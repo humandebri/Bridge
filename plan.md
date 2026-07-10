@@ -38,6 +38,7 @@ ADR が contract 側へ課す制約をすべてこの Phase で実装する。
 Phase 1Aで確定したconstructor、型、関数、event、error、権限表は`docs/base-interface.md`を正本とする。
 Bridgeはconstructor内でbSNSを生成し（ADR 0014）、BaseのService Feeをcanisterがfinalized blockで読む正本とする（ADR 0013）。
 EIP-3009の追加interfaceはPhase 1Aの正本とselector/topic testへ反映済みである（ADR 0015）。
+Phase 1BでbSNS、EIP-3009、Deposit mint、Per-Deposit Limit、deploy時起点のfixed-window Mint Throughput Limitを実装済みである。Withdrawal、Service Fee変更、管理操作は後続Phaseの対象とする。
 
 ### 1-1. bSNS ERC-20
 

@@ -1,4 +1,4 @@
-// contracts/test: prove both Phase 0 deployment units create non-empty runtime bytecode.
+// contracts/test: prove the Phase 1B Bridge creates its bound bSNS deployment unit.
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
@@ -6,13 +6,16 @@ import {BSNS} from "../src/BSNS.sol";
 import {Bridge} from "../src/Bridge.sol";
 
 contract ScaffoldTest {
-    function testDeploysBSNS() public {
-        BSNS token = new BSNS();
+    function testDeploysStandaloneBSNS() public {
+        BSNS token = new BSNS("kinic", "KINIC", 8, address(this));
         assert(address(token).code.length > 0);
     }
 
-    function testDeploysBridge() public {
-        Bridge bridge = new Bridge();
+    function testBridgeDeploysBoundBSNS() public {
+        Bridge bridge =
+            new Bridge("kinic", "KINIC", 8, address(0x11), address(0x22), address(0x33), 100, 200, 1 hours, 10, 1);
         assert(address(bridge).code.length > 0);
+        assert(address(bridge.bsns()).code.length > 0);
+        assert(bridge.bsns().bridge() == address(bridge));
     }
 }

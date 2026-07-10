@@ -20,6 +20,7 @@ bSNSは非アップグレード型であり、後からの機能追加には再d
 - bSNSは`transferWithAuthorization`、`receiveWithAuthorization`、`authorizationState`、`cancelAuthorization`を提供し、authorizationの使用と取消しをeventに記録する。
 - EIP-712 domainはtoken name、固定version `"1"`、実行chain ID、bSNS contract addressへ署名を束縛する。
   別chainまたは別contractで作られた署名を受理しない。
+  固定versionは`version()`、domain全体はEIP-5267 `eip712Domain()`から取得可能にする。
 - authorization nonceはauthorizerごとの単一namespaceで管理する。
   使用済みまたは取消済みのnonceは、どのauthorization送金関数からも再利用できない。
 - `receiveWithAuthorization`はcallerと受取人の一致を要求し、第三者が署名を流用して送金だけを先に実行するfront-runningを防ぐ。

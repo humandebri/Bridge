@@ -6,6 +6,7 @@ import {IBSNS} from "../src/interfaces/IBSNS.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {IERC5267} from "@openzeppelin/contracts/interfaces/IERC5267.sol";
 
 contract BridgeConstructorFixture {
     bytes32 public immutable argumentsHash;
@@ -52,6 +53,8 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBSNS.bridge.selector, "bridge()");
         _assertSelector(IBSNS.bridgeMint.selector, "bridgeMint(address,uint256)");
         _assertSelector(IBSNS.bridgeBurn.selector, "bridgeBurn(address,uint256)");
+        _assertSelector(IBSNS.version.selector, "version()");
+        _assertSelector(IERC5267.eip712Domain.selector, "eip712Domain()");
         _assertSelector(IERC20Metadata.name.selector, "name()");
         _assertSelector(IERC20Metadata.symbol.selector, "symbol()");
         _assertSelector(IERC20Metadata.decimals.selector, "decimals()");
@@ -122,6 +125,11 @@ contract InterfaceSelectorsTest {
 
     function testErrorSelectors() public pure {
         _assertSelector(IBSNS.OnlyBridge.selector, "OnlyBridge(address)");
+        _assertSelector(IBSNS.AuthorizationNotYetValid.selector, "AuthorizationNotYetValid(uint256,uint256)");
+        _assertSelector(IBSNS.AuthorizationExpired.selector, "AuthorizationExpired(uint256,uint256)");
+        _assertSelector(IBSNS.AuthorizationAlreadyUsed.selector, "AuthorizationAlreadyUsed(address,bytes32)");
+        _assertSelector(IBSNS.InvalidAuthorizationSigner.selector, "InvalidAuthorizationSigner(address,address)");
+        _assertSelector(IBSNS.CallerMustBeRecipient.selector, "CallerMustBeRecipient(address,address)");
         _assertSelector(IBridge.ZeroAddress.selector, "ZeroAddress()");
         _assertSelector(IBridge.RoleAddressesMustDiffer.selector, "RoleAddressesMustDiffer()");
         _assertSelector(IBridge.InvalidAmount.selector, "InvalidAmount(uint256)");
@@ -168,6 +176,23 @@ contract InterfaceSelectorsTest {
         _assertTopic(IBridge.BridgeSignerChanged.selector, "BridgeSignerChanged(address,address)");
         _assertTopic(IBridge.RuntimeAdministratorChanged.selector, "RuntimeAdministratorChanged(address,address)");
         _assertTopic(IBridge.BaseAdminTimelockChanged.selector, "BaseAdminTimelockChanged(address,address)");
+    }
+
+    function testEIP3009TypeHashes() public pure {
+        assert(
+            keccak256(
+                "TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"
+            ) == 0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267
+        );
+        assert(
+            keccak256(
+                "ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"
+            ) == 0xd099cc98ef71107a616c4f0f941f04c322d8e254fe26b3c6668db87aae413de8
+        );
+        assert(
+            keccak256("CancelAuthorization(address authorizer,bytes32 nonce)")
+                == 0x158b0a9edf7a828aad02f63cd515c68ef2f50ba807396f6d12842833a1597429
+        );
     }
 
     function testEnumOrdinalsAndStructOrder() public pure {

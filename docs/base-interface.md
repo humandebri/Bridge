@@ -31,6 +31,7 @@ KINIC用deployではERC-20 metadataを`name = "kinic"`、`symbol = "KINIC"`と�
 bSNSは標準ERC-20に加えて、次のEIP-3009 interfaceを提供する。
 
 ```solidity
+function version() external pure returns (string memory); // "1"
 function authorizationState(address authorizer, bytes32 nonce) external view returns (bool);
 function transferWithAuthorization(
     address from,
@@ -60,7 +61,7 @@ event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce);
 event AuthorizationCanceled(address indexed authorizer, bytes32 indexed nonce);
 ```
 
-`validAfter`と`validBefore`はUnix timeであり、authorizationはその有効期間内だけ使用できる。使用済みと取消済みのnonceはauthorizerごとの単一namespaceで管理し、どちらのauthorization送金関数からも再利用できない。`receiveWithAuthorization`はcallerと`to`の一致を要求する。EIP-712 domainはtoken name、固定version `"1"`、実行chain ID、bSNS contract addressへ束縛する。
+`validAfter`と`validBefore`はUnix timeであり、`block.timestamp > validAfter && block.timestamp < validBefore`の間だけ使用できる。使用済みと取消済みのnonceはauthorizerごとの単一namespaceで管理し、どちらのauthorization送金関数からも再利用できない。`receiveWithAuthorization`はcallerと`to`の一致を要求する。EIP-712 domainはtoken name、固定version `"1"`、実行chain ID、bSNS contract addressへ束縛し、EIP-5267 `eip712Domain()`から取得できる。
 
 ## Roles
 
@@ -78,6 +79,8 @@ rotationでもzero addressと3権限addressの重複を拒否し、初期deploy�
 `DepositMintRequest`は`depositId`、Base recipient、ICPでlockした`grossAmount`、利用者指定の`maxServiceFee`を保持する。実mint量は`grossAmount - serviceFee`であり、Per-Deposit LimitとMint Throughput Limitはこの実mint量へ適用する。
 
 singleとbatchは同じstructを使用する。batchはatomicであり、空batch、処理済みID、batch内重複、zero recipient、不正amount、fee保護違反、各Depositのlimit違反、batch合計のthroughput違反のいずれかで全体をrevertする。成功後の`depositId`は再利用できない。
+
+fixed windowはBridge deploy時刻から開始する。`block.timestamp >= mintWindowStartedAt + mintWindowDuration`となった後、最初に成功したmintの時刻を次windowの起点にし、消費量をresetする。失敗したmintは起点も消費量も変更しない。window境界直前と直後には最大2 window分をmintできるため、上限値は`docs/parameters.md`の2倍係数を前提に導出する。
 
 ## Withdrawal
 
@@ -101,4 +104,4 @@ Runtime Administratorの`reduceMintLimits`は、Per-Deposit Limitとwindow limit
 
 ## Phase境界
 
-Phase 1Aではinterface、constructor fixture、selector/topic testだけを追加する。concreteな`Bridge`と`BSNS`は外部資産操作関数を持たず、本番資産を受け付けない。bSNSとDeposit mintはPhase 1B、WithdrawalとService FeeはPhase 1C、管理権限とtimelockはPhase 1Dで実装する。
+Phase 1BではbSNS、EIP-3009、Deposit mint、Per-Deposit Limit、fixed-window Mint Throughput Limitまでを実装した。WithdrawalとService Fee変更はPhase 1C、管理権限とtimelockはPhase 1Dで実装する。未実装APIのrevert stubは置かず、interfaceはPhase 1Eまで暫定とする。Phase 1B contractは本番資産を受け付けない。

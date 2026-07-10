@@ -149,17 +149,24 @@ wait_for_anvil() {
 
 deploy_contract() {
   local identifier="$1"
+  shift
   local output
   local address
   local code
+  local command=(
+    forge create
+    --root "$CONTRACTS"
+    --rpc-url http://127.0.0.1:8545
+    --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+    --unlocked
+    --broadcast
+    "$identifier"
+  )
 
-  output="$(forge create \
-    --root "$CONTRACTS" \
-    --rpc-url http://127.0.0.1:8545 \
-    --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
-    --unlocked \
-    --broadcast \
-    "$identifier")"
+  if [[ "$#" -gt 0 ]]; then
+    command+=(--constructor-args "$@")
+  fi
+  output="$("${command[@]}")"
   address="$(printf '%s\n' "$output" | sed -n 's/^Deployed to: //p' | tail -n 1)"
   if [[ -z "$address" ]]; then
     echo "could not parse deployed address for $identifier" >&2
@@ -172,7 +179,19 @@ deploy_contract() {
     echo "deployed contract has no runtime bytecode: $identifier at $address" >&2
     return 1
   fi
-  echo "$identifier deployed at $address"
+  echo "$identifier deployed at $address" >&2
+  printf '%s\n' "$address"
+}
+
+require_equal() {
+  local label="$1"
+  local actual="$2"
+  local expected="$3"
+
+  if [[ "$actual" != "$expected" ]]; then
+    echo "$label mismatch: expected $expected, got $actual" >&2
+    return 1
+  fi
 }
 
 prepare_temporary_icp_config() {
@@ -200,6 +219,23 @@ ensure_icp_network() {
 run_smoke() {
   local network_status="$TMP_ROOT/icp-network-status.json"
   local canister_status="$TMP_ROOT/canister-status.json"
+  local bridge_address
+  local bsns_address
+  local token_bridge
+  local token_name
+  local token_symbol
+  local token_version
+  local token_decimals
+  local recipient_balance
+  local processed
+  local readonly bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  local readonly runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+  local readonly base_admin_timelock="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+  local readonly recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
+  local readonly deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
+  local readonly gross_amount="101000000"
+  local readonly service_fee="1000000"
+  local readonly minted_amount="100000000"
 
   ensure_icp_network "$network_status"
   icp deploy -e local --project-root-override "$ROOT"
@@ -223,8 +259,56 @@ run_smoke() {
     return 1
   fi
 
-  deploy_contract "src/BSNS.sol:BSNS"
-  deploy_contract "src/Bridge.sol:Bridge"
+  bridge_address="$(deploy_contract \
+    "src/Bridge.sol:Bridge" \
+    "kinic" \
+    "KINIC" \
+    "8" \
+    "$bridge_signer" \
+    "$runtime_administrator" \
+    "$base_admin_timelock" \
+    "1000000000000" \
+    "10000000000000" \
+    "3600" \
+    "100000000" \
+    "$service_fee")"
+  bsns_address="$(cast call "$bridge_address" "bsns()(address)" --rpc-url http://127.0.0.1:8545)"
+  if [[ "$(cast code "$bsns_address" --rpc-url http://127.0.0.1:8545)" == "0x" ]]; then
+    echo "Bridge-created bSNS has no runtime bytecode: $bsns_address" >&2
+    return 1
+  fi
+
+  token_bridge="$(cast call "$bsns_address" "bridge()(address)" --rpc-url http://127.0.0.1:8545)"
+  require_equal \
+    "bSNS Bridge binding" \
+    "$(printf '%s' "$token_bridge" | tr '[:upper:]' '[:lower:]')" \
+    "$(printf '%s' "$bridge_address" | tr '[:upper:]' '[:lower:]')"
+  token_name="$(cast call "$bsns_address" "name()(string)" --rpc-url http://127.0.0.1:8545)"
+  token_symbol="$(cast call "$bsns_address" "symbol()(string)" --rpc-url http://127.0.0.1:8545)"
+  token_version="$(cast call "$bsns_address" "version()(string)" --rpc-url http://127.0.0.1:8545)"
+  read -r token_decimals _ <<<"$(cast call "$bsns_address" "decimals()(uint8)" --rpc-url http://127.0.0.1:8545)"
+  require_equal "bSNS name" "$token_name" '"kinic"'
+  require_equal "bSNS symbol" "$token_symbol" '"KINIC"'
+  require_equal "bSNS EIP-712 version" "$token_version" '"1"'
+  require_equal "bSNS decimals" "$token_decimals" "8"
+
+  cast send \
+    "$bridge_address" \
+    "mintDeposit((bytes32,address,uint256,uint256))" \
+    "($deposit_id,$recipient,$gross_amount,$service_fee)" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$bridge_signer" \
+    --unlocked >/dev/null
+  read -r recipient_balance _ <<<"$(
+    cast call "$bsns_address" "balanceOf(address)(uint256)" "$recipient" --rpc-url http://127.0.0.1:8545
+  )"
+  processed="$(
+    cast call "$bridge_address" "isDepositProcessed(bytes32)(bool)" "$deposit_id" \
+      --rpc-url http://127.0.0.1:8545
+  )"
+  require_equal "smoke recipient balance" "$recipient_balance" "$minted_amount"
+  require_equal "smoke Deposit processed state" "$processed" "true"
+  echo "Bridge-created bSNS deployed at $bsns_address" >&2
 }
 
 run_checks() {
