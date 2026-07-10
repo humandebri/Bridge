@@ -1,0 +1,22 @@
+# Repository root: build and deploy the empty Rust Bridge canister with a pinned ICP recipe.
+canisters:
+  - name: bridge-canister
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: bridge-canister
+        candid: canister/bridge-canister/bridge.did
+        shrink: true
+
+networks:
+  - name: local
+    mode: managed
+    version: v15.0.0-2026-07-02-07-40
+    gateway:
+      port: 8000
+
+environments:
+  - name: local
+    network: local
+    canisters:
+      - bridge-canister

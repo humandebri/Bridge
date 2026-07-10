@@ -1,0 +1,26 @@
+# contracts project: pin compiler behavior and isolate SMTChecker from normal Foundry tests.
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+cache_path = "cache"
+solc = "0.8.35"
+evm_version = "prague"
+optimizer = true
+optimizer_runs = 200
+deny = "warnings"
+bytecode_hash = "none"
+cbor_metadata = false
+
+[profile.smt]
+optimizer = false
+deny = "warnings"
+
+[profile.smt.model_checker]
+engine = "chc"
+solvers = ["z3"]
+targets = ["assert"]
+invariants = ["contract"]
+show_unproved = true
+timeout = 30000

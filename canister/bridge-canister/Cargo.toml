@@ -1,0 +1,16 @@
+# bridge-canister crate: build the empty Phase 0 IC boundary as a Wasm canister.
+[package]
+name = "bridge-canister"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+bridge-core = { path = "../bridge-core" }
+candid.workspace = true
+ic-cdk.workspace = true

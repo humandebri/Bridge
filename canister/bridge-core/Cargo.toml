@@ -1,0 +1,10 @@
+# bridge-core crate: reserve a dependency-free library for deterministic state-machine logic.
+[package]
+name = "bridge-core"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"

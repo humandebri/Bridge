@@ -1,0 +1,2 @@
+// Bridge canister Candid: Phase 0 has no callable production API.
+service : () -> {};

@@ -1,0 +1,27 @@
+# Repository root: exclude local state, secrets, and generated build artifacts.
+# Keep source, lockfiles, dependencies, and curated audit evidence visible by default.
+
+# Local machine settings
+.DS_Store
+.claude/settings.local.json
+
+# Environment secrets; commit only the documented example file.
+.env
+.env.*
+!.env.example
+
+# Rust build artifacts
+target/
+
+# Foundry build and deployment artifacts
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+contracts/.forge-snapshots/
+
+# ICP CLI cache and local network state. Mainnet mappings under .icp/data stay tracked.
+.icp/cache/
+
+# Local tool and proof output
+.tools/
+verification/output/

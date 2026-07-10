@@ -1,0 +1,17 @@
+# Repository root: group the pure Bridge core and the IC canister adapter in one workspace.
+[workspace]
+members = [
+    "canister/bridge-core",
+    "canister/bridge-canister",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.93.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+candid = "=0.10.32"
+ic-cdk = "=0.20.2"
