@@ -1,6 +1,6 @@
 // verification/smt/pass: ensure CHC can prove a value accepted under an explicit upper bound.
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 contract BoundedValue {
     uint256 public immutable MAXIMUM;

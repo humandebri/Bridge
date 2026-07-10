@@ -1,5 +1,5 @@
-# GitHub Actions: reproduce the complete Phase 0 tool, proof, build, and deploy gate on Linux.
-name: phase-0-ci
+# GitHub Actions: reproduce the complete Phase 1A interface, proof, build, and deploy gate on Linux.
+name: phase-1a-ci
 
 on:
   pull_request:
@@ -9,17 +9,24 @@ permissions:
   contents: read
 
 concurrency:
-  group: phase-0-${{ github.workflow }}-${{ github.ref }}
+  group: phase-1a-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  phase-0:
+  phase-1a:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Verify OpenZeppelin revision
+        run: |
+          test "$(git -C contracts/lib/openzeppelin-contracts rev-parse HEAD)" = \
+            "5fd1781b1454fd1ef8e722282f86f9293cacf256"
 
       - name: Install pinned Rust toolchain
         run: rustup show
@@ -29,42 +36,43 @@ jobs:
         with:
           version: v1.7.1
 
-      - name: Install ICP CLI 0.2.7
+      - name: Install ICP CLI 1.0.2
         env:
           ICP_CLI_DISABLE_UPDATE: "1"
           ICP_CLI_NO_MODIFY_PATH: "1"
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
             -o /tmp/icp-cli-installer.sh \
-            https://github.com/dfinity/icp-cli/releases/download/v0.2.7/icp-cli-installer.sh
-          echo "7293491f12d988bf52a75777c5c49daff5bda96032984c28dc1ccc28118b263c  /tmp/icp-cli-installer.sh" \
+            https://github.com/dfinity/icp-cli/releases/download/v1.0.2/icp-cli-installer.sh
+          echo "e7e29ec7a99c854264477f8dcede86670ff3a854f035b6fac40d0c891b9cf70e  /tmp/icp-cli-installer.sh" \
             | sha256sum --check
           sh /tmp/icp-cli-installer.sh --quiet
 
-      - name: Install Z3 4.15.4
+      - name: Install Z3 4.16.0
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
             -o /tmp/z3.zip \
-            https://github.com/Z3Prover/z3/releases/download/z3-4.15.4/z3-4.15.4-x64-glibc-2.39.zip
-          echo "a41b690e89c343931471506cdc6d957b6044a200fd2d240cc017432afdff7d3e  /tmp/z3.zip" \
+            https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/z3-4.16.0-x64-glibc-2.39.zip
+          echo "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e  /tmp/z3.zip" \
             | sha256sum --check
           unzip -q /tmp/z3.zip -d "$HOME/.local/z3"
           mkdir -p "$HOME/.local/bin"
           ln -s "$(find "$HOME/.local/z3" -type f -path '*/bin/z3' -print -quit)" "$HOME/.local/bin/z3"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Install Verus 0.2026.05.05
+      - name: Install Verus 0.2026.07.05
         run: |
+          rustup toolchain install 1.96.0 --profile minimal
           curl --proto '=https' --tlsv1.2 -LsSf \
             -o /tmp/verus.zip \
-            https://github.com/verus-lang/verus/releases/download/release/0.2026.05.05.d03e906/verus-0.2026.05.05.d03e906-x86-linux.zip
-          echo "09c0ef9f59995a9c0e26c2a47ef6a6fc437d67816aca1685d05b872519af426c  /tmp/verus.zip" \
+            https://github.com/verus-lang/verus/releases/download/release/0.2026.07.05.49b8806/verus-0.2026.07.05.49b8806-x86-linux.zip
+          echo "cb4fe7db423fdda5e9aa77b2c3e632f8a618b6a991509283aae591f0a914d34c  /tmp/verus.zip" \
             | sha256sum --check
           unzip -q /tmp/verus.zip -d "$HOME/.local/verus"
           mkdir -p "$HOME/.local/bin"
           ln -s "$(find "$HOME/.local/verus" -type f -name verus -print -quit)" "$HOME/.local/bin/verus"
 
-      - name: Run Phase 0 gate
+      - name: Run Phase 1A gate
         run: scripts/ci-local.sh all
 
       - name: Verify smoke restored the ICP configuration

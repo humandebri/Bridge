@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Repository tool gate: reject drift from the Phase 0 compiler and verifier versions.
+# Repository tool gate: reject drift from the pinned compiler and verifier versions.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,9 +25,34 @@ require_output() {
   fi
 }
 
-require_output rustc "1.93.0" "$RUST_VERSION_PATTERN"
-require_output icp "0.2.7" "$ICP_VERSION_PATTERN"
+require_git_revision() {
+  local dependency_path="$1"
+  local expected_revision="$2"
+  local actual_revision
+
+  if [[ ! -e "$dependency_path/.git" ]]; then
+    echo "missing required git dependency: $dependency_path" >&2
+    return 1
+  fi
+
+  actual_revision="$(git -C "$dependency_path" rev-parse HEAD 2>/dev/null)"
+  if [[ "$actual_revision" != "$expected_revision" ]]; then
+    echo "dependency revision mismatch: $dependency_path" >&2
+    echo "expected $expected_revision, found $actual_revision" >&2
+    return 1
+  fi
+  if ! git -C "$dependency_path" diff --quiet || ! git -C "$dependency_path" diff --cached --quiet; then
+    echo "dependency has uncommitted changes: $dependency_path" >&2
+    return 1
+  fi
+}
+
+require_output rustc "1.97.0" "$RUST_VERSION_PATTERN"
+require_output icp "1.0.2" "$ICP_VERSION_PATTERN"
 require_output forge "1.7.1" "$FOUNDRY_VERSION_PATTERN"
 require_output anvil "1.7.1" "$ANVIL_VERSION_PATTERN"
-require_output z3 "4.15.4" "$Z3_VERSION_PATTERN"
-require_output verus "0.2026.05.05.d03e906" "$VERUS_VERSION_PATTERN"
+require_output z3 "4.16.0" "$Z3_VERSION_PATTERN"
+require_output verus "0.2026.07.05.49b8806" "$VERUS_VERSION_PATTERN"
+require_git_revision \
+  "$ROOT/contracts/lib/openzeppelin-contracts" \
+  "5fd1781b1454fd1ef8e722282f86f9293cacf256"

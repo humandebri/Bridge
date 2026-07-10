@@ -5,7 +5,7 @@ SNSトークンをICPとBaseの間で移動し、両チェーンにまたがる�
 ## Language
 
 **Deposit**:
-ICPでSNSトークンをロックし、Baseで同量をmintする1件の要求。
+ICPでSNSトークンをロックし、Service Feeを引いた量のbSNSをBaseでmintする1件の要求。
 _Avoid_: Bridge transaction, transfer
 
 **Withdrawal**:
@@ -30,6 +30,7 @@ _Avoid_: Total supply, staked token
 
 **bSNS**:
 Bridgeable SNS Tokenを1:1で裏付けるBase上のERC-20。SNS Governanceの投票権やneuron権限を持たない。
+これは内部の総称であり、ERC-20 metadataへ`b` prefixを付けることを意味しない。KINIC用deployのtoken nameは`kinic`、symbolは`KINIC`とする。
 _Avoid_: Cross-chain governance token, voting token
 
 **Withdrawal Settlement**:
@@ -59,6 +60,10 @@ _Avoid_: Runtime administrator, developer controller
 **Runtime Administrator**:
 Bridgeのpause、limitの引き下げ、上限内のService Fee、Fee Recipientだけを操作する外部管理鍵。安全方向の操作に限定され、canister controllerではない。
 _Avoid_: Upgrade authority, owner
+
+**Bridge Signer**:
+Bridge canisterのthreshold ECDSAで管理され、Baseのdeposit mint、Release acknowledgement、Base Refundだけを実行する単一address。
+_Avoid_: Base Admin, Runtime Administrator, owner
 
 **Base Admin**:
 Base contractのunpause、limitの引き上げ、role rotationをtimelock経由で承認するSafe multisig。mint、refund、escrow資産への権限を持たない。

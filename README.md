@@ -1,25 +1,26 @@
 # SNS–Base Bridge
 
-SNSトークンをICPとBaseの間で1:1に裏付けるBridge。本リポジトリはPhase 0の基盤段階にある。
+SNSトークンをICPとBaseの間で1:1に裏付けるBridge。本リポジトリはPhase 1AのBase interface設計段階にある。
 
-現在の`bridge-canister`は空のCandid service、`BSNS`と`Bridge`は外部操作関数を持たない空contractである。資産を受け付けず、本番deployしない。
+現在の`bridge-canister`は空のCandid service、concreteな`BSNS`と`Bridge`は外部操作関数を持たない空contractである。Phase 1AのSolidity interfaceは設計宣言だけであり、資産を受け付けず、本番deployしない。
 
-設計判断は[plan.md](plan.md)、用語は[CONTEXT.md](CONTEXT.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
+Base ABIは[docs/base-interface.md](docs/base-interface.md)、設計判断は[plan.md](plan.md)、用語は[CONTEXT.md](CONTEXT.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
 
 ## 固定ツール
 
 | Tool | Version |
 |---|---:|
-| Rust | 1.93.0 |
-| ICP CLI | 0.2.7 |
-| ICP Rust recipe | `@dfinity/rust@v3.2.0` |
+| Rust | 1.97.0 |
+| ICP CLI | 1.0.2 |
+| ICP Rust recipe | `@dfinity/rust@v3.3.0` |
 | ICP local network launcher | `v15.0.0-2026-07-02-07-40` |
 | Foundry / Anvil | 1.7.1 |
-| Solidity | 0.8.35 |
-| Z3 | 4.15.4 |
-| Verus | 0.2026.05.05.d03e906 |
+| Solidity | 0.8.36 |
+| OpenZeppelin Contracts | 5.6.1 (`5fd1781b1454fd1ef8e722282f86f9293cacf256`) |
+| Z3 | 4.16.0 |
+| Verus | 0.2026.07.05.49b8806 |
 
-Rustは`rust-toolchain.toml`、Rust依存は`Cargo.lock`、Solidity compilerとEVM targetは`contracts/foundry.toml`で固定する。
+Rustは`rust-toolchain.toml`、Rust依存は`Cargo.lock`、Solidity compilerとEVM targetは`contracts/foundry.toml`、OpenZeppelinはgit submoduleのcommitで固定する。Verusが内部で要求するRust 1.96.0はCIのVerus導入stepで別途固定する。
 
 ## 検証
 
@@ -46,7 +47,7 @@ scripts/ci-local.sh icp
 scripts/ci-local.sh smoke
 ```
 
-`proofs`は成功fixtureだけでなく、意図的に誤ったSMTChecker/Verus fixtureが拒否されることも確認する。Phase 0ではBridge固有の性質をまだ証明しない。証明範囲と未検証事項は[verification/README.md](verification/README.md)に記録する。
+`contracts`はPhase 1A interfaceのfunction/error selector、event topic、型順序も検証する。`proofs`は成功fixtureだけでなく、意図的に誤ったSMTChecker/Verus fixtureが拒否されることも確認する。Phase 1AではBridge固有の性質をまだ証明しない。証明範囲と未検証事項は[verification/README.md](verification/README.md)に記録する。
 
 ## ローカルdeploy
 

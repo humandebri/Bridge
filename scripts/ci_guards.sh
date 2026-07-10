@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Phase 0 CI guards: centralize exact output checks so production gates and tests cannot drift.
+# CI guards: centralize exact output checks so production gates and tests cannot drift.
 
-readonly RUST_VERSION_PATTERN='^rustc 1\.93\.0([[:space:]]|$)'
-readonly ICP_VERSION_PATTERN='^icp 0\.2\.7$'
+readonly RUST_VERSION_PATTERN='^rustc 1\.97\.0([[:space:]]|$)'
+readonly ICP_VERSION_PATTERN='^icp 1\.0\.2$'
 readonly FOUNDRY_VERSION_PATTERN='^forge Version: 1\.7\.1$'
 readonly ANVIL_VERSION_PATTERN='^anvil Version: 1\.7\.1$'
-readonly Z3_VERSION_PATTERN='^Z3 version 4\.15\.4([[:space:]]|$)'
-readonly VERUS_VERSION_PATTERN='^[[:space:]]*Version: 0\.2026\.05\.05\.d03e906$'
+readonly Z3_VERSION_PATTERN='^Z3 version 4\.16\.0([[:space:]]|$)'
+readonly VERUS_VERSION_PATTERN='^[[:space:]]*Version: 0\.2026\.07\.05\.49b8806$'
 
 output_has_matching_line() {
   local output="$1"

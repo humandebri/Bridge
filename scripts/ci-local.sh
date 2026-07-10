@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Repository CI entrypoint: run deterministic Phase 0 checks and isolated local deploy smoke tests.
+# Repository CI entrypoint: run deterministic checks and isolated local deploy smoke tests.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

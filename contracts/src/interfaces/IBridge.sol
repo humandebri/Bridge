@@ -1,0 +1,164 @@
+// contracts/src/interfaces: define the Base Bridge ABI consumed by later contract and canister phases.
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity 0.8.36;
+
+import {IBSNS} from "./IBSNS.sol";
+
+/// @notice Provisional Phase 1A interface; the ABI remains changeable until Phase 1E.
+interface IBridge {
+    enum WithdrawalStatus {
+        None,
+        Pending,
+        Released,
+        Refunded
+    }
+
+    struct DepositMintRequest {
+        bytes32 depositId;
+        address recipient;
+        uint256 grossAmount;
+        uint256 maxServiceFee;
+    }
+
+    struct Withdrawal {
+        address requester;
+        uint256 amount;
+        uint256 minAmountOut;
+        bytes owner;
+        bytes32 subaccount;
+        WithdrawalStatus status;
+        uint256 amountOut;
+        uint256 serviceFee;
+        uint256 ledgerFee;
+        uint256 ledgerBlockIndex;
+    }
+
+    event DepositMinted(
+        bytes32 indexed depositId,
+        address indexed recipient,
+        uint256 grossAmount,
+        uint256 serviceFee,
+        uint256 mintedAmount
+    );
+    event WithdrawalCreated(
+        uint256 indexed withdrawalId,
+        address indexed requester,
+        uint256 amount,
+        uint256 minAmountOut,
+        bytes owner,
+        bytes32 subaccount
+    );
+    event WithdrawalReleased(
+        uint256 indexed withdrawalId, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee, uint256 ledgerBlockIndex
+    );
+    event WithdrawalRefunded(uint256 indexed withdrawalId, address indexed requester, uint256 amount);
+    event ServiceFeeChanged(address indexed caller, uint256 previousFee, uint256 newFee);
+    event MintLimitsChanged(
+        address indexed caller,
+        uint256 previousPerDepositLimit,
+        uint256 newPerDepositLimit,
+        uint256 previousWindowLimit,
+        uint256 newWindowLimit,
+        uint64 previousWindowDuration,
+        uint64 newWindowDuration
+    );
+    event DepositMintsPaused(address indexed caller);
+    event DepositMintsUnpaused(address indexed caller);
+    event WithdrawalsPaused(address indexed caller);
+    event WithdrawalsUnpaused(address indexed caller);
+    event BridgeSignerChanged(address indexed previousSigner, address indexed newSigner);
+    event RuntimeAdministratorChanged(address indexed previousAdministrator, address indexed newAdministrator);
+    event BaseAdminTimelockChanged(address indexed previousTimelock, address indexed newTimelock);
+
+    error ZeroAddress();
+    error RoleAddressesMustDiffer();
+    error InvalidAmount(uint256 amount);
+    error InvalidPrincipal(bytes owner);
+    error InvalidMinAmountOut(uint256 minAmountOut, uint256 amount);
+    error InvalidServiceFee(uint256 serviceFee, uint256 maximumServiceFee);
+    error ServiceFeeExceedsUserMaximum(uint256 serviceFee, uint256 userMaximum);
+    error EmptyBatch();
+    error DepositAlreadyProcessed(bytes32 depositId);
+    error DepositMintLimitExceeded(uint256 mintAmount, uint256 limit);
+    error MintWindowLimitExceeded(uint256 requestedAmount, uint256 availableAmount);
+    error DepositMintsArePaused();
+    error WithdrawalsArePaused();
+    error WithdrawalNotFound(uint256 withdrawalId);
+    error InvalidWithdrawalStatus(uint256 withdrawalId, WithdrawalStatus currentStatus);
+    error SettlementAmountsMismatch(uint256 amount, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee);
+    error ReleaseAcknowledgementMismatch(uint256 withdrawalId);
+    error UnsafeLimitChange();
+    error UnauthorizedBridgeSigner(address caller);
+    error UnauthorizedRuntimeAdministrator(address caller);
+    error UnauthorizedBaseAdmin(address caller);
+
+    function mintDeposit(DepositMintRequest calldata request) external;
+
+    function mintDeposits(DepositMintRequest[] calldata requests) external;
+
+    function createWithdrawal(uint256 amount, uint256 minAmountOut, bytes calldata owner, bytes32 subaccount)
+        external
+        returns (uint256 withdrawalId);
+
+    function acknowledgeRelease(
+        uint256 withdrawalId,
+        uint256 amountOut,
+        uint256 serviceFee,
+        uint256 ledgerFee,
+        uint256 ledgerBlockIndex
+    ) external;
+
+    function refundWithdrawal(uint256 withdrawalId) external;
+
+    function bsns() external view returns (IBSNS);
+
+    function bridgeSigner() external view returns (address);
+
+    function runtimeAdministrator() external view returns (address);
+
+    function baseAdminTimelock() external view returns (address);
+
+    function serviceFee() external view returns (uint256);
+
+    function MAX_SERVICE_FEE() external view returns (uint256);
+
+    function perDepositLimit() external view returns (uint256);
+
+    function mintWindowLimit() external view returns (uint256);
+
+    function mintWindowDuration() external view returns (uint64);
+
+    function mintWindowStartedAt() external view returns (uint64);
+
+    function mintedInWindow() external view returns (uint256);
+
+    function depositMintsPaused() external view returns (bool);
+
+    function withdrawalsPaused() external view returns (bool);
+
+    function nextWithdrawalId() external view returns (uint256);
+
+    function isDepositProcessed(bytes32 depositId) external view returns (bool);
+
+    function getWithdrawal(uint256 withdrawalId) external view returns (Withdrawal memory);
+
+    function pauseDepositMints() external;
+
+    function pauseWithdrawals() external;
+
+    function unpauseDepositMints() external;
+
+    function unpauseWithdrawals() external;
+
+    function reduceMintLimits(uint256 newPerDepositLimit, uint256 newWindowLimit, uint64 newWindowDuration) external;
+
+    function setMintLimits(uint256 newPerDepositLimit, uint256 newWindowLimit, uint64 newWindowDuration) external;
+
+    function setServiceFee(uint256 newServiceFee) external;
+
+    function rotateBridgeSigner(address newSigner) external;
+
+    function rotateRuntimeAdministrator(address newAdministrator) external;
+
+    function rotateBaseAdminTimelock(address newTimelock) external;
+}

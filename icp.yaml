@@ -2,7 +2,7 @@
 canisters:
   - name: bridge-canister
     recipe:
-      type: "@dfinity/rust@v3.2.0"
+      type: "@dfinity/rust@v3.3.0"
       configuration:
         package: bridge-canister
         candid: canister/bridge-canister/bridge.did

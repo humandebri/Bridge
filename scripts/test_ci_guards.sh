@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 0 CI guard tests: reject near-match versions and inconclusive SMT diagnostics.
+# CI guard tests: reject near-match versions and inconclusive SMT diagnostics.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -50,12 +50,28 @@ expect_no_smt_counterexample() {
 
 expect_match \
   "Rust release with commit metadata" \
-  "rustc 1.93.0 (254b59607 2026-01-19)" \
+  "rustc 1.97.0 (2d8144b78 2026-07-07)" \
   "$RUST_VERSION_PATTERN"
 expect_match \
+  "exact ICP CLI release" \
+  "icp 1.0.2" \
+  "$ICP_VERSION_PATTERN"
+expect_no_match \
+  "near-match ICP CLI release" \
+  "icp 1.0.20" \
+  "$ICP_VERSION_PATTERN"
+expect_match \
   "Z3 release with platform metadata" \
-  "Z3 version 4.15.4 - 64 bit" \
+  "Z3 version 4.16.0 - 64 bit" \
   "$Z3_VERSION_PATTERN"
+expect_match \
+  "exact Verus release" \
+  $'Verus\n  Version: 0.2026.07.05.49b8806\n  Profile: release' \
+  "$VERUS_VERSION_PATTERN"
+expect_no_match \
+  "suffixed Verus release" \
+  "Version: 0.2026.07.05.49b8806-custom" \
+  "$VERUS_VERSION_PATTERN"
 expect_match \
   "exact Foundry release" \
   "forge Version: 1.7.1" \

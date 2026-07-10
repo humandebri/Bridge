@@ -1,6 +1,6 @@
 # SNS–Base Bridge 実装計画
 
-本計画は `docs/adr/` の ADR 0001〜0012 と `CONTEXT.md` の用語定義に基づく。
+本計画は `docs/adr/` の ADR 0001〜0015 と `CONTEXT.md` の用語定義に基づく。
 用語は CONTEXT.md の定義に従い、本文では再定義しない。
 
 ADR 0007（SNS Governance を Base admin の権限主体にする）は ADR 0009 により supersede された。
@@ -35,13 +35,27 @@ bSNS ERC-20 と Bridge contract を実装する。
 アップグレード不能である以上、この Phase の設計ミスは再デプロイでしか直せない。
 ADR が contract 側へ課す制約をすべてこの Phase で実装する。
 
+Phase 1Aで確定したconstructor、型、関数、event、error、権限表は`docs/base-interface.md`を正本とする。
+Bridgeはconstructor内でbSNSを生成し（ADR 0014）、BaseのService Feeをcanisterがfinalized blockで読む正本とする（ADR 0013）。
+EIP-3009の追加interfaceはPhase 1Aの正本とselector/topic testへ反映済みである（ADR 0015）。
+
 ### 1-1. bSNS ERC-20
 
 - Bridgeable SNS Token を 1:1 で裏付ける ERC-20 とする（ADR 0002）。
 - 投票権、neuron 権限、Governance 用 identity mapping をいっさい持たせない（ADR 0002）。
 - mint と burn の権限を Bridge contract に限定する。
 
-### 1-2. Deposit mint の流量制御（ADR 0001、0012）
+### 1-2. EIP-3009署名送金（ADR 0015）
+
+- `transferWithAuthorization`と`receiveWithAuthorization`を実装し、x402 `exact`決済がbSNSを直接settleできるようにする。
+- `authorizationState`と`cancelAuthorization`を実装し、使用済みと取消済みのnonceをauthorizerごとの単一namespaceで再利用できないようにする。
+- EIP-712 domainをtoken name、固定version `"1"`、実行chain ID、bSNS contract addressへ束縛する。
+- `receiveWithAuthorization`ではcallerと受取人の一致を要求する。
+- authorization送金は既存balanceの移転だけに限定し、Bridge以外へmintとburnの権限を与えない。
+- Foundryで正常送金、replay、期限の前後、署名者とdomainの不一致、取消し、`receiveWithAuthorization`の受取人検査をテストする。
+- 標準ERC-20のallowanceを維持し、Permit2を代替のx402決済経路として妨げない。
+
+### 1-3. Deposit mint の流量制御（ADR 0001、0012）
 
 - Per-Deposit Limit を各 Deposit に適用する。
 - Mint Throughput Limit を fixed window（初期値 1 時間）の新規 deposit mint 総量に適用する。window 境界バーストの 2 倍係数は上限値の導出（`docs/parameters.md`）で織り込む。
@@ -49,27 +63,27 @@ ADR が contract 側へ課す制約をすべてこの Phase で実装する。
 - refund mint は新規 deposit mint に計上せず、両制限の対象外とする。
 - mint batch では、各 Deposit に Per-Deposit Limit を適用したうえで、batch 全体を Mint Throughput Limit に算入する。
 
-### 1-3. Withdrawal 状態機械（ADR 0003）
+### 1-4. Withdrawal 状態機械（ADR 0003）
 
 - Withdrawal の状態を `Pending`、`Released`、`Refunded` とし、`Pending → Released` と `Pending → Refunded` を排他にする。
 - Release acknowledgement を withdrawal ID で冪等にし、同一内容の再実行を成功扱いにする。
 - Base Refund は `Pending` の Withdrawal だけに許可する。
 
-### 1-4. Service Fee（ADR 0004）
+### 1-5. Service Fee（ADR 0004）
 
 - immutable な `MAX_SERVICE_FEE` を raw unit でデプロイ時に固定する。
 - `0 <= service_fee <= MAX_SERVICE_FEE` を超える fee 変更を contract 側でも拒否する。
 - Withdrawal の `minAmountOut` により、処理中の fee 変更から利用者を保護する。
 - cancel と Base Refund では Service Fee を徴収しない。
 
-### 1-5. 管理権限の分割（ADR 0005、0009）
+### 1-6. 管理権限の分割（ADR 0005、0009）
 
 - Withdrawal 受付を継続できない残高のとき、新規 Withdrawal を pause し、既存 Settlement だけを継続できる構造にする。
 - 安全方向の操作（pause、limit 引き下げ）を Runtime Administrator の role に割り当てる。
 - 危険方向の操作（unpause、limit 引き上げ、role rotation）を timelock 経由の Base Admin（Safe multisig）に割り当てる。timelock 遅延は初期値 72 時間とし、遅延短縮と signer 変更も timelock を経由する。
 - Base Admin に mint、refund、escrow 資産への権限を与えない。
 
-### 1-6. SMTChecker による証明（ADR 0004）
+### 1-7. SMTChecker による証明（ADR 0004）
 
 - Service Fee の上限制約。
 - fee の二重計上防止と、成功前の fee 確定禁止。
@@ -168,6 +182,8 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 - upgrade 前後で未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold が再開できることを、実データ相当の state で検証する。
 - handover を実行し、controller 一覧が SNS Root だけであることを確認する。開発者 identity、fallback identity、NNS Root を残さない。
 - handover 後の upgrade proposal に添付する成果物（Wasm hash、source revision、Verus 結果、テスト結果、stable schema 互換性）の生成を CI で自動化する。
+- 採用時点のx402 SDKとBase上のfacilitatorを使い、EIP-3009によるbSNSのverifyとsettleをtestnetで確認する。
+  x402 resource serverとfacilitatorの運用は本Bridgeの責務に含めない（ADR 0015）。
 - UI 側の要件として、Deposit 前に bSNS では投票と投票報酬を得られないことを明示する（ADR 0002）。UI 実装が別リポジトリの場合は要件として引き渡す。
 
 **完了条件**：handover checklist がすべて満たされ、SNS proposal による upgrade が一度実際に成功する。

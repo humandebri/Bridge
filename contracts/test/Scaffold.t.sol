@@ -1,6 +1,6 @@
 // contracts/test: prove both Phase 0 deployment units create non-empty runtime bytecode.
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity 0.8.35;
+pragma solidity 0.8.36;
 
 import {BSNS} from "../src/BSNS.sol";
 import {Bridge} from "../src/Bridge.sol";
