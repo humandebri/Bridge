@@ -16,6 +16,14 @@ ignored_error_codes = [6335]
 bytecode_hash = "none"
 cbor_metadata = false
 
+[profile.default.fuzz]
+runs = 1000
+
+[profile.default.invariant]
+runs = 256
+depth = 100
+fail_on_revert = true
+
 [profile.smt]
 optimizer = false
 deny = "warnings"

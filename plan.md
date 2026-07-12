@@ -1,6 +1,6 @@
 # SNS–Base Bridge 実装計画
 
-本計画は `docs/adr/` の ADR 0001〜0015 と `CONTEXT.md` の用語定義に基づく。
+本計画は `docs/adr/` の ADR 0001〜0016 と `CONTEXT.md` の用語定義に基づく。
 用語は CONTEXT.md の定義に従い、本文では再定義しない。
 
 ADR 0007（SNS Governance を Base admin の権限主体にする）は ADR 0009 により supersede された。
@@ -38,7 +38,10 @@ ADR が contract 側へ課す制約をすべてこの Phase で実装する。
 Phase 1Aで確定したconstructor、型、関数、event、error、権限表は`docs/base-interface.md`を正本とする。
 Bridgeはconstructor内でbSNSを生成し（ADR 0014）、BaseのService Feeをcanisterがfinalized blockで読む正本とする（ADR 0013）。
 EIP-3009の追加interfaceはPhase 1Aの正本とselector/topic testへ反映済みである（ADR 0015）。
-Phase 1BでbSNS、EIP-3009、Deposit mint、Per-Deposit Limit、deploy時起点のfixed-window Mint Throughput Limitを実装済みである。Withdrawal、Service Fee変更、管理操作は後続Phaseの対象とする。
+Phase 1BでbSNS、EIP-3009、Deposit mint、Per-Deposit Limit、deploy時起点のfixed-window Mint Throughput Limitを実装済みである。
+Phase 1CでWithdrawal burn、Release acknowledgement、ledger block index一意性、Base Refund、settlement fee記録を実装済みである。
+Phase 1DでService Fee変更、独立pause、limit変更、role rotation、OpenZeppelinの72時間Timelock統合を実装済みである。
+Phase 1Eで検証を閉じてABIを凍結する。
 
 ### 1-1. bSNS ERC-20
 
@@ -91,7 +94,18 @@ Phase 1BでbSNS、EIP-3009、Deposit mint、Per-Deposit Limit、deploy時起点�
 - recipient 変更時の fee reserve 保存。
 - fee reserve を超える送金の禁止。
 
-**完了条件**：Foundry テストと SMTChecker が通り、インターフェース（イベント、関数シグネチャ）が凍結される。
+**完了条件**：Foundry テストと SMTChecker が通り、Phase 1EのABI snapshotとfixtureでインターフェース（イベント、関数シグネチャ）を凍結できる。
+
+### 1-8. Contract検証とABI凍結
+
+- concrete `Bridge`と`BSNS`のcanonical ABI snapshotを追跡し、interface subsetとconstructor、struct、enumの形状をCIで検査する。
+- Foundryのfuzzを1000 runs、stateful invariantを256 runs・depth 100・`fail_on_revert`で実行する。
+- Deposit mint、Withdrawal exposure、terminal state、roleとfee safetyをproduction共有library、unit test、stateful invariantで検証する。
+- EIP-3009 authorizationのnonce namespaceとrollbackをunit・fuzz testで検証する。
+- coverage summaryを情報表示として保存し、数値閾値ではなく未検証経路を検査対象として管理する。
+- 証明義務と外部仮定を`verification/obligations.md`へ記録する。
+
+**完了条件**：ABI snapshot、selector/topic fixture、Foundry fuzz/invariant、SMT pass/negative、coverage summary、local smoke、CIが同一判定で通り、Phase 1E以後のABI変更は別計画と再レビューを要する。
 
 ## Phase 2: Bridge canister の状態機械
 

@@ -66,5 +66,5 @@ Bridge canisterのthreshold ECDSAで管理され、Baseのdeposit mint、Release
 _Avoid_: Base Admin, Runtime Administrator, owner
 
 **Base Admin**:
-Base contractのunpause、limitの引き上げ、role rotationをtimelock経由で承認するSafe multisig。mint、refund、escrow資産への権限を持たない。
+Base contractのunpause、limitの引き上げ、role rotationを72時間のOpenZeppelin Timelock経由で承認・実行するSafe multisig。mint、refund、escrow資産への権限を持たない。
 _Avoid_: Governance Executor, owner, DEFAULT_ADMIN_ROLE holder

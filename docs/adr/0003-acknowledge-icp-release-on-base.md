@@ -15,6 +15,7 @@ ICP Releaseが成功したWithdrawalはBase contractへacknowledgeし、Base上�
 
 - Bridge canisterはICRC transferの成功、`Duplicate`、または完全な履歴照合を確定してからRelease acknowledgementを送る。
 - Release acknowledgementはwithdrawal IDで冪等にし、同一内容の再実行を成功扱いにする。
+- 同じICP ledger block indexを別WithdrawalのRelease acknowledgementへ再利用することをBase contractでも拒否する。
 - ICP Release開始後からBaseで`Released`がfinalizeするまで、自動refundへ遷移させない。
 - Withdrawal settlement用のBase gasを新規Deposit処理とは別に確保する。
 - Verusで、1件のWithdrawalが`Released`と`Refunded`の両方へ到達しないことを証明する。

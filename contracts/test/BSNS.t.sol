@@ -325,6 +325,26 @@ contract BSNSTest is TestBase {
         assert(token.balanceOf(recipient) == 10);
     }
 
+    function testFuzzAuthorizationNonceNamespace(uint256 nonceSeed) public {
+        token.bridgeMint(authorizer, 1);
+        bytes32 nonce = bytes32(nonceSeed);
+        uint256 validAfter = block.timestamp - 1;
+        uint256 validBefore = block.timestamp + 2;
+        (uint8 transferV, bytes32 transferR, bytes32 transferS) = _signTransfer(
+            AUTHORIZER_KEY, TRANSFER_TYPEHASH, address(token), authorizer, recipient, 1, validAfter, validBefore, nonce
+        );
+
+        token.transferWithAuthorization(
+            authorizer, recipient, 1, validAfter, validBefore, nonce, transferV, transferR, transferS
+        );
+        assert(token.authorizationState(authorizer, nonce));
+
+        (uint8 cancelV, bytes32 cancelR, bytes32 cancelS) =
+            _signCancel(AUTHORIZER_KEY, address(token), authorizer, nonce);
+        vm.expectRevert(abi.encodeWithSelector(IBSNS.AuthorizationAlreadyUsed.selector, authorizer, nonce));
+        token.cancelAuthorization(authorizer, nonce, cancelV, cancelR, cancelS);
+    }
+
     function _signTransfer(
         uint256 privateKey,
         bytes32 typeHash,

@@ -22,3 +22,4 @@ Base contractの管理操作を安全方向と危険方向に分け、権限主�
 - Base AdminはSNS Governanceの外に立つ運用組織への信頼追加である。ICP側の信頼主体（ADR 0008のSNS Governance）と対称でないことを受け入れ、UIと文書で明示する。
 - `MAX_SERVICE_FEE`などimmutableと定めた値はBase Adminでも変更できない。
 - Base Adminはmint、refund、escrow資産への権限を持たない。
+- Base Admin Timelockの具体構成はADR 0016に従う。

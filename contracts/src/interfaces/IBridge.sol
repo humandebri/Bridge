@@ -4,7 +4,7 @@ pragma solidity 0.8.36;
 
 import {IBSNS} from "./IBSNS.sol";
 
-/// @notice Provisional Phase 1A interface; the ABI remains changeable until Phase 1E.
+/// @notice Phase 1E frozen Bridge interface used by the concrete implementation and ABI checks.
 interface IBridge {
     enum WithdrawalStatus {
         None,
@@ -87,6 +87,7 @@ interface IBridge {
     error InvalidWithdrawalStatus(uint256 withdrawalId, WithdrawalStatus currentStatus);
     error SettlementAmountsMismatch(uint256 amount, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee);
     error ReleaseAcknowledgementMismatch(uint256 withdrawalId);
+    error LedgerBlockAlreadyAcknowledged(uint256 ledgerBlockIndex, uint256 existingWithdrawalId);
     error UnsafeLimitChange();
     error UnauthorizedBridgeSigner(address caller);
     error UnauthorizedRuntimeAdministrator(address caller);

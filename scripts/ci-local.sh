@@ -64,13 +64,30 @@ run_rust() {
 
 run_contracts() {
   forge fmt --root "$CONTRACTS" --check
-  forge build --root "$CONTRACTS"
+  forge build --root "$CONTRACTS" --sizes
+  python3 "$ROOT/scripts/abi_snapshot.py" --check
   forge test --root "$CONTRACTS"
+  forge coverage \
+    --root "$CONTRACTS" \
+    --report summary \
+    --ignored-error-codes 6335 \
+    --ignored-error-codes 3860
+}
+
+build_smt_failure_fixture() {
+  local fixture="$1"
+
+  FOUNDRY_PROFILE=smt forge build \
+    --root "$CONTRACTS" \
+    --contracts "$fixture" \
+    --skip test \
+    --skip script \
+    --force
 }
 
 run_smt() {
-  local failure_log="$TMP_ROOT/smt-failure.log"
-  local failure_status
+  local -a failure_fixtures=()
+  local failure_fixture
 
   FOUNDRY_PROFILE=smt forge build \
     --root "$CONTRACTS" \
@@ -79,26 +96,14 @@ run_smt() {
     --skip script \
     --force
 
-  set +e
-  FOUNDRY_PROFILE=smt forge build \
-    --root "$CONTRACTS" \
-    --contracts "$ROOT/verification/smt/fail" \
-    --skip test \
-    --skip script \
-    --force >"$failure_log" 2>&1
-  failure_status=$?
-  set -e
+  while IFS= read -r failure_fixture; do
+    failure_fixtures+=("$failure_fixture")
+  done < <(rg --files "$ROOT/verification/smt/fail" -g '*.sol' | sort)
 
-  if [[ "$failure_status" -eq 0 ]]; then
-    echo "SMTChecker accepted the deliberate failing fixture" >&2
-    cat "$failure_log" >&2
-    return 1
-  fi
-  if ! smt_output_has_counterexample "$(<"$failure_log")"; then
-    echo "SMTChecker failed without reporting the expected assertion counterexample" >&2
-    cat "$failure_log" >&2
-    return 1
-  fi
+  verify_smt_failure_fixtures \
+    "$TMP_ROOT/smt-failures" \
+    build_smt_failure_fixture \
+    "${failure_fixtures[@]}"
 }
 
 run_verus() {
@@ -194,6 +199,13 @@ require_equal() {
   fi
 }
 
+json_tuple_field() {
+  local json="$1"
+  local index="$2"
+
+  python3 -c 'import json, sys; print(json.load(sys.stdin)[0][int(sys.argv[1])])' "$index" <<<"$json"
+}
+
 prepare_temporary_icp_config() {
   cp -p "$ROOT/icp.yaml" "$TMP_ROOT/icp.yaml.original"
   ICP_CONFIG_BACKED_UP=1
@@ -220,6 +232,7 @@ run_smoke() {
   local network_status="$TMP_ROOT/icp-network-status.json"
   local canister_status="$TMP_ROOT/canister-status.json"
   local bridge_address
+  local base_admin_timelock
   local bsns_address
   local token_bridge
   local token_name
@@ -227,15 +240,40 @@ run_smoke() {
   local token_version
   local token_decimals
   local recipient_balance
+  local token_total_supply
+  local minted_in_window
   local processed
+  local release_withdrawal
+  local refund_withdrawal
+  local next_withdrawal_id
+  local timelock_delay
+  local proposer_role
+  local canceller_role
+  local executor_role
+  local default_admin_role
+  local unpause_deposit_data
+  local management_salt
+  local current_service_fee
   local readonly bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
   local readonly runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
-  local readonly base_admin_timelock="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+  local readonly base_admin_safe="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
   local readonly recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
   local readonly deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
   local readonly gross_amount="101000000"
   local readonly service_fee="1000000"
   local readonly minted_amount="100000000"
+  local readonly release_amount="50000000"
+  local readonly release_min_amount_out="48000000"
+  local readonly release_amount_out="48000000"
+  local readonly release_ledger_fee="1000000"
+  local readonly release_ledger_block_index="42"
+  local readonly refund_amount="20000000"
+  local readonly refund_min_amount_out="19000000"
+  local readonly principal_owner="0x010203"
+  local readonly default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
+  local readonly timelock_delay_seconds="259200"
+  local readonly zero_address="0x0000000000000000000000000000000000000000"
+  local readonly zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
 
   ensure_icp_network "$network_status"
   icp deploy -e local --project-root-override "$ROOT"
@@ -258,6 +296,59 @@ run_smoke() {
     echo "unexpected Anvil chain ID" >&2
     return 1
   fi
+
+  base_admin_timelock="$(deploy_contract \
+    "lib/openzeppelin-contracts/contracts/governance/TimelockController.sol:TimelockController" \
+    "$timelock_delay_seconds" \
+    "[$base_admin_safe]" \
+    "[$base_admin_safe]" \
+    "$zero_address")"
+  read -r timelock_delay _ <<<"$(
+    cast call "$base_admin_timelock" "getMinDelay()(uint256)" --rpc-url http://127.0.0.1:8545
+  )"
+  require_equal "Base Admin timelock delay" "$timelock_delay" "$timelock_delay_seconds"
+  proposer_role="$(
+    cast call "$base_admin_timelock" "PROPOSER_ROLE()(bytes32)" --rpc-url http://127.0.0.1:8545
+  )"
+  canceller_role="$(
+    cast call "$base_admin_timelock" "CANCELLER_ROLE()(bytes32)" --rpc-url http://127.0.0.1:8545
+  )"
+  executor_role="$(
+    cast call "$base_admin_timelock" "EXECUTOR_ROLE()(bytes32)" --rpc-url http://127.0.0.1:8545
+  )"
+  default_admin_role="$(
+    cast call "$base_admin_timelock" "DEFAULT_ADMIN_ROLE()(bytes32)" --rpc-url http://127.0.0.1:8545
+  )"
+  require_equal \
+    "Safe proposer role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$base_admin_safe" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "true"
+  require_equal \
+    "Safe canceller role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$base_admin_safe" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "true"
+  require_equal \
+    "Safe executor role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$base_admin_safe" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "true"
+  require_equal \
+    "permissionless executor disabled" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$zero_address" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "false"
+  require_equal \
+    "Timelock self administration" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" \
+      "$base_admin_timelock" --rpc-url http://127.0.0.1:8545)" \
+    "true"
+  require_equal \
+    "Safe has no direct timelock administration" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" "$base_admin_safe" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "false"
 
   bridge_address="$(deploy_contract \
     "src/Bridge.sol:Bridge" \
@@ -308,6 +399,210 @@ run_smoke() {
   )"
   require_equal "smoke recipient balance" "$recipient_balance" "$minted_amount"
   require_equal "smoke Deposit processed state" "$processed" "true"
+
+  cast send \
+    "$bridge_address" \
+    "createWithdrawal(uint256,uint256,bytes,bytes32)" \
+    "$release_amount" \
+    "$release_min_amount_out" \
+    "$principal_owner" \
+    "$default_subaccount" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$recipient" \
+    --unlocked >/dev/null
+  release_withdrawal="$(
+    cast call \
+      "$bridge_address" \
+      "getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))" \
+      1 \
+      --rpc-url http://127.0.0.1:8545 \
+      --json
+  )"
+  require_equal \
+    "Pending requester" \
+    "$(printf '%s' "$(json_tuple_field "$release_withdrawal" 0)" | tr '[:upper:]' '[:lower:]')" \
+    "$(printf '%s' "$recipient" | tr '[:upper:]' '[:lower:]')"
+  require_equal "Pending amount" "$(json_tuple_field "$release_withdrawal" 1)" "$release_amount"
+  require_equal "Pending min amount" "$(json_tuple_field "$release_withdrawal" 2)" "$release_min_amount_out"
+  require_equal "Pending owner" "$(json_tuple_field "$release_withdrawal" 3)" "$principal_owner"
+  require_equal "Pending subaccount" "$(json_tuple_field "$release_withdrawal" 4)" "$default_subaccount"
+  require_equal "Pending status" "$(json_tuple_field "$release_withdrawal" 5)" "1"
+
+  cast send \
+    "$bridge_address" \
+    "acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)" \
+    1 \
+    "$release_amount_out" \
+    "$service_fee" \
+    "$release_ledger_fee" \
+    "$release_ledger_block_index" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$bridge_signer" \
+    --unlocked >/dev/null
+  # Exact replay must succeed without changing the record.
+  cast send \
+    "$bridge_address" \
+    "acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)" \
+    1 \
+    "$release_amount_out" \
+    "$service_fee" \
+    "$release_ledger_fee" \
+    "$release_ledger_block_index" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$bridge_signer" \
+    --unlocked >/dev/null
+  release_withdrawal="$(
+    cast call \
+      "$bridge_address" \
+      "getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))" \
+      1 \
+      --rpc-url http://127.0.0.1:8545 \
+      --json
+  )"
+  require_equal "Released status" "$(json_tuple_field "$release_withdrawal" 5)" "2"
+  require_equal "Released amount out" "$(json_tuple_field "$release_withdrawal" 6)" "$release_amount_out"
+  require_equal "Released service fee" "$(json_tuple_field "$release_withdrawal" 7)" "$service_fee"
+  require_equal "Released ledger fee" "$(json_tuple_field "$release_withdrawal" 8)" "$release_ledger_fee"
+  require_equal \
+    "Released ledger block index" \
+    "$(json_tuple_field "$release_withdrawal" 9)" \
+    "$release_ledger_block_index"
+
+  cast send \
+    "$bridge_address" \
+    "createWithdrawal(uint256,uint256,bytes,bytes32)" \
+    "$refund_amount" \
+    "$refund_min_amount_out" \
+    "$principal_owner" \
+    "$default_subaccount" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$recipient" \
+    --unlocked >/dev/null
+  cast send \
+    "$bridge_address" \
+    "refundWithdrawal(uint256)" \
+    2 \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$bridge_signer" \
+    --unlocked >/dev/null
+  refund_withdrawal="$(
+    cast call \
+      "$bridge_address" \
+      "getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))" \
+      2 \
+      --rpc-url http://127.0.0.1:8545 \
+      --json
+  )"
+  require_equal "Refunded status" "$(json_tuple_field "$refund_withdrawal" 5)" "3"
+  require_equal "Refunded service fee" "$(json_tuple_field "$refund_withdrawal" 7)" "0"
+  require_equal "Refunded ledger fee" "$(json_tuple_field "$refund_withdrawal" 8)" "0"
+
+  read -r recipient_balance _ <<<"$(
+    cast call "$bsns_address" "balanceOf(address)(uint256)" "$recipient" --rpc-url http://127.0.0.1:8545
+  )"
+  read -r token_total_supply _ <<<"$(
+    cast call "$bsns_address" "totalSupply()(uint256)" --rpc-url http://127.0.0.1:8545
+  )"
+  read -r minted_in_window _ <<<"$(
+    cast call "$bridge_address" "mintedInWindow()(uint256)" --rpc-url http://127.0.0.1:8545
+  )"
+  read -r next_withdrawal_id _ <<<"$(
+    cast call "$bridge_address" "nextWithdrawalId()(uint256)" --rpc-url http://127.0.0.1:8545
+  )"
+  require_equal "post-settlement recipient balance" "$recipient_balance" "50000000"
+  require_equal "post-settlement token supply" "$token_total_supply" "50000000"
+  require_equal "refund mint window consumption" "$minted_in_window" "$minted_amount"
+  require_equal "next Withdrawal ID" "$next_withdrawal_id" "3"
+
+  cast send \
+    "$bridge_address" \
+    "setServiceFee(uint256)" \
+    "2000000" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$runtime_administrator" \
+    --unlocked >/dev/null
+  read -r current_service_fee _ <<<"$(
+    cast call "$bridge_address" "serviceFee()(uint256)" --rpc-url http://127.0.0.1:8545
+  )"
+  require_equal "Runtime Administrator Service Fee" "$current_service_fee" "2000000"
+  cast send \
+    "$bridge_address" \
+    "pauseDepositMints()" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$runtime_administrator" \
+    --unlocked >/dev/null
+  cast send \
+    "$bridge_address" \
+    "pauseWithdrawals()" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$runtime_administrator" \
+    --unlocked >/dev/null
+  require_equal \
+    "Deposit mint pause" \
+    "$(cast call "$bridge_address" "depositMintsPaused()(bool)" --rpc-url http://127.0.0.1:8545)" \
+    "true"
+  require_equal \
+    "Withdrawal pause" \
+    "$(cast call "$bridge_address" "withdrawalsPaused()(bool)" --rpc-url http://127.0.0.1:8545)" \
+    "true"
+
+  if cast call \
+    "$bridge_address" \
+    "unpauseDepositMints()" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$base_admin_safe" >/dev/null 2>&1; then
+    echo "Safe bypassed the Base Admin timelock" >&2
+    return 1
+  fi
+  unpause_deposit_data="$(cast calldata "unpauseDepositMints()")"
+  management_salt="0x0000000000000000000000000000000000000000000000000000000000000001"
+  cast send \
+    "$base_admin_timelock" \
+    "schedule(address,uint256,bytes,bytes32,bytes32,uint256)" \
+    "$bridge_address" \
+    0 \
+    "$unpause_deposit_data" \
+    "$zero_bytes32" \
+    "$management_salt" \
+    "$timelock_delay_seconds" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$base_admin_safe" \
+    --unlocked >/dev/null
+  if cast send \
+    "$base_admin_timelock" \
+    "execute(address,uint256,bytes,bytes32,bytes32)" \
+    "$bridge_address" \
+    0 \
+    "$unpause_deposit_data" \
+    "$zero_bytes32" \
+    "$management_salt" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$base_admin_safe" \
+    --unlocked >/dev/null 2>&1; then
+    echo "Base Admin operation executed before the 72-hour delay" >&2
+    return 1
+  fi
+  cast rpc evm_increaseTime "$timelock_delay_seconds" --rpc-url http://127.0.0.1:8545 >/dev/null
+  cast rpc evm_mine --rpc-url http://127.0.0.1:8545 >/dev/null
+  cast send \
+    "$base_admin_timelock" \
+    "execute(address,uint256,bytes,bytes32,bytes32)" \
+    "$bridge_address" \
+    0 \
+    "$unpause_deposit_data" \
+    "$zero_bytes32" \
+    "$management_salt" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$base_admin_safe" \
+    --unlocked >/dev/null
+  require_equal \
+    "Timelocked Deposit mint unpause" \
+    "$(cast call "$bridge_address" "depositMintsPaused()(bool)" --rpc-url http://127.0.0.1:8545)" \
+    "false"
+  require_equal \
+    "Independent Withdrawal pause" \
+    "$(cast call "$bridge_address" "withdrawalsPaused()(bool)" --rpc-url http://127.0.0.1:8545)" \
+    "true"
   echo "Bridge-created bSNS deployed at $bsns_address" >&2
 }
 

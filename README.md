@@ -1,8 +1,11 @@
 # SNS–Base Bridge
 
-SNSトークンをICPとBaseの間で1:1に裏付けるBridge。本リポジトリはPhase 1BのbSNS・Deposit mint実装段階にある。
+SNSトークンをICPとBaseの間で1:1に裏付けるBridge。
+本リポジトリはPhase 1Eのcontract検証とABI凍結段階にある。
 
-現在の`bridge-canister`は空のCandid serviceである。Base側はERC-20 bSNS、EIP-3009署名送金、Bridge SignerによるDeposit mint、fee控除、重複防止、fixed-window流量制限までを実装している。Withdrawal、pause操作、limit・fee変更、role rotationは未実装であり、資産を受け付けず、本番deployしない。
+現在の`bridge-canister`は空のCandid serviceである。
+Base側はERC-20 bSNS、EIP-3009、DepositとWithdrawal、独立pause、limitとfeeの変更、role rotationを実装し、危険方向の操作をOpenZeppelinの72時間Timelockへ接続している。
+concrete BridgeとBSNSのABI snapshot、selector・topic fixture、stateful invariant、SMT gateを閉じる段階であり、資産を受け付けず、本番deployしない。
 
 Base ABIは[docs/base-interface.md](docs/base-interface.md)、設計判断は[plan.md](plan.md)、用語は[CONTEXT.md](CONTEXT.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
 
@@ -47,7 +50,16 @@ scripts/ci-local.sh icp
 scripts/ci-local.sh smoke
 ```
 
-`contracts`はPhase 1A interfaceのfunction/error selector、event topic、型順序に加え、bSNS、EIP-3009、単体・batch Deposit、fixed-window境界を検証する。`proofs`はproductionと共有するDeposit算術をSMTCheckerで証明し、意図的に境界検査を欠くfixtureが拒否されることも確認する。証明範囲と外部仮定は[verification/README.md](verification/README.md)に記録する。
+`contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
+`proofs`はproductionと共有するDeposit、Withdrawal、管理判定coreをSMTCheckerで証明し、意図的に制約を欠くfixtureが拒否されることも確認する。
+証明範囲と外部仮定は[verification/README.md](verification/README.md)と[verification/obligations.md](verification/obligations.md)に記録する。
+
+ABI snapshotは次で明示的に更新し、通常のCIは更新を行わず差分だけを検出する。
+
+```bash
+python3 scripts/abi_snapshot.py --update
+python3 scripts/abi_snapshot.py --check
+```
 
 ## ローカルdeploy
 
@@ -57,9 +69,12 @@ scripts/ci-local.sh smoke
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
 3. `bridge-canister`をdeployし、`Running`を確認する。
 4. Anvilをchain ID 31337で起動する。
-5. unlock済みローカルaccountから`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
-6. Bridge Signerからsmoke用Depositをmintし、net残高とprocessed状態を確認する。
-7. 本スクリプトが起動したprocessだけを終了し、一時変更した`icp.yaml`を復元する。
+5. 72時間delay、Safe限定proposer・canceller・executor、自己adminでOpenZeppelin `TimelockController`をdeployする。
+6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
+7. Bridge Signerからsmoke用Depositをmintし、Withdrawalの`Pending → Released`、同一acknowledgement、別Withdrawalの`Pending → Refunded`を確認する。
+8. Runtime AdministratorのService Fee変更と独立pause、Safeの直接unpause拒否、72時間前のTimelock execute拒否、経過後のunpauseを確認する。
+9. burn・refund後の残高、supply、mint window、Withdrawal連番を確認する。
+10. 本スクリプトが起動したprocessだけを終了し、一時変更した`icp.yaml`を復元する。
 
 既に起動中の当該ICP project networkは設定を変更せず再利用し、停止しない。実行中に`icp.yaml`が別途変更された場合、その変更を上書きしない。port 8545に別EVM nodeが存在する場合は再利用せず停止する。
 

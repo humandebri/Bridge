@@ -1,6 +1,6 @@
 # Base Interface仕様
 
-Phase 1Aで確定したBase側の暫定interfaceを記録する。Solidity宣言は`contracts/src/interfaces/`を正本とし、Phase 1Eまでは意図的な変更を許可する。
+Phase 1Eで凍結するBase側のconcrete ABIとinterfaceを記録する。Solidity宣言は`contracts/src/interfaces/`と`contracts/src/`を正本とし、concrete ABI snapshotとselector fixtureで差分を検出する。
 
 ## Deployment
 
@@ -74,6 +74,11 @@ event AuthorizationCanceled(address indexed authorizer, bytes32 indexed nonce);
 任意のrole memberを追加できるgenericなgrant APIは公開しない。Bridge SignerとRuntime Administratorは常に単一addressとする。
 rotationでもzero addressと3権限addressの重複を拒否し、初期deploy後の権限分離を維持する。
 
+Base Admin TimelockにはOpenZeppelin 5.6.1の`TimelockController`を使用する。
+Bridgeより先にdeployし、minimum delayを72時間、Safe addressだけをproposer、canceller、executor、追加adminをzero addressとして初期化する。
+Timelock自身が唯一のadminであり、delayとTimelock roleの変更もschedule済み自己callだけに許可する。
+Bridgeはこの構成を内部検証しないため、deploy preflightで確認する。
+
 ## Deposit mint
 
 `DepositMintRequest`は`depositId`、Base recipient、ICPでlockした`grossAmount`、利用者指定の`maxServiceFee`を保持する。実mint量は`grossAmount - serviceFee`であり、Per-Deposit LimitとMint Throughput Limitはこの実mint量へ適用する。
@@ -84,9 +89,9 @@ fixed windowはBridge deploy時刻から開始する。`block.timestamp >= mintW
 
 ## Withdrawal
 
-Withdrawal IDは1から始まるcontract内`uint256`連番とし、0を`None`用に予約する。ICRC-1 Accountはraw principalの`bytes owner`と`bytes32 subaccount`で保持し、zero subaccountをdefault subaccountとする。空principal、29 bytes超、anonymous principalは受取先として拒否する。
+Withdrawal IDは1から始まるcontract内`uint256`連番とし、0を`None`用に予約する。未存在IDの`getWithdrawal`は`status = None`のdefault structを返す。ICRC-1 Accountはraw principalの`bytes owner`と`bytes32 subaccount`で保持し、zero subaccountをdefault subaccountとする。ownerは1〜29 bytesだけを許可し、空のmanagement principalとanonymous principal `hex"04"`を拒否する。
 
-`createWithdrawal`はcallerのbSNSを全量burnし、recordを`Pending`にする。Release acknowledgementは次をすべて満たす必要がある。
+`createWithdrawal`は`amount > 0`と`1 <= minAmountOut <= amount`を要求し、callerのbSNSを全量burnしてrecordを`Pending`にする。現在のService Feeと未知のledger feeを使ったcreate時の実行可能性判定は行わない。Release acknowledgementは次をすべて満たす必要がある。
 
 ```text
 amountOut + serviceFee + ledgerFee == amount
@@ -94,7 +99,7 @@ amountOut >= minAmountOut
 serviceFee <= MAX_SERVICE_FEE
 ```
 
-acknowledgementはamount、fee、ledger block indexをrecordへ保存する。同一内容の再実行は成功するがeventやfeeを重複計上しない。異なる内容の再実行と`Refunded`へのacknowledgementはrevertする。Base Refundは`Pending`だけに許可し、元requesterへburn量全体を再mintする。
+acknowledgementはamountOut、fee、ledger block indexをrecordへ保存する。acknowledgementのfeeは実行時の`serviceFee`と一致する必要はない。同一内容の再実行は成功するがeventやfeeを重複記録しない。異なる内容の再実行と`Refunded`へのacknowledgementはrevertする。同じledger block indexを別Withdrawalへ使用することも拒否する。Base Refundは`Pending`だけに許可し、元requesterへburn量全体を再mintする。refundではfeeを記録せず、Deposit mint windowを消費しない。
 
 ## Pauseとlimit変更
 
@@ -102,6 +107,13 @@ Deposit mintとWithdrawal作成は独立してpauseする。Release acknowledgem
 
 Runtime Administratorの`reduceMintLimits`は、Per-Deposit Limitとwindow limitを現行値以下、window durationを現行値以上に限定し、少なくとも1項目を安全方向へ変更する。Base Admin Timelockの`setMintLimits`はzero以外の任意値を設定できる。どちらも現在windowの開始時刻と消費量をresetしない。
 
+Runtime Administratorは`serviceFee`をzeroからimmutableな`MAX_SERVICE_FEE`まで変更できる。
+pause、unpause、Service Fee、Base Adminのlimit設定、role rotationは同じ状態または値への再実行を成功扱いにし、storageとeventを変更しない。
+`reduceMintLimits`の完全なno-opだけは`UnsafeLimitChange`で拒否する。
+role rotation成立後は旧addressの権限を即時失効する。
+
 ## Phase境界
 
-Phase 1BではbSNS、EIP-3009、Deposit mint、Per-Deposit Limit、fixed-window Mint Throughput Limitまでを実装した。WithdrawalとService Fee変更はPhase 1C、管理権限とtimelockはPhase 1Dで実装する。未実装APIのrevert stubは置かず、interfaceはPhase 1Eまで暫定とする。Phase 1B contractは本番資産を受け付けない。
+Phase 1DではService Fee変更、pause、limit変更、role rotationと72時間Timelock統合までを実装し、Phase 1Eではconcrete ABI、stateful invariant、SMT証明義務、coverage summaryを閉じる。
+Baseにはfee reserveとFee Recipientを持たせない。
+Phase 1E完了時点でconcrete Bridge・BSNS ABIをsnapshotとfixtureにより凍結する。現段階のcontractは本番資産を受け付けない。

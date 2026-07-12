@@ -1,4 +1,4 @@
-// contracts/test: lock the provisional Phase 1A function, error, event, enum, struct, and constructor shapes.
+// contracts/test: lock the Phase 1E function, error, event, enum, struct, and constructor shapes.
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
@@ -149,6 +149,9 @@ contract InterfaceSelectorsTest {
             IBridge.SettlementAmountsMismatch.selector, "SettlementAmountsMismatch(uint256,uint256,uint256,uint256)"
         );
         _assertSelector(IBridge.ReleaseAcknowledgementMismatch.selector, "ReleaseAcknowledgementMismatch(uint256)");
+        _assertSelector(
+            IBridge.LedgerBlockAlreadyAcknowledged.selector, "LedgerBlockAlreadyAcknowledged(uint256,uint256)"
+        );
         _assertSelector(IBridge.UnsafeLimitChange.selector, "UnsafeLimitChange()");
         _assertSelector(IBridge.UnauthorizedBridgeSigner.selector, "UnauthorizedBridgeSigner(address)");
         _assertSelector(IBridge.UnauthorizedRuntimeAdministrator.selector, "UnauthorizedRuntimeAdministrator(address)");
