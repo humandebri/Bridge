@@ -14,4 +14,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 candid = "=0.10.32"
+ciborium = "=0.2.2"
 ic-cdk = "=0.20.2"
+ic-stable-structures = "=0.7.2"
+serde = { version = "=1.0.228", features = ["derive"] }

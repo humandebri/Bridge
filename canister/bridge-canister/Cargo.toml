@@ -11,6 +11,9 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
-bridge-core = { path = "../bridge-core" }
+bridge-core = { path = "../bridge-core", features = ["storage-serde"] }
 candid.workspace = true
+ciborium.workspace = true
 ic-cdk.workspace = true
+ic-stable-structures.workspace = true
+serde.workspace = true

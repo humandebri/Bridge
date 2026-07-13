@@ -1,13 +1,23 @@
-# SNS–Base Bridge
+# KINIC–Base Bridge
 
-SNSトークンをICPとBaseの間で1:1に裏付けるBridge。
-本リポジトリはPhase 1Eのcontract検証とABI凍結段階にある。
+KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
+本リポジトリはPhase 2の決定的canister状態機械とstable schema v1までを実装している。
 
-現在の`bridge-canister`は空のCandid serviceである。
-Base側はERC-20 bSNS、EIP-3009、DepositとWithdrawal、独立pause、limitとfeeの変更、role rotationを実装し、危険方向の操作をOpenZeppelinの72時間Timelockへ接続している。
-concrete BridgeとBSNSのABI snapshot、selector・topic fixture、stateful invariant、SMT gateを閉じる段階であり、資産を受け付けず、本番deployしない。
+現在の`bridge-canister`は資産移動APIを持たず、schema versionとrecord件数を返す`get_bridge_status` queryだけを公開する。
+Deposit、Withdrawal、EVM操作、Reconciliation Holdは外部I/Oを含まない`bridge-core`で遷移し、version付きrecordとしてstable structuresへ直接保存する。
+Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、limitとfeeの変更、role rotationを実装し、危険方向の操作をOpenZeppelinの72時間Timelockへ接続している。
+資産を受け付けず、本番deployしない。
 
 Base ABIは[docs/base-interface.md](docs/base-interface.md)、設計判断は[plan.md](plan.md)、用語は[CONTEXT.md](CONTEXT.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
+
+## KINIC mainnet canister
+
+| Role | Canister ID |
+|---|---|
+| Ledger | `73mez-iiaaa-aaaaq-aaasq-cai` |
+| Index | `7vojr-tyaaa-aaaaq-aaatq-cai` |
+
+Bridge canisterはこのLedgerとIndexだけを対象とする。Ledger metadataは`name = "KINIC"`、`symbol = "KINIC"`、`decimals = 8`である。Archive canisterは増設され得るためIDを固定せず、LedgerのICRC-3 archive discovery結果を使用する。
 
 ## 固定ツール
 
@@ -67,7 +77,7 @@ python3 scripts/abi_snapshot.py --check
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 1・全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
 5. 72時間delay、Safe限定proposer・canceller・executor、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。

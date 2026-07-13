@@ -1,6 +1,8 @@
-# SNS–Base Bridge
+# KINIC–Base Bridge
 
-SNSトークンをICPとBaseの間で移動し、両チェーンにまたがる裏付け債務を管理する文脈。
+KINICトークンをICPとBaseの間で移動し、両チェーンにまたがる裏付け債務を管理する文脈。
+
+本BridgeはKINIC専用である。以下の`SNSトークン`や`bSNS`は設計上の総称として使い、実際の対象はKINIC、Base上のERC-20 metadataは`name = "kinic"`、`symbol = "KINIC"`とする。
 
 ## Language
 

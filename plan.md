@@ -1,11 +1,12 @@
-# SNS–Base Bridge 実装計画
+# KINIC–Base Bridge 実装計画
 
 本計画は `docs/adr/` の ADR 0001〜0016 と `CONTEXT.md` の用語定義に基づく。
 用語は CONTEXT.md の定義に従い、本文では再定義しない。
 
 ADR 0007（SNS Governance を Base admin の権限主体にする）は ADR 0009 により supersede された。
 Base contract の admin 権限は Governance Executor ではなく、安全方向（Runtime Administrator の高速パス）と危険方向（Base Admin の timelock 経由）の分割で実装する。
-Bridge は単一 SNS トークン専用にデプロイする（ADR 0010）。
+Bridge はKINICトークン専用にデプロイする（ADR 0010）。複数SNS tokenを扱う分岐は導入しない。
+Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaatq-cai`に固定する。Archive canisterはLedgerから動的に発見する。
 
 ## 全体構成
 
@@ -112,9 +113,12 @@ Phase 1Eで検証を閉じてABIを凍結する。
 Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純粋なロジックとして先に実装する。
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
+Phase 2の決定的状態機械、stable schema v1、観測queryは実装済みである。
+ICRC ledger、EVM RPC、threshold ECDSAを呼ぶupdate APIはPhase 3まで追加しない。
+
 ### 2-1. state 設計（ADR 0008、0010）
 
-- 単一 SNS トークン専用とし、state とデプロイ構成から token ID による分岐を排除する。
+- KINICトークン専用とし、state とデプロイ構成から token ID による分岐を排除する。
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
 - stable schema の互換性を検証するテストを最初から用意する。

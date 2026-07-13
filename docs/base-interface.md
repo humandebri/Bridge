@@ -22,9 +22,9 @@ constructor(
 )
 ```
 
-KINIC用deployではERC-20 metadataを`name = "kinic"`、`symbol = "KINIC"`とする。`bKINIC`のような`b` prefixは付けない。`bSNS`はBridgeable SNS Tokenを表す内部の総称であり、token metadataには使用しない。
+KINIC用deployではERC-20 metadataを`name = "kinic"`、`symbol = "KINIC"`、`decimals = 8`とする。`bKINIC`のような`b` prefixは付けない。`bSNS`はBridgeable SNS Tokenを表す内部の総称であり、token metadataには使用しない。
 
-3個の権限addressはzero addressを禁止し、相互に異なる必要がある。limitとwindow durationはzeroを禁止し、`initialServiceFee <= maxServiceFee`を要求する。`tokenDecimals`は対象SNS ledgerのdecimalsと一致させるが、本番値の確定はPhase 6開始条件とする。
+3個の権限addressはzero addressを禁止し、相互に異なる必要がある。limitとwindow durationはzeroを禁止し、`initialServiceFee <= maxServiceFee`を要求する。`tokenDecimals`はKINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai`のdecimalsと同じ8に固定する。
 
 ## EIP-3009署名送金
 

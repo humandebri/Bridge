@@ -1,2 +1,15 @@
-// Bridge canister Candid: Phase 0 has no callable production API.
-service : () -> {};
+type BridgeStatus = record {
+  schema_version : nat16;
+  counts : StatusCounts
+};
+
+type StatusCounts = record {
+  pending_evm_operations : nat64;
+  reconciliation_holds : nat64;
+  withdrawals : nat64;
+  deposits : nat64;
+};
+
+service : () -> {
+  get_bridge_status : () -> (BridgeStatus) query
+}

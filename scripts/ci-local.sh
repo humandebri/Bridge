@@ -231,6 +231,7 @@ ensure_icp_network() {
 run_smoke() {
   local network_status="$TMP_ROOT/icp-network-status.json"
   local canister_status="$TMP_ROOT/canister-status.json"
+  local bridge_status
   local bridge_address
   local base_admin_timelock
   local bsns_address
@@ -284,6 +285,27 @@ run_smoke() {
     cat "$canister_status" >&2
     return 1
   fi
+  bridge_status="$(
+    icp canister call bridge-canister get_bridge_status '()' \
+      -e local --query --json --project-root-override "$ROOT"
+  )"
+  python3 -c '
+import json, re, sys
+
+response = json.load(sys.stdin)
+candid = response.get("response_candid") or ""
+expected = {
+    "schema_version": ("1", "nat16"),
+    "deposits": ("0", "nat64"),
+    "withdrawals": ("0", "nat64"),
+    "pending_evm_operations": ("0", "nat64"),
+    "reconciliation_holds": ("0", "nat64"),
+}
+for field, (value, candid_type) in expected.items():
+    pattern = rf"\b{field}\s*=\s*{value}\s*:\s*{candid_type}\b"
+    if len(re.findall(pattern, candid)) != 1:
+        raise SystemExit(f"unexpected get_bridge_status response: {response!r}")
+' <<<"$bridge_status"
 
   if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
     echo "port 8545 is already serving an EVM node; refusing to reuse it" >&2
