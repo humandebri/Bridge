@@ -28,24 +28,6 @@ library BridgeAdministration {
         return perDepositLimit != 0 && mintWindowLimit != 0 && mintWindowDuration != 0;
     }
 
-    function isSafeLimitChange(
-        uint256 currentPerDepositLimit,
-        uint256 currentMintWindowLimit,
-        uint64 currentMintWindowDuration,
-        uint256 newPerDepositLimit,
-        uint256 newMintWindowLimit,
-        uint64 newMintWindowDuration
-    ) internal pure returns (bool) {
-        if (!limitsAreNonzero(newPerDepositLimit, newMintWindowLimit, newMintWindowDuration)) {
-            return false;
-        }
-        bool safeDirection = newPerDepositLimit <= currentPerDepositLimit
-            && newMintWindowLimit <= currentMintWindowLimit && newMintWindowDuration >= currentMintWindowDuration;
-        bool changed = newPerDepositLimit != currentPerDepositLimit || newMintWindowLimit != currentMintWindowLimit
-            || newMintWindowDuration != currentMintWindowDuration;
-        return safeDirection && changed;
-    }
-
     function serviceFeeIsValid(uint256 serviceFee, uint256 maximumServiceFee) internal pure returns (bool) {
         return serviceFee <= maximumServiceFee;
     }

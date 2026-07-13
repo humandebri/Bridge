@@ -18,9 +18,9 @@ contract Bridge is IBridge {
     address public override runtimeAdministrator;
     address public override baseAdminTimelock;
     uint256 public override serviceFee;
-    uint256 public override perDepositLimit;
-    uint256 public override mintWindowLimit;
-    uint64 public override mintWindowDuration;
+    uint256 public immutable override perDepositLimit;
+    uint256 public immutable override mintWindowLimit;
+    uint64 public immutable override mintWindowDuration;
     uint64 public override mintWindowStartedAt;
     uint256 public override mintedInWindow;
     bool public override depositMintsPaused;
@@ -122,7 +122,9 @@ contract Bridge is IBridge {
         uint256 mintAmount = _validateAndMarkDeposit(request);
         mintedInWindow = _consumeMintWindow(mintAmount);
         bsns.bridgeMint(request.recipient, mintAmount);
-        emit IBridge.DepositMinted(request.depositId, request.recipient, request.grossAmount, serviceFee, mintAmount);
+        emit IBridge.DepositMinted(
+            request.depositId, request.recipient, request.grossAmount, request.chargedServiceFee, mintAmount
+        );
     }
 
     function mintDeposits(IBridge.DepositMintRequest[] calldata requests)
@@ -151,7 +153,7 @@ contract Bridge is IBridge {
             uint256 mintAmount = mintAmounts[index];
             bsns.bridgeMint(request.recipient, mintAmount);
             emit IBridge.DepositMinted(
-                request.depositId, request.recipient, request.grossAmount, serviceFee, mintAmount
+                request.depositId, request.recipient, request.grossAmount, request.chargedServiceFee, mintAmount
             );
         }
     }
@@ -283,44 +285,6 @@ contract Bridge is IBridge {
         emit IBridge.WithdrawalsUnpaused(msg.sender);
     }
 
-    function reduceMintLimits(uint256 newPerDepositLimit, uint256 newWindowLimit, uint64 newWindowDuration)
-        external
-        override
-        onlyRuntimeAdministrator
-    {
-        if (newPerDepositLimit == 0 || newWindowLimit == 0 || newWindowDuration == 0) {
-            revert IBridge.InvalidAmount(0);
-        }
-        if (!BridgeAdministration.isSafeLimitChange(
-                perDepositLimit,
-                mintWindowLimit,
-                mintWindowDuration,
-                newPerDepositLimit,
-                newWindowLimit,
-                newWindowDuration
-            )) {
-            revert IBridge.UnsafeLimitChange();
-        }
-        _setMintLimits(newPerDepositLimit, newWindowLimit, newWindowDuration);
-    }
-
-    function setMintLimits(uint256 newPerDepositLimit, uint256 newWindowLimit, uint64 newWindowDuration)
-        external
-        override
-        onlyBaseAdminTimelock
-    {
-        if (!BridgeAdministration.limitsAreNonzero(newPerDepositLimit, newWindowLimit, newWindowDuration)) {
-            revert IBridge.InvalidAmount(0);
-        }
-        if (
-            newPerDepositLimit == perDepositLimit && newWindowLimit == mintWindowLimit
-                && newWindowDuration == mintWindowDuration
-        ) {
-            return;
-        }
-        _setMintLimits(newPerDepositLimit, newWindowLimit, newWindowDuration);
-    }
-
     function setServiceFee(uint256 newServiceFee) external override onlyRuntimeAdministrator {
         if (!BridgeAdministration.serviceFeeIsValid(newServiceFee, MAX_SERVICE_FEE)) {
             revert IBridge.InvalidServiceFee(newServiceFee, MAX_SERVICE_FEE);
@@ -371,24 +335,6 @@ contract Bridge is IBridge {
         return _withdrawals[withdrawalId];
     }
 
-    function _setMintLimits(uint256 newPerDepositLimit, uint256 newWindowLimit, uint64 newWindowDuration) private {
-        uint256 previousPerDepositLimit = perDepositLimit;
-        uint256 previousWindowLimit = mintWindowLimit;
-        uint64 previousWindowDuration = mintWindowDuration;
-        perDepositLimit = newPerDepositLimit;
-        mintWindowLimit = newWindowLimit;
-        mintWindowDuration = newWindowDuration;
-        emit IBridge.MintLimitsChanged(
-            msg.sender,
-            previousPerDepositLimit,
-            newPerDepositLimit,
-            previousWindowLimit,
-            newWindowLimit,
-            previousWindowDuration,
-            newWindowDuration
-        );
-    }
-
     function _validateRoleSet(
         address candidateBridgeSigner,
         address candidateRuntimeAdministrator,
@@ -413,14 +359,17 @@ contract Bridge is IBridge {
         if (_processedDeposits[request.depositId]) {
             revert IBridge.DepositAlreadyProcessed(request.depositId);
         }
-        if (serviceFee > request.maxServiceFee) {
-            revert IBridge.ServiceFeeExceedsUserMaximum(serviceFee, request.maxServiceFee);
+        if (request.chargedServiceFee > MAX_SERVICE_FEE) {
+            revert IBridge.InvalidServiceFee(request.chargedServiceFee, MAX_SERVICE_FEE);
+        }
+        if (request.chargedServiceFee > request.maxServiceFee) {
+            revert IBridge.ServiceFeeExceedsUserMaximum(request.chargedServiceFee, request.maxServiceFee);
         }
 
-        if (request.grossAmount <= serviceFee) {
+        if (request.grossAmount <= request.chargedServiceFee) {
             revert IBridge.InvalidAmount(request.grossAmount);
         }
-        mintAmount = MintAccounting.netAmount(request.grossAmount, serviceFee);
+        mintAmount = MintAccounting.netAmount(request.grossAmount, request.chargedServiceFee);
         if (mintAmount > perDepositLimit) {
             revert IBridge.DepositMintLimitExceeded(mintAmount, perDepositLimit);
         }

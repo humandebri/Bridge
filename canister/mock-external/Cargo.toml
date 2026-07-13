@@ -1,0 +1,20 @@
+[package]
+name = "mock-external"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+candid.workspace = true
+evm_rpc_types.workspace = true
+ic-cdk.workspace = true
+ic-cdk-management-canister.workspace = true
+icrc-ledger-types.workspace = true
+k256.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny-keccak.workspace = true

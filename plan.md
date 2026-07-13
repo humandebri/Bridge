@@ -8,6 +8,12 @@ Base contract の admin 権限は Governance Executor ではなく、安全方�
 Bridge はKINICトークン専用にデプロイする（ADR 0010）。複数SNS tokenを扱う分岐は導入しない。
 Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaatq-cai`に固定する。Archive canisterはLedgerから動的に発見する。
 
+## 現在の進捗
+
+Base contractのPhase 1EとPlan 001〜004は完了している。
+Bridge canisterはstable schema v3、外部連携、Settlement Reserve、運用管理、Verus証明まで実装済みである。
+Plan 005は本番パラメータの外部計測と鍵ceremony待ちであり、Plan 006は未着手である。
+
 ## 全体構成
 
 実装対象は次の 3 つのコンポーネントである。
@@ -41,8 +47,8 @@ Bridgeはconstructor内でbSNSを生成し（ADR 0014）、BaseのService Feeを
 EIP-3009の追加interfaceはPhase 1Aの正本とselector/topic testへ反映済みである（ADR 0015）。
 Phase 1BでbSNS、EIP-3009、Deposit mint、Per-Deposit Limit、deploy時起点のfixed-window Mint Throughput Limitを実装済みである。
 Phase 1CでWithdrawal burn、Release acknowledgement、ledger block index一意性、Base Refund、settlement fee記録を実装済みである。
-Phase 1DでService Fee変更、独立pause、limit変更、role rotation、OpenZeppelinの72時間Timelock統合を実装済みである。
-Phase 1Eで検証を閉じてABIを凍結する。
+Phase 1DでService Fee変更、独立pause、固定limit、role rotation、OpenZeppelinの72時間Timelock統合を実装済みである。
+Phase 1Eで検証を閉じ、ABIを凍結済みである。
 
 ### 1-1. bSNS ERC-20
 
@@ -64,7 +70,7 @@ Phase 1Eで検証を閉じてABIを凍結する。
 
 - Per-Deposit Limit を各 Deposit に適用する。
 - Mint Throughput Limit を fixed window（初期値 1 時間）の新規 deposit mint 総量に適用する。window 境界バーストの 2 倍係数は上限値の導出（`docs/parameters.md`）で織り込む。
-- 両制限とも raw unit で定義し、decimals の表示変換を判定に使わない。
+- 両制限とwindow長はdeploy時のimmutable値とし、raw unitで定義する。decimalsの表示変換を判定に使わない。
 - refund mint は新規 deposit mint に計上せず、両制限の対象外とする。
 - mint batch では、各 Deposit に Per-Deposit Limit を適用したうえで、batch 全体を Mint Throughput Limit に算入する。
 
@@ -84,8 +90,9 @@ Phase 1Eで検証を閉じてABIを凍結する。
 ### 1-6. 管理権限の分割（ADR 0005、0009）
 
 - Withdrawal 受付を継続できない残高のとき、新規 Withdrawal を pause し、既存 Settlement だけを継続できる構造にする。
-- 安全方向の操作（pause、limit 引き下げ）を Runtime Administrator の role に割り当てる。
-- 危険方向の操作（unpause、limit 引き上げ、role rotation）を timelock 経由の Base Admin（Safe multisig）に割り当てる。timelock 遅延は初期値 72 時間とし、遅延短縮と signer 変更も timelock を経由する。
+- 即時操作（pause、上限内Service Fee変更）をRuntime Administratorのroleに割り当てる。
+- 遅延操作（unpause、role rotation）をtimelock経由の単一Base Admin hardware walletに割り当てる。timelock遅延は初期値72時間とし、遅延短縮とsigner変更もtimelockを経由する。
+- limitを変更するfunctionとselectorは公開しない。
 - Base Admin に mint、refund、escrow 資産への権限を与えない。
 
 ### 1-7. SMTChecker による証明（ADR 0004）
@@ -113,15 +120,15 @@ Phase 1Eで検証を閉じてABIを凍結する。
 Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純粋なロジックとして先に実装する。
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
-Phase 2の決定的状態機械、stable schema v1、観測queryは実装済みである。
-ICRC ledger、EVM RPC、threshold ECDSAを呼ぶupdate APIはPhase 3まで追加しない。
+Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
+後続のPlan 002と003で外部連携と運用状態を追加し、現行stable schemaはv3である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
 - KINICトークン専用とし、state とデプロイ構成から token ID による分岐を排除する。
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
-- stable schema の互換性を検証するテストを最初から用意する。
+- 本番未デプロイ中はlegacy schemaを維持せず、現行stable schemaの再オープンとupgrade保持、未知versionのfail-closedを検証する。
 
 ### 2-2. Deposit フロー（ADR 0001、0004、0005）
 
@@ -148,6 +155,9 @@ ICRC ledger、EVM RPC、threshold ECDSAを呼ぶupdate APIはPhase 3まで追加
 
 ## Phase 3: 外部連携
 
+Phase 3のICRC adapter、Base finalized監視、threshold ECDSA transaction、stable nonce queue、Reconciliation Hold履歴照合、公開Deposit APIは実装済みである。
+PicJSでDeposit、Withdrawal、Refund、Holdのupgrade保持、stuck receiptを検証し、Plan 002を完了した。
+
 ### 3-1. EVM 連携（ADR 0005、0011）
 
 - threshold ECDSA による署名と、EVM RPC canister 経由の transaction 送信を実装する。
@@ -163,6 +173,9 @@ ICRC ledger、EVM RPC、threshold ECDSAを呼ぶupdate APIはPhase 3まで追加
 - Settlement Reserve を満たせないとき、新規 Deposit の受付を停止する。
 - gas 価格、EVM RPC 費用、management canister call 費用の上限評価を外部仮定として文書化し、監査対象にする。
 
+Settlement Reserve、nonce割当前のSettlement優先scheduler、新規Deposit pause、Fee Recipient、fee payout、stable監査ログはPlan 003で実装済みである。
+本番の数値と鍵保管方式はPlan 005と006で確定する。
+
 ### 3-3. Reconciliation Hold（ADR 0006）
 
 - deduplication 期間内は、同一の `created_at_time`、memo、amount、fee、from、to、spender でだけ再試行する。
@@ -175,17 +188,19 @@ ICRC ledger、EVM RPC、threshold ECDSAを呼ぶupdate APIはPhase 3まで追加
 
 ## Phase 4: 管理権限
 
-- Runtime Administrator を実装する。操作範囲は pause、limit 引き下げ、上限内の Service Fee 変更、Fee Recipient 変更に限定し、mint、refund、任意送金の権限を含めない（ADR 0004、0008、0009）。
-- pause は複数 principal（運用者の鍵と監視 canister）から発動可能にする。安全方向の操作は発動しやすいほどよい。
-- fee と recipient の変更はハードウェア鍵 1 本に限定し、admin principal 自体の rotation は SNS Governance のみが実行できる形にする（暫定運用方針。詳細は Phase 6 前に確定）。
-- Runtime Administrator を canister controller にしない（ADR 0008）。
-- Fee Recipient と Service Fee の変更をイベントと監査ログへ記録する（ADR 0004）。
-- SNS-token fee から Base gas 用 ETH への自動変換は実装せず、運用者による ETH 補充手順を運用文書として別途書く（ADR 0004）。
+Plan 003で管理権限と監査ログを実装済みである。
+
+- 複数のpause principalは新規Depositを停止できる。
+- Governance principalだけがDeposit受付の再開とruntime administrator rotationを実行できる。
+- finance administratorだけがFee Recipient変更とfee payoutを実行できる。
+- Base Runtime AdministratorはBase contractのpauseと上限内Service Fee変更を実行できる。
+- runtime administratorをcanister controllerにせず、mint、refund、任意送金の権限を与えない。
+- SNS-token feeからBase gas用ETHへの自動変換は行わず、運用者がrunbookに従って補充する。
 
 ## Phase 5: 形式検証（Verus）
 
-各 ADR が指定する証明義務を Verus で証明する。
-証明は Wasm ごとに再実行し、過去版の証明を新 upgrade へ流用しない（ADR 0008）。
+Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みである。
+証明はWasmごとに再実行し、過去版の証明を新しいupgradeへ流用しない（ADR 0008）。
 
 - 各 Deposit が Per-Deposit Limit を超えないこと。mint 流量の消費量が保存されること。refund が新規 deposit mint に計上されないこと（ADR 0001）。
 - 1 件の Withdrawal が `Released` と `Refunded` の両方へ到達しないこと（ADR 0003）。
@@ -207,15 +222,11 @@ ICRC ledger、EVM RPC、threshold ECDSAを呼ぶupdate APIはPhase 3まで追加
 
 **完了条件**：handover checklist がすべて満たされ、SNS proposal による upgrade が一度実際に成功する。
 
-## 未決事項
+## 未完了事項
 
-当初の未決事項 5 件のうち 4 件は解決済みである。
-
-1. **Base contract の admin 権限主体**：解決済み。ADR 0009（安全方向と危険方向の権限分割）が ADR 0007 を supersede した。
-2. **パラメータの具体値**：導出式は `docs/parameters.md` に確定した。数値は対象 SNS トークンの確定後に同文書の TBD を埋める。
-3. **対象 SNS トークンの単複**：解決済み。単一トークン専用にデプロイする（ADR 0010）。どの SNS トークンを対象とするかは残タスク。
-4. **burn イベント観測の方式**：解決済み。`finalized` の状態読みで確定する（ADR 0011）。
-5. **Runtime Administrator の鍵管理**：暫定運用で進める。pause は複数 principal から許可、fee と recipient の変更はハードウェア鍵 1 本、admin principal の rotation は SNS Governance のみ、という方針を Phase 4 に反映済み。保管方式の詳細は機能完成後、Phase 6 の前に確定する。
+Plan 005の完了には、Sepoliaでのgasとcyclesの各100回計測、Base mainnetの30日fee分布、実運用principalと鍵ceremony、固定limitの承認、7日間の運転記録が必要である。
+これらの証跡が揃うまでmainnet candidateを`validated`にしない。
+Plan 006ではSNS Rootへのcontroller handover、upgrade実証、x402 testnet、production preflightを完了する。
 
 ## Phase 間の依存とマイルストーン
 

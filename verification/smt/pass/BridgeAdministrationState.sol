@@ -1,40 +1,10 @@
-// verification/smt/pass: prove production administration predicates preserve safety directions and role separation.
+// verification/smt/pass: prove production administration predicates preserve role separation and fee bounds.
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
 import {BridgeAdministration} from "bridge-src/libraries/BridgeAdministration.sol";
 
 contract BridgeAdministrationState {
-    function safeLimitChange(
-        uint256 currentPerDepositLimit,
-        uint256 currentMintWindowLimit,
-        uint64 currentMintWindowDuration,
-        uint256 newPerDepositLimit,
-        uint256 newMintWindowLimit,
-        uint64 newMintWindowDuration
-    ) external pure {
-        bool accepted = BridgeAdministration.isSafeLimitChange(
-            currentPerDepositLimit,
-            currentMintWindowLimit,
-            currentMintWindowDuration,
-            newPerDepositLimit,
-            newMintWindowLimit,
-            newMintWindowDuration
-        );
-        if (accepted) {
-            assert(newPerDepositLimit != 0);
-            assert(newMintWindowLimit != 0);
-            assert(newMintWindowDuration != 0);
-            assert(newPerDepositLimit <= currentPerDepositLimit);
-            assert(newMintWindowLimit <= currentMintWindowLimit);
-            assert(newMintWindowDuration >= currentMintWindowDuration);
-            assert(
-                newPerDepositLimit != currentPerDepositLimit || newMintWindowLimit != currentMintWindowLimit
-                    || newMintWindowDuration != currentMintWindowDuration
-            );
-        }
-    }
-
     function separatedRoles(address bridgeSigner, address runtimeAdministrator, address baseAdminTimelock)
         external
         pure

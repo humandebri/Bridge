@@ -55,12 +55,24 @@ _Avoid_: Settlement wallet, separate treasury
 外部transferの成否を確定できず、二重処理を避けるため補償操作を禁止した状態。時間経過だけでは解除しない。
 _Avoid_: Timed out, failed, retryable
 
+**Deposit Cancellation**:
+DepositのICP pullが完全な履歴scanにより存在しないと証明された後、そのDeposit IDを再利用不能にする終端結果。token移動やService Fee確定を伴わない。
+_Avoid_: Retry, timeout, reopen
+
+**Withdrawal Transfer Attempt**:
+1件のWithdrawalに対する特定のICRC release identity。不存在が完全に証明された場合だけ番号を増やし、経済的payloadを維持した新identityへ更新できる。
+_Avoid_: Withdrawal retry, replacement withdrawal
+
+**Ledger History Watermark**:
+Reconciliationで完全性を確認したinclusiveなledger block index。最初の未走査blockがledger tipを超え、archiveとindexを含むexact transfer探索が完了した場合だけ不存在証拠になる。
+_Avoid_: Timestamp, timeout, last attempted block
+
 **Upgrade Authority**:
 Bridge canisterのコード更新を承認するSNS Governance。SNS Rootが唯一のcontrollerとして採択済みupgradeを実行する。
 _Avoid_: Runtime administrator, developer controller
 
 **Runtime Administrator**:
-Bridgeのpause、limitの引き下げ、上限内のService Fee、Fee Recipientだけを操作する外部管理鍵。安全方向の操作に限定され、canister controllerではない。
+Base Bridgeのpauseと上限内Service Fee変更だけを操作する外部管理鍵。canister controllerではない。
 _Avoid_: Upgrade authority, owner
 
 **Bridge Signer**:
@@ -68,5 +80,5 @@ Bridge canisterのthreshold ECDSAで管理され、Baseのdeposit mint、Release
 _Avoid_: Base Admin, Runtime Administrator, owner
 
 **Base Admin**:
-Base contractのunpause、limitの引き上げ、role rotationを72時間のOpenZeppelin Timelock経由で承認・実行するSafe multisig。mint、refund、escrow資産への権限を持たない。
+Base contractのunpauseとrole rotationを72時間のOpenZeppelin Timelock経由で承認・実行する単一hardware wallet。mint、refund、limit変更、escrow資産への権限を持たない。
 _Avoid_: Governance Executor, owner, DEFAULT_ADMIN_ROLE holder

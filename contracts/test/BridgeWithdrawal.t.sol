@@ -48,7 +48,9 @@ contract BridgeWithdrawalTest is TestBase {
         );
         token = bridge.bsns();
         vm.prank(BRIDGE_SIGNER);
-        bridge.mintDeposit(IBridge.DepositMintRequest(keccak256("withdrawal-funding"), USER, 1_010, SERVICE_FEE));
+        bridge.mintDeposit(
+            IBridge.DepositMintRequest(keccak256("withdrawal-funding"), USER, 1_010, SERVICE_FEE, SERVICE_FEE)
+        );
     }
 
     function testCreateWithdrawalBurnsAndStoresEveryField() public {

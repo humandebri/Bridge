@@ -32,55 +32,6 @@
         "internalType": "address",
         "name": "caller",
         "type": "address"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "previousPerDepositLimit",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "newPerDepositLimit",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "previousWindowLimit",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "newWindowLimit",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint64",
-        "name": "previousWindowDuration",
-        "type": "uint64"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint64",
-        "name": "newWindowDuration",
-        "type": "uint64"
-      }
-    ],
-    "name": "MintLimitsChanged",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "caller",
-        "type": "address"
       }
     ],
     "name": "DepositMintsPaused",
@@ -354,11 +305,6 @@
   },
   {
     "inputs": [],
-    "name": "UnsafeLimitChange",
-    "type": "error"
-  },
-  {
-    "inputs": [],
     "name": "WithdrawalsArePaused",
     "type": "error"
   },
@@ -587,6 +533,11 @@
             "internalType": "uint256",
             "name": "maxServiceFee",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "chargedServiceFee",
+            "type": "uint256"
           }
         ],
         "internalType": "struct IBridge.DepositMintRequest",
@@ -621,6 +572,11 @@
           {
             "internalType": "uint256",
             "name": "maxServiceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "chargedServiceFee",
             "type": "uint256"
           }
         ],
@@ -926,52 +882,6 @@
     ],
     "name": "DepositMintLimitExceeded",
     "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "newPerDepositLimit",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "newWindowLimit",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint64",
-        "name": "newWindowDuration",
-        "type": "uint64"
-      }
-    ],
-    "name": "reduceMintLimits",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "newPerDepositLimit",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "newWindowLimit",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint64",
-        "name": "newWindowDuration",
-        "type": "uint64"
-      }
-    ],
-    "name": "setMintLimits",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
   },
   {
     "inputs": [

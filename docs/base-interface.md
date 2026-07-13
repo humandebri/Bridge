@@ -68,20 +68,20 @@ event AuthorizationCanceled(address indexed authorizer, bytes32 indexed nonce);
 | Role | 即時操作 | 禁止操作 |
 |---|---|---|
 | Bridge Signer | deposit mint、Release acknowledgement、Base Refund | pause、limit・fee変更、role rotation |
-| Runtime Administrator | Deposit/Withdrawal pause、limit引下げ、window延長、上限内Service Fee変更 | unpause、limit引上げ、role rotation、mint、refund |
-| Base Admin Timelock | unpause、任意limit変更、window短縮、3権限addressのrotation | 直接mint、直接refund |
+| Runtime Administrator | Deposit/Withdrawal pause、上限内Service Fee変更 | unpause、limit変更、role rotation、mint、refund |
+| Base Admin Timelock | unpause、3権限addressのrotation | limit変更、直接mint、直接refund |
 
 任意のrole memberを追加できるgenericなgrant APIは公開しない。Bridge SignerとRuntime Administratorは常に単一addressとする。
 rotationでもzero addressと3権限addressの重複を拒否し、初期deploy後の権限分離を維持する。
 
 Base Admin TimelockにはOpenZeppelin 5.6.1の`TimelockController`を使用する。
-Bridgeより先にdeployし、minimum delayを72時間、Safe addressだけをproposer、canceller、executor、追加adminをzero addressとして初期化する。
+Bridgeより先にdeployし、minimum delayを72時間、単一のBase Admin hardware walletだけをproposer、canceller、executor、追加adminをzero addressとして初期化する。
 Timelock自身が唯一のadminであり、delayとTimelock roleの変更もschedule済み自己callだけに許可する。
 Bridgeはこの構成を内部検証しないため、deploy preflightで確認する。
 
 ## Deposit mint
 
-`DepositMintRequest`は`depositId`、Base recipient、ICPでlockした`grossAmount`、利用者指定の`maxServiceFee`を保持する。実mint量は`grossAmount - serviceFee`であり、Per-Deposit LimitとMint Throughput Limitはこの実mint量へ適用する。
+`DepositMintRequest`は`depositId`、Base recipient、ICPでlockした`grossAmount`、利用者指定の`maxServiceFee`、受付時に固定した`chargedServiceFee`を保持する。Contractは`chargedServiceFee <= maxServiceFee`かつ`chargedServiceFee <= MAX_SERVICE_FEE`を検証し、実mint量`grossAmount - chargedServiceFee`へPer-Deposit LimitとMint Throughput Limitを適用する。受付後のglobal `serviceFee`変更は既存Depositのmint量とevent値へ影響しない。
 
 singleとbatchは同じstructを使用する。batchはatomicであり、空batch、処理済みID、batch内重複、zero recipient、不正amount、fee保護違反、各Depositのlimit違反、batch合計のthroughput違反のいずれかで全体をrevertする。成功後の`depositId`は再利用できない。
 
@@ -101,19 +101,18 @@ serviceFee <= MAX_SERVICE_FEE
 
 acknowledgementはamountOut、fee、ledger block indexをrecordへ保存する。acknowledgementのfeeは実行時の`serviceFee`と一致する必要はない。同一内容の再実行は成功するがeventやfeeを重複記録しない。異なる内容の再実行と`Refunded`へのacknowledgementはrevertする。同じledger block indexを別Withdrawalへ使用することも拒否する。Base Refundは`Pending`だけに許可し、元requesterへburn量全体を再mintする。refundではfeeを記録せず、Deposit mint windowを消費しない。
 
-## Pauseとlimit変更
+## Pauseと固定limit
 
 Deposit mintとWithdrawal作成は独立してpauseする。Release acknowledgementとBase Refundは既存Settlementを完了する操作であるためpauseの影響を受けない。
 
-Runtime Administratorの`reduceMintLimits`は、Per-Deposit Limitとwindow limitを現行値以下、window durationを現行値以上に限定し、少なくとも1項目を安全方向へ変更する。Base Admin Timelockの`setMintLimits`はzero以外の任意値を設定できる。どちらも現在windowの開始時刻と消費量をresetしない。
+Per-Deposit Limit、Mint Throughput Limit、window durationはconstructorで固定する。deploy後に変更するfunction、selector、管理経路は持たない。
 
 Runtime Administratorは`serviceFee`をzeroからimmutableな`MAX_SERVICE_FEE`まで変更できる。
-pause、unpause、Service Fee、Base Adminのlimit設定、role rotationは同じ状態または値への再実行を成功扱いにし、storageとeventを変更しない。
-`reduceMintLimits`の完全なno-opだけは`UnsafeLimitChange`で拒否する。
+pause、unpause、Service Fee、role rotationは同じ状態または値への再実行を成功扱いにし、storageとeventを変更しない。
 role rotation成立後は旧addressの権限を即時失効する。
 
 ## Phase境界
 
-Phase 1DではService Fee変更、pause、limit変更、role rotationと72時間Timelock統合までを実装し、Phase 1Eではconcrete ABI、stateful invariant、SMT証明義務、coverage summaryを閉じる。
+Phase 1DではService Fee変更、pause、固定limit、role rotationと72時間Timelock統合までを実装し、Phase 1Eではconcrete ABI、stateful invariant、SMT証明義務、coverage summaryを閉じる。
 Baseにはfee reserveとFee Recipientを持たせない。
 Phase 1E完了時点でconcrete Bridge・BSNS ABIをsnapshotとfixtureにより凍結する。現段階のcontractは本番資産を受け付けない。

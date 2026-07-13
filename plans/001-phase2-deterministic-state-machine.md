@@ -1,5 +1,8 @@
 # Plan 001: Phase 2の決定的Bridge状態機械を実装する
 
+> **履歴資料**：この本文はPlan 001の実装時点における前提と完了条件を記録している。
+> 現行仕様はリポジトリ直下の`README.md`と`docs/`を参照する。
+
 > **実行者向け指示**: この計画を上から順に実行し、各ステップの検証結果を確認してから次へ進むこと。`STOP条件`に該当した場合は実装を続けず、差分と判断材料を報告すること。完了時は`plans/README.md`の状態を更新する。
 
 > **ドリフト確認（最初に実行）**: `git diff --stat 5fc223c..HEAD -- Cargo.toml canister/bridge-core canister/bridge-canister scripts/ci-local.sh docs/adr/0008-handover-bridge-upgrades-to-sns-control.md plan.md`。対象ファイルにPhase 2の意図と異なる変更がある場合、下記Current stateを現行コードと照合し、不一致ならSTOPする。
@@ -65,7 +68,7 @@ Base側のbSNS、Deposit、Withdrawal、pause、Timelock、ABI snapshotはPhase 
 
 - `contracts/src/**`、`contracts/test/**`、`contracts/abi/**` — Phase 1Eで凍結済みのBase contractとABI。
 - ICRC ledger transfer、EVM RPC送信、threshold ECDSA、nonce queue、scheduler、Settlement Reserveの実コスト計算、Runtime Administrator、Fee Recipient運用 — Plan 002/003へ延期する。
-- `docs/parameters.md`のTBD数値、Safe signer、SNS Root handover、mainnet/testnet deploy、x402 facilitator — Plan 005/006へ延期する。KINIC LedgerとIndexの本番識別子は確定済みである。
+- `docs/parameters.md`のTBD数値、Base Admin wallet、SNS Root handover、mainnet/testnet deploy、x402 facilitator — Plan 005/006へ延期する。KINIC LedgerとIndexの本番識別子は確定済みである。
 - `pre_upgrade`で全stateを一括serializeする実装。stable structuresのmemory layoutを正本にする。
 
 ## Steps

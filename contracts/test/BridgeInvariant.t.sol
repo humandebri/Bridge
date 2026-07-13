@@ -56,7 +56,7 @@ contract BridgeInvariantHandler is TestBase {
         uint256 grossAmount = fee + 1 + (seed % 300);
         bytes32 depositId = keccak256(abi.encode("handler-deposit", depositNonce++));
         IBridge.DepositMintRequest memory request =
-            IBridge.DepositMintRequest(depositId, address(this), grossAmount, fee);
+            IBridge.DepositMintRequest(depositId, address(this), grossAmount, fee, fee);
         (bool succeeded,) = address(_bridge).call(abi.encodeCall(IBridge.mintDeposit, (request)));
         if (succeeded) {
             cumulativeDepositMinted += grossAmount - fee;
@@ -138,7 +138,7 @@ contract BridgeInvariantHandler is TestBase {
     }
 
     function _initialMint(bytes32 depositId, address recipient) private {
-        _bridge.mintDeposit(IBridge.DepositMintRequest(depositId, recipient, 1_010, 10));
+        _bridge.mintDeposit(IBridge.DepositMintRequest(depositId, recipient, 1_010, 10, 10));
     }
 }
 

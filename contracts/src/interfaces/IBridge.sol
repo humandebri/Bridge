@@ -18,6 +18,7 @@ interface IBridge {
         address recipient;
         uint256 grossAmount;
         uint256 maxServiceFee;
+        uint256 chargedServiceFee;
     }
 
     struct Withdrawal {
@@ -53,15 +54,6 @@ interface IBridge {
     );
     event WithdrawalRefunded(uint256 indexed withdrawalId, address indexed requester, uint256 amount);
     event ServiceFeeChanged(address indexed caller, uint256 previousFee, uint256 newFee);
-    event MintLimitsChanged(
-        address indexed caller,
-        uint256 previousPerDepositLimit,
-        uint256 newPerDepositLimit,
-        uint256 previousWindowLimit,
-        uint256 newWindowLimit,
-        uint64 previousWindowDuration,
-        uint64 newWindowDuration
-    );
     event DepositMintsPaused(address indexed caller);
     event DepositMintsUnpaused(address indexed caller);
     event WithdrawalsPaused(address indexed caller);
@@ -88,7 +80,6 @@ interface IBridge {
     error SettlementAmountsMismatch(uint256 amount, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee);
     error ReleaseAcknowledgementMismatch(uint256 withdrawalId);
     error LedgerBlockAlreadyAcknowledged(uint256 ledgerBlockIndex, uint256 existingWithdrawalId);
-    error UnsafeLimitChange();
     error UnauthorizedBridgeSigner(address caller);
     error UnauthorizedRuntimeAdministrator(address caller);
     error UnauthorizedBaseAdmin(address caller);
@@ -150,10 +141,6 @@ interface IBridge {
     function unpauseDepositMints() external;
 
     function unpauseWithdrawals() external;
-
-    function reduceMintLimits(uint256 newPerDepositLimit, uint256 newWindowLimit, uint64 newWindowDuration) external;
-
-    function setMintLimits(uint256 newPerDepositLimit, uint256 newWindowLimit, uint64 newWindowDuration) external;
 
     function setServiceFee(uint256 newServiceFee) external;
 

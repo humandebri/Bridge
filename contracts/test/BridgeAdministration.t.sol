@@ -16,7 +16,7 @@ contract BridgeAdministrationTest is TestBase {
     address private constant NEW_BRIDGE_SIGNER = address(0x66);
     address private constant NEW_RUNTIME_ADMINISTRATOR = address(0x77);
     address private constant NEW_TIMELOCK = address(0x88);
-    address private constant SAFE = address(0x99);
+    address private constant BASE_ADMIN_WALLET = address(0x99);
     uint256 private constant MAX_SERVICE_FEE = 100;
     uint256 private constant SERVICE_FEE = 10;
     uint256 private constant PER_DEPOSIT_LIMIT = 1_000;
@@ -24,15 +24,6 @@ contract BridgeAdministrationTest is TestBase {
     uint64 private constant WINDOW_DURATION = 1 hours;
 
     event ServiceFeeChanged(address indexed caller, uint256 previousFee, uint256 newFee);
-    event MintLimitsChanged(
-        address indexed caller,
-        uint256 previousPerDepositLimit,
-        uint256 newPerDepositLimit,
-        uint256 previousWindowLimit,
-        uint256 newWindowLimit,
-        uint64 previousWindowDuration,
-        uint64 newWindowDuration
-    );
     event DepositMintsPaused(address indexed caller);
     event DepositMintsUnpaused(address indexed caller);
     event WithdrawalsPaused(address indexed caller);
@@ -64,12 +55,12 @@ contract BridgeAdministrationTest is TestBase {
     function testAdministrationFunctionsRejectEveryWrongAuthority() public {
         _assertRuntimeFunctionsRejected(BRIDGE_SIGNER);
         _assertRuntimeFunctionsRejected(BASE_ADMIN_TIMELOCK);
-        _assertRuntimeFunctionsRejected(SAFE);
+        _assertRuntimeFunctionsRejected(BASE_ADMIN_WALLET);
         _assertRuntimeFunctionsRejected(OUTSIDER);
 
         _assertTimelockFunctionsRejected(BRIDGE_SIGNER);
         _assertTimelockFunctionsRejected(RUNTIME_ADMINISTRATOR);
-        _assertTimelockFunctionsRejected(SAFE);
+        _assertTimelockFunctionsRejected(BASE_ADMIN_WALLET);
         _assertTimelockFunctionsRejected(OUTSIDER);
     }
 
@@ -141,14 +132,14 @@ contract BridgeAdministrationTest is TestBase {
         emit ServiceFeeChanged(RUNTIME_ADMINISTRATOR, SERVICE_FEE, 0);
         vm.prank(RUNTIME_ADMINISTRATOR);
         bridge.setServiceFee(0);
-        _mintDeposit(keccak256("zero-fee"), USER, 100, 0, BRIDGE_SIGNER);
+        _mintDepositWithChargedFee(keccak256("zero-fee"), USER, 100, 0, 0, BRIDGE_SIGNER);
         assert(token.balanceOf(USER) == 100);
 
         vm.expectEmit(true, false, false, true, address(bridge));
         emit ServiceFeeChanged(RUNTIME_ADMINISTRATOR, 0, MAX_SERVICE_FEE);
         vm.prank(RUNTIME_ADMINISTRATOR);
         bridge.setServiceFee(MAX_SERVICE_FEE);
-        _mintDeposit(keccak256("max-fee"), USER, 101, MAX_SERVICE_FEE, BRIDGE_SIGNER);
+        _mintDepositWithChargedFee(keccak256("max-fee"), USER, 101, MAX_SERVICE_FEE, MAX_SERVICE_FEE, BRIDGE_SIGNER);
         assert(token.balanceOf(USER) == 101);
 
         vm.prank(RUNTIME_ADMINISTRATOR);
@@ -176,58 +167,17 @@ contract BridgeAdministrationTest is TestBase {
         assert(withdrawal.status == IBridge.WithdrawalStatus.Released);
     }
 
-    function testRuntimeAdministratorCanOnlyMoveLimitsInSafeDirection() public {
-        uint64 startedAt = bridge.mintWindowStartedAt();
-        vm.expectEmit(true, false, false, true, address(bridge));
-        emit MintLimitsChanged(
-            RUNTIME_ADMINISTRATOR, PER_DEPOSIT_LIMIT, 900, WINDOW_LIMIT, 1_800, WINDOW_DURATION, WINDOW_DURATION + 1
-        );
+    function testAdministrationDoesNotChangeConstructorMintLimits() public {
         vm.prank(RUNTIME_ADMINISTRATOR);
-        bridge.reduceMintLimits(900, 1_800, WINDOW_DURATION + 1);
-        assert(bridge.perDepositLimit() == 900);
-        assert(bridge.mintWindowLimit() == 1_800);
-        assert(bridge.mintWindowDuration() == WINDOW_DURATION + 1);
-        assert(bridge.mintWindowStartedAt() == startedAt);
-        assert(bridge.mintedInWindow() == 0);
-
-        _expectUnsafeLimitChange(901, 1_800, WINDOW_DURATION + 1);
-        _expectUnsafeLimitChange(900, 1_801, WINDOW_DURATION + 1);
-        _expectUnsafeLimitChange(900, 1_800, WINDOW_DURATION);
-        _expectUnsafeLimitChange(900, 1_800, WINDOW_DURATION + 1);
-
+        bridge.setServiceFee(20);
         vm.prank(RUNTIME_ADMINISTRATOR);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, 0));
-        bridge.reduceMintLimits(0, 1_800, WINDOW_DURATION + 1);
-    }
-
-    function testBaseAdminCanSetArbitraryNonzeroLimitsWithoutResettingWindow() public {
-        _mintDeposit(keccak256("consumed"), USER, 110, SERVICE_FEE, BRIDGE_SIGNER);
-        uint64 startedAt = bridge.mintWindowStartedAt();
+        bridge.pauseDepositMints();
         vm.prank(BASE_ADMIN_TIMELOCK);
-        bridge.setMintLimits(50, 50, 1);
-        assert(bridge.mintedInWindow() == 100);
-        assert(bridge.mintWindowStartedAt() == startedAt);
+        bridge.unpauseDepositMints();
 
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.DepositMintLimitExceeded.selector, 51, 50));
-        bridge.mintDeposit(_request(keccak256("per-limit"), USER, 61, SERVICE_FEE));
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.MintWindowLimitExceeded.selector, 1, 0));
-        bridge.mintDeposit(_request(keccak256("window-limit"), USER, 11, SERVICE_FEE));
-
-        vm.warp(uint256(startedAt) + 1);
-        _mintDeposit(keccak256("rolled"), USER, 11, SERVICE_FEE, BRIDGE_SIGNER);
-        assert(bridge.mintedInWindow() == 1);
-        assert(bridge.mintWindowStartedAt() == startedAt + 1);
-
-        vm.recordLogs();
-        vm.prank(BASE_ADMIN_TIMELOCK);
-        bridge.setMintLimits(50, 50, 1);
-        assert(vm.getRecordedLogs().length == 0);
-
-        vm.prank(BASE_ADMIN_TIMELOCK);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, 0));
-        bridge.setMintLimits(50, 0, 1);
+        assert(bridge.perDepositLimit() == PER_DEPOSIT_LIMIT);
+        assert(bridge.mintWindowLimit() == WINDOW_LIMIT);
+        assert(bridge.mintWindowDuration() == WINDOW_DURATION);
     }
 
     function testRoleRotationsRejectInvalidSetsAndImmediatelyRevokeOldAuthority() public {
@@ -309,8 +259,6 @@ contract BridgeAdministrationTest is TestBase {
         vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedRuntimeAdministrator.selector, caller));
         bridge.pauseWithdrawals();
         vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedRuntimeAdministrator.selector, caller));
-        bridge.reduceMintLimits(900, 1_900, WINDOW_DURATION + 1);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedRuntimeAdministrator.selector, caller));
         bridge.setServiceFee(1);
         vm.stopPrank();
     }
@@ -321,8 +269,6 @@ contract BridgeAdministrationTest is TestBase {
         bridge.unpauseDepositMints();
         vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedBaseAdmin.selector, caller));
         bridge.unpauseWithdrawals();
-        vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedBaseAdmin.selector, caller));
-        bridge.setMintLimits(1, 1, 1);
         vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedBaseAdmin.selector, caller));
         bridge.rotateBridgeSigner(NEW_BRIDGE_SIGNER);
         vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedBaseAdmin.selector, caller));
@@ -343,17 +289,22 @@ contract BridgeAdministrationTest is TestBase {
         vm.stopPrank();
     }
 
-    function _expectUnsafeLimitChange(uint256 perDeposit, uint256 window, uint64 duration) private {
-        vm.prank(RUNTIME_ADMINISTRATOR);
-        vm.expectRevert(IBridge.UnsafeLimitChange.selector);
-        bridge.reduceMintLimits(perDeposit, window, duration);
-    }
-
     function _mintDeposit(bytes32 depositId, address recipient, uint256 grossAmount, uint256 maximumFee, address signer)
         private
     {
+        _mintDepositWithChargedFee(depositId, recipient, grossAmount, maximumFee, SERVICE_FEE, signer);
+    }
+
+    function _mintDepositWithChargedFee(
+        bytes32 depositId,
+        address recipient,
+        uint256 grossAmount,
+        uint256 maximumFee,
+        uint256 chargedFee,
+        address signer
+    ) private {
         vm.prank(signer);
-        bridge.mintDeposit(_request(depositId, recipient, grossAmount, maximumFee));
+        bridge.mintDeposit(IBridge.DepositMintRequest(depositId, recipient, grossAmount, maximumFee, chargedFee));
     }
 
     function _request(bytes32 depositId, address recipient, uint256 grossAmount, uint256 maximumFee)
@@ -361,6 +312,6 @@ contract BridgeAdministrationTest is TestBase {
         pure
         returns (IBridge.DepositMintRequest memory)
     {
-        return IBridge.DepositMintRequest(depositId, recipient, grossAmount, maximumFee);
+        return IBridge.DepositMintRequest(depositId, recipient, grossAmount, maximumFee, SERVICE_FEE);
     }
 }

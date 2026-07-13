@@ -1,17 +1,17 @@
 # 実装計画
 
-この計画は、Base contractのPhase 1E完了時点（`5fc223c`、2026-07-13）を基準にした次の実装順序を記録する。
-Phase 2の詳細計画だけを今回作成し、後続Phaseは依存関係が分かる粒度のロードマップとして管理する。
+この索引はBase contractのPhase 1E完了時点から始まった実装計画と現在の進捗を記録する。
+Plan 001〜004は完了済みの履歴資料であり、現行仕様はリポジトリ直下の`README.md`と`docs/`を正本とする。
 
 ## 実行順序
 
 | Plan | 内容 | 優先度 | 規模 | 依存 | 状態 |
 |---|---|---:|---:|---|---|
-| [001](001-phase2-deterministic-state-machine.md) | canisterの決定的状態機械、stable schema、read-only Candid境界 | P1 | L | — | TODO |
-| 002 | ICRC ledger / EVM RPC / threshold ECDSAの外部連携とReconciliation Hold | P1 | L | 001 | 未作成 |
-| 003 | Settlement Reserve scheduler、Runtime Administrator、運用監査ログ | P1 | L | 001, 002 | 未作成 |
-| 004 | Verusでcanister coreとcross-system境界の証明を追加 | P1 | L | 001, 002, 003 | 未作成 |
-| 005 | 対象SNS・数値パラメータ・鍵管理・testnet運用の確定 | P1 | M | 001〜004と並行 | 未作成 |
+| [001](001-phase2-deterministic-state-machine.md) | Phase 2時点の決定的状態機械、stable schema、read-only Candid境界 | P1 | L | — | DONE |
+| [002](002-phase3-external-integrations.md) | ICRC ledger / EVM RPC / threshold ECDSAの外部連携とReconciliation Hold | P1 | L | 001 | DONE |
+| [003](003-settlement-reserve-runtime-admin.md) | Settlement Reserve scheduler、Runtime Administrator、運用監査ログ | P1 | L | 001, 002 | DONE |
+| [004](004-plan003-asset-safety-verus.md) | Verusでcanister coreとcross-system境界の証明を追加 | P1 | L | 001, 002, 003 | DONE |
+| [005](005-production-parameters-key-operations.md) | 対象SNS・数値パラメータ・鍵管理・testnet運用の確定 | P1 | M | 001〜004 | IN PROGRESS |
 | 006 | SNS handover、upgrade互換性、x402 testnet、production preflight | P0 | L | 001〜005 | 未作成 |
 
 ## 依存関係
@@ -24,7 +24,7 @@ Phase 2の詳細計画だけを今回作成し、後続Phaseは依存関係が�
 
 ## 今回の推奨着手点
 
-まず001を実装する。現在のRust coreはPhase 0の空crate（`canister/bridge-core/src/lib.rs`）で、canisterのCandid serviceも空（`canister/bridge-canister/bridge.did`）である。ここに外部I/Oを持ち込まず、状態遷移と永続化の正本を作ることが、以後のledger、EVM、Verus、upgrade検証の共通前提になる。
+Plan 005の外部計測と鍵ceremonyを完了し、検証済みprofileを確定する。
 
 ## 残作業の完了条件
 

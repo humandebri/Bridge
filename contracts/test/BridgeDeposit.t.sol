@@ -111,12 +111,29 @@ contract BridgeDepositTest is TestBase {
         vm.expectRevert(abi.encodeWithSelector(IBridge.ServiceFeeExceedsUserMaximum.selector, 10, 9));
         bridge.mintDeposit(_request(keccak256("fee-maximum"), RECIPIENT, 110, 9));
 
+        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidServiceFee.selector, 101, 100));
+        bridge.mintDeposit(IBridge.DepositMintRequest(keccak256("fee-cap"), RECIPIENT, 110, 101, 101));
+
         vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, 10));
         bridge.mintDeposit(_request(keccak256("zero-net"), RECIPIENT, 10, 10));
 
         vm.expectRevert(abi.encodeWithSelector(IBridge.DepositMintLimitExceeded.selector, 1_001, 1_000));
         bridge.mintDeposit(_request(keccak256("per-deposit"), RECIPIENT, 1_011, 10));
         vm.stopPrank();
+    }
+
+    function testAcceptedFeeRemainsFixedAfterRuntimeFeeChanges() public {
+        IBridge.DepositMintRequest memory request = _request(keccak256("fixed-fee"), RECIPIENT, 110, 10);
+        vm.prank(RUNTIME_ADMINISTRATOR);
+        bridge.setServiceFee(20);
+
+        vm.expectEmit(true, true, false, true, address(bridge));
+        emit DepositMinted(request.depositId, RECIPIENT, 110, 10, 100);
+        vm.prank(BRIDGE_SIGNER);
+        bridge.mintDeposit(request);
+
+        assert(token.balanceOf(RECIPIENT) == 100);
+        assert(bridge.serviceFee() == 20);
     }
 
     function testMintDepositRejectsProcessedIdWithoutChangingSupply() public {
@@ -285,6 +302,6 @@ contract BridgeDepositTest is TestBase {
         pure
         returns (IBridge.DepositMintRequest memory)
     {
-        return IBridge.DepositMintRequest(depositId, recipient, grossAmount, maximumServiceFee);
+        return IBridge.DepositMintRequest(depositId, recipient, grossAmount, maximumServiceFee, SERVICE_FEE);
     }
 }

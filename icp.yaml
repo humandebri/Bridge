@@ -7,6 +7,13 @@ canisters:
         package: bridge-canister
         candid: canister/bridge-canister/bridge.did
         shrink: true
+  - name: pause-watchdog
+    recipe:
+      type: "@dfinity/rust@v3.3.0"
+      configuration:
+        package: pause-watchdog
+        candid: canister/pause-watchdog/watchdog.did
+        shrink: true
 
 networks:
   - name: local
@@ -20,3 +27,4 @@ environments:
     network: local
     canisters:
       - bridge-canister
+      - pause-watchdog

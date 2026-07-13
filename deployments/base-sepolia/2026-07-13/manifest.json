@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "experiment": "base-sepolia-contract-only",
+  "test_only": true,
+  "state": "PREFLIGHT",
+  "created_at": "2026-07-13T05:05:05Z",
+  "last_observed_at": "2026-07-13T05:08:53Z",
+  "network": {
+    "name": "base-sepolia",
+    "chain_id": 84532,
+    "rpc_host": "base-sepolia-rpc.publicnode.com",
+    "rpc_url": "https://base-sepolia-rpc.publicnode.com",
+    "rpc_is_canonical": false,
+    "observed_block": 44075519,
+    "chain_id_check": "passed"
+  },
+  "wallets": {
+    "deployer": "0x7F4743128368CdeD5413E8c42C9Bd689ea64D192",
+    "base_admin": "0x7F4743128368CdeD5413E8c42C9Bd689ea64D192",
+    "runtime_administrator": "0x7F4743128368CdeD5413E8c42C9Bd689ea64D192",
+    "bridge_signer": "0xF96808b465638E88Ed4602b3852Ce7AC92E57721",
+    "role_separation": "contract-only-test-exception",
+    "production_reuse_allowed": false,
+    "starting_balance_wei": "99000000000000000",
+    "starting_nonce": 0,
+    "funding_check": "passed"
+  },
+  "source": {
+    "revision": "f7ca733ae98fb759caf17419c594e9c3d51f6872",
+    "dirty_diff_sha256": "2d566af4b82e0e55c662dd362eef251044979a2a5d8de6301290c278d0b0681a",
+    "source_tree_sha256": "fbd15415b5e83a3d04a4a9cecb8ddd5c7448f687dc7e491d03b122f0eb24539f"
+  },
+  "parameters": {
+    "token_name": "kinic",
+    "token_symbol": "KINIC",
+    "token_decimals": 8,
+    "timelock_delay_seconds": 259200,
+    "per_deposit_limit": "1000000000",
+    "mint_window_limit": "10000000000",
+    "mint_window_duration_seconds": 3600,
+    "max_service_fee": "10000000",
+    "initial_service_fee": "1000000"
+  },
+  "contracts": {
+    "timelock": {
+      "status": "pending",
+      "address": null,
+      "runtime_bytecode_hash": null
+    },
+    "bridge": {
+      "status": "pending",
+      "address": null,
+      "runtime_bytecode_hash": null
+    },
+    "bsns": {
+      "status": "pending",
+      "address": null,
+      "runtime_bytecode_hash": null
+    }
+  },
+  "transactions": {
+    "deploy_timelock": {
+      "status": "pending",
+      "transaction_hash": null,
+      "block_number": null,
+      "gas_used": null
+    },
+    "deploy_bridge": {
+      "status": "pending",
+      "transaction_hash": null,
+      "block_number": null,
+      "gas_used": null
+    },
+    "runtime_service_fee": {
+      "status": "pending",
+      "transaction_hash": null
+    },
+    "runtime_pause_deposits": {
+      "status": "pending",
+      "transaction_hash": null
+    },
+    "runtime_pause_withdrawals": {
+      "status": "pending",
+      "transaction_hash": null
+    },
+    "timelock_schedule_unpause": {
+      "status": "pending",
+      "transaction_hash": null,
+      "operation_id": null,
+      "ready_at": null
+    },
+    "timelock_early_execute": {
+      "status": "pending",
+      "transaction_hash": null,
+      "expected_result": "revert"
+    },
+    "timelock_execute_unpause": {
+      "status": "pending",
+      "transaction_hash": null
+    },
+    "deposit_mint": {
+      "status": "pending",
+      "transaction_hash": null
+    },
+    "withdrawal_create": {
+      "status": "pending",
+      "transaction_hash": null
+    },
+    "withdrawal_acknowledgement": {
+      "status": "pending",
+      "transaction_hash": null
+    },
+    "withdrawal_refund": {
+      "status": "pending",
+      "transaction_hash": null
+    },
+    "final_pause": {
+      "status": "pending",
+      "transaction_hashes": []
+    }
+  },
+  "checks": {
+    "rpc_chain_id": "passed",
+    "wallet_funded": "passed",
+    "timelock_roles": "pending",
+    "timelock_delay": "pending",
+    "bridge_roles": "pending",
+    "fixed_limits": "pending",
+    "removed_limit_selectors": "pending",
+    "bsns_binding": "pending",
+    "runtime_administrator": "pending",
+    "early_timelock_execute_rejected": "pending",
+    "asset_moving_scenarios": "pending",
+    "final_pause": "pending"
+  },
+  "synthetic_ledger_block": 42,
+  "final_state": {
+    "status": "pending",
+    "observed_at": null,
+    "block_number": null,
+    "wallet_balance_wei": null,
+    "deposit_mints_paused": null,
+    "withdrawals_paused": null
+  }
+}

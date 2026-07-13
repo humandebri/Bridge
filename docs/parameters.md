@@ -2,7 +2,7 @@
 
 Bridge の安全パラメータの導出式と初期値を記録する。
 すべて raw unit で定義し、token decimals の表示変換を判断に使わない（ADR 0001）。
-値の変更は ADR 0009 の権限分割に従う。引き下げは Runtime Administrator、引き上げは Base Admin の timelock 経由とする。
+Mint limitとwindow長はdeploy時に固定し、どの権限にも変更を許可しない。
 
 ## Mint Throughput Limit
 
@@ -14,7 +14,7 @@ window あたりの上限 = 許容最大被害額 ÷ 2
 ```
 
 - window 長の初期値: 1 時間
-- 上限値: TBD（対象 SNS トークンの流通量と監視体制の確定後に決定）
+- production上限値: 未確定。承認済みdeployment profileへraw unitで明示し、deploy後は変更しない。
 
 window を 1 時間とする場合、監視は 1 時間以内の pause 発動を前提とする。
 監視体制がこれを満たせないなら、window を延ばすのではなく上限値を下げる。
@@ -22,10 +22,10 @@ window を 1 時間とする場合、監視は 1 時間以内の pause 発動を
 ## Per-Deposit Limit
 
 ```
-Per-Deposit Limit = 流通中 Bridgeable SNS Token の 1〜5%
+Per-Deposit Limit = 承認済みdeployment profileの固定値
 ```
 
-- 初期値: TBD（対象 SNS トークン確定後に決定）
+- production初期値: 未確定。Mint Throughput Limit以下のraw unitをprofileへ明示する。
 
 Mint Throughput Limit が総量を抑えるため、この値は単発の入力ミスと単一要求の異常検知を目的とする。
 
@@ -38,8 +38,9 @@ immutable であり、デプロイ後にいかなる権限でも変更できな�
 MAX_SERVICE_FEE = SNS ledger fee × 100〜1000
 ```
 
-- 初期値: TBD（対象 SNS トークンの ledger fee 確定後に決定）
-- `service_fee` 運用初期値: TBD
+- KINIC ledger fee: `100000` raw
+- `MAX_SERVICE_FEE`: `10000000` raw（ledger feeの100倍）
+- `service_fee`運用初期値: `1000000` raw（ledger feeの10倍）
 
 ## Settlement Reserve
 
@@ -52,9 +53,12 @@ MAX_SERVICE_FEE = SNS ledger fee × 100〜1000
   + cycles の N 日分の運用費
 ```
 
-- 固定 floor: TBD
-- max fee per gas 上限: TBD（外部仮定として監査対象）
-- N: TBD（初期案 30 日）
+- ETH固定floor: 未確定。Sepolia gas 100回計測とBase mainnet 30日fee分布の証跡が揃った後、Settlement 100件分を設定する。
+- max fee per gas上限: 未確定。Base mainnet直近30日のbase fee p99×2 + priority fee p95で算出する。
+- cycles floor: 未確定。7日間の実測から30日分を設定する。
+- N: 30日
+
+未確定値をzeroや仮値でmainnet profileへ入れてはならない。`bridge-profile validate`は`status != validated`、zero reserve、証跡hash欠落を拒否する。
 
 ## timelock 遅延（Base Admin）
 
@@ -72,6 +76,6 @@ MAX_SERVICE_FEE = SNS ledger fee × 100〜1000
 
 ## 見直し手順
 
-1. 値の変更提案は本文書の式に対する入力値の変更として記述する。
-2. 引き上げ方向は Base Admin の timelock を経由し、待機期間中に公開する。
-3. 変更後の値で ADR 0001 と 0005 の証明前提が保たれることを確認する。
+1. Mint limitとwindow長は既存contract上で変更しない。
+2. 異なる値が必要な場合は、新contractのdeployを別計画として安全審査する。
+3. Service FeeはRuntime Administratorが`MAX_SERVICE_FEE`以内で変更する。

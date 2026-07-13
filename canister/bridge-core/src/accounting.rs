@@ -39,57 +39,9 @@ impl AccountingState {
         self.confirmed_withdrawal_fees = next_withdrawal;
         Ok(())
     }
-}
 
-#[cfg_attr(
-    feature = "storage-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ResourceCost {
-    pub eth_wei: u128,
-    pub cycles: u128,
-}
-
-impl ResourceCost {
-    fn checked_add(self, other: Self) -> Result<Self, CoreError> {
-        Ok(Self {
-            eth_wei: self
-                .eth_wei
-                .checked_add(other.eth_wei)
-                .ok_or(CoreError::ArithmeticOverflow)?,
-            cycles: self
-                .cycles
-                .checked_add(other.cycles)
-                .ok_or(CoreError::ArithmeticOverflow)?,
-        })
-    }
-
-    fn fits_within(self, available: Self) -> bool {
-        self.eth_wei <= available.eth_wei && self.cycles <= available.cycles
-    }
-}
-
-#[cfg_attr(
-    feature = "storage-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ResourceBudget {
-    pub available: ResourceCost,
-    pub settlement_floor: ResourceCost,
-    pub pending_settlements: ResourceCost,
-}
-
-impl ResourceBudget {
-    pub fn ensure_deposit_can_reserve(self, deposit_cost: ResourceCost) -> Result<(), CoreError> {
-        let required = self
-            .settlement_floor
-            .checked_add(self.pending_settlements)?
-            .checked_add(deposit_cost)?;
-        if !required.fits_within(self.available) {
-            return Err(CoreError::InsufficientSettlementReserve);
-        }
+    pub fn spend_fee_reserve(&mut self, amount: Amount) -> Result<(), CoreError> {
+        self.fee_reserve = self.fee_reserve.checked_sub(amount)?;
         Ok(())
     }
 }

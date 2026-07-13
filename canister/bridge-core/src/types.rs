@@ -116,6 +116,7 @@ impl Account {
 pub enum LedgerOperation {
     PullDeposit,
     ReleaseWithdrawal,
+    FeePayout,
 }
 
 #[cfg_attr(
@@ -140,14 +141,28 @@ pub struct LedgerTransferIdentity {
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BaseMintSnapshot {
+    pub finalized_block_number: u64,
+    pub finalized_block_timestamp: u64,
     pub service_fee: Amount,
     pub max_service_fee: Amount,
     pub per_deposit_limit: Amount,
     pub mint_window_limit: Amount,
+    pub mint_window_started_at: u64,
+    pub mint_window_duration: u64,
     pub minted_in_window: Amount,
 }
 
 impl BaseMintSnapshot {
+    pub fn effective_minted_in_window(self) -> Amount {
+        let expires_at = u128::from(self.mint_window_started_at)
+            .saturating_add(u128::from(self.mint_window_duration));
+        if u128::from(self.finalized_block_timestamp) >= expires_at {
+            Amount::ZERO
+        } else {
+            self.minted_in_window
+        }
+    }
+
     pub fn quote(self, gross_amount: Amount, user_max_fee: Amount) -> Result<Amount, CoreError> {
         if gross_amount == Amount::ZERO {
             return Err(CoreError::InvalidAmount);
@@ -165,7 +180,7 @@ impl BaseMintSnapshot {
         if net_amount > self.per_deposit_limit {
             return Err(CoreError::PerDepositLimitExceeded);
         }
-        if self.minted_in_window.checked_add(net_amount)? > self.mint_window_limit {
+        if self.effective_minted_in_window().checked_add(net_amount)? > self.mint_window_limit {
             return Err(CoreError::MintWindowLimitExceeded);
         }
         Ok(net_amount)
@@ -247,7 +262,6 @@ pub enum CoreError {
     MintWindowLimitExceeded,
     MinimumAmountNotMet,
     SettlementMismatch,
-    InsufficientSettlementReserve,
     InvalidLedgerOperation,
     InvalidTransition {
         entity: &'static str,
@@ -257,6 +271,9 @@ pub enum CoreError {
     PayloadConflict,
     HoldMismatch,
     MissingReconciliationEvidence,
+    AttemptOverflow,
+    AttemptPayloadChanged,
+    RefundIneligible,
 }
 
 impl fmt::Display for CoreError {

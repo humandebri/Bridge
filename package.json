@@ -1,0 +1,17 @@
+{
+  "name": "kinic-base-bridge-integration",
+  "private": true,
+  "scripts": {
+    "test:e2e": "TMPDIR=/private/tmp jest --config integration/jest.config.js --runInBand"
+  },
+  "devDependencies": {
+    "@dfinity/agent": "^3.4.3",
+    "@dfinity/pic": "0.22.0",
+    "@swc/core": "^1.15.18",
+    "@swc/jest": "^0.2.39",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.10.1",
+    "jest": "^30.2.0",
+    "typescript": "^5.9.3"
+  }
+}

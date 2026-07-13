@@ -59,6 +59,23 @@ run_rust() {
     --target wasm32-unknown-unknown \
     --release \
     -p bridge-canister
+  cargo build \
+    --manifest-path "$ROOT/Cargo.toml" \
+    --target wasm32-unknown-unknown \
+    --release \
+    -p mock-external
+  cargo build \
+    --manifest-path "$ROOT/Cargo.toml" \
+    --target wasm32-unknown-unknown \
+    --release \
+    -p pause-watchdog
+  if [[ "${CI:-}" == "true" ]]; then
+    npm ci --prefix "$ROOT"
+  elif [[ ! -d "$ROOT/node_modules" ]]; then
+    echo "node_modules is missing; run npm ci before checks" >&2
+    return 1
+  fi
+  npm run --prefix "$ROOT" test:e2e
   python3 "$ROOT/scripts/test_prepare_local_network.py"
 }
 
@@ -107,27 +124,46 @@ run_smt() {
 }
 
 run_verus() {
-  local failure_log="$TMP_ROOT/verus-failure.log"
+  local failure_fixture
+  local failure_log
   local failure_status
+  local kernel_name
+  local expected_fixture
+
+  if rg -n '\b(assume|admit|external_body)\b' \
+    "$ROOT/canister/bridge-core/src/kernel.rs" \
+    "$ROOT/verification/verus/pass.rs" \
+    "$ROOT/verification/verus/fail"; then
+    echo "forbidden Verus proof escape found" >&2
+    return 1
+  fi
 
   verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass"
 
-  set +e
-  verus --no-cheating "$ROOT/verification/verus/fail.rs" \
-    -o "$TMP_ROOT/verus-fail" >"$failure_log" 2>&1
-  failure_status=$?
-  set -e
+  while IFS=$'\t' read -r kernel_name expected_fixture; do
+    [[ -n "$kernel_name" ]] || continue
+    rg -q "pub const fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs"
+    rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/pass.rs"
+    rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture"
+  done < "$ROOT/verification/verus/manifest.tsv"
 
-  if [[ "$failure_status" -eq 0 ]]; then
-    echo "Verus accepted the deliberate failing fixture" >&2
-    cat "$failure_log" >&2
-    return 1
-  fi
-  if ! rg -qi "postcondition.*not satisfied|postcondition.*fail" "$failure_log"; then
-    echo "Verus failed without reporting the expected postcondition violation" >&2
-    cat "$failure_log" >&2
-    return 1
-  fi
+  while IFS= read -r failure_fixture; do
+    failure_log="$TMP_ROOT/verus-$(basename "$failure_fixture" .rs).log"
+    set +e
+    verus --no-cheating "$failure_fixture" \
+      -o "$TMP_ROOT/verus-$(basename "$failure_fixture" .rs)" >"$failure_log" 2>&1
+    failure_status=$?
+    set -e
+    if [[ "$failure_status" -eq 0 ]]; then
+      echo "Verus accepted deliberate failing fixture: $failure_fixture" >&2
+      return 1
+    fi
+    if ! rg -qi "postcondition.*not satisfied|postcondition.*fail" "$failure_log"; then
+      echo "Verus fixture failed without expected postcondition violation: $failure_fixture" >&2
+      cat "$failure_log" >&2
+      return 1
+    fi
+  done < <(rg --files "$ROOT/verification/verus/fail" -g '*.rs' | sort)
 }
 
 run_proofs() {
@@ -255,9 +291,11 @@ run_smoke() {
   local unpause_deposit_data
   local management_salt
   local current_service_fee
+  local limit_caller
+  local limit_signature
   local readonly bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
   local readonly runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
-  local readonly base_admin_safe="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+  local readonly base_admin_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
   local readonly recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
   local readonly deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
   local readonly gross_amount="101000000"
@@ -295,7 +333,7 @@ import json, re, sys
 response = json.load(sys.stdin)
 candid = response.get("response_candid") or ""
 expected = {
-    "schema_version": ("1", "nat16"),
+    "schema_version": ("4", "nat16"),
     "deposits": ("0", "nat64"),
     "withdrawals": ("0", "nat64"),
     "pending_evm_operations": ("0", "nat64"),
@@ -322,8 +360,8 @@ for field, (value, candid_type) in expected.items():
   base_admin_timelock="$(deploy_contract \
     "lib/openzeppelin-contracts/contracts/governance/TimelockController.sol:TimelockController" \
     "$timelock_delay_seconds" \
-    "[$base_admin_safe]" \
-    "[$base_admin_safe]" \
+    "[$base_admin_wallet]" \
+    "[$base_admin_wallet]" \
     "$zero_address")"
   read -r timelock_delay _ <<<"$(
     cast call "$base_admin_timelock" "getMinDelay()(uint256)" --rpc-url http://127.0.0.1:8545
@@ -342,18 +380,18 @@ for field, (value, candid_type) in expected.items():
     cast call "$base_admin_timelock" "DEFAULT_ADMIN_ROLE()(bytes32)" --rpc-url http://127.0.0.1:8545
   )"
   require_equal \
-    "Safe proposer role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$base_admin_safe" \
+    "Base Admin wallet proposer role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$base_admin_wallet" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Safe canceller role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$base_admin_safe" \
+    "Base Admin wallet canceller role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$base_admin_wallet" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Safe executor role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$base_admin_safe" \
+    "Base Admin wallet executor role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$base_admin_wallet" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
@@ -367,8 +405,8 @@ for field, (value, candid_type) in expected.items():
       "$base_admin_timelock" --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Safe has no direct timelock administration" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" "$base_admin_safe" \
+    "Base Admin wallet has no direct timelock administration" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" "$base_admin_wallet" \
       --rpc-url http://127.0.0.1:8545)" \
     "false"
 
@@ -385,6 +423,23 @@ for field, (value, candid_type) in expected.items():
     "3600" \
     "100000000" \
     "$service_fee")"
+  for limit_caller in "$bridge_signer" "$runtime_administrator" "$base_admin_wallet"; do
+    for limit_signature in \
+      "setMintLimits(uint256,uint256,uint64)" \
+      "reduceMintLimits(uint256,uint256,uint64)"; do
+      if cast call \
+        "$bridge_address" \
+        "$limit_signature" \
+        1 \
+        1 \
+        1 \
+        --rpc-url http://127.0.0.1:8545 \
+        --from "$limit_caller" >/dev/null 2>&1; then
+        echo "removed Mint limit selector remains callable: $limit_signature" >&2
+        return 1
+      fi
+    done
+  done
   bsns_address="$(cast call "$bridge_address" "bsns()(address)" --rpc-url http://127.0.0.1:8545)"
   if [[ "$(cast code "$bsns_address" --rpc-url http://127.0.0.1:8545)" == "0x" ]]; then
     echo "Bridge-created bSNS has no runtime bytecode: $bsns_address" >&2
@@ -407,8 +462,8 @@ for field, (value, candid_type) in expected.items():
 
   cast send \
     "$bridge_address" \
-    "mintDeposit((bytes32,address,uint256,uint256))" \
-    "($deposit_id,$recipient,$gross_amount,$service_fee)" \
+    "mintDeposit((bytes32,address,uint256,uint256,uint256))" \
+    "($deposit_id,$recipient,$gross_amount,$service_fee,$service_fee)" \
     --rpc-url http://127.0.0.1:8545 \
     --from "$bridge_signer" \
     --unlocked >/dev/null
@@ -572,8 +627,8 @@ for field, (value, candid_type) in expected.items():
     "$bridge_address" \
     "unpauseDepositMints()" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_safe" >/dev/null 2>&1; then
-    echo "Safe bypassed the Base Admin timelock" >&2
+    --from "$base_admin_wallet" >/dev/null 2>&1; then
+    echo "Base Admin wallet bypassed the timelock" >&2
     return 1
   fi
   unpause_deposit_data="$(cast calldata "unpauseDepositMints()")"
@@ -588,7 +643,7 @@ for field, (value, candid_type) in expected.items():
     "$management_salt" \
     "$timelock_delay_seconds" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_safe" \
+    --from "$base_admin_wallet" \
     --unlocked >/dev/null
   if cast send \
     "$base_admin_timelock" \
@@ -599,7 +654,7 @@ for field, (value, candid_type) in expected.items():
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_safe" \
+    --from "$base_admin_wallet" \
     --unlocked >/dev/null 2>&1; then
     echo "Base Admin operation executed before the 72-hour delay" >&2
     return 1
@@ -615,7 +670,7 @@ for field, (value, candid_type) in expected.items():
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_safe" \
+    --from "$base_admin_wallet" \
     --unlocked >/dev/null
   require_equal \
     "Timelocked Deposit mint unpause" \
