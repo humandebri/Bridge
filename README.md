@@ -4,7 +4,7 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 Base contractとPlan 001〜004を実装済みであり、現在は本番パラメータと鍵運用を確定するPlan 005を進めている。
 
 `bridge-core`はDeposit、Withdrawal、EVM操作、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v4へ状態を保存し、公開Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、timer駆動のSettlement、運用管理APIを接続する。
+`bridge-canister`はstable schema v1へ状態を保存し、公開Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、timer駆動のSettlement、運用管理APIを接続する。
 `pause-watchdog`はreserve不足、観測停滞、連続status失敗を監視し、新規Depositだけを停止する。
 Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの72時間Timelockへ接続している。
 
@@ -79,7 +79,7 @@ python3 scripts/abi_snapshot.py --check
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 5、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 1、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
 5. 72時間delay、Base Admin wallet限定proposer、canceller、executor、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。

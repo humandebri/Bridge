@@ -1,9 +1,14 @@
-use crate::{config::BridgeInitArgs, evm_rpc, ledger, storage::DepositIntent, STORE};
+use crate::{
+    config::BridgeInitArgs,
+    evm_rpc, ledger,
+    storage::{DepositIntent, NotificationEnqueueError, NotificationEnqueueOutcome},
+    storage_or_trap, STORE,
+};
 use bridge_core::{
     Account, Amount, DepositEvent, DepositId, DepositRecord, DepositRequest, DepositState,
     EvmCallIntent, EvmOperationId, EvmOperationKind, EvmOperationRecord, EvmOperationState,
     LedgerCallOutcome, LedgerFailure, LedgerOperation, LedgerTransferIdentity,
-    ReconciliationHoldRecord, RequestReference, SafeReceiptOutcome, WithdrawalState,
+    ReconciliationHoldRecord, RequestReference, WithdrawalState,
 };
 use candid::{CandidType, Deserialize, Nat, Principal};
 use ic_stable_structures::Memory;
@@ -14,8 +19,27 @@ use tiny_keccak::{Hasher, Keccak};
 pub struct DepositArgs {
     pub client_request_id: Vec<u8>,
     pub base_recipient: Vec<u8>,
+    pub from_subaccount: Option<Vec<u8>>,
     pub gross_amount: Nat,
     pub max_service_fee: Nat,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ListDepositIdsArgs {
+    pub owner: Principal,
+    pub before_sequence: Option<u64>,
+    pub limit: u16,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct DepositIdPage {
+    pub deposit_ids: Vec<Vec<u8>>,
+    pub next_before_sequence: Option<u64>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum ListDepositIdsError {
+    InvalidLimit,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -33,6 +57,7 @@ pub enum DepositError {
     StorageFailure,
     DepositsPaused,
     ReserveUnavailable,
+    RateLimited { retry_after_seconds: u64 },
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -56,19 +81,34 @@ pub struct WithdrawalView {
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum GetWithdrawalsError {
+    TooManyIds,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct NotifyWithdrawalArgs {
+    pub transaction_hash: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyWithdrawalReceipt {
+    Queued,
+    Duplicate,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum NotifyWithdrawalError {
+    AnonymousCaller,
+    InvalidTransactionHash,
+    RateLimited { retry_after_seconds: u64 },
+    QueueFull,
+    StorageFailure,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum BaseConfirmationView {
     Submitted {
         transaction_hash: Vec<u8>,
-    },
-    SafeSucceeded {
-        transaction_hash: Vec<u8>,
-        receipt_block_number: u64,
-        observed_head: u64,
-    },
-    SafeReverted {
-        transaction_hash: Vec<u8>,
-        receipt_block_number: u64,
-        observed_head: u64,
     },
     Finalized {
         transaction_hash: Vec<u8>,
@@ -85,8 +125,43 @@ pub enum BaseConfirmationView {
 enum AdmissionOutcome {
     Inserted,
     Existing,
-    StaleObservation,
 }
+
+pub fn notify_withdrawal(
+    caller: Principal,
+    args: NotifyWithdrawalArgs,
+) -> Result<NotifyWithdrawalReceipt, NotifyWithdrawalError> {
+    if caller == Principal::anonymous() {
+        return Err(NotifyWithdrawalError::AnonymousCaller);
+    }
+    let transaction_hash: [u8; 32] = args
+        .transaction_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| NotifyWithdrawalError::InvalidTransactionHash)?;
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .enqueue_withdrawal_notification(caller, transaction_hash, ic_cdk::api::time())
+            .map(|outcome| match outcome {
+                NotificationEnqueueOutcome::Queued => NotifyWithdrawalReceipt::Queued,
+                NotificationEnqueueOutcome::Duplicate => NotifyWithdrawalReceipt::Duplicate,
+            })
+            .map_err(|error| match error {
+                NotificationEnqueueError::RateLimited {
+                    retry_after_seconds,
+                } => NotifyWithdrawalError::RateLimited {
+                    retry_after_seconds,
+                },
+                NotificationEnqueueError::QueueFull => NotifyWithdrawalError::QueueFull,
+                NotificationEnqueueError::Storage => NotifyWithdrawalError::StorageFailure,
+            })
+    })
+}
+
+const BASE_SNAPSHOT_TTL_NS: u64 = 60_000_000_000;
+const BASE_SNAPSHOT_REFRESH_COOLDOWN_NS: u64 = 60_000_000_000;
+const BASE_SNAPSHOT_REFRESH_STALE_LOCK_NS: u64 = 300_000_000_000;
 
 fn nat_u128(value: &Nat) -> Result<u128, DepositError> {
     value
@@ -128,11 +203,24 @@ fn config() -> Result<BridgeInitArgs, DepositError> {
     })
 }
 
-pub async fn request_deposit(
+pub(crate) struct ValidatedDepositArgs {
+    pub client_request_id: [u8; 32],
+    pub base_recipient: [u8; 20],
+    pub from_subaccount: [u8; 32],
+    pub gross_amount: u128,
+    pub max_service_fee: u128,
+}
+
+pub(crate) fn validate_deposit_args(
     caller: Principal,
-    args: DepositArgs,
-) -> Result<DepositReceipt, DepositError> {
-    let client_request_id: [u8; 32] =
+    args: &DepositArgs,
+) -> Result<ValidatedDepositArgs, DepositError> {
+    if caller == Principal::anonymous() {
+        return Err(DepositError::InvalidRequest(
+            "anonymous caller is not allowed".into(),
+        ));
+    }
+    let client_request_id =
         args.client_request_id.as_slice().try_into().map_err(|_| {
             DepositError::InvalidRequest("client_request_id must be 32 bytes".into())
         })?;
@@ -141,18 +229,49 @@ pub async fn request_deposit(
         .as_slice()
         .try_into()
         .map_err(|_| DepositError::InvalidRequest("base_recipient must be 20 bytes".into()))?;
-    if base_recipient == [0; 20] || caller == Principal::anonymous() {
+    if base_recipient == [0; 20] {
         return Err(DepositError::InvalidRequest(
-            "anonymous caller or zero recipient".into(),
+            "zero Base recipient is not allowed".into(),
         ));
     }
+    let from_subaccount = match args.from_subaccount.as_deref() {
+        None => [0; 32],
+        Some(bytes) => bytes
+            .try_into()
+            .map_err(|_| DepositError::InvalidRequest("from_subaccount must be 32 bytes".into()))?,
+    };
     let gross_amount = nat_u128(&args.gross_amount)?;
     let max_service_fee = nat_u128(&args.max_service_fee)?;
+    if gross_amount == 0 {
+        return Err(DepositError::InvalidRequest(
+            "gross_amount must be positive".into(),
+        ));
+    }
+    Ok(ValidatedDepositArgs {
+        client_request_id,
+        base_recipient,
+        from_subaccount,
+        gross_amount,
+        max_service_fee,
+    })
+}
+
+pub async fn request_deposit(
+    caller: Principal,
+    args: DepositArgs,
+) -> Result<DepositReceipt, DepositError> {
+    let validated = validate_deposit_args(caller, &args)?;
+    let client_request_id = validated.client_request_id;
+    let base_recipient = validated.base_recipient;
+    let from_subaccount = validated.from_subaccount;
+    let gross_amount = validated.gross_amount;
+    let max_service_fee = validated.max_service_fee;
     let deposit_id = hash(&[caller.as_slice(), &client_request_id]);
     let payload_hash = hash(&[
         caller.as_slice(),
         &client_request_id,
         &base_recipient,
+        &from_subaccount,
         &gross_amount.to_be_bytes(),
         &max_service_fee.to_be_bytes(),
     ]);
@@ -167,11 +286,32 @@ pub async fn request_deposit(
             .borrow()
             .admin_state()
             .map(|state| state.deposits_paused)
-            .unwrap_or(true)
-    });
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
     if deposits_paused {
         return Err(DepositError::DepositsPaused);
     }
+    let now = ic_cdk::api::time();
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .reserve_deposit_quota(
+                caller,
+                now,
+                config.deposit_rate_limit_window_seconds,
+                config.deposit_rate_limit_global,
+                config.deposit_rate_limit_per_principal,
+            )
+            .map_err(|error| match error {
+                crate::storage::DepositQuotaError::RateLimited(limited) => {
+                    DepositError::RateLimited {
+                        retry_after_seconds: limited.retry_after_seconds,
+                    }
+                }
+                crate::storage::DepositQuotaError::Storage(_) => DepositError::StorageFailure,
+            })
+    })?;
+    let snapshot = base_mint_snapshot(&config, now).await?;
     ensure_reserve(&config).await?;
     crate::tasks::ensure_nonce_initialized(&config)
         .await
@@ -184,7 +324,6 @@ pub async fn request_deposit(
     let ledger_fee = ledger::ledger_fee(config.ledger_canister_id)
         .await
         .map_err(|_| DepositError::LedgerFeeUnavailable)?;
-    let now = ic_cdk::api::time();
     let memo = hash(&[b"KINIC-DEPOSIT", &deposit_id]);
     let canister = ic_cdk::api::canister_self();
     let transfer = LedgerTransferIdentity {
@@ -193,7 +332,7 @@ pub async fn request_deposit(
         memo,
         amount: Amount::new(gross_amount),
         fee: ledger_fee,
-        from: Account::new(caller.as_slice().to_vec(), [0; 32])
+        from: Account::new(caller.as_slice().to_vec(), from_subaccount)
             .map_err(|e| DepositError::Rejected(format!("{e:?}")))?,
         to: Account::new(canister.as_slice().to_vec(), [0; 32])
             .map_err(|e| DepositError::Rejected(format!("{e:?}")))?,
@@ -207,78 +346,64 @@ pub async fn request_deposit(
         caller: caller.as_slice().to_vec(),
         client_request_id,
         base_recipient,
+        from_subaccount,
         payload_hash,
     };
-    let mut admission = AdmissionOutcome::StaleObservation;
-    for _ in 0..3 {
-        let snapshot = evm_rpc::base_mint_snapshot(&config)
-            .await
-            .map_err(|_| DepositError::BaseObservationUnavailable)?;
-        let record = DepositRecord::accept(
-            DepositRequest {
-                id: DepositId::new(deposit_id),
-                payload_hash,
-                gross_amount: Amount::new(gross_amount),
-                user_max_service_fee: Amount::new(max_service_fee),
-                transfer: transfer.clone(),
-            },
-            snapshot,
-        )
-        .map_err(|e| DepositError::Rejected(format!("{e:?}")))?;
-        admission = STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            if let Some(existing) = store
-                .deposit(deposit_id)
-                .map_err(|_| DepositError::StorageFailure)?
-            {
-                existing.verify_retry(payload_hash).map_err(|_| {
-                    DepositError::InvalidRequest(
-                        "client request id conflicts with an existing payload".into(),
-                    )
-                })?;
-                return Ok(AdmissionOutcome::Existing);
-            }
-            if store
-                .admin_state()
-                .map_err(|_| DepositError::StorageFailure)?
-                .deposits_paused
-            {
-                return Err(DepositError::DepositsPaused);
-            }
-            let progress = store
-                .external_progress()
-                .map_err(|_| DepositError::StorageFailure)?;
-            if snapshot.finalized_block_number < progress.last_finalized_mint_block {
-                return Ok(AdmissionOutcome::StaleObservation);
-            }
-            let reserved = store
-                .counters()
-                .map_err(|_| DepositError::StorageFailure)?
-                .reserved_deposit_mint_amount;
-            let total = bridge_core::mint_admission_total(
-                snapshot.effective_minted_in_window().get(),
-                reserved,
-                record.net_amount.get(),
-            )
-            .ok_or_else(|| DepositError::Rejected("mint admission arithmetic overflow".into()))?;
-            if total > snapshot.mint_window_limit.get() {
-                return Err(DepositError::Rejected("MintWindowLimitExceeded".into()));
-            }
-            store
-                .put_deposit_intent(&intent)
-                .map_err(|_| DepositError::StorageFailure)?;
-            store
-                .put_deposit(&record)
-                .map_err(|_| DepositError::StorageFailure)?;
-            Ok(AdmissionOutcome::Inserted)
-        })?;
-        if !matches!(admission, AdmissionOutcome::StaleObservation) {
-            break;
+    let record = DepositRecord::accept(
+        DepositRequest {
+            id: DepositId::new(deposit_id),
+            payload_hash,
+            gross_amount: Amount::new(gross_amount),
+            user_max_service_fee: Amount::new(max_service_fee),
+            transfer: transfer.clone(),
+        },
+        snapshot,
+    )
+    .map_err(|e| DepositError::Rejected(format!("{e:?}")))?;
+    let admission = STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        if let Some(existing) = store
+            .deposit(deposit_id)
+            .map_err(|_| DepositError::StorageFailure)?
+        {
+            existing.verify_retry(payload_hash).map_err(|_| {
+                DepositError::InvalidRequest(
+                    "client request id conflicts with an existing payload".into(),
+                )
+            })?;
+            return Ok(AdmissionOutcome::Existing);
         }
-    }
-    if matches!(admission, AdmissionOutcome::StaleObservation) {
-        return Err(DepositError::BaseObservationUnavailable);
-    }
+        if store
+            .admin_state()
+            .map_err(|_| DepositError::StorageFailure)?
+            .deposits_paused
+        {
+            return Err(DepositError::DepositsPaused);
+        }
+        let progress = store
+            .external_progress()
+            .map_err(|_| DepositError::StorageFailure)?;
+        if snapshot.finalized_block_number < progress.last_finalized_mint_block {
+            return Err(DepositError::BaseObservationUnavailable);
+        }
+        let reserved = store
+            .counters()
+            .map_err(|_| DepositError::StorageFailure)?
+            .reserved_deposit_mint_amount;
+        let total = bridge_core::mint_admission_total(
+            snapshot.effective_minted_in_window().get(),
+            reserved,
+            record.net_amount.get(),
+        )
+        .ok_or_else(|| DepositError::Rejected("mint admission arithmetic overflow".into()))?;
+        if total > snapshot.mint_window_limit.get() {
+            return Err(DepositError::Rejected("MintWindowLimitExceeded".into()));
+        }
+        store
+            .admit_deposit(caller, &intent, &record)
+            .map_err(|_| DepositError::StorageFailure)?;
+        Ok(AdmissionOutcome::Inserted)
+    })?;
     if matches!(admission, AdmissionOutcome::Existing) {
         return existing_receipt(deposit_id, payload_hash)?.ok_or(DepositError::StorageFailure);
     }
@@ -324,6 +449,22 @@ pub async fn request_deposit(
     existing_receipt(deposit_id, payload_hash)?.ok_or(DepositError::StorageFailure)
 }
 
+pub fn list_deposit_ids(args: ListDepositIdsArgs) -> Result<DepositIdPage, ListDepositIdsError> {
+    if !(1..=100).contains(&args.limit) {
+        return Err(ListDepositIdsError::InvalidLimit);
+    }
+    STORE.with(|store| {
+        let (deposit_ids, next_before_sequence) = store
+            .borrow()
+            .list_deposit_ids(args.owner, args.before_sequence, args.limit)
+            .unwrap_or_else(|error| ic_cdk::trap(format!("deposit index read failed: {error}")));
+        Ok(DepositIdPage {
+            deposit_ids: deposit_ids.into_iter().map(Vec::from).collect(),
+            next_before_sequence,
+        })
+    })
+}
+
 pub(crate) fn cancel_deposit_in_store(
     store: &mut crate::storage::StableStore<ic_stable_structures::DefaultMemoryImpl>,
     deposit_id: [u8; 32],
@@ -342,7 +483,7 @@ pub(crate) fn cancel_deposit_in_store(
 }
 
 async fn ensure_reserve(config: &BridgeInitArgs) -> Result<(), DepositError> {
-    let address = crate::signer::ethereum_address(config)
+    let address = cached_signer_address(config)
         .await
         .map_err(|_| DepositError::ReserveUnavailable)?;
     let eth_balance = evm_rpc::signer_eth_balance(config, address)
@@ -390,6 +531,112 @@ async fn ensure_reserve(config: &BridgeInitArgs) -> Result<(), DepositError> {
         .sufficient
         .then_some(())
         .ok_or(DepositError::ReserveUnavailable)
+}
+
+pub(crate) async fn cached_signer_address(
+    config: &BridgeInitArgs,
+) -> Result<[u8; 20], DepositError> {
+    if let Some(address) = STORE.with(|store| {
+        store
+            .borrow()
+            .signer_address()
+            .map_err(|_| DepositError::StorageFailure)
+    })? {
+        return Ok(address);
+    }
+    let derived = crate::signer::ethereum_address(config)
+        .await
+        .map_err(|_| DepositError::BaseObservationUnavailable)?;
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .set_signer_address_if_absent(derived)
+            .map_err(|_| DepositError::StorageFailure)
+    })
+}
+
+async fn base_mint_snapshot(
+    config: &BridgeInitArgs,
+    now_ns: u64,
+) -> Result<bridge_core::BaseMintSnapshot, DepositError> {
+    let expected_signer = cached_signer_address(config).await?;
+    let minimum_finalized_block = STORE.with(|store| {
+        store
+            .borrow()
+            .external_progress()
+            .map(|progress| progress.last_finalized_mint_block)
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
+    if let Some(snapshot) = STORE.with(|store| {
+        store
+            .borrow()
+            .cached_base_mint_snapshot(now_ns, BASE_SNAPSHOT_TTL_NS, minimum_finalized_block)
+            .map_err(|_| DepositError::StorageFailure)
+    })? {
+        return validate_base_deposit_snapshot(
+            snapshot.snapshot,
+            snapshot.bridge_signer,
+            snapshot.deposits_paused,
+            expected_signer,
+        );
+    }
+    let refresh_started = STORE.with(|store| {
+        store
+            .borrow_mut()
+            .begin_base_snapshot_refresh(
+                now_ns,
+                BASE_SNAPSHOT_REFRESH_STALE_LOCK_NS,
+                BASE_SNAPSHOT_REFRESH_COOLDOWN_NS,
+            )
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
+    if !refresh_started {
+        return Err(DepositError::BaseObservationUnavailable);
+    }
+    let snapshot = match evm_rpc::bridge_snapshot(config).await {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .fail_base_snapshot_refresh()
+                    .map_err(|_| DepositError::StorageFailure)
+            })?;
+            return Err(DepositError::BaseObservationUnavailable);
+        }
+    };
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .finish_base_snapshot_refresh(
+                ic_cdk::api::time(),
+                snapshot.mint,
+                snapshot.bridge_signer,
+                snapshot.deposits_paused,
+            )
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
+    validate_base_deposit_snapshot(
+        snapshot.mint,
+        snapshot.bridge_signer,
+        snapshot.deposits_paused,
+        expected_signer,
+    )
+}
+
+fn validate_base_deposit_snapshot(
+    snapshot: bridge_core::BaseMintSnapshot,
+    bridge_signer: [u8; 20],
+    deposits_paused: bool,
+    expected_signer: [u8; 20],
+) -> Result<bridge_core::BaseMintSnapshot, DepositError> {
+    if deposits_paused {
+        return Err(DepositError::DepositsPaused);
+    }
+    if bridge_signer != expected_signer {
+        return Err(DepositError::BaseObservationUnavailable);
+    }
+    Ok(snapshot)
 }
 
 pub(crate) fn prepare_mint(
@@ -517,8 +764,8 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
     let id: [u8; 32] = id.as_slice().try_into().ok()?;
     STORE.with(|store| {
         let store = store.borrow();
-        let record = store.deposit(id).ok()??;
-        let intent = store.deposit_intent(id).ok()??;
+        let record = storage_or_trap("deposit read", store.deposit(id))?;
+        let intent = storage_or_trap("deposit intent read", store.deposit_intent(id))?;
         let operation_id = match &record.state {
             DepositState::MintPending { operation_id, .. }
             | DepositState::Minted { operation_id, .. }
@@ -540,7 +787,7 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
 pub fn get_withdrawal(id: Vec<u8>) -> Option<WithdrawalView> {
     let id: [u8; 32] = id.as_slice().try_into().ok()?;
     STORE.with(|store| {
-        let record = store.borrow().withdrawal(id).ok()??;
+        let record = storage_or_trap("withdrawal read", store.borrow().withdrawal(id))?;
         let operation_id = match &record.state {
             WithdrawalState::AcknowledgePending { operation_id, .. }
             | WithdrawalState::AcknowledgeReverted { operation_id, .. }
@@ -572,62 +819,47 @@ pub fn get_withdrawal(id: Vec<u8>) -> Option<WithdrawalView> {
     })
 }
 
+pub fn get_withdrawals(
+    ids: Vec<Vec<u8>>,
+) -> Result<Vec<Option<WithdrawalView>>, GetWithdrawalsError> {
+    if ids.len() > 20 {
+        return Err(GetWithdrawalsError::TooManyIds);
+    }
+    Ok(ids.into_iter().map(get_withdrawal).collect())
+}
+
 fn base_confirmation<M: Memory>(
     store: &crate::storage::StableStore<M>,
     operation_id: Option<EvmOperationId>,
 ) -> Option<BaseConfirmationView> {
-    let operation = store.evm_operation(operation_id?.get()).ok()??;
-    let observed_head = store
-        .external_progress()
-        .map(|progress| progress.last_finalized_base_block)
-        .unwrap_or_default();
+    let operation = storage_or_trap(
+        "EVM operation read",
+        store.evm_operation(operation_id?.get()),
+    )?;
     match operation.state {
         EvmOperationState::Queued | EvmOperationState::Prepared => None,
         EvmOperationState::Submitted { transaction_hash } => {
-            match store
-                .evm_safe_observation(operation.id.get())
-                .ok()
-                .flatten()
-            {
-                Some(observation) => {
-                    let common = (
-                        observation.transaction_hash.to_vec(),
-                        observation.receipt_block_number,
-                        observation.safe_block_number,
-                    );
-                    Some(match observation.outcome {
-                        SafeReceiptOutcome::Succeeded => BaseConfirmationView::SafeSucceeded {
-                            transaction_hash: common.0,
-                            receipt_block_number: common.1,
-                            observed_head: common.2,
-                        },
-                        SafeReceiptOutcome::Reverted => BaseConfirmationView::SafeReverted {
-                            transaction_hash: common.0,
-                            receipt_block_number: common.1,
-                            observed_head: common.2,
-                        },
-                    })
-                }
-                None => Some(BaseConfirmationView::Submitted {
-                    transaction_hash: transaction_hash.to_vec(),
-                }),
-            }
+            Some(BaseConfirmationView::Submitted {
+                transaction_hash: transaction_hash.to_vec(),
+            })
         }
         EvmOperationState::Finalized {
             transaction_hash,
+            receipt_block_number,
             finalized_block_number,
         } => Some(BaseConfirmationView::Finalized {
             transaction_hash: transaction_hash.to_vec(),
-            receipt_block_number: finalized_block_number,
-            observed_head,
+            receipt_block_number,
+            observed_head: finalized_block_number,
         }),
         EvmOperationState::Reverted {
             transaction_hash,
+            receipt_block_number,
             finalized_block_number,
         } => Some(BaseConfirmationView::Reverted {
             transaction_hash: transaction_hash.to_vec(),
-            receipt_block_number: finalized_block_number,
-            observed_head,
+            receipt_block_number,
+            observed_head: finalized_block_number,
         }),
     }
 }

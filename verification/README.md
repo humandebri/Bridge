@@ -10,7 +10,7 @@ Deposit、Withdrawal、EVM operation、Reconciliation Holdのrecord APIは共有
 
 ## テストのみ
 
-StableBTreeMap、wire CBOR、schema v4再オープン、Candid、timer task、ledger/EVM adapterはRust、PocketIC、smoke testの対象でありVerusの証明対象ではない。
+StableBTreeMap、wire CBOR、schema v1再オープン、Candid、timer task、ledger/EVM adapterはRust、PocketIC、smoke testの対象でありVerusの証明対象ではない。
 未デプロイのためlegacy schema migrationは設けない。
 
 ## 外部仮定

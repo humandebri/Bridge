@@ -1,27 +1,56 @@
-type AdminError = variant { InsufficientFeeReserve; Unauthorized; UnresolvedEvmRevert; InvalidArgument : text; StorageFailure; };
-type AuditEvent = record { timestamp_ns : nat64; kind : AuditEventKind; caller : principal; sequence : nat64; };
+type AdminError = variant {
+  InsufficientFeeReserve;
+  Unauthorized;
+  UnresolvedEvmRevert;
+  InvalidArgument : text;
+  StorageFailure;
+};
+type AuditEvent = record {
+  timestamp_ns : nat64;
+  kind : AuditEventKind;
+  caller : principal;
+  sequence : nat64;
+};
 type AuditEventKind = variant {
   RuntimeAdministratorsRotated;
-  BaseServiceFeeChanged : record { previous : opt nat; current : nat };
-  EvmOperationReverted : record { finalized_block_number : nat64; transaction_hash : blob; kind : AuditedEvmOperationKind; operation_id : nat64; };
+  EvmOperationReverted : record {
+    finalized_block_number : nat64;
+    transaction_hash : blob;
+    kind : AuditedEvmOperationKind;
+    operation_id : nat64;
+  };
   DepositsPauseRepeated;
-  FeeRecipientChanged : record { previous : FeeRecipientConfig; current : FeeRecipientConfig; };
+  FeeRecipientChanged : record {
+    previous : FeeRecipientConfig;
+    current : FeeRecipientConfig;
+  };
   DepositsPaused;
   DepositsResumed;
   FeePayoutRequested : record { amount : nat };
   ReserveGateChanged : record { sufficient : bool };
 };
-type AuditedEvmOperationKind = variant { RefundWithdrawal; MintDeposit; AcknowledgeRelease; };
+type AuditedEvmOperationKind = variant {
+  RefundWithdrawal;
+  MintDeposit;
+  AcknowledgeRelease;
+};
 type BaseConfirmationView = variant {
-  Finalized : record { transaction_hash : blob; receipt_block_number : nat64; observed_head : nat64; };
-  SafeReverted : record { transaction_hash : blob; receipt_block_number : nat64; observed_head : nat64; };
-  SafeSucceeded : record { transaction_hash : blob; receipt_block_number : nat64; observed_head : nat64; };
-  Reverted : record { transaction_hash : blob; receipt_block_number : nat64; observed_head : nat64; };
+  Finalized : record {
+    transaction_hash : blob;
+    receipt_block_number : nat64;
+    observed_head : nat64;
+  };
+  Reverted : record {
+    transaction_hash : blob;
+    receipt_block_number : nat64;
+    observed_head : nat64;
+  };
   Submitted : record { transaction_hash : blob };
 };
 type BridgeInitArgs = record {
   settlement_cycle_ceiling : nat;
   finance_administrator : principal;
+  deposit_rate_limit_window_seconds : nat64;
   poll_interval_seconds : nat64;
   ecdsa_key_name : text;
   base_chain_id : nat64;
@@ -30,41 +59,189 @@ type BridgeInitArgs = record {
   fee_recipient : FeeRecipientConfig;
   ecdsa_derivation_path : vec blob;
   evm_rpc_canister_id : principal;
+  deposit_rate_limit_per_principal : nat16;
   pause_principals : vec principal;
   max_fee_per_gas : nat;
   eth_floor_wei : nat;
   custom_evm_rpc_urls : vec text;
   transaction_gas_limit : nat;
+  deposit_rate_limit_global : nat16;
   governance_principal : principal;
   index_canister_id : principal;
   ledger_canister_id : principal;
   cycles_floor : nat;
 };
-type BridgeStatus = record { last_safe_base_block : nat64; queued_evm_operations : nat64; last_reserve_observation_ns : nat64; reserve : ReserveStatus; deposits_paused : bool; schema_version : nat16; last_finalized_observation_ns : nat64; safe_evm_operations : nat64; last_finalized_base_block : nat64; last_safe_observation_ns : nat64; counts : StatusCounts; withdrawal_log_cursor : nat64; last_audit_sequence : opt nat64; };
-type DepositArgs = record { base_recipient : blob; client_request_id : blob; max_service_fee : nat; gross_amount : nat; };
-type DepositError = variant { BaseObservationUnavailable; ReserveUnavailable; DepositsPaused; Rejected : text; InvalidRequest : text; LedgerFeeUnavailable; StorageFailure; };
+type BridgeStatus = record {
+  queued_evm_operations : nat64;
+  last_reserve_observation_ns : nat64;
+  reserve : ReserveStatus;
+  deposits_paused : bool;
+  schema_version : nat16;
+  last_finalized_observation_ns : nat64;
+  withdrawal_notifications : nat64;
+  last_finalized_base_block : nat64;
+  counts : StatusCounts;
+  last_audit_sequence : opt nat64;
+};
+type DepositArgs = record {
+  base_recipient : blob;
+  client_request_id : blob;
+  max_service_fee : nat;
+  from_subaccount : opt blob;
+  gross_amount : nat;
+};
+type DepositError = variant {
+  BaseObservationUnavailable;
+  ReserveUnavailable;
+  DepositsPaused;
+  Rejected : text;
+  RateLimited : record { retry_after_seconds : nat64 };
+  InvalidRequest : text;
+  LedgerFeeUnavailable;
+  StorageFailure;
+};
+type DepositIdPage = record {
+  next_before_sequence : opt nat64;
+  deposit_ids : vec blob;
+};
 type DepositReceipt = record { deposit_id : blob; state : text };
-type DepositView = record { base_recipient : blob; net_amount : nat; service_fee : nat; deposit_id : blob; state : text; base_confirmation : opt BaseConfirmationView; gross_amount : nat; };
-type FeePayoutReceipt = record { id : nat64; state : FeePayoutState; amount : nat; };
-type FeePayoutState = variant { Failed; Succeeded : record { block_index : nat }; ReconciliationHold; Pending; };
+type DepositView = record {
+  base_recipient : blob;
+  net_amount : nat;
+  service_fee : nat;
+  deposit_id : blob;
+  state : text;
+  base_confirmation : opt BaseConfirmationView;
+  gross_amount : nat;
+};
+type FeePayoutReceipt = record {
+  id : nat64;
+  state : FeePayoutState;
+  amount : nat;
+};
+type FeePayoutState = variant {
+  Failed;
+  Succeeded : record { block_index : nat };
+  ReconciliationHold;
+  Pending;
+};
 type FeeRecipientConfig = record { owner : principal; subaccount : blob };
-type ReserveStatus = record { cycles_balance : nat; required_eth_wei : nat; eth_surplus_wei : nat; cycles_surplus : nat; sufficient : bool; eth_balance_wei : nat; required_cycles : nat; };
+type GetWithdrawalsError = variant { TooManyIds };
+type Icrc10SupportedStandard = record { url : text; name : text };
+type Icrc21ConsentInfo = record {
+  metadata : Icrc21ConsentMessageMetadata;
+  consent_message : Icrc21ConsentMessage;
+};
+type Icrc21ConsentMessage = variant { GenericDisplayMessage : text };
+type Icrc21ConsentMessageMetadata = record {
+  utc_offset_minutes : opt int16;
+  language : text;
+};
+type Icrc21ConsentMessageRequest = record {
+  arg : blob;
+  method : text;
+  user_preferences : Icrc21ConsentMessageSpec;
+};
+type Icrc21ConsentMessageResponse = variant {
+  Ok : Icrc21ConsentInfo;
+  Err : Icrc21Error;
+};
+type Icrc21ConsentMessageSpec = record {
+  metadata : Icrc21ConsentMessageMetadata;
+  device_spec : opt Icrc21DeviceSpec;
+};
+type Icrc21DeviceSpec = variant { GenericDisplay; FieldsDisplay };
+type Icrc21Error = variant {
+  GenericError : Icrc21GenericError;
+  InsufficientPayment : Icrc21ErrorInfo;
+  UnsupportedCanisterCall : Icrc21ErrorInfo;
+  ConsentMessageUnavailable : Icrc21ErrorInfo;
+};
+type Icrc21ErrorInfo = record { description : text };
+type Icrc21GenericError = record { description : text; error_code : nat };
+type ListDepositIdsArgs = record {
+  owner : principal;
+  limit : nat16;
+  before_sequence : opt nat64;
+};
+type ListDepositIdsError = variant { InvalidLimit };
+type NotifyWithdrawalArgs = record { transaction_hash : blob };
+type NotifyWithdrawalError = variant {
+  QueueFull;
+  RateLimited : record { retry_after_seconds : nat64 };
+  InvalidTransactionHash;
+  StorageFailure;
+  AnonymousCaller;
+};
+type NotifyWithdrawalReceipt = variant { Queued; Duplicate };
+type PublicConfig = record {
+  base_chain_id : nat64;
+  bridge_contract : blob;
+  schema_version : nat16;
+  index_canister_id : principal;
+  ledger_canister_id : principal;
+};
+type ReserveStatus = record {
+  cycles_balance : nat;
+  required_eth_wei : nat;
+  eth_surplus_wei : nat;
+  cycles_surplus : nat;
+  sufficient : bool;
+  eth_balance_wei : nat;
+  required_cycles : nat;
+};
 type Result = variant { Ok : vec AuditEvent; Err : AdminError };
-type Result_1 = variant { Ok; Err : AdminError };
-type Result_2 = variant { Ok : DepositReceipt; Err : DepositError };
-type Result_3 = variant { Ok : FeePayoutReceipt; Err : AdminError };
-type RotateRuntimeAdministratorsArgs = record { finance_administrator : principal; pause_principals : vec principal; };
-type StatusCounts = record { reverted_evm_operations : nat64; pending_evm_operations : nat64; reconciliation_holds : nat64; pending_ledger_operations : nat64; withdrawals : nat64; deposits : nat64; reserved_deposit_mint_amount : nat; };
-type WithdrawalView = record { min_amount_out : nat; withdrawal_id : blob; state : text; amount : nat; base_confirmation : opt BaseConfirmationView; };
+type Result_1 = variant {
+  Ok : vec opt WithdrawalView;
+  Err : GetWithdrawalsError;
+};
+type Result_2 = variant { Ok : DepositIdPage; Err : ListDepositIdsError };
+type Result_3 = variant {
+  Ok : NotifyWithdrawalReceipt;
+  Err : NotifyWithdrawalError;
+};
+type Result_4 = variant { Ok; Err : AdminError };
+type Result_5 = variant { Ok : DepositReceipt; Err : DepositError };
+type Result_6 = variant { Ok : FeePayoutReceipt; Err : AdminError };
+type RotateRuntimeAdministratorsArgs = record {
+  finance_administrator : principal;
+  pause_principals : vec principal;
+};
+type StatusCounts = record {
+  reverted_evm_operations : nat64;
+  pending_evm_operations : nat64;
+  reconciliation_holds : nat64;
+  pending_ledger_operations : nat64;
+  withdrawals : nat64;
+  deposits : nat64;
+  reserved_deposit_mint_amount : nat;
+};
+type WithdrawalView = record {
+  min_amount_out : nat;
+  withdrawal_id : blob;
+  state : text;
+  amount : nat;
+  base_confirmation : opt BaseConfirmationView;
+};
 service : (BridgeInitArgs) -> {
   get_audit_events : (nat64, nat16) -> (Result) query;
   get_bridge_status : () -> (BridgeStatus) query;
   get_deposit : (blob) -> (opt DepositView) query;
+  get_public_config : () -> (PublicConfig) query;
   get_withdrawal : (blob) -> (opt WithdrawalView) query;
-  pause_new_deposits : () -> (Result_1);
-  request_deposit : (DepositArgs) -> (Result_2);
-  request_fee_payout : (nat) -> (Result_3);
-  resume_new_deposits : () -> (Result_1);
-  rotate_runtime_administrators : (RotateRuntimeAdministratorsArgs) -> (Result_1,);
-  set_fee_recipient : (FeeRecipientConfig) -> (Result_1);
+  get_withdrawals : (vec blob) -> (Result_1) query;
+  icrc10_supported_standards : () -> (vec Icrc10SupportedStandard) query;
+  icrc21_canister_call_consent_message : (Icrc21ConsentMessageRequest) -> (
+      Icrc21ConsentMessageResponse,
+    );
+  list_deposit_ids : (ListDepositIdsArgs) -> (Result_2) query;
+  notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_3);
+  pause_new_deposits : () -> (Result_4);
+  request_deposit : (DepositArgs) -> (Result_5);
+  request_fee_payout : (nat) -> (Result_6);
+  resume_new_deposits : () -> (Result_4);
+  rotate_runtime_administrators : (RotateRuntimeAdministratorsArgs) -> (
+      Result_4,
+    );
+  set_fee_recipient : (FeeRecipientConfig) -> (Result_4);
 }

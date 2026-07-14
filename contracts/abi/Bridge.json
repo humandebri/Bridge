@@ -341,6 +341,81 @@
   },
   {
     "inputs": [],
+    "name": "bridgeSnapshot",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "blockNumber",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "blockTimestamp",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address",
+            "name": "bridgeSigner",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "serviceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "maxServiceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "perDepositLimit",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "mintWindowLimit",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint64",
+            "name": "mintWindowDuration",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint64",
+            "name": "mintWindowStartedAt",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint256",
+            "name": "mintedInWindow",
+            "type": "uint256"
+          },
+          {
+            "internalType": "bool",
+            "name": "depositMintsPaused",
+            "type": "bool"
+          },
+          {
+            "internalType": "bool",
+            "name": "withdrawalsPaused",
+            "type": "bool"
+          }
+        ],
+        "internalType": "struct IBridge.BridgeSnapshot",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "bsns",
     "outputs": [
       {
@@ -586,6 +661,46 @@
       }
     ],
     "name": "mintDeposits",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "withdrawalId",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOut",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "serviceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "ledgerFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "ledgerBlockIndex",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct IBridge.ReleaseAcknowledgement[]",
+        "name": "acknowledgements",
+        "type": "tuple[]"
+      }
+    ],
+    "name": "acknowledgeReleases",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -948,6 +1063,22 @@
     "inputs": [
       {
         "internalType": "uint256",
+        "name": "supplied",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "maximum",
+        "type": "uint256"
+      }
+    ],
+    "name": "BatchTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
         "name": "withdrawalId",
         "type": "uint256"
       },
@@ -1095,6 +1226,19 @@
       }
     ],
     "name": "refundWithdrawal",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256[]",
+        "name": "withdrawalIds",
+        "type": "uint256[]"
+      }
+    ],
+    "name": "refundWithdrawals",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

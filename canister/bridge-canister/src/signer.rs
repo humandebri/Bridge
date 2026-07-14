@@ -1,4 +1,4 @@
-use crate::config::BridgeInitArgs;
+use crate::{config::BridgeInitArgs, STORE};
 use bridge_core::EvmTransactionEnvelope;
 use ic_cdk_management_canister::{
     ecdsa_public_key, sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs,
@@ -71,14 +71,38 @@ pub async fn sign(
         curve: EcdsaCurve::Secp256k1,
         name: config.ecdsa_key_name.clone(),
     };
-    let public_key = ecdsa_public_key(&EcdsaPublicKeyArgs {
-        canister_id: None,
-        derivation_path: config.ecdsa_derivation_path.clone(),
-        key_id: key_id.clone(),
-    })
-    .await
-    .map_err(public_key_error)?
-    .public_key;
+    let public_key = match STORE
+        .with(|store| store.borrow().signer_public_key())
+        .map_err(|error| SignerError::ManagementCall {
+            operation: "read_cached_ecdsa_public_key",
+            class: "storage",
+            detail: error.to_string(),
+        })? {
+        Some(public_key) => public_key,
+        None => {
+            let public_key = ecdsa_public_key(&EcdsaPublicKeyArgs {
+                canister_id: None,
+                derivation_path: config.ecdsa_derivation_path.clone(),
+                key_id: key_id.clone(),
+            })
+            .await
+            .map_err(public_key_error)?
+            .public_key;
+            VerifyingKey::from_sec1_bytes(&public_key)
+                .map_err(|_| SignerError::InvalidPublicKey)?;
+            STORE
+                .with(|store| {
+                    store
+                        .borrow_mut()
+                        .set_signer_public_key_if_absent(public_key)
+                })
+                .map_err(|error| SignerError::ManagementCall {
+                    operation: "cache_ecdsa_public_key",
+                    class: "storage",
+                    detail: error.to_string(),
+                })?
+        }
+    };
     let raw_signature = sign_with_ecdsa(&SignWithEcdsaArgs {
         message_hash: signing_hash.to_vec(),
         derivation_path: config.ecdsa_derivation_path.clone(),
@@ -239,6 +263,7 @@ mod tests {
     fn unsigned_eip1559_encoding_is_stable_and_hashable() {
         let envelope = EvmTransactionEnvelope {
             operation_id: EvmOperationId::new(1),
+            operation_ids: vec![EvmOperationId::new(1)],
             payload_hash: [2; 32],
             nonce: 0,
             chain_id: 8453,

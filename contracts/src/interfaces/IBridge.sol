@@ -34,6 +34,29 @@ interface IBridge {
         uint256 ledgerBlockIndex;
     }
 
+    struct ReleaseAcknowledgement {
+        uint256 withdrawalId;
+        uint256 amountOut;
+        uint256 serviceFee;
+        uint256 ledgerFee;
+        uint256 ledgerBlockIndex;
+    }
+
+    struct BridgeSnapshot {
+        uint256 blockNumber;
+        uint256 blockTimestamp;
+        address bridgeSigner;
+        uint256 serviceFee;
+        uint256 maxServiceFee;
+        uint256 perDepositLimit;
+        uint256 mintWindowLimit;
+        uint64 mintWindowDuration;
+        uint64 mintWindowStartedAt;
+        uint256 mintedInWindow;
+        bool depositMintsPaused;
+        bool withdrawalsPaused;
+    }
+
     event DepositMinted(
         bytes32 indexed depositId,
         address indexed recipient,
@@ -70,6 +93,7 @@ interface IBridge {
     error InvalidServiceFee(uint256 serviceFee, uint256 maximumServiceFee);
     error ServiceFeeExceedsUserMaximum(uint256 serviceFee, uint256 userMaximum);
     error EmptyBatch();
+    error BatchTooLarge(uint256 supplied, uint256 maximum);
     error DepositAlreadyProcessed(bytes32 depositId);
     error DepositMintLimitExceeded(uint256 mintAmount, uint256 limit);
     error MintWindowLimitExceeded(uint256 requestedAmount, uint256 availableAmount);
@@ -100,7 +124,13 @@ interface IBridge {
         uint256 ledgerBlockIndex
     ) external;
 
+    function acknowledgeReleases(ReleaseAcknowledgement[] calldata acknowledgements) external;
+
     function refundWithdrawal(uint256 withdrawalId) external;
+
+    function refundWithdrawals(uint256[] calldata withdrawalIds) external;
+
+    function bridgeSnapshot() external view returns (BridgeSnapshot memory);
 
     function bsns() external view returns (IBSNS);
 

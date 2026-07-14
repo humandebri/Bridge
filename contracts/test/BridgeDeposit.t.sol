@@ -184,6 +184,34 @@ contract BridgeDepositTest is TestBase {
         assert(bridge.mintedInWindow() == 0);
     }
 
+    function testBatchRejectsMoreThanFourItems() public {
+        IBridge.DepositMintRequest[] memory requests = new IBridge.DepositMintRequest[](5);
+        for (uint256 index = 0; index < requests.length; ++index) {
+            requests[index] = _request(bytes32(index + 1), RECIPIENT, 110, 10);
+        }
+        vm.prank(BRIDGE_SIGNER);
+        vm.expectRevert(abi.encodeWithSelector(IBridge.BatchTooLarge.selector, 5, 4));
+        bridge.mintDeposits(requests);
+        assert(token.totalSupply() == 0);
+    }
+
+    function testBridgeSnapshotReturnsOneConsistentView() public view {
+        uint256 expectedBlockTimestamp = block.timestamp;
+        IBridge.BridgeSnapshot memory snapshot = bridge.bridgeSnapshot();
+        assert(snapshot.blockNumber == block.number);
+        assert(snapshot.blockTimestamp == expectedBlockTimestamp);
+        assert(snapshot.bridgeSigner == BRIDGE_SIGNER);
+        assert(snapshot.serviceFee == SERVICE_FEE);
+        assert(snapshot.maxServiceFee == MAX_SERVICE_FEE);
+        assert(snapshot.perDepositLimit == PER_DEPOSIT_LIMIT);
+        assert(snapshot.mintWindowLimit == WINDOW_LIMIT);
+        assert(snapshot.mintWindowDuration == WINDOW_DURATION);
+        assert(snapshot.mintWindowStartedAt == bridge.mintWindowStartedAt());
+        assert(snapshot.mintedInWindow == 0);
+        assert(!snapshot.depositMintsPaused);
+        assert(!snapshot.withdrawalsPaused);
+    }
+
     function testBatchInvalidLaterItemRollsBackEarlierMark() public {
         IBridge.DepositMintRequest[] memory requests = new IBridge.DepositMintRequest[](2);
         requests[0] = _request(keccak256("valid-first"), RECIPIENT, 110, 10);

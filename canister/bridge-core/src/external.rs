@@ -51,6 +51,7 @@ impl LedgerCallOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvmTransactionEnvelope {
     pub operation_id: EvmOperationId,
+    pub operation_ids: Vec<EvmOperationId>,
     pub payload_hash: [u8; 32],
     pub nonce: u64,
     pub chain_id: u64,
@@ -78,34 +79,11 @@ pub struct EvmCallIntent {
     pub max_priority_fee_per_gas: u128,
 }
 
-#[cfg_attr(
-    feature = "storage-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SafeReceiptOutcome {
-    Succeeded,
-    Reverted,
-}
-
-#[cfg_attr(
-    feature = "storage-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EvmSafeObservation {
-    pub operation_id: EvmOperationId,
-    pub transaction_hash: [u8; 32],
-    pub receipt_block_number: u64,
-    pub safe_block_number: u64,
-    pub observed_at_ns: u64,
-    pub outcome: SafeReceiptOutcome,
-}
-
 impl EvmCallIntent {
     pub fn assign_nonce(self, nonce: u64) -> EvmTransactionEnvelope {
         EvmTransactionEnvelope {
             operation_id: self.operation_id,
+            operation_ids: vec![self.operation_id],
             payload_hash: self.payload_hash,
             nonce,
             chain_id: self.chain_id,
@@ -128,7 +106,13 @@ impl EvmTransactionEnvelope {
         if self.chain_id != expected_chain_id || self.contract != expected_contract {
             return Err(CoreError::PayloadConflict);
         }
-        if self.calldata.len() < 4 || self.gas_limit == 0 || self.max_fee_per_gas == 0 {
+        if self.operation_ids.is_empty()
+            || self.operation_ids.len() > 4
+            || self.operation_ids[0] != self.operation_id
+            || self.calldata.len() < 4
+            || self.gas_limit == 0
+            || self.max_fee_per_gas == 0
+        {
             return Err(CoreError::InvalidAmount);
         }
         Ok(())
@@ -141,29 +125,14 @@ impl EvmTransactionEnvelope {
 )]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExternalProgress {
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub nonce_initialized: bool,
     pub next_evm_nonce: u64,
-    pub withdrawal_log_cursor: u64,
     pub last_finalized_base_block: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
-    pub last_safe_base_block: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub last_finalized_mint_block: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub last_eth_balance_wei: u128,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub reserve_sufficient: bool,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub last_reserve_observation_ns: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub last_finalized_observation_ns: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
-    pub last_safe_observation_ns: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
-    pub safe_observation_cursor: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
-    pub last_observed_service_fee: Option<u128>,
 }
 
 #[cfg_attr(

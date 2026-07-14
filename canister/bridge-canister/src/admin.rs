@@ -278,18 +278,9 @@ pub async fn request_fee_payout(
         | LedgerCallOutcome::Duplicate { block_index } => {
             record.state = FeePayoutState::Succeeded { block_index };
             STORE.with(|store| {
-                let mut store = store.borrow_mut();
-                let mut accounting = store.accounting().map_err(|_| AdminError::StorageFailure)?;
-                let debit = bridge_core::payout_debit(true, amount, record.transfer.fee.get())
-                    .ok_or(AdminError::InsufficientFeeReserve)?;
-                accounting
-                    .spend_fee_reserve(Amount::new(debit))
-                    .map_err(|_| AdminError::InsufficientFeeReserve)?;
                 store
-                    .set_accounting(&accounting)
-                    .map_err(|_| AdminError::StorageFailure)?;
-                store
-                    .put_fee_payout(&record)
+                    .borrow_mut()
+                    .complete_fee_payout_success(record.id, block_index)
                     .map_err(|_| AdminError::StorageFailure)
             })?;
         }

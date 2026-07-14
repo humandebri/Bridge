@@ -12,7 +12,7 @@
 | Deposit Service Feeは受付時に固定し、Mint確定時に一度だけ会計へ加算する | ADR 0004 | Foundry fee変更test、Rust accounting test、PocketIC | Bridge signerのcalldata真正性、IC message rollback |
 | BaseのPer-Deposit Limit、Mint Throughput Limit、window長はdeploy後に変更できない | ADR 0009 | Solidity immutable、ABI snapshot、Foundry authorization test | constructorへ渡すprofile値の妥当性 |
 | EVM operationはQueued(0)→Prepared(1)→Submitted(2)→Finalized/Reverted(3)で単調 | Phase 3仕様 | production kernel Verus、遷移表、Rust exhaustive test | Base finality |
-| Base safe観測はprimary EVM rankを進めず、取り消し可能なsidecarに限定する | safe確認レイヤー | Rust storage/coordinator test、PicJS safe regression test | provider合意、Base safe head |
+| Base safe観測はprimary EVM rankを進めず、canonical receipt block hashを照合した取り消し可能なsidecarに限定する | safe確認レイヤー | Rust storage/coordinator test、PicJS safe regression・provider不一致・decode失敗test | provider合意、Base safe headとcanonical block hash |
 | pending/open counterは状態分類差分と一致する | query契約 | production kernel Verus、stable counter test | stable write rollback |
 | Mint受付はfinalized window消費量、未確定予約量、新規net量をchecked加算しlimit以下に限定する | 資産安全性 | production kernel Verus、Rust境界test、PocketIC | finalized Base snapshotの真正性 |
 | reserve必要量は非終端Withdrawal数に対して単調でoverflow時は拒否する | Plan 003 | production kernel Verus、Rust境界test | 残高・費用入力の真正性 |

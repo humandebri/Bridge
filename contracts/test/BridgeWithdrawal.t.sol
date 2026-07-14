@@ -302,6 +302,40 @@ contract BridgeWithdrawalTest is TestBase {
         bridge.acknowledgeRelease(withdrawalId, 550, 30, 20, 42);
     }
 
+    function testBatchAcknowledgesAndRefundsUpToFourWithdrawals() public {
+        uint256 releasedFirst = _createWithdrawal(300, 250, hex"01", bytes32(0));
+        uint256 releasedSecond = _createWithdrawal(200, 150, hex"02", bytes32(0));
+        IBridge.ReleaseAcknowledgement[] memory acknowledgements = new IBridge.ReleaseAcknowledgement[](2);
+        acknowledgements[0] = IBridge.ReleaseAcknowledgement(releasedFirst, 270, 20, 10, 101);
+        acknowledgements[1] = IBridge.ReleaseAcknowledgement(releasedSecond, 170, 20, 10, 102);
+        vm.prank(BRIDGE_SIGNER);
+        bridge.acknowledgeReleases(acknowledgements);
+        assert(bridge.getWithdrawal(releasedFirst).status == IBridge.WithdrawalStatus.Released);
+        assert(bridge.getWithdrawal(releasedSecond).status == IBridge.WithdrawalStatus.Released);
+
+        uint256 refundedFirst = _createWithdrawal(100, 50, hex"03", bytes32(0));
+        uint256 refundedSecond = _createWithdrawal(100, 50, hex"03", bytes32(uint256(1)));
+        uint256[] memory refundIds = new uint256[](2);
+        refundIds[0] = refundedFirst;
+        refundIds[1] = refundedSecond;
+        vm.prank(BRIDGE_SIGNER);
+        bridge.refundWithdrawals(refundIds);
+        assert(bridge.getWithdrawal(refundedFirst).status == IBridge.WithdrawalStatus.Refunded);
+        assert(bridge.getWithdrawal(refundedSecond).status == IBridge.WithdrawalStatus.Refunded);
+    }
+
+    function testWithdrawalBatchesRejectEmptyAndMoreThanFourItems() public {
+        IBridge.ReleaseAcknowledgement[] memory emptyAcknowledgements = new IBridge.ReleaseAcknowledgement[](0);
+        vm.prank(BRIDGE_SIGNER);
+        vm.expectRevert(IBridge.EmptyBatch.selector);
+        bridge.acknowledgeReleases(emptyAcknowledgements);
+
+        uint256[] memory refundIds = new uint256[](5);
+        vm.prank(BRIDGE_SIGNER);
+        vm.expectRevert(abi.encodeWithSelector(IBridge.BatchTooLarge.selector, 5, 4));
+        bridge.refundWithdrawals(refundIds);
+    }
+
     function testBridgeExposureAcrossPendingReleaseAndRefund() public {
         uint256 first = _createWithdrawal(600, 500, hex"01", bytes32(0));
         uint256 pendingExposure = token.totalSupply() + bridge.getWithdrawal(first).amount;

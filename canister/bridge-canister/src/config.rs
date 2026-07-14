@@ -23,6 +23,9 @@ pub struct BridgeInitArgs {
     pub ecdsa_key_name: String,
     pub ecdsa_derivation_path: Vec<Vec<u8>>,
     pub poll_interval_seconds: u64,
+    pub deposit_rate_limit_window_seconds: u64,
+    pub deposit_rate_limit_global: u16,
+    pub deposit_rate_limit_per_principal: u16,
     pub transaction_gas_limit: u128,
     pub max_fee_per_gas: u128,
     pub max_priority_fee_per_gas: u128,
@@ -48,6 +51,13 @@ impl BridgeInitArgs {
         }
         if !(60..=300).contains(&self.poll_interval_seconds) {
             return Err("poll interval must be between 60 and 300 seconds");
+        }
+        if !(60..=300).contains(&self.deposit_rate_limit_window_seconds)
+            || self.deposit_rate_limit_per_principal == 0
+            || self.deposit_rate_limit_per_principal > self.deposit_rate_limit_global
+            || self.deposit_rate_limit_global > 100
+        {
+            return Err("deposit rate limit must satisfy 60 <= window <= 300 and 1 <= per-principal <= global <= 100");
         }
         if self.transaction_gas_limit == 0 || self.max_fee_per_gas == 0 {
             return Err("transaction gas limits must be nonzero");

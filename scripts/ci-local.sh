@@ -47,6 +47,7 @@ trap 'exit 143' TERM
 
 run_versions() {
   "$ROOT/scripts/check_tool_versions.sh"
+  python3 "$ROOT/scripts/check_schema_consistency.py"
   "$ROOT/scripts/test_ci_guards.sh"
 }
 
@@ -293,6 +294,8 @@ run_smoke() {
   local current_service_fee
   local limit_caller
   local limit_signature
+  local smoke_principal
+  local bridge_init_args
   local readonly bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
   local readonly runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
   local readonly base_admin_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
@@ -315,7 +318,38 @@ run_smoke() {
   local readonly zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
 
   ensure_icp_network "$network_status"
-  icp deploy -e local --project-root-override "$ROOT"
+  smoke_principal="$(icp identity principal --project-root-override "$ROOT")"
+  bridge_init_args="(record {
+    ledger_canister_id = principal \"73mez-iiaaa-aaaaq-aaasq-cai\";
+    index_canister_id = principal \"7vojr-tyaaa-aaaaq-aaatq-cai\";
+    evm_rpc_canister_id = principal \"73mez-iiaaa-aaaaq-aaasq-cai\";
+    custom_evm_rpc_urls = vec {};
+    base_chain_id = 8_453 : nat64;
+    bridge_contract = blob \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\";
+    ecdsa_key_name = \"dfx_test_key\";
+    ecdsa_derivation_path = vec {};
+    poll_interval_seconds = 60 : nat64;
+    deposit_rate_limit_window_seconds = 60 : nat64;
+    deposit_rate_limit_global = 30 : nat16;
+    deposit_rate_limit_per_principal = 3 : nat16;
+    transaction_gas_limit = 500_000 : nat;
+    max_fee_per_gas = 10 : nat;
+    max_priority_fee_per_gas = 1 : nat;
+    eth_floor_wei = 1 : nat;
+    cycles_floor = 1 : nat;
+    settlement_cycle_ceiling = 1 : nat;
+    governance_principal = principal \"$smoke_principal\";
+    pause_principals = vec { principal \"$smoke_principal\" };
+    finance_administrator = principal \"$smoke_principal\";
+    fee_recipient = record {
+      owner = principal \"$smoke_principal\";
+      subaccount = blob \"\";
+    };
+  })"
+  icp deploy bridge-canister \
+    -e local \
+    --args "$bridge_init_args" \
+    --project-root-override "$ROOT"
   icp canister status bridge-canister -e local --json \
     --project-root-override "$ROOT" >"$canister_status"
   if ! rg -qi '"status"[[:space:]]*:[[:space:]]*"running"' "$canister_status"; then
@@ -327,13 +361,14 @@ run_smoke() {
     icp canister call bridge-canister get_bridge_status '()' \
       -e local --query --json --project-root-override "$ROOT"
   )"
+  expected_schema_version="$(python3 "$ROOT/scripts/check_schema_consistency.py" --print-version)"
   python3 -c '
 import json, re, sys
 
 response = json.load(sys.stdin)
 candid = response.get("response_candid") or ""
 expected = {
-    "schema_version": ("4", "nat16"),
+    "schema_version": (sys.argv[1], "nat16"),
     "deposits": ("0", "nat64"),
     "withdrawals": ("0", "nat64"),
     "pending_evm_operations": ("0", "nat64"),
@@ -343,7 +378,7 @@ for field, (value, candid_type) in expected.items():
     pattern = rf"\b{field}\s*=\s*{value}\s*:\s*{candid_type}\b"
     if len(re.findall(pattern, candid)) != 1:
         raise SystemExit(f"unexpected get_bridge_status response: {response!r}")
-' <<<"$bridge_status"
+' "$expected_schema_version" <<<"$bridge_status"
 
   if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
     echo "port 8545 is already serving an EVM node; refusing to reuse it" >&2

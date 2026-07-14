@@ -11,7 +11,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v3、外部連携、Settlement Reserve、運用管理、Verus証明まで実装済みである。
+Bridge canisterはstable schema v1、外部連携、Settlement Reserve、運用管理、Verus証明まで実装済みである。
 Plan 005は本番パラメータの外部計測と鍵ceremony待ちであり、Plan 006は未着手である。
 
 ## 全体構成
@@ -121,7 +121,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003で外部連携と運用状態を追加し、現行stable schemaはv3である。
+後続のPlan 002と003で外部連携と運用状態を追加し、現行stable schemaはv1である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 

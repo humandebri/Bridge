@@ -11,6 +11,7 @@ import {WithdrawalAccounting} from "./libraries/WithdrawalAccounting.sol";
 
 /// @notice Phase 1E Base implementation whose concrete ABI is checked against the frozen interface snapshot.
 contract Bridge is IBridge {
+    uint256 private constant MAX_BATCH_SIZE = 4;
     IBSNS public immutable override bsns;
     uint256 public immutable override MAX_SERVICE_FEE;
 
@@ -134,9 +135,7 @@ contract Bridge is IBridge {
         whenDepositMintsActive
     {
         uint256 requestCount = requests.length;
-        if (requestCount == 0) {
-            revert IBridge.EmptyBatch();
-        }
+        _validateBatchSize(requestCount);
 
         _rollMintWindowIfExpired();
         uint256[] memory mintAmounts = new uint256[](requestCount);
@@ -195,6 +194,35 @@ contract Bridge is IBridge {
         uint256 ledgerFee,
         uint256 ledgerBlockIndex
     ) external override onlyBridgeSigner {
+        _acknowledgeRelease(withdrawalId, amountOut, withdrawalServiceFee, ledgerFee, ledgerBlockIndex);
+    }
+
+    function acknowledgeReleases(IBridge.ReleaseAcknowledgement[] calldata acknowledgements)
+        external
+        override
+        onlyBridgeSigner
+    {
+        uint256 count = acknowledgements.length;
+        _validateBatchSize(count);
+        for (uint256 index; index < count; ++index) {
+            IBridge.ReleaseAcknowledgement calldata acknowledgement = acknowledgements[index];
+            _acknowledgeRelease(
+                acknowledgement.withdrawalId,
+                acknowledgement.amountOut,
+                acknowledgement.serviceFee,
+                acknowledgement.ledgerFee,
+                acknowledgement.ledgerBlockIndex
+            );
+        }
+    }
+
+    function _acknowledgeRelease(
+        uint256 withdrawalId,
+        uint256 amountOut,
+        uint256 withdrawalServiceFee,
+        uint256 ledgerFee,
+        uint256 ledgerBlockIndex
+    ) private {
         IBridge.Withdrawal storage withdrawal = _withdrawals[withdrawalId];
         IBridge.WithdrawalStatus status = withdrawal.status;
         if (status == IBridge.WithdrawalStatus.None) {
@@ -239,6 +267,18 @@ contract Bridge is IBridge {
     }
 
     function refundWithdrawal(uint256 withdrawalId) external override onlyBridgeSigner {
+        _refundWithdrawal(withdrawalId);
+    }
+
+    function refundWithdrawals(uint256[] calldata withdrawalIds) external override onlyBridgeSigner {
+        uint256 count = withdrawalIds.length;
+        _validateBatchSize(count);
+        for (uint256 index; index < count; ++index) {
+            _refundWithdrawal(withdrawalIds[index]);
+        }
+    }
+
+    function _refundWithdrawal(uint256 withdrawalId) private {
         IBridge.Withdrawal storage withdrawal = _withdrawals[withdrawalId];
         IBridge.WithdrawalStatus status = withdrawal.status;
         if (status == IBridge.WithdrawalStatus.None) {
@@ -251,6 +291,23 @@ contract Bridge is IBridge {
         withdrawal.status = IBridge.WithdrawalStatus.Refunded;
         bsns.bridgeMint(withdrawal.requester, withdrawal.amount);
         emit IBridge.WithdrawalRefunded(withdrawalId, withdrawal.requester, withdrawal.amount);
+    }
+
+    function bridgeSnapshot() external view override returns (IBridge.BridgeSnapshot memory) {
+        return IBridge.BridgeSnapshot({
+            blockNumber: block.number,
+            blockTimestamp: block.timestamp,
+            bridgeSigner: bridgeSigner,
+            serviceFee: serviceFee,
+            maxServiceFee: MAX_SERVICE_FEE,
+            perDepositLimit: perDepositLimit,
+            mintWindowLimit: mintWindowLimit,
+            mintWindowDuration: mintWindowDuration,
+            mintWindowStartedAt: mintWindowStartedAt,
+            mintedInWindow: mintedInWindow,
+            depositMintsPaused: depositMintsPaused,
+            withdrawalsPaused: withdrawalsPaused
+        });
     }
 
     function pauseDepositMints() external override onlyRuntimeAdministrator {
@@ -349,6 +406,15 @@ contract Bridge is IBridge {
                 candidateBridgeSigner, candidateRuntimeAdministrator, candidateTimelock
             )) {
             revert IBridge.RoleAddressesMustDiffer();
+        }
+    }
+
+    function _validateBatchSize(uint256 count) private pure {
+        if (count == 0) {
+            revert IBridge.EmptyBatch();
+        }
+        if (count > MAX_BATCH_SIZE) {
+            revert IBridge.BatchTooLarge(count, MAX_BATCH_SIZE);
         }
     }
 

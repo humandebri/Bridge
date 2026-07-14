@@ -11,13 +11,14 @@ use std::cell::{Cell, RefCell};
 mod admin;
 mod api;
 pub mod config;
+mod consent;
 mod evm_rpc;
 mod ledger;
 mod signer;
 pub mod storage;
 mod tasks;
 
-use storage::{StableStore, SCHEMA_VERSION};
+use storage::{StableStore, StorageError, SCHEMA_VERSION};
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatusCounts {
@@ -34,16 +35,13 @@ pub struct StatusCounts {
 pub struct BridgeStatus {
     pub schema_version: u16,
     pub counts: StatusCounts,
-    pub withdrawal_log_cursor: u64,
     pub last_finalized_base_block: u64,
-    pub last_safe_base_block: u64,
     pub last_reserve_observation_ns: u64,
     pub last_finalized_observation_ns: u64,
-    pub last_safe_observation_ns: u64,
     pub reserve: ReserveStatus,
     pub deposits_paused: bool,
     pub queued_evm_operations: u64,
-    pub safe_evm_operations: u64,
+    pub withdrawal_notifications: u64,
     pub last_audit_sequence: Option<u64>,
 }
 
@@ -56,6 +54,15 @@ pub struct ReserveStatus {
     pub eth_surplus_wei: u128,
     pub cycles_surplus: u128,
     pub sufficient: bool,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicConfig {
+    pub base_chain_id: u64,
+    pub bridge_contract: Vec<u8>,
+    pub ledger_canister_id: candid::Principal,
+    pub index_canister_id: candid::Principal,
+    pub schema_version: u16,
 }
 
 thread_local! {
@@ -110,16 +117,11 @@ fn init(args: config::BridgeInitArgs) {
 fn post_upgrade() {
     ensure_supported_schema();
     let interval = STORE.with(|store| {
-        store
-            .borrow()
-            .config()
-            .ok()
-            .flatten()
-            .map(|config| config.poll_interval_seconds)
+        storage_or_trap("configuration read", store.borrow().config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"))
+            .poll_interval_seconds
     });
-    if let Some(interval) = interval {
-        schedule_timer(interval);
-    }
+    schedule_timer(interval);
 }
 
 fn schedule_timer(seconds: u64) {
@@ -148,8 +150,29 @@ fn get_deposit(id: Vec<u8>) -> Option<api::DepositView> {
 }
 
 #[ic_cdk::query]
+fn list_deposit_ids(
+    args: api::ListDepositIdsArgs,
+) -> Result<api::DepositIdPage, api::ListDepositIdsError> {
+    api::list_deposit_ids(args)
+}
+
+#[ic_cdk::query]
 fn get_withdrawal(id: Vec<u8>) -> Option<api::WithdrawalView> {
     api::get_withdrawal(id)
+}
+
+#[ic_cdk::query]
+fn get_withdrawals(
+    ids: Vec<Vec<u8>>,
+) -> Result<Vec<Option<api::WithdrawalView>>, api::GetWithdrawalsError> {
+    api::get_withdrawals(ids)
+}
+
+#[ic_cdk::update]
+fn notify_withdrawal(
+    args: api::NotifyWithdrawalArgs,
+) -> Result<api::NotifyWithdrawalReceipt, api::NotifyWithdrawalError> {
+    api::notify_withdrawal(ic_cdk::api::msg_caller(), args)
 }
 
 fn ensure_supported_schema() {
@@ -160,6 +183,10 @@ fn ensure_supported_schema() {
     });
 }
 
+pub(crate) fn storage_or_trap<T>(context: &str, result: Result<T, StorageError>) -> T {
+    result.unwrap_or_else(|error| ic_cdk::trap(format!("{context} failed: {error}")))
+}
+
 #[ic_cdk::query]
 fn get_bridge_status() -> BridgeStatus {
     STORE.with(|store| {
@@ -167,16 +194,16 @@ fn get_bridge_status() -> BridgeStatus {
         let counts = store
             .status_counts()
             .unwrap_or_else(|error| ic_cdk::trap(format!("stable state read failed: {error}")));
-        let config = store
-            .config()
-            .ok()
-            .flatten()
+        let config = storage_or_trap("configuration read", store.config())
             .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
-        let progress = store.external_progress().unwrap_or_default();
+        let progress = storage_or_trap("external progress read", store.external_progress());
         let reserve = config
             .reserve_policy()
             .snapshot(
-                store.nonterminal_withdrawal_count().unwrap_or(0),
+                storage_or_trap(
+                    "nonterminal withdrawal count read",
+                    store.nonterminal_withdrawal_count(),
+                ),
                 progress.last_eth_balance_wei,
                 ic_cdk::api::canister_liquid_cycle_balance(),
             )
@@ -195,12 +222,9 @@ fn get_bridge_status() -> BridgeStatus {
                 reserved_deposit_mint_amount: counts.reserved_deposit_mint_amount,
                 reverted_evm_operations: counts.reverted_evm_operations,
             },
-            withdrawal_log_cursor: counts.withdrawal_log_cursor,
             last_finalized_base_block: counts.last_finalized_base_block,
-            last_safe_base_block: progress.last_safe_base_block,
             last_reserve_observation_ns: progress.last_reserve_observation_ns,
             last_finalized_observation_ns: progress.last_finalized_observation_ns,
-            last_safe_observation_ns: progress.last_safe_observation_ns,
             reserve: ReserveStatus {
                 eth_balance_wei: reserve.eth_balance_wei,
                 cycles_balance: reserve.cycles_balance,
@@ -211,11 +235,49 @@ fn get_bridge_status() -> BridgeStatus {
                 sufficient: reserve.sufficient,
             },
             deposits_paused: admin.deposits_paused,
-            queued_evm_operations: store.queued_evm_count().unwrap_or(0),
-            safe_evm_operations: store.safe_evm_count(),
-            last_audit_sequence: store.last_audit_sequence().unwrap_or(None),
+            queued_evm_operations: storage_or_trap(
+                "queued EVM operation count read",
+                store.queued_evm_count(),
+            ),
+            withdrawal_notifications: store.withdrawal_notification_count(),
+            last_audit_sequence: storage_or_trap(
+                "last audit sequence read",
+                store.last_audit_sequence(),
+            ),
         }
     })
+}
+
+#[ic_cdk::query]
+fn get_public_config() -> PublicConfig {
+    STORE.with(|store| {
+        let store = store.borrow();
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        PublicConfig {
+            base_chain_id: config.base_chain_id,
+            bridge_contract: config.bridge_contract,
+            ledger_canister_id: config.ledger_canister_id,
+            index_canister_id: config.index_canister_id,
+            schema_version: store.schema_version(),
+        }
+    })
+}
+
+#[ic_cdk::query]
+fn icrc10_supported_standards() -> Vec<consent::Icrc10SupportedStandard> {
+    consent::supported_standards()
+}
+
+#[ic_cdk::update]
+fn icrc21_canister_call_consent_message(
+    request: consent::Icrc21ConsentMessageRequest,
+) -> consent::Icrc21ConsentMessageResponse {
+    consent::consent_message(
+        ic_cdk::api::msg_caller(),
+        ic_cdk::api::canister_self(),
+        request,
+    )
 }
 
 #[ic_cdk::update]
@@ -251,7 +313,7 @@ ic_cdk::export_candid!();
 
 #[cfg(test)]
 mod candid_tests {
-    use super::TimerTickGuard;
+    use super::{storage::StorageError, storage_or_trap, TimerTickGuard};
 
     fn normalize(candid: &str) -> String {
         candid
@@ -273,5 +335,13 @@ mod candid_tests {
         assert!(TimerTickGuard::acquire().is_none());
         drop(guard);
         assert!(TimerTickGuard::acquire().is_some());
+    }
+
+    #[test]
+    fn storage_errors_are_not_converted_to_default_values() {
+        let trapped = std::panic::catch_unwind(|| {
+            storage_or_trap::<()>("test storage read", Err(StorageError::DecodeFailed));
+        });
+        assert!(trapped.is_err());
     }
 }

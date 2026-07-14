@@ -38,10 +38,12 @@ pub enum EvmOperationState {
     },
     Finalized {
         transaction_hash: [u8; 32],
+        receipt_block_number: u64,
         finalized_block_number: u64,
     },
     Reverted {
         transaction_hash: [u8; 32],
+        receipt_block_number: u64,
         finalized_block_number: u64,
     },
 }
@@ -58,10 +60,12 @@ pub enum EvmOperationEvent {
     },
     Finalized {
         transaction_hash: [u8; 32],
+        receipt_block_number: u64,
         finalized_block_number: u64,
     },
     Reverted {
         transaction_hash: [u8; 32],
+        receipt_block_number: u64,
         finalized_block_number: u64,
     },
 }
@@ -148,22 +152,29 @@ impl EvmOperationRecord {
                 },
                 Event::Finalized {
                     transaction_hash,
+                    receipt_block_number,
                     finalized_block_number,
                 },
             ) if current == transaction_hash => State::Finalized {
                 transaction_hash,
+                receipt_block_number,
                 finalized_block_number,
             },
             (
                 State::Finalized {
                     transaction_hash: current_hash,
+                    receipt_block_number: current_receipt_block,
                     finalized_block_number: current_block,
                 },
                 Event::Finalized {
                     transaction_hash,
+                    receipt_block_number,
                     finalized_block_number,
                 },
-            ) if current_hash == transaction_hash && current_block == finalized_block_number => {
+            ) if current_hash == transaction_hash
+                && current_receipt_block == receipt_block_number
+                && current_block == finalized_block_number =>
+            {
                 return Ok(ApplyOutcome::Idempotent);
             }
             (State::Submitted { .. }, Event::Finalized { .. }) => {
@@ -175,22 +186,29 @@ impl EvmOperationRecord {
                 },
                 Event::Reverted {
                     transaction_hash,
+                    receipt_block_number,
                     finalized_block_number,
                 },
             ) if current == transaction_hash => State::Reverted {
                 transaction_hash,
+                receipt_block_number,
                 finalized_block_number,
             },
             (
                 State::Reverted {
                     transaction_hash: current_hash,
+                    receipt_block_number: current_receipt_block,
                     finalized_block_number: current_block,
                 },
                 Event::Reverted {
                     transaction_hash,
+                    receipt_block_number,
                     finalized_block_number,
                 },
-            ) if current_hash == transaction_hash && current_block == finalized_block_number => {
+            ) if current_hash == transaction_hash
+                && current_receipt_block == receipt_block_number
+                && current_block == finalized_block_number =>
+            {
                 return Ok(ApplyOutcome::Idempotent);
             }
             (

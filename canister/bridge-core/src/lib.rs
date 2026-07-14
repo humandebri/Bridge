@@ -17,8 +17,8 @@ pub use accounting::{AccountingState, FeeKind};
 pub use deposit::{DepositEvent, DepositRecord, DepositRequest, DepositState};
 pub use evm::{EvmOperationEvent, EvmOperationKind, EvmOperationRecord, EvmOperationState};
 pub use external::{
-    EvmCallIntent, EvmSafeObservation, EvmTransactionEnvelope, ExternalProgress, LedgerCallOutcome,
-    LedgerFailure, ReconciliationScanProgress, SafeReceiptOutcome,
+    EvmCallIntent, EvmTransactionEnvelope, ExternalProgress, LedgerCallOutcome, LedgerFailure,
+    ReconciliationScanProgress,
 };
 pub use kernel::{
     administrator_authorized, audit_next, can_assign_nonce, candidate_precedes,

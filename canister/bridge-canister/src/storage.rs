@@ -1,11 +1,11 @@
 use crate::config::BridgeInitArgs;
 use crate::{admin::AdminState, config::FeeRecipientConfig};
 use bridge_core::{
-    resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, ApplyResult, CoreError,
-    DepositHoldResolution, DepositId, DepositRecord, EvmCallIntent, EvmOperationRecord,
-    EvmOperationState, EvmSafeObservation, EvmTransactionEnvelope, ExternalProgress, HoldId,
-    ReconciliationHoldRecord, ReconciliationHoldState, ReconciliationScanProgress,
-    WithdrawalHoldResolution, WithdrawalId, WithdrawalRecord, WithdrawalState,
+    resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, ApplyResult, BaseMintSnapshot,
+    CoreError, DepositHoldResolution, DepositId, DepositRecord, EvmCallIntent, EvmOperationRecord,
+    EvmOperationState, EvmTransactionEnvelope, ExternalProgress, HoldId, ReconciliationHoldRecord,
+    ReconciliationHoldState, ReconciliationScanProgress, WithdrawalHoldResolution, WithdrawalId,
+    WithdrawalRecord, WithdrawalState,
 };
 use candid::{CandidType, Principal};
 use ic_stable_structures::{
@@ -16,7 +16,7 @@ use ic_stable_structures::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{borrow::Cow, fmt, io::Cursor};
 
-pub const SCHEMA_VERSION: u16 = 5;
+pub const SCHEMA_VERSION: u16 = 1;
 const WIRE_VERSION: u8 = 1;
 const MAX_STABLE_VALUE_BYTES: usize = 16 * 1024;
 
@@ -36,12 +36,144 @@ const ADMIN_STATE_MEMORY_ID: MemoryId = MemoryId::new(12);
 const AUDIT_EVENTS_MEMORY_ID: MemoryId = MemoryId::new(13);
 const FEE_PAYOUTS_MEMORY_ID: MemoryId = MemoryId::new(14);
 const EVM_CALL_INTENTS_MEMORY_ID: MemoryId = MemoryId::new(15);
-const EVM_SAFE_OBSERVATIONS_MEMORY_ID: MemoryId = MemoryId::new(16);
-pub const RESERVED_MEMORY_IDS: core::ops::RangeInclusive<u8> = 17..=31;
+const WITHDRAWAL_NOTIFICATIONS_MEMORY_ID: MemoryId = MemoryId::new(16);
+const DEPOSIT_OWNER_INDEX_MEMORY_ID: MemoryId = MemoryId::new(17);
+const DEPOSIT_ADMISSION_MEMORY_ID: MemoryId = MemoryId::new(18);
+const FEE_PAYOUT_STATE_INDEX_MEMORY_ID: MemoryId = MemoryId::new(19);
+const OPERATION_OWNER_INDEX_MEMORY_ID: MemoryId = MemoryId::new(20);
+const EVM_STATE_INDEX_MEMORY_ID: MemoryId = MemoryId::new(21);
+const PULL_PENDING_DEPOSIT_INDEX_MEMORY_ID: MemoryId = MemoryId::new(22);
+const RELEASE_PENDING_WITHDRAWAL_INDEX_MEMORY_ID: MemoryId = MemoryId::new(23);
+const OPEN_HOLD_INDEX_MEMORY_ID: MemoryId = MemoryId::new(24);
+const WITHDRAWAL_NOTIFICATION_CONTROL_MEMORY_ID: MemoryId = MemoryId::new(25);
+pub const RESERVED_MEMORY_IDS: core::ops::RangeInclusive<u8> = 26..=31;
 
 type StableMemory<M> = VirtualMemory<M>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+fn deposit_owner_index_prefix(owner: Principal) -> Vec<u8> {
+    let owner_bytes = owner.as_slice();
+    let mut prefix = Vec::with_capacity(1 + owner_bytes.len());
+    prefix.push(owner_bytes.len() as u8);
+    prefix.extend_from_slice(owner_bytes);
+    prefix
+}
+
+fn deposit_owner_index_bytes(prefix: &[u8], reverse_sequence: u64) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(prefix.len() + 8);
+    bytes.extend_from_slice(prefix);
+    bytes.extend_from_slice(&reverse_sequence.to_be_bytes());
+    bytes
+}
+
+fn deposit_owner_index_key(owner: Principal, sequence: u64) -> Result<StableBlob, StorageError> {
+    StableBlob::new(deposit_owner_index_bytes(
+        &deposit_owner_index_prefix(owner),
+        u64::MAX - sequence,
+    ))
+}
+
+fn deposit_sequence_from_index_key(key: &StableBlob) -> Result<u64, StorageError> {
+    let reverse_bytes: [u8; 8] = key
+        .as_slice()
+        .get(key.as_slice().len().saturating_sub(8)..)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(StorageError::DecodeFailed)?;
+    Ok(u64::MAX - u64::from_be_bytes(reverse_bytes))
+}
+
+fn fee_payout_index_key_for_state(id: u64, state: u8) -> Result<StableBlob, StorageError> {
+    let mut bytes = Vec::with_capacity(9);
+    bytes.push(state);
+    bytes.extend_from_slice(&id.to_be_bytes());
+    StableBlob::new(bytes)
+}
+
+fn fee_payout_index_key(
+    value: &crate::admin::FeePayoutRecord,
+) -> Result<Option<StableBlob>, StorageError> {
+    matches!(
+        value.state,
+        crate::admin::FeePayoutState::Pending | crate::admin::FeePayoutState::ReconciliationHold
+    )
+    .then(|| fee_payout_index_key_for_state(value.id, 0))
+    .transpose()
+}
+
+fn fee_payout_id_from_index_key(key: &StableBlob) -> Result<u64, StorageError> {
+    let bytes: [u8; 8] = key
+        .as_slice()
+        .get(1..9)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(StorageError::DecodeFailed)?;
+    Ok(u64::from_be_bytes(bytes))
+}
+
+fn evm_state_tag(state: EvmOperationState) -> Option<u8> {
+    match state {
+        EvmOperationState::Queued => Some(0),
+        EvmOperationState::Prepared => Some(1),
+        EvmOperationState::Submitted { .. } => Some(2),
+        EvmOperationState::Finalized { .. } | EvmOperationState::Reverted { .. } => None,
+    }
+}
+
+fn evm_state_index_key(value: &EvmOperationRecord) -> Result<Option<StableBlob>, StorageError> {
+    let Some(tag) = evm_state_tag(value.state) else {
+        return Ok(None);
+    };
+    let priority = matches!(value.state, EvmOperationState::Queued)
+        .then(|| value.kind.scheduler_priority())
+        .unwrap_or(0);
+    let mut bytes = Vec::with_capacity(10);
+    bytes.push(tag);
+    bytes.push(priority);
+    bytes.extend_from_slice(&value.id.get().to_be_bytes());
+    StableBlob::new(bytes).map(Some)
+}
+
+fn first_evm_index_id(
+    index: &StableBTreeMap<StableBlob, u8, impl Memory>,
+    tag: u8,
+) -> Result<Option<u64>, StorageError> {
+    let start = StableBlob::new(vec![tag])?;
+    let end = StableBlob::new(vec![tag.saturating_add(1)])?;
+    let Some(entry) = index.range(start..end).next() else {
+        return Ok(None);
+    };
+    evm_index_id(entry.key()).map(Some)
+}
+
+fn evm_index_id(key: &StableBlob) -> Result<u64, StorageError> {
+    let bytes: [u8; 8] = key
+        .as_slice()
+        .get(2..10)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(StorageError::DecodeFailed)?;
+    Ok(u64::from_be_bytes(bytes))
+}
+
+fn deposit_operation_id(value: &DepositRecord) -> Option<u64> {
+    match value.state {
+        bridge_core::DepositState::MintPending { operation_id, .. }
+        | bridge_core::DepositState::Minted { operation_id, .. }
+        | bridge_core::DepositState::MintReverted { operation_id, .. } => Some(operation_id.get()),
+        _ => None,
+    }
+}
+
+fn withdrawal_operation_id(value: &WithdrawalRecord) -> Option<u64> {
+    match value.state {
+        WithdrawalState::AcknowledgePending { operation_id, .. }
+        | WithdrawalState::AcknowledgeReverted { operation_id, .. }
+        | WithdrawalState::Released { operation_id, .. }
+        | WithdrawalState::RefundPending { operation_id, .. }
+        | WithdrawalState::RefundReverted { operation_id, .. }
+        | WithdrawalState::Refunded { operation_id } => Some(operation_id.get()),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StableBlob(Vec<u8>);
 
 impl StableBlob {
@@ -85,14 +217,93 @@ pub struct CounterState {
     pub next_hold_id: u64,
     pub pending_evm_operations: u64,
     pub reconciliation_holds: u64,
-    #[serde(default)]
     pub pending_ledger_operations: u64,
-    #[serde(default)]
     pub next_audit_sequence: u64,
-    #[serde(default)]
     pub next_fee_payout_id: u64,
+    pub next_deposit_sequence: u64,
     pub reserved_deposit_mint_amount: u128,
     pub reverted_evm_operations: u64,
+    pub queued_evm_operations: u64,
+    pub nonterminal_withdrawals: u64,
+    pub pending_fee_payout_debit: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepositCallerQuota {
+    pub caller: Vec<u8>,
+    pub count: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CachedBaseMintSnapshot {
+    pub observed_at_ns: u64,
+    pub snapshot: BaseMintSnapshot,
+    pub bridge_signer: [u8; 20],
+    pub deposits_paused: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepositAdmissionControl {
+    pub window_id: u64,
+    pub global_count: u16,
+    pub caller_counts: Vec<DepositCallerQuota>,
+    pub signer_address: Option<[u8; 20]>,
+    pub signer_public_key: Option<Vec<u8>>,
+    pub base_snapshot: Option<CachedBaseMintSnapshot>,
+    pub refresh_started_at_ns: Option<u64>,
+    pub next_refresh_allowed_at_ns: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DepositRateLimit {
+    pub retry_after_seconds: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawalNotification {
+    pub transaction_hash: [u8; 32],
+    pub caller: Principal,
+    pub created_at_ns: u64,
+    pub next_attempt_at_ns: u64,
+    pub attempts: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct NotificationCallerQuota {
+    caller: Principal,
+    count: u8,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct WithdrawalNotificationControl {
+    window_id: u64,
+    global_count: u8,
+    caller_counts: Vec<NotificationCallerQuota>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationEnqueueOutcome {
+    Queued,
+    Duplicate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationEnqueueError {
+    RateLimited { retry_after_seconds: u64 },
+    QueueFull,
+    Storage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DepositQuotaError {
+    RateLimited(DepositRateLimit),
+    Storage(StorageError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum OperationOwner {
+    Deposit([u8; 32]),
+    Withdrawal([u8; 32]),
 }
 
 #[derive(CandidType, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,10 +321,6 @@ pub enum AuditEventKind {
     },
     FeePayoutRequested {
         amount: u128,
-    },
-    BaseServiceFeeChanged {
-        previous: Option<u128>,
-        current: u128,
     },
     EvmOperationReverted {
         operation_id: u64,
@@ -157,7 +364,6 @@ pub struct StorageCounts {
     pub pending_ledger_operations: u64,
     pub reserved_deposit_mint_amount: u128,
     pub reverted_evm_operations: u64,
-    pub withdrawal_log_cursor: u64,
     pub last_finalized_base_block: u64,
 }
 
@@ -167,6 +373,7 @@ pub struct DepositIntent {
     pub caller: Vec<u8>,
     pub client_request_id: [u8; 32],
     pub base_recipient: [u8; 20],
+    pub from_subaccount: [u8; 32],
     pub payload_hash: [u8; 32],
 }
 
@@ -215,7 +422,16 @@ pub struct StableStore<M: Memory> {
     audit_events: StableBTreeMap<u64, StableBlob, StableMemory<M>>,
     fee_payouts: StableBTreeMap<u64, StableBlob, StableMemory<M>>,
     evm_call_intents: StableBTreeMap<u64, StableBlob, StableMemory<M>>,
-    evm_safe_observations: StableBTreeMap<u64, StableBlob, StableMemory<M>>,
+    withdrawal_notifications: StableBTreeMap<[u8; 32], StableBlob, StableMemory<M>>,
+    deposit_owner_index: StableBTreeMap<StableBlob, [u8; 32], StableMemory<M>>,
+    deposit_admission: StableCell<StableBlob, StableMemory<M>>,
+    fee_payout_state_index: StableBTreeMap<StableBlob, u8, StableMemory<M>>,
+    operation_owner_index: StableBTreeMap<u64, StableBlob, StableMemory<M>>,
+    evm_state_index: StableBTreeMap<StableBlob, u8, StableMemory<M>>,
+    pull_pending_deposit_index: StableBTreeMap<[u8; 32], u8, StableMemory<M>>,
+    release_pending_withdrawal_index: StableBTreeMap<[u8; 32], u8, StableMemory<M>>,
+    open_hold_index: StableBTreeMap<u64, u8, StableMemory<M>>,
+    withdrawal_notification_control: StableCell<StableBlob, StableMemory<M>>,
 }
 
 impl<M: Memory> StableStore<M> {
@@ -257,8 +473,31 @@ impl<M: Memory> StableStore<M> {
             audit_events: StableBTreeMap::init(manager.get(AUDIT_EVENTS_MEMORY_ID)),
             fee_payouts: StableBTreeMap::init(manager.get(FEE_PAYOUTS_MEMORY_ID)),
             evm_call_intents: StableBTreeMap::init(manager.get(EVM_CALL_INTENTS_MEMORY_ID)),
-            evm_safe_observations: StableBTreeMap::init(
-                manager.get(EVM_SAFE_OBSERVATIONS_MEMORY_ID),
+            withdrawal_notifications: StableBTreeMap::init(
+                manager.get(WITHDRAWAL_NOTIFICATIONS_MEMORY_ID),
+            ),
+            deposit_owner_index: StableBTreeMap::init(manager.get(DEPOSIT_OWNER_INDEX_MEMORY_ID)),
+            deposit_admission: StableCell::init(
+                manager.get(DEPOSIT_ADMISSION_MEMORY_ID),
+                encode(&DepositAdmissionControl::default())?,
+            ),
+            fee_payout_state_index: StableBTreeMap::init(
+                manager.get(FEE_PAYOUT_STATE_INDEX_MEMORY_ID),
+            ),
+            operation_owner_index: StableBTreeMap::init(
+                manager.get(OPERATION_OWNER_INDEX_MEMORY_ID),
+            ),
+            evm_state_index: StableBTreeMap::init(manager.get(EVM_STATE_INDEX_MEMORY_ID)),
+            pull_pending_deposit_index: StableBTreeMap::init(
+                manager.get(PULL_PENDING_DEPOSIT_INDEX_MEMORY_ID),
+            ),
+            release_pending_withdrawal_index: StableBTreeMap::init(
+                manager.get(RELEASE_PENDING_WITHDRAWAL_INDEX_MEMORY_ID),
+            ),
+            open_hold_index: StableBTreeMap::init(manager.get(OPEN_HOLD_INDEX_MEMORY_ID)),
+            withdrawal_notification_control: StableCell::init(
+                manager.get(WITHDRAWAL_NOTIFICATION_CONTROL_MEMORY_ID),
+                encode(&WithdrawalNotificationControl::default())?,
             ),
         })
     }
@@ -278,6 +517,156 @@ impl<M: Memory> StableStore<M> {
 
     pub fn counters(&self) -> Result<CounterState, StorageError> {
         decode(self.counters.get())
+    }
+
+    fn deposit_admission(&self) -> Result<DepositAdmissionControl, StorageError> {
+        decode(self.deposit_admission.get())
+    }
+
+    fn set_deposit_admission(
+        &mut self,
+        value: &DepositAdmissionControl,
+    ) -> Result<(), StorageError> {
+        self.deposit_admission.set(encode(value)?);
+        Ok(())
+    }
+
+    pub fn reserve_deposit_quota(
+        &mut self,
+        caller: Principal,
+        now_ns: u64,
+        window_seconds: u64,
+        global_limit: u16,
+        per_principal_limit: u16,
+    ) -> Result<(), DepositQuotaError> {
+        let window_ns = window_seconds.saturating_mul(1_000_000_000);
+        let window_id = now_ns / window_ns;
+        let mut admission = self
+            .deposit_admission()
+            .map_err(DepositQuotaError::Storage)?;
+        if admission.window_id != window_id {
+            admission.window_id = window_id;
+            admission.global_count = 0;
+            admission.caller_counts.clear();
+        }
+        let retry_after_seconds = ((window_id + 1)
+            .saturating_mul(window_ns)
+            .saturating_sub(now_ns)
+            .saturating_add(999_999_999)
+            / 1_000_000_000)
+            .max(1);
+        let caller_bytes = caller.as_slice();
+        let caller_count = admission
+            .caller_counts
+            .iter()
+            .find(|entry| entry.caller == caller_bytes)
+            .map(|entry| entry.count)
+            .unwrap_or(0);
+        if admission.global_count >= global_limit || caller_count >= per_principal_limit {
+            return Err(DepositQuotaError::RateLimited(DepositRateLimit {
+                retry_after_seconds,
+            }));
+        }
+        admission.global_count = admission.global_count.saturating_add(1);
+        match admission
+            .caller_counts
+            .iter_mut()
+            .find(|entry| entry.caller == caller_bytes)
+        {
+            Some(entry) => entry.count = entry.count.saturating_add(1),
+            None => admission.caller_counts.push(DepositCallerQuota {
+                caller: caller_bytes.to_vec(),
+                count: 1,
+            }),
+        }
+        self.set_deposit_admission(&admission)
+            .map_err(DepositQuotaError::Storage)
+    }
+
+    pub fn cached_base_mint_snapshot(
+        &self,
+        now_ns: u64,
+        ttl_ns: u64,
+        minimum_finalized_block: u64,
+    ) -> Result<Option<CachedBaseMintSnapshot>, StorageError> {
+        Ok(self.deposit_admission()?.base_snapshot.and_then(|cached| {
+            (now_ns.saturating_sub(cached.observed_at_ns) <= ttl_ns
+                && cached.snapshot.finalized_block_number >= minimum_finalized_block)
+                .then_some(cached)
+        }))
+    }
+
+    pub fn begin_base_snapshot_refresh(
+        &mut self,
+        now_ns: u64,
+        stale_lock_ns: u64,
+        cooldown_ns: u64,
+    ) -> Result<bool, StorageError> {
+        let mut admission = self.deposit_admission()?;
+        let locked = admission
+            .refresh_started_at_ns
+            .is_some_and(|started| now_ns.saturating_sub(started) < stale_lock_ns);
+        if locked || now_ns < admission.next_refresh_allowed_at_ns {
+            return Ok(false);
+        }
+        admission.refresh_started_at_ns = Some(now_ns);
+        admission.next_refresh_allowed_at_ns = now_ns.saturating_add(cooldown_ns);
+        self.set_deposit_admission(&admission)?;
+        Ok(true)
+    }
+
+    pub fn finish_base_snapshot_refresh(
+        &mut self,
+        observed_at_ns: u64,
+        snapshot: BaseMintSnapshot,
+        bridge_signer: [u8; 20],
+        deposits_paused: bool,
+    ) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        admission.base_snapshot = Some(CachedBaseMintSnapshot {
+            observed_at_ns,
+            snapshot,
+            bridge_signer,
+            deposits_paused,
+        });
+        admission.refresh_started_at_ns = None;
+        self.set_deposit_admission(&admission)
+    }
+
+    pub fn fail_base_snapshot_refresh(&mut self) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        admission.refresh_started_at_ns = None;
+        self.set_deposit_admission(&admission)
+    }
+
+    pub fn signer_address(&self) -> Result<Option<[u8; 20]>, StorageError> {
+        Ok(self.deposit_admission()?.signer_address)
+    }
+
+    pub fn signer_public_key(&self) -> Result<Option<Vec<u8>>, StorageError> {
+        Ok(self.deposit_admission()?.signer_public_key)
+    }
+
+    pub fn set_signer_public_key_if_absent(
+        &mut self,
+        public_key: Vec<u8>,
+    ) -> Result<Vec<u8>, StorageError> {
+        let mut admission = self.deposit_admission()?;
+        let selected = admission.signer_public_key.unwrap_or(public_key);
+        admission.signer_public_key = Some(selected.clone());
+        self.set_deposit_admission(&admission)?;
+        Ok(selected)
+    }
+
+    pub fn set_signer_address_if_absent(
+        &mut self,
+        address: [u8; 20],
+    ) -> Result<[u8; 20], StorageError> {
+        let mut admission = self.deposit_admission()?;
+        let selected = admission.signer_address.unwrap_or(address);
+        admission.signer_address = Some(selected);
+        self.set_deposit_admission(&admission)?;
+        Ok(selected)
     }
 
     pub fn external_progress(&self) -> Result<ExternalProgress, StorageError> {
@@ -365,43 +754,98 @@ impl<M: Memory> StableStore<M> {
         &mut self,
         value: &crate::admin::FeePayoutRecord,
     ) -> Result<(), StorageError> {
-        self.fee_payouts.insert(value.id, encode(value)?);
+        let previous = self
+            .fee_payouts
+            .get(&value.id)
+            .map(|blob| decode::<crate::admin::FeePayoutRecord>(&blob))
+            .transpose()?;
+        let mut counters = self.counters()?;
+        counters.pending_fee_payout_debit = adjust_pending_fee_payout_debit(
+            counters.pending_fee_payout_debit,
+            previous.as_ref(),
+            value,
+        )?;
+        let value_blob = encode(value)?;
+        let counters_blob = encode(&counters)?;
+        let previous_key = previous
+            .as_ref()
+            .map(fee_payout_index_key)
+            .transpose()?
+            .flatten();
+        let next_key = fee_payout_index_key(value)?;
+        if let Some(key) = previous_key {
+            self.fee_payout_state_index.remove(&key);
+        }
+        if let Some(key) = next_key {
+            self.fee_payout_state_index.insert(key, 0);
+        }
+        self.fee_payouts.insert(value.id, value_blob);
+        self.counters.set(counters_blob);
         Ok(())
     }
     pub fn pending_fee_payout_amount(&self) -> Result<u128, StorageError> {
-        let mut total = 0u128;
-        for entry in self.fee_payouts.iter() {
-            let value: crate::admin::FeePayoutRecord = decode(&entry.value())?;
-            if matches!(
-                value.state,
-                crate::admin::FeePayoutState::Pending
-                    | crate::admin::FeePayoutState::ReconciliationHold
-            ) {
-                total = total
-                    .checked_add(
-                        value
-                            .amount
-                            .checked_add(value.transfer.fee.get())
-                            .ok_or(StorageError::CounterOverflow)?,
-                    )
-                    .ok_or(StorageError::CounterOverflow)?;
-            }
-        }
-        Ok(total)
+        Ok(self.counters()?.pending_fee_payout_debit)
     }
-    pub fn first_held_fee_payout(
+    pub fn first_reconcilable_fee_payout(
         &self,
+        now_ns: u64,
+        dedup_ns: u64,
     ) -> Result<Option<crate::admin::FeePayoutRecord>, StorageError> {
-        for entry in self.fee_payouts.iter() {
-            let value: crate::admin::FeePayoutRecord = decode(&entry.value())?;
-            if matches!(
-                value.state,
-                crate::admin::FeePayoutState::ReconciliationHold
-            ) {
+        for entry in self.fee_payout_state_index.iter() {
+            let id = fee_payout_id_from_index_key(entry.key())?;
+            let value = self
+                .fee_payouts
+                .get(&id)
+                .map(|blob| decode::<crate::admin::FeePayoutRecord>(&blob))
+                .transpose()?
+                .ok_or(StorageError::RecordNotFound)?;
+            if now_ns.saturating_sub(value.transfer.created_at_time_ns) > dedup_ns {
                 return Ok(Some(value));
             }
         }
         Ok(None)
+    }
+
+    pub fn complete_fee_payout_success(
+        &mut self,
+        id: u64,
+        block_index: u128,
+    ) -> Result<(), StorageError> {
+        let mut payout = self
+            .fee_payouts
+            .get(&id)
+            .map(|blob| decode::<crate::admin::FeePayoutRecord>(&blob))
+            .transpose()?
+            .ok_or(StorageError::RecordNotFound)?;
+        match payout.state {
+            crate::admin::FeePayoutState::Succeeded {
+                block_index: previous,
+            } if previous == block_index => return Ok(()),
+            crate::admin::FeePayoutState::Pending
+            | crate::admin::FeePayoutState::ReconciliationHold => {}
+            _ => return Err(StorageError::Core(CoreError::ConflictingReplay)),
+        }
+        let debit = payout
+            .amount
+            .checked_add(payout.transfer.fee.get())
+            .ok_or(StorageError::CounterOverflow)?;
+        let mut accounting = self.accounting()?;
+        accounting.spend_fee_reserve(bridge_core::Amount::new(debit))?;
+        payout.state = crate::admin::FeePayoutState::Succeeded { block_index };
+        let previous_key = fee_payout_index_key_for_state(id, 0)?;
+        let accounting_blob = encode(&accounting)?;
+        let payout_blob = encode(&payout)?;
+        let mut counters = self.counters()?;
+        counters.pending_fee_payout_debit = counters
+            .pending_fee_payout_debit
+            .checked_sub(debit)
+            .ok_or(StorageError::CounterUnderflow)?;
+        let counters_blob = encode(&counters)?;
+        self.accounting.set(accounting_blob);
+        self.fee_payouts.insert(id, payout_blob);
+        self.fee_payout_state_index.remove(&previous_key);
+        self.counters.set(counters_blob);
+        Ok(())
     }
 
     pub fn set_external_progress(&mut self, value: &ExternalProgress) -> Result<(), StorageError> {
@@ -410,17 +854,28 @@ impl<M: Memory> StableStore<M> {
     }
 
     pub fn put_evm_envelope(&mut self, value: &EvmTransactionEnvelope) -> Result<(), StorageError> {
-        if let Some(previous) = self.evm_envelope(value.operation_id.get())? {
-            if previous != *value {
-                let mut expected = value.clone();
-                expected.signed_transaction = previous.signed_transaction.clone();
-                if expected != previous || previous.signed_transaction.is_some() {
-                    return Err(StorageError::Core(CoreError::ConflictingReplay));
+        if value.operation_ids.is_empty()
+            || value.operation_ids.len() > 4
+            || value.operation_ids[0] != value.operation_id
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        for operation_id in &value.operation_ids {
+            if let Some(previous) = self.evm_envelope(operation_id.get())? {
+                if previous != *value {
+                    let mut expected = value.clone();
+                    expected.signed_transaction = previous.signed_transaction.clone();
+                    if expected != previous || previous.signed_transaction.is_some() {
+                        return Err(StorageError::Core(CoreError::ConflictingReplay));
+                    }
                 }
             }
         }
-        self.evm_envelopes
-            .insert(value.operation_id.get(), encode(value)?);
+        let encoded = encode(value)?;
+        for operation_id in &value.operation_ids {
+            self.evm_envelopes
+                .insert(operation_id.get(), encoded.clone());
+        }
         Ok(())
     }
 
@@ -434,16 +889,14 @@ impl<M: Memory> StableStore<M> {
     pub fn first_prepared_evm(
         &self,
     ) -> Result<Option<(EvmOperationRecord, EvmTransactionEnvelope)>, StorageError> {
-        for entry in self.evm_operations.iter() {
-            let operation: EvmOperationRecord = decode(&entry.value())?;
-            if matches!(operation.state, EvmOperationState::Prepared) {
-                let envelope = self
-                    .evm_envelope(operation.id.get())?
-                    .ok_or(StorageError::RecordNotFound)?;
-                return Ok(Some((operation, envelope)));
-            }
-        }
-        Ok(None)
+        let Some(id) = first_evm_index_id(&self.evm_state_index, 1)? else {
+            return Ok(None);
+        };
+        let operation = self
+            .evm_operation(id)?
+            .ok_or(StorageError::RecordNotFound)?;
+        let envelope = self.evm_envelope(id)?.ok_or(StorageError::RecordNotFound)?;
+        Ok(Some((operation, envelope)))
     }
     pub fn put_evm_call_intent(&mut self, value: &EvmCallIntent) -> Result<(), StorageError> {
         if let Some(previous) = self.evm_call_intent(value.operation_id.get())? {
@@ -464,37 +917,49 @@ impl<M: Memory> StableStore<M> {
     pub fn first_queued_evm(
         &self,
     ) -> Result<Option<(EvmOperationRecord, EvmCallIntent)>, StorageError> {
-        let mut selected: Option<(u8, EvmOperationRecord, EvmCallIntent)> = None;
-        for entry in self.evm_operations.iter() {
-            let operation: EvmOperationRecord = decode(&entry.value())?;
-            if !matches!(operation.state, EvmOperationState::Queued) {
+        let Some(id) = first_evm_index_id(&self.evm_state_index, 0)? else {
+            return Ok(None);
+        };
+        let operation = self
+            .evm_operation(id)?
+            .ok_or(StorageError::RecordNotFound)?;
+        let intent = self
+            .evm_call_intent(id)?
+            .ok_or(StorageError::RecordNotFound)?;
+        Ok(Some((operation, intent)))
+    }
+    pub fn first_queued_evm_batch(
+        &self,
+    ) -> Result<Vec<(EvmOperationRecord, EvmCallIntent)>, StorageError> {
+        let Some((first, first_intent)) = self.first_queued_evm()? else {
+            return Ok(Vec::new());
+        };
+        let mut batch = vec![(first, first_intent)];
+        let start = StableBlob::new(vec![0, first.kind.scheduler_priority()])?;
+        let end = StableBlob::new(vec![0, first.kind.scheduler_priority().saturating_add(1)])?;
+        for entry in self.evm_state_index.range(start..end) {
+            let id = evm_index_id(entry.key())?;
+            if id == first.id.get() {
                 continue;
             }
-            let priority = operation.kind.scheduler_priority();
-            let intent = self
-                .evm_call_intent(operation.id.get())?
+            let operation = self
+                .evm_operation(id)?
                 .ok_or(StorageError::RecordNotFound)?;
-            if selected
-                .as_ref()
-                .map(|(p, o, _)| {
-                    bridge_core::candidate_precedes(priority, operation.id.get(), *p, o.id.get())
-                })
-                .unwrap_or(true)
-            {
-                selected = Some((priority, operation, intent));
+            if operation.kind != first.kind {
+                continue;
+            }
+            let intent = self
+                .evm_call_intent(id)?
+                .ok_or(StorageError::RecordNotFound)?;
+            batch.push((operation, intent));
+            if batch.len() == 4 {
+                break;
             }
         }
-        Ok(selected.map(|(_, operation, intent)| (operation, intent)))
+        Ok(batch)
     }
     pub fn queued_evm_count(&self) -> Result<u64, StorageError> {
-        let mut count = 0u64;
-        for entry in self.evm_operations.iter() {
-            let operation: EvmOperationRecord = decode(&entry.value())?;
-            if matches!(operation.state, EvmOperationState::Queued) {
-                count = count.checked_add(1).ok_or(StorageError::CounterOverflow)?;
-            }
-        }
-        Ok(count)
+        Ok(self.counters()?.queued_evm_operations)
     }
 
     pub fn put_reconciliation_scan(
@@ -543,8 +1008,34 @@ impl<M: Memory> StableStore<M> {
             previous.as_ref(),
             value,
         )?;
-        self.deposits.insert(value.id.bytes(), encode(value)?);
-        self.counters.set(encode(&counters)?);
+        let value_blob = encode(value)?;
+        let counters_blob = encode(&counters)?;
+        let operation_owner = deposit_operation_id(value)
+            .map(|operation_id| {
+                encode(&OperationOwner::Deposit(value.id.bytes()))
+                    .map(|owner| (operation_id, owner))
+            })
+            .transpose()?;
+        if let Some((operation_id, owner)) = operation_owner.as_ref() {
+            if self
+                .operation_owner_index
+                .get(operation_id)
+                .is_some_and(|previous| previous != *owner)
+            {
+                return Err(StorageError::Core(CoreError::ConflictingReplay));
+            }
+        }
+        if previous.as_ref().is_some_and(is_pending_deposit_ledger) {
+            self.pull_pending_deposit_index.remove(&value.id.bytes());
+        }
+        if is_pending_deposit_ledger(value) {
+            self.pull_pending_deposit_index.insert(value.id.bytes(), 0);
+        }
+        if let Some((operation_id, owner)) = operation_owner {
+            self.operation_owner_index.insert(operation_id, owner);
+        }
+        self.deposits.insert(value.id.bytes(), value_blob);
+        self.counters.set(counters_blob);
         Ok(())
     }
 
@@ -558,6 +1049,84 @@ impl<M: Memory> StableStore<M> {
         self.deposit_intents
             .insert(value.deposit_id, encode(value)?);
         Ok(())
+    }
+
+    pub fn admit_deposit(
+        &mut self,
+        owner: Principal,
+        intent: &DepositIntent,
+        record: &DepositRecord,
+    ) -> Result<(), StorageError> {
+        if self.deposit(record.id.bytes())?.is_some()
+            || self.deposit_intent(intent.deposit_id)?.is_some()
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        if intent.deposit_id != record.id.bytes() || intent.payload_hash != record.payload_hash {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+
+        let mut counters = self.counters()?;
+        let sequence = counters.next_deposit_sequence;
+        counters.next_deposit_sequence = sequence
+            .checked_add(1)
+            .ok_or(StorageError::CounterOverflow)?;
+        counters.pending_ledger_operations = adjust_active_count(
+            counters.pending_ledger_operations,
+            false,
+            is_pending_deposit_ledger(record),
+        )?;
+        counters.reserved_deposit_mint_amount =
+            adjust_reserved_mint_amount(counters.reserved_deposit_mint_amount, None, record)?;
+
+        let intent_blob = encode(intent)?;
+        let record_blob = encode(record)?;
+        let counters_blob = encode(&counters)?;
+        let index_key = deposit_owner_index_key(owner, sequence)?;
+
+        self.deposit_intents.insert(intent.deposit_id, intent_blob);
+        self.deposits.insert(record.id.bytes(), record_blob);
+        self.deposit_owner_index
+            .insert(index_key, record.id.bytes());
+        self.pull_pending_deposit_index.insert(record.id.bytes(), 0);
+        self.counters.set(counters_blob);
+        Ok(())
+    }
+
+    pub fn list_deposit_ids(
+        &self,
+        owner: Principal,
+        before_sequence: Option<u64>,
+        limit: u16,
+    ) -> Result<(Vec<[u8; 32]>, Option<u64>), StorageError> {
+        let prefix = deposit_owner_index_prefix(owner);
+        let start_reverse = match before_sequence {
+            Some(0) => return Ok((Vec::new(), None)),
+            Some(sequence) => u64::MAX
+                .checked_sub(sequence)
+                .and_then(|value| value.checked_add(1))
+                .ok_or(StorageError::CounterOverflow)?,
+            None => 0,
+        };
+        let start = StableBlob::new(deposit_owner_index_bytes(&prefix, start_reverse))?;
+        let end = StableBlob::new(deposit_owner_index_bytes(&prefix, u64::MAX))?;
+        let mut entries = self
+            .deposit_owner_index
+            .range(start..=end)
+            .take(usize::from(limit) + 1)
+            .map(|entry| {
+                let sequence = deposit_sequence_from_index_key(entry.key())?;
+                Ok((sequence, entry.value()))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        let has_more = entries.len() > usize::from(limit);
+        if has_more {
+            entries.pop();
+        }
+        let next = has_more
+            .then(|| entries.last().map(|entry| entry.0))
+            .flatten();
+        Ok((entries.into_iter().map(|entry| entry.1).collect(), next))
     }
 
     pub fn deposit_intent(&self, id: [u8; 32]) -> Result<Option<DepositIntent>, StorageError> {
@@ -590,13 +1159,10 @@ impl<M: Memory> StableStore<M> {
     }
 
     pub fn first_pull_pending(&self) -> Result<Option<DepositRecord>, StorageError> {
-        for entry in self.deposits.iter() {
-            let record: DepositRecord = decode(&entry.value())?;
-            if matches!(record.state, bridge_core::DepositState::PullPending) {
-                return Ok(Some(record));
-            }
-        }
-        Ok(None)
+        let Some(entry) = self.pull_pending_deposit_index.iter().next() else {
+            return Ok(None);
+        };
+        self.deposit(*entry.key())
     }
 
     pub fn put_withdrawal(&mut self, value: &WithdrawalRecord) -> Result<(), StorageError> {
@@ -610,8 +1176,41 @@ impl<M: Memory> StableStore<M> {
                 .unwrap_or(false),
             is_pending_withdrawal_ledger(value),
         )?;
-        self.withdrawals.insert(value.id.bytes(), encode(value)?);
-        self.counters.set(encode(&counters)?);
+        counters.nonterminal_withdrawals = adjust_active_count(
+            counters.nonterminal_withdrawals,
+            previous.as_ref().is_some_and(is_nonterminal_withdrawal),
+            is_nonterminal_withdrawal(value),
+        )?;
+        let value_blob = encode(value)?;
+        let counters_blob = encode(&counters)?;
+        let operation_owner = withdrawal_operation_id(value)
+            .map(|operation_id| {
+                encode(&OperationOwner::Withdrawal(value.id.bytes()))
+                    .map(|owner| (operation_id, owner))
+            })
+            .transpose()?;
+        if let Some((operation_id, owner)) = operation_owner.as_ref() {
+            if self
+                .operation_owner_index
+                .get(operation_id)
+                .is_some_and(|previous| previous != *owner)
+            {
+                return Err(StorageError::Core(CoreError::ConflictingReplay));
+            }
+        }
+        if previous.as_ref().is_some_and(is_pending_withdrawal_ledger) {
+            self.release_pending_withdrawal_index
+                .remove(&value.id.bytes());
+        }
+        if is_pending_withdrawal_ledger(value) {
+            self.release_pending_withdrawal_index
+                .insert(value.id.bytes(), 0);
+        }
+        if let Some((operation_id, owner)) = operation_owner {
+            self.operation_owner_index.insert(operation_id, owner);
+        }
+        self.withdrawals.insert(value.id.bytes(), value_blob);
+        self.counters.set(counters_blob);
         Ok(())
     }
 
@@ -638,97 +1237,47 @@ impl<M: Memory> StableStore<M> {
     }
 
     pub fn first_release_pending(&self) -> Result<Option<WithdrawalRecord>, StorageError> {
-        for entry in self.withdrawals.iter() {
-            let blob = entry.value();
-            let record: WithdrawalRecord = decode(&blob)?;
-            if matches!(record.state, WithdrawalState::ReleasePending { .. }) {
-                return Ok(Some(record));
-            }
-        }
-        Ok(None)
+        let Some(entry) = self.release_pending_withdrawal_index.iter().next() else {
+            return Ok(None);
+        };
+        self.withdrawal(*entry.key())
     }
 
     pub fn nonterminal_withdrawal_count(&self) -> Result<u64, StorageError> {
-        let mut count = 0u64;
-        for entry in self.withdrawals.iter() {
-            let record: WithdrawalRecord = decode(&entry.value())?;
-            if !matches!(
-                record.state,
-                WithdrawalState::Released { .. } | WithdrawalState::Refunded { .. }
-            ) {
-                count = count.checked_add(1).ok_or(StorageError::CounterOverflow)?;
-            }
-        }
-        Ok(count)
+        Ok(self.counters()?.nonterminal_withdrawals)
     }
 
     pub fn deposit_for_operation(
         &self,
         operation_id: bridge_core::EvmOperationId,
     ) -> Result<Option<DepositRecord>, StorageError> {
-        for entry in self.deposits.iter() {
-            let record: DepositRecord = decode(&entry.value())?;
-            if matches!(
-                record.state,
-                bridge_core::DepositState::MintPending { operation_id: current, .. }
-                    | bridge_core::DepositState::Minted { operation_id: current, .. }
-                    | bridge_core::DepositState::MintReverted { operation_id: current, .. }
-                    if current == operation_id
-            ) {
-                return Ok(Some(record));
-            }
+        let Some(owner) = self.operation_owner_index.get(&operation_id.get()) else {
+            return Ok(None);
+        };
+        match decode::<OperationOwner>(&owner)? {
+            OperationOwner::Deposit(id) => self.deposit(id),
+            OperationOwner::Withdrawal(_) => Ok(None),
         }
-        Ok(None)
     }
 
     pub fn withdrawal_for_operation(
         &self,
         operation_id: bridge_core::EvmOperationId,
     ) -> Result<Option<WithdrawalRecord>, StorageError> {
-        for entry in self.withdrawals.iter() {
-            let record: WithdrawalRecord = decode(&entry.value())?;
-            if matches!(
-                record.state,
-                WithdrawalState::AcknowledgePending { operation_id: current, .. }
-                    | WithdrawalState::Released { operation_id: current, .. }
-                    | WithdrawalState::AcknowledgeReverted { operation_id: current, .. }
-                    | WithdrawalState::RefundPending { operation_id: current, .. }
-                    | WithdrawalState::Refunded { operation_id: current }
-                    | WithdrawalState::RefundReverted { operation_id: current, .. }
-                    if current == operation_id
-            ) {
-                return Ok(Some(record));
-            }
+        let Some(owner) = self.operation_owner_index.get(&operation_id.get()) else {
+            return Ok(None);
+        };
+        match decode::<OperationOwner>(&owner)? {
+            OperationOwner::Withdrawal(id) => self.withdrawal(id),
+            OperationOwner::Deposit(_) => Ok(None),
         }
-        Ok(None)
     }
 
     pub fn first_submitted_evm(&self) -> Result<Option<EvmOperationRecord>, StorageError> {
-        for entry in self.evm_operations.iter() {
-            let operation: EvmOperationRecord = decode(&entry.value())?;
-            if matches!(operation.state, EvmOperationState::Submitted { .. }) {
-                return Ok(Some(operation));
-            }
-        }
-        Ok(None)
-    }
-
-    pub fn first_submitted_without_safe_observation(
-        &self,
-    ) -> Result<Option<(EvmOperationRecord, EvmTransactionEnvelope)>, StorageError> {
-        for entry in self.evm_operations.iter() {
-            let operation: EvmOperationRecord = decode(&entry.value())?;
-            if !matches!(operation.state, EvmOperationState::Submitted { .. })
-                || self.evm_safe_observation(operation.id.get())?.is_some()
-            {
-                continue;
-            }
-            let envelope = self
-                .evm_envelope(operation.id.get())?
-                .ok_or(StorageError::RecordNotFound)?;
-            return Ok(Some((operation, envelope)));
-        }
-        Ok(None)
+        let Some(id) = first_evm_index_id(&self.evm_state_index, 2)? else {
+            return Ok(None);
+        };
+        self.evm_operation(id)
     }
 
     pub fn put_evm_operation(&mut self, value: &EvmOperationRecord) -> Result<(), StorageError> {
@@ -749,7 +1298,25 @@ impl<M: Memory> StableStore<M> {
             previous.as_ref().map(is_reverted_evm).unwrap_or(false),
             is_reverted_evm(value),
         )?;
+        counters.queued_evm_operations = adjust_active_count(
+            counters.queued_evm_operations,
+            previous
+                .as_ref()
+                .is_some_and(|operation| matches!(operation.state, EvmOperationState::Queued)),
+            matches!(value.state, EvmOperationState::Queued),
+        )?;
         let encoded_counters = encode(&counters)?;
+        if let Some(previous_key) = previous
+            .as_ref()
+            .map(evm_state_index_key)
+            .transpose()?
+            .flatten()
+        {
+            self.evm_state_index.remove(&previous_key);
+        }
+        if let Some(next_key) = evm_state_index_key(value)? {
+            self.evm_state_index.insert(next_key, 0);
+        }
         self.evm_operations.insert(value.id.get(), encoded_value);
         self.counters.set(encoded_counters);
         Ok(())
@@ -762,59 +1329,145 @@ impl<M: Memory> StableStore<M> {
             .transpose()
     }
 
-    pub fn evm_safe_observation(
-        &self,
-        id: u64,
-    ) -> Result<Option<EvmSafeObservation>, StorageError> {
-        self.evm_safe_observations
-            .get(&id)
-            .map(|blob| decode(&blob))
-            .transpose()
+    pub fn enqueue_withdrawal_notification(
+        &mut self,
+        caller: Principal,
+        transaction_hash: [u8; 32],
+        now_ns: u64,
+    ) -> Result<NotificationEnqueueOutcome, NotificationEnqueueError> {
+        const QUEUE_LIMIT: u64 = 64;
+        const CALLER_PENDING_LIMIT: usize = 4;
+        const WINDOW_NS: u64 = 10 * 60 * 1_000_000_000;
+        const GLOBAL_WINDOW_LIMIT: u8 = 32;
+        const CALLER_WINDOW_LIMIT: u8 = 4;
+
+        if self
+            .withdrawal_notifications
+            .contains_key(&transaction_hash)
+        {
+            return Ok(NotificationEnqueueOutcome::Duplicate);
+        }
+        if self.withdrawal_notifications.len() >= QUEUE_LIMIT {
+            return Err(NotificationEnqueueError::QueueFull);
+        }
+        let pending_for_caller = self
+            .withdrawal_notifications
+            .iter()
+            .map(|entry| decode::<WithdrawalNotification>(&entry.value()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| NotificationEnqueueError::Storage)?
+            .into_iter()
+            .filter(|notification| notification.caller == caller)
+            .count();
+        if pending_for_caller >= CALLER_PENDING_LIMIT {
+            return Err(NotificationEnqueueError::RateLimited {
+                retry_after_seconds: 600,
+            });
+        }
+
+        let window_id = now_ns / WINDOW_NS;
+        let mut control =
+            decode::<WithdrawalNotificationControl>(self.withdrawal_notification_control.get())
+                .map_err(|_| NotificationEnqueueError::Storage)?;
+        if control.window_id != window_id {
+            control = WithdrawalNotificationControl {
+                window_id,
+                ..WithdrawalNotificationControl::default()
+            };
+        }
+        let caller_count = control
+            .caller_counts
+            .iter()
+            .find(|quota| quota.caller == caller)
+            .map(|quota| quota.count)
+            .unwrap_or(0);
+        if control.global_count >= GLOBAL_WINDOW_LIMIT || caller_count >= CALLER_WINDOW_LIMIT {
+            let retry_after_ns = WINDOW_NS.saturating_sub(now_ns % WINDOW_NS);
+            return Err(NotificationEnqueueError::RateLimited {
+                retry_after_seconds: retry_after_ns.saturating_add(999_999_999) / 1_000_000_000,
+            });
+        }
+
+        control.global_count = control
+            .global_count
+            .checked_add(1)
+            .ok_or(NotificationEnqueueError::Storage)?;
+        match control
+            .caller_counts
+            .iter_mut()
+            .find(|quota| quota.caller == caller)
+        {
+            Some(quota) => {
+                quota.count = quota
+                    .count
+                    .checked_add(1)
+                    .ok_or(NotificationEnqueueError::Storage)?;
+            }
+            None => control
+                .caller_counts
+                .push(NotificationCallerQuota { caller, count: 1 }),
+        }
+
+        let notification = WithdrawalNotification {
+            transaction_hash,
+            caller,
+            created_at_ns: now_ns,
+            next_attempt_at_ns: now_ns,
+            attempts: 0,
+        };
+        let encoded_notification =
+            encode(&notification).map_err(|_| NotificationEnqueueError::Storage)?;
+        let encoded_control = encode(&control).map_err(|_| NotificationEnqueueError::Storage)?;
+        self.withdrawal_notifications
+            .insert(transaction_hash, encoded_notification);
+        self.withdrawal_notification_control.set(encoded_control);
+        Ok(NotificationEnqueueOutcome::Queued)
     }
 
-    pub fn put_evm_safe_observation(
-        &mut self,
-        value: &EvmSafeObservation,
-    ) -> Result<(), StorageError> {
-        let operation = self
-            .evm_operation(value.operation_id.get())?
-            .ok_or(StorageError::RecordNotFound)?;
-        match operation.state {
-            EvmOperationState::Submitted { transaction_hash }
-                if transaction_hash == value.transaction_hash => {}
-            _ => return Err(StorageError::Core(CoreError::ConflictingReplay)),
+    pub fn first_due_withdrawal_notification(
+        &self,
+        now_ns: u64,
+    ) -> Result<Option<WithdrawalNotification>, StorageError> {
+        let mut selected: Option<WithdrawalNotification> = None;
+        for entry in self.withdrawal_notifications.iter() {
+            let candidate: WithdrawalNotification = decode(&entry.value())?;
+            if candidate.next_attempt_at_ns > now_ns {
+                continue;
+            }
+            if selected
+                .as_ref()
+                .is_none_or(|current| candidate.created_at_ns < current.created_at_ns)
+            {
+                selected = Some(candidate);
+            }
         }
-        self.evm_safe_observations
-            .insert(value.operation_id.get(), encode(value)?);
+        Ok(selected)
+    }
+
+    pub fn put_withdrawal_notification(
+        &mut self,
+        value: &WithdrawalNotification,
+    ) -> Result<(), StorageError> {
+        let previous = self
+            .withdrawal_notifications
+            .get(&value.transaction_hash)
+            .map(|blob| decode::<WithdrawalNotification>(&blob))
+            .transpose()?
+            .ok_or(StorageError::RecordNotFound)?;
+        if previous.caller != value.caller || previous.created_at_ns != value.created_at_ns {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        self.withdrawal_notifications
+            .insert(value.transaction_hash, encode(value)?);
         Ok(())
     }
 
-    pub fn remove_evm_safe_observation(&mut self, id: u64) {
-        self.evm_safe_observations.remove(&id);
+    pub fn remove_withdrawal_notification(&mut self, transaction_hash: [u8; 32]) {
+        self.withdrawal_notifications.remove(&transaction_hash);
     }
 
-    pub fn safe_evm_count(&self) -> u64 {
-        self.evm_safe_observations.len()
-    }
-
-    pub fn first_submitted_for_safe_observation(
-        &self,
-        after_operation_id: u64,
-    ) -> Result<Option<EvmOperationRecord>, StorageError> {
-        let mut first = None;
-        for entry in self.evm_operations.iter() {
-            let operation: EvmOperationRecord = decode(&entry.value())?;
-            if !matches!(operation.state, EvmOperationState::Submitted { .. }) {
-                continue;
-            }
-            if first.is_none() {
-                first = Some(operation);
-            }
-            if operation.id.get() > after_operation_id {
-                return Ok(Some(operation));
-            }
-        }
-        Ok(first)
+    pub fn withdrawal_notification_count(&self) -> u64 {
+        self.withdrawal_notifications.len()
     }
 
     fn put_reconciliation_hold(
@@ -834,6 +1487,12 @@ impl<M: Memory> StableStore<M> {
             is_open_hold(value),
         )?;
         let encoded_counters = encode(&counters)?;
+        if previous.as_ref().is_some_and(is_open_hold) {
+            self.open_hold_index.remove(&value.id.get());
+        }
+        if is_open_hold(value) {
+            self.open_hold_index.insert(value.id.get(), 0);
+        }
         self.reconciliation_holds
             .insert(value.id.get(), encoded_value);
         self.counters.set(encoded_counters);
@@ -867,13 +1526,10 @@ impl<M: Memory> StableStore<M> {
     }
 
     pub fn first_open_hold(&self) -> Result<Option<ReconciliationHoldRecord>, StorageError> {
-        for entry in self.reconciliation_holds.iter() {
-            let hold: ReconciliationHoldRecord = decode(&entry.value())?;
-            if matches!(hold.state, ReconciliationHoldState::Open) {
-                return Ok(Some(hold));
-            }
-        }
-        Ok(None)
+        let Some(entry) = self.open_hold_index.iter().next() else {
+            return Ok(None);
+        };
+        self.reconciliation_hold(*entry.key())
     }
 
     pub fn resolve_deposit_hold(
@@ -918,6 +1574,7 @@ impl<M: Memory> StableStore<M> {
         let encoded_deposit = encode(deposit)?;
         let encoded_hold = encode(hold)?;
         let previous_deposit = self.deposit(deposit.id.bytes())?;
+        let previous_hold = self.reconciliation_hold(hold.id.get())?;
         let mut counters = self.counters_after_hold_update(hold)?;
         counters.pending_ledger_operations = adjust_active_count(
             counters.pending_ledger_operations,
@@ -933,6 +1590,22 @@ impl<M: Memory> StableStore<M> {
             deposit,
         )?;
         let encoded_counters = encode(&counters)?;
+        if previous_deposit
+            .as_ref()
+            .is_some_and(is_pending_deposit_ledger)
+        {
+            self.pull_pending_deposit_index.remove(&deposit.id.bytes());
+        }
+        if is_pending_deposit_ledger(deposit) {
+            self.pull_pending_deposit_index
+                .insert(deposit.id.bytes(), 0);
+        }
+        if previous_hold.as_ref().is_some_and(is_open_hold) {
+            self.open_hold_index.remove(&hold.id.get());
+        }
+        if is_open_hold(hold) {
+            self.open_hold_index.insert(hold.id.get(), 0);
+        }
         self.deposits.insert(deposit.id.bytes(), encoded_deposit);
         self.reconciliation_holds
             .insert(hold.id.get(), encoded_hold);
@@ -948,6 +1621,7 @@ impl<M: Memory> StableStore<M> {
         let encoded_withdrawal = encode(withdrawal)?;
         let encoded_hold = encode(hold)?;
         let previous_withdrawal = self.withdrawal(withdrawal.id.bytes())?;
+        let previous_hold = self.reconciliation_hold(hold.id.get())?;
         let mut counters = self.counters_after_hold_update(hold)?;
         counters.pending_ledger_operations = adjust_active_count(
             counters.pending_ledger_operations,
@@ -957,7 +1631,31 @@ impl<M: Memory> StableStore<M> {
                 .unwrap_or(false),
             is_pending_withdrawal_ledger(withdrawal),
         )?;
+        counters.nonterminal_withdrawals = adjust_active_count(
+            counters.nonterminal_withdrawals,
+            previous_withdrawal
+                .as_ref()
+                .is_some_and(is_nonterminal_withdrawal),
+            is_nonterminal_withdrawal(withdrawal),
+        )?;
         let encoded_counters = encode(&counters)?;
+        if previous_withdrawal
+            .as_ref()
+            .is_some_and(is_pending_withdrawal_ledger)
+        {
+            self.release_pending_withdrawal_index
+                .remove(&withdrawal.id.bytes());
+        }
+        if is_pending_withdrawal_ledger(withdrawal) {
+            self.release_pending_withdrawal_index
+                .insert(withdrawal.id.bytes(), 0);
+        }
+        if previous_hold.as_ref().is_some_and(is_open_hold) {
+            self.open_hold_index.remove(&hold.id.get());
+        }
+        if is_open_hold(hold) {
+            self.open_hold_index.insert(hold.id.get(), 0);
+        }
         self.withdrawals
             .insert(withdrawal.id.bytes(), encoded_withdrawal);
         self.reconciliation_holds
@@ -995,7 +1693,6 @@ impl<M: Memory> StableStore<M> {
             pending_ledger_operations: counters.pending_ledger_operations,
             reserved_deposit_mint_amount: counters.reserved_deposit_mint_amount,
             reverted_evm_operations: counters.reverted_evm_operations,
-            withdrawal_log_cursor: self.external_progress()?.withdrawal_log_cursor,
             last_finalized_base_block: self.external_progress()?.last_finalized_base_block,
         })
     }
@@ -1052,6 +1749,48 @@ fn is_pending_withdrawal_ledger(value: &WithdrawalRecord) -> bool {
     matches!(value.state, WithdrawalState::ReleasePending { .. })
 }
 
+fn is_nonterminal_withdrawal(value: &WithdrawalRecord) -> bool {
+    !matches!(
+        value.state,
+        WithdrawalState::Released { .. } | WithdrawalState::Refunded { .. }
+    )
+}
+
+fn is_pending_fee_payout(value: &crate::admin::FeePayoutRecord) -> bool {
+    matches!(
+        value.state,
+        crate::admin::FeePayoutState::Pending | crate::admin::FeePayoutState::ReconciliationHold
+    )
+}
+
+fn fee_payout_debit(value: &crate::admin::FeePayoutRecord) -> Result<u128, StorageError> {
+    value
+        .amount
+        .checked_add(value.transfer.fee.get())
+        .ok_or(StorageError::CounterOverflow)
+}
+
+fn adjust_pending_fee_payout_debit(
+    current: u128,
+    previous: Option<&crate::admin::FeePayoutRecord>,
+    next: &crate::admin::FeePayoutRecord,
+) -> Result<u128, StorageError> {
+    let without_previous = if previous.is_some_and(is_pending_fee_payout) {
+        current
+            .checked_sub(fee_payout_debit(previous.expect("checked previous"))?)
+            .ok_or(StorageError::CounterUnderflow)?
+    } else {
+        current
+    };
+    if is_pending_fee_payout(next) {
+        without_previous
+            .checked_add(fee_payout_debit(next)?)
+            .ok_or(StorageError::CounterOverflow)
+    } else {
+        Ok(without_previous)
+    }
+}
+
 fn adjust_active_count(
     current: u64,
     was_active: bool,
@@ -1094,8 +1833,8 @@ mod tests {
         DepositId, DepositRequest, DepositState, EvmCallIntent, EvmOperationEvent, EvmOperationId,
         EvmOperationKind, HoldId, LedgerOperation, LedgerTransferIdentity,
         ReconciliationHoldRecord, ReconciliationHoldState, RefundEligibility, RefundReason,
-        RequestReference, SafeReceiptOutcome, Settlement, TransferAttempt, WithdrawalEvent,
-        WithdrawalHoldResolution, WithdrawalId,
+        RequestReference, Settlement, TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution,
+        WithdrawalId,
     };
     use ic_stable_structures::VectorMemory;
 
@@ -1183,6 +1922,9 @@ mod tests {
             ecdsa_key_name: "test_key".into(),
             ecdsa_derivation_path: vec![],
             poll_interval_seconds: 60,
+            deposit_rate_limit_window_seconds: 60,
+            deposit_rate_limit_global: 30,
+            deposit_rate_limit_per_principal: 3,
             transaction_gas_limit: 500_000,
             max_fee_per_gas: 10,
             max_priority_fee_per_gas: 1,
@@ -1197,6 +1939,76 @@ mod tests {
                 subaccount: vec![],
             },
         }
+    }
+
+    fn intent(id: [u8; 32], owner: Principal) -> DepositIntent {
+        DepositIntent {
+            deposit_id: id,
+            caller: owner.as_slice().to_vec(),
+            client_request_id: id,
+            base_recipient: [9; 20],
+            from_subaccount: [0; 32],
+            payload_hash: [2; 32],
+        }
+    }
+
+    #[test]
+    fn deposit_owner_index_is_newest_first_paginated_and_owner_scoped() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize stable store");
+        let owner = Principal::self_authenticating([1; 32]);
+        let other = Principal::self_authenticating([2; 32]);
+
+        for (tag, principal) in [(1u8, owner), (2, other), (3, owner), (4, owner)] {
+            let mut record = deposit();
+            record.id = DepositId::new([tag; 32]);
+            record.payload_hash = [2; 32];
+            store
+                .admit_deposit(principal, &intent([tag; 32], principal), &record)
+                .expect("admit deposit");
+        }
+
+        let (first, cursor) = store
+            .list_deposit_ids(owner, None, 2)
+            .expect("list first page");
+        assert_eq!(first, vec![[4; 32], [3; 32]]);
+        assert_eq!(cursor, Some(2));
+
+        let (second, cursor) = store
+            .list_deposit_ids(owner, cursor, 2)
+            .expect("list second page");
+        assert_eq!(second, vec![[1; 32]]);
+        assert_eq!(cursor, None);
+        assert_eq!(
+            store
+                .list_deposit_ids(other, None, 100)
+                .expect("list other owner")
+                .0,
+            vec![[2; 32]]
+        );
+    }
+
+    #[test]
+    fn deposit_admission_rejects_replay_without_duplicate_index_entry() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize stable store");
+        let owner = Principal::self_authenticating([3; 32]);
+        let record = deposit();
+        let intent = intent(record.id.bytes(), owner);
+        store
+            .admit_deposit(owner, &intent, &record)
+            .expect("first admission");
+        assert!(matches!(
+            store.admit_deposit(owner, &intent, &record),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        assert_eq!(
+            store
+                .list_deposit_ids(owner, None, 100)
+                .expect("list owner deposits")
+                .0,
+            vec![record.id.bytes()]
+        );
     }
 
     fn held_deposit() -> (DepositRecord, ReconciliationHoldRecord) {
@@ -1247,14 +2059,6 @@ mod tests {
             transaction_hash: [8; 32],
         })
         .expect("submit evm");
-        let safe = EvmSafeObservation {
-            operation_id: evm.id,
-            transaction_hash: [8; 32],
-            receipt_block_number: 99,
-            safe_block_number: 100,
-            observed_at_ns: 101,
-            outcome: SafeReceiptOutcome::Succeeded,
-        };
         let hold = ReconciliationHoldRecord::open(
             HoldId::new(7),
             RequestReference::Withdrawal(withdrawal.id),
@@ -1280,9 +2084,6 @@ mod tests {
             store.put_deposit(&deposit).expect("write deposit");
             store.put_withdrawal(&withdrawal).expect("write withdrawal");
             store.put_evm_operation(&evm).expect("write evm");
-            store
-                .put_evm_safe_observation(&safe)
-                .expect("write safe observation");
             store.put_reconciliation_hold(&hold).expect("write hold");
             store.set_accounting(&accounting).expect("write accounting");
             store.set_counters(&counters).expect("write counters");
@@ -1306,13 +2107,6 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .evm_safe_observation(safe.operation_id.get())
-                .expect("read safe observation"),
-            Some(safe)
-        );
-        assert_eq!(reopened.safe_evm_count(), 1);
-        assert_eq!(
-            reopened
                 .reconciliation_hold(hold.id.get())
                 .expect("read hold"),
             Some(hold)
@@ -1329,7 +2123,6 @@ mod tests {
                 pending_ledger_operations: 1,
                 reserved_deposit_mint_amount: 100,
                 reverted_evm_operations: 0,
-                withdrawal_log_cursor: 0,
                 last_finalized_base_block: 0,
             }
         );
@@ -1337,6 +2130,14 @@ mod tests {
 
     #[test]
     fn schema_wire_corruption_and_size_are_rejected() {
+        #[derive(Serialize)]
+        struct IncompleteCounterState {
+            next_evm_operation_id: u64,
+            next_hold_id: u64,
+            pending_evm_operations: u64,
+            reconciliation_holds: u64,
+        }
+
         assert_eq!(
             StableBlob::new(vec![0; MAX_STABLE_VALUE_BYTES + 1]),
             Err(StorageError::ValueTooLarge {
@@ -1352,6 +2153,18 @@ mod tests {
             decode::<CounterState>(&StableBlob::new(vec![1, 0xff]).expect("bounded")),
             Err(StorageError::DecodeFailed)
         );
+        assert_eq!(
+            decode::<CounterState>(
+                &encode(&IncompleteCounterState {
+                    next_evm_operation_id: 0,
+                    next_hold_id: 0,
+                    pending_evm_operations: 0,
+                    reconciliation_holds: 0,
+                })
+                .expect("encode incomplete value")
+            ),
+            Err(StorageError::DecodeFailed)
+        );
 
         let memory = VectorMemory::default();
         let manager = MemoryManager::init(memory.clone());
@@ -1363,13 +2176,13 @@ mod tests {
     }
 
     #[test]
-    fn schema_v4_is_rejected_without_legacy_migration() {
+    fn non_current_schema_is_rejected_without_migration() {
         let memory = VectorMemory::default();
         let manager = MemoryManager::init(memory.clone());
-        StableCell::init(manager.get(SCHEMA_MEMORY_ID), 4u16);
+        StableCell::init(manager.get(SCHEMA_MEMORY_ID), 2u16);
         assert!(matches!(
             StableStore::init(memory),
-            Err(StorageError::UnsupportedSchemaVersion(4))
+            Err(StorageError::UnsupportedSchemaVersion(2))
         ));
     }
 
@@ -1390,6 +2203,7 @@ mod tests {
         );
         evm.state = EvmOperationState::Finalized {
             transaction_hash: [2; 32],
+            receipt_block_number: 2,
             finalized_block_number: 3,
         };
         store.put_evm_operation(&evm).expect("finalize EVM");
@@ -1534,6 +2348,7 @@ mod tests {
         store.put_evm_operation(&evm).expect("insert pending");
         evm.state = EvmOperationState::Reverted {
             transaction_hash: [5; 32],
+            receipt_block_number: 98,
             finalized_block_number: 99,
         };
         store.put_evm_operation(&evm).expect("mark reverted");
@@ -1788,6 +2603,7 @@ mod tests {
             );
             evm.state = EvmOperationState::Finalized {
                 transaction_hash: [2; 32],
+                receipt_block_number: id,
                 finalized_block_number: id,
             };
             store.put_evm_operation(&evm).expect("write terminal EVM");
@@ -1806,7 +2622,6 @@ mod tests {
                 pending_ledger_operations: 0,
                 reserved_deposit_mint_amount: 0,
                 reverted_evm_operations: 0,
-                withdrawal_log_cursor: 0,
                 last_finalized_base_block: 0,
             }
         );
@@ -1843,6 +2658,7 @@ mod tests {
         let mut finalized = evm;
         finalized.state = EvmOperationState::Finalized {
             transaction_hash: [2; 32],
+            receipt_block_number: 2,
             finalized_block_number: 3,
         };
         assert_eq!(
@@ -1856,7 +2672,182 @@ mod tests {
     }
 
     #[test]
+    fn deposit_quota_is_principal_scoped_and_resets_by_window() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        let caller = Principal::self_authenticating([1; 32]);
+        let other = Principal::self_authenticating([2; 32]);
+        store
+            .reserve_deposit_quota(caller, 1, 60, 3, 2)
+            .expect("first admission");
+        store
+            .reserve_deposit_quota(caller, 2, 60, 3, 2)
+            .expect("second admission");
+        assert_eq!(
+            store.reserve_deposit_quota(caller, 3, 60, 3, 2),
+            Err(DepositQuotaError::RateLimited(DepositRateLimit {
+                retry_after_seconds: 60
+            }))
+        );
+        store
+            .reserve_deposit_quota(other, 4, 60, 3, 2)
+            .expect("global final slot");
+        assert!(store
+            .reserve_deposit_quota(Principal::self_authenticating([3; 32]), 5, 60, 3, 2)
+            .is_err());
+        store
+            .reserve_deposit_quota(caller, 60_000_000_000, 60, 3, 2)
+            .expect("new window resets quota");
+    }
+
+    #[test]
+    fn withdrawal_notification_queue_is_deduplicated_bounded_and_rate_limited() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        let caller = Principal::self_authenticating([1; 32]);
+        assert_eq!(
+            store.enqueue_withdrawal_notification(caller, [1; 32], 1),
+            Ok(NotificationEnqueueOutcome::Queued)
+        );
+        assert_eq!(
+            store.enqueue_withdrawal_notification(caller, [1; 32], 2),
+            Ok(NotificationEnqueueOutcome::Duplicate)
+        );
+        for tag in 2..=4 {
+            assert_eq!(
+                store.enqueue_withdrawal_notification(caller, [tag; 32], u64::from(tag)),
+                Ok(NotificationEnqueueOutcome::Queued)
+            );
+        }
+        assert!(matches!(
+            store.enqueue_withdrawal_notification(caller, [5; 32], 5),
+            Err(NotificationEnqueueError::RateLimited { .. })
+        ));
+        assert_eq!(store.withdrawal_notification_count(), 4);
+        assert_eq!(
+            store
+                .first_due_withdrawal_notification(5)
+                .expect("read due notification")
+                .expect("notification")
+                .transaction_hash,
+            [1; 32]
+        );
+    }
+
+    #[test]
+    fn withdrawal_notification_global_window_limit_is_enforced() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        for tag in 1..=32u8 {
+            let caller = Principal::self_authenticating([tag; 32]);
+            assert_eq!(
+                store.enqueue_withdrawal_notification(caller, [tag; 32], 1),
+                Ok(NotificationEnqueueOutcome::Queued)
+            );
+        }
+        assert!(matches!(
+            store.enqueue_withdrawal_notification(
+                Principal::self_authenticating([99; 32]),
+                [99; 32],
+                1
+            ),
+            Err(NotificationEnqueueError::RateLimited { .. })
+        ));
+    }
+
+    #[test]
+    fn base_snapshot_cache_is_bounded_by_ttl_progress_and_singleflight() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        let snapshot = BaseMintSnapshot {
+            finalized_block_number: 10,
+            finalized_block_timestamp: 10,
+            service_fee: Amount::new(1),
+            max_service_fee: Amount::new(2),
+            per_deposit_limit: Amount::new(100),
+            mint_window_limit: Amount::new(1_000),
+            mint_window_started_at: 0,
+            mint_window_duration: 100,
+            minted_in_window: Amount::ZERO,
+        };
+        assert!(store
+            .begin_base_snapshot_refresh(100, 300, 60)
+            .expect("begin refresh"));
+        assert!(!store
+            .begin_base_snapshot_refresh(101, 300, 60)
+            .expect("singleflight rejects overlap"));
+        store
+            .finish_base_snapshot_refresh(110, snapshot, [7; 20], false)
+            .expect("cache snapshot");
+        let cached = store
+            .cached_base_mint_snapshot(160, 60, 10)
+            .expect("fresh cache")
+            .expect("cached snapshot");
+        assert_eq!(cached.snapshot, snapshot);
+        assert_eq!(cached.bridge_signer, [7; 20]);
+        assert!(!cached.deposits_paused);
+        assert_eq!(
+            store
+                .cached_base_mint_snapshot(171, 60, 10)
+                .expect("expired cache"),
+            None
+        );
+        assert_eq!(
+            store
+                .cached_base_mint_snapshot(120, 60, 11)
+                .expect("progress-invalid cache"),
+            None
+        );
+    }
+
+    #[test]
+    fn fee_payout_success_debits_once_and_removes_reconciliation_reservation() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        store
+            .set_accounting(&AccountingState {
+                fee_reserve: Amount::new(101),
+                ..AccountingState::default()
+            })
+            .expect("seed reserve");
+        let recipient = FeeRecipientConfig {
+            owner: Principal::self_authenticating([7; 32]),
+            subaccount: vec![],
+        };
+        let payout = crate::admin::FeePayoutRecord {
+            id: 4,
+            amount: 100,
+            recipient,
+            transfer: transfer(LedgerOperation::FeePayout, 100, 30),
+            state: crate::admin::FeePayoutState::Pending,
+        };
+        store.put_fee_payout(&payout).expect("insert payout");
+        assert_eq!(store.pending_fee_payout_amount().expect("pending"), 101);
+        assert_eq!(
+            store
+                .first_reconcilable_fee_payout(1_000, 100)
+                .expect("aged pending payout"),
+            Some(payout.clone())
+        );
+        store
+            .complete_fee_payout_success(payout.id, 8)
+            .expect("complete payout");
+        store
+            .complete_fee_payout_success(payout.id, 8)
+            .expect("idempotent replay");
+        assert_eq!(
+            store.accounting().expect("accounting").fee_reserve,
+            Amount::ZERO
+        );
+        assert_eq!(store.pending_fee_payout_amount().expect("pending"), 0);
+        assert_eq!(
+            store.complete_fee_payout_success(payout.id, 9),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        );
+    }
+
+    #[test]
     fn reserved_memory_ids_are_never_reassigned() {
-        assert_eq!(RESERVED_MEMORY_IDS, 17..=31);
+        assert_eq!(RESERVED_MEMORY_IDS, 26..=31);
     }
 }

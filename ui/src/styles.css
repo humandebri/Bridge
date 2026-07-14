@@ -1,0 +1,49 @@
+@import "tailwindcss";
+@import "@fontsource/dm-sans/400.css";
+@import "@fontsource/dm-sans/500.css";
+@import "@fontsource/dm-sans/700.css";
+
+:root {
+  --paper: #ffffff;
+  --panel: #f3f3f3;
+  --ink: #000000;
+  --muted: #555252;
+  --support: #4d4d4d;
+  --line: #dddddd;
+  --line-strong: #c8c8c8;
+  --pink: #ff2686;
+  --pink-pale: #ffcde5;
+  --pink-soft: rgba(255, 129, 190, .15);
+  --success: #11845b;
+  --info: #086cd9;
+  --warning: #d5691b;
+  --danger: #dc2b2b;
+  --focus: #3324d5;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: "DM Sans", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+html { min-width: 320px; min-height: 100%; background: var(--paper); }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--paper); }
+button, input { font: inherit; }
+a { color: inherit; text-decoration: none; }
+summary::-webkit-details-marker { display: none; }
+::selection { background: var(--pink-pale); color: var(--ink); }
+.font-display { font-family: "DM Sans", sans-serif; font-weight: 700; letter-spacing: -.035em; }
+.font-mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+.route-enter { animation: route-in .45s ease both; }
+.menu-popover:not([open]) nav { display: none; }
+.kinic-lines { position: relative; height: 10px; width: 88px; transition: transform .3s ease; }
+.kinic-lines i { position: absolute; left: 0; height: 2px; border-radius: 999px; background: var(--pink); transition: width .3s ease, transform .3s ease; }
+.kinic-lines i:nth-child(1) { top: 0; width: 88px; opacity: .18; }
+.kinic-lines i:nth-child(2) { top: 4px; width: 68px; opacity: .5; }
+.kinic-lines i:nth-child(3) { top: 8px; width: 48px; }
+.kinic-lines.is-withdraw { transform: translateX(calc(100% + 356px)); }
+.kinic-lines.is-withdraw i { transform: scaleX(-1); transform-origin: center; }
+@keyframes route-in { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+@media (max-width: 639px) { .kinic-lines.is-withdraw { transform: translateX(calc(100vw - 152px)); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }

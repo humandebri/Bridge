@@ -555,6 +555,7 @@ fn evm_operation_is_ordered_and_idempotent() {
     );
     let finalized = EvmOperationEvent::Finalized {
         transaction_hash: [8; 32],
+        receipt_block_number: 70,
         finalized_block_number: 77,
     };
     operation.apply(finalized).expect("finalize");
@@ -564,8 +565,20 @@ fn evm_operation_is_ordered_and_idempotent() {
     );
     assert!(matches!(
         operation.state,
-        EvmOperationState::Finalized { .. }
+        EvmOperationState::Finalized {
+            receipt_block_number: 70,
+            finalized_block_number: 77,
+            ..
+        }
     ));
+    assert_eq!(
+        operation.apply(EvmOperationEvent::Finalized {
+            transaction_hash: [8; 32],
+            receipt_block_number: 71,
+            finalized_block_number: 77,
+        }),
+        Err(CoreError::ConflictingReplay)
+    );
 }
 
 #[test]
@@ -580,6 +593,7 @@ fn finalized_revert_is_terminal_and_propagates_to_owned_records() {
         .expect("submit");
     let reverted = EvmOperationEvent::Reverted {
         transaction_hash: [8; 32],
+        receipt_block_number: 70,
         finalized_block_number: 78,
     };
     assert_eq!(
@@ -600,6 +614,7 @@ fn finalized_revert_is_terminal_and_propagates_to_owned_records() {
     assert!(matches!(
         operation.apply(EvmOperationEvent::Finalized {
             transaction_hash: [8; 32],
+            receipt_block_number: 70,
             finalized_block_number: 78,
         }),
         Err(CoreError::ConflictingReplay)
@@ -1065,6 +1080,7 @@ fn evm_state_event_transition_table_is_exhaustive() {
         },
         EvmOperationState::Finalized {
             transaction_hash: [8; 32],
+            receipt_block_number: 10,
             finalized_block_number: 11,
         },
     ];
@@ -1074,6 +1090,7 @@ fn evm_state_event_transition_table_is_exhaustive() {
         },
         EvmOperationEvent::Finalized {
             transaction_hash: [8; 32],
+            receipt_block_number: 10,
             finalized_block_number: 11,
         },
     ];
@@ -1113,6 +1130,7 @@ fn evm_state_event_transition_table_is_exhaustive() {
     );
     finalized.state = EvmOperationState::Finalized {
         transaction_hash: [8; 32],
+        receipt_block_number: 10,
         finalized_block_number: 11,
     };
     assert_eq!(

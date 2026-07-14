@@ -1,10 +1,10 @@
-use crate::{evm_rpc, ledger, signer, STORE};
+use crate::{evm_rpc, ledger, signer, storage_or_trap, STORE};
 use bridge_core::{
     Account, Amount, DepositEvent, DepositHoldResolution, EvmOperationEvent, EvmOperationKind,
-    EvmOperationState, EvmSafeObservation, FeeKind, LedgerCallOutcome, LedgerOperation,
-    LedgerTransferIdentity, ReconciliationHoldRecord, RefundEligibility, RefundReason,
-    RequestReference, SafeReceiptOutcome, Settlement, TransferAttempt, WithdrawalEvent,
-    WithdrawalHoldResolution, WithdrawalId, WithdrawalRecord, WithdrawalState,
+    EvmOperationState, FeeKind, LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity,
+    ReconciliationHoldRecord, RefundEligibility, RefundReason, RequestReference, Settlement,
+    TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId, WithdrawalRecord,
+    WithdrawalState,
 };
 use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
@@ -18,190 +18,29 @@ fn retry_memo(hold_id: u64, identity: &LedgerTransferIdentity) -> [u8; 32] {
 }
 
 pub async fn tick() {
-    observe_service_fee().await;
-    observe_one_safe_evm_operation().await;
     confirm_one_evm_operation().await;
-    rebroadcast_one_unconfirmed_evm_operation().await;
     reconcile_one_hold().await;
     reconcile_fee_payout().await;
-    discover_withdrawals().await;
+    process_one_withdrawal_notification().await;
     process_one_release().await;
-    if ensure_nonce_initialized_from_store().await.is_err() {
-        return;
+    match ensure_nonce_initialized_from_store().await {
+        Ok(()) => {}
+        Err(NonceInitializationError::Observation) => return,
+        Err(NonceInitializationError::Storage) => {
+            ic_cdk::trap("nonce initialization storage failure")
+        }
     }
     assign_one_evm_nonce();
     process_one_evm_operation().await;
     process_one_deposit_pull().await;
 }
 
-async fn rebroadcast_one_unconfirmed_evm_operation() {
-    let candidate = STORE.with(|store| {
-        let store = store.borrow();
-        Some((
-            store.config().ok().flatten()?,
-            store
-                .first_submitted_without_safe_observation()
-                .ok()
-                .flatten()?,
-        ))
-    });
-    let Some((config, (operation, envelope))) = candidate else {
-        return;
-    };
-    let Some(raw) = envelope.signed_transaction else {
-        return;
-    };
-    let transaction_hash = match operation.state {
-        EvmOperationState::Submitted { transaction_hash } => transaction_hash,
-        _ => return,
-    };
-    if signer::transaction_hash(&raw) != transaction_hash {
-        return;
-    }
-    let _ = evm_rpc::broadcast(&config, &raw).await;
-}
-
-async fn observe_one_safe_evm_operation() {
-    let candidate = STORE.with(|store| {
-        let store = store.borrow();
-        let progress = store.external_progress().ok()?;
-        Some((
-            store.config().ok().flatten()?,
-            store
-                .first_submitted_for_safe_observation(progress.safe_observation_cursor)
-                .ok()
-                .flatten()?,
-        ))
-    });
-    let Some((config, operation)) = candidate else {
-        return;
-    };
-    let transaction_hash = match operation.state {
-        EvmOperationState::Submitted { transaction_hash } => transaction_hash,
-        _ => return,
-    };
-    let outcome = match evm_rpc::safe_receipt_outcome(&config, transaction_hash).await {
-        Ok(outcome) => outcome,
-        Err(_) => return,
-    };
-    let safe_block_number = match outcome {
-        evm_rpc::SafeReceiptOutcome::Missing { safe_block_number }
-        | evm_rpc::SafeReceiptOutcome::Succeeded {
-            safe_block_number, ..
-        }
-        | evm_rpc::SafeReceiptOutcome::Reverted {
-            safe_block_number, ..
-        } => safe_block_number,
-    };
-    let observation = match outcome {
-        evm_rpc::SafeReceiptOutcome::Missing { .. } => None,
-        evm_rpc::SafeReceiptOutcome::Succeeded {
-            receipt_block_number,
-            safe_block_number,
-        } => {
-            let contract_matches = if operation.kind == EvmOperationKind::MintDeposit {
-                let deposit_id = STORE.with(|store| {
-                    store
-                        .borrow()
-                        .deposit_for_operation(operation.id)
-                        .ok()
-                        .flatten()
-                        .map(|record| record.id)
-                });
-                let Some(deposit_id) = deposit_id else {
-                    return;
-                };
-                let Ok(matches) = evm_rpc::is_deposit_processed_at_block(
-                    &config,
-                    deposit_id.bytes(),
-                    safe_block_number,
-                )
-                .await
-                else {
-                    return;
-                };
-                matches
-            } else {
-                let withdrawal_id = STORE.with(|store| {
-                    store
-                        .borrow()
-                        .withdrawal_for_operation(operation.id)
-                        .ok()
-                        .flatten()
-                        .map(|record| record.id)
-                });
-                let Some(withdrawal_id) = withdrawal_id else {
-                    return;
-                };
-                let expected = match operation.kind {
-                    EvmOperationKind::AcknowledgeRelease => 2,
-                    EvmOperationKind::RefundWithdrawal => 3,
-                    EvmOperationKind::MintDeposit => unreachable!(),
-                };
-                let Ok(status) = evm_rpc::withdrawal_status_at_block(
-                    &config,
-                    withdrawal_id.bytes(),
-                    safe_block_number,
-                )
-                .await
-                else {
-                    return;
-                };
-                status == expected
-            };
-            contract_matches.then_some(EvmSafeObservation {
-                operation_id: operation.id,
-                transaction_hash,
-                receipt_block_number,
-                safe_block_number,
-                observed_at_ns: ic_cdk::api::time(),
-                outcome: SafeReceiptOutcome::Succeeded,
-            })
-        }
-        evm_rpc::SafeReceiptOutcome::Reverted {
-            receipt_block_number,
-            safe_block_number,
-        } => Some(EvmSafeObservation {
-            operation_id: operation.id,
-            transaction_hash,
-            receipt_block_number,
-            safe_block_number,
-            observed_at_ns: ic_cdk::api::time(),
-            outcome: SafeReceiptOutcome::Reverted,
-        }),
-    };
-    STORE.with(|store| {
-        let mut store = store.borrow_mut();
-        let Ok(Some(current)) = store.evm_operation(operation.id.get()) else {
-            return;
-        };
-        if current.state != operation.state {
-            return;
-        }
-        match observation {
-            Some(value) => {
-                if store.put_evm_safe_observation(&value).is_err() {
-                    return;
-                }
-            }
-            None => store.remove_evm_safe_observation(operation.id.get()),
-        }
-        let Ok(mut progress) = store.external_progress() else {
-            return;
-        };
-        progress.last_safe_base_block = safe_block_number;
-        progress.last_safe_observation_ns = ic_cdk::api::time();
-        progress.safe_observation_cursor = operation.id.get();
-        let _ = store.set_external_progress(&progress);
-    });
-}
-
-async fn ensure_nonce_initialized_from_store() -> Result<(), ()> {
-    let config = STORE.with(|store| store.borrow().config().ok().flatten());
-    let Some(config) = config else {
-        return Err(());
-    };
-    ensure_nonce_initialized(&config).await.map_err(|_| ())
+async fn ensure_nonce_initialized_from_store() -> Result<(), NonceInitializationError> {
+    let config = STORE
+        .with(|store| store.borrow().config())
+        .map_err(|_| NonceInitializationError::Storage)?
+        .ok_or(NonceInitializationError::Storage)?;
+    ensure_nonce_initialized(&config).await
 }
 
 pub(crate) enum NonceInitializationError {
@@ -212,20 +51,31 @@ pub(crate) enum NonceInitializationError {
 pub(crate) async fn ensure_nonce_initialized(
     config: &crate::config::BridgeInitArgs,
 ) -> Result<(), NonceInitializationError> {
-    let initialized = STORE.with(|store| {
-        store
-            .borrow()
-            .external_progress()
-            .map(|progress| progress.nonce_initialized)
-            .unwrap_or(false)
-    });
+    let initialized = STORE
+        .with(|store| store.borrow().external_progress())
+        .map_err(|_| NonceInitializationError::Storage)?
+        .nonce_initialized;
     if initialized {
         return Ok(());
     }
-    let address = signer::ethereum_address(config).await.map_err(|error| {
-        ic_cdk::println!("failed to derive bridge signer address: {error:?}");
-        NonceInitializationError::Observation
-    })?;
+    let address = match STORE
+        .with(|store| store.borrow().signer_address())
+        .map_err(|_| NonceInitializationError::Storage)?
+    {
+        Some(address) => address,
+        None => {
+            let derived = signer::ethereum_address(config).await.map_err(|error| {
+                ic_cdk::println!("failed to derive bridge signer address: {error:?}");
+                NonceInitializationError::Observation
+            })?;
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .set_signer_address_if_absent(derived)
+                    .map_err(|_| NonceInitializationError::Storage)
+            })?
+        }
+    };
     let nonce = evm_rpc::transaction_count(config, address)
         .await
         .map_err(|error| {
@@ -254,36 +104,28 @@ async fn reconcile_fee_payout() {
     const DEDUP_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
     let candidate = STORE.with(|store| {
         let store = store.borrow();
-        Some((
-            store.config().ok().flatten()?,
-            store.first_held_fee_payout().ok().flatten()?,
-        ))
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let payout = storage_or_trap(
+            "reconcilable fee payout read",
+            store.first_reconcilable_fee_payout(ic_cdk::api::time(), DEDUP_NS),
+        )?;
+        Some((config, payout))
     });
     let Some((config, mut payout)) = candidate else {
         return;
     };
-    if ic_cdk::api::time().saturating_sub(payout.transfer.created_at_time_ns) <= DEDUP_NS {
-        return;
-    }
     let resolution = ledger::reconcile_history(config.ledger_canister_id, &payout.transfer).await;
     match resolution {
         ledger::HistoryResolution::Succeeded { block_index } => {
             payout.state = crate::admin::FeePayoutState::Succeeded { block_index };
             STORE.with(|store| {
-                let mut store = store.borrow_mut();
-                let Ok(mut accounting) = store.accounting() else {
-                    return;
-                };
-                let Some(debit) =
-                    bridge_core::payout_debit(true, payout.amount, payout.transfer.fee.get())
-                else {
-                    return;
-                };
-                if accounting.spend_fee_reserve(Amount::new(debit)).is_ok()
-                    && store.set_accounting(&accounting).is_ok()
-                {
-                    let _ = store.put_fee_payout(&payout);
-                }
+                storage_or_trap(
+                    "fee payout completion",
+                    store
+                        .borrow_mut()
+                        .complete_fee_payout_success(payout.id, block_index),
+                );
             });
         }
         ledger::HistoryResolution::Absent { watermark } => {
@@ -298,7 +140,10 @@ async fn reconcile_fee_payout() {
             {
                 payout.state = crate::admin::FeePayoutState::Failed;
                 STORE.with(|store| {
-                    let _ = store.borrow_mut().put_fee_payout(&payout);
+                    storage_or_trap(
+                        "failed fee payout persistence",
+                        store.borrow_mut().put_fee_payout(&payout),
+                    );
                 });
             }
         }
@@ -309,32 +154,42 @@ async fn reconcile_fee_payout() {
 fn assign_one_evm_nonce() {
     STORE.with(|store| {
         let mut store = store.borrow_mut();
-        let has_prepared = match store.first_prepared_evm() {
-            Ok(Some(_)) => true,
-            Ok(None) => false,
-            Err(_) => return,
-        };
-        let Ok(mut progress) = store.external_progress() else {
-            return;
-        };
+        let has_prepared =
+            storage_or_trap("prepared EVM operation read", store.first_prepared_evm()).is_some();
+        let mut progress = storage_or_trap("external progress read", store.external_progress());
         if !bridge_core::can_assign_nonce(progress.nonce_initialized, has_prepared) {
             return;
         }
-        let Ok(Some((mut operation, intent))) = store.first_queued_evm() else {
+        let batch = storage_or_trap("queued EVM batch read", store.first_queued_evm_batch());
+        if batch.is_empty() {
             return;
-        };
+        }
         let nonce = progress.next_evm_nonce;
         let Some(next) = bridge_core::nonce_next(nonce) else {
             return;
         };
-        let envelope = intent.assign_nonce(nonce);
-        if operation.apply(EvmOperationEvent::Prepared).is_err() {
+        let Some(envelope) = batch_envelope(&batch, nonce) else {
             return;
-        }
-        if store.put_evm_envelope(&envelope).is_err()
-            || store.put_evm_operation(&operation).is_err()
+        };
+        let mut operations = batch
+            .into_iter()
+            .map(|(operation, _)| operation)
+            .collect::<Vec<_>>();
+        if operations
+            .iter_mut()
+            .any(|operation| operation.apply(EvmOperationEvent::Prepared).is_err())
         {
-            return;
+            ic_cdk::trap("invalid EVM prepared transition");
+        }
+        storage_or_trap(
+            "EVM envelope persistence",
+            store.put_evm_envelope(&envelope),
+        );
+        for operation in &operations {
+            storage_or_trap(
+                "prepared EVM operation persistence",
+                store.put_evm_operation(operation),
+            );
         }
         progress.next_evm_nonce = next;
         store
@@ -345,39 +200,89 @@ fn assign_one_evm_nonce() {
     });
 }
 
-async fn observe_service_fee() {
-    let config = STORE.with(|store| store.borrow().config().ok().flatten());
-    let Some(config) = config else {
-        return;
+fn abi_word(value: u128) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[16..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn batch_envelope(
+    batch: &[(bridge_core::EvmOperationRecord, bridge_core::EvmCallIntent)],
+    nonce: u64,
+) -> Option<bridge_core::EvmTransactionEnvelope> {
+    let (first_operation, first_intent) = batch.first()?;
+    if batch.len() > 4
+        || batch.iter().any(|(operation, intent)| {
+            operation.kind != first_operation.kind
+                || intent.chain_id != first_intent.chain_id
+                || intent.contract != first_intent.contract
+                || intent.max_fee_per_gas != first_intent.max_fee_per_gas
+                || intent.max_priority_fee_per_gas != first_intent.max_priority_fee_per_gas
+        })
+    {
+        return None;
+    }
+    let (signature, single_words) = match first_operation.kind {
+        EvmOperationKind::MintDeposit => (
+            "mintDeposits((bytes32,address,uint256,uint256,uint256)[])",
+            5,
+        ),
+        EvmOperationKind::AcknowledgeRelease => (
+            "acknowledgeReleases((uint256,uint256,uint256,uint256,uint256)[])",
+            5,
+        ),
+        EvmOperationKind::RefundWithdrawal => ("refundWithdrawals(uint256[])", 1),
     };
-    let Ok((current, _)) = evm_rpc::service_fee(&config).await else {
-        return;
-    };
-    STORE.with(|store| {
-        let mut store = store.borrow_mut();
-        let Ok(mut progress) = store.external_progress() else {
-            return;
-        };
-        if progress.last_observed_service_fee == Some(current) {
-            return;
-        }
-        let previous = progress.last_observed_service_fee;
-        progress.last_observed_service_fee = Some(current);
-        if store.set_external_progress(&progress).is_ok() {
-            let _ = store.append_audit_event(
-                ic_cdk::api::canister_self(),
-                crate::storage::AuditEventKind::BaseServiceFeeChanged { previous, current },
-            );
-        }
-    });
+    let expected_len = 4 + single_words * 32;
+    if batch
+        .iter()
+        .any(|(_, intent)| intent.calldata.len() != expected_len)
+    {
+        return None;
+    }
+    let mut selector_hash = [0u8; 32];
+    let mut keccak = Keccak::v256();
+    keccak.update(signature.as_bytes());
+    keccak.finalize(&mut selector_hash);
+    let mut calldata = selector_hash[..4].to_vec();
+    calldata.extend_from_slice(&abi_word(32));
+    calldata.extend_from_slice(&abi_word(batch.len() as u128));
+    for (_, intent) in batch {
+        calldata.extend_from_slice(&intent.calldata[4..]);
+    }
+    let mut digest = Sha256::new();
+    for (operation, _) in batch {
+        digest.update(operation.id.get().to_be_bytes());
+        digest.update(operation.payload_hash);
+    }
+    Some(bridge_core::EvmTransactionEnvelope {
+        operation_id: first_operation.id,
+        operation_ids: batch.iter().map(|(operation, _)| operation.id).collect(),
+        payload_hash: digest.finalize().into(),
+        nonce,
+        chain_id: first_intent.chain_id,
+        contract: first_intent.contract,
+        calldata,
+        gas_limit: batch
+            .iter()
+            .try_fold(0u128, |sum, (_, intent)| sum.checked_add(intent.gas_limit))?,
+        max_fee_per_gas: first_intent.max_fee_per_gas,
+        max_priority_fee_per_gas: first_intent.max_priority_fee_per_gas,
+        signed_transaction: None,
+    })
 }
 
 async fn process_one_deposit_pull() {
     let candidate = STORE.with(|store| {
         let store = store.borrow();
-        let config = store.config().ok().flatten()?;
-        let deposit = store.first_pull_pending().ok().flatten()?;
-        let intent = store.deposit_intent(deposit.id.bytes()).ok().flatten()?;
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let deposit = storage_or_trap("pull-pending deposit read", store.first_pull_pending())?;
+        let intent = storage_or_trap(
+            "deposit intent read",
+            store.deposit_intent(deposit.id.bytes()),
+        )
+        .unwrap_or_else(|| ic_cdk::trap("missing deposit intent"));
         Some((config, deposit, intent.base_recipient))
     });
     let Some((config, mut deposit, recipient)) = candidate else {
@@ -394,33 +299,27 @@ async fn process_one_deposit_pull() {
         LedgerCallOutcome::Ambiguous => {
             STORE.with(|store| {
                 let mut store = store.borrow_mut();
-                let Ok(Some(current)) = store.deposit(deposit.id.bytes()) else {
-                    return;
-                };
+                let current = storage_or_trap("deposit read", store.deposit(deposit.id.bytes()))
+                    .unwrap_or_else(|| ic_cdk::trap("missing pull-pending deposit"));
                 if !matches!(current.state, bridge_core::DepositState::PullPending) {
                     return;
                 }
-                let Ok(hold_id) = store.allocate_hold_id() else {
-                    return;
-                };
-                if deposit
+                let hold_id = storage_or_trap("hold ID allocation", store.allocate_hold_id());
+                deposit
                     .apply(DepositEvent::PullAmbiguous { hold_id })
-                    .is_err()
-                {
-                    return;
-                }
+                    .unwrap_or_else(|error| {
+                        ic_cdk::trap(format!("deposit hold transition failed: {error}"))
+                    });
                 let hold = ReconciliationHoldRecord::open(
                     hold_id,
                     RequestReference::Deposit(deposit.id),
                     deposit.transfer.clone(),
                 );
-                if store.put_deposit(&deposit).is_ok() {
-                    store
-                        .put_open_reconciliation_hold(&hold)
-                        .unwrap_or_else(|error| {
-                            ic_cdk::trap(format!("deposit hold persistence failed: {error}"))
-                        });
-                }
+                storage_or_trap("held deposit persistence", store.put_deposit(&deposit));
+                storage_or_trap(
+                    "deposit hold persistence",
+                    store.put_open_reconciliation_hold(&hold),
+                );
             });
         }
         LedgerCallOutcome::DefinitiveFailure { code } => {
@@ -440,10 +339,10 @@ async fn reconcile_one_hold() {
     const DEDUP_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
     let candidate = STORE.with(|store| {
         let store = store.borrow();
-        Some((
-            store.config().ok().flatten()?,
-            store.first_open_hold().ok().flatten()?,
-        ))
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let hold = storage_or_trap("open hold read", store.first_open_hold())?;
+        Some((config, hold))
     });
     let Some((config, hold)) = candidate else {
         return;
@@ -490,11 +389,13 @@ async fn reconcile_one_hold() {
                                 matched_block: None,
                                 transfer: hold.transfer.clone(),
                             };
-                            if !scan.can_prove_absent()
-                                || store.put_reconciliation_scan(&scan).is_err()
-                            {
+                            if !scan.can_prove_absent() {
                                 return;
                             }
+                            storage_or_trap(
+                                "deposit reconciliation scan persistence",
+                                store.put_reconciliation_scan(&scan),
+                            );
                             DepositHoldResolution::Absent { history_watermark }
                         }
                     };
@@ -515,11 +416,13 @@ async fn reconcile_one_hold() {
                                 matched_block: None,
                                 transfer: hold.transfer.clone(),
                             };
-                            if !scan.can_prove_absent()
-                                || store.put_reconciliation_scan(&scan).is_err()
-                            {
+                            if !scan.can_prove_absent() {
                                 return;
                             }
+                            storage_or_trap(
+                                "withdrawal reconciliation scan persistence",
+                                store.put_reconciliation_scan(&scan),
+                            );
                             let mut next_identity = hold.transfer.clone();
                             next_identity.created_at_time_ns = ic_cdk::api::time()
                                 .max(hold.transfer.created_at_time_ns.saturating_add(1));
@@ -645,146 +548,199 @@ fn advance_withdrawal_hold(
     });
 }
 
-async fn discover_withdrawals() {
+async fn process_one_withdrawal_notification() {
     let candidate = STORE.with(|store| {
         let store = store.borrow();
-        Some((
-            store.config().ok().flatten()?,
-            store.external_progress().ok()?,
-        ))
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let notification = storage_or_trap(
+            "due withdrawal notification read",
+            store.first_due_withdrawal_notification(ic_cdk::api::time()),
+        )?;
+        Some((config, notification))
     });
-    let Some((config, mut progress)) = candidate else {
+    let Some((config, notification)) = candidate else {
         return;
     };
-    let Ok((next_cursor, ids)) =
-        evm_rpc::discover_withdrawals(&config, progress.withdrawal_log_cursor).await
-    else {
+    let outcome = match evm_rpc::notified_withdrawal_outcome(&config, notification.transaction_hash)
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(evm_rpc::ObservationError::InvalidResponse | evm_rpc::ObservationError::Overflow) => {
+            discard_withdrawal_notification(notification.transaction_hash);
+            return;
+        }
+        Err(evm_rpc::ObservationError::Rpc | evm_rpc::ObservationError::Inconsistent) => {
+            retry_withdrawal_notification(notification);
+            return;
+        }
+    };
+    let (observed, snapshot, finalized_block_number) = match outcome {
+        evm_rpc::NotifiedWithdrawalOutcome::Missing
+        | evm_rpc::NotifiedWithdrawalOutcome::Pending { .. } => {
+            retry_withdrawal_notification(notification);
+            return;
+        }
+        evm_rpc::NotifiedWithdrawalOutcome::Reverted { .. } => {
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .remove_withdrawal_notification(notification.transaction_hash)
+            });
+            return;
+        }
+        evm_rpc::NotifiedWithdrawalOutcome::Finalized {
+            withdrawal,
+            snapshot,
+            finalized_block_number,
+            ..
+        } => (withdrawal, snapshot, finalized_block_number),
+    };
+    let Ok(owner) = candid::Principal::try_from_slice(&observed.owner) else {
+        discard_withdrawal_notification(notification.transaction_hash);
         return;
     };
-    progress.last_finalized_base_block = progress
-        .last_finalized_base_block
-        .max(next_cursor.saturating_sub(1));
-    progress.last_finalized_observation_ns = ic_cdk::api::time();
-    for id in ids {
-        let already_known =
-            STORE.with(|store| store.borrow().withdrawal(id).ok().flatten().is_some());
-        if already_known {
-            continue;
-        }
-        let Ok(Some(observed)) = evm_rpc::finalized_withdrawal(&config, id).await else {
-            return;
-        };
-        let Ok((service_fee, max_service_fee)) = evm_rpc::service_fee(&config).await else {
-            return;
-        };
-        let Ok(ledger_fee) = ledger::ledger_fee(config.ledger_canister_id).await else {
-            return;
-        };
-        let mut digest = Sha256::new();
-        digest.update(id);
-        digest.update(&observed.owner);
-        digest.update(observed.subaccount);
-        digest.update(observed.amount.to_be_bytes());
-        digest.update(observed.min_amount_out.to_be_bytes());
-        let payload_hash: [u8; 32] = digest.finalize().into();
-        let Ok(mut withdrawal) = WithdrawalRecord::observed(
-            WithdrawalId::new(id),
-            payload_hash,
-            Amount::new(observed.amount),
-            Amount::new(observed.min_amount_out),
-            Amount::new(max_service_fee),
-        ) else {
-            return;
-        };
-        let Some(amount_out) = observed
-            .amount
-            .checked_sub(service_fee)
-            .and_then(|value| value.checked_sub(ledger_fee.get()))
-        else {
-            // An uneconomic withdrawal remains Observed until the refund transaction path is
-            // prepared; no ICP transfer is attempted.
-            if prepare_refund(
-                &config,
-                &mut withdrawal,
-                RefundEligibility {
-                    finalized_base_block: next_cursor.saturating_sub(1),
-                    base_status_pending: true,
-                    release_attempt_created: false,
-                    reason: RefundReason::AmountBelowMinimum,
-                },
-            )
-            .is_err()
-            {
-                return;
-            }
-            continue;
-        };
-        if amount_out < observed.min_amount_out {
-            if prepare_refund(
-                &config,
-                &mut withdrawal,
-                RefundEligibility {
-                    finalized_base_block: next_cursor.saturating_sub(1),
-                    base_status_pending: true,
-                    release_attempt_created: false,
-                    reason: RefundReason::AmountBelowMinimum,
-                },
-            )
-            .is_err()
-            {
-                return;
-            }
-            continue;
-        }
-        let canister = ic_cdk::api::canister_self();
-        let transfer = LedgerTransferIdentity {
-            operation: LedgerOperation::ReleaseWithdrawal,
-            created_at_time_ns: ic_cdk::api::time(),
-            memo: payload_hash,
-            amount: Amount::new(amount_out),
-            fee: ledger_fee,
-            from: match Account::new(canister.as_slice().to_vec(), [0; 32]) {
-                Ok(account) => account,
-                Err(_) => return,
-            },
-            to: match Account::new(observed.owner, observed.subaccount) {
-                Ok(account) => account,
-                Err(_) => return,
-            },
-            spender: None,
-        };
-        if withdrawal
-            .apply(WithdrawalEvent::StartRelease {
-                attempt: Box::new(TransferAttempt {
-                    attempt_no: 0,
-                    identity: transfer,
-                }),
-                settlement: Settlement {
-                    amount_out: Amount::new(amount_out),
-                    service_fee: Amount::new(service_fee),
-                    ledger_fee,
-                },
-            })
-            .is_err()
-        {
-            return;
-        }
-        if STORE
-            .with(|store| store.borrow_mut().put_withdrawal(&withdrawal))
-            .is_err()
-        {
-            return;
-        }
+    if owner != notification.caller {
+        discard_withdrawal_notification(notification.transaction_hash);
+        return;
     }
-    progress.withdrawal_log_cursor = next_cursor;
+    let already_known = STORE.with(|store| {
+        storage_or_trap("withdrawal read", store.borrow().withdrawal(observed.id)).is_some()
+    });
+    if already_known {
+        discard_withdrawal_notification(notification.transaction_hash);
+        return;
+    }
+    let Ok(ledger_fee) = ledger::ledger_fee(config.ledger_canister_id).await else {
+        retry_withdrawal_notification(notification);
+        return;
+    };
+    if ingest_notified_withdrawal(
+        &config,
+        observed,
+        snapshot.mint.service_fee.get(),
+        snapshot.mint.max_service_fee.get(),
+        ledger_fee,
+        finalized_block_number,
+    )
+    .is_err()
+    {
+        retry_withdrawal_notification(notification);
+        return;
+    }
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        store.remove_withdrawal_notification(notification.transaction_hash);
+        let mut progress = storage_or_trap("external progress read", store.external_progress());
+        progress.last_finalized_base_block = progress
+            .last_finalized_base_block
+            .max(finalized_block_number);
+        progress.last_finalized_observation_ns = ic_cdk::api::time();
+        storage_or_trap(
+            "external progress persistence",
+            store.set_external_progress(&progress),
+        );
+    });
+}
+
+fn discard_withdrawal_notification(transaction_hash: [u8; 32]) {
     STORE.with(|store| {
         store
             .borrow_mut()
-            .set_external_progress(&progress)
-            .unwrap_or_else(|error| {
-                ic_cdk::trap(format!("withdrawal cursor persistence failed: {error}"))
-            })
+            .remove_withdrawal_notification(transaction_hash)
     });
+}
+
+fn retry_withdrawal_notification(mut notification: crate::storage::WithdrawalNotification) {
+    notification.attempts = notification.attempts.saturating_add(1);
+    if notification.attempts >= 12 {
+        discard_withdrawal_notification(notification.transaction_hash);
+        return;
+    }
+    let delay_seconds = 60u64.saturating_mul(1u64 << notification.attempts.min(4));
+    notification.next_attempt_at_ns =
+        ic_cdk::api::time().saturating_add(delay_seconds * 1_000_000_000);
+    STORE.with(|store| {
+        storage_or_trap(
+            "withdrawal notification retry persistence",
+            store
+                .borrow_mut()
+                .put_withdrawal_notification(&notification),
+        );
+    });
+}
+
+fn ingest_notified_withdrawal(
+    config: &crate::config::BridgeInitArgs,
+    observed: evm_rpc::ObservedWithdrawal,
+    service_fee: u128,
+    max_service_fee: u128,
+    ledger_fee: Amount,
+    finalized_block_number: u64,
+) -> Result<(), ()> {
+    let mut digest = Sha256::new();
+    digest.update(observed.id);
+    digest.update(&observed.owner);
+    digest.update(observed.subaccount);
+    digest.update(observed.amount.to_be_bytes());
+    digest.update(observed.min_amount_out.to_be_bytes());
+    let payload_hash: [u8; 32] = digest.finalize().into();
+    let mut withdrawal = WithdrawalRecord::observed(
+        WithdrawalId::new(observed.id),
+        payload_hash,
+        Amount::new(observed.amount),
+        Amount::new(observed.min_amount_out),
+        Amount::new(max_service_fee),
+    )
+    .map_err(|_| ())?;
+    let amount_out = observed
+        .amount
+        .checked_sub(service_fee)
+        .and_then(|value| value.checked_sub(ledger_fee.get()));
+    if amount_out.is_none_or(|amount| amount < observed.min_amount_out) {
+        return prepare_refund(
+            config,
+            &mut withdrawal,
+            RefundEligibility {
+                finalized_base_block: finalized_block_number,
+                base_status_pending: true,
+                release_attempt_created: false,
+                reason: RefundReason::AmountBelowMinimum,
+            },
+        );
+    }
+    let amount_out = amount_out.expect("checked economic withdrawal");
+    let canister = ic_cdk::api::canister_self();
+    let transfer = LedgerTransferIdentity {
+        operation: LedgerOperation::ReleaseWithdrawal,
+        created_at_time_ns: ic_cdk::api::time(),
+        memo: payload_hash,
+        amount: Amount::new(amount_out),
+        fee: ledger_fee,
+        from: Account::new(canister.as_slice().to_vec(), [0; 32]).map_err(|_| ())?,
+        to: Account::new(observed.owner, observed.subaccount).map_err(|_| ())?,
+        spender: None,
+    };
+    withdrawal
+        .apply(WithdrawalEvent::StartRelease {
+            attempt: Box::new(TransferAttempt {
+                attempt_no: 0,
+                identity: transfer,
+            }),
+            settlement: Settlement {
+                amount_out: Amount::new(amount_out),
+                service_fee: Amount::new(service_fee),
+                ledger_fee,
+            },
+        })
+        .map_err(|_| ())?;
+    STORE.with(|store| {
+        storage_or_trap(
+            "notified withdrawal persistence",
+            store.borrow_mut().put_withdrawal(&withdrawal),
+        );
+    });
+    Ok(())
 }
 
 fn prepare_refund(
@@ -794,14 +750,13 @@ fn prepare_refund(
 ) -> Result<(), ()> {
     STORE.with(|store| {
         let mut store = store.borrow_mut();
-        if store
-            .withdrawal(withdrawal.id.bytes())
-            .map_err(|_| ())?
-            .is_some()
-        {
+        if storage_or_trap("withdrawal read", store.withdrawal(withdrawal.id.bytes())).is_some() {
             return Ok(());
         }
-        let operation_id = store.allocate_evm_operation_id().map_err(|_| ())?;
+        let operation_id = storage_or_trap(
+            "EVM operation ID allocation",
+            store.allocate_evm_operation_id(),
+        );
         if withdrawal
             .apply(WithdrawalEvent::StartRefund {
                 operation_id,
@@ -842,12 +797,15 @@ fn prepare_refund(
 async fn confirm_one_evm_operation() {
     let candidate = STORE.with(|store| {
         let store = store.borrow();
-        Some((
-            store.config().ok().flatten()?,
-            store.first_submitted_evm().ok().flatten()?,
-        ))
+        let operation =
+            storage_or_trap("submitted EVM operation read", store.first_submitted_evm())?;
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let envelope = storage_or_trap("EVM envelope read", store.evm_envelope(operation.id.get()))
+            .unwrap_or_else(|| ic_cdk::trap("missing submitted EVM envelope"));
+        Some((config, operation, envelope))
     });
-    let Some((config, mut operation)) = candidate else {
+    let Some((config, operation, envelope)) = candidate else {
         return;
     };
     let transaction_hash = match operation.state {
@@ -868,89 +826,105 @@ async fn confirm_one_evm_operation() {
             receipt_block_number,
             finalized_block_number,
         } => {
-            mark_evm_reverted(
-                operation,
-                transaction_hash,
-                receipt_block_number,
-                finalized_block_number,
-            );
+            let members = STORE.with(|store| {
+                let store = store.borrow();
+                envelope
+                    .operation_ids
+                    .iter()
+                    .map(|id| {
+                        storage_or_trap("batched EVM operation read", store.evm_operation(id.get()))
+                    })
+                    .collect::<Option<Vec<_>>>()
+            });
+            let Some(members) = members else {
+                ic_cdk::trap("missing batched EVM operation");
+            };
+            for member in members {
+                mark_evm_reverted(
+                    member,
+                    transaction_hash,
+                    receipt_block_number,
+                    finalized_block_number,
+                );
+            }
             return;
         }
     };
-    if operation.kind == EvmOperationKind::MintDeposit {
-        let deposit_id = STORE.with(|store| {
-            store
-                .borrow()
-                .deposit_for_operation(operation.id)
-                .ok()
-                .flatten()
-                .map(|record| record.id)
-        });
-        let Some(deposit_id) = deposit_id else {
-            return;
-        };
-        if evm_rpc::is_deposit_processed(&config, deposit_id.bytes()).await != Ok(true) {
-            return;
-        }
-    } else {
-        let withdrawal_id = STORE.with(|store| {
-            store
-                .borrow()
-                .withdrawal_for_operation(operation.id)
-                .ok()
-                .flatten()
-                .map(|record| record.id)
-        });
-        let Some(withdrawal_id) = withdrawal_id else {
-            return;
-        };
-        let expected = match operation.kind {
-            EvmOperationKind::AcknowledgeRelease => 2,
-            EvmOperationKind::RefundWithdrawal => 3,
-            EvmOperationKind::MintDeposit => unreachable!(),
-        };
-        if evm_rpc::finalized_withdrawal_status(&config, withdrawal_id.bytes()).await
-            != Ok(expected)
-        {
-            return;
-        }
-    }
-    if operation
-        .apply(EvmOperationEvent::Finalized {
-            transaction_hash,
-            finalized_block_number: receipt_block_number,
-        })
-        .is_err()
-    {
-        return;
-    }
     STORE.with(|store| {
         let mut store = store.borrow_mut();
-        if operation.kind == EvmOperationKind::MintDeposit {
-            let Ok(Some(mut deposit)) = store.deposit_for_operation(operation.id) else {
-                return;
-            };
-            let Ok(result) = deposit.apply(DepositEvent::MintFinalized {
-                operation_id: operation.id,
-            }) else {
-                return;
-            };
-            let Ok(mut accounting) = store.accounting() else {
-                return;
-            };
-            if accounting
+        let mut finalized_mint = false;
+        for operation_id in &envelope.operation_ids {
+            let member = storage_or_trap(
+                "batched EVM operation read",
+                store.evm_operation(operation_id.get()),
+            )
+            .unwrap_or_else(|| ic_cdk::trap("missing batched EVM operation"));
+            finalized_mint |= member.kind == EvmOperationKind::MintDeposit;
+            finalize_evm_member(
+                &mut store,
+                member,
+                transaction_hash,
+                receipt_block_number,
+                finalized_block_number,
+            )
+            .unwrap_or_else(|_| ic_cdk::trap("invalid finalized EVM transition"));
+        }
+        let mut progress = storage_or_trap("external progress read", store.external_progress());
+        progress.last_finalized_base_block = progress
+            .last_finalized_base_block
+            .max(finalized_block_number);
+        if finalized_mint {
+            progress.last_finalized_mint_block = progress
+                .last_finalized_mint_block
+                .max(finalized_block_number);
+        }
+        progress.last_finalized_observation_ns = ic_cdk::api::time();
+        storage_or_trap(
+            "finalized block persistence",
+            store.set_external_progress(&progress),
+        );
+    });
+}
+
+fn finalize_evm_member<M: ic_stable_structures::Memory>(
+    store: &mut crate::storage::StableStore<M>,
+    mut operation: bridge_core::EvmOperationRecord,
+    transaction_hash: [u8; 32],
+    receipt_block_number: u64,
+    finalized_block_number: u64,
+) -> Result<(), ()> {
+    operation
+        .apply(EvmOperationEvent::Finalized {
+            transaction_hash,
+            receipt_block_number,
+            finalized_block_number,
+        })
+        .map_err(|_| ())?;
+    match operation.kind {
+        EvmOperationKind::MintDeposit => {
+            let mut deposit = storage_or_trap(
+                "deposit by EVM operation read",
+                store.deposit_for_operation(operation.id),
+            )
+            .ok_or(())?;
+            let result = deposit
+                .apply(DepositEvent::MintFinalized {
+                    operation_id: operation.id,
+                })
+                .map_err(|_| ())?;
+            let mut accounting = storage_or_trap("accounting read", store.accounting());
+            accounting
                 .confirm_fee(FeeKind::Deposit, result.fee_delta)
-                .is_err()
-            {
-                return;
-            }
-            if store.set_accounting(&accounting).is_err() || store.put_deposit(&deposit).is_err() {
-                return;
-            }
-        } else {
-            let Ok(Some(mut withdrawal)) = store.withdrawal_for_operation(operation.id) else {
-                return;
-            };
+                .map_err(|_| ())?;
+            storage_or_trap("accounting persistence", store.set_accounting(&accounting));
+            storage_or_trap("finalized deposit persistence", store.put_deposit(&deposit));
+        }
+        EvmOperationKind::AcknowledgeRelease | EvmOperationKind::RefundWithdrawal => {
+            let mut withdrawal = storage_or_trap(
+                "withdrawal by EVM operation read",
+                store.withdrawal_for_operation(operation.id),
+            )
+            .ok_or(())?;
             let event = match operation.kind {
                 EvmOperationKind::AcknowledgeRelease => WithdrawalEvent::AcknowledgementFinalized {
                     operation_id: operation.id,
@@ -960,31 +934,18 @@ async fn confirm_one_evm_operation() {
                 },
                 EvmOperationKind::MintDeposit => unreachable!(),
             };
-            if withdrawal.apply(event).is_err() || store.put_withdrawal(&withdrawal).is_err() {
-                return;
-            }
+            withdrawal.apply(event).map_err(|_| ())?;
+            storage_or_trap(
+                "finalized withdrawal persistence",
+                store.put_withdrawal(&withdrawal),
+            );
         }
-        if store.put_evm_operation(&operation).is_err() {
-            return;
-        }
-        store.remove_evm_safe_observation(operation.id.get());
-        if let Ok(mut progress) = store.external_progress() {
-            progress.last_finalized_base_block = progress
-                .last_finalized_base_block
-                .max(finalized_block_number);
-            if operation.kind == EvmOperationKind::MintDeposit {
-                progress.last_finalized_mint_block = progress
-                    .last_finalized_mint_block
-                    .max(finalized_block_number);
-            }
-            progress.last_finalized_observation_ns = ic_cdk::api::time();
-            store
-                .set_external_progress(&progress)
-                .unwrap_or_else(|error| {
-                    ic_cdk::trap(format!("finalized block persistence failed: {error}"))
-                });
-        }
-    });
+    }
+    storage_or_trap(
+        "finalized EVM operation persistence",
+        store.put_evm_operation(&operation),
+    );
+    Ok(())
 }
 
 fn mark_evm_reverted(
@@ -996,7 +957,8 @@ fn mark_evm_reverted(
     operation
         .apply(EvmOperationEvent::Reverted {
             transaction_hash,
-            finalized_block_number: receipt_block_number,
+            receipt_block_number,
+            finalized_block_number,
         })
         .unwrap_or_else(|error| ic_cdk::trap(format!("EVM revert transition failed: {error}")));
     STORE.with(|store| {
@@ -1047,7 +1009,6 @@ fn mark_evm_reverted(
         store.put_evm_operation(&operation).unwrap_or_else(|error| {
             ic_cdk::trap(format!("EVM revert persistence failed: {error}"))
         });
-        store.remove_evm_safe_observation(operation.id.get());
         let mut admin = store
             .admin_state()
             .unwrap_or_else(|error| ic_cdk::trap(format!("administrator read failed: {error}")));
@@ -1062,7 +1023,7 @@ fn mark_evm_reverted(
                     operation_id: operation.id.get(),
                     kind: operation.kind.into(),
                     transaction_hash: transaction_hash.to_vec(),
-                    finalized_block_number: receipt_block_number,
+                    finalized_block_number,
                 },
             )
             .unwrap_or_else(|error| ic_cdk::trap(format!("EVM revert audit failed: {error}")));
@@ -1084,12 +1045,12 @@ fn mark_evm_reverted(
 async fn process_one_evm_operation() {
     let candidate = STORE.with(|store| {
         let store = store.borrow();
-        Some((
-            store.config().ok().flatten()?,
-            store.first_prepared_evm().ok().flatten()?,
-        ))
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let operation = storage_or_trap("prepared EVM operation read", store.first_prepared_evm())?;
+        Some((config, operation))
     });
-    let Some((config, (mut operation, mut envelope))) = candidate else {
+    let Some((config, (operation, mut envelope))) = candidate else {
         return;
     };
     let raw = match envelope.signed_transaction.clone() {
@@ -1097,10 +1058,12 @@ async fn process_one_evm_operation() {
         None => match signer::sign(&envelope, &config).await {
             Ok(raw) => {
                 envelope.signed_transaction = Some(raw.clone());
-                let persisted = STORE.with(|store| store.borrow_mut().put_evm_envelope(&envelope));
-                if persisted.is_err() {
-                    return;
-                }
+                STORE.with(|store| {
+                    storage_or_trap(
+                        "signed EVM envelope persistence",
+                        store.borrow_mut().put_evm_envelope(&envelope),
+                    );
+                });
                 raw
             }
             Err(error) => {
@@ -1116,29 +1079,36 @@ async fn process_one_evm_operation() {
         return;
     }
     let transaction_hash = signer::transaction_hash(&raw);
-    if operation
-        .apply(EvmOperationEvent::Submitted { transaction_hash })
-        .is_err()
-    {
-        return;
-    }
     STORE.with(|store| {
-        store
-            .borrow_mut()
-            .put_evm_operation(&operation)
-            .unwrap_or_else(|error| {
+        let mut store = store.borrow_mut();
+        for operation_id in &envelope.operation_ids {
+            let mut member = store
+                .evm_operation(operation_id.get())
+                .unwrap_or_else(|error| ic_cdk::trap(format!("EVM operation read failed: {error}")))
+                .unwrap_or_else(|| ic_cdk::trap("missing batched EVM operation"));
+            member
+                .apply(EvmOperationEvent::Submitted { transaction_hash })
+                .unwrap_or_else(|error| {
+                    ic_cdk::trap(format!("EVM submit transition failed: {error}"))
+                });
+            store.put_evm_operation(&member).unwrap_or_else(|error| {
                 ic_cdk::trap(format!(
                     "submitted EVM operation persistence failed: {error}"
                 ))
             });
+        }
     });
 }
 
 async fn process_one_release() {
     let candidate = STORE.with(|store| {
         let store = store.borrow();
-        let config = store.config().ok().flatten()?;
-        let withdrawal = store.first_release_pending().ok().flatten()?;
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let withdrawal = storage_or_trap(
+            "release-pending withdrawal read",
+            store.first_release_pending(),
+        )?;
         let transfer = match &withdrawal.state {
             WithdrawalState::ReleasePending { attempt, .. } => attempt.identity.clone(),
             _ => return None,
@@ -1151,53 +1121,51 @@ async fn process_one_release() {
     let outcome = ledger::release(config.ledger_canister_id, &transfer).await;
     STORE.with(|store| {
         let mut store = store.borrow_mut();
-        let Ok(Some(mut withdrawal)) = store.withdrawal(withdrawal_id.bytes()) else {
-            return;
-        };
+        let mut withdrawal =
+            storage_or_trap("withdrawal read", store.withdrawal(withdrawal_id.bytes()))
+                .unwrap_or_else(|| ic_cdk::trap("missing release-pending withdrawal"));
         match outcome {
             LedgerCallOutcome::Succeeded { block_index }
             | LedgerCallOutcome::Duplicate { block_index } => {
-                if let Ok(result) = withdrawal.apply(WithdrawalEvent::ReleaseSucceeded {
-                    ledger_block_index: block_index,
-                }) {
-                    let Ok(mut accounting) = store.accounting() else {
-                        return;
-                    };
-                    if accounting
-                        .confirm_fee(FeeKind::Withdrawal, result.fee_delta)
-                        .is_err()
-                        || store.set_accounting(&accounting).is_err()
-                    {
-                        return;
-                    }
-                    prepare_acknowledgement_in_store(&mut store, &config, &mut withdrawal)
-                        .unwrap_or_else(|error| {
-                            ic_cdk::trap(format!("acknowledgement preparation failed: {error}"))
-                        });
-                }
+                let result = withdrawal
+                    .apply(WithdrawalEvent::ReleaseSucceeded {
+                        ledger_block_index: block_index,
+                    })
+                    .unwrap_or_else(|error| {
+                        ic_cdk::trap(format!("withdrawal release transition failed: {error}"))
+                    });
+                let mut accounting = storage_or_trap("accounting read", store.accounting());
+                accounting
+                    .confirm_fee(FeeKind::Withdrawal, result.fee_delta)
+                    .unwrap_or_else(|error| {
+                        ic_cdk::trap(format!("withdrawal fee confirmation failed: {error}"))
+                    });
+                storage_or_trap("accounting persistence", store.set_accounting(&accounting));
+                prepare_acknowledgement_in_store(&mut store, &config, &mut withdrawal)
+                    .unwrap_or_else(|error| {
+                        ic_cdk::trap(format!("acknowledgement preparation failed: {error}"))
+                    });
             }
             LedgerCallOutcome::Ambiguous => {
-                let Ok(hold_id) = store.allocate_hold_id() else {
-                    return;
-                };
-                if withdrawal
+                let hold_id = storage_or_trap("hold ID allocation", store.allocate_hold_id());
+                withdrawal
                     .apply(WithdrawalEvent::ReleaseAmbiguous { hold_id })
-                    .is_err()
-                {
-                    return;
-                }
+                    .unwrap_or_else(|error| {
+                        ic_cdk::trap(format!("withdrawal hold transition failed: {error}"))
+                    });
                 let hold = ReconciliationHoldRecord::open(
                     hold_id,
                     RequestReference::Withdrawal(withdrawal.id),
                     transfer,
                 );
-                if store.put_withdrawal(&withdrawal).is_ok() {
-                    store
-                        .put_open_reconciliation_hold(&hold)
-                        .unwrap_or_else(|error| {
-                            ic_cdk::trap(format!("withdrawal hold persistence failed: {error}"))
-                        });
-                }
+                storage_or_trap(
+                    "held withdrawal persistence",
+                    store.put_withdrawal(&withdrawal),
+                );
+                storage_or_trap(
+                    "withdrawal hold persistence",
+                    store.put_open_reconciliation_hold(&hold),
+                );
             }
             LedgerCallOutcome::DefinitiveFailure { .. }
             | LedgerCallOutcome::RetryableFailure { .. } => {}
@@ -1263,4 +1231,55 @@ pub(crate) fn prepare_acknowledgement_in_store<M: ic_stable_structures::Memory>(
     store.put_evm_operation(&operation)?;
     store.put_withdrawal(withdrawal)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bridge_core::{EvmCallIntent, EvmOperationId, EvmOperationRecord};
+
+    #[test]
+    fn refund_batch_envelope_uses_one_nonce_and_bounds_members() {
+        let batch = (1..=4)
+            .map(|id| {
+                let operation_id = EvmOperationId::new(id);
+                let operation = EvmOperationRecord::queued(
+                    operation_id,
+                    [id as u8; 32],
+                    EvmOperationKind::RefundWithdrawal,
+                );
+                let mut calldata = vec![0; 4];
+                calldata.extend_from_slice(&abi_word(id as u128));
+                let intent = EvmCallIntent {
+                    operation_id,
+                    payload_hash: operation.payload_hash,
+                    chain_id: 8453,
+                    contract: [7; 20],
+                    calldata,
+                    gas_limit: 100_000,
+                    max_fee_per_gas: 10,
+                    max_priority_fee_per_gas: 1,
+                };
+                (operation, intent)
+            })
+            .collect::<Vec<_>>();
+        let envelope = batch_envelope(&batch, 9).expect("batch envelope");
+        assert_eq!(envelope.operation_ids.len(), 4);
+        assert_eq!(envelope.operation_id, EvmOperationId::new(1));
+        assert_eq!(envelope.nonce, 9);
+        assert_eq!(envelope.gas_limit, 400_000);
+        assert_eq!(envelope.calldata.len(), 4 + 32 + 32 + 4 * 32);
+        assert_eq!(
+            &envelope.calldata[..4],
+            &selector_for_test("refundWithdrawals(uint256[])")
+        );
+    }
+
+    fn selector_for_test(signature: &str) -> [u8; 4] {
+        let mut hash = [0; 32];
+        let mut keccak = Keccak::v256();
+        keccak.update(signature.as_bytes());
+        keccak.finalize(&mut hash);
+        hash[..4].try_into().expect("selector")
+    }
 }
