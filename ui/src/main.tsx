@@ -9,7 +9,7 @@ import { wagmiConfig } from "@/lib/evm/client"
 import { IcWalletProviderRoot } from "@/features/wallet/ic-wallet-provider"
 import "./styles.css"
 
-const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 15_000, retry: 1, refetchOnWindowFocus: false } } })
+const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 15_000, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false } } })
 const router = createRouter({ routeTree, defaultPreload: "intent" })
 
 declare module "@tanstack/react-router" { interface Register { router: typeof router } }

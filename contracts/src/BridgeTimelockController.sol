@@ -1,0 +1,55 @@
+// contracts/src: configure an OpenZeppelin timelock with an independently held cancellation role.
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity 0.8.36;
+
+import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
+
+contract BridgeTimelockController is TimelockController {
+    error EmptyRoleMembers(bytes32 role);
+    error ZeroRoleMember(bytes32 role);
+    error CancellerRoleOverlap(address account);
+
+    constructor(
+        uint256 minimumDelay,
+        address[] memory proposers,
+        address[] memory cancellers,
+        address[] memory executors
+    ) TimelockController(minimumDelay, proposers, executors, address(0)) {
+        _validateNonemptyRole(PROPOSER_ROLE, proposers);
+        _validateNonemptyRole(CANCELLER_ROLE, cancellers);
+        _validateNonemptyRole(EXECUTOR_ROLE, executors);
+
+        // OpenZeppelin grants CANCELLER_ROLE to every proposer. Remove that
+        // bootstrap convenience before assigning the independently held role.
+        for (uint256 index; index < proposers.length; ++index) {
+            _revokeRole(CANCELLER_ROLE, proposers[index]);
+        }
+        for (uint256 index; index < cancellers.length; ++index) {
+            address canceller = cancellers[index];
+            if (_contains(proposers, canceller) || _contains(executors, canceller)) {
+                revert CancellerRoleOverlap(canceller);
+            }
+            _grantRole(CANCELLER_ROLE, canceller);
+        }
+    }
+
+    function _validateNonemptyRole(bytes32 role, address[] memory members) private pure {
+        if (members.length == 0) {
+            revert EmptyRoleMembers(role);
+        }
+        for (uint256 index; index < members.length; ++index) {
+            if (members[index] == address(0)) {
+                revert ZeroRoleMember(role);
+            }
+        }
+    }
+
+    function _contains(address[] memory members, address candidate) private pure returns (bool) {
+        for (uint256 index; index < members.length; ++index) {
+            if (members[index] == candidate) {
+                return true;
+            }
+        }
+        return false;
+    }
+}

@@ -16,7 +16,7 @@ window あたりの上限 = 許容最大被害額 ÷ 2
 - window 長の初期値: 1 時間
 - production上限値: 未確定。承認済みdeployment profileへraw unitで明示し、deploy後は変更しない。
 
-window を 1 時間とする場合、監視は 1 時間以内の pause 発動を前提とする。
+監視はwindow長とは別に、異常を5分以内に検知し、15分以内に担当者が確認し、60分以内にBaseとICの双方をpauseする。
 監視体制がこれを満たせないなら、window を延ばすのではなく上限値を下げる。
 
 ## Per-Deposit Limit
@@ -58,7 +58,7 @@ MAX_SERVICE_FEE = SNS ledger fee × 100〜1000
 - cycles floor: 未確定。7日間の実測から30日分を設定する。
 - N: 30日
 
-未確定値をzeroや仮値でmainnet profileへ入れてはならない。`bridge-profile validate`は`status != validated`、zero reserve、証跡hash欠落を拒否する。
+未確定値をzeroや仮値でmainnet profileへ入れてはならない。`bridge-profile validate-bundle --offline`と`verify-live`は、実artifact、署名、zero reserve、証跡欠落をfail closedで拒否する。
 
 ## timelock 遅延（Base Admin）
 
@@ -71,8 +71,10 @@ MAX_SERVICE_FEE = SNS ledger fee × 100〜1000
 
 - gas 価格の上限評価
 - EVM RPC 費用と management canister call 費用の上限評価
-- EVM RPC provider 3 中 2 の合意が誤らないこと
-- 監視が Mint Throughput Limit の window 長以内に pause を発動できること
+- 公式EVM RPC Canisterと設定されたquorumがcanonical Safe chainを正しく返すこと
+- 監視が5分以内検知、15分以内担当確認、60分以内のBase/IC双方pauseを実証できること
+
+EVM RPC Canister配下providerの運営主体、基盤、可用性は監査対象外であり、production承認条件には含めない。
 
 ## 見直し手順
 

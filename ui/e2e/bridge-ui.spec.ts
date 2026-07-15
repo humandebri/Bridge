@@ -1,12 +1,14 @@
 import { expect, test } from "@playwright/test"
 import type { Page, TestInfo } from "@playwright/test"
 
-test("bridge defaults to IC to Base and stays fail-closed", async ({ page }, testInfo) => {
+test("bridge defaults to IC to Base and reports incomplete configuration", async ({ page }, testInfo) => {
   await page.goto("/")
   await expect(page.getByRole("heading", { name: "Bridge KINIC" })).toBeVisible()
   await expect(page.getByText("Internet Computer")).toBeVisible()
-  await expect(page.getByText("Transfers are locked during preflight.")).toBeVisible()
+  await expect(page.getByText("Refresh to verify the reviewed deployment before continuing.")).toBeVisible()
   await expect(page.getByRole("button", { name: "Bridge to Base" })).toBeDisabled()
+  await expect(page.getByLabel("You send")).toHaveAttribute("aria-invalid", "true")
+  await expect(page.getByLabel("You send")).toHaveAttribute("aria-describedby", "bridge-amount-feedback")
   await expect(page.getByRole("button", { name: "Reverse bridge direction" })).toHaveCSS("width", "32px")
   await expect(page.getByRole("button", { name: "Reverse bridge direction" })).toHaveCSS("height", "32px")
   if ((page.viewportSize()?.width ?? 0) >= 768) {
@@ -49,11 +51,18 @@ test("IC and Base wallet controls are separate", async ({ page }) => {
 test("history and status are separate low-density surfaces", async ({ page }, testInfo) => {
   await page.goto("/history")
   await expect(page.getByRole("heading", { name: "Bridge history" })).toBeVisible()
+  await expect(page.getByRole("alert")).toContainText("Settlement actions are locked")
+  await expect(page.getByRole("alert")).toContainText("Refresh to verify the reviewed deployment")
   await expect(page.getByRole("tab", { name: "Deposits" })).toHaveAttribute("aria-selected", "true")
+  await page.getByRole("tab", { name: "Deposits" }).press("ArrowRight")
+  await expect(page).toHaveURL(/tab=withdraw/)
+  await expect(page.getByRole("tab", { name: "Withdrawals" })).toBeFocused()
   await capture(page, testInfo, "history")
   await page.goto("/status")
   await expect(page.getByRole("heading", { name: "Bridge status" })).toBeVisible()
-  await expect(page.getByText("Transfers are locked.")).toBeVisible()
+  await expect(page.getByText("Bridge checks have not passed.")).toBeVisible()
+  await expect(page.getByText("Base safe snapshot block", { exact: true })).toBeVisible()
+  await expect(page.getByText("Canister safe block", { exact: true })).toBeVisible()
   await capture(page, testInfo, "status")
 })
 

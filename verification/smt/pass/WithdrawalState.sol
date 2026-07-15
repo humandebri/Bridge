@@ -19,12 +19,12 @@ contract WithdrawalState {
     function releaseDecision(IBridge.WithdrawalStatus status, bool detailsMatch) external pure {
         WithdrawalAccounting.ReleaseAction action = WithdrawalAccounting.releaseAction(status, detailsMatch);
         if (action == WithdrawalAccounting.ReleaseAction.Apply) {
-            assert(status == IBridge.WithdrawalStatus.Pending);
+            assert(status == IBridge.WithdrawalStatus.Releasing);
         } else if (action == WithdrawalAccounting.ReleaseAction.Idempotent) {
             assert(status == IBridge.WithdrawalStatus.Released);
             assert(detailsMatch);
         } else {
-            assert(status != IBridge.WithdrawalStatus.Pending);
+            assert(status != IBridge.WithdrawalStatus.Releasing);
             assert(status != IBridge.WithdrawalStatus.Released || !detailsMatch);
         }
     }
@@ -44,6 +44,29 @@ contract WithdrawalState {
             WithdrawalAccounting.releaseAction(IBridge.WithdrawalStatus.Refunded, releasedDetailsMatch)
                 == WithdrawalAccounting.ReleaseAction.Reject
         );
+    }
+
+    function cancellationAndRefundDecisions(IBridge.WithdrawalStatus status) external pure {
+        if (WithdrawalAccounting.cancelAllowed(status)) {
+            assert(status == IBridge.WithdrawalStatus.Releasing);
+            assert(!WithdrawalAccounting.refundAllowed(status));
+        }
+        if (WithdrawalAccounting.refundAllowed(status)) {
+            assert(status == IBridge.WithdrawalStatus.Pending);
+            assert(!WithdrawalAccounting.cancelAllowed(status));
+        }
+    }
+
+    function ledgerBlockIndexDecision(uint256 existingWithdrawalId, uint256 withdrawalId) external pure {
+        (bool accepted, uint256 recordedWithdrawalId) =
+            WithdrawalAccounting.tryRecordLedgerBlock(existingWithdrawalId, withdrawalId);
+        if (accepted) {
+            assert(existingWithdrawalId == 0);
+            assert(recordedWithdrawalId == withdrawalId);
+        } else {
+            assert(existingWithdrawalId != 0);
+            assert(recordedWithdrawalId == existingWithdrawalId);
+        }
     }
 
     function feeAndMinimum(uint256 serviceFee, uint256 maximumServiceFee, uint256 amountOut, uint256 minAmountOut)

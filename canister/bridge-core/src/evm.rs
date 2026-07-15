@@ -7,22 +7,9 @@ use crate::{ApplyOutcome, CoreError, EvmOperationId};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvmOperationKind {
     MintDeposit,
+    CancelRelease,
     AcknowledgeRelease,
     RefundWithdrawal,
-}
-
-impl EvmOperationKind {
-    pub const fn scheduler_code(self) -> u8 {
-        match self {
-            Self::AcknowledgeRelease => 0,
-            Self::RefundWithdrawal => 1,
-            Self::MintDeposit => 2,
-        }
-    }
-
-    pub const fn scheduler_priority(self) -> u8 {
-        crate::scheduler_priority(self.scheduler_code())
-    }
 }
 
 #[cfg_attr(
@@ -36,15 +23,15 @@ pub enum EvmOperationState {
     Submitted {
         transaction_hash: [u8; 32],
     },
-    Finalized {
+    Confirmed {
         transaction_hash: [u8; 32],
         receipt_block_number: u64,
-        finalized_block_number: u64,
+        confirmed_block_number: u64,
     },
     Reverted {
         transaction_hash: [u8; 32],
         receipt_block_number: u64,
-        finalized_block_number: u64,
+        confirmed_block_number: u64,
     },
 }
 
@@ -58,15 +45,15 @@ pub enum EvmOperationEvent {
     Submitted {
         transaction_hash: [u8; 32],
     },
-    Finalized {
+    Confirmed {
         transaction_hash: [u8; 32],
         receipt_block_number: u64,
-        finalized_block_number: u64,
+        confirmed_block_number: u64,
     },
     Reverted {
         transaction_hash: [u8; 32],
         receipt_block_number: u64,
-        finalized_block_number: u64,
+        confirmed_block_number: u64,
     },
 }
 
@@ -123,7 +110,7 @@ impl EvmOperationRecord {
             (State::Prepared, Event::Prepared) => return Ok(ApplyOutcome::Idempotent),
             (
                 State::Queued,
-                Event::Submitted { .. } | Event::Finalized { .. } | Event::Reverted { .. },
+                Event::Submitted { .. } | Event::Confirmed { .. } | Event::Reverted { .. },
             ) => {
                 return Err(CoreError::InvalidTransition {
                     entity: "evm_operation",
@@ -131,7 +118,7 @@ impl EvmOperationRecord {
                 })
             }
             (
-                State::Submitted { .. } | State::Finalized { .. } | State::Reverted { .. },
+                State::Submitted { .. } | State::Confirmed { .. } | State::Reverted { .. },
                 Event::Prepared,
             ) => return Ok(ApplyOutcome::Idempotent),
             (State::Prepared, Event::Submitted { transaction_hash }) => {
@@ -150,34 +137,34 @@ impl EvmOperationRecord {
                 State::Submitted {
                     transaction_hash: current,
                 },
-                Event::Finalized {
+                Event::Confirmed {
                     transaction_hash,
                     receipt_block_number,
-                    finalized_block_number,
+                    confirmed_block_number,
                 },
-            ) if current == transaction_hash => State::Finalized {
+            ) if current == transaction_hash => State::Confirmed {
                 transaction_hash,
                 receipt_block_number,
-                finalized_block_number,
+                confirmed_block_number,
             },
             (
-                State::Finalized {
+                State::Confirmed {
                     transaction_hash: current_hash,
                     receipt_block_number: current_receipt_block,
-                    finalized_block_number: current_block,
+                    confirmed_block_number: current_block,
                 },
-                Event::Finalized {
+                Event::Confirmed {
                     transaction_hash,
                     receipt_block_number,
-                    finalized_block_number,
+                    confirmed_block_number,
                 },
             ) if current_hash == transaction_hash
                 && current_receipt_block == receipt_block_number
-                && current_block == finalized_block_number =>
+                && current_block == confirmed_block_number =>
             {
                 return Ok(ApplyOutcome::Idempotent);
             }
-            (State::Submitted { .. }, Event::Finalized { .. }) => {
+            (State::Submitted { .. }, Event::Confirmed { .. }) => {
                 return Err(CoreError::ConflictingReplay);
             }
             (
@@ -187,42 +174,42 @@ impl EvmOperationRecord {
                 Event::Reverted {
                     transaction_hash,
                     receipt_block_number,
-                    finalized_block_number,
+                    confirmed_block_number,
                 },
             ) if current == transaction_hash => State::Reverted {
                 transaction_hash,
                 receipt_block_number,
-                finalized_block_number,
+                confirmed_block_number,
             },
             (
                 State::Reverted {
                     transaction_hash: current_hash,
                     receipt_block_number: current_receipt_block,
-                    finalized_block_number: current_block,
+                    confirmed_block_number: current_block,
                 },
                 Event::Reverted {
                     transaction_hash,
                     receipt_block_number,
-                    finalized_block_number,
+                    confirmed_block_number,
                 },
             ) if current_hash == transaction_hash
                 && current_receipt_block == receipt_block_number
-                && current_block == finalized_block_number =>
+                && current_block == confirmed_block_number =>
             {
                 return Ok(ApplyOutcome::Idempotent);
             }
             (
-                State::Submitted { .. } | State::Finalized { .. } | State::Reverted { .. },
+                State::Submitted { .. } | State::Confirmed { .. } | State::Reverted { .. },
                 Event::Reverted { .. },
             ) => return Err(CoreError::ConflictingReplay),
             (
-                State::Finalized {
+                State::Confirmed {
                     transaction_hash: current,
                     ..
                 },
                 Event::Submitted { transaction_hash },
             ) if current == transaction_hash => return Ok(ApplyOutcome::Idempotent),
-            (State::Finalized { .. }, Event::Submitted { .. }) => {
+            (State::Confirmed { .. }, Event::Submitted { .. }) => {
                 return Err(CoreError::ConflictingReplay);
             }
             (
@@ -235,13 +222,13 @@ impl EvmOperationRecord {
             (State::Reverted { .. }, Event::Submitted { .. }) => {
                 return Err(CoreError::ConflictingReplay);
             }
-            (State::Prepared, Event::Finalized { .. } | Event::Reverted { .. }) => {
+            (State::Prepared, Event::Confirmed { .. } | Event::Reverted { .. }) => {
                 return Err(CoreError::InvalidTransition {
                     entity: "evm_operation",
                     event: "terminal before submission",
                 });
             }
-            (State::Finalized { .. } | State::Reverted { .. }, Event::Finalized { .. }) => {
+            (State::Confirmed { .. } | State::Reverted { .. }, Event::Confirmed { .. }) => {
                 return Err(CoreError::ConflictingReplay);
             }
         };
@@ -259,7 +246,7 @@ impl EvmOperationState {
             Self::Queued => 0,
             Self::Prepared => 1,
             Self::Submitted { .. } => 2,
-            Self::Finalized { .. } => 3,
+            Self::Confirmed { .. } => 3,
             Self::Reverted { .. } => 3,
         }
     }

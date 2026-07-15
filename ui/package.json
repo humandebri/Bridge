@@ -24,7 +24,9 @@
     "codegen:abi:check": "node scripts/generate-abi.mjs --check",
     "codegen:candid": "node scripts/generate-candid.mjs",
     "codegen:candid:check": "node scripts/generate-candid.mjs --check",
-    "deploy": "pnpm run build && wrangler deploy"
+    "deploy:check": "node scripts/check-deploy-profile.mjs",
+    "deploy": "pnpm run deploy:check && pnpm run build && wrangler deploy",
+    "deploy:test": "pnpm run build && wrangler deploy --name kinic-bridge-ui-test"
   },
   "dependencies": {
     "@dfinity/agent": "3.4.3",

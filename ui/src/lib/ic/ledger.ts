@@ -6,6 +6,7 @@ export interface LedgerAccount { owner: Principal; subaccount: [] | [Uint8Array]
 export interface LedgerAllowance { allowance: bigint; expires_at: [] | [bigint] }
 export interface LedgerActor {
   icrc1_balance_of(account: LedgerAccount): Promise<bigint>
+  icrc1_name(): Promise<string>
   icrc1_decimals(): Promise<number>
   icrc1_symbol(): Promise<string>
   icrc1_fee(): Promise<bigint>
@@ -16,6 +17,7 @@ export const ledgerIdlFactory: IDL.InterfaceFactory = ({ IDL: I }) => {
   const account = I.Record({ owner: I.Principal, subaccount: I.Opt(I.Vec(I.Nat8)) })
   return I.Service({
     icrc1_balance_of: I.Func([account], [I.Nat], ["query"]),
+    icrc1_name: I.Func([], [I.Text], ["query"]),
     icrc1_decimals: I.Func([], [I.Nat8], ["query"]),
     icrc1_symbol: I.Func([], [I.Text], ["query"]),
     icrc1_fee: I.Func([], [I.Nat], ["query"]),

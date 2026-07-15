@@ -136,6 +136,10 @@ expect_no_match \
   "missing Foundry release" \
   "forge Version: unknown" \
   "$FOUNDRY_VERSION_PATTERN"
+expect_match "exact Node.js release" "v24.14.0" "$NODE_VERSION_PATTERN"
+expect_no_match "near-match Node.js release" "v24.14.1" "$NODE_VERSION_PATTERN"
+expect_match "exact pnpm release" "11.0.8" "$PNPM_VERSION_PATTERN"
+expect_no_match "near-match pnpm release" "11.0.80" "$PNPM_VERSION_PATTERN"
 
 expect_smt_counterexample \
   "confirmed assertion violation" \
@@ -163,3 +167,29 @@ expect_smt_fixture_gate_failure \
   fake_inconclusive_runner \
   "inconclusive.sol"
 expect_smt_fixture_gate_failure "no-fixtures" fake_counterexample_runner
+
+LIVE_REHEARSAL_SOURCE="$TEST_TMP_ROOT/live-rehearsal.py"
+printf '%s\n' \
+  'OFFICIAL_CANISTER = "7hfb6-caaaa-aaaar-qadga-cai"' \
+  'CHAIN_ID = 84532' \
+  'capture-artifact validate_raw_artifacts CROSS_ARTIFACT_BINDINGS' >"$LIVE_REHEARSAL_SOURCE"
+verify_live_evm_rpc_rehearsal_sources "$LIVE_REHEARSAL_SOURCE"
+
+LOCAL_REHEARSAL_SOURCE="$TEST_TMP_ROOT/local-rehearsal.py"
+printf '%s\n' \
+  'OFFICIAL_CANISTER = "7hfb6-caaaa-aaaar-qadga-cai"' \
+  'CHAIN_ID = 84532' \
+  'capture-artifact validate_raw_artifacts CROSS_ARTIFACT_BINDINGS' \
+  'RPC = "http://localhost:8545"' >"$LOCAL_REHEARSAL_SOURCE"
+if verify_live_evm_rpc_rehearsal_sources "$LOCAL_REHEARSAL_SOURCE" >/dev/null 2>&1; then
+  echo "live EVM RPC guard accepted a local backend" >&2
+  exit 1
+fi
+
+WRONG_CANISTER_SOURCE="$TEST_TMP_ROOT/wrong-canister.py"
+printf '%s\n' 'OFFICIAL_CANISTER = "aaaaa-aa"' 'CHAIN_ID = 84532' \
+  'capture-artifact validate_raw_artifacts CROSS_ARTIFACT_BINDINGS' >"$WRONG_CANISTER_SOURCE"
+if verify_live_evm_rpc_rehearsal_sources "$WRONG_CANISTER_SOURCE" >/dev/null 2>&1; then
+  echo "live EVM RPC guard accepted a non-official canister" >&2
+  exit 1
+fi

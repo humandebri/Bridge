@@ -54,7 +54,7 @@ pub enum DepositEvent {
     PullAmbiguous { hold_id: HoldId },
     PullFailed { code: LedgerFailure },
     PrepareMint { operation_id: EvmOperationId },
-    MintFinalized { operation_id: EvmOperationId },
+    MintConfirmed { operation_id: EvmOperationId },
     MintReverted { operation_id: EvmOperationId },
 }
 
@@ -72,6 +72,7 @@ pub struct DepositRecord {
     pub net_amount: Amount,
     pub transfer: LedgerTransferIdentity,
     pub state: DepositState,
+    pub last_settlement_stop_reason: Option<String>,
 }
 
 impl DepositRecord {
@@ -92,6 +93,7 @@ impl DepositRecord {
             net_amount,
             transfer: request.transfer,
             state: DepositState::PullPending,
+            last_settlement_stop_reason: None,
         })
     }
 
@@ -102,12 +104,28 @@ impl DepositRecord {
         Ok(())
     }
 
+    pub const fn reserves_mint_resources(&self) -> bool {
+        !matches!(
+            self.state,
+            DepositState::Minted { .. }
+                | DepositState::MintReverted { .. }
+                | DepositState::Cancelled { .. }
+        )
+    }
+
     pub fn apply(&mut self, event: DepositEvent) -> Result<ApplyResult, CoreError> {
         use DepositEvent as Event;
         use DepositState as State;
 
         if self.is_idempotent(&event) {
             return Ok(ApplyResult::idempotent());
+        }
+
+        if !crate::deposit_phase_allows(self.state.phase(), event.phase()) {
+            return Err(CoreError::InvalidTransition {
+                entity: "deposit",
+                event: event.name(),
+            });
         }
 
         let (next, fee_delta) = match (&self.state, event) {
@@ -137,15 +155,15 @@ impl DepositRecord {
                     ledger_block_index,
                     operation_id: current,
                 },
-                Event::MintFinalized { operation_id },
+                Event::MintConfirmed { operation_id },
             ) if *current == operation_id => (
                 State::Minted {
                     ledger_block_index: *ledger_block_index,
                     operation_id,
                 },
-                Amount::new(crate::terminal_retry_fee(true, self.service_fee.get())),
+                Amount::new(crate::fee_delta_once(false, true, self.service_fee.get())),
             ),
-            (State::MintPending { .. }, Event::MintFinalized { .. }) => {
+            (State::MintPending { .. }, Event::MintConfirmed { .. }) => {
                 return Err(CoreError::ConflictingReplay);
             }
             (
@@ -207,7 +225,7 @@ impl DepositRecord {
                     operation_id: current,
                     ..
                 },
-                Event::MintFinalized { operation_id },
+                Event::MintConfirmed { operation_id },
             ) => *current == *operation_id,
             (
                 State::Cancelled {
@@ -229,14 +247,39 @@ impl DepositRecord {
     }
 }
 
+impl DepositState {
+    const fn phase(&self) -> u8 {
+        match self {
+            Self::PullPending => 0,
+            Self::Escrowed { .. } => 1,
+            Self::MintPending { .. } => 2,
+            Self::Minted { .. } => 3,
+            Self::MintReverted { .. } => 4,
+            Self::ReconciliationHold { .. } => 5,
+            Self::Cancelled { .. } => 6,
+        }
+    }
+}
+
 impl DepositEvent {
+    const fn phase(&self) -> u8 {
+        match self {
+            Self::PullSucceeded { .. } => 0,
+            Self::PullAmbiguous { .. } => 1,
+            Self::PullFailed { .. } => 2,
+            Self::PrepareMint { .. } => 3,
+            Self::MintConfirmed { .. } => 4,
+            Self::MintReverted { .. } => 5,
+        }
+    }
+
     const fn name(&self) -> &'static str {
         match self {
             Self::PullSucceeded { .. } => "pull_succeeded",
             Self::PullAmbiguous { .. } => "pull_ambiguous",
             Self::PullFailed { .. } => "pull_failed",
             Self::PrepareMint { .. } => "prepare_mint",
-            Self::MintFinalized { .. } => "mint_finalized",
+            Self::MintConfirmed { .. } => "mint_confirmed",
             Self::MintReverted { .. } => "mint_reverted",
         }
     }

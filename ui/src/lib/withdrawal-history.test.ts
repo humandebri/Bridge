@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { scanWithdrawalLogs, WITHDRAWAL_LOG_CHUNK_SIZE } from "./withdrawal-history"
+import { fetchInBatches, scanWithdrawalLogs, WITHDRAWAL_LOG_CHUNK_SIZE, WITHDRAWAL_SCAN_CHUNKS_PER_STEP } from "./withdrawal-history"
 
 interface TestLog {
   blockNumber: bigint
@@ -9,21 +9,35 @@ interface TestLog {
 }
 
 const log = (id: number, blockNumber: bigint): TestLog => ({ id, blockNumber, transactionHash: `0x${id.toString(16)}`, logIndex: 0 })
+const blockHash = (block: bigint): Promise<`0x${string}`> => {
+  const hash: `0x${string}` = `0x${block.toString(16)}`
+  return Promise.resolve(hash)
+}
 
 describe("withdrawal log scanning", () => {
-  it("scans finalized blocks backwards in bounded chunks and stops after 20 events", async () => {
-    const fetchLogs = vi.fn((fromBlock: bigint, toBlock: bigint) => Promise.resolve(fromBlock === 5_002n
+  it("loads more than 20 canister views in ordered batches", async () => {
+    const fetchBatch = vi.fn((batch: number[]) => Promise.resolve(batch.map((value) => `view-${value}`)))
+
+    const result = await fetchInBatches(Array.from({ length: 21 }, (_, index) => index), 20, fetchBatch)
+
+    expect(fetchBatch.mock.calls.map(([batch]) => batch.length)).toEqual([20, 1])
+    expect(result).toEqual(Array.from({ length: 21 }, (_, index) => `view-${index}`))
+  })
+
+  it("keeps the older cursor when a bounded scan finds 20 events", async () => {
+    const fetchLogs = vi.fn((fromBlock: bigint, toBlock: bigint) => Promise.resolve(fromBlock === 45_002n
       ? Array.from({ length: 20 }, (_, index) => log(index + 1, toBlock - BigInt(index)))
       : []))
 
-    const result = await scanWithdrawalLogs({ deploymentBlock: 1n, finalizedBlock: 10_001n, fetchLogs })
+    const result = await scanWithdrawalLogs({ deploymentBlock: 1n, safeBlock: 50_001n, safeBlockHash: "0x5001", fetchLogs })
 
-    expect(fetchLogs.mock.calls).toEqual([[5_002n, 10_001n]])
+    expect(fetchLogs).toHaveBeenCalledTimes(WITHDRAWAL_SCAN_CHUNKS_PER_STEP)
     expect(result.logs).toHaveLength(20)
-    expect(result.lastFinalizedBlock).toBe(10_001n)
+    expect(result.lastSafeBlock).toBe(50_001n)
+    expect(result.olderCursor).toBe(30_001n)
   })
 
-  it("uses only newly finalized ranges on refresh and deduplicates events", async () => {
+  it("uses only newly confirmed ranges on refresh and deduplicates events", async () => {
     const existing = log(1, 100n)
     const duplicate = { ...existing }
     const added = log(2, 102n)
@@ -31,8 +45,9 @@ describe("withdrawal log scanning", () => {
 
     const result = await scanWithdrawalLogs({
       deploymentBlock: 1n,
-      finalizedBlock: 102n,
-      previous: { lastFinalizedBlock: 100n, logs: [existing] },
+      safeBlock: 102n,
+      safeBlockHash: "0x0102",
+      previous: { lastSafeBlock: 100n, lastSafeBlockHash: "0x0100", olderCursor: null, reachedDeploymentBlock: true, logs: [existing] },
       fetchLogs,
     })
 
@@ -45,8 +60,10 @@ describe("withdrawal log scanning", () => {
 
     await scanWithdrawalLogs({
       deploymentBlock: 1n,
-      finalizedBlock: WITHDRAWAL_LOG_CHUNK_SIZE * 2n + 1n,
-      previous: { lastFinalizedBlock: 1n, logs: [] as TestLog[] },
+      safeBlock: WITHDRAWAL_LOG_CHUNK_SIZE * 2n + 1n,
+      safeBlockHash: "0x1001",
+      previous: { lastSafeBlock: 1n, lastSafeBlockHash: "0x0001", olderCursor: null, reachedDeploymentBlock: true, logs: [] as TestLog[] },
+      fetchBlockHash: blockHash,
       fetchLogs,
     })
 
@@ -54,5 +71,84 @@ describe("withdrawal log scanning", () => {
       [2n, 5_001n],
       [5_002n, 10_001n],
     ])
+  })
+
+  it("caps each scan step and resumes older ranges from its cursor", async () => {
+    const fetchLogs = vi.fn(() => Promise.resolve([] as TestLog[]))
+    const safeBlock = WITHDRAWAL_LOG_CHUNK_SIZE * 10n
+
+    const first = await scanWithdrawalLogs({ deploymentBlock: 1n, safeBlock, safeBlockHash: "0x50000", fetchLogs })
+    expect(fetchLogs).toHaveBeenCalledTimes(WITHDRAWAL_SCAN_CHUNKS_PER_STEP)
+    expect(first.olderCursor).toBe(safeBlock - WITHDRAWAL_LOG_CHUNK_SIZE * BigInt(WITHDRAWAL_SCAN_CHUNKS_PER_STEP))
+    expect(first.reachedDeploymentBlock).toBe(false)
+
+    fetchLogs.mockClear()
+    const second = await scanWithdrawalLogs({ deploymentBlock: 1n, safeBlock, safeBlockHash: "0x50000", previous: first, mode: "older", fetchLogs })
+    expect(fetchLogs).toHaveBeenCalledTimes(WITHDRAWAL_SCAN_CHUNKS_PER_STEP)
+    expect(second.olderCursor).toBe(first.olderCursor! - WITHDRAWAL_LOG_CHUNK_SIZE * BigInt(WITHDRAWAL_SCAN_CHUNKS_PER_STEP))
+  })
+
+  it("caps a large safe catch-up and resumes it on the next refresh", async () => {
+    const fetchLogs = vi.fn(() => Promise.resolve([] as TestLog[]))
+    const previous = { lastSafeBlock: 1n, lastSafeBlockHash: "0x0001" as const, olderCursor: null, reachedDeploymentBlock: true, logs: [] as TestLog[] }
+    const safeBlock = WITHDRAWAL_LOG_CHUNK_SIZE * 10n
+
+    const first = await scanWithdrawalLogs({ deploymentBlock: 1n, safeBlock, safeBlockHash: "0x50000", previous, fetchLogs, fetchBlockHash: blockHash })
+    expect(fetchLogs).toHaveBeenCalledTimes(WITHDRAWAL_SCAN_CHUNKS_PER_STEP)
+    expect(first.lastSafeBlock).toBe(1n + WITHDRAWAL_LOG_CHUNK_SIZE * BigInt(WITHDRAWAL_SCAN_CHUNKS_PER_STEP))
+
+    fetchLogs.mockClear()
+    const second = await scanWithdrawalLogs({ deploymentBlock: 1n, safeBlock, safeBlockHash: "0x50000", previous: first, fetchLogs, fetchBlockHash: blockHash })
+    expect(fetchLogs).toHaveBeenCalledTimes(WITHDRAWAL_SCAN_CHUNKS_PER_STEP)
+    expect(second.lastSafeBlock).toBe(first.lastSafeBlock + WITHDRAWAL_LOG_CHUNK_SIZE * BigInt(WITHDRAWAL_SCAN_CHUNKS_PER_STEP))
+  })
+
+  it("preserves the older cursor when a safe refresh fills the visible history", async () => {
+    const previous = { lastSafeBlock: 100n, lastSafeBlockHash: "0x0100" as const, olderCursor: 50n, reachedDeploymentBlock: false, logs: [] as TestLog[] }
+    const result = await scanWithdrawalLogs({
+      deploymentBlock: 1n,
+      safeBlock: 101n,
+      safeBlockHash: "0x0101",
+      previous,
+      fetchLogs: () => Promise.resolve(Array.from({ length: 20 }, (_, index) => log(index + 1, 101n))),
+    })
+
+    expect(result.logs).toHaveLength(20)
+    expect(result.olderCursor).toBe(50n)
+  })
+
+  it("discards cached logs and rescans from the safe head when its hash changes", async () => {
+    const stale = log(1, 100n)
+    const replacement = log(2, 100n)
+    const fetchLogs = vi.fn(() => Promise.resolve([replacement]))
+
+    const result = await scanWithdrawalLogs({
+      deploymentBlock: 1n,
+      safeBlock: 100n,
+      safeBlockHash: "0xnew",
+      previous: { lastSafeBlock: 100n, lastSafeBlockHash: "0xold", olderCursor: null, reachedDeploymentBlock: true, logs: [stale] },
+      fetchLogs,
+    })
+
+    expect(fetchLogs).toHaveBeenCalledWith(1n, 100n)
+    expect(result.logs).toEqual([replacement])
+    expect(result.lastSafeBlockHash).toBe("0xnew")
+  })
+
+  it("continues scanning after more than 20 events have already been found", async () => {
+    const previous = {
+      lastSafeBlock: 50_001n,
+      lastSafeBlockHash: "0x5001" as const,
+      olderCursor: 30_001n,
+      reachedDeploymentBlock: false,
+      logs: Array.from({ length: 20 }, (_, index) => log(index + 1, 50_001n - BigInt(index))),
+    }
+    const fetchLogs = vi.fn(() => Promise.resolve([log(21, 30_000n)]))
+
+    const result = await scanWithdrawalLogs({ deploymentBlock: 1n, safeBlock: 50_001n, safeBlockHash: "0x5001", previous, mode: "older", fetchLogs })
+
+    expect(fetchLogs).toHaveBeenCalledTimes(WITHDRAWAL_SCAN_CHUNKS_PER_STEP)
+    expect(result.logs).toHaveLength(21)
+    expect(result.olderCursor).toBe(10_001n)
   })
 })

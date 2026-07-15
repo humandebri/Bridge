@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "rehearsal_id": "<unique-lowercase-rehearsal-id>",
+  "test_only": true,
+  "ic_network": "ic",
+  "base_chain_id": 84532,
+  "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+  "bridge_canister_id": "<test-bridge-canister-principal>",
+  "ledger_canister_id": "<test-ledger-canister-principal>",
+  "index_canister_id": "<test-index-canister-principal>",
+  "bridge_contract": "<base-sepolia-bridge-address>",
+  "expected_bridge_signer": "<chain-key-signer-address>",
+  "bridge_canister_wasm_sha256": "<64-lowercase-hex>",
+  "bridge_runtime_bytecode_sha256": "<64-lowercase-hex>",
+  "rpc_urls": [
+    "https://<public-provider-one>/<path>",
+    "https://<public-provider-two>/<path>",
+    "https://<public-provider-three>/<path>"
+  ]
+}

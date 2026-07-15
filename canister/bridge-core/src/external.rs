@@ -51,7 +51,6 @@ impl LedgerCallOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvmTransactionEnvelope {
     pub operation_id: EvmOperationId,
-    pub operation_ids: Vec<EvmOperationId>,
     pub payload_hash: [u8; 32],
     pub nonce: u64,
     pub chain_id: u64,
@@ -83,7 +82,6 @@ impl EvmCallIntent {
     pub fn assign_nonce(self, nonce: u64) -> EvmTransactionEnvelope {
         EvmTransactionEnvelope {
             operation_id: self.operation_id,
-            operation_ids: vec![self.operation_id],
             payload_hash: self.payload_hash,
             nonce,
             chain_id: self.chain_id,
@@ -106,13 +104,7 @@ impl EvmTransactionEnvelope {
         if self.chain_id != expected_chain_id || self.contract != expected_contract {
             return Err(CoreError::PayloadConflict);
         }
-        if self.operation_ids.is_empty()
-            || self.operation_ids.len() > 4
-            || self.operation_ids[0] != self.operation_id
-            || self.calldata.len() < 4
-            || self.gas_limit == 0
-            || self.max_fee_per_gas == 0
-        {
+        if self.calldata.len() < 4 || self.gas_limit == 0 || self.max_fee_per_gas == 0 {
             return Err(CoreError::InvalidAmount);
         }
         Ok(())
@@ -127,12 +119,64 @@ impl EvmTransactionEnvelope {
 pub struct ExternalProgress {
     pub nonce_initialized: bool,
     pub next_evm_nonce: u64,
-    pub last_finalized_base_block: u64,
-    pub last_finalized_mint_block: u64,
+    pub last_safe_base_block: u64,
+    pub last_safe_mint_block: u64,
     pub last_eth_balance_wei: u128,
     pub reserve_sufficient: bool,
+    pub reserve_observation_generation: u64,
     pub last_reserve_observation_ns: u64,
-    pub last_finalized_observation_ns: u64,
+    pub last_safe_observation_ns: u64,
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReconciliationTarget {
+    Hold(HoldId),
+    FeePayout(u64),
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconciliationArchiveRange {
+    pub canister_id: Vec<u8>,
+    pub method: String,
+    pub start: u128,
+    pub length: u128,
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconciliationLedgerPage {
+    pub end: u128,
+    pub archives: Vec<ReconciliationArchiveRange>,
+    pub next_archive: u16,
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReconciliationScanPhase {
+    Ledger {
+        next_block: u128,
+        ledger_tip: Option<u128>,
+        pending_page: Option<Box<ReconciliationLedgerPage>>,
+    },
+    Index {
+        ledger_watermark: u128,
+        index_watermark: Option<u128>,
+        next_start: Option<u128>,
+    },
 }
 
 #[cfg_attr(
@@ -141,23 +185,21 @@ pub struct ExternalProgress {
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconciliationScanProgress {
-    pub hold_id: HoldId,
-    pub next_block: u128,
-    pub ledger_tip: u128,
-    pub index_watermark: u128,
-    pub archives_complete: bool,
-    pub matched_block: Option<u128>,
+    pub target: ReconciliationTarget,
     pub transfer: LedgerTransferIdentity,
+    pub phase: ReconciliationScanPhase,
 }
 
 impl ReconciliationScanProgress {
-    pub fn can_prove_absent(&self) -> bool {
-        crate::scan_complete(
-            self.next_block,
-            self.ledger_tip,
-            self.index_watermark,
-            self.archives_complete,
-            self.matched_block.is_some(),
-        )
+    pub fn new(target: ReconciliationTarget, transfer: LedgerTransferIdentity) -> Self {
+        Self {
+            target,
+            transfer,
+            phase: ReconciliationScanPhase::Ledger {
+                next_block: 0,
+                ledger_tip: None,
+                pending_page: None,
+            },
+        }
     }
 }

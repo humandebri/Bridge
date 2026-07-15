@@ -18,7 +18,7 @@ and the production OISY signer. Automated test adapters do not satisfy this gate
 - KINIC ledger and index canister IDs:
 
 Attach the runtime-verification screen and record that every check is fresh and passing. Stop the
-test if the UI becomes read-only or any identifier differs from the reviewed profile.
+test if bridge controls become unavailable or any identifier differs from the reviewed profile.
 
 ## Plug
 
@@ -27,7 +27,7 @@ test if the UI becomes read-only or any identifier differs from the reviewed pro
 - Approve the exact gross amount plus transfer-from fee with current allowance and 30-minute expiry.
 - Confirm Plug displays the Bridge canister's ICRC-21 message, including Base recipient, amounts,
   maximum service fee, minimum received amount, and the bSNS governance disclosure.
-- Submit a deposit and verify canister history and the finalized Base mint.
+- Submit a deposit and verify canister history and the Safe-confirmed Base mint.
 - Reject one approval and one Bridge call; verify no subsequent step is sent.
 - Close one wallet popup; verify the UI reports cancellation without inventing success.
 - Disconnect/reconnect and change account once; verify the stale confirmation is invalidated.
@@ -38,7 +38,7 @@ test if the UI becomes read-only or any identifier differs from the reviewed pro
 - Confirm the selected owner/subaccount remains the approval and deposit source.
 - Approve the exact gross amount plus transfer-from fee with current allowance and 30-minute expiry.
 - Confirm OISY displays the Bridge canister's ICRC-21 message and the bSNS governance disclosure.
-- Submit a deposit and verify canister history and the finalized Base mint.
+- Submit a deposit and verify canister history and the Safe-confirmed Base mint.
 - Reject one approval and one Bridge call, close one popup, then reconnect.
 - Change the selected account after confirmation; verify the transaction is aborted and must be
   reviewed again.
@@ -48,10 +48,18 @@ test if the UI becomes read-only or any identifier differs from the reviewed pro
 - Change the Base chain and verify approve/deposit/withdraw remain disabled.
 - Disconnect the Base wallet after confirmation and verify submission is aborted.
 - Verify an altered runtime bytecode hash, contract address, ledger metadata, or public canister
-  config makes the entire UI read-only.
-- Retry an indeterminate deposit with the same request ID and identical payload; verify one history
-  entry. Alter the payload with the same ID and verify rejection.
+  config makes bridge controls unavailable.
+- Retry an indeterminate deposit with the same `owner_sequence` and identical payload; verify one
+  history entry. Alter the payload with the same sequence and verify `DepositConflict`; use a skipped
+  or stale sequence and verify `SequenceMismatch`.
 - After approve succeeds but deposit fails, record the remaining allowance, expiry, and retry path.
+- Force one withdrawal notification failure and verify a later explicit History refresh reconstructs
+  the Safe-confirmed event and exposes `Check and notify` again.
+- Reload the page and reconnect both wallets; verify neither action retries the notification.
+- Select `Check and notify` and verify one receipt check and at most one notification call are made.
+- After successful ingestion, close the wallet and browser; verify canister timers complete release
+  and Base acknowledgement or refund without another wallet prompt. Reopen History and verify
+  `Confirming automatically` is shown only while scheduled, and `Retry settlement` only after a stop.
 
 ## Result
 
@@ -60,5 +68,4 @@ test if the UI becomes read-only or any identifier differs from the reviewed pro
 - Deviations or browser/extension issues:
 - Reviewer and review date:
 
-A `FAIL`, missing evidence, or incomplete runtime profile blocks write enablement and release.
-
+A `FAIL`, missing evidence, or incomplete runtime profile blocks the release.

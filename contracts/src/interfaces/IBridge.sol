@@ -9,6 +9,7 @@ interface IBridge {
     enum WithdrawalStatus {
         None,
         Pending,
+        Releasing,
         Released,
         Refunded
     }
@@ -28,14 +29,6 @@ interface IBridge {
         bytes owner;
         bytes32 subaccount;
         WithdrawalStatus status;
-        uint256 amountOut;
-        uint256 serviceFee;
-        uint256 ledgerFee;
-        uint256 ledgerBlockIndex;
-    }
-
-    struct ReleaseAcknowledgement {
-        uint256 withdrawalId;
         uint256 amountOut;
         uint256 serviceFee;
         uint256 ledgerFee;
@@ -72,6 +65,7 @@ interface IBridge {
         bytes owner,
         bytes32 subaccount
     );
+    event WithdrawalReleaseCancelled(uint256 indexed withdrawalId);
     event WithdrawalReleased(
         uint256 indexed withdrawalId, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee, uint256 ledgerBlockIndex
     );
@@ -92,14 +86,13 @@ interface IBridge {
     error InvalidMinAmountOut(uint256 minAmountOut, uint256 amount);
     error InvalidServiceFee(uint256 serviceFee, uint256 maximumServiceFee);
     error ServiceFeeExceedsUserMaximum(uint256 serviceFee, uint256 userMaximum);
-    error EmptyBatch();
-    error BatchTooLarge(uint256 supplied, uint256 maximum);
     error DepositAlreadyProcessed(bytes32 depositId);
     error DepositMintLimitExceeded(uint256 mintAmount, uint256 limit);
     error MintWindowLimitExceeded(uint256 requestedAmount, uint256 availableAmount);
     error DepositMintsArePaused();
     error WithdrawalsArePaused();
     error WithdrawalNotFound(uint256 withdrawalId);
+    error TokenTransferFailed();
     error InvalidWithdrawalStatus(uint256 withdrawalId, WithdrawalStatus currentStatus);
     error SettlementAmountsMismatch(uint256 amount, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee);
     error ReleaseAcknowledgementMismatch(uint256 withdrawalId);
@@ -107,14 +100,18 @@ interface IBridge {
     error UnauthorizedBridgeSigner(address caller);
     error UnauthorizedRuntimeAdministrator(address caller);
     error UnauthorizedBaseAdmin(address caller);
+    error TimelockCandidateHasNoCode(address candidate);
+    error TimelockCandidateIntrospectionFailed(address candidate);
+    error TimelockCandidateDelayTooShort(address candidate, uint256 suppliedDelay, uint256 minimumDelay);
+    error TimelockCandidateMissingSelfAdmin(address candidate);
 
     function mintDeposit(DepositMintRequest calldata request) external;
-
-    function mintDeposits(DepositMintRequest[] calldata requests) external;
 
     function createWithdrawal(uint256 amount, uint256 minAmountOut, bytes calldata owner, bytes32 subaccount)
         external
         returns (uint256 withdrawalId);
+
+    function cancelRelease(uint256 withdrawalId) external;
 
     function acknowledgeRelease(
         uint256 withdrawalId,
@@ -124,11 +121,7 @@ interface IBridge {
         uint256 ledgerBlockIndex
     ) external;
 
-    function acknowledgeReleases(ReleaseAcknowledgement[] calldata acknowledgements) external;
-
     function refundWithdrawal(uint256 withdrawalId) external;
-
-    function refundWithdrawals(uint256[] calldata withdrawalIds) external;
 
     function bridgeSnapshot() external view returns (BridgeSnapshot memory);
 

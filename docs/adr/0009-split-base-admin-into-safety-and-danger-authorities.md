@@ -4,7 +4,7 @@ status: accepted
 
 # Base adminを即時停止と遅延回復の権限に分割する
 
-Base contractのMint limitとwindow長はdeploy時に固定する。Runtime Administratorはpauseと上限内Service Fee変更を即時実行できる。unpauseとrole rotationはtimelockを経由する単一Base Admin hardware walletだけが実行できる。本決定はADR 0007をsupersedeし、Governance Executorを導入しない。
+Base contractのMint limitとwindow長はdeploy時に固定する。Runtime Administratorはpauseと上限内Service Fee変更を即時実行できる。unpauseとrole rotationはtimelockを経由するBase Admin hardware walletだけが実行でき、cancellerは独立hardware walletへ分離する。本決定はADR 0007をsupersedeし、Governance Executorを導入しない。
 
 ## Considered Options
 
@@ -18,7 +18,7 @@ Base contractのMint limitとwindow長はdeploy時に固定する。Runtime Admi
 
 - Runtime AdministratorのBase側権限はpauseと`MAX_SERVICE_FEE`以内のService Fee変更に限定する。
 - Base Adminのunpauseとrole rotationはtimelock（初期値72時間）の待機を経て実行する。
-- Base Admin walletはtimelockのproposer、canceller、executorを兼ねる。timelock遅延の短縮とrole変更もtimelock自身を経由する。
+- Base Admin walletはtimelockのproposerとexecutorを担い、cancellerは独立hardware walletだけが担う。timelock遅延の短縮とrole変更もtimelock自身を経由する。
 - Per-Deposit Limit、Mint Throughput Limit、window長を変更するselectorは公開しない。
 - Base Admin walletはSNS Governanceの外に立つ運用主体である。ICP側の信頼主体（ADR 0008のSNS Governance）と対称でないことをUIと文書で明示する。
 - `MAX_SERVICE_FEE`などimmutableと定めた値はBase Adminでも変更できない。

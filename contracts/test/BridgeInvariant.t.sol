@@ -36,6 +36,10 @@ contract BridgeInvariantHandler is TestBase {
             10
         );
         _token = _bridge.bsns();
+        vm.startPrank(BASE_ADMIN_TIMELOCK);
+        _bridge.unpauseDepositMints();
+        _bridge.unpauseWithdrawals();
+        vm.stopPrank();
         _initialMint(keccak256("invariant-0"), address(this));
         _initialMint(keccak256("invariant-1"), address(this));
         _initialMint(keccak256("invariant-2"), address(this));
@@ -80,6 +84,7 @@ contract BridgeInvariantHandler is TestBase {
             mstore8(add(owner, 0x20), principalTag)
         }
         bytes32 subaccount = bytes32(seed);
+        _token.approve(address(_bridge), amount);
         (bool succeeded,) =
             address(_bridge).call(abi.encodeCall(IBridge.createWithdrawal, (amount, minAmountOut, owner, subaccount)));
         if (succeeded) {
@@ -94,7 +99,7 @@ contract BridgeInvariantHandler is TestBase {
         }
         uint256 withdrawalId = 1 + (seed % withdrawalCount);
         IBridge.Withdrawal memory withdrawal = _bridge.getWithdrawal(withdrawalId);
-        if (withdrawal.status == IBridge.WithdrawalStatus.Pending) {
+        if (withdrawal.status == IBridge.WithdrawalStatus.Releasing) {
             uint256 amountOut = withdrawal.minAmountOut + (seed % (withdrawal.amount - withdrawal.minAmountOut + 1));
             uint256 remaining = withdrawal.amount - amountOut;
             uint256 feeLimit = remaining < _bridge.MAX_SERVICE_FEE() ? remaining : _bridge.MAX_SERVICE_FEE();
@@ -122,12 +127,26 @@ contract BridgeInvariantHandler is TestBase {
         }
     }
 
+    function cancelRelease(uint256 seed) external {
+        if (withdrawalCount == 0) {
+            return;
+        }
+        uint256 withdrawalId = 1 + (seed % withdrawalCount);
+        if (_bridge.getWithdrawal(withdrawalId).status == IBridge.WithdrawalStatus.Releasing) {
+            _bridge.cancelRelease(withdrawalId);
+        }
+    }
+
     function refundWithdrawal(uint256 seed) external {
         if (withdrawalCount == 0) {
             return;
         }
         uint256 withdrawalId = 1 + (seed % withdrawalCount);
         IBridge.Withdrawal memory withdrawal = _bridge.getWithdrawal(withdrawalId);
+        if (withdrawal.status == IBridge.WithdrawalStatus.Releasing) {
+            _bridge.cancelRelease(withdrawalId);
+            withdrawal = _bridge.getWithdrawal(withdrawalId);
+        }
         if (withdrawal.status != IBridge.WithdrawalStatus.Pending) {
             return;
         }
@@ -178,7 +197,10 @@ contract BridgeInvariantTest is TestBase, StdInvariant {
                 assert(withdrawal.ledgerFee == 0);
                 assert(withdrawal.ledgerBlockIndex == 0);
             } else {
-                assert(withdrawal.status == IBridge.WithdrawalStatus.Pending);
+                assert(
+                    withdrawal.status == IBridge.WithdrawalStatus.Pending
+                        || withdrawal.status == IBridge.WithdrawalStatus.Releasing
+                );
             }
         }
     }

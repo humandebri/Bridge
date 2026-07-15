@@ -9,8 +9,10 @@ DEPLOYER="0x7F4743128368CdeD5413E8c42C9Bd689ea64D192"
 MANIFEST="${BASE_SEPOLIA_MANIFEST:-$ROOT/deployments/base-sepolia-contract-experiment.json}"
 DEPLOYER_KEYSTORE="${BASE_SEPOLIA_DEPLOYER_KEYSTORE:-$HOME/.foundry/keystores/kinic-base-sepolia-experiment}"
 SIGNER_KEYSTORE="${BASE_SEPOLIA_SIGNER_KEYSTORE:-$HOME/.foundry/keystores/kinic-base-sepolia-bridge-signer}"
+CANCELLER_KEYSTORE="${BASE_SEPOLIA_CANCELLER_KEYSTORE:-$HOME/.foundry/keystores/kinic-base-sepolia-canceller}"
 DEPLOYER_PASSWORD_FILE="${BASE_SEPOLIA_DEPLOYER_PASSWORD_FILE:-}"
 SIGNER_PASSWORD_FILE="${BASE_SEPOLIA_SIGNER_PASSWORD_FILE:-}"
+CANCELLER_PASSWORD_FILE="${BASE_SEPOLIA_CANCELLER_PASSWORD_FILE:-}"
 TIMELOCK_DELAY=259200
 ZERO_ADDRESS="0x0000000000000000000000000000000000000000"
 ZERO_BYTES32="0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -119,35 +121,35 @@ wait_receipt() {
   die "receipt was not available within 5 minutes: $tx_hash"
 }
 
-wait_transactions_finalized() {
+wait_transactions_confirmed() {
   (( $# > 0 )) || return 0
   local names=("$@")
   local deadline=$((SECONDS + 1800))
-  local finalized_json finalized_hex finalized_dec name receipt_block all_finalized
+  local safe_json safe_hex safe_dec name receipt_block all_confirmed
   while (( SECONDS < deadline )); do
-    if finalized_json="$(cast block finalized --rpc-url "$RPC_URL" --json 2>/dev/null)"; then
-      finalized_hex="$(jq -r '.number' <<<"$finalized_json")"
-      finalized_dec="$(hex_to_dec "$finalized_hex")"
-      all_finalized=true
+    if safe_json="$(cast block safe --rpc-url "$RPC_URL" --json 2>/dev/null)"; then
+      safe_hex="$(jq -r '.number' <<<"$safe_json")"
+      safe_dec="$(hex_to_dec "$safe_hex")"
+      all_confirmed=true
       for name in "${names[@]}"; do
         receipt_block="$(jq -er --arg name "$name" '.transactions[$name].receipt_block' "$MANIFEST")"
-        if (( finalized_dec >= receipt_block )); then
+        if (( safe_dec >= receipt_block )); then
           manifest_update \
-            '.transactions[$name].finalized = true | .transactions[$name].finalized_block = $block | .transactions[$name].finalized_at = $at' \
-            --arg name "$name" --argjson block "$finalized_dec" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            '.transactions[$name].confirmed = true | .transactions[$name].confirmed_block = $block | .transactions[$name].confirmed_at = $at' \
+            --arg name "$name" --argjson block "$safe_dec" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         else
-          all_finalized=false
+          all_confirmed=false
         fi
       done
-      if [[ "$all_finalized" == true ]]; then
-        log "finalized stage transactions at observed block $finalized_dec: ${names[*]}"
+      if [[ "$all_confirmed" == true ]]; then
+        log "Safe-confirmed stage transactions at observed block $safe_dec: ${names[*]}"
         return 0
       fi
     fi
     sleep 15
   done
-  manifest_update '.state = "PENDING_FINALITY" | .pending_transactions = $names' --argjson names "$(printf '%s\n' "${names[@]}" | jq -R . | jq -s .)"
-  die "stage transactions did not finalize within 30 minutes; no replacement transaction was sent"
+  manifest_update '.state = "PENDING_CONFIRMATION" | .pending_transactions = $names' --argjson names "$(printf '%s\n' "${names[@]}" | jq -R . | jq -s .)"
+  die "stage transactions did not reach the Safe head within 30 minutes; no replacement transaction was sent"
 }
 
 record_transaction() {
@@ -166,7 +168,7 @@ record_transaction() {
   block="$(hex_to_dec "$block_raw")"
   [[ "$status" == "$expected_status" ]] || die "$name receipt status is $status, expected $expected_status"
   manifest_update \
-    '.transactions[$name] = {hash:$hash,from:$from,to:$to,nonce:$nonce,status:$status,receipt_block:$block,receipt_block_hash:$block_hash,finalized:false}' \
+    '.transactions[$name] = {hash:$hash,from:$from,to:$to,nonce:$nonce,status:$status,receipt_block:$block,receipt_block_hash:$block_hash,confirmed:false}' \
     --arg name "$name" --arg hash "$tx_hash" --arg from "$sender" --arg to "$target" \
     --argjson nonce "$nonce" --argjson status "$status" --argjson block "$block" --arg block_hash "$block_hash"
   echo "$block"
@@ -320,14 +322,18 @@ preflight() {
   require_file "$DEPLOYER_PASSWORD_FILE"
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
   require_file "$SIGNER_PASSWORD_FILE"
-  local signer
+  require_file "$CANCELLER_PASSWORD_FILE"
+  local signer canceller
   signer="$(wallet_address "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE")"
+  canceller="$(wallet_address "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE")"
   address_eq "$signer" "$DEPLOYER" && die "bridge signer must differ from deployer/runtime administrator"
+  address_eq "$canceller" "$DEPLOYER" && die "canceller must differ from proposer/executor"
+  address_eq "$canceller" "$signer" && die "canceller must differ from bridge signer"
   init_manifest
   require_manifest_chain
   manifest_update \
-    '.wallets.bridge_signer = $signer | .source.revision = $revision | .source.dirty_diff_sha256 = $dirty | .source.source_tree_sha256 = $tree' \
-    --arg signer "$signer" --arg revision "$(git -C "$ROOT" rev-parse HEAD)" \
+    '.wallets.bridge_signer = $signer | .wallets.independent_canceller = $canceller | .source.revision = $revision | .source.dirty_diff_sha256 = $dirty | .source.source_tree_sha256 = $tree' \
+    --arg signer "$signer" --arg canceller "$canceller" --arg revision "$(git -C "$ROOT" rev-parse HEAD)" \
     --arg dirty "$(dirty_diff_hash)" --arg tree "$(source_tree_hash)"
 
   log "running local Solidity and ABI gates"
@@ -343,9 +349,9 @@ preflight() {
 
   forge build --root "$CONTRACTS"
   local timelock_bytecode bridge_bytecode timelock_args bridge_args timelock_creation bridge_creation
-  timelock_bytecode="$(jq -r '.bytecode.object' "$CONTRACTS/out/TimelockController.sol/TimelockController.json")"
+  timelock_bytecode="$(jq -r '.bytecode.object' "$CONTRACTS/out/BridgeTimelockController.sol/BridgeTimelockController.json")"
   bridge_bytecode="$(jq -r '.bytecode.object' "$CONTRACTS/out/Bridge.sol/Bridge.json")"
-  timelock_args="$(cast abi-encode 'constructor(uint256,address[],address[],address)' "$TIMELOCK_DELAY" "[$DEPLOYER]" "[$DEPLOYER]" "$ZERO_ADDRESS")"
+  timelock_args="$(cast abi-encode 'constructor(uint256,address[],address[],address[])' "$TIMELOCK_DELAY" "[$DEPLOYER]" "[$canceller]" "[$DEPLOYER]")"
   bridge_args="$(cast abi-encode 'constructor(string,string,uint8,address,address,address,uint256,uint256,uint64,uint256,uint256)' \
     kinic KINIC 8 "$signer" "$DEPLOYER" 0x0000000000000000000000000000000000000001 \
     1000000000 10000000000 3600 10000000 1000000)"
@@ -400,9 +406,11 @@ deploy() {
   require_manifest_chain
   require_state READY_TO_DEPLOY
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
-  local signer signer_balance fund_tx timelock bridge bsns
+  local signer canceller signer_balance fund_tx timelock bridge bsns
   signer="$(manifest_get '.wallets.bridge_signer')"
+  canceller="$(manifest_get '.wallets.independent_canceller')"
   check_wallet "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$signer"
+  check_wallet "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE" "$canceller"
   signer_balance="$(cast balance "$signer" --rpc-url "$RPC_URL")"
   if (( signer_balance < SIGNER_FUNDING_WEI )); then
     fund_tx="$(send_success fund_bridge_signer "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
@@ -428,14 +436,14 @@ deploy() {
       --argjson balance "$signer_balance"
   fi
   timelock="$(deploy_contract timelock \
-    'lib/openzeppelin-contracts/contracts/governance/TimelockController.sol:TimelockController' \
+    'src/BridgeTimelockController.sol:BridgeTimelockController' \
     "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
-    "$TIMELOCK_DELAY" "[$DEPLOYER]" "[$DEPLOYER]" "$ZERO_ADDRESS")"
+    "$TIMELOCK_DELAY" "[$DEPLOYER]" "[$canceller]" "[$DEPLOYER]")"
   bridge="$(deploy_contract bridge 'src/Bridge.sol:Bridge' "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
     kinic KINIC 8 "$signer" "$DEPLOYER" "$timelock" 1000000000 10000000000 3600 10000000 1000000)"
   bsns="$(cast call "$bridge" 'bsns()(address)' --rpc-url "$RPC_URL")"
   record_contract bsns "$bsns" "$(manifest_get '.contracts.bridge.deployment_transaction')"
-  wait_transactions_finalized fund_bridge_signer deploy_timelock deploy_bridge
+  wait_transactions_confirmed fund_bridge_signer deploy_timelock deploy_bridge
   manifest_update '.state = "DEPLOYED" | .balances.deployer_after_deploy = $deployer | .balances.signer_after_deploy = $signer' \
     --argjson deployer "$(cast balance "$DEPLOYER" --rpc-url "$RPC_URL")" \
     --argjson signer "$(cast balance "$signer" --rpc-url "$RPC_URL")"
@@ -443,8 +451,9 @@ deploy() {
 }
 
 verify_deployment() {
-  local signer timelock bridge bsns proposer canceller executor admin
+  local signer independent_canceller timelock bridge bsns proposer canceller executor admin
   signer="$(manifest_get '.wallets.bridge_signer')"
+  independent_canceller="$(manifest_get '.wallets.independent_canceller')"
   timelock="$(manifest_get '.contracts.timelock.address')"
   bridge="$(manifest_get '.contracts.bridge.address')"
   bsns="$(manifest_get '.contracts.bsns.address')"
@@ -458,8 +467,19 @@ verify_deployment() {
   assert_call_eq 10000000000 "$bridge" 'mintWindowLimit()(uint256)'
   assert_call_eq 3600 "$bridge" 'mintWindowDuration()(uint64)'
   assert_call_eq 10000000 "$bridge" 'MAX_SERVICE_FEE()(uint256)'
-  if [[ "$(manifest_get '.state')" != WAITING_TIMELOCK ]]; then
+  local deployment_state
+  deployment_state="$(manifest_get '.state')"
+  if [[ "$deployment_state" == COMPLETE ]]; then
+    assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
+  else
     assert_call_eq 1000000 "$bridge" 'serviceFee()(uint256)'
+  fi
+  if [[ "$deployment_state" == DEPLOYED || "$deployment_state" == WAITING_TIMELOCK || "$deployment_state" == COMPLETE ]]; then
+    assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
+    assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
+  elif [[ "$deployment_state" == ACTIVE ]]; then
+    assert_call_eq false "$bridge" 'depositMintsPaused()(bool)'
+    assert_call_eq false "$bridge" 'withdrawalsPaused()(bool)'
   fi
   assert_call_eq 8 "$bsns" 'decimals()(uint8)'
   [[ "$(cast call "$bsns" 'name()(string)' --rpc-url "$RPC_URL")" == '"kinic"' ]] || die "token name mismatch"
@@ -469,7 +489,10 @@ verify_deployment() {
   executor="$(cast call "$timelock" 'EXECUTOR_ROLE()(bytes32)' --rpc-url "$RPC_URL")"
   admin="$(cast call "$timelock" 'DEFAULT_ADMIN_ROLE()(bytes32)' --rpc-url "$RPC_URL")"
   assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$proposer" "$DEPLOYER"
-  assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$canceller" "$DEPLOYER"
+  assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$canceller" "$DEPLOYER"
+  assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$canceller" "$independent_canceller"
+  assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$proposer" "$independent_canceller"
+  assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$executor" "$independent_canceller"
   assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$executor" "$DEPLOYER"
   assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$admin" "$timelock"
   assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$admin" "$DEPLOYER"
@@ -486,7 +509,7 @@ verify_deployment() {
 flow() {
   check_chain
   require_manifest_chain
-  require_state DEPLOYED
+  require_state ACTIVE
   local signer bridge bsns deposit_id owner subaccount tx withdrawal1 withdrawal2 status1 status2
   signer="$(manifest_get '.wallets.bridge_signer')"
   bridge="$(manifest_get '.contracts.bridge.address')"
@@ -502,12 +525,18 @@ flow() {
   fi
   owner=0x01
   subaccount="$ZERO_BYTES32"
+  send_success approve_withdrawal_1 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bsns" \
+    'approve(address,uint256)' "$bridge" 50000000 >/dev/null
   send_success create_withdrawal_1 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'createWithdrawal(uint256,uint256,bytes,bytes32)' 50000000 48000000 "$owner" "$subaccount" >/dev/null
   send_success acknowledge_withdrawal_1 "$signer" "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$bridge" \
     'acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)' 1 48000000 1000000 1000000 42 >/dev/null
+  send_success approve_withdrawal_2 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bsns" \
+    'approve(address,uint256)' "$bridge" 20000000 >/dev/null
   send_success create_withdrawal_2 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'createWithdrawal(uint256,uint256,bytes,bytes32)' 20000000 19000000 "$owner" "$subaccount" >/dev/null
+  send_success cancel_withdrawal_2 "$signer" "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$bridge" \
+    'cancelRelease(uint256)' 2 >/dev/null
   send_success refund_withdrawal_2 "$signer" "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$bridge" \
     'refundWithdrawal(uint256)' 2 >/dev/null
   assert_call_eq 50000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
@@ -516,27 +545,28 @@ flow() {
   withdrawal2="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))' 2 --rpc-url "$RPC_URL" --json)"
   status1="$(jq -r '.[0][5]' <<<"$withdrawal1")"
   status2="$(jq -r '.[0][5]' <<<"$withdrawal2")"
-  [[ "$status1" == 2 ]] || die "withdrawal 1 status is $status1, expected Released(2)"
-  [[ "$status2" == 3 ]] || die "withdrawal 2 status is $status2, expected Refunded(3)"
+  [[ "$status1" == 3 ]] || die "withdrawal 1 status is $status1, expected Released(3)"
+  [[ "$status2" == 4 ]] || die "withdrawal 2 status is $status2, expected Refunded(4)"
   send_success set_service_fee_2m "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'setServiceFee(uint256)' 2000000 >/dev/null
   send_success pause_deposits "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'pauseDepositMints()' >/dev/null
   send_success pause_withdrawals "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'pauseWithdrawals()' >/dev/null
-  wait_transactions_finalized mint_deposit create_withdrawal_1 acknowledge_withdrawal_1 \
-    create_withdrawal_2 refund_withdrawal_2 set_service_fee_2m pause_deposits pause_withdrawals
+  wait_transactions_confirmed mint_deposit approve_withdrawal_1 create_withdrawal_1 acknowledge_withdrawal_1 \
+    approve_withdrawal_2 create_withdrawal_2 cancel_withdrawal_2 refund_withdrawal_2 set_service_fee_2m pause_deposits pause_withdrawals
   assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
   assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
   assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
   assert_reverts_call "$DEPLOYER" "$bridge" "$(cast calldata 'unpauseDepositMints()')"
-  manifest_update '.checks.asset_flow = true | .checks.direct_unpause_rejected = true | .state = "FLOW_COMPLETE"'
+  manifest_update '.checks.asset_flow = true | .checks.direct_unpause_rejected = true | .state = "COMPLETE" | .completed_at = $at' \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
 schedule() {
   check_chain
   require_manifest_chain
-  require_state FLOW_COMPLETE
+  require_state DEPLOYED
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
   local timelock bridge data1 data2 targets values payloads salt operation_id ready now
   timelock="$(manifest_get '.contracts.timelock.address')"
@@ -563,7 +593,7 @@ schedule() {
   send_expected_revert early_execute_unpause "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$timelock" \
     'executeBatch(address[],uint256[],bytes[],bytes32,bytes32)' \
     "$targets" "$values" "$payloads" "$ZERO_BYTES32" "$salt" >/dev/null
-  wait_transactions_finalized schedule_unpause early_execute_unpause
+  wait_transactions_confirmed schedule_unpause early_execute_unpause
   manifest_update '.checks.early_execute_reverted = true | .state = "WAITING_TIMELOCK"'
   log "timelock scheduled; ready timestamp $ready"
 }
@@ -589,15 +619,8 @@ resume() {
     "$targets" "$values" "$payloads" "$predecessor" "$salt" >/dev/null
   assert_call_eq false "$bridge" 'depositMintsPaused()(bool)'
   assert_call_eq false "$bridge" 'withdrawalsPaused()(bool)'
-  send_success final_pause_deposits "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
-    'pauseDepositMints()' >/dev/null
-  send_success final_pause_withdrawals "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
-    'pauseWithdrawals()' >/dev/null
-  send_success restore_service_fee "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
-    'setServiceFee(uint256)' 1000000 >/dev/null
-  wait_transactions_finalized execute_unpause final_pause_deposits final_pause_withdrawals restore_service_fee
-  manifest_update '.checks.timelock_unpause = true | .state = "COMPLETE" | .completed_at = $at' \
-    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  wait_transactions_confirmed execute_unpause
+  manifest_update '.checks.timelock_unpause = true | .state = "ACTIVE"'
   verify
 }
 
@@ -611,28 +634,38 @@ verify() {
   contract_code_hash "$bridge" >/dev/null
   contract_code_hash "$bsns" >/dev/null
   verify_deployment
+  if [[ "$state" == DEPLOYED ]]; then
+    assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
+    assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
+    return
+  fi
+  if [[ "$state" == WAITING_TIMELOCK ]]; then
+    assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
+    assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
+    assert_call_eq true "$(manifest_get '.contracts.timelock.address')" 'isOperationPending(bytes32)(bool)' \
+      "$(manifest_get '.timelock_operation.id')"
+    assert_call_eq "$(manifest_get '.timelock_operation.ready_timestamp')" \
+      "$(manifest_get '.contracts.timelock.address')" 'getTimestamp(bytes32)(uint256)' \
+      "$(manifest_get '.timelock_operation.id')"
+    return
+  fi
+  if [[ "$state" == ACTIVE ]]; then
+    assert_call_eq false "$bridge" 'depositMintsPaused()(bool)'
+    assert_call_eq false "$bridge" 'withdrawalsPaused()(bool)'
+    return
+  fi
+  [[ "$state" == COMPLETE ]] || die "unsupported manifest state $state"
   assert_call_eq 50000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
   assert_call_eq 50000000 "$bsns" 'totalSupply()(uint256)'
   withdrawal1="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))' 1 --rpc-url "$RPC_URL" --json)"
   withdrawal2="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))' 2 --rpc-url "$RPC_URL" --json)"
   status1="$(jq -r '.[0][5]' <<<"$withdrawal1")"
   status2="$(jq -r '.[0][5]' <<<"$withdrawal2")"
-  [[ "$status1" == 2 && "$status2" == 3 ]] || die "withdrawal final states mismatch"
-  if [[ "$state" == WAITING_TIMELOCK ]]; then
-    assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
-    assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
-    assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
-    assert_call_eq true "$(manifest_get '.contracts.timelock.address')" 'isOperationPending(bytes32)(bool)' \
-      "$(manifest_get '.timelock_operation.id')"
-    assert_call_eq "$(manifest_get '.timelock_operation.ready_timestamp')" \
-      "$(manifest_get '.contracts.timelock.address')" 'getTimestamp(bytes32)(uint256)' \
-      "$(manifest_get '.timelock_operation.id')"
-  elif [[ "$state" == COMPLETE ]]; then
-    assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
-    assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
-    assert_call_eq 1000000 "$bridge" 'serviceFee()(uint256)'
-  fi
-  local name hash receipt recorded_hash status block finalized
+  [[ "$status1" == 3 && "$status2" == 4 ]] || die "withdrawal final states mismatch"
+  assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
+  assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
+  assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
+  local name hash receipt recorded_hash status block safe
   while IFS= read -r name; do
     hash="$(jq -r --arg name "$name" '.transactions[$name].hash' "$MANIFEST")"
     receipt="$(receipt_json "$hash")"
@@ -641,12 +674,12 @@ verify() {
     status="$(hex_to_dec "$(jq -r '.status' <<<"$receipt")")"
     [[ "$status" == "$(jq -r --arg name "$name" '.transactions[$name].status' "$MANIFEST")" ]] || die "receipt status mismatch for $name"
     block="$(hex_to_dec "$(jq -r '.blockNumber' <<<"$receipt")")"
-    finalized="$(hex_to_dec "$(jq -r '.number' <<<"$(cast block finalized --rpc-url "$RPC_URL" --json)")")"
-    (( finalized >= block )) || die "$name receipt block is not finalized"
+    safe="$(hex_to_dec "$(jq -r '.number' <<<"$(cast block safe --rpc-url "$RPC_URL" --json)")")"
+    (( safe >= block )) || die "$name receipt block has not reached the Safe head"
   done < <(jq -r '.transactions | keys[]' "$MANIFEST")
-  manifest_update '.checks.rpc_reread = true | .last_verified_at = $at | .last_finalized_base_block = $block' \
+  manifest_update '.checks.rpc_reread = true | .last_verified_at = $at | .last_confirmed_base_block = $block' \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --argjson block "$(hex_to_dec "$(jq -r '.number' <<<"$(cast block finalized --rpc-url "$RPC_URL" --json)")")"
+    --argjson block "$(hex_to_dec "$(jq -r '.number' <<<"$(cast block safe --rpc-url "$RPC_URL" --json)")")"
   log "verification complete; state=$state"
 }
 

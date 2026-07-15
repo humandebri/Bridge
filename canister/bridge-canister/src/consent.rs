@@ -80,6 +80,12 @@ pub fn consent_message(
     canister: Principal,
     request: Icrc21ConsentMessageRequest,
 ) -> Icrc21ConsentMessageResponse {
+    if request.method == "continue_deposit" || request.method == "continue_withdrawal" {
+        return settlement_consent(caller, canister, request);
+    }
+    if request.method == "continue_fee_payout" {
+        return fee_payout_consent(caller, canister, request);
+    }
     if request.method == "notify_withdrawal" {
         return withdrawal_consent(caller, canister, request);
     }
@@ -120,11 +126,55 @@ pub fn consent_message(
             utc_offset_minutes: request.user_preferences.metadata.utc_offset_minutes,
         },
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nSource subaccount: `{subaccount}`\n\nGross amount: `{gross}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the amount using an existing ICRC-2 allowance. Execution still depends on the current ledger fee, reserve, finalized Base state, and bridge limits.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
+            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross amount: `{gross}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the amount using an existing ICRC-2 allowance. Execution still depends on the current ledger fee, reserve, Safe Base state, and bridge limits.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
+            owner_sequence = validated.owner_sequence,
             gross = format_e8s(validated.gross_amount),
             fee = format_e8s(validated.max_service_fee),
             minimum = format_e8s(minimum),
             recipient = hex(&validated.base_recipient),
+        )),
+    })
+}
+
+fn settlement_consent(
+    caller: Principal,
+    canister: Principal,
+    request: Icrc21ConsentMessageRequest,
+) -> Icrc21ConsentMessageResponse {
+    if caller == Principal::anonymous() {
+        return unavailable("anonymous caller is not allowed");
+    }
+    let id = match Decode!(&request.arg, Vec<u8>) {
+        Ok(id) if id.len() == 32 => id,
+        Ok(_) => return unavailable("settlement ID must be 32 bytes"),
+        Err(error) => return unavailable(format!("settlement ID decode failed: {error}")),
+    };
+    Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
+        metadata: request.user_preferences.metadata,
+        consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
+            "# Retry bridge settlement\n\nIC wallet: `{caller}`\n\nAction: `{method}`\n\nSettlement ID: `0x{id}`\n\nBridge canister: `{canister}`\n\nThis manual recovery call retries immediately available work after automatic settlement has stopped. Submitted Base transactions are normally confirmed at the Safe head by the canister scheduler.",
+            method = request.method,
+            id = hex(&id),
+        )),
+    })
+}
+
+fn fee_payout_consent(
+    caller: Principal,
+    canister: Principal,
+    request: Icrc21ConsentMessageRequest,
+) -> Icrc21ConsentMessageResponse {
+    if caller == Principal::anonymous() {
+        return unavailable("anonymous caller is not allowed");
+    }
+    let payout_id = match Decode!(&request.arg, u64) {
+        Ok(id) => id,
+        Err(error) => return unavailable(format!("fee payout ID decode failed: {error}")),
+    };
+    Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
+        metadata: request.user_preferences.metadata,
+        consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
+            "# Continue fee payout\n\nAdministrator: `{caller}`\n\nPayout ID: `{payout_id}`\n\nBridge canister: `{canister}`\n\nThis call performs one explicit payout or reconciliation step and does not schedule an automatic retry."
         )),
     })
 }
@@ -163,7 +213,7 @@ fn withdrawal_consent(
             utc_offset_minutes: request.user_preferences.metadata.utc_offset_minutes,
         },
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Notify a finalized Base withdrawal\n\nIC wallet: `{caller}`\n\nBase transaction: `0x{transaction_hash}`\n\nBase chain ID: `{base_chain_id}`\n\nBridge contract: `0x{bridge_contract}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister independently verifies the finalized receipt, Bridge contract, WithdrawalCreated event, and event owner before settlement. This notification does not guarantee settlement success or the amount ultimately released.",
+            "# Notify a Safe-confirmed Base withdrawal\n\nIC wallet: `{caller}`\n\nBase transaction: `0x{transaction_hash}`\n\nBase chain ID: `{base_chain_id}`\n\nBridge contract: `0x{bridge_contract}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister independently verifies the Safe-confirmed receipt, Bridge contract, WithdrawalCreated event, and event owner before settlement. This notification does not guarantee settlement success or the amount ultimately released.",
             transaction_hash = hex(&transaction_hash),
             base_chain_id = config.base_chain_id,
             bridge_contract = hex(&config.bridge_contract),
@@ -227,7 +277,7 @@ mod tests {
             arg: Vec::new(),
             method: "request_deposit".into(),
             user_preferences: request(&api::DepositArgs {
-                client_request_id: vec![1; 32],
+                owner_sequence: 0,
                 base_recipient: vec![2; 20],
                 from_subaccount: None,
                 gross_amount: Nat::from(200_000_000u64),
@@ -241,7 +291,7 @@ mod tests {
         ));
 
         let mut unsupported_request = request(&api::DepositArgs {
-            client_request_id: vec![1; 32],
+            owner_sequence: 0,
             base_recipient: vec![2; 20],
             from_subaccount: None,
             gross_amount: Nat::from(200_000_000u64),
@@ -260,7 +310,7 @@ mod tests {
             .expect("encode withdrawal notification"),
             method: "notify_withdrawal".into(),
             user_preferences: request(&api::DepositArgs {
-                client_request_id: vec![1; 32],
+                owner_sequence: 0,
                 base_recipient: vec![2; 20],
                 from_subaccount: None,
                 gross_amount: Nat::from(200_000_000u64),

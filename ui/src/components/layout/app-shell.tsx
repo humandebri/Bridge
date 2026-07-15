@@ -1,7 +1,5 @@
 import { Link, Outlet } from "@tanstack/react-router"
 import { History, Menu, ShieldCheck } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
-import { deploymentProfile } from "@/config/profile"
 import { WalletCenter, WalletDialogProvider } from "@/features/wallet/wallet-controls"
 
 export function AppShell() {
@@ -12,7 +10,6 @@ export function AppShell() {
         <span className="hidden text-lg font-bold tracking-[-.02em] text-black sm:inline">KINIC Bridge</span>
       </Link>
       <div className="flex items-center gap-2">
-        {!deploymentProfile.writeEnabled && <Badge tone="warn" className="hidden sm:inline-flex">Read-only</Badge>}
         <WalletCenter />
         <details className="menu-popover relative md:hidden">
           <summary className="grid size-11 cursor-pointer list-none place-items-center rounded-2xl border border-[var(--line)] bg-white transition duration-300 hover:-translate-y-[3px] hover:border-[var(--pink)] hover:bg-[var(--pink)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]" aria-label="Open navigation menu"><Menu className="size-5" /></summary>

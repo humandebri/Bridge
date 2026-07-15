@@ -5,6 +5,7 @@ pragma solidity 0.8.36;
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Bridge} from "../src/Bridge.sol";
+import {BridgeTimelockController} from "../src/BridgeTimelockController.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
 import {TestBase} from "./TestBase.sol";
 
@@ -13,17 +14,20 @@ contract BridgeTimelockTest is TestBase {
     address private constant RUNTIME_ADMINISTRATOR = address(0x22);
     address private constant BASE_ADMIN_WALLET = address(0x33);
     address private constant OUTSIDER = address(0x44);
+    address private constant CANCELLER = address(0x55);
     uint256 private constant TIMELOCK_DELAY = 72 hours;
 
     Bridge private bridge;
-    TimelockController private timelock;
+    BridgeTimelockController private timelock;
 
     function setUp() public {
         address[] memory proposers = new address[](1);
         proposers[0] = BASE_ADMIN_WALLET;
         address[] memory executors = new address[](1);
         executors[0] = BASE_ADMIN_WALLET;
-        timelock = new TimelockController(TIMELOCK_DELAY, proposers, executors, address(0));
+        address[] memory cancellers = new address[](1);
+        cancellers[0] = CANCELLER;
+        timelock = new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
         bridge = new Bridge(
             "kinic", "KINIC", 8, BRIDGE_SIGNER, RUNTIME_ADMINISTRATOR, address(timelock), 1_000, 2_000, 1 hours, 100, 10
         );
@@ -32,13 +36,16 @@ contract BridgeTimelockTest is TestBase {
     function testInitialConfigurationHasSingleBaseAdminWalletAndNoExternalAdmin() public view {
         assert(timelock.getMinDelay() == TIMELOCK_DELAY);
         assert(timelock.hasRole(timelock.PROPOSER_ROLE(), BASE_ADMIN_WALLET));
-        assert(timelock.hasRole(timelock.CANCELLER_ROLE(), BASE_ADMIN_WALLET));
+        assert(!timelock.hasRole(timelock.CANCELLER_ROLE(), BASE_ADMIN_WALLET));
+        assert(timelock.hasRole(timelock.CANCELLER_ROLE(), CANCELLER));
         assert(timelock.hasRole(timelock.EXECUTOR_ROLE(), BASE_ADMIN_WALLET));
         assert(!timelock.hasRole(timelock.PROPOSER_ROLE(), OUTSIDER));
         assert(!timelock.hasRole(timelock.EXECUTOR_ROLE(), address(0)));
         assert(timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), address(timelock)));
         assert(!timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), BASE_ADMIN_WALLET));
         assert(bridge.baseAdminTimelock() == address(timelock));
+        assert(bridge.depositMintsPaused());
+        assert(bridge.withdrawalsPaused());
     }
 
     function testRequiresBaseAdminWalletAndFullDelayBeforeExecutingBridgeCall() public {
@@ -81,7 +88,7 @@ contract BridgeTimelockTest is TestBase {
         assert(!bridge.depositMintsPaused());
     }
 
-    function testBaseAdminWalletCanCancelButOutsiderCannot() public {
+    function testOnlyIndependentCancellerCanCancel() public {
         bytes memory data = abi.encodeCall(IBridge.rotateRuntimeAdministrator, (address(0x55)));
         bytes32 salt = keccak256("cancel");
         vm.prank(BASE_ADMIN_WALLET);
@@ -94,13 +101,44 @@ contract BridgeTimelockTest is TestBase {
         );
         vm.prank(OUTSIDER);
         timelock.cancel(operationId);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, BASE_ADMIN_WALLET, cancellerRole
+            )
+        );
         vm.prank(BASE_ADMIN_WALLET);
+        timelock.cancel(operationId);
+        vm.prank(CANCELLER);
         timelock.cancel(operationId);
 
         vm.warp(block.timestamp + TIMELOCK_DELAY);
         vm.expectPartialRevert(TimelockController.TimelockUnexpectedOperationState.selector);
         vm.prank(BASE_ADMIN_WALLET);
         timelock.execute(address(bridge), 0, data, bytes32(0), salt);
+    }
+
+    function testConstructorRejectsCancellerOverlapAndOpenRoles() public {
+        address[] memory proposers = new address[](1);
+        proposers[0] = BASE_ADMIN_WALLET;
+        address[] memory cancellers = new address[](1);
+        cancellers[0] = BASE_ADMIN_WALLET;
+        address[] memory executors = new address[](1);
+        executors[0] = OUTSIDER;
+        vm.expectRevert(
+            abi.encodeWithSelector(BridgeTimelockController.CancellerRoleOverlap.selector, BASE_ADMIN_WALLET)
+        );
+        new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
+
+        cancellers[0] = CANCELLER;
+        executors[0] = CANCELLER;
+        vm.expectRevert(abi.encodeWithSelector(BridgeTimelockController.CancellerRoleOverlap.selector, CANCELLER));
+        new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
+
+        executors[0] = address(0);
+        vm.expectRevert(
+            abi.encodeWithSelector(BridgeTimelockController.ZeroRoleMember.selector, timelock.EXECUTOR_ROLE())
+        );
+        new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
     }
 
     function testDelayAndRoleChangesRequireTimelockSelfCall() public {

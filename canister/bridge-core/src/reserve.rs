@@ -19,6 +19,10 @@ pub struct ReservePolicy {
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReserveSnapshot {
+    pub nonterminal_withdrawals: u64,
+    pub reserved_deposits: u64,
+    pub candidate_deposits: u64,
+    pub reserved_operation_count: u128,
     pub eth_balance_wei: u128,
     pub cycles_balance: u128,
     pub required_eth_wei: u128,
@@ -32,10 +36,15 @@ impl ReservePolicy {
     pub fn snapshot(
         self,
         nonterminal_withdrawals: u64,
+        reserved_deposits: u64,
+        candidate_deposits: u64,
         eth_balance_wei: u128,
         cycles_balance: u128,
     ) -> Result<ReserveSnapshot, CoreError> {
-        let count = u128::from(nonterminal_withdrawals);
+        let count = u128::from(nonterminal_withdrawals)
+            .checked_add(u128::from(reserved_deposits))
+            .and_then(|value| value.checked_add(u128::from(candidate_deposits)))
+            .ok_or(CoreError::ArithmeticOverflow)?;
         let per_settlement_eth =
             crate::checked_requirement(0, self.transaction_gas_limit, self.max_fee_per_gas)
                 .ok_or(CoreError::ArithmeticOverflow)?;
@@ -46,6 +55,10 @@ impl ReservePolicy {
             crate::checked_requirement(self.cycles_floor, self.settlement_cycle_ceiling, count)
                 .ok_or(CoreError::ArithmeticOverflow)?;
         Ok(ReserveSnapshot {
+            nonterminal_withdrawals,
+            reserved_deposits,
+            candidate_deposits,
+            reserved_operation_count: count,
             eth_balance_wei,
             cycles_balance,
             required_eth_wei,

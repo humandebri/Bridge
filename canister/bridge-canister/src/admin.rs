@@ -1,4 +1,4 @@
-use crate::{config::FeeRecipientConfig, ledger, storage::AuditEvent, STORE};
+use crate::{config::FeeRecipientConfig, ledger, storage::AuditEventPage, STORE};
 use bridge_core::{Account, Amount, LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity};
 use candid::{CandidType, Deserialize, Nat, Principal};
 use serde::Serialize;
@@ -19,6 +19,42 @@ fn authorized(state: &AdminState, caller: Principal, action: u8) -> bool {
     )
 }
 
+pub(crate) fn can_advance_settlement(caller: Principal) -> Result<bool, AdminError> {
+    if caller == Principal::anonymous() {
+        return Ok(false);
+    }
+    STORE.with(|store| {
+        let state = store
+            .borrow()
+            .admin_state()
+            .map_err(|_| AdminError::StorageFailure)?;
+        Ok(state.governance_principal == caller || state.pause_principals.contains(&caller))
+    })
+}
+
+pub(crate) fn is_governance(caller: Principal) -> Result<bool, AdminError> {
+    if caller == Principal::anonymous() {
+        return Ok(false);
+    }
+    STORE.with(|store| {
+        let state = store
+            .borrow()
+            .admin_state()
+            .map_err(|_| AdminError::StorageFailure)?;
+        Ok(state.governance_principal == caller)
+    })
+}
+
+pub(crate) fn can_manage_fee_payout(caller: Principal) -> Result<bool, AdminError> {
+    STORE.with(|store| {
+        let state = store
+            .borrow()
+            .admin_state()
+            .map_err(|_| AdminError::StorageFailure)?;
+        Ok(authorized(&state, caller, ACTION_PAYOUT))
+    })
+}
+
 #[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct AdminState {
     pub deposits_paused: bool,
@@ -36,6 +72,7 @@ pub struct RotateRuntimeAdministratorsArgs {
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum AdminError {
+    Busy,
     Unauthorized,
     InvalidArgument(String),
     StorageFailure,
@@ -80,7 +117,7 @@ fn mutate(
             .map_err(|_| AdminError::StorageFailure)?;
         store
             .append_audit_event(caller, event)
-            .map_err(|_| AdminError::StorageFailure)?;
+            .unwrap_or_else(|error| ic_cdk::trap(format!("audit persistence failed: {error}")));
         Ok(())
     })
 }
@@ -166,7 +203,7 @@ pub fn rotate(caller: Principal, args: RotateRuntimeAdministratorsArgs) -> Resul
     })
 }
 
-pub fn audit_events(start: u64, limit: u16) -> Result<Vec<AuditEvent>, AdminError> {
+pub fn audit_events(start: u64, limit: u16) -> Result<AuditEventPage, AdminError> {
     if !(1..=100).contains(&limit) {
         return Err(AdminError::InvalidArgument("limit must be 1..=100".into()));
     }
@@ -226,7 +263,7 @@ pub async fn request_fee_payout(
             return Err(AdminError::InsufficientFeeReserve);
         }
         let id = store
-            .allocate_fee_payout_id()
+            .next_fee_payout_id()
             .map_err(|_| AdminError::StorageFailure)?;
         let mut digest = Sha256::new();
         digest.update(b"KINIC-FEE-PAYOUT");
@@ -243,9 +280,10 @@ pub async fn request_fee_payout(
                 .map_err(|_| AdminError::InvalidArgument("invalid subaccount".into()))?
         };
         let canister = ic_cdk::api::canister_self();
+        let created_at_time_ns = ic_cdk::api::time();
         let transfer = LedgerTransferIdentity {
             operation: LedgerOperation::FeePayout,
-            created_at_time_ns: ic_cdk::api::time(),
+            created_at_time_ns,
             memo,
             amount: Amount::new(amount),
             fee,
@@ -263,13 +301,7 @@ pub async fn request_fee_payout(
             state: FeePayoutState::Pending,
         };
         store
-            .put_fee_payout(&record)
-            .map_err(|_| AdminError::StorageFailure)?;
-        store
-            .append_audit_event(
-                caller,
-                crate::storage::AuditEventKind::FeePayoutRequested { amount },
-            )
+            .commit_fee_payout_request(&record, caller, created_at_time_ns)
             .map_err(|_| AdminError::StorageFailure)?;
         Ok(record)
     })?;
@@ -289,7 +321,7 @@ pub async fn request_fee_payout(
             STORE.with(|store| {
                 store
                     .borrow_mut()
-                    .put_fee_payout(&record)
+                    .hold_fee_payout(record.id)
                     .map_err(|_| AdminError::StorageFailure)
             })?;
         }
@@ -298,18 +330,13 @@ pub async fn request_fee_payout(
             STORE.with(|store| {
                 store
                     .borrow_mut()
-                    .put_fee_payout(&record)
+                    .complete_fee_payout_failure(record.id)
                     .map_err(|_| AdminError::StorageFailure)
             })?;
         }
         LedgerCallOutcome::RetryableFailure { .. } => {
-            record.state = FeePayoutState::Failed;
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .put_fee_payout(&record)
-                    .map_err(|_| AdminError::StorageFailure)
-            })?;
+            // Keep the record pending. A later attempt requires an explicit
+            // continue_fee_payout call from an authorized administrator.
         }
     }
     Ok(FeePayoutReceipt {

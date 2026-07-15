@@ -2,23 +2,56 @@
 
 ## 日常確認
 
-- Bridgeとpause-watchdogのcycles、signer ETH、reserve surplus、finalized観測時刻、pending nonceを確認する。
-- pause-watchdogは60秒間隔で確認し、reserve不足、15分超の観測停滞、3回連続status失敗で新規Depositだけをpauseする。
+- Bridgeのcycles、signer ETH、reserve surplus、Safe観測時刻、pending nonce、停止理由に加え、`confirmation_scheduler`のhealth、scheduled件数、次回時刻、最終実行時刻を確認する。
 - Fee Recipient、RPC credential、raw transaction、秘密情報を監視ログへ出さない。
+- `get_bridge_status.counts`の`active_evm_payloads`、`retained_audit_events`、`pruned_audit_events`、`retained_deposit_index_entries`を確認する。audit詳細は直近10,000件、Deposit一覧はownerごとに直近100件が上限である。
+
+## 保持制限と監査
+
+`get_audit_events`で指定したsequenceがpruning済みの場合、応答は`oldest_available_sequence`から始まる。削除済みeventの完全な内容はcanister内に残らず、`pruned_count`、`pruned_through_sequence`、`pruned_digest`だけがcommitmentとして残る。今回は外部archiveや第三者timestampingを行わないため、詳細の長期保管が必要な運用では上限到達前に別系統へ取得する。
+
+`list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
+
+schema v6またはwire v6以外のstable state、未知schema、decode不能なDBはfail closedで起動を拒否する。本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。SQLite DBやcounterを手作業で変更しない。
 
 ## ETH・cycles補充
 
 - ETHはprofileのthreshold signer addressへ、Settlement Reserveを上回るまで運用者が送る。SNS-token feeの自動交換は行わない。
-- cyclesはBridgeとwatchdogを別々に補充し、30日floorとfreezing thresholdの両方を満たすことを確認する。
+- cyclesはBridgeの30日floorとfreezing thresholdの両方を満たすことを確認する。
 - 補充後も自動resumeしない。Governanceが観測回復と資産状態を確認してからBridgeをresumeする。
 
 ## 緊急pause
 
-- hardware pause principalまたはwatchdogから`pause_new_deposits`を実行する。既存Settlement、Hold照合、receipt確認は止めない。
+監視SLOは同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。演習時刻、担当確認、両transaction/callの確定時刻を記録し、秘密情報を除いた証跡をevidence bundleへ入れる。SLO未達、証跡欠落、公式EVM RPC Canister IDまたはchainの不一致、独立cancellerの利用不能はいずれもproduction承認blockerである。EVM RPC Canister配下providerの運営主体・基盤・可用性は監査せず、外部仮定として扱う。
+
+- hardware pause principalから`pause_new_deposits`を実行する。既にschedule済みのconfirmation確認は継続するため、scheduler healthと各停止理由も監視する。
 - Base側の異常ではRuntime AdministratorがDeposit/Withdrawal pauseを実行する。unpauseとrole rotationはBase Admin walletからTimelockを経由し、limitは変更しない。
+
+本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotと署名でGate Bを作り、まず`BRIDGE_ACTIVATION_PHASE=schedule`を実行する。Timelock待機中はpauseを維持する。72時間後は古いGate Bを再利用せず、最新Safe stateからsnapshotと署名を再取得して新しいGate Bを作り、明示承認後に`BRIDGE_ACTIVATION_PHASE=execute`を実行する。
+
+`execute`はBase両flowのunpause後にICをresumeする。IC resumeまたは確認が失敗した場合、driverはICを再pauseし、独立したRuntime Administrator hardware walletでBase両flowも再pauseする。`INCIDENT:`が出力された場合は成功扱いにせず、再pause確認の成否にかかわらず直ちにincident対応し、BaseとICのlive状態を3-provider quorumとCanister queryで確認する。
 - Holdの強制解除、nonce操作、任意transaction送信は行わない。
-## Finalized EVM revert
+## Confirmed EVM revert
 
-finalized receiptがrevertを示した場合、Bridgeは対象operationとDeposit/Withdrawalを`Reverted`へ終端化し、新規Depositを自動pauseする。監査ログのoperation ID、kind、transaction hash、finalized blockを保存する。未解決revertが1件でもある間は`resume_new_deposits`は`UnresolvedEvmRevert`を返す。
+Safe-confirmed receiptがrevertを示した場合、Bridgeは対象operationとDeposit/Withdrawalを`Reverted`へ終端化し、新規Depositを自動pauseする。監査ログのoperation ID、kind、transaction hash、Safe確認headを保存する。未解決revertが1件でもある間は`resume_new_deposits`は`UnresolvedEvmRevert`を返す。
 
-reverted transactionは自動再送も管理APIによるretryも行わない。既存Withdrawal settlement、Reconciliation Hold照合、receipt確認は継続する。復旧では原因を調査し、状態を明示的に扱うcanister upgradeを準備する。schemaやcounterを手作業で書き換えない。
+reverted transactionは自動再送も管理APIによるretryも行わない。復旧では原因を調査し、状態を明示的に扱うcanister upgradeを準備する。schemaやcounterを手作業で書き換えない。
+
+## Confirmation schedulerと手動復旧
+
+Submitted EVM transactionは2、5、10、20、40分時点でCanisterがSafe confirmationを確認する。receiptが未確定の場合だけ次回へ進み、5回目で`ConfirmationCheckExhausted`としてscheduleを解除する。RPC不一致・停止・不正応答、署名、nonce、Ledger障害は自動再試行しない。BrowserはCanisterのsettlement update callを自動実行せず、schedule中のrecordを表示している間だけHistory queryを60秒ごとに更新する。
+
+`confirmation_scheduler.healthy = false`の場合は`last_error`と`last_run_ns`を記録する。schedulerが対象scheduleを特定できなかった場合、record viewは自動確認時刻を隠して手動Retryを表示し、認可済み`continue_*`が外部call前に残存scheduleを解除して停止理由を保存する。hot loopを疑う場合はscheduled件数、EVM RPC call数、cycles減少を確認して新規Depositをpauseする。RPC障害では複数providerの応答一致とcanonical Safe headを回復させてから手動Retryする。`ConfirmationCheckExhausted`ではtransaction hashをBase explorerと独立RPCで調査し、canonical receiptの有無を確認する。Safe-confirmed revertは前節の手順に従い、手動Retryしない。
+
+Base burnが未通知なら、Historyの`Check and notify`でCanisterのSafe-confirmed receipt検証と通知を一回だけ実行する。browserから別のreceipt/confirmation確認は行わない。
+Withdrawal transaction hashやrecovery cursorはbrowser storageへ保存しない。回復はWithdrawal Historyの明示的な`Refresh`と必要な回数の`Scan older`でSafe-confirmed Base eventを取得し、event行の`Check and notify`から通知する。
+Depositの不明応答はbrowser storageへ保存しない。`Refresh`でowner sequenceとHistoryを読み、受付済みrecordがあればそれをContinueし、未受付なら同じ次sequenceで再度明示送信する。
+
+所有者が操作できない場合、Governanceまたはpause administratorはscheduleがなく非終端であることと停止原因の解消を確認して`continue_deposit(deposit_id)`または`continue_withdrawal(withdrawal_id)`を一度実行する。schedule中は`AutomaticProgressPending`、10分windowの上限超過は`RateLimited`を返し、どちらも外部callを行わない。fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行する。`Busy`は同じrecordの処理中を示すため、call終了とrecord状態を確認する。
+
+- nonceを確保したoperation: 対象recordのContinueを実行する。別recordが`NonceBlocked`なら、先にnonceを保持するSubmitted/Prepared operationを特定してContinueする。nonceやstable counterを手作業で変更しない。
+- Ledger hold: dedup期間内のContinueは同一transfer identityを一度だけ再送する。期間後は一回につきreconciliationを1 stepだけ進める。証拠なしに別identityを作らない。
+- Submitted EVM transaction: schedule中は手動Retryしない。期限超過またはscheduler/RPC障害でscheduleが解除された場合だけ、原因解消後にRetryする。同じraw transactionを再broadcastしない。
+- 停止理由: Historyまたは`get_deposit`/`get_withdrawal`の`last_settlement_stop_reason`を記録し、外部障害を解消してからContinueする。
+
+手動Retryの既定quotaは10分windowあたりglobal 60、caller 6、record 3である。profile値を変更する場合は`1 <= per_record <= per_principal <= global`とwindow 60〜3600秒を維持する。

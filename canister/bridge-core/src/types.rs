@@ -141,8 +141,8 @@ pub struct LedgerTransferIdentity {
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BaseMintSnapshot {
-    pub finalized_block_number: u64,
-    pub finalized_block_timestamp: u64,
+    pub confirmed_block_number: u64,
+    pub confirmed_block_timestamp: u64,
     pub service_fee: Amount,
     pub max_service_fee: Amount,
     pub per_deposit_limit: Amount,
@@ -156,7 +156,7 @@ impl BaseMintSnapshot {
     pub fn effective_minted_in_window(self) -> Amount {
         let expires_at = u128::from(self.mint_window_started_at)
             .saturating_add(u128::from(self.mint_window_duration));
-        if u128::from(self.finalized_block_timestamp) >= expires_at {
+        if u128::from(self.confirmed_block_timestamp) >= expires_at {
             Amount::ZERO
         } else {
             self.minted_in_window
@@ -199,6 +199,22 @@ pub struct Settlement {
 }
 
 impl Settlement {
+    pub fn terminal_liability_residual(self, amount: Amount) -> Result<Amount, CoreError> {
+        // Preserve the public arithmetic-overflow classification while delegating the actual
+        // residual relation to the production/Verus shared kernel.
+        self.amount_out
+            .checked_add(self.service_fee)?
+            .checked_add(self.ledger_fee)?;
+        crate::terminal_liability_residual(
+            amount.get(),
+            self.amount_out.get(),
+            self.service_fee.get(),
+            self.ledger_fee.get(),
+        )
+        .map(Amount::new)
+        .ok_or(CoreError::SettlementMismatch)
+    }
+
     pub fn validate(
         self,
         amount: Amount,
@@ -211,11 +227,7 @@ impl Settlement {
         if self.amount_out < min_amount_out {
             return Err(CoreError::MinimumAmountNotMet);
         }
-        let total = self
-            .amount_out
-            .checked_add(self.service_fee)?
-            .checked_add(self.ledger_fee)?;
-        if total != amount {
+        if self.terminal_liability_residual(amount)? != Amount::ZERO {
             return Err(CoreError::SettlementMismatch);
         }
         Ok(())

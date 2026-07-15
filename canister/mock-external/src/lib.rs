@@ -1,7 +1,8 @@
 use candid::{CandidType, Deserialize, Nat, Principal};
 use evm_rpc_types::{
     Block, BlockTag, GetLogsArgs, GetTransactionCountArgs, Hex, Hex32, MultiRpcResult, Nat256,
-    RpcConfig, RpcService, RpcServices, SendRawTransactionStatus, TransactionReceipt,
+    ProviderError, RpcConfig, RpcError, RpcService, RpcServices, SendRawTransactionStatus,
+    TransactionReceipt,
 };
 use ic_cdk_management_canister::{
     ecdsa_public_key, sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs,
@@ -47,9 +48,10 @@ pub struct WithdrawalFixture {
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReceiptMode {
-    Finalized,
+    Confirmed,
     Missing,
     Reverted,
+    RpcFailure,
     Inconsistent,
     DecodeFailure,
     Orphaned,
@@ -131,6 +133,9 @@ async fn probe_chain_key(key_name: String) -> Result<ChainKeyProbe, String> {
 struct StableMockState {
     ledger_id: Option<Principal>,
     ledger_mode: LedgerMode,
+    ledger_fee_available: bool,
+    ledger_fee: u128,
+    bad_fee_expected_fee: Option<u128>,
     next_block: u128,
     transactions: Vec<Transaction>,
     processed_deposit: bool,
@@ -142,6 +147,7 @@ struct StableMockState {
     withdrawal_status: u8,
     receipt_mode: ReceiptMode,
     broadcasts: Vec<Vec<u8>>,
+    accepted_tx_hashes: Vec<[u8; 32]>,
     eth_balance: u128,
     next_evm_nonce: u64,
     service_fee: u128,
@@ -152,8 +158,10 @@ struct StableMockState {
     mint_window_started_at: u64,
     mint_window_duration: u64,
     block_timestamp: u64,
-    finalized_block_sequence: Vec<u64>,
+    safe_block_sequence: Vec<u64>,
+    fallback_block_sequence: Vec<u64>,
     eth_call_count: u64,
+    receipt_call_count: u64,
     bridge_signer: [u8; 20],
     deposit_mints_paused: bool,
 }
@@ -161,6 +169,10 @@ struct StableMockState {
 thread_local! {
     static LEDGER_ID: RefCell<Option<Principal>> = const { RefCell::new(None) };
     static LEDGER_MODE: RefCell<LedgerMode> = const { RefCell::new(LedgerMode::Succeed) };
+    static LEDGER_FEE_AVAILABLE: RefCell<bool> = const { RefCell::new(true) };
+    static LEDGER_FEE: RefCell<u128> = const { RefCell::new(1) };
+    static BAD_FEE_EXPECTED_FEE: RefCell<Option<u128>> = const { RefCell::new(None) };
+    static LEDGER_TRANSFER_CALLS: RefCell<u64> = const { RefCell::new(0) };
     static NEXT_BLOCK: RefCell<u128> = const { RefCell::new(1) };
     static TRANSACTIONS: RefCell<Vec<Transaction>> = const { RefCell::new(Vec::new()) };
     static PROCESSED_DEPOSIT: RefCell<bool> = const { RefCell::new(false) };
@@ -170,8 +182,9 @@ thread_local! {
     static OBSERVED_BLOCK_NUMBER: RefCell<u64> = const { RefCell::new(99) };
     static WITHDRAWAL: RefCell<Option<WithdrawalFixture>> = const { RefCell::new(None) };
     static WITHDRAWAL_STATUS: RefCell<u8> = const { RefCell::new(1) };
-    static RECEIPT_MODE: RefCell<ReceiptMode> = const { RefCell::new(ReceiptMode::Finalized) };
+    static RECEIPT_MODE: RefCell<ReceiptMode> = const { RefCell::new(ReceiptMode::Confirmed) };
     static BROADCASTS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+    static ACCEPTED_TX_HASHES: RefCell<Vec<[u8; 32]>> = const { RefCell::new(Vec::new()) };
     static ETH_BALANCE: RefCell<u128> = const { RefCell::new(10_000_000_000_000_000_000) };
     static NEXT_EVM_NONCE: RefCell<u64> = const { RefCell::new(0) };
     static SERVICE_FEE: RefCell<u128> = const { RefCell::new(1) };
@@ -182,8 +195,10 @@ thread_local! {
     static MINT_WINDOW_STARTED_AT: RefCell<u64> = const { RefCell::new(0) };
     static MINT_WINDOW_DURATION: RefCell<u64> = const { RefCell::new(3_600) };
     static BLOCK_TIMESTAMP: RefCell<u64> = const { RefCell::new(1) };
-    static FINALIZED_BLOCK_SEQUENCE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    static SAFE_BLOCK_SEQUENCE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    static FALLBACK_BLOCK_SEQUENCE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static ETH_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
+    static RECEIPT_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
     static BRIDGE_SIGNER: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static DEPOSIT_MINTS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
 }
@@ -199,10 +214,30 @@ fn set_ledger_mode(mode: LedgerMode) {
 }
 
 #[ic_cdk::update]
+fn set_ledger_fee_available(available: bool) {
+    LEDGER_FEE_AVAILABLE.with(|current| *current.borrow_mut() = available);
+}
+
+#[ic_cdk::update]
+fn set_ledger_fee(fee: u128) {
+    LEDGER_FEE.with(|current| *current.borrow_mut() = fee);
+}
+
+#[ic_cdk::update]
+fn set_bad_fee_expected_fee(fee: Option<u128>) {
+    BAD_FEE_EXPECTED_FEE.with(|current| *current.borrow_mut() = fee);
+}
+
+#[ic_cdk::update]
 fn set_withdrawal(value: Option<WithdrawalFixture>) {
     WITHDRAWAL.with(|current| *current.borrow_mut() = value);
-    WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 1);
+    WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 2);
     LAST_TX_HASH.with(|hash| *hash.borrow_mut() = [9; 32]);
+}
+
+#[ic_cdk::update]
+fn set_withdrawal_status(status: u8) {
+    WITHDRAWAL_STATUS.with(|current| *current.borrow_mut() = status);
 }
 
 #[ic_cdk::update]
@@ -275,8 +310,8 @@ fn set_mint_window(
 }
 
 #[ic_cdk::update]
-fn set_finalized_block_sequence(value: Vec<u64>) {
-    FINALIZED_BLOCK_SEQUENCE.with(|current| *current.borrow_mut() = value);
+fn set_safe_block_sequence(value: Vec<u64>) {
+    SAFE_BLOCK_SEQUENCE.with(|current| *current.borrow_mut() = value);
 }
 
 #[ic_cdk::update]
@@ -332,8 +367,18 @@ fn ledger_transactions() -> Vec<Transaction> {
 }
 
 #[ic_cdk::query]
+fn ledger_transfer_calls() -> u64 {
+    LEDGER_TRANSFER_CALLS.with(|value| *value.borrow())
+}
+
+#[ic_cdk::query]
 fn eth_call_count() -> u64 {
     ETH_CALL_COUNT.with(|value| *value.borrow())
+}
+
+#[ic_cdk::query]
+fn receipt_call_count() -> u64 {
+    RECEIPT_CALL_COUNT.with(|value| *value.borrow())
 }
 
 #[ic_cdk::pre_upgrade]
@@ -341,6 +386,9 @@ fn pre_upgrade() {
     let state = StableMockState {
         ledger_id: LEDGER_ID.with(|v| *v.borrow()),
         ledger_mode: LEDGER_MODE.with(|v| *v.borrow()),
+        ledger_fee_available: LEDGER_FEE_AVAILABLE.with(|v| *v.borrow()),
+        ledger_fee: LEDGER_FEE.with(|v| *v.borrow()),
+        bad_fee_expected_fee: BAD_FEE_EXPECTED_FEE.with(|v| *v.borrow()),
         next_block: NEXT_BLOCK.with(|v| *v.borrow()),
         transactions: TRANSACTIONS.with(|v| v.borrow().clone()),
         processed_deposit: PROCESSED_DEPOSIT.with(|v| *v.borrow()),
@@ -352,6 +400,7 @@ fn pre_upgrade() {
         withdrawal_status: WITHDRAWAL_STATUS.with(|v| *v.borrow()),
         receipt_mode: RECEIPT_MODE.with(|v| *v.borrow()),
         broadcasts: BROADCASTS.with(|v| v.borrow().clone()),
+        accepted_tx_hashes: ACCEPTED_TX_HASHES.with(|v| v.borrow().clone()),
         eth_balance: ETH_BALANCE.with(|v| *v.borrow()),
         next_evm_nonce: NEXT_EVM_NONCE.with(|v| *v.borrow()),
         service_fee: SERVICE_FEE.with(|v| *v.borrow()),
@@ -362,8 +411,10 @@ fn pre_upgrade() {
         mint_window_started_at: MINT_WINDOW_STARTED_AT.with(|v| *v.borrow()),
         mint_window_duration: MINT_WINDOW_DURATION.with(|v| *v.borrow()),
         block_timestamp: BLOCK_TIMESTAMP.with(|v| *v.borrow()),
-        finalized_block_sequence: FINALIZED_BLOCK_SEQUENCE.with(|v| v.borrow().clone()),
+        safe_block_sequence: SAFE_BLOCK_SEQUENCE.with(|v| v.borrow().clone()),
+        fallback_block_sequence: FALLBACK_BLOCK_SEQUENCE.with(|v| v.borrow().clone()),
         eth_call_count: ETH_CALL_COUNT.with(|v| *v.borrow()),
+        receipt_call_count: RECEIPT_CALL_COUNT.with(|v| *v.borrow()),
         bridge_signer: BRIDGE_SIGNER.with(|v| *v.borrow()),
         deposit_mints_paused: DEPOSIT_MINTS_PAUSED.with(|v| *v.borrow()),
     };
@@ -376,6 +427,9 @@ fn post_upgrade() {
         ic_cdk::storage::stable_restore().expect("restore mock state");
     LEDGER_ID.with(|v| *v.borrow_mut() = state.ledger_id);
     LEDGER_MODE.with(|v| *v.borrow_mut() = state.ledger_mode);
+    LEDGER_FEE_AVAILABLE.with(|v| *v.borrow_mut() = state.ledger_fee_available);
+    LEDGER_FEE.with(|v| *v.borrow_mut() = state.ledger_fee);
+    BAD_FEE_EXPECTED_FEE.with(|v| *v.borrow_mut() = state.bad_fee_expected_fee);
     NEXT_BLOCK.with(|v| *v.borrow_mut() = state.next_block);
     TRANSACTIONS.with(|v| *v.borrow_mut() = state.transactions);
     PROCESSED_DEPOSIT.with(|v| *v.borrow_mut() = state.processed_deposit);
@@ -387,6 +441,7 @@ fn post_upgrade() {
     WITHDRAWAL_STATUS.with(|v| *v.borrow_mut() = state.withdrawal_status);
     RECEIPT_MODE.with(|v| *v.borrow_mut() = state.receipt_mode);
     BROADCASTS.with(|v| *v.borrow_mut() = state.broadcasts);
+    ACCEPTED_TX_HASHES.with(|v| *v.borrow_mut() = state.accepted_tx_hashes);
     ETH_BALANCE.with(|v| *v.borrow_mut() = state.eth_balance);
     NEXT_EVM_NONCE.with(|v| *v.borrow_mut() = state.next_evm_nonce);
     SERVICE_FEE.with(|v| *v.borrow_mut() = state.service_fee);
@@ -397,26 +452,32 @@ fn post_upgrade() {
     MINT_WINDOW_STARTED_AT.with(|v| *v.borrow_mut() = state.mint_window_started_at);
     MINT_WINDOW_DURATION.with(|v| *v.borrow_mut() = state.mint_window_duration);
     BLOCK_TIMESTAMP.with(|v| *v.borrow_mut() = state.block_timestamp);
-    FINALIZED_BLOCK_SEQUENCE.with(|v| *v.borrow_mut() = state.finalized_block_sequence);
+    SAFE_BLOCK_SEQUENCE.with(|v| *v.borrow_mut() = state.safe_block_sequence);
+    FALLBACK_BLOCK_SEQUENCE.with(|v| *v.borrow_mut() = state.fallback_block_sequence);
     ETH_CALL_COUNT.with(|v| *v.borrow_mut() = state.eth_call_count);
+    RECEIPT_CALL_COUNT.with(|v| *v.borrow_mut() = state.receipt_call_count);
     BRIDGE_SIGNER.with(|v| *v.borrow_mut() = state.bridge_signer);
     DEPOSIT_MINTS_PAUSED.with(|v| *v.borrow_mut() = state.deposit_mints_paused);
 }
 
 #[ic_cdk::query]
 fn icrc1_fee() -> Nat {
-    Nat::from(1u8)
+    if !LEDGER_FEE_AVAILABLE.with(|available| *available.borrow()) {
+        ic_cdk::trap("mock ledger fee unavailable");
+    }
+    Nat::from(LEDGER_FEE.with(|fee| *fee.borrow()))
 }
 
 #[ic_cdk::update]
 fn icrc2_transfer_from(args: TransferFromArgs) -> Result<Nat, TransferFromError> {
+    LEDGER_TRANSFER_CALLS.with(|value| *value.borrow_mut() += 1);
     match LEDGER_MODE.with(|mode| *mode.borrow()) {
         LedgerMode::Trap => ic_cdk::trap("ambiguous mock transfer"),
         LedgerMode::Duplicate => Err(TransferFromError::Duplicate {
             duplicate_of: Nat::from(1u8),
         }),
         LedgerMode::BadFee => Err(TransferFromError::BadFee {
-            expected_fee: Nat::from(2u8),
+            expected_fee: Nat::from(LEDGER_FEE.with(|fee| *fee.borrow())),
         }),
         LedgerMode::TemporarilyUnavailable => Err(TransferFromError::TemporarilyUnavailable),
         LedgerMode::Succeed => {
@@ -447,6 +508,7 @@ fn icrc2_transfer_from(args: TransferFromArgs) -> Result<Nat, TransferFromError>
 
 #[ic_cdk::update]
 fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
+    LEDGER_TRANSFER_CALLS.with(|value| *value.borrow_mut() += 1);
     match LEDGER_MODE.with(|mode| *mode.borrow()) {
         LedgerMode::Trap => ic_cdk::trap("ambiguous mock transfer"),
         LedgerMode::Duplicate => {
@@ -456,7 +518,10 @@ fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
         }
         LedgerMode::BadFee => {
             return Err(TransferError::BadFee {
-                expected_fee: Nat::from(2u8),
+                expected_fee: Nat::from(BAD_FEE_EXPECTED_FEE.with(|fee| {
+                    fee.borrow()
+                        .unwrap_or_else(|| LEDGER_FEE.with(|current| *current.borrow()))
+                })),
             })
         }
         LedgerMode::TemporarilyUnavailable => return Err(TransferError::TemporarilyUnavailable),
@@ -548,8 +613,33 @@ fn multi_request(
     {
         return MultiRpcResult::Consistent(Ok("not-hex".into()));
     }
-    let response = if request.contains("f702cf2b") {
-        bridge_snapshot_response()
+    let response = if request.contains("eth_getTransactionByHash") {
+        let requested = serde_json::from_str::<serde_json::Value>(&request)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("params")?
+                    .as_array()?
+                    .first()?
+                    .as_str()
+                    .map(str::to_owned)
+            });
+        let known = requested.as_ref().is_some_and(|requested| {
+            ACCEPTED_TX_HASHES.with(|hashes| {
+                hashes
+                    .borrow()
+                    .iter()
+                    .any(|hash| requested.eq_ignore_ascii_case(&format!("0x{}", bytes_hex(hash))))
+            })
+        });
+        if known {
+            let hash = requested.as_deref().expect("known request has hash");
+            serde_json::json!({"hash": hash}).to_string()
+        } else {
+            "null".into()
+        }
+    } else if request.contains("f702cf2b") {
+        bridge_snapshot_response(explicit_block_number(&request))
     } else if request.contains("d5d0d21c") {
         if PROCESSED_DEPOSIT.with(|processed| *processed.borrow()) {
             word(1)
@@ -609,21 +699,30 @@ fn eth_send_raw_transaction(
     }
     NEXT_EVM_NONCE.with(|nonce| *nonce.borrow_mut() = expected_nonce.saturating_add(1));
     let hash = keccak(&raw_bytes);
+    ACCEPTED_TX_HASHES.with(|hashes| hashes.borrow_mut().push(hash));
     LAST_TX_HASH.with(|current| *current.borrow_mut() = hash);
     if RECEIPT_MODE.with(|mode| *mode.borrow()) != ReceiptMode::Reverted {
-        PROCESSED_DEPOSIT.with(|processed| *processed.borrow_mut() = true);
-        WITHDRAWAL.with(|value| {
-            if let Some(fixture) = value.borrow().as_ref() {
-                WITHDRAWAL_STATUS.with(|status| {
-                    *status.borrow_mut() =
-                        if fixture.amount <= fixture.min_amount_out.saturating_add(2) {
-                            3
-                        } else {
-                            2
-                        }
-                });
+        if let Some(calldata) = eip1559_calldata(&raw_bytes) {
+            let selector = calldata.get(..4);
+            let signature_selector = |signature: &[u8]| keccak(signature)[..4].to_vec();
+            if selector == Some(signature_selector(b"cancelRelease(uint256)").as_slice()) {
+                WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 1);
+            } else if selector
+                == Some(
+                    signature_selector(
+                        b"acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)",
+                    )
+                    .as_slice(),
+                )
+            {
+                WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 3);
+            } else if selector == Some(signature_selector(b"refundWithdrawal(uint256)").as_slice())
+            {
+                WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 4);
+            } else {
+                PROCESSED_DEPOSIT.with(|processed| *processed.borrow_mut() = true);
             }
-        });
+        }
     }
     MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::Ok(Some(hex32(hash)))))
 }
@@ -641,17 +740,32 @@ fn eth_get_block_by_number(
 fn eth_get_transaction_receipt(
     _services: RpcServices,
     _config: Option<RpcConfig>,
-    _hash: Hex32,
+    hash: Hex32,
 ) -> MultiRpcResult<Option<TransactionReceipt>> {
+    RECEIPT_CALL_COUNT.with(|count| {
+        let next = count.borrow().saturating_add(1);
+        *count.borrow_mut() = next;
+    });
+    let hash: [u8; 32] = hash.into();
     match RECEIPT_MODE.with(|mode| *mode.borrow()) {
-        ReceiptMode::Finalized | ReceiptMode::DecodeFailure => {
-            MultiRpcResult::Consistent(Ok(Some(mock_receipt(false, true))))
+        ReceiptMode::Confirmed | ReceiptMode::DecodeFailure => {
+            MultiRpcResult::Consistent(Ok(Some(mock_receipt(hash, false, true))))
         }
         ReceiptMode::Missing => MultiRpcResult::Consistent(Ok(None)),
-        ReceiptMode::Reverted => MultiRpcResult::Consistent(Ok(Some(mock_receipt(true, true)))),
-        ReceiptMode::Orphaned => MultiRpcResult::Consistent(Ok(Some(mock_receipt(false, false)))),
+        ReceiptMode::Reverted => {
+            MultiRpcResult::Consistent(Ok(Some(mock_receipt(hash, true, true))))
+        }
+        ReceiptMode::RpcFailure => MultiRpcResult::Consistent(Err(RpcError::ProviderError(
+            ProviderError::ProviderNotFound,
+        ))),
+        ReceiptMode::Orphaned => {
+            MultiRpcResult::Consistent(Ok(Some(mock_receipt(hash, false, false))))
+        }
         ReceiptMode::Inconsistent => MultiRpcResult::Inconsistent(vec![
-            (RpcService::Provider(1), Ok(Some(mock_receipt(false, true)))),
+            (
+                RpcService::Provider(1),
+                Ok(Some(mock_receipt(hash, false, true))),
+            ),
             (RpcService::Provider(2), Ok(None)),
         ]),
     }
@@ -678,12 +792,21 @@ fn word(value: u128) -> String {
     format!("0x{value:064x}")
 }
 
-fn bridge_snapshot_response() -> String {
+fn explicit_block_number(request: &str) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_str(request).ok()?;
+    let tag = value.get("params")?.as_array()?.get(1)?.as_str()?;
+    u64::from_str_radix(tag.strip_prefix("0x")?, 16).ok()
+}
+
+fn bridge_snapshot_response(block_number: Option<u64>) -> String {
     const WORDS: usize = 12;
     const WORD: usize = 32;
     let mut bytes = vec![0; WORDS * WORD];
     let values = [
-        (0, u128::from(next_block_number(&FINALIZED_BLOCK_SEQUENCE))),
+        (
+            0,
+            u128::from(block_number.unwrap_or_else(|| next_block_number(&FALLBACK_BLOCK_SEQUENCE))),
+        ),
         (1, u128::from(BLOCK_TIMESTAMP.with(|value| *value.borrow()))),
         (3, SERVICE_FEE.with(|value| *value.borrow())),
         (4, MAX_SERVICE_FEE.with(|value| *value.borrow())),
@@ -723,7 +846,8 @@ fn withdrawal_response(value: Option<&WithdrawalFixture>) -> String {
     let mut bytes = vec![0u8; owner_length_offset + WORD + padded_owner_length];
     put_word(&mut bytes[..WORD], TUPLE_START as u128);
     if value.is_some() {
-        bytes[TUPLE_START + 12..TUPLE_START + WORD].fill(0x11);
+        bytes[TUPLE_START + 12..TUPLE_START + WORD]
+            .copy_from_slice(&OBSERVED_REQUESTER.with(|requester| *requester.borrow()));
     }
     put_word(
         &mut bytes[TUPLE_START + WORD..TUPLE_START + 2 * WORD],
@@ -825,6 +949,22 @@ fn eip1559_nonce(raw: &[u8]) -> Option<u64> {
     )
 }
 
+fn eip1559_calldata(raw: &[u8]) -> Option<&[u8]> {
+    if raw.first() != Some(&2) {
+        return None;
+    }
+    let (payload, _) = rlp_item(raw, 1, true)?;
+    let mut offset = 0;
+    // calldata is the eighth EIP-1559 field after chain id, nonce, both fees,
+    // gas, destination, and value.
+    for _ in 0..7 {
+        let (_, next) = rlp_item(payload, offset, false)?;
+        offset = next;
+    }
+    let (calldata, _) = rlp_item(payload, offset, false)?;
+    Some(calldata)
+}
+
 fn rlp_item(input: &[u8], offset: usize, list: bool) -> Option<(&[u8], usize)> {
     let prefix = *input.get(offset)?;
     let (payload_start, payload_len) = match prefix {
@@ -866,8 +1006,8 @@ fn bytes_hex(bytes: &[u8]) -> String {
 fn mock_block(tag: BlockTag) -> Block {
     let block_number = match tag {
         BlockTag::Number(number) => u64::try_from(number).expect("mock block number fits u64"),
-        BlockTag::Safe => 100,
-        _ => next_block_number(&FINALIZED_BLOCK_SEQUENCE),
+        BlockTag::Safe => next_block_number(&SAFE_BLOCK_SEQUENCE),
+        _ => next_block_number(&FALLBACK_BLOCK_SEQUENCE),
     };
     serde_json::from_value(serde_json::json!({
         "baseFeePerGas":1,"number":block_number,"difficulty":0,"extraData":"0x",
@@ -891,8 +1031,7 @@ fn next_block_number(sequence: &'static std::thread::LocalKey<RefCell<Vec<u64>>>
     })
 }
 
-fn mock_receipt(reverted: bool, canonical: bool) -> TransactionReceipt {
-    let hash = LAST_TX_HASH.with(|hash| *hash.borrow());
+fn mock_receipt(hash: [u8; 32], reverted: bool, canonical: bool) -> TransactionReceipt {
     let logs = WITHDRAWAL.with(|value| {
         value
             .borrow()

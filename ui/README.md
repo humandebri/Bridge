@@ -29,27 +29,44 @@ pnpm run e2e
 pnpm run e2e:real
 ```
 
-The checked-in `base-sepolia-preflight` profile is intentionally incomplete and read-only.
-Do not enable writes until every canister/contract identifier, deployment block, and runtime
-bytecode hash is reviewed and committed. At runtime the UI also verifies wallet chain, contract
-bytecode, `Bridge.bsns()`, token metadata, `get_public_config`, and schema version. Any failure
-locks approve, deposit, and withdrawal controls.
+The checked-in `base-sepolia-preflight` profile is intentionally incomplete. Complete every
+canister/contract identifier, expected Bridge signer, deployment block, and runtime bytecode hash before publishing a
+working environment. At runtime the UI verifies wallet chain, contract
+bytecode, `Bridge.bsns()`, the Safe-confirmed Bridge signer, token metadata, `get_public_config`, and schema version. Any failure
+disables approve, deposit, and withdrawal controls.
 
-Write controls are also locked unless `window.location.origin` exactly matches a checked-in
-`allowedOrigins` entry. This and the CSP reduce accidental use from copied frontends but are not
-canister authorization: direct canister calls remain possible.
+The deployment profile has no manual read-only flag or origin allowlist. Controls become available
+when the profile is complete and runtime verification passes. The CSP limits browser connections,
+but it is not canister authorization: direct canister calls remain possible.
 
 OISY and Plug are the only supported IC wallets. Internet Identity and delegated browser
 identities are not used. Deposit history is read from the public canister index; anyone who knows
 an owner Principal can enumerate its deposit IDs and correlate them with the Base recipients in
-the corresponding deposit records.
+the corresponding deposit records. Withdrawal History scans Safe-confirmed Base logs in 5,000-block
+chunks, with at most four RPC requests per refresh or manual `Scan older` action. The resumable
+cursor is held only in the React Query cache and is not persisted in browser storage.
 
-After a Base withdrawal reaches the finalized head, the connected IC wallet calls
-`notify_withdrawal`. Pending notification v2 records retain the transaction hash, IC owner and
-subaccount, Base requester, chain ID, and Bridge address in browser local storage. They are retried
-only when every saved value matches the active wallets and deployment. Legacy v1 records are
-discarded without migration. There is intentionally no periodic canister-side discovery
-fallback, so a withdrawal that is never notified remains pending on Base.
+The Bridge form reads a latest-state `Current bridge fee` quote. Status and runtime validation
+first resolve one Safe block and pass that same block number to their Base contract and
+bytecode reads, so latest estimates are not presented as confirmed operational state.
+
+Deposit idempotency and recovery use the Canister's public owner sequence. `Refresh bridge data`
+reads it once; the form does not generate a client request ID or persist a pending payload in
+browser storage. While the Bridge page remains open, an uncertain response locks the exact owner
+sequence, amount, wallets, and Base recipient. The user can retry only that same request, or confirm
+that the sequence was not accepted before unlocking the form. Reloading clears this in-memory hint;
+after a reload, the user explicitly refreshes History and the owner sequence before creating another
+Deposit.
+
+After a Base withdrawal reaches the Safe head, the Bridge page automatically calls
+`notify_withdrawal` with the connected IC wallet. History reconstructs Safe-confirmed burns from
+Base events and exposes `Check and notify` after a wallet rejection, reload, or RPC failure. No
+transaction hash or recovery cursor is persisted in browser storage. There is
+intentionally no periodic canister-side discovery fallback, so a withdrawal that is never notified
+remains pending on Base. After ingestion, submitted EVM transactions are Safe-confirmed and
+normal settlement is advanced by canister timers even when the browser is closed. History polls
+queries every 60 seconds only while a visible record has an automatic check scheduled. `Retry
+settlement` appears only after automatic progress has stopped; it never runs automatically in the UI.
 
 `pnpm run e2e:real` downloads checksum-pinned DFINITY Ledger/Index Wasm artifacts, then starts an
 actual ICRC-1/2 Ledger and Bridge canister in PocketIC plus the real Bridge/bSNS contracts in
@@ -61,6 +78,10 @@ Deployment is manual:
 ```sh
 pnpm run deploy
 ```
+
+The normal deploy command fails unless the checked-in UI profile explicitly sets
+`testOnly: false`. Test-only profiles require the deliberately separate `pnpm run deploy:test`
+command, which targets the `kinic-bridge-ui-test` Worker, and must not be used for a production release.
 
 Complete the wallet compatibility checklist in
 [`../docs/runbooks/ui-wallet-compatibility.md`](../docs/runbooks/ui-wallet-compatibility.md)

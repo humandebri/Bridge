@@ -12,7 +12,7 @@ library WithdrawalAccounting {
     }
 
     function releaseAction(IBridge.WithdrawalStatus status, bool detailsMatch) internal pure returns (ReleaseAction) {
-        if (status == IBridge.WithdrawalStatus.Pending) {
+        if (status == IBridge.WithdrawalStatus.Releasing) {
             return ReleaseAction.Apply;
         }
         if (status == IBridge.WithdrawalStatus.Released && detailsMatch) {
@@ -23,6 +23,21 @@ library WithdrawalAccounting {
 
     function refundAllowed(IBridge.WithdrawalStatus status) internal pure returns (bool) {
         return status == IBridge.WithdrawalStatus.Pending;
+    }
+
+    function cancelAllowed(IBridge.WithdrawalStatus status) internal pure returns (bool) {
+        return status == IBridge.WithdrawalStatus.Releasing;
+    }
+
+    function tryRecordLedgerBlock(uint256 existingWithdrawalId, uint256 withdrawalId)
+        internal
+        pure
+        returns (bool accepted, uint256 recordedWithdrawalId)
+    {
+        if (existingWithdrawalId != 0) {
+            return (false, existingWithdrawalId);
+        }
+        return (true, withdrawalId);
     }
 
     function feeWithinMaximum(uint256 withdrawalServiceFee, uint256 maximumServiceFee) internal pure returns (bool) {

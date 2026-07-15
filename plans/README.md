@@ -9,7 +9,7 @@ Plan 001〜004は完了済みの履歴資料であり、現行仕様はリポジ
 |---|---|---:|---:|---|---|
 | [001](001-phase2-deterministic-state-machine.md) | Phase 2時点の決定的状態機械、stable schema、read-only Candid境界 | P1 | L | — | DONE |
 | [002](002-phase3-external-integrations.md) | ICRC ledger / EVM RPC / threshold ECDSAの外部連携とReconciliation Hold | P1 | L | 001 | DONE |
-| [003](003-settlement-reserve-runtime-admin.md) | Settlement Reserve scheduler、Runtime Administrator、運用監査ログ | P1 | L | 001, 002 | DONE |
+| [003](003-settlement-reserve-runtime-admin.md) | Settlement Reserve、Runtime Administrator、運用監査ログ | P1 | L | 001, 002 | DONE |
 | [004](004-plan003-asset-safety-verus.md) | Verusでcanister coreとcross-system境界の証明を追加 | P1 | L | 001, 002, 003 | DONE |
 | [005](005-production-parameters-key-operations.md) | 対象SNS・数値パラメータ・鍵管理・testnet運用の確定 | P1 | M | 001〜004 | IN PROGRESS |
 | 006 | SNS handover、upgrade互換性、x402 testnet、production preflight | P0 | L | 001〜005 | 未作成 |

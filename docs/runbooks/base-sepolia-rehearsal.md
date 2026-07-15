@@ -80,7 +80,7 @@ PREFLIGHT
 
 `deploy`はBridge signerへのtest ETH送金、72時間Timelock、Bridgeの順にdeployする。
 Bridgeはconstructor内でbSNSを生成する。
-各transactionはfinalized block到達まで確認し、30分以内にfinalizeしなければ同じnonceの代替transactionを送らず停止する。
+各transactionはSafe block到達まで確認し、30分以内に確認できなければ同じnonceの代替transactionを送らず停止する。
 
 `flow`はDeposit mint、Withdrawal作成、Release acknowledgement、Base Refund、Service Fee変更、DepositとWithdrawalのpauseを実行する。
 Release acknowledgementのledger block `42`はsynthetic値であり、実KINIC Ledgerの証跡ではない。
@@ -99,12 +99,12 @@ scripts/base-sepolia-experiment/run-with-keychain.sh resume
 scripts/base-sepolia-experiment/experiment.sh verify
 ```
 
-`verify`はread-onlyであり、contract code、role、固定limit、asset state、全receipt、finalized block、最終pauseをRPCから再読する。
+`verify`はread-onlyであり、contract code、role、固定limit、asset state、全receipt、Safe block、最終pauseをRPCから再読する。
 
 ## manifestの扱い
 
 `deployments/base-sepolia-contract-experiment.json`は実行中state machineの作業用manifestである。
-スクリプトがaddress、nonce、transaction hash、receipt block、finality、runtime bytecode hash、check結果を更新する。
+スクリプトがaddress、nonce、transaction hash、receipt block、confirmation、runtime bytecode hash、check結果を更新する。
 
 日付別の公開記録は`deployments/base-sepolia/YYYY-MM-DD/manifest.json`へ保存する。
 未実行項目は`pending`とし、addressやtransaction hashを推測で埋めない。
@@ -122,5 +122,4 @@ scripts/base-sepolia-experiment/experiment.sh verify
 
 実験終了時はBridgeがtest-onlyであることをmanifestへ残す。
 Deposit mintとWithdrawalはpause状態、Service Feeは`1000000` rawとする。
-Timelock、Bridge、bSNSのaddressとruntime bytecode hash、全transactionのfinalityを`verify`で再確認する。
-
+Timelock、Bridge、bSNSのaddressとruntime bytecode hash、全transactionのconfirmationを`verify`で再確認する。

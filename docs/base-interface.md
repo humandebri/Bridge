@@ -75,15 +75,15 @@ event AuthorizationCanceled(address indexed authorizer, bytes32 indexed nonce);
 rotationでもzero addressと3権限addressの重複を拒否し、初期deploy後の権限分離を維持する。
 
 Base Admin TimelockにはOpenZeppelin 5.6.1の`TimelockController`を使用する。
-Bridgeより先にdeployし、minimum delayを72時間、単一のBase Admin hardware walletだけをproposer、canceller、executor、追加adminをzero addressとして初期化する。
+Bridgeより先にdeployし、minimum delayを72時間、Base Admin hardware walletをproposerとexecutor、独立hardware walletをcanceller、追加adminをzero addressとして初期化する。
 Timelock自身が唯一のadminであり、delayとTimelock roleの変更もschedule済み自己callだけに許可する。
-Bridgeはこの構成を内部検証しないため、deploy preflightで確認する。
+Bridgeはrotation候補のcode、72時間以上のdelay、Timelock自身のadmin保持を検証する。role分離はdeployment profileとdeploy preflightで確認する。
 
 ## Deposit mint
 
 `DepositMintRequest`は`depositId`、Base recipient、ICPでlockした`grossAmount`、利用者指定の`maxServiceFee`、受付時に固定した`chargedServiceFee`を保持する。Contractは`chargedServiceFee <= maxServiceFee`かつ`chargedServiceFee <= MAX_SERVICE_FEE`を検証し、実mint量`grossAmount - chargedServiceFee`へPer-Deposit LimitとMint Throughput Limitを適用する。受付後のglobal `serviceFee`変更は既存Depositのmint量とevent値へ影響しない。
 
-singleとbatchは同じstructを使用する。batchはatomicであり、空batch、処理済みID、batch内重複、zero recipient、不正amount、fee保護違反、各Depositのlimit違反、batch合計のthroughput違反のいずれかで全体をrevertする。成功後の`depositId`は再利用できない。
+各Depositは1件ずつmintする。zero recipient、不正amount、fee保護違反、Per-Deposit Limit違反、共有Mint Throughput Limit違反をrevertする。成功後の`depositId`は再利用できず、複数回のmintは同じfixed windowのthroughputへ累積する。
 
 fixed windowはBridge deploy時刻から開始する。`block.timestamp >= mintWindowStartedAt + mintWindowDuration`となった後、最初に成功したmintの時刻を次windowの起点にし、消費量をresetする。失敗したmintは起点も消費量も変更しない。window境界直前と直後には最大2 window分をmintできるため、上限値は`docs/parameters.md`の2倍係数を前提に導出する。
 
@@ -91,7 +91,7 @@ fixed windowはBridge deploy時刻から開始する。`block.timestamp >= mintW
 
 Withdrawal IDは1から始まるcontract内`uint256`連番とし、0を`None`用に予約する。未存在IDの`getWithdrawal`は`status = None`のdefault structを返す。ICRC-1 Accountはraw principalの`bytes owner`と`bytes32 subaccount`で保持し、zero subaccountをdefault subaccountとする。ownerは1〜29 bytesだけを許可し、空のmanagement principalとanonymous principal `hex"04"`を拒否する。
 
-`createWithdrawal`は`amount > 0`と`1 <= minAmountOut <= amount`を要求し、callerのbSNSを全量burnしてrecordを`Pending`にする。現在のService Feeと未知のledger feeを使ったcreate時の実行可能性判定は行わない。Release acknowledgementは次をすべて満たす必要がある。
+`createWithdrawal`は`amount > 0`と`1 <= minAmountOut <= amount`を要求する。callerは事前にBridgeへ要求額ちょうどをapproveする。実行時は`transferFrom(msg.sender, Bridge, amount)`、Bridge自身の残高のburn、record作成、`Releasing`化を同一transactionで行う。allowance不足を含む途中失敗はすべてrevertする。Release acknowledgementは`Releasing`だけを対象にし、次をすべて満たす必要がある。
 
 ```text
 amountOut + serviceFee + ledgerFee == amount
@@ -99,7 +99,7 @@ amountOut >= minAmountOut
 serviceFee <= MAX_SERVICE_FEE
 ```
 
-acknowledgementはamountOut、fee、ledger block indexをrecordへ保存する。acknowledgementのfeeは実行時の`serviceFee`と一致する必要はない。同一内容の再実行は成功するがeventやfeeを重複記録しない。異なる内容の再実行と`Refunded`へのacknowledgementはrevertする。同じledger block indexを別Withdrawalへ使用することも拒否する。Base Refundは`Pending`だけに許可し、元requesterへburn量全体を再mintする。refundではfeeを記録せず、Deposit mint windowを消費しない。
+acknowledgementはamountOut、fee、ledger block indexをrecordへ保存する。acknowledgementのfeeは実行時の`serviceFee`と一致する必要はない。同一内容の再実行は成功するがeventやfeeを重複記録しない。異なる内容の再実行と`Refunded`へのacknowledgementはrevertする。同じledger block indexを別Withdrawalへ使用することも拒否する。Ledgerが確定的に未実行と確認できた場合だけ`cancelRelease`をSafe確認して`Releasing → Pending`へ戻せる。Base Refundは`Pending`だけに許可し、元requesterへburn量全体を再mintする。refundではfeeを記録せず、Deposit mint windowを消費しない。
 
 ## Pauseと固定limit
 

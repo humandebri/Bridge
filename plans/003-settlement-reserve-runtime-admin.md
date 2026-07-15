@@ -1,6 +1,6 @@
-# Plan 003: Settlement Reserve・優先scheduler・Runtime Administrator
+# Plan 003: Settlement Reserve・Runtime Administrator
 
-> **履歴資料**：この本文はPlan 003完了時点の実装境界を記録している。
+> **履歴資料**：この本文はPlan 003完了時点の実装境界を記録している。現行実装は明示操作型Settlementを使用する。
 > 現行仕様はリポジトリ直下の`README.md`と`docs/`を参照する。
 
 ## Status

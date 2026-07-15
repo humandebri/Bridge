@@ -1,12 +1,36 @@
-import { createPublicClient, http, keccak256, type Address } from "viem"
+import { createPublicClient, http, type Address } from "viem"
 import { defineChain } from "viem"
 import { createBridgeActor } from "@/lib/ic/bridge"
+import { createIndexActor } from "@/lib/ic/index"
 import { createLedgerActor } from "@/lib/ic/ledger"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { profileCompleteness, type DeploymentProfile } from "@/config/profile"
+import { runtimeBytecodeSha256 } from "@/lib/runtime-bytecode-hash"
 
 export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number }
+
+export const RUNTIME_VALIDATION_TTL_MS = 60_000
+
+export function runtimeWriteBlocker(validation?: RuntimeValidation, now = Date.now()): string | undefined {
+  if (!validation) return "Refresh to verify the reviewed deployment before continuing."
+  if (!validation.ready) return validation.blockers[0] ?? "Runtime verification has not passed"
+  if (!Number.isFinite(validation.checkedAt) || validation.checkedAt > now || now - validation.checkedAt > RUNTIME_VALIDATION_TTL_MS) {
+    return "Runtime verification expired. Refresh before continuing."
+  }
+  return undefined
+}
+
+export function requireRuntimeWriteReady(validation?: RuntimeValidation, now = Date.now()): asserts validation is RuntimeValidation & { ready: true } {
+  const blocker = runtimeWriteBlocker(validation, now)
+  if (blocker) throw new Error(blocker)
+}
+
+export async function refetchRuntimeWriteReady(refetch: () => Promise<{ data?: RuntimeValidation }>): Promise<RuntimeValidation & { ready: true }> {
+  const result = await refetch()
+  requireRuntimeWriteReady(result.data)
+  return result.data
+}
 
 export async function validateRuntime(profile: DeploymentProfile, connectedChainId?: number): Promise<RuntimeValidation> {
   const blockers = profileCompleteness(profile)
@@ -19,28 +43,64 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
     chain: defineChain({ id: profile.chainId, name: profile.label, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [profile.baseRpcUrl] } } }),
     transport: http(profile.baseRpcUrl),
   })
-  const [bridgeCode, bsnsCode, linkedBsns, bsnsSymbol, bsnsDecimals] = await Promise.all([
-    client.getCode({ address: bridgeAddress }),
-    client.getCode({ address: bsnsAddress }),
-    client.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "bsns" }),
-    client.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "symbol" }),
-    client.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "decimals" }),
+  const safe = await client.getBlock({ blockTag: "safe" })
+  if (safe.number === null) blockers.push("Safe Base block number is unavailable")
+  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
+  const blockNumber = safe.number
+  const [bridgeCode, bsnsCode, bridgeSnapshot, linkedBsns, bsnsSymbol, bsnsDecimals] = await Promise.all([
+    client.getCode({ address: bridgeAddress, blockNumber }),
+    client.getCode({ address: bsnsAddress, blockNumber }),
+    client.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "bridgeSnapshot", blockNumber }),
+    client.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "bsns", blockNumber }),
+    client.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "symbol", blockNumber }),
+    client.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "decimals", blockNumber }),
   ])
-  if (!bridgeCode || keccak256(bridgeCode) !== profile.bridgeRuntimeHash) blockers.push("Bridge runtime bytecode does not match the reviewed profile")
-  if (!bsnsCode || keccak256(bsnsCode) !== profile.bsnsRuntimeHash) blockers.push("bSNS runtime bytecode does not match the reviewed profile")
+  if (!bridgeCode || runtimeBytecodeSha256(bridgeCode) !== profile.bridgeRuntimeHash) blockers.push("Bridge runtime bytecode does not match the reviewed profile")
+  if (!bsnsCode || runtimeBytecodeSha256(bsnsCode) !== profile.bsnsRuntimeHash) blockers.push("bSNS runtime bytecode does not match the reviewed profile")
   if (String(linkedBsns).toLowerCase() !== bsnsAddress.toLowerCase()) blockers.push("Bridge points to a different bSNS contract")
-  if (bsnsSymbol !== "KINIC" || Number(bsnsDecimals) !== 8) blockers.push("Base token metadata is not KINIC/8")
+  if (bsnsSymbol !== profile.baseToken.symbol || Number(bsnsDecimals) !== profile.baseToken.decimals) {
+    blockers.push(`Base token metadata is not ${profile.baseToken.symbol}/${profile.baseToken.decimals}`)
+  }
 
   const [bridge, ledger] = await Promise.all([
     createBridgeActor(profile.icHost, profile.bridgeCanisterId as string),
     createLedgerActor(profile.icHost, profile.ledgerCanisterId as string),
   ])
-  const [config, ledgerSymbol, ledgerDecimals] = await Promise.all([bridge.get_public_config(), ledger.icrc1_symbol(), ledger.icrc1_decimals()])
+  const [config, ledgerName, ledgerSymbol, ledgerDecimals] = await Promise.all([
+    bridge.get_public_config(),
+    ledger.icrc1_name(),
+    ledger.icrc1_symbol(),
+    ledger.icrc1_decimals(),
+  ])
+  blockers.push(...bridgeSignerBlockers(profile.expected_bridge_signer as Address, bridgeSnapshot.bridgeSigner, config.expected_bridge_signer))
   if (config.base_chain_id !== BigInt(profile.chainId)) blockers.push("Canister Base chain ID differs from the profile")
   const configuredBridge = `0x${Array.from(config.bridge_contract, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
   if (configuredBridge.toLowerCase() !== bridgeAddress.toLowerCase()) blockers.push("Canister Bridge contract differs from the profile")
   if (config.ledger_canister_id.toText() !== profile.ledgerCanisterId) blockers.push("Canister ledger differs from the profile")
-  if (config.schema_version !== 1) blockers.push(`Unsupported canister schema ${config.schema_version}`)
-  if (ledgerSymbol !== "KINIC" || ledgerDecimals !== 8) blockers.push("IC token metadata is not KINIC/8")
+  if (config.index_canister_id.toText() !== profile.indexCanisterId) blockers.push("Canister index differs from the profile")
+  if (config.evm_rpc_canister_id.toText() !== profile.evmRpcCanisterId) blockers.push("Canister EVM RPC ID differs from the profile")
+  const rpcUrlsDigest = `0x${Array.from(config.rpc_provider_urls_sha256, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
+  if (rpcUrlsDigest.toLowerCase() !== profile.rpcProviderUrlsSha256?.toLowerCase()) blockers.push("Canister RPC provider URLs differ from the profile")
+  try {
+    const index = await createIndexActor(profile.icHost, profile.indexCanisterId as string)
+    const indexLedgerId = await index.ledger_id()
+    if (indexLedgerId.toText() !== profile.ledgerCanisterId) blockers.push("Index ledger differs from the profile")
+  } catch {
+    blockers.push("Index ledger binding is unavailable")
+  }
+  if (config.schema_version !== 6) blockers.push(`Unsupported canister schema ${config.schema_version}`)
+  if (ledgerName !== profile.icToken.name || ledgerSymbol !== profile.icToken.symbol || ledgerDecimals !== profile.icToken.decimals) {
+    blockers.push(`IC token metadata is not ${profile.icToken.name}/${profile.icToken.symbol}/${profile.icToken.decimals}`)
+  }
   return { ready: blockers.length === 0, blockers, checkedAt: Date.now() }
+}
+
+export function bridgeSignerBlockers(profileSigner: Address, contractSigner: Address, canisterSigner?: Uint8Array | number[]): string[] {
+  if (!canisterSigner || canisterSigner.length !== 20) return ["Canister expected Bridge signer is unavailable"]
+  const canisterAddress = `0x${Array.from(canisterSigner, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
+  const expected = profileSigner.toLowerCase()
+  const blockers: string[] = []
+  if (contractSigner.toLowerCase() !== expected) blockers.push("Bridge signer differs from the reviewed profile")
+  if (canisterAddress.toLowerCase() !== expected) blockers.push("Canister expected Bridge signer differs from the reviewed profile")
+  return blockers
 }

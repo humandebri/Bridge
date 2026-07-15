@@ -1,6 +1,11 @@
 {
   "name": "kinic-base-bridge-integration",
   "private": true,
+  "packageManager": "pnpm@11.0.8",
+  "engines": {
+    "node": "24.14.0",
+    "pnpm": "11.0.8"
+  },
   "scripts": {
     "test:e2e": "TMPDIR=/private/tmp jest --config integration/jest.config.js --runInBand"
   },

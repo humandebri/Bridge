@@ -1,15 +1,20 @@
 use bridge_core::{
-    administrator_authorized, audit_next, can_assign_nonce, candidate_precedes,
-    checked_requirement, counter_delta, evidence_matches, mint_admission_total, next_attempt,
-    nonce_next, payout_allowed, payout_debit, refund_allowed, replay_matches, resources_sufficient,
-    scan_complete, scheduler_priority, terminal_retry_fee,
+    administrator_authorized, audit_next, bad_fee_reprice_amount, can_assign_nonce,
+    checked_counter_transition, checked_requirement, counter_delta, deposit_phase_allows,
+    deposit_phase_step, evidence_matches, fee_delta_once, mint_admission_total, next_attempt,
+    nonce_next, nonce_too_low_is_submitted, payout_allowed, payout_debit, refund_allowed,
+    replay_matches, resources_sufficient, scan_complete, withdrawal_phase_allows,
+    withdrawal_phase_step,
 };
 
 #[test]
 fn boolean_decisions_are_exhaustive() {
     for pending in [false, true] {
-        for attempted in [false, true] {
-            assert_eq!(refund_allowed(pending, attempted), pending && !attempted);
+        for proven_absent in [false, true] {
+            assert_eq!(
+                refund_allowed(pending, proven_absent),
+                pending && proven_absent
+            );
         }
     }
     for old in [false, true] {
@@ -72,13 +77,7 @@ fn mint_admission_includes_existing_reservations_and_checks_overflow() {
 }
 
 #[test]
-fn scheduler_nonce_and_audit_boundaries_are_deterministic() {
-    assert_eq!(scheduler_priority(0), 0);
-    assert_eq!(scheduler_priority(1), 0);
-    assert_eq!(scheduler_priority(2), 1);
-    assert!(candidate_precedes(0, 99, 1, 0));
-    assert!(candidate_precedes(0, 1, 0, 2));
-    assert!(!candidate_precedes(0, 2, 0, 1));
+fn nonce_and_audit_boundaries_are_deterministic() {
     assert!(!can_assign_nonce(false, false));
     assert!(!can_assign_nonce(true, true));
     assert!(can_assign_nonce(true, false));
@@ -141,6 +140,80 @@ fn attempt_and_fee_boundaries_are_checked() {
     assert_eq!(next_attempt(0), Some(1));
     assert_eq!(next_attempt(u64::MAX - 1), Some(u64::MAX));
     assert_eq!(next_attempt(u64::MAX), None);
-    assert_eq!(terminal_retry_fee(true, u128::MAX), u128::MAX);
-    assert_eq!(terminal_retry_fee(false, u128::MAX), 0);
+    assert_eq!(fee_delta_once(false, true, 9), 9);
+    assert_eq!(fee_delta_once(true, true, 9), 0);
+    assert_eq!(fee_delta_once(false, false, 9), 0);
+    assert_eq!(checked_counter_transition(7, false, true), Some(8));
+    assert_eq!(checked_counter_transition(7, true, false), Some(6));
+    assert_eq!(checked_counter_transition(0, true, false), None);
+}
+
+#[test]
+fn compact_phase_kernels_match_the_legal_transition_graphs() {
+    let deposit_edges = [
+        (0, 0, 1),
+        (0, 1, 5),
+        (0, 2, 6),
+        (1, 3, 2),
+        (2, 4, 3),
+        (2, 5, 4),
+    ];
+    for state in 0..=6 {
+        for event in 0..=5 {
+            let expected = deposit_edges
+                .iter()
+                .find(|(from, input, _)| *from == state && *input == event)
+                .map_or(state, |(_, _, next)| *next);
+            assert_eq!(deposit_phase_step(state, event), expected);
+            assert_eq!(deposit_phase_allows(state, event), expected != state);
+        }
+    }
+
+    let withdrawal_edges = [
+        (0, 0, 1),
+        (0, 4, 10),
+        (1, 1, 1),
+        (1, 2, 2),
+        (1, 3, 9),
+        (1, 4, 10),
+        (10, 5, 11),
+        (2, 6, 3),
+        (3, 7, 5),
+        (3, 8, 4),
+        (0, 9, 6),
+        (11, 9, 6),
+        (6, 10, 8),
+        (6, 11, 7),
+    ];
+    for state in 0..=11 {
+        for event in 0..=11 {
+            let expected = withdrawal_edges
+                .iter()
+                .find(|(from, input, _)| *from == state && *input == event)
+                .map_or(state, |(_, _, next)| *next);
+            assert_eq!(
+                withdrawal_phase_step(state, event),
+                expected,
+                "withdrawal state {state}, event {event}"
+            );
+            assert_eq!(
+                withdrawal_phase_allows(state, event),
+                expected != state || (state == 1 && event == 1)
+            );
+        }
+    }
+}
+
+#[test]
+fn bad_fee_and_nonce_conflict_fail_closed() {
+    assert_eq!(
+        bad_fee_reprice_amount(100, 10, 6, 80, true, false),
+        Some(84)
+    );
+    assert_eq!(bad_fee_reprice_amount(100, 10, 11, 80, true, false), None);
+    assert_eq!(bad_fee_reprice_amount(100, 10, 6, 80, false, false), None);
+    assert_eq!(bad_fee_reprice_amount(100, 10, 6, 80, true, true), None);
+    assert!(nonce_too_low_is_submitted(true, true));
+    assert!(!nonce_too_low_is_submitted(true, false));
+    assert!(!nonce_too_low_is_submitted(false, true));
 }

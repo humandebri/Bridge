@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest"
-import { deploymentProfile, profileCompleteness } from "./profile"
+import { deploymentProfile, deploymentProfileSchema, profileCompleteness } from "./profile"
 
 describe("reviewed deployment profile", () => {
-  it("keeps the incomplete checked-in preflight fail-closed", () => {
+  it("reports every missing preflight deployment value", () => {
     const blockers = profileCompleteness(deploymentProfile)
-    expect(blockers).toContain("Deployment profile is not approved for writes")
     expect(blockers).toContain("Bridge contract address is missing")
-    expect(blockers.length).toBeGreaterThan(5)
+    expect(blockers).toContain("IC token index ID is missing")
+    expect(blockers).toContain("Expected Bridge signer is missing")
+    expect(blockers).toHaveLength(13)
+    expect(deploymentProfile.icToken).toEqual({ name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 })
+    expect(deploymentProfile.baseToken).toEqual({ symbol: "KINIC", decimals: 8 })
+  })
+
+  it("accepts deterministic JSON release fields and coerces deployment block", () => {
+    const parsed = deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      deploymentBlock: "123",
+    })
+    expect(parsed.deploymentBlock).toBe(123n)
   })
 })

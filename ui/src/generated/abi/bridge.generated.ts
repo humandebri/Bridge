@@ -277,13 +277,21 @@ export const bridgeAbi = [
     "type": "event"
   },
   {
-    "inputs": [],
-    "name": "DepositMintsArePaused",
-    "type": "error"
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "withdrawalId",
+        "type": "uint256"
+      }
+    ],
+    "name": "WithdrawalReleaseCancelled",
+    "type": "event"
   },
   {
     "inputs": [],
-    "name": "EmptyBatch",
+    "name": "DepositMintsArePaused",
     "type": "error"
   },
   {
@@ -302,6 +310,11 @@ export const bridgeAbi = [
   {
     "inputs": [],
     "name": "RoleAddressesMustDiffer",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TokenTransferFailed",
     "type": "error"
   },
   {
@@ -629,86 +642,6 @@ export const bridgeAbi = [
   {
     "inputs": [
       {
-        "components": [
-          {
-            "internalType": "bytes32",
-            "name": "depositId",
-            "type": "bytes32"
-          },
-          {
-            "internalType": "address",
-            "name": "recipient",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "grossAmount",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "maxServiceFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "chargedServiceFee",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct IBridge.DepositMintRequest[]",
-        "name": "requests",
-        "type": "tuple[]"
-      }
-    ],
-    "name": "mintDeposits",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "components": [
-          {
-            "internalType": "uint256",
-            "name": "withdrawalId",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountOut",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "serviceFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "ledgerFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "ledgerBlockIndex",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct IBridge.ReleaseAcknowledgement[]",
-        "name": "acknowledgements",
-        "type": "tuple[]"
-      }
-    ],
-    "name": "acknowledgeReleases",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
         "internalType": "address",
         "name": "caller",
         "type": "address"
@@ -737,6 +670,60 @@ export const bridgeAbi = [
       }
     ],
     "name": "UnauthorizedRuntimeAdministrator",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "suppliedDelay",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "minimumDelay",
+        "type": "uint256"
+      }
+    ],
+    "name": "TimelockCandidateDelayTooShort",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      }
+    ],
+    "name": "TimelockCandidateHasNoCode",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      }
+    ],
+    "name": "TimelockCandidateIntrospectionFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      }
+    ],
+    "name": "TimelockCandidateMissingSelfAdmin",
     "type": "error"
   },
   {
@@ -1064,22 +1051,6 @@ export const bridgeAbi = [
     "inputs": [
       {
         "internalType": "uint256",
-        "name": "supplied",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "maximum",
-        "type": "uint256"
-      }
-    ],
-    "name": "BatchTooLarge",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
         "name": "withdrawalId",
         "type": "uint256"
       },
@@ -1146,6 +1117,19 @@ export const bridgeAbi = [
     ],
     "name": "WithdrawalNotFound",
     "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "withdrawalId",
+        "type": "uint256"
+      }
+    ],
+    "name": "cancelRelease",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
   },
   {
     "inputs": [
@@ -1227,19 +1211,6 @@ export const bridgeAbi = [
       }
     ],
     "name": "refundWithdrawal",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256[]",
-        "name": "withdrawalIds",
-        "type": "uint256[]"
-      }
-    ],
-    "name": "refundWithdrawals",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

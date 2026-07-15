@@ -9,9 +9,14 @@ import {BridgeAdministration} from "./libraries/BridgeAdministration.sol";
 import {MintAccounting} from "./libraries/MintAccounting.sol";
 import {WithdrawalAccounting} from "./libraries/WithdrawalAccounting.sol";
 
+interface ITimelockCandidate {
+    function getMinDelay() external view returns (uint256);
+    function hasRole(bytes32 role, address account) external view returns (bool);
+}
+
 /// @notice Phase 1E Base implementation whose concrete ABI is checked against the frozen interface snapshot.
 contract Bridge is IBridge {
-    uint256 private constant MAX_BATCH_SIZE = 4;
+    uint256 private constant MINIMUM_TIMELOCK_DELAY = 72 hours;
     IBSNS public immutable override bsns;
     uint256 public immutable override MAX_SERVICE_FEE;
 
@@ -24,8 +29,8 @@ contract Bridge is IBridge {
     uint64 public immutable override mintWindowDuration;
     uint64 public override mintWindowStartedAt;
     uint256 public override mintedInWindow;
-    bool public override depositMintsPaused;
-    bool public override withdrawalsPaused;
+    bool public override depositMintsPaused = true;
+    bool public override withdrawalsPaused = true;
     uint256 public override nextWithdrawalId = 1;
 
     mapping(bytes32 depositId => bool processed) private _processedDeposits;
@@ -128,35 +133,6 @@ contract Bridge is IBridge {
         );
     }
 
-    function mintDeposits(IBridge.DepositMintRequest[] calldata requests)
-        external
-        override
-        onlyBridgeSigner
-        whenDepositMintsActive
-    {
-        uint256 requestCount = requests.length;
-        _validateBatchSize(requestCount);
-
-        _rollMintWindowIfExpired();
-        uint256[] memory mintAmounts = new uint256[](requestCount);
-        uint256 batchMintAmount;
-        for (uint256 index; index < requestCount; ++index) {
-            uint256 mintAmount = _validateAndMarkDeposit(requests[index]);
-            mintAmounts[index] = mintAmount;
-            batchMintAmount += mintAmount;
-        }
-
-        mintedInWindow = _consumeMintWindow(batchMintAmount);
-        for (uint256 index; index < requestCount; ++index) {
-            IBridge.DepositMintRequest calldata request = requests[index];
-            uint256 mintAmount = mintAmounts[index];
-            bsns.bridgeMint(request.recipient, mintAmount);
-            emit IBridge.DepositMinted(
-                request.depositId, request.recipient, request.grossAmount, request.chargedServiceFee, mintAmount
-            );
-        }
-    }
-
     function createWithdrawal(uint256 amount, uint256 minAmountOut, bytes calldata owner, bytes32 subaccount)
         external
         override
@@ -181,9 +157,12 @@ contract Bridge is IBridge {
         withdrawal.minAmountOut = minAmountOut;
         withdrawal.owner = owner;
         withdrawal.subaccount = subaccount;
-        withdrawal.status = IBridge.WithdrawalStatus.Pending;
+        withdrawal.status = IBridge.WithdrawalStatus.Releasing;
 
-        bsns.bridgeBurn(msg.sender, amount);
+        if (!bsns.transferFrom(msg.sender, address(this), amount)) {
+            revert IBridge.TokenTransferFailed();
+        }
+        bsns.bridgeBurn(amount);
         emit IBridge.WithdrawalCreated(withdrawalId, msg.sender, amount, minAmountOut, owner, subaccount);
     }
 
@@ -197,23 +176,17 @@ contract Bridge is IBridge {
         _acknowledgeRelease(withdrawalId, amountOut, withdrawalServiceFee, ledgerFee, ledgerBlockIndex);
     }
 
-    function acknowledgeReleases(IBridge.ReleaseAcknowledgement[] calldata acknowledgements)
-        external
-        override
-        onlyBridgeSigner
-    {
-        uint256 count = acknowledgements.length;
-        _validateBatchSize(count);
-        for (uint256 index; index < count; ++index) {
-            IBridge.ReleaseAcknowledgement calldata acknowledgement = acknowledgements[index];
-            _acknowledgeRelease(
-                acknowledgement.withdrawalId,
-                acknowledgement.amountOut,
-                acknowledgement.serviceFee,
-                acknowledgement.ledgerFee,
-                acknowledgement.ledgerBlockIndex
-            );
+    function cancelRelease(uint256 withdrawalId) external override onlyBridgeSigner {
+        IBridge.Withdrawal storage withdrawal = _withdrawals[withdrawalId];
+        IBridge.WithdrawalStatus status = withdrawal.status;
+        if (status == IBridge.WithdrawalStatus.None) {
+            revert IBridge.WithdrawalNotFound(withdrawalId);
         }
+        if (!WithdrawalAccounting.cancelAllowed(status)) {
+            revert IBridge.InvalidWithdrawalStatus(withdrawalId, status);
+        }
+        withdrawal.status = IBridge.WithdrawalStatus.Pending;
+        emit IBridge.WithdrawalReleaseCancelled(withdrawalId);
     }
 
     function _acknowledgeRelease(
@@ -254,10 +227,12 @@ contract Bridge is IBridge {
         }
 
         uint256 existingWithdrawalId = _withdrawalIdByLedgerBlockIndex[ledgerBlockIndex];
-        if (existingWithdrawalId != 0) {
+        (bool ledgerBlockAvailable, uint256 recordedWithdrawalId) =
+            WithdrawalAccounting.tryRecordLedgerBlock(existingWithdrawalId, withdrawalId);
+        if (!ledgerBlockAvailable) {
             revert IBridge.LedgerBlockAlreadyAcknowledged(ledgerBlockIndex, existingWithdrawalId);
         }
-        _withdrawalIdByLedgerBlockIndex[ledgerBlockIndex] = withdrawalId;
+        _withdrawalIdByLedgerBlockIndex[ledgerBlockIndex] = recordedWithdrawalId;
         withdrawal.status = IBridge.WithdrawalStatus.Released;
         withdrawal.amountOut = amountOut;
         withdrawal.serviceFee = withdrawalServiceFee;
@@ -268,14 +243,6 @@ contract Bridge is IBridge {
 
     function refundWithdrawal(uint256 withdrawalId) external override onlyBridgeSigner {
         _refundWithdrawal(withdrawalId);
-    }
-
-    function refundWithdrawals(uint256[] calldata withdrawalIds) external override onlyBridgeSigner {
-        uint256 count = withdrawalIds.length;
-        _validateBatchSize(count);
-        for (uint256 index; index < count; ++index) {
-            _refundWithdrawal(withdrawalIds[index]);
-        }
     }
 
     function _refundWithdrawal(uint256 withdrawalId) private {
@@ -380,6 +347,7 @@ contract Bridge is IBridge {
             return;
         }
         _validateRoleSet(bridgeSigner, runtimeAdministrator, newTimelock);
+        _validateTimelockCandidate(newTimelock);
         baseAdminTimelock = newTimelock;
         emit IBridge.BaseAdminTimelockChanged(previousTimelock, newTimelock);
     }
@@ -409,12 +377,28 @@ contract Bridge is IBridge {
         }
     }
 
-    function _validateBatchSize(uint256 count) private pure {
-        if (count == 0) {
-            revert IBridge.EmptyBatch();
+    function _validateTimelockCandidate(address candidate) private view {
+        if (candidate.code.length == 0) {
+            revert IBridge.TimelockCandidateHasNoCode(candidate);
         }
-        if (count > MAX_BATCH_SIZE) {
-            revert IBridge.BatchTooLarge(count, MAX_BATCH_SIZE);
+
+        uint256 delay;
+        bool selfAdmin;
+        try ITimelockCandidate(candidate).getMinDelay() returns (uint256 candidateDelay) {
+            delay = candidateDelay;
+        } catch {
+            revert IBridge.TimelockCandidateIntrospectionFailed(candidate);
+        }
+        try ITimelockCandidate(candidate).hasRole(bytes32(0), candidate) returns (bool candidateSelfAdmin) {
+            selfAdmin = candidateSelfAdmin;
+        } catch {
+            revert IBridge.TimelockCandidateIntrospectionFailed(candidate);
+        }
+        if (delay < MINIMUM_TIMELOCK_DELAY) {
+            revert IBridge.TimelockCandidateDelayTooShort(candidate, delay, MINIMUM_TIMELOCK_DELAY);
+        }
+        if (!selfAdmin) {
+            revert IBridge.TimelockCandidateMissingSelfAdmin(candidate);
         }
     }
 

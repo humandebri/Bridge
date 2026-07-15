@@ -31,6 +31,17 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show
 
+      - name: Install Node.js 24.14.0
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.14.0
+
+      - name: Install pnpm 11.0.8
+        uses: pnpm/action-setup@v5
+        with:
+          version: 11.0.8
+          run_install: false
+
       - name: Install Foundry 1.7.1
         uses: foundry-rs/foundry-toolchain@v1
         with:

@@ -1,6 +1,6 @@
 # Plan 001: Phase 2の決定的Bridge状態機械を実装する
 
-> **履歴資料**：この本文はPlan 001の実装時点における前提と完了条件を記録している。
+> **履歴資料**：この本文はPlan 001の実装時点における前提と完了条件を記録している。現行実装はCanister timerを使わない明示操作型Settlementである。
 > 現行仕様はリポジトリ直下の`README.md`と`docs/`を参照する。
 
 > **実行者向け指示**: この計画を上から順に実行し、各ステップの検証結果を確認してから次へ進むこと。`STOP条件`に該当した場合は実装を続けず、差分と判断材料を報告すること。完了時は`plans/README.md`の状態を更新する。
@@ -67,7 +67,7 @@ Base側のbSNS、Deposit、Withdrawal、pause、Timelock、ABI snapshotはPhase 
 **Out of scope（触らない）**:
 
 - `contracts/src/**`、`contracts/test/**`、`contracts/abi/**` — Phase 1Eで凍結済みのBase contractとABI。
-- ICRC ledger transfer、EVM RPC送信、threshold ECDSA、nonce queue、scheduler、Settlement Reserveの実コスト計算、Runtime Administrator、Fee Recipient運用 — Plan 002/003へ延期する。
+- ICRC ledger transfer、EVM RPC送信、threshold ECDSA、nonce queue、Settlement Reserveの実コスト計算、Runtime Administrator、Fee Recipient運用 — Plan 002/003へ延期する。
 - `docs/parameters.md`のTBD数値、Base Admin wallet、SNS Root handover、mainnet/testnet deploy、x402 facilitator — Plan 005/006へ延期する。KINIC LedgerとIndexの本番識別子は確定済みである。
 - `pre_upgrade`で全stateを一括serializeする実装。stable structuresのmemory layoutを正本にする。
 
@@ -111,7 +111,7 @@ property test dependencyを追加する場合は、Rust 1.97.0で維持でき、
 
 ### Step 4: stable structures adapterとschema versionを実装する
 
-`bridge-canister`に`ic-stable-structures`の`MemoryManager`と固定memory IDを導入し、core stateを直接stable memoryへ保存する。`pre_upgrade`で全stateをblob化しない。各recordのkey、stable value encoding、schema version、migration方針、未使用memory IDを文書化する。
+`bridge-canister`はstable SQLiteへcore stateを直接保存し、`pre_upgrade`で全stateをblob化しない。各recordのkey、stable value encoding、schema version、migration方針を文書化する。
 
 adapterはcoreのtransitionを呼び出し、成功したdecisionだけをstable mapへ反映する。外部I/Oが未実装のPhase 2では、asset-moving update endpointを公開しない。読み取りqueryは、state version、pause/acceptance state、未完了件数、Reconciliation Hold件数など、秘密や署名materialを含まない最小情報に限定する。
 
@@ -159,7 +159,7 @@ adapterはcoreのtransitionを呼び出し、成功したdecisionだけをstable
 ## Maintenance notes
 
 - Plan 002のICRC/EVM adapterは、ここで固定したcore transitionとstable key/schemaを呼び出すだけにし、外部失敗を新しい状態へ変換する。core APIをadapter都合で緩めない。
-- Plan 003のschedulerとRuntime Administratorは、Phase 2のqueryで未完了件数、reserve、Reconciliation Holdを安全に観測できることを前提にする。
+- Plan 003のRuntime Administratorは、Phase 2のqueryで未完了件数、reserve、Reconciliation Holdを安全に観測できることを前提にする。
 - Plan 004のVerusでは、pure coreのtransitionと不変条件をproductionと同じ関数から証明対象にする。`Nat`/`u128`境界を別の未検証変換として増やさない。
-- Reviewでは、caller認証がquery/updateの境界にないこと、retryがconflicting payloadを受理しないこと、stable memory IDの変更がupgradeを壊さないことを重点確認する。
+- Reviewでは、caller認証がquery/updateの境界にないこと、retryがconflicting payloadを受理しないこと、stable schemaの変更がupgradeを壊さないことを重点確認する。
 - `docs/parameters.md`のTBD値はこの計画では埋めない。対象SNSと運用監視が確定したPlan 005で、導出式と外部仮定を一緒に更新する。

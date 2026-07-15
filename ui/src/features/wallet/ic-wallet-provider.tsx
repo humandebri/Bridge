@@ -22,8 +22,10 @@ export function IcWalletProviderRoot({ children }: { children: ReactNode }) {
   const connect = useCallback(async (nextProvider: IcWalletProvider) => {
     if (!deploymentProfile.ledgerCanisterId || !deploymentProfile.bridgeCanisterId) throw new Error("The reviewed deployment profile is incomplete")
     setConnecting(nextProvider)
+    const previous = adapter
+    setAdapter(undefined); setProvider(undefined); setAccount(undefined)
     try {
-      await adapter?.disconnect()
+      await previous?.disconnect()
       const next = nextProvider === "oisy"
         ? new OisyAdapter(deploymentProfile.icHost, deploymentProfile.ledgerCanisterId, deploymentProfile.bridgeCanisterId)
         : new PlugAdapter(deploymentProfile.icHost, deploymentProfile.ledgerCanisterId, deploymentProfile.bridgeCanisterId)
@@ -35,8 +37,9 @@ export function IcWalletProviderRoot({ children }: { children: ReactNode }) {
   }, [adapter])
 
   const disconnect = useCallback(async () => {
-    await adapter?.disconnect()
+    const previous = adapter
     setAdapter(undefined); setProvider(undefined); setAccount(undefined)
+    await previous?.disconnect()
   }, [adapter])
 
   const value = useMemo(() => ({ account, provider, adapter, connecting, connect, disconnect }), [account, provider, adapter, connecting, connect, disconnect])

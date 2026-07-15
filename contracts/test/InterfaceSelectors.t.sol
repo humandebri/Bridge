@@ -52,7 +52,7 @@ contract InterfaceSelectorsTest {
     function testBSNSFunctionSelectors() public pure {
         _assertSelector(IBSNS.bridge.selector, "bridge()");
         _assertSelector(IBSNS.bridgeMint.selector, "bridgeMint(address,uint256)");
-        _assertSelector(IBSNS.bridgeBurn.selector, "bridgeBurn(address,uint256)");
+        _assertSelector(IBSNS.bridgeBurn.selector, "bridgeBurn(uint256)");
         _assertSelector(IBSNS.version.selector, "version()");
         _assertSelector(IERC5267.eip712Domain.selector, "eip712Domain()");
         _assertSelector(IERC20Metadata.name.selector, "name()");
@@ -83,8 +83,8 @@ contract InterfaceSelectorsTest {
 
     function testBridgeOperationSelectors() public pure {
         _assertSelector(IBridge.mintDeposit.selector, "mintDeposit((bytes32,address,uint256,uint256,uint256))");
-        _assertSelector(IBridge.mintDeposits.selector, "mintDeposits((bytes32,address,uint256,uint256,uint256)[])");
         _assertSelector(IBridge.createWithdrawal.selector, "createWithdrawal(uint256,uint256,bytes,bytes32)");
+        _assertSelector(IBridge.cancelRelease.selector, "cancelRelease(uint256)");
         _assertSelector(
             IBridge.acknowledgeRelease.selector, "acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)"
         );
@@ -135,7 +135,6 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.InvalidMinAmountOut.selector, "InvalidMinAmountOut(uint256,uint256)");
         _assertSelector(IBridge.InvalidServiceFee.selector, "InvalidServiceFee(uint256,uint256)");
         _assertSelector(IBridge.ServiceFeeExceedsUserMaximum.selector, "ServiceFeeExceedsUserMaximum(uint256,uint256)");
-        _assertSelector(IBridge.EmptyBatch.selector, "EmptyBatch()");
         _assertSelector(IBridge.DepositAlreadyProcessed.selector, "DepositAlreadyProcessed(bytes32)");
         _assertSelector(IBridge.DepositMintLimitExceeded.selector, "DepositMintLimitExceeded(uint256,uint256)");
         _assertSelector(IBridge.MintWindowLimitExceeded.selector, "MintWindowLimitExceeded(uint256,uint256)");
@@ -153,6 +152,16 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.UnauthorizedBridgeSigner.selector, "UnauthorizedBridgeSigner(address)");
         _assertSelector(IBridge.UnauthorizedRuntimeAdministrator.selector, "UnauthorizedRuntimeAdministrator(address)");
         _assertSelector(IBridge.UnauthorizedBaseAdmin.selector, "UnauthorizedBaseAdmin(address)");
+        _assertSelector(IBridge.TimelockCandidateHasNoCode.selector, "TimelockCandidateHasNoCode(address)");
+        _assertSelector(
+            IBridge.TimelockCandidateIntrospectionFailed.selector, "TimelockCandidateIntrospectionFailed(address)"
+        );
+        _assertSelector(
+            IBridge.TimelockCandidateDelayTooShort.selector, "TimelockCandidateDelayTooShort(address,uint256,uint256)"
+        );
+        _assertSelector(
+            IBridge.TimelockCandidateMissingSelfAdmin.selector, "TimelockCandidateMissingSelfAdmin(address)"
+        );
     }
 
     function testEventTopics() public pure {
@@ -162,6 +171,7 @@ contract InterfaceSelectorsTest {
         _assertTopic(
             IBridge.WithdrawalCreated.selector, "WithdrawalCreated(uint256,address,uint256,uint256,bytes,bytes32)"
         );
+        _assertTopic(IBridge.WithdrawalReleaseCancelled.selector, "WithdrawalReleaseCancelled(uint256)");
         _assertTopic(IBridge.WithdrawalReleased.selector, "WithdrawalReleased(uint256,uint256,uint256,uint256,uint256)");
         _assertTopic(IBridge.WithdrawalRefunded.selector, "WithdrawalRefunded(uint256,address,uint256)");
         _assertTopic(IBridge.ServiceFeeChanged.selector, "ServiceFeeChanged(address,uint256,uint256)");
@@ -194,8 +204,9 @@ contract InterfaceSelectorsTest {
     function testEnumOrdinalsAndStructOrder() public pure {
         assert(uint8(IBridge.WithdrawalStatus.None) == 0);
         assert(uint8(IBridge.WithdrawalStatus.Pending) == 1);
-        assert(uint8(IBridge.WithdrawalStatus.Released) == 2);
-        assert(uint8(IBridge.WithdrawalStatus.Refunded) == 3);
+        assert(uint8(IBridge.WithdrawalStatus.Releasing) == 2);
+        assert(uint8(IBridge.WithdrawalStatus.Released) == 3);
+        assert(uint8(IBridge.WithdrawalStatus.Refunded) == 4);
         _assertSelector(InterfaceTupleFixture.deposit.selector, "deposit((bytes32,address,uint256,uint256,uint256))");
         _assertSelector(
             InterfaceTupleFixture.withdrawal.selector,

@@ -15,8 +15,8 @@ ICRC transferの結果がdeduplication期間後も不明で、履歴から成否
 
 ## Consequences
 
-- deduplication期間内は、同一`created_at_time`、memo、amount、fee、from、to、spenderでだけ再試行する。
-- 期間経過後はICRC-3とindex履歴を使用し、archiveを含む検索範囲の完全性と同期済みwatermarkを確認する。
+- deduplication期間内は、明示Continue一回につき同一`created_at_time`、memo、amount、fee、from、to、spenderで一度だけ再送する。自動再送しない。
+- 期間経過後は明示Continue一回につき最大4 callの1 stepだけICRC-3とindex履歴を走査し、archiveを含む検索範囲の完全性と同期済みwatermarkを確認する。
 - memoだけで判定せず、operation、from、to、spender、amount、fee、created_at_timeを照合する。
 - 履歴サービスの遅延、欠落、archive障害がある間は「存在しない」と判定しない。
 - Governanceは証拠に基づく成否確定を実行できるが、証拠なしに再送・返金を強制できない。

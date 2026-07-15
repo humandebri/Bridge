@@ -10,7 +10,7 @@
 - KINIC Ledger/Index/Root/Governanceの一次証跡と確定済みfee設定
 - 保守的parameter derivationとdeployment profile検証CLI
 - deploy後に変更不能なMint limitと単一Base Admin walletのTimelock構成
-- stableなpause専用watchdog、Bridgeのreserve/finalized観測時刻
+- Bridgeのrequest-time reserve gate、Safe観測時刻、手動pause API
 - 鍵ceremony、補充、緊急pause runbook
 
 外部証跡とceremonyが欠ける間はmainnet candidateを`validated`にせず、Plan 005を完了へ更新しない。

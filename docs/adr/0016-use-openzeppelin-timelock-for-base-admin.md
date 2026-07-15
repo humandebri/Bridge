@@ -5,7 +5,7 @@ status: accepted
 # Base Adminの実行境界にOpenZeppelin TimelockControllerを使う
 
 Base Adminの危険方向操作はOpenZeppelin Contracts 5.6.1の`TimelockController`を経由する。
-TimelockをBridgeより先にdeployし、初期minimum delayを72時間、単一Base Admin hardware walletだけをproposer、canceller、executor、追加adminを`address(0)`として構成する。
+TimelockをBridgeより先にdeployし、初期minimum delayを72時間、Base Admin hardware walletをproposerとexecutor、別hardware walletをcanceller、追加adminを`address(0)`として構成する。
 Timelock自身だけが`DEFAULT_ADMIN_ROLE`を持ち、delayとroleの変更もschedule済みの自己callで実行する。
 
 ## Considered Options
@@ -19,6 +19,5 @@ Timelock自身だけが`DEFAULT_ADMIN_ROLE`を持ち、delayとroleの変更もs
 - Base Admin walletからBridgeのBase Admin関数を直接呼んでも失敗し、walletはTimelockへscheduleして72時間後にexecuteする。
 - Base Admin walletが利用不能な間はready済み操作もexecuteできない。
   このliveness tradeoffを受け入れる。
-- Bridgeは`baseAdminTimelock` addressのbytecode、delay、role構成を内部検証しない。
-  正しいTimelockを指定したことはdeploy smokeと本番preflightの外部仮定とする。
-- Base Admin walletの生成、backup確認、紛失時の回復手順は本番開始条件とする。
+- Bridgeは候補addressのbytecode、`getMinDelay() >= 72 hours`、候補自身の`DEFAULT_ADMIN_ROLE`保持をrotation時に検証する。proposer/executor/cancellerの役割分離はdeployment profile、ceremony、deploy smokeで検証する。
+- Base Admin walletと独立cancellerの生成、backup確認、紛失時の回復手順は本番開始条件とする。

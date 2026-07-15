@@ -1,6 +1,6 @@
 # Plan 002: Phase 3 外部連携とローカル E2E
 
-> **履歴資料**：この本文はPlan 002完了時点のschema v2と実装境界を記録している。
+> **履歴資料**：この本文はPlan 002完了時点のschema v2と実装境界を記録している。timer、queue、client request IDは明示操作、bounded external call、owner sequenceへ置換済みである。
 > 現行仕様はリポジトリ直下の`README.md`と`docs/`を参照する。
 
 ## Status
@@ -12,11 +12,11 @@
 
 ## Implemented boundary
 
-- 公開`request_deposit`はcallerとclient request IDからDeposit IDを決定し、finalized Base fee/limit確認後、同一identityのICRC-2 pullを実行する。
+- 公開`request_deposit`はcallerとclient request IDからDeposit IDを決定し、Safe Base fee/limit確認後、同一identityのICRC-2 pullを実行する。
 - ICRCの成功と`Duplicate`は同じ成功証拠として扱い、call rejection・decode不能はReconciliation Holdへ移す。dedup期間後はLedgerと動的archiveの全rangeを照合し、完全被覆できない限りabsentにしない。
-- Base監視は`WithdrawalCreated`を発見にだけ使用し、`finalized`の`getWithdrawal`を受付根拠にする。3 provider中2の一致を必須とする。
+- Base監視は`WithdrawalCreated`を発見にだけ使用し、Safe headの`getWithdrawal`を受付根拠にする。3 provider中2の一致を必須とする。
 - EVM操作は単一stable nonce queue、固定contract、固定selectorのEIP-1559 envelopeとして保存し、threshold ECDSA署名後のraw transactionを再送用に保持する。
-- timerはWithdrawal発見、Hold照合、ICP Release、mint/acknowledgement/refund送信、finalized receiptとcontract state確認をstable recordから再開する。
+- timerはWithdrawal発見、Hold照合、ICP Release、mint/acknowledgement/refund送信、Safe-confirmed receiptとcontract state確認をstable recordから再開する。
 - 本番未デプロイのためlegacy migrationは持たず、schema v2以外をfail closedで拒否する。現行schemaの未完了record、nonce、cursor、会計はupgrade後も保持する。
 
 ## Deferred to Plan 003

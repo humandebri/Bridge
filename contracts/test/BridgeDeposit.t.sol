@@ -57,6 +57,12 @@ contract BridgeDepositTest is TestBase {
         assert(token.decimals() == 8);
     }
 
+    function testConstructorStartsBothAssetFlowsPaused() public {
+        Bridge freshBridge = _deployRaw(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, WINDOW_DURATION, MAX_SERVICE_FEE, SERVICE_FEE);
+        assert(freshBridge.depositMintsPaused());
+        assert(freshBridge.withdrawalsPaused());
+    }
+
     function testConstructorRejectsZeroAndDuplicateRoles() public {
         vm.expectRevert(IBridge.ZeroAddress.selector);
         new Bridge("kinic", "KINIC", 8, address(0), RUNTIME_ADMINISTRATOR, BASE_ADMIN_TIMELOCK, 1, 1, 1, 1, 0);
@@ -67,19 +73,19 @@ contract BridgeDepositTest is TestBase {
 
     function testConstructorRejectsZeroLimitsAndFeeAboveMaximum() public {
         vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, 0));
-        _deploy(0, WINDOW_LIMIT, WINDOW_DURATION, MAX_SERVICE_FEE, SERVICE_FEE);
+        _deployRaw(0, WINDOW_LIMIT, WINDOW_DURATION, MAX_SERVICE_FEE, SERVICE_FEE);
 
         vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, 0));
-        _deploy(PER_DEPOSIT_LIMIT, 0, WINDOW_DURATION, MAX_SERVICE_FEE, SERVICE_FEE);
+        _deployRaw(PER_DEPOSIT_LIMIT, 0, WINDOW_DURATION, MAX_SERVICE_FEE, SERVICE_FEE);
 
         vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, 0));
-        _deploy(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, 0, MAX_SERVICE_FEE, SERVICE_FEE);
+        _deployRaw(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, 0, MAX_SERVICE_FEE, SERVICE_FEE);
 
         vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, 0));
-        _deploy(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, WINDOW_DURATION, 0, 0);
+        _deployRaw(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, WINDOW_DURATION, 0, 0);
 
         vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidServiceFee.selector, 101, 100));
-        _deploy(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, WINDOW_DURATION, 100, 101);
+        _deployRaw(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, WINDOW_DURATION, 100, 101);
     }
 
     function testMintDepositDeductsFeeAndMarksOpaqueId() public {
@@ -148,53 +154,6 @@ contract BridgeDepositTest is TestBase {
         assert(bridge.mintedInWindow() == 100);
     }
 
-    function testBatchMintsInInputOrder() public {
-        IBridge.DepositMintRequest[] memory requests = new IBridge.DepositMintRequest[](2);
-        requests[0] = _request(keccak256("batch-0"), RECIPIENT, 110, 10);
-        requests[1] = _request(keccak256("batch-1"), address(0x55), 210, 10);
-
-        vm.expectEmit(true, true, false, true, address(bridge));
-        emit DepositMinted(requests[0].depositId, RECIPIENT, 110, 10, 100);
-        vm.expectEmit(true, true, false, true, address(bridge));
-        emit DepositMinted(requests[1].depositId, address(0x55), 210, 10, 200);
-        vm.prank(BRIDGE_SIGNER);
-        bridge.mintDeposits(requests);
-
-        assert(token.balanceOf(RECIPIENT) == 100);
-        assert(token.balanceOf(address(0x55)) == 200);
-        assert(bridge.mintedInWindow() == 300);
-    }
-
-    function testBatchRejectsEmptyAndDuplicateAtomically() public {
-        IBridge.DepositMintRequest[] memory empty = new IBridge.DepositMintRequest[](0);
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(IBridge.EmptyBatch.selector);
-        bridge.mintDeposits(empty);
-
-        bytes32 duplicateId = keccak256("batch-duplicate");
-        IBridge.DepositMintRequest[] memory requests = new IBridge.DepositMintRequest[](2);
-        requests[0] = _request(duplicateId, RECIPIENT, 110, 10);
-        requests[1] = _request(duplicateId, address(0x55), 210, 10);
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.DepositAlreadyProcessed.selector, duplicateId));
-        bridge.mintDeposits(requests);
-
-        assert(!bridge.isDepositProcessed(duplicateId));
-        assert(token.totalSupply() == 0);
-        assert(bridge.mintedInWindow() == 0);
-    }
-
-    function testBatchRejectsMoreThanFourItems() public {
-        IBridge.DepositMintRequest[] memory requests = new IBridge.DepositMintRequest[](5);
-        for (uint256 index = 0; index < requests.length; ++index) {
-            requests[index] = _request(bytes32(index + 1), RECIPIENT, 110, 10);
-        }
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.BatchTooLarge.selector, 5, 4));
-        bridge.mintDeposits(requests);
-        assert(token.totalSupply() == 0);
-    }
-
     function testBridgeSnapshotReturnsOneConsistentView() public view {
         uint256 expectedBlockTimestamp = block.timestamp;
         IBridge.BridgeSnapshot memory snapshot = bridge.bridgeSnapshot();
@@ -212,49 +171,12 @@ contract BridgeDepositTest is TestBase {
         assert(!snapshot.withdrawalsPaused);
     }
 
-    function testBatchInvalidLaterItemRollsBackEarlierMark() public {
-        IBridge.DepositMintRequest[] memory requests = new IBridge.DepositMintRequest[](2);
-        requests[0] = _request(keccak256("valid-first"), RECIPIENT, 110, 10);
-        requests[1] = _request(keccak256("invalid-second"), address(0), 110, 10);
-
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(IBridge.ZeroAddress.selector);
-        bridge.mintDeposits(requests);
-
-        assert(!bridge.isDepositProcessed(requests[0].depositId));
-        assert(!bridge.isDepositProcessed(requests[1].depositId));
-        assert(token.totalSupply() == 0);
-        assert(bridge.mintedInWindow() == 0);
-    }
-
-    function testBatchWindowViolationRollsBackEveryDeposit() public {
-        IBridge.DepositMintRequest[] memory requests = new IBridge.DepositMintRequest[](3);
-        requests[0] = _request(keccak256("window-0"), RECIPIENT, 1_010, 10);
-        requests[1] = _request(keccak256("window-1"), RECIPIENT, 1_010, 10);
-        requests[2] = _request(keccak256("window-2"), RECIPIENT, 11, 10);
-
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.MintWindowLimitExceeded.selector, 2_001, 2_000));
-        bridge.mintDeposits(requests);
-
-        assert(!bridge.isDepositProcessed(requests[0].depositId));
-        assert(!bridge.isDepositProcessed(requests[1].depositId));
-        assert(!bridge.isDepositProcessed(requests[2].depositId));
-        assert(token.totalSupply() == 0);
-        assert(bridge.mintedInWindow() == 0);
-    }
-
-    function testMultipleBatchesAccumulateInOneWindow() public {
-        IBridge.DepositMintRequest[] memory first = new IBridge.DepositMintRequest[](2);
-        first[0] = _request(keccak256("first-0"), RECIPIENT, 510, 10);
-        first[1] = _request(keccak256("first-1"), RECIPIENT, 510, 10);
-        IBridge.DepositMintRequest[] memory second = new IBridge.DepositMintRequest[](2);
-        second[0] = _request(keccak256("second-0"), RECIPIENT, 510, 10);
-        second[1] = _request(keccak256("second-1"), RECIPIENT, 510, 10);
-
+    function testMultipleDepositsAccumulateInOneWindow() public {
         vm.startPrank(BRIDGE_SIGNER);
-        bridge.mintDeposits(first);
-        bridge.mintDeposits(second);
+        bridge.mintDeposit(_request(keccak256("deposit-0"), RECIPIENT, 510, 10));
+        bridge.mintDeposit(_request(keccak256("deposit-1"), RECIPIENT, 510, 10));
+        bridge.mintDeposit(_request(keccak256("deposit-2"), RECIPIENT, 510, 10));
+        bridge.mintDeposit(_request(keccak256("deposit-3"), RECIPIENT, 510, 10));
         vm.expectRevert(abi.encodeWithSelector(IBridge.MintWindowLimitExceeded.selector, 1, 0));
         bridge.mintDeposit(_request(keccak256("over-window"), RECIPIENT, 11, 10));
         vm.stopPrank();
@@ -304,6 +226,21 @@ contract BridgeDepositTest is TestBase {
     }
 
     function _deploy(
+        uint256 perDepositLimit,
+        uint256 windowLimit,
+        uint64 windowDuration,
+        uint256 maxServiceFee,
+        uint256 initialServiceFee
+    ) private returns (Bridge) {
+        Bridge deployed = _deployRaw(perDepositLimit, windowLimit, windowDuration, maxServiceFee, initialServiceFee);
+        vm.startPrank(BASE_ADMIN_TIMELOCK);
+        deployed.unpauseDepositMints();
+        deployed.unpauseWithdrawals();
+        vm.stopPrank();
+        return deployed;
+    }
+
+    function _deployRaw(
         uint256 perDepositLimit,
         uint256 windowLimit,
         uint64 windowDuration,

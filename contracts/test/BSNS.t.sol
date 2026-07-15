@@ -69,8 +69,10 @@ contract BSNSTest is TestBase {
         restricted.bridgeMint(authorizer, 100);
         assert(restricted.balanceOf(authorizer) == 100);
 
+        vm.prank(authorizer);
+        assert(restricted.transfer(address(0xBEEF), 40));
         vm.prank(address(0xBEEF));
-        restricted.bridgeBurn(authorizer, 40);
+        restricted.bridgeBurn(40);
         assert(restricted.balanceOf(authorizer) == 60);
         assert(restricted.totalSupply() == 60);
     }
