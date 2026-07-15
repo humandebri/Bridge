@@ -10,7 +10,7 @@ import {TestBase, Vm} from "./TestBase.sol";
 contract BridgeWithdrawalTest is TestBase {
     address private constant BRIDGE_SIGNER = address(0x11);
     address private constant RUNTIME_ADMINISTRATOR = address(0x22);
-    address private constant BASE_ADMIN_TIMELOCK = address(0x33);
+    address private BASE_ADMIN_TIMELOCK;
     address private constant USER = address(0x44);
     uint256 private constant MAX_SERVICE_FEE = 100;
     uint256 private constant SERVICE_FEE = 10;
@@ -34,6 +34,7 @@ contract BridgeWithdrawalTest is TestBase {
     IBSNS private token;
 
     function setUp() public {
+        BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
         bridge = new Bridge(
             "kinic",
             "KINIC",
@@ -41,6 +42,7 @@ contract BridgeWithdrawalTest is TestBase {
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
             1_000,
             2_000,
             1 hours,

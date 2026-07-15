@@ -11,6 +11,9 @@ import { idlFactory } from "@/generated/bridge.idl"
 
 const CALL_TIMEOUT_MS = 120_000
 const OISY_SIGNER_URL = "https://oisy.com/sign"
+const BRIDGE_SERVICE = idlFactory({ IDL: LegacyIDL }) as IDL.ServiceClass
+
+type BridgeWalletMethod = "request_deposit" | "notify_withdrawal" | "continue_deposit" | "continue_withdrawal"
 
 export type IcWalletProvider = "oisy" | "plug"
 export interface IcAccount { owner: string; subaccount?: Uint8Array }
@@ -118,10 +121,10 @@ export class OisyAdapter implements IcWalletAdapter {
   private async continueSettlement(method: "continue_deposit" | "continue_withdrawal", id: Uint8Array): Promise<SettlementActionResult> {
     const wallet = this.requiredWallet()
     const account = await this.getAccount()
-    const arg = uint8ArrayToBase64(new Uint8Array(LegacyIDL.encode([LegacyIDL.Vec(LegacyIDL.Nat8)], [id])))
+    const arg = uint8ArrayToBase64(encodeBridgeCall(method, [id]))
     const result = await wallet.callCanister({ canisterId: this.bridgeCanisterId, sender: account.owner, method, arg })
     const reply = await verifyOisyReply({ host: this.host, canisterId: this.bridgeCanisterId, sender: account.owner, method, arg, result })
-    return decodeSettlementReply(reply)
+    return decodeSettlementReply(method, reply)
   }
 
   private requiredWallet(): BridgeIcrcWallet { if (!this.#wallet) throw new Error("Connect OISY first"); return this.#wallet }
@@ -182,16 +185,14 @@ export class PlugAdapter implements IcWalletAdapter {
       gross_amount: call.grossAmount,
       max_service_fee: call.maxServiceFee,
     })
-    if ("Err" in result) throw new Error(`Bridge rejected deposit: ${stringify(result.Err)}`)
-    return result.Ok
+    return unwrapDepositResult(result)
   }
 
   async notifyWithdrawal(transactionHash: Uint8Array): Promise<NotifyWithdrawalReceipt> {
     await this.assertConnectedPrincipal()
     const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
     const result = await actor.notify_withdrawal({ transaction_hash: transactionHash })
-    if ("Err" in result) throw new Error(notifyWithdrawalErrorMessage(result.Err))
-    return result.Ok
+    return unwrapNotifyWithdrawalResult(result)
   }
 
   async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
@@ -206,8 +207,7 @@ export class PlugAdapter implements IcWalletAdapter {
     await this.assertConnectedPrincipal()
     const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
     const result = await actor[method](id)
-    if ("Err" in result) throw new Error(settlementActionErrorMessage(result.Err))
-    return result.Ok
+    return unwrapSettlementResult(result)
   }
 
   private async assertConnectedPrincipal(): Promise<IcAccount> {
@@ -239,13 +239,27 @@ function parseSubaccount(value?: string): Uint8Array | undefined {
 }
 
 function encodeDepositCall(call: DepositCall, subaccount?: Uint8Array): Uint8Array {
-  const type = LegacyIDL.Record({ owner_sequence: LegacyIDL.Nat64, base_recipient: LegacyIDL.Vec(LegacyIDL.Nat8), from_subaccount: LegacyIDL.Opt(LegacyIDL.Vec(LegacyIDL.Nat8)), gross_amount: LegacyIDL.Nat, max_service_fee: LegacyIDL.Nat })
-  return new Uint8Array(LegacyIDL.encode([type], [{ owner_sequence: call.ownerSequence, base_recipient: call.baseRecipient, from_subaccount: subaccount ? [subaccount] : [], gross_amount: call.grossAmount, max_service_fee: call.maxServiceFee }]))
+  return encodeBridgeCall("request_deposit", [{ owner_sequence: call.ownerSequence, base_recipient: call.baseRecipient, from_subaccount: subaccount ? [subaccount] : [], gross_amount: call.grossAmount, max_service_fee: call.maxServiceFee }])
 }
 
 function encodeNotifyWithdrawalCall(transactionHash: Uint8Array): Uint8Array {
-  const type = LegacyIDL.Record({ transaction_hash: LegacyIDL.Vec(LegacyIDL.Nat8) })
-  return new Uint8Array(LegacyIDL.encode([type], [{ transaction_hash: transactionHash }]))
+  return encodeBridgeCall("notify_withdrawal", [{ transaction_hash: transactionHash }])
+}
+
+function bridgeMethod(method: BridgeWalletMethod): IDL.FuncClass {
+  const codec = BRIDGE_SERVICE._fields.find(([name]) => name === method)?.[1]
+  if (!codec) throw new Error(`Generated Bridge Candid does not define ${method}`)
+  return codec
+}
+
+function encodeBridgeCall(method: BridgeWalletMethod, args: unknown[]): Uint8Array {
+  return new Uint8Array(LegacyIDL.encode(bridgeMethod(method).argTypes, args))
+}
+
+function decodeBridgeReply(method: BridgeWalletMethod, reply: Uint8Array): unknown {
+  const decoded = LegacyIDL.decode(bridgeMethod(method).retTypes, reply)
+  if (decoded.length !== 1) throw new Error(`Wallet reply for ${method} has an invalid result count`)
+  return decoded[0]
 }
 
 async function verifyOisyReply(input: { host: string; canisterId: string; sender: string; method: string; arg: string; result: IcrcCallCanisterResult }): Promise<Uint8Array> {
@@ -266,13 +280,13 @@ async function verifyOisyReply(input: { host: string; canisterId: string; sender
 }
 
 export function decodeDepositReply(reply: Uint8Array): DepositReceipt {
-  const resultType = LegacyIDL.Variant({ Ok: LegacyIDL.Record({ deposit_id: LegacyIDL.Vec(LegacyIDL.Nat8), owner_sequence: LegacyIDL.Nat64, state: LegacyIDL.Text, settlement: LegacyIDL.Opt(settlementActionIdl()) }), Err: LegacyIDL.Variant({ Busy: LegacyIDL.Null, BaseObservationUnavailable: LegacyIDL.Null, ReserveUnavailable: LegacyIDL.Null, DepositsPaused: LegacyIDL.Null, Rejected: LegacyIDL.Text, InvalidRequest: LegacyIDL.Text, SequenceMismatch: LegacyIDL.Record({ expected: LegacyIDL.Nat64 }), DepositConflict: LegacyIDL.Null, LedgerFeeUnavailable: LegacyIDL.Null, StorageFailure: LegacyIDL.Null, RateLimited: LegacyIDL.Record({ retry_after_seconds: LegacyIDL.Nat64 }) }) })
-  const decodedValues: unknown = LegacyIDL.decode([resultType], reply)
-  if (!Array.isArray(decodedValues)) throw new Error("Wallet reply has an invalid shape")
-  const decoded: unknown = decodedValues[0]
-  if (!isObject(decoded)) throw new Error("Wallet reply has an invalid shape")
-  if ("Err" in decoded) throw new Error(`Bridge rejected deposit: ${stringify(Reflect.get(decoded, "Err"))}`)
-  const ok: unknown = Reflect.get(decoded, "Ok")
+  return unwrapDepositResult(decodeBridgeReply("request_deposit", reply))
+}
+
+function unwrapDepositResult(result: unknown): DepositReceipt {
+  if (!isObject(result)) throw new Error("Wallet reply has an invalid shape")
+  if ("Err" in result) throw new Error(`Bridge rejected deposit: ${stringify(Reflect.get(result, "Err"))}`)
+  const ok: unknown = Reflect.get(result, "Ok")
   if (!isObject(ok) || typeof Reflect.get(ok, "state") !== "string") throw new Error("Wallet reply has an invalid deposit receipt")
   const id: unknown = Reflect.get(ok, "deposit_id")
   if (!(id instanceof Uint8Array) && !Array.isArray(id)) throw new Error("Wallet reply has an invalid deposit ID")
@@ -286,55 +300,28 @@ export function decodeDepositReply(reply: Uint8Array): DepositReceipt {
 }
 
 export function decodeNotifyWithdrawalReply(reply: Uint8Array): NotifyWithdrawalReceipt {
-  const resultType = LegacyIDL.Variant({
-    Ok: LegacyIDL.Variant({
-      Duplicate: LegacyIDL.Record({ withdrawal_id: LegacyIDL.Vec(LegacyIDL.Nat8), settlement: LegacyIDL.Opt(settlementActionIdl()) }),
-      Ingested: LegacyIDL.Record({ confirmed_head_block_number: LegacyIDL.Nat64, withdrawal_id: LegacyIDL.Vec(LegacyIDL.Nat8), settlement: LegacyIDL.Opt(settlementActionIdl()) }),
-    }),
-    Err: LegacyIDL.Variant({
-      Busy: LegacyIDL.Null, RpcUnavailable: LegacyIDL.Null,
-      TransactionNotConfirmed: LegacyIDL.Null,
-      WithdrawalConflict: LegacyIDL.Null,
-      OwnerMismatch: LegacyIDL.Null,
-      RpcInconsistent: LegacyIDL.Null,
-      RateLimited: LegacyIDL.Record({ retry_after_seconds: LegacyIDL.Nat64 }),
-      InvalidTransactionHash: LegacyIDL.Null,
-      TransactionReverted: LegacyIDL.Null,
-      LedgerFeeUnavailable: LegacyIDL.Null,
-      StorageFailure: LegacyIDL.Null,
-      BaseStateMismatch: LegacyIDL.Null,
-      TransactionNotFound: LegacyIDL.Null,
-      BridgeSignerMismatch: LegacyIDL.Null,
-      AnonymousCaller: LegacyIDL.Null,
-      InvalidBaseResponse: LegacyIDL.Null,
-    }),
-  })
-  const decodedValues: unknown = LegacyIDL.decode([resultType], reply)
-  if (!Array.isArray(decodedValues) || !isObject(decodedValues[0])) throw new Error("Wallet reply has an invalid notification result")
-  const decoded = decodedValues[0] as Record<string, unknown>
+  return unwrapNotifyWithdrawalResult(decodeBridgeReply("notify_withdrawal", reply))
+}
+
+function unwrapNotifyWithdrawalResult(result: unknown): NotifyWithdrawalReceipt {
+  if (!isObject(result)) throw new Error("Wallet reply has an invalid notification result")
+  const decoded = result as Record<string, unknown>
   if ("Err" in decoded) throw new Error(notifyWithdrawalErrorMessage(decoded.Err as NotifyWithdrawalError))
   const receipt: unknown = decoded.Ok
   if (!isObject(receipt)) throw new Error("Wallet reply has an invalid notification receipt")
   return receipt as NotifyWithdrawalReceipt
 }
 
-function settlementActionIdl(): IDL.Type {
-  const stop = LegacyIDL.Variant({ LedgerRejected: LegacyIDL.Text, RpcUnavailable: LegacyIDL.Null, TransactionNotConfirmed: LegacyIDL.Null, ConfirmationCheckExhausted: LegacyIDL.Null, RpcInconsistent: LegacyIDL.Null, LedgerAmbiguous: LegacyIDL.Null, LedgerUnavailable: LegacyIDL.Null, LedgerFeeChanged: LegacyIDL.Null, NonceUnavailable: LegacyIDL.Null, NonceConflict: LegacyIDL.Null, TransactionReverted: LegacyIDL.Null, NonceBlocked: LegacyIDL.Null, BaseStateMismatch: LegacyIDL.Null, TransactionNotFound: LegacyIDL.Null, BridgeSignerMismatch: LegacyIDL.Null, SigningUnavailable: LegacyIDL.Null, InvalidBaseResponse: LegacyIDL.Null })
-  return LegacyIDL.Variant({
-    Stopped: LegacyIDL.Record({ state: LegacyIDL.Text, reason: stop }),
-    Complete: LegacyIDL.Record({ state: LegacyIDL.Text }),
-    ReconciliationProgress: LegacyIDL.Record({ state: LegacyIDL.Text }),
-    WaitingForConfirmation: LegacyIDL.Record({ transaction_hash: LegacyIDL.Vec(LegacyIDL.Nat8), state: LegacyIDL.Text }),
-    Submitted: LegacyIDL.Record({ transaction_hash: LegacyIDL.Vec(LegacyIDL.Nat8), state: LegacyIDL.Text }),
-  })
+function decodeSettlementReply(method: "continue_deposit" | "continue_withdrawal", reply: Uint8Array): SettlementActionResult {
+  return unwrapSettlementResult(decodeBridgeReply(method, reply))
 }
 
-function decodeSettlementReply(reply: Uint8Array): SettlementActionResult {
-  const error = LegacyIDL.Variant({ AutomaticProgressPending: LegacyIDL.Record({ next_run_at_ns: LegacyIDL.Opt(LegacyIDL.Nat64) }), RateLimited: LegacyIDL.Record({ retry_after_seconds: LegacyIDL.Nat64 }), InvalidId: LegacyIDL.Null, Busy: LegacyIDL.Null, NotFound: LegacyIDL.Null, Unauthorized: LegacyIDL.Null, StorageFailure: LegacyIDL.Null, AnonymousCaller: LegacyIDL.Null })
-  const decoded = LegacyIDL.decode([LegacyIDL.Variant({ Ok: settlementActionIdl(), Err: error })], reply)[0] as { Ok?: SettlementActionResult; Err?: unknown }
+function unwrapSettlementResult(result: unknown): SettlementActionResult {
+  if (!isObject(result)) throw new Error("Wallet reply has an invalid settlement result")
+  const decoded = result as Record<string, unknown>
   if (decoded.Err !== undefined) throw new Error(settlementActionErrorMessage(decoded.Err))
   if (decoded.Ok === undefined) throw new Error("Wallet reply has an invalid settlement result")
-  return decoded.Ok
+  return decoded.Ok as SettlementActionResult
 }
 
 function settlementActionErrorMessage(error: unknown): string {

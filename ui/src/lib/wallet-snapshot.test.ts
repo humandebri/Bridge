@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { currentInjectedWallet, sameIcAccount } from "@/lib/wallet-snapshot"
+import { currentInjectedWallet, requireWalletSnapshot, sameIcAccount } from "@/lib/wallet-snapshot"
 
 afterEach(() => { Reflect.deleteProperty(window, "ethereum") })
 
@@ -17,5 +17,12 @@ describe("wallet snapshots", () => {
   it("treats an omitted IC subaccount as the zero subaccount", () => {
     expect(sameIcAccount({ owner: "aaaaa-aa" }, { owner: "aaaaa-aa", subaccount: new Uint8Array(32) })).toBe(true)
     expect(sameIcAccount({ owner: "aaaaa-aa", subaccount: new Uint8Array(32).fill(1) }, { owner: "aaaaa-aa", subaccount: new Uint8Array(32) })).toBe(false)
+  })
+
+  it("rejects account or chain drift immediately before a write", () => {
+    const expected = { address: "0x1111111111111111111111111111111111111111" as const, chainId: 8453, icAccount: { owner: "aaaaa-aa" } }
+    expect(() => requireWalletSnapshot(expected, { ...expected, address: "0x1111111111111111111111111111111111111111" })).not.toThrow()
+    expect(() => requireWalletSnapshot(expected, { ...expected, chainId: 84532 })).toThrow("changed during confirmation")
+    expect(() => requireWalletSnapshot(expected, { ...expected, icAccount: { owner: "2vxsx-fae" } }, "after approval")).toThrow("changed after approval")
   })
 })

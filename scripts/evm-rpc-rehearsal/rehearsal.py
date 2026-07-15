@@ -36,25 +36,25 @@ SCENARIOS = (
     "final_pause",
 )
 REQUIRED_ARTIFACTS = {
-    "preflight": {"bridge", "base"},
+    "preflight": {"bridge", "base", "audit", "module"},
     "deposit_mint": {"bridge", "base", "ledger", "audit"},
     "withdrawal_release": {"bridge", "base", "ledger", "audit"},
     "bad_fee_refund": {"bridge", "base", "ledger", "audit"},
-    "canonical_receipt": {"bridge", "base"},
-    "single_provider_failure": {"bridge", "audit"},
-    "quorum_loss": {"bridge", "audit"},
+    "canonical_receipt": {"bridge", "base", "audit"},
+    "single_provider_failure": {"bridge", "audit", "fault"},
+    "quorum_loss": {"bridge", "audit", "fault"},
     "nonce_known": {"bridge", "audit"},
     "nonce_conflict": {"bridge", "audit"},
     "final_pause": {"bridge", "base", "audit"},
 }
 CROSS_ARTIFACT_BINDINGS = {
-    "preflight": {"observed_bridge_contract": {"bridge", "base"}, "observed_chain_id": {"bridge", "base"}, "base_bridge_signer": {"base"}, "canister_chain_key_signer": {"bridge"}},
+    "preflight": {"observed_bridge_contract": {"bridge", "base"}, "observed_chain_id": {"bridge", "base"}, "base_bridge_signer": {"base"}, "canister_chain_key_signer": {"bridge"}, "bridge_canister_module_sha256": {"module"}},
     "deposit_mint": {"deposit_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "mint_transaction_hash": {"bridge", "base"}, "safe_block_hash": {"bridge", "base"}},
     "withdrawal_release": {"withdrawal_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "request_transaction_hash": {"bridge", "base"}, "acknowledge_transaction_hash": {"bridge", "base"}, "request_safe_block_hash": {"bridge", "base"}, "acknowledgement_safe_block_hash": {"bridge", "base"}},
     "bad_fee_refund": {"withdrawal_id": {"bridge", "base", "audit"}, "new_ledger_fee": {"bridge", "ledger"}, "cancel_release_transaction_hash": {"bridge", "base"}, "refund_transaction_hash": {"bridge", "base"}, "safe_block_hash": {"bridge", "base"}},
     "canonical_receipt": {"transaction_hash": {"bridge", "base"}, "receipt_block_hash": {"bridge", "base"}, "canonical_block_hash": {"bridge", "base"}, "confirmed_head_block_number": {"bridge", "base"}},
-    "single_provider_failure": {"agreeing_provider_count": {"bridge", "audit"}, "bridge_operation_continued": {"bridge", "audit"}},
-    "quorum_loss": {"agreeing_provider_count": {"bridge", "audit"}, "stop_reason": {"bridge", "audit"}, "ledger_call_performed": {"bridge", "audit"}},
+    "single_provider_failure": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "bridge_operation_continued": {"bridge", "audit"}},
+    "quorum_loss": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "stop_reason": {"bridge", "audit"}, "ledger_call_performed": {"bridge", "audit"}},
     "nonce_known": {"local_transaction_hash": {"bridge", "audit"}, "provider_agreement": {"bridge", "audit"}, "resulting_state": {"bridge", "audit"}},
     "nonce_conflict": {"resulting_stop_reason": {"bridge", "audit"}, "deposits_paused": {"bridge", "audit"}, "automatically_resigned": {"bridge", "audit"}},
     "final_pause": {"base_deposits_paused": {"base", "audit"}, "base_withdrawals_paused": {"base", "audit"}, "canister_deposits_paused": {"bridge", "audit"}, "safe_block_hash": {"base", "audit"}},
@@ -64,6 +64,19 @@ HEX_20 = re.compile(r"^0x[0-9a-fA-F]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PRINCIPAL = re.compile(r"^[a-z0-9-]{5,63}$")
 REHEARSAL_ID = re.compile(r"^[a-z0-9][a-z0-9-]{7,63}$")
+RPC_AUDIT_SCENARIOS = frozenset(SCENARIOS) - {"quorum_loss"}
+RPC_DECISION_SCENARIOS = frozenset({"single_provider_failure", "quorum_loss", "nonce_conflict"})
+RPC_AUDIT_METHODS = {
+    "preflight": {"multi_request"},
+    "deposit_mint": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
+    "withdrawal_release": {"multi_request", "eth_sendRawTransaction", "eth_sendRawTransaction+multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
+    "bad_fee_refund": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
+    "canonical_receipt": {"multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
+    "single_provider_failure": {"multi_request"},
+    "nonce_known": {"eth_sendRawTransaction+multi_request"},
+    "nonce_conflict": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request"},
+    "final_pause": {"multi_request"},
+}
 
 
 class InvalidEvidence(ValueError):
@@ -298,7 +311,7 @@ def source_tree_sha256(root: Path) -> str:
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -386,6 +399,8 @@ def validate_common(
         "response_sha256",
         "result",
         "details",
+        "canister_audit",
+        "canister_decision",
         "artifacts",
     }
     exact_keys(evidence, common, f"{expected_scenario} evidence")
@@ -413,6 +428,15 @@ def validate_common(
             fail(f"{expected_scenario}.{field} must be a lowercase SHA-256 digest")
     if not isinstance(evidence["details"], dict):
         fail(f"{expected_scenario}.details must be an object")
+    validate_canister_audit(evidence["canister_audit"], binding, expected_scenario, evidence["details"])
+    validate_canister_decision(evidence["canister_decision"], expected_scenario, evidence["details"])
+    if expected_scenario == "nonce_conflict" and (
+        evidence["canister_audit"] is None
+        or evidence["canister_decision"] is None
+        or evidence["canister_decision"]["transaction_hash"]
+        != evidence["canister_audit"]["transaction_hash"]
+    ):
+        fail("nonce conflict audit and decision must bind the same local transaction hash")
     artifacts = evidence["artifacts"]
     if not isinstance(artifacts, list) or not artifacts:
         fail(f"{expected_scenario}.artifacts must be a non-empty array")
@@ -422,7 +446,7 @@ def validate_common(
         if not isinstance(artifact, dict):
             fail(f"{expected_scenario} artifact reference must be an object")
         exact_keys(artifact, {"kind", "path", "sha256", "bindings"}, "artifact reference")
-        if artifact["kind"] not in {"bridge", "base", "ledger", "audit"}:
+        if artifact["kind"] not in {"bridge", "base", "ledger", "audit", "module", "fault"}:
             fail("artifact reference kind is invalid")
         path = artifact["path"]
         if (
@@ -468,6 +492,130 @@ def require_nat(details: dict[str, Any], field: str, positive: bool = False) -> 
     return value
 
 
+def validate_canister_audit(value: Any, binding: dict[str, Any], scenario: str, details: dict[str, Any]) -> None:
+    if scenario not in RPC_AUDIT_SCENARIOS:
+        if value is not None:
+            fail(f"{scenario}.canister_audit must be null when no quorum observation completed")
+        return
+    if not isinstance(value, dict):
+        fail(f"{scenario}.canister_audit must be derived from a Canister audit event")
+    exact_keys(value, {"evm_rpc_canister_id", "call_method", "request_digest", "quorum_response_digest", "safe_block_number", "safe_block_hash", "transaction_hash"}, f"{scenario}.canister_audit")
+    if (
+        value["evm_rpc_canister_id"] != binding["evm_rpc_canister_id"]
+        or value["call_method"] not in RPC_AUDIT_METHODS[scenario]
+    ):
+        fail("Canister audit event is bound to the wrong EVM RPC Canister or Candid method")
+    for field in ("request_digest", "quorum_response_digest"):
+        if not isinstance(value[field], str) or not SHA256.fullmatch(value[field]):
+            fail(f"canister_audit.{field} must be a lowercase SHA-256 digest")
+    require_nat(value, "safe_block_number", positive=True)
+    require_hex(value, "safe_block_hash", HEX_32)
+    if value["transaction_hash"] is not None:
+        require_hex(value, "transaction_hash", HEX_32)
+    if value["call_method"] != "multi_request" and value["transaction_hash"] is None:
+        fail("transaction RPC audit must bind its local transaction hash")
+    safe_hashes = {str(v).lower() for k, v in details.items() if "safe_block_hash" in k and isinstance(v, str)}
+    if safe_hashes and value["safe_block_hash"].lower() not in safe_hashes:
+        fail("Canister audit Safe hash is not bound to the scenario")
+    tx_hashes = {str(v).lower() for k, v in details.items() if "transaction_hash" in k and isinstance(v, str)}
+    if tx_hashes and (value["transaction_hash"] is None or value["transaction_hash"].lower() not in tx_hashes):
+        fail("Canister audit transaction hash is not bound to the scenario")
+
+
+def normalized_rpc_audits(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [found for item in value for found in normalized_rpc_audits(item)]
+    if not isinstance(value, dict):
+        return []
+    candidate = value.get("EvmRpcObservation", value)
+    required = {"evm_rpc_canister_id", "call_method", "request_digest", "quorum_response_digest", "safe_block_number", "safe_block_hash", "transaction_hash"}
+    if isinstance(candidate, dict) and required.issubset(candidate):
+        normalized = dict(candidate)
+        for field in ("request_digest", "quorum_response_digest"):
+            raw = normalized[field]
+            if isinstance(raw, list) and all(isinstance(byte, int) and 0 <= byte <= 255 for byte in raw):
+                normalized[field] = bytes(raw).hex()
+        for field in ("safe_block_hash", "transaction_hash"):
+            raw = normalized[field]
+            if field == "transaction_hash" and isinstance(raw, list):
+                if raw == []:
+                    raw = None
+                elif len(raw) == 1 and isinstance(raw[0], list):
+                    raw = raw[0]
+                normalized[field] = raw
+            if isinstance(raw, list) and all(isinstance(byte, int) and 0 <= byte <= 255 for byte in raw):
+                normalized[field] = "0x" + bytes(raw).hex()
+        if isinstance(normalized["safe_block_number"], str) and normalized["safe_block_number"].isdigit():
+            normalized["safe_block_number"] = int(normalized["safe_block_number"])
+        return [normalized]
+    return [found for item in value.values() for found in normalized_rpc_audits(item)]
+
+
+def normalized_rpc_decisions(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [found for item in value for found in normalized_rpc_decisions(item)]
+    if not isinstance(value, dict):
+        return []
+    event_sequence = value.get("sequence")
+    event_timestamp = value.get("timestamp_ns")
+    kind = value.get("kind")
+    candidate = kind.get("EvmRpcDecision") if isinstance(kind, dict) and "EvmRpcDecision" in kind else value.get("EvmRpcDecision", value)
+    required = {
+        "kind", "operation", "configured_provider_count", "required_threshold",
+        "stop_reason", "ledger_call_performed", "bridge_operation_continued",
+        "deposits_paused", "automatically_resigned", "transaction_hash",
+    }
+    if isinstance(candidate, dict) and required.issubset(candidate):
+        normalized = dict(candidate)
+        raw = normalized["transaction_hash"]
+        if isinstance(raw, list):
+            if raw == []:
+                raw = None
+            elif len(raw) == 1 and isinstance(raw[0], list):
+                raw = raw[0]
+        if isinstance(raw, list) and all(isinstance(byte, int) and 0 <= byte <= 255 for byte in raw):
+            raw = "0x" + bytes(raw).hex()
+        normalized["transaction_hash"] = raw
+        for raw_value, name in ((event_sequence, "sequence"), (event_timestamp, "timestamp_ns")):
+            if isinstance(raw_value, str) and raw_value.isdigit():
+                raw_value = int(raw_value)
+            if not isinstance(raw_value, int):
+                break
+            if name == "sequence":
+                event_sequence = raw_value
+            else:
+                event_timestamp = raw_value
+        else:
+            return [{"sequence": event_sequence, "timestamp_ns": event_timestamp, "decision": normalized}]
+        return []
+    return [found for item in value.values() for found in normalized_rpc_decisions(item)]
+
+
+def validate_canister_decision(value: Any, scenario: str, details: dict[str, Any]) -> None:
+    if scenario not in RPC_DECISION_SCENARIOS:
+        if value is not None:
+            fail(f"{scenario}.canister_decision must be null")
+        return
+    if not isinstance(value, dict):
+        fail(f"{scenario}.canister_decision must be derived from EvmRpcDecision")
+    exact_keys(value, {
+        "kind", "operation", "configured_provider_count", "required_threshold",
+        "stop_reason", "ledger_call_performed", "bridge_operation_continued",
+        "deposits_paused", "automatically_resigned", "transaction_hash",
+    }, f"{scenario}.canister_decision")
+    if value["configured_provider_count"] != 3 or value["required_threshold"] != 2:
+        fail("Canister decision has the wrong provider threshold")
+    if scenario == "single_provider_failure":
+        if value["kind"] != "QuorumContinued" or value["operation"] != "refresh_base_observation" or value["stop_reason"] is not None or value["ledger_call_performed"] is not False or value["bridge_operation_continued"] is not True:
+            fail("single provider failure lacks a threshold continuation decision")
+    elif scenario == "quorum_loss":
+        if value["kind"] != "QuorumLoss" or value["operation"] != "notify_withdrawal" or value["stop_reason"] != details["stop_reason"] or value["ledger_call_performed"] is not False or value["bridge_operation_continued"] is not False:
+            fail("quorum loss decision is not fail closed before Ledger")
+    elif scenario == "nonce_conflict":
+        if value["kind"] != "NonceConflict" or value["operation"] != "broadcast_evm_operation" or value["stop_reason"] != "NonceConflict" or value["deposits_paused"] is not True or value["automatically_resigned"] is not False or not isinstance(value["transaction_hash"], str) or not HEX_32.fullmatch(value["transaction_hash"]):
+            fail("nonce conflict decision does not pause without re-signing")
+
+
 def json_pointer(value: Any, pointer: str) -> Any:
     current = value
     for raw in pointer.split("/")[1:]:
@@ -482,25 +630,41 @@ def json_pointer(value: Any, pointer: str) -> Any:
 
 
 def validate_capture_command(kind: str, tool: str, argv: list[str], binding: dict[str, Any]) -> None:
+    if kind == "fault":
+        if tool != "fault-injection-recorder" or len(argv) != 2 or any(not SHA256.fullmatch(value) for value in argv):
+            fail("fault artifact must come from the dedicated fault-injection recorder")
+        return
     if tool == "dfx":
-        if kind == "base" or len(argv) < 6 or argv[:2] != ["canister", "call"]:
-            fail("dfx artifacts must be fixed canister call captures")
+        expected_prefix = ["canister", "status"] if kind == "module" else ["canister", "call"]
+        if kind == "base" or len(argv) < 6 or argv[:2] != expected_prefix:
+            fail("dfx artifacts must be fixed canister call/status captures")
         expected_canister = binding["ledger_canister_id"] if kind == "ledger" else binding["bridge_canister_id"]
-        if argv[2] != expected_canister or "--network" not in argv:
+        if argv[2] != expected_canister or argv.count("--network") != 1:
             fail("dfx artifact targets the wrong canister or network")
+        if any(item.startswith("--network=") for item in argv):
+            fail("dfx network flag must use the fixed split form exactly once")
         network_index = argv.index("--network")
         if network_index + 1 >= len(argv) or argv[network_index + 1] != "ic":
             fail("dfx artifact must target the IC network")
-        if "--output" not in argv or argv.index("--output") + 1 >= len(argv) or argv[argv.index("--output") + 1] != "json":
+        if argv.count("--output") != 1 or any(item.startswith("--output=") for item in argv):
+            fail("dfx output flag must use the fixed split form exactly once")
+        if argv.index("--output") + 1 >= len(argv) or argv[argv.index("--output") + 1] != "json":
             fail("dfx artifact must request raw JSON output")
-        method = argv[3]
-        allowed_methods = {
-            "ledger": {"icrc3_get_blocks", "icrc1_balance_of", "icrc1_fee"},
-            "audit": {"get_audit_events"},
-            "bridge": {"get_public_config", "get_bridge_status", "get_deposit", "get_withdrawals"},
-        }
-        if method not in allowed_methods[kind]:
-            fail(f"dfx artifact method is not allowed for {kind}: {method}")
+        forbidden = {"--identity", "--wallet", "--host", "--insecure", "--yes"}
+        if any(item in forbidden or any(item.startswith(flag + "=") for flag in forbidden) for item in argv):
+            fail("dfx artifact contains an operator-controlled routing or identity flag")
+        if kind == "module":
+            if len(argv) != 7:
+                fail("module artifact must be one fixed dfx canister status capture")
+        else:
+            method = argv[3]
+            allowed_methods = {
+                "ledger": {"icrc3_get_blocks", "icrc1_balance_of", "icrc1_fee"},
+                "audit": {"get_audit_events"},
+                "bridge": {"get_public_config", "get_bridge_status", "get_deposit", "get_withdrawals"},
+            }
+            if method not in allowed_methods[kind]:
+                fail(f"dfx artifact method is not allowed for {kind}: {method}")
     elif tool == "cast":
         if kind != "base" or not argv or argv[0] not in {"receipt", "block", "call"}:
             fail("cast artifacts must be Base receipt, block, or call captures")
@@ -537,6 +701,10 @@ def reject_secret_material(value: Any, context: str = "raw artifact") -> None:
 
 def validate_transport(artifact: dict[str, Any], binding: dict[str, Any]) -> None:
     transport = artifact["transport"]
+    if artifact["kind"] == "fault":
+        if transport is not None:
+            fail("fault artifact must not contain provider transport")
+        return
     if artifact["tool"] == "dfx":
         if transport is not None:
             fail("dfx artifact must not contain Base provider transport")
@@ -564,6 +732,8 @@ def validate_raw_artifacts(evidence: dict[str, Any], binding: dict[str, Any], ro
     seen_paths: set[str] = set()
     request_records: list[list[str]] = []
     response_records: list[str] = []
+    fault_claim: dict[str, Any] | None = None
+    decision_events: list[dict[str, Any]] = []
     root = root.resolve()
     for reference in evidence["artifacts"]:
         relative = reference["path"]
@@ -604,6 +774,57 @@ def validate_raw_artifacts(evidence: dict[str, Any], binding: dict[str, Any], ro
             fail("raw artifact argv is invalid")
         validate_capture_command(artifact["kind"], artifact["tool"], artifact["argv"], binding)
         validate_transport(artifact, binding)
+        if artifact["kind"] == "fault":
+            exact_keys(parsed, {"schema_version", "rehearsal_id", "scenario", "run_reference", "configured_provider_count", "required_threshold", "failed_provider_count", "failed_provider_indices", "provider_url_digests", "failure_rule", "started_at", "completed_at", "restored_provider_indices", "injector_output_digest", "request_config_digest", "decision_sequence", "decision_timestamp_ns", "decision_digest"}, "fault injection artifact")
+            expected = evidence["details"]
+            expected_failed = list(range(expected["injected_provider_failures"]))
+            request_config = {
+                "rehearsal_id": binding["rehearsal_id"],
+                "scenario": evidence["scenario"],
+                "run_reference": expected["fault_injection_reference"],
+                "provider_url_digests": [item["url_sha256"] for item in binding["rpc_endpoints"]],
+                "failed_provider_indices": expected_failed,
+                "failure_rule": "connection-refused",
+            }
+            expected_request_digest = hashlib.sha256(json.dumps(request_config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            if (
+                parsed["schema_version"] != 1
+                or parsed["rehearsal_id"] != binding["rehearsal_id"]
+                or parsed["scenario"] != evidence["scenario"]
+                or parsed["run_reference"] != expected["fault_injection_reference"]
+                or parsed["configured_provider_count"] != expected["configured_provider_count"]
+                or parsed["required_threshold"] != expected["required_provider_threshold"]
+                or parsed["failed_provider_count"] != expected["injected_provider_failures"]
+                or parsed["failed_provider_indices"] != expected_failed
+                or parsed["provider_url_digests"] != request_config["provider_url_digests"]
+                or parsed["failure_rule"] != request_config["failure_rule"]
+                or parsed["restored_provider_indices"] != expected_failed
+                or parsed["request_config_digest"] != expected_request_digest
+                or artifact["argv"] != [expected_request_digest, parsed["injector_output_digest"]]
+                or parsed["decision_digest"] != hashlib.sha256(json.dumps(evidence["canister_decision"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                or not isinstance(parsed["decision_sequence"], int) or parsed["decision_sequence"] < 0
+                or not isinstance(parsed["decision_timestamp_ns"], int) or parsed["decision_timestamp_ns"] < 0
+            ):
+                fail("fault injection artifact does not match the reviewed rehearsal run")
+            valid_timestamp(parsed["started_at"], "fault injection started_at")
+            valid_timestamp(parsed["completed_at"], "fault injection completed_at")
+            if (parsed["completed_at"] < parsed["started_at"]
+                    or not isinstance(parsed["injector_output_digest"], str)
+                    or not SHA256.fullmatch(parsed["injector_output_digest"])):
+                fail("fault injection execution interval or output digest is invalid")
+            decision_at = datetime.fromtimestamp(parsed["decision_timestamp_ns"] / 1_000_000_000, timezone.utc).isoformat().replace("+00:00", "Z")
+            if not parsed["started_at"] <= decision_at <= parsed["completed_at"]:
+                fail("Canister decision was not emitted during the reviewed fault interval")
+            fault_claim = parsed
+        if artifact["kind"] == "audit" and evidence["scenario"] in RPC_AUDIT_SCENARIOS:
+            observed_audits = normalized_rpc_audits(parsed)
+            if evidence["canister_audit"] not in observed_audits:
+                fail("scenario Canister audit binding is not derived from get_audit_events")
+        if artifact["kind"] == "audit" and evidence["scenario"] in RPC_DECISION_SCENARIOS:
+            observed_decisions = normalized_rpc_decisions(parsed)
+            decision_events.extend(observed_decisions)
+            if evidence["canister_decision"] not in [event["decision"] for event in observed_decisions]:
+                fail("scenario Canister decision is not derived from get_audit_events")
         request_records.append([artifact["tool"], *artifact["argv"], artifact["transport"]])
         response_records.append(artifact["stdout"])
         pointer_root = dict(parsed) if isinstance(parsed, dict) else {"value": parsed}
@@ -612,9 +833,20 @@ def validate_raw_artifacts(evidence: dict[str, Any], binding: dict[str, Any], ro
             if field not in evidence["details"]:
                 fail(f"artifact binds an unknown detail field: {field}")
             observed = json_pointer(pointer_root, pointer)
+            if field == "bridge_canister_module_sha256":
+                if isinstance(observed, str):
+                    observed = observed.lower().removeprefix("0x")
+                elif isinstance(observed, list) and all(isinstance(byte, int) and 0 <= byte <= 255 for byte in observed):
+                    observed = bytes(observed).hex()
             if observed != evidence["details"][field]:
                 fail(f"raw artifact disagrees with scenario detail: {field}")
             covered.add(field)
+    if evidence["scenario"] in {"single_provider_failure", "quorum_loss"}:
+        if fault_claim is None:
+            fail("fault scenario lacks its execution claim")
+        matching = [event for event in decision_events if event["sequence"] == fault_claim["decision_sequence"] and event["timestamp_ns"] == fault_claim["decision_timestamp_ns"] and hashlib.sha256(json.dumps(event["decision"], sort_keys=True, separators=(",", ":")).encode()).hexdigest() == fault_claim["decision_digest"]]
+        if len(matching) != 1:
+            fail("fault claim does not identify exactly one matching Canister audit event")
     if covered != set(evidence["details"]):
         fail(f"scenario details lack raw artifact bindings: {sorted(set(evidence['details']) - covered)}")
     request_digest = hashlib.sha256(
@@ -636,7 +868,7 @@ def capture_artifact(
     command: list[str],
     provider_index: int | None = None,
 ) -> None:
-    if scenario not in SCENARIOS or kind not in {"bridge", "base", "ledger", "audit"}:
+    if scenario not in SCENARIOS or kind not in {"bridge", "base", "ledger", "audit", "module"}:
         fail("capture scenario or artifact kind is invalid")
     if not command:
         fail("capture command is missing")
@@ -708,6 +940,71 @@ def capture_artifact(
     write_json(output, artifact)
 
 
+def capture_fault_artifact(
+    manifest: dict[str, Any], raw_config: dict[str, Any], scenario: str, output: Path,
+    run_reference: str, command: list[str],
+) -> None:
+    if scenario not in {"single_provider_failure", "quorum_loss"}:
+        fail("fault capture is only valid for the two reviewed quorum scenarios")
+    if command != ["evm-rpc-fault-injector"]:
+        fail("fault capture must invoke the fixed evm-rpc-fault-injector executable")
+    config_binding = validate_config(raw_config)
+    validate_binding(manifest["binding"])
+    if config_binding != manifest["binding"]:
+        fail("capture config does not match the reviewed manifest binding")
+    failed_indices = [0] if scenario == "single_provider_failure" else [0, 1]
+    request_config = {
+        "rehearsal_id": manifest["binding"]["rehearsal_id"],
+        "scenario": scenario,
+        "run_reference": run_reference,
+        "provider_url_digests": [item["url_sha256"] for item in manifest["binding"]["rpc_endpoints"]],
+        "failed_provider_indices": failed_indices,
+        "failure_rule": "connection-refused",
+    }
+    request_json = json.dumps(request_config, sort_keys=True, separators=(",", ":"))
+    request_digest = hashlib.sha256(request_json.encode()).hexdigest()
+    started_at = now()
+    result = subprocess.run(command, input=request_json, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    completed_at = now()
+    if result.returncode != 0:
+        fail(f"fault injector failed with status {result.returncode}: {result.stderr.strip()}")
+    try:
+        injector_result = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        fail(f"fault injector did not emit JSON: {error}")
+    exact_keys(injector_result, {"schema_version", "run_reference", "applied_provider_indices", "restored_provider_indices", "result", "decision_sequence", "decision_timestamp_ns", "canister_decision"}, "fault injector result")
+    if (injector_result["schema_version"] != 1 or injector_result["run_reference"] != run_reference
+            or injector_result["applied_provider_indices"] != failed_indices
+            or injector_result["restored_provider_indices"] != failed_indices
+            or injector_result["result"] != "completed"
+            or not isinstance(injector_result["decision_sequence"], int)
+            or not isinstance(injector_result["decision_timestamp_ns"], int)
+            or not isinstance(injector_result["canister_decision"], dict)):
+        fail("fault injector did not apply and restore the reviewed failure set")
+    decision_at = datetime.fromtimestamp(injector_result["decision_timestamp_ns"] / 1_000_000_000, timezone.utc).isoformat().replace("+00:00", "Z")
+    if not started_at <= decision_at <= completed_at:
+        fail("fault injector returned a Canister decision outside its execution interval")
+    reject_secret_material(injector_result)
+    injector_digest = hashlib.sha256(result.stdout.encode()).hexdigest()
+    parsed = {
+        "schema_version": 1, "rehearsal_id": request_config["rehearsal_id"], "scenario": scenario,
+        "run_reference": run_reference, "configured_provider_count": 3, "required_threshold": 2,
+        "failed_provider_count": len(failed_indices), "failed_provider_indices": failed_indices,
+        "provider_url_digests": request_config["provider_url_digests"], "failure_rule": request_config["failure_rule"],
+        "started_at": started_at, "completed_at": completed_at,
+        "restored_provider_indices": injector_result["restored_provider_indices"],
+        "injector_output_digest": injector_digest, "request_config_digest": request_digest,
+        "decision_sequence": injector_result["decision_sequence"],
+        "decision_timestamp_ns": injector_result["decision_timestamp_ns"],
+        "decision_digest": hashlib.sha256(json.dumps(injector_result["canister_decision"], sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+    }
+    stdout = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+    artifact = {"schema_version": 1, "scenario": scenario, "kind": "fault", "captured_at": completed_at,
+        "tool": "fault-injection-recorder", "argv": [request_digest, injector_digest], "exit_code": 0,
+        "stdout_sha256": hashlib.sha256(stdout.encode()).hexdigest(), "stdout": stdout, "parsed": parsed, "transport": None}
+    write_json(output, artifact)
+
+
 def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, Any]) -> None:
     if scenario == "preflight":
         exact_keys(
@@ -723,6 +1020,7 @@ def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, 
                 "cycles_balance",
                 "base_sepolia_eth_balance_wei",
                 "configured_rpc_url_sha256",
+                "bridge_canister_module_sha256",
             },
             "preflight.details",
         )
@@ -730,6 +1028,8 @@ def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, 
             fail("preflight observed the wrong chain")
         if details["observed_evm_rpc_canister_id"] != OFFICIAL_EVM_RPC_CANISTER_ID:
             fail("preflight observed the wrong EVM RPC Canister")
+        if details["bridge_canister_module_sha256"] != binding["bridge_canister_wasm_sha256"]:
+            fail("preflight Bridge Canister module hash does not match the reviewed release")
         require_hex(details, "observed_bridge_contract", HEX_20)
         require_hex(details, "base_bridge_signer", HEX_20)
         require_hex(details, "canister_chain_key_signer", HEX_20)
@@ -817,18 +1117,34 @@ def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, 
         return
 
     if scenario == "single_provider_failure":
-        exact_keys(details, {"configured_provider_count", "agreeing_provider_count", "bridge_operation_continued"}, "single_provider_failure.details")
-        if details != {"configured_provider_count": 3, "agreeing_provider_count": 2, "bridge_operation_continued": True}:
-            fail("single-provider failure must demonstrate successful 2-of-3 continuation")
+        exact_keys(details, {"configured_provider_count", "required_provider_threshold", "injected_provider_failures", "fault_injection_reference", "threshold_satisfied", "bridge_operation_continued"}, "single_provider_failure.details")
+        configured = require_nat(details, "configured_provider_count", positive=True)
+        required = require_nat(details, "required_provider_threshold", positive=True)
+        injected = require_nat(details, "injected_provider_failures", positive=True)
+        if (
+            configured != 3
+            or required != 2
+            or injected != 1
+            or not isinstance(details["fault_injection_reference"], str)
+            or not details["fault_injection_reference"]
+            or details["threshold_satisfied"] is not True
+            or details["bridge_operation_continued"] is not True
+        ):
+            fail("single-provider failure must demonstrate threshold-certified continuation")
         return
 
     if scenario == "quorum_loss":
-        exact_keys(details, {"configured_provider_count", "agreeing_provider_count", "fail_closed", "stop_reason", "ledger_call_performed"}, "quorum_loss.details")
+        exact_keys(details, {"configured_provider_count", "required_provider_threshold", "injected_provider_failures", "fault_injection_reference", "threshold_satisfied", "fail_closed", "stop_reason", "ledger_call_performed"}, "quorum_loss.details")
+        configured = require_nat(details, "configured_provider_count", positive=True)
+        required = require_nat(details, "required_provider_threshold", positive=True)
+        injected = require_nat(details, "injected_provider_failures", positive=True)
         if (
-            details["configured_provider_count"] != 3
-            or not isinstance(details["agreeing_provider_count"], int)
-            or isinstance(details["agreeing_provider_count"], bool)
-            or details["agreeing_provider_count"] >= 2
+            configured != 3
+            or required != 2
+            or injected < 2
+            or not isinstance(details["fault_injection_reference"], str)
+            or not details["fault_injection_reference"]
+            or details["threshold_satisfied"] is not False
             or details["fail_closed"] is not True
             or details["stop_reason"] not in ("RpcInconsistent", "RpcUnavailable")
             or details["ledger_call_performed"] is not False
@@ -956,10 +1272,17 @@ def parse_args() -> argparse.Namespace:
     capture.add_argument("manifest", type=Path)
     capture.add_argument("config", type=Path)
     capture.add_argument("scenario", choices=SCENARIOS)
-    capture.add_argument("kind", choices=("bridge", "base", "ledger", "audit"))
+    capture.add_argument("kind", choices=("bridge", "base", "ledger", "audit", "module"))
     capture.add_argument("output", type=Path)
     capture.add_argument("provider_selection", help="0..2 for Base capture; 'none' for dfx")
     capture.add_argument("capture_argv", nargs=argparse.REMAINDER)
+    fault = subparsers.add_parser("capture-fault")
+    fault.add_argument("manifest", type=Path)
+    fault.add_argument("config", type=Path)
+    fault.add_argument("scenario", choices=("single_provider_failure", "quorum_loss"))
+    fault.add_argument("output", type=Path)
+    fault.add_argument("run_reference")
+    fault.add_argument("capture_argv", nargs=argparse.REMAINDER)
     verify = subparsers.add_parser("verify")
     verify.add_argument("manifest", type=Path)
     return parser.parse_args()
@@ -1007,6 +1330,12 @@ def main() -> int:
                 provider_index,
             )
             print(f"captured {args.kind} artifact at {args.output}")
+        elif args.command == "capture-fault":
+            command = args.capture_argv[1:] if args.capture_argv[:1] == ["--"] else args.capture_argv
+            manifest = load_object(args.manifest)
+            validate_manifest_envelope(manifest)
+            capture_fault_artifact(manifest, load_object(args.config), args.scenario, args.output, args.run_reference, command)
+            print(f"captured fault artifact at {args.output}")
         elif args.command == "verify":
             manifest = load_object(args.manifest)
             verify_manifest(manifest, args.manifest.resolve().parent)

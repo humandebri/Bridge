@@ -119,6 +119,31 @@ def main() -> int:
         print("fee payout progress must use update_fee_payout_scan", file=sys.stderr)
         return 1
     storage = SOURCE.read_text(encoding="utf-8")
+    for function_name in ("put_deposit", "put_withdrawal", "put_reconciliation_hold"):
+        start = storage.index(f"fn {function_name}(")
+        body = closure(storage, start)
+        if "self.handle.update(|connection|" not in body:
+            print(
+                f"{SOURCE}: {function_name} must commit record, indexes, and counters in one SQLite transaction",
+                file=sys.stderr,
+            )
+            return 1
+        for token in (
+            "self.deposits.insert(",
+            "self.withdrawals.insert(",
+            "self.reconciliation_holds.insert(",
+            "self.pull_pending_deposit_index.insert(",
+            "self.release_pending_withdrawal_index.insert(",
+            "self.open_hold_index.insert(",
+            "self.operation_owner_index.insert(",
+            "self.counters.set(",
+        ):
+            if token in body:
+                print(
+                    f"{SOURCE}: {function_name} uses forbidden sequential write {token}",
+                    file=sys.stderr,
+                )
+                return 1
     for function_name in ("persist_resolved_deposit_and_hold", "persist_resolved_withdrawal_and_hold"):
         start = storage.index(f"fn {function_name}(")
         body = closure(storage, start)

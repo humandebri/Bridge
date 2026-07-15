@@ -28,7 +28,7 @@ contract TimelockCandidateFixture {
 contract BridgeAdministrationTest is TestBase {
     address private constant BRIDGE_SIGNER = address(0x11);
     address private constant RUNTIME_ADMINISTRATOR = address(0x22);
-    address private constant BASE_ADMIN_TIMELOCK = address(0x33);
+    address private BASE_ADMIN_TIMELOCK;
     address private constant USER = address(0x44);
     address private constant OUTSIDER = address(0x55);
     address private constant NEW_BRIDGE_SIGNER = address(0x66);
@@ -54,7 +54,8 @@ contract BridgeAdministrationTest is TestBase {
     IBSNS private token;
 
     function setUp() public {
-        NEW_TIMELOCK = address(new TimelockCandidateFixture(72 hours, true));
+        BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
+        NEW_TIMELOCK = _deployTestTimelock(address(0x34));
         bridge = new Bridge(
             "kinic",
             "KINIC",
@@ -62,6 +63,7 @@ contract BridgeAdministrationTest is TestBase {
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
             PER_DEPOSIT_LIMIT,
             WINDOW_LIMIT,
             WINDOW_DURATION,
@@ -83,6 +85,7 @@ contract BridgeAdministrationTest is TestBase {
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
             PER_DEPOSIT_LIMIT,
             WINDOW_LIMIT,
             WINDOW_DURATION,
@@ -281,19 +284,52 @@ contract BridgeAdministrationTest is TestBase {
         vm.stopPrank();
     }
 
-    function testTimelockRotationRejectsEoaShortDelayAndMissingSelfAdmin() public {
+    function testConstructorRejectsUnapprovedInitialTimelock() public {
+        vm.expectRevert(abi.encodeWithSelector(IBridge.TimelockCandidateHasNoCode.selector, OUTSIDER));
+        new Bridge(
+            "kinic",
+            "KINIC",
+            8,
+            BRIDGE_SIGNER,
+            RUNTIME_ADMINISTRATOR,
+            OUTSIDER,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
+            PER_DEPOSIT_LIMIT,
+            WINDOW_LIMIT,
+            WINDOW_DURATION,
+            MAX_SERVICE_FEE,
+            SERVICE_FEE
+        );
+
+        address spoof = address(new TimelockCandidateFixture(72 hours, true));
+        vm.expectPartialRevert(IBridge.TimelockCandidateCodeHashMismatch.selector);
+        new Bridge(
+            "kinic",
+            "KINIC",
+            8,
+            BRIDGE_SIGNER,
+            RUNTIME_ADMINISTRATOR,
+            spoof,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
+            PER_DEPOSIT_LIMIT,
+            WINDOW_LIMIT,
+            WINDOW_DURATION,
+            MAX_SERVICE_FEE,
+            SERVICE_FEE
+        );
+    }
+
+    function testTimelockRotationRejectsEoaAndInterfaceSpoofs() public {
         vm.startPrank(BASE_ADMIN_TIMELOCK);
         vm.expectRevert(abi.encodeWithSelector(IBridge.TimelockCandidateHasNoCode.selector, OUTSIDER));
         bridge.rotateBaseAdminTimelock(OUTSIDER);
 
         address shortDelay = address(new TimelockCandidateFixture(72 hours - 1, true));
-        vm.expectRevert(
-            abi.encodeWithSelector(IBridge.TimelockCandidateDelayTooShort.selector, shortDelay, 72 hours - 1, 72 hours)
-        );
+        vm.expectPartialRevert(IBridge.TimelockCandidateCodeHashMismatch.selector);
         bridge.rotateBaseAdminTimelock(shortDelay);
 
         address missingSelfAdmin = address(new TimelockCandidateFixture(72 hours, false));
-        vm.expectRevert(abi.encodeWithSelector(IBridge.TimelockCandidateMissingSelfAdmin.selector, missingSelfAdmin));
+        vm.expectPartialRevert(IBridge.TimelockCandidateCodeHashMismatch.selector);
         bridge.rotateBaseAdminTimelock(missingSelfAdmin);
         vm.stopPrank();
         assert(bridge.baseAdminTimelock() == BASE_ADMIN_TIMELOCK);

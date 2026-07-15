@@ -19,8 +19,10 @@ contract BridgeTimelockTest is TestBase {
 
     Bridge private bridge;
     BridgeTimelockController private timelock;
+    uint256 private currentTimestamp;
 
     function setUp() public {
+        currentTimestamp = block.timestamp;
         address[] memory proposers = new address[](1);
         proposers[0] = BASE_ADMIN_WALLET;
         address[] memory executors = new address[](1);
@@ -29,7 +31,18 @@ contract BridgeTimelockTest is TestBase {
         cancellers[0] = CANCELLER;
         timelock = new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
         bridge = new Bridge(
-            "kinic", "KINIC", 8, BRIDGE_SIGNER, RUNTIME_ADMINISTRATOR, address(timelock), 1_000, 2_000, 1 hours, 100, 10
+            "kinic",
+            "KINIC",
+            8,
+            BRIDGE_SIGNER,
+            RUNTIME_ADMINISTRATOR,
+            address(timelock),
+            _timelockCodeHash(address(timelock)),
+            1_000,
+            2_000,
+            1 hours,
+            100,
+            10
         );
     }
 
@@ -76,7 +89,7 @@ contract BridgeTimelockTest is TestBase {
         vm.prank(BASE_ADMIN_WALLET);
         timelock.execute(address(bridge), 0, data, bytes32(0), salt);
 
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        _advanceTime(TIMELOCK_DELAY);
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, OUTSIDER, executorRole)
         );
@@ -111,7 +124,7 @@ contract BridgeTimelockTest is TestBase {
         vm.prank(CANCELLER);
         timelock.cancel(operationId);
 
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        _advanceTime(TIMELOCK_DELAY);
         vm.expectPartialRevert(TimelockController.TimelockUnexpectedOperationState.selector);
         vm.prank(BASE_ADMIN_WALLET);
         timelock.execute(address(bridge), 0, data, bytes32(0), salt);
@@ -139,9 +152,17 @@ contract BridgeTimelockTest is TestBase {
             abi.encodeWithSelector(BridgeTimelockController.ZeroRoleMember.selector, timelock.EXECUTOR_ROLE())
         );
         new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
+
+        executors[0] = OUTSIDER;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                BridgeTimelockController.MinimumDelayTooShort.selector, TIMELOCK_DELAY - 1, TIMELOCK_DELAY
+            )
+        );
+        new BridgeTimelockController(TIMELOCK_DELAY - 1, proposers, cancellers, executors);
     }
 
-    function testDelayAndRoleChangesRequireTimelockSelfCall() public {
+    function testDelayCannotBeReducedBelowPermanentMinimum() public {
         bytes32 defaultAdminRole = timelock.DEFAULT_ADMIN_ROLE();
         bytes32 executorRole = timelock.EXECUTOR_ROLE();
         vm.expectRevert(
@@ -149,6 +170,18 @@ contract BridgeTimelockTest is TestBase {
         );
         vm.prank(BASE_ADMIN_WALLET);
         timelock.updateDelay(24 hours);
+        bytes memory delayData = abi.encodeCall(TimelockController.updateDelay, (24 hours));
+        bytes32 delaySalt = keccak256("delay");
+        vm.prank(BASE_ADMIN_WALLET);
+        timelock.schedule(address(timelock), 0, delayData, bytes32(0), delaySalt, TIMELOCK_DELAY);
+        _advanceTime(TIMELOCK_DELAY);
+        vm.expectRevert(
+            abi.encodeWithSelector(BridgeTimelockController.MinimumDelayTooShort.selector, 24 hours, TIMELOCK_DELAY)
+        );
+        vm.prank(BASE_ADMIN_WALLET);
+        timelock.execute(address(timelock), 0, delayData, bytes32(0), delaySalt);
+        assert(timelock.getMinDelay() == TIMELOCK_DELAY);
+
         vm.expectRevert(
             abi.encodeWithSelector(
                 IAccessControl.AccessControlUnauthorizedAccount.selector, BASE_ADMIN_WALLET, defaultAdminRole
@@ -156,23 +189,65 @@ contract BridgeTimelockTest is TestBase {
         );
         vm.prank(BASE_ADMIN_WALLET);
         timelock.grantRole(executorRole, OUTSIDER);
+    }
 
-        bytes memory delayData = abi.encodeCall(TimelockController.updateDelay, (24 hours));
-        bytes32 delaySalt = keccak256("delay");
+    function testDelayCanIncreaseThroughNormalTimelockExecution() public {
+        uint256 increasedDelay = TIMELOCK_DELAY + 1 days;
+        bytes memory data = abi.encodeCall(TimelockController.updateDelay, (increasedDelay));
+        bytes32 salt = keccak256("increase-delay");
         vm.prank(BASE_ADMIN_WALLET);
-        timelock.schedule(address(timelock), 0, delayData, bytes32(0), delaySalt, TIMELOCK_DELAY);
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        timelock.schedule(address(timelock), 0, data, bytes32(0), salt, TIMELOCK_DELAY);
+        _advanceTime(TIMELOCK_DELAY);
         vm.prank(BASE_ADMIN_WALLET);
-        timelock.execute(address(timelock), 0, delayData, bytes32(0), delaySalt);
-        assert(timelock.getMinDelay() == 24 hours);
+        timelock.execute(address(timelock), 0, data, bytes32(0), salt);
+        assert(timelock.getMinDelay() == increasedDelay);
+    }
 
-        bytes memory roleData = abi.encodeCall(IAccessControl.grantRole, (executorRole, OUTSIDER));
-        bytes32 roleSalt = keccak256("role");
+    function testRoleSetIsFrozenAfterConstruction() public {
+        bytes32 executorRole = timelock.EXECUTOR_ROLE();
+        bytes memory grantExecutor = abi.encodeCall(IAccessControl.grantRole, (executorRole, OUTSIDER));
+        _executeRoleMutationAndExpectFrozen(grantExecutor, keccak256("grant-executor"), executorRole, OUTSIDER);
+
+        bytes32 proposerRole = timelock.PROPOSER_ROLE();
+        bytes memory revokeProposer = abi.encodeCall(IAccessControl.revokeRole, (proposerRole, BASE_ADMIN_WALLET));
+        _executeRoleMutationAndExpectFrozen(
+            revokeProposer, keccak256("revoke-proposer"), proposerRole, BASE_ADMIN_WALLET
+        );
+
+        bytes32 defaultAdminRole = timelock.DEFAULT_ADMIN_ROLE();
+        bytes memory revokeSelfAdmin = abi.encodeCall(IAccessControl.revokeRole, (defaultAdminRole, address(timelock)));
+        _executeRoleMutationAndExpectFrozen(
+            revokeSelfAdmin, keccak256("revoke-self-admin"), defaultAdminRole, address(timelock)
+        );
+
+        bytes32 cancellerRole = timelock.CANCELLER_ROLE();
+        vm.expectRevert(
+            abi.encodeWithSelector(BridgeTimelockController.RoleSetFrozen.selector, cancellerRole, CANCELLER)
+        );
+        vm.prank(CANCELLER);
+        timelock.renounceRole(cancellerRole, CANCELLER);
+
+        assert(!timelock.hasRole(executorRole, OUTSIDER));
+        assert(timelock.hasRole(proposerRole, BASE_ADMIN_WALLET));
+        assert(timelock.hasRole(defaultAdminRole, address(timelock)));
+        assert(timelock.hasRole(cancellerRole, CANCELLER));
+    }
+
+    function _executeRoleMutationAndExpectFrozen(bytes memory data, bytes32 salt, bytes32 role, address account)
+        private
+    {
         vm.prank(BASE_ADMIN_WALLET);
-        timelock.schedule(address(timelock), 0, roleData, bytes32(0), roleSalt, 24 hours);
-        vm.warp(block.timestamp + 24 hours);
+        timelock.schedule(address(timelock), 0, data, bytes32(0), salt, TIMELOCK_DELAY);
+        _advanceTime(TIMELOCK_DELAY);
+        vm.expectRevert(abi.encodeWithSelector(BridgeTimelockController.RoleSetFrozen.selector, role, account));
         vm.prank(BASE_ADMIN_WALLET);
-        timelock.execute(address(timelock), 0, roleData, bytes32(0), roleSalt);
-        assert(timelock.hasRole(executorRole, OUTSIDER));
+        timelock.execute(address(timelock), 0, data, bytes32(0), salt);
+    }
+
+    function _advanceTime(uint256 seconds_) private {
+        // Track the mocked time explicitly because via-IR may treat
+        // block.timestamp as invariant within a single test transaction.
+        currentTimestamp += seconds_;
+        vm.warp(currentTimestamp);
     }
 }

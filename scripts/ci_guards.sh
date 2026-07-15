@@ -104,3 +104,27 @@ verify_live_evm_rpc_rehearsal_sources() {
     return 1
   fi
 }
+
+verify_no_obsolete_withdrawal_terms() {
+  if [[ "$#" -eq 0 ]]; then
+    echo "no protocol documentation supplied" >&2
+    return 1
+  fi
+  if rg -n \
+    '\bbeginRelease\b|canonical finalized|finalized (receipt|state|block|chain|Bridge event)' \
+    "$@" --glob '*.md'; then
+    echo "obsolete Withdrawal confirmation terminology found" >&2
+    return 1
+  fi
+}
+
+verify_lean_no_proof_escape() {
+  if [[ "$#" -eq 0 ]]; then
+    echo "no Lean proof source supplied" >&2
+    return 1
+  fi
+  if rg -n '\b(sorry|admit)\b' "$@" --glob '*.lean'; then
+    echo "forbidden Lean proof escape found" >&2
+    return 1
+  fi
+}

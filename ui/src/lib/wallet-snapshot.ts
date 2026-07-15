@@ -25,3 +25,16 @@ export function sameIcAccount(left: IcAccount, right: IcAccount): boolean {
   return leftSubaccount.length === rightSubaccount.length && leftSubaccount.every((byte, index) => byte === rightSubaccount[index])
 }
 
+export function requireWalletSnapshot(
+  expected: { address: `0x${string}`; chainId: number; icAccount: IcAccount },
+  current: { address: `0x${string}`; chainId: number; icAccount: IcAccount },
+  context = "during confirmation",
+): void {
+  if (
+    current.chainId !== expected.chainId
+    || current.address.toLowerCase() !== expected.address.toLowerCase()
+    || !sameIcAccount(current.icAccount, expected.icAccount)
+  ) {
+    throw new Error(`A connected account or chain changed ${context}; review and submit again`)
+  }
+}

@@ -93,6 +93,7 @@ struct Monitoring {
 #[serde(deny_unknown_fields)]
 struct Timelock {
     address: String,
+    runtime_code_hash: String,
     minimum_delay_seconds: u64,
     proposer: String,
     canceller: String,
@@ -220,9 +221,16 @@ struct GateAReceipt {
     release_id: String,
     source_revision: String,
     source_tree_sha256: String,
-    profile_sha256: String,
+    gate_a_profile_sha256: String,
+    post_deploy_profile_sha256: String,
     bridge_canister_wasm_sha256: String,
     bridge_runtime_bytecode_sha256: String,
+    bridge_deployment_transaction_hash: String,
+    bridge_deployment_block_number: u64,
+    bridge_deployment_block_hash: String,
+    timelock_deployment_transaction_hash: String,
+    timelock_deployment_block_number: u64,
+    timelock_deployment_block_hash: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -249,6 +257,8 @@ struct SignerSnapshot {
     bridge_canister_wasm_sha256: String,
     bridge_canister_id: String,
     timelock_address: String,
+    timelock_runtime_code_hash: String,
+    bridge_approved_timelock_runtime_code_hash: String,
     timelock_minimum_delay_seconds: u64,
     timelock_self_admin: bool,
     timelock_proposer: String,
@@ -261,6 +271,13 @@ struct SignerSnapshot {
     timelock_open_executor: bool,
     timelock_open_canceller: bool,
     timelock_external_admins_absent: bool,
+    timelock_roles_exact: bool,
+    bridge_deployment_transaction_hash: String,
+    bridge_deployment_block_number: u64,
+    bridge_deployment_block_hash: String,
+    timelock_deployment_transaction_hash: String,
+    timelock_deployment_block_number: u64,
+    timelock_deployment_block_hash: String,
     bsns_address: String,
     bsns_runtime_bytecode_sha256: String,
     bsns_name: String,
@@ -487,9 +504,8 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
             .rpc_providers
             .iter()
             .any(|provider| provider.url.eq_ignore_ascii_case(&profile.base_rpc_url))
-        || profile.deployment_block == 0
     {
-        return Err("invalid release endpoint or planned deployment binding".into());
+        return Err("invalid release endpoint".into());
     }
     if profile.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER {
         return Err("profile must bind the official EVM RPC canister ID".into());
@@ -548,7 +564,11 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     if unique.len() != addresses.len() {
         return Err("EVM roles must be distinct".into());
     }
-    if profile.timelock.minimum_delay_seconds < 72 * 60 * 60
+    if !valid_hash32(&profile.timelock.runtime_code_hash)
+        || profile.timelock.runtime_code_hash[2..]
+            .bytes()
+            .all(|byte| byte == b'0')
+        || profile.timelock.minimum_delay_seconds < 72 * 60 * 60
         || profile.timelock.external_admins != 0
         || !profile
             .timelock
@@ -773,7 +793,7 @@ fn render_release_inputs(
     let constructors = serde_json::json!({
         "bridge": [
             "KINIC", "KINIC", profile.decimals.to_string(), profile.expected_bridge_signer,
-            profile.runtime_administrator, profile.timelock.address,
+            profile.runtime_administrator, profile.timelock.address, profile.timelock.runtime_code_hash,
             profile.parameters.per_deposit_limit.to_string(),
             profile.parameters.mint_throughput_limit.to_string(),
             profile.parameters.mint_window_duration_seconds.to_string(),
@@ -1057,12 +1077,6 @@ fn validate_rpc_rehearsal(bundle: &ValidatedBundle) -> Result<(), String> {
             }
         }
     }
-    let profile_url_hashes = bundle
-        .profile
-        .rpc_providers
-        .iter()
-        .map(|provider| hex(&Sha256::digest(provider.url.as_bytes())))
-        .collect::<BTreeSet<_>>();
     let rehearsal_url_hashes = value
         .pointer("/binding/rpc_endpoints")
         .and_then(Value::as_array)
@@ -1071,8 +1085,8 @@ fn validate_rpc_rehearsal(bundle: &ValidatedBundle) -> Result<(), String> {
         .filter_map(|endpoint| endpoint.get("url_sha256").and_then(Value::as_str))
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    if profile_url_hashes != rehearsal_url_hashes {
-        return Err("rehearsal RPC URLs do not match the release profile".into());
+    if rehearsal_url_hashes.len() != 3 {
+        return Err("rehearsal must bind three distinct Base Sepolia RPC URLs".into());
     }
     if value.pointer("/complete") != Some(&Value::Bool(true))
         || string("/state")? != "COMPLETE"
@@ -1266,6 +1280,13 @@ fn validate_bundle(root: &Path, require_approval: bool) -> Result<ValidatedBundl
     }
     let profile: Profile = read_json(&root.join("profile.json"))?;
     validate_profile(&profile, !manifest.test_only)?;
+    if require_approval {
+        if profile.deployment_block == 0 {
+            return Err("Gate B profile must bind the actual Bridge deployment block".into());
+        }
+    } else if profile.deployment_block != 0 {
+        return Err("Gate A profile must leave deployment_block unbound until deployment".into());
+    }
     let wasm_hash = artifacts["bridge-canister.wasm"].sha256.as_str();
     let bytecode_hash = artifacts["bridge-runtime.bin"].sha256.as_str();
     if !wasm_hash.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
@@ -1276,6 +1297,9 @@ fn validate_bundle(root: &Path, require_approval: bool) -> Result<ValidatedBundl
     if require_approval {
         let receipt: GateAReceipt = read_json(&root.join("gate-a-receipt.json"))?;
         let profile_hash = artifacts["profile.json"].sha256.as_str();
+        let mut gate_a_profile = profile.clone();
+        gate_a_profile.deployment_block = 0;
+        let expected_gate_a_profile_hash = hex(&canonical_sha256(&gate_a_profile)?);
         if !receipt.gate_a_manifest_sha256.eq_ignore_ascii_case(
             manifest
                 .parent_gate_a_manifest_sha256
@@ -1286,13 +1310,25 @@ fn validate_bundle(root: &Path, require_approval: bool) -> Result<ValidatedBundl
             || !receipt
                 .source_tree_sha256
                 .eq_ignore_ascii_case(&manifest.source_tree_sha256)
-            || !receipt.profile_sha256.eq_ignore_ascii_case(profile_hash)
+            || !receipt
+                .post_deploy_profile_sha256
+                .eq_ignore_ascii_case(profile_hash)
+            || !receipt
+                .gate_a_profile_sha256
+                .eq_ignore_ascii_case(&expected_gate_a_profile_hash)
             || !receipt
                 .bridge_canister_wasm_sha256
                 .eq_ignore_ascii_case(wasm_hash)
             || !receipt
                 .bridge_runtime_bytecode_sha256
                 .eq_ignore_ascii_case(bytecode_hash)
+            || !valid_hash32(&receipt.bridge_deployment_transaction_hash)
+            || !valid_hash32(&receipt.bridge_deployment_block_hash)
+            || !valid_hash32(&receipt.timelock_deployment_transaction_hash)
+            || !valid_hash32(&receipt.timelock_deployment_block_hash)
+            || receipt.bridge_deployment_block_number != profile.deployment_block
+            || receipt.timelock_deployment_block_number == 0
+            || receipt.timelock_deployment_block_number > receipt.bridge_deployment_block_number
         {
             return Err("Gate B evidence is not bound to the Gate A release".into());
         }
@@ -1369,6 +1405,7 @@ fn validate_bundle(root: &Path, require_approval: bool) -> Result<ValidatedBundl
 
 fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
     let snapshot: SignerSnapshot = read_json(&bundle.root.join("signer-snapshot.json"))?;
+    let receipt: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
     let now = now_unix()?;
     validate_evidence_time(
         snapshot.observed_at_unix,
@@ -1423,6 +1460,13 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
         || !snapshot
             .timelock_address
             .eq_ignore_ascii_case(&bundle.profile.timelock.address)
+        || !valid_hash32(&snapshot.timelock_runtime_code_hash)
+        || !snapshot
+            .timelock_runtime_code_hash
+            .eq_ignore_ascii_case(&bundle.profile.timelock.runtime_code_hash)
+        || !snapshot
+            .bridge_approved_timelock_runtime_code_hash
+            .eq_ignore_ascii_case(&bundle.profile.timelock.runtime_code_hash)
         || snapshot.timelock_minimum_delay_seconds < 72 * 60 * 60
         || !snapshot.timelock_self_admin
         || !snapshot
@@ -1441,6 +1485,21 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
         || snapshot.timelock_open_executor
         || snapshot.timelock_open_canceller
         || !snapshot.timelock_external_admins_absent
+        || !snapshot.timelock_roles_exact
+        || !snapshot
+            .bridge_deployment_transaction_hash
+            .eq_ignore_ascii_case(&receipt.bridge_deployment_transaction_hash)
+        || snapshot.bridge_deployment_block_number != receipt.bridge_deployment_block_number
+        || !snapshot
+            .bridge_deployment_block_hash
+            .eq_ignore_ascii_case(&receipt.bridge_deployment_block_hash)
+        || !snapshot
+            .timelock_deployment_transaction_hash
+            .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
+        || snapshot.timelock_deployment_block_number != receipt.timelock_deployment_block_number
+        || !snapshot
+            .timelock_deployment_block_hash
+            .eq_ignore_ascii_case(&receipt.timelock_deployment_block_hash)
         || !snapshot
             .bsns_address
             .eq_ignore_ascii_case(&bundle.profile.bsns_contract)
@@ -1575,7 +1634,7 @@ mod tests {
             decimals: 8,
             bridge_canister_id: test_principal(9),
             ic_host: "https://icp-api.io".into(),
-            base_rpc_url: "https://one.example/rpc".into(),
+            base_rpc_url: "https://prod-one.example/base-mainnet".into(),
             bridge_contract: address(1),
             bsns_contract: address(8),
             deployment_block: 1,
@@ -1590,6 +1649,7 @@ mod tests {
             base_admin_wallet: address(4),
             timelock: Timelock {
                 address: address(5),
+                runtime_code_hash: format!("0x{}", "ab".repeat(32)),
                 minimum_delay_seconds: 259_200,
                 proposer: address(4),
                 canceller: address(6),
@@ -1601,13 +1661,13 @@ mod tests {
             fee_recipient: test_principal(4),
             rpc_providers: vec![
                 RpcProvider {
-                    url: "https://one.example/rpc".into(),
+                    url: "https://prod-one.example/base-mainnet".into(),
                 },
                 RpcProvider {
-                    url: "https://two.example/rpc".into(),
+                    url: "https://prod-two.example/base-mainnet".into(),
                 },
                 RpcProvider {
-                    url: "https://three.example/rpc".into(),
+                    url: "https://prod-three.example/base-mainnet".into(),
                 },
             ],
             monitoring: Monitoring {
@@ -1695,6 +1755,9 @@ mod tests {
         let mut profile = valid_profile();
         profile.release_approver = profile.expected_bridge_signer.clone();
         assert!(validate_profile(&profile, true).is_err());
+        let mut profile = valid_profile();
+        profile.timelock.runtime_code_hash = format!("0x{}", "00".repeat(32));
+        assert!(validate_profile(&profile, true).is_err());
     }
 
     #[test]
@@ -1769,6 +1832,11 @@ mod tests {
         let canister: Value = read_json(&first.join("canister-init.json")).unwrap();
         assert_eq!(canister["evm_rpc_canister_id"], OFFICIAL_EVM_RPC_CANISTER);
         assert_eq!(canister["install_paused"], true);
+        let constructors: Value = read_json(&first.join("contract-constructor-args.json")).unwrap();
+        assert_eq!(
+            constructors["bridge"][6],
+            valid_profile().timelock.runtime_code_hash
+        );
         let ui: Value = read_json(&first.join("ui-runtime-profile.json")).unwrap();
         assert_eq!(ui["evmRpcCanisterId"], OFFICIAL_EVM_RPC_CANISTER);
         assert_eq!(
@@ -1776,7 +1844,7 @@ mod tests {
             format!(
                 "0x{}",
                 hex(&Sha256::digest(
-                    br#"["https://one.example/rpc","https://two.example/rpc","https://three.example/rpc"]"#
+                    br#"["https://prod-one.example/base-mainnet","https://prod-two.example/base-mainnet","https://prod-three.example/base-mainnet"]"#
                 ))
             )
         );
@@ -1827,6 +1895,7 @@ mod tests {
         profile.timelock.executor = profile.base_admin_wallet.clone();
         profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(b"wasm"));
         profile.bridge_runtime_bytecode_sha256 = hex(&Sha256::digest(b"runtime"));
+        profile.deployment_block = 0;
         let controller = profile.root_canister_id.clone();
         let chain_key_approval = sign_approval(
             &bridge_key,
@@ -1862,6 +1931,8 @@ mod tests {
             bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
             bridge_canister_id: profile.bridge_canister_id.clone(),
             timelock_address: profile.timelock.address.clone(),
+            timelock_runtime_code_hash: profile.timelock.runtime_code_hash.clone(),
+            bridge_approved_timelock_runtime_code_hash: profile.timelock.runtime_code_hash.clone(),
             timelock_minimum_delay_seconds: 259_200,
             timelock_self_admin: true,
             timelock_proposer: profile.timelock.proposer.clone(),
@@ -1874,6 +1945,13 @@ mod tests {
             timelock_open_executor: false,
             timelock_open_canceller: false,
             timelock_external_admins_absent: true,
+            timelock_roles_exact: true,
+            bridge_deployment_transaction_hash: format!("0x{}", "aa".repeat(32)),
+            bridge_deployment_block_number: 1,
+            bridge_deployment_block_hash: format!("0x{}", "cc".repeat(32)),
+            timelock_deployment_transaction_hash: format!("0x{}", "bb".repeat(32)),
+            timelock_deployment_block_number: 1,
+            timelock_deployment_block_hash: format!("0x{}", "dd".repeat(32)),
             bsns_address: profile.bsns_contract.clone(),
             bsns_runtime_bytecode_sha256: profile.bsns_runtime_bytecode_sha256.clone(),
             bsns_name: "KINIC".into(),
@@ -1953,13 +2031,17 @@ m.SIGNER=sys.argv[3]; m.SHA_A=sys.argv[4]; m.SHA_B=sys.argv[5]; binding=m.rehear
 root=Path(sys.argv[2]).parent; tool=root/'tool'
 os.environ['PATH']=str(root)+os.pathsep+os.environ.get('PATH','')
 for scenario,item in m.all_evidence(binding).items():
- payload=json.dumps(item['details'],separators=(',',':')); tool.write_text("#!/bin/sh\nprintf '%s' '"+payload+"'\n"); tool.chmod(0o755)
+ fault_fields={'configured_provider_count','required_provider_threshold','injected_provider_failures','fault_injection_reference'}; command_details={k:v for k,v in item['details'].items() if scenario not in {'single_provider_failure','quorum_loss'} or k not in fault_fields}; payload=json.dumps({**command_details,'canister_audit':item['canister_audit'],'canister_decision':item['canister_decision']},separators=(',',':')); tool.write_text("#!/bin/sh\nprintf '%s' '"+payload+"'\n"); tool.chmod(0o755)
  for reference in item['artifacts']:
-  kind=reference['kind']; executable=root/('cast' if kind=='base' else 'dfx')
+  kind=reference['kind']; output=root/reference['path']
+  if kind=='fault':
+   m.write_fault_artifact(item,scenario,output); reference['sha256']=m.rehearsal.hashlib.sha256(output.read_bytes()).hexdigest(); continue
+  executable=root/('cast' if kind=='base' else 'dfx')
   if kind=='base': executable.write_text("#!/bin/sh\nif [ \"$1\" = \"chain-id\" ]; then printf '84532\\n'; else printf '%s' '"+payload+"'; fi\n")
   else: executable.write_bytes(tool.read_bytes())
-  executable.chmod(0o755); output=root/reference['path']
+  executable.chmod(0o755)
   if kind=='base': command=['cast','receipt',m.H32_A]
+  elif kind=='module': command=['dfx','canister','status',binding['bridge_canister_id'],'--network','ic','--output','json']
   else:
    method='icrc1_fee' if kind=='ledger' else ('get_audit_events' if kind=='audit' else 'get_bridge_status')
    command=['dfx','canister','call',binding['ledger_canister_id'] if kind=='ledger' else binding['bridge_canister_id'],method,'()','--network','ic','--output','json']
@@ -2045,20 +2127,63 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::to_vec(&gate_a_manifest).unwrap(),
         )
         .unwrap();
+        let planned_profile = fs::read(root.join("profile.json")).unwrap();
+        let mut premature_profile = profile.clone();
+        premature_profile.deployment_block = 1;
+        let premature_bytes = serde_json::to_vec(&premature_profile).unwrap();
+        fs::write(root.join("profile.json"), &premature_bytes).unwrap();
+        let mut premature_manifest = serde_json::to_value(&gate_a_manifest).unwrap();
+        let profile_artifact = premature_manifest["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|artifact| artifact["path"] == "profile.json")
+            .unwrap();
+        profile_artifact["sha256"] = Value::String(hex(&Sha256::digest(&premature_bytes)));
+        fs::write(
+            root.join("release-manifest.json"),
+            serde_json::to_vec(&premature_manifest).unwrap(),
+        )
+        .unwrap();
+        let premature_error = match validate_bundle(&root, false) {
+            Ok(_) => panic!("Gate A accepted a predeclared deployment block"),
+            Err(error) => error,
+        };
+        assert!(premature_error.contains("leave deployment_block unbound"));
+        fs::write(root.join("profile.json"), planned_profile).unwrap();
+        fs::write(
+            root.join("release-manifest.json"),
+            serde_json::to_vec(&gate_a_manifest).unwrap(),
+        )
+        .unwrap();
         let gate_a = validate_bundle(&root, false).unwrap();
+        let gate_a_profile_sha256 = hex(&canonical_sha256(&profile).unwrap());
+        profile.deployment_block = snapshot.bridge_deployment_block_number;
+        let post_deploy_profile = serde_json::to_vec(&profile).unwrap();
+        fs::write(root.join("profile.json"), &post_deploy_profile).unwrap();
+        let post_deploy_profile_sha256 = hex(&Sha256::digest(&post_deploy_profile));
+        artifacts
+            .iter_mut()
+            .find(|a| a.path == "profile.json")
+            .unwrap()
+            .sha256 = post_deploy_profile_sha256.clone();
         let receipt = GateAReceipt {
             gate_a_manifest_sha256: gate_a.manifest_sha256.clone(),
             release_id: "release-1".into(),
             source_revision: "a".repeat(40),
             source_tree_sha256: "2".repeat(64),
-            profile_sha256: artifacts
-                .iter()
-                .find(|a| a.path == "profile.json")
-                .unwrap()
-                .sha256
-                .clone(),
+            gate_a_profile_sha256,
+            post_deploy_profile_sha256,
             bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
             bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
+            bridge_deployment_transaction_hash: snapshot.bridge_deployment_transaction_hash.clone(),
+            bridge_deployment_block_number: snapshot.bridge_deployment_block_number,
+            bridge_deployment_block_hash: snapshot.bridge_deployment_block_hash.clone(),
+            timelock_deployment_transaction_hash: snapshot
+                .timelock_deployment_transaction_hash
+                .clone(),
+            timelock_deployment_block_number: snapshot.timelock_deployment_block_number,
+            timelock_deployment_block_hash: snapshot.timelock_deployment_block_hash.clone(),
         };
         let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
         fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();
@@ -2090,6 +2215,46 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .unwrap();
         let bundle = validate_bundle(&root, true).unwrap();
         verify_live(&bundle).unwrap();
+        let valid_profile_bytes = fs::read(root.join("profile.json")).unwrap();
+        let valid_receipt_bytes = fs::read(root.join("gate-a-receipt.json")).unwrap();
+        let valid_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
+        profile.finance_administrator = test_principal(30);
+        let drifted_profile_bytes = serde_json::to_vec(&profile).unwrap();
+        fs::write(root.join("profile.json"), &drifted_profile_bytes).unwrap();
+        let mut drifted_receipt = receipt;
+        drifted_receipt.post_deploy_profile_sha256 = hex(&Sha256::digest(&drifted_profile_bytes));
+        let drifted_receipt_bytes = serde_json::to_vec(&drifted_receipt).unwrap();
+        fs::write(root.join("gate-a-receipt.json"), &drifted_receipt_bytes).unwrap();
+        let mut drifted_manifest: ReleaseManifest =
+            serde_json::from_slice(&valid_manifest_bytes).unwrap();
+        for artifact in &mut drifted_manifest.artifacts {
+            if artifact.path == "profile.json" {
+                artifact.sha256 = hex(&Sha256::digest(&drifted_profile_bytes));
+            } else if artifact.path == "gate-a-receipt.json" {
+                artifact.sha256 = hex(&Sha256::digest(&drifted_receipt_bytes));
+            }
+        }
+        drifted_manifest.approval = Some(sign_approval(
+            &key,
+            unsigned_manifest_hash(&drifted_manifest).unwrap(),
+            profile.release_approver.clone(),
+        ));
+        fs::write(
+            root.join("release-manifest.json"),
+            serde_json::to_vec(&drifted_manifest).unwrap(),
+        )
+        .unwrap();
+        let drift_error = match validate_bundle(&root, true) {
+            Ok(_) => panic!("Gate B accepted non-deployment profile drift"),
+            Err(error) => error,
+        };
+        assert!(
+            drift_error.contains("Gate B evidence is not bound"),
+            "unexpected error: {drift_error}"
+        );
+        fs::write(root.join("profile.json"), valid_profile_bytes).unwrap();
+        fs::write(root.join("gate-a-receipt.json"), valid_receipt_bytes).unwrap();
+        fs::write(root.join("release-manifest.json"), valid_manifest_bytes).unwrap();
         let valid_rehearsal = fs::read(root.join("rpc-e2e.json")).unwrap();
         let mut incomplete: Value = serde_json::from_slice(&valid_rehearsal).unwrap();
         incomplete["complete"] = Value::Bool(false);

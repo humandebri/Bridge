@@ -101,6 +101,7 @@ interface IBridge {
     error UnauthorizedRuntimeAdministrator(address caller);
     error UnauthorizedBaseAdmin(address caller);
     error TimelockCandidateHasNoCode(address candidate);
+    error TimelockCandidateCodeHashMismatch(address candidate, bytes32 actualCodeHash, bytes32 expectedCodeHash);
     error TimelockCandidateIntrospectionFailed(address candidate);
     error TimelockCandidateDelayTooShort(address candidate, uint256 suppliedDelay, uint256 minimumDelay);
     error TimelockCandidateMissingSelfAdmin(address candidate);
@@ -132,6 +133,8 @@ interface IBridge {
     function runtimeAdministrator() external view returns (address);
 
     function baseAdminTimelock() external view returns (address);
+
+    function approvedTimelockRuntimeCodeHash() external view returns (bytes32);
 
     function serviceFee() external view returns (uint256);
 

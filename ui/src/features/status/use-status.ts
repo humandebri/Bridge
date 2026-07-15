@@ -4,7 +4,7 @@ import { createPublicClient, defineChain, http } from "viem"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { RUNTIME_VALIDATION_TTL_MS, runtimeWriteBlocker, validateRuntime, type RuntimeValidation } from "@/lib/runtime-validation"
+import { bytesHex, RUNTIME_VALIDATION_TTL_MS, runtimeWriteBlocker, validateRuntime, type RuntimeValidation } from "@/lib/runtime-validation"
 
 export function useRuntimeValidation(chainId?: number) {
   return useQuery({
@@ -61,10 +61,18 @@ export function useConfirmedBaseStatus() {
     queryFn: async () => {
       const client = baseClient()
       const address = deploymentProfile.bridgeAddress as `0x${string}`
-      const safe = await client.getBlock({ blockTag: "safe" })
-      if (safe.number === null) throw new Error("Safe Base block number is unavailable")
-      const snapshot = await client.readContract({ address, abi: bridgeAbi, functionName: "bridgeSnapshot", blockNumber: safe.number })
-      return { ...bridgeSnapshotView(snapshot), observedBlock: snapshot.blockNumber, observedTimestamp: snapshot.blockTimestamp }
+      const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
+      const status = await actor.get_bridge_status()
+      const observedHash = bytesHex(status.last_safe_base_block_hash, 32)
+      if (!observedHash || status.last_safe_base_block === 0n) throw new Error("Canister Safe block observation is unavailable")
+      const [localSafe, observedBlock] = await Promise.all([
+        client.getBlock({ blockTag: "safe" }),
+        client.getBlock({ blockHash: observedHash }),
+      ])
+      if (localSafe.number === null || localSafe.number < status.last_safe_base_block) throw new Error("Canister Safe block is ahead of the configured Base RPC Safe head")
+      if (observedBlock.number !== status.last_safe_base_block || observedBlock.hash?.toLowerCase() !== observedHash.toLowerCase()) throw new Error("Canister Safe block hash is not canonical on the configured Base RPC")
+      const snapshot = await client.readContract({ address, abi: bridgeAbi, functionName: "bridgeSnapshot", blockHash: observedHash, requireCanonical: true })
+      return { ...bridgeSnapshotView(snapshot), observedBlock: status.last_safe_base_block, observedBlockHash: observedHash, observedTimestamp: snapshot.blockTimestamp }
     },
   })
 }

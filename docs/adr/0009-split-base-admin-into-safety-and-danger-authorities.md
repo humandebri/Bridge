@@ -18,7 +18,7 @@ Base contractのMint limitとwindow長はdeploy時に固定する。Runtime Admi
 
 - Runtime AdministratorのBase側権限はpauseと`MAX_SERVICE_FEE`以内のService Fee変更に限定する。
 - Base Adminのunpauseとrole rotationはtimelock（初期値72時間）の待機を経て実行する。
-- Base Admin walletはtimelockのproposerとexecutorを担い、cancellerは独立hardware walletだけが担う。timelock遅延の短縮とrole変更もtimelock自身を経由する。
+- Base Admin walletはtimelockのproposerとexecutorを担い、cancellerは独立hardware walletだけが担う。timelock遅延の短縮は拒否し、構築後のTimelock role集合は凍結する。role変更は新Timelockの配置とBridge rotationで行う。
 - Per-Deposit Limit、Mint Throughput Limit、window長を変更するselectorは公開しない。
 - Base Admin walletはSNS Governanceの外に立つ運用主体である。ICP側の信頼主体（ADR 0008のSNS Governance）と対称でないことをUIと文書で明示する。
 - `MAX_SERVICE_FEE`などimmutableと定めた値はBase Adminでも変更できない。

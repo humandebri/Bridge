@@ -9,6 +9,15 @@ on:
       - "canister/bridge-canister/bridge.did"
       - "contracts/abi/**"
       - "contracts/src/**"
+      - "contracts/lib/openzeppelin-contracts/**"
+      - ".gitmodules"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "integration/**"
+      - "scripts/ci-local.sh"
       - ".github/workflows/ui.yml"
   push:
     paths:
@@ -18,6 +27,15 @@ on:
       - "canister/bridge-canister/bridge.did"
       - "contracts/abi/**"
       - "contracts/src/**"
+      - "contracts/lib/openzeppelin-contracts/**"
+      - ".gitmodules"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "integration/**"
+      - "scripts/ci-local.sh"
       - ".github/workflows/ui.yml"
 
 permissions:
@@ -38,6 +56,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Install Node 24.14.0
         uses: actions/setup-node@v6
@@ -107,6 +127,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Install Node 24.14.0
         uses: actions/setup-node@v6
@@ -119,9 +141,10 @@ jobs:
           version: 11.0.8
           run_install: false
 
-      - name: Install Rust and the Wasm target
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust 1.97.0 and the Wasm target
+        uses: dtolnay/rust-toolchain@1.97.0
         with:
+          components: clippy, rustfmt
           targets: wasm32-unknown-unknown
 
       - name: Install Foundry 1.7.1

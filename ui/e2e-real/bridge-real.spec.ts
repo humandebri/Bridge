@@ -31,7 +31,16 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.getByLabel("You send").fill("2.00000000")
   await expect(page.getByText("1.99 KINIC", { exact: true })).toBeVisible()
   await postControl(request, "/test/fail-next-deposit-response", {})
-  await page.getByRole("button", { name: "Bridge to Base" }).click()
+  const depositButton = page.getByRole("button", { name: "Bridge to Base" })
+  await expect.poll(async () => {
+    if (!await depositButton.isEnabled()) return await page.getByText(/^Next:/).textContent()
+    try {
+      await depositButton.click({ timeout: 500 })
+      return "opened"
+    } catch {
+      return await page.getByText(/^Next:/).textContent()
+    }
+  }, { timeout: 30_000 }).toBe("opened")
   await page.getByRole("checkbox").check()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
   await expect(page.getByText("Injected response loss after deposit acceptance", { exact: false })).toBeVisible()
@@ -79,7 +88,8 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByText(/Confirming automatically/).first()).toBeVisible()
   await expect(page.getByRole("button", { name: "Retry settlement" })).toHaveCount(0)
   // Cross the two-minute boundary with one minute of margin for PocketIC timer rounding.
-  await postControl(request, "/test/advance-confirmation", { minutes: 3 })
+  const firstAdvance = await postControl(request, "/test/advance-confirmation", { minutes: 3 }) as { time: number }
+  await page.clock.setFixedTime(firstAdvance.time)
   await page.getByRole("button", { name: "Refresh", exact: true }).click()
   await expect(page.getByText("Minted", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
 
@@ -91,9 +101,16 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.getByLabel("You send").fill("1.00000000")
   await expect(page.getByText("0.9899 TICRC1", { exact: true })).toBeVisible()
   const withdraw = page.getByRole("button", { name: "Bridge to IC" })
-  await expect(withdraw).toBeEnabled()
   await postControl(request, "/test/fail-next-notification", {})
-  await withdraw.click()
+  await expect.poll(async () => {
+    if (!await withdraw.isEnabled()) return await page.getByText(/^Next:/).textContent()
+    try {
+      await withdraw.click({ timeout: 500 })
+      return "opened"
+    } catch {
+      return await page.getByText(/^Next:/).textContent()
+    }
+  }, { timeout: 30_000 }).toBe("opened")
   await page.getByRole("button", { name: "Confirm burn" }).click()
   await expect(page.getByText(/Withdrawal submitted:/)).toBeVisible()
   await expect.poll(async () => (await controlState(request)).notifyCalls).toBe(beforeWithdrawal.notifyCalls + 1)
@@ -115,7 +132,8 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByText("AcknowledgePending", { exact: true })).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText(/Confirming automatically/)).toBeVisible()
   await expect(page.getByRole("button", { name: "Retry settlement" })).toHaveCount(0)
-  await postControl(request, "/test/advance-confirmation", { minutes: 3 })
+  const secondAdvance = await postControl(request, "/test/advance-confirmation", { minutes: 3 }) as { time: number }
+  await page.clock.setFixedTime(secondAdvance.time)
   await page.getByRole("button", { name: "Refresh", exact: true }).click()
   await expect.poll(async () => BigInt((await controlState(request)).ledgerBalance)).toBe(BigInt(beforeWithdrawal.ledgerBalance) + 98_990_000n)
   await expect.poll(async () => {

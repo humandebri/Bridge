@@ -14,7 +14,7 @@ const LEASE_NS: u64 = 120 * 1_000_000_000;
 const BUSY_RETRY_NS: u64 = 60 * 1_000_000_000;
 pub fn confirmation_delay_ns(kind: bridge_core::EvmOperationKind, check_index: u8) -> Option<u64> {
     let _ = kind;
-    let minutes = [2, 3, 5, 10, 20].get(usize::from(check_index)).copied()?;
+    let minutes = [2, 3, 5].get(usize::from(check_index)).copied()?;
     Some(minutes * MINUTE_NS)
 }
 
@@ -140,7 +140,7 @@ async fn dispatch_due() {
                     &job,
                     None,
                     checks,
-                    Some("Automatic Base confirmation checks were exhausted"),
+                    Some("Base transaction did not reach the Safe head within 10 minutes"),
                 );
             } else {
                 finish(
@@ -243,20 +243,17 @@ mod tests {
     use bridge_core::EvmOperationKind;
 
     #[test]
-    fn safe_operations_are_checked_at_cumulative_2_5_10_20_40_minutes() {
+    fn safe_operations_are_checked_at_cumulative_2_5_10_minutes() {
         for kind in [
             EvmOperationKind::MintDeposit,
             EvmOperationKind::CancelRelease,
             EvmOperationKind::RefundWithdrawal,
             EvmOperationKind::AcknowledgeRelease,
         ] {
-            let delays = (0..6)
+            let delays = (0..4)
                 .map(|index| confirmation_delay_ns(kind, index).map(|ns| ns / MINUTE_NS))
                 .collect::<Vec<_>>();
-            assert_eq!(
-                delays,
-                vec![Some(2), Some(3), Some(5), Some(10), Some(20), None]
-            );
+            assert_eq!(delays, vec![Some(2), Some(3), Some(5), None]);
         }
     }
 }

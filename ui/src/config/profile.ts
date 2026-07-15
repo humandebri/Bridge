@@ -85,6 +85,8 @@ export function profileCompleteness(profile: DeploymentProfile): string[] {
   if (!profile.evmRpcCanisterId) missing.push("EVM RPC Canister ID is missing")
   if (!profile.rpcProviderUrlsSha256) missing.push("RPC provider URL digest is missing")
   if (profile.deploymentBlock === null) missing.push("Deployment block is missing")
+  else if (!profile.testOnly && profile.deploymentBlock === 0n) missing.push("Production deployment block is not Gate B bound")
+  if (!profile.testOnly && !profile.gateBManifestSha256) missing.push("Verified Gate B manifest SHA-256 is missing")
   if (!profile.bridgeRuntimeHash) missing.push("Bridge runtime bytecode hash is missing")
   if (!profile.bsnsRuntimeHash) missing.push("bSNS runtime bytecode hash is missing")
   return missing

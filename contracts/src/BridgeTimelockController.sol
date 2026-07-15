@@ -5,9 +5,15 @@ pragma solidity 0.8.36;
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 
 contract BridgeTimelockController is TimelockController {
+    uint256 public constant MINIMUM_DELAY = 72 hours;
+
     error EmptyRoleMembers(bytes32 role);
     error ZeroRoleMember(bytes32 role);
     error CancellerRoleOverlap(address account);
+    error MinimumDelayTooShort(uint256 suppliedDelay, uint256 minimumDelay);
+    error RoleSetFrozen(bytes32 role, address account);
+
+    bool private _rolePolicyActive;
 
     constructor(
         uint256 minimumDelay,
@@ -15,6 +21,9 @@ contract BridgeTimelockController is TimelockController {
         address[] memory cancellers,
         address[] memory executors
     ) TimelockController(minimumDelay, proposers, executors, address(0)) {
+        if (minimumDelay < MINIMUM_DELAY) {
+            revert MinimumDelayTooShort(minimumDelay, MINIMUM_DELAY);
+        }
         _validateNonemptyRole(PROPOSER_ROLE, proposers);
         _validateNonemptyRole(CANCELLER_ROLE, cancellers);
         _validateNonemptyRole(EXECUTOR_ROLE, executors);
@@ -31,6 +40,33 @@ contract BridgeTimelockController is TimelockController {
             }
             _grantRole(CANCELLER_ROLE, canceller);
         }
+        _rolePolicyActive = true;
+    }
+
+    function updateDelay(uint256 newDelay) public override {
+        if (msg.sender != address(this)) {
+            revert TimelockUnauthorizedCaller(msg.sender);
+        }
+        if (newDelay < MINIMUM_DELAY) {
+            revert MinimumDelayTooShort(newDelay, MINIMUM_DELAY);
+        }
+        super.updateDelay(newDelay);
+    }
+
+    function _grantRole(bytes32 role, address account) internal override returns (bool changed) {
+        if (_rolePolicyActive) {
+            revert RoleSetFrozen(role, account);
+        }
+
+        changed = super._grantRole(role, account);
+    }
+
+    function _revokeRole(bytes32 role, address account) internal override returns (bool changed) {
+        if (_rolePolicyActive) {
+            revert RoleSetFrozen(role, account);
+        }
+
+        changed = super._revokeRole(role, account);
     }
 
     function _validateNonemptyRole(bytes32 role, address[] memory members) private pure {

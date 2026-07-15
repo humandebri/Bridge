@@ -106,7 +106,7 @@ pub(crate) fn stop_reason_text(result: &SettlementActionResult) -> Option<String
                 "Confirmed Base bridge signer does not match the chain-key signer".into()
             }
             SettlementStopReason::ConfirmationCheckExhausted => {
-                "Automatic Base confirmation checks were exhausted".into()
+                "Base transaction did not reach the Safe head within 10 minutes".into()
             }
         }),
         _ => None,
@@ -373,6 +373,7 @@ fn confirm_evm_member(
     transaction_hash: [u8; 32],
     receipt_block_number: u64,
     confirmed_block_number: u64,
+    rpc_audit: Vec<crate::storage::AuditEventKind>,
 ) -> Result<(), ()> {
     operation
         .apply(EvmOperationEvent::Confirmed {
@@ -388,7 +389,14 @@ fn confirm_evm_member(
     }
     progress.last_safe_observation_ns = ic_cdk::api::time();
     store
-        .commit_evm_terminal_bundle(&operation, &progress, None)
+        .commit_evm_terminal_bundle_with_rpc_audit(
+            &operation,
+            &progress,
+            None,
+            ic_cdk::api::canister_self(),
+            ic_cdk::api::time(),
+            rpc_audit,
+        )
         .map_err(|_| ())
 }
 
@@ -397,6 +405,7 @@ fn mark_evm_reverted(
     transaction_hash: [u8; 32],
     receipt_block_number: u64,
     confirmed_block_number: u64,
+    rpc_audit: Vec<crate::storage::AuditEventKind>,
 ) {
     operation
         .apply(EvmOperationEvent::Reverted {
@@ -413,7 +422,7 @@ fn mark_evm_reverted(
         progress.last_safe_base_block = progress.last_safe_base_block.max(confirmed_block_number);
         progress.last_safe_observation_ns = ic_cdk::api::time();
         store
-            .commit_evm_terminal_bundle(
+            .commit_evm_terminal_bundle_with_rpc_audit(
                 &operation,
                 &progress,
                 Some((
@@ -421,6 +430,9 @@ fn mark_evm_reverted(
                     ic_cdk::api::time(),
                     confirmed_block_number,
                 )),
+                ic_cdk::api::canister_self(),
+                ic_cdk::api::time(),
+                rpc_audit,
             )
             .unwrap_or_else(|error| ic_cdk::trap(format!("EVM revert bundle failed: {error}")));
     });
@@ -545,7 +557,7 @@ fn map_observation_stop(error: evm_rpc::ObservationError) -> SettlementStopReaso
             SettlementStopReason::InvalidBaseResponse
         }
         evm_rpc::ObservationError::BaseStateMismatch => SettlementStopReason::BaseStateMismatch,
-        evm_rpc::ObservationError::NonceConflict => SettlementStopReason::NonceConflict,
+        evm_rpc::ObservationError::ChainIdMismatch => SettlementStopReason::BaseStateMismatch,
     }
 }
 
@@ -662,22 +674,36 @@ async fn advance_evm_operation(
                     }
                 },
             };
-            if let Err(error) = evm_rpc::broadcast(config, &raw).await {
-                if matches!(error, evm_rpc::ObservationError::NonceConflict) {
-                    STORE.with(|store| {
-                        let mut store = store.borrow_mut();
-                        let mut admin = store
-                            .admin_state()
-                            .map_err(|_| SettlementActionError::StorageFailure)?;
-                        admin.deposits_paused = true;
-                        store
-                            .set_admin_state(&admin)
-                            .map_err(|_| SettlementActionError::StorageFailure)
-                    })?;
-                    return Ok(EvmAdvance::Stopped(SettlementStopReason::NonceConflict));
-                }
-                return Ok(EvmAdvance::Stopped(map_observation_stop(error)));
+            let broadcast = match evm_rpc::broadcast(config, &raw).await {
+                Ok(outcome) => outcome,
+                Err(error) => return Ok(EvmAdvance::Stopped(map_observation_stop(error))),
+            };
+            if let evm_rpc::BroadcastOutcome::NonceConflict(rpc_audit) = &broadcast {
+                let decision = evm_rpc::nonce_conflict_decision(
+                    "broadcast_evm_operation",
+                    rpc_audit
+                        .transaction_hash
+                        .ok_or(SettlementActionError::StorageFailure)?,
+                );
+                STORE.with(|store| {
+                    store
+                        .borrow_mut()
+                        .pause_deposits_with_rpc_audit(
+                            ic_cdk::api::canister_self(),
+                            ic_cdk::api::time(),
+                            vec![
+                                crate::rpc_audit_event_kind(rpc_audit),
+                                crate::rpc_decision_event_kind(&decision),
+                            ],
+                        )
+                        .map_err(|_| SettlementActionError::StorageFailure)
+                })?;
+                return Ok(EvmAdvance::Stopped(SettlementStopReason::NonceConflict));
             }
+            let rpc_audit = match &broadcast {
+                evm_rpc::BroadcastOutcome::Submitted(evidence) => evidence,
+                evm_rpc::BroadcastOutcome::NonceConflict(_) => unreachable!(),
+            };
             let transaction_hash = signer::transaction_hash(&raw);
             STORE.with(|store| {
                 let mut store = store.borrow_mut();
@@ -693,13 +719,22 @@ async fn advance_evm_operation(
                     .map_err(|_| SettlementActionError::StorageFailure)?;
                 let submitted_at_ns = ic_cdk::api::time();
                 store
-                    .put_submitted_evm_operation(
+                    .put_submitted_evm_operation_with_rpc_audit(
                         &current,
                         submitted_at_ns,
                         submitted_at_ns.saturating_add(
                             crate::scheduler::confirmation_delay_ns(current.kind, 0)
                                 .expect("every EVM operation has a confirmation schedule"),
                         ),
+                        ic_cdk::api::canister_self(),
+                        vec![
+                            crate::rpc_audit_event_kind(rpc_audit),
+                            crate::rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
+                                "broadcast_evm_operation",
+                                Some(transaction_hash),
+                                false,
+                            )),
+                        ],
                     )
                     .map_err(|_| SettlementActionError::StorageFailure)
             })?;
@@ -708,6 +743,21 @@ async fn advance_evm_operation(
         EvmOperationState::Submitted { transaction_hash } => {
             let outcome = match evm_rpc::confirmed_receipt_outcome(config, transaction_hash).await {
                 Ok(outcome) => outcome,
+                Err(evm_rpc::ObservationError::Inconsistent) => {
+                    let decision = evm_rpc::quorum_loss_decision(
+                        "confirm_evm_operation",
+                        Some(transaction_hash),
+                    );
+                    STORE
+                        .with(|store| {
+                            store.borrow_mut().append_audit_events_atomically(
+                                ic_cdk::api::canister_self(),
+                                vec![crate::rpc_decision_event_kind(&decision)],
+                            )
+                        })
+                        .map_err(|_| SettlementActionError::StorageFailure)?;
+                    return Ok(EvmAdvance::Stopped(SettlementStopReason::RpcInconsistent));
+                }
                 Err(error) => return Ok(EvmAdvance::Stopped(map_observation_stop(error))),
             };
             match outcome {
@@ -717,6 +767,7 @@ async fn advance_evm_operation(
                 evm_rpc::ConfirmedReceiptOutcome::Succeeded {
                     receipt_block_number,
                     confirmed_block_number,
+                    rpc_audit,
                 } => {
                     STORE.with(|store| {
                         let mut store = store.borrow_mut();
@@ -730,6 +781,16 @@ async fn advance_evm_operation(
                             transaction_hash,
                             receipt_block_number,
                             confirmed_block_number,
+                            vec![
+                                crate::rpc_audit_event_kind(&rpc_audit),
+                                crate::rpc_decision_event_kind(
+                                    &evm_rpc::quorum_continued_decision(
+                                        "confirm_evm_operation",
+                                        Some(transaction_hash),
+                                        false,
+                                    ),
+                                ),
+                            ],
                         )
                         .map_err(|_| SettlementActionError::StorageFailure)
                     })?;
@@ -738,12 +799,21 @@ async fn advance_evm_operation(
                 evm_rpc::ConfirmedReceiptOutcome::Reverted {
                     receipt_block_number,
                     confirmed_block_number,
+                    rpc_audit,
                 } => {
                     mark_evm_reverted(
                         operation,
                         transaction_hash,
                         receipt_block_number,
                         confirmed_block_number,
+                        vec![
+                            crate::rpc_audit_event_kind(&rpc_audit),
+                            crate::rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
+                                "confirm_evm_operation",
+                                Some(transaction_hash),
+                                false,
+                            )),
+                        ],
                     );
                     Ok(EvmAdvance::Complete)
                 }

@@ -10,7 +10,7 @@ import {TestBase} from "./TestBase.sol";
 
 contract BridgeInvariantHandler is TestBase {
     address internal constant RUNTIME_ADMINISTRATOR = address(0x22);
-    address internal constant BASE_ADMIN_TIMELOCK = address(0x33);
+    address internal BASE_ADMIN_TIMELOCK;
 
     Bridge private immutable _bridge;
     IBSNS private immutable _token;
@@ -22,6 +22,7 @@ contract BridgeInvariantHandler is TestBase {
     uint256 public ledgerBlockNonce;
 
     constructor() {
+        BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
         _bridge = new Bridge(
             "kinic",
             "KINIC",
@@ -29,6 +30,7 @@ contract BridgeInvariantHandler is TestBase {
             address(this),
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
             1_000,
             100_000,
             1 hours,

@@ -43,44 +43,99 @@ PY
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-live-preflight.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
-for i in 0 1 2; do
-  rpc="${PROFILE_VALUES[$((9+i))]}"
-  [[ "$(cast chain-id --rpc-url "$rpc")" == "$CHAIN_ID" ]] || { echo "RPC chain id mismatch" >&2; exit 1; }
-  cast block safe --rpc-url "$rpc" --json >"$TMP/block-$i.json"
-  if [[ "$MODE" == verify ]]; then
-    SIGNED_HEIGHT="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["confirmed_head_block_number"])' "$SNAPSHOT")"
-    cast block "$SIGNED_HEIGHT" --rpc-url "$rpc" --json >"$TMP/signed-block-$i.json"
-  fi
-done
+python3 - "$PROFILE" "$SNAPSHOT" "$TMP" "$MODE" <<'PY'
+import json,subprocess,sys
+from pathlib import Path
+p=json.load(open(sys.argv[1])); root=Path(sys.argv[3]); mode=sys.argv[4]
+signed_height=json.load(open(sys.argv[2]))['confirmed_head_block_number'] if mode=='verify' else None
+observations=[]
+for index,entry in enumerate(p['rpc_providers']):
+ try:
+  rpc=entry['url']
+  chain=subprocess.check_output(['cast','chain-id','--rpc-url',rpc],text=True,stderr=subprocess.DEVNULL).strip()
+  if chain!=str(p['chain_id']): raise ValueError('wrong chain')
+  safe=json.loads(subprocess.check_output(['cast','block','safe','--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
+  observation={'provider_index':index,'chain_id':int(chain),'safe':safe}
+  if signed_height is not None:
+   observation['signed']=json.loads(subprocess.check_output(['cast','block',str(signed_height),'--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
+  observations.append(observation)
+ except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError):
+  continue
+(root/'provider-observations.json').write_text(json.dumps(observations,sort_keys=True,separators=(',',':'))+'\n')
+PY
 
 python3 - "$PROFILE" "$TMP" <<'PY'
 import hashlib,json,subprocess,sys
 from pathlib import Path
-p=json.load(open(sys.argv[1])); root=Path(sys.argv[2])
+p=json.load(open(sys.argv[1])); root=Path(sys.argv[2]); receipt=json.load(open(Path(sys.argv[1]).with_name('gate-a-receipt.json')))
+observations=json.load(open(root/'provider-observations.json'))
 blocks=[]
-for i in range(3):
- b=json.load(open(root/f'block-{i}.json')); n=int(str(b['number']),16) if str(b['number']).startswith('0x') else int(b['number']); blocks.append((n,str(b['hash']).lower()))
+for observation in observations:
+ b=observation['safe']; n=int(str(b['number']),16) if str(b['number']).startswith('0x') else int(b['number']); blocks.append((n,str(b['hash']).lower()))
+if not blocks: raise SystemExit('no usable Safe block observations')
 height,block_hash=max(set(blocks),key=blocks.count)
 if blocks.count((height,block_hash))<2: raise SystemExit('no Safe block quorum')
+eligible={observation['provider_index'] for observation in observations if (int(str(observation['safe']['number']),16) if str(observation['safe']['number']).startswith('0x') else int(observation['safe']['number']))==height and str(observation['safe']['hash']).lower()==block_hash}
 roles={name:subprocess.check_output(['cast','keccak',name],text=True).strip() for name in ('PROPOSER_ROLE','EXECUTOR_ROLE','CANCELLER_ROLE')}
 zero='0x'+'00'*20; zero32='0x'+'00'*32
 def run(args): return subprocess.check_output(args,text=True).strip().strip('"')
-def call(rpc,address,sig,*args): return run(['cast','call',address,sig,*args,'--rpc-url',rpc,'--block',str(height)])
-def code(rpc,address): return run(['cast','code',address,'--rpc-url',rpc,'--block',str(height)])
+block_selector=json.dumps({'blockHash':block_hash,'requireCanonical':True},separators=(',',':'))
+def call(rpc,address,sig,*args):
+ data=run(['cast','calldata',sig,*args])
+ request=json.dumps({'to':address,'data':data},separators=(',',':'))
+ result=run(['cast','rpc','--rpc-url',rpc,'eth_call',request,block_selector])
+ return run(['cast','decode-abi',sig,result])
+def code(rpc,address):
+ return run(['cast','rpc','--rpc-url',rpc,'eth_getCode',json.dumps(address),block_selector])
 def sha_code(value): return hashlib.sha256(bytes.fromhex(value.removeprefix('0x'))).hexdigest()
+def number(value):
+ return int(str(value),16) if str(value).startswith('0x') else int(value)
+def deployment(rpc,tx,address,expected_block):
+ receipt=json.loads(run(['cast','receipt',tx,'--rpc-url',rpc,'--json']))
+ actual_block=number(receipt.get('blockNumber',-1)); actual_hash=str(receipt.get('blockHash','')).lower()
+ status=number(receipt.get('status',0)); contract=str(receipt.get('contractAddress','')).lower()
+ canonical=json.loads(run(['cast','block',str(expected_block),'--rpc-url',rpc,'--json']))
+ if actual_block!=expected_block or status!=1 or contract!=address.lower() or str(canonical.get('hash','')).lower()!=actual_hash:
+  raise ValueError('deployment receipt is not canonical or does not create the reviewed contract')
+ return actual_hash
+def exact_role_members(rpc,timelock,from_block):
+ event_topics={run(['cast','keccak','RoleGranted(bytes32,address,address)']).lower():'grant',run(['cast','keccak','RoleRevoked(bytes32,address,address)']).lower():'revoke'}
+ members={zero32:set(),roles['PROPOSER_ROLE'].lower():set(),roles['EXECUTOR_ROLE'].lower():set(),roles['CANCELLER_ROLE'].lower():set()}
+ entries=json.loads(run(['cast','logs','--address',timelock,'--from-block',str(from_block),'--to-block',str(height),'--rpc-url',rpc,'--json']))
+ for entry in entries:
+  event_number=number(entry.get('blockNumber',-1)); event_hash=str(entry.get('blockHash','')).lower()
+  canonical=json.loads(run(['cast','block',str(event_number),'--rpc-url',rpc,'--json']))
+  if event_number<from_block or event_number>height or not event_hash or str(canonical.get('hash','')).lower()!=event_hash:
+   raise ValueError('Timelock role event is not canonical')
+  topics=[str(x).lower() for x in entry.get('topics',[])]
+  if not topics or topics[0] not in event_topics: continue
+  if len(topics)<3: raise ValueError('malformed Timelock role event')
+  role=topics[1]; account='0x'+topics[2][-40:]
+  if role not in members: raise ValueError('unsupported Timelock role observed')
+  if event_topics[topics[0]]=='grant': members[role].add(account)
+  else: members[role].discard(account)
+ expected={zero32:{timelock.lower()},roles['PROPOSER_ROLE'].lower():{p['timelock']['proposer'].lower()},roles['EXECUTOR_ROLE'].lower():{p['timelock']['executor'].lower()},roles['CANCELLER_ROLE'].lower():{p['timelock']['canceller'].lower()}}
+ return members, members==expected
 states=[]
-for rpc_entry in p['rpc_providers']:
- rpc=rpc_entry['url']; bridge=p['bridge_contract']; timelock=p['timelock']['address']
- bsns=call(rpc,bridge,'bsns()(address)').lower()
- external={p['timelock']['proposer'],p['timelock']['executor'],p['timelock']['canceller'],p['base_admin_wallet'],p['runtime_administrator'],p['release_approver'],zero}
- state={
+for provider_index,rpc_entry in enumerate(p['rpc_providers']):
+ if provider_index not in eligible: continue
+ try:
+  rpc=rpc_entry['url']; bridge=p['bridge_contract']; timelock=p['timelock']['address']
+  bsns=call(rpc,bridge,'bsns()(address)').lower()
+  external={p['timelock']['proposer'],p['timelock']['executor'],p['timelock']['canceller'],p['base_admin_wallet'],p['runtime_administrator'],p['release_approver'],zero}
+  bridge_deployment_hash=deployment(rpc,receipt['bridge_deployment_transaction_hash'],bridge,receipt['bridge_deployment_block_number'])
+  timelock_deployment_hash=deployment(rpc,receipt['timelock_deployment_transaction_hash'],timelock,receipt['timelock_deployment_block_number'])
+  role_members,roles_exact=exact_role_members(rpc,timelock,receipt['timelock_deployment_block_number'])
+  state={
   'height':height,'hash':block_hash,
   'base_bridge_signer':call(rpc,bridge,'bridgeSigner()(address)').lower(),
   'base_runtime_administrator':call(rpc,bridge,'runtimeAdministrator()(address)').lower(),
   'base_admin_timelock':call(rpc,bridge,'baseAdminTimelock()(address)').lower(),
+  'bridge_approved_timelock_runtime_code_hash':call(rpc,bridge,'approvedTimelockRuntimeCodeHash()(bytes32)').lower(),
   'base_deposit_mints_paused':call(rpc,bridge,'depositMintsPaused()(bool)').lower()=='true',
   'base_withdrawals_paused':call(rpc,bridge,'withdrawalsPaused()(bool)').lower()=='true',
   'bridge_runtime_bytecode_sha256':sha_code(code(rpc,bridge)),
+  'timelock_runtime_code_hash':run(['cast','keccak',code(rpc,timelock)]).lower(),
   'timelock_minimum_delay_seconds':int(call(rpc,timelock,'getMinDelay()(uint256)').split()[0],0),
   'timelock_self_admin':call(rpc,timelock,'hasRole(bytes32,address)(bool)',zero32,timelock).lower()=='true',
   'timelock_proposer_authorized':call(rpc,timelock,'hasRole(bytes32,address)(bool)',roles['PROPOSER_ROLE'],p['timelock']['proposer']).lower()=='true',
@@ -92,9 +147,17 @@ for rpc_entry in p['rpc_providers']:
   'bsns_address':bsns,'bsns_runtime_bytecode_sha256':sha_code(code(rpc,bsns)),
   'bsns_name':call(rpc,bsns,'name()(string)'),'bsns_symbol':call(rpc,bsns,'symbol()(string)'),
   'bsns_decimals':int(call(rpc,bsns,'decimals()(uint8)').split()[0],0),'bsns_bridge':call(rpc,bsns,'bridge()(address)').lower(),
- }
- state['timelock_external_admins_absent']=all(call(rpc,timelock,'hasRole(bytes32,address)(bool)',zero32,a).lower()=='false' for a in external if a.lower()!=timelock.lower())
- states.append(state)
+  'timelock_role_members':{k:sorted(v) for k,v in role_members.items()},'timelock_roles_exact':roles_exact,
+  'bridge_deployment_transaction_hash':receipt['bridge_deployment_transaction_hash'].lower(),'bridge_deployment_block_number':receipt['bridge_deployment_block_number'],'bridge_deployment_block_hash':bridge_deployment_hash,
+  'timelock_deployment_transaction_hash':receipt['timelock_deployment_transaction_hash'].lower(),'timelock_deployment_block_number':receipt['timelock_deployment_block_number'],'timelock_deployment_block_hash':timelock_deployment_hash,
+  }
+  state['timelock_external_admins_absent']=all(call(rpc,timelock,'hasRole(bytes32,address)(bool)',zero32,a).lower()=='false' for a in external if a.lower()!=timelock.lower())
+  final=json.loads(run(['cast','block',str(height),'--rpc-url',rpc,'--json']))
+  if str(final.get('hash','')).lower()!=block_hash: raise ValueError('Safe block changed while Base state was being read')
+  states.append(state)
+ except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError):
+  continue
+if not states: raise SystemExit('no provider completed the bound Safe state read')
 groups={json.dumps(s,sort_keys=True,separators=(',',':')):states.count(s) for s in states}
 winner,count=max(groups.items(),key=lambda x:x[1])
 if count<2: raise SystemExit('Base state does not have 2-of-3 agreement at the Safe block')
@@ -156,6 +219,8 @@ if sys.argv[4]=='capture':
   chain_key_signature=signatures[0]
 else: chain_key_signature=json.load(open(sys.argv[2]))['chain_key_eip191_signature']
 if runtime_hash.lower()!=p['bridge_runtime_bytecode_sha256'].lower(): raise SystemExit('runtime bytecode drift')
+if state['timelock_runtime_code_hash'].lower()!=p['timelock']['runtime_code_hash'].lower(): raise SystemExit('Timelock runtime code hash drift')
+if state['bridge_approved_timelock_runtime_code_hash'].lower()!=p['timelock']['runtime_code_hash'].lower(): raise SystemExit('Bridge approved Timelock runtime code hash drift')
 if module_hash.lower()!=p['bridge_canister_wasm_sha256'].lower(): raise SystemExit('Canister Wasm drift')
 if controller!=p['root_canister_id']: raise SystemExit('controller drift')
 if not sufficient: raise SystemExit('settlement reserve is insufficient')
@@ -164,7 +229,7 @@ expected_addresses={
  'base_admin_timelock':p['timelock']['address'],'bsns_address':p['bsns_contract'],'bsns_bridge':p['bridge_contract']}
 if any(state[k].lower()!=v.lower() for k,v in expected_addresses.items()): raise SystemExit('Base role or bSNS binding drift')
 if not state['base_deposit_mints_paused'] or not state['base_withdrawals_paused']: raise SystemExit('Base asset flows are not paused')
-if not all(state[k] for k in ('timelock_self_admin','timelock_proposer_authorized','timelock_executor_authorized','timelock_canceller_authorized','timelock_external_admins_absent')): raise SystemExit('Timelock role drift')
+if not all(state[k] for k in ('timelock_self_admin','timelock_proposer_authorized','timelock_executor_authorized','timelock_canceller_authorized','timelock_external_admins_absent','timelock_roles_exact')): raise SystemExit('Timelock role drift')
 if any(state[k] for k in ('timelock_open_proposer','timelock_open_executor','timelock_open_canceller')): raise SystemExit('Timelock has an open role')
 if state['bsns_runtime_bytecode_sha256'].lower()!=p['bsns_runtime_bytecode_sha256'].lower() or state['bsns_name']!='KINIC' or state['bsns_symbol']!='KINIC' or state['bsns_decimals']!=p['decimals']: raise SystemExit('bSNS runtime or metadata drift')
 out={
@@ -173,6 +238,8 @@ out={
  'base_bridge_signer':base,'canister_bridge_signer':canister,'chain_key_eip191_signature':chain_key_signature,
  'bridge_runtime_bytecode_sha256':runtime_hash,'expected_bridge_runtime_bytecode_sha256':p['bridge_runtime_bytecode_sha256'],
  'bridge_canister_wasm_sha256':module_hash,'bridge_canister_id':p['bridge_canister_id'],'timelock_address':p['timelock']['address'],
+ 'timelock_runtime_code_hash':state['timelock_runtime_code_hash'],
+ 'bridge_approved_timelock_runtime_code_hash':state['bridge_approved_timelock_runtime_code_hash'],
  'timelock_minimum_delay_seconds':delay,'timelock_self_admin':self_admin,'ic_controller':controller,
  'expected_ic_controller':p['root_canister_id'],'settlement_reserve_sufficient':sufficient,
  'base_deposit_mints_paused':state['base_deposit_mints_paused'],'base_withdrawals_paused':state['base_withdrawals_paused'],
@@ -182,6 +249,10 @@ out={
  'timelock_canceller_authorized':state['timelock_canceller_authorized'],'timelock_open_proposer':state['timelock_open_proposer'],
  'timelock_open_executor':state['timelock_open_executor'],'timelock_open_canceller':state['timelock_open_canceller'],
  'timelock_external_admins_absent':state['timelock_external_admins_absent'],'bsns_address':state['bsns_address'],
+ 'timelock_roles_exact':state['timelock_roles_exact'],'bridge_deployment_transaction_hash':state['bridge_deployment_transaction_hash'],
+ 'bridge_deployment_block_number':state['bridge_deployment_block_number'],'bridge_deployment_block_hash':state['bridge_deployment_block_hash'],
+ 'timelock_deployment_transaction_hash':state['timelock_deployment_transaction_hash'],'timelock_deployment_block_number':state['timelock_deployment_block_number'],
+ 'timelock_deployment_block_hash':state['timelock_deployment_block_hash'],
  'bsns_runtime_bytecode_sha256':state['bsns_runtime_bytecode_sha256'],'bsns_name':state['bsns_name'],'bsns_symbol':state['bsns_symbol'],
  'bsns_decimals':state['bsns_decimals'],'bsns_bridge':state['bsns_bridge'],'rpc_provider_urls_sha256':actual_rpc_digest}
 mode=sys.argv[4]
@@ -190,8 +261,9 @@ if mode=='capture':
 else:
   old=json.load(open(sys.argv[2]))
   signed=[]
-  for i in range(3):
-    b=json.load(open(root/f'signed-block-{i}.json')); signed.append((num(b.get('number')),str(b.get('hash','')).lower()))
+  for observation in json.load(open(root/'provider-observations.json')):
+    if 'signed' in observation:
+      b=observation['signed']; signed.append((num(b.get('number')),str(b.get('hash','')).lower()))
   expected=(old['confirmed_head_block_number'],old['confirmed_head_block_hash'].lower())
   if signed.count(expected)<2: raise SystemExit('signed Safe block is no longer canonical')
   if out['confirmed_head_block_number'] < old['confirmed_head_block_number']: raise SystemExit('latest Safe head is older than the signed snapshot')

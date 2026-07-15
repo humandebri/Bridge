@@ -4,8 +4,10 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 Base contractとPlan 001〜004を実装済みであり、現在は本番パラメータと鍵運用を確定するPlan 005を進めている。
 
 `bridge-core`はDeposit、Withdrawal、EVM操作、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v6の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。EVM transactionのbroadcast後はstable scheduleとone-shot timerにより2、5、10、20、40分時点でSafe confirmationを確認し、確定後の正常段階を次の待機点または完了まで自動で進める。RPC、署名、nonce、Ledgerなどの障害は自動再試行せず、rate limitされた手動Retryへ移す。
+`bridge-canister`はstable schema v6の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。EVM transactionのbroadcast後はstable scheduleとone-shot timerにより2、5、10分時点でSafe confirmationを確認し、確定後の正常段階を次の待機点または完了まで自動で進める。10分時点でも未確認なら失敗として停止する。RPC、署名、nonce、Ledgerなどの障害は自動再試行せず、rate limitされた手動Retryへ移す。
 Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの72時間Timelockへ接続している。
+
+Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、Withdrawal作成、`Releasing`化を原子的に実行する。Canisterは同じcanonical Safe block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証してからICP送金を開始する。SafeはL1 settlement完了前にreorgし得るため、その残存リスクは受容済みであり、finality保証の対象には含めない。
 
 本番Bridgeは未デプロイであり、Plan 005の外部計測と鍵ceremony、Plan 006のhandoverとproduction preflightが完了するまで本番資産を受け付けない。
 
@@ -61,12 +63,14 @@ scripts/ci-local.sh versions
 scripts/ci-local.sh rust
 scripts/ci-local.sh contracts
 scripts/ci-local.sh proofs
+scripts/ci-local.sh ui
 scripts/ci-local.sh icp
 scripts/ci-local.sh smoke
 ```
 
 `contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
-`proofs`はproductionと共有するDeposit、Withdrawal、管理判定coreをSMTCheckerで証明し、意図的に制約を欠くfixtureが拒否されることも確認する。
+`proofs`はLeanの`sorry`・`admit`を拒否してcross-system modelを検査し、productionと共有するDeposit、Withdrawal、管理判定coreをSMTCheckerとVerusで証明する。意図的に制約を欠くfixtureが拒否されることも確認する。
+`ui`はABI/Candid drift、typecheck、lint、unit test、build、desktop/mobile Playwrightを実行する。
 証明範囲と外部仮定は[verification/README.md](verification/README.md)と[verification/obligations.md](verification/obligations.md)に記録する。
 
 ABI snapshotは次で明示的に更新し、通常のCIは更新を行わず差分だけを検出する。
@@ -86,7 +90,7 @@ python3 scripts/abi_snapshot.py --check
 4. Anvilをchain ID 31337で起動する。
 5. 72時間delay、Base Admin wallet限定proposer/executor、独立canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
-7. Bridge Signerからsmoke用Depositをmintし、Withdrawalの`Pending → Releasing → Released`、同一acknowledgement、別Withdrawalの`Pending → Refunded`を確認する。
+7. Bridge Signerからsmoke用Depositをmintし、ユーザーの`createWithdrawal`による`Releasing → Released`、同一acknowledgement、別Withdrawalの`Releasing → Pending → Refunded`を確認する。
 8. Runtime AdministratorのService Fee変更と独立pause、Base Admin walletの直接unpause拒否、72時間前のTimelock execute拒否、経過後のunpauseを確認する。
 9. burn・refund後の残高、supply、mint window、Withdrawal連番を確認する。
 10. 本スクリプトが起動したprocessだけを終了し、一時変更した`icp.yaml`を復元する。

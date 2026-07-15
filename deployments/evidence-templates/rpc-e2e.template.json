@@ -15,9 +15,19 @@
   "response_sha256": "<sha256-of-redacted-response-record>",
   "result": "passed",
   "details": "<replace-with-the-scenario-specific-object-documented-in-the-runbook>",
+  "canister_audit": {
+    "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+    "call_method": "<multi_request|eth_sendRawTransaction|eth_sendRawTransaction+multi_request|eth_getTransactionReceipt+eth_getBlockByNumber>",
+    "request_digest": "<64-hex-from-EvmRpcObservation>",
+    "quorum_response_digest": "<64-hex-from-EvmRpcObservation>",
+    "safe_block_number": 0,
+    "safe_block_hash": "<0x-32-byte-hash>",
+    "transaction_hash": "<0x-32-byte-hash-or-null>"
+  },
+  "canister_decision": "<EvmRpcDecision object for single_provider_failure, quorum_loss, and nonce_conflict; null otherwise>",
   "artifacts": [
     {
-      "kind": "<bridge|base|ledger|audit>",
+      "kind": "<bridge|base|ledger|audit|module|fault>",
       "path": "artifacts/<scenario>-<kind>.json",
       "sha256": "<sha256-of-the-complete-artifact-file>",
       "bindings": {

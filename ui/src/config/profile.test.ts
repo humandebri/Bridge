@@ -19,4 +19,15 @@ describe("reviewed deployment profile", () => {
     })
     expect(parsed.deploymentBlock).toBe(123n)
   })
+
+  it("fails closed for a production profile without Gate B deployment binding", () => {
+    const blockers = profileCompleteness({
+      ...deploymentProfile,
+      testOnly: false,
+      deploymentBlock: 0n,
+      gateBManifestSha256: null,
+    })
+    expect(blockers).toContain("Production deployment block is not Gate B bound")
+    expect(blockers).toContain("Verified Gate B manifest SHA-256 is missing")
+  })
 })

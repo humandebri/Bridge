@@ -1,7 +1,9 @@
 use crate::{
     config::BridgeInitArgs,
-    evm_rpc, ledger,
-    storage::{DepositIntent, DepositReserveAdmission, WithdrawalAttemptAdmissionError},
+    evm_rpc, ledger, rpc_audit_event_kind, rpc_decision_event_kind,
+    storage::{
+        DepositIntent, DepositReserveAdmission, RpcAuditBatch, WithdrawalAttemptAdmissionError,
+    },
     storage_or_trap, STORE,
 };
 use bridge_core::{
@@ -185,10 +187,24 @@ pub async fn notify_withdrawal(
         .with(|store| store.borrow().config())
         .map_err(|_| NotifyWithdrawalError::StorageFailure)?
         .ok_or(NotifyWithdrawalError::StorageFailure)?;
-    let outcome = evm_rpc::notified_withdrawal_outcome(&config, transaction_hash)
-        .await
-        .map_err(map_withdrawal_observation_error)?;
-    let (observed, snapshot, confirmed_block_number) = match outcome {
+    let outcome = match evm_rpc::notified_withdrawal_outcome(&config, transaction_hash).await {
+        Ok(outcome) => outcome,
+        Err(evm_rpc::ObservationError::Inconsistent) => {
+            let decision =
+                evm_rpc::quorum_loss_decision("notify_withdrawal", Some(transaction_hash));
+            STORE
+                .with(|store| {
+                    store.borrow_mut().append_audit_events_atomically(
+                        ic_cdk::api::canister_self(),
+                        vec![rpc_decision_event_kind(&decision)],
+                    )
+                })
+                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+            return Err(NotifyWithdrawalError::RpcInconsistent);
+        }
+        Err(error) => return Err(map_withdrawal_observation_error(error)),
+    };
+    let (observed, snapshot, rpc_audit, confirmed_block_number) = match outcome {
         evm_rpc::NotifiedWithdrawalOutcome::Missing => {
             return Err(NotifyWithdrawalError::TransactionNotFound)
         }
@@ -201,9 +217,10 @@ pub async fn notify_withdrawal(
         evm_rpc::NotifiedWithdrawalOutcome::Confirmed {
             withdrawal,
             snapshot,
+            rpc_audit,
             confirmed_block_number,
             ..
-        } => (withdrawal, snapshot, confirmed_block_number),
+        } => (withdrawal, snapshot, rpc_audit, confirmed_block_number),
     };
     let owner = Principal::try_from_slice(&observed.owner)
         .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
@@ -219,14 +236,23 @@ pub async fn notify_withdrawal(
     let ledger_fee = ledger::ledger_fee(config.ledger_canister_id)
         .await
         .map_err(|_| NotifyWithdrawalError::LedgerFeeUnavailable)?;
-    ingest_notified_withdrawal(
+    let receipt = ingest_notified_withdrawal(
         &config,
         observed,
         snapshot.mint.service_fee.get(),
         snapshot.mint.max_service_fee.get(),
         ledger_fee,
         confirmed_block_number,
-    )
+        vec![
+            rpc_audit_event_kind(&rpc_audit),
+            rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
+                "notify_withdrawal",
+                Some(transaction_hash),
+                true,
+            )),
+        ],
+    )?;
+    Ok(receipt)
 }
 
 pub(crate) fn notification_action_hash(
@@ -247,7 +273,7 @@ fn map_withdrawal_observation_error(error: evm_rpc::ObservationError) -> NotifyW
         evm_rpc::ObservationError::Rpc => NotifyWithdrawalError::RpcUnavailable,
         evm_rpc::ObservationError::Inconsistent => NotifyWithdrawalError::RpcInconsistent,
         evm_rpc::ObservationError::BaseStateMismatch => NotifyWithdrawalError::BaseStateMismatch,
-        evm_rpc::ObservationError::NonceConflict => NotifyWithdrawalError::InvalidBaseResponse,
+        evm_rpc::ObservationError::ChainIdMismatch => NotifyWithdrawalError::BaseStateMismatch,
         evm_rpc::ObservationError::InvalidResponse | evm_rpc::ObservationError::Overflow => {
             NotifyWithdrawalError::InvalidBaseResponse
         }
@@ -261,6 +287,7 @@ fn ingest_notified_withdrawal(
     max_service_fee: u128,
     ledger_fee: Amount,
     confirmed_block_number: u64,
+    rpc_audit: Vec<crate::storage::AuditEventKind>,
 ) -> Result<NotifyWithdrawalReceipt, NotifyWithdrawalError> {
     let mut digest = Sha256::new();
     digest.update(observed.id);
@@ -331,7 +358,17 @@ fn ingest_notified_withdrawal(
                 max_priority_fee_per_gas: config.max_priority_fee_per_gas,
             };
             store
-                .commit_new_withdrawal_operation_bundle(&withdrawal, &operation, &intent, &progress)
+                .commit_new_withdrawal_operation_bundle_with_rpc_audit(
+                    &withdrawal,
+                    &operation,
+                    &intent,
+                    &progress,
+                    RpcAuditBatch {
+                        caller: ic_cdk::api::canister_self(),
+                        timestamp_ns: ic_cdk::api::time(),
+                        kinds: rpc_audit,
+                    },
+                )
                 .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
         } else {
             let amount_out = amount_out.expect("validated withdrawal amount");
@@ -361,7 +398,13 @@ fn ingest_notified_withdrawal(
                 })
                 .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
             store
-                .commit_new_withdrawal_release_bundle(&withdrawal, &progress)
+                .commit_new_withdrawal_release_bundle_with_rpc_audit(
+                    &withdrawal,
+                    &progress,
+                    ic_cdk::api::canister_self(),
+                    ic_cdk::api::time(),
+                    rpc_audit,
+                )
                 .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
         }
         Ok(NotifyWithdrawalReceipt::Ingested {
@@ -797,24 +840,52 @@ async fn base_mint_snapshot(
     }
     let snapshot = match evm_rpc::bridge_snapshot(config).await {
         Ok(snapshot) => snapshot,
-        Err(_) => {
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .fail_base_snapshot_refresh()
-                    .map_err(|_| DepositError::StorageFailure)
-            })?;
+        Err(error) => {
+            if matches!(error, evm_rpc::ObservationError::Inconsistent) {
+                let decision = evm_rpc::quorum_loss_decision("request_deposit", None);
+                STORE.with(|store| {
+                    store
+                        .borrow_mut()
+                        .fail_base_snapshot_refresh_with_rpc_audit(
+                            ic_cdk::api::canister_self(),
+                            ic_cdk::api::time(),
+                            vec![rpc_decision_event_kind(&decision)],
+                        )
+                        .map_err(|_| DepositError::StorageFailure)
+                })?;
+            } else {
+                STORE.with(|store| {
+                    store
+                        .borrow_mut()
+                        .fail_base_snapshot_refresh()
+                        .map_err(|_| DepositError::StorageFailure)
+                })?;
+            }
+            if matches!(error, evm_rpc::ObservationError::ChainIdMismatch) {
+                pause_deposits_for_chain_mismatch()?;
+            }
             return Err(DepositError::BaseObservationUnavailable);
         }
     };
+    let completed = evm_rpc::latest_completed_safe_observation()
+        .ok_or(DepositError::BaseObservationUnavailable)?;
     STORE.with(|store| {
         store
             .borrow_mut()
-            .finish_base_snapshot_refresh(
+            .finish_base_snapshot_refresh_with_rpc_audit(
                 ic_cdk::api::time(),
                 snapshot.mint,
                 snapshot.bridge_signer,
                 snapshot.deposits_paused,
+                ic_cdk::api::canister_self(),
+                vec![
+                    rpc_audit_event_kind(&completed.rpc_audit),
+                    rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
+                        "request_deposit",
+                        None,
+                        false,
+                    )),
+                ],
             )
             .map_err(|_| DepositError::StorageFailure)
     })?;
@@ -824,6 +895,22 @@ async fn base_mint_snapshot(
         snapshot.deposits_paused,
         expected_signer,
     )
+}
+
+fn pause_deposits_for_chain_mismatch() -> Result<(), DepositError> {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let mut admin = store
+            .admin_state()
+            .map_err(|_| DepositError::StorageFailure)?;
+        if admin.deposits_paused {
+            return Ok(());
+        }
+        admin.deposits_paused = true;
+        store
+            .set_admin_state(&admin)
+            .map_err(|_| DepositError::StorageFailure)
+    })
 }
 
 fn validate_base_deposit_snapshot(

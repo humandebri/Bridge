@@ -3,8 +3,8 @@ use bridge_core::{
     checked_counter_transition, checked_requirement, counter_delta, deposit_phase_allows,
     deposit_phase_step, evidence_matches, fee_delta_once, mint_admission_total, next_attempt,
     nonce_next, nonce_too_low_is_submitted, payout_allowed, payout_debit, refund_allowed,
-    replay_matches, resources_sufficient, scan_complete, withdrawal_phase_allows,
-    withdrawal_phase_step,
+    release_transfer_matches, replay_matches, resources_sufficient, scan_complete,
+    withdrawal_phase_allows, withdrawal_phase_step,
 };
 
 #[test]
@@ -143,6 +143,9 @@ fn attempt_and_fee_boundaries_are_checked() {
     assert_eq!(fee_delta_once(false, true, 9), 9);
     assert_eq!(fee_delta_once(true, true, 9), 0);
     assert_eq!(fee_delta_once(false, false, 9), 0);
+    assert!(release_transfer_matches(85, 5, 85, 5));
+    assert!(!release_transfer_matches(84, 5, 85, 5));
+    assert!(!release_transfer_matches(85, 6, 85, 5));
     assert_eq!(checked_counter_transition(7, false, true), Some(8));
     assert_eq!(checked_counter_transition(7, true, false), Some(6));
     assert_eq!(checked_counter_transition(0, true, false), None);

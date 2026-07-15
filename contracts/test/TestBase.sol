@@ -23,6 +23,9 @@ interface Vm {
     function recordLogs() external;
     function getRecordedLogs() external returns (Log[] memory logs);
     function bound(uint256 value, uint256 minimum, uint256 maximum) external pure returns (uint256 result);
+    function deployCode(string calldata artifactPath, bytes calldata constructorArgs)
+        external
+        returns (address deployed);
 }
 
 abstract contract TestBase {
@@ -30,5 +33,22 @@ abstract contract TestBase {
 
     function _sameString(string memory left, string memory right) internal pure returns (bool) {
         return keccak256(bytes(left)) == keccak256(bytes(right));
+    }
+
+    function _deployTestTimelock(address operator) internal returns (address) {
+        address[] memory proposers = new address[](1);
+        proposers[0] = operator;
+        address[] memory cancellers = new address[](1);
+        cancellers[0] = address(uint160(operator) ^ uint160(0xCA11));
+        address[] memory executors = new address[](1);
+        executors[0] = operator;
+        return vm.deployCode(
+            "BridgeTimelockController.sol:BridgeTimelockController",
+            abi.encode(72 hours, proposers, cancellers, executors)
+        );
+    }
+
+    function _timelockCodeHash(address timelock) internal view returns (bytes32) {
+        return timelock.codehash;
     }
 }

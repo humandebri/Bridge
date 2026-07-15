@@ -39,7 +39,7 @@ reverted transactionは自動再送も管理APIによるretryも行わない。�
 
 ## Confirmation schedulerと手動復旧
 
-Submitted EVM transactionは2、5、10、20、40分時点でCanisterがSafe confirmationを確認する。receiptが未確定の場合だけ次回へ進み、5回目で`ConfirmationCheckExhausted`としてscheduleを解除する。RPC不一致・停止・不正応答、署名、nonce、Ledger障害は自動再試行しない。BrowserはCanisterのsettlement update callを自動実行せず、schedule中のrecordを表示している間だけHistory queryを60秒ごとに更新する。
+Submitted EVM transactionは2、5、10分時点でCanisterがSafe confirmationを確認する。receiptが未確定の場合だけ次回へ進み、10分時点の3回目でも未確定なら`ConfirmationCheckExhausted`として失敗を表示し、scheduleを解除する。RPC不一致・停止・不正応答、署名、nonce、Ledger障害は自動再試行しない。BrowserはCanisterのsettlement update callを自動実行せず、schedule中のrecordを表示している間だけHistory queryを60秒ごとに更新する。
 
 `confirmation_scheduler.healthy = false`の場合は`last_error`と`last_run_ns`を記録する。schedulerが対象scheduleを特定できなかった場合、record viewは自動確認時刻を隠して手動Retryを表示し、認可済み`continue_*`が外部call前に残存scheduleを解除して停止理由を保存する。hot loopを疑う場合はscheduled件数、EVM RPC call数、cycles減少を確認して新規Depositをpauseする。RPC障害では複数providerの応答一致とcanonical Safe headを回復させてから手動Retryする。`ConfirmationCheckExhausted`ではtransaction hashをBase explorerと独立RPCで調査し、canonical receiptの有無を確認する。Safe-confirmed revertは前節の手順に従い、手動Retryしない。
 

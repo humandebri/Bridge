@@ -427,6 +427,26 @@ fn release_and_bad_fee_repricing_are_fail_closed() {
 }
 
 #[test]
+fn withdrawal_release_rejects_a_ledger_fee_not_bound_to_settlement() {
+    let mut withdrawal = observed_withdrawal();
+    let mismatched = WithdrawalEvent::StartRelease {
+        attempt: Box::new(attempt(transfer(
+            LedgerOperation::ReleaseWithdrawal,
+            85,
+            6,
+            70,
+        ))),
+        settlement: settlement(),
+    };
+
+    assert_eq!(
+        withdrawal.apply(mismatched),
+        Err(CoreError::SettlementMismatch)
+    );
+    assert_eq!(withdrawal.state, WithdrawalState::Observed);
+}
+
+#[test]
 fn withdrawal_refund_path_cannot_become_released() {
     let mut withdrawal = observed_withdrawal();
     let refund = WithdrawalEvent::StartRefund {

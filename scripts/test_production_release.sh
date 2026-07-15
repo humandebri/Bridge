@@ -28,9 +28,9 @@ LOCK
 cat >"$TEST_TMP_ROOT/source/src/main.rs" <<'RS'
 use std::{env,fs,path::Path};
 fn copy_dir(from:&Path,to:&Path){fs::create_dir_all(to).unwrap();for e in fs::read_dir(from).unwrap(){let e=e.unwrap();let d=to.join(e.file_name());if e.path().is_dir(){copy_dir(&e.path(),&d)}else{fs::copy(e.path(),d).unwrap();}}}
-fn main(){let a:Vec<String>=env::args().skip(1).collect();fs::OpenOptions::new().create(true).append(true).open(env::var("GATE_CALLS").unwrap()).and_then(|mut f|{use std::io::Write;writeln!(f,"{}",a.join(" "))}).unwrap();if a[0].starts_with("render-"){copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}println!("gate=pass manifest_sha256={:064}",1);if env::var("GATE_RESULT").as_deref()==Ok("fail"){std::process::exit(1)}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();fs::OpenOptions::new().create(true).append(true).open(env::var("GATE_CALLS").unwrap()).and_then(|mut f|{use std::io::Write;writeln!(f,"{}",a.join(" "))}).unwrap();if a[0].starts_with("render-"){copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate"{println!("{:064}",2);return}println!("gate=pass manifest_sha256={:064}",1);if env::var("GATE_RESULT").as_deref()==Ok("fail"){std::process::exit(1)}}
 RS
-printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' >"$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' 'printf '\''{"bridge":{"transaction_hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","block_number":1,"block_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"timelock":{"transaction_hash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","block_number":1,"block_hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}\n'\'' >"$BRIDGE_DEPLOYMENT_BINDING_FILE"' >"$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' >"$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TEST_TMP_ROOT/source/scripts/production-live-preflight.sh"
 cp "$ROOT/scripts/production-release.sh" "$TEST_TMP_ROOT/source/scripts/production-release.sh"
@@ -42,11 +42,12 @@ printf '%s\n' '#!/usr/bin/env bash' 'touch "$PROFILE_OVERRIDE_MARKER"' 'exit 0' 
 chmod +x "$TEST_TMP_ROOT/malicious-profile"
 SOURCE_REVISION="$(git -C "$TEST_TMP_ROOT/source" rev-parse HEAD)"
 SOURCE_TREE_SHA256="$(git -C "$TEST_TMP_ROOT/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
-PROFILE_SHA256="$(printf profile | shasum -a 256 | awk '{print $1}')"
+PROFILE_CONTENT='{"deployment_block":0,"name":"planned-profile"}'
+PROFILE_SHA256="$(printf '%s' "$PROFILE_CONTENT" | shasum -a 256 | awk '{print $1}')"
 WASM_SHA256="$(printf wasm | shasum -a 256 | awk '{print $1}')"
 RUNTIME_SHA256="$(printf runtime | shasum -a 256 | awk '{print $1}')"
-printf profile >"$TEST_TMP_ROOT/bundle-a/profile.json"
-printf profile >"$TEST_TMP_ROOT/bundle-b/profile.json"
+printf '%s' "$PROFILE_CONTENT" >"$TEST_TMP_ROOT/bundle-a/profile.json"
+printf '%s' "$PROFILE_CONTENT" >"$TEST_TMP_ROOT/bundle-b/profile.json"
 printf '{}\n' >"$TEST_TMP_ROOT/release-inputs/canister-init.json"
 printf '{}\n' >"$TEST_TMP_ROOT/release-inputs/contract-constructor-args.json"
 printf '{}\n' >"$TEST_TMP_ROOT/release-inputs/ui-runtime-profile.json"
@@ -95,6 +96,18 @@ expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --release-inputs "$T
 ACTION_MARKER="$TEST_TMP_ROOT/deployed" run_release deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 [[ -e "$TEST_TMP_ROOT/deployed" ]]
 [[ -s "$TEST_TMP_ROOT/receipt.json" ]]
+[[ -s "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json" ]]
+[[ "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["deployment_block"])' "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json")" == 1 ]]
+cp "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json" "$TEST_TMP_ROOT/bundle-b/profile.json"
+POST_PROFILE_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/profile.json" | awk '{print $1}')"
+python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$POST_PROFILE_SHA256" <<'PY'
+import json,sys
+p=sys.argv[1]; value=json.load(open(p))
+next(a for a in value['artifacts'] if a['path']=='profile.json')['sha256']=sys.argv[2]
+json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
+PY
+python3 -c 'import json,sys; json.dump({"profile_file_sha256":sys.argv[2]},open(sys.argv[1],"w"),sort_keys=True,separators=(",",":")); open(sys.argv[1],"a").write("\n")' \
+  "$TEST_TMP_ROOT/release-inputs/release-inputs-manifest.json" "$POST_PROFILE_SHA256"
 cp "$TEST_TMP_ROOT/receipt.json" "$TEST_TMP_ROOT/bundle-b/gate-a-receipt.json"
 rg -q '^validate-bundle --offline ' "$TEST_TMP_ROOT/gate-calls"
 
@@ -107,6 +120,19 @@ write_gate 0
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
   --live-preflight /bin/true --release-inputs "$TEST_TMP_ROOT/release-inputs" \
   --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+cp "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$TEST_TMP_ROOT/manifest-valid.json"
+cp "$TEST_TMP_ROOT/release-inputs/release-inputs-manifest.json" "$TEST_TMP_ROOT/inputs-valid.json"
+python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$TEST_TMP_ROOT/release-inputs/release-inputs-manifest.json" <<'PY'
+import json,sys
+manifest=json.load(open(sys.argv[1])); forged='f'*64
+next(a for a in manifest['artifacts'] if a['path']=='profile.json')['sha256']=forged
+json.dump(manifest,open(sys.argv[1],'w'),sort_keys=True,separators=(',',':'))
+json.dump({'profile_file_sha256':forged},open(sys.argv[2],'w'),sort_keys=True,separators=(',',':'))
+PY
+expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+mv "$TEST_TMP_ROOT/manifest-valid.json" "$TEST_TMP_ROOT/bundle-b/release-manifest.json"
+mv "$TEST_TMP_ROOT/inputs-valid.json" "$TEST_TMP_ROOT/release-inputs/release-inputs-manifest.json"
 ACTION_MARKER="$TEST_TMP_ROOT/activated" run_release activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
   --release-inputs "$TEST_TMP_ROOT/release-inputs" --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ -e "$TEST_TMP_ROOT/activated" ]]

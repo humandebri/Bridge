@@ -6,7 +6,7 @@ status: accepted
 
 Base Adminの危険方向操作はOpenZeppelin Contracts 5.6.1の`TimelockController`を経由する。
 TimelockをBridgeより先にdeployし、初期minimum delayを72時間、Base Admin hardware walletをproposerとexecutor、別hardware walletをcanceller、追加adminを`address(0)`として構成する。
-Timelock自身だけが`DEFAULT_ADMIN_ROLE`を持ち、delayとroleの変更もschedule済みの自己callで実行する。
+Timelock自身だけが`DEFAULT_ADMIN_ROLE`を持つ。構築後のTimelock role集合は凍結し、自己callを含むgrant、revoke、renounceを拒否する。role変更は、新しい承認済みrole集合のTimelockを配置してBridgeのTimelock rotationを行う。
 
 ## Considered Options
 

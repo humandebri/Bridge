@@ -83,6 +83,17 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           ln -s "$(find "$HOME/.local/verus" -type f -name verus -print -quit)" "$HOME/.local/bin/verus"
 
+      - name: Install Lean 4.30.0
+        uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          use-github-cache: false
+
+      - name: Install UI dependencies and Chromium
+        run: |
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui exec playwright install --with-deps chromium
+
       - name: Run Phase 1E gate
         run: scripts/ci-local.sh all
 

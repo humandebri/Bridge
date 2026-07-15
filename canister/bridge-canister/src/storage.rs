@@ -13,7 +13,14 @@ use ic_sqlite_vfs::db::migrate::Migration;
 use ic_sqlite_vfs::{params, DbError, DbHandle, DefaultMemoryImpl, MemoryId, MemoryManager};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fmt, io::Cursor, marker::PhantomData, ops::Bound as RangeBound, ops::RangeBounds};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    io::Cursor,
+    marker::PhantomData,
+    ops::Bound as RangeBound,
+    ops::RangeBounds,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -94,6 +101,25 @@ enum FeePayoutBundleFailpoint {
     SingletonState,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum RecordWriteFailpoint {
+    Encode,
+    RemoveIndex,
+    AddIndex,
+    OperationOwner,
+    Record,
+    SingletonState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum RpcAtomicFailpoint {
+    Business,
+    Audit,
+    Singleton,
+}
+
 #[cfg(test)]
 thread_local! {
     static ACKNOWLEDGEMENT_BUNDLE_FAILPOINT: std::cell::Cell<Option<AcknowledgementBundleFailpoint>> = const { std::cell::Cell::new(None) };
@@ -102,6 +128,45 @@ thread_local! {
     static HOLD_BUNDLE_FAILPOINT: std::cell::Cell<Option<HoldBundleFailpoint>> = const { std::cell::Cell::new(None) };
     static RESOLVE_HOLD_BUNDLE_FAILPOINT: std::cell::Cell<Option<ResolveHoldBundleFailpoint>> = const { std::cell::Cell::new(None) };
     static FEE_PAYOUT_BUNDLE_FAILPOINT: std::cell::Cell<Option<FeePayoutBundleFailpoint>> = const { std::cell::Cell::new(None) };
+    static RECORD_WRITE_FAILPOINT: std::cell::Cell<Option<RecordWriteFailpoint>> = const { std::cell::Cell::new(None) };
+    static RPC_ATOMIC_FAILPOINT: std::cell::Cell<Option<RpcAtomicFailpoint>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn set_rpc_atomic_failpoint(value: Option<RpcAtomicFailpoint>) {
+    RPC_ATOMIC_FAILPOINT.with(|slot| slot.set(value));
+}
+
+fn rpc_atomic_db_failpoint(point: RpcAtomicFailpoint) -> Result<(), DbError> {
+    #[cfg(test)]
+    if RPC_ATOMIC_FAILPOINT.with(|slot| slot.get()) == Some(point) {
+        return Err(DbError::Constraint("test RPC atomic failpoint".into()));
+    }
+    let _ = point;
+    Ok(())
+}
+
+#[cfg(test)]
+fn set_record_write_failpoint(value: Option<RecordWriteFailpoint>) {
+    RECORD_WRITE_FAILPOINT.with(|slot| slot.set(value));
+}
+
+fn record_write_storage_failpoint(point: RecordWriteFailpoint) -> Result<(), StorageError> {
+    #[cfg(test)]
+    if RECORD_WRITE_FAILPOINT.with(|slot| slot.get()) == Some(point) {
+        return Err(StorageError::EncodeFailed);
+    }
+    let _ = point;
+    Ok(())
+}
+
+fn record_write_db_failpoint(point: RecordWriteFailpoint) -> Result<(), DbError> {
+    #[cfg(test)]
+    if RECORD_WRITE_FAILPOINT.with(|slot| slot.get()) == Some(point) {
+        return Err(DbError::Constraint("test record write failpoint".into()));
+    }
+    let _ = point;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -472,6 +537,15 @@ fn withdrawal_operation_id(value: &WithdrawalRecord) -> Option<u64> {
     }
 }
 
+fn withdrawal_operation_kind(value: &WithdrawalRecord) -> Option<EvmOperationKind> {
+    match value.state {
+        WithdrawalState::ReleaseCancellationPending { .. } => Some(EvmOperationKind::CancelRelease),
+        WithdrawalState::AcknowledgePending { .. } => Some(EvmOperationKind::AcknowledgeRelease),
+        WithdrawalState::RefundPending { .. } => Some(EvmOperationKind::RefundWithdrawal),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StableBlob(Vec<u8>);
 
@@ -824,6 +898,65 @@ fn decrement_table_count(
     )
 }
 
+fn commit_audit_batch(
+    connection: &ic_sqlite_vfs::db::UpdateConnection<'_>,
+    audit: &PreparedAuditBatch,
+) -> Result<(), DbError> {
+    for (sequence, event_blob) in &audit.events {
+        connection.execute(
+            "INSERT INTO audit_events(key, value) VALUES (?1, ?2)",
+            params![sequence.to_sql_bytes(), event_blob.to_sql_bytes()],
+        )?;
+        increment_table_count(connection, "audit_events")?;
+    }
+    for sequence in &audit.pruned_sequences {
+        connection.execute(
+            "DELETE FROM audit_events WHERE key = ?1",
+            params![sequence.to_sql_bytes()],
+        )?;
+        decrement_table_count(connection, "audit_events")?;
+    }
+    Ok(())
+}
+
+fn upsert_table_entry(
+    connection: &ic_sqlite_vfs::db::UpdateConnection<'_>,
+    table: &'static str,
+    key: Vec<u8>,
+    value: Vec<u8>,
+) -> Result<(), DbError> {
+    let select_sql = format!("SELECT 1 FROM {table} WHERE key = ?1");
+    let insert_sql = format!(
+        "INSERT INTO {table}(key, value) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    );
+    let existed = connection
+        .query_optional_scalar::<i64>(&select_sql, params![key.clone()])?
+        .is_some();
+    connection.execute(&insert_sql, params![key, value])?;
+    if !existed {
+        increment_table_count(connection, table)?;
+    }
+    Ok(())
+}
+
+fn remove_table_entry(
+    connection: &ic_sqlite_vfs::db::UpdateConnection<'_>,
+    table: &'static str,
+    key: Vec<u8>,
+) -> Result<(), DbError> {
+    let select_sql = format!("SELECT 1 FROM {table} WHERE key = ?1");
+    if connection
+        .query_optional_scalar::<i64>(&select_sql, params![key.clone()])?
+        .is_some()
+    {
+        let delete_sql = format!("DELETE FROM {table} WHERE key = ?1");
+        connection.execute(&delete_sql, params![key])?;
+        decrement_table_count(connection, table)?;
+    }
+    Ok(())
+}
+
 fn upsert_confirmation_schedule(
     connection: &ic_sqlite_vfs::db::UpdateConnection<'_>,
     kind: SettlementJobKind,
@@ -1131,6 +1264,27 @@ pub enum AuditEventKind {
         transaction_hash: Vec<u8>,
         confirmed_head_block_number: u64,
     },
+    EvmRpcObservation {
+        evm_rpc_canister_id: Principal,
+        call_method: String,
+        request_digest: Vec<u8>,
+        quorum_response_digest: Vec<u8>,
+        safe_block_number: u64,
+        safe_block_hash: Vec<u8>,
+        transaction_hash: Option<Vec<u8>>,
+    },
+    EvmRpcDecision {
+        kind: String,
+        operation: String,
+        configured_provider_count: u8,
+        required_threshold: u8,
+        stop_reason: Option<String>,
+        ledger_call_performed: bool,
+        bridge_operation_continued: bool,
+        deposits_paused: bool,
+        automatically_resigned: bool,
+        transaction_hash: Option<Vec<u8>>,
+    },
 }
 
 #[derive(CandidType, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1158,6 +1312,18 @@ pub struct AuditEvent {
     pub timestamp_ns: u64,
     pub caller: Principal,
     pub kind: AuditEventKind,
+}
+
+pub struct RpcAuditBatch {
+    pub caller: Principal,
+    pub timestamp_ns: u64,
+    pub kinds: Vec<AuditEventKind>,
+}
+
+struct PreparedAuditBatch {
+    events: Vec<(u64, StableBlob)>,
+    retention_blob: StableBlob,
+    pruned_sequences: Vec<u64>,
 }
 
 #[derive(CandidType, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1508,6 +1674,7 @@ impl StableStore {
             ));
         }
         store.validate_singletons()?;
+        store.validate_relations()?;
         Ok(store)
     }
 
@@ -1522,6 +1689,290 @@ impl StableStore {
         decode::<AuditRetentionState>(self.audit_retention.get())?;
         decode::<SettlementAdmissionControl>(self.settlement_admission.get())?;
         decode::<ConfirmationSchedulerHealth>(self.confirmation_scheduler_health.get())?;
+        Ok(())
+    }
+
+    fn validate_relations(&self) -> Result<(), StorageError> {
+        const COUNTED_TABLES: &[&str] = &[
+            "deposits",
+            "withdrawals",
+            "evm_operations",
+            "reconciliation_holds",
+            "evm_execution_payloads",
+            "reconciliation_scans",
+            "deposit_intents",
+            "audit_events",
+            "fee_payouts",
+            "deposit_owner_index",
+            "fee_payout_state_index",
+            "operation_owner_index",
+            "evm_state_index",
+            "pull_pending_deposit_index",
+            "release_pending_withdrawal_index",
+            "open_hold_index",
+            "owner_deposit_sequences",
+        ];
+        self.handle.query(|connection| {
+            for table in COUNTED_TABLES {
+                let actual = connection
+                    .query_scalar::<i64>(&format!("SELECT COUNT(*) FROM {table}"), params![])?;
+                let recorded = connection.query_scalar::<Vec<u8>>(
+                    "SELECT count FROM table_counts WHERE name = ?1",
+                    params![*table],
+                )?;
+                let recorded = u64::from_sql_bytes(recorded)
+                    .map_err(|_| DbError::Constraint("invalid table count".into()))?;
+                if u64::try_from(actual).ok() != Some(recorded) {
+                    return Err(DbError::Constraint("table count mismatch".into()));
+                }
+            }
+            Ok(())
+        })?;
+
+        let deposits = self.handle.query(|connection| {
+            connection.query_all("SELECT key, value FROM deposits", params![], |row| {
+                Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+            })
+        })?;
+        let withdrawals = self.handle.query(|connection| {
+            connection.query_all("SELECT key, value FROM withdrawals", params![], |row| {
+                Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+            })
+        })?;
+        let holds = self.handle.query(|connection| {
+            connection.query_all(
+                "SELECT key, value FROM reconciliation_holds",
+                params![],
+                |row| Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?)),
+            )
+        })?;
+        let evm_operations = self.handle.query(|connection| {
+            connection.query_all("SELECT key, value FROM evm_operations", params![], |row| {
+                Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+            })
+        })?;
+        let evm_execution_payloads = self.handle.query(|connection| {
+            connection.query_all(
+                "SELECT key, value FROM evm_execution_payloads",
+                params![],
+                |row| Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?)),
+            )
+        })?;
+
+        let mut expected_pull = BTreeSet::new();
+        let mut expected_release = BTreeSet::new();
+        let mut expected_open_holds = BTreeSet::new();
+        let mut expected_owners = BTreeSet::new();
+        let mut expected_operations = BTreeMap::new();
+        let mut pending_ledger_operations = 0u64;
+        let mut reserved_deposit_mint_operations = 0u64;
+        let mut reserved_deposit_mint_amount = 0u128;
+        let mut nonterminal_withdrawals = 0u64;
+        let mut reconciliation_holds = 0u64;
+
+        for (key, bytes) in deposits {
+            let key: [u8; 32] = key.try_into().map_err(|_| StorageError::DecodeFailed)?;
+            let record: DepositRecord = decode(&StableBlob::new(bytes)?)?;
+            if key != record.id.bytes() {
+                return Err(StorageError::DecodeFailed);
+            }
+            if is_pending_deposit_ledger(&record) {
+                expected_pull.insert(key);
+                pending_ledger_operations = pending_ledger_operations
+                    .checked_add(1)
+                    .ok_or(StorageError::CounterOverflow)?;
+            }
+            if is_deposit_mint_reserved(&record) {
+                reserved_deposit_mint_operations = reserved_deposit_mint_operations
+                    .checked_add(1)
+                    .ok_or(StorageError::CounterOverflow)?;
+                reserved_deposit_mint_amount = reserved_deposit_mint_amount
+                    .checked_add(record.net_amount.get())
+                    .ok_or(StorageError::CounterOverflow)?;
+            }
+            if let Some(operation_id) = deposit_operation_id(&record) {
+                let owner = encode(&OperationOwner::Deposit(key))?.to_sql_bytes();
+                expected_owners.insert((operation_id, owner.clone()));
+                if expected_operations
+                    .insert(
+                        operation_id,
+                        (owner, record.payload_hash, EvmOperationKind::MintDeposit),
+                    )
+                    .is_some()
+                {
+                    return Err(StorageError::DatabaseFailure);
+                }
+            }
+        }
+        for (key, bytes) in withdrawals {
+            let key: [u8; 32] = key.try_into().map_err(|_| StorageError::DecodeFailed)?;
+            let record: WithdrawalRecord = decode(&StableBlob::new(bytes)?)?;
+            if key != record.id.bytes() {
+                return Err(StorageError::DecodeFailed);
+            }
+            if is_pending_withdrawal_ledger(&record) {
+                expected_release.insert(key);
+                pending_ledger_operations = pending_ledger_operations
+                    .checked_add(1)
+                    .ok_or(StorageError::CounterOverflow)?;
+            }
+            if is_nonterminal_withdrawal(&record) {
+                nonterminal_withdrawals = nonterminal_withdrawals
+                    .checked_add(1)
+                    .ok_or(StorageError::CounterOverflow)?;
+            }
+            if let Some(operation_id) = withdrawal_operation_id(&record) {
+                let operation_kind =
+                    withdrawal_operation_kind(&record).ok_or(StorageError::DatabaseFailure)?;
+                let owner = encode(&OperationOwner::Withdrawal(key))?.to_sql_bytes();
+                expected_owners.insert((operation_id, owner.clone()));
+                if expected_operations
+                    .insert(operation_id, (owner, record.payload_hash, operation_kind))
+                    .is_some()
+                {
+                    return Err(StorageError::DatabaseFailure);
+                }
+            }
+        }
+        for (key, bytes) in holds {
+            let key = u64::from_sql_bytes(key).map_err(|_| StorageError::DecodeFailed)?;
+            let record: ReconciliationHoldRecord = decode(&StableBlob::new(bytes)?)?;
+            if key != record.id.get() {
+                return Err(StorageError::DecodeFailed);
+            }
+            if is_open_hold(&record) {
+                expected_open_holds.insert(key);
+                reconciliation_holds = reconciliation_holds
+                    .checked_add(1)
+                    .ok_or(StorageError::CounterOverflow)?;
+            }
+        }
+
+        let mut expected_evm_state_index = BTreeSet::new();
+        let mut expected_payload_ids = BTreeSet::new();
+        let mut pending_evm_operations = 0u64;
+        let mut reverted_evm_operations = 0u64;
+        let mut awaiting_nonce_evm_operations = 0u64;
+        for (key, bytes) in evm_operations {
+            let key = u64::from_sql_bytes(key).map_err(|_| StorageError::DecodeFailed)?;
+            let record: EvmOperationRecord = decode(&StableBlob::new(bytes)?)?;
+            if key != record.id.get() {
+                return Err(StorageError::DecodeFailed);
+            }
+            if let Some(index_key) = evm_state_index_key(&record)? {
+                expected_evm_state_index.insert((index_key, 0u8));
+            }
+            if is_pending_evm(&record) {
+                pending_evm_operations = pending_evm_operations
+                    .checked_add(1)
+                    .ok_or(StorageError::CounterOverflow)?;
+            }
+            if is_reverted_evm(&record) {
+                reverted_evm_operations = reverted_evm_operations
+                    .checked_add(1)
+                    .ok_or(StorageError::CounterOverflow)?;
+            }
+            if matches!(record.state, EvmOperationState::Queued) {
+                awaiting_nonce_evm_operations = awaiting_nonce_evm_operations
+                    .checked_add(1)
+                    .ok_or(StorageError::CounterOverflow)?;
+            }
+
+            let parent = expected_operations.get(&key);
+            match record.state {
+                EvmOperationState::Queued
+                | EvmOperationState::Prepared
+                | EvmOperationState::Submitted { .. } => {
+                    if !parent.is_some_and(|(_, payload_hash, kind)| {
+                        *payload_hash == record.payload_hash && *kind == record.kind
+                    }) {
+                        return Err(StorageError::DatabaseFailure);
+                    }
+                    if matches!(
+                        record.state,
+                        EvmOperationState::Queued | EvmOperationState::Prepared
+                    ) {
+                        expected_payload_ids.insert(key);
+                    }
+                }
+                EvmOperationState::Confirmed { .. } | EvmOperationState::Reverted { .. } => {
+                    if parent.is_some() {
+                        return Err(StorageError::DatabaseFailure);
+                    }
+                }
+            }
+        }
+
+        let mut actual_payload_ids = BTreeSet::new();
+        for (key, bytes) in evm_execution_payloads {
+            let key = u64::from_sql_bytes(key).map_err(|_| StorageError::DecodeFailed)?;
+            let payload: EvmExecutionPayload = decode(&StableBlob::new(bytes)?)?;
+            let operation = self
+                .evm_operation(key)?
+                .ok_or(StorageError::DatabaseFailure)?;
+            let valid = match (&operation.state, &payload) {
+                (EvmOperationState::Queued, EvmExecutionPayload::AwaitingNonce(intent)) => {
+                    intent.operation_id == operation.id
+                        && intent.payload_hash == operation.payload_hash
+                }
+                (EvmOperationState::Prepared, EvmExecutionPayload::Prepared(envelope)) => {
+                    envelope.operation_id == operation.id
+                        && envelope.payload_hash == operation.payload_hash
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err(StorageError::DatabaseFailure);
+            }
+            actual_payload_ids.insert(key);
+        }
+
+        let actual_pull = self
+            .pull_pending_deposit_index
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
+        let actual_release = self
+            .release_pending_withdrawal_index
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
+        let actual_open_holds = self
+            .open_hold_index
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
+        let actual_owners = self
+            .operation_owner_index
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().to_sql_bytes()))
+            .collect();
+        let actual_evm_state_index = self
+            .evm_state_index
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value()))
+            .collect();
+        if expected_pull != actual_pull
+            || expected_release != actual_release
+            || expected_open_holds != actual_open_holds
+            || expected_owners != actual_owners
+            || expected_evm_state_index != actual_evm_state_index
+            || expected_payload_ids != actual_payload_ids
+        {
+            return Err(StorageError::DatabaseFailure);
+        }
+        let counters = self.counters()?;
+        if counters.pending_ledger_operations != pending_ledger_operations
+            || counters.reserved_deposit_mint_operations != reserved_deposit_mint_operations
+            || counters.reserved_deposit_mint_amount != reserved_deposit_mint_amount
+            || counters.nonterminal_withdrawals != nonterminal_withdrawals
+            || counters.reconciliation_holds != reconciliation_holds
+            || counters.pending_evm_operations != pending_evm_operations
+            || counters.reverted_evm_operations != reverted_evm_operations
+            || counters.awaiting_nonce_evm_operations != awaiting_nonce_evm_operations
+        {
+            return Err(StorageError::DatabaseFailure);
+        }
         Ok(())
     }
 
@@ -2012,10 +2463,101 @@ impl StableStore {
         self.set_deposit_admission(&admission)
     }
 
+    pub fn finish_base_snapshot_refresh_with_rpc_audit(
+        &mut self,
+        observed_at_ns: u64,
+        snapshot: BaseMintSnapshot,
+        bridge_signer: [u8; 20],
+        deposits_paused: bool,
+        caller: Principal,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        let previous_admission = self.deposit_admission.get().clone();
+        admission.base_snapshot = Some(CachedBaseMintSnapshot {
+            observed_at_ns,
+            snapshot,
+            bridge_signer,
+            deposits_paused,
+        });
+        admission.refresh_started_at_ns = None;
+        let admission_blob = encode(&admission)?;
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = self.prepare_audit_batch(&mut counters, caller, observed_at_ns, audit_kinds)?;
+        let counters_blob = encode(&counters)?;
+        self.handle.update(|connection| {
+            let persisted_admission = connection.query_scalar::<Vec<u8>>(
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_admission != previous_admission.to_sql_bytes()
+                || persisted_counters != previous_counters.to_sql_bytes()
+            {
+                return Err(DbError::Constraint("stale Base snapshot refresh".into()));
+            }
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            commit_audit_batch(connection, &audit)?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET deposit_admission = ?1, counters = ?2, audit_retention = ?3 WHERE id = 1",
+                params![admission_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        self.deposit_admission.value = admission_blob;
+        self.counters.value = counters_blob;
+        self.audit_retention.value = audit.retention_blob;
+        Ok(())
+    }
+
     pub fn fail_base_snapshot_refresh(&mut self) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
         admission.refresh_started_at_ns = None;
         self.set_deposit_admission(&admission)
+    }
+
+    pub fn fail_base_snapshot_refresh_with_rpc_audit(
+        &mut self,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        let previous_admission = self.deposit_admission.get().clone();
+        admission.refresh_started_at_ns = None;
+        let admission_blob = encode(&admission)?;
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = self.prepare_audit_batch(&mut counters, caller, timestamp_ns, audit_kinds)?;
+        let counters_blob = encode(&counters)?;
+        self.handle.update(|connection| {
+            if connection.query_scalar::<Vec<u8>>(
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1", params![])?
+                != previous_admission.to_sql_bytes()
+                || connection.query_scalar::<Vec<u8>>(
+                    "SELECT counters FROM singleton_state WHERE id = 1", params![])?
+                    != previous_counters.to_sql_bytes()
+            {
+                return Err(DbError::Constraint("stale failed Base snapshot refresh".into()));
+            }
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            commit_audit_batch(connection, &audit)?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET deposit_admission = ?1, counters = ?2, audit_retention = ?3 WHERE id = 1",
+                params![admission_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        self.deposit_admission.value = admission_blob;
+        self.counters.value = counters_blob;
+        self.audit_retention.value = audit.retention_blob;
+        Ok(())
     }
 
     pub fn signer_address(&self) -> Result<Option<[u8; 20]>, StorageError> {
@@ -2089,12 +2631,224 @@ impl StableStore {
         self.admin_state.set(encode(&Some(value.clone()))?);
         Ok(())
     }
+
+    pub fn pause_deposits_with_rpc_audit(
+        &mut self,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        let mut admin = self.admin_state()?;
+        admin.deposits_paused = true;
+        let previous_admin = self.admin_state.get().clone();
+        let admin_blob = encode(&Some(admin))?;
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = self.prepare_audit_batch(&mut counters, caller, timestamp_ns, audit_kinds)?;
+        let counters_blob = encode(&counters)?;
+        self.handle.update(|connection| {
+            let persisted_admin = connection.query_scalar::<Vec<u8>>(
+                "SELECT admin_state FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_admin != previous_admin.to_sql_bytes()
+                || persisted_counters != previous_counters.to_sql_bytes()
+            {
+                return Err(DbError::Constraint("stale nonce-conflict pause".into()));
+            }
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            commit_audit_batch(connection, &audit)?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET admin_state = ?1, counters = ?2, audit_retention = ?3 WHERE id = 1",
+                params![admin_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        self.admin_state.value = admin_blob;
+        self.counters.value = counters_blob;
+        self.audit_retention.value = audit.retention_blob;
+        Ok(())
+    }
     pub fn append_audit_event(
         &mut self,
         caller: Principal,
         kind: AuditEventKind,
     ) -> Result<AuditEvent, StorageError> {
         self.append_audit_event_at(caller, kind, ic_cdk::api::time())
+    }
+
+    pub fn append_audit_events_atomically(
+        &mut self,
+        caller: Principal,
+        kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = self.prepare_audit_batch(&mut counters, caller, ic_cdk::api::time(), kinds)?;
+        let counters_blob = encode(&counters)?;
+        self.handle.update(|connection| {
+            let persisted = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted != previous_counters.to_sql_bytes() {
+                return Err(DbError::Constraint("stale audit batch".into()));
+            }
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            commit_audit_batch(connection, &audit)?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
+                params![
+                    counters_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        self.counters.value = counters_blob;
+        self.audit_retention.value = audit.retention_blob;
+        Ok(())
+    }
+
+    fn prepare_audit_batch(
+        &self,
+        counters: &mut CounterState,
+        caller: Principal,
+        timestamp_ns: u64,
+        kinds: Vec<AuditEventKind>,
+    ) -> Result<PreparedAuditBatch, StorageError> {
+        let mut events = Vec::with_capacity(kinds.len());
+        for kind in kinds {
+            let sequence = counters.next_audit_sequence;
+            counters.next_audit_sequence =
+                bridge_core::audit_next(sequence).ok_or(StorageError::CounterOverflow)?;
+            events.push((
+                sequence,
+                encode(&AuditEvent {
+                    sequence,
+                    timestamp_ns,
+                    caller,
+                    kind,
+                })?,
+            ));
+        }
+        let mut retention: AuditRetentionState = decode(self.audit_retention.get())?;
+        let existing =
+            usize::try_from(self.audit_events.len()).map_err(|_| StorageError::CounterOverflow)?;
+        let prune_count = existing
+            .checked_add(events.len())
+            .ok_or(StorageError::CounterOverflow)?
+            .saturating_sub(MAX_AUDIT_EVENTS as usize);
+        let oldest = self
+            .audit_events
+            .iter()
+            .take(prune_count)
+            .map(|entry| (*entry.key(), entry.value()))
+            .collect::<Vec<_>>();
+        if oldest.len() != prune_count {
+            return Err(StorageError::RecordNotFound);
+        }
+        let mut pruned_sequences = Vec::with_capacity(prune_count);
+        for (oldest_sequence, oldest_blob) in oldest {
+            if oldest_sequence != retention.pruned_count {
+                return Err(StorageError::SequenceMismatch {
+                    expected: retention.pruned_count,
+                });
+            }
+            let mut digest = Sha256::new();
+            digest.update(AUDIT_DIGEST_DOMAIN);
+            digest.update(retention.pruned_digest);
+            digest.update(oldest_sequence.to_be_bytes());
+            digest.update((oldest_blob.as_slice().len() as u64).to_be_bytes());
+            digest.update(oldest_blob.as_slice());
+            retention.pruned_digest = digest.finalize().into();
+            retention.pruned_count = retention
+                .pruned_count
+                .checked_add(1)
+                .ok_or(StorageError::CounterOverflow)?;
+            retention.pruned_through_sequence = Some(oldest_sequence);
+            pruned_sequences.push(oldest_sequence);
+        }
+        Ok(PreparedAuditBatch {
+            events,
+            retention_blob: encode(&retention)?,
+            pruned_sequences,
+        })
+    }
+
+    /// Persists one audit record for a verified EVM RPC transcript.
+    ///
+    /// Notification retries call this even when the business record already exists. The internal
+    /// request digest is the idempotency key, so a prior post-commit audit failure can be repaired
+    /// without creating duplicate evidence.
+    pub fn append_evm_rpc_observation_once(
+        &mut self,
+        caller: Principal,
+        kind: AuditEventKind,
+    ) -> Result<bool, StorageError> {
+        self.append_evm_rpc_observation_once_at(caller, kind, ic_cdk::api::time())
+    }
+
+    fn append_evm_rpc_observation_once_at(
+        &mut self,
+        caller: Principal,
+        kind: AuditEventKind,
+        timestamp_ns: u64,
+    ) -> Result<bool, StorageError> {
+        let AuditEventKind::EvmRpcObservation {
+            evm_rpc_canister_id,
+            call_method,
+            request_digest,
+            quorum_response_digest,
+            safe_block_hash,
+            transaction_hash,
+            ..
+        } = &kind
+        else {
+            return Err(StorageError::DecodeFailed);
+        };
+        if call_method.is_empty()
+            || request_digest.len() != 32
+            || quorum_response_digest.len() != 32
+            || safe_block_hash.len() != 32
+            || transaction_hash
+                .as_ref()
+                .is_some_and(|transaction_hash| transaction_hash.len() != 32)
+        {
+            return Err(StorageError::DecodeFailed);
+        }
+        let recent_events = self.handle.query(|connection| {
+            connection.query_all(
+                "SELECT value FROM audit_events ORDER BY key DESC LIMIT 64",
+                params![],
+                |row| row.get::<Vec<u8>>(0),
+            )
+        })?;
+        for event_blob in recent_events {
+            let event: AuditEvent = decode(&StableBlob::new(event_blob)?)?;
+            if let AuditEventKind::EvmRpcObservation {
+                evm_rpc_canister_id: previous_canister,
+                call_method: previous_method,
+                request_digest: previous_request,
+                ..
+            } = event.kind
+            {
+                if previous_canister == *evm_rpc_canister_id
+                    && previous_method == *call_method
+                    && previous_request == *request_digest
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        self.append_audit_event_at(caller, kind, timestamp_ns)?;
+        Ok(true)
     }
 
     fn append_audit_event_at(
@@ -2837,22 +3591,64 @@ impl StableStore {
             if self
                 .operation_owner_index
                 .get(operation_id)
-                .is_some_and(|previous| previous != *owner)
+                .is_some_and(|persisted| persisted != *owner)
             {
                 return Err(StorageError::Core(CoreError::ConflictingReplay));
             }
         }
-        if previous.as_ref().is_some_and(is_pending_deposit_ledger) {
-            self.pull_pending_deposit_index.remove(&value.id.bytes());
-        }
-        if is_pending_deposit_ledger(value) {
-            self.pull_pending_deposit_index.insert(value.id.bytes(), 0);
-        }
-        if let Some((operation_id, owner)) = operation_owner {
-            self.operation_owner_index.insert(operation_id, owner);
-        }
-        self.deposits.insert(value.id.bytes(), value_blob);
-        self.counters.set(counters_blob);
+        record_write_storage_failpoint(RecordWriteFailpoint::Encode)?;
+        let key = value.id.bytes().to_sql_bytes();
+        let previous_blob = previous.as_ref().map(encode).transpose()?;
+        self.handle.update(|connection| {
+            let persisted = connection.query_optional_scalar::<Vec<u8>>(
+                "SELECT value FROM deposits WHERE key = ?1",
+                params![key.clone()],
+            )?;
+            if persisted.as_deref() != previous_blob.as_ref().map(|blob| blob.as_slice()) {
+                return Err(DbError::Constraint("stale deposit write".into()));
+            }
+            if previous.as_ref().is_some_and(is_pending_deposit_ledger) {
+                remove_table_entry(connection, "pull_pending_deposit_index", key.clone())?;
+            }
+            record_write_db_failpoint(RecordWriteFailpoint::RemoveIndex)?;
+            if is_pending_deposit_ledger(value) {
+                upsert_table_entry(
+                    connection,
+                    "pull_pending_deposit_index",
+                    key.clone(),
+                    0u8.to_sql_bytes(),
+                )?;
+            }
+            record_write_db_failpoint(RecordWriteFailpoint::AddIndex)?;
+            if let Some((operation_id, owner)) = operation_owner.as_ref() {
+                let operation_key = operation_id.to_sql_bytes();
+                let persisted_owner = connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM operation_owner_index WHERE key = ?1",
+                    params![operation_key.clone()],
+                )?;
+                if persisted_owner
+                    .as_deref()
+                    .is_some_and(|persisted| persisted != owner.as_slice())
+                {
+                    return Err(DbError::Constraint("conflicting operation owner".into()));
+                }
+                upsert_table_entry(
+                    connection,
+                    "operation_owner_index",
+                    operation_key,
+                    owner.to_sql_bytes(),
+                )?;
+            }
+            record_write_db_failpoint(RecordWriteFailpoint::OperationOwner)?;
+            upsert_table_entry(connection, "deposits", key, value_blob.to_sql_bytes())?;
+            record_write_db_failpoint(RecordWriteFailpoint::Record)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                params![counters_blob.to_sql_bytes()],
+            )?;
+            record_write_db_failpoint(RecordWriteFailpoint::SingletonState)
+        })?;
+        self.counters.value = counters_blob;
         Ok(())
     }
 
@@ -3478,6 +4274,7 @@ impl StableStore {
             },
             None,
             scan_target,
+            None,
         )
     }
 
@@ -3487,6 +4284,36 @@ impl StableStore {
         operation: &EvmOperationRecord,
         intent: &EvmCallIntent,
         progress: &ExternalProgress,
+    ) -> Result<bool, StorageError> {
+        self.commit_new_withdrawal_operation_bundle_inner(
+            withdrawal, operation, intent, progress, None,
+        )
+    }
+
+    pub fn commit_new_withdrawal_operation_bundle_with_rpc_audit(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        operation: &EvmOperationRecord,
+        intent: &EvmCallIntent,
+        progress: &ExternalProgress,
+        rpc_audit: RpcAuditBatch,
+    ) -> Result<bool, StorageError> {
+        self.commit_new_withdrawal_operation_bundle_inner(
+            withdrawal,
+            operation,
+            intent,
+            progress,
+            Some((rpc_audit.caller, rpc_audit.timestamp_ns, rpc_audit.kinds)),
+        )
+    }
+
+    fn commit_new_withdrawal_operation_bundle_inner(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        operation: &EvmOperationRecord,
+        intent: &EvmCallIntent,
+        progress: &ExternalProgress,
+        rpc_audit: Option<(Principal, u64, Vec<AuditEventKind>)>,
     ) -> Result<bool, StorageError> {
         if let Some(previous) = self.withdrawal(withdrawal.id.bytes())? {
             if previous == *withdrawal {
@@ -3536,6 +4363,7 @@ impl StableStore {
             },
             Some(progress),
             None,
+            rpc_audit,
         )?;
         Ok(true)
     }
@@ -3545,6 +4373,30 @@ impl StableStore {
         &mut self,
         withdrawal: &WithdrawalRecord,
         progress: &ExternalProgress,
+    ) -> Result<bool, StorageError> {
+        self.commit_new_withdrawal_release_bundle_inner(withdrawal, progress, None)
+    }
+
+    pub fn commit_new_withdrawal_release_bundle_with_rpc_audit(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        progress: &ExternalProgress,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<bool, StorageError> {
+        self.commit_new_withdrawal_release_bundle_inner(
+            withdrawal,
+            progress,
+            Some((caller, timestamp_ns, audit_kinds)),
+        )
+    }
+
+    fn commit_new_withdrawal_release_bundle_inner(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        progress: &ExternalProgress,
+        rpc_audit: Option<(Principal, u64, Vec<AuditEventKind>)>,
     ) -> Result<bool, StorageError> {
         if let Some(previous) = self.withdrawal(withdrawal.id.bytes())? {
             if previous == *withdrawal {
@@ -3579,6 +4431,11 @@ impl StableStore {
             .nonterminal_withdrawals
             .checked_add(1)
             .ok_or(StorageError::CounterOverflow)?;
+        let prepared_audit = rpc_audit
+            .map(|(caller, timestamp_ns, kinds)| {
+                self.prepare_audit_batch(&mut counters, caller, timestamp_ns, kinds)
+            })
+            .transpose()?;
         let withdrawal_blob = encode(withdrawal)?;
         let counters_blob = encode(&counters)?;
         let progress_blob = encode(progress)?;
@@ -3602,14 +4459,27 @@ impl StableStore {
                 params![key, 0u8.to_sql_bytes()],
             )?;
             increment_table_count(connection, "release_pending_withdrawal_index")?;
-            connection.execute(
-                "UPDATE singleton_state SET counters = ?1, external_progress = ?2 WHERE id = 1",
-                params![counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes()],
-            )?;
-            Ok(())
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            if let Some(audit) = &prepared_audit {
+                commit_audit_batch(connection, audit)?;
+                rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, external_progress = ?2, audit_retention = ?3 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+                )?;
+            } else {
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, external_progress = ?2 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes()],
+                )?;
+            }
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
         })?;
         self.counters.value = counters_blob;
         self.external_progress.value = progress_blob;
+        if let Some(audit) = prepared_audit {
+            self.audit_retention.value = audit.retention_blob;
+        }
         Ok(true)
     }
 
@@ -3663,6 +4533,7 @@ impl StableStore {
             },
             None,
             None,
+            None,
         )
     }
 
@@ -3673,6 +4544,7 @@ impl StableStore {
         parent: OperationBundleParent<'_>,
         progress: Option<&ExternalProgress>,
         scan_target: Option<&ReconciliationTarget>,
+        rpc_audit: Option<(Principal, u64, Vec<AuditEventKind>)>,
     ) -> Result<(), StorageError> {
         if !matches!(operation.state, EvmOperationState::Queued)
             || intent.operation_id != operation.id
@@ -3793,6 +4665,11 @@ impl StableStore {
         }
 
         operation_bundle_storage_failpoint(OperationBundleFailpoint::Encode)?;
+        let prepared_audit = rpc_audit
+            .map(|(caller, timestamp_ns, kinds)| {
+                self.prepare_audit_batch(&mut counters, caller, timestamp_ns, kinds)
+            })
+            .transpose()?;
         let payload_blob = encode(&EvmExecutionPayload::AwaitingNonce(intent.clone()))?;
         let operation_blob = encode(operation)?;
         let owner_blob = encode(&owner)?;
@@ -3942,23 +4819,40 @@ impl StableStore {
             )?;
             increment_table_count(connection, "operation_owner_index")?;
             operation_bundle_db_failpoint(OperationBundleFailpoint::OperationOwnerIndex)?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
 
-            if let Some(progress_blob) = &progress_blob {
-                connection.execute(
+            if let Some(audit) = &prepared_audit {
+                commit_audit_batch(connection, audit)?;
+                rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+            }
+
+            match (&progress_blob, &prepared_audit) {
+                (Some(progress), Some(audit)) => connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, external_progress = ?2, audit_retention = ?3 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes(), progress.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+                )?,
+                (Some(progress), None) => connection.execute(
                     "UPDATE singleton_state SET counters = ?1, external_progress = ?2 WHERE id = 1",
-                    params![counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes()],
-                )?;
-            } else {
-                connection.execute(
+                    params![counters_blob.to_sql_bytes(), progress.to_sql_bytes()],
+                )?,
+                (None, Some(audit)) => connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+                )?,
+                (None, None) => connection.execute(
                     "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
                     params![counters_blob.to_sql_bytes()],
-                )?;
+                )?,
             }
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)?;
             operation_bundle_db_failpoint(OperationBundleFailpoint::SingletonState)
         })?;
         self.counters.value = counters_blob;
         if let Some(progress_blob) = progress_blob {
             self.external_progress.value = progress_blob;
+        }
+        if let Some(audit) = prepared_audit {
+            self.audit_retention.value = audit.retention_blob;
         }
         Ok(())
     }
@@ -4252,6 +5146,33 @@ impl StableStore {
         progress: &ExternalProgress,
         revert_audit: Option<(Principal, u64, u64)>,
     ) -> Result<(), StorageError> {
+        self.commit_evm_terminal_bundle_inner(operation, progress, revert_audit, None)
+    }
+
+    pub fn commit_evm_terminal_bundle_with_rpc_audit(
+        &mut self,
+        operation: &EvmOperationRecord,
+        progress: &ExternalProgress,
+        revert_audit: Option<(Principal, u64, u64)>,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        self.commit_evm_terminal_bundle_inner(
+            operation,
+            progress,
+            revert_audit,
+            Some((caller, timestamp_ns, audit_kinds)),
+        )
+    }
+
+    fn commit_evm_terminal_bundle_inner(
+        &mut self,
+        operation: &EvmOperationRecord,
+        progress: &ExternalProgress,
+        revert_audit: Option<(Principal, u64, u64)>,
+        rpc_audit: Option<(Principal, u64, Vec<AuditEventKind>)>,
+    ) -> Result<(), StorageError> {
         let previous_operation = self
             .evm_operation(operation.id.get())?
             .ok_or(StorageError::RecordNotFound)?;
@@ -4430,68 +5351,41 @@ impl StableStore {
         let parent_key_sql = parent_key.to_sql_bytes();
         let operation_key = operation.id.get().to_sql_bytes();
 
-        let (admin_blob, audit_event, retention_blob, pruned_sequence) =
-            if let Some((caller, timestamp_ns, confirmed_block_number)) = revert_audit {
-                let mut admin = self.admin_state()?;
-                admin.deposits_paused = true;
-                let sequence = counters.next_audit_sequence;
-                counters.next_audit_sequence =
-                    bridge_core::audit_next(sequence).ok_or(StorageError::CounterOverflow)?;
-                let transaction_hash = match operation.state {
-                    EvmOperationState::Reverted {
-                        transaction_hash, ..
-                    } => transaction_hash,
-                    _ => return Err(StorageError::Core(CoreError::PayloadConflict)),
-                };
-                let event = AuditEvent {
-                    sequence,
-                    timestamp_ns,
-                    caller,
-                    kind: AuditEventKind::EvmOperationReverted {
-                        operation_id: operation.id.get(),
-                        kind: operation.kind.into(),
-                        transaction_hash: transaction_hash.to_vec(),
-                        confirmed_head_block_number: confirmed_block_number,
-                    },
-                };
-                let mut retention: AuditRetentionState = decode(self.audit_retention.get())?;
-                let pruned = if self.audit_events.len() >= MAX_AUDIT_EVENTS {
-                    let (oldest_sequence, oldest_blob) = self
-                        .audit_events
-                        .iter()
-                        .next()
-                        .map(|entry| (*entry.key(), entry.value()))
-                        .ok_or(StorageError::RecordNotFound)?;
-                    if oldest_sequence != retention.pruned_count {
-                        return Err(StorageError::SequenceMismatch {
-                            expected: retention.pruned_count,
-                        });
-                    }
-                    let mut digest = Sha256::new();
-                    digest.update(AUDIT_DIGEST_DOMAIN);
-                    digest.update(retention.pruned_digest);
-                    digest.update(oldest_sequence.to_be_bytes());
-                    digest.update((oldest_blob.as_slice().len() as u64).to_be_bytes());
-                    digest.update(oldest_blob.as_slice());
-                    retention.pruned_digest = digest.finalize().into();
-                    retention.pruned_count = retention
-                        .pruned_count
-                        .checked_add(1)
-                        .ok_or(StorageError::CounterOverflow)?;
-                    retention.pruned_through_sequence = Some(oldest_sequence);
-                    Some(oldest_sequence)
-                } else {
-                    None
-                };
-                (
-                    Some(encode(&Some(admin))?),
-                    Some((sequence, encode(&event)?)),
-                    Some(encode(&retention)?),
-                    pruned,
-                )
-            } else {
-                (None, None, None, None)
+        let mut audit_caller = rpc_audit.as_ref().map(|(caller, _, _)| *caller);
+        let mut audit_timestamp = rpc_audit.as_ref().map(|(_, timestamp, _)| *timestamp);
+        let mut audit_kinds = rpc_audit.map(|(_, _, kinds)| kinds).unwrap_or_default();
+        let admin_blob = if let Some((caller, timestamp_ns, confirmed_block_number)) = revert_audit
+        {
+            audit_caller.get_or_insert(caller);
+            audit_timestamp.get_or_insert(timestamp_ns);
+            let mut admin = self.admin_state()?;
+            admin.deposits_paused = true;
+            let transaction_hash = match operation.state {
+                EvmOperationState::Reverted {
+                    transaction_hash, ..
+                } => transaction_hash,
+                _ => return Err(StorageError::Core(CoreError::PayloadConflict)),
             };
+            audit_kinds.push(AuditEventKind::EvmOperationReverted {
+                operation_id: operation.id.get(),
+                kind: operation.kind.into(),
+                transaction_hash: transaction_hash.to_vec(),
+                confirmed_head_block_number: confirmed_block_number,
+            });
+            Some(encode(&Some(admin))?)
+        } else {
+            None
+        };
+        let prepared_audit = if audit_kinds.is_empty() {
+            None
+        } else {
+            Some(self.prepare_audit_batch(
+                &mut counters,
+                audit_caller.ok_or(StorageError::DecodeFailed)?,
+                audit_timestamp.ok_or(StorageError::DecodeFailed)?,
+                audit_kinds,
+            )?)
+        };
         let counters_blob = encode(&counters)?;
 
         self.handle.update(|connection| {
@@ -4554,23 +5448,20 @@ impl StableStore {
                 progress.last_safe_observation_ns,
             )?;
             terminal_bundle_db_failpoint(TerminalBundleFailpoint::ConfirmationSchedule)?;
-            if let Some((sequence, event_blob)) = &audit_event {
-                connection.execute(
-                    "INSERT INTO audit_events(key, value) VALUES (?1, ?2)",
-                    params![sequence.to_sql_bytes(), event_blob.to_sql_bytes()],
-                )?;
-                increment_table_count(connection, "audit_events")?;
-                if let Some(pruned) = pruned_sequence {
-                    connection.execute("DELETE FROM audit_events WHERE key = ?1", params![pruned.to_sql_bytes()])?;
-                    decrement_table_count(connection, "audit_events")?;
-                }
+            if let Some(audit) = &prepared_audit {
+                commit_audit_batch(connection, audit)?;
             }
             terminal_bundle_db_failpoint(TerminalBundleFailpoint::Audit)?;
-            if let (Some(admin_blob), Some(retention_blob)) = (&admin_blob, &retention_blob) {
+            if let (Some(admin_blob), Some(audit)) = (&admin_blob, &prepared_audit) {
                 connection.execute(
                     "UPDATE singleton_state SET accounting = ?1, counters = ?2, external_progress = ?3,
                         admin_state = ?4, audit_retention = ?5 WHERE id = 1",
-                    params![accounting_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), admin_blob.to_sql_bytes(), retention_blob.to_sql_bytes()],
+                    params![accounting_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), admin_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+                )?;
+            } else if let Some(audit) = &prepared_audit {
+                connection.execute(
+                    "UPDATE singleton_state SET accounting = ?1, counters = ?2, external_progress = ?3, audit_retention = ?4 WHERE id = 1",
+                    params![accounting_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
                 )?;
             } else {
                 connection.execute(
@@ -4586,8 +5477,8 @@ impl StableStore {
         if let Some(blob) = admin_blob {
             self.admin_state.value = blob;
         }
-        if let Some(blob) = retention_blob {
-            self.audit_retention.value = blob;
+        if let Some(audit) = prepared_audit {
+            self.audit_retention.value = audit.retention_blob;
         }
         Ok(())
     }
@@ -4624,24 +5515,64 @@ impl StableStore {
             if self
                 .operation_owner_index
                 .get(operation_id)
-                .is_some_and(|previous| previous != *owner)
+                .is_some_and(|persisted| persisted != *owner)
             {
                 return Err(StorageError::Core(CoreError::ConflictingReplay));
             }
         }
-        if previous.as_ref().is_some_and(is_pending_withdrawal_ledger) {
-            self.release_pending_withdrawal_index
-                .remove(&value.id.bytes());
-        }
-        if is_pending_withdrawal_ledger(value) {
-            self.release_pending_withdrawal_index
-                .insert(value.id.bytes(), 0);
-        }
-        if let Some((operation_id, owner)) = operation_owner {
-            self.operation_owner_index.insert(operation_id, owner);
-        }
-        self.withdrawals.insert(value.id.bytes(), value_blob);
-        self.counters.set(counters_blob);
+        record_write_storage_failpoint(RecordWriteFailpoint::Encode)?;
+        let key = value.id.bytes().to_sql_bytes();
+        let previous_blob = previous.as_ref().map(encode).transpose()?;
+        self.handle.update(|connection| {
+            let persisted = connection.query_optional_scalar::<Vec<u8>>(
+                "SELECT value FROM withdrawals WHERE key = ?1",
+                params![key.clone()],
+            )?;
+            if persisted.as_deref() != previous_blob.as_ref().map(|blob| blob.as_slice()) {
+                return Err(DbError::Constraint("stale withdrawal write".into()));
+            }
+            if previous.as_ref().is_some_and(is_pending_withdrawal_ledger) {
+                remove_table_entry(connection, "release_pending_withdrawal_index", key.clone())?;
+            }
+            record_write_db_failpoint(RecordWriteFailpoint::RemoveIndex)?;
+            if is_pending_withdrawal_ledger(value) {
+                upsert_table_entry(
+                    connection,
+                    "release_pending_withdrawal_index",
+                    key.clone(),
+                    0u8.to_sql_bytes(),
+                )?;
+            }
+            record_write_db_failpoint(RecordWriteFailpoint::AddIndex)?;
+            if let Some((operation_id, owner)) = operation_owner.as_ref() {
+                let operation_key = operation_id.to_sql_bytes();
+                let persisted_owner = connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM operation_owner_index WHERE key = ?1",
+                    params![operation_key.clone()],
+                )?;
+                if persisted_owner
+                    .as_deref()
+                    .is_some_and(|persisted| persisted != owner.as_slice())
+                {
+                    return Err(DbError::Constraint("conflicting operation owner".into()));
+                }
+                upsert_table_entry(
+                    connection,
+                    "operation_owner_index",
+                    operation_key,
+                    owner.to_sql_bytes(),
+                )?;
+            }
+            record_write_db_failpoint(RecordWriteFailpoint::OperationOwner)?;
+            upsert_table_entry(connection, "withdrawals", key, value_blob.to_sql_bytes())?;
+            record_write_db_failpoint(RecordWriteFailpoint::Record)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                params![counters_blob.to_sql_bytes()],
+            )?;
+            record_write_db_failpoint(RecordWriteFailpoint::SingletonState)
+        })?;
+        self.counters.value = counters_blob;
         Ok(())
     }
 
@@ -4683,7 +5614,7 @@ impl StableStore {
     }
 
     pub fn put_evm_operation(&mut self, value: &EvmOperationRecord) -> Result<(), StorageError> {
-        self.put_evm_operation_inner(value, None)
+        self.put_evm_operation_inner(value, None, None)
     }
 
     pub fn put_submitted_evm_operation(
@@ -4700,6 +5631,27 @@ impl StableStore {
                 next_check_at_ns,
                 checks_completed: 0,
             }),
+            None,
+        )
+    }
+
+    pub fn put_submitted_evm_operation_with_rpc_audit(
+        &mut self,
+        value: &EvmOperationRecord,
+        submitted_at_ns: u64,
+        next_check_at_ns: u64,
+        caller: Principal,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        self.put_evm_operation_inner(
+            value,
+            Some(ConfirmationSchedule {
+                operation_id: value.id.get(),
+                submitted_at_ns,
+                next_check_at_ns,
+                checks_completed: 0,
+            }),
+            Some((caller, submitted_at_ns, audit_kinds)),
         )
     }
 
@@ -4707,6 +5659,7 @@ impl StableStore {
         &mut self,
         value: &EvmOperationRecord,
         submission_schedule: Option<ConfirmationSchedule>,
+        rpc_audit: Option<(Principal, u64, Vec<AuditEventKind>)>,
     ) -> Result<(), StorageError> {
         let payload = self.evm_execution_payload(value.id.get())?;
         match (&value.state, &payload) {
@@ -4748,6 +5701,11 @@ impl StableStore {
                 .is_some_and(|operation| matches!(operation.state, EvmOperationState::Queued)),
             matches!(value.state, EvmOperationState::Queued),
         )?;
+        let prepared_audit = rpc_audit
+            .map(|(caller, timestamp_ns, kinds)| {
+                self.prepare_audit_batch(&mut counters, caller, timestamp_ns, kinds)
+            })
+            .transpose()?;
         let encoded_counters = encode(&counters)?;
         let previous_key = previous
             .as_ref()
@@ -4836,12 +5794,29 @@ impl StableStore {
             {
                 upsert_confirmation_schedule(connection, kind, id, schedule)?;
             }
-            connection.execute(
-                "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
-                params![encoded_counters.to_sql_bytes()],
-            )
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            if let Some(audit) = &prepared_audit {
+                commit_audit_batch(connection, audit)?;
+                rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
+                    params![
+                        encoded_counters.to_sql_bytes(),
+                        audit.retention_blob.to_sql_bytes()
+                    ],
+                )?;
+            } else {
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                    params![encoded_counters.to_sql_bytes()],
+                )?;
+            }
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
         })?;
         self.counters.value = encoded_counters;
+        if let Some(audit) = prepared_audit {
+            self.audit_retention.value = audit.retention_blob;
+        }
         Ok(())
     }
 
@@ -4926,15 +5901,47 @@ impl StableStore {
             is_open_hold(value),
         )?;
         let encoded_counters = encode(&counters)?;
-        if previous.as_ref().is_some_and(is_open_hold) {
-            self.open_hold_index.remove(&value.id.get());
-        }
-        if is_open_hold(value) {
-            self.open_hold_index.insert(value.id.get(), 0);
-        }
-        self.reconciliation_holds
-            .insert(value.id.get(), encoded_value);
-        self.counters.set(encoded_counters);
+        record_write_storage_failpoint(RecordWriteFailpoint::Encode)?;
+        let key = value.id.get().to_sql_bytes();
+        let previous_blob = previous.as_ref().map(encode).transpose()?;
+        self.handle.update(|connection| {
+            let persisted = connection.query_optional_scalar::<Vec<u8>>(
+                "SELECT value FROM reconciliation_holds WHERE key = ?1",
+                params![key.clone()],
+            )?;
+            if persisted.as_deref() != previous_blob.as_ref().map(|blob| blob.as_slice()) {
+                return Err(DbError::Constraint(
+                    "stale reconciliation hold write".into(),
+                ));
+            }
+            if previous.as_ref().is_some_and(is_open_hold) {
+                remove_table_entry(connection, "open_hold_index", key.clone())?;
+            }
+            record_write_db_failpoint(RecordWriteFailpoint::RemoveIndex)?;
+            if is_open_hold(value) {
+                upsert_table_entry(
+                    connection,
+                    "open_hold_index",
+                    key.clone(),
+                    0u8.to_sql_bytes(),
+                )?;
+            }
+            record_write_db_failpoint(RecordWriteFailpoint::AddIndex)?;
+            record_write_db_failpoint(RecordWriteFailpoint::OperationOwner)?;
+            upsert_table_entry(
+                connection,
+                "reconciliation_holds",
+                key,
+                encoded_value.to_sql_bytes(),
+            )?;
+            record_write_db_failpoint(RecordWriteFailpoint::Record)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                params![encoded_counters.to_sql_bytes()],
+            )?;
+            record_write_db_failpoint(RecordWriteFailpoint::SingletonState)
+        })?;
+        self.counters.value = encoded_counters;
         Ok(())
     }
 
@@ -5501,12 +6508,12 @@ mod tests {
             .apply(WithdrawalEvent::StartRelease {
                 attempt: Box::new(TransferAttempt {
                     attempt_no: 0,
-                    identity: transfer(LedgerOperation::ReleaseWithdrawal, 85, 20),
+                    identity: transfer(LedgerOperation::ReleaseWithdrawal, 89, 20),
                 }),
                 settlement: Settlement {
-                    amount_out: Amount::new(85),
+                    amount_out: Amount::new(89),
                     service_fee: Amount::new(10),
-                    ledger_fee: Amount::new(5),
+                    ledger_fee: Amount::new(1),
                 },
             })
             .expect("release pending");
@@ -5569,6 +6576,106 @@ mod tests {
             max_fee_per_gas: 2,
             max_priority_fee_per_gas: 1,
         }
+    }
+
+    fn rpc_audit_kind(tag: u8) -> AuditEventKind {
+        AuditEventKind::EvmRpcObservation {
+            evm_rpc_canister_id: Principal::self_authenticating([tag; 32]),
+            call_method: "multi_request".into(),
+            request_digest: vec![tag; 32],
+            quorum_response_digest: vec![tag.wrapping_add(1); 32],
+            safe_block_number: u64::from(tag),
+            safe_block_hash: vec![tag.wrapping_add(2); 32],
+            transaction_hash: Some(vec![tag.wrapping_add(3); 32]),
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct RpcAtomicSnapshot {
+        counters: CounterState,
+        progress: ExternalProgress,
+        admin: StableBlob,
+        admission: StableBlob,
+        retention: StableBlob,
+        withdrawals: Vec<([u8; 32], StableBlob)>,
+        operations: Vec<(u64, StableBlob)>,
+        payloads: Vec<(u64, StableBlob)>,
+        owners: Vec<(u64, StableBlob)>,
+        evm_indexes: Vec<(StableBlob, u8)>,
+        release_indexes: Vec<([u8; 32], u8)>,
+        audits: Vec<(u64, StableBlob)>,
+        schedule: Option<ConfirmationSchedule>,
+    }
+
+    fn rpc_atomic_snapshot(store: &StableStore, operation_id: Option<u64>) -> RpcAtomicSnapshot {
+        RpcAtomicSnapshot {
+            counters: store.counters().expect("counters"),
+            progress: store.external_progress().expect("progress"),
+            admin: store.admin_state.get().clone(),
+            admission: store.deposit_admission.get().clone(),
+            retention: store.audit_retention.get().clone(),
+            withdrawals: store
+                .withdrawals
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect(),
+            operations: store
+                .evm_operations
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect(),
+            payloads: store
+                .evm_execution_payloads
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect(),
+            owners: store
+                .operation_owner_index
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect(),
+            evm_indexes: store
+                .evm_state_index
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value()))
+                .collect(),
+            release_indexes: store
+                .release_pending_withdrawal_index
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect(),
+            audits: store
+                .audit_events
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect(),
+            schedule: operation_id
+                .and_then(|id| store.confirmation_schedule(id).expect("schedule")),
+        }
+    }
+
+    fn seed_queued_evm_operation(store: &mut StableStore) -> (EvmOperationRecord, EvmCallIntent) {
+        let operation_id = EvmOperationId::new(77);
+        let mut parent = deposit();
+        parent
+            .apply(DepositEvent::PrepareMint { operation_id })
+            .expect("prepare deposit mint");
+        store
+            .put_deposit(&parent)
+            .expect("persist operation parent");
+        let operation = EvmOperationRecord::queued(
+            operation_id,
+            parent.payload_hash,
+            EvmOperationKind::MintDeposit,
+        );
+        let intent = evm_intent(operation_id, parent.payload_hash);
+        store
+            .put_evm_call_intent(&intent)
+            .expect("persist execution payload");
+        store
+            .put_evm_operation(&operation)
+            .expect("persist EVM operation");
+        (operation, intent)
     }
 
     #[test]
@@ -5709,6 +6816,282 @@ mod tests {
         expected.update((first_blob.as_slice().len() as u64).to_be_bytes());
         expected.update(first_blob.as_slice());
         assert_eq!(page.pruned_digest, expected.finalize().to_vec());
+    }
+
+    #[test]
+    #[serial]
+    fn evm_rpc_audit_observation_is_validated_and_idempotent() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        let caller = Principal::self_authenticating([71; 32]);
+        let kind = AuditEventKind::EvmRpcObservation {
+            evm_rpc_canister_id: Principal::self_authenticating([72; 32]),
+            call_method: "request".into(),
+            request_digest: vec![73; 32],
+            quorum_response_digest: vec![74; 32],
+            safe_block_number: 75,
+            safe_block_hash: vec![76; 32],
+            transaction_hash: Some(vec![77; 32]),
+        };
+        assert!(store
+            .append_evm_rpc_observation_once_at(caller, kind.clone(), 1_000)
+            .expect("append evidence"));
+        assert!(!store
+            .append_evm_rpc_observation_once_at(caller, kind, 1_001)
+            .expect("deduplicate evidence"));
+        assert_eq!(store.audit_events.len(), 1);
+        assert_eq!(store.counters().expect("counters").next_audit_sequence, 1);
+
+        let malformed = AuditEventKind::EvmRpcObservation {
+            evm_rpc_canister_id: Principal::self_authenticating([72; 32]),
+            call_method: "request".into(),
+            request_digest: vec![73; 31],
+            quorum_response_digest: vec![74; 32],
+            safe_block_number: 75,
+            safe_block_hash: vec![76; 32],
+            transaction_hash: None,
+        };
+        assert_eq!(
+            store.append_evm_rpc_observation_once_at(caller, malformed, 1_002),
+            Err(StorageError::DecodeFailed)
+        );
+        assert_eq!(store.audit_events.len(), 1);
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen audit evidence");
+        assert_eq!(reopened.audit_events.len(), 1);
+        let page = reopened.audit_events(0, 10).expect("read audit evidence");
+        assert!(matches!(
+            page.events.first().map(|event| &event.kind),
+            Some(AuditEventKind::EvmRpcObservation { .. })
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn every_rpc_atomic_path_rolls_back_business_audit_cache_and_reopen() {
+        let failpoints = [
+            RpcAtomicFailpoint::Business,
+            RpcAtomicFailpoint::Audit,
+            RpcAtomicFailpoint::Singleton,
+        ];
+        let caller = Principal::self_authenticating([80; 32]);
+
+        for failpoint in failpoints {
+            let memory = VectorMemory::default();
+            let mut store = StableStore::init(memory.clone()).expect("release init");
+            let withdrawal = withdrawal();
+            let before = rpc_atomic_snapshot(&store, None);
+            set_rpc_atomic_failpoint(Some(failpoint));
+            assert!(store
+                .commit_new_withdrawal_release_bundle_with_rpc_audit(
+                    &withdrawal,
+                    &ExternalProgress::default(),
+                    caller,
+                    100,
+                    vec![rpc_audit_kind(80)],
+                )
+                .is_err());
+            set_rpc_atomic_failpoint(None);
+            assert_eq!(
+                rpc_atomic_snapshot(&store, None),
+                before,
+                "release {failpoint:?}"
+            );
+            drop(store);
+            assert_eq!(
+                rpc_atomic_snapshot(&StableStore::reopen(memory).expect("release reopen"), None),
+                before,
+                "release reopen {failpoint:?}"
+            );
+        }
+
+        for failpoint in failpoints {
+            let memory = VectorMemory::default();
+            let mut store = StableStore::init(memory.clone()).expect("cancel init");
+            let operation_id = store.next_evm_operation_id().expect("candidate");
+            let mut withdrawal = WithdrawalRecord::observed(
+                WithdrawalId::new([81; 32]),
+                vec![1],
+                [82; 32],
+                Amount::new(100),
+                Amount::new(90),
+                Amount::new(10),
+            )
+            .expect("observed");
+            withdrawal
+                .apply(WithdrawalEvent::PrepareReleaseCancellation {
+                    operation_id,
+                    expected_ledger_fee: Amount::new(1),
+                })
+                .expect("cancel pending");
+            let operation = EvmOperationRecord::queued(
+                operation_id,
+                withdrawal.payload_hash,
+                EvmOperationKind::CancelRelease,
+            );
+            let intent = evm_intent(operation_id, withdrawal.payload_hash);
+            let before = rpc_atomic_snapshot(&store, Some(operation_id.get()));
+            set_rpc_atomic_failpoint(Some(failpoint));
+            assert!(store
+                .commit_new_withdrawal_operation_bundle_with_rpc_audit(
+                    &withdrawal,
+                    &operation,
+                    &intent,
+                    &ExternalProgress::default(),
+                    RpcAuditBatch {
+                        caller,
+                        timestamp_ns: 101,
+                        kinds: vec![rpc_audit_kind(81)],
+                    },
+                )
+                .is_err());
+            set_rpc_atomic_failpoint(None);
+            assert_eq!(
+                rpc_atomic_snapshot(&store, Some(operation_id.get())),
+                before,
+                "cancel {failpoint:?}"
+            );
+            drop(store);
+            assert_eq!(
+                rpc_atomic_snapshot(
+                    &StableStore::reopen(memory).expect("cancel reopen"),
+                    Some(operation_id.get()),
+                ),
+                before,
+                "cancel reopen {failpoint:?}"
+            );
+        }
+
+        for failpoint in failpoints {
+            let memory = VectorMemory::default();
+            let mut store = StableStore::init(memory.clone()).expect("submitted init");
+            let operation_id = EvmOperationId::new(83);
+            let mut parent = deposit();
+            parent
+                .apply(DepositEvent::PrepareMint { operation_id })
+                .expect("mint parent");
+            store.put_deposit(&parent).expect("parent");
+            let mut operation = EvmOperationRecord::queued(
+                operation_id,
+                parent.payload_hash,
+                EvmOperationKind::MintDeposit,
+            );
+            let intent = evm_intent(operation_id, parent.payload_hash);
+            store.put_evm_call_intent(&intent).expect("intent");
+            store.put_evm_operation(&operation).expect("queued");
+            let envelope = intent.assign_nonce(0);
+            operation
+                .apply(EvmOperationEvent::Prepared)
+                .expect("prepared");
+            let progress = ExternalProgress {
+                next_evm_nonce: 1,
+                ..ExternalProgress::default()
+            };
+            store
+                .prepare_evm_operation(&operation, &envelope, &progress)
+                .expect("persist prepared");
+            operation
+                .apply(EvmOperationEvent::Submitted {
+                    transaction_hash: [84; 32],
+                })
+                .expect("submitted");
+            let before = rpc_atomic_snapshot(&store, Some(operation_id.get()));
+            set_rpc_atomic_failpoint(Some(failpoint));
+            assert!(store
+                .put_submitted_evm_operation_with_rpc_audit(
+                    &operation,
+                    102,
+                    103,
+                    caller,
+                    vec![rpc_audit_kind(82)],
+                )
+                .is_err());
+            set_rpc_atomic_failpoint(None);
+            assert_eq!(
+                rpc_atomic_snapshot(&store, Some(operation_id.get())),
+                before,
+                "submitted {failpoint:?}"
+            );
+            drop(store);
+            assert_eq!(
+                rpc_atomic_snapshot(
+                    &StableStore::reopen(memory).expect("submitted reopen"),
+                    Some(operation_id.get()),
+                ),
+                before,
+                "submitted reopen {failpoint:?}"
+            );
+        }
+
+        for failpoint in failpoints {
+            let memory = VectorMemory::default();
+            let mut store =
+                StableStore::init_configured(memory.clone(), &config()).expect("pause init");
+            let mut admin = store.admin_state().expect("admin");
+            admin.deposits_paused = false;
+            store.set_admin_state(&admin).expect("unpause fixture");
+            let before = rpc_atomic_snapshot(&store, None);
+            set_rpc_atomic_failpoint(Some(failpoint));
+            assert!(store
+                .pause_deposits_with_rpc_audit(caller, 104, vec![rpc_audit_kind(83)])
+                .is_err());
+            set_rpc_atomic_failpoint(None);
+            assert_eq!(
+                rpc_atomic_snapshot(&store, None),
+                before,
+                "pause {failpoint:?}"
+            );
+            drop(store);
+            assert_eq!(
+                rpc_atomic_snapshot(&StableStore::reopen(memory).expect("pause reopen"), None),
+                before,
+                "pause reopen {failpoint:?}"
+            );
+        }
+
+        for (success, tag) in [(true, 84u8), (false, 85u8)] {
+            for failpoint in failpoints {
+                let memory = VectorMemory::default();
+                let mut store = StableStore::init(memory.clone()).expect("snapshot init");
+                assert!(store
+                    .begin_base_snapshot_refresh(105, 1_000, 1)
+                    .expect("begin refresh"));
+                let before = rpc_atomic_snapshot(&store, None);
+                set_rpc_atomic_failpoint(Some(failpoint));
+                let result = if success {
+                    store.finish_base_snapshot_refresh_with_rpc_audit(
+                        106,
+                        mint_snapshot(),
+                        [86; 20],
+                        false,
+                        caller,
+                        vec![rpc_audit_kind(tag)],
+                    )
+                } else {
+                    store.fail_base_snapshot_refresh_with_rpc_audit(
+                        caller,
+                        106,
+                        vec![rpc_audit_kind(tag)],
+                    )
+                };
+                assert!(result.is_err());
+                set_rpc_atomic_failpoint(None);
+                assert_eq!(
+                    rpc_atomic_snapshot(&store, None),
+                    before,
+                    "snapshot success={success} {failpoint:?}"
+                );
+                drop(store);
+                assert_eq!(
+                    rpc_atomic_snapshot(
+                        &StableStore::reopen(memory).expect("snapshot reopen"),
+                        None,
+                    ),
+                    before,
+                    "snapshot reopen success={success} {failpoint:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -6324,12 +7707,17 @@ mod tests {
     #[serial]
     fn every_incomplete_record_survives_reopen() {
         let memory = VectorMemory::default();
-        let deposit = deposit();
+        let mut deposit = deposit();
         let withdrawal = withdrawal();
+        deposit
+            .apply(DepositEvent::PrepareMint {
+                operation_id: EvmOperationId::new(6),
+            })
+            .expect("prepare mint");
         let mut evm = EvmOperationRecord::prepared(
             EvmOperationId::new(6),
-            [6; 32],
-            EvmOperationKind::AcknowledgeRelease,
+            deposit.payload_hash,
+            EvmOperationKind::MintDeposit,
         );
         evm.apply(EvmOperationEvent::Submitted {
             transaction_hash: [8; 32],
@@ -6353,6 +7741,7 @@ mod tests {
             pending_ledger_operations: 1,
             reserved_deposit_mint_amount: 100,
             reserved_deposit_mint_operations: 1,
+            nonterminal_withdrawals: 1,
             ..CounterState::default()
         };
 
@@ -6449,7 +7838,7 @@ mod tests {
             Err(StorageError::DecodeFailed)
         );
 
-        let store = StableStore::init(VectorMemory::default()).expect("initialize schema v5");
+        let store = StableStore::init(VectorMemory::default()).expect("initialize schema v6");
         assert_eq!(store.schema_version(), SCHEMA_VERSION);
     }
 
@@ -6786,6 +8175,189 @@ mod tests {
             .put_reconciliation_hold(&hold)
             .expect("replay resolved hold internally");
         assert_eq!(store.counters().expect("counters").reconciliation_holds, 0);
+    }
+
+    #[test]
+    #[serial]
+    fn primary_record_writes_roll_back_every_write_failpoint_and_after_reopen() {
+        let failpoints = [
+            RecordWriteFailpoint::Encode,
+            RecordWriteFailpoint::RemoveIndex,
+            RecordWriteFailpoint::AddIndex,
+            RecordWriteFailpoint::OperationOwner,
+            RecordWriteFailpoint::Record,
+            RecordWriteFailpoint::SingletonState,
+        ];
+
+        for failpoint in failpoints {
+            let memory = VectorMemory::default();
+            let mut store = StableStore::init(memory.clone()).expect("init deposit store");
+            let previous = deposit();
+            store.put_deposit(&previous).expect("seed deposit");
+            let mut next = previous.clone();
+            next.apply(DepositEvent::PrepareMint {
+                operation_id: EvmOperationId::new(91),
+            })
+            .expect("prepare mint");
+            let before = (
+                store.counters().expect("counters"),
+                store.deposit(previous.id.bytes()).expect("deposit"),
+                store.operation_owner_index.get(&91),
+                store.table_count("deposits"),
+                store.table_count("operation_owner_index"),
+            );
+            set_record_write_failpoint(Some(failpoint));
+            assert!(store.put_deposit(&next).is_err(), "{failpoint:?}");
+            set_record_write_failpoint(None);
+            assert_eq!(
+                (
+                    store.counters().expect("counters"),
+                    store.deposit(previous.id.bytes()).expect("deposit"),
+                    store.operation_owner_index.get(&91),
+                    store.table_count("deposits"),
+                    store.table_count("operation_owner_index"),
+                ),
+                before,
+                "deposit {failpoint:?}"
+            );
+            drop(store);
+            let reopened = StableStore::reopen(memory).expect("reopen deposit store");
+            assert_eq!(
+                (
+                    reopened.counters().expect("counters"),
+                    reopened.deposit(previous.id.bytes()).expect("deposit"),
+                    reopened.operation_owner_index.get(&91),
+                    reopened.table_count("deposits"),
+                    reopened.table_count("operation_owner_index"),
+                ),
+                before,
+                "reopened deposit {failpoint:?}"
+            );
+        }
+
+        for failpoint in failpoints {
+            let memory = VectorMemory::default();
+            let mut store = StableStore::init(memory.clone()).expect("init withdrawal store");
+            let mut previous = WithdrawalRecord::observed(
+                WithdrawalId::new([33; 32]),
+                vec![1],
+                [34; 32],
+                Amount::new(100),
+                Amount::new(80),
+                Amount::new(10),
+            )
+            .expect("valid withdrawal");
+            previous
+                .apply(WithdrawalEvent::StartRelease {
+                    attempt: Box::new(TransferAttempt {
+                        attempt_no: 0,
+                        identity: transfer(LedgerOperation::ReleaseWithdrawal, 89, 30),
+                    }),
+                    settlement: Settlement {
+                        amount_out: Amount::new(89),
+                        service_fee: Amount::new(10),
+                        ledger_fee: Amount::new(1),
+                    },
+                })
+                .expect("release pending");
+            store.put_withdrawal(&previous).expect("seed withdrawal");
+            let mut next = previous.clone();
+            next.apply(WithdrawalEvent::ReleaseSucceeded {
+                ledger_block_index: 72,
+            })
+            .expect("release transferred");
+            let before = (
+                store.counters().expect("counters"),
+                store.withdrawal(previous.id.bytes()).expect("withdrawal"),
+                store
+                    .release_pending_withdrawal_index
+                    .get(&previous.id.bytes()),
+                store.table_count("withdrawals"),
+                store.table_count("release_pending_withdrawal_index"),
+            );
+            set_record_write_failpoint(Some(failpoint));
+            assert!(store.put_withdrawal(&next).is_err(), "{failpoint:?}");
+            set_record_write_failpoint(None);
+            assert_eq!(
+                (
+                    store.counters().expect("counters"),
+                    store.withdrawal(previous.id.bytes()).expect("withdrawal"),
+                    store
+                        .release_pending_withdrawal_index
+                        .get(&previous.id.bytes()),
+                    store.table_count("withdrawals"),
+                    store.table_count("release_pending_withdrawal_index"),
+                ),
+                before,
+                "withdrawal {failpoint:?}"
+            );
+            drop(store);
+            let reopened = StableStore::reopen(memory).expect("reopen withdrawal store");
+            assert_eq!(
+                (
+                    reopened.counters().expect("counters"),
+                    reopened
+                        .withdrawal(previous.id.bytes())
+                        .expect("withdrawal"),
+                    reopened
+                        .release_pending_withdrawal_index
+                        .get(&previous.id.bytes()),
+                    reopened.table_count("withdrawals"),
+                    reopened.table_count("release_pending_withdrawal_index"),
+                ),
+                before,
+                "reopened withdrawal {failpoint:?}"
+            );
+        }
+
+        for failpoint in failpoints {
+            let memory = VectorMemory::default();
+            let mut store = StableStore::init(memory.clone()).expect("init hold store");
+            let (_, mut next) = held_deposit();
+            store
+                .put_open_reconciliation_hold(&next)
+                .expect("seed hold");
+            next.state = ReconciliationHoldState::ResolvedAbsent {
+                history_watermark: 55,
+            };
+            let before = (
+                store.counters().expect("counters"),
+                store.reconciliation_hold(next.id.get()).expect("hold"),
+                store.open_hold_index.get(&next.id.get()),
+                store.table_count("reconciliation_holds"),
+                store.table_count("open_hold_index"),
+            );
+            set_record_write_failpoint(Some(failpoint));
+            assert!(
+                store.put_reconciliation_hold(&next).is_err(),
+                "{failpoint:?}"
+            );
+            set_record_write_failpoint(None);
+            assert_eq!(
+                (
+                    store.counters().expect("counters"),
+                    store.reconciliation_hold(next.id.get()).expect("hold"),
+                    store.open_hold_index.get(&next.id.get()),
+                    store.table_count("reconciliation_holds"),
+                    store.table_count("open_hold_index"),
+                ),
+                before,
+                "hold {failpoint:?}"
+            );
+            drop(store);
+            let reopened = StableStore::reopen(memory).expect("reopen hold store");
+            assert_eq!(
+                (
+                    reopened.counters().expect("counters"),
+                    reopened.reconciliation_hold(next.id.get()).expect("hold"),
+                    reopened.open_hold_index.get(&next.id.get()),
+                    reopened.table_count("reconciliation_holds"),
+                    reopened.table_count("open_hold_index"),
+                ),
+                before,
+                "reopened hold {failpoint:?}"
+            );
+        }
     }
 
     #[test]
@@ -7745,10 +9317,21 @@ mod tests {
             let before = terminal_bundle_snapshot(&store, deposit_id, submitted.id);
             set_terminal_bundle_failpoint(Some(failpoint));
             assert!(store
-                .commit_evm_terminal_bundle(
+                .commit_evm_terminal_bundle_with_rpc_audit(
                     &terminal,
                     &progress,
                     Some((Principal::self_authenticating([5; 32]), 50, 40)),
+                    Principal::self_authenticating([5; 32]),
+                    50,
+                    vec![AuditEventKind::EvmRpcObservation {
+                        evm_rpc_canister_id: Principal::self_authenticating([6; 32]),
+                        call_method: "multi_request".into(),
+                        request_digest: vec![7; 32],
+                        quorum_response_digest: vec![8; 32],
+                        safe_block_number: 40,
+                        safe_block_hash: vec![9; 32],
+                        transaction_hash: Some(vec![9; 32]),
+                    }],
                 )
                 .is_err());
             set_terminal_bundle_failpoint(None);
@@ -8595,6 +10178,220 @@ mod tests {
         assert_eq!(
             StableStore::reopen(memory).err(),
             Some(StorageError::DecodeFailed)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn reopen_rejects_cross_table_count_index_and_counter_drift() {
+        let count_memory = VectorMemory::default();
+        let mut count_store = StableStore::init(count_memory.clone()).expect("initialize count");
+        count_store.put_deposit(&deposit()).expect("seed deposit");
+        count_store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE table_counts SET count = ?1 WHERE name = 'deposits'",
+                    params![0u64.to_sql_bytes()],
+                )
+            })
+            .expect("corrupt count");
+        drop(count_store);
+        assert_eq!(
+            StableStore::reopen(count_memory).err(),
+            Some(StorageError::DatabaseFailure)
+        );
+
+        let index_memory = VectorMemory::default();
+        let mut index_store = StableStore::init(index_memory.clone()).expect("initialize index");
+        let mut pending = deposit();
+        pending.state = DepositState::PullPending;
+        index_store
+            .put_deposit(&pending)
+            .expect("seed pending deposit");
+        index_store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "DELETE FROM pull_pending_deposit_index WHERE key = ?1",
+                    params![pending.id.bytes().to_sql_bytes()],
+                )?;
+                decrement_table_count(connection, "pull_pending_deposit_index")
+            })
+            .expect("corrupt index");
+        drop(index_store);
+        assert_eq!(
+            StableStore::reopen(index_memory).err(),
+            Some(StorageError::DatabaseFailure)
+        );
+
+        let counter_memory = VectorMemory::default();
+        let mut counter_store =
+            StableStore::init(counter_memory.clone()).expect("initialize counter");
+        counter_store.put_deposit(&deposit()).expect("seed deposit");
+        let mut counters = counter_store.counters().expect("counters");
+        counters.reserved_deposit_mint_operations = 0;
+        let corrupt = encode(&counters).expect("encode corrupt counters");
+        counter_store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                    params![corrupt.to_sql_bytes()],
+                )
+            })
+            .expect("corrupt counter");
+        drop(counter_store);
+        assert_eq!(
+            StableStore::reopen(counter_memory).err(),
+            Some(StorageError::DatabaseFailure)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn reopen_rejects_same_count_but_wrong_evm_state_index() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize EVM index fixture");
+        let (operation, _) = seed_queued_evm_operation(&mut store);
+        let correct = evm_state_index_key(&operation)
+            .expect("derive queued index")
+            .expect("queued operation is indexed");
+        let wrong = evm_state_index_key(&EvmOperationRecord::prepared(
+            operation.id,
+            operation.payload_hash,
+            operation.kind,
+        ))
+        .expect("derive prepared index")
+        .expect("prepared operation is indexed");
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "DELETE FROM evm_state_index WHERE key = ?1",
+                    params![correct.to_sql_bytes()],
+                )?;
+                connection.execute(
+                    "INSERT INTO evm_state_index(key, value) VALUES (?1, ?2)",
+                    params![wrong.to_sql_bytes(), 0u8.to_sql_bytes()],
+                )
+            })
+            .expect("replace index without changing its count");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen(memory).err(),
+            Some(StorageError::DatabaseFailure)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn reopen_rejects_orphan_execution_payload_with_consistent_table_count() {
+        let memory = VectorMemory::default();
+        let store = StableStore::init(memory.clone()).expect("initialize orphan payload fixture");
+        let orphan_id = EvmOperationId::new(91);
+        let payload = encode(&EvmExecutionPayload::AwaitingNonce(evm_intent(
+            orphan_id, [92; 32],
+        )))
+        .expect("encode orphan payload");
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "INSERT INTO evm_execution_payloads(key, value) VALUES (?1, ?2)",
+                    params![orphan_id.get().to_sql_bytes(), payload.to_sql_bytes()],
+                )?;
+                increment_table_count(connection, "evm_execution_payloads")
+            })
+            .expect("insert count-consistent orphan payload");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen(memory).err(),
+            Some(StorageError::DatabaseFailure)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn reopen_rejects_execution_payload_hash_mismatch() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize payload hash fixture");
+        let (operation, mut intent) = seed_queued_evm_operation(&mut store);
+        intent.payload_hash = [93; 32];
+        let mismatched =
+            encode(&EvmExecutionPayload::AwaitingNonce(intent)).expect("encode mismatched payload");
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE evm_execution_payloads SET value = ?1 WHERE key = ?2",
+                    params![mismatched.to_sql_bytes(), operation.id.get().to_sql_bytes()],
+                )
+            })
+            .expect("corrupt payload hash");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen(memory).err(),
+            Some(StorageError::DatabaseFailure)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn reopen_rejects_execution_payload_retained_after_submission() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize submitted fixture");
+        let (mut operation, _) = seed_queued_evm_operation(&mut store);
+        let previous_index = evm_state_index_key(&operation)
+            .expect("derive queued index")
+            .expect("queued operation is indexed");
+        operation
+            .apply(EvmOperationEvent::Prepared)
+            .expect("prepare operation in memory");
+        operation
+            .apply(EvmOperationEvent::Submitted {
+                transaction_hash: [94; 32],
+            })
+            .expect("submit operation in memory");
+        let submitted_index = evm_state_index_key(&operation)
+            .expect("derive submitted index")
+            .expect("submitted operation is indexed");
+        let operation_blob = encode(&operation).expect("encode submitted operation");
+        let mut counters = store.counters().expect("read counters");
+        counters.awaiting_nonce_evm_operations = 0;
+        let counters_blob = encode(&counters).expect("encode counters");
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE evm_operations SET value = ?1 WHERE key = ?2",
+                    params![
+                        operation_blob.to_sql_bytes(),
+                        operation.id.get().to_sql_bytes()
+                    ],
+                )?;
+                connection.execute(
+                    "DELETE FROM evm_state_index WHERE key = ?1",
+                    params![previous_index.to_sql_bytes()],
+                )?;
+                connection.execute(
+                    "INSERT INTO evm_state_index(key, value) VALUES (?1, ?2)",
+                    params![submitted_index.to_sql_bytes(), 0u8.to_sql_bytes()],
+                )?;
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes()],
+                )
+            })
+            .expect("retain payload while otherwise committing submitted state");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen(memory).err(),
+            Some(StorageError::DatabaseFailure)
         );
     }
 

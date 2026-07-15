@@ -329,6 +329,19 @@ export const bridgeAbi = [
   },
   {
     "inputs": [],
+    "name": "approvedTimelockRuntimeCodeHash",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "baseAdminTimelock",
     "outputs": [
       {
@@ -680,6 +693,27 @@ export const bridgeAbi = [
         "type": "address"
       },
       {
+        "internalType": "bytes32",
+        "name": "actualCodeHash",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "expectedCodeHash",
+        "type": "bytes32"
+      }
+    ],
+    "name": "TimelockCandidateCodeHashMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      },
+      {
         "internalType": "uint256",
         "name": "suppliedDelay",
         "type": "uint256"
@@ -837,6 +871,11 @@ export const bridgeAbi = [
         "internalType": "address",
         "name": "initialBaseAdminTimelock",
         "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "initialApprovedTimelockRuntimeCodeHash",
+        "type": "bytes32"
       },
       {
         "internalType": "uint256",

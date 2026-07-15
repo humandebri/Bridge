@@ -24,7 +24,7 @@ mod signer;
 pub mod storage;
 mod tasks;
 
-use storage::{StableStore, StorageError, SCHEMA_VERSION};
+use storage::{AuditEventKind, StableStore, StorageError, SCHEMA_VERSION};
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatusCounts {
@@ -44,15 +44,28 @@ pub struct StatusCounts {
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeStatus {
+    pub base_chain_id_matches_config: bool,
     pub schema_version: u16,
     pub counts: StatusCounts,
     pub last_safe_base_block: u64,
     pub last_reserve_observation_ns: u64,
     pub last_safe_observation_ns: u64,
+    pub last_safe_base_block_hash: Vec<u8>,
+    pub observed_base_chain_id: Option<u64>,
+    pub observed_bridge_signer: Vec<u8>,
+    pub observed_bridge_runtime_sha256: Vec<u8>,
     pub reserve: ReserveStatus,
     pub deposits_paused: bool,
     pub last_audit_sequence: Option<u64>,
     pub confirmation_scheduler: ConfirmationSchedulerStatus,
+}
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshBaseObservationError {
+    Busy,
+    BaseStateMismatch,
+    ObservationUnavailable,
+    StorageFailure,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -138,6 +151,7 @@ enum ActionKey {
     FeePayout(u64),
     FeePayoutCreation,
     ChainKeyChallenge,
+    BaseObservation,
 }
 
 fn valid_release_id(release_id: &str) -> bool {
@@ -537,6 +551,63 @@ pub(crate) fn storage_or_trap<T>(context: &str, result: Result<T, StorageError>)
     result.unwrap_or_else(|error| ic_cdk::trap(format!("{context} failed: {error}")))
 }
 
+pub(crate) fn append_rpc_audit_evidence(
+    evidence: &evm_rpc::RpcAuditEvidence,
+) -> Result<(), StorageError> {
+    STORE.with(|store| {
+        store.borrow_mut().append_evm_rpc_observation_once(
+            ic_cdk::api::canister_self(),
+            AuditEventKind::EvmRpcObservation {
+                evm_rpc_canister_id: evidence.evm_rpc_canister_id,
+                call_method: evidence.call_method.clone(),
+                request_digest: evidence.request_digest.to_vec(),
+                quorum_response_digest: evidence.quorum_response_digest.to_vec(),
+                safe_block_number: evidence.safe_block_number,
+                safe_block_hash: evidence.safe_block_hash.to_vec(),
+                transaction_hash: evidence.transaction_hash.map(|hash| hash.to_vec()),
+            },
+        )?;
+        Ok(())
+    })
+}
+
+pub(crate) fn rpc_audit_event_kind(evidence: &evm_rpc::RpcAuditEvidence) -> AuditEventKind {
+    AuditEventKind::EvmRpcObservation {
+        evm_rpc_canister_id: evidence.evm_rpc_canister_id,
+        call_method: evidence.call_method.clone(),
+        request_digest: evidence.request_digest.to_vec(),
+        quorum_response_digest: evidence.quorum_response_digest.to_vec(),
+        safe_block_number: evidence.safe_block_number,
+        safe_block_hash: evidence.safe_block_hash.to_vec(),
+        transaction_hash: evidence.transaction_hash.map(|hash| hash.to_vec()),
+    }
+}
+
+pub(crate) fn rpc_decision_event_kind(evidence: &evm_rpc::RpcDecisionEvidence) -> AuditEventKind {
+    AuditEventKind::EvmRpcDecision {
+        kind: format!("{:?}", evidence.kind),
+        operation: evidence.operation.clone(),
+        configured_provider_count: evidence.configured_provider_count,
+        required_threshold: evidence.required_threshold,
+        stop_reason: evidence.stop_reason.clone(),
+        ledger_call_performed: evidence.ledger_call_performed,
+        bridge_operation_continued: evidence.bridge_operation_continued,
+        deposits_paused: evidence.deposits_paused,
+        automatically_resigned: evidence.automatically_resigned,
+        transaction_hash: evidence.transaction_hash.map(|hash| hash.to_vec()),
+    }
+}
+
+fn append_rpc_decision(evidence: &evm_rpc::RpcDecisionEvidence) -> Result<(), StorageError> {
+    STORE.with(|store| {
+        store.borrow_mut().append_audit_event(
+            ic_cdk::api::canister_self(),
+            rpc_decision_event_kind(evidence),
+        )?;
+        Ok(())
+    })
+}
+
 #[ic_cdk::query]
 fn get_bridge_status() -> BridgeStatus {
     STORE.with(|store| {
@@ -563,6 +634,7 @@ fn get_bridge_status() -> BridgeStatus {
         let admin = store
             .admin_state()
             .unwrap_or_else(|_| ic_cdk::trap("missing administrator state"));
+        let completed_observation = evm_rpc::latest_completed_safe_observation();
         let mut scheduler_health = storage_or_trap(
             "confirmation scheduler health read",
             store.confirmation_scheduler_health(),
@@ -578,6 +650,9 @@ fn get_bridge_status() -> BridgeStatus {
             }
         };
         BridgeStatus {
+            base_chain_id_matches_config: completed_observation
+                .as_ref()
+                .is_some_and(|observation| observation.safe.chain_id == config.base_chain_id),
             schema_version: store.schema_version(),
             counts: StatusCounts {
                 deposits: counts.deposits,
@@ -593,9 +668,30 @@ fn get_bridge_status() -> BridgeStatus {
                 pruned_audit_events: counts.pruned_audit_events,
                 retained_deposit_index_entries: counts.retained_deposit_index_entries,
             },
-            last_safe_base_block: counts.last_safe_base_block,
+            last_safe_base_block: completed_observation
+                .as_ref()
+                .map(|observation| observation.safe.block_number)
+                .unwrap_or_default(),
             last_reserve_observation_ns: progress.last_reserve_observation_ns,
-            last_safe_observation_ns: progress.last_safe_observation_ns,
+            last_safe_observation_ns: completed_observation
+                .as_ref()
+                .map(|observation| observation.safe.observed_at_ns)
+                .unwrap_or_default(),
+            last_safe_base_block_hash: completed_observation
+                .as_ref()
+                .map(|observation| observation.safe.block_hash.to_vec())
+                .unwrap_or_default(),
+            observed_base_chain_id: completed_observation
+                .as_ref()
+                .map(|observation| observation.safe.chain_id),
+            observed_bridge_signer: completed_observation
+                .as_ref()
+                .map(|observation| observation.bridge_identity.signer.to_vec())
+                .unwrap_or_default(),
+            observed_bridge_runtime_sha256: completed_observation
+                .as_ref()
+                .map(|observation| observation.bridge_identity.runtime_sha256.to_vec())
+                .unwrap_or_default(),
             reserve: ReserveStatus {
                 eth_balance_wei: reserve.eth_balance_wei,
                 cycles_balance: reserve.cycles_balance,
@@ -619,6 +715,71 @@ fn get_bridge_status() -> BridgeStatus {
             },
         }
     })
+}
+
+#[ic_cdk::update]
+async fn refresh_base_observation() -> Result<(), RefreshBaseObservationError> {
+    const MIN_REFRESH_INTERVAL_NS: u64 = 30_000_000_000;
+
+    let now = ic_cdk::api::time();
+    if let Some(observation) = evm_rpc::latest_completed_safe_observation().filter(|observation| {
+        now.saturating_sub(observation.safe.observed_at_ns) <= MIN_REFRESH_INTERVAL_NS
+    }) {
+        return append_rpc_audit_evidence(&observation.rpc_audit)
+            .map_err(|_| RefreshBaseObservationError::StorageFailure);
+    }
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseObservation) else {
+        return Err(RefreshBaseObservationError::Busy);
+    };
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| RefreshBaseObservationError::StorageFailure)?
+            .ok_or(RefreshBaseObservationError::StorageFailure)
+    })?;
+    match evm_rpc::bridge_snapshot(&config).await {
+        Ok(_) => {
+            let completed = evm_rpc::latest_completed_safe_observation()
+                .ok_or(RefreshBaseObservationError::ObservationUnavailable)?;
+            append_rpc_audit_evidence(&completed.rpc_audit)
+                .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
+            append_rpc_decision(&evm_rpc::quorum_continued_decision(
+                "refresh_base_observation",
+                None,
+                false,
+            ))
+            .map_err(|_| RefreshBaseObservationError::StorageFailure)
+        }
+        Err(evm_rpc::ObservationError::ChainIdMismatch) => {
+            STORE.with(|store| {
+                let mut store = store.borrow_mut();
+                let mut admin = store
+                    .admin_state()
+                    .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
+                if !admin.deposits_paused {
+                    admin.deposits_paused = true;
+                    store
+                        .set_admin_state(&admin)
+                        .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
+                }
+                Ok(())
+            })?;
+            Err(RefreshBaseObservationError::BaseStateMismatch)
+        }
+        Err(evm_rpc::ObservationError::Inconsistent) => {
+            append_rpc_decision(&evm_rpc::quorum_loss_decision(
+                "refresh_base_observation",
+                None,
+            ))
+            .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
+            Err(RefreshBaseObservationError::ObservationUnavailable)
+        }
+        Err(evm_rpc::ObservationError::BaseStateMismatch) => {
+            Err(RefreshBaseObservationError::BaseStateMismatch)
+        }
+        Err(_) => Err(RefreshBaseObservationError::ObservationUnavailable),
+    }
 }
 
 #[ic_cdk::update]

@@ -24,7 +24,8 @@ import { createLedgerActor, ledgerAccount } from "@/lib/ic/ledger"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import type { DepositCall, IcAccount } from "@/lib/ic/wallet"
 import { refetchRuntimeWriteReady } from "@/lib/runtime-validation"
-import { currentInjectedWallet, sameIcAccount } from "@/lib/wallet-snapshot"
+import { currentInjectedWallet, requireWalletSnapshot, sameIcAccount } from "@/lib/wallet-snapshot"
+import { createWithdrawalAfterRevalidation } from "@/lib/withdrawal-submit"
 
 export type BridgeDirection = "deposit" | "withdraw"
 
@@ -195,7 +196,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       const snapshotAddress = address
       const activeEvm = await currentInjectedWallet()
       const activeIc = await ic.adapter.getAccount()
-      if (activeEvm.chainId !== deploymentProfile.chainId || activeEvm.address.toLowerCase() !== snapshotAddress.toLowerCase() || !sameIcAccount(activeIc, confirmedIcAccount)) throw new Error("A connected account or chain changed; review and submit again")
+      const expectedWallets = { address: snapshotAddress, chainId: deploymentProfile.chainId, icAccount: confirmedIcAccount }
+      requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc })
       const owner = Principal.fromText(confirmedIcAccount.owner).toUint8Array()
       const subaccount = confirmedIcAccount.subaccount ?? new Uint8Array(32)
       await refetchRuntimeWriteReady(() => runtime.refetch())
@@ -216,11 +218,14 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         })
         const approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
         if (approvalReceipt.status !== "success") throw new Error("The exact bSNS approval reverted")
-        const afterApprovalEvm = await currentInjectedWallet()
-        const afterApprovalIc = await ic.adapter.getAccount()
-        if (afterApprovalEvm.chainId !== deploymentProfile.chainId || afterApprovalEvm.address.toLowerCase() !== snapshotAddress.toLowerCase() || !sameIcAccount(afterApprovalIc, confirmedIcAccount)) throw new Error("A connected account or chain changed after approval; review and submit again")
       }
-      const hash = await write.writeContractAsync({ account: snapshotAddress, address: deploymentProfile.bridgeAddress as `0x${string}`, abi: bridgeAbi, functionName: "createWithdrawal", args: [withdrawParsed.value, parsedMinimum.value, bytesToHex(owner), bytesToHex(subaccount)] })
+      const hash = await createWithdrawalAfterRevalidation({
+        expectedWallets,
+        refetchRuntime: () => runtime.refetch(),
+        currentEvmWallet: currentInjectedWallet,
+        currentIcAccount: () => ic.adapter!.getAccount(),
+        createWithdrawal: () => write.writeContractAsync({ account: snapshotAddress, address: deploymentProfile.bridgeAddress as `0x${string}`, abi: bridgeAbi, functionName: "createWithdrawal", args: [withdrawParsed.value, parsedMinimum.value, bytesToHex(owner), bytesToHex(subaccount)] }),
+      })
       const withdrawalReceipt = await client.waitForTransactionReceipt({ hash })
       if (withdrawalReceipt.status !== "success") {
         throw new Error("The withdrawal transaction reverted")

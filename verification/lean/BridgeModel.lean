@@ -5,13 +5,13 @@ namespace BridgeModel
    explicitly; the local transition theorems remain independent of it. -/
 structure WorldAssumptions where
   honestBridgeSigner : Bool
-  canonicalSafeChain : Bool
+  evmRpcQuorumReturnsCanonicalSafeChain : Bool
   authenticLedgerResults : Bool
   atomicIcSqliteCommit : Bool
   deriving DecidableEq, Repr
 
 def TrustedWorld (world : WorldAssumptions) : Prop :=
-  world.honestBridgeSigner = true ∧ world.canonicalSafeChain = true ∧
+  world.honestBridgeSigner = true ∧ world.evmRpcQuorumReturnsCanonicalSafeChain = true ∧
   world.authenticLedgerResults = true ∧ world.atomicIcSqliteCommit = true
 
 inductive WithdrawalPhase where

@@ -17,6 +17,7 @@ interface ITimelockCandidate {
 /// @notice Phase 1E Base implementation whose concrete ABI is checked against the frozen interface snapshot.
 contract Bridge is IBridge {
     uint256 private constant MINIMUM_TIMELOCK_DELAY = 72 hours;
+    bytes32 public immutable override approvedTimelockRuntimeCodeHash;
     IBSNS public immutable override bsns;
     uint256 public immutable override MAX_SERVICE_FEE;
 
@@ -79,6 +80,7 @@ contract Bridge is IBridge {
         address initialBridgeSigner,
         address initialRuntimeAdministrator,
         address initialBaseAdminTimelock,
+        bytes32 initialApprovedTimelockRuntimeCodeHash,
         uint256 initialPerDepositLimit,
         uint256 initialMintWindowLimit,
         uint64 initialMintWindowDuration,
@@ -105,6 +107,8 @@ contract Bridge is IBridge {
         if (!BridgeAdministration.serviceFeeIsValid(initialServiceFee, maxServiceFee)) {
             revert IBridge.InvalidServiceFee(initialServiceFee, maxServiceFee);
         }
+        approvedTimelockRuntimeCodeHash = initialApprovedTimelockRuntimeCodeHash;
+        _validateTimelockCandidate(initialBaseAdminTimelock);
 
         bridgeSigner = initialBridgeSigner;
         runtimeAdministrator = initialRuntimeAdministrator;
@@ -380,6 +384,11 @@ contract Bridge is IBridge {
     function _validateTimelockCandidate(address candidate) private view {
         if (candidate.code.length == 0) {
             revert IBridge.TimelockCandidateHasNoCode(candidate);
+        }
+        bytes32 expectedCodeHash = approvedTimelockRuntimeCodeHash;
+        bytes32 actualCodeHash = candidate.codehash;
+        if (actualCodeHash != expectedCodeHash) {
+            revert IBridge.TimelockCandidateCodeHashMismatch(candidate, actualCodeHash, expectedCodeHash);
         }
 
         uint256 delay;

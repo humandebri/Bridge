@@ -41,7 +41,7 @@ pause、resume、管理者rotation、Fee Recipient変更、fee payout、reserve 
 
 Withdrawalは認証済みcallerが送るBase transaction hashを同じupdate call内で一度だけ検証する。canisterはsafe receipt内のBridge event、`Releasing`状態、IC owner、Bridge signerを検証して`ReleasePending`へ直接遷移させ、そのcall内でLedger送金を開始する。通知queueは持たない。domain/origin制限はフロントのCSPとwrite UXにだけ使用し、canister認可境界とはみなさない。
 
-terminal EVM operationはtransaction hash、receipt block、Safe確認headを保存する。Mint、cancel、refund、acknowledgementはSafeを2、5、10、20、40分後に確認する。最後の確認でも未確定なら`ConfirmationCheckExhausted`で停止する。RPC失敗・不一致・不正応答は即座にscheduleを解除し、自動再試行しない。revertはoperationと所有recordをterminalなReverted状態へ遷移させ、新規Depositを自動pauseする。未解決revertが存在する間はGovernanceによるresumeも拒否し、同一transactionを再送しない。
+terminal EVM operationはtransaction hash、receipt block、Safe確認headを保存する。Mint、cancel、refund、acknowledgementはSafeを2、5、10分後に確認する。10分時点でも未確定なら`ConfirmationCheckExhausted`で失敗として停止する。RPC失敗・不一致・不正応答は即座にscheduleを解除し、自動再試行しない。revertはoperationと所有recordをterminalなReverted状態へ遷移させ、新規Depositを自動pauseする。未解決revertが存在する間はGovernanceによるresumeも拒否し、同一transactionを再送しない。
 
 Ledger、Ledger archive、Index callは15秒、EVM RPC callは30秒、threshold ECDSA public key・署名callは60秒のbounded waitで停止する。timeout後に同一callを自動再試行しない。Ledger transfer timeoutは結果不明としてHoldへ、EVM timeoutは現在stateを維持した停止へ、署名timeoutはenvelopeを`Prepared`のまま維持した停止へ遷移する。
 

@@ -90,6 +90,17 @@ Base captureのendpointはreview済みconfigの`rpc_urls[provider-index]`から�
 artifactには完全URLを残さずprovider indexとURL SHA-256、chain-id応答、method、paramsを残す。`ETH_RPC_URL`等の環境override、command内の`--rpc-url`、`--chain`、`--json`、重複network flagは拒否する。
 Bridge状態取得は実Candid名`get_bridge_status`を使用し、旧`get_status`は拒否する。
 
+故障scenarioは手書きJSONを使わず、固定名`evm-rpc-fault-injector`をPATH上に用意し、review済み設定をstdinで受けて故障適用・scenario実行・全provider復旧後にJSON結果を返す。recorderは対象URLのdigest、故障provider index、failure rule、実行区間、injector出力を決定的に束縛する。
+
+```sh
+python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-fault \
+  /secure/work/rpc-e2e.json /secure/work/rehearsal-config.json single_provider_failure \
+  /secure/work/artifacts/single-provider-fault.json fault-one-provider -- \
+  evm-rpc-fault-injector
+```
+
+injectorは`schema_version`、`run_reference`、`applied_provider_indices`、`restored_provider_indices`、`result: "completed"`に加え、故障区間中に取得した`decision_sequence`、`decision_timestamp_ns`、完全な`canister_decision`をJSONで返す。recorderはdecisionのcanonical digestを保存し、validatorはscenarioのdecisionと一致し、そのtimestampが故障適用から復旧までの区間内にある場合だけ受理する。review済みindexと不一致、復旧未確認、別時点のdecision、失敗exit、任意引数付きinjectorは拒否する。
+
 scenario evidenceの`artifacts`へartifactの相対path、ファイル全体のSHA-256、`details`各fieldをraw stdoutへ結ぶJSON pointerを記載する。
 全detail fieldがraw artifactから再導出できなければ`verify`は失敗する。ID、Ledger block、transaction、canonical hash、quorum、nonce結果はscenarioごとにBridge/Base/Ledger/auditの複数artifactへcross-bindingする必要があり、一種類の自己申告だけでは完了しない。
 `request_sha256`はartifact順の`[tool, argv..., transport]`配列、`response_sha256`は同順のraw stdout配列を空白なしJSONへしたSHA-256として算出する。任意hashは受理しない。
@@ -101,7 +112,12 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
   record /secure/work/rpc-e2e.json preflight /secure/work/preflight.json
 ```
 
-`external_calls_performed=true`と`through_evm_rpc_canister=true`は、実際にlive Canister経由で観測した場合だけ設定する。予定値やdry-runを証跡として記録してはならない。
+`external_calls_performed=true`と`through_evm_rpc_canister=true`だけでは証跡にならない。
+quorum成功scenarioは`get_audit_events`の`EvmRpcObservation`から、EVM RPC Canister ID、Candid call method、Canister内部request digest、quorum response digest、Safe block number/hash、transaction hashを`canister_audit`へ束縛する。
+call methodはscenarioに応じたproduction実値`multi_request`、`eth_sendRawTransaction`、`eth_sendRawTransaction+multi_request`、`eth_getTransactionReceipt+eth_getBlockByNumber`だけを許可する。`nonce_conflict`もbroadcast decision auditを必須とし、単なるstop reason自己申告では完了しない。
+`single_provider_failure`、`quorum_loss`、`nonce_conflict`は`EvmRpcDecision`も`canister_decision`へ束縛し、設定provider数、必要threshold、停止理由、Ledger呼出し有無、Bridge継続、Deposit pause、自動再署名有無を再導出する。threshold APIは採用前のprovider別全responseを返さないため、3/3一致と2/3一致の区別はfault injection artifactへ委ね、Canister auditは設定値`3`、必要threshold`2`、実際の継続・停止判断を証明する。
+`preflight`ではさらに固定`dfx canister status` captureのmodule hashをreview済みWasm SHA-256へ束縛する。
+予定値、手入力digest、dry-runを証跡として記録してはならない。
 
 ## 段階実行
 
@@ -125,13 +141,16 @@ asset flowとして次の4件を実行し、各transactionをSafe headまで待�
 
 failure scenarioとして次の4件をtest-only設定で実行する。
 
-1. `single_provider_failure`: provider 3、合意2、Bridge処理継続
-2. `quorum_loss`: 合意2未満、`RpcInconsistent`または`RpcUnavailable`、Ledger call前fail-closed
+1. `single_provider_failure`: configured provider 3、required threshold 2、1 provider故障注入のraw参照、threshold成立、Bridge処理継続
+2. `quorum_loss`: required threshold 2、2 provider以上の故障注入、threshold不成立、`RpcInconsistent`または`RpcUnavailable`、Ledger call前fail-closed
 3. `nonce_known`: `NonceTooLow`後、local transaction hashが2-provider合意で存在し`Submitted`
 4. `nonce_conflict`: local transaction hash不在、`NonceConflict`、自動再署名なし、Deposit pause
 
 failure用endpointへの一時差替えはtest Bridge Canisterだけで行い、通常3 endpointを使う正常系証跡と混在させない。
 一時設定、操作時刻、元設定への復旧を別の運用ログへ残す。
+EVM RPC clientはthreshold判定に使ったprovider別全responseやexact agreeing countを公開しないため、`agreeing_provider_count`は証跡にしない。
+代わりにconfigured count、required threshold、故障注入artifact、処理継続またはfail-closed decisionをthreshold certificateとして記録する。
+故障注入条件はBridge/Canister auditへ存在しないfieldを合成せず、専用`fault` raw artifactへ分離する。このartifactは`rehearsal_id`、scenario、run reference、configured provider count 3、required threshold 2、failed provider count、request/config digestを持ち、manifest hashで保護する。Canister `EvmRpcDecision`は継続またはfail-closedの判断だけを証明する。
 
 failure scenario後に`final_pause`を記録する。BaseのDeposit/WithdrawalとCanisterの新規Deposit受付をpauseし、Base側pause transactionのSafe block/hashを再読する。
 
@@ -150,6 +169,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 - manifestが`COMPLETE`かつ`complete=true`である。
 - 全10 scenarioが公式EVM RPC Canister、Base Sepolia、同じrehearsal ID、同じBridge Canisterへbindingされている。
 - rehearsalのsource revision/tree、Bridge Canister Wasm、Bridge runtime bytecodeがrelease bundleと一致する。
+- quorum成功scenarioの`canister_audit`がraw `get_audit_events` artifactから再導出され、preflight module hashがreleaseのBridge Wasmと一致する。
 - signer triple、receipt/canonical block hash、confirmationが一致する。
 - quorum lossはLedger call前に停止する。
 - unknown nonce conflictは自動再署名せずDepositをpauseする。

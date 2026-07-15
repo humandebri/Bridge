@@ -6,7 +6,7 @@
 
 ## 結論
 
-既知advisoryのうち、複合stable writeの原子化と対象Withdrawalのterminal liability zeroは`RETEST PASS`と判定した。
+対象Withdrawalのterminal liability zeroと複合stable writeは、現行sourceに対するLean・Verus・Solidity SMT、およびRPC監査eventを含む全transaction経路のfailpoint/reopen検査を再実行し、`RETEST PASS`とした。
 
 公式EVM RPC Canisterを経由するBase Sepolia実演習は、実行手順、証跡形式、fail-closed validatorまで実装したが、実ネットワークでは未実施である。
 このadvisoryは`PENDING EXTERNAL RETEST`のままとする。
@@ -14,14 +14,16 @@
 本レポートは「全実装にバグがない」とは主張しない。
 機械証明は定義したモデルと`TrustedWorld`として与えた外部条件の範囲に限られ、外部サービス、非同期実行、鍵管理、運用応答の正しさを証明しない。
 
-署名済みGate B evidence bundleが完成するまでproduction deploy blockerを維持する。
+Safe確認はL1 settlement完了より弱い。ユーザーの`createWithdrawal`をSafe確認した後、finality前reorgによってBase上のburnが消える一方でICP送金が残る可能性は、証明対象外の受容リスクである。
+
+署名済みGate B evidence bundleが完成し、現行sourceで全CIと形式検証が成功するまでproduction deploy blockerを維持する。
 controller handoverはGate A後に別の明示承認で実施し、そのlive結果をfresh Gate Bへ含める。
 Gate Bが成立してもunpauseと資産受付開始には別の明示承認を要する。
 
 | 対象 | 判定 | 根拠 |
 |---|---|---|
-| 複合stable write | RETEST PASS | SQLite transaction、全write点failpoint、snapshotとreopen後状態の一致 |
-| 対象Withdrawalのterminal liability zero | RETEST PASS | Leanの`sorry`なし証明、production kernel、Verus obligation |
+| 複合stable write | RETEST PASS | 業務状態とRPC監査eventを単一transaction化し、notify release/cancel、Submitted、NonceConflict、Base snapshot success/loss、terminal各write pointのsnapshot/cache/reopen不変を検査 |
+| 対象Withdrawalのterminal liability zero | RETEST PASS | Lean `sorry` 0、Verus 55 verified / 0 errors、Solidity SMT pass/fail fixtureが成功 |
 | 公式EVM RPC Canister経由の実E2E | PENDING EXTERNAL RETEST | rehearsalとvalidatorは完成、IC stagingとBase Sepoliaでは未実行 |
 | 本番承認 | DEPLOY BLOCKED | 署名済みGate B bundle、ceremony、監視演習が未提示 |
 
@@ -43,7 +45,7 @@ memory cacheはcommit成功後だけ更新し、async `await`を跨いでtransac
 失敗時はDB snapshot、operation counter、各index、cache、reopen後状態が実行前と一致することをunit testで確認した。
 
 CIはoperation採番後の逐次`put_*`連鎖を静的に拒否する。
-stable schemaはv5だけを受理し、旧版と未知版をmigrationなしでfail closedにする。
+stable schemaはv6だけを受理し、旧版と未知版をmigrationなしでfail closedにする。
 
 ## Terminal liability zero
 
@@ -73,22 +75,23 @@ production共有kernelへ厳密なsettlement分割とterminal residual計算を�
 正当な初期状態は`ValidInitial`として定義する。
 idle、対象liability 0、未受領履歴、1:1、非負性からterminal safetyを導出するため、terminal liability zeroを初期状態の同一命題として仮定しない。
 
-正直なBridge signer、canonical finality、Ledger結果真正性、IC messageとSQLite transactionの原子性は`WorldAssumptions`と`TrustedWorld`で明示的なrefinement入力にした。
+正直なBridge signer、canonical Safe chain、Ledger結果真正性、IC messageとSQLite transactionの原子性は`WorldAssumptions`と`TrustedWorld`で明示的なrefinement入力にした。
 Leanはこれら外部条件そのものを証明せず、条件が成立する`RefinedExecution`についてterminal safetyを証明する。
+Safe後からL1 finalityまでのreorg耐性は証明しない。
 
 ## EVM RPC Canister実演習
 
 ### 実装済みの検査
 
 manual rehearsalはmockを参照せず、IC上のtest Bridge Canister、test ICRC LedgerとIndex、公式EVM RPC Canister、Base Sepolia専用Bridgeを対象とする。
-証跡はrequestとresponse、transaction hash、Ledger block、finalized block numberとhash、RPC合意結果を同じrehearsal IDへ結び付ける。
+証跡はrequestとresponse、transaction hash、Ledger block、Safe block numberとhash、RPC合意結果を同じrehearsal IDへ結び付ける。
 
 rehearsalは次の10 scenarioが完了しなければ`COMPLETE`にならない。
 
 - Deposit mint
-- Withdrawalの`beginRelease`、ICRC transfer、ack
+- ユーザーの`createWithdrawal`によるburnと`Releasing`化、ICRC transfer、ack
 - BadFee minimum割れ、cancel、refund
-- receiptとcanonical finalized block hashの一致
+- receipt、event、state、Bridge snapshotとcanonical Safe block hashの一致
 - 1 provider相当の失敗後もquorumが成立する場合の継続
 - quorum不成立時のfail-closed
 - `NonceTooLow`でlocal transaction hashが存在する場合と存在しない場合
@@ -102,7 +105,7 @@ orphan receipt、同じheightでのhash不一致、provider誤応答はPocketIC 
 EVM RPC Canister ID、Base chain ID、canonical block numberとhash、quorum結果、Base signerとCanister signerは監査対象に残す。
 
 EVM RPC Canister配下providerの運営法人、upstream、ASN、cloud、region、障害ドメイン、可用性SLOは監査対象外である。
-「EVM RPC Canisterと設定されたprovider quorumがcanonical finalized chainを正しく返す」を外部仮定として扱う。
+「EVM RPC Canisterと設定されたprovider quorumがcanonical Safe chainを正しく返す」を外部仮定として扱う。
 
 ## Evidence bundleと本番Gate
 
@@ -119,6 +122,8 @@ Gate Bはlive状態、Gate A receiptへのbinding、専用hardware walletによ�
 production scriptはbundle欠落、test bundle、source drift、Gate不足、署名欠落、codeまたはrole driftの場合にbroadcastとunpauseを拒否する。
 任意driverや任意preflightへの差し替えも拒否する。
 
+Timelockのrole集合はconstructor完了時に凍結し、自己callを含むgrant、revoke、renounceを拒否する。role変更は、承認済みの新しいrole集合で同一runtimeのTimelockを配置し、既存TimelockからBridge rotationを行う。
+
 Canisterにはrelease IDへ束縛したchain-key challenge署名endpointを追加した。
 live preflightは保存済み署名を信用せず、その場で署名を取得し、導出したCanister signerとBase signerを比較する。
 
@@ -127,11 +132,11 @@ live preflightは保存済み署名を信用せず、その場で署名を取得
 
 ## 保証境界
 
-### 機械証明済み
+### 機械証明済みの範囲
 
-- Lean：cross-system model上の1:1 liability保存、releaseとrefundの排他、対象Withdrawalのterminal liability zero、他Withdrawal liabilityの不変性
-- Verus：production共有kernelとmodel obligation、54 verified、0 errors
-- Solidity SMT：production accounting libraryへ接続したWithdrawal状態、fee、minimum、Ledger indexに関する検証条件
+- Lean：ユーザー実行型Withdrawal、1:1 liability保存、releaseとrefundの排他、対象Withdrawalのterminal liability zero、他Withdrawal liabilityの不変性。Safe後・finality前reorgは対象外
+- Verus：production共有kernelとmodel obligation。現行sourceで55 verified、0 errors
+- Solidity SMT：`Releasing`作成、cancel、ack、refund、fee、minimum、Ledger index。pass fixtureのverification conditionと、1 obligation 1 negative fixtureを検査
 
 ### テストで検査した範囲
 
@@ -143,7 +148,8 @@ live preflightは保存済み署名を信用せず、その場で署名を取得
 
 ### 外部仮定と未実施事項
 
-- EVM RPC Canisterと設定provider quorumがcanonical finalized chainを正しく返すこと
+- EVM RPC Canisterと設定provider quorumがcanonical Safe chainを正しく返すこと
+- Safe確認後からL1 finalityまでreorgしないことは仮定せず、この区間のreorgによる1:1毀損を受容リスクとして残す
 - Bridge signerが定めたprotocolだけへ署名すること
 - ICRC LedgerとIndexの結果と履歴が真正であること
 - amountを持たない`RefundFinalized` eventが、gross全額をmintする検証済みBase operationと一致すること
@@ -151,19 +157,14 @@ live preflightは保存済み署名を信用せず、その場で署名を取得
 - production hardware wallet ceremony、controller handover、monitor drill
 - OISY、Plug、browser extensionの本番versionとの手動互換matrix
 
-## 検証結果
+## 検証状態
 
-- Rust：bridge-canister 73件、bridge-core 32件、bridge-profile 8件を含む全workspace testが成功
-- PocketIC integration：47件成功
-- Foundry：78件成功。stateful invariant 4件は各256 runs、100 calls
-- Solidity SMT：Withdrawal関連36 verification conditionsがsafe
-- Verus：54 verified、0 errors。manifestとnegative fixtureは35対35
-- Lean：`BridgeModel.lean`が成功し、`sorry`は0件
-- UI unit：49件成功。typecheck、lint、build、ABI drift、Candid driftも成功
-- Playwright：desktopとmobileの8件成功
-- local ICとAnvil smoke：test-deployment Wasm、72時間Timelock、独立canceller、初期pause、releaseとrefundが成功
+現行sourceでCanister unit 96件、UI unit 65件、Contract 83件、Lean `sorry`禁止とtypecheck、Solidity SMT pass/fail fixture、Verus 55 obligations / 0 errors、schema/ABI/Candid drift検査が成功した。RPC監査を含む全transaction経路のfailpoint/reopen検査も成功した。
 
-`scripts/ci-local.sh all`は上記を一括実行する。
+直前の統合実行ではPocketIC 53件、desktop/mobile Playwright 8件、local IC/Anvil smokeも成功した。その後の監査transaction変更を含む現行sourceでは、sandboxのlocal socket制限によりPocketIC/real Playwrightを完走できていない。approval待機中のaccount/chain/signer/code driftはunitで送信未実行を確認したが、desktop/mobile Playwright fixtureは未完了である。RPC監査failpointとfault-injection証跡のblocking findingは解消したが、`codex-review-gate`はこのPlaywright drift fixtureをblocking findingとして残している。このため全CI完了条件とproduction blockerは満たしていない。
+
+`scripts/ci-local.sh all`はRust、PocketIC、Foundry、Leanのproof escape guard、Lean、Verus、SMT、UI typecheck/lint/unit/build、desktop/mobile Playwright、schema/ABI/Candid drift、local ICとAnvil smokeを一括実行する。
+
 外部networkへのbroadcast、実送金、controller handover、unpauseはこの検証で実行していない。
 
 ## 受容済みリスク
@@ -173,6 +174,7 @@ live preflightは保存済み署名を信用せず、その場で署名を取得
 - Withdrawal Historyの古い範囲は自動全走査せず、利用者の`Scan older`操作を要する。
 - 単一release approverの誤承認と鍵喪失を受容する。
 - hardware walletの物理的独立性と担当者応答は、署名付きattestationと演習証跡に依存する。
+- Base Safe確認後からL1 finalityまでのreorgにより、Base上のburnが消えた後もICP releaseが残る可能性を受容する。
 
 ## Production deploy blocker
 
@@ -183,5 +185,6 @@ live preflightは保存済み署名を信用せず、その場で署名を取得
 3. proposerとexecutorから分離したcanceller hardware walletを含むceremony証跡
 4. 同じT0から計測した5分、15分、60分のmonitor drill証跡
 5. Timelock、IC controller、reserve、runtime codeのlive検査成功
+6. 現行source hashに対する`scripts/ci-local.sh all`とreview gateのblocking finding 0
 
 providerの運営主体と基盤の独立性はblockerに含めない。

@@ -10,7 +10,7 @@ import {TestBase} from "./TestBase.sol";
 contract BridgeDepositTest is TestBase {
     address private constant BRIDGE_SIGNER = address(0x11);
     address private constant RUNTIME_ADMINISTRATOR = address(0x22);
-    address private constant BASE_ADMIN_TIMELOCK = address(0x33);
+    address private BASE_ADMIN_TIMELOCK;
     address private constant RECIPIENT = address(0x44);
     uint256 private constant PER_DEPOSIT_LIMIT = 1_000;
     uint256 private constant WINDOW_LIMIT = 2_000;
@@ -30,6 +30,7 @@ contract BridgeDepositTest is TestBase {
     IBSNS private token;
 
     function setUp() public {
+        BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
         vm.warp(1_000_000);
         bridge = _deploy(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, WINDOW_DURATION, MAX_SERVICE_FEE, SERVICE_FEE);
         token = bridge.bsns();
@@ -65,10 +66,36 @@ contract BridgeDepositTest is TestBase {
 
     function testConstructorRejectsZeroAndDuplicateRoles() public {
         vm.expectRevert(IBridge.ZeroAddress.selector);
-        new Bridge("kinic", "KINIC", 8, address(0), RUNTIME_ADMINISTRATOR, BASE_ADMIN_TIMELOCK, 1, 1, 1, 1, 0);
+        new Bridge(
+            "kinic",
+            "KINIC",
+            8,
+            address(0),
+            RUNTIME_ADMINISTRATOR,
+            BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
+            1,
+            1,
+            1,
+            1,
+            0
+        );
 
         vm.expectRevert(IBridge.RoleAddressesMustDiffer.selector);
-        new Bridge("kinic", "KINIC", 8, BRIDGE_SIGNER, BRIDGE_SIGNER, BASE_ADMIN_TIMELOCK, 1, 1, 1, 1, 0);
+        new Bridge(
+            "kinic",
+            "KINIC",
+            8,
+            BRIDGE_SIGNER,
+            BRIDGE_SIGNER,
+            BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
+            1,
+            1,
+            1,
+            1,
+            0
+        );
     }
 
     function testConstructorRejectsZeroLimitsAndFeeAboveMaximum() public {
@@ -254,6 +281,7 @@ contract BridgeDepositTest is TestBase {
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
             perDepositLimit,
             windowLimit,
             windowDuration,

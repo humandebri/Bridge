@@ -26,12 +26,37 @@ export type AuditEventKind = { 'RuntimeAdministratorsRotated' : null } |
   } |
   { 'DepositsPauseRepeated' : null } |
   {
+    'EvmRpcObservation' : {
+      'transaction_hash' : [] | [Uint8Array | number[]],
+      'call_method' : string,
+      'evm_rpc_canister_id' : Principal,
+      'safe_block_hash' : Uint8Array | number[],
+      'quorum_response_digest' : Uint8Array | number[],
+      'safe_block_number' : bigint,
+      'request_digest' : Uint8Array | number[],
+    }
+  } |
+  {
     'FeeRecipientChanged' : {
       'previous' : FeeRecipientConfig,
       'current' : FeeRecipientConfig,
     }
   } |
   { 'DepositsPaused' : null } |
+  {
+    'EvmRpcDecision' : {
+      'bridge_operation_continued' : boolean,
+      'configured_provider_count' : number,
+      'transaction_hash' : [] | [Uint8Array | number[]],
+      'kind' : string,
+      'deposits_paused' : boolean,
+      'automatically_resigned' : boolean,
+      'required_threshold' : number,
+      'operation' : string,
+      'ledger_call_performed' : boolean,
+      'stop_reason' : [] | [string],
+    }
+  } |
   { 'DepositsResumed' : null } |
   { 'FeePayoutRequested' : { 'amount' : bigint } } |
   { 'ReserveGateChanged' : { 'sufficient' : boolean } };
@@ -90,15 +115,20 @@ export interface BridgeInitArgs {
   'cycles_floor' : bigint,
 }
 export interface BridgeStatus {
+  'base_chain_id_matches_config' : boolean,
   'confirmation_scheduler' : ConfirmationSchedulerStatus,
   'last_safe_base_block' : bigint,
   'last_reserve_observation_ns' : bigint,
   'reserve' : ReserveStatus,
+  'observed_base_chain_id' : [] | [bigint],
   'deposits_paused' : boolean,
   'schema_version' : number,
+  'observed_bridge_runtime_sha256' : Uint8Array | number[],
+  'observed_bridge_signer' : Uint8Array | number[],
   'last_safe_observation_ns' : bigint,
   'counts' : StatusCounts,
   'last_audit_sequence' : [] | [bigint],
+  'last_safe_base_block_hash' : Uint8Array | number[],
 }
 export type ChainKeyChallengeError = { 'Busy' : null } |
   { 'Unauthorized' : null } |
@@ -248,6 +278,10 @@ export interface PublicConfig {
   'ledger_canister_id' : Principal,
   'rpc_provider_urls_sha256' : Uint8Array | number[],
 }
+export type RefreshBaseObservationError = { 'Busy' : null } |
+  { 'StorageFailure' : null } |
+  { 'BaseStateMismatch' : null } |
+  { 'ObservationUnavailable' : null };
 export interface ReserveStatus {
   'cycles_balance' : bigint,
   'required_eth_wei' : bigint,
@@ -269,11 +303,13 @@ export type Result_4 = { 'Ok' : NotifyWithdrawalReceipt } |
   { 'Err' : NotifyWithdrawalError };
 export type Result_5 = { 'Ok' : null } |
   { 'Err' : AdminError };
-export type Result_6 = { 'Ok' : DepositReceipt } |
+export type Result_6 = { 'Ok' : null } |
+  { 'Err' : RefreshBaseObservationError };
+export type Result_7 = { 'Ok' : DepositReceipt } |
   { 'Err' : DepositError };
-export type Result_7 = { 'Ok' : FeePayoutReceipt } |
+export type Result_8 = { 'Ok' : FeePayoutReceipt } |
   { 'Err' : AdminError };
-export type Result_8 = { 'Ok' : string } |
+export type Result_9 = { 'Ok' : string } |
   { 'Err' : ChainKeyChallengeError };
 export interface RotateRuntimeAdministratorsArgs {
   'finance_administrator' : Principal,
@@ -371,15 +407,16 @@ export interface _SERVICE {
   'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_3>,
   'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_4>,
   'pause_new_deposits' : ActorMethod<[], Result_5>,
-  'request_deposit' : ActorMethod<[DepositArgs], Result_6>,
-  'request_fee_payout' : ActorMethod<[bigint], Result_7>,
+  'refresh_base_observation' : ActorMethod<[], Result_6>,
+  'request_deposit' : ActorMethod<[DepositArgs], Result_7>,
+  'request_fee_payout' : ActorMethod<[bigint], Result_8>,
   'resume_new_deposits' : ActorMethod<[], Result_5>,
   'rotate_runtime_administrators' : ActorMethod<
     [RotateRuntimeAdministratorsArgs],
     Result_5
   >,
   'set_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_5>,
-  'sign_chain_key_challenge' : ActorMethod<[string], Result_8>,
+  'sign_chain_key_challenge' : ActorMethod<[string], Result_9>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
 export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];

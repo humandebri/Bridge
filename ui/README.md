@@ -46,9 +46,14 @@ the corresponding deposit records. Withdrawal History scans Safe-confirmed Base 
 chunks, with at most four RPC requests per refresh or manual `Scan older` action. The resumable
 cursor is held only in the React Query cache and is not persisted in browser storage.
 
-The Bridge form reads a latest-state `Current bridge fee` quote. Status and runtime validation
-first resolve one Safe block and pass that same block number to their Base contract and
-bytecode reads, so latest estimates are not presented as confirmed operational state.
+The Bridge form reads a latest-state `Current bridge fee` quote. Before enabling a write, runtime
+validation asks the Canister to refresh its quorum-backed Safe observation and treats that observation
+as authoritative. It requires the observed chain ID, Bridge signer, and runtime hash to match the
+reviewed profile, verifies that the observed block is no newer than the browser RPC's Safe head, and
+binds every Base contract state and bytecode read to that canonical hash with EIP-1898. The
+browser's single-RPC result is supplemental; it cannot make the form writable without the Canister
+observation. The update endpoint is globally rate-limited and single-flight so the first write after
+deployment can establish an observation without turning refresh into an unbounded RPC path.
 
 Deposit idempotency and recovery use the Canister's public owner sequence. `Refresh bridge data`
 reads it once; the form does not generate a client request ID or persist a pending payload in

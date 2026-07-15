@@ -70,6 +70,52 @@ def evidence(scenario, details):
                 "bindings": bindings,
             }
         )
+    if scenario in {"single_provider_failure", "quorum_loss"}:
+        fault_fields = {"configured_provider_count", "required_provider_threshold", "injected_provider_failures", "fault_injection_reference"}
+        for artifact in artifacts:
+            for field in fault_fields:
+                artifact["bindings"].pop(field, None)
+            if artifact["kind"] == "fault":
+                artifact["bindings"].update({
+                    "configured_provider_count": "/configured_provider_count",
+                    "required_provider_threshold": "/required_threshold",
+                    "injected_provider_failures": "/failed_provider_count",
+                    "fault_injection_reference": "/run_reference",
+                })
+    audit_methods = {
+        "deposit_mint": "eth_getTransactionReceipt+eth_getBlockByNumber",
+        "withdrawal_release": "eth_getTransactionReceipt+eth_getBlockByNumber",
+        "bad_fee_refund": "eth_getTransactionReceipt+eth_getBlockByNumber",
+        "canonical_receipt": "eth_getTransactionReceipt+eth_getBlockByNumber",
+        "nonce_known": "eth_sendRawTransaction+multi_request",
+        "nonce_conflict": "eth_sendRawTransaction+multi_request",
+    }
+    audit_transaction_hash = next((value for key, value in reversed(list(details.items())) if "transaction_hash" in key and isinstance(value, str)), None)
+    if scenario == "nonce_conflict":
+        audit_transaction_hash = H32_A
+    decisions = {
+        "single_provider_failure": {
+            "kind": "QuorumContinued", "operation": "refresh_base_observation",
+            "configured_provider_count": 3, "required_threshold": 2,
+            "stop_reason": None, "ledger_call_performed": False,
+            "bridge_operation_continued": True, "deposits_paused": False,
+            "automatically_resigned": False, "transaction_hash": None,
+        },
+        "quorum_loss": {
+            "kind": "QuorumLoss", "operation": "notify_withdrawal",
+            "configured_provider_count": 3, "required_threshold": 2,
+            "stop_reason": "RpcInconsistent", "ledger_call_performed": False,
+            "bridge_operation_continued": False, "deposits_paused": False,
+            "automatically_resigned": False, "transaction_hash": None,
+        },
+        "nonce_conflict": {
+            "kind": "NonceConflict", "operation": "broadcast_evm_operation",
+            "configured_provider_count": 3, "required_threshold": 2,
+            "stop_reason": "NonceConflict", "ledger_call_performed": False,
+            "bridge_operation_continued": False, "deposits_paused": True,
+            "automatically_resigned": False, "transaction_hash": H32_A,
+        },
+    }
     return {
         "schema_version": 1,
         "rehearsal_id": "base-sepolia-live-001",
@@ -87,6 +133,20 @@ def evidence(scenario, details):
         "response_sha256": SHA_B,
         "result": "passed",
         "details": details,
+        "canister_audit": (
+            {
+                "evm_rpc_canister_id": rehearsal.OFFICIAL_EVM_RPC_CANISTER_ID,
+                "call_method": audit_methods.get(scenario, "multi_request"),
+                "request_digest": "5" * 64,
+                "quorum_response_digest": "6" * 64,
+                "safe_block_number": next((value for key, value in details.items() if "safe_block_number" in key), 10),
+                "safe_block_hash": next((value for key, value in details.items() if "safe_block_hash" in key), H32_C),
+                "transaction_hash": audit_transaction_hash,
+            }
+            if scenario in rehearsal.RPC_AUDIT_SCENARIOS
+            else None
+        ),
+        "canister_decision": decisions.get(scenario),
         "artifacts": artifacts,
     }
 
@@ -107,6 +167,7 @@ def all_evidence(binding):
                 "cycles_balance": 10_000_000_000,
                 "base_sepolia_eth_balance_wei": 1,
                 "configured_rpc_url_sha256": digests,
+                "bridge_canister_module_sha256": SHA_A,
             },
         ),
         "deposit_mint": evidence(
@@ -127,11 +188,11 @@ def all_evidence(binding):
         ),
         "single_provider_failure": evidence(
             "single_provider_failure",
-            {"configured_provider_count": 3, "agreeing_provider_count": 2, "bridge_operation_continued": True},
+            {"configured_provider_count": 3, "required_provider_threshold": 2, "injected_provider_failures": 1, "fault_injection_reference": "fault-one-provider", "threshold_satisfied": True, "bridge_operation_continued": True},
         ),
         "quorum_loss": evidence(
             "quorum_loss",
-            {"configured_provider_count": 3, "agreeing_provider_count": 1, "fail_closed": True, "stop_reason": "RpcInconsistent", "ledger_call_performed": False},
+            {"configured_provider_count": 3, "required_provider_threshold": 2, "injected_provider_failures": 2, "fault_injection_reference": "fault-two-providers", "threshold_satisfied": False, "fail_closed": True, "stop_reason": "RpcInconsistent", "ledger_call_performed": False},
         ),
         "nonce_known": evidence(
             "nonce_known",
@@ -146,6 +207,50 @@ def all_evidence(binding):
             {"base_deposits_paused": True, "base_withdrawals_paused": True, "canister_deposits_paused": True, "safe_block_number": 14, "safe_block_hash": H32_D},
         ),
     }
+
+
+def write_fault_artifact(item, scenario, output):
+    details = item["details"]
+    binding = rehearsal.validate_config(config())
+    failed = list(range(details["injected_provider_failures"]))
+    request = {
+        "rehearsal_id": item["rehearsal_id"], "scenario": scenario,
+        "run_reference": details["fault_injection_reference"],
+        "provider_url_digests": [entry["url_sha256"] for entry in binding["rpc_endpoints"]],
+        "failed_provider_indices": failed, "failure_rule": "connection-refused",
+    }
+    request_digest = rehearsal.hashlib.sha256(json.dumps(request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    injector_output_digest = "8" * 64
+    decision_timestamp_ns = int(rehearsal.datetime.fromisoformat(item["observed_at"].replace("Z", "+00:00")).timestamp() * 1_000_000_000)
+    parsed = {
+        "schema_version": 1,
+        "rehearsal_id": item["rehearsal_id"],
+        "scenario": scenario,
+        "run_reference": details["fault_injection_reference"],
+        "configured_provider_count": details["configured_provider_count"],
+        "required_threshold": details["required_provider_threshold"],
+        "failed_provider_count": details["injected_provider_failures"],
+        "failed_provider_indices": failed,
+        "provider_url_digests": request["provider_url_digests"],
+        "failure_rule": "connection-refused",
+        "started_at": item["observed_at"], "completed_at": item["observed_at"],
+        "restored_provider_indices": failed,
+        "injector_output_digest": injector_output_digest,
+        "request_config_digest": request_digest,
+        "decision_sequence": 7,
+        "decision_timestamp_ns": decision_timestamp_ns,
+        "decision_digest": rehearsal.hashlib.sha256(json.dumps(item["canister_decision"], sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+    }
+    stdout = json.dumps(parsed, separators=(",", ":"))
+    artifact = {
+        "schema_version": 1, "scenario": scenario, "kind": "fault",
+        "captured_at": item["observed_at"], "tool": "fault-injection-recorder",
+        "argv": [request_digest, injector_output_digest], "exit_code": 0,
+        "stdout_sha256": rehearsal.hashlib.sha256(stdout.encode()).hexdigest(),
+        "stdout": stdout, "parsed": parsed, "transport": None,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(artifact, sort_keys=True), encoding="utf-8")
 
 
 def manifest(binding):
@@ -201,6 +306,38 @@ class RehearsalTests(unittest.TestCase):
         self.assertEqual(value["state"], "AWAITING_RAW_ARTIFACT_VERIFICATION")
         self.assertFalse(value["complete"])
 
+    def test_boolean_claim_cannot_replace_canister_audit_or_module_binding(self):
+        binding = rehearsal.validate_config(config())
+        item = all_evidence(binding)["preflight"]
+        item["canister_audit"] = None
+        with self.assertRaises(rehearsal.InvalidEvidence):
+            rehearsal.validate_common(item, binding, "preflight")
+
+        item = all_evidence(binding)["preflight"]
+        item["details"]["bridge_canister_module_sha256"] = "f" * 64
+        with self.assertRaises(rehearsal.InvalidEvidence):
+            rehearsal.validate_details("preflight", item["details"], binding)
+
+        item = all_evidence(binding)["deposit_mint"]
+        item["canister_audit"]["call_method"] = "multi_request"
+        with self.assertRaises(rehearsal.InvalidEvidence):
+            rehearsal.validate_common(item, binding, "deposit_mint")
+
+        item = all_evidence(binding)["nonce_conflict"]
+        item["canister_audit"] = None
+        with self.assertRaises(rehearsal.InvalidEvidence):
+            rehearsal.validate_common(item, binding, "nonce_conflict")
+
+        item = all_evidence(binding)["nonce_conflict"]
+        item["canister_decision"]["transaction_hash"] = H32_B
+        with self.assertRaises(rehearsal.InvalidEvidence):
+            rehearsal.validate_common(item, binding, "nonce_conflict")
+
+        item = all_evidence(binding)["single_provider_failure"]
+        item["canister_decision"]["operation"] = "unrelated"
+        with self.assertRaises(rehearsal.InvalidEvidence):
+            rehearsal.validate_common(item, binding, "single_provider_failure")
+
     def test_evidence_fails_closed_before_preflight_and_on_tamper(self):
         binding = rehearsal.validate_config(config())
         value = manifest(binding)
@@ -229,6 +366,19 @@ class RehearsalTests(unittest.TestCase):
                 ["canister", "call", "aaaaa-aa", "get_status", "()", "--network", "ic", "--output", "json"],
                 binding,
             )
+        for extra in (
+            ["--network", "ic"],
+            ["--output", "json"],
+            ["--identity", "attacker"],
+            ["--host=https://attacker.example"],
+        ):
+            with self.assertRaises(rehearsal.InvalidEvidence):
+                rehearsal.validate_capture_command(
+                    "bridge",
+                    "dfx",
+                    ["canister", "call", "aaaaa-aa", "get_public_config", "()", "--network", "ic", "--output", "json", *extra],
+                    binding,
+                )
         with self.assertRaises(rehearsal.InvalidEvidence):
             rehearsal.validate_capture_command(
                 "base",
@@ -260,7 +410,7 @@ class RehearsalTests(unittest.TestCase):
                 rehearsal.verify_manifest(value, root)
 
             fake = root / "dfx"
-            payload = json.dumps(item["details"], separators=(",", ":"))
+            payload = json.dumps({**item["details"], "canister_audit": item["canister_audit"], "canister_decision": item["canister_decision"]}, separators=(",", ":"))
             fake.write_text(f"#!/bin/sh\nprintf '%s' '{payload}'\n", encoding="utf-8")
             fake.chmod(0o755)
             output = root / "artifacts" / "preflight-bridge.json"
@@ -321,6 +471,40 @@ class RehearsalTests(unittest.TestCase):
             )
             self.assertNotEqual(failed.returncode, 0)
 
+    def test_capture_fault_cli_binds_execution_and_rejects_wrong_restore(self):
+        binding = rehearsal.validate_config(config())
+        value = manifest(binding)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "rpc-e2e.json"
+            config_path = root / "config.json"
+            output = root / "fault.json"
+            manifest_path.write_text(json.dumps(value), encoding="utf-8")
+            config_path.write_text(json.dumps(config()), encoding="utf-8")
+            injector = root / "evm-rpc-fault-injector"
+            decision = all_evidence(binding)["single_provider_failure"]["canister_decision"]
+            injector.write_text(
+                "#!/usr/bin/env python3\nimport json,time\nprint(json.dumps(" + repr({"schema_version": 1, "run_reference": "fault-one-provider", "applied_provider_indices": [0], "restored_provider_indices": [0], "result": "completed", "decision_sequence": 9, "decision_timestamp_ns": 0, "canister_decision": decision}) + ".copy() | {'decision_timestamp_ns': time.time_ns()}, separators=(',', ':')))\n",
+                encoding="utf-8",
+            )
+            injector.chmod(0o755)
+            command = [
+                "python3", str(MODULE_PATH), "capture-fault", str(manifest_path), str(config_path),
+                "single_provider_failure", str(output), "fault-one-provider", "--", "evm-rpc-fault-injector",
+            ]
+            environment = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ.get('PATH', '')}"}
+            completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            artifact = json.loads(output.read_text())
+            self.assertEqual(artifact["parsed"]["failed_provider_indices"], [0])
+            self.assertEqual(artifact["parsed"]["restored_provider_indices"], [0])
+            injector.write_text(
+                "#!/usr/bin/env python3\nimport json,time\nprint(json.dumps(" + repr({"schema_version": 1, "run_reference": "fault-one-provider", "applied_provider_indices": [0], "restored_provider_indices": [], "result": "completed", "decision_sequence": 9, "decision_timestamp_ns": 0, "canister_decision": decision}) + ".copy() | {'decision_timestamp_ns': time.time_ns()}, separators=(',', ':')))\n",
+                encoding="utf-8",
+            )
+            rejected = subprocess.run(command[:-4] + [str(root / "bad.json"), "fault-one-provider", "--", "evm-rpc-fault-injector"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+            self.assertNotEqual(rejected.returncode, 0)
+
     def test_fake_command_harness_completes_and_tamper_fails(self):
         binding = rehearsal.validate_config(config())
         value = manifest(binding)
@@ -329,7 +513,13 @@ class RehearsalTests(unittest.TestCase):
             root = Path(directory)
             tool = root / "tool"
             for scenario, item in items.items():
-                payload = json.dumps(item["details"], separators=(",", ":"))
+                fault_fields = {"configured_provider_count", "required_provider_threshold", "injected_provider_failures", "fault_injection_reference"}
+                command_details = {key: value for key, value in item["details"].items() if scenario not in {"single_provider_failure", "quorum_loss"} or key not in fault_fields}
+                audit_event = None
+                if item["canister_decision"] is not None:
+                    timestamp_ns = int(rehearsal.datetime.fromisoformat(item["observed_at"].replace("Z", "+00:00")).timestamp() * 1_000_000_000)
+                    audit_event = {"sequence": 7, "timestamp_ns": timestamp_ns, "kind": {"EvmRpcDecision": item["canister_decision"]}}
+                payload = json.dumps({**command_details, "canister_audit": item["canister_audit"], "audit_events": [audit_event] if audit_event else []}, separators=(",", ":"))
                 tool.write_text(
                     f"#!/bin/sh\nif [ \"$1\" = chain-id ]; then printf '84532\\n'; else printf '%s' '{payload}'; fi\n",
                     encoding="utf-8",
@@ -337,12 +527,18 @@ class RehearsalTests(unittest.TestCase):
                 tool.chmod(0o755)
                 for reference in item["artifacts"]:
                     kind = reference["kind"]
+                    output = root / reference["path"]
+                    if kind == "fault":
+                        write_fault_artifact(item, scenario, output)
+                        reference["sha256"] = rehearsal.hashlib.sha256(output.read_bytes()).hexdigest()
+                        continue
                     executable = root / ("cast" if kind == "base" else "dfx")
                     executable.write_bytes(tool.read_bytes())
                     executable.chmod(0o755)
-                    output = root / reference["path"]
                     if kind == "base":
                         command = ["cast", "receipt", H32_A]
+                    elif kind == "module":
+                        command = ["dfx", "canister", "status", binding["bridge_canister_id"], "--network", "ic", "--output", "json"]
                     else:
                         canister = binding["ledger_canister_id"] if kind == "ledger" else binding["bridge_canister_id"]
                         method = {"ledger": "icrc3_get_blocks", "audit": "get_audit_events", "bridge": "get_bridge_status"}[kind]
@@ -440,11 +636,12 @@ class RehearsalTests(unittest.TestCase):
             {"kind": "base", "path": "artifacts/canonical-safe.json", "sha256": "0" * 64, "bindings": {
                 "confirmed_head_block_number": "/number",
             }},
+            {"kind": "audit", "path": "artifacts/canonical-audit.json", "sha256": "0" * 64, "bindings": {}},
         ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dfx = root / "dfx"
-            dfx.write_text(f"#!/bin/sh\nprintf '%s' '{json.dumps(item['details'], separators=(',', ':'))}'\n", encoding="utf-8")
+            dfx.write_text(f"#!/bin/sh\nprintf '%s' '{json.dumps({**item['details'], 'canister_audit': item['canister_audit'], 'canister_decision': item['canister_decision']}, separators=(',', ':'))}'\n", encoding="utf-8")
             dfx.chmod(0o755)
             cast = root / "cast"
             cast.write_text(
@@ -461,6 +658,7 @@ class RehearsalTests(unittest.TestCase):
                 (item["artifacts"][1], ["cast", "receipt", H32_A], 0),
                 (item["artifacts"][2], ["cast", "block", "12"], 0),
                 (item["artifacts"][3], ["cast", "block", "safe"], 0),
+                (item["artifacts"][4], ["dfx", "canister", "call", "aaaaa-aa", "get_audit_events", "()", "--network", "ic", "--output", "json"], None),
             ]
             clean = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ.get('PATH', '')}", "ETH_RPC_URL": "", "FOUNDRY_ETH_RPC_URL": "", "CAST_RPC_URL": ""}
             with patch.dict(os.environ, clean, clear=True):

@@ -19,6 +19,7 @@ ZERO_BYTES32="0x0000000000000000000000000000000000000000000000000000000000000000
 MAX_EXPERIMENT_COST_WEI=20000000000000000
 SIGNER_FUNDING_WEI=5000000000000000
 CALL_GAS_BUDGET=5000000
+BRIDGE_DEPLOY_GAS_BUDGET=5000000
 
 die() {
   echo "error: $*" >&2
@@ -348,18 +349,16 @@ preflight() {
   fi
 
   forge build --root "$CONTRACTS"
-  local timelock_bytecode bridge_bytecode timelock_args bridge_args timelock_creation bridge_creation
+  local timelock_bytecode timelock_args timelock_creation
   timelock_bytecode="$(jq -r '.bytecode.object' "$CONTRACTS/out/BridgeTimelockController.sol/BridgeTimelockController.json")"
-  bridge_bytecode="$(jq -r '.bytecode.object' "$CONTRACTS/out/Bridge.sol/Bridge.json")"
   timelock_args="$(cast abi-encode 'constructor(uint256,address[],address[],address[])' "$TIMELOCK_DELAY" "[$DEPLOYER]" "[$canceller]" "[$DEPLOYER]")"
-  bridge_args="$(cast abi-encode 'constructor(string,string,uint8,address,address,address,uint256,uint256,uint64,uint256,uint256)' \
-    kinic KINIC 8 "$signer" "$DEPLOYER" 0x0000000000000000000000000000000000000001 \
-    1000000000 10000000000 3600 10000000 1000000)"
   timelock_creation="${timelock_bytecode}${timelock_args#0x}"
-  bridge_creation="${bridge_bytecode}${bridge_args#0x}"
   local timelock_gas bridge_gas gas_price total_gas upper_cost balance
   timelock_gas="$(cast estimate --rpc-url "$RPC_URL" --from "$DEPLOYER" --create "$timelock_creation")"
-  bridge_gas="$(cast estimate --rpc-url "$RPC_URL" --from "$DEPLOYER" --create "$bridge_creation")"
+  # Bridge validates the already-deployed Timelock's extcodehash in its
+  # constructor, so a pre-deployment eth_estimateGas cannot faithfully execute
+  # it against a placeholder address. Use a conservative explicit budget.
+  bridge_gas="$BRIDGE_DEPLOY_GAS_BUDGET"
   gas_price="$(cast gas-price --rpc-url "$RPC_URL")"
   total_gas=$((timelock_gas + bridge_gas + CALL_GAS_BUDGET))
   upper_cost=$((total_gas * gas_price))
@@ -439,8 +438,11 @@ deploy() {
     'src/BridgeTimelockController.sol:BridgeTimelockController' \
     "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
     "$TIMELOCK_DELAY" "[$DEPLOYER]" "[$canceller]" "[$DEPLOYER]")"
+  local timelock_code_hash
+  timelock_code_hash="$(cast codehash "$timelock" --rpc-url "$RPC_URL")"
   bridge="$(deploy_contract bridge 'src/Bridge.sol:Bridge' "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
-    kinic KINIC 8 "$signer" "$DEPLOYER" "$timelock" 1000000000 10000000000 3600 10000000 1000000)"
+    kinic KINIC 8 "$signer" "$DEPLOYER" "$timelock" "$timelock_code_hash" \
+    1000000000 10000000000 3600 10000000 1000000)"
   bsns="$(cast call "$bridge" 'bsns()(address)' --rpc-url "$RPC_URL")"
   record_contract bsns "$bsns" "$(manifest_get '.contracts.bridge.deployment_transaction')"
   wait_transactions_confirmed fund_bridge_signer deploy_timelock deploy_bridge

@@ -193,3 +193,28 @@ if verify_live_evm_rpc_rehearsal_sources "$WRONG_CANISTER_SOURCE" >/dev/null 2>&
   echo "live EVM RPC guard accepted a non-official canister" >&2
   exit 1
 fi
+
+CURRENT_PROTOCOL_DOC="$TEST_TMP_ROOT/current-protocol.md"
+printf '%s\n' \
+  'The user createWithdrawal transaction burns bSNS and enters Releasing.' \
+  'The canister binds all reads to one canonical Safe block.' >"$CURRENT_PROTOCOL_DOC"
+verify_no_obsolete_withdrawal_terms "$CURRENT_PROTOCOL_DOC"
+
+OBSOLETE_PROTOCOL_DOC="$TEST_TMP_ROOT/obsolete-protocol.md"
+printf '%s\n' 'The canister calls beginRelease before a canonical finalized receipt.' \
+  >"$OBSOLETE_PROTOCOL_DOC"
+if verify_no_obsolete_withdrawal_terms "$OBSOLETE_PROTOCOL_DOC" >/dev/null 2>&1; then
+  echo "protocol documentation guard accepted the retired Withdrawal flow" >&2
+  exit 1
+fi
+
+COMPLETE_LEAN_SOURCE="$TEST_TMP_ROOT/Complete.lean"
+printf '%s\n' 'theorem complete : True := by trivial' >"$COMPLETE_LEAN_SOURCE"
+verify_lean_no_proof_escape "$COMPLETE_LEAN_SOURCE"
+
+INCOMPLETE_LEAN_SOURCE="$TEST_TMP_ROOT/Incomplete.lean"
+printf '%s\n' 'theorem incomplete : True := by sorry' >"$INCOMPLETE_LEAN_SOURCE"
+if verify_lean_no_proof_escape "$INCOMPLETE_LEAN_SOURCE" >/dev/null 2>&1; then
+  echo "Lean proof guard accepted sorry" >&2
+  exit 1
+fi

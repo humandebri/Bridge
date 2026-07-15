@@ -4,11 +4,11 @@ status: accepted
 
 # ICP ReleaseをBase contractへ記録する
 
-> Withdrawal開始方法と確定条件はADR 0018でsupersedeされた。本書は旧設計の歴史記録である。
+> Withdrawal開始方法と確定条件はADR 0018でsupersedeされた。現行実装と運用判断にはADR 0018だけを使用する。
 
 > Confirmation後の自動進行に関する判断はADR 0017でsupersedeされた。
 
-WithdrawalはICP Ledger送金前にBase上で`Pending → Releasing`をfinalizeする。ICP Releaseが成功したWithdrawalはBase contractへacknowledgeし、`Releasing → Released`へ終端させる。Ledgerが確定的に未実行の場合だけ`Releasing → Pending`へcancelでき、Base Refundは`Pending`だけに許可する。この二段階lockによりReleaseとRefundを排他的にする。
+Withdrawalの開始・確認方法に関する旧方式は廃止した。現在はユーザーの`createWithdrawal`がburnと`Releasing`化を同一transactionで行い、Canisterはcanonical Safe blockで確認する。Release成功後のacknowledgement、確定的未送金時だけ許可するcancel、`Pending`だけに許可するrefundという排他条件は維持する。
 
 ## Considered Options
 
@@ -17,11 +17,11 @@ WithdrawalはICP Ledger送金前にBase上で`Pending → Releasing`をfinalize�
 
 ## Consequences
 
-- Bridge canisterは`beginRelease`のcanonical finalized receiptを確認するまでICRC transferを呼ばない。ICRC transferの成功、`Duplicate`、または完全な履歴照合を確定してからRelease acknowledgementを送る。
+- Bridge canisterはユーザーの`createWithdrawal`を同一canonical Safe blockへ束縛して確認するまでICRC transferを呼ばない。ICRC transferの成功、`Duplicate`、または完全な履歴照合を確定してからRelease acknowledgementを送る。
 - releaseとacknowledgementは明示的な`notify_withdrawal`または障害復旧用`continue_withdrawal`から開始し、EVM transactionを送信した後のconfirmation確認と次の正常段階はADR 0017のone-shot timerで進める。
 - Release acknowledgementはwithdrawal IDで冪等にし、同一内容の再実行を成功扱いにする。
 - 同じICP ledger block indexを別WithdrawalのRelease acknowledgementへ再利用することをBase contractでも拒否する。
-- ICP Release開始後からBaseで`Released`がfinalizeするまで、自動refundへ遷移させない。
+- ICP Release開始後からBaseで`Released`がSafe確認されるまで、自動refundへ遷移させない。
 - Walletを閉じてもschedule済みのconfirmation確認は継続する。自動処理が停止理由を保存した場合だけ、利用者のHistory操作またはGovernance/pause administratorのRetryで再開する。
 - Withdrawal settlement用のBase gasを新規Deposit処理とは別に確保する。
 - Verusで、1件のWithdrawalが`Released`と`Refunded`の両方へ到達しないことを証明する。

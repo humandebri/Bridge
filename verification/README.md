@@ -4,7 +4,8 @@
 
 - `verification/lean/BridgeModel.lean` models ICP escrow, Base supply, confirmed fee reserve,
   Deposit liability, one target Withdrawal liability, all other Withdrawal liabilities and the
-  `Pending → Releasing` lock. Lean 4 proves, without `sorry`, that every modeled transition
+  user-signed `createWithdrawal` transaction that atomically burns bSNS and creates a `Releasing`
+  Withdrawal. Lean 4 proves, without `sorry`, that every modeled transition
   preserves 1:1 backing, that one Withdrawal cannot receive both an ICP release and a Base refund,
   and that a reachable economically terminal target Withdrawal has zero target liability without
   changing other Withdrawals' liability.
@@ -26,8 +27,9 @@ verus --crate-type bin --no-cheating verification/verus/pass.rs
 ## Explicit refinement boundary
 
 The Lean model does not assert external facts as axioms. `WorldAssumptions`, `TrustedWorld` and
-`RefinedExecution` require an honest Bridge signer, a canonical Base Safe chain, authentic Ledger
-results and atomic IC/SQLite commit as explicit inputs to the cross-system refinement theorem.
+`RefinedExecution` require an honest Bridge signer, the configured EVM RPC Canister quorum returning
+the canonical Base Safe chain, authentic Ledger results and atomic IC/SQLite commit as explicit
+inputs to the cross-system refinement theorem.
 `ValidInitial` constructs terminal-liability safety from an idle, unreceived, zero-target-liability,
 backed and nonnegative initial state. These inputs are not proved by Lean. The configured EVM
 RPC Canister quorum returning the canonical Safe chain, chain-key signing, ICRC archive
@@ -35,8 +37,11 @@ completeness, stable VFS/SQLite semantics, Serde/CBOR,
 and IC message rollback remain trusted platform or adapter assumptions. The terminal-liability
 claim is a safety property for one modeled Withdrawal; it does not prove that all live Withdrawals
 eventually reach a terminal state or that aggregate outstanding Bridge liability becomes zero.
+It also does not prove Base finality: a reorg after Safe observation and before finalization is an
+explicitly accepted external risk and can break the modeled 1:1 correspondence.
 Lean's `releaseIcp` abstracts the Ledger transfer and Safe-confirmed Base acknowledgement into one
-economic transition. For refunds, the production event contains no amount. The operation bundle
+economic transition. A post-Safe, pre-finality Base reorg is outside this proof and is an explicitly
+accepted risk; this model must not be described as proving L1 finality. For refunds, the production event contains no amount. The operation bundle
 therefore checks the Refund kind, operation ID, payload hash, and exact
 `refundWithdrawal(uint256)` selector plus Withdrawal ID before persistence. The Base contract uses
 that ID to refund its stored gross amount. Verus proves that all four binding predicates are

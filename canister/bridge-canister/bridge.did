@@ -21,11 +21,32 @@ type AuditEventKind = variant {
     confirmed_head_block_number : nat64;
   };
   DepositsPauseRepeated;
+  EvmRpcObservation : record {
+    transaction_hash : opt blob;
+    call_method : text;
+    evm_rpc_canister_id : principal;
+    safe_block_hash : blob;
+    quorum_response_digest : blob;
+    safe_block_number : nat64;
+    request_digest : blob;
+  };
   FeeRecipientChanged : record {
     previous : FeeRecipientConfig;
     current : FeeRecipientConfig;
   };
   DepositsPaused;
+  EvmRpcDecision : record {
+    bridge_operation_continued : bool;
+    configured_provider_count : nat8;
+    transaction_hash : opt blob;
+    kind : text;
+    deposits_paused : bool;
+    automatically_resigned : bool;
+    required_threshold : nat8;
+    operation : text;
+    ledger_call_performed : bool;
+    stop_reason : opt text;
+  };
   DepositsResumed;
   FeePayoutRequested : record { amount : nat };
   ReserveGateChanged : record { sufficient : bool };
@@ -85,15 +106,20 @@ type BridgeInitArgs = record {
   cycles_floor : nat;
 };
 type BridgeStatus = record {
+  base_chain_id_matches_config : bool;
   confirmation_scheduler : ConfirmationSchedulerStatus;
   last_safe_base_block : nat64;
   last_reserve_observation_ns : nat64;
   reserve : ReserveStatus;
+  observed_base_chain_id : opt nat64;
   deposits_paused : bool;
   schema_version : nat16;
+  observed_bridge_runtime_sha256 : blob;
+  observed_bridge_signer : blob;
   last_safe_observation_ns : nat64;
   counts : StatusCounts;
   last_audit_sequence : opt nat64;
+  last_safe_base_block_hash : blob;
 };
 type ChainKeyChallengeError = variant {
   Busy;
@@ -244,6 +270,12 @@ type PublicConfig = record {
   ledger_canister_id : principal;
   rpc_provider_urls_sha256 : blob;
 };
+type RefreshBaseObservationError = variant {
+  Busy;
+  StorageFailure;
+  BaseStateMismatch;
+  ObservationUnavailable;
+};
 type ReserveStatus = record {
   cycles_balance : nat;
   required_eth_wei : nat;
@@ -268,9 +300,10 @@ type Result_4 = variant {
   Err : NotifyWithdrawalError;
 };
 type Result_5 = variant { Ok; Err : AdminError };
-type Result_6 = variant { Ok : DepositReceipt; Err : DepositError };
-type Result_7 = variant { Ok : FeePayoutReceipt; Err : AdminError };
-type Result_8 = variant { Ok : text; Err : ChainKeyChallengeError };
+type Result_6 = variant { Ok; Err : RefreshBaseObservationError };
+type Result_7 = variant { Ok : DepositReceipt; Err : DepositError };
+type Result_8 = variant { Ok : FeePayoutReceipt; Err : AdminError };
+type Result_9 = variant { Ok : text; Err : ChainKeyChallengeError };
 type RotateRuntimeAdministratorsArgs = record {
   finance_administrator : principal;
   pause_principals : vec principal;
@@ -352,12 +385,13 @@ service : (BridgeInitArgs) -> {
   list_deposit_ids : (ListDepositIdsArgs) -> (Result_3) query;
   notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_4);
   pause_new_deposits : () -> (Result_5);
-  request_deposit : (DepositArgs) -> (Result_6);
-  request_fee_payout : (nat) -> (Result_7);
+  refresh_base_observation : () -> (Result_6);
+  request_deposit : (DepositArgs) -> (Result_7);
+  request_fee_payout : (nat) -> (Result_8);
   resume_new_deposits : () -> (Result_5);
   rotate_runtime_administrators : (RotateRuntimeAdministratorsArgs) -> (
       Result_5,
     );
   set_fee_recipient : (FeeRecipientConfig) -> (Result_5);
-  sign_chain_key_challenge : (text) -> (Result_8);
+  sign_chain_key_challenge : (text) -> (Result_9);
 }

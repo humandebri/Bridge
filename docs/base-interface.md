@@ -76,7 +76,7 @@ rotationでもzero addressと3権限addressの重複を拒否し、初期deploy�
 
 Base Admin TimelockにはOpenZeppelin 5.6.1の`TimelockController`を使用する。
 Bridgeより先にdeployし、minimum delayを72時間、Base Admin hardware walletをproposerとexecutor、独立hardware walletをcanceller、追加adminをzero addressとして初期化する。
-Timelock自身が唯一のadminであり、delayとTimelock roleの変更もschedule済み自己callだけに許可する。
+Timelock自身が唯一のadminである。構築後のTimelock role集合は凍結し、`grantRole`、`revokeRole`、`renounceRole`を自己callを含めて拒否する。role変更が必要な場合は、新しい承認済みrole集合で同一runtimeのTimelockを配置し、BridgeのTimelock rotationを行う。
 Bridgeはrotation候補のcode、72時間以上のdelay、Timelock自身のadmin保持を検証する。role分離はdeployment profileとdeploy preflightで確認する。
 
 ## Deposit mint

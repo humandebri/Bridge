@@ -126,6 +126,14 @@ proof fn fee_is_counted_exactly_on_first_transfer(fee: int)
         kernel::fee_delta_once_spec(false, false, fee) == 0
 {}
 
+proof fn release_transfer_requires_exact_amount_and_fee(
+    transfer_amount: int, transfer_fee: int, amount_out: int, ledger_fee: int,
+)
+    ensures kernel::release_transfer_matches_spec(
+        transfer_amount, transfer_fee, amount_out, ledger_fee)
+            <==> transfer_amount == amount_out && transfer_fee == ledger_fee
+{}
+
 proof fn exact_settlement_clears_terminal_liability(
     liability: int, amount_out: int, service_fee: int, ledger_fee: int,
 )

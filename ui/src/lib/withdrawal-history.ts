@@ -40,8 +40,8 @@ interface ScanOptions<T extends SafeEventLog> {
 export async function scanWithdrawalLogs<T extends SafeEventLog>({ deploymentBlock, safeBlock, safeBlockHash, previous, mode = "refresh", fetchLogs, fetchBlockHash }: ScanOptions<T>): Promise<WithdrawalLogScan<T>> {
   if (safeBlock < deploymentBlock) return { lastSafeBlock: safeBlock, lastSafeBlockHash: safeBlockHash, olderCursor: null, reachedDeploymentBlock: true, logs: [] }
 
-  if (mode === "older") {
-    if (!previous || previous.olderCursor === null) return previous ?? initialEmpty(safeBlock, safeBlockHash)
+  if (mode === "older" && previous) {
+    if (previous.olderCursor === null) return previous
     const scanned = await scanBackwards(previous.olderCursor, deploymentBlock, previous.logs, fetchLogs)
     return { ...previous, ...scanned }
   }
@@ -91,10 +91,6 @@ async function scanBackwards<T extends SafeEventLog>(startBlock: bigint, deploym
   const merged = newestUnique(logs)
   const olderCursor = reachedDeploymentBlock ? null : toBlock
   return { olderCursor, reachedDeploymentBlock, logs: merged }
-}
-
-function initialEmpty<T extends SafeEventLog>(safeBlock: bigint, safeBlockHash: `0x${string}`): WithdrawalLogScan<T> {
-  return { lastSafeBlock: safeBlock, lastSafeBlockHash: safeBlockHash, olderCursor: null, reachedDeploymentBlock: true, logs: [] }
 }
 
 function newestUnique<T extends SafeEventLog>(logs: T[]): T[] {

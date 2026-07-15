@@ -13,6 +13,8 @@ const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_exter
 const mockInit = IDL.Record({ ledger_id: IDL.Principal });
 const ledgerMode = IDL.Variant({ Succeed: IDL.Null, Duplicate: IDL.Null, Trap: IDL.Null, BadFee: IDL.Null, TemporarilyUnavailable: IDL.Null });
 const receiptMode = IDL.Variant({ Confirmed: IDL.Null, Missing: IDL.Null, Reverted: IDL.Null, RpcFailure: IDL.Null, Inconsistent: IDL.Null, DecodeFailure: IDL.Null, Orphaned: IDL.Null });
+const chainIdMode = IDL.Variant({ Configured: IDL.Null, Wrong: IDL.Null, Inconsistent: IDL.Null });
+const blockMode = IDL.Variant({ Canonical: IDL.Null, SafeInconsistent: IDL.Null, CanonicalInconsistent: IDL.Null, SameHeightDifferentHash: IDL.Null });
 const withdrawalFixture = IDL.Record({ id: IDL.Vec(IDL.Nat8), owner: IDL.Vec(IDL.Nat8), subaccount: IDL.Vec(IDL.Nat8), amount: IDL.Nat, min_amount_out: IDL.Nat });
 const chainKeyProbe = IDL.Record({ public_key: IDL.Vec(IDL.Nat8), signature: IDL.Vec(IDL.Nat8) });
 const mockIdl = ({ IDL: I }: { IDL: typeof IDL }) =>
@@ -24,6 +26,8 @@ const mockIdl = ({ IDL: I }: { IDL: typeof IDL }) =>
     set_withdrawal: I.Func([I.Opt(withdrawalFixture)], [], []),
     set_withdrawal_status: I.Func([I.Nat8], [], []),
     set_receipt_mode: I.Func([receiptMode], [], []),
+    set_chain_id_mode: I.Func([chainIdMode], [], []),
+    set_block_mode: I.Func([blockMode], [], []),
     set_observed_transaction: I.Func([I.Vec(I.Nat8), I.Vec(I.Nat8), I.Vec(I.Nat8), I.Nat64], [I.Variant({ Ok: I.Null, Err: I.Text })], []),
     set_eth_balance: I.Func([I.Nat], [], []),
     set_next_evm_nonce: I.Func([I.Nat64], [], []),
@@ -38,6 +42,7 @@ const mockIdl = ({ IDL: I }: { IDL: typeof IDL }) =>
     ledger_transactions: I.Func([], [I.Vec(I.Record({ kind: I.Text, mint: I.Opt(I.Reserved), burn: I.Opt(I.Reserved), transfer: I.Opt(I.Reserved), approve: I.Opt(I.Reserved), fee_collector: I.Opt(I.Reserved), timestamp: I.Nat64 }))], ["query"]),
     ledger_transfer_calls: I.Func([], [I.Nat64], ["query"]),
     eth_call_count: I.Func([], [I.Nat64], ["query"]),
+    pinned_eth_call_block_numbers: I.Func([], [I.Vec(I.Nat64)], ["query"]),
     receipt_call_count: I.Func([], [I.Nat64], ["query"]),
     probe_chain_key: I.Func([I.Text], [I.Variant({ Ok: chainKeyProbe, Err: I.Text })], []),
   });
@@ -116,21 +121,22 @@ const confirmationSchedulerStatus = IDL.Record({ healthy: IDL.Bool, scheduled_op
 const bridgeStatus = IDL.Record({ schema_version: IDL.Nat16, last_safe_base_block: IDL.Nat64, last_reserve_observation_ns: IDL.Nat64, last_safe_observation_ns: IDL.Nat64, counts: IDL.Record({ deposits: IDL.Nat64, withdrawals: IDL.Nat64, pending_ledger_operations: IDL.Nat64, pending_evm_operations: IDL.Nat64, reconciliation_holds: IDL.Nat64, reserved_deposit_mint_amount: IDL.Nat, reserved_deposit_mint_operations: IDL.Nat64, reverted_evm_operations: IDL.Nat64, active_evm_payloads: IDL.Nat64, retained_audit_events: IDL.Nat64, pruned_audit_events: IDL.Nat64, retained_deposit_index_entries: IDL.Nat64 }), reserve: reserveStatus, deposits_paused: IDL.Bool, last_audit_sequence: IDL.Opt(IDL.Nat64), confirmation_scheduler: confirmationSchedulerStatus });
 const adminError = IDL.Variant({ Busy: IDL.Null, Unauthorized: IDL.Null, InvalidArgument: IDL.Text, StorageFailure: IDL.Null, InsufficientFeeReserve: IDL.Null, UnresolvedEvmRevert: IDL.Null });
 const auditedEvmOperationKind = IDL.Variant({ RefundWithdrawal: IDL.Null, MintDeposit: IDL.Null, CancelRelease: IDL.Null, AcknowledgeRelease: IDL.Null });
+const feeRecipientConfig = IDL.Record({ owner: IDL.Principal, subaccount: IDL.Vec(IDL.Nat8) });
 const auditEventKind = IDL.Variant({
   RuntimeAdministratorsRotated: IDL.Null,
   EvmOperationReverted: IDL.Record({ confirmed_head_block_number: IDL.Nat64, transaction_hash: IDL.Vec(IDL.Nat8), kind: auditedEvmOperationKind, operation_id: IDL.Nat64 }),
   DepositsPauseRepeated: IDL.Null,
-  FeeRecipientChanged: IDL.Reserved,
+  FeeRecipientChanged: IDL.Record({ previous: feeRecipientConfig, current: feeRecipientConfig }),
   DepositsPaused: IDL.Null,
   DepositsResumed: IDL.Null,
-  FeePayoutRequested: IDL.Reserved,
-  ReserveGateChanged: IDL.Reserved,
+  FeePayoutRequested: IDL.Record({ amount: IDL.Nat }),
+  ReserveGateChanged: IDL.Record({ sufficient: IDL.Bool }),
 });
 const auditEvent = IDL.Record({ timestamp_ns: IDL.Nat64, kind: auditEventKind, caller: IDL.Principal, sequence: IDL.Nat64 });
 const auditEventPage = IDL.Record({ events: IDL.Vec(auditEvent), oldest_available_sequence: IDL.Nat64, next_sequence: IDL.Opt(IDL.Nat64), pruned_count: IDL.Nat64, pruned_through_sequence: IDL.Opt(IDL.Nat64), pruned_digest: IDL.Vec(IDL.Nat8) });
 const payoutState = IDL.Variant({ Pending: IDL.Null, ReconciliationHold: IDL.Null, Succeeded: IDL.Record({ block_index: IDL.Nat }), Failed: IDL.Null });
 const payoutReceipt = IDL.Record({ id: IDL.Nat64, amount: IDL.Nat, state: payoutState });
-const publicConfig = IDL.Record({ base_chain_id: IDL.Nat64, bridge_contract: IDL.Vec(IDL.Nat8), ledger_canister_id: IDL.Principal, index_canister_id: IDL.Principal, schema_version: IDL.Nat16, expected_bridge_signer: IDL.Vec(IDL.Nat8) });
+const publicConfig = IDL.Record({ base_chain_id: IDL.Nat64, bridge_contract: IDL.Vec(IDL.Nat8), ledger_canister_id: IDL.Principal, index_canister_id: IDL.Principal, evm_rpc_canister_id: IDL.Principal, rpc_provider_urls_sha256: IDL.Vec(IDL.Nat8), schema_version: IDL.Nat16, expected_bridge_signer: IDL.Vec(IDL.Nat8) });
 const listDepositIdsArgs = IDL.Record({ owner: IDL.Principal, before_cursor: IDL.Opt(IDL.Nat64), limit: IDL.Nat16 });
 const depositIdPage = IDL.Record({ deposit_ids: IDL.Vec(IDL.Vec(IDL.Nat8)), next_cursor: IDL.Opt(IDL.Nat64), oldest_available_cursor: IDL.Opt(IDL.Nat64), history_truncated: IDL.Bool });
 const consentMetadata = IDL.Record({ utc_offset_minutes: IDL.Opt(IDL.Int16), language: IDL.Text });
@@ -389,6 +395,8 @@ describe("Phase 3 PocketIC saga", () => {
     expect(config.base_chain_id).toBe(8453n);
     expect(config.schema_version).toBe(6);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
+    expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
+    expect(config.rpc_provider_urls_sha256).toHaveLength(32);
 
     const consent: any = await (bridge.actor as any).icrc21_canister_call_consent_message({
       arg: new Uint8Array(IDL.encode([depositArgs], [request])),
@@ -651,6 +659,71 @@ describe("Phase 3 PocketIC saga", () => {
     }
   });
 
+  it("binds withdrawal state reads to the canonical receipt block with EIP-1898", async () => {
+    const { evm, bridge, runtimePrincipal } = await setup();
+    const id = new Uint8Array(32).fill(0x9a);
+    await (evm.actor as any).set_observed_transaction(
+      new Uint8Array(32).fill(9),
+      new Uint8Array(20).fill(1),
+      new Uint8Array(20).fill(0x22),
+      99n,
+    );
+    await (evm.actor as any).set_withdrawal([{
+      id,
+      owner: runtimePrincipal.toUint8Array(),
+      subaccount: new Uint8Array(32),
+      amount: 100n,
+      min_amount_out: 90n,
+    }]);
+
+    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) }))
+      .toHaveProperty("Ok.Ingested");
+    expect(Array.from(await (evm.actor as any).pinned_eth_call_block_numbers())).toEqual([99n, 99n, 100n]);
+  });
+
+  it.each([
+    { mode: { Wrong: null }, error: "BaseStateMismatch" },
+    { mode: { Inconsistent: null }, error: "RpcInconsistent" },
+  ])("fails closed on $error eth_chainId observations before Ledger", async ({ mode, error }) => {
+    const { ledger, evm, bridge, runtimePrincipal } = await setup();
+    const id = new Uint8Array(32).fill(error === "BaseStateMismatch" ? 0x9b : 0x9c);
+    await (evm.actor as any).set_withdrawal([{
+      id,
+      owner: runtimePrincipal.toUint8Array(),
+      subaccount: new Uint8Array(32),
+      amount: 100n,
+      min_amount_out: 90n,
+    }]);
+    await (evm.actor as any).set_chain_id_mode(mode);
+
+    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) }))
+      .toHaveProperty(`Err.${error}`);
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
+    expect(Array.from(await (evm.actor as any).pinned_eth_call_block_numbers())).toEqual([]);
+  });
+
+  it.each([
+    { mode: { SafeInconsistent: null }, error: "RpcInconsistent", tag: 0x9e },
+    { mode: { CanonicalInconsistent: null }, error: "RpcInconsistent", tag: 0x9f },
+    { mode: { SameHeightDifferentHash: null }, error: "InvalidBaseResponse", tag: 0x9d },
+  ])("fails closed on $error canonical block observations before Ledger", async ({ mode, error, tag }) => {
+    const { ledger, evm, bridge, runtimePrincipal } = await setup();
+    const id = new Uint8Array(32).fill(tag);
+    await (evm.actor as any).set_withdrawal([{
+      id,
+      owner: runtimePrincipal.toUint8Array(),
+      subaccount: new Uint8Array(32),
+      amount: 100n,
+      min_amount_out: 90n,
+    }]);
+    await (evm.actor as any).set_block_mode(mode);
+
+    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) }))
+      .toHaveProperty(`Err.${error}`);
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
+    expect(await (bridge.actor as any).get_withdrawal(id)).toEqual([]);
+  });
+
   it("rejects a refunded old receipt before any Ledger release call", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(0xa1);
@@ -861,7 +934,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(stored[0].state).toBe("MintPending");
   });
 
-  it("checks safe confirmation only at 2, 5, 10, 20, and 40 minutes then requires manual recovery", async () => {
+  it("checks safe confirmation only at 2, 5, and 10 minutes then reports failure", async () => {
     const { evm, bridge } = await setup();
     await (evm.actor as any).set_receipt_mode({ Missing: null });
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 100n, max_service_fee: 10n });
@@ -869,16 +942,16 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (evm.actor as any).receipt_call_count()).toBe(0n);
     await advanceAutomaticConfirmation(1);
     expect(await (evm.actor as any).receipt_call_count()).toBe(0n);
-    for (const minutes of [1, 3, 5, 10, 20]) {
+    for (const minutes of [1, 3, 5]) {
       await advanceAutomaticConfirmation(minutes);
     }
-    expect(await (evm.actor as any).receipt_call_count()).toBe(5n);
+    expect(await (evm.actor as any).receipt_call_count()).toBe(3n);
     const exhausted: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
-    expect(exhausted[0].last_settlement_stop_reason).toEqual(["Automatic Base confirmation checks were exhausted"]);
+    expect(exhausted[0].last_settlement_stop_reason).toEqual(["Base transaction did not reach the Safe head within 10 minutes"]);
     expect(exhausted[0].next_automatic_confirmation_check_at_ns).toEqual([]);
     expect((await (bridge.actor as any).get_bridge_status()).confirmation_scheduler.scheduled_operations).toBe(0n);
     await advanceAutomaticConfirmation(60);
-    expect(await (evm.actor as any).receipt_call_count()).toBe(5n);
+    expect(await (evm.actor as any).receipt_call_count()).toBe(3n);
   });
 
   it("restores a pending confirmation timer after upgrade without double execution", async () => {

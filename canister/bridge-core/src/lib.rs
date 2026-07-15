@@ -26,8 +26,9 @@ pub use kernel::{
     checked_counter_transition, checked_requirement, counter_delta, deposit_phase_allows,
     deposit_phase_step, evidence_matches, fee_delta_once, mint_admission_total, monotone,
     next_attempt, nonce_next, nonce_too_low_is_submitted, payout_allowed, payout_debit,
-    refund_allowed, refund_operation_binding, replay_matches, resources_sufficient, scan_complete,
-    terminal_liability_residual, withdrawal_phase_allows, withdrawal_phase_step,
+    refund_allowed, refund_operation_binding, release_transfer_matches, replay_matches,
+    resources_sufficient, scan_complete, terminal_liability_residual, withdrawal_phase_allows,
+    withdrawal_phase_step,
 };
 pub use reconciliation::{
     resolve_deposit_hold, resolve_withdrawal_hold, DepositHoldResolution, ReconciliationHoldRecord,

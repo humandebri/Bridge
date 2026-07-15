@@ -10,6 +10,7 @@ solc = "0.8.36"
 evm_version = "prague"
 optimizer = true
 optimizer_runs = 200
+via_ir = true
 deny = "warnings"
 # OpenZeppelin 5.6.1 uses `error` as a local identifier; solc 0.8.36 only warns that it may become reserved.
 ignored_error_codes = [6335]
@@ -26,6 +27,7 @@ fail_on_revert = true
 
 [profile.smt]
 optimizer = false
+via_ir = false
 deny = "warnings"
 
 [profile.smt.model_checker]

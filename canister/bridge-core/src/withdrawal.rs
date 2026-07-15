@@ -297,8 +297,13 @@ impl WithdrawalRecord {
                 {
                     return Err(CoreError::InvalidLedgerOperation);
                 }
-                if attempt.identity.amount != settlement.amount_out {
-                    return Err(CoreError::InvalidAmount);
+                if !crate::release_transfer_matches(
+                    attempt.identity.amount.get(),
+                    attempt.identity.fee.get(),
+                    settlement.amount_out.get(),
+                    settlement.ledger_fee.get(),
+                ) {
+                    return Err(CoreError::SettlementMismatch);
                 }
                 settlement.validate(self.amount, self.min_amount_out, self.max_service_fee)?;
                 (

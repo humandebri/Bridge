@@ -98,7 +98,10 @@ print(manifest.get("release_id", ""), manifest.get("source_revision", ""), manif
 
 RENDERED_INPUTS="$(mktemp -d "${TMPDIR:-/tmp}/bridge-release-inputs.XXXXXX")"
 PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-profile-build.XXXXXX")"
-trap 'rm -rf "$RENDERED_INPUTS" "$PROFILE_TARGET"' EXIT
+RECEIPT_TMP=""
+POST_DEPLOY_PROFILE_TMP=""
+DEPLOYMENT_BINDING=""
+trap 'rm -rf "$RENDERED_INPUTS" "$PROFILE_TARGET"; [[ -z "$RECEIPT_TMP" ]] || rm -f "$RECEIPT_TMP"; [[ -z "$POST_DEPLOY_PROFILE_TMP" ]] || rm -f "$POST_DEPLOY_PROFILE_TMP"; [[ -z "$DEPLOYMENT_BINDING" ]] || rm -f "$DEPLOYMENT_BINDING"' EXIT
 CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --locked --quiet --release \
   --manifest-path "$SOURCE_ROOT/Cargo.toml" -p bridge-profile
 PROFILE_BIN="$PROFILE_TARGET/release/bridge-profile"
@@ -150,7 +153,7 @@ else
 import json, sys
 r = json.load(open(sys.argv[1], encoding="utf-8"))
 expected = sys.argv[2:9]
-actual = [r.get("gate_a_manifest_sha256"), r.get("release_id"), r.get("source_revision"), r.get("source_tree_sha256"), r.get("profile_sha256"), r.get("bridge_canister_wasm_sha256"), r.get("bridge_runtime_bytecode_sha256")]
+actual = [r.get("gate_a_manifest_sha256"), r.get("release_id"), r.get("source_revision"), r.get("source_tree_sha256"), r.get("post_deploy_profile_sha256"), r.get("bridge_canister_wasm_sha256"), r.get("bridge_runtime_bytecode_sha256")]
 raise SystemExit(0 if [str(v).lower() for v in actual] == [v.lower() for v in expected] else 1)
 ' "$RECEIPT" "$RECEIPT_MANIFEST_SHA256" "$RELEASE_ID" \
     "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" "$PROFILE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" || {
@@ -176,16 +179,50 @@ fi
 }
 GATE_MANIFEST_SHA256="${BASH_REMATCH[1]}"
 if [[ "$MODE" == "deploy" ]]; then
+  [[ ! -e "$RECEIPT" && ! -e "$RECEIPT.post-deploy-profile.json" ]] || {
+    echo "Gate A output receipt or post-deploy profile already exists" >&2
+    exit 1
+  }
   export BRIDGE_GATE_A_MANIFEST_SHA256="$GATE_MANIFEST_SHA256"
+  GATE_A_PROFILE_CANONICAL_SHA256="$(run_profile_gate validate "$BUNDLE/profile.json")"
+  [[ "$GATE_A_PROFILE_CANONICAL_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {
+    echo "Gate A profile canonicalization did not return SHA-256" >&2
+    exit 1
+  }
+  DEPLOYMENT_BINDING="$(mktemp "${TMPDIR:-/tmp}/bridge-deployment-binding.XXXXXX")"
+  rm -f "$DEPLOYMENT_BINDING"
+  export BRIDGE_DEPLOYMENT_BINDING_FILE="$DEPLOYMENT_BINDING"
   "$DRIVER_PATH"
+  [[ -f "$DEPLOYMENT_BINDING" ]] || { echo "deployment driver did not produce its canonical binding" >&2; exit 1; }
   RECEIPT_TMP="$RECEIPT.tmp.$$"
+  POST_DEPLOY_PROFILE="$RECEIPT.post-deploy-profile.json"
+  POST_DEPLOY_PROFILE_TMP="$POST_DEPLOY_PROFILE.tmp.$$"
+  python3 - "$BUNDLE/profile.json" "$DEPLOYMENT_BINDING" "$POST_DEPLOY_PROFILE_TMP" <<'PY'
+import json, os, sys
+profile = json.load(open(sys.argv[1], encoding="utf-8"))
+binding = json.load(open(sys.argv[2], encoding="utf-8"))
+if profile.get("deployment_block") != 0:
+    raise SystemExit("Gate A profile must leave deployment_block unbound")
+block = binding.get("bridge", {}).get("block_number")
+if not isinstance(block, int) or isinstance(block, bool) or block <= 0:
+    raise SystemExit("deployment binding has no valid Bridge block")
+profile["deployment_block"] = block
+with open(sys.argv[3], "w", encoding="utf-8") as output:
+    json.dump(profile, output, sort_keys=True, separators=(",", ":"))
+    output.write("\n")
+PY
+  POST_DEPLOY_PROFILE_SHA256="$(shasum -a 256 "$POST_DEPLOY_PROFILE_TMP" | awk '{print $1}')"
   python3 -c '
 import json, sys
+binding = json.load(open(sys.argv[10], encoding="utf-8"))
 with open(sys.argv[1], "w", encoding="utf-8") as output:
-    json.dump({"gate_a_manifest_sha256": sys.argv[2], "release_id": sys.argv[3], "source_revision": sys.argv[4], "source_tree_sha256": sys.argv[5], "profile_sha256": sys.argv[6], "bridge_canister_wasm_sha256": sys.argv[7], "bridge_runtime_bytecode_sha256": sys.argv[8]}, output, sort_keys=True, separators=(",", ":"))
+    json.dump({"gate_a_manifest_sha256": sys.argv[2], "release_id": sys.argv[3], "source_revision": sys.argv[4], "source_tree_sha256": sys.argv[5], "gate_a_profile_sha256": sys.argv[6], "post_deploy_profile_sha256": sys.argv[7], "bridge_canister_wasm_sha256": sys.argv[8], "bridge_runtime_bytecode_sha256": sys.argv[9], "bridge_deployment_transaction_hash": binding["bridge"]["transaction_hash"], "bridge_deployment_block_number": binding["bridge"]["block_number"], "bridge_deployment_block_hash": binding["bridge"]["block_hash"], "timelock_deployment_transaction_hash": binding["timelock"]["transaction_hash"], "timelock_deployment_block_number": binding["timelock"]["block_number"], "timelock_deployment_block_hash": binding["timelock"]["block_hash"]}, output, sort_keys=True, separators=(",", ":"))
     output.write("\n")
-' "$RECEIPT_TMP" "$GATE_MANIFEST_SHA256" "$RELEASE_ID" "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" "$PROFILE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256"
+' "$RECEIPT_TMP" "$GATE_MANIFEST_SHA256" "$RELEASE_ID" "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" "$GATE_A_PROFILE_CANONICAL_SHA256" "$POST_DEPLOY_PROFILE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" "$DEPLOYMENT_BINDING"
+  rm -f "$DEPLOYMENT_BINDING"
+  mv "$POST_DEPLOY_PROFILE_TMP" "$POST_DEPLOY_PROFILE"
   mv "$RECEIPT_TMP" "$RECEIPT"
+  printf 'post_deploy_profile=%s\n' "$POST_DEPLOY_PROFILE"
 else
   export BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_MANIFEST_SHA256"
   exec "$DRIVER_PATH"

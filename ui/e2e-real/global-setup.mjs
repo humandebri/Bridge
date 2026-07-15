@@ -43,7 +43,10 @@ async function setup() {
   buildWasm()
   execFileSync("forge", ["build", "--root", path.join(root, "contracts")], { stdio: "inherit" })
 
-  const anvil = spawn("anvil", ["--chain-id", "31337", "--base-fee", "1", "--silent"], { stdio: ["ignore", "ignore", "inherit"] })
+  const anvil = spawn("anvil", [
+    "--chain-id", "31337", "--base-fee", "1", "--silent",
+    "--cache-path", path.join(runtimeDir, "anvil-cache"),
+  ], { stdio: ["ignore", "ignore", "inherit"] })
   resources.anvil = anvil
   await waitForRpc()
   const publicClient = createPublicClient({ transport: http(rpcUrl) })
@@ -54,6 +57,7 @@ async function setup() {
     nns: { state: { type: SubnetStateType.New } },
     fiduciary: { state: { type: SubnetStateType.New } },
   })
+  await pic.resetTime()
   resources.pic = pic
   const subnet = await pic.getFiduciarySubnet()
   if (!subnet) throw new Error("PocketIC fiduciary subnet is unavailable")
@@ -116,6 +120,7 @@ async function setup() {
     cycles: 50_000_000_000_000n,
     targetSubnetId: subnet.id,
   })
+  await mock.actor.set_configured_chain_id(31_337n)
   await mock.actor.set_service_fee(1_000_000n)
   await mock.actor.set_max_service_fee(100_000_000n)
   await mock.actor.set_per_deposit_limit(1_000_000_000_000n)
@@ -136,12 +141,15 @@ async function setup() {
   await rpc("anvil_setBalance", [signer, "0x8ac7230489e80000"])
   if (BigInt(await rpc("eth_getBalance", [signer, "latest"])) === 0n) throw new Error("Failed to fund the PocketIC Bridge signer")
 
-  const bridgeAddress = deployBridge(signer)
+  const timelockAddress = deployTimelock()
+  resources.timelockAddress = timelockAddress
+  const bridgeAddress = deployBridge(signer, timelockAddress)
   const bsnsAddress = execFileSync("cast", ["call", bridgeAddress, "bsns()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   const deploymentBlock = await publicClient.getBlockNumber()
   const bridgeCode = await publicClient.getCode({ address: bridgeAddress })
   const bsnsCode = await publicClient.getCode({ address: bsnsAddress })
   if (!bridgeCode || !bsnsCode) throw new Error("Anvil contract deployment returned empty code")
+  await mock.actor.set_bridge_runtime_code(hexToBytes(bridgeCode))
 
   await pic.reinstallCode({
     canisterId: bridgeId,
@@ -186,11 +194,15 @@ async function setup() {
   if (!("Ok" in configuredSigner)) throw new Error(`Failed to configure the confirmed bridge signer: ${configuredSigner.Err}`)
   const confirmedSigner = bytesHex(await mock.actor.bridge_signer())
   if (confirmedSigner.toLowerCase() !== signer.toLowerCase()) {
-    execFileSync("cast", ["send", bridgeAddress, "rotateBridgeSigner(address)", confirmedSigner, "--from", baseAdmin, "--unlocked", "--rpc-url", rpcUrl], { stdio: "inherit" })
+    sendAsTimelock(bridgeAddress, "rotateBridgeSigner(address)", confirmedSigner)
     signer = confirmedSigner
   }
   await rpc("anvil_setBalance", [signer, "0x8ac7230489e80000"])
   await rpc("anvil_mine", ["0x40"])
+  const initialSafe = await publicClient.getBlock({ blockTag: "safe" })
+  if (initialSafe.number === null) throw new Error("Anvil initial safe head is unavailable")
+  const initialSafeResult = await mock.actor.set_safe_block(initialSafe.number, hexToBytes(initialSafe.hash))
+  if ("Err" in initialSafeResult) throw new Error(initialSafeResult.Err)
   const ledger = pic.createActor(ledgerIdl, ledgerId)
   ledger.setIdentity(testIdentity)
   const index = pic.createActor(indexIdl, indexId)
@@ -227,9 +239,8 @@ async function setup() {
   const syncSafeHead = async () => {
     const safe = await publicClient.getBlock({ blockTag: "safe" })
     if (safe.number === null) throw new Error("Anvil safe head is unavailable")
-    // The mock EVM RPC canister consumes one entry per Safe lookup. Keep enough
-    // identical observations for the quorum checks and scheduler rounds.
-    await mock.actor.set_safe_block_sequence(Array(512).fill(Number(safe.number)))
+    const result = await mock.actor.set_safe_block(safe.number, hexToBytes(safe.hash))
+    if ("Err" in result) throw new Error(result.Err)
   }
   const relayPendingBroadcasts = async () => {
     const broadcasts = await mock.actor.broadcast_transactions()
@@ -237,7 +248,7 @@ async function setup() {
       const raw = bytesHex(broadcasts[relayedBroadcasts])
       const rawSigner = await recoverTransactionAddress({ serializedTransaction: raw })
       if (rawSigner.toLowerCase() !== signer.toLowerCase()) {
-        execFileSync("cast", ["send", bridgeAddress, "rotateBridgeSigner(address)", rawSigner, "--from", baseAdmin, "--unlocked", "--rpc-url", rpcUrl], { stdio: "inherit" })
+        sendAsTimelock(bridgeAddress, "rotateBridgeSigner(address)", rawSigner)
         await rpc("anvil_setBalance", [rawSigner, "0x8ac7230489e80000"])
         signer = rawSigner
       }
@@ -361,11 +372,15 @@ async function setup() {
           await pic.advanceTime(Number(body.minutes ?? 20) * 60_000)
           await pic.tick(100)
           await relayPendingBroadcasts()
+          await syncSafeHead()
+          // Let the prior cached observation expire so the next UI readiness
+          // refresh must consume the newly synchronized Safe head.
+          await pic.advanceTime(31_000)
           await pic.tick(5)
         } finally {
           startProgressLoop(pic)
         }
-        return send(response, 200, null)
+        return send(response, 200, { time: await pic.getTime() })
       }
       if (request.url === "/test/account") {
         connectedAccount = String(body.owner)
@@ -442,18 +457,45 @@ function buildWasm() {
   execFileSync("cargo", ["build", "--target", "wasm32-unknown-unknown", "--release", "-p", "mock-external"], { cwd: root, stdio: "inherit" })
 }
 
-function deployBridge(signer) {
+function deployTimelock() {
+  const output = execFileSync("forge", [
+    "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
+    "--from", deployer, "--unlocked", "--broadcast",
+    "src/BridgeTimelockController.sol:BridgeTimelockController", "--constructor-args",
+    "259200", `[${baseAdmin}]`, `[${runtimeAdministrator}]`, `[${baseAdmin}]`,
+  ], { encoding: "utf8" })
+  const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
+  if (!match) throw new Error(`Unable to parse Timelock deployment:\n${output}`)
+  return match[1]
+}
+
+function deployBridge(signer, timelockAddress) {
+  const timelockCodeHash = execFileSync(
+    "cast", ["codehash", timelockAddress, "--rpc-url", rpcUrl], { encoding: "utf8" },
+  ).trim()
   const output = execFileSync("forge", [
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast", "src/Bridge.sol:Bridge", "--constructor-args",
-    "Bridged KINIC", "KINIC", "8", signer, runtimeAdministrator, baseAdmin,
+    "Bridged KINIC", "KINIC", "8", signer, runtimeAdministrator, timelockAddress, timelockCodeHash,
     "1000000000000", "10000000000000", "3600", "100000000", "1000000",
   ], { encoding: "utf8" })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Bridge deployment:\n${output}`)
-  execFileSync("cast", ["send", match[1], "unpauseDepositMints()", "--from", baseAdmin, "--unlocked", "--rpc-url", rpcUrl], { stdio: "inherit" })
-  execFileSync("cast", ["send", match[1], "unpauseWithdrawals()", "--from", baseAdmin, "--unlocked", "--rpc-url", rpcUrl], { stdio: "inherit" })
+  sendAsTimelock(match[1], "unpauseDepositMints()")
+  sendAsTimelock(match[1], "unpauseWithdrawals()")
   return match[1]
+}
+
+function sendAsTimelock(target, signature, ...args) {
+  const timelockAddress = resources.timelockAddress
+  if (!timelockAddress) throw new Error("Timelock has not been deployed")
+  execFileSync("cast", ["rpc", "anvil_setBalance", timelockAddress, "0x56BC75E2D63100000", "--rpc-url", rpcUrl])
+  execFileSync("cast", ["rpc", "anvil_impersonateAccount", timelockAddress, "--rpc-url", rpcUrl])
+  try {
+    execFileSync("cast", ["send", target, signature, ...args, "--from", timelockAddress, "--unlocked", "--rpc-url", rpcUrl], { stdio: "inherit" })
+  } finally {
+    execFileSync("cast", ["rpc", "anvil_stopImpersonatingAccount", timelockAddress, "--rpc-url", rpcUrl])
+  }
 }
 
 async function writeProfile(values) {
@@ -538,6 +580,9 @@ const mockIdl = ({ IDL: I }) => I.Service({
   set_withdrawal: I.Func([I.Opt(withdrawalFixture)], [], []),
   set_observed_transaction: I.Func([I.Vec(I.Nat8), I.Vec(I.Nat8), I.Vec(I.Nat8), I.Nat64], [I.Variant({ Ok: I.Null, Err: I.Text })], []),
   set_safe_block_sequence: I.Func([I.Vec(I.Nat64)], [], []),
+  set_safe_block: I.Func([I.Nat64, I.Vec(I.Nat8)], [I.Variant({ Ok: I.Null, Err: I.Text })], []),
+  set_configured_chain_id: I.Func([I.Nat64], [], []),
+  set_bridge_runtime_code: I.Func([I.Vec(I.Nat8)], [], []),
   set_service_fee: I.Func([I.Nat], [], []),
   set_max_service_fee: I.Func([I.Nat], [], []),
   set_per_deposit_limit: I.Func([I.Nat], [], []),

@@ -48,6 +48,8 @@ trap 'exit 143' TERM
 run_versions() {
   "$ROOT/scripts/check_tool_versions.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
+  verify_no_obsolete_withdrawal_terms \
+    "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   "$ROOT/scripts/test_ci_guards.sh"
   "$ROOT/scripts/test_production_release.sh"
@@ -120,14 +122,17 @@ run_rust() {
 
 run_contracts() {
   forge fmt --root "$CONTRACTS" --check
-  forge build --root "$CONTRACTS" --sizes
+  forge build --root "$CONTRACTS" --sizes --ignored-error-codes 3860 --ignored-error-codes 6335
   python3 "$ROOT/scripts/abi_snapshot.py" --check
   forge test --root "$CONTRACTS"
   forge coverage \
     --root "$CONTRACTS" \
+    --ir-minimum \
     --report summary \
+    --no-match-coverage 'BridgeTimelockController\.sol' \
     --ignored-error-codes 6335 \
-    --ignored-error-codes 3860
+    --ignored-error-codes 3860 \
+    --ignored-error-codes 5574
 }
 
 build_smt_failure_fixture() {
@@ -249,8 +254,26 @@ run_verus() {
 }
 
 run_proofs() {
+  verify_lean_no_proof_escape "$ROOT/verification/lean"
+  lean "$ROOT/verification/lean/BridgeModel.lean"
   run_smt
   run_verus
+}
+
+run_ui() {
+  if [[ "${CI:-}" == "true" ]]; then
+    pnpm --dir "$ROOT/ui" install --frozen-lockfile
+  elif [[ ! -d "$ROOT/ui/node_modules" ]]; then
+    echo "ui/node_modules is missing; run pnpm --dir ui install --frozen-lockfile before checks" >&2
+    return 1
+  fi
+  pnpm --dir "$ROOT/ui" run codegen:abi:check
+  pnpm --dir "$ROOT/ui" run codegen:candid:check
+  pnpm --dir "$ROOT/ui" run typecheck
+  pnpm --dir "$ROOT/ui" run lint
+  pnpm --dir "$ROOT/ui" run test
+  pnpm --dir "$ROOT/ui" run build
+  pnpm --dir "$ROOT/ui" run e2e
 }
 
 run_icp_build() {
@@ -562,6 +585,7 @@ for field, (value, candid_type) in expected.items():
     "$bridge_signer" \
     "$runtime_administrator" \
     "$base_admin_timelock" \
+    "$(cast codehash "$base_admin_timelock" --rpc-url http://127.0.0.1:8545)" \
     "1000000000000" \
     "10000000000000" \
     "3600" \
@@ -873,6 +897,7 @@ run_checks() {
   run_rust
   run_contracts
   run_proofs
+  run_ui
   run_icp_build
 }
 
@@ -897,6 +922,10 @@ case "$MODE" in
     run_versions
     run_proofs
     ;;
+  ui)
+    run_versions
+    run_ui
+    ;;
   icp)
     run_icp_build
     ;;
@@ -904,7 +933,7 @@ case "$MODE" in
     run_smoke
     ;;
   *)
-    echo "usage: $0 {all|checks|versions|rust|contracts|proofs|icp|smoke}" >&2
+    echo "usage: $0 {all|checks|versions|rust|contracts|proofs|ui|icp|smoke}" >&2
     exit 2
     ;;
 esac

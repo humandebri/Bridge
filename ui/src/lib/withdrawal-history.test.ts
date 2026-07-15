@@ -135,6 +135,24 @@ describe("withdrawal log scanning", () => {
     expect(result.lastSafeBlockHash).toBe("0xnew")
   })
 
+  it("restarts from the safe head when an older scan loses its reorged checkpoint", async () => {
+    const replacement = log(2, 100n)
+    const fetchLogs = vi.fn(() => Promise.resolve([replacement]))
+
+    const result = await scanWithdrawalLogs({
+      deploymentBlock: 1n,
+      safeBlock: 100n,
+      safeBlockHash: "0xnew",
+      previous: undefined,
+      mode: "older",
+      fetchLogs,
+    })
+
+    expect(fetchLogs).toHaveBeenCalledWith(1n, 100n)
+    expect(result.logs).toEqual([replacement])
+    expect(result.lastSafeBlockHash).toBe("0xnew")
+  })
+
   it("continues scanning after more than 20 events have already been found", async () => {
     const previous = {
       lastSafeBlock: 50_001n,

@@ -97,6 +97,12 @@ macro_rules! fee_delta_once_body {
     };
 }
 
+macro_rules! release_transfer_matches_body {
+    ($transfer_amount:expr, $transfer_fee:expr, $amount_out:expr, $ledger_fee:expr) => {
+        $transfer_amount == $amount_out && $transfer_fee == $ledger_fee
+    };
+}
+
 macro_rules! terminal_liability_residual_body {
     ($liability:expr, $amount_out:expr, $service_fee:expr, $ledger_fee:expr, $max:expr) => {{
         if $amount_out > $max - $service_fee {
@@ -310,6 +316,17 @@ pub const fn fee_delta_once(was_transferred: bool, is_transferred: bool, fee: u1
     fee_delta_once_body!(was_transferred, is_transferred, fee, 0u128)
 }
 
+/// Binds the ICRC transfer identity to the exact release settlement persisted for this attempt.
+#[cfg(not(verus_keep_ghost))]
+pub const fn release_transfer_matches(
+    transfer_amount: u128,
+    transfer_fee: u128,
+    amount_out: u128,
+    ledger_fee: u128,
+) -> bool {
+    release_transfer_matches_body!(transfer_amount, transfer_fee, amount_out, ledger_fee)
+}
+
 /// Returns the liability left after a release settlement, rejecting arithmetic overflow and
 /// over-discharge. A valid economic terminal release must return `Some(0)`.
 #[cfg(not(verus_keep_ghost))]
@@ -507,6 +524,15 @@ verus! {
     pub open spec fn fee_delta_once_spec(was_transferred: bool, is_transferred: bool, fee: int) -> int {
         let zero: int = 0;
         fee_delta_once_body!(was_transferred, is_transferred, fee, zero)
+    }
+
+    pub open spec fn release_transfer_matches_spec(
+        transfer_amount: int,
+        transfer_fee: int,
+        amount_out: int,
+        ledger_fee: int,
+    ) -> bool {
+        release_transfer_matches_body!(transfer_amount, transfer_fee, amount_out, ledger_fee)
     }
 
     pub open spec fn terminal_liability_residual_spec(

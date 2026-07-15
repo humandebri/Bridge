@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 
 import {IBSNS} from "../src/interfaces/IBSNS.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
+import {BridgeTimelockController} from "../src/BridgeTimelockController.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC5267} from "@openzeppelin/contracts/interfaces/IERC5267.sol";
@@ -18,6 +19,7 @@ contract BridgeConstructorFixture {
         address bridgeSigner,
         address runtimeAdministrator,
         address baseAdminTimelock,
+        bytes32 approvedTimelockRuntimeCodeHash,
         uint256 perDepositLimit,
         uint256 mintWindowLimit,
         uint64 mintWindowDuration,
@@ -32,6 +34,7 @@ contract BridgeConstructorFixture {
                 bridgeSigner,
                 runtimeAdministrator,
                 baseAdminTimelock,
+                approvedTimelockRuntimeCodeHash,
                 perDepositLimit,
                 mintWindowLimit,
                 mintWindowDuration,
@@ -106,6 +109,7 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.depositMintsPaused.selector, "depositMintsPaused()");
         _assertSelector(IBridge.withdrawalsPaused.selector, "withdrawalsPaused()");
         _assertSelector(IBridge.nextWithdrawalId.selector, "nextWithdrawalId()");
+        _assertSelector(IBridge.approvedTimelockRuntimeCodeHash.selector, "approvedTimelockRuntimeCodeHash()");
         _assertSelector(IBridge.isDepositProcessed.selector, "isDepositProcessed(bytes32)");
         _assertSelector(IBridge.getWithdrawal.selector, "getWithdrawal(uint256)");
     }
@@ -154,6 +158,10 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.UnauthorizedBaseAdmin.selector, "UnauthorizedBaseAdmin(address)");
         _assertSelector(IBridge.TimelockCandidateHasNoCode.selector, "TimelockCandidateHasNoCode(address)");
         _assertSelector(
+            IBridge.TimelockCandidateCodeHashMismatch.selector,
+            "TimelockCandidateCodeHashMismatch(address,bytes32,bytes32)"
+        );
+        _assertSelector(
             IBridge.TimelockCandidateIntrospectionFailed.selector, "TimelockCandidateIntrospectionFailed(address)"
         );
         _assertSelector(
@@ -162,6 +170,10 @@ contract InterfaceSelectorsTest {
         _assertSelector(
             IBridge.TimelockCandidateMissingSelfAdmin.selector, "TimelockCandidateMissingSelfAdmin(address)"
         );
+    }
+
+    function testTimelockErrorSelectors() public pure {
+        _assertSelector(BridgeTimelockController.RoleSetFrozen.selector, "RoleSetFrozen(bytes32,address)");
     }
 
     function testEventTopics() public pure {
@@ -216,7 +228,18 @@ contract InterfaceSelectorsTest {
 
     function testConstructorArgumentOrderFixture() public {
         BridgeConstructorFixture fixture = new BridgeConstructorFixture(
-            "kinic", "KINIC", 8, address(0x11), address(0x22), address(0x33), 100, 200, 1 hours, 10, 1
+            "kinic",
+            "KINIC",
+            8,
+            address(0x11),
+            address(0x22),
+            address(0x33),
+            bytes32(uint256(0x44)),
+            100,
+            200,
+            1 hours,
+            10,
+            1
         );
         bytes32 expected = keccak256(
             abi.encode(
@@ -226,6 +249,7 @@ contract InterfaceSelectorsTest {
                 address(0x11),
                 address(0x22),
                 address(0x33),
+                bytes32(uint256(0x44)),
                 uint256(100),
                 uint256(200),
                 uint64(1 hours),
