@@ -15,7 +15,8 @@ function dependencies() {
     currentIcAccount: vi.fn().mockResolvedValue(expectedWallets.icAccount),
     refetchFinancials: vi.fn().mockResolvedValue({ serviceFee: 10n, balance: 100n }),
     validateFinancials: vi.fn(),
-    createWithdrawal: vi.fn().mockResolvedValue("0xtx"),
+    createWithdrawal: vi.fn<(quote: { serviceFee: bigint; balance: bigint }) => Promise<`0x${string}`>>().mockResolvedValue("0xtx"),
+    onBroadcast: vi.fn<(hash: `0x${string}`) => void>(),
   }
 }
 
@@ -41,6 +42,26 @@ describe("createWithdrawalAfterRevalidation", () => {
     expect(deps.refetchFinancials).toHaveBeenCalledOnce()
     expect(deps.validateFinancials).toHaveBeenCalledWith({ serviceFee: 10n, balance: 100n })
     expect(deps.createWithdrawal).toHaveBeenCalledWith({ serviceFee: 10n, balance: 100n })
+    expect(deps.onBroadcast).toHaveBeenCalledWith("0xtx")
+  })
+
+  it("persists the broadcast result before returning control to the caller", async () => {
+    const deps = dependencies()
+    let persisted: string | undefined
+    deps.onBroadcast.mockImplementation((hash) => { persisted = hash })
+
+    const result = await createWithdrawalAfterRevalidation(deps)
+
+    expect(result).toBe("0xtx")
+    expect(persisted).toBe(result)
+  })
+
+  it("surfaces persistence failures after broadcast", async () => {
+    const deps = dependencies()
+    deps.onBroadcast.mockImplementation((hash) => { throw new Error(`could not save ${hash}`) })
+
+    await expect(createWithdrawalAfterRevalidation(deps)).rejects.toThrow("could not save 0xtx")
+    expect(deps.createWithdrawal).toHaveBeenCalledOnce()
   })
 
   it("does not submit when the final financial validation fails", async () => {

@@ -92,6 +92,11 @@ export async function confirmWhenFinalized(
   }
   if (!isActive()) return { status: "retry" }
   if (finalized.number === null || finalized.number < receipt.blockNumber) return { status: "retry" }
+  if (entry.kind === "withdrawal" && receipt.status === "reverted") {
+    setPendingConfirmationBlocked(entry, true)
+    toast.warning("The Base withdrawal transaction reverted. Check History before trying again.")
+    return { status: "blocked" }
+  }
 
   try {
     toast.info("Base transaction is finalized. Review the IC wallet confirmation.")

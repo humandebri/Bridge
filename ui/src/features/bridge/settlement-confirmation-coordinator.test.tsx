@@ -38,7 +38,7 @@ function adapter(confirmDeposit = vi.fn()): IcWalletAdapter {
 }
 
 function finalizedReceipt() {
-  vi.mocked(basePublicClient.getTransactionReceipt).mockResolvedValue({ blockNumber: 10n } as never)
+  vi.mocked(basePublicClient.getTransactionReceipt).mockResolvedValue({ blockNumber: 10n, status: "success" } as never)
   vi.mocked(basePublicClient.getBlock).mockResolvedValue({ number: 12n } as never)
 }
 
@@ -93,6 +93,20 @@ describe("confirmWhenFinalized", () => {
     expect(readPendingConfirmations()).toEqual([])
   })
 
+  it("blocks a finalized reverted withdrawal without opening the IC wallet", async () => {
+    vi.mocked(basePublicClient.getTransactionReceipt).mockResolvedValue({ blockNumber: 10n, status: "reverted" } as never)
+    vi.mocked(basePublicClient.getBlock).mockResolvedValue({ number: 12n } as never)
+    const notifyWithdrawal = vi.fn()
+    const wallet = adapter()
+    wallet.notifyWithdrawal = notifyWithdrawal
+    savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+    const entry = readPendingConfirmations()[0]!
+
+    expect(await confirmWhenFinalized(entry, wallet)).toEqual({ status: "blocked" })
+    expect(notifyWithdrawal).not.toHaveBeenCalled()
+    expect(readPendingConfirmations()[0]?.blocked).toBe(true)
+  })
+
   it("blocks a withdrawal owner mismatch", async () => {
     finalizedReceipt()
     const wallet = adapter()
@@ -117,6 +131,29 @@ describe("confirmWhenFinalized", () => {
 })
 
 describe("SettlementConfirmationCoordinator", () => {
+  it("restores a submitted withdrawal after an RPC failure and completes it after remount", async () => {
+    const notifyWithdrawal = vi.fn().mockResolvedValue({ Ingested: { withdrawal_id: new Uint8Array(32), settlement: [] } })
+    const wallet = adapter()
+    wallet.notifyWithdrawal = notifyWithdrawal
+    vi.mocked(useIcWallet).mockReturnValue({ account: { owner }, adapter: wallet, provider: "plug", connect: vi.fn(), disconnect: vi.fn() })
+    vi.mocked(basePublicClient.getTransactionReceipt).mockRejectedValueOnce(new Error("RPC unavailable"))
+    savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+
+    const firstView = render(<SettlementConfirmationCoordinator />)
+    await flushPromises()
+    expect(readPendingConfirmations()).toHaveLength(1)
+    expect(readPendingConfirmations()[0]?.blocked).toBe(false)
+    expect(notifyWithdrawal).not.toHaveBeenCalled()
+    firstView.unmount()
+
+    finalizedReceipt()
+    const restoredView = render(<SettlementConfirmationCoordinator />)
+    await flushPromises()
+    expect(notifyWithdrawal).toHaveBeenCalledOnce()
+    expect(readPendingConfirmations()).toEqual([])
+    restoredView.unmount()
+  })
+
   it("polls multiple settlements independently and resumes immediately when visible", async () => {
     vi.useFakeTimers()
     finalizedReceipt()

@@ -229,18 +229,20 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
           if (finalBalance < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
         },
         createWithdrawal: ({ serviceFee }) => write.writeContractAsync({ account: snapshotAddress, address: deploymentProfile.bridgeAddress as `0x${string}`, abi: bridgeAbi, functionName: "createWithdrawal", args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)] }),
-      })
-      const withdrawalReceipt = await client.waitForTransactionReceipt({ hash })
-      if (withdrawalReceipt.status !== "success") {
-        throw new Error("Withdrawal failed")
-      }
-      savePendingConfirmation({
-        kind: "withdrawal",
-        transactionHash: hash,
-        owner: confirmedIcAccount.owner,
+        onBroadcast: (transactionHash) => {
+          try {
+            savePendingConfirmation({
+              kind: "withdrawal",
+              transactionHash,
+              owner: confirmedIcAccount.owner,
+            })
+          } catch {
+            throw new Error(`Withdrawal ${transactionHash} was submitted, but this browser could not save it. Copy this transaction hash and recover it from History.`)
+          }
+        },
       })
       setWithdrawAmount("")
-      toast.success(`Withdrawal submitted: ${hash.slice(0, 12)}…. Its status will update automatically.`)
+      toast.success(`Withdrawal submitted: ${hash.slice(0, 12)}…. Confirmation is pending and its status will update automatically.`)
     } catch (error) { toast.error(error instanceof Error ? error.message : "Withdrawal failed") }
     finally { setSubmittingWithdrawal(false) }
   }

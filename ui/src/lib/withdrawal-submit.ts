@@ -8,7 +8,7 @@ interface ExpectedWallets {
   icAccount: IcAccount
 }
 
-export async function createWithdrawalAfterRevalidation<T, Q>({
+export async function createWithdrawalAfterRevalidation<Q>({
   expectedWallets,
   refetchRuntime,
   currentEvmWallet,
@@ -16,6 +16,7 @@ export async function createWithdrawalAfterRevalidation<T, Q>({
   refetchFinancials,
   validateFinancials,
   createWithdrawal,
+  onBroadcast,
 }: {
   expectedWallets: ExpectedWallets
   refetchRuntime: () => Promise<{ data?: RuntimeValidation }>
@@ -23,11 +24,14 @@ export async function createWithdrawalAfterRevalidation<T, Q>({
   currentIcAccount: () => Promise<IcAccount>
   refetchFinancials: () => Promise<Q>
   validateFinancials: (quote: Q) => void
-  createWithdrawal: (quote: Q) => Promise<T>
-}): Promise<T> {
+  createWithdrawal: (quote: Q) => Promise<`0x${string}`>
+  onBroadcast: (transactionHash: `0x${string}`) => void
+}): Promise<`0x${string}`> {
   await refetchRuntimeWriteReady(refetchRuntime)
   const [evm, icAccount, quote] = await Promise.all([currentEvmWallet(), currentIcAccount(), refetchFinancials()])
   requireWalletSnapshot(expectedWallets, { ...evm, icAccount }, "after approval or runtime verification")
   validateFinancials(quote)
-  return createWithdrawal(quote)
+  const transactionHash = await createWithdrawal(quote)
+  onBroadcast(transactionHash)
+  return transactionHash
 }
