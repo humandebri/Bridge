@@ -1,14 +1,22 @@
 import { IDL } from "@dfinity/candid"
 import { describe, expect, it } from "vitest"
-import { decodeDepositReply, decodeNotifyWithdrawalReply, notifyWithdrawalErrorMessage } from "./wallet"
+import { idlFactory } from "@/generated/bridge.idl"
+import { decodeDepositReply, decodeNotifyWithdrawalReply, NotifyWithdrawalCallError, notifyWithdrawalErrorMessage } from "./wallet"
+
+// didc's runtime JS intentionally has no static return type; the checked-in TS binding is the typed contract.
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const bridgeService: IDL.ServiceClass = idlFactory({ IDL })
+function resultType(method: "request_deposit" | "notify_withdrawal") {
+  const codec = (bridgeService._fields as Array<[string, IDL.FuncClass]>).find(([name]) => name === method)?.[1]
+  if (!codec) throw new Error(`Missing generated codec for ${method}`)
+  const result = codec.retTypes[0]
+  if (!result) throw new Error(`Missing generated result codec for ${method}`)
+  return result
+}
 
 describe("OISY deposit reply decoding", () => {
   it("decodes RateLimited as a normal bridge rejection", () => {
-    const resultType = IDL.Variant({
-      Ok: IDL.Record({ deposit_id: IDL.Vec(IDL.Nat8), state: IDL.Text }),
-      Err: IDL.Variant({ RateLimited: IDL.Record({ retry_after_seconds: IDL.Nat64 }) }),
-    })
-    const reply = new Uint8Array(IDL.encode([resultType], [{ Err: { RateLimited: { retry_after_seconds: 42n } } }]))
+    const reply = new Uint8Array(IDL.encode([resultType("request_deposit")], [{ Err: { RateLimited: { retry_after_seconds: 42n } } }]))
 
     expect(() => decodeDepositReply(reply)).toThrow("Bridge rejected deposit")
     expect(() => decodeDepositReply(reply)).toThrow("42")
@@ -18,39 +26,29 @@ describe("OISY deposit reply decoding", () => {
 describe("withdrawal notification errors", () => {
   it("renders actionable RPC and rate-limit failures", () => {
     expect(notifyWithdrawalErrorMessage({ RpcInconsistent: null })).toContain("providers disagreed")
-    expect(notifyWithdrawalErrorMessage({ RateLimited: { retry_after_seconds: 42n } })).toContain("42 seconds")
   })
 
   it("decodes the confirmed-head receipt shape used by the public Candid", () => {
-    const settlement = IDL.Variant({
-      Complete: IDL.Record({ state: IDL.Text }),
-      Stopped: IDL.Record({ state: IDL.Text, reason: IDL.Variant({ RpcUnavailable: IDL.Null }) }),
-      ReconciliationProgress: IDL.Record({ state: IDL.Text }),
-      WaitingForConfirmation: IDL.Record({ transaction_hash: IDL.Vec(IDL.Nat8), state: IDL.Text }),
-      Submitted: IDL.Record({ transaction_hash: IDL.Vec(IDL.Nat8), state: IDL.Text }),
-    })
-    const resultType = IDL.Variant({
-      Ok: IDL.Variant({
-        Duplicate: IDL.Record({ withdrawal_id: IDL.Vec(IDL.Nat8), settlement: IDL.Opt(settlement) }),
-        Ingested: IDL.Record({ confirmed_head_block_number: IDL.Nat64, withdrawal_id: IDL.Vec(IDL.Nat8), settlement: IDL.Opt(settlement) }),
-      }),
-      Err: IDL.Variant({ BaseStateMismatch: IDL.Null, BridgeSignerMismatch: IDL.Null }),
-    })
-    const reply = new Uint8Array(IDL.encode([resultType], [{ Ok: { Ingested: { confirmed_head_block_number: 42n, withdrawal_id: new Uint8Array(32).fill(7), settlement: [] } } }]))
+    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Ok: { Ingested: { finalized_head_block_number: 42n, withdrawal_id: new Uint8Array(32).fill(7), settlement: [] } } }]))
 
-    expect(decodeNotifyWithdrawalReply(reply)).toMatchObject({ Ingested: { confirmed_head_block_number: 42n } })
+    expect(decodeNotifyWithdrawalReply(reply)).toMatchObject({ Ingested: { finalized_head_block_number: 42n } })
   })
 
   it.each(["BaseStateMismatch", "BridgeSignerMismatch"] as const)("decodes %s as a normal bridge rejection", (variant) => {
-    const resultType = IDL.Variant({
-      Ok: IDL.Variant({
-        Duplicate: IDL.Record({ withdrawal_id: IDL.Vec(IDL.Nat8), settlement: IDL.Opt(IDL.Null) }),
-        Ingested: IDL.Record({ confirmed_head_block_number: IDL.Nat64, withdrawal_id: IDL.Vec(IDL.Nat8), settlement: IDL.Opt(IDL.Null) }),
-      }),
-      Err: IDL.Variant({ BaseStateMismatch: IDL.Null, BridgeSignerMismatch: IDL.Null }),
-    })
-    const reply = new Uint8Array(IDL.encode([resultType], [{ Err: { [variant]: null } }]))
+    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Err: { [variant]: null } }]))
 
     expect(() => decodeNotifyWithdrawalReply(reply)).toThrow(variant === "BaseStateMismatch" ? "state does not match" : "signer does not match")
+  })
+
+  it("preserves LedgerFeeExceedsServiceFee as a typed non-retryable error", () => {
+    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Err: { LedgerFeeExceedsServiceFee: null } }]))
+
+    try {
+      decodeNotifyWithdrawalReply(reply)
+      throw new Error("Expected withdrawal notification decoding to fail")
+    } catch (error) {
+      expect(error).toBeInstanceOf(NotifyWithdrawalCallError)
+      expect((error as NotifyWithdrawalCallError).code).toBe("LedgerFeeExceedsServiceFee")
+    }
   })
 })

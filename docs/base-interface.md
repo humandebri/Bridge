@@ -11,12 +11,13 @@ constructor(
     string memory tokenName,
     string memory tokenSymbol,
     uint8 tokenDecimals,
-    address bridgeSigner,
-    address runtimeAdministrator,
-    address baseAdminTimelock,
-    uint256 perDepositLimit,
-    uint256 mintWindowLimit,
-    uint64 mintWindowDuration,
+    address initialBridgeSigner,
+    address initialRuntimeAdministrator,
+    address initialBaseAdminTimelock,
+    bytes32 initialApprovedTimelockRuntimeCodeHash,
+    uint256 initialPerDepositLimit,
+    uint256 initialMintWindowLimit,
+    uint64 initialMintWindowDuration,
     uint256 maxServiceFee,
     uint256 initialServiceFee
 )
@@ -24,7 +25,7 @@ constructor(
 
 KINIC用deployではERC-20 metadataを`name = "kinic"`、`symbol = "KINIC"`、`decimals = 8`とする。`bKINIC`のような`b` prefixは付けない。`bSNS`はBridgeable SNS Tokenを表す内部の総称であり、token metadataには使用しない。
 
-3個の権限addressはzero addressを禁止し、相互に異なる必要がある。limitとwindow durationはzeroを禁止し、`initialServiceFee <= maxServiceFee`を要求する。`tokenDecimals`はKINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai`のdecimalsと同じ8に固定する。
+3個の権限addressはzero addressを禁止し、相互に異なる必要がある。limitとwindow durationはzeroを禁止し、`initialServiceFee <= maxServiceFee`を要求する。`tokenDecimals`はKINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai`のdecimalsと同じ8に固定する。`initialApprovedTimelockRuntimeCodeHash`は、deploy時およびTimelock rotation時に検証するOpenZeppelin Timelock runtime code hashである。
 
 ## EIP-3009署名送金
 
@@ -67,9 +68,9 @@ event AuthorizationCanceled(address indexed authorizer, bytes32 indexed nonce);
 
 | Role | 即時操作 | 禁止操作 |
 |---|---|---|
-| Bridge Signer | deposit mint、Release acknowledgement、Base Refund | pause、limit・fee変更、role rotation |
-| Runtime Administrator | Deposit/Withdrawal pause、上限内Service Fee変更 | unpause、limit変更、role rotation、mint、refund |
-| Base Admin Timelock | unpause、3権限addressのrotation | limit変更、直接mint、直接refund |
+| Bridge Signer | Deposit mint | pause、limit・fee変更、role rotation、Withdrawal操作 |
+| Runtime Administrator | Deposit/Withdrawal pause、上限内Service Fee変更 | unpause、limit変更、role rotation、mint |
+| Base Admin Timelock | unpause、3権限addressのrotation | limit変更、直接mint、Withdrawal操作 |
 
 任意のrole memberを追加できるgenericなgrant APIは公開しない。Bridge SignerとRuntime Administratorは常に単一addressとする。
 rotationでもzero addressと3権限addressの重複を拒否し、初期deploy後の権限分離を維持する。
@@ -91,19 +92,19 @@ fixed windowはBridge deploy時刻から開始する。`block.timestamp >= mintW
 
 Withdrawal IDは1から始まるcontract内`uint256`連番とし、0を`None`用に予約する。未存在IDの`getWithdrawal`は`status = None`のdefault structを返す。ICRC-1 Accountはraw principalの`bytes owner`と`bytes32 subaccount`で保持し、zero subaccountをdefault subaccountとする。ownerは1〜29 bytesだけを許可し、空のmanagement principalとanonymous principal `hex"04"`を拒否する。
 
-`createWithdrawal`は`amount > 0`と`1 <= minAmountOut <= amount`を要求する。callerは事前にBridgeへ要求額ちょうどをapproveする。実行時は`transferFrom(msg.sender, Bridge, amount)`、Bridge自身の残高のburn、record作成、`Releasing`化を同一transactionで行う。allowance不足を含む途中失敗はすべてrevertする。Release acknowledgementは`Releasing`だけを対象にし、次をすべて満たす必要がある。
+`createWithdrawal(amount, maxServiceFee, owner, subaccount)`は、burn前に現在の`serviceFee <= maxServiceFee`と`amount > serviceFee`を検証する。callerは事前にBridgeへ要求額ちょうどをapproveする。実行時は`transferFrom`、Bridge残高のburn、次の固定quoteを持つ`Committed` record作成を同一transactionで行い、`WithdrawalCommitted`を発行する。途中失敗はすべてrevertする。
 
 ```text
-amountOut + serviceFee + ledgerFee == amount
-amountOut >= minAmountOut
-serviceFee <= MAX_SERVICE_FEE
+chargedServiceFee = 実行時のserviceFee
+chargedServiceFee <= maxServiceFee
+amountOut = amount - chargedServiceFee
 ```
 
-acknowledgementはamountOut、fee、ledger block indexをrecordへ保存する。acknowledgementのfeeは実行時の`serviceFee`と一致する必要はない。同一内容の再実行は成功するがeventやfeeを重複記録しない。異なる内容の再実行と`Refunded`へのacknowledgementはrevertする。同じledger block indexを別Withdrawalへ使用することも拒否する。Ledgerが確定的に未実行と確認できた場合だけ`cancelRelease`をSafe確認して`Releasing → Pending`へ戻せる。Base Refundは`Pending`だけに許可し、元requesterへburn量全体を再mintする。refundではfeeを記録せず、Deposit mint windowを消費しない。
+Withdrawal stateは`None | Committed`だけであり、CommittedはBase上の不可逆な終端状態である。`acknowledgeRelease`、`cancelRelease`、`refundWithdrawal`、Ledger block情報はABIに存在しない。burn後のICP側債務はCanisterが元のWithdrawal IDとIC Accountを維持して再試行・照合する。
 
 ## Pauseと固定limit
 
-Deposit mintとWithdrawal作成は独立してpauseする。Release acknowledgementとBase Refundは既存Settlementを完了する操作であるためpauseの影響を受けない。
+Deposit mintとWithdrawal作成は独立してpauseする。pauseは既にCommittedとなったCanister債務の送金・照合を止めない。
 
 Per-Deposit Limit、Mint Throughput Limit、window durationはconstructorで固定する。deploy後に変更するfunction、selector、管理経路は持たない。
 

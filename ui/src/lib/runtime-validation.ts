@@ -1,5 +1,4 @@
-import { createPublicClient, http, type Address } from "viem"
-import { defineChain } from "viem"
+import type { Address } from "viem"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { createIndexActor } from "@/lib/ic/index"
 import { createLedgerActor } from "@/lib/ic/ledger"
@@ -7,11 +6,12 @@ import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { profileCompleteness, type DeploymentProfile } from "@/config/profile"
 import { runtimeBytecodeSha256 } from "@/lib/runtime-bytecode-hash"
+import { createBasePublicClient } from "@/lib/evm/client"
 
 export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number }
 
 export const RUNTIME_VALIDATION_TTL_MS = 60_000
-export const CANISTER_SAFE_OBSERVATION_TTL_MS = 60_000
+export const CANISTER_FINALIZED_OBSERVATION_TTL_MS = 60_000
 const CANISTER_CLOCK_SKEW_MS = 5_000
 
 export function runtimeWriteBlocker(validation?: RuntimeValidation, now = Date.now()): string | undefined {
@@ -41,10 +41,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
 
   const bridgeAddress = profile.bridgeAddress as Address
   const bsnsAddress = profile.bsnsAddress as Address
-  const client = createPublicClient({
-    chain: defineChain({ id: profile.chainId, name: profile.label, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [profile.baseRpcUrl] } } }),
-    transport: http(profile.baseRpcUrl),
-  })
+  const client = createBasePublicClient(profile)
   const [bridge, ledger] = await Promise.all([
     createBridgeActor(profile.icHost, profile.bridgeCanisterId as string),
     createLedgerActor(profile.icHost, profile.ledgerCanisterId as string),
@@ -53,24 +50,24 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if ("Err" in refreshedObservation) {
     blockers.push(`Canister Base observation refresh failed: ${Object.keys(refreshedObservation.Err)[0] ?? "unknown error"}`)
   }
-  const [config, status, ledgerName, ledgerSymbol, ledgerDecimals, localChainId, localSafe] = await Promise.all([
+  const [config, status, ledgerName, ledgerSymbol, ledgerDecimals, localChainId, localFinalized] = await Promise.all([
     bridge.get_public_config(),
     bridge.get_bridge_status(),
     ledger.icrc1_name(),
     ledger.icrc1_symbol(),
     ledger.icrc1_decimals(),
     client.getChainId(),
-    client.getBlock({ blockTag: "safe" }),
+    client.getBlock({ blockTag: "finalized" }),
   ])
   if (localChainId !== profile.chainId) blockers.push(`Base RPC is on chain ${localChainId}; expected ${profile.chainId}`)
-  if (localSafe.number === null || localSafe.hash === null) blockers.push("Safe Base block number or hash is unavailable")
-  blockers.push(...canisterSafeObservationBlockers(profile, localSafe.number, status, Date.now()))
+  if (localFinalized.number === null || localFinalized.hash === null) blockers.push("Finalized Base block number or hash is unavailable")
+  blockers.push(...canisterFinalizedObservationBlockers(profile, localFinalized.number, status, Date.now()))
   if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
 
-  const observedHash = bytesHex(status.last_safe_base_block_hash, 32)!
+  const observedHash = bytesHex(status.last_finalized_base_block_hash, 32)!
   const observedBlock = await client.getBlock({ blockHash: observedHash })
-  if (observedBlock.number !== status.last_safe_base_block || observedBlock.hash?.toLowerCase() !== observedHash.toLowerCase()) {
-    blockers.push("Canister Safe block hash is not canonical on the configured Base RPC")
+  if (observedBlock.number !== status.last_finalized_base_block || observedBlock.hash?.toLowerCase() !== observedHash.toLowerCase()) {
+    blockers.push("Canister finalized block hash is not canonical on the configured Base RPC")
     return { ready: false, blockers, checkedAt: Date.now() }
   }
   const [bridgeCode, bsnsCode, bridgeSnapshot, linkedBsns, bsnsSymbol, bsnsDecimals] = await Promise.all([
@@ -104,27 +101,27 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   } catch {
     blockers.push("Index ledger binding is unavailable")
   }
-  if (config.schema_version !== 6) blockers.push(`Unsupported canister schema ${config.schema_version}`)
+  if (config.schema_version !== 10) blockers.push(`Unsupported canister schema ${config.schema_version}`)
   if (ledgerName !== profile.icToken.name || ledgerSymbol !== profile.icToken.symbol || ledgerDecimals !== profile.icToken.decimals) {
     blockers.push(`IC token metadata is not ${profile.icToken.name}/${profile.icToken.symbol}/${profile.icToken.decimals}`)
   }
   return { ready: blockers.length === 0, blockers, checkedAt: Date.now() }
 }
 
-interface CanisterSafeObservation {
+interface CanisterFinalizedObservation {
   base_chain_id_matches_config: boolean
-  last_safe_base_block: bigint
-  last_safe_base_block_hash: Uint8Array | number[]
-  last_safe_observation_ns: bigint
+  last_finalized_base_block: bigint
+  last_finalized_base_block_hash: Uint8Array | number[]
+  last_finalized_observation_ns: bigint
   observed_base_chain_id: [] | [bigint]
   observed_bridge_signer: Uint8Array | number[]
   observed_bridge_runtime_sha256: Uint8Array | number[]
 }
 
-export function canisterSafeObservationBlockers(
+export function canisterFinalizedObservationBlockers(
   profile: DeploymentProfile,
-  localSafeBlock: bigint,
-  observation: CanisterSafeObservation,
+  localFinalizedBlock: bigint,
+  observation: CanisterFinalizedObservation,
   now = Date.now(),
 ): string[] {
   const blockers: string[] = []
@@ -132,17 +129,17 @@ export function canisterSafeObservationBlockers(
   if (observedChainId === undefined) blockers.push("Canister Base chain observation is unavailable")
   else if (observedChainId !== BigInt(profile.chainId) || !observation.base_chain_id_matches_config) blockers.push("Canister observed a different Base chain")
 
-  const observedHash = bytesHex(observation.last_safe_base_block_hash, 32)
-  if (observation.last_safe_base_block === 0n || observedHash === undefined) blockers.push("Canister Safe block observation is unavailable")
-  else if (observation.last_safe_base_block > localSafeBlock) blockers.push("Canister Safe block is ahead of the configured Base RPC Safe head")
+  const observedHash = bytesHex(observation.last_finalized_base_block_hash, 32)
+  if (observation.last_finalized_base_block === 0n || observedHash === undefined) blockers.push("Canister finalized block observation is unavailable")
+  else if (observation.last_finalized_base_block > localFinalizedBlock) blockers.push("Canister finalized block is ahead of the configured Base RPC finalized head")
 
-  const observedAtMs = Number(observation.last_safe_observation_ns / 1_000_000n)
+  const observedAtMs = Number(observation.last_finalized_observation_ns / 1_000_000n)
   if (
-    observation.last_safe_observation_ns === 0n
+    observation.last_finalized_observation_ns === 0n
     || !Number.isSafeInteger(observedAtMs)
     || observedAtMs > now + CANISTER_CLOCK_SKEW_MS
-    || now - observedAtMs > CANISTER_SAFE_OBSERVATION_TTL_MS
-  ) blockers.push("Canister Safe block observation is unavailable or stale")
+    || now - observedAtMs > CANISTER_FINALIZED_OBSERVATION_TTL_MS
+  ) blockers.push("Canister finalized block observation is unavailable or stale")
 
   const signer = bytesHex(observation.observed_bridge_signer, 20)
   if (signer === undefined) blockers.push("Canister observed Bridge signer is unavailable")

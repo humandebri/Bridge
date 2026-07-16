@@ -12,7 +12,7 @@ CIが確認するのは、rehearsal recorderのテスト、公式Canister IDへ�
 - EVM RPC CanisterはDFINITY管理の`7hfb6-caaaa-aaaar-qadga-cai`に固定する。
 - custom RPC URLはcredentialを含まないHTTPSを3件指定し、URL文字列の重複だけを拒否する。
 - providerの運営主体、upstream、ASN、cloud、region、障害ドメイン、可用性は監査しない。
-- 「EVM RPC Canisterと設定providerのquorumがcanonical Safe Base Sepolia chainを正しく返す」ことは外部仮定として証跡に残す。
+- 「EVM RPC Canisterと設定providerのquorumがcanonical Finalized Base Sepolia chainを正しく返す」ことは外部仮定として証跡に残す。
 - orphan receipt、same-height hash不一致、provider誤応答の決定的検査は既存PocketICテストの責務とする。実公開RPCへの故障注入は本番承認条件にしない。
 
 公式Canister IDとinterfaceの一次資料は、DFINITYの[EVM RPC documentation](https://internetcomputer.org/docs/references/evm-rpc-canister)および[EVM RPC canister repository](https://github.com/dfinity/evm-rpc-canister)を参照する。ネットワーク取得はCIの前提にしない。
@@ -49,7 +49,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 `validate-config`は、IC network、Base Sepolia、公式EVM RPC Canister、3件のsecret-free HTTPS URL、test-only binding、Bridge Canister WasmとBridge runtime bytecodeのSHA-256を検査する。
 出力はURLをhostとSHA-256へ縮約し、完全URLをmanifestへ保存しない。
 
-外部callを行う前に、Bridge Canisterのchain/canister/contract/RPC設定、chain-key signer、同じSafe Base blockのBridge signer、両方向pause、cyclesとtest ETHをlive状態から再読する。
+外部callを行う前に、Bridge Canisterのchain/canister/contract/RPC設定、chain-key signer、同じFinalized Base blockのBridge signer、両方向pause、cyclesとtest ETHをlive状態から再読する。
 
 preflight evidenceの`details`は次の完全なfield集合とする。
 
@@ -113,7 +113,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 ```
 
 `external_calls_performed=true`と`through_evm_rpc_canister=true`だけでは証跡にならない。
-quorum成功scenarioは`get_audit_events`の`EvmRpcObservation`から、EVM RPC Canister ID、Candid call method、Canister内部request digest、quorum response digest、Safe block number/hash、transaction hashを`canister_audit`へ束縛する。
+quorum成功scenarioは`get_audit_events`の`EvmRpcObservation`から、EVM RPC Canister ID、Candid call method、Canister内部request digest、quorum response digest、Finalized block number/hash、transaction hashを`canister_audit`へ束縛する。
 call methodはscenarioに応じたproduction実値`multi_request`、`eth_sendRawTransaction`、`eth_sendRawTransaction+multi_request`、`eth_getTransactionReceipt+eth_getBlockByNumber`だけを許可する。`nonce_conflict`もbroadcast decision auditを必須とし、単なるstop reason自己申告では完了しない。
 `single_provider_failure`、`quorum_loss`、`nonce_conflict`は`EvmRpcDecision`も`canister_decision`へ束縛し、設定provider数、必要threshold、停止理由、Ledger呼出し有無、Bridge継続、Deposit pause、自動再署名有無を再導出する。threshold APIは採用前のprovider別全responseを返さないため、3/3一致と2/3一致の区別はfault injection artifactへ委ね、Canister auditは設定値`3`、必要threshold`2`、実際の継続・停止判断を証明する。
 `preflight`ではさらに固定`dfx canister status` captureのmodule hashをreview済みWasm SHA-256へ束縛する。
@@ -132,12 +132,12 @@ AWAITING_PREFLIGHT
   -> COMPLETE
 ```
 
-asset flowとして次の4件を実行し、各transactionをSafe headまで待つ。
+asset flowとして次の4件を実行し、各transactionをFinalized headまで待つ。
 
-1. `deposit_mint`: Deposit ID、Ledger block、mint transaction、safe block/hash
-2. `withdrawal_release`: user `approve`、user `createWithdrawal`のSafe block/hash、ICRC transfer block、`acknowledgeRelease`のSafe block/hash
-3. `bad_fee_refund`: fee変更、minimum割れ、`cancelRelease`、refund、safe block/hash
-4. `canonical_receipt`: receipt block number/hash、同heightのcanonical hash、Safe head
+1. `deposit_mint`: Deposit ID、Ledger block、mint transaction、Safe block/hash
+2. `withdrawal_release`: user `approve`、user `createWithdrawal`のFinalized block/hash、固定quote、ICRC transfer block、追加Base transactionがないこと
+3. `bad_fee_hold`: Ledger FeeがService Feeを超えた場合の送金前停止と、同じIC Accountの維持
+4. `canonical_receipt`: receipt block number/hash、同heightのcanonical hash、Finalized head
 
 failure scenarioとして次の4件をtest-only設定で実行する。
 
@@ -152,7 +152,7 @@ EVM RPC clientはthreshold判定に使ったprovider別全responseやexact agree
 代わりにconfigured count、required threshold、故障注入artifact、処理継続またはfail-closed decisionをthreshold certificateとして記録する。
 故障注入条件はBridge/Canister auditへ存在しないfieldを合成せず、専用`fault` raw artifactへ分離する。このartifactは`rehearsal_id`、scenario、run reference、configured provider count 3、required threshold 2、failed provider count、request/config digestを持ち、manifest hashで保護する。Canister `EvmRpcDecision`は継続またはfail-closedの判断だけを証明する。
 
-failure scenario後に`final_pause`を記録する。BaseのDeposit/WithdrawalとCanisterの新規Deposit受付をpauseし、Base側pause transactionのSafe block/hashを再読する。
+failure scenario後に`final_pause`を記録する。BaseのDeposit/WithdrawalとCanisterの新規Deposit受付をpauseし、Base側pause transactionのFinalized block/hashを再読する。
 
 各scenarioの`details`の正確なfield名と型は`scripts/evm-rpc-rehearsal/rehearsal.py`がfail closedで検査する。
 templateの`details`文字列を実objectへ置換し、次のように一件ずつrecordする。

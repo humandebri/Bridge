@@ -196,7 +196,7 @@ fi
 
 CURRENT_PROTOCOL_DOC="$TEST_TMP_ROOT/current-protocol.md"
 printf '%s\n' \
-  'The user createWithdrawal transaction burns bSNS and enters Releasing.' \
+  'The user createWithdrawal transaction burns bSNS and enters Committed.' \
   'The canister binds all reads to one canonical Safe block.' >"$CURRENT_PROTOCOL_DOC"
 verify_no_obsolete_withdrawal_terms "$CURRENT_PROTOCOL_DOC"
 

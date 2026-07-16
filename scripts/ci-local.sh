@@ -68,7 +68,7 @@ run_no_automatic_execution_guards() {
   if rg -n '\bset_timer\b' \
     "$ROOT/canister/bridge-canister/src" \
     --glob '!scheduler.rs'; then
-    echo "one-shot timer found outside the stable confirmation scheduler" >&2
+    echo "one-shot timer found outside the stable settlement executor" >&2
     return 1
   fi
   if rg -n '\b(scheduler_priority|scheduler_code|candidate_precedes)\b' \
@@ -76,8 +76,10 @@ run_no_automatic_execution_guards() {
     echo "retired scheduler implementation found" >&2
     return 1
   fi
-  if rg -n '\b(sessionStorage|localStorage)\b' "$ROOT/ui/src"; then
-    echo "browser storage is used by production Bridge UI" >&2
+  if rg -n '\b(sessionStorage|localStorage)\b' "$ROOT/ui/src" \
+    --glob '!pending-confirmations.ts' \
+    --glob '!pending-confirmations.test.ts'; then
+    echo "browser storage is used outside the confirmation recovery queue" >&2
     return 1
   fi
   if rg -n '\b(getTransactionReceipt|waitForTransactionReceipt)\b' "$ROOT/ui/src/routes/history.tsx"; then
@@ -386,7 +388,6 @@ run_smoke() {
   local minted_in_window
   local processed
   local release_withdrawal
-  local refund_withdrawal
   local next_withdrawal_id
   local timelock_delay
   local proposer_role
@@ -410,12 +411,7 @@ run_smoke() {
   local readonly service_fee="1000000"
   local readonly minted_amount="100000000"
   local readonly release_amount="50000000"
-  local readonly release_min_amount_out="48000000"
-  local readonly release_amount_out="48000000"
-  local readonly release_ledger_fee="1000000"
-  local readonly release_ledger_block_index="42"
-  local readonly refund_amount="20000000"
-  local readonly refund_min_amount_out="19000000"
+  local readonly release_amount_out="49000000"
   local readonly principal_owner="0x010203"
   local readonly default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
   local readonly timelock_delay_seconds="259200"
@@ -675,7 +671,7 @@ for field, (value, candid_type) in expected.items():
     "$bridge_address" \
     "createWithdrawal(uint256,uint256,bytes,bytes32)" \
     "$release_amount" \
-    "$release_min_amount_out" \
+    "$service_fee" \
     "$principal_owner" \
     "$default_subaccount" \
     --rpc-url http://127.0.0.1:8545 \
@@ -684,104 +680,22 @@ for field, (value, candid_type) in expected.items():
   release_withdrawal="$(
     cast call \
       "$bridge_address" \
-      "getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))" \
+      "getWithdrawal(uint256)((address,uint256,uint256,uint256,uint256,bytes,bytes32,uint8))" \
       1 \
       --rpc-url http://127.0.0.1:8545 \
       --json
   )"
   require_equal \
-    "Pending requester" \
+    "Committed requester" \
     "$(printf '%s' "$(json_tuple_field "$release_withdrawal" 0)" | tr '[:upper:]' '[:lower:]')" \
     "$(printf '%s' "$recipient" | tr '[:upper:]' '[:lower:]')"
-  require_equal "Pending amount" "$(json_tuple_field "$release_withdrawal" 1)" "$release_amount"
-  require_equal "Pending min amount" "$(json_tuple_field "$release_withdrawal" 2)" "$release_min_amount_out"
-  require_equal "Pending owner" "$(json_tuple_field "$release_withdrawal" 3)" "$principal_owner"
-  require_equal "Pending subaccount" "$(json_tuple_field "$release_withdrawal" 4)" "$default_subaccount"
-  require_equal "Releasing status" "$(json_tuple_field "$release_withdrawal" 5)" "2"
-
-  cast send \
-    "$bridge_address" \
-    "acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)" \
-    1 \
-    "$release_amount_out" \
-    "$service_fee" \
-    "$release_ledger_fee" \
-    "$release_ledger_block_index" \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$bridge_signer" \
-    --unlocked >/dev/null
-  # Exact replay must succeed without changing the record.
-  cast send \
-    "$bridge_address" \
-    "acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)" \
-    1 \
-    "$release_amount_out" \
-    "$service_fee" \
-    "$release_ledger_fee" \
-    "$release_ledger_block_index" \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$bridge_signer" \
-    --unlocked >/dev/null
-  release_withdrawal="$(
-    cast call \
-      "$bridge_address" \
-      "getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))" \
-      1 \
-      --rpc-url http://127.0.0.1:8545 \
-      --json
-  )"
-  require_equal "Released status" "$(json_tuple_field "$release_withdrawal" 5)" "3"
-  require_equal "Released amount out" "$(json_tuple_field "$release_withdrawal" 6)" "$release_amount_out"
-  require_equal "Released service fee" "$(json_tuple_field "$release_withdrawal" 7)" "$service_fee"
-  require_equal "Released ledger fee" "$(json_tuple_field "$release_withdrawal" 8)" "$release_ledger_fee"
-  require_equal \
-    "Released ledger block index" \
-    "$(json_tuple_field "$release_withdrawal" 9)" \
-    "$release_ledger_block_index"
-
-  cast send \
-    "$bsns_address" \
-    "approve(address,uint256)" \
-    "$bridge_address" \
-    "$refund_amount" \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$recipient" \
-    --unlocked >/dev/null
-  cast send \
-    "$bridge_address" \
-    "createWithdrawal(uint256,uint256,bytes,bytes32)" \
-    "$refund_amount" \
-    "$refund_min_amount_out" \
-    "$principal_owner" \
-    "$default_subaccount" \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$recipient" \
-    --unlocked >/dev/null
-  cast send \
-    "$bridge_address" \
-    "cancelRelease(uint256)" \
-    2 \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$bridge_signer" \
-    --unlocked >/dev/null
-  cast send \
-    "$bridge_address" \
-    "refundWithdrawal(uint256)" \
-    2 \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$bridge_signer" \
-    --unlocked >/dev/null
-  refund_withdrawal="$(
-    cast call \
-      "$bridge_address" \
-      "getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))" \
-      2 \
-      --rpc-url http://127.0.0.1:8545 \
-      --json
-  )"
-  require_equal "Refunded status" "$(json_tuple_field "$refund_withdrawal" 5)" "4"
-  require_equal "Refunded service fee" "$(json_tuple_field "$refund_withdrawal" 7)" "0"
-  require_equal "Refunded ledger fee" "$(json_tuple_field "$refund_withdrawal" 8)" "0"
+  require_equal "Committed amount" "$(json_tuple_field "$release_withdrawal" 1)" "$release_amount"
+  require_equal "Committed max Service Fee" "$(json_tuple_field "$release_withdrawal" 2)" "$service_fee"
+  require_equal "Committed charged Service Fee" "$(json_tuple_field "$release_withdrawal" 3)" "$service_fee"
+  require_equal "Committed amount out" "$(json_tuple_field "$release_withdrawal" 4)" "$release_amount_out"
+  require_equal "Committed owner" "$(json_tuple_field "$release_withdrawal" 5)" "$principal_owner"
+  require_equal "Committed subaccount" "$(json_tuple_field "$release_withdrawal" 6)" "$default_subaccount"
+  require_equal "Committed status" "$(json_tuple_field "$release_withdrawal" 7)" "1"
 
   read -r recipient_balance _ <<<"$(
     cast call "$bsns_address" "balanceOf(address)(uint256)" "$recipient" --rpc-url http://127.0.0.1:8545
@@ -797,8 +711,8 @@ for field, (value, candid_type) in expected.items():
   )"
   require_equal "post-settlement recipient balance" "$recipient_balance" "50000000"
   require_equal "post-settlement token supply" "$token_total_supply" "50000000"
-  require_equal "refund mint window consumption" "$minted_in_window" "$minted_amount"
-  require_equal "next Withdrawal ID" "$next_withdrawal_id" "3"
+  require_equal "Withdrawal does not consume mint window" "$minted_in_window" "$minted_amount"
+  require_equal "next Withdrawal ID" "$next_withdrawal_id" "2"
 
   cast send \
     "$bridge_address" \
@@ -901,9 +815,14 @@ run_checks() {
   run_icp_build
 }
 
+run_real() {
+  pnpm --dir "$ROOT/ui" e2e:real
+}
+
 case "$MODE" in
   all)
     run_checks
+    run_real
     run_smoke
     ;;
   checks)
@@ -932,8 +851,11 @@ case "$MODE" in
   smoke)
     run_smoke
     ;;
+  real)
+    run_real
+    ;;
   *)
-    echo "usage: $0 {all|checks|versions|rust|contracts|proofs|ui|icp|smoke}" >&2
+    echo "usage: $0 {all|checks|versions|rust|contracts|proofs|ui|icp|smoke|real}" >&2
     exit 2
     ;;
 esac

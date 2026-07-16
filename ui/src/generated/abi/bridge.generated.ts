@@ -181,43 +181,6 @@ export const bridgeAbi = [
         "type": "uint256"
       },
       {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "serviceFee",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "ledgerFee",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "ledgerBlockIndex",
-        "type": "uint256"
-      }
-    ],
-    "name": "WithdrawalReleased",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      },
-      {
         "indexed": true,
         "internalType": "address",
         "name": "requester",
@@ -232,7 +195,19 @@ export const bridgeAbi = [
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "minAmountOut",
+        "name": "maxServiceFee",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "chargedServiceFee",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amountOut",
         "type": "uint256"
       },
       {
@@ -248,45 +223,7 @@ export const bridgeAbi = [
         "type": "bytes32"
       }
     ],
-    "name": "WithdrawalCreated",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "requester",
-        "type": "address"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      }
-    ],
-    "name": "WithdrawalRefunded",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "WithdrawalReleaseCancelled",
+    "name": "WithdrawalCommitted",
     "type": "event"
   },
   {
@@ -915,33 +852,7 @@ export const bridgeAbi = [
       },
       {
         "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "serviceFee",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "ledgerFee",
-        "type": "uint256"
-      }
-    ],
-    "name": "SettlementAmountsMismatch",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "minAmountOut",
+        "name": "maxServiceFee",
         "type": "uint256"
       },
       {
@@ -975,38 +886,6 @@ export const bridgeAbi = [
       }
     ],
     "name": "InvalidAmount",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "ledgerBlockIndex",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "existingWithdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "LedgerBlockAlreadyAcknowledged",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "minAmountOut",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      }
-    ],
-    "name": "InvalidMinAmountOut",
     "type": "error"
   },
   {
@@ -1092,90 +971,6 @@ export const bridgeAbi = [
         "internalType": "uint256",
         "name": "withdrawalId",
         "type": "uint256"
-      },
-      {
-        "internalType": "enum IBridge.WithdrawalStatus",
-        "name": "currentStatus",
-        "type": "uint8"
-      }
-    ],
-    "name": "InvalidWithdrawalStatus",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "withdrawalServiceFee",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "ledgerFee",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "ledgerBlockIndex",
-        "type": "uint256"
-      }
-    ],
-    "name": "acknowledgeRelease",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "ReleaseAcknowledgementMismatch",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "WithdrawalNotFound",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "cancelRelease",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
       }
     ],
     "name": "getWithdrawal",
@@ -1194,7 +989,17 @@ export const bridgeAbi = [
           },
           {
             "internalType": "uint256",
-            "name": "minAmountOut",
+            "name": "maxServiceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "chargedServiceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOut",
             "type": "uint256"
           },
           {
@@ -1211,26 +1016,6 @@ export const bridgeAbi = [
             "internalType": "enum IBridge.WithdrawalStatus",
             "name": "status",
             "type": "uint8"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountOut",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "serviceFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "ledgerFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "ledgerBlockIndex",
-            "type": "uint256"
           }
         ],
         "internalType": "struct IBridge.Withdrawal",
@@ -1239,19 +1024,6 @@ export const bridgeAbi = [
       }
     ],
     "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "refundWithdrawal",
-    "outputs": [],
-    "stateMutability": "nonpayable",
     "type": "function"
   }
 ] as const

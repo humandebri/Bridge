@@ -1,5 +1,8 @@
 use vstd::prelude::*;
 
+// rustc's unused-macro lint does not see invocations expanded inside Verus spec functions.
+// The macros remain exercised by both the executable kernel and the specs below.
+#[allow(unused_macros)]
 #[path = "../../canister/bridge-core/src/kernel.rs"]
 mod kernel;
 
@@ -15,10 +18,6 @@ proof fn complete_scan_is_nonempty_witness(tip: int)
 
 proof fn matched_transfer_cannot_be_absent(next: int, tip: int, watermark: int)
     ensures !kernel::scan_complete_spec(next, tip, watermark, true, true)
-{}
-
-proof fn refund_requires_pending_and_proven_absence(pending: bool, proven_absent: bool)
-    ensures kernel::refund_allowed_spec(pending, proven_absent) ==> pending && proven_absent
 {}
 
 proof fn attempt_is_strictly_monotone(attempt: int)
@@ -98,24 +97,19 @@ proof fn candidate_reservation_increases_both_requirements(
     vstd::arithmetic::mul::lemma_mul_inequality(current, current + 1, unit);
 }
 
-proof fn definitive_bad_fee_reprices_only_when_minimum_is_met(
-    gross: int, service_fee: int, ledger_fee: int, minimum: int,
+proof fn definitive_bad_fee_reprices_only_within_service_fee(
+    service_fee: int, ledger_fee: int,
 )
-    requires 0 <= service_fee <= gross, 0 <= ledger_fee <= gross - service_fee,
-        0 <= minimum, minimum <= gross - service_fee - ledger_fee
-    ensures kernel::bad_fee_reprice_amount_spec(
-        gross, service_fee, ledger_fee, minimum, true, false)
-            == Some(gross - service_fee - ledger_fee)
+    requires 0 <= ledger_fee <= service_fee
+    ensures kernel::ledger_fee_reprice_allowed_spec(service_fee, ledger_fee, true, false)
 {}
 
 proof fn uncertain_or_non_bad_fee_outcome_cannot_reprice(
-    gross: int, service_fee: int, ledger_fee: int, minimum: int,
+    service_fee: int, ledger_fee: int,
 )
     ensures
-        kernel::bad_fee_reprice_amount_spec(
-            gross, service_fee, ledger_fee, minimum, false, false) == None::<int>,
-        kernel::bad_fee_reprice_amount_spec(
-            gross, service_fee, ledger_fee, minimum, true, true) == None::<int>
+        !kernel::ledger_fee_reprice_allowed_spec(service_fee, ledger_fee, false, false),
+        !kernel::ledger_fee_reprice_allowed_spec(service_fee, ledger_fee, true, true)
 {}
 
 proof fn fee_is_counted_exactly_on_first_transfer(fee: int)
@@ -134,24 +128,15 @@ proof fn release_transfer_requires_exact_amount_and_fee(
             <==> transfer_amount == amount_out && transfer_fee == ledger_fee
 {}
 
-proof fn exact_settlement_clears_terminal_liability(
-    liability: int, amount_out: int, service_fee: int, ledger_fee: int,
+proof fn committed_quote_fixes_amount_out(
+    amount: int, amount_out: int, service_fee: int,
 )
     requires
-        0 <= amount_out,
+        0 < amount_out,
         0 <= service_fee,
-        0 <= ledger_fee,
-        liability == amount_out + service_fee + ledger_fee,
-        liability <= 340282366920938463463374607431768211455int,
-    ensures kernel::terminal_liability_residual_spec(
-        liability, amount_out, service_fee, ledger_fee) == Some(0int)
-{}
-
-proof fn refund_operation_requires_every_binding(
-    refund_kind: bool, operation: bool, payload: bool, calldata: bool,
-)
-    ensures kernel::refund_operation_binding_spec(refund_kind, operation, payload, calldata)
-        <==> refund_kind && operation && payload && calldata
+        amount == amount_out + service_fee,
+        amount <= 340282366920938463463374607431768211455int,
+    ensures kernel::committed_quote_matches_spec(amount, amount_out, service_fee)
 {}
 
 proof fn active_counter_transition_preserves_classification(current: int, old: bool, new: bool)
@@ -230,7 +215,7 @@ proof fn audit_overflow_is_rejected()
 {}
 
 proof fn deposit_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
-    requires state == 3 || state == 4 || state == 6
+    requires state == 3 || state == 6
     ensures kernel::deposit_phase_run_spec(state, events) == state
     decreases events.len()
 {
@@ -241,7 +226,7 @@ proof fn deposit_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int
 }
 
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
-    requires state == 4 || state == 5 || state == 7 || state == 8
+    requires state == 2
     ensures kernel::withdrawal_phase_run_spec(state, events) == state
     decreases events.len()
 {
@@ -262,6 +247,10 @@ proof fn withdrawal_phase_allowance_matches_a_transition(state: int, event: int)
             || (state == 1 && event == 1)
 {}
 
+proof fn reverted_phases_only_reopen_through_recovery_events(event: int)
+    ensures kernel::reverted_phase_recovery_spec(event)
+{}
+
 proof fn deposit_fee_delta_occurs_only_on_mint(state: int, event: int, fee: int)
     ensures kernel::deposit_fee_delta_spec(state, event, fee)
         == if state == 2 && event == 4 { fee } else { 0 }
@@ -273,7 +262,7 @@ proof fn withdrawal_fee_delta_occurs_only_on_release(state: int, event: int, fee
 {}
 
 proof fn deposit_post_mint_never_charges(state: int, events: Seq<int>, fee: int)
-    requires state == 3 || state == 4 || state == 6, 0 <= fee
+    requires state == 3 || state == 6, 0 <= fee
     ensures kernel::deposit_fee_total_spec(state, events, fee) == 0
     decreases events.len()
 {
@@ -285,9 +274,7 @@ proof fn deposit_post_mint_never_charges(state: int, events: Seq<int>, fee: int)
 }
 
 proof fn withdrawal_post_transfer_never_charges(state: int, events: Seq<int>, fee: int)
-    requires state == 2 || state == 3 || state == 4 || state == 5
-        || state == 6 || state == 7 || state == 8 || state == 9
-        || state == 10 || state == 11,
+    requires state == 2,
         0 <= fee
     ensures kernel::withdrawal_fee_total_spec(state, events, fee) == 0
     decreases events.len()
@@ -295,9 +282,7 @@ proof fn withdrawal_post_transfer_never_charges(state: int, events: Seq<int>, fe
     if events.len() > 0 {
         let next = kernel::withdrawal_phase_step_spec(state, events[0]);
         assert(kernel::withdrawal_fee_delta_spec(state, events[0], fee) == 0);
-        assert(next == 2 || next == 3 || next == 4 || next == 5
-            || next == 6 || next == 7 || next == 8 || next == 9
-            || next == 10 || next == 11);
+        assert(next == 2);
         withdrawal_post_transfer_never_charges(next, events.drop_first(), fee);
     }
 }
@@ -320,7 +305,7 @@ proof fn deposit_fee_is_charged_at_most_once(state: int, events: Seq<int>, fee: 
 }
 
 proof fn withdrawal_fee_is_charged_at_most_once(state: int, events: Seq<int>, fee: int)
-    requires 0 <= state <= 11, 0 <= fee
+    requires 0 <= state <= 3, 0 <= fee
     ensures 0 <= kernel::withdrawal_fee_total_spec(state, events, fee) <= fee
     decreases events.len()
 {
@@ -330,7 +315,7 @@ proof fn withdrawal_fee_is_charged_at_most_once(state: int, events: Seq<int>, fe
         if state == 1 && event == 2 {
             withdrawal_post_transfer_never_charges(2, events.drop_first(), fee);
         } else {
-            assert(0 <= next <= 11);
+            assert(0 <= next <= 3);
             withdrawal_fee_is_charged_at_most_once(next, events.drop_first(), fee);
         }
     }
@@ -361,19 +346,11 @@ proof fn withdrawal_release_preserves_one_to_one_backing(
 )
     requires kernel::asset_backed_spec(escrow, supply, fees, unminted, unreleased),
         0 <= amount_out, 0 <= ledger_fee, 0 <= service_fee,
-        amount_out + ledger_fee + service_fee <= unreleased
+        ledger_fee <= service_fee,
+        amount_out + service_fee <= unreleased
     ensures kernel::asset_backed_spec(
-        escrow - amount_out - ledger_fee, supply, fees + service_fee, unminted,
-        unreleased - amount_out - ledger_fee - service_fee)
-{}
-
-proof fn withdrawal_refund_preserves_one_to_one_backing(
-    escrow: int, supply: int, fees: int, unminted: int, unreleased: int, amount: int,
-)
-    requires kernel::asset_backed_spec(escrow, supply, fees, unminted, unreleased),
-        0 <= amount <= unreleased
-    ensures kernel::asset_backed_spec(
-        escrow, supply + amount, fees, unminted, unreleased - amount)
+        escrow - amount_out - ledger_fee, supply, fees + service_fee - ledger_fee, unminted,
+        unreleased - amount_out - service_fee)
 {}
 
 proof fn fee_payout_preserves_one_to_one_backing(

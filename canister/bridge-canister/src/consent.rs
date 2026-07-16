@@ -83,11 +83,17 @@ pub fn consent_message(
     if request.method == "continue_deposit" || request.method == "continue_withdrawal" {
         return settlement_consent(caller, canister, request);
     }
+    if request.method == "confirm_deposit" {
+        return confirmation_consent(caller, canister, request);
+    }
     if request.method == "continue_fee_payout" {
         return fee_payout_consent(caller, canister, request);
     }
     if request.method == "notify_withdrawal" {
         return withdrawal_consent(caller, canister, request);
+    }
+    if request.method == "recover_mint_revert" {
+        return recovery_consent(caller, canister, request);
     }
     if request.method != "request_deposit" {
         return unsupported(format!("unsupported canister call: {}", request.method));
@@ -126,12 +132,79 @@ pub fn consent_message(
             utc_offset_minutes: request.user_preferences.metadata.utc_offset_minutes,
         },
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross amount: `{gross}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the amount using an existing ICRC-2 allowance. Execution still depends on the current ledger fee, reserve, Safe Base state, and bridge limits.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
+            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross amount: `{gross}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the amount using an existing ICRC-2 allowance. Execution still depends on the current ledger fee, reserve, finalized Base state, and bridge limits.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
             owner_sequence = validated.owner_sequence,
             gross = format_e8s(validated.gross_amount),
             fee = format_e8s(validated.max_service_fee),
             minimum = format_e8s(minimum),
             recipient = hex(&validated.base_recipient),
+        )),
+    })
+}
+
+fn confirmation_consent(
+    caller: Principal,
+    canister: Principal,
+    request: Icrc21ConsentMessageRequest,
+) -> Icrc21ConsentMessageResponse {
+    if caller == Principal::anonymous() {
+        return unavailable("anonymous caller is not allowed");
+    }
+    let args = match Decode!(&request.arg, api::ConfirmEvmArgs) {
+        Ok(args) => args,
+        Err(error) => return unavailable(format!("confirmation argument decode failed: {error}")),
+    };
+    if args.settlement_id.len() != 32 || args.transaction_hash.len() != 32 {
+        return unavailable("settlement_id and transaction_hash must be 32 bytes");
+    }
+    if args.observed_finalized_block_number < args.receipt_block_number {
+        return unavailable("observed finalized block cannot precede the receipt block");
+    }
+    let config = match STORE.with(|store| store.borrow().config()) {
+        Ok(Some(config)) => config,
+        Ok(None) => return unavailable("bridge configuration is unavailable"),
+        Err(error) => return unavailable(format!("bridge configuration read failed: {error}")),
+    };
+    Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
+        metadata: request.user_preferences.metadata,
+        consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
+            "# Confirm a finalized Base transaction\n\nIC wallet: `{caller}`\n\nAction: `{method}`\n\nSettlement ID: `0x{settlement_id}`\n\nBase transaction: `0x{transaction_hash}`\n\nReceipt block: `{receipt_block}`\n\nObserved finalized block: `{finalized_block}`\n\nBase chain ID: `{chain_id}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister independently verifies the canonical receipt and finalized head before changing settlement state.",
+            method = request.method,
+            settlement_id = hex(&args.settlement_id),
+            transaction_hash = hex(&args.transaction_hash),
+            receipt_block = args.receipt_block_number,
+            finalized_block = args.observed_finalized_block_number,
+            chain_id = config.base_chain_id,
+        )),
+    })
+}
+
+fn recovery_consent(
+    caller: Principal,
+    canister: Principal,
+    request: Icrc21ConsentMessageRequest,
+) -> Icrc21ConsentMessageResponse {
+    if caller == Principal::anonymous() {
+        return unavailable("anonymous caller is not allowed");
+    }
+    let args = match Decode!(&request.arg, crate::recovery::RecoverMintRevertArgs) {
+        Ok(args) => args,
+        Err(error) => {
+            return unavailable(format!(
+                "recover_mint_revert argument decode failed: {error}"
+            ));
+        }
+    };
+    let id = args.deposit_id;
+    if id.len() != 32 {
+        return unavailable("recovery Deposit ID must be 32 bytes");
+    }
+    Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
+        metadata: request.user_preferences.metadata,
+        consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
+            "# Recover a reverted Base mint\n\nGovernance principal: `{caller}`\n\nDeposit: `0x{id}`\n\nReverted operation ID: `{operation_id}`\n\nBridge canister: `{canister}`\n\nThe canister will re-observe the Bridge signer, runtime, mint limits, reserve, and deposit state at one 2-of-3 quorum finalized block, then create a new operation ID, nonce, and threshold signature. The reverted raw transaction is never reused.",
+            id = hex(&id),
+            operation_id = args.reverted_operation_id,
         )),
     })
 }
@@ -152,7 +225,7 @@ fn settlement_consent(
     Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
         metadata: request.user_preferences.metadata,
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Retry bridge settlement\n\nIC wallet: `{caller}`\n\nAction: `{method}`\n\nSettlement ID: `0x{id}`\n\nBridge canister: `{canister}`\n\nThis manual recovery call retries immediately available work after automatic settlement has stopped. Submitted Base transactions are normally confirmed at the Safe head by the canister scheduler.",
+            "# Retry bridge settlement\n\nIC wallet: `{caller}`\n\nAction: `{method}`\n\nSettlement ID: `0x{id}`\n\nBridge canister: `{canister}`\n\nThis manual recovery call retries immediately available work after settlement has stopped. Submitted Base transactions require the dedicated wallet-confirmed confirmation call.",
             method = request.method,
             id = hex(&id),
         )),
@@ -213,7 +286,7 @@ fn withdrawal_consent(
             utc_offset_minutes: request.user_preferences.metadata.utc_offset_minutes,
         },
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Notify a Safe-confirmed Base withdrawal\n\nIC wallet: `{caller}`\n\nBase transaction: `0x{transaction_hash}`\n\nBase chain ID: `{base_chain_id}`\n\nBridge contract: `0x{bridge_contract}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister independently verifies the Safe-confirmed receipt, Bridge contract, WithdrawalCreated event, and event owner before settlement. This notification does not guarantee settlement success or the amount ultimately released.",
+            "# Notify a finalized Base withdrawal\n\nIC wallet: `{caller}`\n\nBase transaction: `0x{transaction_hash}`\n\nBase chain ID: `{base_chain_id}`\n\nBridge contract: `0x{bridge_contract}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister independently verifies the finalized canonical receipt, Bridge contract, WithdrawalCommitted event, fixed amount out, service fee, and event owner. The Base burn is irreversible and interrupted delivery is retried only to the committed IC account.",
             transaction_hash = hex(&transaction_hash),
             base_chain_id = config.base_chain_id,
             bridge_contract = hex(&config.bridge_contract),

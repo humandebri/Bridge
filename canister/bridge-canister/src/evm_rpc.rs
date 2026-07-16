@@ -1,6 +1,6 @@
 use crate::config::BridgeInitArgs;
 use async_trait::async_trait;
-use bridge_core::{Amount, BaseMintSnapshot};
+use bridge_core::{Amount, BaseMintSnapshot, FinalizedObservationRecord};
 use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use evm_rpc_client::{CandidResponseConverter, EvmRpcClient, NoRetry};
 use evm_rpc_types::{
@@ -12,7 +12,7 @@ use ic_cdk::call::Call;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::{cell::RefCell, str::FromStr};
+use std::str::FromStr;
 use tiny_keccak::{Hasher, Keccak};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub enum ObservationError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SafeObservation {
+pub struct FinalizedObservation {
     pub chain_id: u64,
     pub block_number: u64,
     pub block_hash: [u8; 32],
@@ -45,8 +45,8 @@ pub struct RpcAuditEvidence {
     pub call_method: String,
     pub request_digest: [u8; 32],
     pub quorum_response_digest: [u8; 32],
-    pub safe_block_number: u64,
-    pub safe_block_hash: [u8; 32],
+    pub finalized_block_number: u64,
+    pub finalized_block_hash: [u8; 32],
     pub transaction_hash: Option<[u8; 32]>,
 }
 
@@ -127,29 +127,33 @@ pub fn nonce_conflict_decision(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CompletedSafeObservation {
-    pub safe: SafeObservation,
+pub struct CompletedFinalizedObservation {
+    pub finalized: FinalizedObservation,
     pub snapshot: BridgeSnapshot,
     pub bridge_identity: ObservedBridgeIdentity,
     pub rpc_audit: RpcAuditEvidence,
 }
 
-thread_local! {
-    // This is intentionally one cache entry.  Publishing the safe head, signer, or
-    // runtime separately would let status/readiness combine values from different
-    // Base blocks after a partially failed refresh.
-    static LAST_COMPLETED_SAFE_OBSERVATION: RefCell<Option<CompletedSafeObservation>> = const { RefCell::new(None) };
-}
-
-pub fn latest_completed_safe_observation() -> Option<CompletedSafeObservation> {
-    LAST_COMPLETED_SAFE_OBSERVATION.with(|observation| observation.borrow().clone())
+pub fn stable_observation(
+    observation: &CompletedFinalizedObservation,
+) -> FinalizedObservationRecord {
+    FinalizedObservationRecord {
+        chain_id: observation.finalized.chain_id,
+        block_number: observation.finalized.block_number,
+        block_hash: observation.finalized.block_hash,
+        observed_at_ns: observation.finalized.observed_at_ns,
+        bridge_signer: observation.bridge_identity.signer,
+        runtime_sha256: observation.bridge_identity.runtime_sha256,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservedWithdrawal {
     pub id: [u8; 32],
     pub amount: u128,
-    pub min_amount_out: u128,
+    pub max_service_fee: u128,
+    pub charged_service_fee: u128,
+    pub amount_out: u128,
     pub owner: Vec<u8>,
     pub subaccount: [u8; 32],
     pub requester: [u8; 20],
@@ -164,13 +168,34 @@ pub struct BridgeSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CurrentWithdrawal {
-    requester: [u8; 20],
-    amount: u128,
-    min_amount_out: u128,
-    owner: Vec<u8>,
-    subaccount: [u8; 32],
-    status: u8,
+pub struct CurrentWithdrawal {
+    pub requester: [u8; 20],
+    pub amount: u128,
+    pub max_service_fee: u128,
+    pub charged_service_fee: u128,
+    pub amount_out: u128,
+    pub owner: Vec<u8>,
+    pub subaccount: [u8; 32],
+    pub status: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryTarget {
+    Deposit([u8; 32]),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryBaseState {
+    DepositProcessed(bool),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryObservation {
+    pub finalized: FinalizedObservation,
+    pub snapshot: BridgeSnapshot,
+    pub bridge_identity: ObservedBridgeIdentity,
+    pub state: RecoveryBaseState,
+    pub rpc_audit: RpcAuditEvidence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,14 +206,15 @@ pub enum NotifiedWithdrawalOutcome {
     },
     Reverted {
         receipt_block_number: u64,
-        confirmed_block_number: u64,
+        finalized_head_block_number: u64,
     },
     Confirmed {
         withdrawal: ObservedWithdrawal,
         snapshot: Box<BridgeSnapshot>,
         rpc_audit: Box<RpcAuditEvidence>,
+        stable_observation: Box<FinalizedObservationRecord>,
         receipt_block_number: u64,
-        confirmed_block_number: u64,
+        finalized_head_block_number: u64,
     },
 }
 
@@ -317,7 +343,7 @@ fn parse_u128(value: &str) -> Result<u128, ObservationError> {
 async fn eth_call_at_observation(
     args: &BridgeInitArgs,
     calldata: &[u8],
-    observation: SafeObservation,
+    observation: FinalizedObservation,
 ) -> Result<String, ObservationError> {
     let request = eth_call_request(&args.bridge_contract, calldata, observation);
     match client(args)
@@ -335,7 +361,7 @@ async fn eth_call_at_observation(
 fn eth_call_request(
     bridge_contract: &[u8],
     calldata: &[u8],
-    observation: SafeObservation,
+    observation: FinalizedObservation,
 ) -> serde_json::Value {
     json!({
         "jsonrpc": "2.0", "id": 1, "method": "eth_call",
@@ -349,25 +375,51 @@ fn eth_call_request(
     })
 }
 
-pub async fn bridge_snapshot(args: &BridgeInitArgs) -> Result<BridgeSnapshot, ObservationError> {
-    let safe = safe_observation(args).await?;
-    let (snapshot, bridge_identity) = observe_bridge_at(args, safe).await?;
-    publish_completed_safe_observation(CompletedSafeObservation {
-        safe,
+pub async fn bridge_snapshot(
+    args: &BridgeInitArgs,
+) -> Result<CompletedFinalizedObservation, ObservationError> {
+    let finalized = finalized_observation(args).await?;
+    let (snapshot, bridge_identity) = observe_bridge_at(args, finalized).await?;
+    Ok(CompletedFinalizedObservation {
+        finalized,
         snapshot,
         bridge_identity,
-        rpc_audit: rpc_audit_evidence(args, safe, snapshot, bridge_identity, None, None, None),
-    });
-    Ok(snapshot)
+        rpc_audit: rpc_audit_evidence(args, finalized, snapshot, bridge_identity, None, None, None),
+    })
+}
+
+pub async fn recovery_observation(
+    args: &BridgeInitArgs,
+    target: RecoveryTarget,
+) -> Result<RecoveryObservation, ObservationError> {
+    let finalized = finalized_observation(args).await?;
+    let state = match target {
+        RecoveryTarget::Deposit(deposit_id) => {
+            let mut calldata = selector("isDepositProcessed(bytes32)").to_vec();
+            calldata.extend_from_slice(&deposit_id);
+            let value = eth_call_at_observation(args, &calldata, finalized).await?;
+            RecoveryBaseState::DepositProcessed(decode_bool_word(&value)?)
+        }
+    };
+    let (snapshot, bridge_identity) = observe_bridge_at(args, finalized).await?;
+    let rpc_audit =
+        recovery_rpc_audit_evidence(args, finalized, snapshot, bridge_identity, target, &state);
+    Ok(RecoveryObservation {
+        finalized,
+        snapshot,
+        bridge_identity,
+        state,
+        rpc_audit,
+    })
 }
 
 async fn observe_bridge_at(
     args: &BridgeInitArgs,
-    observation: SafeObservation,
+    observation: FinalizedObservation,
 ) -> Result<(BridgeSnapshot, ObservedBridgeIdentity), ObservationError> {
     let value = eth_call_at_observation(args, &selector("bridgeSnapshot()"), observation).await?;
     let snapshot = decode_bridge_snapshot(&value)?;
-    if snapshot.mint.confirmed_block_number != observation.block_number {
+    if snapshot.mint.finalized_head_block_number != observation.block_number {
         return Err(ObservationError::InvalidResponse);
     }
     let runtime = bridge_runtime_at_observation(args, observation).await?;
@@ -381,13 +433,9 @@ async fn observe_bridge_at(
     Ok((snapshot, identity))
 }
 
-fn publish_completed_safe_observation(observation: CompletedSafeObservation) {
-    LAST_COMPLETED_SAFE_OBSERVATION.with(|current| *current.borrow_mut() = Some(observation));
-}
-
 fn rpc_audit_evidence(
     args: &BridgeInitArgs,
-    safe: SafeObservation,
+    finalized: FinalizedObservation,
     snapshot: BridgeSnapshot,
     identity: ObservedBridgeIdentity,
     transaction_hash: Option<[u8; 32]>,
@@ -400,19 +448,19 @@ fn rpc_audit_evidence(
     let calls = if transaction_hash.is_some() {
         vec![
             "eth_chainId",
-            "eth_getBlockByNumber(safe)",
+            "eth_getBlockByNumber(finalized)",
             "eth_getTransactionReceipt",
             "eth_getBlockByNumber(receipt-height)",
-            "eth_call(getWithdrawal,EIP-1898-safe-hash)",
-            "eth_call(bridgeSnapshot,EIP-1898-safe-hash)",
-            "eth_getCode(EIP-1898-safe-hash)",
+            "eth_call(getWithdrawal,EIP-1898-finalized-hash)",
+            "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
+            "eth_getCode(EIP-1898-finalized-hash)",
         ]
     } else {
         vec![
             "eth_chainId",
-            "eth_getBlockByNumber(safe)",
-            "eth_call(bridgeSnapshot,EIP-1898-safe-hash)",
-            "eth_getCode(EIP-1898-safe-hash)",
+            "eth_getBlockByNumber(finalized)",
+            "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
+            "eth_getCode(EIP-1898-finalized-hash)",
         ]
     };
     let request = json!({
@@ -421,7 +469,7 @@ fn rpc_audit_evidence(
         "calls": calls,
         "configured_chain_id": args.base_chain_id,
         "bridge_contract": format!("0x{}", hex(&args.bridge_contract)),
-        "safe_block_hash": format!("0x{}", hex(&safe.block_hash)),
+        "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
         "transaction_hash": transaction_hash.map(|hash| format!("0x{}", hex(&hash))),
     });
     let withdrawal_response = withdrawal.map(|value| {
@@ -429,21 +477,23 @@ fn rpc_audit_evidence(
             "id": format!("0x{}", hex(&value.id)),
             "requester": format!("0x{}", hex(&value.requester)),
             "amount": value.amount.to_string(),
-            "min_amount_out": value.min_amount_out.to_string(),
+            "max_service_fee": value.max_service_fee.to_string(),
+            "charged_service_fee": value.charged_service_fee.to_string(),
+            "amount_out": value.amount_out.to_string(),
             "owner": format!("0x{}", hex(&value.owner)),
             "subaccount": format!("0x{}", hex(&value.subaccount)),
-            "current_status": 2,
+            "current_status": 1,
         })
     });
     let response = json!({
-        "chain_id": safe.chain_id,
-        "safe_block_number": safe.block_number,
-        "safe_block_hash": format!("0x{}", hex(&safe.block_hash)),
+        "chain_id": finalized.chain_id,
+        "finalized_block_number": finalized.block_number,
+        "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
         "receipt_block_number": receipt_block_number,
         "withdrawal": withdrawal_response,
         "bridge_signer": format!("0x{}", hex(&snapshot.bridge_signer)),
         "bridge_runtime_sha256": format!("0x{}", hex(&identity.runtime_sha256)),
-        "snapshot_confirmed_block_number": snapshot.mint.confirmed_block_number,
+        "snapshot_finalized_head_block_number": snapshot.mint.finalized_head_block_number,
         "snapshot_confirmed_block_timestamp": snapshot.mint.confirmed_block_timestamp,
         "snapshot_service_fee": snapshot.mint.service_fee.get().to_string(),
         "snapshot_max_service_fee": snapshot.mint.max_service_fee.get().to_string(),
@@ -466,16 +516,71 @@ fn rpc_audit_evidence(
             serde_json::to_vec(&response).expect("JSON value serialization is infallible"),
         )
         .into(),
-        safe_block_number: safe.block_number,
-        safe_block_hash: safe.block_hash,
+        finalized_block_number: finalized.block_number,
+        finalized_block_hash: finalized.block_hash,
         transaction_hash,
+    }
+}
+
+fn recovery_rpc_audit_evidence(
+    args: &BridgeInitArgs,
+    finalized: FinalizedObservation,
+    snapshot: BridgeSnapshot,
+    identity: ObservedBridgeIdentity,
+    target: RecoveryTarget,
+    state: &RecoveryBaseState,
+) -> RpcAuditEvidence {
+    let (method, target_value, state_value) = match (target, state) {
+        (RecoveryTarget::Deposit(id), RecoveryBaseState::DepositProcessed(processed)) => (
+            "eth_call(isDepositProcessed,EIP-1898-finalized-hash)",
+            format!("0x{}", hex(&id)),
+            json!({ "processed": processed }),
+        ),
+    };
+    let request = json!({
+        "evm_rpc_canister_id": args.evm_rpc_canister_id.to_text(),
+        "candid_method": "multi_request",
+        "calls": [
+            "eth_chainId",
+            "eth_getBlockByNumber(finalized)",
+            method,
+            "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
+            "eth_getCode(EIP-1898-finalized-hash)",
+        ],
+        "configured_chain_id": args.base_chain_id,
+        "bridge_contract": format!("0x{}", hex(&args.bridge_contract)),
+        "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
+        "target": target_value,
+    });
+    let response = json!({
+        "chain_id": finalized.chain_id,
+        "finalized_block_number": finalized.block_number,
+        "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
+        "bridge_signer": format!("0x{}", hex(&snapshot.bridge_signer)),
+        "bridge_runtime_sha256": format!("0x{}", hex(&identity.runtime_sha256)),
+        "state": state_value,
+    });
+    RpcAuditEvidence {
+        evm_rpc_canister_id: args.evm_rpc_canister_id,
+        call_method: "multi_request:recovery_observation".into(),
+        request_digest: Sha256::digest(
+            serde_json::to_vec(&request).expect("serializable recovery request"),
+        )
+        .into(),
+        quorum_response_digest: Sha256::digest(
+            serde_json::to_vec(&response).expect("serializable recovery response"),
+        )
+        .into(),
+        finalized_block_number: finalized.block_number,
+        finalized_block_hash: finalized.block_hash,
+        transaction_hash: None,
     }
 }
 
 fn transaction_rpc_audit_evidence(
     args: &BridgeInitArgs,
     call_method: &str,
-    safe: SafeObservation,
+    finalized: FinalizedObservation,
     transaction_hash: [u8; 32],
     response: serde_json::Value,
 ) -> RpcAuditEvidence {
@@ -483,14 +588,14 @@ fn transaction_rpc_audit_evidence(
         "evm_rpc_canister_id": args.evm_rpc_canister_id.to_text(),
         "call_method": call_method,
         "configured_chain_id": args.base_chain_id,
-        "safe_block_number": safe.block_number,
-        "safe_block_hash": format!("0x{}", hex(&safe.block_hash)),
+        "finalized_block_number": finalized.block_number,
+        "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
         "transaction_hash": format!("0x{}", hex(&transaction_hash)),
     });
     let response = json!({
-        "chain_id": safe.chain_id,
-        "safe_block_number": safe.block_number,
-        "safe_block_hash": format!("0x{}", hex(&safe.block_hash)),
+        "chain_id": finalized.chain_id,
+        "finalized_block_number": finalized.block_number,
+        "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
         "transaction_hash": format!("0x{}", hex(&transaction_hash)),
         "outcome": response,
     });
@@ -505,15 +610,15 @@ fn transaction_rpc_audit_evidence(
             serde_json::to_vec(&response).expect("JSON value serialization is infallible"),
         )
         .into(),
-        safe_block_number: safe.block_number,
-        safe_block_hash: safe.block_hash,
+        finalized_block_number: finalized.block_number,
+        finalized_block_hash: finalized.block_hash,
         transaction_hash: Some(transaction_hash),
     }
 }
 
 async fn bridge_runtime_at_observation(
     args: &BridgeInitArgs,
-    observation: SafeObservation,
+    observation: FinalizedObservation,
 ) -> Result<Vec<u8>, ObservationError> {
     let request = bridge_runtime_request(&args.bridge_contract, observation);
     let value = match client(args)
@@ -536,7 +641,7 @@ async fn bridge_runtime_at_observation(
 
 fn bridge_runtime_request(
     bridge_contract: &[u8],
-    observation: SafeObservation,
+    observation: FinalizedObservation,
 ) -> serde_json::Value {
     json!({
         "jsonrpc": "2.0", "id": 1, "method": "eth_getCode",
@@ -575,7 +680,7 @@ fn decode_bridge_snapshot(value: &str) -> Result<BridgeSnapshot, ObservationErro
     };
     Ok(BridgeSnapshot {
         mint: BaseMintSnapshot {
-            confirmed_block_number: u64::try_from(word_u128(word(0)?)?)
+            finalized_head_block_number: u64::try_from(word_u128(word(0)?)?)
                 .map_err(|_| ObservationError::Overflow)?,
             confirmed_block_timestamp: u64::try_from(word_u128(word(1)?)?)
                 .map_err(|_| ObservationError::Overflow)?,
@@ -613,10 +718,12 @@ async fn observed_chain_id(args: &BridgeInitArgs) -> Result<u64, ObservationErro
     u64::try_from(chain_id).map_err(|_| ObservationError::Overflow)
 }
 
-async fn safe_observation(args: &BridgeInitArgs) -> Result<SafeObservation, ObservationError> {
+async fn finalized_observation(
+    args: &BridgeInitArgs,
+) -> Result<FinalizedObservation, ObservationError> {
     let chain_id = ensure_chain_id(args).await?;
-    let block = safe_block(args).await?;
-    let observation = SafeObservation {
+    let block = finalized_block(args).await?;
+    let observation = FinalizedObservation {
         chain_id,
         block_number: u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?,
         block_hash: *block.hash.as_array(),
@@ -633,9 +740,9 @@ async fn ensure_chain_id(args: &BridgeInitArgs) -> Result<u64, ObservationError>
     Ok(chain_id)
 }
 
-async fn safe_block(args: &BridgeInitArgs) -> Result<Block, ObservationError> {
+async fn finalized_block(args: &BridgeInitArgs) -> Result<Block, ObservationError> {
     match client(args)
-        .get_block_by_number(BlockTag::Safe)
+        .get_block_by_number(BlockTag::Finalized)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
         .send()
         .await
@@ -647,24 +754,24 @@ async fn safe_block(args: &BridgeInitArgs) -> Result<Block, ObservationError> {
 }
 
 /// Returns a receipt only after proving that its block hash is canonical at its height
-/// and that the height is not newer than the provider-consistent safe head.
-enum CanonicalReceiptOutcome {
+/// and that the height is not newer than the provider-consistent finalized head.
+enum CanonicalFinalizedReceiptOutcome {
     Missing,
     Pending {
         receipt_block_number: u64,
     },
     Confirmed {
         receipt: Box<TransactionReceipt>,
-        safe_observation: SafeObservation,
-        receipt_observation: SafeObservation,
+        finalized_observation: FinalizedObservation,
+        receipt_observation: FinalizedObservation,
     },
 }
 
-async fn canonical_confirmed_receipt(
+async fn canonical_finalized_receipt(
     args: &BridgeInitArgs,
     transaction_hash: [u8; 32],
-) -> Result<CanonicalReceiptOutcome, ObservationError> {
-    let safe = safe_observation(args).await?;
+) -> Result<CanonicalFinalizedReceiptOutcome, ObservationError> {
+    let finalized = finalized_observation(args).await?;
     let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
         .map_err(|_| ObservationError::InvalidResponse)?;
     let receipt = match client(args)
@@ -678,15 +785,15 @@ async fn canonical_confirmed_receipt(
         MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
     };
     let Some(receipt) = receipt else {
-        return Ok(CanonicalReceiptOutcome::Missing);
+        return Ok(CanonicalFinalizedReceiptOutcome::Missing);
     };
     if receipt.transaction_hash != hash {
         return Err(ObservationError::InvalidResponse);
     }
     let receipt_block =
         u64::try_from(receipt.block_number.clone()).map_err(|_| ObservationError::Overflow)?;
-    if receipt_block > safe.block_number {
-        return Ok(CanonicalReceiptOutcome::Pending {
+    if receipt_block > finalized.block_number {
+        return Ok(CanonicalFinalizedReceiptOutcome::Pending {
             receipt_block_number: receipt_block,
         });
     }
@@ -703,15 +810,15 @@ async fn canonical_confirmed_receipt(
     if canonical.number != Nat256::from(receipt_block) || canonical.hash != receipt.block_hash {
         return Err(ObservationError::InvalidResponse);
     }
-    let receipt_observation = SafeObservation {
-        chain_id: safe.chain_id,
+    let receipt_observation = FinalizedObservation {
+        chain_id: finalized.chain_id,
         block_number: receipt_block,
         block_hash: *canonical.hash.as_array(),
-        observed_at_ns: safe.observed_at_ns,
+        observed_at_ns: finalized.observed_at_ns,
     };
-    Ok(CanonicalReceiptOutcome::Confirmed {
+    Ok(CanonicalFinalizedReceiptOutcome::Confirmed {
         receipt: Box::new(receipt),
-        safe_observation: safe,
+        finalized_observation: finalized,
         receipt_observation,
     })
 }
@@ -746,6 +853,30 @@ pub async fn signer_eth_balance(
 ) -> Result<u128, ObservationError> {
     ensure_chain_id(args).await?;
     let request = json!({ "jsonrpc":"2.0", "id":1, "method":"eth_getBalance", "params":[format!("0x{}", hex(&address)), "safe"] });
+    match client(args)
+        .multi_request(request)
+        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+        .send()
+        .await
+    {
+        MultiRpcResult::Consistent(Ok(value)) => parse_u128(&value),
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
+    }
+}
+
+pub async fn signer_eth_balance_at(
+    args: &BridgeInitArgs,
+    address: [u8; 20],
+    observation: FinalizedObservation,
+) -> Result<u128, ObservationError> {
+    let request = json!({
+        "jsonrpc":"2.0", "id":1, "method":"eth_getBalance",
+        "params":[format!("0x{}", hex(&address)), {
+            "blockHash": format!("0x{}", hex(&observation.block_hash)),
+            "requireCanonical": true,
+        }]
+    });
     match client(args)
         .multi_request(request)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
@@ -793,7 +924,7 @@ pub async fn broadcast(
     args: &BridgeInitArgs,
     raw: &[u8],
 ) -> Result<BroadcastOutcome, ObservationError> {
-    let safe = safe_observation(args).await?;
+    let finalized = finalized_observation(args).await?;
     let mut transaction_hash = [0u8; 32];
     let mut hasher = Keccak::v256();
     hasher.update(raw);
@@ -812,7 +943,7 @@ pub async fn broadcast(
             Ok(BroadcastOutcome::Submitted(transaction_rpc_audit_evidence(
                 args,
                 "eth_sendRawTransaction",
-                safe,
+                finalized,
                 transaction_hash,
                 json!({"result": "submitted", "local_hash_matched": true}),
             )))
@@ -821,7 +952,7 @@ pub async fn broadcast(
             BroadcastOutcome::NonceConflict(transaction_rpc_audit_evidence(
                 args,
                 "eth_sendRawTransaction",
-                safe,
+                finalized,
                 transaction_hash,
                 json!({"result": "returned_hash_mismatch"}),
             )),
@@ -857,7 +988,7 @@ pub async fn broadcast(
                 Ok(BroadcastOutcome::Submitted(transaction_rpc_audit_evidence(
                     args,
                     "eth_sendRawTransaction+multi_request",
-                    safe,
+                    finalized,
                     transaction_hash,
                     json!({"result": "nonce_too_low", "local_transaction_found": true}),
                 )))
@@ -866,7 +997,7 @@ pub async fn broadcast(
                     transaction_rpc_audit_evidence(
                         args,
                         "eth_sendRawTransaction+multi_request",
-                        safe,
+                        finalized,
                         transaction_hash,
                         json!({"result": "nonce_too_low", "local_transaction_found": false}),
                     ),
@@ -890,21 +1021,23 @@ pub async fn notified_withdrawal_outcome(
 ) -> Result<NotifiedWithdrawalOutcome, ObservationError> {
     let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
         .map_err(|_| ObservationError::InvalidResponse)?;
-    let (receipt, safe_observation, _receipt_observation) =
-        match canonical_confirmed_receipt(args, transaction_hash).await? {
-            CanonicalReceiptOutcome::Missing => return Ok(NotifiedWithdrawalOutcome::Missing),
-            CanonicalReceiptOutcome::Pending {
+    let (receipt, finalized_observation, _receipt_observation) =
+        match canonical_finalized_receipt(args, transaction_hash).await? {
+            CanonicalFinalizedReceiptOutcome::Missing => {
+                return Ok(NotifiedWithdrawalOutcome::Missing)
+            }
+            CanonicalFinalizedReceiptOutcome::Pending {
                 receipt_block_number,
             } => {
                 return Ok(NotifiedWithdrawalOutcome::Pending {
                     receipt_block_number,
                 })
             }
-            CanonicalReceiptOutcome::Confirmed {
+            CanonicalFinalizedReceiptOutcome::Confirmed {
                 receipt,
-                safe_observation,
+                finalized_observation,
                 receipt_observation,
-            } => (*receipt, safe_observation, receipt_observation),
+            } => (*receipt, finalized_observation, receipt_observation),
         };
     let receipt_block_number =
         u64::try_from(receipt.block_number.clone()).map_err(|_| ObservationError::Overflow)?;
@@ -912,7 +1045,7 @@ pub async fn notified_withdrawal_outcome(
         Some(status) if status == Nat256::from(0u64) => {
             return Ok(NotifiedWithdrawalOutcome::Reverted {
                 receipt_block_number,
-                confirmed_block_number: safe_observation.block_number,
+                finalized_head_block_number: finalized_observation.block_number,
             });
         }
         Some(status) if status == Nat256::from(1u64) => {}
@@ -922,7 +1055,9 @@ pub async fn notified_withdrawal_outcome(
         .map_err(|_| ObservationError::InvalidResponse)?;
     let mut topic = [0u8; 32];
     let mut hasher = Keccak::v256();
-    hasher.update(b"WithdrawalCreated(uint256,address,uint256,uint256,bytes,bytes32)");
+    hasher.update(
+        b"WithdrawalCommitted(uint256,address,uint256,uint256,uint256,uint256,bytes,bytes32)",
+    );
     hasher.finalize(&mut topic);
     let topic = Hex32::from_str(&format!("0x{}", hex(&topic)))
         .map_err(|_| ObservationError::InvalidResponse)?;
@@ -943,48 +1078,51 @@ pub async fn notified_withdrawal_outcome(
     let withdrawal = decode_withdrawal_created_log(log)?;
     let mut withdrawal_calldata = selector("getWithdrawal(uint256)").to_vec();
     withdrawal_calldata.extend_from_slice(&withdrawal.id);
-    // The event is authenticated at its receipt block, but authorization to release
-    // must use the current provider-consistent Safe state.  Otherwise an old receipt
-    // could be replayed after the withdrawal was cancelled or refunded.
+    // Bind every event field to the same provider-consistent Finalized state used for release.
     let current = decode_current_withdrawal(
-        &eth_call_at_observation(args, &withdrawal_calldata, safe_observation).await?,
+        &eth_call_at_observation(args, &withdrawal_calldata, finalized_observation).await?,
     )?;
-    if !is_same_releasing_withdrawal(&current, &withdrawal) {
+    if !is_same_committed_withdrawal(&current, &withdrawal) {
         return Err(ObservationError::BaseStateMismatch);
     }
-    let (snapshot, bridge_identity) = observe_bridge_at(args, safe_observation).await?;
+    let (snapshot, bridge_identity) = observe_bridge_at(args, finalized_observation).await?;
     let rpc_audit = rpc_audit_evidence(
         args,
-        safe_observation,
+        finalized_observation,
         snapshot,
         bridge_identity,
         Some(transaction_hash),
         Some(receipt_block_number),
         Some(&withdrawal),
     );
-    publish_completed_safe_observation(CompletedSafeObservation {
-        safe: safe_observation,
-        snapshot,
-        bridge_identity,
-        rpc_audit: rpc_audit.clone(),
+    let stable_observation = Box::new(FinalizedObservationRecord {
+        chain_id: finalized_observation.chain_id,
+        block_number: finalized_observation.block_number,
+        block_hash: finalized_observation.block_hash,
+        observed_at_ns: finalized_observation.observed_at_ns,
+        bridge_signer: bridge_identity.signer,
+        runtime_sha256: bridge_identity.runtime_sha256,
     });
     Ok(NotifiedWithdrawalOutcome::Confirmed {
         withdrawal,
         snapshot: Box::new(snapshot),
         rpc_audit: Box::new(rpc_audit),
+        stable_observation,
         receipt_block_number,
-        confirmed_block_number: safe_observation.block_number,
+        finalized_head_block_number: finalized_observation.block_number,
     })
 }
 
-fn is_same_releasing_withdrawal(
+fn is_same_committed_withdrawal(
     current: &CurrentWithdrawal,
     observed: &ObservedWithdrawal,
 ) -> bool {
-    current.status == 2
+    current.status == 1
         && current.requester == observed.requester
         && current.amount == observed.amount
-        && current.min_amount_out == observed.min_amount_out
+        && current.max_service_fee == observed.max_service_fee
+        && current.charged_service_fee == observed.charged_service_fee
+        && current.amount_out == observed.amount_out
         && current.owner == observed.owner
         && current.subaccount == observed.subaccount
 }
@@ -993,7 +1131,7 @@ fn decode_withdrawal_created_log(
     log: &evm_rpc_types::LogEntry,
 ) -> Result<ObservedWithdrawal, ObservationError> {
     let data = log.data.as_ref();
-    if data.len() < 6 * ABI_WORD_BYTES {
+    if data.len() < 8 * ABI_WORD_BYTES {
         return Err(ObservationError::InvalidResponse);
     }
     let word = |index: usize| -> Result<&[u8], ObservationError> {
@@ -1001,22 +1139,22 @@ fn decode_withdrawal_created_log(
             .ok_or(ObservationError::InvalidResponse)
     };
     let owner_offset =
-        usize::try_from(word_u128(word(2)?)?).map_err(|_| ObservationError::Overflow)?;
-    if owner_offset != 4 * ABI_WORD_BYTES {
+        usize::try_from(word_u128(word(4)?)?).map_err(|_| ObservationError::Overflow)?;
+    if owner_offset != 6 * ABI_WORD_BYTES {
         return Err(ObservationError::InvalidResponse);
     }
     let owner_len =
-        usize::try_from(word_u128(word(4)?)?).map_err(|_| ObservationError::Overflow)?;
+        usize::try_from(word_u128(word(6)?)?).map_err(|_| ObservationError::Overflow)?;
     if !(1..=29).contains(&owner_len) {
         return Err(ObservationError::InvalidResponse);
     }
-    let owner_end = 5 * ABI_WORD_BYTES + owner_len;
-    let expected_len = 5 * ABI_WORD_BYTES + owner_len.div_ceil(ABI_WORD_BYTES) * ABI_WORD_BYTES;
+    let owner_end = 7 * ABI_WORD_BYTES + owner_len;
+    let expected_len = 7 * ABI_WORD_BYTES + owner_len.div_ceil(ABI_WORD_BYTES) * ABI_WORD_BYTES;
     if data.len() != expected_len || data[owner_end..].iter().any(|byte| *byte != 0) {
         return Err(ObservationError::InvalidResponse);
     }
     let owner = data
-        .get(5 * ABI_WORD_BYTES..owner_end)
+        .get(7 * ABI_WORD_BYTES..owner_end)
         .ok_or(ObservationError::InvalidResponse)?
         .to_vec();
     Ok(ObservedWithdrawal {
@@ -1025,9 +1163,11 @@ fn decode_withdrawal_created_log(
             .try_into()
             .map_err(|_| ObservationError::InvalidResponse)?,
         amount: word_u128(word(0)?)?,
-        min_amount_out: word_u128(word(1)?)?,
+        max_service_fee: word_u128(word(1)?)?,
+        charged_service_fee: word_u128(word(2)?)?,
+        amount_out: word_u128(word(3)?)?,
         owner,
-        subaccount: word(3)?
+        subaccount: word(5)?
             .try_into()
             .map_err(|_| ObservationError::InvalidResponse)?,
     })
@@ -1040,7 +1180,7 @@ fn decode_current_withdrawal(value: &str) -> Result<CurrentWithdrawal, Observati
             .strip_prefix("0x")
             .ok_or(ObservationError::InvalidResponse)?,
     )?;
-    if bytes.len() < 12 * ABI_WORD_BYTES
+    if bytes.len() < 10 * ABI_WORD_BYTES
         || word_u128(&bytes[..ABI_WORD_BYTES])? != ABI_WORD_BYTES as u128
     {
         return Err(ObservationError::InvalidResponse);
@@ -1056,16 +1196,16 @@ fn decode_current_withdrawal(value: &str) -> Result<CurrentWithdrawal, Observati
         return Err(ObservationError::InvalidResponse);
     }
     let owner_offset =
-        usize::try_from(word_u128(word(3)?)?).map_err(|_| ObservationError::Overflow)?;
-    if owner_offset != 10 * ABI_WORD_BYTES {
+        usize::try_from(word_u128(word(5)?)?).map_err(|_| ObservationError::Overflow)?;
+    if owner_offset != 8 * ABI_WORD_BYTES {
         return Err(ObservationError::InvalidResponse);
     }
     let owner_len =
-        usize::try_from(word_u128(word(10)?)?).map_err(|_| ObservationError::Overflow)?;
+        usize::try_from(word_u128(word(8)?)?).map_err(|_| ObservationError::Overflow)?;
     if !(1..=29).contains(&owner_len) {
         return Err(ObservationError::InvalidResponse);
     }
-    let owner_start = tuple_start + 11 * ABI_WORD_BYTES;
+    let owner_start = tuple_start + 9 * ABI_WORD_BYTES;
     let owner_end = owner_start
         .checked_add(owner_len)
         .ok_or(ObservationError::Overflow)?;
@@ -1076,19 +1216,38 @@ fn decode_current_withdrawal(value: &str) -> Result<CurrentWithdrawal, Observati
         return Err(ObservationError::InvalidResponse);
     }
     let status =
-        u8::try_from(word_u128(word(5)?)?).map_err(|_| ObservationError::InvalidResponse)?;
+        u8::try_from(word_u128(word(7)?)?).map_err(|_| ObservationError::InvalidResponse)?;
     Ok(CurrentWithdrawal {
         requester: requester_word[12..]
             .try_into()
             .map_err(|_| ObservationError::InvalidResponse)?,
         amount: word_u128(word(1)?)?,
-        min_amount_out: word_u128(word(2)?)?,
+        max_service_fee: word_u128(word(2)?)?,
+        charged_service_fee: word_u128(word(3)?)?,
+        amount_out: word_u128(word(4)?)?,
         owner: bytes[owner_start..owner_end].to_vec(),
-        subaccount: word(4)?
+        subaccount: word(6)?
             .try_into()
             .map_err(|_| ObservationError::InvalidResponse)?,
         status,
     })
+}
+
+fn decode_bool_word(value: &str) -> Result<bool, ObservationError> {
+    let bytes = decode_hex(
+        value
+            .trim_matches('"')
+            .strip_prefix("0x")
+            .ok_or(ObservationError::InvalidResponse)?,
+    )?;
+    if bytes.len() != ABI_WORD_BYTES || bytes[..ABI_WORD_BYTES - 1].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    match bytes[ABI_WORD_BYTES - 1] {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(ObservationError::InvalidResponse),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1096,12 +1255,12 @@ pub enum ConfirmedReceiptOutcome {
     Missing,
     Succeeded {
         receipt_block_number: u64,
-        confirmed_block_number: u64,
+        finalized_head_block_number: u64,
         rpc_audit: Box<RpcAuditEvidence>,
     },
     Reverted {
         receipt_block_number: u64,
-        confirmed_block_number: u64,
+        finalized_head_block_number: u64,
         rpc_audit: Box<RpcAuditEvidence>,
     },
 }
@@ -1110,15 +1269,16 @@ pub async fn confirmed_receipt_outcome(
     args: &BridgeInitArgs,
     transaction_hash: [u8; 32],
 ) -> Result<ConfirmedReceiptOutcome, ObservationError> {
-    let (receipt, safe) = match canonical_confirmed_receipt(args, transaction_hash).await? {
-        CanonicalReceiptOutcome::Missing | CanonicalReceiptOutcome::Pending { .. } => {
+    let (receipt, finalized) = match canonical_finalized_receipt(args, transaction_hash).await? {
+        CanonicalFinalizedReceiptOutcome::Missing
+        | CanonicalFinalizedReceiptOutcome::Pending { .. } => {
             return Ok(ConfirmedReceiptOutcome::Missing)
         }
-        CanonicalReceiptOutcome::Confirmed {
+        CanonicalFinalizedReceiptOutcome::Confirmed {
             receipt,
-            safe_observation,
+            finalized_observation,
             ..
-        } => (*receipt, safe_observation),
+        } => (*receipt, finalized_observation),
     };
     let receipt_block =
         u64::try_from(receipt.block_number.clone()).map_err(|_| ObservationError::Overflow)?;
@@ -1127,11 +1287,11 @@ pub async fn confirmed_receipt_outcome(
         Some(status) if status == evm_rpc_types::Nat256::from(1u64) => {
             Ok(ConfirmedReceiptOutcome::Succeeded {
                 receipt_block_number: receipt_block,
-                confirmed_block_number: safe.block_number,
+                finalized_head_block_number: finalized.block_number,
                 rpc_audit: Box::new(transaction_rpc_audit_evidence(
                     args,
                     "eth_getTransactionReceipt+eth_getBlockByNumber",
-                    safe,
+                    finalized,
                     transaction_hash,
                     json!({
                         "status": "succeeded",
@@ -1144,11 +1304,11 @@ pub async fn confirmed_receipt_outcome(
         Some(status) if status == evm_rpc_types::Nat256::from(0u64) => {
             Ok(ConfirmedReceiptOutcome::Reverted {
                 receipt_block_number: receipt_block,
-                confirmed_block_number: safe.block_number,
+                finalized_head_block_number: finalized.block_number,
                 rpc_audit: Box::new(transaction_rpc_audit_evidence(
                     args,
                     "eth_getTransactionReceipt+eth_getBlockByNumber",
-                    safe,
+                    finalized,
                     transaction_hash,
                     json!({
                         "status": "reverted",
@@ -1188,31 +1348,35 @@ mod tests {
     fn current_withdrawal_decoder_handles_dynamic_struct_tuple() {
         const WORD: usize = 32;
         let owner = [0x2a, 0x2b, 0x2c];
-        let mut bytes = vec![0u8; 13 * WORD];
+        let mut bytes = vec![0u8; 11 * WORD];
         bytes[31] = WORD as u8;
         let base = WORD;
         bytes[base + 12..base + WORD].fill(0x11);
         bytes[base + 2 * WORD - 1] = 100;
-        bytes[base + 3 * WORD - 1] = 80;
-        bytes[base + 4 * WORD - 2] = 1;
-        bytes[base + 4 * WORD - 1] = 64;
-        bytes[base + 4 * WORD..base + 5 * WORD].fill(0x22);
-        bytes[base + 6 * WORD - 1] = 2;
-        bytes[base + 11 * WORD - 1] = owner.len() as u8;
-        bytes[base + 11 * WORD..base + 11 * WORD + owner.len()].copy_from_slice(&owner);
+        bytes[base + 3 * WORD - 1] = 20;
+        bytes[base + 4 * WORD - 1] = 10;
+        bytes[base + 5 * WORD - 1] = 90;
+        bytes[base + 6 * WORD - 2] = 1;
+        bytes[base + 6 * WORD - 1] = 0;
+        bytes[base + 6 * WORD..base + 7 * WORD].fill(0x22);
+        bytes[base + 8 * WORD - 1] = 1;
+        bytes[base + 9 * WORD - 1] = owner.len() as u8;
+        bytes[base + 9 * WORD..base + 9 * WORD + owner.len()].copy_from_slice(&owner);
         let decoded = decode_current_withdrawal(&format!("0x{}", hex(&bytes)))
             .expect("valid dynamic Withdrawal tuple");
         assert_eq!(decoded.requester, [0x11; 20]);
         assert_eq!(decoded.amount, 100);
-        assert_eq!(decoded.min_amount_out, 80);
+        assert_eq!(decoded.max_service_fee, 20);
+        assert_eq!(decoded.charged_service_fee, 10);
+        assert_eq!(decoded.amount_out, 90);
         assert_eq!(decoded.owner, owner);
         assert_eq!(decoded.subaccount, [0x22; 32]);
-        assert_eq!(decoded.status, 2);
+        assert_eq!(decoded.status, 1);
     }
 
     #[test]
     fn eth_call_is_bound_to_a_canonical_block_hash() {
-        let observation = SafeObservation {
+        let observation = FinalizedObservation {
             chain_id: 8453,
             block_number: 42,
             block_hash: [0xabu8; 32],
@@ -1234,11 +1398,13 @@ mod tests {
     }
 
     #[test]
-    fn old_receipt_is_rejected_after_cancel_or_refund() {
+    fn committed_observation_requires_an_exact_finalized_state_match() {
         let observed = ObservedWithdrawal {
             id: [0x33; 32],
             amount: 100,
-            min_amount_out: 80,
+            max_service_fee: 20,
+            charged_service_fee: 10,
+            amount_out: 90,
             owner: vec![1, 2, 3],
             subaccount: [0x22; 32],
             requester: [0x11; 20],
@@ -1246,22 +1412,25 @@ mod tests {
         let mut current = CurrentWithdrawal {
             requester: observed.requester,
             amount: observed.amount,
-            min_amount_out: observed.min_amount_out,
+            max_service_fee: observed.max_service_fee,
+            charged_service_fee: observed.charged_service_fee,
+            amount_out: observed.amount_out,
             owner: observed.owner.clone(),
             subaccount: observed.subaccount,
-            status: 2,
+            status: 1,
         };
-        assert!(is_same_releasing_withdrawal(&current, &observed));
+        assert!(is_same_committed_withdrawal(&current, &observed));
 
-        current.status = 1;
-        assert!(!is_same_releasing_withdrawal(&current, &observed));
-        current.status = 4;
-        assert!(!is_same_releasing_withdrawal(&current, &observed));
+        current.amount_out -= 1;
+        assert!(!is_same_committed_withdrawal(&current, &observed));
+        current.amount_out = observed.amount_out;
+        current.status = 0;
+        assert!(!is_same_committed_withdrawal(&current, &observed));
     }
 
     #[test]
     fn completed_observation_cache_cannot_publish_torn_fields() {
-        let safe = SafeObservation {
+        let finalized = FinalizedObservation {
             chain_id: 8453,
             block_number: 42,
             block_hash: [0xaa; 32],
@@ -1269,7 +1438,7 @@ mod tests {
         };
         let snapshot = BridgeSnapshot {
             mint: BaseMintSnapshot {
-                confirmed_block_number: 42,
+                finalized_head_block_number: 42,
                 confirmed_block_timestamp: 1,
                 service_fee: Amount::new(2),
                 max_service_fee: Amount::new(3),
@@ -1288,25 +1457,37 @@ mod tests {
             runtime_sha256: [0xcc; 32],
         };
         let args = test_init_args();
-        let rpc_audit =
-            rpc_audit_evidence(&args, safe, snapshot, bridge_identity, None, None, None);
-        publish_completed_safe_observation(CompletedSafeObservation {
-            safe,
+        let rpc_audit = rpc_audit_evidence(
+            &args,
+            finalized,
+            snapshot,
+            bridge_identity,
+            None,
+            None,
+            None,
+        );
+        let completed = CompletedFinalizedObservation {
+            finalized,
             snapshot,
             bridge_identity,
             rpc_audit: rpc_audit.clone(),
-        });
-
-        let cached = latest_completed_safe_observation().expect("completed observation");
-        assert_eq!(cached.safe, safe);
-        assert_eq!(cached.snapshot, snapshot);
-        assert_eq!(cached.bridge_identity, bridge_identity);
-        assert_eq!(cached.rpc_audit, rpc_audit);
+        };
+        assert_eq!(
+            stable_observation(&completed),
+            FinalizedObservationRecord {
+                chain_id: finalized.chain_id,
+                block_number: finalized.block_number,
+                block_hash: finalized.block_hash,
+                observed_at_ns: finalized.observed_at_ns,
+                bridge_signer: bridge_identity.signer,
+                runtime_sha256: bridge_identity.runtime_sha256,
+            }
+        );
     }
 
     #[test]
-    fn rpc_audit_evidence_binds_transaction_and_safe_hash() {
-        let safe = SafeObservation {
+    fn rpc_audit_evidence_binds_transaction_and_finalized_hash() {
+        let finalized = FinalizedObservation {
             chain_id: 8453,
             block_number: 42,
             block_hash: [0xaa; 32],
@@ -1314,7 +1495,7 @@ mod tests {
         };
         let snapshot = BridgeSnapshot {
             mint: BaseMintSnapshot {
-                confirmed_block_number: 42,
+                finalized_head_block_number: 42,
                 confirmed_block_timestamp: 1,
                 service_fee: Amount::new(2),
                 max_service_fee: Amount::new(3),
@@ -1335,7 +1516,7 @@ mod tests {
         let args = test_init_args();
         let first = rpc_audit_evidence(
             &args,
-            safe,
+            finalized,
             snapshot,
             identity,
             Some([1; 32]),
@@ -1344,9 +1525,9 @@ mod tests {
         );
         let second = rpc_audit_evidence(
             &args,
-            SafeObservation {
+            FinalizedObservation {
                 block_hash: [0xdd; 32],
-                ..safe
+                ..finalized
             },
             snapshot,
             identity,

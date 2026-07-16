@@ -52,7 +52,7 @@ CROSS_ARTIFACT_BINDINGS = {
     "deposit_mint": {"deposit_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "mint_transaction_hash": {"bridge", "base"}, "safe_block_hash": {"bridge", "base"}},
     "withdrawal_release": {"withdrawal_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "request_transaction_hash": {"bridge", "base"}, "acknowledge_transaction_hash": {"bridge", "base"}, "request_safe_block_hash": {"bridge", "base"}, "acknowledgement_safe_block_hash": {"bridge", "base"}},
     "bad_fee_refund": {"withdrawal_id": {"bridge", "base", "audit"}, "new_ledger_fee": {"bridge", "ledger"}, "cancel_release_transaction_hash": {"bridge", "base"}, "refund_transaction_hash": {"bridge", "base"}, "safe_block_hash": {"bridge", "base"}},
-    "canonical_receipt": {"transaction_hash": {"bridge", "base"}, "receipt_block_hash": {"bridge", "base"}, "canonical_block_hash": {"bridge", "base"}, "confirmed_head_block_number": {"bridge", "base"}},
+    "canonical_receipt": {"transaction_hash": {"bridge", "base"}, "receipt_block_hash": {"bridge", "base"}, "canonical_block_hash": {"bridge", "base"}, "finalized_head_block_number": {"bridge", "base"}},
     "single_provider_failure": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "bridge_operation_continued": {"bridge", "audit"}},
     "quorum_loss": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "stop_reason": {"bridge", "audit"}, "ledger_call_performed": {"bridge", "audit"}},
     "nonce_known": {"local_transaction_hash": {"bridge", "audit"}, "provider_agreement": {"bridge", "audit"}, "resulting_state": {"bridge", "audit"}},
@@ -345,7 +345,7 @@ def initial_manifest(config: dict[str, Any], root: Path) -> dict[str, Any]:
             "provider_operator_or_infrastructure_audited": False,
             "external_assumption": (
                 "The official EVM RPC Canister and configured provider quorum return the "
-                "canonical Safe Base Sepolia chain."
+                "canonical Finalized Base Sepolia chain."
             ),
         },
     }
@@ -516,7 +516,7 @@ def validate_canister_audit(value: Any, binding: dict[str, Any], scenario: str, 
         fail("transaction RPC audit must bind its local transaction hash")
     safe_hashes = {str(v).lower() for k, v in details.items() if "safe_block_hash" in k and isinstance(v, str)}
     if safe_hashes and value["safe_block_hash"].lower() not in safe_hashes:
-        fail("Canister audit Safe hash is not bound to the scenario")
+        fail("Canister audit Finalized hash is not bound to the scenario")
     tx_hashes = {str(v).lower() for k, v in details.items() if "transaction_hash" in k and isinstance(v, str)}
     if tx_hashes and (value["transaction_hash"] is None or value["transaction_hash"].lower() not in tx_hashes):
         fail("Canister audit transaction hash is not bound to the scenario")
@@ -1103,17 +1103,17 @@ def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, 
     if scenario == "canonical_receipt":
         exact_keys(
             details,
-            {"transaction_hash", "receipt_block_number", "receipt_block_hash", "canonical_block_hash", "confirmed_head_block_number"},
+            {"transaction_hash", "receipt_block_number", "receipt_block_hash", "canonical_block_hash", "finalized_head_block_number"},
             "canonical_receipt.details",
         )
         for field in ("transaction_hash", "receipt_block_hash", "canonical_block_hash"):
             require_hex(details, field, HEX_32)
         receipt = require_nat(details, "receipt_block_number", positive=True)
-        confirmed_head = require_nat(details, "confirmed_head_block_number", positive=True)
+        finalized_head = require_nat(details, "finalized_head_block_number", positive=True)
         if details["receipt_block_hash"].lower() != details["canonical_block_hash"].lower():
             fail("receipt block hash is not canonical")
-        if confirmed_head < receipt:
-            fail("receipt block has not reached the Safe head")
+        if finalized_head < receipt:
+            fail("receipt block has not reached the Finalized head")
         return
 
     if scenario == "single_provider_failure":

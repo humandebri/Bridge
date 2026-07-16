@@ -47,15 +47,15 @@ python3 - "$PROFILE" "$SNAPSHOT" "$TMP" "$MODE" <<'PY'
 import json,subprocess,sys
 from pathlib import Path
 p=json.load(open(sys.argv[1])); root=Path(sys.argv[3]); mode=sys.argv[4]
-signed_height=json.load(open(sys.argv[2]))['confirmed_head_block_number'] if mode=='verify' else None
+signed_height=json.load(open(sys.argv[2]))['finalized_head_block_number'] if mode=='verify' else None
 observations=[]
 for index,entry in enumerate(p['rpc_providers']):
  try:
   rpc=entry['url']
   chain=subprocess.check_output(['cast','chain-id','--rpc-url',rpc],text=True,stderr=subprocess.DEVNULL).strip()
   if chain!=str(p['chain_id']): raise ValueError('wrong chain')
-  safe=json.loads(subprocess.check_output(['cast','block','safe','--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
-  observation={'provider_index':index,'chain_id':int(chain),'safe':safe}
+  finalized=json.loads(subprocess.check_output(['cast','block','finalized','--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
+  observation={'provider_index':index,'chain_id':int(chain),'finalized':finalized}
   if signed_height is not None:
    observation['signed']=json.loads(subprocess.check_output(['cast','block',str(signed_height),'--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
   observations.append(observation)
@@ -71,11 +71,11 @@ p=json.load(open(sys.argv[1])); root=Path(sys.argv[2]); receipt=json.load(open(P
 observations=json.load(open(root/'provider-observations.json'))
 blocks=[]
 for observation in observations:
- b=observation['safe']; n=int(str(b['number']),16) if str(b['number']).startswith('0x') else int(b['number']); blocks.append((n,str(b['hash']).lower()))
-if not blocks: raise SystemExit('no usable Safe block observations')
+ b=observation['finalized']; n=int(str(b['number']),16) if str(b['number']).startswith('0x') else int(b['number']); blocks.append((n,str(b['hash']).lower()))
+if not blocks: raise SystemExit('no usable Finalized block observations')
 height,block_hash=max(set(blocks),key=blocks.count)
-if blocks.count((height,block_hash))<2: raise SystemExit('no Safe block quorum')
-eligible={observation['provider_index'] for observation in observations if (int(str(observation['safe']['number']),16) if str(observation['safe']['number']).startswith('0x') else int(observation['safe']['number']))==height and str(observation['safe']['hash']).lower()==block_hash}
+if blocks.count((height,block_hash))<2: raise SystemExit('no Finalized block quorum')
+eligible={observation['provider_index'] for observation in observations if (int(str(observation['finalized']['number']),16) if str(observation['finalized']['number']).startswith('0x') else int(observation['finalized']['number']))==height and str(observation['finalized']['hash']).lower()==block_hash}
 roles={name:subprocess.check_output(['cast','keccak',name],text=True).strip() for name in ('PROPOSER_ROLE','EXECUTOR_ROLE','CANCELLER_ROLE')}
 zero='0x'+'00'*20; zero32='0x'+'00'*32
 def run(args): return subprocess.check_output(args,text=True).strip().strip('"')
@@ -153,14 +153,14 @@ for provider_index,rpc_entry in enumerate(p['rpc_providers']):
   }
   state['timelock_external_admins_absent']=all(call(rpc,timelock,'hasRole(bytes32,address)(bool)',zero32,a).lower()=='false' for a in external if a.lower()!=timelock.lower())
   final=json.loads(run(['cast','block',str(height),'--rpc-url',rpc,'--json']))
-  if str(final.get('hash','')).lower()!=block_hash: raise ValueError('Safe block changed while Base state was being read')
+  if str(final.get('hash','')).lower()!=block_hash: raise ValueError('Finalized block changed while Base state was being read')
   states.append(state)
  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError):
   continue
-if not states: raise SystemExit('no provider completed the bound Safe state read')
+if not states: raise SystemExit('no provider completed the bound Finalized state read')
 groups={json.dumps(s,sort_keys=True,separators=(',',':')):states.count(s) for s in states}
 winner,count=max(groups.items(),key=lambda x:x[1])
-if count<2: raise SystemExit('Base state does not have 2-of-3 agreement at the Safe block')
+if count<2: raise SystemExit('Base state does not have 2-of-3 agreement at the Finalized block')
 (root/'base-state.json').write_text(json.dumps({'agreeing_providers':count,'state':json.loads(winner)},sort_keys=True,separators=(',',':'))+'\n')
 PY
 dfx canister call "$CANISTER" get_public_config '()' --network "$IC_HOST" --output json >"$TMP/public-config.json"
@@ -234,7 +234,7 @@ if any(state[k] for k in ('timelock_open_proposer','timelock_open_executor','tim
 if state['bsns_runtime_bytecode_sha256'].lower()!=p['bsns_runtime_bytecode_sha256'].lower() or state['bsns_name']!='KINIC' or state['bsns_symbol']!='KINIC' or state['bsns_decimals']!=p['decimals']: raise SystemExit('bSNS runtime or metadata drift')
 out={
  'observed_at_unix':int(time.time()),'chain_id':p['chain_id'],'evm_rpc_canister_id':p['evm_rpc_canister_id'],
- 'confirmed_head_block_number':height,'confirmed_head_block_hash':bhash,'canonical':True,'agreeing_providers':agree,'total_providers':3,
+ 'finalized_head_block_number':height,'finalized_head_block_hash':bhash,'canonical':True,'agreeing_providers':agree,'total_providers':3,
  'base_bridge_signer':base,'canister_bridge_signer':canister,'chain_key_eip191_signature':chain_key_signature,
  'bridge_runtime_bytecode_sha256':runtime_hash,'expected_bridge_runtime_bytecode_sha256':p['bridge_runtime_bytecode_sha256'],
  'bridge_canister_wasm_sha256':module_hash,'bridge_canister_id':p['bridge_canister_id'],'timelock_address':p['timelock']['address'],
@@ -264,9 +264,9 @@ else:
   for observation in json.load(open(root/'provider-observations.json')):
     if 'signed' in observation:
       b=observation['signed']; signed.append((num(b.get('number')),str(b.get('hash','')).lower()))
-  expected=(old['confirmed_head_block_number'],old['confirmed_head_block_hash'].lower())
-  if signed.count(expected)<2: raise SystemExit('signed Safe block is no longer canonical')
-  if out['confirmed_head_block_number'] < old['confirmed_head_block_number']: raise SystemExit('latest Safe head is older than the signed snapshot')
-  comparable=lambda x:{k:v for k,v in x.items() if k not in ('observed_at_unix','chain_key_eip191_signature','confirmed_head_block_number','confirmed_head_block_hash','agreeing_providers')}
+  expected=(old['finalized_head_block_number'],old['finalized_head_block_hash'].lower())
+  if signed.count(expected)<2: raise SystemExit('signed Finalized block is no longer canonical')
+  if out['finalized_head_block_number'] < old['finalized_head_block_number']: raise SystemExit('latest Finalized head is older than the signed snapshot')
+  comparable=lambda x:{k:v for k,v in x.items() if k not in ('observed_at_unix','chain_key_eip191_signature','finalized_head_block_number','finalized_head_block_hash','agreeing_providers')}
   if comparable(out)!=comparable(old): raise SystemExit('live state differs from the signed snapshot')
 PY

@@ -27,6 +27,16 @@ export function mergeDepositHistoryPage(previous: DepositHistoryData | undefined
   }
 }
 
+export function depositIdsForRefresh(previous: DepositHistoryData | undefined, latestIds: Array<Uint8Array | number[]>): Array<Uint8Array | number[]> {
+  const ids = [...latestIds, ...(previous?.items.map((record) => record.deposit_id) ?? [])]
+  const unique = new Map(ids.map((id) => [bytesKey(id), id]))
+  return [...unique.values()]
+}
+
 function depositKey(record: DepositView): string {
-  return Array.from(record.deposit_id, (value) => Number(value).toString(16).padStart(2, "0")).join("")
+  return bytesKey(record.deposit_id)
+}
+
+function bytesKey(value: Uint8Array | number[]): string {
+  return Array.from(value, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")
 }

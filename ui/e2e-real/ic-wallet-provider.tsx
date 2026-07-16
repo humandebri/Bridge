@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
-import type { DepositReceipt, NotifyWithdrawalReceipt, SettlementActionResult } from "@/generated/bridge.did"
-import type { ApprovalCall, DepositCall, IcAccount, IcWalletAdapter, IcWalletProvider } from "@/lib/ic/wallet"
+import type { DepositPhase, DepositReceipt, NotifyWithdrawalReceipt, SettlementActionResult } from "@/generated/bridge.did"
+import type { ApprovalCall, ConfirmationCall, DepositCall, IcAccount, IcWalletAdapter, IcWalletProvider } from "@/lib/ic/wallet"
 
 const CONTROL = "http://127.0.0.1:43119"
 
@@ -35,20 +35,26 @@ class HarnessWalletAdapter implements IcWalletAdapter {
       grossAmount: call.grossAmount.toString(),
       maxServiceFee: call.maxServiceFee.toString(),
     }, (value) => {
-      const receipt = value as { deposit_id: string; owner_sequence: string; state: string; settlement?: SettlementActionResult }
+      const receipt = value as { deposit_id: string; owner_sequence: string; state: DepositPhase; settlement?: SettlementActionResult }
       return { deposit_id: bytes(receipt.deposit_id), owner_sequence: BigInt(receipt.owner_sequence), state: receipt.state, settlement: receipt.settlement ? [receipt.settlement] : [] }
     })
   }
   notifyWithdrawal(transactionHash: Uint8Array) {
     return request<NotifyWithdrawalReceipt>("/ic/notify", { transactionHash: hex(transactionHash) }, (value) => {
-      const receipt = value as { Ingested?: { confirmed_head_block_number: string; withdrawal_id: string; settlement?: SettlementActionResult }; Duplicate?: { withdrawal_id: string; settlement?: SettlementActionResult } }
-      if (receipt.Ingested) return { Ingested: { confirmed_head_block_number: BigInt(receipt.Ingested.confirmed_head_block_number), withdrawal_id: bytes(receipt.Ingested.withdrawal_id), settlement: receipt.Ingested.settlement ? [receipt.Ingested.settlement] : [] } }
+      const receipt = value as { Ingested?: { finalized_head_block_number: string; withdrawal_id: string; settlement?: SettlementActionResult }; Duplicate?: { withdrawal_id: string; settlement?: SettlementActionResult } }
+      if (receipt.Ingested) return { Ingested: { finalized_head_block_number: BigInt(receipt.Ingested.finalized_head_block_number), withdrawal_id: bytes(receipt.Ingested.withdrawal_id), settlement: receipt.Ingested.settlement ? [receipt.Ingested.settlement] : [] } }
       if (receipt.Duplicate) return { Duplicate: { withdrawal_id: bytes(receipt.Duplicate.withdrawal_id), settlement: receipt.Duplicate.settlement ? [receipt.Duplicate.settlement] : [] } }
       throw new Error("Harness returned an invalid notification receipt")
     })
   }
+  confirmDeposit(call: ConfirmationCall) { return request<SettlementActionResult>("/ic/confirm-deposit", confirmationBody(call)) }
+  confirmWithdrawal(call: ConfirmationCall) { return request<SettlementActionResult>("/ic/confirm-withdrawal", confirmationBody(call)) }
   continueDeposit(depositId: Uint8Array) { return request<SettlementActionResult>("/ic/continue-deposit", { id: hex(depositId) }) }
   continueWithdrawal(withdrawalId: Uint8Array) { return request<SettlementActionResult>("/ic/continue-withdrawal", { id: hex(withdrawalId) }) }
+}
+
+function confirmationBody(call: ConfirmationCall) {
+  return { settlementId: hex(call.settlementId), transactionHash: hex(call.transactionHash), receiptBlockNumber: call.receiptBlockNumber.toString(), observedFinalizedBlockNumber: call.observedFinalizedBlockNumber.toString() }
 }
 
 export function IcWalletProviderRoot({ children }: { children: ReactNode }) {

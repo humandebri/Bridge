@@ -10,6 +10,8 @@ import { Principal } from "@dfinity/principal"
 import { PocketIc, PocketIcServer, SubnetStateType } from "@dfinity/pic"
 import { createPublicClient, decodeEventLog, hexToBytes, http, numberToHex, recoverTransactionAddress, sha256 } from "viem"
 import { publicKeyToAddress } from "viem/accounts"
+import { idlFactory as bridgeIdl, init as bridgeInitFactory } from "./generated/bridge.idl.mjs"
+import { idlFactory as mockIdl, init as mockInitFactory } from "./generated/mock-external.idl.mjs"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const uiRoot = path.resolve(here, "..")
@@ -28,6 +30,8 @@ const minter = Principal.selfAuthenticating(new Uint8Array(32).fill(9))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
 const resources = {}
+const bridgeInitType = bridgeInitFactory({ IDL })[0]
+const mockInitType = mockInitFactory({ IDL })[0]
 
 export default async function globalSetup() {
   try {
@@ -116,7 +120,7 @@ async function setup() {
   const mock = await pic.setupCanister({
     idlFactory: mockIdl,
     wasm: await readFile(path.join(root, "target/wasm32-unknown-unknown/release/mock_external.wasm")),
-    arg: IDL.encode([IDL.Record({ ledger_id: IDL.Principal })], [{ ledger_id: ledgerId }]),
+    arg: IDL.encode([mockInitType], [{ ledger_id: ledgerId }]),
     cycles: 50_000_000_000_000n,
     targetSubnetId: subnet.id,
   })
@@ -130,7 +134,7 @@ async function setup() {
   await pic.installCode({
     canisterId: bridgeId,
     wasm: mockWasm,
-    arg: IDL.encode([IDL.Record({ ledger_id: IDL.Principal })], [{ ledger_id: ledgerId }]),
+    arg: IDL.encode([mockInitType], [{ ledger_id: ledgerId }]),
     targetSubnetId: subnet.id,
   })
   const signerProbe = pic.createActor(mockIdl, bridgeId)
@@ -154,7 +158,7 @@ async function setup() {
   await pic.reinstallCode({
     canisterId: bridgeId,
     wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
-    arg: IDL.encode([bridgeInitType()], [{
+    arg: IDL.encode([bridgeInitType], [{
       ledger_canister_id: ledgerId,
       index_canister_id: indexId,
       evm_rpc_canister_id: mock.canisterId,
@@ -236,12 +240,21 @@ async function setup() {
   const knownDeposits = []
   const depositSequences = []
   const knownWithdrawals = []
-  const syncSafeHead = async () => {
-    const safe = await publicClient.getBlock({ blockTag: "safe" })
-    if (safe.number === null) throw new Error("Anvil safe head is unavailable")
-    const result = await mock.actor.set_safe_block(safe.number, hexToBytes(safe.hash))
-    if ("Err" in result) throw new Error(result.Err)
+  const syncObservedHeads = async () => {
+    const [safe, finalized] = await Promise.all([
+      publicClient.getBlock({ blockTag: "safe" }),
+      publicClient.getBlock({ blockTag: "finalized" }),
+    ])
+    if (safe.number === null || safe.hash === null) throw new Error("Anvil safe head is unavailable")
+    if (finalized.number === null || finalized.hash === null) throw new Error("Anvil finalized head is unavailable")
+    const [safeResult, finalizedResult] = await Promise.all([
+      mock.actor.set_safe_block(safe.number, hexToBytes(safe.hash)),
+      mock.actor.set_finalized_block(finalized.number, hexToBytes(finalized.hash)),
+    ])
+    if ("Err" in safeResult) throw new Error(safeResult.Err)
+    if ("Err" in finalizedResult) throw new Error(finalizedResult.Err)
   }
+  await syncObservedHeads()
   const relayPendingBroadcasts = async () => {
     const broadcasts = await mock.actor.broadcast_transactions()
     for (; relayedBroadcasts < broadcasts.length; relayedBroadcasts += 1) {
@@ -312,18 +325,18 @@ async function setup() {
         const transactionHash = body.transactionHash
         const receipt = await publicClient.getTransactionReceipt({ hash: transactionHash })
         const created = receipt.logs.map((log) => {
-          try { return decodeEventLog({ abi: bridgeAbi, eventName: "WithdrawalCreated", data: log.data, topics: log.topics }) } catch { return undefined }
+          try { return decodeEventLog({ abi: bridgeAbi, eventName: "WithdrawalCommitted", data: log.data, topics: log.topics }) } catch { return undefined }
         }).find(Boolean)
-        if (!created) throw new Error("WithdrawalCreated log is missing from the Anvil receipt")
-        await mock.actor.set_withdrawal([{ id: hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 })), owner: hexToBytes(created.args.owner), subaccount: hexToBytes(created.args.subaccount), amount: created.args.amount, min_amount_out: created.args.minAmountOut }])
+        if (!created) throw new Error("WithdrawalCommitted log is missing from the Anvil receipt")
+        await mock.actor.set_withdrawal([{ id: hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 })), owner: hexToBytes(created.args.owner), subaccount: hexToBytes(created.args.subaccount), amount: created.args.amount, max_service_fee: created.args.maxServiceFee, charged_service_fee: created.args.chargedServiceFee, amount_out: created.args.amountOut }])
         const observed = await mock.actor.set_observed_transaction(hexToBytes(transactionHash), hexToBytes(bridgeAddress), hexToBytes(created.args.requester), Number(receipt.blockNumber))
         if ("Err" in observed) throw new Error(observed.Err)
-        await syncSafeHead()
+        await syncObservedHeads()
         const result = await bridge.actor.notify_withdrawal({ transaction_hash: hexToBytes(transactionHash) })
         if ("Err" in result) throw new Error(`withdrawal notification rejected: ${json(result.Err)}`)
         const withdrawalId = "Ingested" in result.Ok ? result.Ok.Ingested.withdrawal_id : result.Ok.Duplicate.withdrawal_id
         if (!knownWithdrawals.some((id) => bytesHex(id) === bytesHex(withdrawalId))) knownWithdrawals.push(withdrawalId)
-        if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { confirmed_head_block_number: result.Ok.Ingested.confirmed_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id), settlement: result.Ok.Ingested.settlement[0] ? settlementJson(result.Ok.Ingested.settlement[0]) : undefined } })
+        if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id), settlement: result.Ok.Ingested.settlement[0] ? settlementJson(result.Ok.Ingested.settlement[0]) : undefined } })
         return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id), settlement: result.Ok.Duplicate.settlement[0] ? settlementJson(result.Ok.Duplicate.settlement[0]) : undefined } })
       }
       if (request.url === "/ic/continue-deposit") {
@@ -354,7 +367,7 @@ async function setup() {
       }
       if (request.url === "/test/relay") {
         await relayPendingBroadcasts()
-        await syncSafeHead()
+        await syncObservedHeads()
         stopProgressLoop()
         try {
           await pic.advanceTime(2_000)
@@ -366,15 +379,15 @@ async function setup() {
       }
       if (request.url === "/test/advance-confirmation") {
         await relayPendingBroadcasts()
-        await syncSafeHead()
+        await syncObservedHeads()
         stopProgressLoop()
         try {
           await pic.advanceTime(Number(body.minutes ?? 20) * 60_000)
           await pic.tick(100)
           await relayPendingBroadcasts()
-          await syncSafeHead()
+          await syncObservedHeads()
           // Let the prior cached observation expire so the next UI readiness
-          // refresh must consume the newly synchronized Safe head.
+          // refresh must consume the newly synchronized finalized head.
           await pic.advanceTime(31_000)
           await pic.tick(5)
         } finally {
@@ -559,39 +572,6 @@ function ledgerInitType() {
   }) })
 }
 
-function bridgeInitType() {
-  return IDL.Record({
-    ledger_canister_id: IDL.Principal, index_canister_id: IDL.Principal, evm_rpc_canister_id: IDL.Principal,
-    custom_evm_rpc_urls: IDL.Vec(IDL.Text), base_chain_id: IDL.Nat64, bridge_contract: IDL.Vec(IDL.Nat8),
-    ecdsa_key_name: IDL.Text, ecdsa_derivation_path: IDL.Vec(IDL.Vec(IDL.Nat8)),
-    deposit_rate_limit_window_seconds: IDL.Nat64, deposit_rate_limit_global: IDL.Nat16, deposit_rate_limit_per_principal: IDL.Nat16,
-    settlement_rate_limit_window_seconds: IDL.Nat64, settlement_rate_limit_global: IDL.Nat16, settlement_rate_limit_per_principal: IDL.Nat16, settlement_rate_limit_per_record: IDL.Nat16,
-    transaction_gas_limit: IDL.Nat, max_fee_per_gas: IDL.Nat, max_priority_fee_per_gas: IDL.Nat,
-    eth_floor_wei: IDL.Nat, cycles_floor: IDL.Nat, settlement_cycle_ceiling: IDL.Nat,
-    governance_principal: IDL.Principal, pause_principals: IDL.Vec(IDL.Principal), finance_administrator: IDL.Principal,
-    fee_recipient: IDL.Record({ owner: IDL.Principal, subaccount: IDL.Vec(IDL.Nat8) }),
-  })
-}
-
-const probeResult = IDL.Variant({ Ok: IDL.Record({ public_key: IDL.Vec(IDL.Nat8), signature: IDL.Vec(IDL.Nat8) }), Err: IDL.Text })
-const withdrawalFixture = IDL.Record({ id: IDL.Vec(IDL.Nat8), owner: IDL.Vec(IDL.Nat8), subaccount: IDL.Vec(IDL.Nat8), amount: IDL.Nat, min_amount_out: IDL.Nat })
-const mockIdl = ({ IDL: I }) => I.Service({
-  probe_chain_key: I.Func([I.Text], [probeResult], []),
-  set_withdrawal: I.Func([I.Opt(withdrawalFixture)], [], []),
-  set_observed_transaction: I.Func([I.Vec(I.Nat8), I.Vec(I.Nat8), I.Vec(I.Nat8), I.Nat64], [I.Variant({ Ok: I.Null, Err: I.Text })], []),
-  set_safe_block_sequence: I.Func([I.Vec(I.Nat64)], [], []),
-  set_safe_block: I.Func([I.Nat64, I.Vec(I.Nat8)], [I.Variant({ Ok: I.Null, Err: I.Text })], []),
-  set_configured_chain_id: I.Func([I.Nat64], [], []),
-  set_bridge_runtime_code: I.Func([I.Vec(I.Nat8)], [], []),
-  set_service_fee: I.Func([I.Nat], [], []),
-  set_max_service_fee: I.Func([I.Nat], [], []),
-  set_per_deposit_limit: I.Func([I.Nat], [], []),
-  set_mint_window: I.Func([I.Nat, I.Nat, I.Nat64, I.Nat64, I.Nat64], [], []),
-  set_bridge_signer_for_canister: I.Func([I.Principal, I.Text], [I.Variant({ Ok: I.Null, Err: I.Text })], []),
-  bridge_signer: I.Func([], [I.Vec(I.Nat8)], ["query"]),
-  broadcast_transactions: I.Func([], [I.Vec(I.Vec(I.Nat8))], ["query"]),
-})
-
 const ledgerIdl = ({ IDL: I }) => {
   const Account = I.Record({ owner: I.Principal, subaccount: I.Opt(I.Vec(I.Nat8)) })
   const ApproveError = I.Variant({
@@ -614,19 +594,3 @@ const indexIdl = ({ IDL: I }) => {
     icrc1_balance_of: I.Func([Account], [I.Nat], ["query"]),
   })
 }
-
-const DepositArgs = IDL.Record({ owner_sequence: IDL.Nat64, base_recipient: IDL.Vec(IDL.Nat8), from_subaccount: IDL.Opt(IDL.Vec(IDL.Nat8)), gross_amount: IDL.Nat, max_service_fee: IDL.Nat })
-const SettlementStopReason = IDL.Variant({ LedgerRejected: IDL.Text, RpcUnavailable: IDL.Null, TransactionNotConfirmed: IDL.Null, ConfirmationCheckExhausted: IDL.Null, LedgerFeeChanged: IDL.Null, RpcInconsistent: IDL.Null, LedgerAmbiguous: IDL.Null, LedgerUnavailable: IDL.Null, NonceConflict: IDL.Null, NonceUnavailable: IDL.Null, TransactionReverted: IDL.Null, NonceBlocked: IDL.Null, BaseStateMismatch: IDL.Null, TransactionNotFound: IDL.Null, BridgeSignerMismatch: IDL.Null, SigningUnavailable: IDL.Null, InvalidBaseResponse: IDL.Null })
-const SettlementAction = IDL.Variant({ Stopped: IDL.Record({ state: IDL.Text, reason: SettlementStopReason }), Complete: IDL.Record({ state: IDL.Text }), ReconciliationProgress: IDL.Record({ state: IDL.Text }), WaitingForConfirmation: IDL.Record({ transaction_hash: IDL.Vec(IDL.Nat8), state: IDL.Text }), Submitted: IDL.Record({ transaction_hash: IDL.Vec(IDL.Nat8), state: IDL.Text }) })
-const SettlementError = IDL.Variant({ AutomaticProgressPending: IDL.Record({ next_run_at_ns: IDL.Opt(IDL.Nat64) }), RateLimited: IDL.Record({ retry_after_seconds: IDL.Nat64 }), InvalidId: IDL.Null, Busy: IDL.Null, NotFound: IDL.Null, Unauthorized: IDL.Null, StorageFailure: IDL.Null, AnonymousCaller: IDL.Null })
-const DepositError = IDL.Variant({ Busy: IDL.Null, InvalidRequest: IDL.Text, SequenceMismatch: IDL.Record({ expected: IDL.Nat64 }), DepositConflict: IDL.Null, BaseObservationUnavailable: IDL.Null, LedgerFeeUnavailable: IDL.Null, Rejected: IDL.Text, StorageFailure: IDL.Null, DepositsPaused: IDL.Null, ReserveUnavailable: IDL.Null, RateLimited: IDL.Record({ retry_after_seconds: IDL.Nat64 }) })
-const PublicConfig = IDL.Record({ base_chain_id: IDL.Nat64, bridge_contract: IDL.Vec(IDL.Nat8), ledger_canister_id: IDL.Principal, index_canister_id: IDL.Principal, schema_version: IDL.Nat16, expected_bridge_signer: IDL.Vec(IDL.Nat8), evm_rpc_canister_id: IDL.Principal, rpc_provider_urls_sha256: IDL.Vec(IDL.Nat8) })
-const bridgeIdl = ({ IDL: I }) => I.Service({
-  resume_new_deposits: I.Func([], [I.Variant({ Ok: I.Null, Err: I.Variant({ Busy: I.Null, Unauthorized: I.Null, InvalidArgument: I.Text, StorageFailure: I.Null, InsufficientFeeReserve: I.Null, UnresolvedEvmRevert: I.Null }) })], []),
-  request_deposit: I.Func([DepositArgs], [I.Variant({ Ok: I.Record({ deposit_id: I.Vec(I.Nat8), owner_sequence: I.Nat64, state: I.Text, settlement: I.Opt(SettlementAction) }), Err: DepositError })], []),
-  notify_withdrawal: I.Func([I.Record({ transaction_hash: I.Vec(I.Nat8) })], [I.Variant({ Ok: I.Variant({ Duplicate: I.Record({ withdrawal_id: I.Vec(I.Nat8), settlement: I.Opt(SettlementAction) }), Ingested: I.Record({ confirmed_head_block_number: I.Nat64, withdrawal_id: I.Vec(I.Nat8), settlement: I.Opt(SettlementAction) }) }), Err: I.Variant({ Busy: I.Null, RpcUnavailable: I.Null, TransactionNotConfirmed: I.Null, WithdrawalConflict: I.Null, OwnerMismatch: I.Null, RpcInconsistent: I.Null, RateLimited: I.Record({ retry_after_seconds: I.Nat64 }), InvalidTransactionHash: I.Null, TransactionReverted: I.Null, LedgerFeeUnavailable: I.Null, StorageFailure: I.Null, BaseStateMismatch: I.Null, TransactionNotFound: I.Null, BridgeSignerMismatch: I.Null, AnonymousCaller: I.Null, InvalidBaseResponse: I.Null }) })], []),
-  get_next_deposit_sequence: I.Func([I.Principal], [I.Nat64], ["query"]),
-  get_public_config: I.Func([], [PublicConfig], []),
-  continue_deposit: I.Func([I.Vec(I.Nat8)], [I.Variant({ Ok: SettlementAction, Err: SettlementError })], []),
-  continue_withdrawal: I.Func([I.Vec(I.Nat8)], [I.Variant({ Ok: SettlementAction, Err: SettlementError })], []),
-})

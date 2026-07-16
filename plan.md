@@ -1,8 +1,8 @@
 # KINIC–Base Bridge 実装計画
 
-> 本文中の旧polling間隔と優先度schedulerは歴史的設計である。現在はADR 0017のstable one-shot confirmation schedulerと、障害時だけのrate limit付き手動Retryを正本とする。
+> 本文中の旧polling間隔と優先度schedulerは歴史的設計である。現在はADR 0019のstable settlement executor、ADR 0020のwallet確認付きフロント通知、障害時だけのrate limit付き手動Retryを正本とする。
 
-本計画は `docs/adr/` の ADR 0001〜0017 と `CONTEXT.md` の用語定義に基づく。
+本計画は `docs/adr/` のADRと `CONTEXT.md` の用語定義に基づく。
 用語は CONTEXT.md の定義に従い、本文では再定義しない。
 
 ADR 0007（SNS Governance を Base admin の権限主体にする）は ADR 0009 により supersede された。
@@ -13,7 +13,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v6、外部連携、Settlement Reserve、stable confirmation scheduler、運用管理、Verus証明まで実装済みである。
+Bridge canisterはstable schema v10、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
 Plan 005は本番パラメータの外部計測と鍵ceremony待ちであり、Plan 006は未着手である。
 
 ## 全体構成
@@ -45,10 +45,10 @@ bSNS ERC-20 と Bridge contract を実装する。
 ADR が contract 側へ課す制約をすべてこの Phase で実装する。
 
 Phase 1Aで確定したconstructor、型、関数、event、error、権限表は`docs/base-interface.md`を正本とする。
-Bridgeはconstructor内でbSNSを生成し（ADR 0014）、BaseのService FeeをcanisterがSafe blockで読む正本とする（ADR 0013）。
+Bridgeはconstructor内でbSNSを生成し（ADR 0014）、BaseのService FeeをcanisterがFinalized blockで読む正本とする（ADR 0013）。
 EIP-3009の追加interfaceはPhase 1Aの正本とselector/topic testへ反映済みである（ADR 0015）。
 Phase 1BでbSNS、EIP-3009、Deposit mint、Per-Deposit Limit、deploy時起点のfixed-window Mint Throughput Limitを実装済みである。
-Phase 1CでWithdrawal burn、Release acknowledgement、ledger block index一意性、Base Refund、settlement fee記録を実装済みである。
+Phase 1CのWithdrawalは、`createWithdrawal`内でtransfer、burn、固定quoteを`Committed`へ原子的に記録する現在形へ置換済みである。Base側のacknowledgement、cancel、refundは存在しない。
 Phase 1DでService Fee変更、独立pause、固定limit、role rotation、OpenZeppelinの72時間Timelock統合を実装済みである。
 Phase 1Eで検証を閉じ、ABIを凍結済みである。
 
@@ -73,25 +73,25 @@ Phase 1Eで検証を閉じ、ABIを凍結済みである。
 - Per-Deposit Limit を各 Deposit に適用する。
 - Mint Throughput Limit を fixed window（初期値 1 時間）の新規 deposit mint 総量に適用する。window 境界バーストの 2 倍係数は上限値の導出（`docs/parameters.md`）で織り込む。
 - 両制限とwindow長はdeploy時のimmutable値とし、raw unitで定義する。decimalsの表示変換を判定に使わない。
-- refund mint は新規 deposit mint に計上せず、両制限の対象外とする。
+- WithdrawalのBase再mint経路を持たない。
 - 各DepositにPer-Deposit Limitを適用し、同じfixed window内のmintを共有Mint Throughput Limitへ累積する。
 
-### 1-4. Withdrawal 状態機械（ADR 0003）
+### 1-4. Withdrawal 状態機械（ADR 0018）
 
-- Withdrawal の状態を `Pending`、`Released`、`Refunded` とし、`Pending → Released` と `Pending → Refunded` を排他にする。
-- Release acknowledgement を withdrawal ID で冪等にし、同一内容の再実行を成功扱いにする。
-- Base Refund は `Pending` の Withdrawal だけに許可する。
+- Base Withdrawalは`None → Committed`だけを持ち、`Committed`を不可逆な終端状態とする。
+- `createWithdrawal`でtransfer、burn、Service Fee、`amountOut`、IC Accountを一つのtransactionへ固定する。
+- ICP送金後のBase transactionやWithdrawal向けEVM operationを作らない。
 
 ### 1-5. Service Fee（ADR 0004）
 
 - immutable な `MAX_SERVICE_FEE` を raw unit でデプロイ時に固定する。
 - `0 <= service_fee <= MAX_SERVICE_FEE` を超える fee 変更を contract 側でも拒否する。
-- Withdrawal の `minAmountOut` により、処理中の fee 変更から利用者を保護する。
-- cancel と Base Refund では Service Fee を徴収しない。
+- Withdrawal の `maxServiceFee` と実行時Service Feeの比較により、処理中の fee 変更から利用者を保護する。
+- WithdrawalのLedger FeeはBridgeが負担し、利用者の固定`amountOut`を減額しない。
 
 ### 1-6. 管理権限の分割（ADR 0005、0009）
 
-- Withdrawal 受付を継続できない残高のとき、新規 Withdrawal を pause し、既存 Settlement だけを継続できる構造にする。
+- Withdrawal受付を継続できない残高を運用監視で検出したとき、Runtime Administratorが新規Withdrawalをpauseし、既存Settlementだけを継続する。Bridge contractやCanisterによる自動pauseは行わない。
 - 即時操作（pause、上限内Service Fee変更）をRuntime Administratorのroleに割り当てる。
 - 遅延操作（unpause、role rotation）をtimelock経由の単一Base Admin hardware walletに割り当てる。timelock遅延は初期値72時間とし、遅延短縮とsigner変更もtimelockを経由する。
 - limitを変更するfunctionとselectorは公開しない。
@@ -123,7 +123,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003およびADR 0017で外部連携、運用状態、confirmation schedulerを追加し、現行stable schemaはv6である。
+後続のPlan 002と003およびADR 0017から0020で外部連携、運用状態、settlement executor、フロント通知型confirmationを追加し、現行stable schemaはv10である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -139,13 +139,12 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 3. Base mint 量は、ロック量から Service Fee を引いた量とする。
 4. mint 成功時にのみ Service Fee を fee reserve へ確定する。
 
-### 2-3. Withdrawal フロー（ADR 0003、0004、0011）
+### 2-3. Withdrawal フロー（ADR 0004、0011、0018）
 
-1. Base の Withdrawal をSafe headのcontract状態読みで確定し、受理する。イベントログは発見にだけ使う。
-2. ICP Release では、burn 量から ledger fee と Service Fee を引いた量を ICRC transfer する。
-3. transfer の成功、`Duplicate`、または完全な履歴照合を確定してから、Base へ Release acknowledgement を送る。
-4. ICP Release 開始後、Base で `Released` がSafe確認されるまで自動 refund へ遷移させない。
-5. Release 成功時にのみ Service Fee を fee reserve へ確定する。
+1. `createWithdrawal` receipt、単一event、`Committed`状態、Bridge signerとruntimeを同一2-of-3 quorum Finalized blockへ束縛して検証する。
+2. 検証証拠、Withdrawal record、release job、transfer identity、監査eventを一つのSQLite transactionで保存してからICRC transferを開始する。
+3. 固定`amountOut = amount - chargedServiceFee`を送り、Ledger FeeはBridgeが負担する。
+4. transfer成功または`Duplicate`で`Paid`へ終端化し、結果不明はReconciliation Holdで完全履歴を照合する。
 
 ### 2-4. 会計の分離（ADR 0004、0005）
 
@@ -157,21 +156,21 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 
 ## Phase 3: 外部連携
 
-Phase 3のICRC adapter、Base Safe監視、threshold ECDSA transaction、stable nonce queue、Reconciliation Hold履歴照合、公開Deposit APIは実装済みである。
-PicJSでDeposit、Withdrawal、Refund、Holdのupgrade保持、stuck receiptを検証し、Plan 002を完了した。
+Phase 3のICRC adapter、Base Finalized監視、threshold ECDSA transaction、stable nonce queue、Reconciliation Hold履歴照合、公開Deposit APIは実装済みである。
+PicJSでDeposit、Withdrawal、Holdのupgrade保持、stuck receiptを検証する。
 
 ### 3-1. EVM 連携（ADR 0005、0011）
 
 - threshold ECDSA による署名と、EVM RPC canister 経由の transaction 送信を実装する。
 - nonce queue は単一とする。
-- Withdrawal settlement 用の Base gas を新規 Deposit 処理と別に確保する（ADR 0003）。
-- Withdrawal の観測は `eth_getLogs` で発見し、Safe headの状態読みで確定する。読み取りは3 provider中2の合意を要求し、送信後2、5、10、20、40分に確認する。
+- Pending nonceはPending、現在ETH残高はSafeを維持し、reserveにはSafe残高とFinalized残高の小さい方を使う。
+- Withdrawalの受付観測は`eth_getLogs`で発見し、Finalized headの状態読みで確定する。読み取りは3 provider中2の合意を要求する。Canister送信transactionの確認起動はADR 0020に従う。
 
 ### 3-2. Settlement Reserve と scheduler（ADR 0005）
 
 - ETH と cycles の一部を Settlement Reserve として会計上予約する。
 - 必要量は固定 floor に加え、未完了 Settlement の保守的最大費用を含めて算出する。
-- scheduler は Release acknowledgement と Base Refund を Deposit mint より優先する。
+- schedulerのEVM jobはDeposit mintだけを扱い、Withdrawal jobはICRC Ledger送金と照合だけを扱う。
 - Settlement Reserve を満たせないとき、新規 Deposit の受付を停止する。
 - gas 価格、EVM RPC 費用、management canister call 費用の上限評価を外部仮定として文書化し、監査対象にする。
 
@@ -204,8 +203,8 @@ Plan 003で管理権限と監査ログを実装済みである。
 Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みである。
 証明はWasmごとに再実行し、過去版の証明を新しいupgradeへ流用しない（ADR 0008）。
 
-- 各 Deposit が Per-Deposit Limit を超えないこと。mint 流量の消費量が保存されること。refund が新規 deposit mint に計上されないこと（ADR 0001）。
-- 1 件の Withdrawal が `Released` と `Refunded` の両方へ到達しないこと（ADR 0003）。
+- 各 Deposit が Per-Deposit Limit を超えないこと。mint 流量の消費量が保存されること。WithdrawalからBase再mintできないこと（ADR 0018）。
+- 1件のWithdrawalがBase `Committed`からCanister `Paid`へ進み、`Paid`後に再送・減額・送金先変更されないこと（ADR 0018）。
 - Service Fee の上限制約、二重計上防止、成功前の fee 確定禁止、recipient 変更時の reserve 保存、fee reserve を超える送金の禁止（ADR 0004）。
 - Deposit 受付が Settlement Reserve を侵食しないこと。Settlement task が Deposit task より優先されること（ADR 0005）。
 - Reconciliation Hold から新規 transfer または補償状態へ直接遷移しないこと（ADR 0006）。

@@ -239,8 +239,8 @@ struct SignerSnapshot {
     observed_at_unix: u64,
     chain_id: u64,
     evm_rpc_canister_id: String,
-    confirmed_head_block_number: u64,
-    confirmed_head_block_hash: String,
+    finalized_head_block_number: u64,
+    finalized_head_block_hash: String,
     canonical: bool,
     agreeing_providers: u8,
     total_providers: u8,
@@ -1426,8 +1426,8 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
         || snapshot.bridge_canister_id != bundle.profile.bridge_canister_id
         || snapshot.chain_id != bundle.profile.chain_id
         || snapshot.evm_rpc_canister_id != bundle.profile.evm_rpc_canister_id
-        || snapshot.confirmed_head_block_number == 0
-        || !valid_hash32(&snapshot.confirmed_head_block_hash)
+        || snapshot.finalized_head_block_number == 0
+        || !valid_hash32(&snapshot.finalized_head_block_hash)
         || !snapshot.canonical
         || snapshot.total_providers != 3
         || snapshot.agreeing_providers < 2
@@ -1906,8 +1906,8 @@ mod tests {
             observed_at_unix: now,
             chain_id: profile.chain_id,
             evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
-            confirmed_head_block_number: 1,
-            confirmed_head_block_hash: format!("0x{}", "ab".repeat(32)),
+            finalized_head_block_number: 1,
+            finalized_head_block_hash: format!("0x{}", "ab".repeat(32)),
             canonical: true,
             agreeing_providers: 2,
             total_providers: 3,
@@ -2031,7 +2031,11 @@ m.SIGNER=sys.argv[3]; m.SHA_A=sys.argv[4]; m.SHA_B=sys.argv[5]; binding=m.rehear
 root=Path(sys.argv[2]).parent; tool=root/'tool'
 os.environ['PATH']=str(root)+os.pathsep+os.environ.get('PATH','')
 for scenario,item in m.all_evidence(binding).items():
- fault_fields={'configured_provider_count','required_provider_threshold','injected_provider_failures','fault_injection_reference'}; command_details={k:v for k,v in item['details'].items() if scenario not in {'single_provider_failure','quorum_loss'} or k not in fault_fields}; payload=json.dumps({**command_details,'canister_audit':item['canister_audit'],'canister_decision':item['canister_decision']},separators=(',',':')); tool.write_text("#!/bin/sh\nprintf '%s' '"+payload+"'\n"); tool.chmod(0o755)
+ m.rehearsal.now=lambda: item['observed_at']
+ fault_fields={'configured_provider_count','required_provider_threshold','injected_provider_failures','fault_injection_reference'}; command_details={k:v for k,v in item['details'].items() if scenario not in {'single_provider_failure','quorum_loss'} or k not in fault_fields}; audit_event=None
+ if item['canister_decision'] is not None:
+  timestamp_ns=int(m.rehearsal.datetime.fromisoformat(item['observed_at'].replace('Z','+00:00')).timestamp()*1_000_000_000); audit_event={'sequence':7,'timestamp_ns':timestamp_ns,'kind':{'EvmRpcDecision':item['canister_decision']}}
+ payload=json.dumps({**command_details,'canister_audit':item['canister_audit'],'audit_events':[audit_event] if audit_event else []},separators=(',',':')); tool.write_text("#!/bin/sh\nprintf '%s' '"+payload+"'\n"); tool.chmod(0o755)
  for reference in item['artifacts']:
   kind=reference['kind']; output=root/reference['path']
   if kind=='fault':

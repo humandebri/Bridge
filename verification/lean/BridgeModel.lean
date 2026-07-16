@@ -1,220 +1,98 @@
-namespace BridgeModel
+structure Account where
+  owner : List UInt8
+  subaccount : List UInt8
+deriving DecidableEq
 
-/- Refinement boundary. These are observations supplied by deployment/runtime evidence, not
-   axioms asserted by the algebraic model. A cross-system theorem must receive a trusted world
-   explicitly; the local transition theorems remain independent of it. -/
-structure WorldAssumptions where
-  honestBridgeSigner : Bool
-  evmRpcQuorumReturnsCanonicalSafeChain : Bool
-  authenticLedgerResults : Bool
-  atomicIcSqliteCommit : Bool
-  deriving DecidableEq, Repr
+structure Withdrawal where
+  amount : Nat
+  chargedServiceFee : Nat
+  amountOut : Nat
+  destination : Account
+  paid : Bool
+deriving DecidableEq
 
-def TrustedWorld (world : WorldAssumptions) : Prop :=
-  world.honestBridgeSigner = true ∧ world.evmRpcQuorumReturnsCanonicalSafeChain = true ∧
-  world.authenticLedgerResults = true ∧ world.atomicIcSqliteCommit = true
+def QuoteValid (w : Withdrawal) : Prop :=
+  w.amountOut + w.chargedServiceFee = w.amount ∧ w.amountOut > 0
 
-inductive WithdrawalPhase where
-  | idle
-  | pending
-  | releasing
-  | released
-  | refunded
-  deriving DecidableEq, Repr
+def commit (amount serviceFee : Nat) (destination : Account) : Option Withdrawal :=
+  if serviceFee < amount then
+    some {
+      amount := amount
+      chargedServiceFee := serviceFee
+      amountOut := amount - serviceFee
+      destination := destination
+      paid := false
+    }
+  else none
 
-structure State where
-  icpEscrow : Int
-  baseSupply : Int
-  feeReserve : Int
-  depositLiability : Int
-  targetWithdrawalLiability : Int
-  otherWithdrawalLiability : Int
-  withdrawalPhase : WithdrawalPhase
-  receivedIcpRelease : Bool
-  receivedBaseRefund : Bool
-  deriving Repr
+def pay (w : Withdrawal) (ledgerFee : Nat) : Option Withdrawal :=
+  if ledgerFee ≤ w.chargedServiceFee then some { w with paid := true } else none
 
-def OneToOne (s : State) : Prop :=
-  s.icpEscrow =
-    s.baseSupply + s.feeReserve + s.depositLiability +
-      s.targetWithdrawalLiability + s.otherWithdrawalLiability
+theorem committed_quote_is_fixed
+    {amount serviceFee : Nat} {destination : Account} {w : Withdrawal}
+    (h : commit amount serviceFee destination = some w) :
+    QuoteValid w := by
+  unfold commit at h
+  split at h
+  next feeLt =>
+    simp only [Option.some.injEq] at h
+    subst w
+    simp only [QuoteValid]
+    omega
+  next => simp at h
 
-def NonnegativeBalances (s : State) : Prop :=
-  0 ≤ s.icpEscrow ∧ 0 ≤ s.baseSupply ∧ 0 ≤ s.feeReserve ∧
-  0 ≤ s.depositLiability ∧ 0 ≤ s.targetWithdrawalLiability ∧
-  0 ≤ s.otherWithdrawalLiability
+theorem payment_preserves_destination_and_amount
+    {w paid : Withdrawal} {ledgerFee : Nat}
+    (h : pay w ledgerFee = some paid) :
+    paid.destination = w.destination ∧ paid.amountOut = w.amountOut := by
+  unfold pay at h
+  split at h
+  next =>
+    simp only [Option.some.injEq] at h
+    subst paid
+    simp
+  next => simp at h
 
-def EconomicTerminal (s : State) : Prop :=
-  s.withdrawalPhase = .released ∨ s.withdrawalPhase = .refunded
+theorem excessive_ledger_fee_stops
+    {w : Withdrawal} {ledgerFee : Nat}
+    (h : w.chargedServiceFee < ledgerFee) :
+    pay w ledgerFee = none := by
+  simp [pay, Nat.not_le.mpr h]
 
-def TerminalLiabilityCleared (s : State) : Prop :=
-  EconomicTerminal s → s.targetWithdrawalLiability = 0
+structure EconomicState where
+  escrow : Nat
+  baseSupply : Nat
+  feeReserve : Nat
+  unpaidLiability : Nat
 
-def ValidInitial (s : State) : Prop :=
-  OneToOne s ∧ NonnegativeBalances s ∧ s.withdrawalPhase = .idle ∧
-  s.targetWithdrawalLiability = 0 ∧ s.receivedIcpRelease = false ∧
-  s.receivedBaseRefund = false
+def Backed (s : EconomicState) : Prop :=
+  s.escrow = s.baseSupply + s.feeReserve + s.unpaidLiability
 
-def ExclusiveSettlement (s : State) : Prop :=
-  ¬(s.receivedIcpRelease = true ∧ s.receivedBaseRefund = true)
+def observeBurn (s : EconomicState) (amount : Nat) : EconomicState :=
+  { s with baseSupply := s.baseSupply - amount
+           unpaidLiability := s.unpaidLiability + amount }
 
-def ReceivedHistoryMonotone (before after : State) : Prop :=
-  (before.receivedIcpRelease = true → after.receivedIcpRelease = true) ∧
-  (before.receivedBaseRefund = true → after.receivedBaseRefund = true)
+def settleDebt (s : EconomicState) (amountOut serviceFee ledgerFee : Nat) : EconomicState :=
+  { escrow := s.escrow - amountOut - ledgerFee
+    baseSupply := s.baseSupply
+    feeReserve := s.feeReserve + serviceFee - ledgerFee
+    unpaidLiability := s.unpaidLiability - (amountOut + serviceFee) }
 
-inductive Step : State → State → Prop where
-  | acceptDeposit (s : State) (gross : Int) (nonnegative : 0 ≤ gross) :
-      Step s { s with
-        icpEscrow := s.icpEscrow + gross
-        depositLiability := s.depositLiability + gross }
-  | confirmMint (s : State) (gross net fee : Int)
-      (nonnegative : 0 ≤ gross ∧ 0 ≤ net ∧ 0 ≤ fee)
-      (partition : gross = net + fee)
-      (covered : gross ≤ s.depositLiability) :
-      Step s { s with
-        baseSupply := s.baseSupply + net
-        feeReserve := s.feeReserve + fee
-        depositLiability := s.depositLiability - gross }
-  | requestWithdrawal (s : State) (gross : Int)
-      (phase : s.withdrawalPhase = .idle)
-      (unencumbered : s.targetWithdrawalLiability = 0)
-      (nonnegative : 0 ≤ gross)
-      (covered : gross ≤ s.baseSupply)
-      (unsettled : s.receivedIcpRelease = false ∧ s.receivedBaseRefund = false) :
-      Step s { s with
-        baseSupply := s.baseSupply - gross
-        targetWithdrawalLiability := gross
-        withdrawalPhase := .releasing }
-  | cancelRelease (s : State) (phase : s.withdrawalPhase = .releasing) :
-      Step s { s with withdrawalPhase := .pending }
-  | releaseIcp (s : State) (amountOut serviceFee ledgerFee : Int)
-      (phase : s.withdrawalPhase = .releasing)
-      (nonnegative : 0 ≤ amountOut ∧ 0 ≤ serviceFee ∧ 0 ≤ ledgerFee)
-      (escrowCovered : amountOut + ledgerFee ≤ s.icpEscrow)
-      (liabilityPartition :
-        amountOut + serviceFee + ledgerFee = s.targetWithdrawalLiability)
-      (notRefunded : s.receivedBaseRefund = false) :
-      Step s { s with
-        icpEscrow := s.icpEscrow - amountOut - ledgerFee
-        feeReserve := s.feeReserve + serviceFee
-        targetWithdrawalLiability := 0
-        withdrawalPhase := .released
-        receivedIcpRelease := true }
-  | refundBase (s : State) (gross : Int)
-      (phase : s.withdrawalPhase = .pending)
-      (nonnegative : 0 ≤ gross)
-      (liabilityPartition : gross = s.targetWithdrawalLiability)
-      (notReleased : s.receivedIcpRelease = false) :
-      Step s { s with
-        baseSupply := s.baseSupply + gross
-        targetWithdrawalLiability := 0
-        withdrawalPhase := .refunded
-        receivedBaseRefund := true }
+theorem observe_burn_preserves_backing
+    {s : EconomicState} {amount : Nat}
+    (backed : Backed s) (available : amount ≤ s.baseSupply) :
+    Backed (observeBurn s amount) := by
+  unfold Backed at backed ⊢
+  simp only [observeBurn]
+  omega
 
-theorem step_preserves_one_to_one {before after : State}
-    (backed : OneToOne before) (step : Step before after) : OneToOne after := by
-  cases step <;> simp_all [OneToOne] <;> omega
-
-theorem step_preserves_nonnegative_balances {before after : State}
-    (nonnegative : NonnegativeBalances before) (step : Step before after) :
-    NonnegativeBalances after := by
-  cases step <;> simp_all [NonnegativeBalances] <;> omega
-
-theorem step_preserves_exclusive_settlement {before after : State}
-    (exclusive : ExclusiveSettlement before) (step : Step before after) :
-    ExclusiveSettlement after := by
-  cases step <;> simp_all [ExclusiveSettlement]
-
-theorem step_preserves_received_history {before after : State} (step : Step before after) :
-    ReceivedHistoryMonotone before after := by
-  cases step <;> simp_all [ReceivedHistoryMonotone]
-
-theorem step_preserves_terminal_liability_cleared {before after : State}
-    (cleared : TerminalLiabilityCleared before) (step : Step before after) :
-    TerminalLiabilityCleared after := by
-  cases step <;> simp_all [TerminalLiabilityCleared, EconomicTerminal]
-
-theorem step_preserves_other_withdrawal_liability {before after : State}
-    (step : Step before after) :
-    after.otherWithdrawalLiability = before.otherWithdrawalLiability := by
-  cases step <;> rfl
-
-inductive Reachable : State → State → Prop where
-  | refl (s : State) : Reachable s s
-  | tail {initial before after : State} :
-      Reachable initial before → Step before after → Reachable initial after
-
-def RefinedExecution (world : WorldAssumptions) (initial final : State) : Prop :=
-  TrustedWorld world ∧ Reachable initial final
-
-theorem valid_initial_has_cleared_terminal_liability {initial : State}
-    (valid : ValidInitial initial) : TerminalLiabilityCleared initial := by
-  intro terminal
-  exact valid.2.2.2.1
-
-theorem reachable_preserves_one_to_one {initial final : State}
-    (backed : OneToOne initial) (reachable : Reachable initial final) : OneToOne final := by
-  induction reachable with
-  | refl => exact backed
-  | tail reachable step ih => exact step_preserves_one_to_one ih step
-
-theorem reachable_preserves_nonnegative_balances {initial final : State}
-    (nonnegative : NonnegativeBalances initial) (reachable : Reachable initial final) :
-    NonnegativeBalances final := by
-  induction reachable with
-  | refl => exact nonnegative
-  | tail reachable step ih => exact step_preserves_nonnegative_balances ih step
-
-theorem withdrawal_never_receives_release_and_refund {initial final : State}
-    (exclusive : ExclusiveSettlement initial) (reachable : Reachable initial final) :
-    ExclusiveSettlement final := by
-  induction reachable with
-  | refl => exact exclusive
-  | tail reachable step ih => exact step_preserves_exclusive_settlement ih step
-
-theorem reachable_preserves_received_history {initial final : State}
-    (reachable : Reachable initial final) : ReceivedHistoryMonotone initial final := by
-  induction reachable with
-  | refl => simp [ReceivedHistoryMonotone]
-  | tail reachable step ih =>
-      have current := step_preserves_received_history step
-      exact ⟨fun initialTrue => current.1 (ih.1 initialTrue),
-        fun initialTrue => current.2 (ih.2 initialTrue)⟩
-
-theorem reachable_preserves_terminal_liability_cleared {initial final : State}
-    (cleared : TerminalLiabilityCleared initial) (reachable : Reachable initial final) :
-    TerminalLiabilityCleared final := by
-  induction reachable with
-  | refl => exact cleared
-  | tail reachable step ih => exact step_preserves_terminal_liability_cleared ih step
-
-theorem economic_terminal_has_zero_target_liability {initial final : State}
-    (cleared : TerminalLiabilityCleared initial) (reachable : Reachable initial final)
-    (terminal : EconomicTerminal final) : final.targetWithdrawalLiability = 0 := by
-  exact reachable_preserves_terminal_liability_cleared cleared reachable terminal
-
-theorem valid_execution_terminal_has_zero_target_liability {initial final : State}
-    (valid : ValidInitial initial) (reachable : Reachable initial final)
-    (terminal : EconomicTerminal final) : final.targetWithdrawalLiability = 0 := by
-  exact economic_terminal_has_zero_target_liability
-    (valid_initial_has_cleared_terminal_liability valid) reachable terminal
-
-theorem refined_execution_terminal_safety {world : WorldAssumptions} {initial final : State}
-    (valid : ValidInitial initial) (execution : RefinedExecution world initial final)
-    (terminal : EconomicTerminal final) :
-    final.targetWithdrawalLiability = 0 ∧ OneToOne final ∧ ExclusiveSettlement final := by
-  have reachable := execution.2
-  exact ⟨valid_execution_terminal_has_zero_target_liability valid reachable terminal,
-    reachable_preserves_one_to_one valid.1 reachable,
-    withdrawal_never_receives_release_and_refund (by simp [ExclusiveSettlement, valid.2.2.2.2])
-      reachable⟩
-
-theorem reachable_preserves_other_withdrawal_liability {initial final : State}
-    (reachable : Reachable initial final) :
-    final.otherWithdrawalLiability = initial.otherWithdrawalLiability := by
-  induction reachable with
-  | refl => rfl
-  | tail reachable step ih =>
-      rw [step_preserves_other_withdrawal_liability step, ih]
-
-end BridgeModel
+theorem paid_debt_preserves_backing
+    {s : EconomicState} {amountOut serviceFee ledgerFee : Nat}
+    (backed : Backed s)
+    (feeBound : ledgerFee ≤ serviceFee)
+    (liability : amountOut + serviceFee ≤ s.unpaidLiability)
+    (escrow : amountOut + ledgerFee ≤ s.escrow) :
+    Backed (settleDebt s amountOut serviceFee ledgerFee) := by
+  unfold Backed at backed ⊢
+  simp only [settleDebt]
+  omega

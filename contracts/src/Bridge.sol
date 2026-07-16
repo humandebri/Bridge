@@ -7,7 +7,6 @@ import {IBSNS} from "./interfaces/IBSNS.sol";
 import {IBridge} from "./interfaces/IBridge.sol";
 import {BridgeAdministration} from "./libraries/BridgeAdministration.sol";
 import {MintAccounting} from "./libraries/MintAccounting.sol";
-import {WithdrawalAccounting} from "./libraries/WithdrawalAccounting.sol";
 
 interface ITimelockCandidate {
     function getMinDelay() external view returns (uint256);
@@ -36,7 +35,6 @@ contract Bridge is IBridge {
 
     mapping(bytes32 depositId => bool processed) private _processedDeposits;
     mapping(uint256 withdrawalId => IBridge.Withdrawal withdrawal) private _withdrawals;
-    mapping(uint256 ledgerBlockIndex => uint256 withdrawalId) private _withdrawalIdByLedgerBlockIndex;
 
     modifier onlyBridgeSigner() {
         if (msg.sender != bridgeSigner) {
@@ -137,7 +135,7 @@ contract Bridge is IBridge {
         );
     }
 
-    function createWithdrawal(uint256 amount, uint256 minAmountOut, bytes calldata owner, bytes32 subaccount)
+    function createWithdrawal(uint256 amount, uint256 maxServiceFee, bytes calldata owner, bytes32 subaccount)
         external
         override
         whenWithdrawalsActive
@@ -146,8 +144,12 @@ contract Bridge is IBridge {
         if (amount == 0) {
             revert IBridge.InvalidAmount(amount);
         }
-        if (minAmountOut == 0 || minAmountOut > amount) {
-            revert IBridge.InvalidMinAmountOut(minAmountOut, amount);
+        uint256 chargedServiceFee = serviceFee;
+        if (chargedServiceFee > maxServiceFee) {
+            revert IBridge.ServiceFeeExceedsUserMaximum(chargedServiceFee, maxServiceFee);
+        }
+        if (amount <= chargedServiceFee) {
+            revert IBridge.InvalidAmount(amount);
         }
         if (owner.length == 0 || owner.length > 29 || (owner.length == 1 && owner[0] == bytes1(0x04))) {
             revert IBridge.InvalidPrincipal(owner);
@@ -158,110 +160,20 @@ contract Bridge is IBridge {
         IBridge.Withdrawal storage withdrawal = _withdrawals[withdrawalId];
         withdrawal.requester = msg.sender;
         withdrawal.amount = amount;
-        withdrawal.minAmountOut = minAmountOut;
+        withdrawal.maxServiceFee = maxServiceFee;
+        withdrawal.chargedServiceFee = chargedServiceFee;
+        withdrawal.amountOut = amount - chargedServiceFee;
         withdrawal.owner = owner;
         withdrawal.subaccount = subaccount;
-        withdrawal.status = IBridge.WithdrawalStatus.Releasing;
+        withdrawal.status = IBridge.WithdrawalStatus.Committed;
 
         if (!bsns.transferFrom(msg.sender, address(this), amount)) {
             revert IBridge.TokenTransferFailed();
         }
         bsns.bridgeBurn(amount);
-        emit IBridge.WithdrawalCreated(withdrawalId, msg.sender, amount, minAmountOut, owner, subaccount);
-    }
-
-    function acknowledgeRelease(
-        uint256 withdrawalId,
-        uint256 amountOut,
-        uint256 withdrawalServiceFee,
-        uint256 ledgerFee,
-        uint256 ledgerBlockIndex
-    ) external override onlyBridgeSigner {
-        _acknowledgeRelease(withdrawalId, amountOut, withdrawalServiceFee, ledgerFee, ledgerBlockIndex);
-    }
-
-    function cancelRelease(uint256 withdrawalId) external override onlyBridgeSigner {
-        IBridge.Withdrawal storage withdrawal = _withdrawals[withdrawalId];
-        IBridge.WithdrawalStatus status = withdrawal.status;
-        if (status == IBridge.WithdrawalStatus.None) {
-            revert IBridge.WithdrawalNotFound(withdrawalId);
-        }
-        if (!WithdrawalAccounting.cancelAllowed(status)) {
-            revert IBridge.InvalidWithdrawalStatus(withdrawalId, status);
-        }
-        withdrawal.status = IBridge.WithdrawalStatus.Pending;
-        emit IBridge.WithdrawalReleaseCancelled(withdrawalId);
-    }
-
-    function _acknowledgeRelease(
-        uint256 withdrawalId,
-        uint256 amountOut,
-        uint256 withdrawalServiceFee,
-        uint256 ledgerFee,
-        uint256 ledgerBlockIndex
-    ) private {
-        IBridge.Withdrawal storage withdrawal = _withdrawals[withdrawalId];
-        IBridge.WithdrawalStatus status = withdrawal.status;
-        if (status == IBridge.WithdrawalStatus.None) {
-            revert IBridge.WithdrawalNotFound(withdrawalId);
-        }
-
-        bool detailsMatch = status == IBridge.WithdrawalStatus.Released && withdrawal.amountOut == amountOut
-            && withdrawal.serviceFee == withdrawalServiceFee && withdrawal.ledgerFee == ledgerFee
-            && withdrawal.ledgerBlockIndex == ledgerBlockIndex;
-        WithdrawalAccounting.ReleaseAction action = WithdrawalAccounting.releaseAction(status, detailsMatch);
-        if (action == WithdrawalAccounting.ReleaseAction.Idempotent) {
-            return;
-        }
-        if (action == WithdrawalAccounting.ReleaseAction.Reject) {
-            if (status == IBridge.WithdrawalStatus.Released) {
-                revert IBridge.ReleaseAcknowledgementMismatch(withdrawalId);
-            }
-            revert IBridge.InvalidWithdrawalStatus(withdrawalId, status);
-        }
-
-        if (!WithdrawalAccounting.feeWithinMaximum(withdrawalServiceFee, MAX_SERVICE_FEE)) {
-            revert IBridge.InvalidServiceFee(withdrawalServiceFee, MAX_SERVICE_FEE);
-        }
-        if (!WithdrawalAccounting.settlementMatches(withdrawal.amount, amountOut, withdrawalServiceFee, ledgerFee)) {
-            revert IBridge.SettlementAmountsMismatch(withdrawal.amount, amountOut, withdrawalServiceFee, ledgerFee);
-        }
-        if (!WithdrawalAccounting.meetsMinimum(amountOut, withdrawal.minAmountOut)) {
-            revert IBridge.InvalidMinAmountOut(withdrawal.minAmountOut, amountOut);
-        }
-
-        uint256 existingWithdrawalId = _withdrawalIdByLedgerBlockIndex[ledgerBlockIndex];
-        (bool ledgerBlockAvailable, uint256 recordedWithdrawalId) =
-            WithdrawalAccounting.tryRecordLedgerBlock(existingWithdrawalId, withdrawalId);
-        if (!ledgerBlockAvailable) {
-            revert IBridge.LedgerBlockAlreadyAcknowledged(ledgerBlockIndex, existingWithdrawalId);
-        }
-        _withdrawalIdByLedgerBlockIndex[ledgerBlockIndex] = recordedWithdrawalId;
-        withdrawal.status = IBridge.WithdrawalStatus.Released;
-        withdrawal.amountOut = amountOut;
-        withdrawal.serviceFee = withdrawalServiceFee;
-        withdrawal.ledgerFee = ledgerFee;
-        withdrawal.ledgerBlockIndex = ledgerBlockIndex;
-        emit IBridge.WithdrawalReleased(withdrawalId, amountOut, withdrawalServiceFee, ledgerFee, ledgerBlockIndex);
-    }
-
-    function refundWithdrawal(uint256 withdrawalId) external override onlyBridgeSigner {
-        _refundWithdrawal(withdrawalId);
-    }
-
-    function _refundWithdrawal(uint256 withdrawalId) private {
-        IBridge.Withdrawal storage withdrawal = _withdrawals[withdrawalId];
-        IBridge.WithdrawalStatus status = withdrawal.status;
-        if (status == IBridge.WithdrawalStatus.None) {
-            revert IBridge.WithdrawalNotFound(withdrawalId);
-        }
-        if (!WithdrawalAccounting.refundAllowed(status)) {
-            revert IBridge.InvalidWithdrawalStatus(withdrawalId, status);
-        }
-
-        withdrawal.status = IBridge.WithdrawalStatus.Refunded;
-        bsns.bridgeMint(withdrawal.requester, withdrawal.amount);
-        emit IBridge.WithdrawalRefunded(withdrawalId, withdrawal.requester, withdrawal.amount);
+        emit IBridge.WithdrawalCommitted(
+            withdrawalId, msg.sender, amount, maxServiceFee, chargedServiceFee, withdrawal.amountOut, owner, subaccount
+        );
     }
 
     function bridgeSnapshot() external view override returns (IBridge.BridgeSnapshot memory) {

@@ -141,7 +141,7 @@ pub struct LedgerTransferIdentity {
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BaseMintSnapshot {
-    pub confirmed_block_number: u64,
+    pub finalized_head_block_number: u64,
     pub confirmed_block_timestamp: u64,
     pub service_fee: Amount,
     pub max_service_fee: Amount,
@@ -199,35 +199,26 @@ pub struct Settlement {
 }
 
 impl Settlement {
-    pub fn terminal_liability_residual(self, amount: Amount) -> Result<Amount, CoreError> {
-        // Preserve the public arithmetic-overflow classification while delegating the actual
-        // residual relation to the production/Verus shared kernel.
-        self.amount_out
-            .checked_add(self.service_fee)?
-            .checked_add(self.ledger_fee)?;
-        crate::terminal_liability_residual(
-            amount.get(),
-            self.amount_out.get(),
-            self.service_fee.get(),
-            self.ledger_fee.get(),
-        )
-        .map(Amount::new)
-        .ok_or(CoreError::SettlementMismatch)
+    pub fn net_service_fee(self) -> Result<Amount, CoreError> {
+        self.service_fee.checked_sub(self.ledger_fee)
     }
 
-    pub fn validate(
+    pub fn validate_committed(
         self,
         amount: Amount,
-        min_amount_out: Amount,
         max_service_fee: Amount,
     ) -> Result<(), CoreError> {
         if self.service_fee > max_service_fee {
             return Err(CoreError::ServiceFeeAboveMaximum);
         }
-        if self.amount_out < min_amount_out {
-            return Err(CoreError::MinimumAmountNotMet);
+        if self.ledger_fee > self.service_fee {
+            return Err(CoreError::LedgerFeeExceedsServiceFee);
         }
-        if self.terminal_liability_residual(amount)? != Amount::ZERO {
+        if !crate::committed_quote_matches(
+            amount.get(),
+            self.amount_out.get(),
+            self.service_fee.get(),
+        ) {
             return Err(CoreError::SettlementMismatch);
         }
         Ok(())
@@ -269,11 +260,13 @@ pub enum CoreError {
     ArithmeticOverflow,
     ArithmeticUnderflow,
     ServiceFeeAboveMaximum,
+    LedgerFeeExceedsServiceFee,
     ServiceFeeAboveUserMaximum,
     PerDepositLimitExceeded,
     MintWindowLimitExceeded,
-    MinimumAmountNotMet,
     SettlementMismatch,
+    StaleFinalizedObservation,
+    ConflictingFinalizedObservation,
     InvalidLedgerOperation,
     InvalidTransition {
         entity: &'static str,

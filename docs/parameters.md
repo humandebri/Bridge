@@ -71,7 +71,7 @@ MAX_SERVICE_FEE = SNS ledger fee × 100〜1000
 
 - gas 価格の上限評価
 - EVM RPC 費用と management canister call 費用の上限評価
-- 公式EVM RPC Canisterと設定されたquorumがcanonical Safe chainを正しく返すこと
+- 公式EVM RPC Canisterと設定されたquorumがcanonical Finalized chainを正しく返すこと
 - 監視が5分以内検知、15分以内担当確認、60分以内のBase/IC双方pauseを実証できること
 
 EVM RPC Canister配下providerの運営主体、基盤、可用性は監査対象外であり、production承認条件には含めない。

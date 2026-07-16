@@ -50,12 +50,28 @@ pub enum DepositState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DepositEvent {
-    PullSucceeded { ledger_block_index: u128 },
-    PullAmbiguous { hold_id: HoldId },
-    PullFailed { code: LedgerFailure },
-    PrepareMint { operation_id: EvmOperationId },
-    MintConfirmed { operation_id: EvmOperationId },
-    MintReverted { operation_id: EvmOperationId },
+    PullSucceeded {
+        ledger_block_index: u128,
+    },
+    PullAmbiguous {
+        hold_id: HoldId,
+    },
+    PullFailed {
+        code: LedgerFailure,
+    },
+    PrepareMint {
+        operation_id: EvmOperationId,
+    },
+    MintConfirmed {
+        operation_id: EvmOperationId,
+    },
+    MintReverted {
+        operation_id: EvmOperationId,
+    },
+    RetryMint {
+        reverted_operation_id: EvmOperationId,
+        replacement_operation_id: EvmOperationId,
+    },
 }
 
 #[cfg_attr(
@@ -182,6 +198,25 @@ impl DepositRecord {
             (State::MintPending { .. }, Event::MintReverted { .. }) => {
                 return Err(CoreError::ConflictingReplay);
             }
+            (
+                State::MintReverted {
+                    ledger_block_index,
+                    operation_id: current,
+                },
+                Event::RetryMint {
+                    reverted_operation_id,
+                    replacement_operation_id,
+                },
+            ) if *current == reverted_operation_id => (
+                State::MintPending {
+                    ledger_block_index: *ledger_block_index,
+                    operation_id: replacement_operation_id,
+                },
+                Amount::ZERO,
+            ),
+            (State::MintReverted { .. }, Event::RetryMint { .. }) => {
+                return Err(CoreError::ConflictingReplay);
+            }
             (_, other) => {
                 return Err(CoreError::InvalidTransition {
                     entity: "deposit",
@@ -242,6 +277,16 @@ impl DepositRecord {
                 },
                 Event::MintReverted { operation_id },
             ) => *current == *operation_id,
+            (
+                State::MintPending {
+                    operation_id: current,
+                    ..
+                },
+                Event::RetryMint {
+                    replacement_operation_id,
+                    ..
+                },
+            ) => current == replacement_operation_id,
             _ => false,
         }
     }
@@ -270,6 +315,7 @@ impl DepositEvent {
             Self::PrepareMint { .. } => 3,
             Self::MintConfirmed { .. } => 4,
             Self::MintReverted { .. } => 5,
+            Self::RetryMint { .. } => 6,
         }
     }
 
@@ -281,6 +327,7 @@ impl DepositEvent {
             Self::PrepareMint { .. } => "prepare_mint",
             Self::MintConfirmed { .. } => "mint_confirmed",
             Self::MintReverted { .. } => "mint_reverted",
+            Self::RetryMint { .. } => "retry_mint",
         }
     }
 }

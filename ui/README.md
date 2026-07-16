@@ -32,7 +32,7 @@ pnpm run e2e:real
 The checked-in `base-sepolia-preflight` profile is intentionally incomplete. Complete every
 canister/contract identifier, expected Bridge signer, deployment block, and runtime bytecode hash before publishing a
 working environment. At runtime the UI verifies wallet chain, contract
-bytecode, `Bridge.bsns()`, the Safe-confirmed Bridge signer, token metadata, `get_public_config`, and schema version. Any failure
+bytecode, `Bridge.bsns()`, the quorum-confirmed Finalized Bridge signer, token metadata, `get_public_config`, and schema version. Any failure
 disables approve, deposit, and withdrawal controls.
 
 The deployment profile has no manual read-only flag or origin allowlist. Controls become available
@@ -42,14 +42,14 @@ but it is not canister authorization: direct canister calls remain possible.
 OISY and Plug are the only supported IC wallets. Internet Identity and delegated browser
 identities are not used. Deposit history is read from the public canister index; anyone who knows
 an owner Principal can enumerate its deposit IDs and correlate them with the Base recipients in
-the corresponding deposit records. Withdrawal History scans Safe-confirmed Base logs in 5,000-block
+the corresponding deposit records. Withdrawal History scans Finalized Base logs in 5,000-block
 chunks, with at most four RPC requests per refresh or manual `Scan older` action. The resumable
 cursor is held only in the React Query cache and is not persisted in browser storage.
 
 The Bridge form reads a latest-state `Current bridge fee` quote. Before enabling a write, runtime
-validation asks the Canister to refresh its quorum-backed Safe observation and treats that observation
+validation asks the Canister to refresh its quorum-backed Finalized observation and treats that observation
 as authoritative. It requires the observed chain ID, Bridge signer, and runtime hash to match the
-reviewed profile, verifies that the observed block is no newer than the browser RPC's Safe head, and
+reviewed profile, verifies that the observed block is no newer than the browser RPC's Finalized head, and
 binds every Base contract state and bytecode read to that canonical hash with EIP-1898. The
 browser's single-RPC result is supplemental; it cannot make the form writable without the Canister
 observation. The update endpoint is globally rate-limited and single-flight so the first write after
@@ -63,13 +63,16 @@ that the sequence was not accepted before unlocking the form. Reloading clears t
 after a reload, the user explicitly refreshes History and the owner sequence before creating another
 Deposit.
 
-After a Base withdrawal reaches the Safe head, the Bridge page automatically calls
-`notify_withdrawal` with the connected IC wallet. History reconstructs Safe-confirmed burns from
+After a Base withdrawal reaches the Finalized head, the Bridge page automatically calls
+`notify_withdrawal` with the connected IC wallet. History reconstructs Finalized burns from
 Base events and exposes `Check and notify` after a wallet rejection, reload, or RPC failure. No
-transaction hash or recovery cursor is persisted in browser storage. There is
+recovery cursor is persisted in browser storage. The pending confirmation record stores
+the Base transaction hash, owner, settlement ID for deposits, and active deployment identifiers in
+`localStorage`; it is scoped to the current Bridge deployment and contains no secret. There is
 intentionally no periodic canister-side discovery fallback, so a withdrawal that is never notified
-remains pending on Base. After ingestion, submitted EVM transactions are Safe-confirmed and
-normal settlement is advanced by canister timers even when the browser is closed. History polls
+remains pending on Base. After ingestion, submitted EVM transactions are confirmed through the
+frontend wallet flow and Canister Finalized revalidation; normal Ledger settlement is advanced by
+Canister timers even when the browser is closed. History polls
 queries every 60 seconds only while a visible record has an automatic check scheduled. `Retry
 settlement` appears only after automatic progress has stopped; it never runs automatically in the UI.
 

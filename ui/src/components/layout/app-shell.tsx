@@ -1,15 +1,21 @@
 import { Link, Outlet } from "@tanstack/react-router"
 import { History, Menu, ShieldCheck } from "lucide-react"
 import { WalletCenter, WalletDialogProvider } from "@/features/wallet/wallet-controls"
+import { SettlementConfirmationCoordinator } from "@/features/bridge/settlement-confirmation-coordinator"
+import blueKinic from "@/assets/blue_kinic.png"
 
 export function AppShell() {
-  return <WalletDialogProvider><div className="min-h-screen">
-    <header className="relative z-20 mx-auto flex max-w-[1155px] items-center justify-between px-4 py-5 md:px-6 md:py-6">
-      <Link to="/" search={{ direction: "deposit" }} className="group flex items-center gap-3" aria-label="KINIC Bridge home">
-        <img src="/kinic-mark.png" alt="" className="size-11 object-contain transition-transform duration-300 group-hover:scale-96" />
-        <span className="hidden text-lg font-bold tracking-[-.02em] text-black sm:inline">KINIC Bridge</span>
+  return <WalletDialogProvider><SettlementConfirmationCoordinator /><div className="min-h-screen">
+    <header className="relative z-20 mx-auto flex max-w-[1155px] items-center gap-3 px-4 py-5 md:px-6 md:py-7">
+      <Link to="/" search={{ direction: "deposit" }} className="group flex shrink-0 items-center gap-3 rounded-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:ring-offset-2" aria-label="KINIC Bridge home">
+        <img src={blueKinic} alt="" className="size-11 rounded-[13px] object-cover shadow-[0_8px_24px_rgba(20,34,53,.12)] transition-transform duration-300 group-hover:-rotate-2 group-hover:scale-[1.03]" />
+        <span className="hidden items-baseline gap-1.5 text-black sm:inline-flex"><strong className="text-lg font-bold tracking-[-.04em]">KINIC</strong><span className="text-[11px] font-bold uppercase tracking-[.16em] text-[var(--muted)]">Bridge</span></span>
       </Link>
-      <div className="flex items-center gap-2">
+      <div className="ml-auto flex min-w-0 items-center gap-2 md:gap-5">
+        <nav className="hidden items-center gap-1 md:flex" aria-label="Secondary navigation">
+          <Link to="/history" search={{ tab: "deposit" }} aria-label="Open history" className="rounded-xl px-3 py-2 text-sm font-semibold text-[var(--muted)] transition-colors hover:bg-[var(--panel)] hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"><span className="flex items-center gap-2"><History className="size-4" />History</span></Link>
+          <Link to="/status" aria-label="Open status" className="rounded-xl px-3 py-2 text-sm font-semibold text-[var(--muted)] transition-colors hover:bg-[var(--panel)] hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"><span className="flex items-center gap-2"><ShieldCheck className="size-4" />Status</span></Link>
+        </nav>
         <WalletCenter />
         <details className="menu-popover relative md:hidden">
           <summary className="grid size-11 cursor-pointer list-none place-items-center rounded-2xl border border-[var(--line)] bg-white transition duration-300 hover:-translate-y-[3px] hover:border-[var(--pink)] hover:bg-[var(--pink)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]" aria-label="Open navigation menu"><Menu className="size-5" /></summary>

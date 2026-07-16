@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useReducer } from "react"
-import { createPublicClient, defineChain, http } from "viem"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { bytesHex, RUNTIME_VALIDATION_TTL_MS, runtimeWriteBlocker, validateRuntime, type RuntimeValidation } from "@/lib/runtime-validation"
+import { basePublicClient } from "@/lib/evm/client"
 
 export function useRuntimeValidation(chainId?: number) {
   return useQuery({
@@ -46,7 +46,7 @@ export function useCurrentBaseQuote() {
     queryKey: ["base-quote", deploymentProfile.bridgeAddress],
     enabled: false,
     queryFn: async () => {
-      const client = baseClient()
+      const client = basePublicClient
       const address = deploymentProfile.bridgeAddress as `0x${string}`
       const snapshot = await client.readContract({ address, abi: bridgeAbi, functionName: "bridgeSnapshot" })
       return bridgeSnapshotView(snapshot)
@@ -56,29 +56,25 @@ export function useCurrentBaseQuote() {
 
 export function useConfirmedBaseStatus() {
   return useQuery({
-    queryKey: ["base-status-safe", deploymentProfile.bridgeAddress],
+    queryKey: ["base-status-finalized", deploymentProfile.bridgeAddress],
     enabled: false,
     queryFn: async () => {
-      const client = baseClient()
+      const client = basePublicClient
       const address = deploymentProfile.bridgeAddress as `0x${string}`
       const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
       const status = await actor.get_bridge_status()
-      const observedHash = bytesHex(status.last_safe_base_block_hash, 32)
-      if (!observedHash || status.last_safe_base_block === 0n) throw new Error("Canister Safe block observation is unavailable")
-      const [localSafe, observedBlock] = await Promise.all([
-        client.getBlock({ blockTag: "safe" }),
+      const observedHash = bytesHex(status.last_finalized_base_block_hash, 32)
+      if (!observedHash || status.last_finalized_base_block === 0n) throw new Error("Canister finalized block observation is unavailable")
+      const [localFinalized, observedBlock] = await Promise.all([
+        client.getBlock({ blockTag: "finalized" }),
         client.getBlock({ blockHash: observedHash }),
       ])
-      if (localSafe.number === null || localSafe.number < status.last_safe_base_block) throw new Error("Canister Safe block is ahead of the configured Base RPC Safe head")
-      if (observedBlock.number !== status.last_safe_base_block || observedBlock.hash?.toLowerCase() !== observedHash.toLowerCase()) throw new Error("Canister Safe block hash is not canonical on the configured Base RPC")
+      if (localFinalized.number === null || localFinalized.number < status.last_finalized_base_block) throw new Error("Canister finalized block is ahead of the configured Base RPC finalized head")
+      if (observedBlock.number !== status.last_finalized_base_block || observedBlock.hash?.toLowerCase() !== observedHash.toLowerCase()) throw new Error("Canister finalized block hash is not canonical on the configured Base RPC")
       const snapshot = await client.readContract({ address, abi: bridgeAbi, functionName: "bridgeSnapshot", blockHash: observedHash, requireCanonical: true })
-      return { ...bridgeSnapshotView(snapshot), observedBlock: status.last_safe_base_block, observedBlockHash: observedHash, observedTimestamp: snapshot.blockTimestamp }
+      return { ...bridgeSnapshotView(snapshot), observedBlock: status.last_finalized_base_block, observedBlockHash: observedHash, observedTimestamp: snapshot.blockTimestamp }
     },
   })
-}
-
-function baseClient() {
-  return createPublicClient({ chain: defineChain({ id: deploymentProfile.chainId, name: deploymentProfile.label, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [deploymentProfile.baseRpcUrl] } } }), transport: http(deploymentProfile.baseRpcUrl) })
 }
 
 function bridgeSnapshotView(snapshot: {

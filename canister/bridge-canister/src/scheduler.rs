@@ -1,23 +1,73 @@
 #[cfg(target_arch = "wasm32")]
+use crate::storage::SettlementJobClaim;
 use crate::{
-    storage::{ConfirmationSchedulerHealth, SettlementJob, SettlementJobClaim, SettlementJobKind},
-    tasks::{self, SettlementActionError, SettlementActionResult, SettlementStopReason},
+    storage::{ConfirmationSchedulerHealth, SettlementJob, SettlementJobKind},
+    tasks::{self, SettlementActionError, SettlementActionResult},
     ActionKey, InFlightGuard, STORE,
 };
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
-const MINUTE_NS: u64 = 60 * 1_000_000_000;
-#[cfg(target_arch = "wasm32")]
 const LEASE_NS: u64 = 120 * 1_000_000_000;
-#[cfg(target_arch = "wasm32")]
 const BUSY_RETRY_NS: u64 = 60 * 1_000_000_000;
-pub fn confirmation_delay_ns(kind: bridge_core::EvmOperationKind, check_index: u8) -> Option<u64> {
-    let _ = kind;
-    let minutes = [2, 3, 5].get(usize::from(check_index)).copied()?;
-    Some(minutes * MINUTE_NS)
+
+pub(crate) struct SettlementLease {
+    pub job: SettlementJob,
+    expected_receipt_block_number: Option<u64>,
+    expected_finalized_block_number: Option<u64>,
 }
 
+impl SettlementLease {
+    pub(crate) fn new(job: SettlementJob) -> Self {
+        Self {
+            job,
+            expected_receipt_block_number: None,
+            expected_finalized_block_number: None,
+        }
+    }
+
+    pub(crate) fn with_expected_confirmation(
+        mut self,
+        receipt_block_number: u64,
+        finalized_block_number: u64,
+    ) -> Self {
+        self.expected_receipt_block_number = Some(receipt_block_number);
+        self.expected_finalized_block_number = Some(finalized_block_number);
+        self
+    }
+
+    pub(crate) fn expected_receipt_block_number(&self) -> Option<u64> {
+        self.expected_receipt_block_number
+    }
+
+    pub(crate) fn expected_finalized_block_number(&self) -> Option<u64> {
+        self.expected_finalized_block_number
+    }
+
+    pub(crate) fn renew_before_external_call(&mut self) -> Result<(), SettlementActionError> {
+        let now = ic_cdk::api::time();
+        let renewed = STORE.with(|store| {
+            store.borrow_mut().renew_settlement_lease(
+                &mut self.job,
+                now,
+                now.saturating_add(LEASE_NS),
+            )
+        });
+        match renewed {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(SettlementActionError::Busy),
+            Err(_) => Err(SettlementActionError::StorageFailure),
+        }
+    }
+
+    pub(crate) fn ensure_current(&self) -> Result<(), SettlementActionError> {
+        match STORE.with(|store| store.borrow().settlement_lease_is_current(&self.job)) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(SettlementActionError::Busy),
+            Err(_) => Err(SettlementActionError::StorageFailure),
+        }
+    }
+}
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static SETTLEMENT_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
@@ -26,7 +76,8 @@ thread_local! {
 pub fn arm() {
     #[cfg(target_arch = "wasm32")]
     {
-        let next = STORE.with(|store| store.borrow().next_settlement_wakeup_ns());
+        let now = ic_cdk::api::time();
+        let next = STORE.with(|store| store.borrow().next_settlement_wakeup_ns(now));
         let Ok(next) = next else {
             mark_fault("failed to read the next settlement job");
             return;
@@ -36,10 +87,9 @@ pub fn arm() {
                 ic_cdk_timers::clear_timer(timer)
             }
             let Some(next_run_at_ns) = next else {
-                mark_readable();
                 return;
             };
-            let delay = next_run_at_ns.saturating_sub(ic_cdk::api::time());
+            let delay = next_run_at_ns.saturating_sub(now);
             let timer = ic_cdk_timers::set_timer(Duration::from_nanos(delay), async {
                 SETTLEMENT_TIMER.with(|slot| {
                     slot.borrow_mut().take();
@@ -48,7 +98,6 @@ pub fn arm() {
                 arm();
             });
             *slot.borrow_mut() = Some(timer);
-            mark_readable();
         });
     }
 }
@@ -69,135 +118,174 @@ async fn dispatch_due() {
             return;
         }
     };
-    let key = match job.kind {
-        SettlementJobKind::Deposit => ActionKey::Deposit(job.settlement_id),
-        SettlementJobKind::Withdrawal => ActionKey::Withdrawal(job.settlement_id),
+    let _ = run_claimed(job).await;
+}
+
+pub(crate) async fn run_claimed(
+    job: SettlementJob,
+) -> Result<SettlementActionResult, SettlementActionError> {
+    run_claimed_inner(job, None).await
+}
+
+pub(crate) async fn run_claimed_confirmation(
+    job: SettlementJob,
+    expected_receipt_block_number: u64,
+    expected_finalized_block_number: u64,
+) -> Result<SettlementActionResult, SettlementActionError> {
+    run_claimed_inner(
+        job,
+        Some((
+            expected_receipt_block_number,
+            expected_finalized_block_number,
+        )),
+    )
+    .await
+}
+
+async fn run_claimed_inner(
+    job: SettlementJob,
+    expected_confirmation: Option<(u64, u64)>,
+) -> Result<SettlementActionResult, SettlementActionError> {
+    let now = ic_cdk::api::time();
+    let mut lease = SettlementLease::new(job);
+    if let Some((receipt_block_number, finalized_block_number)) = expected_confirmation {
+        lease = lease.with_expected_confirmation(receipt_block_number, finalized_block_number);
+    }
+    // Keep a durable recovery wakeup armed before the first await. If this runner
+    // traps, the leased SQLite job can still be reclaimed after its deadline.
+    arm();
+    let key = match lease.job.kind {
+        SettlementJobKind::Deposit => ActionKey::Deposit(lease.job.settlement_id),
+        SettlementJobKind::Withdrawal => ActionKey::Withdrawal(lease.job.settlement_id),
     };
     let Some(_guard) = InFlightGuard::acquire(key) else {
         finish(
-            &job,
+            &lease.job,
             Some(now.saturating_add(BUSY_RETRY_NS)),
-            job.confirmation_checks,
+            lease.job.confirmation_checks,
             None,
-        );
-        return;
+            None,
+        )?;
+        return Err(SettlementActionError::Busy);
     };
     mark_healthy();
-    let result = match job.kind {
+    let result = match lease.job.kind {
         SettlementJobKind::Deposit => {
-            let result = tasks::advance_deposit(job.settlement_id).await;
-            if let Ok(value) = &result {
-                if crate::persist_deposit_settlement_result(job.settlement_id, value).is_err() {
-                    mark_fault("failed to persist automatic deposit progress");
-                    return;
-                }
-            }
-            result
+            tasks::advance_deposit(lease.job.settlement_id, &mut lease).await
         }
         SettlementJobKind::Withdrawal => {
-            let result = tasks::advance_withdrawal(job.settlement_id).await;
-            if let Ok(value) = &result {
-                if crate::persist_withdrawal_settlement_result(job.settlement_id, value).is_err() {
-                    mark_fault("failed to persist automatic withdrawal progress");
-                    return;
-                }
-            }
-            result
+            tasks::advance_withdrawal(lease.job.settlement_id, &mut lease).await
         }
     };
-    match result {
-        Ok(SettlementActionResult::WaitingForConfirmation { .. }) => {
-            let checks = job.confirmation_checks.saturating_add(1);
-            let kind = job.operation_id.and_then(|operation_id| {
-                STORE.with(|store| {
-                    store
-                        .borrow()
-                        .evm_operation(operation_id)
-                        .ok()
-                        .flatten()
-                        .map(|operation| operation.kind)
-                })
-            });
-            let next_delay = kind.and_then(|kind| confirmation_delay_ns(kind, checks));
-            if next_delay.is_none() {
-                let stopped = SettlementActionResult::Stopped {
-                    state: "Submitted".into(),
-                    reason: SettlementStopReason::ConfirmationCheckExhausted,
-                };
-                let persisted = match job.kind {
-                    SettlementJobKind::Deposit => {
-                        crate::persist_deposit_settlement_result(job.settlement_id, &stopped)
-                    }
-                    SettlementJobKind::Withdrawal => {
-                        crate::persist_withdrawal_settlement_result(job.settlement_id, &stopped)
-                    }
-                };
-                if persisted.is_err() {
-                    mark_fault("failed to persist confirmation exhaustion");
-                    return;
-                }
-                finish(
-                    &job,
-                    None,
-                    checks,
-                    Some("Base transaction did not reach the Safe head within 10 minutes"),
-                );
-            } else {
-                finish(
-                    &job,
-                    Some(ic_cdk::api::time().saturating_add(next_delay.unwrap_or_default())),
-                    checks,
-                    None,
-                );
-            }
-        }
-        Ok(SettlementActionResult::Stopped { ref reason, .. }) => finish(
-            &job,
+    let record_stop_reason = result.as_ref().ok().and_then(tasks::stop_reason_text);
+    let outcome = match &result {
+        Ok(SettlementActionResult::WaitingForConfirmation { .. }) => STORE
+            .with(|store| {
+                store
+                    .borrow_mut()
+                    .park_awaiting_confirmation(&lease.job, ic_cdk::api::time())
+            })
+            .map_err(|_| SettlementActionError::StorageFailure),
+        Ok(SettlementActionResult::Stopped { reason, .. }) => finish(
+            &lease.job,
             None,
-            job.confirmation_checks,
-            Some(&format!("{reason:?}")),
+            lease.job.confirmation_checks,
+            Some(("SettlementStopped", format!("{reason:?}"))),
+            record_stop_reason.clone(),
         ),
         Ok(SettlementActionResult::ReconciliationProgress { .. }) => finish(
-            &job,
+            &lease.job,
             None,
-            job.confirmation_checks,
-            Some("Reconciliation requires manual progress"),
+            lease.job.confirmation_checks,
+            Some((
+                "ReconciliationProgress",
+                "Reconciliation requires manual progress".into(),
+            )),
+            record_stop_reason.clone(),
         ),
-        Ok(SettlementActionResult::Submitted { .. }) => { /* submission atomically rescheduled this job */
-        }
+        Ok(SettlementActionResult::Submitted { .. }) => STORE
+            .with(|store| {
+                store
+                    .borrow_mut()
+                    .set_settlement_stop_reason_fenced(&lease.job, None)
+            })
+            .map(|_| ())
+            .map_err(|_| SettlementActionError::StorageFailure),
         Ok(SettlementActionResult::Complete { .. }) => {
-            finish(&job, None, job.confirmation_checks, None)
+            finish(&lease.job, None, lease.job.confirmation_checks, None, None)
         }
         Err(SettlementActionError::Busy) => finish(
-            &job,
+            &lease.job,
             Some(ic_cdk::api::time().saturating_add(BUSY_RETRY_NS)),
-            job.confirmation_checks,
+            lease.job.confirmation_checks,
+            None,
             None,
         ),
         Err(error) => finish(
-            &job,
+            &lease.job,
             None,
-            job.confirmation_checks,
-            Some(&format!("{error:?}")),
+            lease.job.confirmation_checks,
+            Some(("SettlementActionError", format!("{error:?}"))),
+            Some(format!("{error:?}")),
         ),
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn finish(job: &SettlementJob, next: Option<u64>, checks: u8, error: Option<&str>) {
-    if STORE
-        .with(|store| {
-            store
-                .borrow_mut()
-                .finish_settlement_job(job, next, checks, error)
-        })
-        .is_err()
-    {
+    };
+    if outcome.is_err() {
         mark_fault("failed to persist settlement job outcome");
+        return Err(SettlementActionError::StorageFailure);
+    }
+    result
+}
+
+pub(crate) async fn run_newly_enqueued(
+    kind: SettlementJobKind,
+    settlement_id: [u8; 32],
+) -> Option<SettlementActionResult> {
+    let now = ic_cdk::api::time();
+    let claim = STORE.with(|store| {
+        store.borrow_mut().claim_specific_due_settlement_job(
+            kind,
+            settlement_id,
+            now,
+            now.saturating_add(LEASE_NS),
+        )
+    });
+    match claim {
+        Ok(crate::storage::SettlementJobClaim::Claimed(job)) => run_claimed(job).await.ok(),
+        Ok(
+            crate::storage::SettlementJobClaim::ActiveLease { .. }
+            | crate::storage::SettlementJobClaim::None,
+        ) => None,
+        Err(_) => {
+            mark_fault("failed to claim a newly enqueued settlement job");
+            None
+        }
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+fn finish(
+    job: &SettlementJob,
+    next: Option<u64>,
+    checks: u8,
+    error: Option<(&str, String)>,
+    record_stop_reason: Option<String>,
+) -> Result<(), SettlementActionError> {
+    let now = ic_cdk::api::time();
+    STORE
+        .with(|store| {
+            store.borrow_mut().finish_settlement_job(
+                job,
+                next,
+                checks,
+                error
+                    .as_ref()
+                    .map(|(code, detail)| (*code, detail.as_str())),
+                record_stop_reason,
+                now,
+            )
+        })
+        .map_err(|_| SettlementActionError::StorageFailure)
+}
+
 fn mark_healthy() {
     let health = ConfirmationSchedulerHealth {
         healthy: true,
@@ -211,18 +299,6 @@ fn mark_healthy() {
     });
 }
 
-#[cfg(target_arch = "wasm32")]
-fn mark_readable() {
-    let _ = STORE.with(|store| {
-        let mut store = store.borrow_mut();
-        let mut health = store.confirmation_scheduler_health()?;
-        health.healthy = true;
-        health.last_error = None;
-        store.set_confirmation_scheduler_health(&health)
-    });
-}
-
-#[cfg(target_arch = "wasm32")]
 fn mark_fault(message: &str) {
     let health = ConfirmationSchedulerHealth {
         healthy: false,
@@ -235,25 +311,4 @@ fn mark_fault(message: &str) {
             .set_confirmation_scheduler_health(&health)
     });
     ic_cdk::println!("settlement scheduler fault: {message}");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bridge_core::EvmOperationKind;
-
-    #[test]
-    fn safe_operations_are_checked_at_cumulative_2_5_10_minutes() {
-        for kind in [
-            EvmOperationKind::MintDeposit,
-            EvmOperationKind::CancelRelease,
-            EvmOperationKind::RefundWithdrawal,
-            EvmOperationKind::AcknowledgeRelease,
-        ] {
-            let delays = (0..4)
-                .map(|index| confirmation_delay_ns(kind, index).map(|ns| ns / MINUTE_NS))
-                .collect::<Vec<_>>();
-            assert_eq!(delays, vec![Some(2), Some(3), Some(5), None]);
-        }
-    }
 }

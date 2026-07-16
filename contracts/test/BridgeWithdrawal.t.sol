@@ -1,11 +1,11 @@
-// contracts/test: verify Withdrawal burn, exclusive settlement, idempotent release, and full Base Refund.
+// contracts/test: verify irreversible Withdrawal commitment and deterministic ICP payout quotes.
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
 import {Bridge} from "../src/Bridge.sol";
 import {IBSNS} from "../src/interfaces/IBSNS.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
-import {TestBase, Vm} from "./TestBase.sol";
+import {TestBase} from "./TestBase.sol";
 
 contract BridgeWithdrawalTest is TestBase {
     address private constant BRIDGE_SIGNER = address(0x11);
@@ -16,19 +16,16 @@ contract BridgeWithdrawalTest is TestBase {
     uint256 private constant SERVICE_FEE = 10;
     bytes32 private constant SUBACCOUNT = bytes32(uint256(0x1234));
 
-    event WithdrawalCreated(
+    event WithdrawalCommitted(
         uint256 indexed withdrawalId,
         address indexed requester,
         uint256 amount,
-        uint256 minAmountOut,
+        uint256 maxServiceFee,
+        uint256 chargedServiceFee,
+        uint256 amountOut,
         bytes owner,
         bytes32 subaccount
     );
-    event WithdrawalReleased(
-        uint256 indexed withdrawalId, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee, uint256 ledgerBlockIndex
-    );
-    event WithdrawalReleaseCancelled(uint256 indexed withdrawalId);
-    event WithdrawalRefunded(uint256 indexed withdrawalId, address indexed requester, uint256 amount);
 
     Bridge private bridge;
     IBSNS private token;
@@ -50,24 +47,24 @@ contract BridgeWithdrawalTest is TestBase {
             SERVICE_FEE
         );
         token = bridge.bsns();
-        vm.startPrank(BASE_ADMIN_TIMELOCK);
+        vm.prank(BASE_ADMIN_TIMELOCK);
         bridge.unpauseDepositMints();
+        vm.prank(BASE_ADMIN_TIMELOCK);
         bridge.unpauseWithdrawals();
-        vm.stopPrank();
         vm.prank(BRIDGE_SIGNER);
         bridge.mintDeposit(
             IBridge.DepositMintRequest(keccak256("withdrawal-funding"), USER, 1_010, SERVICE_FEE, SERVICE_FEE)
         );
     }
 
-    function testCreateWithdrawalBurnsAndStoresEveryField() public {
+    function testCreateWithdrawalBurnsAndCommitsDeterministicPayout() public {
         bytes memory owner = hex"010203";
         vm.prank(USER);
         token.approve(address(bridge), 600);
         vm.expectEmit(true, true, false, true, address(bridge));
-        emit WithdrawalCreated(1, USER, 600, 500, owner, SUBACCOUNT);
+        emit WithdrawalCommitted(1, USER, 600, SERVICE_FEE, SERVICE_FEE, 590, owner, SUBACCOUNT);
         vm.prank(USER);
-        uint256 withdrawalId = bridge.createWithdrawal(600, 500, owner, SUBACCOUNT);
+        uint256 withdrawalId = bridge.createWithdrawal(600, SERVICE_FEE, owner, SUBACCOUNT);
 
         assert(withdrawalId == 1);
         assert(bridge.nextWithdrawalId() == 2);
@@ -78,361 +75,100 @@ contract BridgeWithdrawalTest is TestBase {
         IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(withdrawalId);
         assert(withdrawal.requester == USER);
         assert(withdrawal.amount == 600);
-        assert(withdrawal.minAmountOut == 500);
+        assert(withdrawal.maxServiceFee == SERVICE_FEE);
+        assert(withdrawal.chargedServiceFee == SERVICE_FEE);
+        assert(withdrawal.amountOut == 590);
         assert(keccak256(withdrawal.owner) == keccak256(owner));
         assert(withdrawal.subaccount == SUBACCOUNT);
-        assert(withdrawal.status == IBridge.WithdrawalStatus.Releasing);
-        assert(withdrawal.amountOut == 0);
-        assert(withdrawal.serviceFee == 0);
-        assert(withdrawal.ledgerFee == 0);
-        assert(withdrawal.ledgerBlockIndex == 0);
+        assert(withdrawal.status == IBridge.WithdrawalStatus.Committed);
     }
 
-    function testCreateWithdrawalUsesSequentialIds() public {
-        uint256 first = _createWithdrawal(400, 300, hex"01", bytes32(0));
-        uint256 second = _createWithdrawal(300, 200, hex"02", SUBACCOUNT);
-        assert(first == 1);
-        assert(second == 2);
-        assert(bridge.nextWithdrawalId() == 3);
-        assert(bridge.getWithdrawal(first).status == IBridge.WithdrawalStatus.Releasing);
-        assert(bridge.getWithdrawal(second).status == IBridge.WithdrawalStatus.Releasing);
-    }
-
-    function testCreateWithdrawalValidatesAmountAndMinimum() public {
-        vm.startPrank(USER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, 0));
-        bridge.createWithdrawal(0, 1, hex"01", bytes32(0));
-
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidMinAmountOut.selector, 0, 100));
-        bridge.createWithdrawal(100, 0, hex"01", bytes32(0));
-
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidMinAmountOut.selector, 101, 100));
-        bridge.createWithdrawal(100, 101, hex"01", bytes32(0));
-
-        token.approve(address(bridge), 100);
-        uint256 withdrawalId = bridge.createWithdrawal(100, 100, hex"01", bytes32(0));
-        vm.stopPrank();
-        assert(withdrawalId == 1);
-    }
-
-    function testCreateWithdrawalValidatesPrincipalBytes() public {
-        bytes memory thirtyBytes = new bytes(30);
-        bytes memory twentyNineBytes = new bytes(29);
-        twentyNineBytes[28] = bytes1(0x02);
-
-        vm.startPrank(USER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidPrincipal.selector, bytes("")));
-        bridge.createWithdrawal(100, 1, bytes(""), bytes32(0));
-
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidPrincipal.selector, thirtyBytes));
-        bridge.createWithdrawal(100, 1, thirtyBytes, bytes32(0));
-
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidPrincipal.selector, hex"04"));
-        bridge.createWithdrawal(100, 1, hex"04", bytes32(0));
-
-        token.approve(address(bridge), 100);
-        uint256 withdrawalId = bridge.createWithdrawal(100, 1, twentyNineBytes, bytes32(0));
-        vm.stopPrank();
-
-        IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(withdrawalId);
-        assert(withdrawal.owner.length == 29);
-        assert(withdrawal.subaccount == bytes32(0));
-    }
-
-    function testBurnFailureRollsBackRecordAndId() public {
-        vm.prank(USER);
-        token.approve(address(bridge), 1_001);
-        vm.prank(USER);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                bytes4(keccak256("ERC20InsufficientBalance(address,uint256,uint256)")), USER, 1_000, 1_001
-            )
-        );
-        bridge.createWithdrawal(1_001, 1, hex"01", bytes32(0));
-
-        assert(bridge.nextWithdrawalId() == 1);
-        assert(bridge.getWithdrawal(1).status == IBridge.WithdrawalStatus.None);
-        assert(token.balanceOf(USER) == 1_000);
-    }
-
-    function testCreateWithdrawalRequiresExactAllowanceAndConsumesIt() public {
-        vm.prank(USER);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                bytes4(keccak256("ERC20InsufficientAllowance(address,uint256,uint256)")), address(bridge), 0, 100
-            )
-        );
-        bridge.createWithdrawal(100, 1, hex"01", bytes32(0));
-
+    function testFeeDriftRevertsBeforeBurn() public {
         vm.prank(USER);
         token.approve(address(bridge), 100);
+        vm.prank(RUNTIME_ADMINISTRATOR);
+        bridge.setServiceFee(11);
+
         vm.prank(USER);
-        bridge.createWithdrawal(100, 1, hex"01", bytes32(0));
-        assert(token.allowance(USER, address(bridge)) == 0);
-    }
+        vm.expectRevert(abi.encodeWithSelector(IBridge.ServiceFeeExceedsUserMaximum.selector, 11, 10));
+        bridge.createWithdrawal(100, 10, hex"01", bytes32(0));
 
-    function testGetUnknownWithdrawalReturnsNone() public view {
-        IBridge.Withdrawal memory zero = bridge.getWithdrawal(0);
-        IBridge.Withdrawal memory missing = bridge.getWithdrawal(type(uint256).max);
-        assert(zero.status == IBridge.WithdrawalStatus.None);
-        assert(missing.status == IBridge.WithdrawalStatus.None);
-        assert(missing.requester == address(0));
-        assert(missing.owner.length == 0);
-    }
-
-    function testAcknowledgeReleaseStoresSettlementAndAllowsDifferentCurrentFee() public {
-        uint256 withdrawalId = _createWithdrawal(600, 500, hex"010203", SUBACCOUNT);
-        vm.expectEmit(true, false, false, true, address(bridge));
-        emit WithdrawalReleased(withdrawalId, 550, 30, 20, 0);
-        _acknowledge(withdrawalId, 550, 30, 20, 0);
-
-        IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(withdrawalId);
-        assert(withdrawal.status == IBridge.WithdrawalStatus.Released);
-        assert(withdrawal.amountOut == 550);
-        assert(withdrawal.serviceFee == 30);
-        assert(withdrawal.serviceFee != bridge.serviceFee());
-        assert(withdrawal.ledgerFee == 20);
-        assert(withdrawal.ledgerBlockIndex == 0);
-        assert(token.totalSupply() == 400);
-    }
-
-    function testExactReleaseAcknowledgementIsIdempotentWithoutEvent() public {
-        uint256 withdrawalId = _createWithdrawal(600, 500, hex"01", bytes32(0));
-        _acknowledge(withdrawalId, 550, 30, 20, 42);
-
-        vm.recordLogs();
-        _acknowledge(withdrawalId, 550, 30, 20, 42);
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        assert(logs.length == 0);
-
-        IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(withdrawalId);
-        assert(withdrawal.status == IBridge.WithdrawalStatus.Released);
-        assert(withdrawal.ledgerBlockIndex == 42);
-    }
-
-    function testReleasedAcknowledgementRejectsEveryMismatchedDetail() public {
-        uint256 withdrawalId = _createWithdrawal(600, 500, hex"01", bytes32(0));
-        _acknowledge(withdrawalId, 550, 30, 20, 42);
-
-        _expectAcknowledgementMismatch(withdrawalId, 549, 30, 21, 42);
-        _expectAcknowledgementMismatch(withdrawalId, 550, 29, 21, 42);
-        _expectAcknowledgementMismatch(withdrawalId, 550, 30, 19, 42);
-        _expectAcknowledgementMismatch(withdrawalId, 550, 30, 20, 43);
-    }
-
-    function testAcknowledgeReleaseRejectsUnauthorizedAndMissing() public {
-        vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedBridgeSigner.selector, address(this)));
-        bridge.acknowledgeRelease(1, 1, 0, 0, 1);
-
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.WithdrawalNotFound.selector, 1));
-        bridge.acknowledgeRelease(1, 1, 0, 0, 1);
-    }
-
-    function testAcknowledgeReleaseValidatesFeeSettlementAndMinimum() public {
-        uint256 feeWithdrawal = _createWithdrawal(200, 1, hex"01", bytes32(0));
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidServiceFee.selector, 101, 100));
-        bridge.acknowledgeRelease(feeWithdrawal, 99, 101, 0, 1);
-
-        uint256 mismatchWithdrawal = _createWithdrawal(200, 1, hex"02", bytes32(0));
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.SettlementAmountsMismatch.selector, 200, 150, 20, 29));
-        bridge.acknowledgeRelease(mismatchWithdrawal, 150, 20, 29, 2);
-
-        uint256 minimumWithdrawal = _createWithdrawal(200, 180, hex"03", bytes32(0));
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidMinAmountOut.selector, 180, 170));
-        bridge.acknowledgeRelease(minimumWithdrawal, 170, 20, 10, 3);
-    }
-
-    function testSettlementMismatchUsesCustomErrorInsteadOfOverflowPanic() public {
-        uint256 withdrawalId = _createWithdrawal(100, 1, hex"01", bytes32(0));
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IBridge.SettlementAmountsMismatch.selector, 100, type(uint256).max, MAX_SERVICE_FEE, type(uint256).max
-            )
-        );
-        bridge.acknowledgeRelease(
-            withdrawalId, type(uint256).max, MAX_SERVICE_FEE, type(uint256).max, type(uint256).max
-        );
-    }
-
-    function testLedgerBlockIndexCannotSettleTwoWithdrawals() public {
-        uint256 first = _createWithdrawal(600, 500, hex"01", bytes32(0));
-        uint256 second = _createWithdrawal(300, 250, hex"02", bytes32(0));
-        _acknowledge(first, 550, 30, 20, 0);
-
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.LedgerBlockAlreadyAcknowledged.selector, 0, first));
-        bridge.acknowledgeRelease(second, 270, 10, 20, 0);
-        assert(bridge.getWithdrawal(second).status == IBridge.WithdrawalStatus.Releasing);
-    }
-
-    function testRefundRestoresFullAmountWithoutFeeOrWindowConsumption() public {
-        uint256 mintedBefore = bridge.mintedInWindow();
-        uint256 withdrawalId = _createWithdrawal(600, 500, hex"01", bytes32(0));
-        _cancel(withdrawalId);
-        vm.expectEmit(true, true, false, true, address(bridge));
-        emit WithdrawalRefunded(withdrawalId, USER, 600);
-        vm.prank(BRIDGE_SIGNER);
-        bridge.refundWithdrawal(withdrawalId);
-
-        IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(withdrawalId);
-        assert(withdrawal.status == IBridge.WithdrawalStatus.Refunded);
-        assert(withdrawal.serviceFee == 0);
-        assert(withdrawal.ledgerFee == 0);
-        assert(withdrawal.ledgerBlockIndex == 0);
         assert(token.balanceOf(USER) == 1_000);
         assert(token.totalSupply() == 1_000);
-        assert(bridge.mintedInWindow() == mintedBefore);
+        assert(bridge.nextWithdrawalId() == 1);
     }
 
-    function testRefundRejectsUnauthorizedMissingAndTerminalStates() public {
-        uint256 refunded = _createWithdrawal(300, 200, hex"01", bytes32(0));
-        vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedBridgeSigner.selector, address(this)));
-        bridge.refundWithdrawal(refunded);
-
-        _cancel(refunded);
-        vm.prank(BRIDGE_SIGNER);
-        bridge.refundWithdrawal(refunded);
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IBridge.InvalidWithdrawalStatus.selector, refunded, IBridge.WithdrawalStatus.Refunded
-            )
-        );
-        bridge.refundWithdrawal(refunded);
-
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.WithdrawalNotFound.selector, 999));
-        bridge.refundWithdrawal(999);
-
-        uint256 released = _createWithdrawal(300, 200, hex"02", bytes32(0));
-        _acknowledge(released, 250, 30, 20, 77);
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IBridge.InvalidWithdrawalStatus.selector, released, IBridge.WithdrawalStatus.Released
-            )
-        );
-        bridge.refundWithdrawal(released);
+    function testAmountMustExceedChargedFee() public {
+        vm.prank(USER);
+        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, SERVICE_FEE));
+        bridge.createWithdrawal(SERVICE_FEE, SERVICE_FEE, hex"01", bytes32(0));
     }
 
-    function testRefundedWithdrawalCannotBeAcknowledged() public {
-        uint256 withdrawalId = _createWithdrawal(600, 500, hex"01", bytes32(0));
-        _cancel(withdrawalId);
-        vm.prank(BRIDGE_SIGNER);
-        bridge.refundWithdrawal(withdrawalId);
+    function testPrincipalValidationAndPauseRemainBurnGuards() public {
+        bytes memory thirtyBytes = new bytes(30);
+        vm.startPrank(USER);
+        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidPrincipal.selector, bytes("")));
+        bridge.createWithdrawal(100, SERVICE_FEE, bytes(""), bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidPrincipal.selector, thirtyBytes));
+        bridge.createWithdrawal(100, SERVICE_FEE, thirtyBytes, bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidPrincipal.selector, hex"04"));
+        bridge.createWithdrawal(100, SERVICE_FEE, hex"04", bytes32(0));
+        vm.stopPrank();
 
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IBridge.InvalidWithdrawalStatus.selector, withdrawalId, IBridge.WithdrawalStatus.Refunded
-            )
-        );
-        bridge.acknowledgeRelease(withdrawalId, 550, 30, 20, 42);
+        vm.prank(RUNTIME_ADMINISTRATOR);
+        bridge.pauseWithdrawals();
+        vm.prank(USER);
+        vm.expectRevert(IBridge.WithdrawalsArePaused.selector);
+        bridge.createWithdrawal(100, SERVICE_FEE, hex"01", bytes32(0));
     }
 
-    function testReleaseCancellationAndRefundAreExclusive() public {
-        uint256 withdrawalId = _createWithdrawal(600, 500, hex"01", bytes32(0));
-        assert(bridge.getWithdrawal(withdrawalId).status == IBridge.WithdrawalStatus.Releasing);
+    function testTransferFailureRollsBackCommitAndId() public {
+        vm.prank(USER);
+        (bool succeeded,) =
+            address(bridge).call(abi.encodeCall(IBridge.createWithdrawal, (1_001, SERVICE_FEE, hex"01", bytes32(0))));
+        assert(!succeeded);
+        assert(bridge.nextWithdrawalId() == 1);
+        assert(bridge.getWithdrawal(1).status == IBridge.WithdrawalStatus.None);
+        assert(token.totalSupply() == 1_000);
+    }
+
+    function testSequentialCommittedWithdrawalsCannotBeRemintedByBridgeSigner() public {
+        uint256 first = _createWithdrawal(400, SERVICE_FEE, hex"01", bytes32(0));
+        uint256 second = _createWithdrawal(300, MAX_SERVICE_FEE, hex"02", SUBACCOUNT);
+        assert(first == 1 && second == 2);
+        assert(bridge.getWithdrawal(first).status == IBridge.WithdrawalStatus.Committed);
+        assert(bridge.getWithdrawal(second).status == IBridge.WithdrawalStatus.Committed);
+        assert(token.totalSupply() == 300);
 
         vm.prank(BRIDGE_SIGNER);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IBridge.InvalidWithdrawalStatus.selector, withdrawalId, IBridge.WithdrawalStatus.Releasing
-            )
+            abi.encodeWithSelector(IBridge.DepositAlreadyProcessed.selector, keccak256("withdrawal-funding"))
         );
-        bridge.refundWithdrawal(withdrawalId);
-
-        vm.expectEmit(true, false, false, true, address(bridge));
-        emit WithdrawalReleaseCancelled(withdrawalId);
-        _cancel(withdrawalId);
-        assert(bridge.getWithdrawal(withdrawalId).status == IBridge.WithdrawalStatus.Pending);
-
-        vm.prank(BRIDGE_SIGNER);
-        bridge.refundWithdrawal(withdrawalId);
-        assert(bridge.getWithdrawal(withdrawalId).status == IBridge.WithdrawalStatus.Refunded);
+        bridge.mintDeposit(
+            IBridge.DepositMintRequest(keccak256("withdrawal-funding"), USER, 710, SERVICE_FEE, SERVICE_FEE)
+        );
+        assert(token.totalSupply() == 300);
     }
 
-    function testBridgeExposureAcrossPendingReleaseAndRefund() public {
-        uint256 first = _createWithdrawal(600, 500, hex"01", bytes32(0));
-        uint256 pendingExposure = token.totalSupply() + bridge.getWithdrawal(first).amount;
-        assert(pendingExposure == 1_000);
-
-        _acknowledge(first, 550, 30, 20, 42);
-        assert(token.totalSupply() == 400);
-
-        uint256 second = _createWithdrawal(300, 200, hex"02", bytes32(0));
-        uint256 exposureBeforeRefund = token.totalSupply() + bridge.getWithdrawal(second).amount;
-        assert(exposureBeforeRefund == 400);
-        _cancel(second);
-        vm.prank(BRIDGE_SIGNER);
-        bridge.refundWithdrawal(second);
-        assert(token.totalSupply() == 400);
+    function testFuzzCommittedQuote(uint256 amountSeed, uint256 feeSeed, bytes32 subaccount) public {
+        uint256 fee = feeSeed % (MAX_SERVICE_FEE + 1);
+        vm.prank(RUNTIME_ADMINISTRATOR);
+        bridge.setServiceFee(fee);
+        uint256 amount = fee + 1 + (amountSeed % (1_000 - fee));
+        uint256 id = _createWithdrawal(amount, fee, hex"01", subaccount);
+        IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(id);
+        assert(withdrawal.amountOut + withdrawal.chargedServiceFee == withdrawal.amount);
+        assert(withdrawal.chargedServiceFee <= withdrawal.maxServiceFee);
+        assert(withdrawal.status == IBridge.WithdrawalStatus.Committed);
     }
 
-    function testFuzzValidSettlementPartition(
-        uint256 amountSeed,
-        uint256 amountOutSeed,
-        uint256 feeSeed,
-        uint256 minimumSeed,
-        uint256 ledgerBlockIndex
-    ) public {
-        uint256 amount = (amountSeed % 1_000) + 1;
-        uint256 amountOut = (amountOutSeed % amount) + 1;
-        uint256 remaining = amount - amountOut;
-        uint256 feeLimit = remaining < MAX_SERVICE_FEE ? remaining : MAX_SERVICE_FEE;
-        uint256 withdrawalServiceFee = feeSeed % (feeLimit + 1);
-        uint256 ledgerFee = remaining - withdrawalServiceFee;
-        uint256 minAmountOut = (minimumSeed % amountOut) + 1;
-
-        uint256 withdrawalId = _createWithdrawal(amount, minAmountOut, hex"01", bytes32(0));
-        _acknowledge(withdrawalId, amountOut, withdrawalServiceFee, ledgerFee, ledgerBlockIndex);
-        IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(withdrawalId);
-        assert(withdrawal.status == IBridge.WithdrawalStatus.Released);
-        assert(withdrawal.amountOut + withdrawal.serviceFee + withdrawal.ledgerFee == amount);
-        assert(withdrawal.amountOut >= withdrawal.minAmountOut);
-        assert(withdrawal.serviceFee <= MAX_SERVICE_FEE);
-    }
-
-    function _createWithdrawal(uint256 amount, uint256 minAmountOut, bytes memory owner, bytes32 subaccount)
+    function _createWithdrawal(uint256 amount, uint256 maxServiceFee, bytes memory owner, bytes32 subaccount)
         private
-        returns (uint256 withdrawalId)
+        returns (uint256)
     {
         vm.prank(USER);
         token.approve(address(bridge), amount);
         vm.prank(USER);
-        return bridge.createWithdrawal(amount, minAmountOut, owner, subaccount);
-    }
-
-    function _acknowledge(
-        uint256 withdrawalId,
-        uint256 amountOut,
-        uint256 withdrawalServiceFee,
-        uint256 ledgerFee,
-        uint256 ledgerBlockIndex
-    ) private {
-        vm.prank(BRIDGE_SIGNER);
-        bridge.acknowledgeRelease(withdrawalId, amountOut, withdrawalServiceFee, ledgerFee, ledgerBlockIndex);
-    }
-
-    function _cancel(uint256 withdrawalId) private {
-        vm.prank(BRIDGE_SIGNER);
-        bridge.cancelRelease(withdrawalId);
-    }
-
-    function _expectAcknowledgementMismatch(
-        uint256 withdrawalId,
-        uint256 amountOut,
-        uint256 withdrawalServiceFee,
-        uint256 ledgerFee,
-        uint256 ledgerBlockIndex
-    ) private {
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.ReleaseAcknowledgementMismatch.selector, withdrawalId));
-        bridge.acknowledgeRelease(withdrawalId, amountOut, withdrawalServiceFee, ledgerFee, ledgerBlockIndex);
+        return bridge.createWithdrawal(amount, maxServiceFee, owner, subaccount);
     }
 }

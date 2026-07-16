@@ -20,7 +20,7 @@ export function IcWalletProviderRoot({ children }: { children: ReactNode }) {
   const [connecting, setConnecting] = useState<IcWalletProvider>()
 
   const connect = useCallback(async (nextProvider: IcWalletProvider) => {
-    if (!deploymentProfile.ledgerCanisterId || !deploymentProfile.bridgeCanisterId) throw new Error("The reviewed deployment profile is incomplete")
+    if (!deploymentProfile.ledgerCanisterId || !deploymentProfile.bridgeCanisterId) throw new Error("Bridge is temporarily unavailable")
     setConnecting(nextProvider)
     const previous = adapter
     setAdapter(undefined); setProvider(undefined); setAccount(undefined)

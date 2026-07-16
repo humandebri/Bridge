@@ -1,13 +1,17 @@
-use crate::{evm_rpc, ledger, signer, storage_or_trap, STORE};
+use crate::{
+    evm_rpc, ledger,
+    phases::{DepositPhase, SettlementState, WithdrawalPhase},
+    signer, storage_or_trap, STORE,
+};
 use bridge_core::{
-    DepositEvent, DepositHoldResolution, EvmOperationEvent, EvmOperationKind, EvmOperationState,
-    LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity, ReconciliationHoldRecord,
-    ReconciliationScanProgress, ReconciliationTarget, RequestReference, WithdrawalEvent,
-    WithdrawalHoldResolution, WithdrawalId, WithdrawalRecord, WithdrawalState,
+    Account, DepositEvent, DepositHoldResolution, EvmOperationEvent, EvmOperationKind,
+    EvmOperationState, LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity,
+    ReconciliationHoldRecord, ReconciliationScanProgress, ReconciliationTarget, RequestReference,
+    Settlement, TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId,
+    WithdrawalState,
 };
 use candid::{CandidType, Deserialize};
 use sha2::{Digest, Sha256};
-use tiny_keccak::{Hasher, Keccak};
 
 fn retry_memo(hold_id: u64, identity: &LedgerTransferIdentity) -> [u8; 32] {
     let mut digest = Sha256::new();
@@ -35,27 +39,40 @@ pub enum SettlementStopReason {
     NonceConflict,
     BaseStateMismatch,
     BridgeSignerMismatch,
-    ConfirmationCheckExhausted,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum SettlementActionResult {
     Complete {
-        state: String,
+        state: SettlementState,
     },
     Submitted {
-        state: String,
+        state: SettlementState,
         transaction_hash: Vec<u8>,
     },
     WaitingForConfirmation {
-        state: String,
+        state: SettlementState,
         transaction_hash: Vec<u8>,
     },
     ReconciliationProgress {
-        state: String,
+        state: SettlementState,
     },
     Stopped {
-        state: String,
+        state: SettlementState,
+        reason: SettlementStopReason,
+    },
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum FeePayoutActionResult {
+    Complete {
+        state: crate::admin::FeePayoutState,
+    },
+    ReconciliationProgress {
+        state: crate::admin::FeePayoutState,
+    },
+    Stopped {
+        state: crate::admin::FeePayoutState,
         reason: SettlementStopReason,
     },
 }
@@ -68,6 +85,10 @@ pub enum SettlementActionError {
     Unauthorized,
     Busy,
     StorageFailure,
+    ConfirmationRequired,
+    InvalidConfirmationObservation,
+    TransactionMismatch,
+    WrongState,
     AutomaticProgressPending { next_run_at_ns: Option<u64> },
     RateLimited { retry_after_seconds: u64 },
 }
@@ -105,9 +126,6 @@ pub(crate) fn stop_reason_text(result: &SettlementActionResult) -> Option<String
             SettlementStopReason::BridgeSignerMismatch => {
                 "Confirmed Base bridge signer does not match the chain-key signer".into()
             }
-            SettlementStopReason::ConfirmationCheckExhausted => {
-                "Base transaction did not reach the Safe head within 10 minutes".into()
-            }
         }),
         _ => None,
     }
@@ -118,8 +136,39 @@ pub(crate) enum NonceInitializationError {
     Storage,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfirmationEvidence {
+    Verified,
+    WaitForFinalized,
+    ReceiptMismatch,
+}
+
+fn confirmation_evidence(
+    expected_receipt_block_number: Option<u64>,
+    expected_finalized_block_number: Option<u64>,
+    receipt_block_number: u64,
+    finalized_head_block_number: u64,
+) -> ConfirmationEvidence {
+    if expected_receipt_block_number.is_some_and(|expected| expected != receipt_block_number) {
+        ConfirmationEvidence::ReceiptMismatch
+    } else if expected_finalized_block_number
+        .is_some_and(|expected| expected > finalized_head_block_number)
+    {
+        ConfirmationEvidence::WaitForFinalized
+    } else {
+        ConfirmationEvidence::Verified
+    }
+}
+
 pub(crate) async fn ensure_nonce_initialized(
     config: &crate::config::BridgeInitArgs,
+) -> Result<(), NonceInitializationError> {
+    ensure_nonce_initialized_inner(config, None).await
+}
+
+async fn ensure_nonce_initialized_inner(
+    config: &crate::config::BridgeInitArgs,
+    mut lease: Option<&mut crate::scheduler::SettlementLease>,
 ) -> Result<(), NonceInitializationError> {
     let initialized = STORE
         .with(|store| store.borrow().external_progress())
@@ -134,10 +183,20 @@ pub(crate) async fn ensure_nonce_initialized(
     {
         Some(address) => address,
         None => {
+            if let Some(lease) = lease.as_deref_mut() {
+                lease
+                    .renew_before_external_call()
+                    .map_err(|_| NonceInitializationError::Storage)?;
+            }
             let derived = signer::ethereum_address(config).await.map_err(|error| {
                 ic_cdk::println!("failed to derive bridge signer address: {error:?}");
                 NonceInitializationError::Observation
             })?;
+            if let Some(lease) = lease.as_deref_mut() {
+                lease
+                    .ensure_current()
+                    .map_err(|_| NonceInitializationError::Storage)?;
+            }
             STORE.with(|store| {
                 store
                     .borrow_mut()
@@ -146,12 +205,22 @@ pub(crate) async fn ensure_nonce_initialized(
             })?
         }
     };
+    if let Some(lease) = lease.as_deref_mut() {
+        lease
+            .renew_before_external_call()
+            .map_err(|_| NonceInitializationError::Storage)?;
+    }
     let nonce = evm_rpc::transaction_count(config, address)
         .await
         .map_err(|error| {
             ic_cdk::println!("failed to observe bridge signer nonce: {error:?}");
             NonceInitializationError::Observation
         })?;
+    if let Some(lease) = lease {
+        lease
+            .ensure_current()
+            .map_err(|_| NonceInitializationError::Storage)?;
+    }
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         let mut progress = store
@@ -331,39 +400,18 @@ fn advance_deposit_hold(
 
 fn advance_withdrawal_hold(
     store: &mut crate::storage::StableStore,
-    config: &crate::config::BridgeInitArgs,
+    _config: &crate::config::BridgeInitArgs,
     withdrawal_id: WithdrawalId,
     hold_id: bridge_core::HoldId,
     resolution: WithdrawalHoldResolution,
     scan_target: Option<&ReconciliationTarget>,
 ) {
-    let WithdrawalHoldResolution::Succeeded { ledger_block_index } = resolution else {
-        store
-            .resolve_withdrawal_hold_and_scan(withdrawal_id, hold_id, resolution, scan_target)
-            .unwrap_or_else(|error| {
-                ic_cdk::trap(format!(
-                    "withdrawal reconciliation persistence failed: {error}"
-                ))
-            });
-        return;
-    };
-    let mut withdrawal = store
-        .withdrawal(withdrawal_id.bytes())
-        .unwrap_or_else(|error| ic_cdk::trap(format!("withdrawal read failed: {error}")))
-        .unwrap_or_else(|| ic_cdk::trap("missing withdrawal"));
-    let mut hold = store
-        .reconciliation_hold(hold_id.get())
-        .unwrap_or_else(|error| ic_cdk::trap(format!("withdrawal hold read failed: {error}")))
-        .unwrap_or_else(|| ic_cdk::trap("missing withdrawal hold"));
-    bridge_core::resolve_withdrawal_hold(
-        &mut withdrawal,
-        &mut hold,
-        WithdrawalHoldResolution::Succeeded { ledger_block_index },
-    )
-    .unwrap_or_else(|error| ic_cdk::trap(format!("withdrawal reconciliation failed: {error}")));
-    prepare_acknowledgement_in_store_and_scan(store, config, &mut withdrawal, scan_target)
+    store
+        .resolve_withdrawal_hold_and_scan(withdrawal_id, hold_id, resolution, scan_target)
         .unwrap_or_else(|error| {
-            ic_cdk::trap(format!("acknowledgement preparation failed: {error}"))
+            ic_cdk::trap(format!(
+                "withdrawal reconciliation persistence failed: {error}"
+            ))
         });
 }
 
@@ -372,22 +420,26 @@ fn confirm_evm_member(
     mut operation: bridge_core::EvmOperationRecord,
     transaction_hash: [u8; 32],
     receipt_block_number: u64,
-    confirmed_block_number: u64,
+    finalized_head_block_number: u64,
     rpc_audit: Vec<crate::storage::AuditEventKind>,
 ) -> Result<(), ()> {
     operation
         .apply(EvmOperationEvent::Confirmed {
             transaction_hash,
             receipt_block_number,
-            confirmed_block_number,
+            finalized_head_block_number,
         })
         .map_err(|_| ())?;
     let mut progress = store.external_progress().map_err(|_| ())?;
-    progress.last_safe_base_block = progress.last_safe_base_block.max(confirmed_block_number);
+    progress.last_finalized_base_block = progress
+        .last_finalized_base_block
+        .max(finalized_head_block_number);
     if operation.kind == EvmOperationKind::MintDeposit {
-        progress.last_safe_mint_block = progress.last_safe_mint_block.max(confirmed_block_number);
+        progress.last_finalized_mint_block = progress
+            .last_finalized_mint_block
+            .max(finalized_head_block_number);
     }
-    progress.last_safe_observation_ns = ic_cdk::api::time();
+    progress.last_finalized_observation_ns = ic_cdk::api::time();
     store
         .commit_evm_terminal_bundle_with_rpc_audit(
             &operation,
@@ -404,14 +456,14 @@ fn mark_evm_reverted(
     mut operation: bridge_core::EvmOperationRecord,
     transaction_hash: [u8; 32],
     receipt_block_number: u64,
-    confirmed_block_number: u64,
+    finalized_head_block_number: u64,
     rpc_audit: Vec<crate::storage::AuditEventKind>,
 ) {
     operation
         .apply(EvmOperationEvent::Reverted {
             transaction_hash,
             receipt_block_number,
-            confirmed_block_number,
+            finalized_head_block_number,
         })
         .unwrap_or_else(|error| ic_cdk::trap(format!("EVM revert transition failed: {error}")));
     STORE.with(|store| {
@@ -419,8 +471,10 @@ fn mark_evm_reverted(
         let mut progress = store.external_progress().unwrap_or_else(|error| {
             ic_cdk::trap(format!("external progress read failed: {error}"))
         });
-        progress.last_safe_base_block = progress.last_safe_base_block.max(confirmed_block_number);
-        progress.last_safe_observation_ns = ic_cdk::api::time();
+        progress.last_finalized_base_block = progress
+            .last_finalized_base_block
+            .max(finalized_head_block_number);
+        progress.last_finalized_observation_ns = ic_cdk::api::time();
         store
             .commit_evm_terminal_bundle_with_rpc_audit(
                 &operation,
@@ -428,7 +482,7 @@ fn mark_evm_reverted(
                 Some((
                     ic_cdk::api::canister_self(),
                     ic_cdk::api::time(),
-                    confirmed_block_number,
+                    finalized_head_block_number,
                 )),
                 ic_cdk::api::canister_self(),
                 ic_cdk::api::time(),
@@ -436,72 +490,6 @@ fn mark_evm_reverted(
             )
             .unwrap_or_else(|error| ic_cdk::trap(format!("EVM revert bundle failed: {error}")));
     });
-}
-
-pub(crate) fn prepare_acknowledgement_in_store(
-    store: &mut crate::storage::StableStore,
-    config: &crate::config::BridgeInitArgs,
-    withdrawal: &mut WithdrawalRecord,
-) -> Result<(), crate::storage::StorageError> {
-    prepare_acknowledgement_in_store_and_scan(store, config, withdrawal, None)
-}
-
-fn prepare_acknowledgement_in_store_and_scan(
-    store: &mut crate::storage::StableStore,
-    config: &crate::config::BridgeInitArgs,
-    withdrawal: &mut WithdrawalRecord,
-    scan_target: Option<&ReconciliationTarget>,
-) -> Result<(), crate::storage::StorageError> {
-    let (settlement, ledger_block_index) = match &withdrawal.state {
-        WithdrawalState::ReleaseTransferred {
-            settlement,
-            ledger_block_index,
-            ..
-        } => (*settlement, *ledger_block_index),
-        WithdrawalState::AcknowledgePending { .. }
-        | WithdrawalState::AcknowledgeReverted { .. }
-        | WithdrawalState::Released { .. } => return Ok(()),
-        _ => {
-            return Err(bridge_core::CoreError::InvalidTransition {
-                entity: "withdrawal",
-                event: "prepare_acknowledgement",
-            }
-            .into())
-        }
-    };
-    let operation_id = store.next_evm_operation_id()?;
-    withdrawal.apply(WithdrawalEvent::PrepareAcknowledgement { operation_id })?;
-    let operation = bridge_core::EvmOperationRecord::queued(
-        operation_id,
-        withdrawal.payload_hash,
-        EvmOperationKind::AcknowledgeRelease,
-    );
-    let mut selector_hash = [0u8; 32];
-    let mut keccak = Keccak::v256();
-    keccak.update(b"acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)");
-    keccak.finalize(&mut selector_hash);
-    let mut calldata = selector_hash[..4].to_vec();
-    calldata.extend_from_slice(&withdrawal.id.bytes());
-    for value in [
-        settlement.amount_out.get(),
-        settlement.service_fee.get(),
-        settlement.ledger_fee.get(),
-        ledger_block_index,
-    ] {
-        calldata.extend_from_slice(&[0; 16]);
-        calldata.extend_from_slice(&value.to_be_bytes());
-    }
-    let intent = bridge_core::EvmCallIntent {
-        operation_id,
-        payload_hash: withdrawal.payload_hash,
-        chain_id: config.base_chain_id,
-        contract: config.contract_array(),
-        calldata,
-        gas_limit: config.transaction_gas_limit,
-        max_fee_per_gas: config.max_fee_per_gas,
-        max_priority_fee_per_gas: config.max_priority_fee_per_gas,
-    };
-    store.commit_acknowledgement_bundle_and_scan(withdrawal, &operation, &intent, scan_target)
 }
 
 enum EvmAdvance {
@@ -515,38 +503,6 @@ enum HoldAdvance {
     Continue,
     Progress,
     Stopped(SettlementStopReason),
-}
-
-fn deposit_state_name(state: &bridge_core::DepositState) -> String {
-    use bridge_core::DepositState as State;
-    match state {
-        State::PullPending => "PullPending",
-        State::Escrowed { .. } => "Escrowed",
-        State::MintPending { .. } => "MintPending",
-        State::Minted { .. } => "Minted",
-        State::MintReverted { .. } => "MintReverted",
-        State::ReconciliationHold { .. } => "ReconciliationHold",
-        State::Cancelled { .. } => "Cancelled",
-    }
-    .into()
-}
-
-fn withdrawal_state_name(state: &WithdrawalState) -> String {
-    match state {
-        WithdrawalState::Observed => "Observed",
-        WithdrawalState::ReleasePending { .. } => "ReleasePending",
-        WithdrawalState::ReleaseTransferred { .. } => "ReleaseTransferred",
-        WithdrawalState::AcknowledgePending { .. } => "AcknowledgePending",
-        WithdrawalState::AcknowledgeReverted { .. } => "AcknowledgeReverted",
-        WithdrawalState::Released { .. } => "Released",
-        WithdrawalState::RefundPending { .. } => "RefundPending",
-        WithdrawalState::RefundReverted { .. } => "RefundReverted",
-        WithdrawalState::Refunded { .. } => "Refunded",
-        WithdrawalState::ReconciliationHold { .. } => "ReconciliationHold",
-        WithdrawalState::ReleaseCancellationPending { .. } => "ReleaseCancellationPending",
-        WithdrawalState::ReleaseCancelled { .. } => "ReleaseCancelled",
-    }
-    .into()
 }
 
 fn map_observation_stop(error: evm_rpc::ObservationError) -> SettlementStopReason {
@@ -622,6 +578,7 @@ fn assign_evm_nonce_for(
 async fn advance_evm_operation(
     config: &crate::config::BridgeInitArgs,
     operation_id: bridge_core::EvmOperationId,
+    lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<EvmAdvance, SettlementActionError> {
     let operation = STORE.with(|store| {
         store
@@ -632,7 +589,7 @@ async fn advance_evm_operation(
     })?;
     match operation.state {
         EvmOperationState::Queued => {
-            match ensure_nonce_initialized(config).await {
+            match ensure_nonce_initialized_inner(config, Some(lease)).await {
                 Ok(()) => {}
                 Err(NonceInitializationError::Observation) => {
                     return Ok(EvmAdvance::Stopped(SettlementStopReason::NonceUnavailable))
@@ -644,7 +601,7 @@ async fn advance_evm_operation(
             if !assign_evm_nonce_for(operation_id)? {
                 return Ok(EvmAdvance::Stopped(SettlementStopReason::NonceBlocked));
             }
-            Box::pin(advance_evm_operation(config, operation_id)).await
+            Box::pin(advance_evm_operation(config, operation_id, lease)).await
         }
         EvmOperationState::Prepared => {
             let mut envelope = STORE.with(|store| {
@@ -656,28 +613,34 @@ async fn advance_evm_operation(
             })?;
             let raw = match envelope.signed_transaction.clone() {
                 Some(raw) => raw,
-                None => match signer::sign(&envelope, config).await {
-                    Ok(raw) => {
-                        envelope.signed_transaction = Some(raw.clone());
-                        STORE.with(|store| {
-                            store
-                                .borrow_mut()
-                                .put_evm_envelope(&envelope)
-                                .map_err(|_| SettlementActionError::StorageFailure)
-                        })?;
-                        raw
+                None => {
+                    lease.renew_before_external_call()?;
+                    match signer::sign(&envelope, config).await {
+                        Ok(raw) => {
+                            lease.ensure_current()?;
+                            envelope.signed_transaction = Some(raw.clone());
+                            STORE.with(|store| {
+                                store
+                                    .borrow_mut()
+                                    .put_evm_envelope(&envelope)
+                                    .map_err(|_| SettlementActionError::StorageFailure)
+                            })?;
+                            raw
+                        }
+                        Err(_) => {
+                            return Ok(EvmAdvance::Stopped(
+                                SettlementStopReason::SigningUnavailable,
+                            ))
+                        }
                     }
-                    Err(_) => {
-                        return Ok(EvmAdvance::Stopped(
-                            SettlementStopReason::SigningUnavailable,
-                        ))
-                    }
-                },
+                }
             };
+            lease.renew_before_external_call()?;
             let broadcast = match evm_rpc::broadcast(config, &raw).await {
                 Ok(outcome) => outcome,
                 Err(error) => return Ok(EvmAdvance::Stopped(map_observation_stop(error))),
             };
+            lease.ensure_current()?;
             if let evm_rpc::BroadcastOutcome::NonceConflict(rpc_audit) = &broadcast {
                 let decision = evm_rpc::nonce_conflict_decision(
                     "broadcast_evm_operation",
@@ -722,10 +685,6 @@ async fn advance_evm_operation(
                     .put_submitted_evm_operation_with_rpc_audit(
                         &current,
                         submitted_at_ns,
-                        submitted_at_ns.saturating_add(
-                            crate::scheduler::confirmation_delay_ns(current.kind, 0)
-                                .expect("every EVM operation has a confirmation schedule"),
-                        ),
                         ic_cdk::api::canister_self(),
                         vec![
                             crate::rpc_audit_event_kind(rpc_audit),
@@ -741,6 +700,7 @@ async fn advance_evm_operation(
             Ok(EvmAdvance::Submitted(transaction_hash))
         }
         EvmOperationState::Submitted { transaction_hash } => {
+            lease.renew_before_external_call()?;
             let outcome = match evm_rpc::confirmed_receipt_outcome(config, transaction_hash).await {
                 Ok(outcome) => outcome,
                 Err(evm_rpc::ObservationError::Inconsistent) => {
@@ -760,15 +720,32 @@ async fn advance_evm_operation(
                 }
                 Err(error) => return Ok(EvmAdvance::Stopped(map_observation_stop(error))),
             };
+            lease.ensure_current()?;
             match outcome {
                 evm_rpc::ConfirmedReceiptOutcome::Missing => {
                     Ok(EvmAdvance::Waiting(transaction_hash))
                 }
                 evm_rpc::ConfirmedReceiptOutcome::Succeeded {
                     receipt_block_number,
-                    confirmed_block_number,
+                    finalized_head_block_number,
                     rpc_audit,
                 } => {
+                    match confirmation_evidence(
+                        lease.expected_receipt_block_number(),
+                        lease.expected_finalized_block_number(),
+                        receipt_block_number,
+                        finalized_head_block_number,
+                    ) {
+                        ConfirmationEvidence::ReceiptMismatch => {
+                            return Ok(EvmAdvance::Stopped(
+                                SettlementStopReason::BaseStateMismatch,
+                            ));
+                        }
+                        ConfirmationEvidence::WaitForFinalized => {
+                            return Ok(EvmAdvance::Waiting(transaction_hash));
+                        }
+                        ConfirmationEvidence::Verified => {}
+                    }
                     STORE.with(|store| {
                         let mut store = store.borrow_mut();
                         let current = store
@@ -780,7 +757,7 @@ async fn advance_evm_operation(
                             current,
                             transaction_hash,
                             receipt_block_number,
-                            confirmed_block_number,
+                            finalized_head_block_number,
                             vec![
                                 crate::rpc_audit_event_kind(&rpc_audit),
                                 crate::rpc_decision_event_kind(
@@ -798,14 +775,30 @@ async fn advance_evm_operation(
                 }
                 evm_rpc::ConfirmedReceiptOutcome::Reverted {
                     receipt_block_number,
-                    confirmed_block_number,
+                    finalized_head_block_number,
                     rpc_audit,
                 } => {
+                    match confirmation_evidence(
+                        lease.expected_receipt_block_number(),
+                        lease.expected_finalized_block_number(),
+                        receipt_block_number,
+                        finalized_head_block_number,
+                    ) {
+                        ConfirmationEvidence::ReceiptMismatch => {
+                            return Ok(EvmAdvance::Stopped(
+                                SettlementStopReason::BaseStateMismatch,
+                            ));
+                        }
+                        ConfirmationEvidence::WaitForFinalized => {
+                            return Ok(EvmAdvance::Waiting(transaction_hash));
+                        }
+                        ConfirmationEvidence::Verified => {}
+                    }
                     mark_evm_reverted(
                         operation,
                         transaction_hash,
                         receipt_block_number,
-                        confirmed_block_number,
+                        finalized_head_block_number,
                         vec![
                             crate::rpc_audit_event_kind(&rpc_audit),
                             crate::rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
@@ -823,14 +816,19 @@ async fn advance_evm_operation(
         EvmOperationState::Reverted { .. } => Ok(EvmAdvance::Stopped(
             SettlementStopReason::TransactionReverted,
         )),
+        EvmOperationState::RecoveryPending { .. } | EvmOperationState::Recovered { .. } => Ok(
+            EvmAdvance::Stopped(SettlementStopReason::TransactionReverted),
+        ),
     }
 }
 
 async fn advance_hold(
     config: &crate::config::BridgeInitArgs,
     hold: ReconciliationHoldRecord,
+    lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<HoldAdvance, SettlementActionError> {
     if ic_cdk::api::time().saturating_sub(hold.transfer.created_at_time_ns) <= LEDGER_DEDUP_NS {
+        lease.renew_before_external_call()?;
         let outcome = match hold.transfer.operation {
             LedgerOperation::PullDeposit => {
                 ledger::pull(config.ledger_canister_id, &hold.transfer).await
@@ -844,6 +842,7 @@ async fn advance_hold(
                 ))
             }
         };
+        lease.ensure_current()?;
         let Some(block_index) = outcome.confirmed_block() else {
             return Ok(HoldAdvance::Stopped(ledger_stop(&outcome)));
         };
@@ -890,13 +889,15 @@ async fn advance_hold(
             .map_err(|_| SettlementActionError::StorageFailure)?;
         Ok(progress)
     })?;
-    match ledger::reconcile_step(
+    lease.renew_before_external_call()?;
+    let outcome = ledger::reconcile_step(
         config.ledger_canister_id,
         config.index_canister_id,
         progress,
     )
-    .await
-    {
+    .await;
+    lease.ensure_current()?;
+    match outcome {
         ledger::ReconciliationOutcome::Progress(progress) => {
             STORE.with(|store| {
                 store
@@ -925,6 +926,7 @@ async fn advance_hold(
 
 pub(crate) async fn advance_deposit(
     deposit_id: [u8; 32],
+    lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<SettlementActionResult, SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -941,10 +943,12 @@ pub(crate) async fn advance_deposit(
                 .map_err(|_| SettlementActionError::StorageFailure)?
                 .ok_or(SettlementActionError::NotFound)
         })?;
-        let state = deposit_state_name(&deposit.state);
+        let state = SettlementState::Deposit(DepositPhase::from(&deposit.state));
         match deposit.state {
             bridge_core::DepositState::PullPending => {
+                lease.renew_before_external_call()?;
                 let outcome = ledger::pull(config.ledger_canister_id, &deposit.transfer).await;
+                lease.ensure_current()?;
                 match outcome {
                     LedgerCallOutcome::Succeeded { block_index }
                     | LedgerCallOutcome::Duplicate { block_index } => {
@@ -982,7 +986,7 @@ pub(crate) async fn advance_deposit(
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                         return Ok(SettlementActionResult::Stopped {
-                            state: "ReconciliationHold".into(),
+                            state: SettlementState::Deposit(DepositPhase::ReconciliationHold),
                             reason: SettlementStopReason::LedgerAmbiguous,
                         });
                     }
@@ -996,7 +1000,7 @@ pub(crate) async fn advance_deposit(
                             .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                         return Ok(SettlementActionResult::Complete {
-                            state: "Cancelled".into(),
+                            state: SettlementState::Deposit(DepositPhase::Cancelled),
                         });
                     }
                     other => {
@@ -1020,7 +1024,7 @@ pub(crate) async fn advance_deposit(
                     .map_err(|_| SettlementActionError::StorageFailure)?;
             }
             bridge_core::DepositState::MintPending { operation_id, .. } => {
-                return match advance_evm_operation(&config, operation_id).await? {
+                return match advance_evm_operation(&config, operation_id, lease).await? {
                     EvmAdvance::Complete => continue,
                     EvmAdvance::Submitted(hash) => Ok(SettlementActionResult::Submitted {
                         state,
@@ -1045,7 +1049,7 @@ pub(crate) async fn advance_deposit(
                         .map_err(|_| SettlementActionError::StorageFailure)?
                         .ok_or(SettlementActionError::NotFound)
                 })?;
-                match advance_hold(&config, hold).await? {
+                match advance_hold(&config, hold, lease).await? {
                     HoldAdvance::Continue => continue,
                     HoldAdvance::Progress => {
                         return Ok(SettlementActionResult::ReconciliationProgress { state })
@@ -1066,6 +1070,7 @@ pub(crate) async fn advance_deposit(
 
 pub(crate) async fn advance_withdrawal(
     withdrawal_id: [u8; 32],
+    lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<SettlementActionResult, SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -1082,28 +1087,12 @@ pub(crate) async fn advance_withdrawal(
                 .map_err(|_| SettlementActionError::StorageFailure)?
                 .ok_or(SettlementActionError::NotFound)
         })?;
-        let state = withdrawal_state_name(&withdrawal.state);
+        let state = SettlementState::Withdrawal(WithdrawalPhase::from(&withdrawal.state));
         match withdrawal.state {
-            WithdrawalState::ReleaseCancellationPending { operation_id, .. } => {
-                return match advance_evm_operation(&config, operation_id).await? {
-                    EvmAdvance::Complete => continue,
-                    EvmAdvance::Submitted(hash) => Ok(SettlementActionResult::Submitted {
-                        state,
-                        transaction_hash: hash.to_vec(),
-                    }),
-                    EvmAdvance::Waiting(hash) => {
-                        Ok(SettlementActionResult::WaitingForConfirmation {
-                            state,
-                            transaction_hash: hash.to_vec(),
-                        })
-                    }
-                    EvmAdvance::Stopped(reason) => {
-                        Ok(SettlementActionResult::Stopped { state, reason })
-                    }
-                };
-            }
             WithdrawalState::ReleasePending { attempt, .. } => {
+                lease.renew_before_external_call()?;
                 let outcome = ledger::release(config.ledger_canister_id, &attempt.identity).await;
+                lease.ensure_current()?;
                 match outcome {
                     LedgerCallOutcome::Succeeded { block_index }
                     | LedgerCallOutcome::Duplicate { block_index } => {
@@ -1118,7 +1107,8 @@ pub(crate) async fn advance_withdrawal(
                                     ledger_block_index: block_index,
                                 })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
-                            prepare_acknowledgement_in_store(&mut store, &config, &mut current)
+                            store
+                                .put_withdrawal(&current)
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                     }
@@ -1145,7 +1135,7 @@ pub(crate) async fn advance_withdrawal(
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                         return Ok(SettlementActionResult::Stopped {
-                            state: "ReconciliationHold".into(),
+                            state: SettlementState::Withdrawal(WithdrawalPhase::ReconciliationHold),
                             reason: SettlementStopReason::LedgerAmbiguous,
                         });
                     }
@@ -1165,94 +1155,53 @@ pub(crate) async fn advance_withdrawal(
                                 } => (attempt.clone(), *settlement),
                                 _ => return Err(SettlementActionError::Busy),
                             };
-                            let repriced_amount = current
-                                .amount
-                                .get()
-                                .checked_sub(current_settlement.service_fee.get())
-                                .and_then(|value| value.checked_sub(expected_fee.get()));
-                            if repriced_amount
-                                .is_some_and(|value| value >= current.min_amount_out.get())
-                            {
-                                let amount_out =
-                                    bridge_core::Amount::new(repriced_amount.expect("checked"));
-                                let created_at_time_ns = ic_cdk::api::time().max(
-                                    current_attempt
-                                        .identity
-                                        .created_at_time_ns
-                                        .saturating_add(1),
+                            if expected_fee > current.charged_service_fee {
+                                return Ok::<_, SettlementActionError>(
+                                    SettlementState::Withdrawal(WithdrawalPhase::ReleasePending),
                                 );
-                                let mut digest = Sha256::new();
-                                digest.update(b"KINIC-WITHDRAWAL-BAD-FEE");
-                                digest.update(current.payload_hash);
-                                digest.update(current_attempt.attempt_no.to_be_bytes());
-                                digest.update(expected_fee.get().to_be_bytes());
-                                let mut identity = current_attempt.identity.clone();
-                                identity.created_at_time_ns = created_at_time_ns;
-                                identity.memo = digest.finalize().into();
-                                identity.amount = amount_out;
-                                identity.fee = expected_fee;
-                                let next_attempt = bridge_core::TransferAttempt {
-                                    attempt_no: current_attempt
-                                        .attempt_no
-                                        .checked_add(1)
-                                        .ok_or(SettlementActionError::StorageFailure)?,
-                                    identity,
-                                };
-                                current
-                                    .apply(WithdrawalEvent::RepriceRelease {
-                                        attempt: Box::new(next_attempt),
-                                        settlement: bridge_core::Settlement {
-                                            amount_out,
-                                            service_fee: current_settlement.service_fee,
-                                            ledger_fee: expected_fee,
-                                        },
-                                    })
-                                    .map_err(|_| SettlementActionError::StorageFailure)?;
-                                store
-                                    .put_withdrawal(&current)
-                                    .map_err(|_| SettlementActionError::StorageFailure)?;
-                                Ok::<_, SettlementActionError>("ReleasePending")
-                            } else {
-                                let operation_id = store
-                                    .next_evm_operation_id()
-                                    .map_err(|_| SettlementActionError::StorageFailure)?;
-                                current
-                                    .apply(WithdrawalEvent::PrepareReleaseCancellation {
-                                        operation_id,
-                                        expected_ledger_fee: expected_fee,
-                                    })
-                                    .map_err(|_| SettlementActionError::StorageFailure)?;
-                                let operation = bridge_core::EvmOperationRecord::queued(
-                                    operation_id,
-                                    current.payload_hash,
-                                    EvmOperationKind::CancelRelease,
-                                );
-                                let mut selector_hash = [0u8; 32];
-                                let mut keccak = Keccak::v256();
-                                keccak.update(b"cancelRelease(uint256)");
-                                keccak.finalize(&mut selector_hash);
-                                let mut calldata = selector_hash[..4].to_vec();
-                                calldata.extend_from_slice(&current.id.bytes());
-                                let intent = bridge_core::EvmCallIntent {
-                                    operation_id,
-                                    payload_hash: current.payload_hash,
-                                    chain_id: config.base_chain_id,
-                                    contract: config.contract_array(),
-                                    calldata,
-                                    gas_limit: config.transaction_gas_limit,
-                                    max_fee_per_gas: config.max_fee_per_gas,
-                                    max_priority_fee_per_gas: config.max_priority_fee_per_gas,
-                                };
-                                store
-                                    .commit_withdrawal_operation_bundle(
-                                        &current, &operation, &intent,
-                                    )
-                                    .map_err(|_| SettlementActionError::StorageFailure)?;
-                                Ok::<_, SettlementActionError>("ReleaseCancellationPending")
                             }
+                            let created_at_time_ns = ic_cdk::api::time().max(
+                                current_attempt
+                                    .identity
+                                    .created_at_time_ns
+                                    .saturating_add(1),
+                            );
+                            let mut digest = Sha256::new();
+                            digest.update(b"KINIC-WITHDRAWAL-BAD-FEE");
+                            digest.update(current.payload_hash);
+                            digest.update(current_attempt.attempt_no.to_be_bytes());
+                            digest.update(expected_fee.get().to_be_bytes());
+                            let mut identity = current_attempt.identity.clone();
+                            identity.created_at_time_ns = created_at_time_ns;
+                            identity.memo = digest.finalize().into();
+                            identity.amount = current.amount_out;
+                            identity.fee = expected_fee;
+                            let next_attempt = bridge_core::TransferAttempt {
+                                attempt_no: current_attempt
+                                    .attempt_no
+                                    .checked_add(1)
+                                    .ok_or(SettlementActionError::StorageFailure)?,
+                                identity,
+                            };
+                            current
+                                .apply(WithdrawalEvent::RepriceRelease {
+                                    attempt: Box::new(next_attempt),
+                                    settlement: bridge_core::Settlement {
+                                        amount_out: current.amount_out,
+                                        service_fee: current_settlement.service_fee,
+                                        ledger_fee: expected_fee,
+                                    },
+                                })
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            store
+                                .put_withdrawal(&current)
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            Ok::<_, SettlementActionError>(SettlementState::Withdrawal(
+                                WithdrawalPhase::ReleasePending,
+                            ))
                         })?;
                         return Ok(SettlementActionResult::Stopped {
-                            state: next_state.into(),
+                            state: next_state,
                             reason: SettlementStopReason::LedgerFeeChanged,
                         });
                     }
@@ -1264,36 +1213,6 @@ pub(crate) async fn advance_withdrawal(
                     }
                 }
             }
-            WithdrawalState::ReleaseTransferred { .. } => {
-                STORE.with(|store| {
-                    let mut store = store.borrow_mut();
-                    let mut current = store
-                        .withdrawal(withdrawal_id)
-                        .map_err(|_| SettlementActionError::StorageFailure)?
-                        .ok_or(SettlementActionError::NotFound)?;
-                    prepare_acknowledgement_in_store(&mut store, &config, &mut current)
-                        .map_err(|_| SettlementActionError::StorageFailure)
-                })?;
-            }
-            WithdrawalState::AcknowledgePending { operation_id, .. }
-            | WithdrawalState::RefundPending { operation_id, .. } => {
-                return match advance_evm_operation(&config, operation_id).await? {
-                    EvmAdvance::Complete => continue,
-                    EvmAdvance::Submitted(hash) => Ok(SettlementActionResult::Submitted {
-                        state,
-                        transaction_hash: hash.to_vec(),
-                    }),
-                    EvmAdvance::Waiting(hash) => {
-                        Ok(SettlementActionResult::WaitingForConfirmation {
-                            state,
-                            transaction_hash: hash.to_vec(),
-                        })
-                    }
-                    EvmAdvance::Stopped(reason) => {
-                        Ok(SettlementActionResult::Stopped { state, reason })
-                    }
-                };
-            }
             WithdrawalState::ReconciliationHold { hold_id, .. } => {
                 let hold = STORE.with(|store| {
                     store
@@ -1302,7 +1221,7 @@ pub(crate) async fn advance_withdrawal(
                         .map_err(|_| SettlementActionError::StorageFailure)?
                         .ok_or(SettlementActionError::NotFound)
                 })?;
-                match advance_hold(&config, hold).await? {
+                match advance_hold(&config, hold, lease).await? {
                     HoldAdvance::Continue => continue,
                     HoldAdvance::Progress => {
                         return Ok(SettlementActionResult::ReconciliationProgress { state })
@@ -1312,66 +1231,59 @@ pub(crate) async fn advance_withdrawal(
                     }
                 }
             }
-            WithdrawalState::Released { .. }
-            | WithdrawalState::Refunded { .. }
-            | WithdrawalState::AcknowledgeReverted { .. }
-            | WithdrawalState::RefundReverted { .. } => {
-                return Ok(SettlementActionResult::Complete { state })
-            }
+            WithdrawalState::Paid { .. } => return Ok(SettlementActionResult::Complete { state }),
             WithdrawalState::Observed => {
-                return Ok(SettlementActionResult::Stopped {
-                    state,
-                    reason: SettlementStopReason::InvalidBaseResponse,
-                })
-            }
-            WithdrawalState::ReleaseCancelled { .. } => {
+                lease.renew_before_external_call()?;
+                let ledger_fee = match ledger::ledger_fee(config.ledger_canister_id).await {
+                    Ok(fee) => fee,
+                    Err(()) => {
+                        return Ok(SettlementActionResult::Stopped {
+                            state,
+                            reason: SettlementStopReason::LedgerUnavailable,
+                        })
+                    }
+                };
+                lease.ensure_current()?;
+                if ledger_fee > withdrawal.charged_service_fee {
+                    return Ok(SettlementActionResult::Stopped {
+                        state,
+                        reason: SettlementStopReason::LedgerFeeChanged,
+                    });
+                }
+                let identity = LedgerTransferIdentity {
+                    operation: LedgerOperation::ReleaseWithdrawal,
+                    created_at_time_ns: ic_cdk::api::time(),
+                    memo: withdrawal.payload_hash,
+                    amount: withdrawal.amount_out,
+                    fee: ledger_fee,
+                    from: Account::new(ic_cdk::api::canister_self().as_slice().to_vec(), [0; 32])
+                        .map_err(|_| SettlementActionError::StorageFailure)?,
+                    to: Account::new(withdrawal.owner.clone(), withdrawal.subaccount)
+                        .map_err(|_| SettlementActionError::StorageFailure)?,
+                    spender: None,
+                };
                 STORE.with(|store| {
                     let mut store = store.borrow_mut();
                     let mut current = store
                         .withdrawal(withdrawal_id)
                         .map_err(|_| SettlementActionError::StorageFailure)?
                         .ok_or(SettlementActionError::NotFound)?;
-                    let operation_id = store
-                        .next_evm_operation_id()
-                        .map_err(|_| SettlementActionError::StorageFailure)?;
-                    let confirmed_base_block = store
-                        .external_progress()
-                        .map_err(|_| SettlementActionError::StorageFailure)?
-                        .last_safe_base_block;
                     current
-                        .apply(WithdrawalEvent::StartRefund {
-                            operation_id,
-                            eligibility: bridge_core::RefundEligibility {
-                                confirmed_base_block,
-                                base_status_pending: true,
-                                release_transfer_proven_absent: true,
-                                reason: bridge_core::RefundReason::AmountBelowMinimum,
+                        .apply(WithdrawalEvent::StartRelease {
+                            attempt: Box::new(TransferAttempt {
+                                attempt_no: 0,
+                                identity,
+                            }),
+                            settlement: Settlement {
+                                amount_out: current.amount_out,
+                                service_fee: current.charged_service_fee,
+                                ledger_fee,
                             },
                         })
                         .map_err(|_| SettlementActionError::StorageFailure)?;
-                    let operation = bridge_core::EvmOperationRecord::queued(
-                        operation_id,
-                        current.payload_hash,
-                        EvmOperationKind::RefundWithdrawal,
-                    );
-                    let mut selector_hash = [0u8; 32];
-                    let mut keccak = Keccak::v256();
-                    keccak.update(b"refundWithdrawal(uint256)");
-                    keccak.finalize(&mut selector_hash);
-                    let mut calldata = selector_hash[..4].to_vec();
-                    calldata.extend_from_slice(&current.id.bytes());
-                    let intent = bridge_core::EvmCallIntent {
-                        operation_id,
-                        payload_hash: current.payload_hash,
-                        chain_id: config.base_chain_id,
-                        contract: config.contract_array(),
-                        calldata,
-                        gas_limit: config.transaction_gas_limit,
-                        max_fee_per_gas: config.max_fee_per_gas,
-                        max_priority_fee_per_gas: config.max_priority_fee_per_gas,
-                    };
+                    current.last_settlement_stop_reason = None;
                     store
-                        .commit_withdrawal_operation_bundle(&current, &operation, &intent)
+                        .put_withdrawal(&current)
                         .map_err(|_| SettlementActionError::StorageFailure)
                 })?;
             }
@@ -1381,7 +1293,7 @@ pub(crate) async fn advance_withdrawal(
 
 pub(crate) async fn advance_fee_payout(
     payout_id: u64,
-) -> Result<SettlementActionResult, SettlementActionError> {
+) -> Result<FeePayoutActionResult, SettlementActionError> {
     let config = STORE.with(|store| {
         store
             .borrow()
@@ -1397,11 +1309,11 @@ pub(crate) async fn advance_fee_payout(
             .ok_or(SettlementActionError::NotFound)
     })?;
     match payout.state {
-        crate::admin::FeePayoutState::Succeeded { .. } => Ok(SettlementActionResult::Complete {
-            state: "Succeeded".into(),
+        crate::admin::FeePayoutState::Succeeded { .. } => Ok(FeePayoutActionResult::Complete {
+            state: payout.state,
         }),
-        crate::admin::FeePayoutState::Failed => Ok(SettlementActionResult::Complete {
-            state: "Failed".into(),
+        crate::admin::FeePayoutState::Failed => Ok(FeePayoutActionResult::Complete {
+            state: payout.state,
         }),
         crate::admin::FeePayoutState::Pending => {
             let outcome = ledger::release(config.ledger_canister_id, &payout.transfer).await;
@@ -1414,8 +1326,8 @@ pub(crate) async fn advance_fee_payout(
                             .complete_fee_payout_success(payout_id, block_index)
                             .map_err(|_| SettlementActionError::StorageFailure)
                     })?;
-                    Ok(SettlementActionResult::Complete {
-                        state: "Succeeded".into(),
+                    Ok(FeePayoutActionResult::Complete {
+                        state: crate::admin::FeePayoutState::Succeeded { block_index },
                     })
                 }
                 LedgerCallOutcome::Ambiguous => {
@@ -1425,8 +1337,8 @@ pub(crate) async fn advance_fee_payout(
                             .hold_fee_payout(payout_id)
                             .map_err(|_| SettlementActionError::StorageFailure)
                     })?;
-                    Ok(SettlementActionResult::Stopped {
-                        state: "ReconciliationHold".into(),
+                    Ok(FeePayoutActionResult::Stopped {
+                        state: crate::admin::FeePayoutState::ReconciliationHold,
                         reason: SettlementStopReason::LedgerAmbiguous,
                     })
                 }
@@ -1437,13 +1349,13 @@ pub(crate) async fn advance_fee_payout(
                             .complete_fee_payout_failure(payout_id)
                             .map_err(|_| SettlementActionError::StorageFailure)
                     })?;
-                    Ok(SettlementActionResult::Stopped {
-                        state: "Failed".into(),
+                    Ok(FeePayoutActionResult::Stopped {
+                        state: crate::admin::FeePayoutState::Failed,
                         reason: SettlementStopReason::LedgerRejected(format!("{code:?}")),
                     })
                 }
-                other => Ok(SettlementActionResult::Stopped {
-                    state: "Pending".into(),
+                other => Ok(FeePayoutActionResult::Stopped {
+                    state: crate::admin::FeePayoutState::Pending,
                     reason: ledger_stop(&other),
                 }),
             }
@@ -1460,12 +1372,12 @@ pub(crate) async fn advance_fee_payout(
                             .complete_fee_payout_success(payout_id, block_index)
                             .map_err(|_| SettlementActionError::StorageFailure)
                     })?;
-                    return Ok(SettlementActionResult::Complete {
-                        state: "Succeeded".into(),
+                    return Ok(FeePayoutActionResult::Complete {
+                        state: crate::admin::FeePayoutState::Succeeded { block_index },
                     });
                 }
-                return Ok(SettlementActionResult::Stopped {
-                    state: "ReconciliationHold".into(),
+                return Ok(FeePayoutActionResult::Stopped {
+                    state: crate::admin::FeePayoutState::ReconciliationHold,
                     reason: ledger_stop(&outcome),
                 });
             }
@@ -1500,14 +1412,14 @@ pub(crate) async fn advance_fee_payout(
                             .update_fee_payout_scan(&reconciliation_input, &progress)
                             .map_err(|_| SettlementActionError::StorageFailure)
                     })?;
-                    Ok(SettlementActionResult::ReconciliationProgress {
-                        state: "ReconciliationHold".into(),
+                    Ok(FeePayoutActionResult::ReconciliationProgress {
+                        state: crate::admin::FeePayoutState::ReconciliationHold,
                     })
                 }
                 ledger::ReconciliationOutcome::Succeeded { block_index } => {
                     resolve_reconciliation_success(&config, target, block_index);
-                    Ok(SettlementActionResult::Complete {
-                        state: "Succeeded".into(),
+                    Ok(FeePayoutActionResult::Complete {
+                        state: crate::admin::FeePayoutState::Succeeded { block_index },
                     })
                 }
                 ledger::ReconciliationOutcome::Absent {
@@ -1515,8 +1427,8 @@ pub(crate) async fn advance_fee_payout(
                     index_watermark,
                 } => {
                     if index_watermark < ledger_watermark {
-                        return Ok(SettlementActionResult::ReconciliationProgress {
-                            state: "ReconciliationHold".into(),
+                        return Ok(FeePayoutActionResult::ReconciliationProgress {
+                            state: crate::admin::FeePayoutState::ReconciliationHold,
                         });
                     }
                     resolve_reconciliation_absence(
@@ -1525,8 +1437,8 @@ pub(crate) async fn advance_fee_payout(
                         payout.transfer,
                         index_watermark,
                     );
-                    Ok(SettlementActionResult::Complete {
-                        state: "Failed".into(),
+                    Ok(FeePayoutActionResult::Complete {
+                        state: crate::admin::FeePayoutState::Failed,
                     })
                 }
             }
@@ -1540,10 +1452,30 @@ mod tests {
     use bridge_core::{EvmCallIntent, EvmOperationId, EvmOperationRecord};
 
     #[test]
+    fn frontend_confirmation_requires_matching_receipt_and_reached_finalized_head() {
+        assert_eq!(
+            confirmation_evidence(Some(10), Some(12), 10, 11),
+            ConfirmationEvidence::WaitForFinalized
+        );
+        assert_eq!(
+            confirmation_evidence(Some(10), Some(12), 10, 12),
+            ConfirmationEvidence::Verified
+        );
+        assert_eq!(
+            confirmation_evidence(Some(10), Some(12), 10, 13),
+            ConfirmationEvidence::Verified
+        );
+        assert_eq!(
+            confirmation_evidence(Some(10), Some(12), 11, 12),
+            ConfirmationEvidence::ReceiptMismatch
+        );
+    }
+
+    #[test]
     fn evm_envelope_contains_exactly_one_operation_and_original_calldata() {
         let operation_id = EvmOperationId::new(1);
         let operation =
-            EvmOperationRecord::queued(operation_id, [1; 32], EvmOperationKind::RefundWithdrawal);
+            EvmOperationRecord::queued(operation_id, [1; 32], EvmOperationKind::MintDeposit);
         let calldata = vec![1, 2, 3, 4, 5];
         let intent = EvmCallIntent {
             operation_id,

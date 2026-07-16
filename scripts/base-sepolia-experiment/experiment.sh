@@ -512,7 +512,7 @@ flow() {
   check_chain
   require_manifest_chain
   require_state ACTIVE
-  local signer bridge bsns deposit_id owner subaccount tx withdrawal1 withdrawal2 status1 status2
+  local signer bridge bsns deposit_id owner subaccount tx withdrawal1 status1
   signer="$(manifest_get '.wallets.bridge_signer')"
   bridge="$(manifest_get '.contracts.bridge.address')"
   bsns="$(manifest_get '.contracts.bsns.address')"
@@ -530,33 +530,20 @@ flow() {
   send_success approve_withdrawal_1 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bsns" \
     'approve(address,uint256)' "$bridge" 50000000 >/dev/null
   send_success create_withdrawal_1 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
-    'createWithdrawal(uint256,uint256,bytes,bytes32)' 50000000 48000000 "$owner" "$subaccount" >/dev/null
-  send_success acknowledge_withdrawal_1 "$signer" "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$bridge" \
-    'acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)' 1 48000000 1000000 1000000 42 >/dev/null
-  send_success approve_withdrawal_2 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bsns" \
-    'approve(address,uint256)' "$bridge" 20000000 >/dev/null
-  send_success create_withdrawal_2 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
-    'createWithdrawal(uint256,uint256,bytes,bytes32)' 20000000 19000000 "$owner" "$subaccount" >/dev/null
-  send_success cancel_withdrawal_2 "$signer" "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$bridge" \
-    'cancelRelease(uint256)' 2 >/dev/null
-  send_success refund_withdrawal_2 "$signer" "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$bridge" \
-    'refundWithdrawal(uint256)' 2 >/dev/null
+    'createWithdrawal(uint256,uint256,bytes,bytes32)' 50000000 1000000 "$owner" "$subaccount" >/dev/null
   assert_call_eq 50000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
   assert_call_eq 50000000 "$bsns" 'totalSupply()(uint256)'
-  withdrawal1="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))' 1 --rpc-url "$RPC_URL" --json)"
-  withdrawal2="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))' 2 --rpc-url "$RPC_URL" --json)"
-  status1="$(jq -r '.[0][5]' <<<"$withdrawal1")"
-  status2="$(jq -r '.[0][5]' <<<"$withdrawal2")"
-  [[ "$status1" == 3 ]] || die "withdrawal 1 status is $status1, expected Released(3)"
-  [[ "$status2" == 4 ]] || die "withdrawal 2 status is $status2, expected Refunded(4)"
+  withdrawal1="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,uint256,uint256,bytes,bytes32,uint8))' 1 --rpc-url "$RPC_URL" --json)"
+  status1="$(jq -r '.[0][7]' <<<"$withdrawal1")"
+  [[ "$status1" == 1 ]] || die "withdrawal 1 status is $status1, expected Committed(1)"
   send_success set_service_fee_2m "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'setServiceFee(uint256)' 2000000 >/dev/null
   send_success pause_deposits "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'pauseDepositMints()' >/dev/null
   send_success pause_withdrawals "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'pauseWithdrawals()' >/dev/null
-  wait_transactions_confirmed mint_deposit approve_withdrawal_1 create_withdrawal_1 acknowledge_withdrawal_1 \
-    approve_withdrawal_2 create_withdrawal_2 cancel_withdrawal_2 refund_withdrawal_2 set_service_fee_2m pause_deposits pause_withdrawals
+  wait_transactions_confirmed mint_deposit approve_withdrawal_1 create_withdrawal_1 \
+    set_service_fee_2m pause_deposits pause_withdrawals
   assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
   assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
   assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'

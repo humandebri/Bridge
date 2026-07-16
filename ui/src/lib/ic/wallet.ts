@@ -6,19 +6,50 @@ import { base64ToUint8Array, uint8ArrayToBase64 } from "@dfinity/utils"
 import type { ApproveParams } from "@icp-sdk/canisters/ledger/icrc"
 import { AnonymousIdentity, Cbor, Certificate, HttpAgent, lookupResultToBuffer, requestIdOf } from "@icp-sdk/core/agent"
 import { Principal } from "@icp-sdk/core/principal"
-import type { _SERVICE, DepositReceipt, NotifyWithdrawalError, NotifyWithdrawalReceipt, SettlementActionResult } from "@/generated/bridge.did"
+import type { _SERVICE, DepositReceipt, NotifyWithdrawalError, NotifyWithdrawalReceipt, SettlementActionError, SettlementActionResult } from "@/generated/bridge.did"
 import { idlFactory } from "@/generated/bridge.idl"
+import { isDepositPhase, isSettlementActionResult } from "@/lib/settlement-phase"
 
 const CALL_TIMEOUT_MS = 120_000
 const OISY_SIGNER_URL = "https://oisy.com/sign"
 const BRIDGE_SERVICE = idlFactory({ IDL: LegacyIDL }) as IDL.ServiceClass
 
-type BridgeWalletMethod = "request_deposit" | "notify_withdrawal" | "continue_deposit" | "continue_withdrawal"
+type BridgeWalletMethod = "request_deposit" | "notify_withdrawal" | "confirm_deposit" | "continue_deposit" | "continue_withdrawal"
 
 export type IcWalletProvider = "oisy" | "plug"
 export interface IcAccount { owner: string; subaccount?: Uint8Array }
 export interface DepositCall { ownerSequence: bigint; baseRecipient: Uint8Array; grossAmount: bigint; maxServiceFee: bigint }
 export interface ApprovalCall { amount: bigint; currentAllowance: bigint; ledgerFee: bigint }
+export interface ConfirmationCall { settlementId: Uint8Array; transactionHash: Uint8Array; receiptBlockNumber: bigint; observedFinalizedBlockNumber: bigint }
+
+export type SettlementActionErrorCode = SettlementActionError extends infer Variant
+  ? Variant extends Record<string, unknown> ? keyof Variant : never
+  : never
+
+export type NotifyWithdrawalErrorCode = NotifyWithdrawalError extends infer Variant
+  ? Variant extends Record<string, unknown> ? keyof Variant : never
+  : never
+
+export class SettlementActionCallError extends Error {
+  constructor(
+    readonly code: SettlementActionErrorCode,
+    message: string,
+    readonly retryAt?: number,
+  ) {
+    super(message)
+    this.name = "SettlementActionCallError"
+  }
+}
+
+export class NotifyWithdrawalCallError extends Error {
+  constructor(
+    readonly code: NotifyWithdrawalErrorCode,
+    message: string,
+  ) {
+    super(message)
+    this.name = "NotifyWithdrawalCallError"
+  }
+}
 
 export interface IcWalletAdapter {
   readonly provider: IcWalletProvider
@@ -28,6 +59,7 @@ export interface IcWalletAdapter {
   approve(call: ApprovalCall): Promise<bigint>
   requestDeposit(call: DepositCall): Promise<DepositReceipt>
   notifyWithdrawal(transactionHash: Uint8Array): Promise<NotifyWithdrawalReceipt>
+  confirmDeposit(call: ConfirmationCall): Promise<SettlementActionResult>
   continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult>
   continueWithdrawal(withdrawalId: Uint8Array): Promise<SettlementActionResult>
 }
@@ -92,22 +124,16 @@ export class OisyAdapter implements IcWalletAdapter {
   }
 
   async requestDeposit(call: DepositCall): Promise<DepositReceipt> {
-    const wallet = this.requiredWallet()
-    const account = this.requiredAccount()
-    const argBytes = encodeDepositCall(call, account.subaccount)
-    const arg = uint8ArrayToBase64(argBytes)
-    const result = await wallet.callCanister({ canisterId: this.bridgeCanisterId, sender: account.owner, method: "request_deposit", arg })
-    const reply = await verifyOisyReply({ host: this.host, canisterId: this.bridgeCanisterId, sender: account.owner, method: "request_deposit", arg, result })
-    return decodeDepositReply(reply)
+    const account = await this.getAccount()
+    return unwrapDepositResult(await this.bridgeCall("request_deposit", [{ owner_sequence: call.ownerSequence, base_recipient: call.baseRecipient, from_subaccount: account.subaccount ? [account.subaccount] : [], gross_amount: call.grossAmount, max_service_fee: call.maxServiceFee }]))
   }
 
   async notifyWithdrawal(transactionHash: Uint8Array): Promise<NotifyWithdrawalReceipt> {
-    const wallet = this.requiredWallet()
-    const account = await this.getAccount()
-    const arg = uint8ArrayToBase64(encodeNotifyWithdrawalCall(transactionHash))
-    const result = await wallet.callCanister({ canisterId: this.bridgeCanisterId, sender: account.owner, method: "notify_withdrawal", arg })
-    const reply = await verifyOisyReply({ host: this.host, canisterId: this.bridgeCanisterId, sender: account.owner, method: "notify_withdrawal", arg, result })
-    return decodeNotifyWithdrawalReply(reply)
+    return unwrapNotifyWithdrawalResult(await this.bridgeCall("notify_withdrawal", [{ transaction_hash: transactionHash }]))
+  }
+
+  async confirmDeposit(call: ConfirmationCall): Promise<SettlementActionResult> {
+    return unwrapSettlementResult(await this.bridgeCall("confirm_deposit", [{ settlement_id: call.settlementId, transaction_hash: call.transactionHash, receipt_block_number: call.receiptBlockNumber, observed_finalized_block_number: call.observedFinalizedBlockNumber }]))
   }
 
   async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
@@ -119,12 +145,16 @@ export class OisyAdapter implements IcWalletAdapter {
   }
 
   private async continueSettlement(method: "continue_deposit" | "continue_withdrawal", id: Uint8Array): Promise<SettlementActionResult> {
+    return unwrapSettlementResult(await this.bridgeCall(method, [id]))
+  }
+
+  private async bridgeCall(method: BridgeWalletMethod, args: unknown[]): Promise<unknown> {
     const wallet = this.requiredWallet()
     const account = await this.getAccount()
-    const arg = uint8ArrayToBase64(encodeBridgeCall(method, [id]))
+    const arg = uint8ArrayToBase64(encodeBridgeCall(method, args))
     const result = await wallet.callCanister({ canisterId: this.bridgeCanisterId, sender: account.owner, method, arg })
     const reply = await verifyOisyReply({ host: this.host, canisterId: this.bridgeCanisterId, sender: account.owner, method, arg, result })
-    return decodeSettlementReply(method, reply)
+    return decodeBridgeReply(method, reply)
   }
 
   private requiredWallet(): BridgeIcrcWallet { if (!this.#wallet) throw new Error("Connect OISY first"); return this.#wallet }
@@ -176,8 +206,7 @@ export class PlugAdapter implements IcWalletAdapter {
   }
 
   async requestDeposit(call: DepositCall): Promise<DepositReceipt> {
-    await this.assertConnectedPrincipal()
-    const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
+    const actor = await this.bridgeActor()
     const result = await actor.request_deposit({
       owner_sequence: call.ownerSequence,
       base_recipient: call.baseRecipient,
@@ -189,10 +218,15 @@ export class PlugAdapter implements IcWalletAdapter {
   }
 
   async notifyWithdrawal(transactionHash: Uint8Array): Promise<NotifyWithdrawalReceipt> {
-    await this.assertConnectedPrincipal()
-    const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
+    const actor = await this.bridgeActor()
     const result = await actor.notify_withdrawal({ transaction_hash: transactionHash })
     return unwrapNotifyWithdrawalResult(result)
+  }
+
+  async confirmDeposit(call: ConfirmationCall): Promise<SettlementActionResult> {
+    const actor = await this.bridgeActor()
+    const result = await actor.confirm_deposit({ settlement_id: call.settlementId, transaction_hash: call.transactionHash, receipt_block_number: call.receiptBlockNumber, observed_finalized_block_number: call.observedFinalizedBlockNumber })
+    return unwrapSettlementResult(result)
   }
 
   async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
@@ -204,8 +238,7 @@ export class PlugAdapter implements IcWalletAdapter {
   }
 
   private async continueSettlement(method: "continue_deposit" | "continue_withdrawal", id: Uint8Array): Promise<SettlementActionResult> {
-    await this.assertConnectedPrincipal()
-    const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
+    const actor = await this.bridgeActor()
     const result = await actor[method](id)
     return unwrapSettlementResult(result)
   }
@@ -215,6 +248,11 @@ export class PlugAdapter implements IcWalletAdapter {
     const current = (await requiredPlug().agent.getPrincipal()).toText()
     if (current !== this.#account.owner) throw new Error("Plug account changed; reconnect and review the transaction")
     return this.#account
+  }
+
+  private async bridgeActor(): Promise<_SERVICE> {
+    await this.assertConnectedPrincipal()
+    return requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
   }
 }
 
@@ -236,14 +274,6 @@ function parseSubaccount(value?: string): Uint8Array | undefined {
   const hex = value.replace(/^0x/, "")
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("OISY returned an invalid subaccount")
   return Uint8Array.from(hex.match(/../g) ?? [], (byte) => Number.parseInt(byte, 16))
-}
-
-function encodeDepositCall(call: DepositCall, subaccount?: Uint8Array): Uint8Array {
-  return encodeBridgeCall("request_deposit", [{ owner_sequence: call.ownerSequence, base_recipient: call.baseRecipient, from_subaccount: subaccount ? [subaccount] : [], gross_amount: call.grossAmount, max_service_fee: call.maxServiceFee }])
-}
-
-function encodeNotifyWithdrawalCall(transactionHash: Uint8Array): Uint8Array {
-  return encodeBridgeCall("notify_withdrawal", [{ transaction_hash: transactionHash }])
 }
 
 function bridgeMethod(method: BridgeWalletMethod): IDL.FuncClass {
@@ -287,15 +317,16 @@ function unwrapDepositResult(result: unknown): DepositReceipt {
   if (!isObject(result)) throw new Error("Wallet reply has an invalid shape")
   if ("Err" in result) throw new Error(`Bridge rejected deposit: ${stringify(Reflect.get(result, "Err"))}`)
   const ok: unknown = Reflect.get(result, "Ok")
-  if (!isObject(ok) || typeof Reflect.get(ok, "state") !== "string") throw new Error("Wallet reply has an invalid deposit receipt")
+  if (!isObject(ok) || !isDepositPhase(Reflect.get(ok, "state"))) throw new Error("Wallet reply has an invalid deposit receipt")
   const id: unknown = Reflect.get(ok, "deposit_id")
   if (!(id instanceof Uint8Array) && !Array.isArray(id)) throw new Error("Wallet reply has an invalid deposit ID")
   const state: unknown = Reflect.get(ok, "state")
-  if (typeof state !== "string") throw new Error("Wallet reply has an invalid deposit state")
+  if (!isDepositPhase(state)) throw new Error("Wallet reply has an invalid deposit state")
   const settlement: unknown = Reflect.get(ok, "settlement")
   if (!Array.isArray(settlement)) throw new Error("Wallet reply has an invalid settlement result")
   const ownerSequence: unknown = Reflect.get(ok, "owner_sequence")
   if (typeof ownerSequence !== "bigint") throw new Error("Wallet reply has an invalid owner sequence")
+  if (settlement.length > 1 || (settlement.length === 1 && !isSettlementActionResult(settlement[0]))) throw new Error("Wallet reply has an invalid settlement result")
   return { deposit_id: id, owner_sequence: ownerSequence, state, settlement: settlement as [] | [SettlementActionResult] }
 }
 
@@ -306,25 +337,66 @@ export function decodeNotifyWithdrawalReply(reply: Uint8Array): NotifyWithdrawal
 function unwrapNotifyWithdrawalResult(result: unknown): NotifyWithdrawalReceipt {
   if (!isObject(result)) throw new Error("Wallet reply has an invalid notification result")
   const decoded = result as Record<string, unknown>
-  if ("Err" in decoded) throw new Error(notifyWithdrawalErrorMessage(decoded.Err as NotifyWithdrawalError))
+  if ("Err" in decoded) {
+    const error = decoded.Err
+    const code = notifyWithdrawalErrorCode(error)
+    if (!code) throw new Error("Wallet reply has an invalid withdrawal notification error")
+    throw new NotifyWithdrawalCallError(code, notifyWithdrawalErrorMessage(error as NotifyWithdrawalError))
+  }
   const receipt: unknown = decoded.Ok
   if (!isObject(receipt)) throw new Error("Wallet reply has an invalid notification receipt")
+  const receiptKeys = Object.keys(receipt)
+  const receiptKey = receiptKeys[0]
+  if (receiptKeys.length !== 1 || (receiptKey !== "Ingested" && receiptKey !== "Duplicate")) throw new Error("Wallet reply has an invalid notification receipt")
+  const payload: unknown = (receipt as Record<string, unknown>)[receiptKey]
+  if (!isObject(payload)) throw new Error("Wallet reply has an invalid notification receipt")
+  const payloadRecord = payload as Record<string, unknown>
+  const withdrawalId: unknown = payloadRecord.withdrawal_id
+  if (!(withdrawalId instanceof Uint8Array) && !Array.isArray(withdrawalId)) throw new Error("Wallet reply has an invalid withdrawal ID")
+  const settlement: unknown = payloadRecord.settlement
+  if (!Array.isArray(settlement) || settlement.length > 1 || (settlement.length === 1 && !isSettlementActionResult(settlement[0]))) throw new Error("Wallet reply has an invalid settlement result")
+  if (receiptKey === "Ingested" && typeof payloadRecord.finalized_head_block_number !== "bigint") throw new Error("Wallet reply has an invalid finalized block")
   return receipt as NotifyWithdrawalReceipt
-}
-
-function decodeSettlementReply(method: "continue_deposit" | "continue_withdrawal", reply: Uint8Array): SettlementActionResult {
-  return unwrapSettlementResult(decodeBridgeReply(method, reply))
 }
 
 function unwrapSettlementResult(result: unknown): SettlementActionResult {
   if (!isObject(result)) throw new Error("Wallet reply has an invalid settlement result")
   const decoded = result as Record<string, unknown>
-  if (decoded.Err !== undefined) throw new Error(settlementActionErrorMessage(decoded.Err))
-  if (decoded.Ok === undefined) throw new Error("Wallet reply has an invalid settlement result")
-  return decoded.Ok as SettlementActionResult
+  if (decoded.Err !== undefined) throw settlementActionCallError(decoded.Err)
+  if (decoded.Ok === undefined || !isSettlementActionResult(decoded.Ok)) throw new Error("Wallet reply has an invalid settlement result")
+  return decoded.Ok
+}
+
+function settlementActionCallError(error: unknown): Error {
+  const code = settlementActionErrorCode(error)
+  if (!code) return new Error("Wallet reply has an invalid settlement error")
+  const message = settlementActionErrorMessage(error)
+  const rateLimited: unknown = isObject(error) ? Reflect.get(error, "RateLimited") as unknown : undefined
+  if (code === "RateLimited" && isObject(rateLimited)) {
+    const retryAfter: unknown = Reflect.get(rateLimited, "retry_after_seconds")
+    if (typeof retryAfter === "bigint") return new SettlementActionCallError(code, message, Date.now() + Number(retryAfter) * 1_000)
+  }
+  const automaticProgress: unknown = isObject(error) ? Reflect.get(error, "AutomaticProgressPending") as unknown : undefined
+  if (code === "AutomaticProgressPending" && isObject(automaticProgress)) {
+    const nextRun: unknown = Reflect.get(automaticProgress, "next_run_at_ns")
+    const nextCheck: unknown = Array.isArray(nextRun) ? (nextRun.at(0) as unknown) : undefined
+    if (typeof nextCheck === "bigint") return new SettlementActionCallError(code, message, Number(nextCheck / 1_000_000n))
+  }
+  return new SettlementActionCallError(code, message)
+}
+
+function settlementActionErrorCode(error: unknown): SettlementActionErrorCode | undefined {
+  if (!isObject(error)) return undefined
+  const code = Object.keys(error)[0]
+  if (code && ["AutomaticProgressPending", "InvalidId", "Busy", "WrongState", "InvalidConfirmationObservation", "NotFound", "Unauthorized", "TransactionMismatch", "ConfirmationRequired", "RateLimited", "StorageFailure", "AnonymousCaller"].includes(code)) return code as SettlementActionErrorCode
+  return undefined
 }
 
 function settlementActionErrorMessage(error: unknown): string {
+  if (isObject(error) && "ConfirmationRequired" in error) return "This Base transaction must be confirmed through the finalized confirmation action."
+  if (isObject(error) && "InvalidConfirmationObservation" in error) return "The Base finalized observation is older than the transaction receipt."
+  if (isObject(error) && "TransactionMismatch" in error) return "The Base transaction does not match the canister settlement."
+  if (isObject(error) && "WrongState" in error) return "This settlement is not waiting for this action."
   if (isObject(error) && "AutomaticProgressPending" in error && isObject(error.AutomaticProgressPending) && "next_run_at_ns" in error.AutomaticProgressPending) {
     const nextRun = error.AutomaticProgressPending.next_run_at_ns
     const nextCheck: unknown = Array.isArray(nextRun) ? (nextRun.at(0) as unknown) : undefined
@@ -333,23 +405,26 @@ function settlementActionErrorMessage(error: unknown): string {
   }
   if (isObject(error) && "RateLimited" in error && isObject(error.RateLimited) && "retry_after_seconds" in error.RateLimited) {
     const retryAfter = error.RateLimited.retry_after_seconds
-    if (typeof retryAfter === "bigint") return `Too many settlement retries. Retry in ${retryAfter.toString()} seconds.`
+    if (typeof retryAfter === "bigint") {
+      const retryAt = new Date(Date.now() + Number(retryAfter) * 1_000)
+      return `Too many settlement retries. Retry after ${retryAt.toLocaleString()}.`
+    }
   }
   return `Bridge rejected settlement action: ${stringify(error)}`
 }
 
 export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): string {
-  if ("RateLimited" in error) return `Too many notification attempts. Retry in ${error.RateLimited.retry_after_seconds.toString()} seconds.`
   const key = Object.keys(error)[0]
   const messages: Record<string, string> = {
+    LedgerFeeExceedsServiceFee: "The IC ledger fee exceeds the committed service fee. Resume this withdrawal from History after the fee falls.",
     RpcUnavailable: "Base RPC is unavailable. Retry the notification manually later.",
     RpcInconsistent: "Base RPC providers disagreed. Retry the notification manually later.",
     InvalidBaseResponse: "Base returned an invalid withdrawal response.",
     TransactionNotFound: "The Base withdrawal transaction was not found.",
-    TransactionNotConfirmed: "The Base withdrawal transaction has not reached the Safe head yet.",
+    TransactionNotConfirmed: "The Base withdrawal transaction has not reached the finalized head yet.",
     TransactionReverted: "The Base withdrawal transaction reverted.",
-    BaseStateMismatch: "The Safe-confirmed Bridge withdrawal state does not match its creation event.",
-    BridgeSignerMismatch: "The Safe-confirmed Bridge signer does not match the configured canister signer.",
+    BaseStateMismatch: "The finalized Bridge withdrawal state does not match its creation event.",
+    BridgeSignerMismatch: "The finalized Bridge signer does not match the configured canister signer.",
     OwnerMismatch: "The connected IC wallet does not own this withdrawal.",
     LedgerFeeUnavailable: "The IC ledger fee is unavailable. Retry the notification manually later.",
     WithdrawalConflict: "A different withdrawal payload already uses this withdrawal ID.",
@@ -360,6 +435,18 @@ export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): stri
   }
   const message = key === undefined ? undefined : messages[key]
   return message ?? `Bridge rejected withdrawal notification: ${stringify(error)}`
+}
+
+function notifyWithdrawalErrorCode(error: unknown): NotifyWithdrawalErrorCode | undefined {
+  if (!isObject(error)) return undefined
+  const code = Object.keys(error)[0]
+  if (code && [
+    "LedgerFeeExceedsServiceFee", "Busy", "RpcUnavailable", "TransactionNotConfirmed",
+    "WithdrawalConflict", "OwnerMismatch", "RpcInconsistent", "InvalidTransactionHash",
+    "TransactionReverted", "LedgerFeeUnavailable", "StorageFailure", "BaseStateMismatch",
+    "TransactionNotFound", "BridgeSignerMismatch", "AnonymousCaller", "InvalidBaseResponse",
+  ].includes(code)) return code as NotifyWithdrawalErrorCode
+  return undefined
 }
 
 function bytes(value: unknown, label: string): Uint8Array { if (value instanceof Uint8Array) return value; throw new Error(`Wallet response ${label} mismatch`) }

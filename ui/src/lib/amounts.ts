@@ -19,9 +19,8 @@ export function formatTokenAmount(value: bigint): string {
   return fraction ? `${whole}.${fraction}` : whole.toString()
 }
 
-export function estimatedAmountOut(amount: bigint, serviceFee: bigint, ledgerFee: bigint): bigint {
-  const fees = serviceFee + ledgerFee
-  return amount > fees ? amount - fees : 0n
+export function estimatedAmountOut(amount: bigint, serviceFee: bigint): bigint {
+  return amount > serviceFee ? amount - serviceFee : 0n
 }
 
 export function requiredDepositBalance(amount: bigint, ledgerFee: bigint, allowance: bigint): bigint {

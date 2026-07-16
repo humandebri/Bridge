@@ -140,7 +140,7 @@ pub fn resume(caller: Principal) -> Result<(), AdminError> {
         store
             .borrow()
             .counters()
-            .map(|counters| counters.reverted_evm_operations != 0)
+            .map(|counters| counters.unresolved_evm_reverts != 0)
             .map_err(|_| AdminError::StorageFailure)
     })?;
     if unresolved {

@@ -27,7 +27,7 @@ test if bridge controls become unavailable or any identifier differs from the re
 - Approve the exact gross amount plus transfer-from fee with current allowance and 30-minute expiry.
 - Confirm Plug displays the Bridge canister's ICRC-21 message, including Base recipient, amounts,
   maximum service fee, minimum received amount, and the bSNS governance disclosure.
-- Submit a deposit and verify canister history and the Safe-confirmed Base mint.
+- Submit a deposit and verify canister history and the Finalized Base mint.
 - Reject one approval and one Bridge call; verify no subsequent step is sent.
 - Close one wallet popup; verify the UI reports cancellation without inventing success.
 - Disconnect/reconnect and change account once; verify the stale confirmation is invalidated.
@@ -38,7 +38,7 @@ test if bridge controls become unavailable or any identifier differs from the re
 - Confirm the selected owner/subaccount remains the approval and deposit source.
 - Approve the exact gross amount plus transfer-from fee with current allowance and 30-minute expiry.
 - Confirm OISY displays the Bridge canister's ICRC-21 message and the bSNS governance disclosure.
-- Submit a deposit and verify canister history and the Safe-confirmed Base mint.
+- Submit a deposit and verify canister history and the Finalized Base mint.
 - Reject one approval and one Bridge call, close one popup, then reconnect.
 - Change the selected account after confirmation; verify the transaction is aborted and must be
   reviewed again.
@@ -54,11 +54,11 @@ test if bridge controls become unavailable or any identifier differs from the re
   or stale sequence and verify `SequenceMismatch`.
 - After approve succeeds but deposit fails, record the remaining allowance, expiry, and retry path.
 - Force one withdrawal notification failure and verify a later explicit History refresh reconstructs
-  the Safe-confirmed event and exposes `Check and notify` again.
+  the Finalized event and exposes `Check and notify` again.
 - Reload the page and reconnect both wallets; verify neither action retries the notification.
 - Select `Check and notify` and verify one receipt check and at most one notification call are made.
-- After successful ingestion, close the wallet and browser; verify canister timers complete release
-  and Base acknowledgement or refund without another wallet prompt. Reopen History and verify
+- After successful ingestion, close the wallet and browser; verify canister timers complete the IC
+  release without another Base transaction or wallet prompt. Reopen History and verify
   `Confirming automatically` is shown only while scheduled, and `Retry settlement` only after a stop.
 
 ## Result

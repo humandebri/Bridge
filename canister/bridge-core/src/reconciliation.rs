@@ -201,22 +201,7 @@ pub fn resolve_withdrawal_hold(
         WithdrawalState::ReconciliationHold {
             hold_id, attempt, ..
         } if *hold_id == hold.id => attempt,
-        WithdrawalState::ReleaseTransferred {
-            attempt,
-            source_hold: Some(id),
-            ..
-        }
-        | WithdrawalState::AcknowledgePending {
-            attempt,
-            source_hold: Some(id),
-            ..
-        }
-        | WithdrawalState::AcknowledgeReverted {
-            attempt,
-            source_hold: Some(id),
-            ..
-        }
-        | WithdrawalState::Released {
+        WithdrawalState::Paid {
             attempt,
             source_hold: Some(id),
             ..
@@ -224,6 +209,9 @@ pub fn resolve_withdrawal_hold(
         WithdrawalState::ReleasePending { attempt, .. } if attempt.attempt_no > 0 => attempt,
         _ => return Err(CoreError::HoldMismatch),
     };
+    // After an absence resolution the hold remains bound to the old transfer while the
+    // withdrawal advances to a replacement attempt. Accept that shape only for replay;
+    // the resolution branch below still requires the exact replacement identity.
     if hold.transfer != held_attempt.identity && held_attempt.attempt_no == 0 {
         return Err(CoreError::HoldMismatch);
     }
@@ -238,7 +226,7 @@ pub fn resolve_withdrawal_hold(
                     settlement,
                     ..
                 } => {
-                    next_withdrawal.state = WithdrawalState::ReleaseTransferred {
+                    next_withdrawal.state = WithdrawalState::Paid {
                         attempt: attempt.clone(),
                         settlement: *settlement,
                         ledger_block_index,
@@ -246,22 +234,7 @@ pub fn resolve_withdrawal_hold(
                     };
                     ApplyOutcome::Applied
                 }
-                WithdrawalState::ReleaseTransferred {
-                    ledger_block_index: current,
-                    source_hold: Some(id),
-                    ..
-                }
-                | WithdrawalState::AcknowledgePending {
-                    ledger_block_index: current,
-                    source_hold: Some(id),
-                    ..
-                }
-                | WithdrawalState::AcknowledgeReverted {
-                    ledger_block_index: current,
-                    source_hold: Some(id),
-                    ..
-                }
-                | WithdrawalState::Released {
+                WithdrawalState::Paid {
                     ledger_block_index: current,
                     source_hold: Some(id),
                     ..
@@ -271,7 +244,7 @@ pub fn resolve_withdrawal_hold(
             let fee = if ro == ApplyOutcome::Applied {
                 match &withdrawal.state {
                     WithdrawalState::ReconciliationHold { settlement, .. } => {
-                        settlement.service_fee
+                        settlement.net_service_fee()?
                     }
                     _ => Amount::ZERO,
                 }

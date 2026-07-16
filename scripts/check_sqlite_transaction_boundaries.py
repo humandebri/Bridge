@@ -62,7 +62,7 @@ def main() -> int:
     for function_name in ("confirm_evm_member", "mark_evm_reverted"):
         start = tasks.index(f"fn {function_name}(")
         body = closure(tasks, start)
-        if "commit_evm_terminal_bundle(" not in body:
+        if "commit_evm_terminal_bundle" not in body:
             print(
                 f"{CALLER_SOURCES[1]}: {function_name} must use commit_evm_terminal_bundle",
                 file=sys.stderr,
@@ -152,13 +152,21 @@ def main() -> int:
             return 1
     for required in (
         "commit_deposit_mint_bundle_and_scan",
-        "commit_acknowledgement_bundle_and_scan",
         "resolve_deposit_hold_and_scan",
         "resolve_withdrawal_hold_and_scan",
     ):
         if required not in storage:
             print(f"{SOURCE}: missing scan-aware atomic bundle {required}", file=sys.stderr)
             return 1
+    api = CALLER_SOURCES[0].read_text(encoding="utf-8")
+    ingest_start = api.index("fn ingest_notified_withdrawal(")
+    ingest_body = closure(api, ingest_start)
+    if "commit_new_withdrawal_release_bundle_with_rpc_audit(" not in ingest_body:
+        print(
+            f"{CALLER_SOURCES[0]}: notify_withdrawal must use the atomic withdrawal ingest bundle",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

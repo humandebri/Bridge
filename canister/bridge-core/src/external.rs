@@ -115,17 +115,183 @@ impl EvmTransactionEnvelope {
     feature = "storage-serde",
     derive(serde::Serialize, serde::Deserialize)
 )]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FinalizedObservationRecord {
+    pub chain_id: u64,
+    pub block_number: u64,
+    pub block_hash: [u8; 32],
+    pub observed_at_ns: u64,
+    pub bridge_signer: [u8; 20],
+    pub runtime_sha256: [u8; 32],
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExternalProgress {
     pub nonce_initialized: bool,
     pub next_evm_nonce: u64,
-    pub last_safe_base_block: u64,
-    pub last_safe_mint_block: u64,
+    pub last_finalized_base_block: u64,
+    pub last_finalized_mint_block: u64,
     pub last_eth_balance_wei: u128,
     pub reserve_sufficient: bool,
     pub reserve_observation_generation: u64,
     pub last_reserve_observation_ns: u64,
-    pub last_safe_observation_ns: u64,
+    pub last_finalized_observation_ns: u64,
+    pub finalized_observation: Option<FinalizedObservationRecord>,
+}
+
+impl ExternalProgress {
+    pub fn observe_finalized(
+        &mut self,
+        candidate: FinalizedObservationRecord,
+    ) -> Result<(), CoreError> {
+        if candidate.block_number < self.last_finalized_base_block {
+            return Err(CoreError::StaleFinalizedObservation);
+        }
+        if let Some(current) = self.finalized_observation {
+            if candidate.chain_id != current.chain_id {
+                return Err(CoreError::ConflictingFinalizedObservation);
+            }
+            if candidate.block_number < current.block_number {
+                return Err(CoreError::StaleFinalizedObservation);
+            }
+            if candidate.block_number == current.block_number
+                && (candidate.block_hash != current.block_hash
+                    || candidate.bridge_signer != current.bridge_signer
+                    || candidate.runtime_sha256 != current.runtime_sha256)
+            {
+                return Err(CoreError::ConflictingFinalizedObservation);
+            }
+        }
+
+        let observed_at_ns = self
+            .last_finalized_observation_ns
+            .max(candidate.observed_at_ns);
+        self.last_finalized_base_block = candidate.block_number;
+        self.last_finalized_observation_ns = observed_at_ns;
+        self.finalized_observation = Some(FinalizedObservationRecord {
+            observed_at_ns,
+            ..candidate
+        });
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod finalized_observation_tests {
+    use super::*;
+
+    fn observation(block_number: u64) -> FinalizedObservationRecord {
+        FinalizedObservationRecord {
+            chain_id: 8453,
+            block_number,
+            block_hash: [block_number as u8; 32],
+            observed_at_ns: block_number * 10,
+            bridge_signer: [7; 20],
+            runtime_sha256: [8; 32],
+        }
+    }
+
+    #[test]
+    fn finalized_observations_advance_monotonically() {
+        let mut progress = ExternalProgress::default();
+        let first = observation(10);
+        progress
+            .observe_finalized(first)
+            .expect("first observation");
+        assert_eq!(progress.finalized_observation, Some(first));
+
+        let next = observation(11);
+        progress.observe_finalized(next).expect("newer observation");
+        assert_eq!(progress.last_finalized_base_block, 11);
+        assert_eq!(progress.finalized_observation, Some(next));
+    }
+
+    #[test]
+    fn stale_finalized_observations_leave_progress_unchanged() {
+        let current = observation(11);
+        let mut progress = ExternalProgress::default();
+        progress
+            .observe_finalized(current)
+            .expect("current observation");
+        let before = progress;
+
+        assert_eq!(
+            progress.observe_finalized(observation(10)),
+            Err(CoreError::StaleFinalizedObservation)
+        );
+        assert_eq!(progress, before);
+
+        let mut block_only = ExternalProgress {
+            last_finalized_base_block: 12,
+            ..ExternalProgress::default()
+        };
+        let before = block_only;
+        assert_eq!(
+            block_only.observe_finalized(observation(11)),
+            Err(CoreError::StaleFinalizedObservation)
+        );
+        assert_eq!(block_only, before);
+    }
+
+    #[test]
+    fn repeated_finalized_observation_only_advances_time() {
+        let mut progress = ExternalProgress::default();
+        let first = observation(10);
+        progress
+            .observe_finalized(first)
+            .expect("first observation");
+        let repeated = FinalizedObservationRecord {
+            observed_at_ns: first.observed_at_ns + 5,
+            ..first
+        };
+        progress
+            .observe_finalized(repeated)
+            .expect("matching repeated observation");
+        assert_eq!(progress.finalized_observation, Some(repeated));
+
+        progress
+            .observe_finalized(first)
+            .expect("older timestamp for the same observation");
+        assert_eq!(progress.finalized_observation, Some(repeated));
+    }
+
+    #[test]
+    fn conflicting_finalized_identity_leaves_progress_unchanged() {
+        let current = observation(10);
+        for conflicting in [
+            FinalizedObservationRecord {
+                chain_id: current.chain_id + 1,
+                ..current
+            },
+            FinalizedObservationRecord {
+                block_hash: [9; 32],
+                ..current
+            },
+            FinalizedObservationRecord {
+                bridge_signer: [9; 20],
+                ..current
+            },
+            FinalizedObservationRecord {
+                runtime_sha256: [9; 32],
+                ..current
+            },
+        ] {
+            let mut progress = ExternalProgress::default();
+            progress
+                .observe_finalized(current)
+                .expect("current observation");
+            let before = progress;
+            assert_eq!(
+                progress.observe_finalized(conflicting),
+                Err(CoreError::ConflictingFinalizedObservation)
+            );
+            assert_eq!(progress, before);
+        }
+    }
 }
 
 #[cfg_attr(

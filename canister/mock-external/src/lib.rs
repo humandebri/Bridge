@@ -15,8 +15,9 @@ use icrc_ledger_types::{
     },
     icrc2::transfer_from::{TransferFromArgs, TransferFromError},
     icrc3::{
+        archive::{ArchivedRange, QueryTxArchiveFn},
         blocks::GetBlocksRequest,
-        transactions::{GetTransactionsResponse, Transaction},
+        transactions::{GetTransactionsResponse, Transaction, TransactionRange},
     },
 };
 use k256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
@@ -34,6 +35,8 @@ pub enum LedgerMode {
     Duplicate,
     Trap,
     BadFee,
+    InsufficientAllowance { allowance: u128 },
+    InsufficientFunds { balance: u128 },
     TemporarilyUnavailable,
 }
 
@@ -43,7 +46,9 @@ pub struct WithdrawalFixture {
     pub owner: Vec<u8>,
     pub subaccount: Vec<u8>,
     pub amount: u128,
-    pub min_amount_out: u128,
+    pub max_service_fee: u128,
+    pub charged_service_fee: u128,
+    pub amount_out: u128,
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +72,8 @@ pub enum ChainIdMode {
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockMode {
     Canonical,
-    SafeInconsistent,
+    FinalizedUnavailable,
+    FinalizedInconsistent,
     CanonicalInconsistent,
     SameHeightDifferentHash,
 }
@@ -153,6 +159,8 @@ struct StableMockState {
     bad_fee_expected_fee: Option<u128>,
     next_block: u128,
     transactions: Vec<Transaction>,
+    archive_prefix_length: u64,
+    index_synced_blocks: Option<u128>,
     processed_deposit: bool,
     last_tx_hash: [u8; 32],
     observed_contract: [u8; 20],
@@ -179,6 +187,8 @@ struct StableMockState {
     block_timestamp: u64,
     safe_block_sequence: Vec<u64>,
     safe_block_hash_override: Option<(u64, [u8; 32])>,
+    finalized_block_sequence: Vec<u64>,
+    finalized_block_hash_override: Option<(u64, [u8; 32])>,
     fallback_block_sequence: Vec<u64>,
     eth_call_count: u64,
     pinned_eth_call_block_numbers: Vec<u64>,
@@ -196,6 +206,8 @@ thread_local! {
     static LEDGER_TRANSFER_CALLS: RefCell<u64> = const { RefCell::new(0) };
     static NEXT_BLOCK: RefCell<u128> = const { RefCell::new(1) };
     static TRANSACTIONS: RefCell<Vec<Transaction>> = const { RefCell::new(Vec::new()) };
+    static ARCHIVE_PREFIX_LENGTH: RefCell<u64> = const { RefCell::new(0) };
+    static INDEX_SYNCED_BLOCKS: RefCell<Option<u128>> = const { RefCell::new(None) };
     static PROCESSED_DEPOSIT: RefCell<bool> = const { RefCell::new(false) };
     static LAST_TX_HASH: RefCell<[u8; 32]> = const { RefCell::new([9; 32]) };
     static OBSERVED_CONTRACT: RefCell<[u8; 20]> = const { RefCell::new([1; 20]) };
@@ -222,6 +234,8 @@ thread_local! {
     static BLOCK_TIMESTAMP: RefCell<u64> = const { RefCell::new(1) };
     static SAFE_BLOCK_SEQUENCE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static SAFE_BLOCK_HASH_OVERRIDE: RefCell<Option<(u64, [u8; 32])>> = const { RefCell::new(None) };
+    static FINALIZED_BLOCK_SEQUENCE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    static FINALIZED_BLOCK_HASH_OVERRIDE: RefCell<Option<(u64, [u8; 32])>> = const { RefCell::new(None) };
     static FALLBACK_BLOCK_SEQUENCE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static ETH_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
     static PINNED_ETH_CALL_BLOCK_NUMBERS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
@@ -238,6 +252,16 @@ fn init(args: InitArgs) {
 #[ic_cdk::update]
 fn set_ledger_mode(mode: LedgerMode) {
     LEDGER_MODE.with(|current| *current.borrow_mut() = mode);
+}
+
+#[ic_cdk::update]
+fn set_archive_prefix_length(length: u64) {
+    ARCHIVE_PREFIX_LENGTH.with(|current| *current.borrow_mut() = length);
+}
+
+#[ic_cdk::update]
+fn set_index_synced_blocks(blocks: Option<u128>) {
+    INDEX_SYNCED_BLOCKS.with(|current| *current.borrow_mut() = blocks);
 }
 
 #[ic_cdk::update]
@@ -258,7 +282,7 @@ fn set_bad_fee_expected_fee(fee: Option<u128>) {
 #[ic_cdk::update]
 fn set_withdrawal(value: Option<WithdrawalFixture>) {
     WITHDRAWAL.with(|current| *current.borrow_mut() = value);
-    WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 2);
+    WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 1);
     LAST_TX_HASH.with(|hash| *hash.borrow_mut() = [9; 32]);
 }
 
@@ -374,6 +398,23 @@ fn set_safe_block(block_number: u64, block_hash: Vec<u8>) -> Result<(), String> 
 }
 
 #[ic_cdk::update]
+fn set_finalized_block_sequence(value: Vec<u64>) {
+    FINALIZED_BLOCK_SEQUENCE.with(|current| *current.borrow_mut() = value);
+}
+
+#[ic_cdk::update]
+fn set_finalized_block(block_number: u64, block_hash: Vec<u8>) -> Result<(), String> {
+    let block_hash: [u8; 32] = block_hash
+        .try_into()
+        .map_err(|_| "finalized block hash must be exactly 32 bytes".to_string())?;
+    FINALIZED_BLOCK_SEQUENCE.with(|current| *current.borrow_mut() = vec![block_number; 512]);
+    FINALIZED_BLOCK_HASH_OVERRIDE.with(|current| {
+        *current.borrow_mut() = Some((block_number, block_hash));
+    });
+    Ok(())
+}
+
+#[ic_cdk::update]
 async fn set_bridge_signer_for_canister(
     canister_id: Principal,
     key_name: String,
@@ -455,6 +496,8 @@ fn pre_upgrade() {
         bad_fee_expected_fee: BAD_FEE_EXPECTED_FEE.with(|v| *v.borrow()),
         next_block: NEXT_BLOCK.with(|v| *v.borrow()),
         transactions: TRANSACTIONS.with(|v| v.borrow().clone()),
+        archive_prefix_length: ARCHIVE_PREFIX_LENGTH.with(|v| *v.borrow()),
+        index_synced_blocks: INDEX_SYNCED_BLOCKS.with(|v| *v.borrow()),
         processed_deposit: PROCESSED_DEPOSIT.with(|v| *v.borrow()),
         last_tx_hash: LAST_TX_HASH.with(|v| *v.borrow()),
         observed_contract: OBSERVED_CONTRACT.with(|v| *v.borrow()),
@@ -481,6 +524,8 @@ fn pre_upgrade() {
         block_timestamp: BLOCK_TIMESTAMP.with(|v| *v.borrow()),
         safe_block_sequence: SAFE_BLOCK_SEQUENCE.with(|v| v.borrow().clone()),
         safe_block_hash_override: SAFE_BLOCK_HASH_OVERRIDE.with(|v| *v.borrow()),
+        finalized_block_sequence: FINALIZED_BLOCK_SEQUENCE.with(|v| v.borrow().clone()),
+        finalized_block_hash_override: FINALIZED_BLOCK_HASH_OVERRIDE.with(|v| *v.borrow()),
         fallback_block_sequence: FALLBACK_BLOCK_SEQUENCE.with(|v| v.borrow().clone()),
         eth_call_count: ETH_CALL_COUNT.with(|v| *v.borrow()),
         pinned_eth_call_block_numbers: PINNED_ETH_CALL_BLOCK_NUMBERS.with(|v| v.borrow().clone()),
@@ -502,6 +547,8 @@ fn post_upgrade() {
     BAD_FEE_EXPECTED_FEE.with(|v| *v.borrow_mut() = state.bad_fee_expected_fee);
     NEXT_BLOCK.with(|v| *v.borrow_mut() = state.next_block);
     TRANSACTIONS.with(|v| *v.borrow_mut() = state.transactions);
+    ARCHIVE_PREFIX_LENGTH.with(|v| *v.borrow_mut() = state.archive_prefix_length);
+    INDEX_SYNCED_BLOCKS.with(|v| *v.borrow_mut() = state.index_synced_blocks);
     PROCESSED_DEPOSIT.with(|v| *v.borrow_mut() = state.processed_deposit);
     LAST_TX_HASH.with(|v| *v.borrow_mut() = state.last_tx_hash);
     OBSERVED_CONTRACT.with(|v| *v.borrow_mut() = state.observed_contract);
@@ -528,6 +575,8 @@ fn post_upgrade() {
     BLOCK_TIMESTAMP.with(|v| *v.borrow_mut() = state.block_timestamp);
     SAFE_BLOCK_SEQUENCE.with(|v| *v.borrow_mut() = state.safe_block_sequence);
     SAFE_BLOCK_HASH_OVERRIDE.with(|v| *v.borrow_mut() = state.safe_block_hash_override);
+    FINALIZED_BLOCK_SEQUENCE.with(|v| *v.borrow_mut() = state.finalized_block_sequence);
+    FINALIZED_BLOCK_HASH_OVERRIDE.with(|v| *v.borrow_mut() = state.finalized_block_hash_override);
     FALLBACK_BLOCK_SEQUENCE.with(|v| *v.borrow_mut() = state.fallback_block_sequence);
     ETH_CALL_COUNT.with(|v| *v.borrow_mut() = state.eth_call_count);
     PINNED_ETH_CALL_BLOCK_NUMBERS.with(|v| *v.borrow_mut() = state.pinned_eth_call_block_numbers);
@@ -554,6 +603,14 @@ fn icrc2_transfer_from(args: TransferFromArgs) -> Result<Nat, TransferFromError>
         }),
         LedgerMode::BadFee => Err(TransferFromError::BadFee {
             expected_fee: Nat::from(LEDGER_FEE.with(|fee| *fee.borrow())),
+        }),
+        LedgerMode::InsufficientAllowance { allowance } => {
+            Err(TransferFromError::InsufficientAllowance {
+                allowance: Nat::from(allowance),
+            })
+        }
+        LedgerMode::InsufficientFunds { balance } => Err(TransferFromError::InsufficientFunds {
+            balance: Nat::from(balance),
         }),
         LedgerMode::TemporarilyUnavailable => Err(TransferFromError::TemporarilyUnavailable),
         LedgerMode::Succeed => {
@@ -600,6 +657,17 @@ fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
                 })),
             })
         }
+        LedgerMode::InsufficientAllowance { allowance } => {
+            return Err(TransferError::GenericError {
+                error_code: Nat::from(1u8),
+                message: format!("insufficient allowance: {allowance}"),
+            })
+        }
+        LedgerMode::InsufficientFunds { balance } => {
+            return Err(TransferError::InsufficientFunds {
+                balance: Nat::from(balance),
+            })
+        }
         LedgerMode::TemporarilyUnavailable => return Err(TransferError::TemporarilyUnavailable),
         LedgerMode::Succeed => {}
     }
@@ -626,12 +694,48 @@ fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
 #[ic_cdk::query]
 fn get_transactions(_args: GetBlocksRequest) -> GetTransactionsResponse {
     let transactions = TRANSACTIONS.with(|transactions| transactions.borrow().clone());
+    let archive_length = ARCHIVE_PREFIX_LENGTH
+        .with(|length| *length.borrow())
+        .min(transactions.len() as u64) as usize;
+    let archived_transactions = if archive_length == 0 {
+        vec![]
+    } else {
+        vec![ArchivedRange {
+            start: Nat::from(0u8),
+            length: Nat::from(archive_length),
+            callback: QueryTxArchiveFn::new(
+                ic_cdk::api::canister_self(),
+                "get_archive_transactions",
+            ),
+        }]
+    };
     GetTransactionsResponse {
         log_length: Nat::from(transactions.len()),
-        first_index: Nat::from(0u8),
-        transactions,
-        archived_transactions: vec![],
+        first_index: Nat::from(archive_length),
+        transactions: transactions.into_iter().skip(archive_length).collect(),
+        archived_transactions,
     }
+}
+
+#[ic_cdk::query]
+fn get_archive_transactions(args: GetBlocksRequest) -> TransactionRange {
+    let start = nat_to_usize(&args.start);
+    let length = nat_to_usize(&args.length);
+    let archive_length = ARCHIVE_PREFIX_LENGTH.with(|value| *value.borrow()) as usize;
+    let transactions = TRANSACTIONS.with(|values| {
+        values
+            .borrow()
+            .iter()
+            .skip(start)
+            .take(length.min(archive_length.saturating_sub(start)))
+            .cloned()
+            .collect()
+    });
+    TransactionRange { transactions }
+}
+
+fn nat_to_usize(value: &Nat) -> usize {
+    value.0.to_string().parse().unwrap_or(usize::MAX)
 }
 
 #[ic_cdk::query]
@@ -642,7 +746,11 @@ fn ledger_id() -> Principal {
 #[ic_cdk::query]
 fn status() -> Status {
     Status {
-        num_blocks_synced: TRANSACTIONS.with(|transactions| Nat::from(transactions.borrow().len())),
+        num_blocks_synced: INDEX_SYNCED_BLOCKS.with(|override_value| {
+            Nat::from(override_value.borrow().unwrap_or_else(|| {
+                TRANSACTIONS.with(|transactions| transactions.borrow().len() as u128)
+            }))
+        }),
     }
 }
 
@@ -797,28 +905,10 @@ fn eth_send_raw_transaction(
     let hash = keccak(&raw_bytes);
     ACCEPTED_TX_HASHES.with(|hashes| hashes.borrow_mut().push(hash));
     LAST_TX_HASH.with(|current| *current.borrow_mut() = hash);
-    if RECEIPT_MODE.with(|mode| *mode.borrow()) != ReceiptMode::Reverted {
-        if let Some(calldata) = eip1559_calldata(&raw_bytes) {
-            let selector = calldata.get(..4);
-            let signature_selector = |signature: &[u8]| keccak(signature)[..4].to_vec();
-            if selector == Some(signature_selector(b"cancelRelease(uint256)").as_slice()) {
-                WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 1);
-            } else if selector
-                == Some(
-                    signature_selector(
-                        b"acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)",
-                    )
-                    .as_slice(),
-                )
-            {
-                WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 3);
-            } else if selector == Some(signature_selector(b"refundWithdrawal(uint256)").as_slice())
-            {
-                WITHDRAWAL_STATUS.with(|status| *status.borrow_mut() = 4);
-            } else {
-                PROCESSED_DEPOSIT.with(|processed| *processed.borrow_mut() = true);
-            }
-        }
+    if RECEIPT_MODE.with(|mode| *mode.borrow()) != ReceiptMode::Reverted
+        && eip1559_calldata(&raw_bytes).is_some()
+    {
+        PROCESSED_DEPOSIT.with(|processed| *processed.borrow_mut() = true);
     }
     MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::Ok(Some(hex32(hash)))))
 }
@@ -830,7 +920,10 @@ fn eth_get_block_by_number(
     tag: BlockTag,
 ) -> MultiRpcResult<Block> {
     match (BLOCK_MODE.with(|mode| *mode.borrow()), &tag) {
-        (BlockMode::SafeInconsistent, BlockTag::Safe)
+        (BlockMode::FinalizedUnavailable, BlockTag::Finalized) => MultiRpcResult::Consistent(Err(
+            RpcError::ProviderError(ProviderError::ProviderNotFound),
+        )),
+        (BlockMode::FinalizedInconsistent, BlockTag::Finalized)
         | (BlockMode::CanonicalInconsistent, BlockTag::Number(_)) => {
             let first = mock_block(tag.clone(), false);
             let second = mock_block(tag, true);
@@ -949,7 +1042,7 @@ fn bridge_snapshot_response(block_number: Option<u64>) -> String {
 fn withdrawal_response(value: Option<&WithdrawalFixture>) -> String {
     const WORD: usize = 32;
     const TUPLE_START: usize = WORD;
-    const HEAD_BYTES: usize = 10 * WORD;
+    const HEAD_BYTES: usize = 8 * WORD;
 
     let owner = value
         .map(|value| value.owner.as_slice())
@@ -968,19 +1061,29 @@ fn withdrawal_response(value: Option<&WithdrawalFixture>) -> String {
     );
     put_word(
         &mut bytes[TUPLE_START + 2 * WORD..TUPLE_START + 3 * WORD],
-        value.map(|value| value.min_amount_out).unwrap_or_default(),
+        value.map(|value| value.max_service_fee).unwrap_or_default(),
     );
     put_word(
         &mut bytes[TUPLE_START + 3 * WORD..TUPLE_START + 4 * WORD],
+        value
+            .map(|value| value.charged_service_fee)
+            .unwrap_or_default(),
+    );
+    put_word(
+        &mut bytes[TUPLE_START + 4 * WORD..TUPLE_START + 5 * WORD],
+        value.map(|value| value.amount_out).unwrap_or_default(),
+    );
+    put_word(
+        &mut bytes[TUPLE_START + 5 * WORD..TUPLE_START + 6 * WORD],
         HEAD_BYTES as u128,
     );
-    bytes[TUPLE_START + 4 * WORD..TUPLE_START + 5 * WORD].copy_from_slice(
+    bytes[TUPLE_START + 6 * WORD..TUPLE_START + 7 * WORD].copy_from_slice(
         &value
             .map(|value| padded32(&value.subaccount))
             .unwrap_or_default(),
     );
     put_word(
-        &mut bytes[TUPLE_START + 5 * WORD..TUPLE_START + 6 * WORD],
+        &mut bytes[TUPLE_START + 7 * WORD..TUPLE_START + 8 * WORD],
         value
             .map(|_| WITHDRAWAL_STATUS.with(|status| *status.borrow()) as u128)
             .unwrap_or_default(),
@@ -1013,18 +1116,22 @@ fn withdrawal_log(
     let id = padded32(&value.id);
     let mut event_topic = [0; 32];
     let mut hasher = Keccak::v256();
-    hasher.update(b"WithdrawalCreated(uint256,address,uint256,uint256,bytes,bytes32)");
+    hasher.update(
+        b"WithdrawalCommitted(uint256,address,uint256,uint256,uint256,uint256,bytes,bytes32)",
+    );
     hasher.finalize(&mut event_topic);
     let mut requester = [0; 32];
     requester[12..].copy_from_slice(&OBSERVED_REQUESTER.with(|value| *value.borrow()));
-    let owner_length_offset = 4 * 32;
-    let mut data = vec![0u8; 6 * 32];
+    let owner_length_offset = 6 * 32;
+    let mut data = vec![0u8; 8 * 32];
     put_word(&mut data[..32], value.amount);
-    put_word(&mut data[32..64], value.min_amount_out);
-    put_word(&mut data[64..96], owner_length_offset as u128);
-    data[96..128].copy_from_slice(&padded32(&value.subaccount));
-    put_word(&mut data[128..160], value.owner.len() as u128);
-    data[160..160 + value.owner.len()].copy_from_slice(&value.owner);
+    put_word(&mut data[32..64], value.max_service_fee);
+    put_word(&mut data[64..96], value.charged_service_fee);
+    put_word(&mut data[96..128], value.amount_out);
+    put_word(&mut data[128..160], owner_length_offset as u128);
+    data[160..192].copy_from_slice(&padded32(&value.subaccount));
+    put_word(&mut data[192..224], value.owner.len() as u128);
+    data[224..224 + value.owner.len()].copy_from_slice(&value.owner);
     let block_number = OBSERVED_BLOCK_NUMBER.with(|value| *value.borrow());
     serde_json::from_value(serde_json::json!({
         "address":format!("0x{}", bytes_hex(&OBSERVED_CONTRACT.with(|value| *value.borrow()))), "topics":[format!("0x{}", bytes_hex(&event_topic)), format!("0x{}", bytes_hex(&id)), format!("0x{}", bytes_hex(&requester))],
@@ -1121,6 +1228,7 @@ fn mock_block(tag: BlockTag, alternate_hash: bool) -> Block {
     let block_number = match tag {
         BlockTag::Number(number) => u64::try_from(number).expect("mock block number fits u64"),
         BlockTag::Safe => next_block_number(&SAFE_BLOCK_SEQUENCE),
+        BlockTag::Finalized => next_block_number(&FINALIZED_BLOCK_SEQUENCE),
         _ => next_block_number(&FALLBACK_BLOCK_SEQUENCE),
     };
     let hash = if alternate_hash {
@@ -1174,7 +1282,7 @@ fn mock_receipt(hash: [u8; 32], reverted: bool, canonical: bool) -> TransactionR
 }
 
 fn block_hash(block_number: u64) -> [u8; 32] {
-    if let Some(hash) = SAFE_BLOCK_HASH_OVERRIDE.with(|value| {
+    if let Some(hash) = FINALIZED_BLOCK_HASH_OVERRIDE.with(|value| {
         value
             .borrow()
             .filter(|(number, _)| *number == block_number)
@@ -1195,7 +1303,7 @@ fn alternate_block_hash(block_number: u64) -> [u8; 32] {
 
 fn block_number_from_hash(value: &str) -> Option<u64> {
     let bytes = decode_hex_32(value.strip_prefix("0x")?)?;
-    if let Some(block_number) = SAFE_BLOCK_HASH_OVERRIDE.with(|value| {
+    if let Some(block_number) = FINALIZED_BLOCK_HASH_OVERRIDE.with(|value| {
         value
             .borrow()
             .filter(|(_, hash)| *hash == bytes)
@@ -1221,3 +1329,18 @@ fn decode_hex_32(value: &str) -> Option<[u8; 32]> {
 }
 
 ic_cdk::export_candid!();
+
+pub fn generated_candid_interface() -> String {
+    __export_service()
+}
+
+#[cfg(test)]
+mod candid_tests {
+    #[test]
+    fn checked_in_candid_matches_exported_interface() {
+        assert_eq!(
+            super::generated_candid_interface(),
+            include_str!("../mock.did")
+        );
+    }
+}

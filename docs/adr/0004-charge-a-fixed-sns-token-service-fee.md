@@ -4,7 +4,7 @@ status: accepted
 
 # 成功したBridge要求へ固定SNS-token feeを課す
 
-成功した各DepositとWithdrawalへ、送金額に比例しない固定Service FeeをSNSトークンで課す。Bridge原価は主にtransaction件数へ依存するため割合feeを採用せず、cancelまたはBase RefundではService Feeを徴収しない。現在のService Feeは変更可能とするが、デプロイ時にraw unitで固定したimmutableな`MAX_SERVICE_FEE`を超えられない。
+成功した各DepositとWithdrawalへ、送金額に比例しない固定Service FeeをSNSトークンで課す。Bridge原価は主にtransaction件数へ依存するため割合feeを採用しない。現在のService Feeは変更可能とするが、デプロイ時にraw unitで固定したimmutableな`MAX_SERVICE_FEE`を超えられない。
 
 ## Considered Options
 
@@ -15,12 +15,11 @@ status: accepted
 ## Consequences
 
 - DepositのBase mint量は、ICPでロックした量からService Feeを引いた量とする。
-- WithdrawalのICP受取量は、Baseでburnした量からledger feeとService Feeを引いた量とする。
+- WithdrawalのICP受取量は、Baseでburnした量からService Feeだけを引いた固定`amountOut`とし、Ledger FeeはBridgeが負担する。
 - Depositは`max_service_fee`、Withdrawalは`minAmountOut`により、処理中のfee変更から利用者を保護する。
 - Service Feeの変更範囲は`0 <= service_fee <= MAX_SERVICE_FEE`とし、`MAX_SERVICE_FEE`自体は変更不能にする。
 - 上限を超えるfee変更はBase contractとBridge canisterの双方で拒否する。
 - Service FeeはBase mintまたはICP Releaseの成功時にのみfee reserveへ確定する。
-- cancelとBase RefundではService Feeを徴収しない。ただし既に発生したledger feeと利用者が支払ったBase gasは返還しない。
 - fee reserveはBridge Exposureの裏付けと分離して会計する。
 - 管理者はFee Recipientを変更できる。変更はeventと監査ログへ記録する。
 - Fee Recipient変更時、未送金の確定済みfee reserve全体を新recipientへ帰属させる。

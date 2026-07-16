@@ -1,20 +1,14 @@
 # Bridge verification ledger
 
-| Claim | Production implementation link | Machine-checked evidence | Required axiom / environment fact | Not proved by this claim |
-|---|---|---|---|---|
-| A Withdrawal cannot receive both ICP release and Base refund | `bridge-core/src/withdrawal.rs`, Base `Pending/Releasing` transitions | Lean `withdrawal_never_receives_release_and_refund`; Verus phase proofs; Foundry invariant | honest signer, canonical Safe chain, authentic Ledger result | EVM RPC Canister quorum correctness and operator key custody |
-| 1:1 backing is preserved across modeled Deposit, mint, Withdrawal, release, refund and fee payout transitions | `bridge-core` accounting/Deposit/Withdrawal records | Lean `reachable_preserves_one_to_one`; Verus backing lemmas | atomic IC/SQLite commit and correct external amounts | Wasm/SQLite/ABI refinement, which is tested separately |
-| A valid refined execution reaching an economically terminal target Withdrawal has zero target liability while other Withdrawal liability is unchanged | `Settlement::validate`, `terminal_liability_residual`, `refund_operation_matches`, operation bundle persistence, and terminal Withdrawal application | Lean `valid_execution_terminal_has_zero_target_liability` / `refined_execution_terminal_safety` / `reachable_preserves_other_withdrawal_liability`; Verus exact-settlement and four-part refund-binding proofs; Rust binding/terminal tests | `ValidInitial`; `TrustedWorld`; persisted amount/settlement correspondence; Base executes the verified calldata with its stored gross amount | liveness; aggregate outstanding liability becoming zero; full EVM calldata-execution refinement; Lean `releaseIcp` abstracts Ledger transfer plus Safe-confirmed Base ACK |
-| Ledger release cannot start before a canonical Safe user-created `Releasing` Withdrawal | notified receipt/event/state validation and `Observed → ReleasePending` kernel | Verus Withdrawal phase theorem; Rust and PocketIC negative tests | configured EVM RPC Canister quorum returns the canonical Safe chain and the user signature is authentic | EVM RPC liveness and post-Safe reorg risk |
-| A release attempt uses the exact settlement amount and Ledger fee | `release_transfer_matches`, `StartRelease` | Verus exact-binding proof and independent negative fixture; Rust mismatch tests | adapter passes the persisted transfer identity and settlement | ICRC Ledger execution correctness |
-| BadFee repricing occurs only after a definitive non-transfer and never after an uncertain result | `bad_fee_reprice_amount`, `RepriceRelease` | Verus BadFee proofs and independent negative fixture | ICRC `BadFee` classification is authentic | Ledger implementation correctness |
-| Service fee is counted once on the first terminal transfer/mint transition | `fee_delta_once`, record event application | Verus fee-once and sequence proofs; Rust replay tests | adapter commits record/accounting atomically | SQLite engine correctness |
-| Deposit admission reserves existing Withdrawals, unresolved Deposits and the candidate | `ReservePolicy::snapshot`, admission transaction | Verus checked requirement/mint admission proofs; Rust boundary tests | provider ETH and canister cycles balances are current/authentic | future gas-price prediction |
-| Active counters reject overflow/underflow and follow state classification | `checked_counter_transition`, storage transaction | Verus counter proof and negative fixture | classification passed by adapter matches persisted record | SQLite crash semantics |
-| `NonceTooLow` is Submitted only with EVM RPC Canister quorum agreement that the local hash exists | `nonce_too_low_is_submitted` | Verus equivalence proof and negative fixture | configured EVM RPC Canister quorum responses are authentic | provider selection, availability or censorship below the EVM RPC Canister |
-| Reconciliation absence requires every block below the exclusive Ledger log length to have been scanned | `scan_complete` and Ledger scan adapter | Verus boundary proofs and Rust inclusive-last-block test | archive/index responses are complete/authentic | malicious Ledger/archive implementation |
-| EVM rank, administrator action matrix, payout debit and audit IDs are monotone/bounded | corresponding production kernels | Verus local proofs; one negative fixture per kernel | adapter supplies the correct actor/state | principal/key compromise |
-| Solidity `Pending/Releasing/Released/Refunded` transition predicates are exclusive | Bridge contract and SMT harness | Solidity SMT plus Foundry invariants | EVM execution/rollback semantics | whole-contract formal verification |
+| Claim | Production implementation | Evidence | External assumption |
+|---|---|---|---|
+| burnと`Committed`化は原子的で、fee drift時はburn前に失敗する | `Bridge.createWithdrawal` | Foundry unit/fuzz/invariant、SMT harness | EVM atomic rollback |
+| Committed quoteは`amountOut + chargedServiceFee = amount`で固定される | Base record、`Settlement::validate_committed` | Foundry、Rust、Verus `committed_quote_matches` | canonical Finalized state read |
+| BaseにWithdrawalの再mint経路がない | `None | Committed` ABI | selector test、Foundry invariant、SMT | deployed bytecodeが検証対象と一致 |
+| Ledger送金はcanonical FinalizedのCommitted確認後だけ開始する | `notify_withdrawal`、`Observed → ReleasePending` | Rust、integration、Verus phase proof | EVM RPC quorumの真正性 |
+| BadFee再価格でも固定受取額・送金先を変えず、Ledger FeeはService Fee以内 | `RepriceRelease` | Rust、Verus `ledger_fee_reprice_allowed` | Ledger error分類の真正性 |
+| 成功・Duplicate・履歴照合成功だけがPaidを終端化する | Withdrawal/Reconciliation state machine | Rust、integration、Verus terminal proof | Ledger履歴の完全性 |
+| Fee reserveは`chargedServiceFee - actualLedgerFee`を一度だけ計上する | Withdrawal apply/storage transaction | Rust、Verus backing/fee-once proof | SQLite atomic commit |
+| WithdrawalはEVM署名・nonce・追加Base transactionを生成しない | adapter operation routing | Rust、integration、ABI selector test | Canister Wasmが検証対象と一致 |
 
-Claims not linked to a production call site are not labeled production proofs. Obsolete scheduler
-priority and variable mint-limit obligations have been removed rather than retained as dead models.
+EVM RPC provider共謀、各providerの`finalized`意味論、Ledger実装、鍵管理、運用補充、未決済債務のlivenessは証明範囲外である。

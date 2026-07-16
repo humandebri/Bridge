@@ -14,8 +14,8 @@ describe("eight-decimal token amount handling", () => {
   })
 
   it("floors an insolvent quote at zero", () => {
-    expect(estimatedAmountOut(100n, 40n, 10n)).toBe(50n)
-    expect(estimatedAmountOut(10n, 10n, 1n)).toBe(0n)
+    expect(estimatedAmountOut(100n, 40n)).toBe(60n)
+    expect(estimatedAmountOut(10n, 10n)).toBe(0n)
   })
 
   it("charges an approval fee only when the allowance is insufficient", () => {

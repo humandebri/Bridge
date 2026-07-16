@@ -26,7 +26,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.getByRole("button", { name: "Close confirmation" }).click()
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
 
-  await page.getByRole("button", { name: "Refresh bridge data" }).click()
+  await refreshBridgeData(page)
   await expect(page.getByText("TICRC1", { exact: true }).first()).toBeVisible()
   await page.getByLabel("You send").fill("2.00000000")
   await expect(page.getByText("1.99 KINIC", { exact: true })).toBeVisible()
@@ -41,19 +41,18 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
       return await page.getByText(/^Next:/).textContent()
     }
   }, { timeout: 30_000 }).toBe("opened")
-  await page.getByRole("checkbox").check()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
   await expect(page.getByText("Injected response loss after deposit acceptance", { exact: false })).toBeVisible()
-  await expect(page.getByText("Deposit response unresolved", { exact: true })).toBeVisible()
+  await expect(page.getByText("Deposit status unavailable", { exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "Retry same deposit" })).toBeVisible()
   expect(await controlState(request)).toMatchObject({ knownDepositCount: 1, depositSequences: ["0"], nextDepositSequence: "1" })
 
-  await page.getByRole("button", { name: "Refresh bridge data" }).click()
+  await refreshBridgeData(page)
   await expect(page.getByRole("button", { name: "Retry same deposit" })).toBeVisible()
   await page.getByRole("button", { name: "Retry same deposit" }).click()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
   await expect(page.getByText(/Deposit 0x[0-9a-f]+… accepted/i)).toBeVisible()
-  await expect(page.getByText("Deposit response unresolved", { exact: true })).toHaveCount(0)
+  await expect(page.getByText("Deposit status unavailable", { exact: true })).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Bridge to Base" })).toBeVisible()
   const afterRecovery = await controlState(request)
   expect(afterRecovery).toMatchObject({ knownDepositCount: 1, depositSequences: ["0", "0"], nextDepositSequence: "1" })
@@ -61,7 +60,6 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
 
   await page.getByLabel("You send").fill("1.00000000")
   await page.getByRole("button", { name: "Bridge to Base" }).click()
-  await page.getByRole("checkbox").check()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
   await expect(page.getByText(/Deposit 0x[0-9a-f]+… accepted/i)).toBeVisible()
   await expect.poll(async () => {
@@ -83,23 +81,22 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   expect(BigInt(initial.ledgerBalance) - BigInt(afterDeposit.ledgerBalance)).toBe(300_040_000n)
   expect(BigInt(afterDeposit.indexBlocksSynced)).toBeGreaterThanOrEqual(BigInt(initial.indexBlocksSynced) + 4n)
   await openHistory(page)
-  await page.getByRole("button", { name: "Refresh", exact: true }).click()
-  await expect(page.getByText("MintPending", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
-  await expect(page.getByText(/Confirming automatically/).first()).toBeVisible()
-  await expect(page.getByRole("button", { name: "Retry settlement" })).toHaveCount(0)
-  // Cross the two-minute boundary with one minute of margin for PocketIC timer rounding.
-  const firstAdvance = await postControl(request, "/test/advance-confirmation", { minutes: 3 }) as { time: number }
-  await page.clock.setFixedTime(firstAdvance.time)
-  await page.getByRole("button", { name: "Refresh", exact: true }).click()
-  await expect(page.getByText("Minted", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
+  const depositState = await refreshHistoryUntil(page, /^(Processing|Complete)$/)
+  if (depositState === "Processing") {
+    await expect(page.getByText("Waiting for wallet-confirmed finalized verification", { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0)
+    // Cross the two-minute boundary with one minute of margin for PocketIC timer rounding.
+    const firstAdvance = await postControl(request, "/test/advance-confirmation", { minutes: 3 }) as { time: number }
+    await page.clock.setFixedTime(firstAdvance.time)
+  }
 
   const beforeWithdrawal = await controlState(request)
   await page.getByRole("link", { name: "KINIC Bridge home" }).click()
   await page.getByRole("button", { name: "Reverse bridge direction" }).click()
-  await page.getByRole("button", { name: "Refresh bridge data" }).click()
+  await refreshBridgeData(page)
   await expect(page.getByText("KINIC", { exact: true }).first()).toBeVisible()
   await page.getByLabel("You send").fill("1.00000000")
-  await expect(page.getByText("0.9899 TICRC1", { exact: true })).toBeVisible()
+  await expect(page.getByText("0.99 TICRC1", { exact: true })).toBeVisible()
   const withdraw = page.getByRole("button", { name: "Bridge to IC" })
   await postControl(request, "/test/fail-next-notification", {})
   await expect.poll(async () => {
@@ -111,17 +108,18 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
       return await page.getByText(/^Next:/).textContent()
     }
   }, { timeout: 30_000 }).toBe("opened")
-  await page.getByRole("button", { name: "Confirm burn" }).click()
+  await page.getByRole("checkbox", { name: "Acknowledge irreversible burn" }).check()
+  await page.getByRole("button", { name: "Confirm and open wallet" }).click()
   await expect(page.getByText(/Withdrawal submitted:/)).toBeVisible()
   await expect.poll(async () => (await controlState(request)).notifyCalls).toBe(beforeWithdrawal.notifyCalls + 1)
-  await expect(page.getByText(/automatic notification did not finish/i)).toBeVisible()
+  const retryClock = await page.evaluate(() => Date.now())
+  await page.clock.setFixedTime(retryClock + 60_000)
+  await expect.poll(async () => (await controlState(request)).notifyCalls, { timeout: 45_000 }).toBeGreaterThanOrEqual(beforeWithdrawal.notifyCalls + 2)
+  await expect(page.getByText("Withdrawal confirmed. The transfer to Internet Computer has started.", { exact: true })).toBeVisible()
   expect((await controlState(request)).bsnsAllowance).toBe("0")
   await openHistory(page)
   await page.getByRole("tab", { name: "Withdrawals" }).click()
   await page.getByRole("button", { name: "Refresh", exact: true }).click()
-  await expect(page.getByRole("button", { name: "Check and notify" })).toBeVisible()
-  await page.getByRole("button", { name: "Check and notify" }).click()
-  await expect(page.getByText("Withdrawal notification succeeded", { exact: true })).toBeVisible()
   await postControl(request, "/test/relay", {})
   await page.reload()
   await expect(page.getByRole("button", { name: /Base wallet connected as 0xf39F/i })).toBeVisible()
@@ -129,13 +127,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.getByRole("button", { name: "Plug" }).click()
   await page.getByRole("button", { name: "Close confirmation" }).click()
   await page.getByRole("button", { name: "Refresh", exact: true }).click()
-  await expect(page.getByText("AcknowledgePending", { exact: true })).toBeVisible({ timeout: 30_000 })
-  await expect(page.getByText(/Confirming automatically/)).toBeVisible()
-  await expect(page.getByRole("button", { name: "Retry settlement" })).toHaveCount(0)
-  const secondAdvance = await postControl(request, "/test/advance-confirmation", { minutes: 3 }) as { time: number }
-  await page.clock.setFixedTime(secondAdvance.time)
-  await page.getByRole("button", { name: "Refresh", exact: true }).click()
-  await expect.poll(async () => BigInt((await controlState(request)).ledgerBalance)).toBe(BigInt(beforeWithdrawal.ledgerBalance) + 98_990_000n)
+  await expect(page.getByText("Paid", { exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0)
+  await expect.poll(async () => BigInt((await controlState(request)).ledgerBalance)).toBe(BigInt(beforeWithdrawal.ledgerBalance) + 99_000_000n)
   await expect.poll(async () => {
     const state = await controlState(request)
     return state.indexBalance === state.ledgerBalance
@@ -143,7 +137,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   const final = await controlState(request)
   expect(BigInt(final.indexBlocksSynced)).toBeGreaterThan(BigInt(afterDeposit.indexBlocksSynced))
   expect(BigInt(final.bsnsBalance)).toBe(198_000_000n)
-  await expect(page.getByText("Released", { exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Paid", { exact: true })).toBeVisible({ timeout: 30_000 })
 })
 
 async function openHistory(page: Page): Promise<void> {
@@ -155,6 +149,27 @@ async function openHistory(page: Page): Promise<void> {
   const history = page.getByRole("link", { name: "History" })
   if (!await history.isVisible()) await page.getByLabel("Open navigation menu").click()
   await history.click()
+}
+
+async function refreshBridgeData(page: Page): Promise<void> {
+  await page
+    .getByRole("region", { name: "KINIC bridge" })
+    .getByRole("button", { name: "Refresh", exact: true })
+    .click()
+}
+
+async function refreshHistoryUntil(page: Page, state: RegExp): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await page.getByRole("button", { name: "Refresh", exact: true }).click()
+    const badge = page.getByText(state, { exact: true }).first()
+    try {
+      await badge.waitFor({ state: "visible", timeout: 5_000 })
+      return await badge.innerText()
+    } catch {
+      // A concurrent automatic confirmation can invalidate the same history query.
+    }
+  }
+  throw new Error(`History did not show ${state}`)
 }
 
 async function postControl(request: APIRequestContext, path: string, data: unknown): Promise<unknown> {

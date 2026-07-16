@@ -2,16 +2,16 @@
 status: accepted
 ---
 
-# Withdrawalをユーザー実行txとsafe確定で開始する
+# Withdrawalを不可逆なCommitted burnとして扱う
 
-ADR 0003、ADR 0011のWithdrawal開始方法と、ADR 0017の旧確認保証をsupersedeする。
+ユーザーは`createWithdrawal(amount, maxServiceFee, owner, subaccount)`を送信する。Contractはburn前に実行時Service Feeが上限以下かつ`amount > serviceFee`であることを検証し、`transferFrom`、burn、固定`amountOut = amount - chargedServiceFee`を持つ`Committed`化を原子的に行う。
 
-Base→ICPは、ユーザーがBridgeへ要求額ちょうどのERC-20 allowanceを設定し、`createWithdrawal`を送信する。このtransactionは`transferFrom`、Bridge残高のburn、Withdrawal作成、`Releasing`化を原子的に実行する。CanisterがRelease開始用のBase transactionを追加送信する設計は採用しない。
+`Committed`はBase上の終端状態であり、Base refund、release acknowledgement、cancelは提供しない。Canisterはcanonical Finalized receipt、event、state、snapshotを同一block hashで検証し、固定額を固定IC Accountへ送る。Ledger FeeはBridge負担とし、`ledgerFee > chargedServiceFee`なら送金前に停止する。
 
-Canisterは`createWithdrawal`のcanonical safe receipt、block hash、event、`Releasing`状態、ICP owner、Bridge signerをquorumで検証する。検証後は同じ`notify_withdrawal` callでLedger送金を開始する。最低受取額を満たせない場合はLedgerを呼ばず、`cancelRelease`をsafe確認してからrefundをsafe確認する。
+## 結果
 
-receipt、event、`getWithdrawal`、`bridgeSnapshot`、chain IDは同じSafe block hashへ束縛する。RPCがblock hash指定のstate readを提供しない場合、同じheightでhashが一致しない場合、または2-of-3合意を得られない場合はLedgerを呼ばずfail closedにする。
-
-Mint、cancel、refund、acknowledgementはすべてSafeを決済条件とし、送信後2、5、10分に自動確認する。10分時点でも未確認なら失敗として停止する。
-
-SafeはL1 settlement完了よりreorg耐性が弱いが、Base sequencerがSafeとした時点で利用者完了へ進める遅延短縮を選ぶ。finality前reorgによる1:1毀損は証明対象外の受容リスクであり、運用・UI・証明台帳で明示する。UIはSafe headまでeventを走査し、保存済みSafe block hashが変わればキャッシュを破棄してdeployment blockから再走査する。通知失敗時はHistoryの`Check and notify`を回復経路とする。
+- 正常WithdrawalのBase transaction、Finalized確認、ユーザー意思確認は1回だけとなる。
+- Withdrawalごとのthreshold ECDSA署名、2回目のgas、nonce、confirmation job、EVM recoveryを削除する。
+- Ledger障害時は同じWithdrawal ID・IC Account・transfer identityを使う再試行と履歴照合で解消する。管理者による送金先変更や任意送金は認めない。
+- burn後にBaseへ資産を戻せないため、UIは不可逆性を署名前に表示し、fee、残高、wallet、chainを直前に再検証する。
+- Finalized headとcanonical hashが2-of-3で収束しない場合は停止し、Safeや固定confirmation数へfallbackしない。

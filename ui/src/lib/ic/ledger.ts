@@ -1,6 +1,6 @@
-import { Actor, HttpAgent, type ActorSubclass } from "@dfinity/agent"
-import type { IDL } from "@dfinity/candid"
+import { IcrcLedgerCanister } from "@icp-sdk/canisters/ledger/icrc"
 import { Principal } from "@dfinity/principal"
+import { createIcAgent } from "@/lib/ic/agent"
 
 export interface LedgerAccount { owner: Principal; subaccount: [] | [Uint8Array] }
 export interface LedgerAllowance { allowance: bigint; expires_at: [] | [bigint] }
@@ -13,22 +13,51 @@ export interface LedgerActor {
   icrc2_allowance(args: { account: LedgerAccount; spender: LedgerAccount }): Promise<LedgerAllowance>
 }
 
-export const ledgerIdlFactory: IDL.InterfaceFactory = ({ IDL: I }) => {
-  const account = I.Record({ owner: I.Principal, subaccount: I.Opt(I.Vec(I.Nat8)) })
-  return I.Service({
-    icrc1_balance_of: I.Func([account], [I.Nat], ["query"]),
-    icrc1_name: I.Func([], [I.Text], ["query"]),
-    icrc1_decimals: I.Func([], [I.Nat8], ["query"]),
-    icrc1_symbol: I.Func([], [I.Text], ["query"]),
-    icrc1_fee: I.Func([], [I.Nat], ["query"]),
-    icrc2_allowance: I.Func([I.Record({ account, spender: account })], [I.Record({ allowance: I.Nat, expires_at: I.Opt(I.Nat64) })], ["query"]),
-  })
+function balanceAccount(value: LedgerAccount) {
+  return { owner: value.owner, subaccount: value.subaccount[0] }
 }
 
-export async function createLedgerActor(host: string, canisterId: string): Promise<ActorSubclass<LedgerActor>> {
-  const agent = HttpAgent.createSync({ host })
-  if (agent.isLocal()) await agent.fetchRootKey()
-  return Actor.createActor<LedgerActor>(ledgerIdlFactory, { agent, canisterId: Principal.fromText(canisterId) })
+function candidAccount(value: LedgerAccount) {
+  return { owner: value.owner, subaccount: value.subaccount }
+}
+
+function metadataText(metadata: Awaited<ReturnType<IcrcLedgerCanister["metadata"]>>, key: string): string {
+  const value = metadata.find(([name]) => name === key)?.[1]
+  if (!value || !("Text" in value)) throw new Error(`Ledger metadata ${key} is unavailable`)
+  return value.Text
+}
+
+function metadataNat(metadata: Awaited<ReturnType<IcrcLedgerCanister["metadata"]>>, key: string): number {
+  const value = metadata.find(([name]) => name === key)?.[1]
+  if (!value || !("Nat" in value)) throw new Error(`Ledger metadata ${key} is unavailable`)
+  return Number(value.Nat)
+}
+
+export async function createLedgerActor(host: string, canisterId: string): Promise<LedgerActor> {
+  const ledger = IcrcLedgerCanister.create({
+    agent: await createIcAgent(host),
+    canisterId: Principal.fromText(canisterId),
+  })
+  let metadata: Awaited<ReturnType<typeof ledger.metadata>> | undefined
+  const readMetadata = async () => metadata ??= await ledger.metadata({ certified: false })
+  return {
+    icrc1_balance_of: (value) => ledger.balance({ ...balanceAccount(value), certified: false }),
+    icrc1_name: async () => metadataText(await readMetadata(), "icrc1:name"),
+    icrc1_decimals: async () => metadataNat(await readMetadata(), "icrc1:decimals"),
+    icrc1_symbol: async () => metadataText(await readMetadata(), "icrc1:symbol"),
+    icrc1_fee: () => ledger.transactionFee({ certified: false }),
+    icrc2_allowance: async ({ account: owner, spender }) => {
+      const result = await ledger.allowance({
+        account: candidAccount(owner),
+        spender: candidAccount(spender),
+        certified: false,
+      })
+      return {
+        allowance: result.allowance,
+        expires_at: result.expires_at,
+      }
+    },
+  }
 }
 
 export function ledgerAccount(owner: string, subaccount?: Uint8Array): LedgerAccount {

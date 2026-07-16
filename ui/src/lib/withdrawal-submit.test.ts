@@ -13,6 +13,8 @@ function dependencies() {
     refetchRuntime: vi.fn().mockResolvedValue({ data: { ready: true, blockers: [], checkedAt: Date.now() } }),
     currentEvmWallet: vi.fn().mockResolvedValue({ address: expectedWallets.address, chainId: expectedWallets.chainId }),
     currentIcAccount: vi.fn().mockResolvedValue(expectedWallets.icAccount),
+    refetchFinancials: vi.fn().mockResolvedValue({ serviceFee: 10n, ledgerFee: 1n, balance: 100n }),
+    validateFinancials: vi.fn(),
     createWithdrawal: vi.fn().mockResolvedValue("0xtx"),
   }
 }
@@ -36,6 +38,15 @@ describe("createWithdrawalAfterRevalidation", () => {
     const deps = dependencies()
     await expect(createWithdrawalAfterRevalidation(deps)).resolves.toBe("0xtx")
     expect(deps.refetchRuntime).toHaveBeenCalledOnce()
-    expect(deps.createWithdrawal).toHaveBeenCalledOnce()
+    expect(deps.refetchFinancials).toHaveBeenCalledOnce()
+    expect(deps.validateFinancials).toHaveBeenCalledWith({ serviceFee: 10n, ledgerFee: 1n, balance: 100n })
+    expect(deps.createWithdrawal).toHaveBeenCalledWith({ serviceFee: 10n, ledgerFee: 1n, balance: 100n })
+  })
+
+  it("does not submit when the final fee validation fails", async () => {
+    const deps = dependencies()
+    deps.validateFinancials.mockImplementation(() => { throw new Error("Ledger fee exceeds the service fee") })
+    await expect(createWithdrawalAfterRevalidation(deps)).rejects.toThrow("Ledger fee exceeds")
+    expect(deps.createWithdrawal).not.toHaveBeenCalled()
   })
 })

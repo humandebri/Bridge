@@ -1,22 +1,14 @@
 use bridge_core::{
-    administrator_authorized, audit_next, bad_fee_reprice_amount, can_assign_nonce,
-    checked_counter_transition, checked_requirement, counter_delta, deposit_phase_allows,
-    deposit_phase_step, evidence_matches, fee_delta_once, mint_admission_total, next_attempt,
-    nonce_next, nonce_too_low_is_submitted, payout_allowed, payout_debit, refund_allowed,
-    release_transfer_matches, replay_matches, resources_sufficient, scan_complete,
-    withdrawal_phase_allows, withdrawal_phase_step,
+    administrator_authorized, audit_next, can_assign_nonce, checked_counter_transition,
+    checked_requirement, counter_delta, deposit_phase_allows, deposit_phase_step, evidence_matches,
+    fee_delta_once, ledger_fee_reprice_allowed, mint_admission_total, next_attempt, nonce_next,
+    nonce_too_low_is_submitted, payout_allowed, payout_debit, release_transfer_matches,
+    replay_matches, resources_sufficient, scan_complete, withdrawal_phase_allows,
+    withdrawal_phase_step,
 };
 
 #[test]
 fn boolean_decisions_are_exhaustive() {
-    for pending in [false, true] {
-        for proven_absent in [false, true] {
-            assert_eq!(
-                refund_allowed(pending, proven_absent),
-                pending && proven_absent
-            );
-        }
-    }
     for old in [false, true] {
         for new in [false, true] {
             let expected = match (old, new) {
@@ -160,9 +152,10 @@ fn compact_phase_kernels_match_the_legal_transition_graphs() {
         (1, 3, 2),
         (2, 4, 3),
         (2, 5, 4),
+        (4, 6, 2),
     ];
     for state in 0..=6 {
-        for event in 0..=5 {
+        for event in 0..=6 {
             let expected = deposit_edges
                 .iter()
                 .find(|(from, input, _)| *from == state && *input == event)
@@ -174,22 +167,14 @@ fn compact_phase_kernels_match_the_legal_transition_graphs() {
 
     let withdrawal_edges = [
         (0, 0, 1),
-        (0, 4, 10),
         (1, 1, 1),
         (1, 2, 2),
-        (1, 3, 9),
-        (1, 4, 10),
-        (10, 5, 11),
-        (2, 6, 3),
-        (3, 7, 5),
-        (3, 8, 4),
-        (0, 9, 6),
-        (11, 9, 6),
-        (6, 10, 8),
-        (6, 11, 7),
+        (1, 3, 3),
+        (3, 4, 2),
+        (3, 5, 1),
     ];
-    for state in 0..=11 {
-        for event in 0..=11 {
+    for state in 0..=3 {
+        for event in 0..=5 {
             let expected = withdrawal_edges
                 .iter()
                 .find(|(from, input, _)| *from == state && *input == event)
@@ -209,13 +194,10 @@ fn compact_phase_kernels_match_the_legal_transition_graphs() {
 
 #[test]
 fn bad_fee_and_nonce_conflict_fail_closed() {
-    assert_eq!(
-        bad_fee_reprice_amount(100, 10, 6, 80, true, false),
-        Some(84)
-    );
-    assert_eq!(bad_fee_reprice_amount(100, 10, 11, 80, true, false), None);
-    assert_eq!(bad_fee_reprice_amount(100, 10, 6, 80, false, false), None);
-    assert_eq!(bad_fee_reprice_amount(100, 10, 6, 80, true, true), None);
+    assert!(ledger_fee_reprice_allowed(10, 6, true, false));
+    assert!(!ledger_fee_reprice_allowed(10, 11, true, false));
+    assert!(!ledger_fee_reprice_allowed(10, 6, false, false));
+    assert!(!ledger_fee_reprice_allowed(10, 6, true, true));
     assert!(nonce_too_low_is_submitted(true, true));
     assert!(!nonce_too_low_is_submitted(true, false));
     assert!(!nonce_too_low_is_submitted(false, true));

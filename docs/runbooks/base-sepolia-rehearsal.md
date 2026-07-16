@@ -80,10 +80,9 @@ PREFLIGHT
 
 `deploy`はBridge signerへのtest ETH送金、72時間Timelock、Bridgeの順にdeployする。
 Bridgeはconstructor内でbSNSを生成する。
-各transactionはSafe block到達まで確認し、30分以内に確認できなければ同じnonceの代替transactionを送らず停止する。
+各transactionはFinalized block到達まで確認し、30分以内に確認できなければ同じnonceの代替transactionを送らず停止する。
 
-`flow`はDeposit mint、Withdrawal作成、Release acknowledgement、Base Refund、Service Fee変更、DepositとWithdrawalのpauseを実行する。
-Release acknowledgementのledger block `42`はsynthetic値であり、実KINIC Ledgerの証跡ではない。
+`flow`はDeposit mint、Withdrawal作成、Service Fee変更、DepositとWithdrawalのpauseを実行する。Withdrawal後の追加Base transactionは存在しないことも確認する。
 
 `schedule`はDepositとWithdrawalのunpauseをTimelockへbatch scheduleする。
 直後のexecuteを実transactionとして送信し、revert receiptと72時間delayを確認する。
@@ -99,7 +98,7 @@ scripts/base-sepolia-experiment/run-with-keychain.sh resume
 scripts/base-sepolia-experiment/experiment.sh verify
 ```
 
-`verify`はread-onlyであり、contract code、role、固定limit、asset state、全receipt、Safe block、最終pauseをRPCから再読する。
+`verify`はread-onlyであり、contract code、role、固定limit、asset state、全receipt、Finalized block、最終pauseをRPCから再読する。
 
 ## manifestの扱い
 

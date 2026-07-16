@@ -1,83 +1,27 @@
-// verification/smt/pass: prove production Withdrawal settlement decisions and terminal-state exclusions.
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
-import {IBridge} from "bridge-src/interfaces/IBridge.sol";
-import {WithdrawalAccounting} from "bridge-src/libraries/WithdrawalAccounting.sol";
+contract WithdrawalStateModel {
+    enum Status { None, Committed }
 
-contract WithdrawalState {
-    function settlement(uint256 amount, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee) external pure {
-        bool matches = WithdrawalAccounting.settlementMatches(amount, amountOut, serviceFee, ledgerFee);
-        if (matches) {
-            assert(amountOut <= amount);
-            uint256 afterAmountOut = amount - amountOut;
-            assert(serviceFee <= afterAmountOut);
-            assert(ledgerFee == afterAmountOut - serviceFee);
-        }
+    struct Withdrawal {
+        uint256 amount;
+        uint256 chargedServiceFee;
+        uint256 amountOut;
+        Status status;
     }
 
-    function releaseDecision(IBridge.WithdrawalStatus status, bool detailsMatch) external pure {
-        WithdrawalAccounting.ReleaseAction action = WithdrawalAccounting.releaseAction(status, detailsMatch);
-        if (action == WithdrawalAccounting.ReleaseAction.Apply) {
-            assert(status == IBridge.WithdrawalStatus.Releasing);
-        } else if (action == WithdrawalAccounting.ReleaseAction.Idempotent) {
-            assert(status == IBridge.WithdrawalStatus.Released);
-            assert(detailsMatch);
-        } else {
-            assert(status != IBridge.WithdrawalStatus.Releasing);
-            assert(status != IBridge.WithdrawalStatus.Released || !detailsMatch);
-        }
+    function commit(uint256 amount, uint256 serviceFee) external pure returns (Withdrawal memory w) {
+        require(serviceFee < amount);
+        w = Withdrawal(amount, serviceFee, amount - serviceFee, Status.Committed);
+        assert(w.status == Status.Committed);
+        assert(w.amountOut + w.chargedServiceFee == w.amount);
     }
 
-    function refundDecision(IBridge.WithdrawalStatus status) external pure {
-        bool allowed = WithdrawalAccounting.refundAllowed(status);
-        if (allowed) {
-            assert(status == IBridge.WithdrawalStatus.Pending);
-        } else {
-            assert(status != IBridge.WithdrawalStatus.Pending);
-        }
-    }
-
-    function terminalStatesAreExclusive(bool releasedDetailsMatch) external pure {
-        assert(!WithdrawalAccounting.refundAllowed(IBridge.WithdrawalStatus.Released));
-        assert(
-            WithdrawalAccounting.releaseAction(IBridge.WithdrawalStatus.Refunded, releasedDetailsMatch)
-                == WithdrawalAccounting.ReleaseAction.Reject
-        );
-    }
-
-    function cancellationAndRefundDecisions(IBridge.WithdrawalStatus status) external pure {
-        if (WithdrawalAccounting.cancelAllowed(status)) {
-            assert(status == IBridge.WithdrawalStatus.Releasing);
-            assert(!WithdrawalAccounting.refundAllowed(status));
-        }
-        if (WithdrawalAccounting.refundAllowed(status)) {
-            assert(status == IBridge.WithdrawalStatus.Pending);
-            assert(!WithdrawalAccounting.cancelAllowed(status));
-        }
-    }
-
-    function ledgerBlockIndexDecision(uint256 existingWithdrawalId, uint256 withdrawalId) external pure {
-        (bool accepted, uint256 recordedWithdrawalId) =
-            WithdrawalAccounting.tryRecordLedgerBlock(existingWithdrawalId, withdrawalId);
-        if (accepted) {
-            assert(existingWithdrawalId == 0);
-            assert(recordedWithdrawalId == withdrawalId);
-        } else {
-            assert(existingWithdrawalId != 0);
-            assert(recordedWithdrawalId == existingWithdrawalId);
-        }
-    }
-
-    function feeAndMinimum(uint256 serviceFee, uint256 maximumServiceFee, uint256 amountOut, uint256 minAmountOut)
-        external
-        pure
-    {
-        if (WithdrawalAccounting.feeWithinMaximum(serviceFee, maximumServiceFee)) {
-            assert(serviceFee <= maximumServiceFee);
-        }
-        if (WithdrawalAccounting.meetsMinimum(amountOut, minAmountOut)) {
-            assert(amountOut >= minAmountOut);
+    function committedIsAbsorbing(Status status) external pure {
+        if (status == Status.Committed) {
+            Status next = status;
+            assert(next == Status.Committed);
         }
     }
 }

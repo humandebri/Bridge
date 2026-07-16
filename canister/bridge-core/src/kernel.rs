@@ -6,12 +6,6 @@ macro_rules! scan_complete_body {
     };
 }
 
-macro_rules! refund_allowed_body {
-    ($pending:expr, $proven_absent:expr) => {
-        $pending && $proven_absent
-    };
-}
-
 macro_rules! next_attempt_body {
     ($attempt:expr, $max:expr, $one:expr) => {
         if $attempt == $max {
@@ -68,23 +62,10 @@ macro_rules! resources_sufficient_body {
     };
 }
 
-macro_rules! bad_fee_reprice_amount_body {
-    ($gross:expr, $service_fee:expr, $ledger_fee:expr, $minimum:expr, $definitive:expr, $uncertain:expr) => {{
-        if !$definitive
-            || $uncertain
-            || $service_fee > $gross
-            || $ledger_fee > $gross - $service_fee
-        {
-            None
-        } else {
-            let amount_out = $gross - $service_fee - $ledger_fee;
-            if amount_out < $minimum {
-                None
-            } else {
-                Some(amount_out)
-            }
-        }
-    }};
+macro_rules! ledger_fee_reprice_allowed_body {
+    ($service_fee:expr, $ledger_fee:expr, $definitive:expr, $uncertain:expr) => {
+        $definitive && !$uncertain && $ledger_fee <= $service_fee
+    };
 }
 
 macro_rules! fee_delta_once_body {
@@ -103,30 +84,12 @@ macro_rules! release_transfer_matches_body {
     };
 }
 
-macro_rules! terminal_liability_residual_body {
-    ($liability:expr, $amount_out:expr, $service_fee:expr, $ledger_fee:expr, $max:expr) => {{
-        if $amount_out > $max - $service_fee {
-            None
-        } else {
-            let partial = $amount_out + $service_fee;
-            if $ledger_fee > $max - partial {
-                None
-            } else {
-                let discharged = partial + $ledger_fee;
-                if discharged > $liability {
-                    None
-                } else {
-                    Some($liability - discharged)
-                }
-            }
-        }
+macro_rules! committed_quote_matches_body {
+    ($amount:expr, $amount_out:expr, $service_fee:expr, $max:expr) => {{
+        $service_fee < $amount
+            && $amount_out <= $max - $service_fee
+            && $amount_out + $service_fee == $amount
     }};
-}
-
-macro_rules! refund_operation_binding_body {
-    ($kind:expr, $operation:expr, $payload:expr, $calldata:expr) => {
-        $kind && $operation && $payload && $calldata
-    };
 }
 
 macro_rules! nonce_too_low_submitted_body {
@@ -183,6 +146,8 @@ macro_rules! deposit_step_body {
             $three
         } else if $state == $two && $event == $five {
             $four
+        } else if $state == $four && $event == $six {
+            $two
         } else {
             $state
         }
@@ -190,33 +155,19 @@ macro_rules! deposit_step_body {
 }
 
 macro_rules! withdrawal_step_body {
-    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr, $six:expr, $seven:expr, $eight:expr, $nine:expr, $ten:expr, $eleven:expr) => {{
+    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr) => {{
         if $state == $zero && $event == $zero {
             $one
-        } else if $state == $zero && $event == $four {
-            $ten
         } else if $state == $one && $event == $one {
             $one
         } else if $state == $one && $event == $two {
             $two
         } else if $state == $one && $event == $three {
-            $nine
-        } else if $state == $one && $event == $four {
-            $ten
-        } else if $state == $ten && $event == $five {
-            $eleven
-        } else if $state == $two && $event == $six {
             $three
-        } else if $state == $three && $event == $seven {
-            $five
-        } else if $state == $three && $event == $eight {
-            $four
-        } else if ($state == $zero || $state == $eleven) && $event == $nine {
-            $six
-        } else if $state == $six && $event == $ten {
-            $eight
-        } else if $state == $six && $event == $eleven {
-            $seven
+        } else if $state == $three && $event == $four {
+            $two
+        } else if $state == $three && $event == $five {
+            $one
         } else {
             $state
         }
@@ -239,11 +190,6 @@ pub const fn scan_complete(
     matched: bool,
 ) -> bool {
     scan_complete_body!(next, tip, watermark, archives, matched)
-}
-
-#[cfg(not(verus_keep_ghost))]
-pub const fn refund_allowed(base_pending: bool, release_transfer_proven_absent: bool) -> bool {
-    refund_allowed_body!(base_pending, release_transfer_proven_absent)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -293,19 +239,15 @@ pub const fn resources_sufficient(
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub const fn bad_fee_reprice_amount(
-    gross: u128,
+pub const fn ledger_fee_reprice_allowed(
     service_fee: u128,
     ledger_fee: u128,
-    minimum: u128,
     definitive_bad_fee: bool,
     uncertain_outcome_seen: bool,
-) -> Option<u128> {
-    bad_fee_reprice_amount_body!(
-        gross,
+) -> bool {
+    ledger_fee_reprice_allowed_body!(
         service_fee,
         ledger_fee,
-        minimum,
         definitive_bad_fee,
         uncertain_outcome_seen
     )
@@ -327,31 +269,9 @@ pub const fn release_transfer_matches(
     release_transfer_matches_body!(transfer_amount, transfer_fee, amount_out, ledger_fee)
 }
 
-/// Returns the liability left after a release settlement, rejecting arithmetic overflow and
-/// over-discharge. A valid economic terminal release must return `Some(0)`.
 #[cfg(not(verus_keep_ghost))]
-pub const fn terminal_liability_residual(
-    liability: u128,
-    amount_out: u128,
-    service_fee: u128,
-    ledger_fee: u128,
-) -> Option<u128> {
-    terminal_liability_residual_body!(liability, amount_out, service_fee, ledger_fee, u128::MAX)
-}
-
-#[cfg(not(verus_keep_ghost))]
-pub const fn refund_operation_binding(
-    refund_kind: bool,
-    operation_id_matches: bool,
-    payload_hash_matches: bool,
-    calldata_matches: bool,
-) -> bool {
-    refund_operation_binding_body!(
-        refund_kind,
-        operation_id_matches,
-        payload_hash_matches,
-        calldata_matches
-    )
+pub const fn committed_quote_matches(amount: u128, amount_out: u128, service_fee: u128) -> bool {
+    committed_quote_matches_body!(amount, amount_out, service_fee, u128::MAX)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -443,9 +363,7 @@ pub const fn deposit_phase_allows(state: u8, event: u8) -> bool {
 /// Compact phase transition used by the rich Withdrawal state machine.
 #[cfg(not(verus_keep_ghost))]
 pub const fn withdrawal_phase_step(state: u8, event: u8) -> u8 {
-    withdrawal_step_body!(
-        state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8
-    )
+    withdrawal_step_body!(state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -460,10 +378,6 @@ use vstd::prelude::*;
 verus! {
     pub open spec fn scan_complete_spec(next: int, tip: int, watermark: int, archives: bool, matched: bool) -> bool {
         scan_complete_body!(next, tip, watermark, archives, matched)
-    }
-
-    pub open spec fn refund_allowed_spec(base_pending: bool, release_transfer_proven_absent: bool) -> bool {
-        refund_allowed_body!(base_pending, release_transfer_proven_absent)
     }
 
     pub open spec fn next_attempt_spec(attempt: int) -> Option<int> {
@@ -503,19 +417,15 @@ verus! {
         resources_sufficient_body!(eth, required_eth, cycles, required_cycles)
     }
 
-    pub open spec fn bad_fee_reprice_amount_spec(
-        gross: int,
+    pub open spec fn ledger_fee_reprice_allowed_spec(
         service_fee: int,
         ledger_fee: int,
-        minimum: int,
         definitive_bad_fee: bool,
         uncertain_outcome_seen: bool,
-    ) -> Option<int> {
-        bad_fee_reprice_amount_body!(
-            gross,
+    ) -> bool {
+        ledger_fee_reprice_allowed_body!(
             service_fee,
             ledger_fee,
-            minimum,
             definitive_bad_fee,
             uncertain_outcome_seen
         )
@@ -535,25 +445,13 @@ verus! {
         release_transfer_matches_body!(transfer_amount, transfer_fee, amount_out, ledger_fee)
     }
 
-    pub open spec fn terminal_liability_residual_spec(
-        liability: int,
+    pub open spec fn committed_quote_matches_spec(
+        amount: int,
         amount_out: int,
         service_fee: int,
-        ledger_fee: int,
-    ) -> Option<int> {
-        let max: int = 340282366920938463463374607431768211455;
-        terminal_liability_residual_body!(
-            liability, amount_out, service_fee, ledger_fee, max)
-    }
-
-    pub open spec fn refund_operation_binding_spec(
-        refund_kind: bool,
-        operation_id_matches: bool,
-        payload_hash_matches: bool,
-        calldata_matches: bool,
     ) -> bool {
-        refund_operation_binding_body!(
-            refund_kind, operation_id_matches, payload_hash_matches, calldata_matches)
+        let max: int = 340282366920938463463374607431768211455;
+        committed_quote_matches_body!(amount, amount_out, service_fee, max)
     }
 
     pub open spec fn checked_counter_transition_spec(
@@ -631,14 +529,17 @@ verus! {
 
     pub open spec fn withdrawal_phase_step_spec(state: int, event: int) -> int {
         let zero: int = 0; let one: int = 1; let two: int = 2; let three: int = 3;
-        let four: int = 4; let five: int = 5; let six: int = 6; let seven: int = 7;
-        let eight: int = 8; let nine: int = 9; let ten: int = 10; let eleven: int = 11;
-        withdrawal_step_body!(state, event, zero, one, two, three, four, five, six,
-            seven, eight, nine, ten, eleven)
+        let four: int = 4; let five: int = 5;
+        withdrawal_step_body!(state, event, zero, one, two, three, four, five)
     }
 
     pub open spec fn withdrawal_phase_allows_spec(state: int, event: int) -> bool {
-        withdrawal_phase_step_spec(state, event) != state || (state == 1 && event == 1)
+        withdrawal_phase_step_spec(state, event) != state
+            || (state == 1 && event == 1)
+    }
+
+    pub open spec fn reverted_phase_recovery_spec(event: int) -> bool {
+        deposit_phase_step_spec(4, event) != 4 <==> event == 6
     }
 
     pub open spec fn deposit_phase_run_spec(state: int, events: Seq<int>) -> int

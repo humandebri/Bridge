@@ -1,14 +1,27 @@
 import { createConfig, http } from "wagmi"
 import { injected } from "wagmi/connectors"
-import { defineChain } from "viem"
-import { deploymentProfile } from "@/config/profile"
+import { createPublicClient, defineChain } from "viem"
+import { deploymentProfile, type DeploymentProfile } from "@/config/profile"
 
-const profileChain = defineChain({
-  id: deploymentProfile.chainId,
-  name: deploymentProfile.label,
+export function createProfileChain(profile: DeploymentProfile) {
+  return defineChain({
+  id: profile.chainId,
+  name: profile.label,
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: { default: { http: [deploymentProfile.baseRpcUrl] } },
+  rpcUrls: { default: { http: [profile.baseRpcUrl] } },
 })
+}
+
+export const profileChain = createProfileChain(deploymentProfile)
+
+export function createBasePublicClient(profile: DeploymentProfile = deploymentProfile) {
+  return createPublicClient({
+    chain: createProfileChain(profile),
+    transport: http(profile.baseRpcUrl),
+  })
+}
+
+export const basePublicClient = createBasePublicClient()
 
 export const wagmiConfig = createConfig({
   chains: [profileChain],

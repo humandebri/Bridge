@@ -1,0 +1,526 @@
+// [Account](https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-3/README.md#value)
+// representation of ledgers supporting the ICRC-1 standard.
+type Account = record { owner : principal; subaccount : opt blob };
+type Approve = record {
+  fee : opt nat;
+  from : Account;
+  memo : opt blob;
+  created_at_time : opt nat64;
+  amount : nat;
+  expected_allowance : opt nat;
+  expires_at : opt nat64;
+  spender : Account;
+};
+// Deprecated. The information in the `ArchivedRange` struct is returned as part of the return value
+// of [`crate::icrc3::blocks::GetBlocksResult`] from the
+// [`icrc3_get_blocks`](https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-3/README.md)
+// endpoint.
+type ArchivedRange = record {
+  callback : func (GetBlocksRequest) -> (TransactionRange) query;
+  start : nat;
+  length : nat;
+};
+type Block = record {
+  // Miner
+  miner : text;
+  // Total difficulty is the sum of all difficulty values up to and including this block.
+  // 
+  // Note: this field was removed from the official JSON-RPC specification in
+  // <https://github.com/ethereum/execution-apis/pull/570> and may no longer be served by providers.
+  totalDifficulty : opt nat;
+  // Receipts root
+  receiptsRoot : text;
+  // State root
+  stateRoot : text;
+  // Block hash
+  hash : text;
+  // Difficulty
+  difficulty : opt nat;
+  // Block size
+  size : nat;
+  // Uncles
+  uncles : vec text;
+  // Base fee per gas
+  // Only included for blocks after the London Upgrade / EIP-1559.
+  baseFeePerGas : opt nat;
+  // Extra data
+  extraData : text;
+  // Transactions root
+  transactionsRoot : opt text;
+  // Ommers hash
+  sha3Uncles : text;
+  // Nonce
+  nonce : nat;
+  // Block number
+  number : nat;
+  // Timestamp
+  timestamp : nat;
+  // Transaction hashes
+  transactions : vec text;
+  // Maximum gas allowed in this block
+  gasLimit : nat;
+  // Bloom filter for the logs.
+  logsBloom : text;
+  // Parent block hash
+  parentHash : text;
+  // Gas used by all transactions in this block
+  gasUsed : nat;
+  // Mix hash
+  mixHash : text;
+};
+type BlockMode = variant {
+  CanonicalInconsistent;
+  FinalizedInconsistent;
+  FinalizedUnavailable;
+  Canonical;
+  SameHeightDifferentHash;
+};
+type BlockTag = variant {
+  Earliest;
+  Safe;
+  Finalized;
+  Latest;
+  Number : nat;
+  Pending;
+};
+type Burn = record {
+  fee : opt nat;
+  from : Account;
+  memo : opt blob;
+  created_at_time : opt nat64;
+  amount : nat;
+  spender : opt Account;
+};
+type ChainIdMode = variant { Wrong; Configured; Inconsistent };
+type ChainKeyProbe = record { signature : blob; public_key : blob };
+type ConsensusStrategy = variant {
+  // All providers must return the same non-error result.
+  Equality;
+  // A subset of providers must return the same non-error result.
+  Threshold : record {
+    // Minimum number of providers that must return the same (non-error) result.
+    min : nat8;
+    // Total number of providers to be queried:
+    // * If `None`, will be set to the number of providers manually specified in `RpcServices`.
+    // * If `Some`, must correspond to the number of manually specified providers in `RpcServices`;
+    // or if they are none indicating that default providers should be used, select the corresponding number of providers.
+    total : opt nat8;
+  };
+};
+type EthMainnetService = variant {
+  Alchemy;
+  Llama;
+  BlockPi;
+  Cloudflare;
+  PublicNode;
+  Ankr;
+};
+type EthSepoliaService = variant {
+  Alchemy;
+  BlockPi;
+  PublicNode;
+  Ankr;
+  Sepolia;
+};
+type FeeCollector = record {
+  ts : opt nat64;
+  mthd : opt text;
+  fee_collector : opt Account;
+  caller : opt principal;
+};
+type GetAccountTransactionsArgs = record {
+  max_results : nat;
+  start : opt nat;
+  account : Account;
+};
+// The arguments for the
+// [ICRC-3 `icrc3_get_blocks`](https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-3/README.md#icrc3_get_blocks)
+// endpoint.
+type GetBlocksRequest = record { start : nat; length : nat };
+type GetLogsArgs = record {
+  // Integer block number, or "latest" for the last mined block or "pending", "earliest" for not yet mined transactions.
+  fromBlock : opt BlockTag;
+  // Integer block number, or "latest" for the last mined block or "pending", "earliest" for not yet mined transactions.
+  toBlock : opt BlockTag;
+  // Contract address or a list of addresses from which logs should originate.
+  addresses : vec text;
+  // Array of 32-byte DATA topics.
+  // Topics are order-dependent.
+  // Each topic can also be an array of DATA with "or" options.
+  topics : opt vec vec text;
+};
+type GetLogsRpcConfig = record {
+  responseConsensus : opt ConsensusStrategy;
+  maxBlockRange : opt nat32;
+  responseSizeEstimate : opt nat64;
+};
+type GetTransactionCountArgs = record { address : text; block : BlockTag };
+// Deprecated. Use [`GetBlocksResponse`] returned from the
+// [`icrc3_get_blocks`](https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-3/README.md)
+// endpoint instead.
+type GetTransactionsResponse = record {
+  first_index : nat;
+  log_length : nat;
+  transactions : vec Transaction;
+  archived_transactions : vec ArchivedRange;
+};
+// # HTTP Header.
+// 
+// Represents a HTTP header.
+// 
+// See [`HttpRequestArgs::headers`] and [`HttpRequestResult::headers`].
+type HttpHeader = record {
+  // Value of the header.
+  value : text;
+  // Name of the header.
+  name : text;
+};
+type HttpOutcallError = variant {
+  // Error from the IC system API.
+  IcError : record { code : LegacyRejectionCode; message : text };
+  // Response is not a valid JSON-RPC response,
+  // which means that the response was not successful (status other than 2xx)
+  // or that the response body could not be deserialized into a JSON-RPC response.
+  InvalidHttpJsonRpcResponse : record {
+    status : nat16;
+    body : text;
+    parsingError : opt text;
+  };
+};
+type IndexError = record { message : text };
+type IndexTransactions = record {
+  balance : nat;
+  transactions : vec TransactionWithId;
+  oldest_tx_id : opt nat;
+};
+type InitArgs = record { ledger_id : principal };
+type JsonRpcError = record { code : int64; message : text };
+type L2MainnetService = variant { Alchemy; Llama; BlockPi; PublicNode; Ankr };
+type LedgerMode = variant {
+  TemporarilyUnavailable;
+  InsufficientAllowance : record { allowance : nat };
+  Trap;
+  Duplicate;
+  BadFee;
+  Succeed;
+  InsufficientFunds : record { balance : nat };
+};
+// Rejection code from calling another canister.
+// 
+// This implementation was [copied](https://github.com/dfinity/cdk-rs/blob/83ba5fc7b3316a6fa4e7f704b689c95c9e677029/src/ic-cdk/src/api/call.rs#L21) from ic-cdk v0.17.
+// 
+// The `ic_cdk::api::call::RejectionCode` type is deprecated since ic-cdk v0.18.
+// The replacement `ic_cdk::call::RejectCode` re-exports the type defined in the `ic-error-types` crate.
+// We cannot simply switch to the replacement because the existing `RejectionCode` is a public type in evm_rpc canister's interface.
+// To maintain compatibility, we retain the "outdated" definition here.
+type LegacyRejectionCode = variant {
+  NoError;
+  CanisterError;
+  SysTransient;
+  DestinationInvalid;
+  Unknown;
+  SysFatal;
+  CanisterReject;
+};
+type LogEntry = record {
+  // 32-byte hash of the transaction from which this log was created.
+  // None if the transaction is still pending.
+  transactionHash : opt text;
+  // The block number in which this log appeared.
+  // None if the block is pending.
+  blockNumber : opt nat;
+  // Contains one or more 32-byte non-indexed log arguments.
+  data : text;
+  // 32-byte hash of the block in which this log appeared.
+  // None if the block is pending.
+  blockHash : opt text;
+  // Integer of the transaction's position within the block the log was created from.
+  // None if the transaction is still pending.
+  transactionIndex : opt nat;
+  // Array of 0 to 4 32-byte DATA elements of indexed log arguments.
+  // In solidity: The first topic is the event signature hash (e.g. Deposit(address,bytes32,uint256)),
+  // unless you declared the event with the anonymous specifier.
+  topics : vec text;
+  // The address from which this log originated.
+  address : text;
+  // Integer of the log index position in the block.
+  // None if the log is pending.
+  logIndex : opt nat;
+  // "true" when the log was removed due to a chain reorganization.
+  // "false" if it is a valid log.
+  removed : bool;
+};
+type Mint = record {
+  to : Account;
+  fee : opt nat;
+  memo : opt blob;
+  created_at_time : opt nat64;
+  amount : nat;
+};
+type MultiRpcResult = variant {
+  Consistent : Result;
+  Inconsistent : vec record { RpcService; Result };
+};
+type MultiRpcResult_1 = variant {
+  Consistent : Result_1;
+  Inconsistent : vec record { RpcService; Result_1 };
+};
+type MultiRpcResult_2 = variant {
+  Consistent : Result_2;
+  Inconsistent : vec record { RpcService; Result_2 };
+};
+type MultiRpcResult_3 = variant {
+  Consistent : Result_3;
+  Inconsistent : vec record { RpcService; Result_3 };
+};
+type MultiRpcResult_4 = variant {
+  Consistent : Result_4;
+  Inconsistent : vec record { RpcService; Result_4 };
+};
+type MultiRpcResult_5 = variant {
+  Consistent : Result_8;
+  Inconsistent : vec record { RpcService; Result_8 };
+};
+type ProviderError = variant {
+  TooFewCycles : record { expected : nat; received : nat };
+  InvalidRpcConfig : text;
+  MissingRequiredProvider;
+  ProviderNotFound;
+  NoPermission;
+};
+type ReceiptMode = variant {
+  Missing;
+  Orphaned;
+  Reverted;
+  Confirmed;
+  DecodeFailure;
+  Inconsistent;
+  RpcFailure;
+};
+type Result = variant { Ok : Block; Err : RpcError };
+type Result_1 = variant { Ok : vec LogEntry; Err : RpcError };
+type Result_10 = variant { Ok; Err : text };
+type Result_2 = variant { Ok : nat; Err : RpcError };
+type Result_3 = variant { Ok : opt TransactionReceipt; Err : RpcError };
+type Result_4 = variant { Ok : SendRawTransactionStatus; Err : RpcError };
+type Result_5 = variant { Ok : IndexTransactions; Err : IndexError };
+type Result_6 = variant { Ok : nat; Err : TransferError };
+type Result_7 = variant { Ok : nat; Err : TransferFromError };
+type Result_8 = variant { Ok : text; Err : RpcError };
+type Result_9 = variant { Ok : ChainKeyProbe; Err : text };
+type RpcApi = record { url : text; headers : opt vec HttpHeader };
+type RpcConfig = record {
+  responseConsensus : opt ConsensusStrategy;
+  responseSizeEstimate : opt nat64;
+};
+type RpcError = variant {
+  JsonRpcError : JsonRpcError;
+  ProviderError : ProviderError;
+  ValidationError : ValidationError;
+  HttpOutcallError : HttpOutcallError;
+};
+type RpcService = variant {
+  EthSepolia : EthSepoliaService;
+  BaseMainnet : L2MainnetService;
+  Custom : RpcApi;
+  OptimismMainnet : L2MainnetService;
+  ArbitrumOne : L2MainnetService;
+  EthMainnet : EthMainnetService;
+  Provider : nat64;
+};
+type RpcServices = variant {
+  EthSepolia : opt vec EthSepoliaService;
+  BaseMainnet : opt vec L2MainnetService;
+  Custom : record { chainId : nat64; services : vec RpcApi };
+  OptimismMainnet : opt vec L2MainnetService;
+  ArbitrumOne : opt vec L2MainnetService;
+  EthMainnet : opt vec EthMainnetService;
+};
+type SendRawTransactionStatus = variant {
+  Ok : opt text;
+  NonceTooLow;
+  NonceTooHigh;
+  InsufficientFunds;
+};
+type Status = record { num_blocks_synced : nat };
+type Transaction = record {
+  burn : opt Burn;
+  kind : text;
+  mint : opt Mint;
+  approve : opt Approve;
+  fee_collector : opt FeeCollector;
+  timestamp : nat64;
+  transfer : opt Transfer;
+};
+// Deprecated. Use Vec<[`ICRC3GenericBlock`]> instead
+type TransactionRange = record { transactions : vec Transaction };
+type TransactionReceipt = record {
+  // Address of the receiver or `None` in a contract creation transaction.
+  to : opt text;
+  // Either 1 (success) or 0 (failure).
+  // Only specified for transactions included after the Byzantium upgrade.
+  status : opt nat;
+  // The hash of the transaction
+  transactionHash : text;
+  // The sum of gas used by this transaction and all preceding transactions in the same block.
+  cumulativeGasUsed : nat;
+  // The number of the block containing the transaction.
+  blockNumber : nat;
+  // The address of the sender
+  from : text;
+  // An array of log objects generated by this transaction.
+  logs : vec LogEntry;
+  // The hash of the block containing the transaction.
+  blockHash : text;
+  // The post-transaction state root.
+  // Only specified for transactions included before the Byzantium upgrade.
+  root : opt text;
+  // The type of the transaction:
+  // - "0x0" for legacy transactions (pre- EIP-2718)
+  // - "0x1" for access list transactions (EIP-2930)
+  // - "0x2" for EIP-1559 transactions
+  "type" : text;
+  // Transaction's index position in the block
+  transactionIndex : nat;
+  // The actual value per gas deducted from the sender's account.
+  // Before EIP-1559, this is equal to the transaction's gas price.
+  // After, it is equal to `baseFeePerGas + min(maxFeePerGas - baseFeePerGas, maxPriorityFeePerGas)`.
+  effectiveGasPrice : nat;
+  // Bloom filter for light clients to quickly retrieve related logs.
+  logsBloom : text;
+  // The contract address created, if the transaction was a contract creation, otherwise `None`.
+  contractAddress : opt text;
+  // The amount of gas used by this specific transaction alone.
+  gasUsed : nat;
+};
+type TransactionWithId = record { id : nat; transaction : Transaction };
+type Transfer = record {
+  to : Account;
+  fee : opt nat;
+  from : Account;
+  memo : opt blob;
+  created_at_time : opt nat64;
+  amount : nat;
+  spender : opt Account;
+};
+// The arguments for the [ICRC-1 `transfer`](https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-1/README.md#icrc1_transfer-) endpoint.
+type TransferArg = record {
+  to : Account;
+  fee : opt nat;
+  memo : opt blob;
+  from_subaccount : opt blob;
+  created_at_time : opt nat64;
+  amount : nat;
+};
+// Errors defined for the
+// [ICRC-1 `transfer`](https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-1/README.md#icrc1_transfer-)
+// endpoint.
+type TransferError = variant {
+  GenericError : record { message : text; error_code : nat };
+  TemporarilyUnavailable;
+  BadBurn : record { min_burn_amount : nat };
+  Duplicate : record { duplicate_of : nat };
+  BadFee : record { expected_fee : nat };
+  CreatedInFuture : record { ledger_time : nat64 };
+  TooOld;
+  InsufficientFunds : record { balance : nat };
+};
+// The arguments for the
+// [ICRC-2 `transfer_from`](https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-2/README.md#icrc2_transfer_from)
+// endpoint.
+type TransferFromArgs = record {
+  to : Account;
+  fee : opt nat;
+  spender_subaccount : opt blob;
+  from : Account;
+  memo : opt blob;
+  created_at_time : opt nat64;
+  amount : nat;
+};
+// The error return type for the
+// [ICRC-2 `transfer_from`](https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-2/README.md#icrc2_transfer_from)
+// endpoint.
+type TransferFromError = variant {
+  GenericError : record { message : text; error_code : nat };
+  TemporarilyUnavailable;
+  InsufficientAllowance : record { allowance : nat };
+  BadBurn : record { min_burn_amount : nat };
+  Duplicate : record { duplicate_of : nat };
+  BadFee : record { expected_fee : nat };
+  CreatedInFuture : record { ledger_time : nat64 };
+  TooOld;
+  InsufficientFunds : record { balance : nat };
+};
+type ValidationError = variant { Custom : text; InvalidHex : text };
+type WithdrawalFixture = record {
+  id : blob;
+  owner : blob;
+  charged_service_fee : nat;
+  subaccount : blob;
+  max_service_fee : nat;
+  amount_out : nat;
+  amount : nat;
+};
+service : (InitArgs) -> {
+  bridge_signer : () -> (blob) query;
+  broadcast_transactions : () -> (vec blob) query;
+  eth_call_count : () -> (nat64) query;
+  eth_getBlockByNumber : (RpcServices, opt RpcConfig, BlockTag) -> (
+      MultiRpcResult,
+    );
+  eth_getLogs : (RpcServices, opt GetLogsRpcConfig, GetLogsArgs) -> (
+      MultiRpcResult_1,
+    );
+  eth_getTransactionCount : (
+      RpcServices,
+      opt RpcConfig,
+      GetTransactionCountArgs,
+    ) -> (MultiRpcResult_2);
+  eth_getTransactionReceipt : (RpcServices, opt RpcConfig, text) -> (
+      MultiRpcResult_3,
+    );
+  eth_sendRawTransaction : (RpcServices, opt RpcConfig, text) -> (
+      MultiRpcResult_4,
+    );
+  get_account_transactions : (GetAccountTransactionsArgs) -> (Result_5) query;
+  get_archive_transactions : (GetBlocksRequest) -> (TransactionRange) query;
+  get_transactions : (GetBlocksRequest) -> (GetTransactionsResponse) query;
+  icrc1_fee : () -> (nat) query;
+  icrc1_transfer : (TransferArg) -> (Result_6);
+  icrc2_transfer_from : (TransferFromArgs) -> (Result_7);
+  ledger_id : () -> (principal) query;
+  ledger_transactions : () -> (vec Transaction) query;
+  ledger_transfer_calls : () -> (nat64) query;
+  multi_request : (RpcServices, opt RpcConfig, text) -> (MultiRpcResult_5);
+  pinned_eth_call_block_numbers : () -> (vec nat64) query;
+  probe_chain_key : (text) -> (Result_9);
+  receipt_call_count : () -> (nat64) query;
+  set_archive_prefix_length : (nat64) -> ();
+  set_bad_fee_expected_fee : (opt nat) -> ();
+  set_block_mode : (BlockMode) -> ();
+  set_bridge_runtime_code : (blob) -> ();
+  set_bridge_signer : (blob) -> (Result_10);
+  set_bridge_signer_for_canister : (principal, text) -> (Result_10);
+  set_chain_id_mode : (ChainIdMode) -> ();
+  set_configured_chain_id : (nat64) -> ();
+  set_deposit_mints_paused : (bool) -> ();
+  set_eth_balance : (nat) -> ();
+  set_finalized_block : (nat64, blob) -> (Result_10);
+  set_finalized_block_sequence : (vec nat64) -> ();
+  set_index_synced_blocks : (opt nat) -> ();
+  set_ledger_fee : (nat) -> ();
+  set_ledger_fee_available : (bool) -> ();
+  set_ledger_mode : (LedgerMode) -> ();
+  set_max_service_fee : (nat) -> ();
+  set_mint_window : (nat, nat, nat64, nat64, nat64) -> ();
+  set_next_evm_nonce : (nat64) -> ();
+  set_observed_transaction : (blob, blob, blob, nat64) -> (Result_10);
+  set_per_deposit_limit : (nat) -> ();
+  set_receipt_mode : (ReceiptMode) -> ();
+  set_safe_block : (nat64, blob) -> (Result_10);
+  set_safe_block_sequence : (vec nat64) -> ();
+  set_service_fee : (nat) -> ();
+  set_withdrawal : (opt WithdrawalFixture) -> ();
+  set_withdrawal_status : (nat8) -> ();
+  status : () -> (Status) query;
+}
