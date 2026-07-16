@@ -156,7 +156,6 @@ struct StableMockState {
     ledger_mode: LedgerMode,
     ledger_fee_available: bool,
     ledger_fee: u128,
-    bad_fee_expected_fee: Option<u128>,
     next_block: u128,
     transactions: Vec<Transaction>,
     archive_prefix_length: u64,
@@ -202,7 +201,6 @@ thread_local! {
     static LEDGER_MODE: RefCell<LedgerMode> = const { RefCell::new(LedgerMode::Succeed) };
     static LEDGER_FEE_AVAILABLE: RefCell<bool> = const { RefCell::new(true) };
     static LEDGER_FEE: RefCell<u128> = const { RefCell::new(1) };
-    static BAD_FEE_EXPECTED_FEE: RefCell<Option<u128>> = const { RefCell::new(None) };
     static LEDGER_TRANSFER_CALLS: RefCell<u64> = const { RefCell::new(0) };
     static NEXT_BLOCK: RefCell<u128> = const { RefCell::new(1) };
     static TRANSACTIONS: RefCell<Vec<Transaction>> = const { RefCell::new(Vec::new()) };
@@ -272,11 +270,6 @@ fn set_ledger_fee_available(available: bool) {
 #[ic_cdk::update]
 fn set_ledger_fee(fee: u128) {
     LEDGER_FEE.with(|current| *current.borrow_mut() = fee);
-}
-
-#[ic_cdk::update]
-fn set_bad_fee_expected_fee(fee: Option<u128>) {
-    BAD_FEE_EXPECTED_FEE.with(|current| *current.borrow_mut() = fee);
 }
 
 #[ic_cdk::update]
@@ -493,7 +486,6 @@ fn pre_upgrade() {
         ledger_mode: LEDGER_MODE.with(|v| *v.borrow()),
         ledger_fee_available: LEDGER_FEE_AVAILABLE.with(|v| *v.borrow()),
         ledger_fee: LEDGER_FEE.with(|v| *v.borrow()),
-        bad_fee_expected_fee: BAD_FEE_EXPECTED_FEE.with(|v| *v.borrow()),
         next_block: NEXT_BLOCK.with(|v| *v.borrow()),
         transactions: TRANSACTIONS.with(|v| v.borrow().clone()),
         archive_prefix_length: ARCHIVE_PREFIX_LENGTH.with(|v| *v.borrow()),
@@ -544,7 +536,6 @@ fn post_upgrade() {
     LEDGER_MODE.with(|v| *v.borrow_mut() = state.ledger_mode);
     LEDGER_FEE_AVAILABLE.with(|v| *v.borrow_mut() = state.ledger_fee_available);
     LEDGER_FEE.with(|v| *v.borrow_mut() = state.ledger_fee);
-    BAD_FEE_EXPECTED_FEE.with(|v| *v.borrow_mut() = state.bad_fee_expected_fee);
     NEXT_BLOCK.with(|v| *v.borrow_mut() = state.next_block);
     TRANSACTIONS.with(|v| *v.borrow_mut() = state.transactions);
     ARCHIVE_PREFIX_LENGTH.with(|v| *v.borrow_mut() = state.archive_prefix_length);
@@ -651,10 +642,7 @@ fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
         }
         LedgerMode::BadFee => {
             return Err(TransferError::BadFee {
-                expected_fee: Nat::from(BAD_FEE_EXPECTED_FEE.with(|fee| {
-                    fee.borrow()
-                        .unwrap_or_else(|| LEDGER_FEE.with(|current| *current.borrow()))
-                })),
+                expected_fee: Nat::from(LEDGER_FEE.with(|current| *current.borrow())),
             })
         }
         LedgerMode::InsufficientAllowance { allowance } => {

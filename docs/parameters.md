@@ -80,4 +80,4 @@ EVM RPC Canister配下providerの運営主体、基盤、可用性は監査対�
 
 1. Mint limitとwindow長は既存contract上で変更しない。
 2. 異なる値が必要な場合は、新contractのdeployを別計画として安全審査する。
-3. Service FeeはRuntime Administratorが`MAX_SERVICE_FEE`以内で変更する。
+3. Service Feeを変更する場合は両方向をpauseし、Ledger feeとの関係を含むreview済みprofileを更新してproduction preflightを再実行する。Ledger feeとService Feeを稼働中に独立変更しない。

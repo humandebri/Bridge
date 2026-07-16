@@ -174,7 +174,6 @@ pub enum NotifyWithdrawalError {
     TransactionReverted,
     OwnerMismatch,
     LedgerFeeUnavailable,
-    LedgerFeeExceedsServiceFee,
     WithdrawalConflict,
     BaseStateMismatch,
     BridgeSignerMismatch,
@@ -276,6 +275,9 @@ pub async fn notify_withdrawal(
     if snapshot.bridge_signer != expected_signer {
         return Err(NotifyWithdrawalError::BridgeSignerMismatch);
     }
+    if let Some(receipt) = existing_notified_withdrawal(&observed)? {
+        return Ok(receipt);
+    }
     let ledger_fee = ledger::ledger_fee(config.ledger_canister_id)
         .await
         .map_err(|_| NotifyWithdrawalError::LedgerFeeUnavailable)?;
@@ -325,14 +327,7 @@ fn map_withdrawal_observation_error(error: evm_rpc::ObservationError) -> NotifyW
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn ingest_notified_withdrawal(
-    observed: evm_rpc::ObservedWithdrawal,
-    ledger_fee: Amount,
-    finalized_head_block_number: u64,
-    stable_observation: FinalizedObservationRecord,
-    rpc_audit: Vec<crate::storage::AuditEventKind>,
-) -> Result<NotifyWithdrawalReceipt, NotifyWithdrawalError> {
+fn notified_withdrawal_payload_hash(observed: &evm_rpc::ObservedWithdrawal) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(observed.id);
     digest.update(&observed.owner);
@@ -341,7 +336,40 @@ fn ingest_notified_withdrawal(
     digest.update(observed.max_service_fee.to_be_bytes());
     digest.update(observed.charged_service_fee.to_be_bytes());
     digest.update(observed.amount_out.to_be_bytes());
-    let payload_hash: [u8; 32] = digest.finalize().into();
+    digest.finalize().into()
+}
+
+fn existing_notified_withdrawal(
+    observed: &evm_rpc::ObservedWithdrawal,
+) -> Result<Option<NotifyWithdrawalReceipt>, NotifyWithdrawalError> {
+    let payload_hash = notified_withdrawal_payload_hash(observed);
+    STORE.with(|store| {
+        let existing = store
+            .borrow()
+            .withdrawal(observed.id)
+            .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+        match existing {
+            Some(existing) if existing.payload_hash == payload_hash => {
+                Ok(Some(NotifyWithdrawalReceipt::Duplicate {
+                    withdrawal_id: observed.id.to_vec(),
+                    settlement: None,
+                }))
+            }
+            Some(_) => Err(NotifyWithdrawalError::WithdrawalConflict),
+            None => Ok(None),
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ingest_notified_withdrawal(
+    observed: evm_rpc::ObservedWithdrawal,
+    ledger_fee: Amount,
+    finalized_head_block_number: u64,
+    stable_observation: FinalizedObservationRecord,
+    rpc_audit: Vec<crate::storage::AuditEventKind>,
+) -> Result<NotifyWithdrawalReceipt, NotifyWithdrawalError> {
+    let payload_hash = notified_withdrawal_payload_hash(&observed);
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         if let Some(existing) = store
@@ -349,16 +377,6 @@ fn ingest_notified_withdrawal(
             .map_err(|_| NotifyWithdrawalError::StorageFailure)?
         {
             if existing.payload_hash == payload_hash {
-                if matches!(existing.state, WithdrawalState::Observed)
-                    && existing.last_settlement_stop_reason.is_some()
-                {
-                    if ledger_fee > existing.charged_service_fee {
-                        return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee);
-                    }
-                    store
-                        .reschedule_fee_blocked_withdrawal(observed.id, ic_cdk::api::time())
-                        .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-                }
                 return Ok(NotifyWithdrawalReceipt::Duplicate {
                     withdrawal_id: observed.id.to_vec(),
                     settlement: None,
@@ -390,20 +408,6 @@ fn ingest_notified_withdrawal(
             .observe_finalized(stable_observation)
             .map_err(|_| NotifyWithdrawalError::BaseStateMismatch)?;
 
-        if ledger_fee.get() > observed.charged_service_fee {
-            withdrawal.last_settlement_stop_reason =
-                Some("Ledger fee exceeds the committed service fee; no transfer was sent".into());
-            store
-                .commit_new_withdrawal_release_bundle_with_rpc_audit(
-                    &withdrawal,
-                    &progress,
-                    ic_cdk::api::canister_self(),
-                    ic_cdk::api::time(),
-                    rpc_audit,
-                )
-                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-            return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee);
-        }
         let transfer = LedgerTransferIdentity {
             operation: LedgerOperation::ReleaseWithdrawal,
             created_at_time_ns: ic_cdk::api::time(),

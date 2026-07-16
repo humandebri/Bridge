@@ -6,7 +6,6 @@
 | Committed quoteは`amountOut + chargedServiceFee = amount`で固定される | Base record、`Settlement::validate_committed` | Foundry、Rust、Verus `committed_quote_matches` | canonical Finalized state read |
 | BaseにWithdrawalの再mint経路がない | `None | Committed` ABI | selector test、Foundry invariant、SMT | deployed bytecodeが検証対象と一致 |
 | Ledger送金はcanonical FinalizedのCommitted確認後だけ開始する | `notify_withdrawal`、`Observed → ReleasePending` | Rust、integration、Verus phase proof | EVM RPC quorumの真正性 |
-| BadFee再価格でも固定受取額・送金先を変えず、Ledger FeeはService Fee以内 | `RepriceRelease` | Rust、Verus `ledger_fee_reprice_allowed` | Ledger error分類の真正性 |
 | 成功・Duplicate・履歴照合成功だけがPaidを終端化する | Withdrawal/Reconciliation state machine | Rust、integration、Verus terminal proof | Ledger履歴の完全性 |
 | Fee reserveは`chargedServiceFee - actualLedgerFee`を一度だけ計上する | Withdrawal apply/storage transaction | Rust、Verus backing/fee-once proof | SQLite atomic commit |
 | WithdrawalはEVM署名・nonce・追加Base transactionを生成しない | adapter operation routing | Rust、integration、ABI selector test | Canister Wasmが検証対象と一致 |

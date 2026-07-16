@@ -115,7 +115,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   const retryClock = await page.evaluate(() => Date.now())
   await page.clock.setFixedTime(retryClock + 60_000)
   await expect.poll(async () => (await controlState(request)).notifyCalls, { timeout: 45_000 }).toBeGreaterThanOrEqual(beforeWithdrawal.notifyCalls + 2)
-  await expect(page.getByText("Withdrawal confirmed. The transfer to Internet Computer has started.", { exact: true })).toBeVisible()
+  await expect(page.getByText("Withdrawal is recorded and the transfer completed.", { exact: true })).toBeVisible()
   expect((await controlState(request)).bsnsAllowance).toBe("0")
   await openHistory(page)
   await page.getByRole("tab", { name: "Withdrawals" }).click()

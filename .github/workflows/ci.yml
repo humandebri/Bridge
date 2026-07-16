@@ -1,5 +1,5 @@
-# GitHub Actions: reproduce the complete Phase 1E contract, proof, build, and deploy gate on Linux.
-name: phase-1e-ci
+# GitHub Actions: reproduce the complete repository test, proof, build, and deploy gate on Linux.
+name: bridge-ci
 
 on:
   pull_request:
@@ -9,11 +9,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: phase-1e-${{ github.workflow }}-${{ github.ref }}
+  group: bridge-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  phase-1e:
+  verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
@@ -84,17 +84,20 @@ jobs:
           ln -s "$(find "$HOME/.local/verus" -type f -name verus -print -quit)" "$HOME/.local/bin/verus"
 
       - name: Install Lean 4.30.0
-        uses: leanprover/lean-action@v1
-        with:
-          auto-config: false
-          use-github-cache: false
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            -o /tmp/elan-init.sh \
+            https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh
+          sh /tmp/elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          "$HOME/.elan/bin/lean" --version
 
       - name: Install UI dependencies and Chromium
         run: |
           pnpm --dir ui install --frozen-lockfile
           pnpm --dir ui exec playwright install --with-deps chromium
 
-      - name: Run Phase 1E gate
+      - name: Run complete repository gate
         run: scripts/ci-local.sh all
 
       - name: Verify smoke restored the ICP configuration

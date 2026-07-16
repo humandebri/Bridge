@@ -4,11 +4,10 @@ use crate::{
     signer, storage_or_trap, STORE,
 };
 use bridge_core::{
-    Account, DepositEvent, DepositHoldResolution, EvmOperationEvent, EvmOperationKind,
-    EvmOperationState, LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity,
-    ReconciliationHoldRecord, ReconciliationScanProgress, ReconciliationTarget, RequestReference,
-    Settlement, TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId,
-    WithdrawalState,
+    DepositEvent, DepositHoldResolution, EvmOperationEvent, EvmOperationKind, EvmOperationState,
+    LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity, ReconciliationHoldRecord,
+    ReconciliationScanProgress, ReconciliationTarget, RequestReference, WithdrawalEvent,
+    WithdrawalHoldResolution, WithdrawalId, WithdrawalState,
 };
 use candid::{CandidType, Deserialize};
 use sha2::{Digest, Sha256};
@@ -35,7 +34,6 @@ pub enum SettlementStopReason {
     SigningUnavailable,
     NonceUnavailable,
     NonceBlocked,
-    LedgerFeeChanged,
     NonceConflict,
     BaseStateMismatch,
     BridgeSignerMismatch,
@@ -113,9 +111,6 @@ pub(crate) fn stop_reason_text(result: &SettlementActionResult) -> Option<String
             SettlementStopReason::NonceUnavailable => "Base nonce unavailable".into(),
             SettlementStopReason::NonceBlocked => {
                 "Another Base operation is holding the next nonce".into()
-            }
-            SettlementStopReason::LedgerFeeChanged => {
-                "Ledger fee changed; settlement identity was updated without sending".into()
             }
             SettlementStopReason::NonceConflict => {
                 "Base nonce is occupied by a different transaction".into()
@@ -1139,72 +1134,6 @@ pub(crate) async fn advance_withdrawal(
                             reason: SettlementStopReason::LedgerAmbiguous,
                         });
                     }
-                    LedgerCallOutcome::DefinitiveFailure {
-                        code: bridge_core::LedgerFailure::BadFee { expected_fee },
-                    } => {
-                        let next_state = STORE.with(|store| {
-                            let mut store = store.borrow_mut();
-                            let mut current = store
-                                .withdrawal(withdrawal_id)
-                                .map_err(|_| SettlementActionError::StorageFailure)?
-                                .ok_or(SettlementActionError::NotFound)?;
-                            let (current_attempt, current_settlement) = match &current.state {
-                                WithdrawalState::ReleasePending {
-                                    attempt,
-                                    settlement,
-                                } => (attempt.clone(), *settlement),
-                                _ => return Err(SettlementActionError::Busy),
-                            };
-                            if expected_fee > current.charged_service_fee {
-                                return Ok::<_, SettlementActionError>(
-                                    SettlementState::Withdrawal(WithdrawalPhase::ReleasePending),
-                                );
-                            }
-                            let created_at_time_ns = ic_cdk::api::time().max(
-                                current_attempt
-                                    .identity
-                                    .created_at_time_ns
-                                    .saturating_add(1),
-                            );
-                            let mut digest = Sha256::new();
-                            digest.update(b"KINIC-WITHDRAWAL-BAD-FEE");
-                            digest.update(current.payload_hash);
-                            digest.update(current_attempt.attempt_no.to_be_bytes());
-                            digest.update(expected_fee.get().to_be_bytes());
-                            let mut identity = current_attempt.identity.clone();
-                            identity.created_at_time_ns = created_at_time_ns;
-                            identity.memo = digest.finalize().into();
-                            identity.amount = current.amount_out;
-                            identity.fee = expected_fee;
-                            let next_attempt = bridge_core::TransferAttempt {
-                                attempt_no: current_attempt
-                                    .attempt_no
-                                    .checked_add(1)
-                                    .ok_or(SettlementActionError::StorageFailure)?,
-                                identity,
-                            };
-                            current
-                                .apply(WithdrawalEvent::RepriceRelease {
-                                    attempt: Box::new(next_attempt),
-                                    settlement: bridge_core::Settlement {
-                                        amount_out: current.amount_out,
-                                        service_fee: current_settlement.service_fee,
-                                        ledger_fee: expected_fee,
-                                    },
-                                })
-                                .map_err(|_| SettlementActionError::StorageFailure)?;
-                            store
-                                .put_withdrawal(&current)
-                                .map_err(|_| SettlementActionError::StorageFailure)?;
-                            Ok::<_, SettlementActionError>(SettlementState::Withdrawal(
-                                WithdrawalPhase::ReleasePending,
-                            ))
-                        })?;
-                        return Ok(SettlementActionResult::Stopped {
-                            state: next_state,
-                            reason: SettlementStopReason::LedgerFeeChanged,
-                        });
-                    }
                     other => {
                         return Ok(SettlementActionResult::Stopped {
                             state,
@@ -1232,61 +1161,7 @@ pub(crate) async fn advance_withdrawal(
                 }
             }
             WithdrawalState::Paid { .. } => return Ok(SettlementActionResult::Complete { state }),
-            WithdrawalState::Observed => {
-                lease.renew_before_external_call()?;
-                let ledger_fee = match ledger::ledger_fee(config.ledger_canister_id).await {
-                    Ok(fee) => fee,
-                    Err(()) => {
-                        return Ok(SettlementActionResult::Stopped {
-                            state,
-                            reason: SettlementStopReason::LedgerUnavailable,
-                        })
-                    }
-                };
-                lease.ensure_current()?;
-                if ledger_fee > withdrawal.charged_service_fee {
-                    return Ok(SettlementActionResult::Stopped {
-                        state,
-                        reason: SettlementStopReason::LedgerFeeChanged,
-                    });
-                }
-                let identity = LedgerTransferIdentity {
-                    operation: LedgerOperation::ReleaseWithdrawal,
-                    created_at_time_ns: ic_cdk::api::time(),
-                    memo: withdrawal.payload_hash,
-                    amount: withdrawal.amount_out,
-                    fee: ledger_fee,
-                    from: Account::new(ic_cdk::api::canister_self().as_slice().to_vec(), [0; 32])
-                        .map_err(|_| SettlementActionError::StorageFailure)?,
-                    to: Account::new(withdrawal.owner.clone(), withdrawal.subaccount)
-                        .map_err(|_| SettlementActionError::StorageFailure)?,
-                    spender: None,
-                };
-                STORE.with(|store| {
-                    let mut store = store.borrow_mut();
-                    let mut current = store
-                        .withdrawal(withdrawal_id)
-                        .map_err(|_| SettlementActionError::StorageFailure)?
-                        .ok_or(SettlementActionError::NotFound)?;
-                    current
-                        .apply(WithdrawalEvent::StartRelease {
-                            attempt: Box::new(TransferAttempt {
-                                attempt_no: 0,
-                                identity,
-                            }),
-                            settlement: Settlement {
-                                amount_out: current.amount_out,
-                                service_fee: current.charged_service_fee,
-                                ledger_fee,
-                            },
-                        })
-                        .map_err(|_| SettlementActionError::StorageFailure)?;
-                    current.last_settlement_stop_reason = None;
-                    store
-                        .put_withdrawal(&current)
-                        .map_err(|_| SettlementActionError::StorageFailure)
-                })?;
-            }
+            WithdrawalState::Observed => return Err(SettlementActionError::WrongState),
         }
     }
 }

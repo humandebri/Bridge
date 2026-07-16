@@ -102,7 +102,7 @@ function isSettlementStopReason(value: unknown): boolean {
   const payload: unknown = Reflect.get(value, key)
   if (key === "LedgerRejected") return typeof payload === "string"
   return [
-    "RpcUnavailable", "LedgerFeeChanged", "TransactionNotConfirmed",
+    "RpcUnavailable", "TransactionNotConfirmed",
     "RpcInconsistent", "LedgerAmbiguous", "LedgerUnavailable", "NonceConflict", "NonceUnavailable",
     "TransactionReverted", "NonceBlocked", "BaseStateMismatch", "TransactionNotFound",
     "BridgeSignerMismatch", "SigningUnavailable", "InvalidBaseResponse",

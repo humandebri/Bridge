@@ -4,7 +4,7 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、stable storageに依存しない決定的な状態遷移を定義する。`bridge-canister`はその状態を単一SQLite DBへ保存し、ICRC Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-stable schemaはv10、record wire versionはv9だけを受理する。本番未デプロイのため、旧形式のmigration、dual-read、fallbackは持たない。未知schema、wire version、decode不能なDBはfail closedで起動を拒否する。
+Stable schema v10、record wire version v9だけを受理し、status APIもschema v10を返す。本番未デプロイのため、旧形式のmigration、dual-read、fallbackは持たない。未知schema、wire version、decode不能なDBはfail closedで起動を拒否する。
 
 `settlement_jobs`がSettlement実行の永続的な正本である。recordと`phase = settlement`のjobは同じSQLite transactionで作成され、init・post-upgrade・job更新後はDBに保存された最短起床時刻からone-shot timerを再登録する。timerは実行の目覚ましであり、timer ID自体に状態上の意味はない。
 
@@ -54,7 +54,7 @@ Base wallet
                                                 └─ 完全な不存在証拠 ─→ ReleasePending
 ```
 
-1. UIはBase wallet、送付先IC wallet、Base snapshotのService Fee、ICRC Ledger fee、bSNS残高、chain/runtimeを直前に再検証する。必要ならbSNSのBridge allowanceを要求額ちょうどに設定する。
+1. UIはBase wallet、送付先IC wallet、Base snapshotのService Fee、bSNS残高、chain/runtimeを直前に再検証する。必要ならbSNSのBridge allowanceを要求額ちょうどに設定する。
 2. Base walletから`createWithdrawal`を送る。Contractは実行時Service Feeが`maxServiceFee`以下で、`amount > serviceFee`であることを確認し、同じtransaction内で`transferFrom`、Bridge残高のburn、固定quoteを持つ`Committed` record作成、`WithdrawalCommitted`発行を原子的に行う。
 
    ```text
@@ -64,9 +64,9 @@ Base wallet
 
 3. UIはtransaction hashと送付先IC ownerをlocalStorageのpending confirmationへ保存する。これは追加のBase transactionを予約するものではなく、通知を再開するための公開transaction参照である。秘密鍵や署名情報は保存しない。
 4. UIまたはWithdrawal HistoryがFinalized blockのreceiptと`WithdrawalCommitted` eventを検出し、IC walletから`notify_withdrawal`を呼ぶ。Canisterはtransaction hashを起点に、receipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛してquorum検証する。通知を行えるのは対象IC owner、Governance principal、pause principalである。
-5. 検証成功後、Canisterは`Observed` recordとSettlement jobを保存し、Ledger feeがService Fee以下なら同じtransaction payloadの`ReleasePending`を作成する。`ledger_fee > chargedServiceFee`の場合はICP送金を行わず停止する。
+5. 検証成功後、Canisterは同じtransaction payloadの`ReleasePending` recordとSettlement jobを原子的に保存する。重複通知は既存recordを返し、新しいjobを起動しない。
 6. Settlement runnerは固定`amountOut`を固定IC Accountへ送る。Ledger成功、Duplicate、または履歴照合による成功確認で`Paid`になり、`chargedServiceFee - actualLedgerFee`だけをfee reserveへ一度加算する。
-7. Ledgerの結果不明は`ReconciliationHold`へ移す。dedup期間内は同一transfer identityで確認し、期間後はLedger全範囲とIndexの同期済みwatermarkで不存在を証明できた場合だけ、同じ宛先・金額を保った新しいtransfer identityで`ReleasePending`へ戻す。BadFeeが確定した場合だけLedger feeを再価格し、利用者受取額は変更しない。
+7. Ledgerの結果不明は`ReconciliationHold`へ移す。dedup期間内は同一transfer identityで確認し、期間後はLedger全範囲とIndexの同期済みwatermarkで不存在を証明できた場合だけ、同じ宛先・金額を保った新しいtransfer identityで`ReleasePending`へ戻す。想定外の`BadFee`は`LedgerRejected`として停止し、feeやtransfer identityを変更しない。
 8. Base側のpauseは新規Withdrawal作成を止めるが、すでに`Committed`となったICP債務の送金・照合は止めない。停止したSettlementは原因解消後に所有者またはGovernance・pause principalが`continue_withdrawal`を呼ぶ。
 
 ## 外部確認の境界

@@ -78,29 +78,23 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       return { balance, fee, allowance: allowance.allowance }
     },
   })
-  const ledgerFee = useQuery({
-    queryKey: ["withdraw-ledger-fee", deploymentProfile.ledgerCanisterId],
-    enabled: false,
-    queryFn: async () => (await createLedgerActor(deploymentProfile.icHost, deploymentProfile.ledgerCanisterId as string)).icrc1_fee(),
-  })
   const bsnsBalance = useQuery({
     queryKey: ["bsns-balance", address],
     enabled: false,
     queryFn: () => basePublicClient.readContract({ address: deploymentProfile.bsnsAddress as `0x${string}`, abi: bsnsAbi, functionName: "balanceOf", args: [address!] }),
   })
   const ledgerData = !ledger.isError && !ledger.isStale ? ledger.data : undefined
-  const ledgerFeeData = !ledgerFee.isError && !ledgerFee.isStale ? ledgerFee.data : undefined
   const bsnsBalanceData = !bsnsBalance.isError && !bsnsBalance.isStale ? bsnsBalance.data : undefined
   const estimate = withdrawParsed.ok && baseData ? estimatedAmountOut(withdrawParsed.value, baseData.serviceFee) : 0n
   const ownerSequenceData = !ownerSequence.isError && !ownerSequence.isStale ? ownerSequence.data : undefined
-  const refreshing = runtime.isFetching || base.isFetching || ledger.isFetching || ledgerFee.isFetching || bsnsBalance.isFetching || (!unresolvedDeposit && ownerSequence.isFetching)
+  const refreshing = runtime.isFetching || base.isFetching || ledger.isFetching || bsnsBalance.isFetching || (!unresolvedDeposit && ownerSequence.isFetching)
   const refreshBridgeData = () => {
     const calls: Promise<unknown>[] = [runtime.refetch(), base.refetch()]
     if (direction === "deposit" && ic.account) {
       calls.push(ledger.refetch())
       if (!unresolvedDeposit) calls.push(ownerSequence.refetch())
     }
-    if (direction === "withdraw" && address) calls.push(ledgerFee.refetch(), bsnsBalance.refetch())
+    if (direction === "withdraw" && address) calls.push(bsnsBalance.refetch())
     void Promise.all(calls)
   }
 
@@ -190,9 +184,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       if (!address) throw new Error("Connect the Base wallet that owns bSNS")
       if (!ic.account || !ic.adapter) throw new Error("Connect the destination IC wallet")
       if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
-      if (baseData === undefined || ledgerFeeData === undefined || bsnsBalanceData === undefined) throw new Error("Fee or balance data is unavailable or stale")
+      if (baseData === undefined || bsnsBalanceData === undefined) throw new Error("Fee or balance data is unavailable or stale")
       if (withdrawParsed.value <= baseData.serviceFee) throw new Error("Amount must be greater than the current service fee")
-      if (ledgerFeeData > baseData.serviceFee) throw new Error("Ledger fee exceeds the service fee; withdrawal is temporarily unavailable")
       if (bsnsBalanceData < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
       const confirmedIcAccount = { owner: ic.account.owner, subaccount: ic.account.subaccount }
       const snapshotAddress = address
@@ -227,13 +220,12 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         currentEvmWallet: currentInjectedWallet,
         currentIcAccount: () => ic.adapter!.getAccount(),
         refetchFinancials: async () => {
-          const [quote, feeResult, balanceResult] = await Promise.all([base.refetch(), ledgerFee.refetch(), bsnsBalance.refetch()])
-          if (quote.isError || quote.isStale || !quote.data || feeResult.isError || feeResult.isStale || feeResult.data === undefined || balanceResult.isError || balanceResult.isStale || balanceResult.data === undefined) throw new Error("Fee or balance data changed and could not be verified")
-          return { serviceFee: quote.data.serviceFee, ledgerFee: feeResult.data, balance: balanceResult.data }
+          const [quote, balanceResult] = await Promise.all([base.refetch(), bsnsBalance.refetch()])
+          if (quote.isError || quote.isStale || !quote.data || balanceResult.isError || balanceResult.isStale || balanceResult.data === undefined) throw new Error("Fee or balance data changed and could not be verified")
+          return { serviceFee: quote.data.serviceFee, balance: balanceResult.data }
         },
-        validateFinancials: ({ serviceFee, ledgerFee: finalLedgerFee, balance: finalBalance }) => {
+        validateFinancials: ({ serviceFee, balance: finalBalance }) => {
           if (withdrawParsed.value <= serviceFee) throw new Error("Amount must be greater than the current service fee")
-          if (finalLedgerFee > serviceFee) throw new Error("Ledger fee exceeds the service fee; withdrawal is temporarily unavailable")
           if (finalBalance < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
         },
         createWithdrawal: ({ serviceFee }) => write.writeContractAsync({ account: snapshotAddress, address: deploymentProfile.bridgeAddress as `0x${string}`, abi: bridgeAbi, functionName: "createWithdrawal", args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)] }),
@@ -265,7 +257,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const depositBlockers = unresolvedDeposit
     ? [runtimeReason, !ic.account && "Reconnect the original IC wallet", !address && "Reconnect the original Base wallet", ic.account && !retryAccountMatches && "Reconnect the original IC wallet", address && !retryRecipientMatches && "Reconnect the original Base wallet"].filter(Boolean) as string[]
     : [!address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || !ledgerData || ownerSequenceData === undefined) && "Balance or fee information is unavailable", !depositParsed.ok && (depositParsed.reason ?? "Enter an amount")].filter(Boolean) as string[]
-  const withdrawalBlockers = [!address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || ledgerFeeData === undefined || bsnsBalanceData === undefined) && "Fee and balance data is unavailable", !withdrawParsed.ok && (withdrawParsed.reason ?? "Enter an amount"), withdrawParsed.ok && baseData && withdrawParsed.value <= baseData.serviceFee && "Amount must exceed the service fee", baseData && ledgerFeeData !== undefined && ledgerFeeData > baseData.serviceFee && "Ledger fee exceeds the service fee"].filter(Boolean) as string[]
+  const withdrawalBlockers = [!address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || bsnsBalanceData === undefined) && "Fee and balance data is unavailable", !withdrawParsed.ok && (withdrawParsed.reason ?? "Enter an amount"), withdrawParsed.ok && baseData && withdrawParsed.value <= baseData.serviceFee && "Amount must exceed the service fee"].filter(Boolean) as string[]
   const blockers = direction === "deposit" ? depositBlockers : withdrawalBlockers
   const amountError = !unresolvedDeposit && (direction === "deposit" ? (!depositParsed.ok ? depositParsed.reason : undefined) : (!withdrawParsed.ok ? withdrawParsed.reason : undefined))
   const amount = direction === "deposit" ? (unresolvedDeposit ? formatTokenAmount(unresolvedDeposit.call.grossAmount) : depositAmount) : withdrawAmount

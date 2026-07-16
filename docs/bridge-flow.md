@@ -71,7 +71,7 @@ Finalized確認に失敗した場合、Safe head、固定confirmation数、単�
 
 ## Withdrawalの詳細
 
-1. UIはBase wallet、送付先IC wallet、Service Fee、ICRC Ledger fee、bSNS残高、chain/runtimeを直前に再検証する。bSNS allowanceは要求額ちょうどを許可する。
+1. UIはBase wallet、送付先IC wallet、Service Fee、bSNS残高、chain/runtimeを直前に再検証する。bSNS allowanceは要求額ちょうどを許可する。
 2. Base walletが`createWithdrawal(amount, maxServiceFee, owner, subaccount)`を呼ぶ。Contractは実行時Service Feeを固定し、次を同一transactionで行う。
 
    ```text
@@ -84,7 +84,7 @@ Finalized確認に失敗した場合、Safe head、固定confirmation数、単�
 3. UIは成功したBase transaction hashとIC ownerをpending confirmationとしてlocalStorageに保存する。これは後で`notify_withdrawal`を再開するための参照であり、追加transactionの予約ではない。
 4. Bridge pageのcoordinatorまたはHistoryがFinalized receiptと`WithdrawalCommitted` eventを検出すると、接続中のIC walletから`notify_withdrawal(transaction_hash)`を呼ぶ。ユーザーが通知を拒否した場合も、Historyの`Check and notify`から同じhashを明示再実行できる。
 5. CanisterはEVM RPC quorumで同じFinalized block hashへreceipt、event、`getWithdrawal`、Bridge snapshotを束縛して検証する。requester、amount、Service Fee、amountOut、IC owner、subaccount、`Committed` statusが一致し、Bridge signerも期待値と一致しなければICP送金を始めない。
-6. 検証後の状態は`Observed → ReleasePending → Paid`である。Ledger feeがService Feeを超える場合は送金せず停止する。通常のreleaseは固定amountOutを固定IC Accountへ送り、BridgeがLedger feeを負担する。
+6. 検証後の状態は`Observed → ReleasePending → Paid`である。releaseは固定amountOutを固定IC Accountへ送り、BridgeがLedger feeを負担する。Ledger feeとService Feeの一致条件はproduction preflightで検証し、想定外の`BadFee`は汎用Ledger拒否として同じtransfer identityのまま停止する。
 7. Ledger成功、Duplicate、履歴照合による成功確認で`Paid`になる。結果不明は`ReconciliationHold`へ移り、完全な不存在証拠を得たときだけ同じ金額・宛先の新しいtransfer identityで再開する。
 
 Withdrawalには次の処理が存在しない。

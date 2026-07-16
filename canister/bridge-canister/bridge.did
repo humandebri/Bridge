@@ -271,7 +271,6 @@ type ListDepositIdsArgs = record {
 type ListDepositIdsError = variant { InvalidLimit };
 type NotifyWithdrawalArgs = record { transaction_hash : blob };
 type NotifyWithdrawalError = variant {
-  LedgerFeeExceedsServiceFee;
   Busy;
   RpcUnavailable;
   TransactionNotConfirmed;
@@ -427,7 +426,6 @@ type SettlementState = variant {
 type SettlementStopReason = variant {
   LedgerRejected : text;
   RpcUnavailable;
-  LedgerFeeChanged;
   TransactionNotConfirmed;
   RpcInconsistent;
   LedgerAmbiguous;

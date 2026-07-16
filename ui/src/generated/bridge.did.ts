@@ -283,8 +283,7 @@ export type ListDepositIdsError = { 'InvalidLimit' : null };
 export interface NotifyWithdrawalArgs {
   'transaction_hash' : Uint8Array | number[],
 }
-export type NotifyWithdrawalError = { 'LedgerFeeExceedsServiceFee' : null } |
-  { 'Busy' : null } |
+export type NotifyWithdrawalError = { 'Busy' : null } |
   { 'RpcUnavailable' : null } |
   { 'TransactionNotConfirmed' : null } |
   { 'WithdrawalConflict' : null } |
@@ -439,7 +438,6 @@ export type SettlementState = { 'Deposit' : DepositPhase } |
   { 'Withdrawal' : WithdrawalPhase };
 export type SettlementStopReason = { 'LedgerRejected' : string } |
   { 'RpcUnavailable' : null } |
-  { 'LedgerFeeChanged' : null } |
   { 'TransactionNotConfirmed' : null } |
   { 'RpcInconsistent' : null } |
   { 'LedgerAmbiguous' : null } |

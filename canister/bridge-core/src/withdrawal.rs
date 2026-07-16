@@ -66,26 +66,6 @@ impl TransferAttempt {
             identity,
         })
     }
-
-    pub fn reprice_after_bad_fee(
-        &self,
-        identity: LedgerTransferIdentity,
-    ) -> Result<Self, CoreError> {
-        if identity.created_at_time_ns <= self.identity.created_at_time_ns
-            || identity.memo == self.identity.memo
-            || identity.operation != self.identity.operation
-            || identity.amount != self.identity.amount
-            || identity.from != self.identity.from
-            || identity.to != self.identity.to
-            || identity.spender != self.identity.spender
-        {
-            return Err(CoreError::AttemptPayloadChanged);
-        }
-        Ok(Self {
-            attempt_no: crate::next_attempt(self.attempt_no).ok_or(CoreError::AttemptOverflow)?,
-            identity,
-        })
-    }
 }
 
 #[cfg_attr(
@@ -95,10 +75,6 @@ impl TransferAttempt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WithdrawalEvent {
     StartRelease {
-        attempt: Box<TransferAttempt>,
-        settlement: Settlement,
-    },
-    RepriceRelease {
         attempt: Box<TransferAttempt>,
         settlement: Settlement,
     },
@@ -208,40 +184,6 @@ impl WithdrawalRecord {
             }
             (
                 State::ReleasePending {
-                    attempt: current_attempt,
-                    settlement: current_settlement,
-                },
-                Event::RepriceRelease {
-                    attempt,
-                    settlement,
-                },
-            ) => {
-                let expected = current_attempt.reprice_after_bad_fee(attempt.identity.clone())?;
-                if expected != *attempt
-                    || settlement.amount_out != current_settlement.amount_out
-                    || settlement.service_fee != current_settlement.service_fee
-                {
-                    return Err(CoreError::AttemptPayloadChanged);
-                }
-                if !crate::ledger_fee_reprice_allowed(
-                    settlement.service_fee.get(),
-                    attempt.identity.fee.get(),
-                    true,
-                    false,
-                ) {
-                    return Err(CoreError::LedgerFeeExceedsServiceFee);
-                }
-                self.validate_attempt(&attempt, settlement)?;
-                (
-                    State::ReleasePending {
-                        attempt: *attempt,
-                        settlement,
-                    },
-                    Amount::ZERO,
-                )
-            }
-            (
-                State::ReleasePending {
                     attempt,
                     settlement,
                 },
@@ -331,16 +273,6 @@ impl WithdrawalRecord {
                 },
             ) => current_attempt == attempt.as_ref() && current_settlement == settlement,
             (
-                State::ReleasePending {
-                    attempt: current_attempt,
-                    settlement: current_settlement,
-                },
-                Event::RepriceRelease {
-                    attempt,
-                    settlement,
-                },
-            ) => current_attempt == attempt.as_ref() && current_settlement == settlement,
-            (
                 State::Paid {
                     ledger_block_index: current,
                     ..
@@ -362,7 +294,6 @@ impl WithdrawalEvent {
     const fn phase_code(&self) -> u8 {
         match self {
             Self::StartRelease { .. } => 0,
-            Self::RepriceRelease { .. } => 1,
             Self::ReleaseSucceeded { .. } => 2,
             Self::ReleaseAmbiguous { .. } => 3,
         }
@@ -371,7 +302,6 @@ impl WithdrawalEvent {
     const fn name(&self) -> &'static str {
         match self {
             Self::StartRelease { .. } => "start_release",
-            Self::RepriceRelease { .. } => "reprice_release",
             Self::ReleaseSucceeded { .. } => "release_succeeded",
             Self::ReleaseAmbiguous { .. } => "release_ambiguous",
         }

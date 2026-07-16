@@ -1843,6 +1843,9 @@ impl StableStore {
             if key != record.id.bytes() {
                 return Err(StorageError::DecodeFailed);
             }
+            if matches!(record.state, WithdrawalState::Observed) {
+                return Err(StorageError::DatabaseFailure);
+            }
             if is_pending_withdrawal_ledger(&record) {
                 expected_release.insert(key);
                 pending_ledger_operations = pending_ledger_operations
@@ -2723,44 +2726,6 @@ impl StableStore {
                 updated_at_ns: now_ns,
             }))
         }).map_err(Into::into)
-    }
-
-    pub fn reschedule_fee_blocked_withdrawal(
-        &mut self,
-        withdrawal_id: [u8; 32],
-        now_ns: u64,
-    ) -> Result<bool, StorageError> {
-        self.handle
-            .update(|connection| {
-                let eligible = connection
-                    .query_optional_scalar::<i64>(
-                        "SELECT 1 FROM settlement_jobs
-                         WHERE settlement_kind = ?1 AND settlement_id = ?2 AND status = 2
-                           AND last_error_code = 'LEDGER_FEE_EXCEEDS_SERVICE_FEE'",
-                        params![
-                            SettlementJobKind::Withdrawal.sql(),
-                            withdrawal_id.to_sql_bytes()
-                        ],
-                    )?
-                    .is_some();
-                if !eligible {
-                    return Ok(false);
-                }
-                connection.execute(
-                    "UPDATE settlement_jobs SET status = 0, next_run_at_ns = ?1,
-                     lease_until_ns = NULL, last_error_code = NULL, last_error_detail = NULL,
-                     updated_at_ns = ?1
-                     WHERE settlement_kind = ?2 AND settlement_id = ?3 AND status = 2
-                       AND last_error_code = 'LEDGER_FEE_EXCEEDS_SERVICE_FEE'",
-                    params![
-                        now_ns.to_sql_bytes(),
-                        SettlementJobKind::Withdrawal.sql(),
-                        withdrawal_id.to_sql_bytes()
-                    ],
-                )?;
-                Ok(true)
-            })
-            .map_err(Into::into)
     }
 
     pub fn renew_settlement_lease(
@@ -4906,8 +4871,7 @@ impl StableStore {
         )
     }
 
-    /// Atomically ingests a finalized Base withdrawal. A fee-blocked debt is retained as
-    /// `Observed`; otherwise its Ledger release is made runnable in the same transaction.
+    /// Atomically ingests a finalized Base withdrawal and makes its Ledger release runnable.
     pub fn commit_new_withdrawal_release_bundle(
         &mut self,
         withdrawal: &WithdrawalRecord,
@@ -4943,34 +4907,29 @@ impl StableStore {
             }
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
-        let release = match &withdrawal.state {
+        let (attempt, settlement) = match &withdrawal.state {
             WithdrawalState::ReleasePending {
                 attempt,
                 settlement,
-            } => Some((attempt.clone(), *settlement)),
-            WithdrawalState::Observed if withdrawal.last_settlement_stop_reason.is_some() => None,
+            } => (attempt.clone(), *settlement),
             _ => return Err(StorageError::Core(CoreError::PayloadConflict)),
         };
-        if let Some((attempt, settlement)) = &release {
-            let mut expected = withdrawal.clone();
-            expected.state = WithdrawalState::Observed;
-            expected.apply(WithdrawalEvent::StartRelease {
-                attempt: Box::new(attempt.clone()),
-                settlement: *settlement,
-            })?;
-            if expected != *withdrawal {
-                return Err(StorageError::Core(CoreError::PayloadConflict));
-            }
+        let mut expected = withdrawal.clone();
+        expected.state = WithdrawalState::Observed;
+        expected.apply(WithdrawalEvent::StartRelease {
+            attempt: Box::new(attempt),
+            settlement,
+        })?;
+        if expected != *withdrawal {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
         }
 
         let mut counters = self.counters()?;
         let previous_counters_blob = encode(&counters)?;
-        if release.is_some() {
-            counters.pending_ledger_operations = counters
-                .pending_ledger_operations
-                .checked_add(1)
-                .ok_or(StorageError::CounterOverflow)?;
-        }
+        counters.pending_ledger_operations = counters
+            .pending_ledger_operations
+            .checked_add(1)
+            .ok_or(StorageError::CounterOverflow)?;
         counters.nonterminal_withdrawals = counters
             .nonterminal_withdrawals
             .checked_add(1)
@@ -4998,13 +4957,11 @@ impl StableStore {
                 params![key.clone(), withdrawal_blob.to_sql_bytes()],
             )?;
             increment_table_count(connection, "withdrawals")?;
-            if release.is_some() {
-                connection.execute(
-                    "INSERT INTO release_pending_withdrawal_index(key, value) VALUES (?1, ?2)",
-                    params![key.clone(), 0u8.to_sql_bytes()],
-                )?;
-                increment_table_count(connection, "release_pending_withdrawal_index")?;
-            }
+            connection.execute(
+                "INSERT INTO release_pending_withdrawal_index(key, value) VALUES (?1, ?2)",
+                params![key.clone(), 0u8.to_sql_bytes()],
+            )?;
+            increment_table_count(connection, "release_pending_withdrawal_index")?;
             enqueue_settlement_job(
                 connection,
                 SettlementJobKind::Withdrawal,
@@ -5012,22 +4969,6 @@ impl StableStore {
                 None,
                 progress.last_finalized_observation_ns,
             )?;
-            if release.is_none() {
-                connection.execute(
-                    "UPDATE settlement_jobs SET status = 2, next_run_at_ns = NULL,
-                     last_error_code = ?1, last_error_detail = ?2
-                     WHERE settlement_kind = ?3 AND settlement_id = ?4",
-                    params![
-                        "LEDGER_FEE_EXCEEDS_SERVICE_FEE",
-                        withdrawal
-                            .last_settlement_stop_reason
-                            .as_deref()
-                            .unwrap_or("Ledger fee exceeds service fee"),
-                        SettlementJobKind::Withdrawal.sql(),
-                        withdrawal.id.bytes().to_sql_bytes()
-                    ],
-                )?;
-            }
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
             if let Some(audit) = &prepared_audit {
                 commit_audit_batch(connection, audit)?;
@@ -5823,6 +5764,9 @@ impl StableStore {
     }
 
     pub fn put_withdrawal(&mut self, value: &WithdrawalRecord) -> Result<(), StorageError> {
+        if matches!(value.state, WithdrawalState::Observed) {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
         let previous = self.withdrawal(value.id.bytes())?;
         let fee_delta = match (previous.as_ref().map(|record| &record.state), &value.state) {
             (
@@ -7498,9 +7442,9 @@ mod tests {
 
     #[test]
     #[serial]
-    fn fee_blocked_withdrawal_can_be_rescheduled_for_immediate_execution() {
+    fn observed_withdrawal_cannot_be_persisted_without_a_release_job() {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize store");
-        let mut record = WithdrawalRecord::observed(
+        let record = WithdrawalRecord::observed(
             WithdrawalId::new([92; 32]),
             [1; 20],
             vec![1],
@@ -7512,35 +7456,22 @@ mod tests {
             Amount::new(90),
             100,
         )
-        .expect("fee-blocked withdrawal");
-        record.last_settlement_stop_reason =
-            Some("Ledger fee exceeds the committed service fee; no transfer was sent".into());
-        store
-            .commit_new_withdrawal_release_bundle(&record, &ExternalProgress::default())
-            .expect("commit stopped withdrawal");
+        .expect("observed withdrawal");
+
+        assert_eq!(
+            store.commit_new_withdrawal_release_bundle(&record, &ExternalProgress::default()),
+            Err(StorageError::Core(CoreError::PayloadConflict))
+        );
+        assert_eq!(
+            store.withdrawal(record.id.bytes()).expect("withdrawal"),
+            None
+        );
         assert_eq!(
             store
                 .settlement_job(SettlementJobKind::Withdrawal, record.id.bytes())
-                .expect("stopped job")
-                .expect("job present")
-                .status,
-            SettlementJobStatus::Stopped
+                .expect("settlement job"),
+            None
         );
-
-        assert!(store
-            .reschedule_fee_blocked_withdrawal(record.id.bytes(), 200)
-            .expect("reschedule stopped job"));
-        assert!(matches!(
-            store
-                .claim_specific_due_settlement_job(
-                    SettlementJobKind::Withdrawal,
-                    record.id.bytes(),
-                    200,
-                    300,
-                )
-                .expect("claim rescheduled job"),
-            SettlementJobClaim::Claimed(_)
-        ));
     }
 
     #[test]

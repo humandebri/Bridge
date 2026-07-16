@@ -27,10 +27,10 @@ pub use external::{
 pub use kernel::{
     administrator_authorized, audit_next, can_assign_nonce, checked_counter_transition,
     checked_requirement, committed_quote_matches, counter_delta, deposit_phase_allows,
-    deposit_phase_step, evidence_matches, fee_delta_once, ledger_fee_reprice_allowed,
-    mint_admission_total, monotone, next_attempt, nonce_next, nonce_too_low_is_submitted,
-    payout_allowed, payout_debit, release_transfer_matches, replay_matches, resources_sufficient,
-    scan_complete, withdrawal_phase_allows, withdrawal_phase_step,
+    deposit_phase_step, evidence_matches, fee_delta_once, mint_admission_total, monotone,
+    next_attempt, nonce_next, nonce_too_low_is_submitted, payout_allowed, payout_debit,
+    release_transfer_matches, replay_matches, resources_sufficient, scan_complete,
+    withdrawal_phase_allows, withdrawal_phase_step,
 };
 pub use reconciliation::{
     resolve_deposit_hold, resolve_withdrawal_hold, DepositHoldResolution, ReconciliationHoldRecord,

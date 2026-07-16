@@ -287,6 +287,8 @@ struct SignerSnapshot {
     ic_controller: String,
     expected_ic_controller: String,
     settlement_reserve_sufficient: bool,
+    ledger_fee: u128,
+    base_service_fee: u128,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1516,6 +1518,9 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
         || snapshot.ic_controller != bundle.profile.root_canister_id
         || !principal(&snapshot.ic_controller)
         || !snapshot.settlement_reserve_sufficient
+        || snapshot.ledger_fee != bundle.profile.parameters.ledger_fee
+        || snapshot.base_service_fee != bundle.profile.parameters.service_fee
+        || snapshot.ledger_fee > snapshot.base_service_fee
     {
         return Err(
             "live snapshot does not match the approved profile or safety requirements".into(),
@@ -1961,6 +1966,8 @@ mod tests {
             ic_controller: controller.clone(),
             expected_ic_controller: controller,
             settlement_reserve_sufficient: true,
+            ledger_fee: profile.parameters.ledger_fee,
+            base_service_fee: profile.parameters.service_fee,
         };
         let mut ceremony = Ceremony {
             release_approver: signer.clone(),

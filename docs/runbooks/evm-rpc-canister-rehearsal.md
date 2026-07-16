@@ -136,7 +136,7 @@ asset flowとして次の4件を実行し、各transactionをFinalized headま�
 
 1. `deposit_mint`: Deposit ID、Ledger block、mint transaction、Safe block/hash
 2. `withdrawal_release`: user `approve`、user `createWithdrawal`のFinalized block/hash、固定quote、ICRC transfer block、追加Base transactionがないこと
-3. `bad_fee_hold`: Ledger FeeがService Feeを超えた場合の送金前停止と、同じIC Accountの維持
+3. `bad_fee_hold`: 想定外のLedger `BadFee`を汎用拒否として停止し、同じtransfer identityを維持
 4. `canonical_receipt`: receipt block number/hash、同heightのcanonical hash、Finalized head
 
 failure scenarioとして次の4件をtest-only設定で実行する。

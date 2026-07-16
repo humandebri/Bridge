@@ -6,7 +6,6 @@ shared	replay_matches	conflicting_payload_is_rejected	replay_matches.rs	canister
 shared	monotone	evm_rank_never_decreases	monotone.rs	canister/bridge-core/src/evm.rs
 shared	checked_requirement	reserve_overflow_is_rejected	checked_requirement.rs	canister/bridge-core/src/reserve.rs
 shared	resources_sufficient	reserve_exact_boundary_and_independent_resources	resources_sufficient.rs	canister/bridge-core/src/reserve.rs
-shared	ledger_fee_reprice_allowed	definitive_bad_fee_reprices_only_within_service_fee	ledger_fee_reprice_allowed.rs	canister/bridge-core/src/withdrawal.rs
 shared	fee_delta_once	fee_is_counted_exactly_on_first_transfer	fee_delta_once.rs	canister/bridge-core/src/deposit.rs
 shared	release_transfer_matches	release_transfer_requires_exact_amount_and_fee	release_transfer_matches.rs	canister/bridge-core/src/withdrawal.rs
 shared	committed_quote_matches	committed_quote_fixes_amount_out	committed_quote_matches.rs	canister/bridge-core/src/types.rs

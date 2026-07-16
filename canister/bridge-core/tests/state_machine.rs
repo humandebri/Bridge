@@ -325,70 +325,6 @@ fn withdrawal_payment_is_terminal_and_fee_reserve_is_net_of_ledger_fee() {
 }
 
 #[test]
-fn release_and_bad_fee_repricing_are_fail_closed() {
-    let mut withdrawal = observed_withdrawal();
-    withdrawal
-        .apply(WithdrawalEvent::StartRelease {
-            attempt: Box::new(attempt(transfer(
-                LedgerOperation::ReleaseWithdrawal,
-                90,
-                5,
-                70,
-            ))),
-            settlement: settlement(),
-        })
-        .expect("prepare release");
-    assert!(matches!(
-        withdrawal.state,
-        WithdrawalState::ReleasePending { .. }
-    ));
-
-    let mut repriced_identity = transfer(LedgerOperation::ReleaseWithdrawal, 90, 5, 70);
-    repriced_identity.created_at_time_ns = 71;
-    repriced_identity.memo = [71; 32];
-    repriced_identity.amount = Amount::new(90);
-    repriced_identity.fee = Amount::new(6);
-    let repriced = TransferAttempt {
-        attempt_no: 1,
-        identity: repriced_identity.clone(),
-    };
-    withdrawal
-        .apply(WithdrawalEvent::RepriceRelease {
-            attempt: Box::new(repriced.clone()),
-            settlement: Settlement {
-                amount_out: Amount::new(90),
-                service_fee: Amount::new(10),
-                ledger_fee: Amount::new(6),
-            },
-        })
-        .expect("definitive BadFee can be repriced");
-    assert!(matches!(
-        withdrawal.state,
-        WithdrawalState::ReleasePending { ref attempt, .. } if attempt == &repriced
-    ));
-    assert!(matches!(
-        withdrawal.apply(WithdrawalEvent::RepriceRelease {
-            attempt: Box::new(TransferAttempt {
-                attempt_no: 2,
-                identity: {
-                    repriced_identity.created_at_time_ns = 72;
-                    repriced_identity.memo = [72; 32];
-                    repriced_identity.amount = Amount::new(90);
-                    repriced_identity.fee = Amount::new(11);
-                    repriced_identity
-                },
-            }),
-            settlement: Settlement {
-                amount_out: Amount::new(90),
-                service_fee: Amount::new(10),
-                ledger_fee: Amount::new(11),
-            },
-        }),
-        Err(CoreError::LedgerFeeExceedsServiceFee)
-    ));
-}
-
-#[test]
 fn withdrawal_release_rejects_a_ledger_fee_not_bound_to_settlement() {
     let mut withdrawal = observed_withdrawal();
     let mismatched = WithdrawalEvent::StartRelease {
@@ -821,7 +757,7 @@ fn principals_and_settlement_inputs_are_rejected_at_boundaries() {
             ledger_fee: Amount::new(11),
         }
         .validate_committed(Amount::new(100), Amount::new(10)),
-        Err(CoreError::LedgerFeeExceedsServiceFee)
+        Err(CoreError::SettlementMismatch)
     );
 }
 
@@ -971,9 +907,6 @@ fn withdrawal_state_event_transition_matrix_covers_all_current_events() {
             settlement: release_settlement,
         },
     ];
-    let mut repriced_transfer = release_transfer.clone();
-    repriced_transfer.created_at_time_ns += 1;
-    repriced_transfer.memo = [61; 32];
     let events = [
         WithdrawalEvent::StartRelease {
             attempt: Box::new(attempt(release_transfer)),
@@ -985,38 +918,27 @@ fn withdrawal_state_event_transition_matrix_covers_all_current_events() {
         WithdrawalEvent::ReleaseAmbiguous {
             hold_id: HoldId::new(3),
         },
-        WithdrawalEvent::RepriceRelease {
-            attempt: Box::new(TransferAttempt {
-                attempt_no: 1,
-                identity: repriced_transfer,
-            }),
-            settlement: release_settlement,
-        },
     ];
     let expected = [
         [
             ExpectedTransition::Applied,
             ExpectedTransition::Rejected,
             ExpectedTransition::Rejected,
-            ExpectedTransition::Rejected,
         ],
         [
             ExpectedTransition::Idempotent,
             ExpectedTransition::Applied,
             ExpectedTransition::Applied,
-            ExpectedTransition::Applied,
         ],
         [
             ExpectedTransition::Idempotent,
             ExpectedTransition::Idempotent,
             ExpectedTransition::Rejected,
-            ExpectedTransition::Rejected,
         ],
         [
             ExpectedTransition::Idempotent,
             ExpectedTransition::Rejected,
             ExpectedTransition::Idempotent,
-            ExpectedTransition::Rejected,
         ],
     ];
 

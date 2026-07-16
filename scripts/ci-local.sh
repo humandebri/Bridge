@@ -51,6 +51,7 @@ run_versions() {
   verify_no_obsolete_withdrawal_terms \
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
+  python3 "$ROOT/scripts/test_live_fee_guard.py"
   "$ROOT/scripts/test_ci_guards.sh"
   "$ROOT/scripts/test_production_release.sh"
   "$ROOT/scripts/test_production_drivers.sh"

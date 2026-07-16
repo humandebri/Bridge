@@ -104,22 +104,6 @@ describe("confirmWhenFinalized", () => {
     expect(readPendingConfirmations()[0]?.blocked).toBe(true)
   })
 
-  it("blocks a ledger fee excess without retrying it as a duplicate", async () => {
-    finalizedReceipt()
-    const wallet = adapter()
-    const notifyWithdrawal = vi.fn().mockRejectedValue(new NotifyWithdrawalCallError(
-      "LedgerFeeExceedsServiceFee",
-      "The IC ledger fee exceeds the committed service fee.",
-    ))
-    wallet.notifyWithdrawal = notifyWithdrawal
-    savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
-    const entry = readPendingConfirmations()[0]!
-
-    expect(await confirmWhenFinalized(entry, wallet)).toEqual({ status: "blocked" })
-    expect(readPendingConfirmations()[0]?.blocked).toBe(true)
-    expect(notifyWithdrawal).toHaveBeenCalledTimes(1)
-  })
-
   it.each(["RpcUnavailable", "TransactionNotConfirmed", "Busy"] as const)("retries transient withdrawal error %s", async (code) => {
     finalizedReceipt()
     const wallet = adapter()

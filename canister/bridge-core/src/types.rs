@@ -212,7 +212,7 @@ impl Settlement {
             return Err(CoreError::ServiceFeeAboveMaximum);
         }
         if self.ledger_fee > self.service_fee {
-            return Err(CoreError::LedgerFeeExceedsServiceFee);
+            return Err(CoreError::SettlementMismatch);
         }
         if !crate::committed_quote_matches(
             amount.get(),
@@ -260,7 +260,6 @@ pub enum CoreError {
     ArithmeticOverflow,
     ArithmeticUnderflow,
     ServiceFeeAboveMaximum,
-    LedgerFeeExceedsServiceFee,
     ServiceFeeAboveUserMaximum,
     PerDepositLimitExceeded,
     MintWindowLimitExceeded,

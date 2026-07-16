@@ -361,6 +361,7 @@ describe("Phase 3 PocketIC saga", () => {
     const accepted: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 10n, max_service_fee: 10n });
     expect(accepted).toHaveProperty("Ok");
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
   });
 
   it("refreshes at most one stale Mint snapshot per request and fails closed", async () => {
@@ -453,6 +454,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(Array.from(ingested.Ok.Ingested.withdrawal_id)).toEqual(Array.from(id));
     expect(phaseName((await (bridge.actor as any).get_withdrawal(id))[0].state)).toBe("Paid");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
+    await (ledger.actor as any).set_ledger_fee_available(false);
     await (evm.actor as any).set_observed_transaction(new Uint8Array(32).fill(9), new Uint8Array(20).fill(1), new Uint8Array(20).fill(0x22), 99n);
     await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
     const duplicate: any = await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) });
@@ -461,6 +463,7 @@ describe("Phase 3 PocketIC saga", () => {
     const withdrawal: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(withdrawal[0].state)).toBe("Paid");
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
     const broadcasts = await (evm.actor as any).broadcast_transactions();
     expect(broadcasts).toHaveLength(0);
   });
@@ -643,29 +646,6 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).get_withdrawal(id)).toEqual([]);
   });
 
-  it("stores the unpaid debt and stops before Ledger transfer when the Ledger fee exceeds the committed service fee", async () => {
-    const { ledger, evm, bridge, runtimePrincipal } = await setup();
-    const id = new Uint8Array(32).fill(0x8f);
-    await (ledger.actor as any).set_ledger_fee(11n);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
-    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.LedgerFeeExceedsServiceFee");
-    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
-    const stopped: any = await (bridge.actor as any).get_withdrawal(id);
-    expect(phaseName(stopped[0].state)).toBe("Observed");
-    expect(stopped[0].last_settlement_stop_reason).toEqual(["Ledger fee exceeds the committed service fee; no transfer was sent"]);
-    const status: any = await (bridge.actor as any).get_bridge_status();
-    expect(status.unpaid_withdrawal_count).toBe(1n);
-    expect(status.unpaid_withdrawal_amount_out).toBe(90n);
-
-    await (ledger.actor as any).set_ledger_fee(9n);
-    const resumed: any = await (bridge.actor as any).notify_withdrawal({
-      transaction_hash: new Uint8Array(32).fill(9),
-    });
-    expect(phaseName((await (bridge.actor as any).get_withdrawal(id))[0].state)).toBe("Paid");
-    expect(resumed).toHaveProperty("Ok.Duplicate.settlement.0.Complete");
-    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
-  });
-
   it("continues an ambiguous Withdrawal release from reconciled Hold to Paid", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     await (ledger.actor as any).set_ledger_mode({ Trap: null });
@@ -681,28 +661,27 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
   });
 
-  it.each([
-    { label: "increased", initialFee: 1n, nextFee: 2n },
-    { label: "decreased", initialFee: 3n, nextFee: 2n },
-  ])("reprices a definitely unsent Withdrawal after a $label BadFee", async ({ initialFee, nextFee }) => {
+  it("stops an unexpected BadFee without changing the Withdrawal transfer identity", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
-    const id = new Uint8Array(32).fill(Number(0xb0n + initialFee));
-    await (ledger.actor as any).set_ledger_fee(initialFee);
-    await (ledger.actor as any).set_bad_fee_expected_fee([nextFee]);
+    const id = new Uint8Array(32).fill(0xb1);
+    await (ledger.actor as any).set_ledger_fee(1n);
     await (ledger.actor as any).set_ledger_mode({ BadFee: null });
     await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
     await notifyFixtureWithdrawal(bridge);
 
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
-    const repriced: any = await (bridge.actor as any).get_withdrawal(id);
-    expect(phaseName(repriced[0].state)).toBe("ReleasePending");
-    expect(repriced[0].amount_out).toBe(90n);
-    expect(repriced[0].last_settlement_stop_reason).toEqual(["Ledger fee changed; settlement identity was updated without sending"]);
+    const stopped: any = await (bridge.actor as any).get_withdrawal(id);
+    expect(phaseName(stopped[0].state)).toBe("ReleasePending");
+    expect(stopped[0].ledger_fee).toBe(1n);
+    expect(stopped[0].last_settlement_stop_reason[0]).toContain("BadFee");
 
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
     expect(await (bridge.actor as any).continue_withdrawal(id)).toHaveProperty("Ok.Complete");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(2n);
-    expect(phaseName((await (bridge.actor as any).get_withdrawal(id))[0].state)).toBe("Paid");
+    const paid: any = await (bridge.actor as any).get_withdrawal(id);
+    expect(phaseName(paid[0].state)).toBe("Paid");
+    expect(paid[0].ledger_fee).toBe(1n);
+    expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
   });
 
 

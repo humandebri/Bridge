@@ -299,11 +299,11 @@ async fn notify_withdrawal(
     };
     let mut receipt = api::notify_withdrawal(caller, args).await?;
     let id = match &receipt {
-        api::NotifyWithdrawalReceipt::Ingested { withdrawal_id, .. }
-        | api::NotifyWithdrawalReceipt::Duplicate { withdrawal_id, .. } => withdrawal_id
+        api::NotifyWithdrawalReceipt::Ingested { withdrawal_id, .. } => withdrawal_id
             .as_slice()
             .try_into()
             .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?,
+        api::NotifyWithdrawalReceipt::Duplicate { .. } => return Ok(receipt),
     };
     drop(notification_guard);
     if let Some(settlement) =
@@ -312,10 +312,8 @@ async fn notify_withdrawal(
         match &mut receipt {
             api::NotifyWithdrawalReceipt::Ingested {
                 settlement: slot, ..
-            }
-            | api::NotifyWithdrawalReceipt::Duplicate {
-                settlement: slot, ..
             } => *slot = Some(settlement),
+            api::NotifyWithdrawalReceipt::Duplicate { .. } => unreachable!(),
         }
     }
     scheduler::arm();

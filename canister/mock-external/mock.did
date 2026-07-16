@@ -496,7 +496,6 @@ service : (InitArgs) -> {
   probe_chain_key : (text) -> (Result_9);
   receipt_call_count : () -> (nat64) query;
   set_archive_prefix_length : (nat64) -> ();
-  set_bad_fee_expected_fee : (opt nat) -> ();
   set_block_mode : (BlockMode) -> ();
   set_bridge_runtime_code : (blob) -> ();
   set_bridge_signer : (blob) -> (Result_10);

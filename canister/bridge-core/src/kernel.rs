@@ -62,12 +62,6 @@ macro_rules! resources_sufficient_body {
     };
 }
 
-macro_rules! ledger_fee_reprice_allowed_body {
-    ($service_fee:expr, $ledger_fee:expr, $definitive:expr, $uncertain:expr) => {
-        $definitive && !$uncertain && $ledger_fee <= $service_fee
-    };
-}
-
 macro_rules! fee_delta_once_body {
     ($was_transferred:expr, $is_transferred:expr, $fee:expr, $zero:expr) => {
         if !$was_transferred && $is_transferred {
@@ -239,20 +233,6 @@ pub const fn resources_sufficient(
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub const fn ledger_fee_reprice_allowed(
-    service_fee: u128,
-    ledger_fee: u128,
-    definitive_bad_fee: bool,
-    uncertain_outcome_seen: bool,
-) -> bool {
-    ledger_fee_reprice_allowed_body!(
-        service_fee,
-        ledger_fee,
-        definitive_bad_fee,
-        uncertain_outcome_seen
-    )
-}
-
 #[cfg(not(verus_keep_ghost))]
 pub const fn fee_delta_once(was_transferred: bool, is_transferred: bool, fee: u128) -> u128 {
     fee_delta_once_body!(was_transferred, is_transferred, fee, 0u128)
@@ -415,20 +395,6 @@ verus! {
 
     pub open spec fn resources_sufficient_spec(eth: int, required_eth: int, cycles: int, required_cycles: int) -> bool {
         resources_sufficient_body!(eth, required_eth, cycles, required_cycles)
-    }
-
-    pub open spec fn ledger_fee_reprice_allowed_spec(
-        service_fee: int,
-        ledger_fee: int,
-        definitive_bad_fee: bool,
-        uncertain_outcome_seen: bool,
-    ) -> bool {
-        ledger_fee_reprice_allowed_body!(
-            service_fee,
-            ledger_fee,
-            definitive_bad_fee,
-            uncertain_outcome_seen
-        )
     }
 
     pub open spec fn fee_delta_once_spec(was_transferred: bool, is_transferred: bool, fee: int) -> int {

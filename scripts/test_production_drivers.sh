@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/bridge-driver-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/bundle" "$T/source/contracts" "$T/source/scripts" "$T/source/src"
-cp "$ROOT/scripts/production-deploy-driver.sh" "$ROOT/scripts/production-activate-driver.sh" "$ROOT/scripts/production-live-preflight.sh" "$ROOT/scripts/production-validation.sh" "$T/source/scripts/"
+cp "$ROOT/scripts/production-deploy-driver.sh" "$ROOT/scripts/production-activate-driver.sh" "$ROOT/scripts/production-live-preflight.sh" "$ROOT/scripts/production-validation.sh" "$ROOT/scripts/live_fee_guard.py" "$T/source/scripts/"
 chmod +x "$T/source/scripts/production-deploy-driver.sh" "$T/source/scripts/production-activate-driver.sh" "$T/source/scripts/production-live-preflight.sh"
 printf '/target\n' >"$T/source/.gitignore"
 cat >"$T/source/Cargo.toml" <<'TOML'
@@ -77,6 +77,7 @@ case "$1 $2" in
     elif [[ "$*" == *'bsns()(address)'* ]]; then echo '"0x0x7777777777777777777777777777777777777777"';
     elif [[ "$*" == *depositMintsPaused* ]]; then if [[ "${CONFIRM_FAIL:-}" == true && -e "$DEPOSIT_PAUSED_MARKER" ]]; then v=false; elif [[ -e "$DEPOSIT_PAUSED_MARKER" ]]; then v=true; elif [[ -e "$EXECUTED_MARKER" || "${BASE_PAUSED:-true}" != true ]]; then v=false; else v=true; fi; echo "\"0x$v\"";
     elif [[ "$*" == *withdrawalsPaused* ]]; then if [[ "${CONFIRM_FAIL:-}" == true && -e "$WITHDRAWAL_PAUSED_MARKER" ]]; then v=false; elif [[ -e "$WITHDRAWAL_PAUSED_MARKER" ]]; then v=true; elif [[ -e "$EXECUTED_MARKER" || "${BASE_PAUSED:-true}" != true ]]; then v=false; else v=true; fi; echo "\"0x$v\"";
+    elif [[ "$*" == *serviceFee* ]]; then echo '"0x1000000"';
     elif [[ "$*" == *getMinDelay* ]]; then echo '"0x259200"';
     elif [[ "$*" == *hasRole* ]]; then if [[ "${ROLE_DRIFT:-}" == true && "$*" != *"0x$(printf '00%.0s' {1..32})"* && "$*" != *' 0x0000000000000000000000000000000000000000'* ]]; then v=false; elif [[ "$*" == *"0x$(printf '00%.0s' {1..32}) 0x2222222222222222222222222222222222222222"* ]]; then v=true; elif [[ "$*" == *"0x$(printf '00%.0s' {1..32})"* || "$*" == *' 0x0000000000000000000000000000000000000000'* ]]; then v=false; else v=true; fi; echo "\"0x$v\"";
     elif [[ "$*" == *isOperationDone* ]]; then [[ -e "$EXECUTED_MARKER" ]] && v=true || v=false; echo "\"0x$v\"";
@@ -96,8 +97,9 @@ SH
 cat >"$T/bin/dfx" <<'SH'
 #!/usr/bin/env bash
 echo "dfx $*" >>"$TRACE"
-if [[ "$*" == *get_public_config* ]]; then printf '{"expected_bridge_signer":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s"}\n' "$RPC_DIGEST";
+if [[ "$*" == *get_public_config* ]]; then printf '{"expected_bridge_signer":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"evm_rpc_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s"}\n' "$RPC_DIGEST";
 elif [[ "$*" == *get_bridge_status* ]]; then if [[ -e "$IC_RESUMED_MARKER" ]]; then paused=false; else paused="${CANISTER_PAUSED:-true}"; fi; printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "$paused";
+elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
 elif [[ "$*" == *sign_chain_key_challenge* ]]; then printf '{"Ok":"0x'; printf '11%.0s' {1..65}; echo '"}';
 elif [[ "$*" == *resume_new_deposits* ]]; then if [[ "${RESUME_FAIL:-}" == true ]]; then echo '{"Err":"StorageFailure"}'; exit 1; fi; touch "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
 elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; rm -f "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
@@ -112,7 +114,7 @@ export BRIDGE_CANONICAL_CONFIRM_TIMEOUT_SECONDS=1 BRIDGE_CANONICAL_CONFIRM_POLL_
 export BRIDGE_DEPLOYMENT_BINDING_FILE="$T/deployment-binding.json"
 export RPC_DIGEST="$(python3 -c 'import hashlib,json;print(hashlib.sha256(json.dumps(["https://one.example","https://two.example","https://three.example"],separators=(",",":"),ensure_ascii=False).encode()).hexdigest())')"
 cat >"$T/bundle/profile.json" <<'JSON'
-{"chain_id":8453,"evm_rpc_canister_id":"aaaaa-aa","bridge_canister_id":"aaaaa-aa","bridge_contract":"0x3333333333333333333333333333333333333333","bsns_contract":"0x7777777777777777777777777777777777777777","decimals":8,"expected_bridge_signer":"0x1111111111111111111111111111111111111111","runtime_administrator":"0x6666666666666666666666666666666666666666","base_admin_wallet":"0x4444444444444444444444444444444444444444","release_approver":"0x8888888888888888888888888888888888888888","timelock":{"address":"0x2222222222222222222222222222222222222222","runtime_code_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","minimum_delay_seconds":259200,"proposer":"0x4444444444444444444444444444444444444444","executor":"0x4444444444444444444444444444444444444444","canceller":"0x5555555555555555555555555555555555555555"},"root_canister_id":"aaaaa-aa","bridge_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bridge_canister_wasm_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","ic_host":"https://icp-api.io","base_rpc_url":"https://rpc.example","deployment_block":0,"rpc_providers":[{"url":"https://one.example"},{"url":"https://two.example"},{"url":"https://three.example"}]}
+{"chain_id":8453,"evm_rpc_canister_id":"aaaaa-aa","bridge_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","bridge_contract":"0x3333333333333333333333333333333333333333","bsns_contract":"0x7777777777777777777777777777777777777777","decimals":8,"expected_bridge_signer":"0x1111111111111111111111111111111111111111","runtime_administrator":"0x6666666666666666666666666666666666666666","base_admin_wallet":"0x4444444444444444444444444444444444444444","release_approver":"0x8888888888888888888888888888888888888888","timelock":{"address":"0x2222222222222222222222222222222222222222","runtime_code_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","minimum_delay_seconds":259200,"proposer":"0x4444444444444444444444444444444444444444","executor":"0x4444444444444444444444444444444444444444","canceller":"0x5555555555555555555555555555555555555555"},"root_canister_id":"aaaaa-aa","bridge_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bridge_canister_wasm_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","ic_host":"https://icp-api.io","base_rpc_url":"https://rpc.example","deployment_block":0,"parameters":{"ledger_fee":100000,"service_fee":1000000},"rpc_providers":[{"url":"https://one.example"},{"url":"https://two.example"},{"url":"https://three.example"}]}
 JSON
 cat >"$T/constructors.json" <<'JSON'
 {"timelock":["259200","[0x4444444444444444444444444444444444444444]","[0x5555555555555555555555555555555555555555]","[0x4444444444444444444444444444444444444444]"],"bridge":["KINIC","KINIC","8","0x1111111111111111111111111111111111111111","0x6666666666666666666666666666666666666666","0x2222222222222222222222222222222222222222","0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","1","2","3600","2","1"]}

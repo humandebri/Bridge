@@ -26,13 +26,14 @@ PROFILE_VALUES=()
 while IFS= read -r line; do PROFILE_VALUES[${#PROFILE_VALUES[@]}]="$line"; done < <(python3 - "$PROFILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
-for v in [p['chain_id'],p['evm_rpc_canister_id'],p['bridge_canister_id'],p['bridge_contract'],p['timelock']['address'],p['root_canister_id'],p['bridge_runtime_bytecode_sha256'],p['bridge_canister_wasm_sha256'],p['ic_host'],*map(lambda x:x['url'],p['rpc_providers'])]: print(v)
+for v in [p['chain_id'],p['evm_rpc_canister_id'],p['bridge_canister_id'],p['bridge_contract'],p['timelock']['address'],p['root_canister_id'],p['bridge_runtime_bytecode_sha256'],p['bridge_canister_wasm_sha256'],p['ic_host'],p['ledger_canister_id'],*map(lambda x:x['url'],p['rpc_providers'])]: print(v)
 PY
 )
-[[ ${#PROFILE_VALUES[@]} -eq 12 ]] || { echo "profile must contain exactly three RPC providers" >&2; exit 1; }
+[[ ${#PROFILE_VALUES[@]} -eq 13 ]] || { echo "profile must contain exactly three RPC providers" >&2; exit 1; }
 CHAIN_ID=${PROFILE_VALUES[0]}; EVM_RPC_CANISTER=${PROFILE_VALUES[1]}; CANISTER=${PROFILE_VALUES[2]}
 BRIDGE=${PROFILE_VALUES[3]}; TIMELOCK=${PROFILE_VALUES[4]}; EXPECTED_CONTROLLER=${PROFILE_VALUES[5]}
 EXPECTED_RUNTIME=${PROFILE_VALUES[6]}; EXPECTED_WASM=${PROFILE_VALUES[7]}; IC_HOST=${PROFILE_VALUES[8]}
+LEDGER=${PROFILE_VALUES[9]}
 RELEASE_ID="$(python3 - "$MANIFEST" <<'PY'
 import json,re,sys
 value=json.load(open(sys.argv[1]))['release_id']
@@ -134,6 +135,7 @@ for provider_index,rpc_entry in enumerate(p['rpc_providers']):
   'bridge_approved_timelock_runtime_code_hash':call(rpc,bridge,'approvedTimelockRuntimeCodeHash()(bytes32)').lower(),
   'base_deposit_mints_paused':call(rpc,bridge,'depositMintsPaused()(bool)').lower()=='true',
   'base_withdrawals_paused':call(rpc,bridge,'withdrawalsPaused()(bool)').lower()=='true',
+  'base_service_fee':int(call(rpc,bridge,'serviceFee()(uint256)').split()[0],0),
   'bridge_runtime_bytecode_sha256':sha_code(code(rpc,bridge)),
   'timelock_runtime_code_hash':run(['cast','keccak',code(rpc,timelock)]).lower(),
   'timelock_minimum_delay_seconds':int(call(rpc,timelock,'getMinDelay()(uint256)').split()[0],0),
@@ -166,6 +168,8 @@ PY
 dfx canister call "$CANISTER" get_public_config '()' --network "$IC_HOST" --output json >"$TMP/public-config.json"
 dfx canister call "$CANISTER" get_bridge_status '()' --network "$IC_HOST" --output json >"$TMP/status.json"
 dfx canister status "$CANISTER" --network "$IC_HOST" --output json >"$TMP/canister-status.json"
+dfx canister call "$LEDGER" icrc1_fee '()' --network "$IC_HOST" --output json >"$TMP/ledger-fee.json"
+python3 "$(dirname "$0")/live_fee_guard.py" "$PROFILE" "$TMP/base-state.json" "$TMP/ledger-fee.json" >"$TMP/live-fees.json"
 if [[ "$MODE" == capture ]]; then
   dfx canister call "$CANISTER" sign_chain_key_challenge "(\"$RELEASE_ID\")" \
     --network "$IC_HOST" --identity "$BRIDGE_DFX_IDENTITY" --output json >"$TMP/chain-key-challenge.json"
@@ -192,6 +196,7 @@ base_result=json.load(open(root/'base-state.json')); state=base_result['state'];
 height=state['height']; bhash=state['hash']; base=state['base_bridge_signer']; runtime_hash=state['bridge_runtime_bytecode_sha256']
 delay=state['timelock_minimum_delay_seconds']; self_admin=state['timelock_self_admin']
 public=json.load(open(root/'public-config.json')); status=json.load(open(root/'status.json')); cstatus=json.load(open(root/'canister-status.json'))
+live_fees=json.load(open(root/'live-fees.json'))
 signers=scalars(public,'expected_bridge_signer')
 if not signers: raise SystemExit('Canister public signer missing')
 s=signers[0]
@@ -207,8 +212,9 @@ module_hash=str(module[0]).lower().removeprefix('0x') if module else ''
 sufficient=scalars(status,'sufficient'); sufficient=bool(sufficient[0]) if sufficient else False
 paused=scalars(status,'deposits_paused')
 if paused != [True]: raise SystemExit('Canister deposits are not paused')
-rpc_ids=scalars(public,'evm_rpc_canister_id'); rpc_digests=scalars(public,'rpc_provider_urls_sha256')
+rpc_ids=scalars(public,'evm_rpc_canister_id'); ledger_ids=scalars(public,'ledger_canister_id'); rpc_digests=scalars(public,'rpc_provider_urls_sha256')
 if len(rpc_ids)!=1 or str(rpc_ids[0])!=p['evm_rpc_canister_id']: raise SystemExit('Canister EVM RPC ID drift')
+if len(ledger_ids)!=1 or str(ledger_ids[0])!=p['ledger_canister_id']: raise SystemExit('Canister Ledger ID drift')
 expected_rpc_digest=hashlib.sha256(json.dumps([x['url'].strip() for x in p['rpc_providers']],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 if len(rpc_digests)!=1: raise SystemExit('Canister RPC URL digest missing')
 d=rpc_digests[0]; actual_rpc_digest=bytes(d).hex() if isinstance(d,list) else str(d).lower().removeprefix('0x')
@@ -242,6 +248,7 @@ out={
  'bridge_approved_timelock_runtime_code_hash':state['bridge_approved_timelock_runtime_code_hash'],
  'timelock_minimum_delay_seconds':delay,'timelock_self_admin':self_admin,'ic_controller':controller,
  'expected_ic_controller':p['root_canister_id'],'settlement_reserve_sufficient':sufficient,
+ 'ledger_fee':live_fees['ledger_fee'],'base_service_fee':live_fees['base_service_fee'],
  'base_deposit_mints_paused':state['base_deposit_mints_paused'],'base_withdrawals_paused':state['base_withdrawals_paused'],
  'canister_deposits_paused':True,'base_runtime_administrator':state['base_runtime_administrator'],
  'timelock_proposer':p['timelock']['proposer'],'timelock_executor':p['timelock']['executor'],'timelock_canceller':p['timelock']['canceller'],

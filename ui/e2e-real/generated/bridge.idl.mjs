@@ -59,7 +59,6 @@ export const idlFactory = ({ IDL }) => {
   const SettlementStopReason = IDL.Variant({
     'LedgerRejected' : IDL.Text,
     'RpcUnavailable' : IDL.Null,
-    'LedgerFeeChanged' : IDL.Null,
     'TransactionNotConfirmed' : IDL.Null,
     'RpcInconsistent' : IDL.Null,
     'LedgerAmbiguous' : IDL.Null,
@@ -404,7 +403,6 @@ export const idlFactory = ({ IDL }) => {
     }),
   });
   const NotifyWithdrawalError = IDL.Variant({
-    'LedgerFeeExceedsServiceFee' : IDL.Null,
     'Busy' : IDL.Null,
     'RpcUnavailable' : IDL.Null,
     'TransactionNotConfirmed' : IDL.Null,

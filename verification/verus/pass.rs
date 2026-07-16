@@ -97,21 +97,6 @@ proof fn candidate_reservation_increases_both_requirements(
     vstd::arithmetic::mul::lemma_mul_inequality(current, current + 1, unit);
 }
 
-proof fn definitive_bad_fee_reprices_only_within_service_fee(
-    service_fee: int, ledger_fee: int,
-)
-    requires 0 <= ledger_fee <= service_fee
-    ensures kernel::ledger_fee_reprice_allowed_spec(service_fee, ledger_fee, true, false)
-{}
-
-proof fn uncertain_or_non_bad_fee_outcome_cannot_reprice(
-    service_fee: int, ledger_fee: int,
-)
-    ensures
-        !kernel::ledger_fee_reprice_allowed_spec(service_fee, ledger_fee, false, false),
-        !kernel::ledger_fee_reprice_allowed_spec(service_fee, ledger_fee, true, true)
-{}
-
 proof fn fee_is_counted_exactly_on_first_transfer(fee: int)
     requires 0 <= fee
     ensures
