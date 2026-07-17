@@ -27,7 +27,7 @@ SCENARIOS = (
     "preflight",
     "deposit_mint",
     "withdrawal_release",
-    "bad_fee_refund",
+    "ledger_fee_guard",
     "canonical_receipt",
     "single_provider_failure",
     "quorum_loss",
@@ -39,7 +39,7 @@ REQUIRED_ARTIFACTS = {
     "preflight": {"bridge", "base", "audit", "module"},
     "deposit_mint": {"bridge", "base", "ledger", "audit"},
     "withdrawal_release": {"bridge", "base", "ledger", "audit"},
-    "bad_fee_refund": {"bridge", "base", "ledger", "audit"},
+    "ledger_fee_guard": {"bridge", "base", "ledger", "audit"},
     "canonical_receipt": {"bridge", "base", "audit"},
     "single_provider_failure": {"bridge", "audit", "fault"},
     "quorum_loss": {"bridge", "audit", "fault"},
@@ -50,8 +50,8 @@ REQUIRED_ARTIFACTS = {
 CROSS_ARTIFACT_BINDINGS = {
     "preflight": {"observed_bridge_contract": {"bridge", "base"}, "observed_chain_id": {"bridge", "base"}, "base_bridge_signer": {"base"}, "canister_chain_key_signer": {"bridge"}, "bridge_canister_module_sha256": {"module"}},
     "deposit_mint": {"deposit_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "mint_transaction_hash": {"bridge", "base"}, "safe_block_hash": {"bridge", "base"}},
-    "withdrawal_release": {"withdrawal_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "request_transaction_hash": {"bridge", "base"}, "acknowledge_transaction_hash": {"bridge", "base"}, "request_safe_block_hash": {"bridge", "base"}, "acknowledgement_safe_block_hash": {"bridge", "base"}},
-    "bad_fee_refund": {"withdrawal_id": {"bridge", "base", "audit"}, "new_ledger_fee": {"bridge", "ledger"}, "cancel_release_transaction_hash": {"bridge", "base"}, "refund_transaction_hash": {"bridge", "base"}, "safe_block_hash": {"bridge", "base"}},
+    "withdrawal_release": {"withdrawal_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "request_transaction_hash": {"bridge", "base"}, "finalized_block_hash": {"bridge", "base"}},
+    "ledger_fee_guard": {"withdrawal_id": {"bridge", "base", "audit"}, "observed_ledger_fee": {"bridge", "ledger"}, "stop_reason": {"bridge", "audit"}, "ledger_call_performed": {"bridge", "audit"}, "withdrawals_paused": {"base", "audit"}, "finalized_block_hash": {"bridge", "base"}},
     "canonical_receipt": {"transaction_hash": {"bridge", "base"}, "receipt_block_hash": {"bridge", "base"}, "canonical_block_hash": {"bridge", "base"}, "finalized_head_block_number": {"bridge", "base"}},
     "single_provider_failure": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "bridge_operation_continued": {"bridge", "audit"}},
     "quorum_loss": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "stop_reason": {"bridge", "audit"}, "ledger_call_performed": {"bridge", "audit"}},
@@ -69,8 +69,8 @@ RPC_DECISION_SCENARIOS = frozenset({"single_provider_failure", "quorum_loss", "n
 RPC_AUDIT_METHODS = {
     "preflight": {"multi_request"},
     "deposit_mint": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
-    "withdrawal_release": {"multi_request", "eth_sendRawTransaction", "eth_sendRawTransaction+multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
-    "bad_fee_refund": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
+    "withdrawal_release": {"multi_request"},
+    "ledger_fee_guard": {"multi_request"},
     "canonical_receipt": {"multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
     "single_provider_failure": {"multi_request"},
     "nonce_known": {"eth_sendRawTransaction+multi_request"},
@@ -634,29 +634,30 @@ def validate_capture_command(kind: str, tool: str, argv: list[str], binding: dic
         if tool != "fault-injection-recorder" or len(argv) != 2 or any(not SHA256.fullmatch(value) for value in argv):
             fail("fault artifact must come from the dedicated fault-injection recorder")
         return
-    if tool == "dfx":
+    if tool == "icp":
         expected_prefix = ["canister", "status"] if kind == "module" else ["canister", "call"]
         if kind == "base" or len(argv) < 6 or argv[:2] != expected_prefix:
-            fail("dfx artifacts must be fixed canister call/status captures")
+            fail("ICP CLI artifacts must be fixed canister call/status captures")
         expected_canister = binding["ledger_canister_id"] if kind == "ledger" else binding["bridge_canister_id"]
-        if argv[2] != expected_canister or argv.count("--network") != 1:
-            fail("dfx artifact targets the wrong canister or network")
-        if any(item.startswith("--network=") for item in argv):
-            fail("dfx network flag must use the fixed split form exactly once")
-        network_index = argv.index("--network")
+        if argv[2] != expected_canister or argv.count("-n") != 1:
+            fail("ICP CLI artifact targets the wrong canister or network")
+        network_index = argv.index("-n")
         if network_index + 1 >= len(argv) or argv[network_index + 1] != "ic":
-            fail("dfx artifact must target the IC network")
-        if argv.count("--output") != 1 or any(item.startswith("--output=") for item in argv):
-            fail("dfx output flag must use the fixed split form exactly once")
-        if argv.index("--output") + 1 >= len(argv) or argv[argv.index("--output") + 1] != "json":
-            fail("dfx artifact must request raw JSON output")
-        forbidden = {"--identity", "--wallet", "--host", "--insecure", "--yes"}
+            fail("ICP CLI artifact must target the IC network")
+        if argv.count("--json") != 1:
+            fail("ICP CLI artifact must request raw JSON output")
+        forbidden = {
+            "--identity", "--proxy", "--root-key", "--environment", "-e", "--yes",
+            "--host", "--output",
+        }
         if any(item in forbidden or any(item.startswith(flag + "=") for flag in forbidden) for item in argv):
-            fail("dfx artifact contains an operator-controlled routing or identity flag")
+            fail("ICP CLI artifact contains an operator-controlled routing or identity flag")
         if kind == "module":
-            if len(argv) != 7:
-                fail("module artifact must be one fixed dfx canister status capture")
+            if len(argv) != 7 or "--public" not in argv:
+                fail("module artifact must be one fixed public ICP CLI canister status capture")
         else:
+            if len(argv) != 8:
+                fail("canister call artifact must use the fixed ICP CLI argument shape")
             method = argv[3]
             allowed_methods = {
                 "ledger": {"icrc3_get_blocks", "icrc1_balance_of", "icrc1_fee"},
@@ -664,7 +665,7 @@ def validate_capture_command(kind: str, tool: str, argv: list[str], binding: dic
                 "bridge": {"get_public_config", "get_bridge_status", "get_deposit", "get_withdrawals"},
             }
             if method not in allowed_methods[kind]:
-                fail(f"dfx artifact method is not allowed for {kind}: {method}")
+                fail(f"ICP CLI artifact method is not allowed for {kind}: {method}")
     elif tool == "cast":
         if kind != "base" or not argv or argv[0] not in {"receipt", "block", "call"}:
             fail("cast artifacts must be Base receipt, block, or call captures")
@@ -675,7 +676,7 @@ def validate_capture_command(kind: str, tool: str, argv: list[str], binding: dic
         if argv[0] == "call" and (len(argv) < 2 or argv[1].lower() != binding["bridge_contract"]):
             fail("cast call artifact must target the reviewed Bridge contract")
     else:
-        fail("artifact tool must be dfx or cast")
+        fail("artifact tool must be icp or cast")
     joined = " ".join(argv).lower()
     if any(marker in joined for marker in ("localhost", "127.0.0.1", "anvil", "pocket", "mock-external")):
         fail("artifact command references a local or test-double backend")
@@ -705,9 +706,9 @@ def validate_transport(artifact: dict[str, Any], binding: dict[str, Any]) -> Non
         if transport is not None:
             fail("fault artifact must not contain provider transport")
         return
-    if artifact["tool"] == "dfx":
+    if artifact["tool"] == "icp":
         if transport is not None:
-            fail("dfx artifact must not contain Base provider transport")
+            fail("ICP CLI artifact must not contain Base provider transport")
         return
     if not isinstance(transport, dict):
         fail("cast artifact is missing reviewed provider transport")
@@ -873,8 +874,8 @@ def capture_artifact(
     if not command:
         fail("capture command is missing")
     tool = command[0]
-    if tool not in {"dfx", "cast"}:
-        fail("capture must invoke dfx or cast by its fixed executable name")
+    if tool not in {"icp", "cast"}:
+        fail("capture must invoke icp or cast by its fixed executable name")
     argv = command[1:]
     config_binding = validate_config(raw_config)
     validate_binding(manifest["binding"])
@@ -915,7 +916,7 @@ def capture_artifact(
         result = subprocess.run(execution_command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=clean_env)
     else:
         if provider_index is not None:
-            fail("dfx capture must not select a Base provider")
+            fail("ICP CLI capture must not select a Base provider")
         result = subprocess.run(execution_command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
         fail(f"capture command failed with status {result.returncode}: {result.stderr.strip()}")
@@ -1071,33 +1072,30 @@ def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, 
     if scenario == "withdrawal_release":
         exact_keys(
             details,
-            {"withdrawal_id", "request_transaction_hash", "acknowledge_transaction_hash", "ledger_block_index", "request_safe_block_number", "request_safe_block_hash", "acknowledgement_safe_block_number", "acknowledgement_safe_block_hash"},
+            {"withdrawal_id", "request_transaction_hash", "ledger_block_index", "finalized_block_number", "finalized_block_hash"},
             "withdrawal_release.details",
         )
-        for field in ("withdrawal_id", "request_transaction_hash", "acknowledge_transaction_hash", "request_safe_block_hash", "acknowledgement_safe_block_hash"):
+        for field in ("withdrawal_id", "request_transaction_hash", "finalized_block_hash"):
             require_hex(details, field, HEX_32)
         require_nat(details, "ledger_block_index")
-        require_nat(details, "request_safe_block_number", positive=True)
-        require_nat(details, "acknowledgement_safe_block_number", positive=True)
+        require_nat(details, "finalized_block_number", positive=True)
         return
 
-    if scenario == "bad_fee_refund":
+    if scenario == "ledger_fee_guard":
         exact_keys(
             details,
-            {"withdrawal_id", "request_transaction_hash", "cancel_release_transaction_hash", "refund_transaction_hash", "old_ledger_fee", "new_ledger_fee", "amount_out_after_fee", "minimum_amount_out", "safe_block_number", "safe_block_hash"},
-            "bad_fee_refund.details",
+            {"withdrawal_id", "request_transaction_hash", "observed_ledger_fee", "charged_service_fee", "stop_reason", "ledger_call_performed", "withdrawals_paused", "finalized_block_number", "finalized_block_hash"},
+            "ledger_fee_guard.details",
         )
-        for field in ("withdrawal_id", "request_transaction_hash", "cancel_release_transaction_hash", "refund_transaction_hash", "safe_block_hash"):
+        for field in ("withdrawal_id", "request_transaction_hash", "finalized_block_hash"):
             require_hex(details, field, HEX_32)
-        old_fee = require_nat(details, "old_ledger_fee")
-        new_fee = require_nat(details, "new_ledger_fee")
-        amount_out = require_nat(details, "amount_out_after_fee")
-        minimum = require_nat(details, "minimum_amount_out", positive=True)
-        require_nat(details, "safe_block_number", positive=True)
-        if old_fee == new_fee:
-            fail("bad-fee scenario must observe an actual fee change")
-        if amount_out >= minimum:
-            fail("bad-fee refund scenario must fall below the requested minimum")
+        ledger_fee = require_nat(details, "observed_ledger_fee", positive=True)
+        charged_fee = require_nat(details, "charged_service_fee", positive=True)
+        require_nat(details, "finalized_block_number", positive=True)
+        if ledger_fee <= charged_fee or details["stop_reason"] != "LedgerFeeExceedsServiceFee":
+            fail("ledger fee guard must stop when the Ledger fee exceeds the charged Service Fee")
+        if details["ledger_call_performed"] is not False or details["withdrawals_paused"] is not True:
+            fail("ledger fee guard must stop before transfer and pause Base withdrawals")
         return
 
     if scenario == "canonical_receipt":
@@ -1188,7 +1186,7 @@ def derive_state(scenarios: dict[str, Any]) -> tuple[str, bool]:
     completed = {name for name, evidence in scenarios.items() if evidence is not None}
     if "preflight" not in completed:
         return "AWAITING_PREFLIGHT", False
-    flow = {"deposit_mint", "withdrawal_release", "bad_fee_refund", "canonical_receipt"}
+    flow = {"deposit_mint", "withdrawal_release", "ledger_fee_guard", "canonical_receipt"}
     faults = {"single_provider_failure", "quorum_loss", "nonce_known", "nonce_conflict"}
     if not flow.issubset(completed):
         return "READY_FOR_ASSET_FLOWS", False
@@ -1274,7 +1272,7 @@ def parse_args() -> argparse.Namespace:
     capture.add_argument("scenario", choices=SCENARIOS)
     capture.add_argument("kind", choices=("bridge", "base", "ledger", "audit", "module"))
     capture.add_argument("output", type=Path)
-    capture.add_argument("provider_selection", help="0..2 for Base capture; 'none' for dfx")
+    capture.add_argument("provider_selection", help="0..2 for Base capture; 'none' for ICP CLI")
     capture.add_argument("capture_argv", nargs=argparse.REMAINDER)
     fault = subparsers.add_parser("capture-fault")
     fault.add_argument("manifest", type=Path)

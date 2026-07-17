@@ -4,7 +4,7 @@
 //! ICRC Ledger calls, EVM RPC observation, threshold ECDSA signing, scheduled confirmation, and runtime
 //! administration.
 
-use candid::{CandidType, Deserialize};
+use candid::{CandidType, Deserialize, Principal};
 use ic_sqlite_vfs::DefaultMemoryImpl;
 use sha2::{Digest, Sha256};
 use std::{
@@ -15,6 +15,7 @@ use std::{
 
 mod admin;
 mod api;
+mod base_governance;
 pub mod config;
 mod consent;
 mod evm_calls;
@@ -27,7 +28,10 @@ mod signer;
 pub mod storage;
 mod tasks;
 
-use storage::{AuditEventKind, StableStore, StorageError, SCHEMA_VERSION};
+use storage::{
+    AuditEventKind, ChecksumRefreshStatus, StableStore, StorageError, StorageMaintenanceError,
+    StorageValidationStatus, SCHEMA_VERSION,
+};
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatusCounts {
@@ -59,6 +63,9 @@ pub struct BridgeStatus {
     pub observed_bridge_runtime_sha256: Vec<u8>,
     pub reserve: ReserveStatus,
     pub deposits_paused: bool,
+    pub withdrawal_fee_guard_active: bool,
+    pub withdrawal_fee_guard_ledger_fee: Option<u128>,
+    pub withdrawal_fee_guard_charged_service_fee: Option<u128>,
     pub last_audit_sequence: Option<u64>,
     pub settlement_scheduler: SettlementSchedulerStatus,
     pub unpaid_withdrawal_count: u64,
@@ -113,6 +120,7 @@ pub struct PublicConfig {
     pub index_canister_id: candid::Principal,
     pub schema_version: u16,
     pub expected_bridge_signer: Vec<u8>,
+    pub governance_operator: Vec<u8>,
     pub evm_rpc_canister_id: candid::Principal,
     pub rpc_provider_urls_sha256: Vec<u8>,
 }
@@ -169,6 +177,7 @@ enum ActionKey {
     FeePayoutCreation,
     ChainKeyChallenge,
     BaseObservation,
+    BaseGovernance,
 }
 
 fn valid_release_id(release_id: &str) -> bool {
@@ -210,6 +219,7 @@ fn init(args: config::BridgeInitArgs) {
         });
     install_store(store);
     scheduler::arm();
+    scheduler::arm_base_governance(Principal::anonymous());
 }
 
 #[ic_cdk::post_upgrade]
@@ -219,6 +229,7 @@ fn post_upgrade() {
     install_store(store);
     ensure_supported_schema();
     scheduler::arm();
+    scheduler::arm_base_governance(Principal::anonymous());
 }
 
 #[ic_cdk::update]
@@ -260,6 +271,14 @@ async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, 
 #[ic_cdk::query]
 fn get_deposit(id: Vec<u8>) -> Option<api::DepositView> {
     api::get_deposit(id)
+}
+
+#[ic_cdk::query]
+fn get_deposit_by_owner_sequence(
+    owner: candid::Principal,
+    owner_sequence: u64,
+) -> Option<api::DepositView> {
+    api::get_deposit_by_owner_sequence(owner, owner_sequence)
 }
 
 #[ic_cdk::query]
@@ -460,7 +479,34 @@ async fn confirm_evm(
     }
     let (operation_id, stored_hash) = submitted_transaction(kind, id)?;
     if stored_hash != transaction_hash {
-        return Err(tasks::SettlementActionError::TransactionMismatch);
+        let known = STORE.with(|store| {
+            store
+                .borrow()
+                .evm_envelope(operation_id.get())
+                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+                .map(|envelope| {
+                    envelope
+                        .prior_signed_transactions
+                        .iter()
+                        .chain(envelope.signed_transaction.iter())
+                        .any(|raw| signer::transaction_hash(raw) == transaction_hash)
+                })
+                .ok_or(tasks::SettlementActionError::StorageFailure)
+        })?;
+        if !known {
+            return Err(tasks::SettlementActionError::TransactionMismatch);
+        }
+        STORE.with(|store| {
+            let mut store = store.borrow_mut();
+            let mut operation = store
+                .evm_operation(operation_id.get())
+                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+                .ok_or(tasks::SettlementActionError::NotFound)?;
+            operation.state = bridge_core::EvmOperationState::Submitted { transaction_hash };
+            store
+                .put_evm_operation(&operation)
+                .map_err(|_| tasks::SettlementActionError::StorageFailure)
+        })?;
     }
     let job = STORE.with(|store| {
         store
@@ -473,7 +519,8 @@ async fn confirm_evm(
         || job.operation_id != Some(operation_id.get())
         || !matches!(
             job.status,
-            storage::SettlementJobStatus::AwaitingConfirmation
+            storage::SettlementJobStatus::Scheduled
+                | storage::SettlementJobStatus::AwaitingConfirmation
                 | storage::SettlementJobStatus::Stopped
         )
     {
@@ -785,6 +832,13 @@ fn get_bridge_status() -> BridgeStatus {
                 sufficient: reserve.sufficient,
             },
             deposits_paused: admin.deposits_paused,
+            withdrawal_fee_guard_active: admin.withdrawal_fee_guard.is_some(),
+            withdrawal_fee_guard_ledger_fee: admin
+                .withdrawal_fee_guard
+                .map(|guard| guard.ledger_fee),
+            withdrawal_fee_guard_charged_service_fee: admin
+                .withdrawal_fee_guard
+                .map(|guard| guard.charged_service_fee),
             last_audit_sequence: storage_or_trap(
                 "last audit sequence read",
                 store.last_audit_sequence(),
@@ -805,6 +859,57 @@ fn get_bridge_status() -> BridgeStatus {
             withdrawal_stop_reasons: withdrawal_liabilities.stop_reasons,
         }
     })
+}
+
+fn require_controller() -> Result<(), StorageMaintenanceError> {
+    let caller = ic_cdk::api::msg_caller();
+    if ic_cdk::api::is_controller(&caller) {
+        Ok(())
+    } else {
+        Err(StorageMaintenanceError::Unauthorized)
+    }
+}
+
+#[ic_cdk::update]
+fn start_storage_validation() -> Result<StorageValidationStatus, StorageMaintenanceError> {
+    require_controller()?;
+    STORE.with(|store| store.borrow().start_storage_validation())
+}
+
+#[ic_cdk::update]
+fn continue_storage_validation(
+    max_rows: u16,
+) -> Result<StorageValidationStatus, StorageMaintenanceError> {
+    require_controller()?;
+    STORE.with(|store| store.borrow().continue_storage_validation(max_rows))
+}
+
+#[ic_cdk::query]
+fn storage_integrity_check() -> Result<String, StorageMaintenanceError> {
+    require_controller()?;
+    STORE.with(|store| store.borrow().storage_integrity_check())
+}
+
+#[ic_cdk::update]
+fn refresh_storage_checksum(
+    max_bytes: u64,
+) -> Result<ChecksumRefreshStatus, StorageMaintenanceError> {
+    require_controller()?;
+    STORE.with(|store| store.borrow_mut().refresh_storage_checksum(max_bytes))
+}
+
+#[cfg(feature = "test-deployment")]
+#[ic_cdk::update]
+fn seed_storage_test_data(start: u64, count: u16) -> Result<u16, StorageMaintenanceError> {
+    require_controller()?;
+    STORE.with(|store| store.borrow_mut().seed_storage_test_data(start, count))
+}
+
+#[cfg(feature = "test-deployment")]
+#[ic_cdk::query]
+fn first_prepared_evm_test_id() -> Result<Option<u64>, StorageMaintenanceError> {
+    require_controller()?;
+    STORE.with(|store| store.borrow().first_prepared_evm_test_id())
 }
 
 #[ic_cdk::update]
@@ -909,6 +1014,9 @@ async fn get_public_config() -> PublicConfig {
     let expected_bridge_signer = api::cached_signer_address(&config)
         .await
         .unwrap_or_else(|_| ic_cdk::trap("chain-key signer derivation failed"));
+    let governance_operator = api::cached_governance_operator_address(&config)
+        .await
+        .unwrap_or_else(|_| ic_cdk::trap("governance operator derivation failed"));
     let normalized_rpc_urls = config
         .custom_evm_rpc_urls
         .iter()
@@ -928,10 +1036,65 @@ async fn get_public_config() -> PublicConfig {
             index_canister_id: config.index_canister_id,
             schema_version: store.schema_version(),
             expected_bridge_signer: Vec::from(expected_bridge_signer),
+            governance_operator: Vec::from(governance_operator),
             evm_rpc_canister_id: config.evm_rpc_canister_id,
             rpc_provider_urls_sha256,
         }
     })
+}
+
+#[ic_cdk::update]
+async fn submit_base_governance_action(
+    action: base_governance::BaseGovernanceAction,
+) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
+    };
+    let caller = ic_cdk::api::msg_caller();
+    let result = base_governance::submit(caller, action).await;
+    scheduler::arm_base_governance(caller);
+    result
+}
+
+#[ic_cdk::update]
+async fn emergency_pause(
+) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
+    };
+    base_governance::emergency_pause(ic_cdk::api::msg_caller()).await
+}
+
+#[ic_cdk::update]
+async fn schedule_activation(
+) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
+    };
+    let caller = ic_cdk::api::msg_caller();
+    let result = base_governance::submit(
+        caller,
+        base_governance::BaseGovernanceAction::ScheduleActivation,
+    )
+    .await;
+    scheduler::arm_base_governance(caller);
+    result
+}
+
+#[ic_cdk::update]
+async fn execute_activation(
+) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
+    };
+    let caller = ic_cdk::api::msg_caller();
+    let result = base_governance::submit(
+        caller,
+        base_governance::BaseGovernanceAction::ExecuteActivation,
+    )
+    .await;
+    scheduler::arm_base_governance(caller);
+    result
 }
 
 #[ic_cdk::update]
@@ -984,10 +1147,8 @@ fn set_fee_recipient(value: config::FeeRecipientConfig) -> Result<(), admin::Adm
     admin::set_fee_recipient(ic_cdk::api::msg_caller(), value)
 }
 #[ic_cdk::update]
-fn rotate_runtime_administrators(
-    args: admin::RotateRuntimeAdministratorsArgs,
-) -> Result<(), admin::AdminError> {
-    admin::rotate(ic_cdk::api::msg_caller(), args)
+fn rotate_pause_principal(args: admin::RotatePausePrincipalArgs) -> Result<(), admin::AdminError> {
+    admin::rotate_pause_principal(ic_cdk::api::msg_caller(), args)
 }
 #[ic_cdk::update]
 async fn request_fee_payout(

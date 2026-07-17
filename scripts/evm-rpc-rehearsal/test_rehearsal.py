@@ -84,8 +84,8 @@ def evidence(scenario, details):
                 })
     audit_methods = {
         "deposit_mint": "eth_getTransactionReceipt+eth_getBlockByNumber",
-        "withdrawal_release": "eth_getTransactionReceipt+eth_getBlockByNumber",
-        "bad_fee_refund": "eth_getTransactionReceipt+eth_getBlockByNumber",
+        "withdrawal_release": "multi_request",
+        "ledger_fee_guard": "multi_request",
         "canonical_receipt": "eth_getTransactionReceipt+eth_getBlockByNumber",
         "nonce_known": "eth_sendRawTransaction+multi_request",
         "nonce_conflict": "eth_sendRawTransaction+multi_request",
@@ -176,11 +176,11 @@ def all_evidence(binding):
         ),
         "withdrawal_release": evidence(
             "withdrawal_release",
-            {"withdrawal_id": H32_A, "request_transaction_hash": H32_B, "acknowledge_transaction_hash": H32_D, "ledger_block_index": 2, "request_safe_block_number": 10, "request_safe_block_hash": H32_C, "acknowledgement_safe_block_number": 11, "acknowledgement_safe_block_hash": H32_A},
+            {"withdrawal_id": H32_A, "request_transaction_hash": H32_B, "ledger_block_index": 2, "finalized_block_number": 10, "finalized_block_hash": H32_C},
         ),
-        "bad_fee_refund": evidence(
-            "bad_fee_refund",
-            {"withdrawal_id": H32_A, "request_transaction_hash": H32_B, "cancel_release_transaction_hash": H32_C, "refund_transaction_hash": H32_D, "old_ledger_fee": 10, "new_ledger_fee": 20, "amount_out_after_fee": 99, "minimum_amount_out": 100, "safe_block_number": 12, "safe_block_hash": H32_A},
+        "ledger_fee_guard": evidence(
+            "ledger_fee_guard",
+            {"withdrawal_id": H32_A, "request_transaction_hash": H32_B, "observed_ledger_fee": 20, "charged_service_fee": 10, "stop_reason": "LedgerFeeExceedsServiceFee", "ledger_call_performed": False, "withdrawals_paused": True, "finalized_block_number": 12, "finalized_block_hash": H32_A},
         ),
         "canonical_receipt": evidence(
             "canonical_receipt",
@@ -362,12 +362,12 @@ class RehearsalTests(unittest.TestCase):
         with self.assertRaises(rehearsal.InvalidEvidence):
             rehearsal.validate_capture_command(
                 "bridge",
-                "dfx",
-                ["canister", "call", "aaaaa-aa", "get_status", "()", "--network", "ic", "--output", "json"],
+                "icp",
+                ["canister", "call", "aaaaa-aa", "get_status", "()", "-n", "ic", "--json"],
                 binding,
             )
         for extra in (
-            ["--network", "ic"],
+            ["-n", "ic"],
             ["--output", "json"],
             ["--identity", "attacker"],
             ["--host=https://attacker.example"],
@@ -375,8 +375,8 @@ class RehearsalTests(unittest.TestCase):
             with self.assertRaises(rehearsal.InvalidEvidence):
                 rehearsal.validate_capture_command(
                     "bridge",
-                    "dfx",
-                    ["canister", "call", "aaaaa-aa", "get_public_config", "()", "--network", "ic", "--output", "json", *extra],
+                    "icp",
+                    ["canister", "call", "aaaaa-aa", "get_public_config", "()", "-n", "ic", "--json", *extra],
                     binding,
                 )
         with self.assertRaises(rehearsal.InvalidEvidence):
@@ -409,7 +409,7 @@ class RehearsalTests(unittest.TestCase):
             with self.assertRaises(rehearsal.InvalidEvidence):
                 rehearsal.verify_manifest(value, root)
 
-            fake = root / "dfx"
+            fake = root / "icp"
             payload = json.dumps({**item["details"], "canister_audit": item["canister_audit"], "canister_decision": item["canister_decision"]}, separators=(",", ":"))
             fake.write_text(f"#!/bin/sh\nprintf '%s' '{payload}'\n", encoding="utf-8")
             fake.chmod(0o755)
@@ -422,8 +422,8 @@ class RehearsalTests(unittest.TestCase):
             cli = subprocess.run(
                 [
                     "python3", str(MODULE_PATH), "capture-artifact", str(manifest_path), str(config_path),
-                    "preflight", "bridge", str(output), "none", "--", "dfx", "canister", "call", "aaaaa-aa",
-                    "get_public_config", "()", "--network", "ic", "--output", "json",
+                    "preflight", "bridge", str(output), "none", "--", "icp", "canister", "call", "aaaaa-aa",
+                    "get_public_config", "()", "-n", "ic", "--json",
                 ],
                 text=True,
                 stdout=subprocess.PIPE,
@@ -462,8 +462,8 @@ class RehearsalTests(unittest.TestCase):
             failed = subprocess.run(
                 [
                     "python3", str(MODULE_PATH), "capture-artifact", str(manifest_path), str(config_path),
-                    "preflight", "bridge", str(root / "artifacts" / "failed.json"), "none", "--", "dfx",
-                    "canister", "call", "aaaaa-aa", "get_public_config", "()", "--network", "ic", "--output", "json",
+                    "preflight", "bridge", str(root / "artifacts" / "failed.json"), "none", "--", "icp",
+                    "canister", "call", "aaaaa-aa", "get_public_config", "()", "-n", "ic", "--json",
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -532,17 +532,17 @@ class RehearsalTests(unittest.TestCase):
                         write_fault_artifact(item, scenario, output)
                         reference["sha256"] = rehearsal.hashlib.sha256(output.read_bytes()).hexdigest()
                         continue
-                    executable = root / ("cast" if kind == "base" else "dfx")
+                    executable = root / ("cast" if kind == "base" else "icp")
                     executable.write_bytes(tool.read_bytes())
                     executable.chmod(0o755)
                     if kind == "base":
                         command = ["cast", "receipt", H32_A]
                     elif kind == "module":
-                        command = ["dfx", "canister", "status", binding["bridge_canister_id"], "--network", "ic", "--output", "json"]
+                        command = ["icp", "canister", "status", binding["bridge_canister_id"], "-n", "ic", "--public", "--json"]
                     else:
                         canister = binding["ledger_canister_id"] if kind == "ledger" else binding["bridge_canister_id"]
                         method = {"ledger": "icrc3_get_blocks", "audit": "get_audit_events", "bridge": "get_bridge_status"}[kind]
-                        command = ["dfx", "canister", "call", canister, method, "()", "--network", "ic", "--output", "json"]
+                        command = ["icp", "canister", "call", canister, method, "()", "-n", "ic", "--json"]
                     with patch.dict(os.environ, {"PATH": f"{root}{os.pathsep}{os.environ.get('PATH', '')}"}):
                         rehearsal.capture_artifact(
                             value,
@@ -640,9 +640,9 @@ class RehearsalTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            dfx = root / "dfx"
-            dfx.write_text(f"#!/bin/sh\nprintf '%s' '{json.dumps({**item['details'], 'canister_audit': item['canister_audit'], 'canister_decision': item['canister_decision']}, separators=(',', ':'))}'\n", encoding="utf-8")
-            dfx.chmod(0o755)
+            icp = root / "icp"
+            icp.write_text(f"#!/bin/sh\nprintf '%s' '{json.dumps({**item['details'], 'canister_audit': item['canister_audit'], 'canister_decision': item['canister_decision']}, separators=(',', ':'))}'\n", encoding="utf-8")
+            icp.chmod(0o755)
             cast = root / "cast"
             cast.write_text(
                 "#!/bin/sh\n"
@@ -654,11 +654,11 @@ class RehearsalTests(unittest.TestCase):
             )
             cast.chmod(0o755)
             commands = [
-                (item["artifacts"][0], ["dfx", "canister", "call", "aaaaa-aa", "get_deposit", "()", "--network", "ic", "--output", "json"], None),
+                (item["artifacts"][0], ["icp", "canister", "call", "aaaaa-aa", "get_deposit", "()", "-n", "ic", "--json"], None),
                 (item["artifacts"][1], ["cast", "receipt", H32_A], 0),
                 (item["artifacts"][2], ["cast", "block", "12"], 0),
                 (item["artifacts"][3], ["cast", "block", "safe"], 0),
-                (item["artifacts"][4], ["dfx", "canister", "call", "aaaaa-aa", "get_audit_events", "()", "--network", "ic", "--output", "json"], None),
+                (item["artifacts"][4], ["icp", "canister", "call", "aaaaa-aa", "get_audit_events", "()", "-n", "ic", "--json"], None),
             ]
             clean = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ.get('PATH', '')}", "ETH_RPC_URL": "", "FOUNDRY_ETH_RPC_URL": "", "CAST_RPC_URL": ""}
             with patch.dict(os.environ, clean, clear=True):

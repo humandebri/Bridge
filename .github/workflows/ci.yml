@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           submodules: recursive
 
@@ -32,18 +32,36 @@ jobs:
         run: rustup show
 
       - name: Install Node.js 24.14.0
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.14.0
 
       - name: Install pnpm 11.0.8
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
           version: 11.0.8
           run_install: false
 
+      - name: Install didc 0.5.4
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            -o "$HOME/.local/bin/didc" \
+            https://github.com/dfinity/candid/releases/download/2025-12-18/didc-linux64
+          echo "32693c76d9c6fe0f273f2c1ebf7e48ba3c383e925e5afd17dd264a06aed9fbcc  $HOME/.local/bin/didc" \
+            | sha256sum --check
+          chmod +x "$HOME/.local/bin/didc"
+          test "$("$HOME/.local/bin/didc" --version)" = "didc 0.5.4"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+          rg --version
+
       - name: Install Foundry 1.7.1
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.7.1
 
@@ -87,7 +105,9 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
             -o /tmp/elan-init.sh \
-            https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh
+            https://raw.githubusercontent.com/leanprover/elan/6737edca3d2ca3dbaa1b47b87769b48b420633ae/elan-init.sh
+          echo "a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53  /tmp/elan-init.sh" \
+            | sha256sum --check
           sh /tmp/elan-init.sh -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
           "$HOME/.elan/bin/lean" --version

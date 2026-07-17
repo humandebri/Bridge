@@ -8,7 +8,7 @@
 |---|---|
 | IC wallet（OISY / Plug） | ICRC-2 approve、`request_deposit`、`confirm_deposit`、`notify_withdrawal`の同意付き呼び出し |
 | Base wallet | bSNS approveと`createWithdrawal`の署名 |
-| Bridge canister | SQLite schema v10への状態保存、Ledger操作、EVM operation、Finalized再検証、Settlement job実行 |
+| Bridge canister | SQLite schema v16への状態保存、Ledger操作、EVM operation、Finalized再検証、Settlement job実行 |
 | KINIC Ledger / Index | Depositのpull、Withdrawalのrelease、履歴照合 |
 | EVM RPC Canister | 複数providerのquorumでBaseのcanonical Finalized chainを観測 |
 | Base Bridge / bSNS | Deposit mint、Withdrawalのatomic transferFrom・burn・`Committed`記録 |
@@ -81,10 +81,10 @@ Finalized確認に失敗した場合、Safe head、固定confirmation数、単�
    ```
 
    `amountOut = amount - chargedServiceFee`であり、`Committed`はBase上の不可逆な終端状態である。
-3. UIは成功したBase transaction hashとIC ownerをpending confirmationとしてlocalStorageに保存する。これは後で`notify_withdrawal`を再開するための参照であり、追加transactionの予約ではない。
+3. UIはBase walletが返したbroadcast transaction hashとIC ownerをpending confirmationとしてlocalStorageに保存する。保存に失敗しても送信失敗とは扱わずhashを表示する。Finalized receiptがrevertならpendingを削除し、成功した場合だけ後で`notify_withdrawal`を再開する。
 4. Bridge pageのcoordinatorまたはHistoryがFinalized receiptと`WithdrawalCommitted` eventを検出すると、接続中のIC walletから`notify_withdrawal(transaction_hash)`を呼ぶ。ユーザーが通知を拒否した場合も、Historyの`Check and notify`から同じhashを明示再実行できる。
 5. CanisterはEVM RPC quorumで同じFinalized block hashへreceipt、event、`getWithdrawal`、Bridge snapshotを束縛して検証する。requester、amount、Service Fee、amountOut、IC owner、subaccount、`Committed` statusが一致し、Bridge signerも期待値と一致しなければICP送金を始めない。
-6. 検証後の状態は`Observed → ReleasePending → Paid`である。releaseは固定amountOutを固定IC Accountへ送り、BridgeがLedger feeを負担する。Ledger feeとService Feeの一致条件はproduction preflightで検証し、想定外の`BadFee`は汎用Ledger拒否として同じtransfer identityのまま停止する。
+6. 検証後の状態は`Observed → ReleasePending → Paid`である。releaseは固定amountOutを固定IC Accountへ送り、BridgeがLedger feeを負担する。Ledger feeが確定済みService Feeを超えた場合はreleaseを作らずObserved recordを停止し、runtime fee guardと監査eventを残す。運用者は直ちにBase withdrawalをpauseし、fee設定を同期する。fee回復後は`continue_withdrawal`が同じrecordを再検証してからreleaseを開始する。
 7. Ledger成功、Duplicate、履歴照合による成功確認で`Paid`になる。結果不明は`ReconciliationHold`へ移り、完全な不存在証拠を得たときだけ同じ金額・宛先の新しいtransfer identityで再開する。
 
 Withdrawalには次の処理が存在しない。

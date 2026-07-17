@@ -2,7 +2,7 @@
   "schema_version": 1,
   "experiment": "base-sepolia-contract-only",
   "test_only": true,
-  "state": "WAITING_TIMELOCK",
+  "state": "ACTIVE",
   "created_at": "2026-07-13T05:05:05Z",
   "chain_id": 84532,
   "rpc_url": "https://base-sepolia-rpc.publicnode.com",
@@ -199,6 +199,18 @@
       "confirmed": true,
       "confirmed_block": 44077391,
       "confirmed_at": "2026-07-13T06:29:38Z"
+    },
+    "execute_unpause": {
+      "hash": "0x2df5c4ca356a607ac60376e8904c68741b8ca672438c760cdef1e34af870bce9",
+      "from": "0x7F4743128368CdeD5413E8c42C9Bd689ea64D192",
+      "to": "0x982aE4b097Ccb71A24932d4AfF1d69eAAcBD1BB0",
+      "nonce": 10,
+      "status": 1,
+      "receipt_block": 44239977,
+      "receipt_block_hash": "0x914d348429e07e96238e0b3eef3f511fca4ab880b0a53cfc06bb8d8cbfffd425",
+      "confirmed": true,
+      "confirmed_block": 44240040,
+      "confirmed_at": "2026-07-17T00:34:14Z"
     }
   },
   "checks": {
@@ -209,7 +221,8 @@
     "asset_flow": true,
     "direct_unpause_rejected": true,
     "early_execute_reverted": true,
-    "rpc_reread": true
+    "rpc_reread": true,
+    "timelock_unpause": true
   },
   "synthetic_ledger_block": 42,
   "preflight": {

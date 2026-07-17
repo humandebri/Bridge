@@ -399,6 +399,11 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Vec(IDL.Vec(IDL.Nat8))],
         ['query'],
       ),
+    'derive_chain_key_address' : IDL.Func(
+        [IDL.Principal, IDL.Text, IDL.Vec(IDL.Vec(IDL.Nat8))],
+        [IDL.Vec(IDL.Nat8)],
+        [],
+      ),
     'eth_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
     'eth_getBlockByNumber' : IDL.Func(
         [RpcServices, IDL.Opt(RpcConfig), BlockTag],
@@ -467,6 +472,7 @@ export const idlFactory = ({ IDL }) => {
         [Result_10],
         [],
       ),
+    'set_broadcast_inconsistent_after_accepts' : IDL.Func([IDL.Nat8], [], []),
     'set_chain_id_mode' : IDL.Func([ChainIdMode], [], []),
     'set_configured_chain_id' : IDL.Func([IDL.Nat64], [], []),
     'set_deposit_mints_paused' : IDL.Func([IDL.Bool], [], []),
@@ -504,6 +510,7 @@ export const idlFactory = ({ IDL }) => {
     'set_service_fee' : IDL.Func([IDL.Nat], [], []),
     'set_withdrawal' : IDL.Func([IDL.Opt(WithdrawalFixture)], [], []),
     'set_withdrawal_status' : IDL.Func([IDL.Nat8], [], []),
+    'set_withdrawals_paused' : IDL.Func([IDL.Bool], [], []),
     'status' : IDL.Func([], [Status], ['query']),
   });
 };

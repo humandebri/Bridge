@@ -130,22 +130,18 @@ contract BridgeTimelockTest is TestBase {
         timelock.execute(address(bridge), 0, data, bytes32(0), salt);
     }
 
-    function testConstructorRejectsCancellerOverlapAndOpenRoles() public {
+    function testConstructorAllowsOneGovernanceOperatorAndRejectsOpenRoles() public {
         address[] memory proposers = new address[](1);
         proposers[0] = BASE_ADMIN_WALLET;
         address[] memory cancellers = new address[](1);
         cancellers[0] = BASE_ADMIN_WALLET;
         address[] memory executors = new address[](1);
-        executors[0] = OUTSIDER;
-        vm.expectRevert(
-            abi.encodeWithSelector(BridgeTimelockController.CancellerRoleOverlap.selector, BASE_ADMIN_WALLET)
-        );
-        new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
-
-        cancellers[0] = CANCELLER;
-        executors[0] = CANCELLER;
-        vm.expectRevert(abi.encodeWithSelector(BridgeTimelockController.CancellerRoleOverlap.selector, CANCELLER));
-        new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
+        executors[0] = BASE_ADMIN_WALLET;
+        BridgeTimelockController singleOperator =
+            new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
+        assert(singleOperator.hasRole(singleOperator.PROPOSER_ROLE(), BASE_ADMIN_WALLET));
+        assert(singleOperator.hasRole(singleOperator.CANCELLER_ROLE(), BASE_ADMIN_WALLET));
+        assert(singleOperator.hasRole(singleOperator.EXECUTOR_ROLE(), BASE_ADMIN_WALLET));
 
         executors[0] = address(0);
         vm.expectRevert(

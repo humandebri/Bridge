@@ -25,7 +25,7 @@ export type PendingConfirmationInput =
   | (Omit<PendingDepositConfirmation, "blocked" | "bridgeCanisterId" | "chainId" | "bridgeAddress"> & { blocked?: boolean })
   | (Omit<PendingWithdrawalConfirmation, "blocked" | "bridgeCanisterId" | "chainId" | "bridgeAddress"> & { blocked?: boolean })
 
-const STORAGE_KEY = "kinic.bridge.pending-confirmations.v2"
+const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v3"
 export const PENDING_CONFIRMATIONS_CHANGED = "kinic-pending-confirmations-changed"
 
 export function pendingConfirmationKey(value: PendingConfirmation | PendingConfirmationInput): string {
@@ -37,7 +37,7 @@ export function pendingConfirmationKey(value: PendingConfirmation | PendingConfi
 export function readPendingConfirmations(): PendingConfirmation[] {
   if (typeof window === "undefined") return []
   try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "[]")
+    const value: unknown = JSON.parse(window.localStorage.getItem(pendingConfirmationsStorageKey()) ?? "[]")
     if (!Array.isArray(value)) return []
     return value.filter(isPendingConfirmation).filter(matchesActiveDeployment)
   } catch {
@@ -61,8 +61,8 @@ export function savePendingConfirmation(value: PendingConfirmationInput): void {
 
 export function restorePendingConfirmation(value: PendingConfirmationInput): void {
   const key = pendingConfirmationKey(value)
-  if (readPendingConfirmations().some((item) => pendingConfirmationKey(item) === key)) return
-  savePendingConfirmation(value)
+  const existing = readPendingConfirmations().find((item) => pendingConfirmationKey(item) === key)
+  savePendingConfirmation({ ...value, blocked: existing?.blocked ?? value.blocked })
 }
 
 export function removePendingConfirmation(value: PendingConfirmation | PendingConfirmationInput): void {
@@ -94,8 +94,13 @@ function matchesActiveDeployment(value: PendingConfirmation): boolean {
 }
 
 function write(values: PendingConfirmation[]): void {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(values))
+  window.localStorage.setItem(pendingConfirmationsStorageKey(), JSON.stringify(values))
   window.dispatchEvent(new Event(PENDING_CONFIRMATIONS_CHANGED))
+}
+
+export function pendingConfirmationsStorageKey(): string {
+  const active = activeDeployment()
+  return `${STORAGE_PREFIX}:${active.chainId}:${active.bridgeAddress}:${active.bridgeCanisterId}`
 }
 
 function isPendingConfirmation(value: unknown): value is PendingConfirmation {

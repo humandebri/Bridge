@@ -5,16 +5,15 @@
 本計画は `docs/adr/` のADRと `CONTEXT.md` の用語定義に基づく。
 用語は CONTEXT.md の定義に従い、本文では再定義しない。
 
-ADR 0007（SNS Governance を Base admin の権限主体にする）は ADR 0009 により supersede された。
-Base contract の admin 権限は Governance Executor ではなく、安全方向（Runtime Administrator の高速パス）と危険方向（Base Admin の timelock 経由）の分割で実装する。
+SNS GovernanceをIC/Base双方の最終trust rootとする。Base操作はBridge Canisterが別derivation pathから導出するGovernance Operatorから送信し、人間のEVM管理鍵を置かない。
 Bridge はKINICトークン専用にデプロイする（ADR 0010）。複数SNS tokenを扱う分岐は導入しない。
 Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaatq-cai`に固定する。Archive canisterはLedgerから動的に発見する。
 
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v10、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
-Plan 005は本番パラメータの外部計測と鍵ceremony待ちであり、Plan 006は未着手である。
+Bridge canisterはstable schema v16、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
+Plan 005は本番パラメータの外部計測と単一emergency pause演習待ちであり、Plan 006はSNS handover・Canister操作型Base管理・production preflightを実装中である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、IC mainnet test CanisterとBase Sepoliaの外部実行は明示承認待ちである。
 
 ## 全体構成
 
@@ -123,7 +122,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003およびADR 0017から0020で外部連携、運用状態、settlement executor、フロント通知型confirmationを追加し、現行stable schemaはv10である。
+後続のPlan 002と003およびADR 0017から0020で外部連携、運用状態、settlement executor、フロント通知型confirmationを追加し、現行stable schemaはv16である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -191,11 +190,10 @@ Settlement Reserve、nonce割当前のSettlement優先scheduler、新規Deposit 
 
 Plan 003で管理権限と監査ログを実装済みである。
 
-- 複数のpause principalは新規Depositを停止できる。
-- Governance principalだけがDeposit受付の再開とruntime administrator rotationを実行できる。
-- finance administratorだけがFee Recipient変更とfee payoutを実行できる。
-- Base Runtime AdministratorはBase contractのpauseと上限内Service Fee変更を実行できる。
-- runtime administratorをcanister controllerにせず、mint、refund、任意送金の権限を与えない。
+- 単一pause principalはIC/Base双方のpause、記録済みpending Timelock cancel、許可済みSettlementの進行だけを実行できる。
+- SNS Governanceだけが再開、pause principal rotation、Fee Recipient、fee payout、Service Fee、Timelock schedule/executeを実行できる。
+- Base操作はMint Signer laneとGovernance Operator laneを分離し、任意target/calldata/raw transaction/nonce APIを公開しない。
+- 人間のEVM address、controller identity、初回deployerへ永続roleを与えない。
 - SNS-token feeからBase gas用ETHへの自動変換は行わず、運用者がrunbookに従って補充する。
 
 ## Phase 5: 形式検証（Verus）
@@ -225,7 +223,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 
 ## 未完了事項
 
-Plan 005の完了には、Sepoliaでのgasとcyclesの各100回計測、Base mainnetの30日fee分布、実運用principalと鍵ceremony、固定limitの承認、7日間の運転記録が必要である。
+Plan 005の完了には、SepoliaでのDeposit mint gas 100回とsettlement cycles 100回、Base mainnetの30日fee分布、承認済み日次settlement上限、単一pause principalの実request/audit証跡、固定limitの承認、監視pause/cancel演習が必要である。cycles floorは基礎日次消費と100回計測最大値を用いる30日負荷モデルへ2倍の安全係数を掛けて導出する。
 これらの証跡が揃うまでmainnet candidateを`validated`にしない。
 Plan 006ではSNS Rootへのcontroller handover、upgrade実証、x402 testnet、production preflightを完了する。
 

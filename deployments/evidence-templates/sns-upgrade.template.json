@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "observed_at_unix": 0,
+  "executed_at_unix": 0,
+  "proposal_id": 0,
+  "governance_canister_id": "74ncn-fqaaa-aaaaq-aaasa-cai",
+  "root_canister_id": "7jkta-eyaaa-aaaaq-aaarq-cai",
+  "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "wasm_sha256": "<64-hex>",
+  "status": "Executed",
+  "before_module_sha256": "<64-hex>",
+  "after_module_sha256": "<64-hex>",
+  "before_public_state_sha256": "<64-hex>",
+  "after_public_state_sha256": "<same-64-hex>"
+}

@@ -26,6 +26,9 @@ IC canisterとKINIC Ledgerは接続しない。
 - **MAX_SERVICE_FEE**：`10000000` raw
 - **Initial Service Fee**：`1000000` raw
 
+上記は2026年7月13日にデプロイ済みの旧実験値であり、証跡として変更しない。
+次回の再デプロイでは **Per-Deposit Limit**と**Mint Window Limit**をそれぞれ`15000000000000` raw（150,000 KINIC、総供給量の約2.5%）、**MAX_SERVICE_FEE**を`1000000000` raw（10 KINIC）、**Initial Service Fee**を`50000000` raw（0.5 KINIC）とする。
+
 2026年7月13日のpreflight観測では、chain IDは`84532`、deployer残高は`99000000000000000` wei、nonceは`0`だった。
 観測blockと時刻は日付別manifestに保存する。
 
@@ -120,5 +123,6 @@ scripts/base-sepolia-experiment/experiment.sh verify
 ## 終了条件
 
 実験終了時はBridgeがtest-onlyであることをmanifestへ残す。
-Deposit mintとWithdrawalはpause状態、Service Feeは`1000000` rawとする。
+2026年7月13日の旧実験では、Deposit mintとWithdrawalはpause状態、Service Feeは`1000000` rawとする。
+次回の再デプロイでは初期Service Feeを`50000000` rawとする。asset-flow試験では管理者変更を確認し、完了前に`50000000` rawへ戻す。
 Timelock、Bridge、bSNSのaddressとruntime bytecode hash、全transactionのconfirmationを`verify`で再確認する。

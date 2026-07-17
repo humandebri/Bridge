@@ -42,11 +42,16 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
     }
   }, { timeout: 30_000 }).toBe("opened")
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
-  await expect(page.getByText("Injected response loss after deposit acceptance", { exact: false })).toBeVisible()
+  await expect.poll(async () => (await controlState(request)).knownDepositCount).toBe(1)
   await expect(page.getByText("Deposit status unavailable", { exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "Retry same deposit" })).toBeVisible()
   expect(await controlState(request)).toMatchObject({ knownDepositCount: 1, depositSequences: ["0"], nextDepositSequence: "1" })
 
+  await page.reload()
+  await expect(page.getByRole("button", { name: /Base wallet connected as 0xf39F/i })).toBeVisible()
+  await page.getByRole("button", { name: "Connect IC wallet", exact: true }).click()
+  await page.getByRole("button", { name: "Plug" }).click()
+  await page.getByRole("button", { name: "Close confirmation" }).click()
   await refreshBridgeData(page)
   await expect(page.getByRole("button", { name: "Retry same deposit" })).toBeVisible()
   await page.getByRole("button", { name: "Retry same deposit" }).click()
@@ -57,6 +62,40 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   const afterRecovery = await controlState(request)
   expect(afterRecovery).toMatchObject({ knownDepositCount: 1, depositSequences: ["0", "0"], nextDepositSequence: "1" })
   expect(BigInt(initial.ledgerBalance) - BigInt(afterRecovery.ledgerBalance)).toBe(200_020_000n)
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined })
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" })
+  })
+  const secondPage = await page.context().newPage()
+  await disableWebLocks(secondPage)
+  await secondPage.addInitScript(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" })
+  })
+  await installAnvilWallet(secondPage)
+  await secondPage.goto("/")
+  await secondPage.getByRole("button", { name: "Connect IC wallet", exact: true }).click()
+  await secondPage.getByRole("button", { name: "Plug" }).click()
+  await secondPage.getByRole("button", { name: "Close confirmation" }).click()
+  await expect.poll(async () => page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("kinic.bridge.confirmation-lease.v2:")))).toBe(false)
+  const beforeTwoTabConfirmation = await controlState(request)
+  await postControl(request, "/test/hold-next-confirm-deposit", {})
+  await postControl(request, "/test/relay", {})
+  await secondPage.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }))
+  await secondPage.bringToFront()
+  await secondPage.evaluate(() => window.dispatchEvent(new Event("kinic-pending-confirmations-changed")))
+  await expect.poll(async () => (await controlState(request)).confirmDepositCalls).toBe(beforeTwoTabConfirmation.confirmDepositCalls + 1)
+  await secondPage.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" }))
+  await page.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }))
+  await page.bringToFront()
+  await page.evaluate(() => window.dispatchEvent(new Event("kinic-pending-confirmations-changed")))
+  await page.waitForTimeout(300)
+  expect((await controlState(request)).confirmDepositCalls).toBe(beforeTwoTabConfirmation.confirmDepositCalls + 1)
+  await postControl(request, "/test/release-confirm-deposit", {})
+  await expect.poll(async () => (await controlState(request)).completedConfirmDepositCalls).toBe(beforeTwoTabConfirmation.completedConfirmDepositCalls + 1)
+  await page.waitForTimeout(300)
+  expect((await controlState(request)).confirmDepositCalls).toBe(beforeTwoTabConfirmation.confirmDepositCalls + 1)
+  await secondPage.close()
 
   await page.getByLabel("You send").fill("1.00000000")
   await page.getByRole("button", { name: "Bridge to Base" }).click()
@@ -71,6 +110,8 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
     }
   }).toEqual({ knownDepositCount: 2, depositSequences: ["0", "0", "1"], nextDepositSequence: "2" })
 
+  const upgrade = (await postControl(request, "/test/upgrade", {})) as { before: Record<string, string>; after: Record<string, string> }
+  expect(upgrade.after).toEqual(upgrade.before)
   await postControl(request, "/test/relay", {})
   await expect.poll(async () => BigInt((await controlState(request)).bsnsBalance)).toBe(298_000_000n)
   await expect.poll(async () => {
@@ -187,6 +228,8 @@ interface ControlState {
   indexLedgerId: string
   indexBlocksSynced: string
   notifyCalls: number
+  confirmDepositCalls: number
+  completedConfirmDepositCalls: number
   knownDepositCount: number
   depositSequences: string[]
   nextDepositSequence: string
@@ -236,4 +279,10 @@ async function installAnvilWallet(page: Page): Promise<void> {
     }
     Object.defineProperty(window, "ethereum", { configurable: true, value: provider })
   }, { account: DEPLOYER, rpcUrl: "http://127.0.0.1:8545" })
+}
+
+async function disableWebLocks(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined })
+  })
 }

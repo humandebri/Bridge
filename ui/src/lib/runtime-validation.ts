@@ -59,6 +59,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
     client.getChainId(),
     client.getBlock({ blockTag: "finalized" }),
   ])
+  if (status.withdrawal_fee_guard_active) blockers.push("Withdrawal fee guard is active; pause Base withdrawals and reconcile fees")
   if (localChainId !== profile.chainId) blockers.push(`Base RPC is on chain ${localChainId}; expected ${profile.chainId}`)
   if (localFinalized.number === null || localFinalized.hash === null) blockers.push("Finalized Base block number or hash is unavailable")
   blockers.push(...canisterFinalizedObservationBlockers(profile, localFinalized.number, status, Date.now()))
@@ -101,7 +102,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   } catch {
     blockers.push("Index ledger binding is unavailable")
   }
-  if (config.schema_version !== 10) blockers.push(`Unsupported canister schema ${config.schema_version}`)
+  if (config.schema_version !== 16) blockers.push(`Unsupported canister schema ${config.schema_version}`)
   if (ledgerName !== profile.icToken.name || ledgerSymbol !== profile.icToken.symbol || ledgerDecimals !== profile.icToken.decimals) {
     blockers.push(`IC token metadata is not ${profile.icToken.name}/${profile.icToken.symbol}/${profile.icToken.decimals}`)
   }

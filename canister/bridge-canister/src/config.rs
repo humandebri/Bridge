@@ -22,8 +22,10 @@ pub struct BridgeInitArgs {
     pub custom_evm_rpc_urls: Vec<String>,
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
+    pub timelock_contract: Vec<u8>,
     pub ecdsa_key_name: String,
     pub ecdsa_derivation_path: Vec<Vec<u8>>,
+    pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
     pub deposit_rate_limit_window_seconds: u64,
     pub deposit_rate_limit_global: u16,
     pub deposit_rate_limit_per_principal: u16,
@@ -34,21 +36,48 @@ pub struct BridgeInitArgs {
     pub transaction_gas_limit: u128,
     pub max_fee_per_gas: u128,
     pub max_priority_fee_per_gas: u128,
+    pub evm_liveness: EvmLivenessPolicy,
     pub eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
     pub governance_principal: Principal,
-    pub pause_principals: Vec<Principal>,
-    pub finance_administrator: Principal,
+    pub pause_principal: Principal,
     pub fee_recipient: FeeRecipientConfig,
+}
+
+#[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvmLivenessPolicy {
+    pub check_interval_seconds: u64,
+    pub rebroadcast_after_seconds: u64,
+    pub replacement_after_seconds: u64,
+    pub max_replacements: u8,
+    pub fee_bump_bps: u16,
+    pub fee_ceiling_multiplier_bps: u32,
+}
+
+impl Default for EvmLivenessPolicy {
+    fn default() -> Self {
+        Self {
+            check_interval_seconds: 60,
+            rebroadcast_after_seconds: 300,
+            replacement_after_seconds: 1_800,
+            max_replacements: 3,
+            fee_bump_bps: 1_250,
+            fee_ceiling_multiplier_bps: 40_000,
+        }
+    }
 }
 
 impl BridgeInitArgs {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.bridge_contract.len() != 20 {
-            return Err("bridge contract must be 20 bytes");
+        if self.bridge_contract.len() != 20 || self.timelock_contract.len() != 20 {
+            return Err("bridge and Timelock contracts must be 20 bytes");
         }
-        if self.base_chain_id == 0 || self.ecdsa_key_name.is_empty() {
+        if self.base_chain_id == 0
+            || self.ecdsa_key_name.is_empty()
+            || self.governance_ecdsa_derivation_path.is_empty()
+            || self.ecdsa_derivation_path == self.governance_ecdsa_derivation_path
+        {
             return Err("chain id and ECDSA key name must be configured");
         }
         #[cfg(not(feature = "test-deployment"))]
@@ -102,35 +131,43 @@ impl BridgeInitArgs {
         if self.max_priority_fee_per_gas > self.max_fee_per_gas {
             return Err("max priority fee per gas must not exceed max fee per gas");
         }
+        let policy = self.evm_liveness;
+        let replacement_checks = policy
+            .replacement_after_seconds
+            .div_ceil(policy.check_interval_seconds.max(1));
+        if !(30..=300).contains(&policy.check_interval_seconds)
+            || policy.rebroadcast_after_seconds < policy.check_interval_seconds
+            || policy.replacement_after_seconds < policy.rebroadcast_after_seconds
+            || !(1..=8).contains(&policy.max_replacements)
+            || !(1_000..=5_000).contains(&policy.fee_bump_bps)
+            || !(10_000..=100_000).contains(&policy.fee_ceiling_multiplier_bps)
+            || replacement_checks.saturating_mul(u64::from(policy.max_replacements) + 1) > 255
+        {
+            return Err("EVM liveness policy is outside the supported safety bounds");
+        }
         if self.governance_principal == Principal::anonymous()
-            || self.finance_administrator == Principal::anonymous()
-            || self.pause_principals.is_empty()
-            || self.pause_principals.len() > 10
-            || self
-                .pause_principals
-                .iter()
-                .any(|principal| *principal == Principal::anonymous())
+            || self.pause_principal == Principal::anonymous()
+            || self.pause_principal == self.governance_principal
             || self.fee_recipient.owner == Principal::anonymous()
+            || self.fee_recipient.owner == self.pause_principal
             || !matches!(self.fee_recipient.subaccount.len(), 0 | 32)
         {
             return Err("administrator principals and fee recipient must be valid");
-        }
-        let mut principals = self.pause_principals.clone();
-        principals.sort();
-        principals.dedup();
-        if principals.len() != self.pause_principals.len() {
-            return Err("pause principals must be distinct");
         }
         Ok(())
     }
 
     pub const fn reserve_policy(&self) -> bridge_core::ReservePolicy {
+        let replacement_fee_ceiling = self
+            .max_fee_per_gas
+            .saturating_mul(self.evm_liveness.fee_ceiling_multiplier_bps as u128)
+            / 10_000;
         bridge_core::ReservePolicy {
             eth_floor_wei: self.eth_floor_wei,
             cycles_floor: self.cycles_floor,
             settlement_cycle_ceiling: self.settlement_cycle_ceiling,
             transaction_gas_limit: self.transaction_gas_limit,
-            max_fee_per_gas: self.max_fee_per_gas,
+            max_fee_per_gas: replacement_fee_ceiling,
         }
     }
 
@@ -139,6 +176,13 @@ impl BridgeInitArgs {
             .as_slice()
             .try_into()
             .expect("validated bridge contract")
+    }
+
+    pub fn timelock_array(&self) -> [u8; 20] {
+        self.timelock_contract
+            .as_slice()
+            .try_into()
+            .expect("validated Timelock contract")
     }
 }
 
@@ -260,8 +304,10 @@ mod tests {
             ],
             base_chain_id: BASE_MAINNET_CHAIN_ID,
             bridge_contract: vec![1; 20],
+            timelock_contract: vec![2; 20],
             ecdsa_key_name: "key_1".into(),
             ecdsa_derivation_path: vec![],
+            governance_ecdsa_derivation_path: vec![b"governance-operator".to_vec()],
             deposit_rate_limit_window_seconds: 60,
             deposit_rate_limit_global: 10,
             deposit_rate_limit_per_principal: 2,
@@ -272,14 +318,14 @@ mod tests {
             transaction_gas_limit: 500_000,
             max_fee_per_gas: 10,
             max_priority_fee_per_gas: 1,
+            evm_liveness: EvmLivenessPolicy::default(),
             eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
             governance_principal: principal,
-            pause_principals: vec![principal],
-            finance_administrator: principal,
+            pause_principal: Principal::from_slice(&[2]),
             fee_recipient: FeeRecipientConfig {
-                owner: principal,
+                owner: Principal::from_slice(&[3]),
                 subaccount: vec![],
             },
         }

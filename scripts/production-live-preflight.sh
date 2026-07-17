@@ -15,25 +15,29 @@ fi
 PROFILE="$BUNDLE/profile.json"
 SNAPSHOT="$BUNDLE/signer-snapshot.json"
 MANIFEST="$BUNDLE/release-manifest.json"
-[[ -f "$PROFILE" && -f "$MANIFEST" ]] || { echo "profile or release manifest is missing" >&2; exit 1; }
+[[ -f "$PROFILE" && -f "$MANIFEST" && -f "$BUNDLE/controller-handover.json" ]] || {
+  echo "profile, manifest, or controller handover evidence is missing" >&2; exit 1;
+}
 if [[ "$MODE" == verify && ! -f "$SNAPSHOT" ]]; then
   echo "signed snapshot is missing" >&2; exit 1
 fi
-: "${BRIDGE_DFX_IDENTITY:?BRIDGE_DFX_IDENTITY must name the governance identity used for the chain-key challenge}"
-for tool in cast dfx python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
+: "${BRIDGE_ICP_IDENTITY:?BRIDGE_ICP_IDENTITY must name the governance identity used for the chain-key challenge}"
+for tool in cast icp python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 
 PROFILE_VALUES=()
 while IFS= read -r line; do PROFILE_VALUES[${#PROFILE_VALUES[@]}]="$line"; done < <(python3 - "$PROFILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
-for v in [p['chain_id'],p['evm_rpc_canister_id'],p['bridge_canister_id'],p['bridge_contract'],p['timelock']['address'],p['root_canister_id'],p['bridge_runtime_bytecode_sha256'],p['bridge_canister_wasm_sha256'],p['ic_host'],p['ledger_canister_id'],*map(lambda x:x['url'],p['rpc_providers'])]: print(v)
+for v in [p['chain_id'],p['evm_rpc_canister_id'],p['bridge_canister_id'],p['bridge_contract'],p['timelock']['address'],p['root_canister_id'],p['bridge_runtime_bytecode_sha256'],p['bridge_canister_wasm_sha256'],p['ledger_canister_id'],*map(lambda x:x['url'],p['rpc_providers'])]: print(v)
 PY
 )
-[[ ${#PROFILE_VALUES[@]} -eq 13 ]] || { echo "profile must contain exactly three RPC providers" >&2; exit 1; }
+[[ ${#PROFILE_VALUES[@]} -eq 12 ]] || { echo "profile must contain exactly three RPC providers" >&2; exit 1; }
 CHAIN_ID=${PROFILE_VALUES[0]}; EVM_RPC_CANISTER=${PROFILE_VALUES[1]}; CANISTER=${PROFILE_VALUES[2]}
 BRIDGE=${PROFILE_VALUES[3]}; TIMELOCK=${PROFILE_VALUES[4]}; EXPECTED_CONTROLLER=${PROFILE_VALUES[5]}
-EXPECTED_RUNTIME=${PROFILE_VALUES[6]}; EXPECTED_WASM=${PROFILE_VALUES[7]}; IC_HOST=${PROFILE_VALUES[8]}
-LEDGER=${PROFILE_VALUES[9]}
+EXPECTED_RUNTIME=${PROFILE_VALUES[6]}; EXPECTED_WASM=${PROFILE_VALUES[7]}; LEDGER=${PROFILE_VALUES[8]}
+[[ "$(icp canister status bridge-canister -e production -i --identity "$BRIDGE_ICP_IDENTITY")" == "$CANISTER" ]] || {
+  echo "production ICP environment does not map the reviewed Bridge Canister" >&2; exit 1;
+}
 RELEASE_ID="$(python3 - "$MANIFEST" <<'PY'
 import json,re,sys
 value=json.load(open(sys.argv[1]))['release_id']
@@ -123,7 +127,7 @@ for provider_index,rpc_entry in enumerate(p['rpc_providers']):
  try:
   rpc=rpc_entry['url']; bridge=p['bridge_contract']; timelock=p['timelock']['address']
   bsns=call(rpc,bridge,'bsns()(address)').lower()
-  external={p['timelock']['proposer'],p['timelock']['executor'],p['timelock']['canceller'],p['base_admin_wallet'],p['runtime_administrator'],p['release_approver'],zero}
+  external={p['timelock']['proposer'],p['timelock']['executor'],p['timelock']['canceller'],p['governance_operator'],zero}
   bridge_deployment_hash=deployment(rpc,receipt['bridge_deployment_transaction_hash'],bridge,receipt['bridge_deployment_block_number'])
   timelock_deployment_hash=deployment(rpc,receipt['timelock_deployment_transaction_hash'],timelock,receipt['timelock_deployment_block_number'])
   role_members,roles_exact=exact_role_members(rpc,timelock,receipt['timelock_deployment_block_number'])
@@ -165,14 +169,15 @@ winner,count=max(groups.items(),key=lambda x:x[1])
 if count<2: raise SystemExit('Base state does not have 2-of-3 agreement at the Finalized block')
 (root/'base-state.json').write_text(json.dumps({'agreeing_providers':count,'state':json.loads(winner)},sort_keys=True,separators=(',',':'))+'\n')
 PY
-dfx canister call "$CANISTER" get_public_config '()' --network "$IC_HOST" --output json >"$TMP/public-config.json"
-dfx canister call "$CANISTER" get_bridge_status '()' --network "$IC_HOST" --output json >"$TMP/status.json"
-dfx canister status "$CANISTER" --network "$IC_HOST" --output json >"$TMP/canister-status.json"
-dfx canister call "$LEDGER" icrc1_fee '()' --network "$IC_HOST" --output json >"$TMP/ledger-fee.json"
+icp canister call bridge-canister get_public_config '()' -e production --json >"$TMP/public-config.json"
+icp canister call bridge-canister get_bridge_status '()' -e production --json >"$TMP/status.json"
+icp canister status bridge-canister -e production --public --json >"$TMP/canister-status.json"
+icp canister call "$LEDGER" icrc1_fee '()' -n ic --json >"$TMP/ledger-fee.json"
+cp "$BUNDLE/controller-handover.json" "$TMP/controller-handover.json"
 python3 "$(dirname "$0")/live_fee_guard.py" "$PROFILE" "$TMP/base-state.json" "$TMP/ledger-fee.json" >"$TMP/live-fees.json"
 if [[ "$MODE" == capture ]]; then
-  dfx canister call "$CANISTER" sign_chain_key_challenge "(\"$RELEASE_ID\")" \
-    --network "$IC_HOST" --identity "$BRIDGE_DFX_IDENTITY" --output json >"$TMP/chain-key-challenge.json"
+  icp canister call bridge-canister sign_chain_key_challenge "(\"$RELEASE_ID\")" \
+    -e production --identity "$BRIDGE_ICP_IDENTITY" --json >"$TMP/chain-key-challenge.json"
 fi
 
 python3 - "$PROFILE" "$SNAPSHOT" "$TMP" "$MODE" "${OUTPUT:-}" <<'PY'
@@ -196,17 +201,20 @@ base_result=json.load(open(root/'base-state.json')); state=base_result['state'];
 height=state['height']; bhash=state['hash']; base=state['base_bridge_signer']; runtime_hash=state['bridge_runtime_bytecode_sha256']
 delay=state['timelock_minimum_delay_seconds']; self_admin=state['timelock_self_admin']
 public=json.load(open(root/'public-config.json')); status=json.load(open(root/'status.json')); cstatus=json.load(open(root/'canister-status.json'))
+handover=json.load(open(root/'controller-handover.json'))
 live_fees=json.load(open(root/'live-fees.json'))
 signers=scalars(public,'expected_bridge_signer')
 if not signers: raise SystemExit('Canister public signer missing')
 s=signers[0]
 if isinstance(s,list): canister='0x'+bytes(s).hex()
 else: canister=str(s).lower()
-controllers=scalars(cstatus,'controllers')
-if not controllers: raise SystemExit('Canister controllers missing')
-controllers=controllers[0] if isinstance(controllers[0],list) else controllers
-if len(controllers)!=1: raise SystemExit('Canister must have exactly one controller')
-controller=str(controllers[0])
+evidence_controllers=handover.get('final_controllers')
+if evidence_controllers != [p['root_canister_id']]: raise SystemExit('handover evidence does not bind the SNS Root-only controller set')
+controller_values=scalars(cstatus,'controllers')
+if len(controller_values)!=1 or not isinstance(controller_values[0],list): raise SystemExit('live Canister controller set is unavailable')
+controllers=[str(value) for value in controller_values[0]]
+if controllers != [p['root_canister_id']]: raise SystemExit('live Canister controller set is not SNS Root-only')
+controller=controllers[0]
 module=scalars(cstatus,'module_hash')
 module_hash=str(module[0]).lower().removeprefix('0x') if module else ''
 sufficient=scalars(status,'sufficient'); sufficient=bool(sufficient[0]) if sufficient else False
@@ -231,7 +239,7 @@ if module_hash.lower()!=p['bridge_canister_wasm_sha256'].lower(): raise SystemEx
 if controller!=p['root_canister_id']: raise SystemExit('controller drift')
 if not sufficient: raise SystemExit('settlement reserve is insufficient')
 expected_addresses={
- 'base_bridge_signer':p['expected_bridge_signer'],'base_runtime_administrator':p['runtime_administrator'],
+ 'base_bridge_signer':p['expected_bridge_signer'],'base_runtime_administrator':p['governance_operator'],
  'base_admin_timelock':p['timelock']['address'],'bsns_address':p['bsns_contract'],'bsns_bridge':p['bridge_contract']}
 if any(state[k].lower()!=v.lower() for k,v in expected_addresses.items()): raise SystemExit('Base role or bSNS binding drift')
 if not state['base_deposit_mints_paused'] or not state['base_withdrawals_paused']: raise SystemExit('Base asset flows are not paused')

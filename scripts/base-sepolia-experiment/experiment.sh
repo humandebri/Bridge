@@ -20,6 +20,10 @@ MAX_EXPERIMENT_COST_WEI=20000000000000000
 SIGNER_FUNDING_WEI=5000000000000000
 CALL_GAS_BUDGET=5000000
 BRIDGE_DEPLOY_GAS_BUDGET=5000000
+DEFAULT_PER_DEPOSIT_LIMIT=15000000000000
+DEFAULT_MINT_WINDOW_LIMIT=15000000000000
+DEFAULT_MAX_SERVICE_FEE=1000000000
+DEFAULT_INITIAL_SERVICE_FEE=50000000
 
 die() {
   echo "error: $*" >&2
@@ -279,7 +283,11 @@ init_manifest() {
     --arg created "$created" --arg rpc "$RPC_URL" --arg deployer "$DEPLOYER" \
     --arg revision "$revision" --arg dirty "$dirty" --arg tree "$tree" \
     --argjson chain "$CHAIN_ID" --argjson delay "$TIMELOCK_DELAY" \
-    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"kinic",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:1000000000,mint_window_limit:10000000000,mint_window_duration_seconds:3600,max_service_fee:10000000,initial_service_fee:1000000},contracts:{},transactions:{},checks:{},synthetic_ledger_block:42}' \
+    --argjson per_deposit_limit "$DEFAULT_PER_DEPOSIT_LIMIT" \
+    --argjson mint_window_limit "$DEFAULT_MINT_WINDOW_LIMIT" \
+    --argjson max_service_fee "$DEFAULT_MAX_SERVICE_FEE" \
+    --argjson initial_service_fee "$DEFAULT_INITIAL_SERVICE_FEE" \
+    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"kinic",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:$per_deposit_limit,mint_window_limit:$mint_window_limit,mint_window_duration_seconds:3600,max_service_fee:$max_service_fee,initial_service_fee:$initial_service_fee},contracts:{},transactions:{},checks:{},synthetic_ledger_block:42}' \
     >"$MANIFEST"
 }
 
@@ -442,7 +450,8 @@ deploy() {
   timelock_code_hash="$(cast codehash "$timelock" --rpc-url "$RPC_URL")"
   bridge="$(deploy_contract bridge 'src/Bridge.sol:Bridge' "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
     kinic KINIC 8 "$signer" "$DEPLOYER" "$timelock" "$timelock_code_hash" \
-    1000000000 10000000000 3600 10000000 1000000)"
+    "$(manifest_get '.parameters.per_deposit_limit')" "$(manifest_get '.parameters.mint_window_limit')" 3600 \
+    "$(manifest_get '.parameters.max_service_fee')" "$(manifest_get '.parameters.initial_service_fee')")"
   bsns="$(cast call "$bridge" 'bsns()(address)' --rpc-url "$RPC_URL")"
   record_contract bsns "$bsns" "$(manifest_get '.contracts.bridge.deployment_transaction')"
   wait_transactions_confirmed fund_bridge_signer deploy_timelock deploy_bridge
@@ -465,16 +474,20 @@ verify_deployment() {
   assert_address_call "$bsns" "$bridge" 'bsns()(address)'
   assert_address_call "$bridge" "$bsns" 'bridge()(address)'
   assert_call_eq 259200 "$timelock" 'getMinDelay()(uint256)'
-  assert_call_eq 1000000000 "$bridge" 'perDepositLimit()(uint256)'
-  assert_call_eq 10000000000 "$bridge" 'mintWindowLimit()(uint256)'
+  assert_call_eq "$(manifest_get '.parameters.per_deposit_limit')" "$bridge" 'perDepositLimit()(uint256)'
+  assert_call_eq "$(manifest_get '.parameters.mint_window_limit')" "$bridge" 'mintWindowLimit()(uint256)'
   assert_call_eq 3600 "$bridge" 'mintWindowDuration()(uint64)'
-  assert_call_eq 10000000 "$bridge" 'MAX_SERVICE_FEE()(uint256)'
+  assert_call_eq "$(manifest_get '.parameters.max_service_fee')" "$bridge" 'MAX_SERVICE_FEE()(uint256)'
   local deployment_state
   deployment_state="$(manifest_get '.state')"
   if [[ "$deployment_state" == COMPLETE ]]; then
-    assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
+    if [[ "$(manifest_get '.parameters.initial_service_fee')" == 1000000 ]]; then
+      assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
+    else
+      assert_call_eq 50000000 "$bridge" 'serviceFee()(uint256)'
+    fi
   else
-    assert_call_eq 1000000 "$bridge" 'serviceFee()(uint256)'
+    assert_call_eq "$(manifest_get '.parameters.initial_service_fee')" "$bridge" 'serviceFee()(uint256)'
   fi
   if [[ "$deployment_state" == DEPLOYED || "$deployment_state" == WAITING_TIMELOCK || "$deployment_state" == COMPLETE ]]; then
     assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
@@ -512,6 +525,14 @@ flow() {
   check_chain
   require_manifest_chain
   require_state ACTIVE
+  [[ "$(manifest_get '.parameters.per_deposit_limit')" == "$DEFAULT_PER_DEPOSIT_LIMIT" ]] \
+    || die "flow requires per-deposit limit=$DEFAULT_PER_DEPOSIT_LIMIT"
+  [[ "$(manifest_get '.parameters.mint_window_limit')" == "$DEFAULT_MINT_WINDOW_LIMIT" ]] \
+    || die "flow requires mint window limit=$DEFAULT_MINT_WINDOW_LIMIT"
+  [[ "$(manifest_get '.parameters.max_service_fee')" == "$DEFAULT_MAX_SERVICE_FEE" ]] \
+    || die "flow requires MAX_SERVICE_FEE=$DEFAULT_MAX_SERVICE_FEE"
+  [[ "$(manifest_get '.parameters.initial_service_fee')" == "$DEFAULT_INITIAL_SERVICE_FEE" ]] \
+    || die "flow requires initial service fee=$DEFAULT_INITIAL_SERVICE_FEE"
   local signer bridge bsns deposit_id owner subaccount tx withdrawal1 status1
   signer="$(manifest_get '.wallets.bridge_signer')"
   bridge="$(manifest_get '.contracts.bridge.address')"
@@ -521,32 +542,34 @@ flow() {
   deposit_id="$(cast keccak 'base-sepolia-contract-experiment-deposit-1')"
   send_success mint_deposit "$signer" "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$bridge" \
     'mintDeposit((bytes32,address,uint256,uint256,uint256))' \
-    "($deposit_id,$DEPLOYER,101000000,10000000,1000000)" >/dev/null
+    "($deposit_id,$DEPLOYER,150000000,1000000000,50000000)" >/dev/null
   if ! jq -e '.transactions.create_withdrawal_1.hash' "$MANIFEST" >/dev/null; then
     assert_call_eq 100000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
   fi
   owner=0x01
   subaccount="$ZERO_BYTES32"
   send_success approve_withdrawal_1 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bsns" \
-    'approve(address,uint256)' "$bridge" 50000000 >/dev/null
+    'approve(address,uint256)' "$bridge" 75000000 >/dev/null
   send_success create_withdrawal_1 "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
-    'createWithdrawal(uint256,uint256,bytes,bytes32)' 50000000 1000000 "$owner" "$subaccount" >/dev/null
-  assert_call_eq 50000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
-  assert_call_eq 50000000 "$bsns" 'totalSupply()(uint256)'
+    'createWithdrawal(uint256,uint256,bytes,bytes32)' 75000000 50000000 "$owner" "$subaccount" >/dev/null
+  assert_call_eq 25000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
+  assert_call_eq 25000000 "$bsns" 'totalSupply()(uint256)'
   withdrawal1="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,uint256,uint256,bytes,bytes32,uint8))' 1 --rpc-url "$RPC_URL" --json)"
   status1="$(jq -r '.[0][7]' <<<"$withdrawal1")"
   [[ "$status1" == 1 ]] || die "withdrawal 1 status is $status1, expected Committed(1)"
-  send_success set_service_fee_2m "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
-    'setServiceFee(uint256)' 2000000 >/dev/null
+  send_success set_service_fee_1_kinic "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
+    'setServiceFee(uint256)' 100000000 >/dev/null
+  send_success restore_service_fee_half_kinic "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
+    'setServiceFee(uint256)' 50000000 >/dev/null
   send_success pause_deposits "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'pauseDepositMints()' >/dev/null
   send_success pause_withdrawals "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'pauseWithdrawals()' >/dev/null
   wait_transactions_confirmed mint_deposit approve_withdrawal_1 create_withdrawal_1 \
-    set_service_fee_2m pause_deposits pause_withdrawals
+    set_service_fee_1_kinic restore_service_fee_half_kinic pause_deposits pause_withdrawals
   assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
   assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
-  assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
+  assert_call_eq 50000000 "$bridge" 'serviceFee()(uint256)'
   assert_reverts_call "$DEPLOYER" "$bridge" "$(cast calldata 'unpauseDepositMints()')"
   manifest_update '.checks.asset_flow = true | .checks.direct_unpause_rejected = true | .state = "COMPLETE" | .completed_at = $at' \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -644,8 +667,13 @@ verify() {
     return
   fi
   [[ "$state" == COMPLETE ]] || die "unsupported manifest state $state"
-  assert_call_eq 50000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
-  assert_call_eq 50000000 "$bsns" 'totalSupply()(uint256)'
+  if [[ "$(manifest_get '.parameters.initial_service_fee')" == 1000000 ]]; then
+    assert_call_eq 50000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
+    assert_call_eq 50000000 "$bsns" 'totalSupply()(uint256)'
+  else
+    assert_call_eq 25000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
+    assert_call_eq 25000000 "$bsns" 'totalSupply()(uint256)'
+  fi
   withdrawal1="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))' 1 --rpc-url "$RPC_URL" --json)"
   withdrawal2="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))' 2 --rpc-url "$RPC_URL" --json)"
   status1="$(jq -r '.[0][5]' <<<"$withdrawal1")"
@@ -653,7 +681,11 @@ verify() {
   [[ "$status1" == 3 && "$status2" == 4 ]] || die "withdrawal final states mismatch"
   assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
   assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
-  assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
+  if [[ "$(manifest_get '.parameters.initial_service_fee')" == 1000000 ]]; then
+    assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
+  else
+    assert_call_eq 50000000 "$bridge" 'serviceFee()(uint256)'
+  fi
   local name hash receipt recorded_hash status block safe
   while IFS= read -r name; do
     hash="$(jq -r --arg name "$name" '.transactions[$name].hash' "$MANIFEST")"

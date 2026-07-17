@@ -8,7 +8,7 @@ import { IDL } from "@dfinity/candid"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Principal } from "@dfinity/principal"
 import { PocketIc, PocketIcServer, SubnetStateType } from "@dfinity/pic"
-import { createPublicClient, decodeEventLog, hexToBytes, http, numberToHex, recoverTransactionAddress, sha256 } from "viem"
+import { createPublicClient, decodeEventLog, hexToBytes, http, keccak256, numberToHex, recoverTransactionAddress, sha256 } from "viem"
 import { publicKeyToAddress } from "viem/accounts"
 import { idlFactory as bridgeIdl, init as bridgeInitFactory } from "./generated/bridge.idl.mjs"
 import { idlFactory as mockIdl, init as mockInitFactory } from "./generated/mock-external.idl.mjs"
@@ -22,10 +22,10 @@ const rpcUrl = "http://127.0.0.1:8545"
 const controlPort = 43119
 const uiPort = 4174
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-const runtimeAdministrator = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-const baseAdmin = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 const testIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(7))
 const testOwner = testIdentity.getPrincipal()
+const pauseIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(8))
+const pausePrincipal = pauseIdentity.getPrincipal()
 const minter = Principal.selfAuthenticating(new Uint8Array(32).fill(9))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
@@ -139,15 +139,20 @@ async function setup() {
   })
   const signerProbe = pic.createActor(mockIdl, bridgeId)
   signerProbe.setIdentity(testIdentity)
-  const probe = await signerProbe.probe_chain_key("key_1")
-  if (!("Ok" in probe)) throw new Error(`PocketIC chain-key probe failed: ${probe.Err}`)
-  let signer = publicKeyToAddress(bytesHex(probe.Ok.public_key))
+  let signer = bytesHex(await signerProbe.derive_chain_key_address(bridgeId, "key_1", []))
+  const governanceOperator = bytesHex(await signerProbe.derive_chain_key_address(
+    bridgeId,
+    "key_1",
+    [new TextEncoder().encode("governance-operator")],
+  ))
   await rpc("anvil_setBalance", [signer, "0x8ac7230489e80000"])
+  await rpc("anvil_setBalance", [governanceOperator, "0x8ac7230489e80000"])
   if (BigInt(await rpc("eth_getBalance", [signer, "latest"])) === 0n) throw new Error("Failed to fund the PocketIC Bridge signer")
+  if (BigInt(await rpc("eth_getBalance", [governanceOperator, "latest"])) === 0n) throw new Error("Failed to fund the PocketIC governance operator")
 
-  const timelockAddress = deployTimelock()
+  const timelockAddress = deployTimelock(governanceOperator)
   resources.timelockAddress = timelockAddress
-  const bridgeAddress = deployBridge(signer, timelockAddress)
+  const bridgeAddress = deployBridge(signer, governanceOperator, timelockAddress)
   const bsnsAddress = execFileSync("cast", ["call", bridgeAddress, "bsns()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   const deploymentBlock = await publicClient.getBlockNumber()
   const bridgeCode = await publicClient.getCode({ address: bridgeAddress })
@@ -165,8 +170,10 @@ async function setup() {
       custom_evm_rpc_urls: [],
       base_chain_id: 31_337n,
       bridge_contract: hexToBytes(bridgeAddress),
+      timelock_contract: hexToBytes(timelockAddress),
       ecdsa_key_name: "key_1",
       ecdsa_derivation_path: [],
+      governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")],
       deposit_rate_limit_window_seconds: 60n,
       deposit_rate_limit_global: 30,
       deposit_rate_limit_per_principal: 3,
@@ -177,12 +184,19 @@ async function setup() {
       transaction_gas_limit: 500_000n,
       max_fee_per_gas: 10n,
       max_priority_fee_per_gas: 1n,
+      evm_liveness: {
+        check_interval_seconds: 60n,
+        rebroadcast_after_seconds: 300n,
+        replacement_after_seconds: 1_800n,
+        max_replacements: 3,
+        fee_bump_bps: 1_250,
+        fee_ceiling_multiplier_bps: 40_000,
+      },
       eth_floor_wei: 1n,
       cycles_floor: 1n,
       settlement_cycle_ceiling: 1n,
       governance_principal: testOwner,
-      pause_principals: [testOwner],
-      finance_administrator: testOwner,
+      pause_principal: pausePrincipal,
       fee_recipient: { owner: testOwner, subaccount: [] },
     }]),
     cycles: 500_000_000_000_000n,
@@ -191,8 +205,8 @@ async function setup() {
   const bridgeActor = pic.createActor(bridgeIdl, bridgeId)
   const bridge = { actor: bridgeActor, canisterId: bridgeId }
   bridge.actor.setIdentity(testIdentity)
-  const resumeResult = await bridge.actor.resume_new_deposits()
-  if (!("Ok" in resumeResult)) throw new Error(`Failed to activate test Bridge canister: ${JSON.stringify(resumeResult.Err)}`)
+  const pauseActor = pic.createActor(bridgeIdl, bridgeId)
+  pauseActor.setIdentity(pauseIdentity)
   mock.actor.setIdentity(testIdentity)
   const configuredSigner = await mock.actor.set_bridge_signer_for_canister(bridgeId, "key_1")
   if (!("Ok" in configuredSigner)) throw new Error(`Failed to configure the confirmed bridge signer: ${configuredSigner.Err}`)
@@ -211,6 +225,15 @@ async function setup() {
   ledger.setIdentity(testIdentity)
   const index = pic.createActor(indexIdl, indexId)
   const publicConfig = await bridge.actor.get_public_config()
+  if (bytesHex(publicConfig.expected_bridge_signer).toLowerCase() !== signer.toLowerCase()) throw new Error("Bridge mint signer derivation drifted")
+  if (bytesHex(publicConfig.governance_operator).toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge governance operator derivation drifted")
+  const governanceReceiptFixture = await mock.actor.set_observed_transaction(
+    new Uint8Array(32).fill(9),
+    hexToBytes(timelockAddress),
+    hexToBytes(governanceOperator),
+    1,
+  )
+  if ("Err" in governanceReceiptFixture) throw new Error(governanceReceiptFixture.Err)
   await pic.advanceTime(2_000)
   await pic.tick(30)
 
@@ -234,6 +257,10 @@ async function setup() {
 
   let relayedBroadcasts = 0
   let notifyCalls = 0
+  let confirmDepositCalls = 0
+  let completedConfirmDepositCalls = 0
+  let holdNextConfirmDeposit = false
+  let releaseHeldConfirmDeposit
   let failNextNotification = false
   let failNextDepositResponse = false
   let connectedAccount = testOwner.toText()
@@ -253,27 +280,168 @@ async function setup() {
     ])
     if ("Err" in safeResult) throw new Error(safeResult.Err)
     if ("Err" in finalizedResult) throw new Error(finalizedResult.Err)
+    const [depositPaused, withdrawalPaused] = await Promise.all([
+      publicClient.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "depositMintsPaused" }),
+      publicClient.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "withdrawalsPaused" }),
+    ])
+    await Promise.all([
+      mock.actor.set_deposit_mints_paused(depositPaused),
+      mock.actor.set_withdrawals_paused(withdrawalPaused),
+    ])
   }
   await syncObservedHeads()
   const relayPendingBroadcasts = async () => {
     const broadcasts = await mock.actor.broadcast_transactions()
+    const submitted = []
     for (; relayedBroadcasts < broadcasts.length; relayedBroadcasts += 1) {
       const raw = bytesHex(broadcasts[relayedBroadcasts])
+      const expectedHash = keccak256(raw)
       const rawSigner = await recoverTransactionAddress({ serializedTransaction: raw })
-      if (rawSigner.toLowerCase() !== signer.toLowerCase()) {
+      if (rawSigner.toLowerCase() !== signer.toLowerCase() && rawSigner.toLowerCase() !== governanceOperator.toLowerCase()) {
         sendAsTimelock(bridgeAddress, "rotateBridgeSigner(address)", rawSigner)
         await rpc("anvil_setBalance", [rawSigner, "0x8ac7230489e80000"])
         signer = rawSigner
       }
-      try { await rpc("eth_sendRawTransaction", [raw]) } catch (error) {
+      try {
+        const submittedHash = await rpc("eth_sendRawTransaction", [raw])
+        if (submittedHash.toLowerCase() !== expectedHash.toLowerCase()) throw new Error("Anvil returned a different raw transaction hash")
+      } catch (error) {
         if (!String(error).includes("already known")) throw error
       }
+      submitted.push(expectedHash)
     }
     await rpc("evm_mine", [])
     // Anvil's Safe tag trails the tip. Mine enough descendants so receipts
     // relayed in this round can be confirmed by the canister's Safe checks.
     await rpc("anvil_mine", ["0x40"])
+    for (const transactionHash of submitted) {
+      if (!await rpc("eth_getTransactionReceipt", [transactionHash])) throw new Error(`Anvil did not mine relayed transaction ${transactionHash}`)
+    }
   }
+  await syncObservedHeads()
+  const scheduleSubmitted = await bridge.actor.schedule_activation()
+  if (!("Ok" in scheduleSubmitted)) throw new Error(`Canister schedule_activation failed: ${json(scheduleSubmitted.Err)}`)
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const scheduleConfirmed = await bridge.actor.schedule_activation()
+  if (!("Ok" in scheduleConfirmed)) throw new Error(`Canister schedule confirmation failed: ${json(scheduleConfirmed.Err)}`)
+
+  const earlyExecuteSubmitted = await bridge.actor.execute_activation()
+  if (!("Ok" in earlyExecuteSubmitted)) throw new Error(`Canister early execute submission failed: ${json(earlyExecuteSubmitted.Err)}`)
+  const mismatchedPending = await pauseActor.submit_base_governance_action({ PauseDepositMints: null })
+  if (!("Err" in mismatchedPending) || !("Busy" in mismatchedPending.Err)
+    || mismatchedPending.Err.Busy.operation_id !== earlyExecuteSubmitted.Ok.operation_id) {
+    throw new Error(`Pause principal advanced a mismatched pending activation: ${json(mismatchedPending)}`)
+  }
+  await mock.actor.set_receipt_mode({ Reverted: null })
+  await relayPendingBroadcasts()
+  const earlyExecuteConfirmed = await bridge.actor.execute_activation()
+  if (!("Err" in earlyExecuteConfirmed) || !("BroadcastAmbiguous" in earlyExecuteConfirmed.Err)) {
+    throw new Error(`Canister did not record the pre-delay execute revert: ${json(earlyExecuteConfirmed)}`)
+  }
+  await mock.actor.set_receipt_mode({ Confirmed: null })
+
+  await rpc("evm_increaseTime", [259_200])
+  await rpc("evm_mine", [])
+  const executeSubmitted = await bridge.actor.execute_activation()
+  if (!("Ok" in executeSubmitted)) throw new Error(`Canister execute_activation failed: ${json(executeSubmitted.Err)}`)
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const executeConfirmed = await bridge.actor.execute_activation()
+  if (!("Ok" in executeConfirmed)) throw new Error(`Canister execute confirmation failed: ${json(executeConfirmed.Err)}`)
+  const activeStatus = await bridge.actor.get_bridge_status()
+  if (activeStatus.deposits_paused) throw new Error("IC deposits remained paused after canonical activation")
+
+  const localPause = await pauseActor.pause_new_deposits()
+  if (!("Ok" in localPause)) throw new Error(`Pause principal could not pause IC deposits: ${json(localPause.Err)}`)
+  const pauseDepositSubmitted = await bridge.actor.submit_base_governance_action({ PauseDepositMints: null })
+  if (!("Ok" in pauseDepositSubmitted)) throw new Error(`Canister deposit pause failed: ${json(pauseDepositSubmitted.Err)}`)
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const pauseDepositConfirmed = await bridge.actor.submit_base_governance_action({ PauseDepositMints: null })
+  if (!("Ok" in pauseDepositConfirmed)) throw new Error(`Canister deposit pause confirmation failed: ${json(pauseDepositConfirmed.Err)}`)
+  const pauseWithdrawalSubmitted = await bridge.actor.submit_base_governance_action({ PauseWithdrawals: null })
+  if (!("Ok" in pauseWithdrawalSubmitted)) throw new Error(`Canister withdrawal pause failed: ${json(pauseWithdrawalSubmitted.Err)}`)
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const pauseWithdrawalConfirmed = await bridge.actor.submit_base_governance_action({ PauseWithdrawals: null })
+  if (!("Ok" in pauseWithdrawalConfirmed)) throw new Error(`Canister withdrawal pause confirmation failed: ${json(pauseWithdrawalConfirmed.Err)}`)
+
+  const secondScheduleSubmitted = await bridge.actor.schedule_activation()
+  if (!("Ok" in secondScheduleSubmitted)) throw new Error(`Second activation schedule failed: ${json(secondScheduleSubmitted.Err)}`)
+  if (secondScheduleSubmitted.Ok.operation_id === scheduleSubmitted.Ok.operation_id) throw new Error("Activation reused its governance operation ID")
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const secondScheduleConfirmed = await bridge.actor.schedule_activation()
+  if (!("Ok" in secondScheduleConfirmed)) throw new Error(`Second activation schedule confirmation failed: ${json(secondScheduleConfirmed.Err)}`)
+  await rpc("evm_increaseTime", [259_200])
+  await rpc("evm_mine", [])
+  const secondExecuteSubmitted = await bridge.actor.execute_activation()
+  if (!("Ok" in secondExecuteSubmitted)) throw new Error(`Second activation execute failed: ${json(secondExecuteSubmitted.Err)}`)
+  const emergencyDuringExecute = await pauseActor.emergency_pause()
+  if (!("Err" in emergencyDuringExecute) || !("Unauthorized" in emergencyDuringExecute.Err)) {
+    throw new Error(`Emergency pause unexpectedly advanced the submitted activation: ${json(emergencyDuringExecute)}`)
+  }
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const secondExecuteConfirmed = await bridge.actor.execute_activation()
+  if (!("Ok" in secondExecuteConfirmed)) throw new Error(`Second activation execute confirmation failed: ${json(secondExecuteConfirmed.Err)}`)
+  const emergencyStatus = await bridge.actor.get_bridge_status()
+  if (!emergencyStatus.deposits_paused) throw new Error("Submitted activation resumed IC deposits during an emergency")
+
+  const emergencyDepositPauseSubmitted = await pauseActor.submit_base_governance_action({ PauseDepositMints: null })
+  if (!("Ok" in emergencyDepositPauseSubmitted)) throw new Error(`Emergency deposit pause failed: ${json(emergencyDepositPauseSubmitted.Err)}`)
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const emergencyDepositPauseConfirmed = await pauseActor.submit_base_governance_action({ PauseDepositMints: null })
+  if (!("Ok" in emergencyDepositPauseConfirmed)) throw new Error(`Emergency deposit pause confirmation failed: ${json(emergencyDepositPauseConfirmed.Err)}`)
+  const emergencyWithdrawalPauseSubmitted = await pauseActor.submit_base_governance_action({ PauseWithdrawals: null })
+  if (!("Ok" in emergencyWithdrawalPauseSubmitted)) throw new Error(`Emergency withdrawal pause failed: ${json(emergencyWithdrawalPauseSubmitted.Err)}`)
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const emergencyWithdrawalPauseConfirmed = await pauseActor.submit_base_governance_action({ PauseWithdrawals: null })
+  if (!("Ok" in emergencyWithdrawalPauseConfirmed)) throw new Error(`Emergency withdrawal pause confirmation failed: ${json(emergencyWithdrawalPauseConfirmed.Err)}`)
+
+  const recoveryScheduleSubmitted = await bridge.actor.schedule_activation()
+  if (!("Ok" in recoveryScheduleSubmitted)) throw new Error(`Post-emergency activation schedule failed: ${json(recoveryScheduleSubmitted.Err)}`)
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const recoveryScheduleConfirmed = await bridge.actor.schedule_activation()
+  if (!("Ok" in recoveryScheduleConfirmed)) throw new Error(`Post-emergency activation schedule confirmation failed: ${json(recoveryScheduleConfirmed.Err)}`)
+  await rpc("evm_increaseTime", [259_200])
+  await rpc("evm_mine", [])
+  const recoveryExecuteSubmitted = await bridge.actor.execute_activation()
+  if (!("Ok" in recoveryExecuteSubmitted)) throw new Error(`Post-emergency activation execute failed: ${json(recoveryExecuteSubmitted.Err)}`)
+  await relayPendingBroadcasts()
+  await syncObservedHeads()
+  const recoveryExecuteConfirmed = await bridge.actor.execute_activation()
+  if (!("Ok" in recoveryExecuteConfirmed)) throw new Error(`Post-emergency activation execute confirmation failed: ${json(recoveryExecuteConfirmed.Err)}`)
+  const reactivatedStatus = await bridge.actor.get_bridge_status()
+  if (reactivatedStatus.deposits_paused) throw new Error("IC deposits remained paused after post-emergency activation")
+  // The mock RPC exposes one nonce response at a time. Switch its observation
+  // from the governance operator lane to the independently derived mint lane.
+  await mock.actor.set_next_evm_nonce(0n)
+  resources.activationFacts = {
+    schedule_transaction: bytesHex(scheduleSubmitted.Ok.transaction_hash[0]),
+    early_execute_reverted: true,
+    delay_seconds: 259200,
+    execute_transaction: bytesHex(executeSubmitted.Ok.transaction_hash[0]),
+    repeated_schedule_transaction: bytesHex(secondScheduleSubmitted.Ok.transaction_hash[0]),
+    repeated_execute_transaction: bytesHex(secondExecuteSubmitted.Ok.transaction_hash[0]),
+    emergency_resume_suppressed: true,
+    recovery_schedule_transaction: bytesHex(recoveryScheduleSubmitted.Ok.transaction_hash[0]),
+    recovery_execute_transaction: bytesHex(recoveryExecuteSubmitted.Ok.transaction_hash[0]),
+  }
+  await writeLocalFacts({
+    bridge_runtime_hash: sha256(bridgeCode),
+    bsns_runtime_hash: sha256(bsnsCode),
+    mint_signer: signer,
+    governance_operator: governanceOperator,
+    timelock: timelockAddress,
+    bridge: bridgeAddress,
+    activation: resources.activationFacts,
+    state_upgrade: false,
+  })
   const control = createServer(async (request, response) => {
     response.setHeader("access-control-allow-origin", `http://127.0.0.1:${uiPort}`)
     response.setHeader("access-control-allow-headers", "content-type")
@@ -339,6 +507,36 @@ async function setup() {
         if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id), settlement: result.Ok.Ingested.settlement[0] ? settlementJson(result.Ok.Ingested.settlement[0]) : undefined } })
         return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id), settlement: result.Ok.Duplicate.settlement[0] ? settlementJson(result.Ok.Duplicate.settlement[0]) : undefined } })
       }
+      if (request.url === "/ic/confirm-deposit") {
+        confirmDepositCalls += 1
+        if (holdNextConfirmDeposit) {
+          holdNextConfirmDeposit = false
+          await new Promise((resolve) => { releaseHeldConfirmDeposit = resolve })
+          releaseHeldConfirmDeposit = undefined
+        }
+        const transactionHash = body.transactionHash
+        const [receipt, transaction] = await Promise.all([
+          publicClient.getTransactionReceipt({ hash: transactionHash }),
+          publicClient.getTransaction({ hash: transactionHash }),
+        ])
+        const observed = await mock.actor.set_observed_transaction(
+          hexToBytes(transactionHash),
+          hexToBytes(bridgeAddress),
+          hexToBytes(transaction.from),
+          Number(receipt.blockNumber),
+        )
+        if ("Err" in observed) throw new Error(observed.Err)
+        await syncObservedHeads()
+        const result = await bridge.actor.confirm_deposit({
+          settlement_id: hexToBytes(body.settlementId),
+          transaction_hash: hexToBytes(transactionHash),
+          receipt_block_number: BigInt(body.receiptBlockNumber),
+          observed_finalized_block_number: BigInt(body.observedFinalizedBlockNumber),
+        })
+        if ("Err" in result) throw new Error(`deposit confirmation rejected: ${json(result.Err)}`)
+        completedConfirmDepositCalls += 1
+        return send(response, 200, settlementJson(result.Ok))
+      }
       if (request.url === "/ic/continue-deposit") {
         const result = await bridge.actor.continue_deposit(hexToBytes(body.id))
         if ("Err" in result) throw new Error(`deposit continuation rejected: ${json(result.Err)}`)
@@ -355,6 +553,14 @@ async function setup() {
       }
       if (request.url === "/test/fail-next-deposit-response") {
         failNextDepositResponse = true
+        return send(response, 200, null)
+      }
+      if (request.url === "/test/hold-next-confirm-deposit") {
+        holdNextConfirmDeposit = true
+        return send(response, 200, null)
+      }
+      if (request.url === "/test/release-confirm-deposit") {
+        releaseHeldConfirmDeposit?.()
         return send(response, 200, null)
       }
       if (request.url === "/test/settle") {
@@ -395,6 +601,31 @@ async function setup() {
         }
         return send(response, 200, { time: await pic.getTime() })
       }
+      if (request.url === "/test/upgrade") {
+        const [beforeStatus, beforeConfig, beforeSequence] = await Promise.all([
+          bridge.actor.get_bridge_status(),
+          bridge.actor.get_public_config(),
+          bridge.actor.get_next_deposit_sequence(testOwner),
+        ])
+        await pic.upgradeCanister({
+          canisterId: bridge.canisterId,
+          wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
+          arg: IDL.encode([], []),
+        })
+        const [afterStatus, afterConfig, afterSequence] = await Promise.all([
+          bridge.actor.get_bridge_status(),
+          bridge.actor.get_public_config(),
+          bridge.actor.get_next_deposit_sequence(testOwner),
+        ])
+        if (json(beforeConfig) !== json(afterConfig) || beforeSequence !== afterSequence) throw new Error("same-Wasm upgrade changed configuration or owner sequence")
+        for (const key of ["deposits", "withdrawals", "pending_evm_operations", "reconciliation_holds", "pending_ledger_operations"]) {
+          if (beforeStatus.counts[key] !== afterStatus.counts[key]) throw new Error(`same-Wasm upgrade changed ${key}`)
+        }
+        if (beforeStatus.deposits_paused !== afterStatus.deposits_paused) throw new Error("same-Wasm upgrade changed pause state")
+        const facts = JSON.parse(await readFile(path.join(runtimeDir, "local-e2e-facts.json"), "utf8"))
+        await writeLocalFacts({ ...facts, state_upgrade: true })
+        return send(response, 200, { before: beforeStatus.counts, after: afterStatus.counts })
+      }
       if (request.url === "/test/account") {
         connectedAccount = String(body.owner)
         return send(response, 200, null)
@@ -412,6 +643,8 @@ async function setup() {
         return send(response, 200, {
           broadcasts: relayedBroadcasts,
           notifyCalls,
+          confirmDepositCalls,
+          completedConfirmDepositCalls,
           knownDepositCount: knownDeposits.length,
           depositSequences,
           nextDepositSequence: nextDepositSequence.toString(),
@@ -456,8 +689,8 @@ function startProgressLoop(pic) {
   resources.progressTimer = setInterval(() => {
     if (ticking) return
     ticking = true
-    void pic.tick().finally(() => { ticking = false })
-  }, 20)
+    void pic.tick().catch(() => undefined).finally(() => { ticking = false })
+  }, 100)
 }
 
 function stopProgressLoop() {
@@ -470,33 +703,46 @@ function buildWasm() {
   execFileSync("cargo", ["build", "--target", "wasm32-unknown-unknown", "--release", "-p", "mock-external"], { cwd: root, stdio: "inherit" })
 }
 
-function deployTimelock() {
+function deployTimelock(governanceOperator) {
   const output = execFileSync("forge", [
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast",
     "src/BridgeTimelockController.sol:BridgeTimelockController", "--constructor-args",
-    "259200", `[${baseAdmin}]`, `[${runtimeAdministrator}]`, `[${baseAdmin}]`,
+    "259200", `[${governanceOperator}]`, `[${governanceOperator}]`, `[${governanceOperator}]`,
   ], { encoding: "utf8" })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Timelock deployment:\n${output}`)
   return match[1]
 }
 
-function deployBridge(signer, timelockAddress) {
+function deployBridge(signer, governanceOperator, timelockAddress) {
   const timelockCodeHash = execFileSync(
     "cast", ["codehash", timelockAddress, "--rpc-url", rpcUrl], { encoding: "utf8" },
   ).trim()
   const output = execFileSync("forge", [
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast", "src/Bridge.sol:Bridge", "--constructor-args",
-    "Bridged KINIC", "KINIC", "8", signer, runtimeAdministrator, timelockAddress, timelockCodeHash,
+    "Bridged KINIC", "KINIC", "8", signer, governanceOperator, timelockAddress, timelockCodeHash,
     "1000000000000", "10000000000000", "3600", "100000000", "1000000",
   ], { encoding: "utf8" })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Bridge deployment:\n${output}`)
-  sendAsTimelock(match[1], "unpauseDepositMints()")
-  sendAsTimelock(match[1], "unpauseWithdrawals()")
+  assertFrozenCanisterRoles(match[1], timelockAddress, governanceOperator)
   return match[1]
+}
+
+function assertFrozenCanisterRoles(bridgeAddress, timelockAddress, governanceOperator) {
+  const runtime = execFileSync("cast", ["call", bridgeAddress, "runtimeAdministrator()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  if (runtime.toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge runtime administrator is not the canister governance operator")
+  for (const role of [
+    execFileSync("cast", ["call", timelockAddress, "PROPOSER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim(),
+    execFileSync("cast", ["call", timelockAddress, "EXECUTOR_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim(),
+    execFileSync("cast", ["call", timelockAddress, "CANCELLER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim(),
+  ]) {
+    const operatorHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, governanceOperator, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+    const deployerHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, deployer, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+    if (operatorHasRole !== "true" || deployerHasRole !== "false") throw new Error("Timelock role set is not canister-only")
+  }
 }
 
 function sendAsTimelock(target, signature, ...args) {
@@ -539,6 +785,10 @@ export function profileCompleteness(profile: DeploymentProfile): string[] {
   await writeFile(path.join(runtimeDir, "profile.ts"), source)
 }
 
+async function writeLocalFacts(value) {
+  await writeFile(path.join(runtimeDir, "local-e2e-facts.json"), `${JSON.stringify(value, null, 2)}\n`)
+}
+
 function serialize(value) {
   if (typeof value === "bigint") return `${value}n`
   if (Array.isArray(value)) return `[${value.map(serialize).join(",")}]`
@@ -555,7 +805,7 @@ function settlementJson(value) {
   return value
 }
 async function readJson(request) { const chunks = []; for await (const chunk of request) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString("utf8") || "null") }
-function send(response, status, value) { response.statusCode = status; response.setHeader("content-type", "application/json"); response.end(value === null ? "null" : JSON.stringify(value)); }
+function send(response, status, value) { response.statusCode = status; response.setHeader("content-type", "application/json"); response.end(value === null ? "null" : json(value)); }
 async function rpc(method, params) { const response = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }); const value = await response.json(); if (value.error) throw new Error(value.error.message); return value.result }
 async function waitForRpc() { for (let attempt = 0; attempt < 100; attempt += 1) { try { if (await rpc("eth_chainId", []) === "0x7a69") return } catch {} await delay(100) } throw new Error("Anvil did not start") }
 async function waitForUrl(url) { for (let attempt = 0; attempt < 200; attempt += 1) { try { if ((await fetch(url)).ok) return } catch {} await delay(100) } throw new Error(`${url} did not start`) }

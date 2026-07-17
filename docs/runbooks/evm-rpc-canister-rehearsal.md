@@ -68,15 +68,15 @@ preflight evidenceの`details`は次の完全なfield集合とする。
 }
 ```
 
-観測値を手入力する前に、固定driverで`dfx`と`cast`のJSON出力をraw artifactへ保存する。
+観測値を手入力する前に、固定driverでICP CLIと`cast`のJSON出力をraw artifactへ保存する。
 driverはshellを介さずcommandを実行し、argv、exit status、raw stdout、stdout digest、JSON parse結果を一つのartifactへ保存する。
 
 ```sh
 python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-artifact \
   /secure/work/rpc-e2e.json /secure/work/rehearsal-config.json preflight bridge \
   /secure/work/artifacts/preflight-bridge.json none -- \
-  dfx canister call <bridge-canister-id> get_public_config '()' \
-  --network ic --output json
+  icp canister call <bridge-canister-id> get_public_config '()' \
+  -n ic --json
 
 python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-artifact \
   /secure/work/rpc-e2e.json /secure/work/rehearsal-config.json canonical_receipt base \
@@ -116,7 +116,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 quorum成功scenarioは`get_audit_events`の`EvmRpcObservation`から、EVM RPC Canister ID、Candid call method、Canister内部request digest、quorum response digest、Finalized block number/hash、transaction hashを`canister_audit`へ束縛する。
 call methodはscenarioに応じたproduction実値`multi_request`、`eth_sendRawTransaction`、`eth_sendRawTransaction+multi_request`、`eth_getTransactionReceipt+eth_getBlockByNumber`だけを許可する。`nonce_conflict`もbroadcast decision auditを必須とし、単なるstop reason自己申告では完了しない。
 `single_provider_failure`、`quorum_loss`、`nonce_conflict`は`EvmRpcDecision`も`canister_decision`へ束縛し、設定provider数、必要threshold、停止理由、Ledger呼出し有無、Bridge継続、Deposit pause、自動再署名有無を再導出する。threshold APIは採用前のprovider別全responseを返さないため、3/3一致と2/3一致の区別はfault injection artifactへ委ね、Canister auditは設定値`3`、必要threshold`2`、実際の継続・停止判断を証明する。
-`preflight`ではさらに固定`dfx canister status` captureのmodule hashをreview済みWasm SHA-256へ束縛する。
+`preflight`ではさらに固定`icp canister status <id> -n ic --public --json` captureのmodule hashをreview済みWasm SHA-256へ束縛する。
 予定値、手入力digest、dry-runを証跡として記録してはならない。
 
 ## 段階実行
@@ -134,9 +134,9 @@ AWAITING_PREFLIGHT
 
 asset flowとして次の4件を実行し、各transactionをFinalized headまで待つ。
 
-1. `deposit_mint`: Deposit ID、Ledger block、mint transaction、Safe block/hash
+1. `deposit_mint`: Deposit ID、Ledger block、mint transaction、Finalized block/hash
 2. `withdrawal_release`: user `approve`、user `createWithdrawal`のFinalized block/hash、固定quote、ICRC transfer block、追加Base transactionがないこと
-3. `bad_fee_hold`: 想定外のLedger `BadFee`を汎用拒否として停止し、同じtransfer identityを維持
+3. `ledger_fee_guard`: 観測Ledger feeがcharged Service Feeを超えたときtransfer前に停止し、Base Withdrawalをpauseする。cancel、refund、別transfer identityを作らない
 4. `canonical_receipt`: receipt block number/hash、同heightのcanonical hash、Finalized head
 
 failure scenarioとして次の4件をtest-only設定で実行する。

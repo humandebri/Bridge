@@ -13,6 +13,12 @@ use tiny_keccak::{Hasher, Keccak};
 
 const SIGNING_CALL_TIMEOUT_SECONDS: u32 = 60;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignerRole {
+    Mint,
+    Governance,
+}
+
 #[derive(Debug)]
 pub enum SignerError {
     ManagementCall {
@@ -79,16 +85,31 @@ pub async fn sign(
     envelope: &EvmTransactionEnvelope,
     config: &BridgeInitArgs,
 ) -> Result<Vec<u8>, SignerError> {
+    sign_for_role(envelope, config, SignerRole::Mint).await
+}
+
+pub async fn sign_governance(
+    envelope: &EvmTransactionEnvelope,
+    config: &BridgeInitArgs,
+) -> Result<Vec<u8>, SignerError> {
+    sign_for_role(envelope, config, SignerRole::Governance).await
+}
+
+async fn sign_for_role(
+    envelope: &EvmTransactionEnvelope,
+    config: &BridgeInitArgs,
+    role: SignerRole,
+) -> Result<Vec<u8>, SignerError> {
     let unsigned = unsigned_transaction(envelope);
     let signing_hash = keccak(&unsigned);
     let key_id = EcdsaKeyId {
         curve: EcdsaCurve::Secp256k1,
         name: config.ecdsa_key_name.clone(),
     };
-    let public_key = signer_public_key(config, &key_id).await?;
+    let public_key = signer_public_key(config, &key_id, role).await?;
     let sign_args = SignWithEcdsaArgs {
         message_hash: signing_hash.to_vec(),
-        derivation_path: config.ecdsa_derivation_path.clone(),
+        derivation_path: derivation_path(config, role).to_vec(),
         key_id,
     };
     let raw_signature = threshold_signature(&sign_args).await?;
@@ -98,10 +119,14 @@ pub async fn sign(
 async fn signer_public_key(
     config: &BridgeInitArgs,
     key_id: &EcdsaKeyId,
+    role: SignerRole,
 ) -> Result<Vec<u8>, SignerError> {
     Ok(
         match STORE
-            .with(|store| store.borrow().signer_public_key())
+            .with(|store| match role {
+                SignerRole::Mint => store.borrow().signer_public_key(),
+                SignerRole::Governance => store.borrow().governance_operator_public_key(),
+            })
             .map_err(|error| SignerError::ManagementCall {
                 operation: "read_cached_ecdsa_public_key",
                 class: "storage",
@@ -113,7 +138,7 @@ async fn signer_public_key(
                     "ecdsa_public_key",
                     &(&EcdsaPublicKeyArgs {
                         canister_id: None,
-                        derivation_path: config.ecdsa_derivation_path.clone(),
+                        derivation_path: derivation_path(config, role).to_vec(),
                         key_id: key_id.clone(),
                     },),
                     0,
@@ -124,9 +149,13 @@ async fn signer_public_key(
                     .map_err(|_| SignerError::InvalidPublicKey)?;
                 STORE
                     .with(|store| {
-                        store
-                            .borrow_mut()
-                            .set_signer_public_key_if_absent(public_key)
+                        let mut store = store.borrow_mut();
+                        match role {
+                            SignerRole::Mint => store.set_signer_public_key_if_absent(public_key),
+                            SignerRole::Governance => {
+                                store.set_governance_operator_public_key_if_absent(public_key)
+                            }
+                        }
                     })
                     .map_err(|error| SignerError::ManagementCall {
                         operation: "cache_ecdsa_public_key",
@@ -162,7 +191,7 @@ pub async fn sign_chain_key_challenge(
         curve: EcdsaCurve::Secp256k1,
         name: config.ecdsa_key_name.clone(),
     };
-    let public_key = signer_public_key(config, &key_id).await?;
+    let public_key = signer_public_key(config, &key_id, SignerRole::Mint).await?;
     let expected =
         VerifyingKey::from_sec1_bytes(&public_key).map_err(|_| SignerError::InvalidPublicKey)?;
     let address = ethereum_address_from_key(&expected);
@@ -185,11 +214,22 @@ fn ethereum_signature_hex(signature: &Signature, recovery: RecoveryId) -> String
 }
 
 pub async fn ethereum_address(config: &BridgeInitArgs) -> Result<[u8; 20], SignerError> {
+    ethereum_address_for_role(config, SignerRole::Mint).await
+}
+
+pub async fn governance_operator_address(config: &BridgeInitArgs) -> Result<[u8; 20], SignerError> {
+    ethereum_address_for_role(config, SignerRole::Governance).await
+}
+
+async fn ethereum_address_for_role(
+    config: &BridgeInitArgs,
+    role: SignerRole,
+) -> Result<[u8; 20], SignerError> {
     let result = bounded_management_call::<_, EcdsaPublicKeyResult>(
         "ecdsa_public_key",
         &(&EcdsaPublicKeyArgs {
             canister_id: None,
-            derivation_path: config.ecdsa_derivation_path.clone(),
+            derivation_path: derivation_path(config, role).to_vec(),
             key_id: EcdsaKeyId {
                 curve: EcdsaCurve::Secp256k1,
                 name: config.ecdsa_key_name.clone(),
@@ -201,6 +241,13 @@ pub async fn ethereum_address(config: &BridgeInitArgs) -> Result<[u8; 20], Signe
     let key = VerifyingKey::from_sec1_bytes(&result.public_key)
         .map_err(|_| SignerError::InvalidPublicKey)?;
     Ok(ethereum_address_from_key(&key))
+}
+
+fn derivation_path(config: &BridgeInitArgs, role: SignerRole) -> &[Vec<u8>] {
+    match role {
+        SignerRole::Mint => &config.ecdsa_derivation_path,
+        SignerRole::Governance => &config.governance_ecdsa_derivation_path,
+    }
 }
 
 fn ethereum_address_from_key(key: &VerifyingKey) -> [u8; 20] {
@@ -387,6 +434,13 @@ mod tests {
             gas_limit: 100_000,
             max_fee_per_gas: 20,
             max_priority_fee_per_gas: 1,
+            initial_max_fee_per_gas: 20,
+            initial_max_priority_fee_per_gas: 1,
+            replacement_generation: 0,
+            prior_signed_transactions: vec![],
+            first_broadcast_at_ns: 0,
+            last_broadcast_at_ns: 0,
+            rebroadcast_count: 0,
             signed_transaction: None,
         };
         let encoded = unsigned_transaction(&envelope);

@@ -19,6 +19,7 @@
     "e2e": "playwright test",
     "e2e:artifacts": "node scripts/download-ledger-artifacts.mjs",
     "e2e:real": "pnpm run e2e:artifacts && playwright test --config playwright.real.config.ts",
+    "build:sepolia": "node scripts/build-sepolia-assets.mjs",
     "codegen": "pnpm run codegen:abi && pnpm run codegen:candid",
     "codegen:abi": "node scripts/generate-abi.mjs",
     "codegen:abi:check": "node scripts/generate-abi.mjs --check",

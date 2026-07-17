@@ -13,8 +13,7 @@ const ACTION_ROTATE: u8 = 4;
 fn authorized(state: &AdminState, caller: Principal, action: u8) -> bool {
     bridge_core::administrator_authorized(
         action,
-        state.pause_principals.contains(&caller),
-        state.finance_administrator == caller,
+        state.pause_principal == caller,
         state.governance_principal == caller,
     )
 }
@@ -28,7 +27,7 @@ pub(crate) fn can_advance_settlement(caller: Principal) -> Result<bool, AdminErr
             .borrow()
             .admin_state()
             .map_err(|_| AdminError::StorageFailure)?;
-        Ok(state.governance_principal == caller || state.pause_principals.contains(&caller))
+        Ok(state.governance_principal == caller || state.pause_principal == caller)
     })
 }
 
@@ -46,28 +45,28 @@ pub(crate) fn is_governance(caller: Principal) -> Result<bool, AdminError> {
 }
 
 pub(crate) fn can_manage_fee_payout(caller: Principal) -> Result<bool, AdminError> {
-    STORE.with(|store| {
-        let state = store
-            .borrow()
-            .admin_state()
-            .map_err(|_| AdminError::StorageFailure)?;
-        Ok(authorized(&state, caller, ACTION_PAYOUT))
-    })
+    is_governance(caller)
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct AdminState {
     pub deposits_paused: bool,
-    pub pause_principals: Vec<Principal>,
-    pub finance_administrator: Principal,
+    pub withdrawal_fee_guard: Option<WithdrawalFeeGuard>,
+    pub pause_principal: Principal,
     pub governance_principal: Principal,
     pub fee_recipient: FeeRecipientConfig,
 }
 
+#[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WithdrawalFeeGuard {
+    pub ledger_fee: u128,
+    pub charged_service_fee: u128,
+    pub tripped_at_ns: u64,
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct RotateRuntimeAdministratorsArgs {
-    pub pause_principals: Vec<Principal>,
-    pub finance_administrator: Principal,
+pub struct RotatePausePrincipalArgs {
+    pub pause_principal: Principal,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -172,34 +171,28 @@ pub fn set_fee_recipient(caller: Principal, value: FeeRecipientConfig) -> Result
     })
 }
 
-pub fn rotate(caller: Principal, args: RotateRuntimeAdministratorsArgs) -> Result<(), AdminError> {
-    if args.pause_principals.is_empty()
-        || args.pause_principals.len() > 10
-        || args.finance_administrator == Principal::anonymous()
-        || args
-            .pause_principals
-            .iter()
-            .any(|p| *p == Principal::anonymous())
-    {
+pub fn rotate_pause_principal(
+    caller: Principal,
+    args: RotatePausePrincipalArgs,
+) -> Result<(), AdminError> {
+    if args.pause_principal == Principal::anonymous() {
         return Err(AdminError::InvalidArgument(
-            "invalid runtime administrators".into(),
-        ));
-    }
-    let mut unique = args.pause_principals.clone();
-    unique.sort();
-    unique.dedup();
-    if unique.len() != args.pause_principals.len() {
-        return Err(AdminError::InvalidArgument(
-            "duplicate pause principal".into(),
+            "invalid pause principal".into(),
         ));
     }
     mutate(caller, |state| {
         if !authorized(state, caller, ACTION_ROTATE) {
             return Err(AdminError::Unauthorized);
         }
-        state.pause_principals = args.pause_principals.clone();
-        state.finance_administrator = args.finance_administrator;
-        Ok(crate::storage::AuditEventKind::RuntimeAdministratorsRotated)
+        if args.pause_principal == state.governance_principal
+            || args.pause_principal == state.fee_recipient.owner
+        {
+            return Err(AdminError::InvalidArgument(
+                "pause principal must not overlap governance or fee recipient".into(),
+            ));
+        }
+        state.pause_principal = args.pause_principal;
+        Ok(crate::storage::AuditEventKind::PausePrincipalRotated)
     })
 }
 

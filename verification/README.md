@@ -4,9 +4,9 @@ Withdrawalの検証対象は、Base上の不可逆な`Committed` burnとCanister
 
 - Foundryはfee driftのburn前revert、固定quote、atomic burn、削除selector不在、Committed後の再mint不能を検査する。
 - `bridge-core/src/kernel.rs`はCargoとVerusで共有し、固定quote、phase遷移、fee一回計上を検査する。
-- LeanはBase supply減少とCanister債務発生、固定宛先への支払、1:1 backingをモデル化する。
+- LeanはBase supply減少とCanister債務発生、固定宛先への支払、1:1 backingに加え、frontendのFinalized成功・revert・retry判断をモデル化する。
 - Rust/integrationはcanonical Finalized照合、Ledger成功・Duplicate・BadFee・曖昧結果、純額Fee reserve、追加EVM transaction不在を検査する。
 
-Solidity SMTはharnessの性質であり、完全なdeployed contract proofではない。providerの`finalized`意味論、EVM RPC quorum、ICRC履歴の真正性、SQLite atomicityは外部仮定である。
+Solidity SMTはharnessの性質であり、完全なdeployed contract proofではない。frontend LeanモデルはTypeScript実装そのものの証明ではなく、純粋な判断関数との対応を網羅テストで検査する。browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityは外部仮定である。Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
 
-本番未デプロイのためschema v10再オープンとwire v9だけを検証し、旧schema migration、compatibility shim、dual-read、fallbackは提供しない。
+本番未デプロイのためschema v16再オープンとwire v15だけを検証し、旧schema migration、compatibility shim、dual-read、fallbackは提供しない。

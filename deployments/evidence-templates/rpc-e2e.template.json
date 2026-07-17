@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "rehearsal_id": "<same-id-as-config>",
-  "scenario": "<preflight|deposit_mint|withdrawal_release|bad_fee_refund|canonical_receipt|single_provider_failure|quorum_loss|nonce_known|nonce_conflict|final_pause>",
+  "scenario": "<preflight|deposit_mint|withdrawal_release|ledger_fee_guard|canonical_receipt|single_provider_failure|quorum_loss|nonce_known|nonce_conflict|final_pause>",
   "observed_at": "<RFC-3339-UTC>",
   "test_assets_only": true,
   "external_calls_performed": true,

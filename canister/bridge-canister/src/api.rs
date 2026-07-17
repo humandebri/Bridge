@@ -74,7 +74,9 @@ pub struct DepositView {
     pub gross_amount: Nat,
     pub net_amount: Nat,
     pub service_fee: Nat,
+    pub max_service_fee: Nat,
     pub base_recipient: Vec<u8>,
+    pub from_subaccount: Option<Vec<u8>>,
     pub state: DepositPhase,
     pub last_settlement_stop_reason: Option<String>,
     pub base_confirmation: Option<BaseConfirmationView>,
@@ -174,6 +176,10 @@ pub enum NotifyWithdrawalError {
     TransactionReverted,
     OwnerMismatch,
     LedgerFeeUnavailable,
+    LedgerFeeExceedsServiceFee {
+        ledger_fee: Nat,
+        charged_service_fee: Nat,
+    },
     WithdrawalConflict,
     BaseStateMismatch,
     BridgeSignerMismatch,
@@ -384,7 +390,69 @@ fn ingest_notified_withdrawal(
             }
             return Err(NotifyWithdrawalError::WithdrawalConflict);
         }
-
+        if let Some(guard) = store
+            .admin_state()
+            .map_err(|_| NotifyWithdrawalError::StorageFailure)?
+            .withdrawal_fee_guard
+        {
+            return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
+                ledger_fee: Nat::from(guard.ledger_fee),
+                charged_service_fee: Nat::from(guard.charged_service_fee),
+            });
+        }
+        if ledger_fee.get() > observed.charged_service_fee {
+            let mut withdrawal = WithdrawalRecord::observed(
+                WithdrawalId::new(observed.id),
+                observed.requester,
+                observed.owner.clone(),
+                observed.subaccount,
+                payload_hash,
+                Amount::new(observed.amount),
+                Amount::new(observed.max_service_fee),
+                Amount::new(observed.charged_service_fee),
+                Amount::new(observed.amount_out),
+                stable_observation.observed_at_ns,
+            )
+            .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
+            withdrawal.last_settlement_stop_reason = Some("LedgerFeeExceedsServiceFee".to_owned());
+            let mut progress = store
+                .external_progress()
+                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+            if finalized_head_block_number != stable_observation.block_number {
+                return Err(NotifyWithdrawalError::BaseStateMismatch);
+            }
+            progress
+                .observe_finalized(stable_observation)
+                .map_err(|_| NotifyWithdrawalError::BaseStateMismatch)?;
+            let mut admin = store
+                .admin_state()
+                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+            let now_ns = ic_cdk::api::time();
+            admin.withdrawal_fee_guard = Some(crate::admin::WithdrawalFeeGuard {
+                ledger_fee: ledger_fee.get(),
+                charged_service_fee: observed.charged_service_fee,
+                tripped_at_ns: now_ns,
+            });
+            let mut audit = rpc_audit;
+            audit.push(crate::storage::AuditEventKind::WithdrawalFeeGuardTripped {
+                ledger_fee: ledger_fee.get(),
+                charged_service_fee: observed.charged_service_fee,
+            });
+            store
+                .commit_withdrawal_fee_guard_trip_bundle(
+                    &withdrawal,
+                    &progress,
+                    &admin,
+                    ic_cdk::api::canister_self(),
+                    now_ns,
+                    audit,
+                )
+                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+            return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
+                ledger_fee: Nat::from(ledger_fee.get()),
+                charged_service_fee: Nat::from(observed.charged_service_fee),
+            });
+        }
         let mut withdrawal = WithdrawalRecord::observed(
             WithdrawalId::new(observed.id),
             observed.requester,
@@ -831,6 +899,28 @@ pub(crate) async fn cached_signer_address(
     })
 }
 
+pub(crate) async fn cached_governance_operator_address(
+    config: &BridgeInitArgs,
+) -> Result<[u8; 20], DepositError> {
+    if let Some(address) = STORE.with(|store| {
+        store
+            .borrow()
+            .governance_operator_address()
+            .map_err(|_| DepositError::StorageFailure)
+    })? {
+        return Ok(address);
+    }
+    let derived = crate::signer::governance_operator_address(config)
+        .await
+        .map_err(|_| DepositError::BaseObservationUnavailable)?;
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .set_governance_operator_address_if_absent(derived)
+            .map_err(|_| DepositError::StorageFailure)
+    })
+}
+
 async fn base_mint_snapshot(
     config: &BridgeInitArgs,
     now_ns: u64,
@@ -1108,13 +1198,20 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
             gross_amount: Nat::from(record.gross_amount.get()),
             net_amount: Nat::from(record.net_amount.get()),
             service_fee: Nat::from(record.service_fee.get()),
+            max_service_fee: Nat::from(record.max_service_fee.get()),
             base_recipient: intent.base_recipient.to_vec(),
+            from_subaccount: (intent.from_subaccount != [0; 32])
+                .then(|| intent.from_subaccount.to_vec()),
             state: DepositPhase::from(&record.state),
             last_settlement_stop_reason: record.last_settlement_stop_reason,
             base_confirmation: base_confirmation(&store, operation_id),
             automatic_progress: automatic_progress(job),
         })
     })
+}
+
+pub fn get_deposit_by_owner_sequence(owner: Principal, owner_sequence: u64) -> Option<DepositView> {
+    get_deposit(derive_deposit_id(owner, owner_sequence).to_vec())
 }
 
 pub fn get_withdrawal(id: Vec<u8>) -> Option<WithdrawalView> {

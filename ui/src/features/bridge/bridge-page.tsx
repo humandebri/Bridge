@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowDownUp, ArrowRight, LockKeyhole, RefreshCcw } from "lucide-react"
 import { Principal } from "@dfinity/principal"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { hexToBytes } from "viem"
 import { useAccount, useChainId, useWriteContract } from "wagmi"
@@ -27,6 +27,7 @@ import { refetchRuntimeWriteReady } from "@/lib/runtime-validation"
 import { currentInjectedWallet, requireWalletSnapshot, sameIcAccount } from "@/lib/wallet-snapshot"
 import { createWithdrawalAfterRevalidation } from "@/lib/withdrawal-submit"
 import { savePendingConfirmation } from "@/lib/pending-confirmations"
+import { readDepositIntent, removeDepositIntent, saveDepositIntent } from "@/lib/deposit-intents"
 
 export type BridgeDirection = "deposit" | "withdraw"
 
@@ -98,19 +99,65 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     void Promise.all(calls)
   }
 
+  useEffect(() => {
+    const account = ic.account
+    let active = true
+    queueMicrotask(() => {
+      if (active) setUnresolvedDeposit(account ? readDepositIntent(account) : undefined)
+    })
+    return () => { active = false }
+  }, [ic.account])
+
   const deposit = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (attempt: UnresolvedDepositAttempt) => {
+      if (!address || !isConnected || !ic.account || !ic.adapter) throw new Error("Reconnect the wallets used for this deposit")
+      const activeEvm = await currentInjectedWallet()
+      const activeIc = await ic.adapter.getAccount()
+      requireWalletSnapshot(
+        { address: attempt.recipient, chainId: deploymentProfile.chainId, icAccount: attempt.account },
+        { ...activeEvm, icAccount: activeIc },
+        "before submitting this deposit",
+      )
+      await refetchRuntimeWriteReady(() => runtime.refetch())
+      saveDepositIntent({ ...attempt, state: "submitted" })
+      setUnresolvedDeposit(attempt)
+      return ic.adapter.requestDeposit(attempt.call)
+    },
+    onSuccess: async (receipt, attempt) => {
+      queryClient.setQueryData(["deposit-owner-sequence", attempt.account.owner], receipt.owner_sequence + 1n)
+      const settlement = receipt.settlement[0]
+      let submittedTransactionHash = settlement && "Submitted" in settlement
+        ? settlement.Submitted.transaction_hash
+        : undefined
+      if (!submittedTransactionHash) {
+        try {
+          const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
+          const [canonical] = await actor.get_deposit(receipt.deposit_id)
+          const confirmation = canonical?.base_confirmation[0]
+          if (confirmation && "Submitted" in confirmation) submittedTransactionHash = confirmation.Submitted.transaction_hash
+        } catch {
+          toast.warning("The deposit was accepted, but its canonical settlement could not be restored yet. Check it again before starting another deposit.")
+          return
+        }
+      }
+      if (submittedTransactionHash) {
+        savePendingConfirmation({ kind: "deposit", settlementId: bytesHex(receipt.deposit_id), transactionHash: bytesHex(submittedTransactionHash), owner: attempt.account.owner })
+      }
+      removeDepositIntent(attempt.account)
+      setUnresolvedDeposit(undefined)
+      setDepositAmount("")
+      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. finalized confirmation will be requested through your IC wallet.`)
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `${error.message}. Retry the same deposit or check whether it was accepted.` : "Deposit response is unresolved")
+    },
+  })
+
+  const submitDeposit = async () => {
+    try {
       if (unresolvedDeposit) {
-        if (!address || !isConnected || !ic.account || !ic.adapter) throw new Error("Reconnect the wallets used for this deposit")
-        const activeEvm = await currentInjectedWallet()
-        const activeIc = await ic.adapter.getAccount()
-        requireWalletSnapshot(
-          { address: unresolvedDeposit.recipient, chainId: deploymentProfile.chainId, icAccount: unresolvedDeposit.account },
-          { ...activeEvm, icAccount: activeIc },
-          "before retrying this deposit",
-        )
-        await refetchRuntimeWriteReady(() => runtime.refetch())
-        return ic.adapter.requestDeposit(unresolvedDeposit.call)
+        deposit.mutate(unresolvedDeposit)
+        return
       }
       if (!address || !isConnected) throw new Error("Connect the Base recipient wallet")
       if (!ic.account || !ic.adapter) throw new Error("Connect OISY or Plug")
@@ -136,24 +183,13 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         account: { owner: confirmedAccount.owner, subaccount: confirmedAccount.subaccount?.slice() },
         recipient: confirmedRecipient,
       }
-      await refetchRuntimeWriteReady(() => runtime.refetch())
+      saveDepositIntent({ ...attempt, state: "prepared" })
       setUnresolvedDeposit(attempt)
-      return ic.adapter.requestDeposit(attempt.call)
-    },
-    onSuccess: (receipt) => {
-      queryClient.setQueryData(ownerSequenceKey, receipt.owner_sequence + 1n)
-      setUnresolvedDeposit(undefined)
-      setDepositAmount("")
-      const settlement = receipt.settlement[0]
-      if (settlement && "Submitted" in settlement && ic.account) {
-        savePendingConfirmation({ kind: "deposit", settlementId: bytesHex(receipt.deposit_id), transactionHash: bytesHex(settlement.Submitted.transaction_hash), owner: ic.account.owner })
-      }
-      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. finalized confirmation will be requested through your IC wallet.`)
-    },
-    onError: (error) => {
-      toast.error(error instanceof Error ? `${error.message}. Retry the same deposit or check whether it was accepted.` : "Deposit response is unresolved")
-    },
-  })
+      deposit.mutate(attempt)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Deposit failed")
+    }
+  }
 
   const checkUnresolvedDeposit = async () => {
     if (!unresolvedDeposit) return
@@ -163,16 +199,40 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       const nextSequence = await actor.get_next_deposit_sequence(Principal.fromText(unresolvedDeposit.account.owner))
       const status = classifyDepositRecoverySequence(unresolvedDeposit.call.ownerSequence, nextSequence)
       if (status === "not-accepted") {
-        queryClient.setQueryData(ownerSequenceKey, nextSequence)
+        queryClient.setQueryData(["deposit-owner-sequence", unresolvedDeposit.account.owner], nextSequence)
+        removeDepositIntent(unresolvedDeposit.account)
         setUnresolvedDeposit(undefined)
         toast.info("The deposit was not accepted. You can edit the form or submit a new request.")
       } else if (status === "accepted-or-conflicted") {
-        toast.error("We could not confirm this deposit. Retry the same deposit or check History.")
+        const record = await actor.get_deposit_by_owner_sequence(
+          Principal.fromText(unresolvedDeposit.account.owner),
+          unresolvedDeposit.call.ownerSequence,
+        )
+        if (!record[0]
+          || record[0].gross_amount !== unresolvedDeposit.call.grossAmount
+          || record[0].max_service_fee !== unresolvedDeposit.call.maxServiceFee
+          || bytesHex(record[0].base_recipient).toLowerCase() !== bytesHex(unresolvedDeposit.call.baseRecipient).toLowerCase()
+          || bytesHex(record[0].from_subaccount[0] ?? new Uint8Array(32)) !== bytesHex(unresolvedDeposit.account.subaccount ?? new Uint8Array(32))) {
+          throw new Error("Canonical deposit does not match the saved intent")
+        }
+        const confirmation = record[0].base_confirmation[0]
+        if (confirmation && "Submitted" in confirmation) {
+          savePendingConfirmation({
+            kind: "deposit",
+            settlementId: bytesHex(record[0].deposit_id),
+            transactionHash: bytesHex(confirmation.Submitted.transaction_hash),
+            owner: unresolvedDeposit.account.owner,
+          })
+        }
+        queryClient.setQueryData(["deposit-owner-sequence", unresolvedDeposit.account.owner], nextSequence)
+        removeDepositIntent(unresolvedDeposit.account)
+        setUnresolvedDeposit(undefined)
+        toast.success("The accepted deposit was recovered from canonical history.")
       } else {
         toast.error("This deposit needs attention. Check History before continuing.")
       }
-    } catch {
-      toast.error("The deposit could not be checked. Try again from History.")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The deposit could not be checked. Try again from History.")
     } finally {
       setCheckingDeposit(false)
     }
@@ -203,7 +263,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         functionName: "allowance",
         args: [snapshotAddress, deploymentProfile.bridgeAddress as `0x${string}`],
       })
-      if (allowance !== withdrawParsed.value) {
+      if (allowance < withdrawParsed.value) {
         const approvalHash = await write.writeContractAsync({
           account: snapshotAddress,
           address: deploymentProfile.bsnsAddress as `0x${string}`,
@@ -214,7 +274,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         const approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
         if (approvalReceipt.status !== "success") throw new Error("Token approval failed")
       }
-      const hash = await createWithdrawalAfterRevalidation({
+      const broadcast = await createWithdrawalAfterRevalidation({
         expectedWallets,
         refetchRuntime: () => runtime.refetch(),
         currentEvmWallet: currentInjectedWallet,
@@ -229,20 +289,18 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
           if (finalBalance < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
         },
         createWithdrawal: ({ serviceFee }) => write.writeContractAsync({ account: snapshotAddress, address: deploymentProfile.bridgeAddress as `0x${string}`, abi: bridgeAbi, functionName: "createWithdrawal", args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)] }),
-        onBroadcast: (transactionHash) => {
-          try {
-            savePendingConfirmation({
-              kind: "withdrawal",
-              transactionHash,
-              owner: confirmedIcAccount.owner,
-            })
-          } catch {
-            throw new Error(`Withdrawal ${transactionHash} was submitted, but this browser could not save it. Copy this transaction hash and recover it from History.`)
-          }
-        },
+        onBroadcast: (transactionHash) => savePendingConfirmation({
+          kind: "withdrawal",
+          transactionHash,
+          owner: confirmedIcAccount.owner,
+        }),
       })
       setWithdrawAmount("")
-      toast.success(`Withdrawal submitted: ${hash.slice(0, 12)}…. Confirmation is pending and its status will update automatically.`)
+      if (broadcast.pendingSaved) {
+        toast.success(`Withdrawal submitted: ${broadcast.transactionHash.slice(0, 12)}…. Confirmation is pending and its status will update automatically.`)
+      } else {
+        toast.warning(`Withdrawal ${broadcast.transactionHash} was submitted, but this browser could not save it. Copy the transaction hash; after it succeeds, recover it from History.`)
+      }
     } catch (error) { toast.error(error instanceof Error ? error.message : "Withdrawal failed") }
     finally { setSubmittingWithdrawal(false) }
   }
@@ -298,7 +356,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       <Button className="mt-3 h-14 w-full" size="lg" disabled={blockers.length > 0 || deposit.isPending || write.isPending || submittingWithdrawal} onClick={() => setConfirming(true)}>{direction === "deposit" ? (unresolvedDeposit ? "Retry same deposit" : "Bridge to Base") : "Bridge to IC"}<ArrowRight className="size-4" /></Button>
       <p id="bridge-amount-feedback" className="mt-3 min-h-4 text-center text-xs text-[var(--muted)]" aria-live="polite">{blockers.length > 0 ? `Next: ${blockers[0]}` : "Ready to review"}</p>
     </section>
-    <BridgeConfirmationDialog direction={direction} open={confirming} setOpen={setConfirming} source={source.wallet} destination={destination.wallet} amount={amount} receive={receive} sendSymbol={sendToken.symbol} receiveSymbol={receiveToken.symbol} pending={deposit.isPending || write.isPending || submittingWithdrawal} onConfirm={() => { setConfirming(false); if (direction === "deposit") deposit.mutate(); else void submitWithdrawal() }} />
+    <BridgeConfirmationDialog direction={direction} open={confirming} setOpen={setConfirming} source={source.wallet} destination={destination.wallet} amount={amount} receive={receive} sendSymbol={sendToken.symbol} receiveSymbol={receiveToken.symbol} pending={deposit.isPending || write.isPending || submittingWithdrawal} onConfirm={() => { setConfirming(false); if (direction === "deposit") void submitDeposit(); else void submitWithdrawal() }} />
   </div>
 }
 

@@ -8,6 +8,11 @@ interface ExpectedWallets {
   icAccount: IcAccount
 }
 
+export interface WithdrawalBroadcastResult {
+  transactionHash: `0x${string}`
+  pendingSaved: boolean
+}
+
 export async function createWithdrawalAfterRevalidation<Q>({
   expectedWallets,
   refetchRuntime,
@@ -26,12 +31,16 @@ export async function createWithdrawalAfterRevalidation<Q>({
   validateFinancials: (quote: Q) => void
   createWithdrawal: (quote: Q) => Promise<`0x${string}`>
   onBroadcast: (transactionHash: `0x${string}`) => void
-}): Promise<`0x${string}`> {
+}): Promise<WithdrawalBroadcastResult> {
   await refetchRuntimeWriteReady(refetchRuntime)
   const [evm, icAccount, quote] = await Promise.all([currentEvmWallet(), currentIcAccount(), refetchFinancials()])
   requireWalletSnapshot(expectedWallets, { ...evm, icAccount }, "after approval or runtime verification")
   validateFinancials(quote)
   const transactionHash = await createWithdrawal(quote)
-  onBroadcast(transactionHash)
-  return transactionHash
+  try {
+    onBroadcast(transactionHash)
+    return { transactionHash, pendingSaved: true }
+  } catch {
+    return { transactionHash, pendingSaved: false }
+  }
 }

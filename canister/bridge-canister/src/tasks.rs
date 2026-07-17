@@ -4,10 +4,10 @@ use crate::{
     signer, storage_or_trap, STORE,
 };
 use bridge_core::{
-    DepositEvent, DepositHoldResolution, EvmOperationEvent, EvmOperationKind, EvmOperationState,
-    LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity, ReconciliationHoldRecord,
-    ReconciliationScanProgress, ReconciliationTarget, RequestReference, WithdrawalEvent,
-    WithdrawalHoldResolution, WithdrawalId, WithdrawalState,
+    DepositEvent, DepositHoldResolution, EvmOperationEvent, EvmOperationId, EvmOperationKind,
+    EvmOperationState, LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity,
+    ReconciliationHoldRecord, ReconciliationScanProgress, ReconciliationTarget, RequestReference,
+    TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId, WithdrawalState,
 };
 use candid::{CandidType, Deserialize};
 use sha2::{Digest, Sha256};
@@ -37,6 +37,7 @@ pub enum SettlementStopReason {
     NonceConflict,
     BaseStateMismatch,
     BridgeSignerMismatch,
+    LedgerFeeExceedsServiceFee,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -121,6 +122,9 @@ pub(crate) fn stop_reason_text(result: &SettlementActionResult) -> Option<String
             SettlementStopReason::BridgeSignerMismatch => {
                 "Confirmed Base bridge signer does not match the chain-key signer".into()
             }
+            SettlementStopReason::LedgerFeeExceedsServiceFee => {
+                "Ledger fee exceeds the charged withdrawal service fee".into()
+            }
         }),
         _ => None,
     }
@@ -144,6 +148,9 @@ fn confirmation_evidence(
     receipt_block_number: u64,
     finalized_head_block_number: u64,
 ) -> ConfirmationEvidence {
+    if expected_receipt_block_number.is_none() || expected_finalized_block_number.is_none() {
+        return ConfirmationEvidence::WaitForFinalized;
+    }
     if expected_receipt_block_number.is_some_and(|expected| expected != receipt_block_number) {
         ConfirmationEvidence::ReceiptMismatch
     } else if expected_finalized_block_number
@@ -253,6 +260,13 @@ fn single_envelope(
         max_fee_per_gas: intent.max_fee_per_gas,
         max_priority_fee_per_gas: intent.max_priority_fee_per_gas,
         signed_transaction: None,
+        initial_max_fee_per_gas: intent.max_fee_per_gas,
+        initial_max_priority_fee_per_gas: intent.max_priority_fee_per_gas,
+        replacement_generation: 0,
+        prior_signed_transactions: Vec::new(),
+        first_broadcast_at_ns: 0,
+        last_broadcast_at_ns: 0,
+        rebroadcast_count: 0,
     })
 }
 
@@ -494,6 +508,205 @@ enum EvmAdvance {
     Stopped(SettlementStopReason),
 }
 
+async fn maintain_missing_evm_transaction(
+    config: &crate::config::BridgeInitArgs,
+    operation_id: EvmOperationId,
+    transaction_hash: [u8; 32],
+    lease: &mut crate::scheduler::SettlementLease,
+) -> Result<Option<EvmAdvance>, SettlementActionError> {
+    let checks = lease.job.confirmation_checks.saturating_add(1);
+    let policy = config.evm_liveness;
+    let rebroadcast_checks = policy
+        .rebroadcast_after_seconds
+        .div_ceil(policy.check_interval_seconds)
+        .max(1) as u8;
+    let replacement_checks = policy
+        .replacement_after_seconds
+        .div_ceil(policy.check_interval_seconds)
+        .max(1) as u8;
+    if envelope_replacement_limit_reached(checks, replacement_checks, policy.max_replacements) {
+        return Ok(Some(EvmAdvance::Stopped(
+            SettlementStopReason::TransactionNotFound,
+        )));
+    }
+    let mut envelope = STORE.with(|store| {
+        store
+            .borrow()
+            .evm_envelope(operation_id.get())
+            .map_err(|_| SettlementActionError::StorageFailure)?
+            .ok_or(SettlementActionError::StorageFailure)
+    })?;
+    let current_raw = envelope
+        .signed_transaction
+        .clone()
+        .ok_or(SettlementActionError::StorageFailure)?;
+    let current_hash = signer::transaction_hash(&current_raw);
+
+    if current_hash != transaction_hash {
+        return broadcast_pending_evm_replacement(
+            config,
+            operation_id,
+            transaction_hash,
+            envelope,
+            lease,
+        )
+        .await;
+    }
+    if checks == 0 || !checks.is_multiple_of(rebroadcast_checks) {
+        return Ok(None);
+    }
+
+    if !checks.is_multiple_of(replacement_checks)
+        || envelope.replacement_generation >= policy.max_replacements
+    {
+        lease.renew_before_external_call()?;
+        let evidence = match evm_rpc::broadcast(config, &current_raw).await {
+            Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => evidence,
+            Ok(evm_rpc::BroadcastOutcome::NonceConflict(_)) => {
+                return Ok(Some(EvmAdvance::Stopped(
+                    SettlementStopReason::NonceConflict,
+                )))
+            }
+            Err(_) => return Ok(None),
+        };
+        lease.ensure_current()?;
+        envelope.last_broadcast_at_ns = ic_cdk::api::time();
+        envelope.rebroadcast_count = envelope.rebroadcast_count.saturating_add(1);
+        STORE
+            .with(|store| {
+                let mut store = store.borrow_mut();
+                store.record_evm_broadcast(&envelope)?;
+                store.append_audit_events_atomically(
+                    ic_cdk::api::canister_self(),
+                    vec![
+                        crate::rpc_audit_event_kind(&evidence),
+                        crate::storage::AuditEventKind::EvmTransactionRebroadcasted {
+                            operation_id: operation_id.get(),
+                            transaction_hash: transaction_hash.to_vec(),
+                            attempt: checks / rebroadcast_checks,
+                        },
+                    ],
+                )
+            })
+            .map_err(|_| SettlementActionError::StorageFailure)?;
+        return Ok(None);
+    }
+
+    envelope.prior_signed_transactions.push(current_raw);
+    let fee_ceiling = envelope
+        .initial_max_fee_per_gas
+        .saturating_mul(u128::from(policy.fee_ceiling_multiplier_bps))
+        / 10_000;
+    let priority_ceiling = (envelope
+        .initial_max_priority_fee_per_gas
+        .saturating_mul(u128::from(policy.fee_ceiling_multiplier_bps))
+        / 10_000)
+        .min(fee_ceiling);
+    envelope.max_fee_per_gas = bump_fee(envelope.max_fee_per_gas, fee_ceiling, policy.fee_bump_bps);
+    envelope.max_priority_fee_per_gas = bump_fee(
+        envelope.max_priority_fee_per_gas,
+        priority_ceiling,
+        policy.fee_bump_bps,
+    )
+    .min(envelope.max_fee_per_gas);
+    envelope.replacement_generation = envelope.replacement_generation.saturating_add(1);
+    envelope.signed_transaction = None;
+    lease.renew_before_external_call()?;
+    let raw = signer::sign(&envelope, config)
+        .await
+        .map_err(|_| SettlementActionError::StorageFailure)?;
+    lease.ensure_current()?;
+    let next_hash = signer::transaction_hash(&raw);
+    envelope.signed_transaction = Some(raw.clone());
+    STORE
+        .with(|store| store.borrow_mut().replace_submitted_evm_envelope(&envelope))
+        .map_err(|_| SettlementActionError::StorageFailure)?;
+    debug_assert_ne!(next_hash, transaction_hash);
+    broadcast_pending_evm_replacement(config, operation_id, transaction_hash, envelope, lease).await
+}
+
+async fn broadcast_pending_evm_replacement(
+    config: &crate::config::BridgeInitArgs,
+    operation_id: EvmOperationId,
+    previous_hash: [u8; 32],
+    mut envelope: bridge_core::EvmTransactionEnvelope,
+    lease: &mut crate::scheduler::SettlementLease,
+) -> Result<Option<EvmAdvance>, SettlementActionError> {
+    let raw = envelope
+        .signed_transaction
+        .clone()
+        .ok_or(SettlementActionError::StorageFailure)?;
+    let next_hash = signer::transaction_hash(&raw);
+    if next_hash == previous_hash {
+        return Err(SettlementActionError::StorageFailure);
+    }
+    lease.renew_before_external_call()?;
+    let evidence = match evm_rpc::broadcast(config, &raw).await {
+        Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => evidence,
+        Ok(evm_rpc::BroadcastOutcome::NonceConflict(_)) => {
+            return Ok(Some(EvmAdvance::Stopped(
+                SettlementStopReason::NonceConflict,
+            )))
+        }
+        Err(_) => return Ok(None),
+    };
+    lease.ensure_current()?;
+    let now = ic_cdk::api::time();
+    envelope.last_broadcast_at_ns = now;
+    STORE
+        .with(|store| {
+            let mut store = store.borrow_mut();
+            let mut operation = store
+                .evm_operation(operation_id.get())?
+                .ok_or(crate::storage::StorageError::RecordNotFound)?;
+            if operation.state
+                != (EvmOperationState::Submitted {
+                    transaction_hash: previous_hash,
+                })
+            {
+                return Err(crate::storage::StorageError::Core(
+                    bridge_core::CoreError::ConflictingReplay,
+                ));
+            }
+            operation.state = EvmOperationState::Submitted {
+                transaction_hash: next_hash,
+            };
+            store.promote_submitted_evm_replacement_with_rpc_audit(
+                &operation,
+                &envelope,
+                ic_cdk::api::canister_self(),
+                now,
+                vec![
+                    crate::rpc_audit_event_kind(&evidence),
+                    crate::storage::AuditEventKind::EvmTransactionReplaced {
+                        operation_id: operation_id.get(),
+                        previous_transaction_hash: previous_hash.to_vec(),
+                        transaction_hash: next_hash.to_vec(),
+                        generation: envelope.replacement_generation,
+                        max_fee_per_gas: envelope.max_fee_per_gas,
+                        max_priority_fee_per_gas: envelope.max_priority_fee_per_gas,
+                    },
+                ],
+            )
+        })
+        .map_err(|_| SettlementActionError::StorageFailure)?;
+    Ok(Some(EvmAdvance::Waiting(next_hash)))
+}
+
+fn envelope_replacement_limit_reached(checks: u8, replacement_checks: u8, maximum: u8) -> bool {
+    checks >= replacement_checks.saturating_mul(maximum.saturating_add(1))
+}
+
+fn bump_fee(current: u128, ceiling: u128, bump_bps: u16) -> u128 {
+    current
+        .saturating_mul(10_000u128.saturating_add(u128::from(bump_bps)))
+        .saturating_add(9_999)
+        .checked_div(10_000)
+        .unwrap_or(ceiling)
+        .max(current.saturating_add(1))
+        .min(ceiling)
+}
+
 enum HoldAdvance {
     Continue,
     Progress,
@@ -672,10 +885,15 @@ async fn advance_evm_operation(
                 if !matches!(current.state, EvmOperationState::Prepared) {
                     return Err(SettlementActionError::Busy);
                 }
+                let submitted_at_ns = ic_cdk::api::time();
+                envelope.first_broadcast_at_ns = submitted_at_ns;
+                envelope.last_broadcast_at_ns = submitted_at_ns;
+                store
+                    .record_evm_broadcast(&envelope)
+                    .map_err(|_| SettlementActionError::StorageFailure)?;
                 current
                     .apply(EvmOperationEvent::Submitted { transaction_hash })
                     .map_err(|_| SettlementActionError::StorageFailure)?;
-                let submitted_at_ns = ic_cdk::api::time();
                 store
                     .put_submitted_evm_operation_with_rpc_audit(
                         &current,
@@ -718,6 +936,16 @@ async fn advance_evm_operation(
             lease.ensure_current()?;
             match outcome {
                 evm_rpc::ConfirmedReceiptOutcome::Missing => {
+                    if let Some(outcome) = maintain_missing_evm_transaction(
+                        config,
+                        operation_id,
+                        transaction_hash,
+                        lease,
+                    )
+                    .await?
+                    {
+                        return Ok(outcome);
+                    }
                     Ok(EvmAdvance::Waiting(transaction_hash))
                 }
                 evm_rpc::ConfirmedReceiptOutcome::Succeeded {
@@ -1161,7 +1389,124 @@ pub(crate) async fn advance_withdrawal(
                 }
             }
             WithdrawalState::Paid { .. } => return Ok(SettlementActionResult::Complete { state }),
-            WithdrawalState::Observed => return Err(SettlementActionError::WrongState),
+            WithdrawalState::Observed => {
+                lease.renew_before_external_call()?;
+                let ledger_fee = match ledger::ledger_fee(config.ledger_canister_id).await {
+                    Ok(fee) => fee,
+                    Err(_) => {
+                        return Ok(SettlementActionResult::Stopped {
+                            state,
+                            reason: SettlementStopReason::LedgerUnavailable,
+                        })
+                    }
+                };
+                lease.ensure_current()?;
+                if ledger_fee.get() > withdrawal.charged_service_fee.get() {
+                    STORE.with(|store| {
+                        let mut store = store.borrow_mut();
+                        let mut current = store
+                            .withdrawal(withdrawal_id)
+                            .map_err(|_| SettlementActionError::StorageFailure)?
+                            .ok_or(SettlementActionError::NotFound)?;
+                        current.last_settlement_stop_reason =
+                            Some("LedgerFeeExceedsServiceFee".to_owned());
+                        let mut admin = store
+                            .admin_state()
+                            .map_err(|_| SettlementActionError::StorageFailure)?;
+                        let now_ns = ic_cdk::api::time();
+                        let guard_changed = admin.withdrawal_fee_guard.is_none_or(|guard| {
+                            guard.ledger_fee != ledger_fee.get()
+                                || guard.charged_service_fee != current.charged_service_fee.get()
+                        });
+                        admin.withdrawal_fee_guard = Some(if guard_changed {
+                            crate::admin::WithdrawalFeeGuard {
+                                ledger_fee: ledger_fee.get(),
+                                charged_service_fee: current.charged_service_fee.get(),
+                                tripped_at_ns: now_ns,
+                            }
+                        } else {
+                            admin.withdrawal_fee_guard.expect("checked fee guard")
+                        });
+                        let audit = guard_changed
+                            .then(
+                                || crate::storage::AuditEventKind::WithdrawalFeeGuardTripped {
+                                    ledger_fee: ledger_fee.get(),
+                                    charged_service_fee: current.charged_service_fee.get(),
+                                },
+                            )
+                            .into_iter()
+                            .collect();
+                        store
+                            .commit_withdrawal_fee_guard_continue_bundle(
+                                &current,
+                                &admin,
+                                ic_cdk::api::canister_self(),
+                                now_ns,
+                                audit,
+                            )
+                            .map_err(|_| SettlementActionError::StorageFailure)
+                    })?;
+                    return Ok(SettlementActionResult::Stopped {
+                        state,
+                        reason: SettlementStopReason::LedgerFeeExceedsServiceFee,
+                    });
+                }
+                STORE.with(|store| {
+                    let mut store = store.borrow_mut();
+                    let mut current = store
+                        .withdrawal(withdrawal_id)
+                        .map_err(|_| SettlementActionError::StorageFailure)?
+                        .ok_or(SettlementActionError::NotFound)?;
+                    let settlement = bridge_core::Settlement {
+                        amount_out: current.amount_out,
+                        service_fee: current.charged_service_fee,
+                        ledger_fee,
+                    };
+                    let transfer = LedgerTransferIdentity {
+                        operation: LedgerOperation::ReleaseWithdrawal,
+                        created_at_time_ns: ic_cdk::api::time(),
+                        memo: current.payload_hash,
+                        amount: current.amount_out,
+                        fee: ledger_fee,
+                        from: bridge_core::Account::new(
+                            ic_cdk::api::canister_self().as_slice().to_vec(),
+                            [0; 32],
+                        )
+                        .map_err(|_| SettlementActionError::StorageFailure)?,
+                        to: bridge_core::Account::new(current.owner.clone(), current.subaccount)
+                            .map_err(|_| SettlementActionError::StorageFailure)?,
+                        spender: None,
+                    };
+                    current
+                        .apply(WithdrawalEvent::StartRelease {
+                            attempt: Box::new(TransferAttempt {
+                                attempt_no: 0,
+                                identity: transfer,
+                            }),
+                            settlement,
+                        })
+                        .map_err(|_| SettlementActionError::StorageFailure)?;
+                    current.last_settlement_stop_reason = None;
+                    let mut admin = store
+                        .admin_state()
+                        .map_err(|_| SettlementActionError::StorageFailure)?;
+                    let cleared = admin.withdrawal_fee_guard.take().is_some();
+                    store
+                        .commit_withdrawal_fee_guard_clear_bundle(
+                            &current,
+                            &admin,
+                            ic_cdk::api::canister_self(),
+                            ic_cdk::api::time(),
+                            cleared
+                                .then_some(
+                                    crate::storage::AuditEventKind::WithdrawalFeeGuardCleared,
+                                )
+                                .into_iter()
+                                .collect(),
+                        )
+                        .map_err(|_| SettlementActionError::StorageFailure)
+                })?;
+            }
         }
     }
 }
@@ -1368,5 +1713,19 @@ mod tests {
         assert_eq!(envelope.nonce, 9);
         assert_eq!(envelope.gas_limit, 100_000);
         assert_eq!(envelope.calldata, calldata);
+    }
+
+    #[test]
+    fn replacement_fee_bumps_by_twelve_and_a_half_percent_and_stops_at_ceiling() {
+        assert_eq!(bump_fee(100, 400, 1_250), 113);
+        assert_eq!(bump_fee(399, 400, 1_250), 400);
+        assert_eq!(bump_fee(400, 400, 1_250), 400);
+    }
+
+    #[test]
+    fn replacement_limit_allows_three_generations_then_stops() {
+        assert!(!envelope_replacement_limit_reached(30, 30, 3));
+        assert!(!envelope_replacement_limit_reached(90, 30, 3));
+        assert!(envelope_replacement_limit_reached(120, 30, 3));
     }
 }

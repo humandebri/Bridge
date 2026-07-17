@@ -20,7 +20,7 @@ Deposit受付snapshot、Mint成功・revert、GovernanceによるMint revert救�
 | Withdrawal状態機械・会計 | PASS | Rust workspace tests、Verus shared kernel |
 | 追加Base transaction不在 | PASS | adapter/integration test、EVM kind縮小、ABI selector test |
 | UIのFinalized待機・fee再検証 | PASS | Vitest 83件、typecheck、lint |
-| Stable state | PASS | stable schemaはv10だけ、wire v9だけを受理。current-schema reopen、未知version fail closed、旧migrationなし |
+| Stable state | PASS | stable schemaはv16だけ、wire v15だけを受理。current-schema reopen、未知version fail closed、旧migrationなし |
 | 形式モデル | PASS | Lean、Verus、Solidity SMT pass/fail fixture |
 | 公式EVM RPC Canister実演習 | PENDING EXTERNAL RETEST | rehearsalとvalidatorは存在するが実ネットワーク未実施 |
 

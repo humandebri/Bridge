@@ -4,7 +4,7 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 Base contractとPlan 001〜004を実装済みであり、現在は本番パラメータと鍵運用を確定するPlan 005を進めている。
 
 `bridge-core`はDeposit、Withdrawal、EVM操作、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v10の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+`bridge-canister`はstable schema v16の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 EVM transactionのbroadcast後は確認待ちとして保存し、フロントがpublic Base RPCでreceiptとFinalized headを観測する。
 Finalized到達後、認証済みIC walletがtransaction hash、receipt block、観測Finalized blockを`confirm_deposit`へ送ると、Canisterが証拠と保存済みtransactionを照合してからEVM RPC outcallで再検証する。Withdrawalは追加EVM transactionを生成しない。
 フロントが動作していない間はEVM confirmation待ちを維持し、Canister timerによるconfirmation fallbackは行わない。confirmation後のLedger settlementはstable jobとCanister timerで自動進行する。
@@ -13,7 +13,7 @@ Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-
 
 Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed`化を原子的に実行する。Canisterは同じcanonical Finalized block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証してから、固定IC AccountへICP送金する。Base refundとrelease acknowledgementはなく、障害時は同じ債務をLedger側で再試行・照合する。Finalized headまたはcanonical hashが2-of-3で収束しない場合はfail closedとし、Safeへfallbackしない。
 
-本番Bridgeは未デプロイであり、Plan 005の外部計測と鍵ceremony、Plan 006のhandoverとproduction preflightが完了するまで本番資産を受け付けない。
+本番Bridgeは未デプロイであり、Plan 005の外部計測と単一emergency pause演習、Plan 006のSNS handoverとCanister操作型production preflightが完了するまで本番資産を受け付けない。
 
 Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、設計判断は[plan.md](plan.md)、用語は[CONTEXT.md](CONTEXT.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
 
@@ -91,12 +91,12 @@ python3 scripts/abi_snapshot.py --check
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 10、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 16、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
-5. 72時間delay、Base Admin wallet限定proposer/executor、独立canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
+5. 72時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
 7. Bridge Signerからsmoke用Depositをmintし、ユーザーの`createWithdrawal`によるatomic burnと`Committed`固定quoteを確認する。Withdrawal用の追加Base transactionと再mint selectorが存在しないことも確認する。
-8. Runtime AdministratorのService Fee変更と独立pause、Base Admin walletの直接unpause拒否、72時間前のTimelock execute拒否、経過後のunpauseを確認する。
+8. Canister由来Governance OperatorのService Fee変更とpause、外部EOAからの直接unpause拒否、72時間前のTimelock execute拒否、経過後のCanister実行によるunpauseを確認する。
 9. Withdrawalのburn後の残高・supply、mint window、Withdrawal連番を確認する。
 10. 本スクリプトが起動したprocessだけを終了し、一時変更した`icp.yaml`を復元する。
 

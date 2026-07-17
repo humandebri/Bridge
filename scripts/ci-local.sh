@@ -45,6 +45,30 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+run_step() {
+  local name="$1"
+  shift
+  local stderr_file="$TMP_ROOT/${name//[^a-zA-Z0-9_-]/_}.stderr"
+  echo "==> $name" >&2
+  set +e
+  ( set -e; "$@" ) 2> >(tee "$stderr_file" >&2)
+  local status=$?
+  set -e
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      printf '### `%s` — exit `%d`\n\n' "$name" "$status"
+      if [[ -s "$stderr_file" ]]; then
+        printf '<details><summary>stderr (last 80 lines)</summary>\n\n~~~text\n'
+        tail -n 80 "$stderr_file"
+        printf '~~~\n</details>\n\n'
+      else
+        printf '_No stderr output._\n\n'
+      fi
+    } >>"$GITHUB_STEP_SUMMARY"
+  fi
+  return "$status"
+}
+
 run_versions() {
   "$ROOT/scripts/check_tool_versions.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
@@ -55,6 +79,7 @@ run_versions() {
   "$ROOT/scripts/test_ci_guards.sh"
   "$ROOT/scripts/test_production_release.sh"
   "$ROOT/scripts/test_production_drivers.sh"
+  "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   verify_live_evm_rpc_rehearsal_sources \
     "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
@@ -79,7 +104,11 @@ run_no_automatic_execution_guards() {
   fi
   if rg -n '\b(sessionStorage|localStorage)\b' "$ROOT/ui/src" \
     --glob '!pending-confirmations.ts' \
-    --glob '!pending-confirmations.test.ts'; then
+    --glob '!pending-confirmations.test.ts' \
+    --glob '!deposit-intents.ts' \
+    --glob '!deposit-intents.test.ts' \
+    --glob '!settlement-confirmation-coordinator.tsx' \
+    --glob '!settlement-confirmation-coordinator.test.tsx'; then
     echo "browser storage is used outside the confirmation recovery queue" >&2
     return 1
   fi
@@ -404,7 +433,7 @@ run_smoke() {
   local bridge_init_args
   local readonly bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
   local readonly runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
-  local readonly base_admin_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+  local readonly unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
   local readonly independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
   local readonly recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
   local readonly deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
@@ -428,8 +457,10 @@ run_smoke() {
     custom_evm_rpc_urls = vec {};
     base_chain_id = 8_453 : nat64;
     bridge_contract = blob \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\";
+    timelock_contract = blob \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\";
     ecdsa_key_name = \"dfx_test_key\";
     ecdsa_derivation_path = vec {};
+    governance_ecdsa_derivation_path = vec { blob \"governance-operator\" };
     deposit_rate_limit_window_seconds = 60 : nat64;
     deposit_rate_limit_global = 30 : nat16;
     deposit_rate_limit_per_principal = 3 : nat16;
@@ -440,12 +471,19 @@ run_smoke() {
     transaction_gas_limit = 500_000 : nat;
     max_fee_per_gas = 10 : nat;
     max_priority_fee_per_gas = 1 : nat;
+    evm_liveness = record {
+      check_interval_seconds = 60 : nat64;
+      rebroadcast_after_seconds = 300 : nat64;
+      replacement_after_seconds = 1_800 : nat64;
+      max_replacements = 3 : nat8;
+      fee_bump_bps = 1_250 : nat16;
+      fee_ceiling_multiplier_bps = 40_000 : nat32;
+    };
     eth_floor_wei = 1 : nat;
     cycles_floor = 1 : nat;
     settlement_cycle_ceiling = 1 : nat;
     governance_principal = principal \"$smoke_principal\";
-    pause_principals = vec { principal \"$smoke_principal\" };
-    finance_administrator = principal \"$smoke_principal\";
+    pause_principal = principal \"7jkta-eyaaa-aaaaq-aaarq-cai\";
     fee_recipient = record {
       owner = principal \"$smoke_principal\";
       subaccount = blob \"\";
@@ -494,6 +532,36 @@ for field, (value, candid_type) in expected.items():
         raise SystemExit(f"unexpected get_bridge_status response: {response!r}")
 ' "$expected_schema_version" <<<"$bridge_status"
 
+  icp canister install bridge-canister \
+    -e local \
+    --mode upgrade \
+    --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --project-root-override "$ROOT"
+  bridge_status_after_upgrade="$(
+    icp canister call bridge-canister get_bridge_status '()' \
+      -e local --query --json \
+      --candid "$ROOT/canister/bridge-canister/bridge.did" \
+      --project-root-override "$ROOT"
+  )"
+  python3 -c '
+import json, re, sys
+
+before = json.loads(sys.argv[1]).get("response_candid") or ""
+after = json.loads(sys.argv[2]).get("response_candid") or ""
+stable_fields = {
+    "schema_version": (sys.argv[3], "nat16"),
+    "deposits": ("0", "nat64"),
+    "withdrawals": ("0", "nat64"),
+    "pending_evm_operations": ("0", "nat64"),
+    "reconciliation_holds": ("0", "nat64"),
+    "deposits_paused": ("true", "bool"),
+}
+for field, (value, candid_type) in stable_fields.items():
+    pattern = rf"\b{field}\s*=\s*{value}(?:\s*:\s*{candid_type})?\b"
+    if len(re.findall(pattern, before)) != 1 or len(re.findall(pattern, after)) != 1:
+        raise SystemExit(f"same-Wasm upgrade did not preserve empty state field {field}")
+' "$bridge_status" "$bridge_status_after_upgrade" "$expected_schema_version"
+
   if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
     echo "port 8545 is already serving an EVM node; refusing to reuse it" >&2
     return 1
@@ -509,9 +577,9 @@ for field, (value, candid_type) in expected.items():
   base_admin_timelock="$(deploy_contract \
     "src/BridgeTimelockController.sol:BridgeTimelockController" \
     "$timelock_delay_seconds" \
-    "[$base_admin_wallet]" \
-    "[$independent_canceller]" \
-    "[$base_admin_wallet]")"
+    "[$runtime_administrator]" \
+    "[$runtime_administrator]" \
+    "[$runtime_administrator]")"
   read -r timelock_delay _ <<<"$(
     cast call "$base_admin_timelock" "getMinDelay()(uint256)" --rpc-url http://127.0.0.1:8545
   )"
@@ -529,20 +597,20 @@ for field, (value, candid_type) in expected.items():
     cast call "$base_admin_timelock" "DEFAULT_ADMIN_ROLE()(bytes32)" --rpc-url http://127.0.0.1:8545
   )"
   require_equal \
-    "Base Admin wallet proposer role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$base_admin_wallet" \
+    "Governance Operator proposer role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Base Admin wallet has no canceller role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$base_admin_wallet" \
+    "Governance Operator canceller role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
-    "false"
+    "true"
   require_equal \
-    "independent wallet canceller role" \
+    "legacy independent wallet has no canceller role" \
     "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$independent_canceller" \
       --rpc-url http://127.0.0.1:8545)" \
-    "true"
+    "false"
   require_equal \
     "independent canceller has no proposer role" \
     "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$independent_canceller" \
@@ -554,8 +622,8 @@ for field, (value, candid_type) in expected.items():
       --rpc-url http://127.0.0.1:8545)" \
     "false"
   require_equal \
-    "Base Admin wallet executor role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$base_admin_wallet" \
+    "Governance Operator executor role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
@@ -569,8 +637,8 @@ for field, (value, candid_type) in expected.items():
       "$base_admin_timelock" --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Base Admin wallet has no direct timelock administration" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" "$base_admin_wallet" \
+    "Governance Operator has no direct timelock administration" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
     "false"
 
@@ -588,7 +656,7 @@ for field, (value, candid_type) in expected.items():
     "3600" \
     "100000000" \
     "$service_fee")"
-  for limit_caller in "$bridge_signer" "$runtime_administrator" "$base_admin_wallet"; do
+  for limit_caller in "$bridge_signer" "$runtime_administrator" "$unauthorized_wallet"; do
     for limit_signature in \
       "setMintLimits(uint256,uint256,uint64)" \
       "reduceMintLimits(uint256,uint256,uint64)"; do
@@ -751,7 +819,7 @@ for field, (value, candid_type) in expected.items():
     "$bridge_address" \
     "unpauseDepositMints()" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_wallet" >/dev/null 2>&1; then
+    --from "$unauthorized_wallet" >/dev/null 2>&1; then
     echo "Base Admin wallet bypassed the timelock" >&2
     return 1
   fi
@@ -767,7 +835,7 @@ for field, (value, candid_type) in expected.items():
     "$management_salt" \
     "$timelock_delay_seconds" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_wallet" \
+    --from "$runtime_administrator" \
     --unlocked >/dev/null
   if cast send \
     "$base_admin_timelock" \
@@ -778,7 +846,7 @@ for field, (value, candid_type) in expected.items():
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_wallet" \
+    --from "$runtime_administrator" \
     --unlocked >/dev/null 2>&1; then
     echo "Base Admin operation executed before the 72-hour delay" >&2
     return 1
@@ -794,7 +862,7 @@ for field, (value, candid_type) in expected.items():
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_wallet" \
+    --from "$runtime_administrator" \
     --unlocked >/dev/null
   require_equal \
     "Timelocked Deposit mint unpause" \
@@ -822,38 +890,48 @@ run_real() {
 
 case "$MODE" in
   all)
-    run_checks
-    run_real
-    run_smoke
+    run_step versions run_versions
+    run_step rust run_rust
+    run_step contracts run_contracts
+    run_step proofs run_proofs
+    run_step ui run_ui
+    run_step icp run_icp_build
+    run_step real run_real
+    run_step smoke run_smoke
     ;;
   checks)
-    run_checks
+    run_step versions run_versions
+    run_step rust run_rust
+    run_step contracts run_contracts
+    run_step proofs run_proofs
+    run_step ui run_ui
+    run_step icp run_icp_build
     ;;
   versions)
-    run_versions
+    run_step versions run_versions
     ;;
   rust)
-    run_rust
+    run_step rust run_rust
     ;;
   contracts)
-    run_contracts
+    run_step contracts run_contracts
     ;;
   proofs)
-    run_versions
-    run_proofs
+    run_step versions run_versions
+    run_step proofs run_proofs
     ;;
   ui)
-    run_versions
-    run_ui
+    run_step versions run_versions
+    run_step ui run_ui
     ;;
   icp)
-    run_icp_build
+    run_step icp run_icp_build
     ;;
   smoke)
-    run_smoke
+    run_step smoke run_smoke
     ;;
   real)
-    run_real
+    run_step real run_real
     ;;
   *)
     echo "usage: $0 {all|checks|versions|rust|contracts|proofs|ui|icp|smoke|real}" >&2

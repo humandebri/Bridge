@@ -6,7 +6,7 @@ status: accepted
 
 ユーザーは`createWithdrawal(amount, maxServiceFee, owner, subaccount)`を送信する。Contractはburn前に実行時Service Feeが上限以下かつ`amount > serviceFee`であることを検証し、`transferFrom`、burn、固定`amountOut = amount - chargedServiceFee`を持つ`Committed`化を原子的に行う。
 
-`Committed`はBase上の終端状態であり、Base refund、release acknowledgement、cancelは提供しない。Canisterはcanonical Finalized receipt、event、state、snapshotを同一block hashで検証し、固定額を固定IC Accountへ送る。Ledger FeeはBridge負担とし、Ledger FeeとService Feeの運用値はproduction preflightでreview済みprofileへ束縛する。想定外の`BadFee`ではtransfer identityを変更しない。
+`Committed`はBase上の終端状態であり、Base refund、release acknowledgement、cancelは提供しない。Canisterはcanonical Finalized receipt、event、state、snapshotを同一block hashで検証し、固定額を固定IC Accountへ送る。Ledger FeeはBridge負担とする。Ledger Feeがcharged Service Feeを超えた場合はreleaseを作らず、Observed record、runtime guard、監査eventを保存する。運用者はBase withdrawalをpauseしてfeeを同期し、`continue_withdrawal`の再検証に成功した場合だけ同じrecordを再開する。想定外の`BadFee`ではtransfer identityを変更しない。
 
 ## 結果
 

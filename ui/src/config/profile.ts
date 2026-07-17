@@ -31,7 +31,39 @@ export const deploymentProfileSchema = z.object({
   deploymentBlock: z.coerce.bigint().nonnegative().nullable(),
   bridgeRuntimeHash: hash.nullable(),
   bsnsRuntimeHash: hash.nullable(),
+}).superRefine((profile, context) => {
+  if (!profile.testOnly) return
+  try {
+    assertEmbeddedTestUiProfile(profile)
+  } catch (error) {
+    context.addIssue({
+      code: "custom",
+      message: error instanceof Error ? error.message : "Invalid test deployment profile",
+    })
+  }
 })
+
+function assertEmbeddedTestUiProfile(profile: {
+  environment: string
+  chainId: number
+  bridgeCanisterId: string | null
+  ledgerCanisterId: string | null
+  indexCanisterId: string | null
+  evmRpcCanisterId: string | null
+}): void {
+  if (profile.chainId === 8453) throw new Error("Test UI deploy rejects Base Mainnet")
+  const productionIds = new Set([
+    "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "73mez-iiaaa-aaaaq-aaasq-cai",
+    "7vojr-tyaaa-aaaaq-aaatq-cai",
+  ])
+  if ([profile.bridgeCanisterId, profile.ledgerCanisterId, profile.indexCanisterId].some((id) => id && productionIds.has(id))) {
+    throw new Error("Test UI deploy rejects production canister IDs")
+  }
+  if (profile.environment === "sepolia-staging" && (profile.chainId !== 84532 || profile.evmRpcCanisterId !== "7hfb6-caaaa-aaaar-qadga-cai")) {
+    throw new Error("Sepolia staging requires Base Sepolia and the official EVM RPC Canister")
+  }
+}
 
 export type DeploymentProfile = z.infer<typeof deploymentProfileSchema>
 

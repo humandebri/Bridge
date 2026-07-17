@@ -45,7 +45,8 @@ describe("pending finalized confirmations", () => {
   })
 
   it("fails closed for malformed storage", () => {
-    window.localStorage.setItem("kinic.bridge.pending-confirmations.v2", JSON.stringify([{ ...entry, ...scope, blocked: false, transactionHash: "0x12" }]))
+    const key = `kinic.bridge.pending-confirmations.v3:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
+    window.localStorage.setItem(key, JSON.stringify([{ ...entry, ...scope, blocked: false, transactionHash: "0x12" }]))
     expect(readPendingConfirmations()).toEqual([])
   })
 
@@ -54,17 +55,26 @@ describe("pending finalized confirmations", () => {
     savePendingConfirmation(withdrawal)
     expect(readPendingConfirmations()).toEqual([{ ...withdrawal, ...scope, blocked: false }])
 
-    window.localStorage.setItem("kinic.bridge.pending-confirmations.v2", JSON.stringify([{
+    const key = `kinic.bridge.pending-confirmations.v3:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
+    window.localStorage.setItem(key, JSON.stringify([{
       ...withdrawal,
       ...scope,
       chainId: scope.chainId + 1,
       blocked: false,
     }]))
     expect(readPendingConfirmations()).toEqual([])
+    savePendingConfirmation(withdrawal)
+    expect(JSON.parse(window.localStorage.getItem(key) ?? "[]")).toHaveLength(1)
   })
 
   it("does not migrate the obsolete v1 queue", () => {
     window.localStorage.setItem("kinic.bridge.pending-confirmations.v1", JSON.stringify([{ ...entry, blocked: false }]))
     expect(readPendingConfirmations()).toEqual([])
+  })
+
+  it("repairs canonical owner metadata without clearing a blocked state", () => {
+    savePendingConfirmation({ ...entry, owner: "wrong-owner", blocked: true })
+    restorePendingConfirmation(entry)
+    expect(readPendingConfirmations()[0]).toMatchObject({ owner: entry.owner, blocked: true })
   })
 })

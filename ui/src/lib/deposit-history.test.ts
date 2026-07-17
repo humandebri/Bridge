@@ -43,6 +43,8 @@ function deposit(sequence: number): DepositView {
     gross_amount: 100n,
     net_amount: 90n,
     service_fee: 10n,
+    max_service_fee: 10n,
+    from_subaccount: [],
     base_recipient: new Uint8Array(20),
     state: { Minted: null },
     last_settlement_stop_reason: [],

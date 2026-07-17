@@ -179,15 +179,14 @@ proof fn payout_includes_fee_and_cannot_exceed_reserve(reserve: int, pending: in
         kernel::payout_debit_spec(false, amount, fee) == Some(0int)
 {}
 
-proof fn role_action_matrix(action: int, pause: bool, finance: bool, governance: bool)
-    ensures kernel::administrator_authorized_spec(action, pause, finance, governance)
+proof fn role_action_matrix(action: int, pause: bool, governance: bool)
+    ensures kernel::administrator_authorized_spec(action, pause, governance)
         <==> (action == 0 && pause)
-            || ((action == 2 || action == 3) && finance)
-            || ((action == 1 || action == 4) && governance)
+            || ((action == 1 || action == 2 || action == 3 || action == 4) && governance)
 {}
 
 proof fn unprivileged_caller_has_no_action(action: int)
-    ensures !kernel::administrator_authorized_spec(action, false, false, false)
+    ensures !kernel::administrator_authorized_spec(action, false, false)
 {}
 
 proof fn audit_sequence_is_strictly_monotone(current: int)

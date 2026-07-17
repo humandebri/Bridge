@@ -72,25 +72,21 @@ Bridge canisterのコード更新を承認するSNS Governance。SNS Rootが唯�
 _Avoid_: Runtime administrator, developer controller
 
 **Governance Principal**:
-Upgrade Authorityと同じSNS Governance principal。Canister上でDeposit受付の再開、runtime administrator rotation、許可されたSettlementの進行、reverted EVM operationの証拠付きrecoveryを実行する。Base contractのRuntime AdministratorまたはBase Adminではない。
-_Avoid_: Upgrade controller, Runtime Administrator, Base Admin
+Upgrade Authorityと同じSNS Governance principal。Canister上の管理操作と、closed Base管理操作を送信するGovernance Operator laneを制御する。
+_Avoid_: developer controller, human EVM wallet
 
 **Pause Principal**:
-新規Depositの即時停止と許可されたSettlementの進行だけを行う複数のIC principal。hardware pause principalはこのroleを保持する物理鍵であり、再開、role rotation、fee管理、upgradeを行わない。
-_Avoid_: Governance Principal, Runtime Administrator, canister controller
+IC/Base双方のpause、記録済みpending Timelock operationのcancel、許可されたSettlementの進行だけを行う単一IC principal。再開、role rotation、fee管理、upgradeを行わない。
+_Avoid_: Governance Principal, canister controller
 
-**Finance Administrator**:
-Fee Recipient変更とfee payoutだけを行うIC principal。pause、recovery、runtime administrator rotation、upgrade権限を持たない。
-_Avoid_: Treasury owner, Governance Principal, Base Admin
-
-**Runtime Administrator**:
-Base Bridgeのpauseと上限内Service Fee変更だけを操作する外部管理鍵。canister controllerではない。
-_Avoid_: Upgrade authority, owner
+**Governance Operator**:
+Bridge CanisterがMint Signerとは別pathから導出し、Base pause、Service Fee、Timelock propose/cancel/executeだけを送信するthreshold address。
+_Avoid_: human wallet, Mint Signer, canister controller
 
 **Bridge Signer**:
 Bridge canisterのthreshold ECDSAで管理され、BaseのDeposit mintだけを実行する単一address。Withdrawalのburnは利用者が実行する。
 _Avoid_: Base Admin, Runtime Administrator, owner
 
-**Base Admin**:
-Base contractのunpauseとrole rotationを72時間のOpenZeppelin Timelock経由で承認・実行する単一hardware wallet。mint、Withdrawal操作、limit変更、escrow資産への権限を持たない。
-_Avoid_: Governance Executor, owner, DEFAULT_ADMIN_ROLE holder
+**Base Admin Timelock**:
+Governance Operatorだけをproposer/executor/cancellerに持ち、自己adminと72時間minimum delayを維持するOpenZeppelin Timelock。人間walletへroleを付与しない。
+_Avoid_: human wallet, external DEFAULT_ADMIN_ROLE holder

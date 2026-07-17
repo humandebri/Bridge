@@ -20,6 +20,7 @@ describe("eight-decimal token amount handling", () => {
 
   it("charges an approval fee only when the allowance is insufficient", () => {
     expect(requiredDepositBalance(100n, 10n, 110n)).toBe(110n)
+    expect(requiredDepositBalance(100n, 10n, 111n)).toBe(110n)
     expect(requiredDepositBalance(100n, 10n, 109n)).toBe(120n)
   })
 })

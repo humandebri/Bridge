@@ -4,7 +4,7 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、stable storageに依存しない決定的な状態遷移を定義する。`bridge-canister`はその状態を単一SQLite DBへ保存し、ICRC Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-Stable schema v10、record wire version v9だけを受理し、status APIもschema v10を返す。本番未デプロイのため、旧形式のmigration、dual-read、fallbackは持たない。未知schema、wire version、decode不能なDBはfail closedで起動を拒否する。
+Stable schema v16、record wire version v15だけを受理し、status APIもschema v16を返す。本番未デプロイのため、旧形式のmigration、dual-read、fallbackは持たない。未知schema、wire version、decode不能なDBはfail closedで起動を拒否する。
 
 `settlement_jobs`がSettlement実行の永続的な正本である。recordと`phase = settlement`のjobは同じSQLite transactionで作成され、init・post-upgrade・job更新後はDBに保存された最短起床時刻からone-shot timerを再登録する。timerは実行の目覚ましであり、timer ID自体に状態上の意味はない。
 
@@ -64,7 +64,7 @@ Base wallet
 
 3. UIはtransaction hashと送付先IC ownerをlocalStorageのpending confirmationへ保存する。これは追加のBase transactionを予約するものではなく、通知を再開するための公開transaction参照である。秘密鍵や署名情報は保存しない。
 4. UIまたはWithdrawal HistoryがFinalized blockのreceiptと`WithdrawalCommitted` eventを検出し、IC walletから`notify_withdrawal`を呼ぶ。Canisterはtransaction hashを起点に、receipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛してquorum検証する。通知を行えるのは対象IC owner、Governance principal、pause principalである。
-5. 検証成功後、Canisterは同じtransaction payloadの`ReleasePending` recordとSettlement jobを原子的に保存する。重複通知は既存recordを返し、新しいjobを起動しない。
+5. 検証成功後、Ledger feeがcharged Service Fee以下ならCanisterは同じtransaction payloadの`ReleasePending` recordとSettlement jobを原子的に保存する。fee超過時はreleaseを作らず`Observed` record、停止理由、runtime guard、監査eventを保存する。重複通知は既存recordを返し、新しいjobを起動しない。
 6. Settlement runnerは固定`amountOut`を固定IC Accountへ送る。Ledger成功、Duplicate、または履歴照合による成功確認で`Paid`になり、`chargedServiceFee - actualLedgerFee`だけをfee reserveへ一度加算する。
 7. Ledgerの結果不明は`ReconciliationHold`へ移す。dedup期間内は同一transfer identityで確認し、期間後はLedger全範囲とIndexの同期済みwatermarkで不存在を証明できた場合だけ、同じ宛先・金額を保った新しいtransfer identityで`ReleasePending`へ戻す。想定外の`BadFee`は`LedgerRejected`として停止し、feeやtransfer identityを変更しない。
 8. Base側のpauseは新規Withdrawal作成を止めるが、すでに`Committed`となったICP債務の送金・照合は止めない。停止したSettlementは原因解消後に所有者またはGovernance・pause principalが`continue_withdrawal`を呼ぶ。
@@ -73,7 +73,7 @@ Base wallet
 
 - **Finalizedが唯一のBase確認境界**：Safe head、一定confirmation数、単一RPCの結果へfallbackしない。Finalized headまたはcanonical hashがquorumで収束しない場合はfail closedする。
 - **ブラウザの役割**：Depositの`confirm_deposit`、Withdrawalの`notify_withdrawal`をユーザーのIC wallet consent付きで開始する。ブラウザの観測値はCanisterの保存値・EVM RPC quorum検証を置き換えない。
-- **Canister timerの役割**：`phase = settlement`のjobを自動実行する。`phase = confirmation`のSubmitted EVM transactionをブラウザなしで確認するfallbackは持たない。
+- **Canister timerの役割**：`phase = settlement`のjobを自動実行する。`phase = confirmation`ではMissing transactionの同一raw再送と上限付きreplacementだけを行う。receiptによるterminal遷移はwallet同意付き`confirm_deposit`に限定する。
 - **Ledger照合**：Ledger transferの不明結果を時間経過だけで失敗扱いにせず、Reconciliation Holdを無期限に保持する。不存在証拠はLedgerとIndexの完全性確認を伴うwatermarkだけである。
 
 ## 主要APIと権限
@@ -86,7 +86,7 @@ Base wallet
 | `notify_withdrawal` | WithdrawalのIC owner、Governance、pause principal | Finalized `WithdrawalCommitted`をCanisterへ通知 |
 | `continue_withdrawal` | Withdrawal owner、Governance、pause principal | ICP releaseまたはReconciliationを再開 |
 | `recover_mint_revert` | Governance principalのみ | Finalized revert済みDepositのreplacement mintを開始 |
-| `get_deposit` / `get_withdrawal` | 公開query | phase、quote、停止理由、automatic progressを照会 |
+| `get_deposit` / `get_deposit_by_owner_sequence` / `get_withdrawal` | 公開query | canonical intent、phase、quote、停止理由、automatic progressを照会 |
 | `get_bridge_status` | 公開query | Finalized観測、reserve、scheduler、未決済Withdrawal、revertを照会 |
 
-管理APIの権限はCanister内で分離する。Governance principalはresume、runtime administrator rotation、reverted mint recovery、許可されたSettlement進行を行い、pause principalは新規Depositのpauseと許可されたSettlement進行を行う。Finance administratorはFee Recipientとfee payoutだけを管理する。Base側ではBridge Signerはmint、Runtime AdministratorはpauseとService Fee、Base Admin Timelockはunpauseとrole rotationだけを担当する。
+管理APIの権限はCanister内で分離する。SNS Governance principalだけがresume、pause principal rotation、Fee Recipient、fee payout、Service Fee、Timelock schedule/executeを行う。単一pause principalはIC/Baseのpause、記録済みpending Timelock operationのcancel、許可されたSettlement進行だけを行う。Base側ではCanisterが別々のthreshold derivation pathからMint SignerとGovernance Operatorを導出し、前者をmint専用、後者をpause、Service Fee、Timelock propose/cancel/execute専用とする。人間のfinance principal、release approver、EVM管理walletは置かない。

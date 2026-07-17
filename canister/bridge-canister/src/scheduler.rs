@@ -71,6 +71,52 @@ impl SettlementLease {
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static SETTLEMENT_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
+    static BASE_GOVERNANCE_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn arm_base_governance(caller: candid::Principal) {
+    #[cfg(target_arch = "wasm32")]
+    BASE_GOVERNANCE_TIMER.with(|slot| {
+        if slot.borrow().is_some() {
+            return;
+        }
+        let has_work = STORE.with(|store| {
+            let store = store.borrow();
+            store
+                .governance_lane()
+                .map(|(_, _, _, pending)| pending.is_some())
+                .and_then(|pending| {
+                    store
+                        .next_emergency_base_action()
+                        .map(|next| pending || next.is_some())
+                })
+                .unwrap_or(true)
+        });
+        if !has_work {
+            return;
+        }
+        let timer = ic_cdk_timers::set_timer(Duration::from_secs(60), async move {
+            BASE_GOVERNANCE_TIMER.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+                arm_base_governance(caller);
+                return;
+            };
+            let effective_caller = STORE.with(|store| {
+                store
+                    .borrow()
+                    .admin_state()
+                    .map(|state| state.governance_principal)
+                    .unwrap_or(caller)
+            });
+            let _ = crate::base_governance::process_emergency(effective_caller).await;
+            arm_base_governance(caller);
+        });
+        *slot.borrow_mut() = Some(timer);
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = caller;
 }
 
 pub fn arm() {
@@ -147,6 +193,7 @@ async fn run_claimed_inner(
     expected_confirmation: Option<(u64, u64)>,
 ) -> Result<SettlementActionResult, SettlementActionError> {
     let now = ic_cdk::api::time();
+    let wallet_confirmation = expected_confirmation.is_some();
     let mut lease = SettlementLease::new(job);
     if let Some((receipt_block_number, finalized_block_number)) = expected_confirmation {
         lease = lease.with_expected_confirmation(receipt_block_number, finalized_block_number);
@@ -179,13 +226,34 @@ async fn run_claimed_inner(
     };
     let record_stop_reason = result.as_ref().ok().and_then(tasks::stop_reason_text);
     let outcome = match &result {
-        Ok(SettlementActionResult::WaitingForConfirmation { .. }) => STORE
+        Ok(SettlementActionResult::WaitingForConfirmation { .. }) if wallet_confirmation => STORE
             .with(|store| {
                 store
                     .borrow_mut()
                     .park_awaiting_confirmation(&lease.job, ic_cdk::api::time())
             })
             .map_err(|_| SettlementActionError::StorageFailure),
+        Ok(SettlementActionResult::WaitingForConfirmation { .. }) => finish(
+            &lease.job,
+            Some(
+                ic_cdk::api::time().saturating_add(
+                    STORE
+                        .with(|store| {
+                            store
+                                .borrow()
+                                .config()
+                                .ok()
+                                .flatten()
+                                .map(|config| config.evm_liveness.check_interval_seconds)
+                                .unwrap_or(60)
+                        })
+                        .saturating_mul(1_000_000_000),
+                ),
+            ),
+            lease.job.confirmation_checks.saturating_add(1),
+            None,
+            None,
+        ),
         Ok(SettlementActionResult::Stopped { reason, .. }) => finish(
             &lease.job,
             None,

@@ -96,3 +96,60 @@ theorem paid_debt_preserves_backing
   unfold Backed at backed ⊢
   simp only [settleDebt]
   omega
+
+/-
+The frontend model begins after the wallet has returned a transaction hash.
+Browser storage, RPC correctness, and wallet behavior remain external assumptions;
+the model proves only the decision made from an observed receipt and finalized head.
+-/
+inductive WithdrawalFinalizationDecision where
+  | retry
+  | notify
+  | discardReverted
+deriving DecidableEq
+
+def decideWithdrawalFinalization
+    (receiptSucceeded : Bool) (receiptBlock : Nat) (finalizedBlock : Option Nat) :
+    WithdrawalFinalizationDecision :=
+  match finalizedBlock with
+  | none => .retry
+  | some finalized =>
+      if finalized < receiptBlock then .retry
+      else if receiptSucceeded then .notify else .discardReverted
+
+structure WithdrawalBroadcast where
+  transactionHash : List UInt8
+  pendingSaved : Bool
+deriving DecidableEq
+
+def recordBroadcast (transactionHash : List UInt8) (pendingSaved : Bool) : WithdrawalBroadcast :=
+  { transactionHash, pendingSaved }
+
+theorem broadcast_hash_is_retained_when_storage_fails (transactionHash : List UInt8) :
+    (recordBroadcast transactionHash false).transactionHash = transactionHash := by
+  rfl
+
+theorem withdrawal_notify_requires_finalized_success
+    {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat}
+    (h : decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) =
+      .notify) :
+    receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock := by
+  simp only [decideWithdrawalFinalization] at h
+  split at h
+  next notFinalized => contradiction
+  next finalized =>
+    split at h
+    next succeeded => exact ⟨succeeded, Nat.le_of_not_gt finalized⟩
+    next => contradiction
+
+theorem finalized_revert_is_never_notified
+    {receiptBlock finalizedBlock : Nat} (finalized : receiptBlock ≤ finalizedBlock) :
+    decideWithdrawalFinalization false receiptBlock (some finalizedBlock) =
+      .discardReverted := by
+  simp [decideWithdrawalFinalization, Nat.not_lt.mpr finalized]
+
+theorem unfinalized_receipt_remains_retryable
+    {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat}
+    (unfinalized : finalizedBlock < receiptBlock) :
+    decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) = .retry := by
+  simp [decideWithdrawalFinalization, unfinalized]

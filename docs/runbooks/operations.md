@@ -12,9 +12,21 @@
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v10またはwire v9以外のstable state、未知schema、decode不能なDBはfail closedで起動を拒否する。
+schema v16またはwire v15以外のstable state、未知schema、decode不能なDBはfail closedで起動を拒否する。
+
+`get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。Ledger feeとService Feeをreview済みprofileへ同期した後、対象ownerまたは運用principalがHistoryから`continue_withdrawal`を実行する。Canisterが最新Ledger feeを再取得し、charged Service Fee以下であることを確認した場合だけ、同じrecordからreleaseを開始してguardを解除する。
 本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。
 SQLite DBやcounterを手作業で変更しない。
+
+## Controller限定のstorage保守
+
+保守APIはCanister controllerだけが呼び出せる。Governance principal、pause principal、Runtime Administratorには許可しない。実行前に対象Wasmとstable imageを保存し、処理失敗時にmetadataやDBを手作業で変更しない。
+
+1. `start_storage_validation()`を一度呼び、`continue_storage_validation(100)`を`complete = true`まで反復する。途中で通常更新が入って`StateChanged`になった場合、古いprogressは破棄されるため、静穏時間帯に明示的に再開始する。
+2. `storage_integrity_check()` queryが`ok`を返すことを確認する。upgrade処理からこの検査は自動実行されない。
+3. `refresh_storage_checksum(4194304)`を`complete = true`まで反復する。一回の呼出しは最大4 MiBであり、raw stable-memoryコピーやfilesystem backupとして扱わない。
+
+旧schemaのlocal/staging Canisterはupgradeせず再作成する。WAL、mmap、compaction、旧`ic-sqlite-vfs`からの直接移行は行わない。
 
 ## ETH・cycles補充
 
@@ -24,10 +36,13 @@ SQLite DBやcounterを手作業で変更しない。
 
 ## 緊急pause
 
-監視SLOは同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。演習時刻、担当確認、両transaction/callの確定時刻を記録し、秘密情報を除いた証跡をevidence bundleへ入れる。SLO未達、証跡欠落、公式EVM RPC Canister IDまたはchainの不一致、独立cancellerの利用不能はいずれもproduction承認blockerである。EVM RPC Canister配下providerの運営主体・基盤・可用性は監査せず、外部仮定として扱う。
+監視SLOは同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。単一emergency pause principalの実request IDとaudit event、両transaction/callの確定時刻をevidenceへ入れる。SLO未達、証跡欠落、公式EVM RPC Canister IDまたはchainの不一致、Canisterによるpending Timelock cancel不能はいずれもproduction承認blockerである。EVM RPC Canister配下providerの運営主体・基盤・可用性は外部仮定として扱う。
 
 - hardware pause principalから`pause_new_deposits`を実行する。既にSubmittedのEVM operationはフロントからのconfirmationを待ち続けるため、各確認待ちと停止理由も監視する。
-- Base側の異常ではRuntime AdministratorがDeposit/Withdrawal pauseを実行する。unpauseとrole rotationはBase Admin walletからTimelockを経由し、limitは変更しない。
+- Base側の異常では単一emergency pause principalがCanisterの`emergency_pause`を呼び、Canister由来Governance OperatorがDeposit/Withdrawal pauseと記録済みTimelock cancelを送信する。unpauseはSNS proposalからCanisterを経由してTimelockで実行し、limitは変更しない。
+- 緊急pauseと競合した未送信のfee・schedule・execute操作は破棄され、未使用nonceだけが再利用される。RPC送信開始済みの操作は`Broadcasting`として保持し、同じhashの存在またはpending nonce前進をquorumで確認できるまで再送・破棄しない。既送信executeが成功しても緊急actionが残る間はICをresumeせず、Base pauseを優先する。
+- 再開ごとの`schedule_activation`はCanisterの単調増加operation IDから新しいTimelock saltを導出する。過去に完了したactivationを再利用せず、保存されたoperation IDとsaltの組だけを`execute_activation`またはcancelへ渡す。
+- Governance Operatorのnonce競合時は、Canisterが自分のtransaction hashをquorum RPCで再確認する。hashが存在すればconfirmationへ戻り、存在せずpending nonceだけが前進していれば競合操作を失敗終了してnonceを前進させる。hashまたはnonceの証拠が一致しない間は新しい署名を作らず停止する。
 
 本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotと署名でGate Bを作り、まず`BRIDGE_ACTIVATION_PHASE=schedule`を実行する。Timelock待機中はpauseを維持する。72時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotと署名を再取得して新しいGate Bを作り、明示承認後に`BRIDGE_ACTIVATION_PHASE=execute`を実行する。
 

@@ -37,7 +37,7 @@ describe("createWithdrawalAfterRevalidation", () => {
 
   it("submits only after both action-time checks pass", async () => {
     const deps = dependencies()
-    await expect(createWithdrawalAfterRevalidation(deps)).resolves.toBe("0xtx")
+    await expect(createWithdrawalAfterRevalidation(deps)).resolves.toEqual({ transactionHash: "0xtx", pendingSaved: true })
     expect(deps.refetchRuntime).toHaveBeenCalledOnce()
     expect(deps.refetchFinancials).toHaveBeenCalledOnce()
     expect(deps.validateFinancials).toHaveBeenCalledWith({ serviceFee: 10n, balance: 100n })
@@ -52,15 +52,15 @@ describe("createWithdrawalAfterRevalidation", () => {
 
     const result = await createWithdrawalAfterRevalidation(deps)
 
-    expect(result).toBe("0xtx")
-    expect(persisted).toBe(result)
+    expect(result).toEqual({ transactionHash: "0xtx", pendingSaved: true })
+    expect(persisted).toBe(result.transactionHash)
   })
 
-  it("surfaces persistence failures after broadcast", async () => {
+  it("returns the broadcast hash when persistence fails after broadcast", async () => {
     const deps = dependencies()
     deps.onBroadcast.mockImplementation((hash) => { throw new Error(`could not save ${hash}`) })
 
-    await expect(createWithdrawalAfterRevalidation(deps)).rejects.toThrow("could not save 0xtx")
+    await expect(createWithdrawalAfterRevalidation(deps)).resolves.toEqual({ transactionHash: "0xtx", pendingSaved: false })
     expect(deps.createWithdrawal).toHaveBeenCalledOnce()
   })
 

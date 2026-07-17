@@ -920,15 +920,62 @@ pub enum BroadcastOutcome {
     NonceConflict(RpcAuditEvidence),
 }
 
+pub async fn transaction_known(
+    args: &BridgeInitArgs,
+    transaction_hash: [u8; 32],
+) -> Result<bool, ObservationError> {
+    ensure_chain_id(args).await?;
+    let request = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "eth_getTransactionByHash",
+        "params": [format!("0x{}", hex(&transaction_hash))],
+    });
+    match client(args)
+        .multi_request(request)
+        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+        .send()
+        .await
+    {
+        MultiRpcResult::Consistent(Ok(value)) => {
+            transaction_response_matches_hash(&value, transaction_hash)
+        }
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
+    }
+}
+
+fn transaction_response_matches_hash(
+    response: &str,
+    transaction_hash: [u8; 32],
+) -> Result<bool, ObservationError> {
+    let value = serde_json::from_str::<serde_json::Value>(response)
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    if value.is_null() {
+        return Ok(false);
+    }
+    let hash = value
+        .get("hash")
+        .and_then(|hash| hash.as_str())
+        .ok_or(ObservationError::InvalidResponse)?;
+    if !hash.eq_ignore_ascii_case(&format!("0x{}", hex(&transaction_hash))) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    Ok(true)
+}
+
+pub(crate) fn signed_transaction_hash(raw: &[u8]) -> [u8; 32] {
+    let mut transaction_hash = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(raw);
+    hasher.finalize(&mut transaction_hash);
+    transaction_hash
+}
+
 pub async fn broadcast(
     args: &BridgeInitArgs,
     raw: &[u8],
 ) -> Result<BroadcastOutcome, ObservationError> {
     let finalized = finalized_observation(args).await?;
-    let mut transaction_hash = [0u8; 32];
-    let mut hasher = Keccak::v256();
-    hasher.update(raw);
-    hasher.finalize(&mut transaction_hash);
+    let transaction_hash = signed_transaction_hash(raw);
     let raw =
         Hex::from_str(&format!("0x{}", hex(raw))).map_err(|_| ObservationError::InvalidResponse)?;
     match client(args)
@@ -958,32 +1005,7 @@ pub async fn broadcast(
             )),
         ),
         MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::NonceTooLow)) => {
-            let request = json!({
-                "jsonrpc": "2.0", "id": 1, "method": "eth_getTransactionByHash",
-                "params": [format!("0x{}", hex(&transaction_hash))],
-            });
-            let known = match client(args)
-                .multi_request(request)
-                .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-                .send()
-                .await
-            {
-                MultiRpcResult::Consistent(Ok(value)) => {
-                    serde_json::from_str::<serde_json::Value>(&value)
-                        .ok()
-                        .and_then(|value| {
-                            value
-                                .get("hash")
-                                .and_then(|hash| hash.as_str())
-                                .map(str::to_owned)
-                        })
-                        .is_some_and(|hash| {
-                            hash.eq_ignore_ascii_case(&format!("0x{}", hex(&transaction_hash)))
-                        })
-                }
-                MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-                MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
-            };
+            let known = transaction_known(args, transaction_hash).await?;
             if bridge_core::nonce_too_low_is_submitted(true, known) {
                 Ok(BroadcastOutcome::Submitted(transaction_rpc_audit_evidence(
                     args,
@@ -1569,6 +1591,7 @@ mod tests {
             index_canister_id: Principal::from_slice(&[4]),
             evm_rpc_canister_id: Principal::from_slice(&[5]),
             bridge_contract: vec![0x42; 20],
+            timelock_contract: vec![0x43; 20],
             base_chain_id: 8453,
             custom_evm_rpc_urls: vec![
                 "https://rpc-1.example".to_owned(),
@@ -1577,6 +1600,7 @@ mod tests {
             ],
             ecdsa_key_name: "test_key_1".to_owned(),
             ecdsa_derivation_path: vec![],
+            governance_ecdsa_derivation_path: vec![b"governance-operator".to_vec()],
             deposit_rate_limit_window_seconds: 60,
             deposit_rate_limit_global: 2,
             deposit_rate_limit_per_principal: 1,
@@ -1587,12 +1611,12 @@ mod tests {
             transaction_gas_limit: 1,
             max_fee_per_gas: 2,
             max_priority_fee_per_gas: 1,
+            evm_liveness: crate::config::EvmLivenessPolicy::default(),
             eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
             governance_principal: Principal::from_slice(&[1]),
-            pause_principals: vec![Principal::from_slice(&[2])],
-            finance_administrator: Principal::from_slice(&[6]),
+            pause_principal: Principal::from_slice(&[2]),
             fee_recipient: crate::config::FeeRecipientConfig {
                 owner: Principal::from_slice(&[7]),
                 subaccount: vec![],
@@ -1615,5 +1639,23 @@ mod tests {
             &SendRawTransactionStatus::Ok(None),
             local
         ));
+    }
+
+    #[test]
+    fn transaction_presence_requires_null_or_the_exact_local_hash() {
+        let local = [0x11; 32];
+        assert!(!transaction_response_matches_hash("null", local).expect("missing"));
+        assert!(transaction_response_matches_hash(
+            &format!(r#"{{"hash":"0x{}"}}"#, "11".repeat(32)),
+            local,
+        )
+        .expect("matching transaction"));
+        assert!(transaction_response_matches_hash(
+            &format!(r#"{{"hash":"0x{}"}}"#, "22".repeat(32)),
+            local,
+        )
+        .is_err());
+        assert!(transaction_response_matches_hash("{}", local).is_err());
+        assert!(transaction_response_matches_hash("not-json", local).is_err());
     }
 }

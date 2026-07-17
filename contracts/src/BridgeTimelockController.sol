@@ -1,4 +1,4 @@
-// contracts/src: configure an OpenZeppelin timelock with an independently held cancellation role.
+// contracts/src: configure an OpenZeppelin timelock with a frozen canister operator role set.
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
@@ -9,7 +9,6 @@ contract BridgeTimelockController is TimelockController {
 
     error EmptyRoleMembers(bytes32 role);
     error ZeroRoleMember(bytes32 role);
-    error CancellerRoleOverlap(address account);
     error MinimumDelayTooShort(uint256 suppliedDelay, uint256 minimumDelay);
     error RoleSetFrozen(bytes32 role, address account);
 
@@ -28,17 +27,15 @@ contract BridgeTimelockController is TimelockController {
         _validateNonemptyRole(CANCELLER_ROLE, cancellers);
         _validateNonemptyRole(EXECUTOR_ROLE, executors);
 
-        // OpenZeppelin grants CANCELLER_ROLE to every proposer. Remove that
-        // bootstrap convenience before assigning the independently held role.
+        // OpenZeppelin grants CANCELLER_ROLE to every proposer. Normalize the
+        // role set to the explicit constructor list before freezing it. This
+        // intentionally permits one canister-derived operator to hold all
+        // three operational roles.
         for (uint256 index; index < proposers.length; ++index) {
             _revokeRole(CANCELLER_ROLE, proposers[index]);
         }
         for (uint256 index; index < cancellers.length; ++index) {
-            address canceller = cancellers[index];
-            if (_contains(proposers, canceller) || _contains(executors, canceller)) {
-                revert CancellerRoleOverlap(canceller);
-            }
-            _grantRole(CANCELLER_ROLE, canceller);
+            _grantRole(CANCELLER_ROLE, cancellers[index]);
         }
         _rolePolicyActive = true;
     }
@@ -78,14 +75,5 @@ contract BridgeTimelockController is TimelockController {
                 revert ZeroRoleMember(role);
             }
         }
-    }
-
-    function _contains(address[] memory members, address candidate) private pure returns (bool) {
-        for (uint256 index; index < members.length; ++index) {
-            if (members[index] == candidate) {
-                return true;
-            }
-        }
-        return false;
     }
 }

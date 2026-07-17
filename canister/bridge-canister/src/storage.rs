@@ -11,17 +11,13 @@ use bridge_core::{
 };
 use candid::{CandidType, Principal};
 use ic_sqlite_vfs::db::migrate::Migration;
+use ic_sqlite_vfs::db::{ChecksumRefresh, UpdateConnection};
 use ic_sqlite_vfs::{params, DbError, DbHandle, DefaultMemoryImpl, MemoryId, MemoryManager};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-    io::Cursor,
-    marker::PhantomData,
-    ops::Bound as RangeBound,
-    ops::RangeBounds,
-};
+#[cfg(test)]
+use std::collections::{BTreeMap, BTreeSet};
+use std::{fmt, io::Cursor, marker::PhantomData, ops::Bound as RangeBound, ops::RangeBounds};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -269,12 +265,37 @@ fn resolve_hold_bundle_db_failpoint(point: ResolveHoldBundleFailpoint) -> Result
     Ok(())
 }
 
-pub const SCHEMA_VERSION: u16 = 10;
-const WIRE_VERSION: u8 = 9;
+pub const SCHEMA_VERSION: u16 = 16;
+const WIRE_VERSION: u8 = 15;
 const MAX_STABLE_VALUE_BYTES: usize = 16 * 1024;
 const MAX_AUDIT_EVENTS: u64 = 10_000;
+const MAX_AUDIT_BATCH: usize = 32;
 const MAX_OWNER_DEPOSIT_INDEX_ENTRIES: usize = 100;
+pub const MAX_VALIDATION_ROWS: u16 = 100;
+pub const MAX_CHECKSUM_REFRESH_BYTES: u64 = 4 * 1024 * 1024;
 const AUDIT_DIGEST_DOMAIN: &[u8] = b"KINIC_BRIDGE_AUDIT_V1";
+const VALIDATION_TABLES: &[&str] = &[
+    "deposits",
+    "withdrawals",
+    "evm_operations",
+    "reconciliation_holds",
+    "evm_execution_payloads",
+    "reconciliation_scans",
+    "deposit_intents",
+    "audit_events",
+    "fee_payouts",
+    "deposit_owner_index",
+    "fee_payout_state_index",
+    "operation_owner_index",
+    "evm_state_index",
+    "pull_pending_deposit_index",
+    "release_pending_withdrawal_index",
+    "open_hold_index",
+    "owner_deposit_sequences",
+    "withdrawal_liability_index",
+    "withdrawal_stop_reason_counts",
+    "settlement_jobs",
+];
 
 pub const RETIRED_STABLE_STRUCTURE_MEMORY_IDS: core::ops::RangeInclusive<u8> = 0..=32;
 pub const SQLITE_MEMORY_ID: MemoryId = MemoryId::new(120);
@@ -285,7 +306,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 10, 9);
+INSERT INTO bridge_metadata VALUES (1, 16, 15);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -298,7 +319,10 @@ CREATE TABLE singleton_state (
     deposit_admission BLOB NOT NULL,
     audit_retention BLOB NOT NULL,
     settlement_admission BLOB NOT NULL,
-    confirmation_scheduler_health BLOB NOT NULL
+    confirmation_scheduler_health BLOB NOT NULL,
+    storage_revision BLOB NOT NULL CHECK (length(storage_revision) = 8),
+    withdrawal_liability_amount BLOB NOT NULL CHECK (length(withdrawal_liability_amount) = 16),
+    storage_validation BLOB
 ) STRICT;
 CREATE TABLE table_counts (
     name TEXT PRIMARY KEY NOT NULL,
@@ -322,6 +346,17 @@ CREATE TABLE pull_pending_deposit_index (key BLOB PRIMARY KEY NOT NULL, value BL
 CREATE TABLE release_pending_withdrawal_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE open_hold_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE owner_deposit_sequences (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE withdrawal_liability_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE withdrawal_stop_reason_counts (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL CHECK (length(value) = 8)) STRICT, WITHOUT ROWID;
+CREATE TABLE settlement_job_status_counts (
+    status INTEGER PRIMARY KEY CHECK (status IN (0, 1, 2, 3)),
+    count INTEGER NOT NULL CHECK (count >= 0)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE withdrawal_change_log (
+    id INTEGER PRIMARY KEY,
+    old_value BLOB,
+    new_value BLOB
+) STRICT;
 CREATE TABLE settlement_jobs (
     settlement_kind INTEGER NOT NULL CHECK (settlement_kind IN (0, 1)),
     settlement_id BLOB NOT NULL CHECK (length(settlement_id) = 32),
@@ -329,7 +364,7 @@ CREATE TABLE settlement_jobs (
     phase INTEGER NOT NULL CHECK (phase IN (0, 1)),
     status INTEGER NOT NULL CHECK (status IN (0, 1, 2, 3)),
     next_run_at_ns BLOB CHECK (next_run_at_ns IS NULL OR length(next_run_at_ns) = 8),
-    confirmation_checks INTEGER NOT NULL CHECK (confirmation_checks BETWEEN 0 AND 3),
+    confirmation_checks INTEGER NOT NULL CHECK (confirmation_checks BETWEEN 0 AND 255),
     confirmation_started_at_ns BLOB CHECK (confirmation_started_at_ns IS NULL OR length(confirmation_started_at_ns) = 8),
     lease_generation BLOB NOT NULL CHECK (length(lease_generation) = 8),
     lease_until_ns BLOB CHECK (lease_until_ns IS NULL OR length(lease_until_ns) = 8),
@@ -344,6 +379,35 @@ CREATE TABLE settlement_jobs (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX settlement_jobs_due
 ON settlement_jobs(status, next_run_at_ns, settlement_kind, settlement_id);
+CREATE INDEX settlement_jobs_lease
+ON settlement_jobs(status, lease_until_ns, settlement_kind, settlement_id);
+
+CREATE TRIGGER settlement_jobs_count_insert AFTER INSERT ON settlement_jobs BEGIN
+    UPDATE settlement_job_status_counts SET count = count + 1 WHERE status = NEW.status;
+END;
+CREATE TRIGGER settlement_jobs_count_delete AFTER DELETE ON settlement_jobs BEGIN
+    UPDATE settlement_job_status_counts SET count = count - 1 WHERE status = OLD.status;
+END;
+CREATE TRIGGER settlement_jobs_count_status AFTER UPDATE OF status ON settlement_jobs
+WHEN OLD.status != NEW.status BEGIN
+    UPDATE settlement_job_status_counts SET count = count - 1 WHERE status = OLD.status;
+    UPDATE settlement_job_status_counts SET count = count + 1 WHERE status = NEW.status;
+END;
+CREATE TRIGGER withdrawals_liability_insert AFTER INSERT ON withdrawals BEGIN
+    INSERT INTO withdrawal_change_log(old_value, new_value) VALUES(NULL, NEW.value);
+END;
+CREATE TRIGGER withdrawals_liability_update AFTER UPDATE OF value ON withdrawals BEGIN
+    INSERT INTO withdrawal_change_log(old_value, new_value) VALUES(OLD.value, NEW.value);
+END;
+CREATE TRIGGER withdrawals_liability_delete AFTER DELETE ON withdrawals BEGIN
+    INSERT INTO withdrawal_change_log(old_value, new_value) VALUES(OLD.value, NULL);
+END;
+
+INSERT INTO settlement_job_status_counts(status, count) VALUES
+ (0, 0),
+ (1, 0),
+ (2, 0),
+ (3, 0);
 
 INSERT INTO table_counts(name, count) VALUES
  ('deposits', X'0000000000000000'),
@@ -362,7 +426,9 @@ INSERT INTO table_counts(name, count) VALUES
  ('pull_pending_deposit_index', X'0000000000000000'),
  ('release_pending_withdrawal_index', X'0000000000000000'),
  ('open_hold_index', X'0000000000000000'),
- ('owner_deposit_sequences', X'0000000000000000');
+ ('owner_deposit_sequences', X'0000000000000000'),
+ ('withdrawal_liability_index', X'0000000000000000'),
+ ('withdrawal_stop_reason_counts', X'0000000000000000');
 "#;
 
 const MIGRATIONS: &[Migration] = &[Migration {
@@ -463,7 +529,7 @@ fn first_evm_index_id(
 ) -> Result<Option<u64>, StorageError> {
     let start = StableBlob::new(vec![tag])?;
     let end = StableBlob::new(vec![tag.saturating_add(1)])?;
-    let Some(entry) = index.range(start..end).next() else {
+    let Some(entry) = index.first_in_range(start..end) else {
         return Ok(None);
     };
     evm_index_id(entry.key()).map(Some)
@@ -561,6 +627,20 @@ impl SqlCodec for u64 {
     }
 }
 
+impl SqlCodec for u128 {
+    fn to_sql_bytes(&self) -> Vec<u8> {
+        self.to_be_bytes().to_vec()
+    }
+
+    fn from_sql_bytes(bytes: Vec<u8>) -> Result<Self, StorageError> {
+        bytes
+            .as_slice()
+            .try_into()
+            .map(u128::from_be_bytes)
+            .map_err(|_| StorageError::DecodeFailed)
+    }
+}
+
 impl<const N: usize> SqlCodec for [u8; N] {
     fn to_sql_bytes(&self) -> Vec<u8> {
         self.to_vec()
@@ -577,6 +657,186 @@ struct SqlEntry<K, V> {
     value: V,
 }
 
+#[derive(Clone, Copy)]
+struct RevisionedHandle(DbHandle);
+
+impl RevisionedHandle {
+    fn query<T, F>(self, f: F) -> Result<T, DbError>
+    where
+        F: FnOnce(&ic_sqlite_vfs::db::connection::Connection) -> Result<T, DbError>,
+    {
+        self.0.query(f)
+    }
+
+    fn update<T, F>(self, f: F) -> Result<T, DbError>
+    where
+        F: FnOnce(&UpdateConnection<'_>) -> Result<T, DbError>,
+    {
+        self.0.update(|connection| {
+            let result = f(connection)?;
+            sync_withdrawal_liability_changes(connection)?;
+            bump_storage_revision(connection)?;
+            Ok(result)
+        })
+    }
+
+    fn integrity_check(self) -> Result<String, DbError> {
+        self.0.integrity_check()
+    }
+
+    fn refresh_checksum_chunk(self, max_bytes: u64) -> Result<ChecksumRefresh, DbError> {
+        self.0.refresh_checksum_chunk(max_bytes)
+    }
+}
+
+fn decode_withdrawal_change(bytes: Vec<u8>) -> Result<WithdrawalRecord, DbError> {
+    let blob = StableBlob::new(bytes)
+        .map_err(|_| DbError::Constraint("invalid withdrawal change blob".into()))?;
+    decode(&blob).map_err(|_| DbError::Constraint("invalid withdrawal record".into()))
+}
+
+fn withdrawal_liability_key(record: &WithdrawalRecord) -> Vec<u8> {
+    let mut key = Vec::with_capacity(40);
+    key.extend_from_slice(&record.observed_at_ns.to_be_bytes());
+    key.extend_from_slice(&record.id.bytes());
+    key
+}
+
+fn adjust_stop_reason_count(
+    connection: &UpdateConnection<'_>,
+    reason: &str,
+    add: bool,
+) -> Result<(), DbError> {
+    let key = reason.as_bytes().to_vec();
+    let current = connection.query_optional_scalar::<Vec<u8>>(
+        "SELECT value FROM withdrawal_stop_reason_counts WHERE key = ?1",
+        params![key.clone()],
+    )?;
+    let count = current
+        .map(u64::from_sql_bytes)
+        .transpose()
+        .map_err(|_| DbError::Constraint("invalid withdrawal stop reason count".into()))?
+        .unwrap_or(0);
+    if add {
+        let next = count
+            .checked_add(1)
+            .ok_or_else(|| DbError::Constraint("withdrawal stop reason count overflow".into()))?;
+        connection.execute(
+            "INSERT INTO withdrawal_stop_reason_counts(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, next.to_sql_bytes()],
+        )?;
+        if count == 0 {
+            increment_table_count(connection, "withdrawal_stop_reason_counts")?;
+        }
+    } else {
+        let next = count
+            .checked_sub(1)
+            .ok_or_else(|| DbError::Constraint("withdrawal stop reason count underflow".into()))?;
+        if next == 0 {
+            connection.execute(
+                "DELETE FROM withdrawal_stop_reason_counts WHERE key = ?1",
+                params![key],
+            )?;
+            decrement_table_count(connection, "withdrawal_stop_reason_counts")?;
+        } else {
+            connection.execute(
+                "UPDATE withdrawal_stop_reason_counts SET value = ?1 WHERE key = ?2",
+                params![next.to_sql_bytes(), key],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_withdrawal_liability_record(
+    connection: &UpdateConnection<'_>,
+    record: &WithdrawalRecord,
+    add: bool,
+    amount: &mut u128,
+) -> Result<(), DbError> {
+    if !is_nonterminal_withdrawal(record) {
+        return Ok(());
+    }
+    let key = withdrawal_liability_key(record);
+    if add {
+        connection.execute(
+            "INSERT INTO withdrawal_liability_index(key, value) VALUES(?1, ?2)",
+            params![key, record.id.bytes().to_sql_bytes()],
+        )?;
+        increment_table_count(connection, "withdrawal_liability_index")?;
+        *amount = amount
+            .checked_add(record.amount_out.get())
+            .ok_or_else(|| DbError::Constraint("withdrawal liability overflow".into()))?;
+    } else {
+        connection.execute(
+            "DELETE FROM withdrawal_liability_index WHERE key = ?1",
+            params![key],
+        )?;
+        decrement_table_count(connection, "withdrawal_liability_index")?;
+        *amount = amount
+            .checked_sub(record.amount_out.get())
+            .ok_or_else(|| DbError::Constraint("withdrawal liability underflow".into()))?;
+    }
+    if let Some(reason) = record.last_settlement_stop_reason.as_deref() {
+        adjust_stop_reason_count(connection, reason, add)?;
+    }
+    Ok(())
+}
+
+fn sync_withdrawal_liability_changes(connection: &UpdateConnection<'_>) -> Result<(), DbError> {
+    let changes = connection.query_all(
+        "SELECT old_value, new_value FROM withdrawal_change_log ORDER BY id",
+        params![],
+        |row| {
+            Ok((
+                row.get::<Option<Vec<u8>>>(0)?,
+                row.get::<Option<Vec<u8>>>(1)?,
+            ))
+        },
+    )?;
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let raw_amount = connection.query_scalar::<Vec<u8>>(
+        "SELECT withdrawal_liability_amount FROM singleton_state WHERE id = 1",
+        params![],
+    )?;
+    let mut amount = u128::from_sql_bytes(raw_amount)
+        .map_err(|_| DbError::Constraint("invalid withdrawal liability amount".into()))?;
+    for (old, new) in changes {
+        if let Some(old) = old {
+            let old = decode_withdrawal_change(old)?;
+            apply_withdrawal_liability_record(connection, &old, false, &mut amount)?;
+        }
+        if let Some(new) = new {
+            let new = decode_withdrawal_change(new)?;
+            apply_withdrawal_liability_record(connection, &new, true, &mut amount)?;
+        }
+    }
+    connection.execute(
+        "UPDATE singleton_state SET withdrawal_liability_amount = ?1 WHERE id = 1",
+        params![amount.to_sql_bytes()],
+    )?;
+    connection.execute("DELETE FROM withdrawal_change_log", params![])
+}
+
+fn bump_storage_revision(connection: &UpdateConnection<'_>) -> Result<(), DbError> {
+    let raw = connection.query_scalar::<Vec<u8>>(
+        "SELECT storage_revision FROM singleton_state WHERE id = 1",
+        params![],
+    )?;
+    let revision = u64::from_sql_bytes(raw)
+        .map_err(|_| DbError::Constraint("invalid storage revision".into()))?;
+    let next = revision
+        .checked_add(1)
+        .ok_or_else(|| DbError::Constraint("storage revision overflow".into()))?;
+    connection.execute(
+        "UPDATE singleton_state SET storage_revision = ?1 WHERE id = 1",
+        params![next.to_sql_bytes()],
+    )
+}
+
 impl<K, V> SqlEntry<K, V> {
     fn key(&self) -> &K {
         &self.key
@@ -591,13 +851,13 @@ impl<K, V> SqlEntry<K, V> {
 }
 
 struct SqlCell<T> {
-    handle: DbHandle,
+    handle: RevisionedHandle,
     name: &'static str,
     value: T,
 }
 
 impl<T: SqlCodec> SqlCell<T> {
-    fn load(handle: DbHandle, name: &'static str) -> Result<Self, StorageError> {
+    fn load(handle: RevisionedHandle, name: &'static str) -> Result<Self, StorageError> {
         let sql = format!("SELECT {name} FROM singleton_state WHERE id = 1");
         let bytes = handle
             .query(|connection| connection.query_optional_scalar::<Vec<u8>>(&sql, params![]))
@@ -625,7 +885,7 @@ impl<T: SqlCodec> SqlCell<T> {
 }
 
 struct SqlMap<K, V> {
-    handle: DbHandle,
+    handle: RevisionedHandle,
     table: &'static str,
     _types: PhantomData<(K, V)>,
 }
@@ -635,7 +895,7 @@ where
     K: SqlCodec + Ord,
     V: SqlCodec,
 {
-    const fn new(handle: DbHandle, table: &'static str) -> Self {
+    const fn new(handle: RevisionedHandle, table: &'static str) -> Self {
         Self {
             handle,
             table,
@@ -717,12 +977,18 @@ where
             .unwrap_or_else(|error| panic!("SQLite table count decode failed: {error}"))
     }
 
+    #[cfg(test)]
     fn iter(&self) -> std::vec::IntoIter<SqlEntry<K, V>> {
         let sql = format!("SELECT key, value FROM {} ORDER BY key", self.table);
         self.query_entries(&sql, params![]).into_iter()
     }
 
-    fn range<R: RangeBounds<K>>(&self, range: R) -> std::vec::IntoIter<SqlEntry<K, V>> {
+    fn range_limited<R: RangeBounds<K>>(
+        &self,
+        range: R,
+        limit: usize,
+        descending: bool,
+    ) -> Vec<SqlEntry<K, V>> {
         let start = match range.start_bound() {
             RangeBound::Included(key) => Some((key.to_sql_bytes(), true)),
             RangeBound::Excluded(key) => Some((key.to_sql_bytes(), false)),
@@ -733,35 +999,47 @@ where
             RangeBound::Excluded(key) => Some((key.to_sql_bytes(), false)),
             RangeBound::Unbounded => None,
         };
+        let order = if descending { "DESC" } else { "ASC" };
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let entries = match (start, end) {
             (Some((start, start_inclusive)), Some((end, end_inclusive))) => {
                 let sql = format!(
-                    "SELECT key, value FROM {} WHERE key {} ?1 AND key {} ?2 ORDER BY key",
+                    "SELECT key, value FROM {} WHERE key {} ?1 AND key {} ?2 ORDER BY key {order} LIMIT ?3",
                     self.table,
                     if start_inclusive { ">=" } else { ">" },
                     if end_inclusive { "<=" } else { "<" }
                 );
-                self.query_entries(&sql, params![start, end])
+                self.query_entries(&sql, params![start, end, limit])
             }
             (Some((start, inclusive)), None) => {
                 let sql = format!(
-                    "SELECT key, value FROM {} WHERE key {} ?1 ORDER BY key",
+                    "SELECT key, value FROM {} WHERE key {} ?1 ORDER BY key {order} LIMIT ?2",
                     self.table,
                     if inclusive { ">=" } else { ">" }
                 );
-                self.query_entries(&sql, params![start])
+                self.query_entries(&sql, params![start, limit])
             }
             (None, Some((end, inclusive))) => {
                 let sql = format!(
-                    "SELECT key, value FROM {} WHERE key {} ?1 ORDER BY key",
+                    "SELECT key, value FROM {} WHERE key {} ?1 ORDER BY key {order} LIMIT ?2",
                     self.table,
                     if inclusive { "<=" } else { "<" }
                 );
-                self.query_entries(&sql, params![end])
+                self.query_entries(&sql, params![end, limit])
             }
-            (None, None) => self.iter().collect(),
+            (None, None) => {
+                let sql = format!(
+                    "SELECT key, value FROM {} ORDER BY key {order} LIMIT ?1",
+                    self.table
+                );
+                self.query_entries(&sql, params![limit])
+            }
         };
-        entries.into_iter()
+        entries
+    }
+
+    fn first_in_range<R: RangeBounds<K>>(&self, range: R) -> Option<SqlEntry<K, V>> {
+        self.range_limited(range, 1, false).into_iter().next()
     }
 
     fn query_entries(
@@ -907,10 +1185,10 @@ fn upsert_confirmation_schedule(
             settlement_kind, settlement_id, operation_id, phase, status, next_run_at_ns,
             confirmation_checks, confirmation_started_at_ns, lease_generation, lease_until_ns,
             last_error_code, last_error_detail, updated_at_ns
-         ) VALUES(?1, ?2, ?3, 0, 3, NULL, ?4, ?5, X'0000000000000000', NULL, NULL, NULL, ?5)
+         ) VALUES(?1, ?2, ?3, 0, 0, ?6, ?4, ?5, X'0000000000000000', NULL, NULL, NULL, ?5)
          ON CONFLICT(settlement_kind, settlement_id) DO UPDATE SET
-            operation_id=excluded.operation_id, phase=0, status=3,
-            next_run_at_ns=NULL,
+            operation_id=excluded.operation_id, phase=0, status=0,
+            next_run_at_ns=excluded.next_run_at_ns,
             confirmation_checks=excluded.confirmation_checks,
             confirmation_started_at_ns=excluded.confirmation_started_at_ns,
             lease_until_ns=NULL, last_error_code=NULL, last_error_detail=NULL,
@@ -920,7 +1198,8 @@ fn upsert_confirmation_schedule(
             settlement_id.to_sql_bytes(),
             schedule.operation_id.to_sql_bytes(),
             i64::from(schedule.checks_completed),
-            schedule.submitted_at_ns.to_sql_bytes()
+            schedule.submitted_at_ns.to_sql_bytes(),
+            schedule.next_check_at_ns.to_sql_bytes()
         ],
     )
 }
@@ -1036,9 +1315,76 @@ pub struct DepositAdmissionControl {
     pub caller_counts: Vec<DepositCallerQuota>,
     pub signer_address: Option<[u8; 20]>,
     pub signer_public_key: Option<Vec<u8>>,
+    pub governance_operator_address: Option<[u8; 20]>,
+    pub governance_operator_public_key: Option<Vec<u8>>,
+    pub governance_nonce_initialized: bool,
+    pub next_governance_nonce: u64,
+    pub next_governance_operation_id: u64,
+    pub pending_governance_transaction: Option<GovernanceTransaction>,
+    pub pending_timelock_operation: Option<PendingTimelockOperation>,
+    pub emergency_pause_deposit_required: bool,
+    pub emergency_pause_withdrawal_required: bool,
+    pub emergency_cancel_required: bool,
     pub base_snapshot: Option<CachedBaseMintSnapshot>,
     pub refresh_started_at_ns: Option<u64>,
     pub next_refresh_allowed_at_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GovernanceTransactionKind {
+    PauseDepositMints,
+    PauseWithdrawals,
+    SetServiceFee {
+        value: u128,
+    },
+    CancelTimelock {
+        operation_id: [u8; 32],
+    },
+    ScheduleActivation {
+        operation_id: [u8; 32],
+        salt: [u8; 32],
+    },
+    ExecuteActivation {
+        operation_id: [u8; 32],
+        salt: [u8; 32],
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingTimelockOperation {
+    pub operation_id: [u8; 32],
+    pub salt: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GovernanceTransactionState {
+    Prepared,
+    Signed,
+    Broadcasting {
+        transaction_hash: [u8; 32],
+    },
+    Submitted {
+        transaction_hash: [u8; 32],
+    },
+    NonceConflict {
+        transaction_hash: [u8; 32],
+    },
+    Confirmed {
+        transaction_hash: [u8; 32],
+        receipt_block_number: u64,
+    },
+    Reverted {
+        transaction_hash: [u8; 32],
+        receipt_block_number: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GovernanceTransaction {
+    pub id: u64,
+    pub kind: GovernanceTransactionKind,
+    pub envelope: bridge_core::EvmTransactionEnvelope,
+    pub state: GovernanceTransactionState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1266,7 +1612,25 @@ pub enum AuditEventKind {
     DepositsPaused,
     DepositsPauseRepeated,
     DepositsResumed,
-    RuntimeAdministratorsRotated,
+    WithdrawalFeeGuardTripped {
+        ledger_fee: u128,
+        charged_service_fee: u128,
+    },
+    WithdrawalFeeGuardCleared,
+    EvmTransactionRebroadcasted {
+        operation_id: u64,
+        transaction_hash: Vec<u8>,
+        attempt: u8,
+    },
+    EvmTransactionReplaced {
+        operation_id: u64,
+        previous_transaction_hash: Vec<u8>,
+        transaction_hash: Vec<u8>,
+        generation: u8,
+        max_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+    },
+    PausePrincipalRotated,
     FeeRecipientChanged {
         previous: FeeRecipientConfig,
         current: FeeRecipientConfig,
@@ -1405,6 +1769,51 @@ pub struct WithdrawalLiabilitySummary {
     pub stop_reasons: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum StorageMaintenanceError {
+    Unauthorized,
+    InvalidArgument { message: String },
+    StateChanged,
+    NotStarted,
+    StorageFailure,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StorageValidationStatus {
+    pub complete: bool,
+    pub phase: String,
+    pub scanned_rows: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ChecksumRefreshStatus {
+    pub complete: bool,
+    pub checksum: u64,
+    pub scanned_bytes: u64,
+    pub db_size: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct StorageValidationProgress {
+    expected_revision: u64,
+    phase: u16,
+    cursor: Option<Vec<u8>>,
+    phase_rows: u64,
+    scanned_rows: u64,
+    pending_ledger_operations: u64,
+    nonterminal_withdrawals: u64,
+    pending_evm_operations: u64,
+    reconciliation_holds: u64,
+    reserved_deposit_mint_amount: u128,
+    reserved_deposit_mint_operations: u64,
+    settlement_job_status_counts: [u64; 4],
+}
+
+enum ValidationChunkOutcome {
+    Status(StorageValidationStatus),
+    StateChanged,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DepositIdPageData {
     pub deposit_ids: Vec<[u8; 32]>,
@@ -1515,8 +1924,8 @@ fn initialize_singleton_state(
 ) -> Result<(), StorageError> {
     let admin = config.map(|config| AdminState {
         deposits_paused: true,
-        pause_principals: config.pause_principals.clone(),
-        finance_administrator: config.finance_administrator,
+        withdrawal_fee_guard: None,
+        pause_principal: config.pause_principal,
         governance_principal: config.governance_principal,
         fee_recipient: config.fee_recipient.clone(),
     });
@@ -1536,8 +1945,9 @@ fn initialize_singleton_state(
             "INSERT INTO singleton_state(
                 id, schema, accounting, counters, external_progress, config, admin_state,
                 deposit_admission, audit_retention,
-                settlement_admission, confirmation_scheduler_health
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                settlement_admission, confirmation_scheduler_health, storage_revision,
+                withdrawal_liability_amount, storage_validation
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)",
             params![
                 schema,
                 accounting,
@@ -1548,7 +1958,9 @@ fn initialize_singleton_state(
                 deposit_admission,
                 audit_retention,
                 settlement_admission,
-                confirmation_scheduler_health
+                confirmation_scheduler_health,
+                0u64.to_sql_bytes(),
+                0u128.to_sql_bytes()
             ],
         )
     })?;
@@ -1562,7 +1974,7 @@ fn reset_sqlite_test_runtime() {
 }
 
 pub struct StableStore {
-    handle: DbHandle,
+    handle: RevisionedHandle,
     schema: SqlCell<u16>,
     accounting: SqlCell<StableBlob>,
     deposits: SqlMap<[u8; 32], StableBlob>,
@@ -1591,6 +2003,195 @@ pub struct StableStore {
     audit_retention: SqlCell<StableBlob>,
     settlement_admission: SqlCell<StableBlob>,
     confirmation_scheduler_health: SqlCell<StableBlob>,
+}
+
+fn read_storage_revision(connection: &UpdateConnection<'_>) -> Result<u64, DbError> {
+    let raw = connection.query_scalar::<Vec<u8>>(
+        "SELECT storage_revision FROM singleton_state WHERE id = 1",
+        params![],
+    )?;
+    u64::from_sql_bytes(raw).map_err(|_| DbError::Constraint("invalid storage revision".into()))
+}
+
+fn decode_with_context<T: DeserializeOwned>(bytes: Vec<u8>, context: &str) -> Result<T, DbError> {
+    let blob = StableBlob::new(bytes).map_err(|_| DbError::Constraint(context.into()))?;
+    decode(&blob).map_err(|_| DbError::Constraint(context.into()))
+}
+
+fn referenced_row_exists(
+    connection: &UpdateConnection<'_>,
+    table: &str,
+    key: &[u8],
+) -> Result<bool, DbError> {
+    let sql = format!("SELECT 1 FROM {table} WHERE key = ?1");
+    Ok(connection
+        .query_optional_scalar::<i64>(&sql, params![key])?
+        .is_some())
+}
+
+fn validate_storage_row(
+    connection: &UpdateConnection<'_>,
+    table: &str,
+    key: &[u8],
+    value: &[u8],
+    progress: &mut StorageValidationProgress,
+) -> Result<(), DbError> {
+    match table {
+        "deposits" => {
+            let record: DepositRecord = decode_with_context(value.to_vec(), "invalid deposit")?;
+            if key != record.id.bytes() {
+                return Err(DbError::Constraint("deposit key mismatch".into()));
+            }
+            if is_pending_deposit_ledger(&record) {
+                progress.pending_ledger_operations = progress
+                    .pending_ledger_operations
+                    .checked_add(1)
+                    .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+            }
+            if is_deposit_mint_reserved(&record) {
+                progress.reserved_deposit_mint_operations = progress
+                    .reserved_deposit_mint_operations
+                    .checked_add(1)
+                    .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+                progress.reserved_deposit_mint_amount = progress
+                    .reserved_deposit_mint_amount
+                    .checked_add(record.net_amount.get())
+                    .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+            }
+        }
+        "withdrawals" => {
+            let record: WithdrawalRecord =
+                decode_with_context(value.to_vec(), "invalid withdrawal")?;
+            if key != record.id.bytes() {
+                return Err(DbError::Constraint("withdrawal key mismatch".into()));
+            }
+            if is_pending_withdrawal_ledger(&record) {
+                progress.pending_ledger_operations = progress
+                    .pending_ledger_operations
+                    .checked_add(1)
+                    .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+            }
+            if is_nonterminal_withdrawal(&record) {
+                progress.nonterminal_withdrawals = progress
+                    .nonterminal_withdrawals
+                    .checked_add(1)
+                    .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+                if !referenced_row_exists(
+                    connection,
+                    "withdrawal_liability_index",
+                    &withdrawal_liability_key(&record),
+                )? {
+                    return Err(DbError::Constraint(
+                        "missing withdrawal liability index".into(),
+                    ));
+                }
+            }
+        }
+        "evm_operations" => {
+            let record: EvmOperationRecord =
+                decode_with_context(value.to_vec(), "invalid EVM operation")?;
+            if key != record.id.get().to_sql_bytes() {
+                return Err(DbError::Constraint("EVM operation key mismatch".into()));
+            }
+            if is_pending_evm(&record) {
+                progress.pending_evm_operations = progress
+                    .pending_evm_operations
+                    .checked_add(1)
+                    .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+            }
+        }
+        "reconciliation_holds" => {
+            let record: ReconciliationHoldRecord =
+                decode_with_context(value.to_vec(), "invalid reconciliation hold")?;
+            if key != record.id.get().to_sql_bytes() {
+                return Err(DbError::Constraint(
+                    "reconciliation hold key mismatch".into(),
+                ));
+            }
+            if is_open_hold(&record) {
+                progress.reconciliation_holds = progress
+                    .reconciliation_holds
+                    .checked_add(1)
+                    .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+            }
+        }
+        "evm_execution_payloads" => {
+            let _: EvmExecutionPayload =
+                decode_with_context(value.to_vec(), "invalid EVM execution payload")?;
+            if !referenced_row_exists(connection, "evm_operations", key)? {
+                return Err(DbError::Constraint("orphan EVM execution payload".into()));
+            }
+        }
+        "deposit_owner_index" => {
+            if value.len() != 32 || !referenced_row_exists(connection, "deposits", value)? {
+                return Err(DbError::Constraint("orphan deposit owner index".into()));
+            }
+        }
+        "operation_owner_index" => {
+            let owner: OperationOwner =
+                decode_with_context(value.to_vec(), "invalid operation owner")?;
+            let OperationOwner::Deposit(deposit_id) = owner;
+            if !referenced_row_exists(connection, "deposits", &deposit_id)? {
+                return Err(DbError::Constraint("orphan operation owner".into()));
+            }
+        }
+        "pull_pending_deposit_index" | "release_pending_withdrawal_index" => {
+            let (primary, context) = if table == "pull_pending_deposit_index" {
+                ("deposits", "orphan deposit pending index")
+            } else {
+                ("withdrawals", "orphan withdrawal pending index")
+            };
+            if !referenced_row_exists(connection, primary, key)? {
+                return Err(DbError::Constraint(context.into()));
+            }
+        }
+        "withdrawal_liability_index" => {
+            if key.len() != 40 || value.len() != 32 {
+                return Err(DbError::Constraint(
+                    "invalid withdrawal liability index".into(),
+                ));
+            }
+            let record = connection
+                .query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM withdrawals WHERE key = ?1",
+                    params![value],
+                )?
+                .ok_or_else(|| DbError::Constraint("orphan withdrawal liability".into()))?;
+            let record: WithdrawalRecord = decode_with_context(record, "invalid withdrawal")?;
+            if !is_nonterminal_withdrawal(&record) || key != withdrawal_liability_key(&record) {
+                return Err(DbError::Constraint("stale withdrawal liability".into()));
+            }
+        }
+        "withdrawal_stop_reason_counts" => {
+            std::str::from_utf8(key)
+                .map_err(|_| DbError::Constraint("invalid withdrawal stop reason".into()))?;
+            if u64::from_sql_bytes(value.to_vec())
+                .map_err(|_| DbError::Constraint("invalid withdrawal stop reason count".into()))?
+                == 0
+            {
+                return Err(DbError::Constraint(
+                    "zero withdrawal stop reason count".into(),
+                ));
+            }
+        }
+        "settlement_jobs" => {
+            if key.len() != 33 || value.len() != 1 {
+                return Err(DbError::Constraint(
+                    "invalid settlement job validation row".into(),
+                ));
+            }
+            let status = usize::from(value[0]);
+            let count = progress
+                .settlement_job_status_counts
+                .get_mut(status)
+                .ok_or_else(|| DbError::Constraint("invalid settlement job status".into()))?;
+            *count = count
+                .checked_add(1)
+                .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1629,6 +2230,7 @@ impl StableStore {
         handle.migrate(MIGRATIONS)?;
         verify_metadata(handle)?;
         initialize_singleton_state(handle, config)?;
+        let handle = RevisionedHandle(handle);
         Ok(Self {
             handle,
             schema: SqlCell::load(handle, "schema")?,
@@ -1669,6 +2271,7 @@ impl StableStore {
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
         verify_metadata(handle)?;
+        let handle = RevisionedHandle(handle);
         let store = Self {
             handle,
             schema: SqlCell::load(handle, "schema")?,
@@ -1708,7 +2311,6 @@ impl StableStore {
             ));
         }
         store.validate_singletons()?;
-        store.validate_relations()?;
         Ok(store)
     }
 
@@ -1722,9 +2324,455 @@ impl StableStore {
         decode::<AuditRetentionState>(self.audit_retention.get())?;
         decode::<SettlementAdmissionControl>(self.settlement_admission.get())?;
         decode::<ConfirmationSchedulerHealth>(self.confirmation_scheduler_health.get())?;
+        let (revision, liability_amount, validation) = self.handle.query(|connection| {
+            connection.query_one(
+                "SELECT storage_revision, withdrawal_liability_amount, storage_validation
+                 FROM singleton_state WHERE id = 1",
+                params![],
+                |row| {
+                    Ok((
+                        row.get::<Vec<u8>>(0)?,
+                        row.get::<Vec<u8>>(1)?,
+                        row.get::<Option<Vec<u8>>>(2)?,
+                    ))
+                },
+            )
+        })?;
+        u64::from_sql_bytes(revision).map_err(|_| StorageError::DecodeFailed)?;
+        u128::from_sql_bytes(liability_amount).map_err(|_| StorageError::DecodeFailed)?;
+        if let Some(validation) = validation {
+            decode_with_context::<StorageValidationProgress>(
+                validation,
+                "invalid storage validation progress",
+            )
+            .map_err(StorageError::from)?;
+        }
         Ok(())
     }
 
+    pub fn start_storage_validation(
+        &self,
+    ) -> Result<StorageValidationStatus, StorageMaintenanceError> {
+        self.validate_singletons()
+            .map_err(|_| StorageMaintenanceError::StorageFailure)?;
+        self.handle
+            .update(|connection| {
+                let revision = read_storage_revision(connection)?;
+                let progress = StorageValidationProgress {
+                    expected_revision: revision
+                        .checked_add(1)
+                        .ok_or_else(|| DbError::Constraint("storage revision overflow".into()))?,
+                    phase: 0,
+                    cursor: None,
+                    phase_rows: 0,
+                    scanned_rows: 0,
+                    pending_ledger_operations: 0,
+                    nonterminal_withdrawals: 0,
+                    pending_evm_operations: 0,
+                    reconciliation_holds: 0,
+                    reserved_deposit_mint_amount: 0,
+                    reserved_deposit_mint_operations: 0,
+                    settlement_job_status_counts: [0; 4],
+                };
+                connection.execute(
+                    "UPDATE singleton_state SET storage_validation = ?1 WHERE id = 1",
+                    params![encode(&progress)
+                        .map_err(|_| DbError::Constraint("validation encoding failed".into()))?
+                        .to_sql_bytes()],
+                )?;
+                Ok(StorageValidationStatus {
+                    complete: false,
+                    phase: VALIDATION_TABLES[0].to_owned(),
+                    scanned_rows: 0,
+                })
+            })
+            .map_err(|_| StorageMaintenanceError::StorageFailure)
+    }
+
+    pub fn continue_storage_validation(
+        &self,
+        max_rows: u16,
+    ) -> Result<StorageValidationStatus, StorageMaintenanceError> {
+        if !(1..=MAX_VALIDATION_ROWS).contains(&max_rows) {
+            return Err(StorageMaintenanceError::InvalidArgument {
+                message: format!("max_rows must be between 1 and {MAX_VALIDATION_ROWS}"),
+            });
+        }
+        let started = self
+            .handle
+            .query(|connection| {
+                connection.query_optional_scalar::<i64>(
+                    "SELECT 1 FROM singleton_state
+                     WHERE id = 1 AND storage_validation IS NOT NULL",
+                    params![],
+                )
+            })
+            .map_err(|_| StorageMaintenanceError::StorageFailure)?
+            .is_some();
+        if !started {
+            return Err(StorageMaintenanceError::NotStarted);
+        }
+        let outcome = self
+            .handle
+            .update(|connection| {
+                let stored = connection
+                    .query_optional_scalar::<Vec<u8>>(
+                        "SELECT storage_validation FROM singleton_state WHERE id = 1",
+                        params![],
+                    )?
+                    .ok_or_else(|| DbError::Constraint("validation not started".into()))?;
+                let mut progress: StorageValidationProgress =
+                    decode_with_context(stored, "invalid storage validation progress")?;
+                let revision = read_storage_revision(connection)?;
+                if revision != progress.expected_revision {
+                    connection.execute(
+                        "UPDATE singleton_state SET storage_validation = NULL WHERE id = 1",
+                        params![],
+                    )?;
+                    return Ok(ValidationChunkOutcome::StateChanged);
+                }
+                let table = VALIDATION_TABLES
+                    .get(usize::from(progress.phase))
+                    .ok_or_else(|| DbError::Constraint("invalid validation phase".into()))?;
+                let rows = if *table == "settlement_jobs" {
+                    let sql = if progress.cursor.is_some() {
+                        "SELECT settlement_kind, settlement_id, status FROM settlement_jobs
+                         WHERE settlement_kind > ?1
+                            OR (settlement_kind = ?1 AND settlement_id > ?2)
+                         ORDER BY settlement_kind, settlement_id LIMIT ?3"
+                    } else {
+                        "SELECT settlement_kind, settlement_id, status FROM settlement_jobs
+                         ORDER BY settlement_kind, settlement_id LIMIT ?1"
+                    };
+                    let decode_job_row = |row: &ic_sqlite_vfs::db::Row| {
+                        let kind = row.get::<i64>(0)?;
+                        let mut key = vec![u8::try_from(kind).map_err(|_| {
+                            DbError::Constraint("invalid settlement job kind".into())
+                        })?];
+                        key.extend_from_slice(&row.get::<Vec<u8>>(1)?);
+                        let status = u8::try_from(row.get::<i64>(2)?).map_err(|_| {
+                            DbError::Constraint("invalid settlement job status".into())
+                        })?;
+                        Ok((key, vec![status]))
+                    };
+                    if let Some(cursor) = progress.cursor.clone() {
+                        let (&kind, id) = cursor.split_first().ok_or_else(|| {
+                            DbError::Constraint("invalid settlement job cursor".into())
+                        })?;
+                        connection.query_all(
+                            sql,
+                            params![i64::from(kind), id, i64::from(max_rows)],
+                            decode_job_row,
+                        )?
+                    } else {
+                        connection.query_all(sql, params![i64::from(max_rows)], decode_job_row)?
+                    }
+                } else {
+                    let sql = if progress.cursor.is_some() {
+                        format!(
+                            "SELECT key, value FROM {table} WHERE key > ?1 ORDER BY key LIMIT ?2"
+                        )
+                    } else {
+                        format!("SELECT key, value FROM {table} ORDER BY key LIMIT ?1")
+                    };
+                    if let Some(cursor) = progress.cursor.clone() {
+                        connection.query_all(&sql, params![cursor, i64::from(max_rows)], |row| {
+                            Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+                        })?
+                    } else {
+                        connection.query_all(&sql, params![i64::from(max_rows)], |row| {
+                            Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+                        })?
+                    }
+                };
+                for (key, value) in &rows {
+                    validate_storage_row(connection, table, key, value, &mut progress)?;
+                }
+                progress.phase_rows = progress
+                    .phase_rows
+                    .checked_add(rows.len() as u64)
+                    .ok_or_else(|| DbError::Constraint("validation row overflow".into()))?;
+                progress.scanned_rows = progress
+                    .scanned_rows
+                    .checked_add(rows.len() as u64)
+                    .ok_or_else(|| DbError::Constraint("validation row overflow".into()))?;
+                progress.cursor = rows.last().map(|(key, _)| key.clone());
+                if rows.len() < usize::from(max_rows) {
+                    if *table == "settlement_jobs" {
+                        let recorded = connection.query_all(
+                            "SELECT status, count FROM settlement_job_status_counts
+                             ORDER BY status",
+                            params![],
+                            |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+                        )?;
+                        let mut recorded_counts = [0u64; 4];
+                        for (status, count) in recorded {
+                            let status = usize::try_from(status).map_err(|_| {
+                                DbError::Constraint("invalid settlement job status".into())
+                            })?;
+                            *recorded_counts.get_mut(status).ok_or_else(|| {
+                                DbError::Constraint("invalid settlement job status".into())
+                            })? = u64::try_from(count).map_err(|_| {
+                                DbError::Constraint("invalid settlement job count".into())
+                            })?;
+                        }
+                        if recorded_counts != progress.settlement_job_status_counts {
+                            return Err(DbError::Constraint(
+                                "settlement job status count mismatch".into(),
+                            ));
+                        }
+                    } else {
+                        let recorded = connection.query_scalar::<Vec<u8>>(
+                            "SELECT count FROM table_counts WHERE name = ?1",
+                            params![*table],
+                        )?;
+                        let recorded = u64::from_sql_bytes(recorded)
+                            .map_err(|_| DbError::Constraint("invalid table count".into()))?;
+                        if recorded != progress.phase_rows {
+                            return Err(DbError::Constraint("table count mismatch".into()));
+                        }
+                    }
+                    progress.phase += 1;
+                    progress.phase_rows = 0;
+                    progress.cursor = None;
+                }
+                let complete = usize::from(progress.phase) == VALIDATION_TABLES.len();
+                if complete {
+                    let counters = connection.query_scalar::<Vec<u8>>(
+                        "SELECT counters FROM singleton_state WHERE id = 1",
+                        params![],
+                    )?;
+                    let counters: CounterState =
+                        decode_with_context(counters, "invalid counters during validation")?;
+                    if counters.pending_ledger_operations != progress.pending_ledger_operations
+                        || counters.nonterminal_withdrawals != progress.nonterminal_withdrawals
+                        || counters.pending_evm_operations != progress.pending_evm_operations
+                        || counters.reconciliation_holds != progress.reconciliation_holds
+                        || counters.reserved_deposit_mint_amount
+                            != progress.reserved_deposit_mint_amount
+                        || counters.reserved_deposit_mint_operations
+                            != progress.reserved_deposit_mint_operations
+                    {
+                        return Err(DbError::Constraint("counter mismatch".into()));
+                    }
+                    connection.execute(
+                        "UPDATE singleton_state SET storage_validation = NULL WHERE id = 1",
+                        params![],
+                    )?;
+                } else {
+                    progress.expected_revision = revision
+                        .checked_add(1)
+                        .ok_or_else(|| DbError::Constraint("storage revision overflow".into()))?;
+                    connection.execute(
+                        "UPDATE singleton_state SET storage_validation = ?1 WHERE id = 1",
+                        params![encode(&progress)
+                            .map_err(|_| {
+                                DbError::Constraint("validation encoding failed".into())
+                            })?
+                            .to_sql_bytes()],
+                    )?;
+                }
+                Ok(ValidationChunkOutcome::Status(StorageValidationStatus {
+                    complete,
+                    phase: if complete {
+                        "complete".to_owned()
+                    } else {
+                        VALIDATION_TABLES[usize::from(progress.phase)].to_owned()
+                    },
+                    scanned_rows: progress.scanned_rows,
+                }))
+            })
+            .map_err(|_| StorageMaintenanceError::StorageFailure)?;
+        match outcome {
+            ValidationChunkOutcome::Status(status) => Ok(status),
+            ValidationChunkOutcome::StateChanged => Err(StorageMaintenanceError::StateChanged),
+        }
+    }
+
+    pub fn storage_integrity_check(&self) -> Result<String, StorageMaintenanceError> {
+        self.handle
+            .integrity_check()
+            .map_err(|_| StorageMaintenanceError::StorageFailure)
+    }
+
+    pub fn refresh_storage_checksum(
+        &mut self,
+        max_bytes: u64,
+    ) -> Result<ChecksumRefreshStatus, StorageMaintenanceError> {
+        if !(1..=MAX_CHECKSUM_REFRESH_BYTES).contains(&max_bytes) {
+            return Err(StorageMaintenanceError::InvalidArgument {
+                message: format!("max_bytes must be between 1 and {MAX_CHECKSUM_REFRESH_BYTES}"),
+            });
+        }
+        self.handle
+            .refresh_checksum_chunk(max_bytes)
+            .map(|status| ChecksumRefreshStatus {
+                complete: status.complete,
+                checksum: status.checksum,
+                scanned_bytes: status.scanned_bytes,
+                db_size: status.db_size,
+            })
+            .map_err(|_| StorageMaintenanceError::StorageFailure)
+    }
+
+    #[cfg(feature = "test-deployment")]
+    pub fn seed_storage_test_data(
+        &mut self,
+        start: u64,
+        count: u16,
+    ) -> Result<u16, StorageMaintenanceError> {
+        if !(1..=100).contains(&count)
+            || start
+                .checked_add(u64::from(count))
+                .is_none_or(|end| end > MAX_AUDIT_EVENTS)
+        {
+            return Err(StorageMaintenanceError::InvalidArgument {
+                message: "seed range must be within 0..10000 and count within 1..100".into(),
+            });
+        }
+        let mut counters = self
+            .counters()
+            .map_err(|_| StorageMaintenanceError::StorageFailure)?;
+        let mut rows = Vec::with_capacity(usize::from(count));
+        for offset in 0..u64::from(count) {
+            let ordinal = start + offset;
+            let mut hasher = Sha256::new();
+            hasher.update(b"KINIC_BRIDGE_STORAGE_SEED_V1");
+            hasher.update(ordinal.to_be_bytes());
+            let id: [u8; 32] = hasher.finalize().into();
+            let withdrawal = WithdrawalRecord::observed(
+                WithdrawalId::new(id),
+                [0; 20],
+                vec![1],
+                [0; 32],
+                id,
+                Amount::new(100),
+                Amount::new(20),
+                Amount::new(10),
+                Amount::new(90),
+                ordinal,
+            )
+            .map_err(|_| StorageMaintenanceError::StorageFailure)?;
+            let operation = EvmOperationRecord::prepared(
+                bridge_core::EvmOperationId::new(ordinal),
+                id,
+                EvmOperationKind::MintDeposit,
+            );
+            let mut envelope = EvmCallIntent {
+                operation_id: operation.id,
+                payload_hash: id,
+                chain_id: 8453,
+                contract: [1; 20],
+                calldata: vec![1, 2, 3, 4],
+                gas_limit: 100_000,
+                max_fee_per_gas: 10,
+                max_priority_fee_per_gas: 1,
+            }
+            .assign_nonce(ordinal);
+            envelope.signed_transaction = Some(vec![1, 2, 3]);
+            let sequence = counters.next_audit_sequence;
+            counters.next_audit_sequence =
+                bridge_core::audit_next(sequence).ok_or(StorageMaintenanceError::StorageFailure)?;
+            counters.nonterminal_withdrawals = counters
+                .nonterminal_withdrawals
+                .checked_add(1)
+                .ok_or(StorageMaintenanceError::StorageFailure)?;
+            counters.pending_evm_operations = counters
+                .pending_evm_operations
+                .checked_add(1)
+                .ok_or(StorageMaintenanceError::StorageFailure)?;
+            rows.push((
+                id,
+                encode(&withdrawal).map_err(|_| StorageMaintenanceError::StorageFailure)?,
+                ordinal,
+                encode(&operation).map_err(|_| StorageMaintenanceError::StorageFailure)?,
+                encode(&EvmExecutionPayload::Prepared(envelope))
+                    .map_err(|_| StorageMaintenanceError::StorageFailure)?,
+                evm_state_index_key(&operation)
+                    .map_err(|_| StorageMaintenanceError::StorageFailure)?
+                    .ok_or(StorageMaintenanceError::StorageFailure)?,
+                sequence,
+                encode(&AuditEvent {
+                    sequence,
+                    timestamp_ns: ordinal,
+                    caller: Principal::anonymous(),
+                    kind: AuditEventKind::ReserveGateChanged { sufficient: true },
+                })
+                .map_err(|_| StorageMaintenanceError::StorageFailure)?,
+            ));
+        }
+        let counters_blob =
+            encode(&counters).map_err(|_| StorageMaintenanceError::StorageFailure)?;
+        self.handle
+            .update(|connection| {
+                for (
+                    id,
+                    withdrawal,
+                    operation_id,
+                    operation,
+                    execution_payload,
+                    evm_index,
+                    sequence,
+                    audit,
+                ) in &rows
+                {
+                    connection.execute(
+                        "INSERT INTO withdrawals(key, value) VALUES(?1, ?2)",
+                        params![id.to_sql_bytes(), withdrawal.to_sql_bytes()],
+                    )?;
+                    increment_table_count(connection, "withdrawals")?;
+                    connection.execute(
+                        "INSERT INTO settlement_jobs(
+                            settlement_kind, settlement_id, operation_id, phase, status,
+                            next_run_at_ns, confirmation_checks, confirmation_started_at_ns,
+                            lease_generation, lease_until_ns, last_error_code,
+                            last_error_detail, updated_at_ns
+                         ) VALUES(1, ?1, NULL, 1, 0, ?2, 0, NULL,
+                            X'0000000000000000', NULL, NULL, NULL, ?2)",
+                        params![id.to_sql_bytes(), u64::MAX.to_sql_bytes()],
+                    )?;
+                    connection.execute(
+                        "INSERT INTO evm_operations(key, value) VALUES(?1, ?2)",
+                        params![operation_id.to_sql_bytes(), operation.to_sql_bytes()],
+                    )?;
+                    increment_table_count(connection, "evm_operations")?;
+                    connection.execute(
+                        "INSERT INTO evm_execution_payloads(key, value) VALUES(?1, ?2)",
+                        params![
+                            operation_id.to_sql_bytes(),
+                            execution_payload.to_sql_bytes()
+                        ],
+                    )?;
+                    increment_table_count(connection, "evm_execution_payloads")?;
+                    connection.execute(
+                        "INSERT INTO evm_state_index(key, value) VALUES(?1, ?2)",
+                        params![evm_index.to_sql_bytes(), 0u8.to_sql_bytes()],
+                    )?;
+                    increment_table_count(connection, "evm_state_index")?;
+                    connection.execute(
+                        "INSERT INTO audit_events(key, value) VALUES(?1, ?2)",
+                        params![sequence.to_sql_bytes(), audit.to_sql_bytes()],
+                    )?;
+                    increment_table_count(connection, "audit_events")?;
+                }
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes()],
+                )
+            })
+            .map_err(|_| StorageMaintenanceError::StorageFailure)?;
+        self.counters.value = counters_blob;
+        Ok(count)
+    }
+
+    #[cfg(feature = "test-deployment")]
+    pub fn first_prepared_evm_test_id(&self) -> Result<Option<u64>, StorageMaintenanceError> {
+        self.first_prepared_evm()
+            .map(|entry| entry.map(|(operation, _)| operation.id.get()))
+            .map_err(|_| StorageMaintenanceError::StorageFailure)
+    }
+
+    #[cfg(test)]
     fn validate_relations(&self) -> Result<(), StorageError> {
         const COUNTED_TABLES: &[&str] = &[
             "deposits",
@@ -1842,9 +2890,6 @@ impl StableStore {
             let record: WithdrawalRecord = decode(&StableBlob::new(bytes)?)?;
             if key != record.id.bytes() {
                 return Err(StorageError::DecodeFailed);
-            }
-            if matches!(record.state, WithdrawalState::Observed) {
-                return Err(StorageError::DatabaseFailure);
             }
             if is_pending_withdrawal_ledger(&record) {
                 expected_release.insert(key);
@@ -2000,10 +3045,18 @@ impl StableStore {
                     envelope.operation_id == operation.id
                         && envelope.payload_hash == operation.payload_hash
                 }
+                (EvmOperationState::Submitted { .. }, EvmExecutionPayload::Prepared(envelope)) => {
+                    envelope.operation_id == operation.id
+                        && envelope.payload_hash == operation.payload_hash
+                        && envelope.signed_transaction.is_some()
+                }
                 _ => false,
             };
             if !valid {
                 return Err(StorageError::DatabaseFailure);
+            }
+            if matches!(operation.state, EvmOperationState::Submitted { .. }) {
+                expected_payload_ids.insert(key);
             }
             actual_payload_ids.insert(key);
         }
@@ -2292,8 +3345,8 @@ impl StableStore {
                         row.get::<Vec<u8>>(3)?,
                     )),
                 )?;
-                if let Some((status, _, Some(next_raw), _)) = target.first() {
-                    if *status == 0 {
+                if let Some((status, phase, Some(next_raw), _)) = target.first() {
+                    if *status == 0 && *phase != 0 {
                         let next = u64::from_sql_bytes(next_raw.clone())
                             .map_err(|_| DbError::Constraint("invalid manual schedule".into()))?;
                         if now_ns < next.saturating_add(overdue_after_ns) {
@@ -2908,50 +3961,42 @@ impl StableStore {
         now_ns: u64,
         overdue_after_ns: u64,
     ) -> Result<SettlementJobSummary, StorageError> {
-        let rows = self.handle.query(|connection| {
-            connection.query_all(
-                "SELECT status, next_run_at_ns, lease_until_ns FROM settlement_jobs",
+        let (counts, overdue, expired) = self.handle.query(|connection| {
+            let counts = connection.query_all(
+                "SELECT status, count FROM settlement_job_status_counts ORDER BY status",
                 params![],
-                |row| {
-                    Ok((
-                        row.get::<i64>(0)?,
-                        row.get::<Option<Vec<u8>>>(1)?,
-                        row.get::<Option<Vec<u8>>>(2)?,
-                    ))
-                },
-            )
+                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+            )?;
+            let overdue = connection
+                .query_optional_scalar::<i64>(
+                    "SELECT 1 FROM settlement_jobs
+                     WHERE status = 0 AND next_run_at_ns <= ?1 LIMIT 1",
+                    params![now_ns.saturating_sub(overdue_after_ns).to_sql_bytes()],
+                )?
+                .is_some();
+            let expired = connection
+                .query_optional_scalar::<i64>(
+                    "SELECT 1 FROM settlement_jobs
+                     WHERE status = 1 AND lease_until_ns <= ?1 LIMIT 1",
+                    params![now_ns.to_sql_bytes()],
+                )?
+                .is_some();
+            Ok((counts, overdue, expired))
         })?;
-        let mut summary = SettlementJobSummary::default();
-        for (status, next, lease) in rows {
-            match status {
-                0 => {
-                    summary.scheduled = summary.scheduled.saturating_add(1);
-                    let next = next
-                        .map(u64::from_sql_bytes)
-                        .transpose()
-                        .map_err(|_| StorageError::DecodeFailed)?
-                        .ok_or(StorageError::DecodeFailed)?;
-                    if now_ns >= next.saturating_add(overdue_after_ns) {
-                        summary.overdue = summary.overdue.saturating_add(1);
-                    }
-                }
-                1 => {
-                    let lease = lease
-                        .map(u64::from_sql_bytes)
-                        .transpose()
-                        .map_err(|_| StorageError::DecodeFailed)?
-                        .ok_or(StorageError::DecodeFailed)?;
-                    if lease <= now_ns {
-                        summary.expired = summary.expired.saturating_add(1);
-                    } else {
-                        summary.leased = summary.leased.saturating_add(1);
-                    }
-                }
-                2 => summary.stopped = summary.stopped.saturating_add(1),
-                3 => {}
-                _ => return Err(StorageError::DecodeFailed),
-            }
+        let mut by_status = [0u64; 4];
+        for (status, count) in counts {
+            let index = usize::try_from(status).map_err(|_| StorageError::DecodeFailed)?;
+            let count = u64::try_from(count).map_err(|_| StorageError::DecodeFailed)?;
+            *by_status.get_mut(index).ok_or(StorageError::DecodeFailed)? = count;
         }
+        let mut summary = SettlementJobSummary {
+            scheduled: by_status[0],
+            leased: by_status[1].saturating_sub(u64::from(expired)),
+            stopped: by_status[2],
+            expired: u64::from(expired),
+            overdue: u64::from(overdue),
+            next_wakeup_at_ns: None,
+        };
         summary.next_wakeup_at_ns = self.next_settlement_wakeup_ns(now_ns)?;
         Ok(summary)
     }
@@ -3153,6 +4198,352 @@ impl StableStore {
         Ok(self.deposit_admission()?.signer_public_key)
     }
 
+    pub fn governance_operator_address(&self) -> Result<Option<[u8; 20]>, StorageError> {
+        Ok(self.deposit_admission()?.governance_operator_address)
+    }
+
+    pub fn governance_operator_public_key(&self) -> Result<Option<Vec<u8>>, StorageError> {
+        Ok(self.deposit_admission()?.governance_operator_public_key)
+    }
+
+    pub fn set_governance_operator_public_key_if_absent(
+        &mut self,
+        public_key: Vec<u8>,
+    ) -> Result<Vec<u8>, StorageError> {
+        let mut admission = self.deposit_admission()?;
+        let selected = admission
+            .governance_operator_public_key
+            .unwrap_or(public_key);
+        admission.governance_operator_public_key = Some(selected.clone());
+        self.set_deposit_admission(&admission)?;
+        Ok(selected)
+    }
+
+    pub fn set_governance_operator_address_if_absent(
+        &mut self,
+        address: [u8; 20],
+    ) -> Result<[u8; 20], StorageError> {
+        let mut admission = self.deposit_admission()?;
+        let selected = admission.governance_operator_address.unwrap_or(address);
+        admission.governance_operator_address = Some(selected);
+        self.set_deposit_admission(&admission)?;
+        Ok(selected)
+    }
+
+    pub fn governance_lane(
+        &self,
+    ) -> Result<(bool, u64, u64, Option<GovernanceTransaction>), StorageError> {
+        let admission = self.deposit_admission()?;
+        Ok((
+            admission.governance_nonce_initialized,
+            admission.next_governance_nonce,
+            admission.next_governance_operation_id,
+            admission.pending_governance_transaction,
+        ))
+    }
+
+    pub fn pending_timelock_operation(
+        &self,
+    ) -> Result<Option<PendingTimelockOperation>, StorageError> {
+        Ok(self.deposit_admission()?.pending_timelock_operation)
+    }
+
+    pub fn enqueue_emergency_base_actions(&mut self) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        admission.emergency_pause_deposit_required = true;
+        admission.emergency_pause_withdrawal_required = true;
+        admission.emergency_cancel_required = admission.pending_timelock_operation.is_some();
+        self.set_deposit_admission(&admission)
+    }
+
+    pub fn next_emergency_base_action(
+        &self,
+    ) -> Result<Option<GovernanceTransactionKind>, StorageError> {
+        let admission = self.deposit_admission()?;
+        if admission.emergency_pause_deposit_required {
+            Ok(Some(GovernanceTransactionKind::PauseDepositMints))
+        } else if admission.emergency_pause_withdrawal_required {
+            Ok(Some(GovernanceTransactionKind::PauseWithdrawals))
+        } else if admission.emergency_cancel_required {
+            admission
+                .pending_timelock_operation
+                .map(|pending| GovernanceTransactionKind::CancelTimelock {
+                    operation_id: pending.operation_id,
+                })
+                .map(Some)
+                .ok_or(StorageError::DecodeFailed)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn emergency_base_actions_pending(&self) -> Result<bool, StorageError> {
+        let admission = self.deposit_admission()?;
+        Ok(admission.emergency_pause_deposit_required
+            || admission.emergency_pause_withdrawal_required
+            || admission.emergency_cancel_required)
+    }
+
+    pub fn initialize_governance_nonce(&mut self, nonce: u64) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        if !admission.governance_nonce_initialized {
+            admission.governance_nonce_initialized = true;
+            admission.next_governance_nonce = nonce;
+        } else if admission.next_governance_nonce < nonce {
+            return Err(StorageError::DecodeFailed);
+        }
+        self.set_deposit_admission(&admission)
+    }
+
+    pub fn prepare_governance_transaction(
+        &mut self,
+        transaction: GovernanceTransaction,
+    ) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        if admission.pending_governance_transaction.is_some()
+            || transaction.id != admission.next_governance_operation_id
+            || transaction.envelope.nonce != admission.next_governance_nonce
+        {
+            return Err(StorageError::DecodeFailed);
+        }
+        match transaction.kind {
+            GovernanceTransactionKind::ScheduleActivation { operation_id, salt } => {
+                if admission.pending_timelock_operation.is_some() {
+                    return Err(StorageError::DecodeFailed);
+                }
+                admission.pending_timelock_operation =
+                    Some(PendingTimelockOperation { operation_id, salt });
+            }
+            GovernanceTransactionKind::ExecuteActivation { operation_id, salt } => {
+                if admission.pending_timelock_operation
+                    != Some(PendingTimelockOperation { operation_id, salt })
+                {
+                    return Err(StorageError::DecodeFailed);
+                }
+            }
+            GovernanceTransactionKind::CancelTimelock { operation_id } => {
+                if admission
+                    .pending_timelock_operation
+                    .is_none_or(|pending| pending.operation_id != operation_id)
+                {
+                    return Err(StorageError::DecodeFailed);
+                }
+            }
+            GovernanceTransactionKind::PauseDepositMints
+            | GovernanceTransactionKind::PauseWithdrawals
+            | GovernanceTransactionKind::SetServiceFee { .. } => {}
+        }
+        admission.next_governance_operation_id = admission
+            .next_governance_operation_id
+            .checked_add(1)
+            .ok_or(StorageError::EncodeFailed)?;
+        admission.next_governance_nonce = admission
+            .next_governance_nonce
+            .checked_add(1)
+            .ok_or(StorageError::EncodeFailed)?;
+        admission.pending_governance_transaction = Some(transaction);
+        self.set_deposit_admission(&admission)
+    }
+
+    pub fn update_governance_transaction(
+        &mut self,
+        transaction: GovernanceTransaction,
+    ) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        if admission
+            .pending_governance_transaction
+            .as_ref()
+            .is_none_or(|pending| {
+                pending.id != transaction.id || pending.envelope.nonce != transaction.envelope.nonce
+            })
+        {
+            return Err(StorageError::DecodeFailed);
+        }
+        admission.pending_governance_transaction = Some(transaction);
+        self.set_deposit_admission(&admission)
+    }
+
+    pub fn abort_unbroadcast_governance_transaction_for_emergency(
+        &mut self,
+        transaction: &GovernanceTransaction,
+    ) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        if !admission.emergency_pause_deposit_required
+            && !admission.emergency_pause_withdrawal_required
+            && !admission.emergency_cancel_required
+        {
+            return Err(StorageError::DecodeFailed);
+        }
+        if admission.pending_governance_transaction.as_ref() != Some(transaction)
+            || !matches!(
+                transaction.state,
+                GovernanceTransactionState::Prepared | GovernanceTransactionState::Signed
+            )
+            || !matches!(
+                transaction.kind,
+                GovernanceTransactionKind::SetServiceFee { .. }
+                    | GovernanceTransactionKind::ScheduleActivation { .. }
+                    | GovernanceTransactionKind::ExecuteActivation { .. }
+            )
+            || admission.next_governance_nonce
+                != transaction
+                    .envelope
+                    .nonce
+                    .checked_add(1)
+                    .ok_or(StorageError::DecodeFailed)?
+        {
+            return Err(StorageError::DecodeFailed);
+        }
+        if let GovernanceTransactionKind::ScheduleActivation { operation_id, salt } =
+            transaction.kind
+        {
+            if admission.pending_timelock_operation
+                != Some(PendingTimelockOperation { operation_id, salt })
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            admission.pending_timelock_operation = None;
+            admission.emergency_cancel_required = false;
+        }
+        admission.next_governance_nonce = transaction.envelope.nonce;
+        admission.pending_governance_transaction = None;
+        self.set_deposit_admission(&admission)
+    }
+
+    pub fn complete_governance_transaction(
+        &mut self,
+        transaction: GovernanceTransaction,
+    ) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        if admission
+            .pending_governance_transaction
+            .as_ref()
+            .is_none_or(|pending| {
+                pending.id != transaction.id
+                    || pending.kind != transaction.kind
+                    || pending.envelope != transaction.envelope
+            })
+        {
+            return Err(StorageError::DecodeFailed);
+        }
+        let confirmed = matches!(
+            transaction.state,
+            GovernanceTransactionState::Confirmed { .. }
+        );
+        let reverted = matches!(
+            transaction.state,
+            GovernanceTransactionState::Reverted { .. }
+        );
+        if !confirmed && !reverted {
+            return Err(StorageError::DecodeFailed);
+        }
+        match transaction.kind {
+            GovernanceTransactionKind::CancelTimelock { operation_id }
+                if confirmed
+                    && admission
+                        .pending_timelock_operation
+                        .is_none_or(|pending| pending.operation_id != operation_id) =>
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            GovernanceTransactionKind::ScheduleActivation { operation_id, salt }
+                if reverted
+                    && admission.pending_timelock_operation
+                        != Some(PendingTimelockOperation { operation_id, salt }) =>
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            GovernanceTransactionKind::ExecuteActivation { operation_id, salt }
+                if confirmed
+                    && admission.pending_timelock_operation
+                        != Some(PendingTimelockOperation { operation_id, salt }) =>
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            _ => {}
+        }
+        admission.pending_governance_transaction = None;
+        match transaction.kind {
+            GovernanceTransactionKind::PauseDepositMints if confirmed => {
+                admission.emergency_pause_deposit_required = false;
+            }
+            GovernanceTransactionKind::PauseWithdrawals if confirmed => {
+                admission.emergency_pause_withdrawal_required = false;
+            }
+            GovernanceTransactionKind::CancelTimelock { operation_id }
+                if confirmed
+                    && admission
+                        .pending_timelock_operation
+                        .is_some_and(|pending| pending.operation_id == operation_id) =>
+            {
+                admission.emergency_cancel_required = false;
+                admission.pending_timelock_operation = None;
+            }
+            GovernanceTransactionKind::ScheduleActivation { operation_id, salt }
+                if reverted
+                    && admission.pending_timelock_operation
+                        == Some(PendingTimelockOperation { operation_id, salt }) =>
+            {
+                admission.pending_timelock_operation = None;
+                admission.emergency_cancel_required = false;
+            }
+            GovernanceTransactionKind::ExecuteActivation { operation_id, salt }
+                if confirmed
+                    && admission.pending_timelock_operation
+                        == Some(PendingTimelockOperation { operation_id, salt }) =>
+            {
+                admission.pending_timelock_operation = None;
+                admission.emergency_cancel_required = false;
+            }
+            GovernanceTransactionKind::SetServiceFee { .. }
+            | GovernanceTransactionKind::ScheduleActivation { .. } => {}
+            GovernanceTransactionKind::PauseDepositMints
+            | GovernanceTransactionKind::PauseWithdrawals
+            | GovernanceTransactionKind::ExecuteActivation { .. }
+            | GovernanceTransactionKind::CancelTimelock { .. } => {}
+        }
+        self.set_deposit_admission(&admission)
+    }
+
+    pub fn resolve_governance_nonce_conflict(
+        &mut self,
+        transaction: &GovernanceTransaction,
+        observed_nonce: u64,
+    ) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        let pending = admission
+            .pending_governance_transaction
+            .as_ref()
+            .ok_or(StorageError::DecodeFailed)?;
+        if pending.id != transaction.id
+            || pending.kind != transaction.kind
+            || pending.envelope != transaction.envelope
+            || !matches!(
+                transaction.state,
+                GovernanceTransactionState::NonceConflict { .. }
+                    | GovernanceTransactionState::Broadcasting { .. }
+            )
+            || observed_nonce <= transaction.envelope.nonce
+            || observed_nonce < admission.next_governance_nonce
+        {
+            return Err(StorageError::DecodeFailed);
+        }
+        if let GovernanceTransactionKind::ScheduleActivation { operation_id, salt } =
+            transaction.kind
+        {
+            if admission.pending_timelock_operation
+                != Some(PendingTimelockOperation { operation_id, salt })
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            admission.pending_timelock_operation = None;
+            admission.emergency_cancel_required = false;
+        }
+        admission.next_governance_nonce = observed_nonce;
+        admission.pending_governance_transaction = None;
+        self.set_deposit_admission(&admission)
+    }
+
     pub fn set_signer_public_key_if_absent(
         &mut self,
         public_key: Vec<u8>,
@@ -3200,8 +4591,8 @@ impl StableStore {
         }
         let state = AdminState {
             deposits_paused: true,
-            pause_principals: config.pause_principals.clone(),
-            finance_administrator: config.finance_administrator,
+            withdrawal_fee_guard: None,
+            pause_principal: config.pause_principal,
             governance_principal: config.governance_principal,
             fee_recipient: config.fee_recipient.clone(),
         };
@@ -3308,6 +4699,12 @@ impl StableStore {
         timestamp_ns: u64,
         kinds: Vec<AuditEventKind>,
     ) -> Result<PreparedAuditBatch, StorageError> {
+        if kinds.len() > MAX_AUDIT_BATCH {
+            return Err(StorageError::ValueTooLarge {
+                actual: kinds.len(),
+                maximum: MAX_AUDIT_BATCH,
+            });
+        }
         let mut events = Vec::with_capacity(kinds.len());
         for kind in kinds {
             let sequence = counters.next_audit_sequence;
@@ -3332,8 +4729,8 @@ impl StableStore {
             .saturating_sub(MAX_AUDIT_EVENTS as usize);
         let oldest = self
             .audit_events
-            .iter()
-            .take(prune_count)
+            .range_limited(.., prune_count, false)
+            .into_iter()
             .map(|entry| (*entry.key(), entry.value()))
             .collect::<Vec<_>>();
         if oldest.len() != prune_count {
@@ -3457,8 +4854,7 @@ impl StableStore {
         let pruned = if self.audit_events.len() >= MAX_AUDIT_EVENTS {
             let (oldest_sequence, oldest_blob) = self
                 .audit_events
-                .iter()
-                .next()
+                .first_in_range(..)
                 .map(|entry| (*entry.key(), entry.value()))
                 .ok_or(StorageError::RecordNotFound)?;
             let expected = retention.pruned_count;
@@ -3514,15 +4910,16 @@ impl StableStore {
         let retention: AuditRetentionState = decode(self.audit_retention.get())?;
         let oldest_available_sequence = self
             .audit_events
-            .iter()
+            .range_limited(.., 1, false)
+            .into_iter()
             .next()
             .map(|entry| *entry.key())
             .unwrap_or(retention.pruned_count);
         let start = requested_start.max(oldest_available_sequence);
         let mut entries = self
             .audit_events
-            .range(start..)
-            .take(usize::from(limit) + 1)
+            .range_limited(start.., usize::from(limit) + 1, false)
+            .into_iter()
             .map(|entry| decode(&entry.value()))
             .collect::<Result<Vec<AuditEvent>, StorageError>>()?;
         let has_more = entries.len() > usize::from(limit);
@@ -3544,8 +4941,9 @@ impl StableStore {
     pub fn last_audit_sequence(&self) -> Result<Option<u64>, StorageError> {
         Ok(self
             .audit_events
-            .iter()
-            .next_back()
+            .range_limited(.., 1, true)
+            .into_iter()
+            .next()
             .map(|entry| *entry.key()))
     }
     /// Returns the next candidate without reserving it. The request transaction rechecks it.
@@ -3590,8 +4988,7 @@ impl StableStore {
         let pruned = if self.audit_events.len() >= MAX_AUDIT_EVENTS {
             let (oldest_sequence, oldest_blob) = self
                 .audit_events
-                .iter()
-                .next()
+                .first_in_range(..)
                 .map(|entry| (*entry.key(), entry.value()))
                 .ok_or(StorageError::RecordNotFound)?;
             if oldest_sequence != retention.pruned_count {
@@ -3969,6 +5366,174 @@ impl StableStore {
             }
         } else {
             return Err(StorageError::RecordNotFound);
+        }
+        self.evm_execution_payloads
+            .insert(id, encode(&EvmExecutionPayload::Prepared(value.clone()))?);
+        Ok(())
+    }
+
+    pub fn replace_submitted_evm_envelope(
+        &mut self,
+        value: &EvmTransactionEnvelope,
+    ) -> Result<(), StorageError> {
+        let id = value.operation_id.get();
+        let previous = self.evm_envelope(id)?.ok_or(StorageError::RecordNotFound)?;
+        if previous.operation_id != value.operation_id
+            || previous.payload_hash != value.payload_hash
+            || previous.nonce != value.nonce
+            || previous.chain_id != value.chain_id
+            || previous.contract != value.contract
+            || previous.calldata != value.calldata
+            || previous.gas_limit != value.gas_limit
+            || previous.initial_max_fee_per_gas != value.initial_max_fee_per_gas
+            || previous.initial_max_priority_fee_per_gas != value.initial_max_priority_fee_per_gas
+            || value.replacement_generation != previous.replacement_generation.saturating_add(1)
+            || value.first_broadcast_at_ns != previous.first_broadcast_at_ns
+            || value.last_broadcast_at_ns < previous.last_broadcast_at_ns
+            || value.rebroadcast_count != previous.rebroadcast_count
+            || value.prior_signed_transactions.len()
+                != previous.prior_signed_transactions.len().saturating_add(1)
+            || value.prior_signed_transactions.last() != previous.signed_transaction.as_ref()
+            || !value
+                .prior_signed_transactions
+                .starts_with(&previous.prior_signed_transactions)
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        self.evm_execution_payloads
+            .insert(id, encode(&EvmExecutionPayload::Prepared(value.clone()))?);
+        Ok(())
+    }
+
+    pub fn promote_submitted_evm_replacement_with_rpc_audit(
+        &mut self,
+        operation: &EvmOperationRecord,
+        envelope: &EvmTransactionEnvelope,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        let id = operation.id.get();
+        let previous_operation = self
+            .evm_operation(id)?
+            .ok_or(StorageError::RecordNotFound)?;
+        let previous_envelope = self.evm_envelope(id)?.ok_or(StorageError::RecordNotFound)?;
+        let (
+            EvmOperationState::Submitted {
+                transaction_hash: previous_hash,
+            },
+            EvmOperationState::Submitted {
+                transaction_hash: next_hash,
+            },
+        ) = (&previous_operation.state, &operation.state)
+        else {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        };
+        if previous_operation.id != operation.id
+            || previous_operation.payload_hash != operation.payload_hash
+            || previous_operation.kind != operation.kind
+            || previous_operation.recovery_of != operation.recovery_of
+            || previous_hash == next_hash
+            || operation.id != envelope.operation_id
+            || previous_envelope.operation_id != envelope.operation_id
+            || previous_envelope.payload_hash != envelope.payload_hash
+            || previous_envelope.nonce != envelope.nonce
+            || previous_envelope.chain_id != envelope.chain_id
+            || previous_envelope.contract != envelope.contract
+            || previous_envelope.calldata != envelope.calldata
+            || previous_envelope.gas_limit != envelope.gas_limit
+            || previous_envelope.max_fee_per_gas != envelope.max_fee_per_gas
+            || previous_envelope.max_priority_fee_per_gas != envelope.max_priority_fee_per_gas
+            || previous_envelope.signed_transaction != envelope.signed_transaction
+            || previous_envelope.initial_max_fee_per_gas != envelope.initial_max_fee_per_gas
+            || previous_envelope.initial_max_priority_fee_per_gas
+                != envelope.initial_max_priority_fee_per_gas
+            || previous_envelope.replacement_generation != envelope.replacement_generation
+            || previous_envelope.prior_signed_transactions != envelope.prior_signed_transactions
+            || previous_envelope.first_broadcast_at_ns != envelope.first_broadcast_at_ns
+            || envelope.last_broadcast_at_ns < previous_envelope.last_broadcast_at_ns
+            || previous_envelope.rebroadcast_count != envelope.rebroadcast_count
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+
+        let mut counters = self.counters()?;
+        let audit = self.prepare_audit_batch(&mut counters, caller, timestamp_ns, audit_kinds)?;
+        let operation_blob = encode(operation)?;
+        let envelope_blob = encode(&EvmExecutionPayload::Prepared(envelope.clone()))?;
+        let previous_operation_blob = encode(&previous_operation)?;
+        let previous_envelope_blob = encode(&EvmExecutionPayload::Prepared(previous_envelope))?;
+        let counters_blob = encode(&counters)?;
+        let key = id.to_sql_bytes();
+        self.handle.update(|connection| {
+            let persisted_operation = connection.query_scalar::<Vec<u8>>(
+                "SELECT value FROM evm_operations WHERE key = ?1",
+                params![key.clone()],
+            )?;
+            let persisted_envelope = connection.query_scalar::<Vec<u8>>(
+                "SELECT value FROM evm_execution_payloads WHERE key = ?1",
+                params![key.clone()],
+            )?;
+            if persisted_operation != previous_operation_blob.to_sql_bytes()
+                || persisted_envelope != previous_envelope_blob.to_sql_bytes()
+            {
+                return Err(DbError::Constraint(
+                    "stale EVM replacement promotion".into(),
+                ));
+            }
+            connection.execute(
+                "UPDATE evm_operations SET value = ?1 WHERE key = ?2",
+                params![operation_blob.to_sql_bytes(), key.clone()],
+            )?;
+            connection.execute(
+                "UPDATE evm_execution_payloads SET value = ?1 WHERE key = ?2",
+                params![envelope_blob.to_sql_bytes(), key],
+            )?;
+            commit_audit_batch(connection, &audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
+                params![
+                    counters_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )
+        })?;
+        self.counters.value = counters_blob;
+        self.audit_retention.value = audit.retention_blob;
+        Ok(())
+    }
+
+    pub fn record_evm_broadcast(
+        &mut self,
+        value: &EvmTransactionEnvelope,
+    ) -> Result<(), StorageError> {
+        let id = value.operation_id.get();
+        let previous = self.evm_envelope(id)?.ok_or(StorageError::RecordNotFound)?;
+        let immutable_matches = previous.operation_id == value.operation_id
+            && previous.payload_hash == value.payload_hash
+            && previous.nonce == value.nonce
+            && previous.chain_id == value.chain_id
+            && previous.contract == value.contract
+            && previous.calldata == value.calldata
+            && previous.gas_limit == value.gas_limit
+            && previous.max_fee_per_gas == value.max_fee_per_gas
+            && previous.max_priority_fee_per_gas == value.max_priority_fee_per_gas
+            && previous.signed_transaction == value.signed_transaction
+            && previous.initial_max_fee_per_gas == value.initial_max_fee_per_gas
+            && previous.initial_max_priority_fee_per_gas == value.initial_max_priority_fee_per_gas
+            && previous.replacement_generation == value.replacement_generation
+            && previous.prior_signed_transactions == value.prior_signed_transactions;
+        let first_valid = (previous.first_broadcast_at_ns == 0 && value.first_broadcast_at_ns > 0)
+            || previous.first_broadcast_at_ns == value.first_broadcast_at_ns;
+        let rebroadcast_valid = value.rebroadcast_count == previous.rebroadcast_count
+            || value.rebroadcast_count == previous.rebroadcast_count.saturating_add(1);
+        if !immutable_matches
+            || !first_valid
+            || value.last_broadcast_at_ns < value.first_broadcast_at_ns
+            || value.last_broadcast_at_ns < previous.last_broadcast_at_ns
+            || !rebroadcast_valid
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
         self.evm_execution_payloads
             .insert(id, encode(&EvmExecutionPayload::Prepared(value.clone()))?);
@@ -4355,8 +5920,7 @@ impl StableStore {
             let pruned = if self.audit_events.len() >= MAX_AUDIT_EVENTS {
                 let (oldest_sequence, oldest_blob) = self
                     .audit_events
-                    .iter()
-                    .next()
+                    .first_in_range(..)
                     .map(|entry| (*entry.key(), entry.value()))
                     .ok_or(StorageError::RecordNotFound)?;
                 if oldest_sequence != retention.pruned_count {
@@ -4398,7 +5962,12 @@ impl StableStore {
         let range_end = StableBlob::new(deposit_owner_index_bytes(&prefix, u64::MAX))?;
         let excess_key = self
             .deposit_owner_index
-            .range(range_start..=range_end)
+            .range_limited(
+                range_start..=range_end,
+                MAX_OWNER_DEPOSIT_INDEX_ENTRIES,
+                false,
+            )
+            .into_iter()
             .nth(MAX_OWNER_DEPOSIT_INDEX_ENTRIES - 1)
             .map(|entry| entry.key().to_sql_bytes());
         let owner_sequence_exists = self
@@ -4516,12 +6085,17 @@ impl StableStore {
         let range_end = StableBlob::new(deposit_owner_index_bytes(&prefix, u64::MAX))?;
         let retained_count = self
             .deposit_owner_index
-            .range(range_start.clone()..=range_end.clone())
-            .count() as u64;
+            .range_limited(
+                range_start.clone()..=range_end.clone(),
+                MAX_OWNER_DEPOSIT_INDEX_ENTRIES,
+                false,
+            )
+            .len() as u64;
         let oldest_available_cursor = self
             .deposit_owner_index
-            .range(range_start..=range_end.clone())
-            .next_back()
+            .range_limited(range_start..=range_end.clone(), 1, true)
+            .into_iter()
+            .next()
             .map(|entry| deposit_sequence_from_index_key(entry.key()))
             .transpose()?;
         let history_truncated = self.next_deposit_sequence(owner)? > retained_count;
@@ -4543,8 +6117,8 @@ impl StableStore {
         let start = StableBlob::new(deposit_owner_index_bytes(&prefix, start_reverse))?;
         let mut entries = self
             .deposit_owner_index
-            .range(start..=range_end)
-            .take(usize::from(limit) + 1)
+            .range_limited(start..=range_end, usize::from(limit) + 1, false)
+            .into_iter()
             .map(|entry| {
                 let sequence = deposit_sequence_from_index_key(entry.key())?;
                 Ok((sequence, entry.value()))
@@ -4991,6 +6565,276 @@ impl StableStore {
             self.audit_retention.value = audit.retention_blob;
         }
         Ok(true)
+    }
+
+    /// Atomically persists a finalized withdrawal that cannot be released because the
+    /// current Ledger fee exceeds the service fee charged to the user.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_withdrawal_fee_guard_trip_bundle(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        progress: &ExternalProgress,
+        admin: &AdminState,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        if self.withdrawal(withdrawal.id.bytes())?.is_some()
+            || !matches!(withdrawal.state, WithdrawalState::Observed)
+            || withdrawal.last_settlement_stop_reason.as_deref()
+                != Some("LedgerFeeExceedsServiceFee")
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        let guard = admin
+            .withdrawal_fee_guard
+            .ok_or(StorageError::Core(CoreError::PayloadConflict))?;
+        if guard.ledger_fee <= guard.charged_service_fee
+            || guard.charged_service_fee != withdrawal.charged_service_fee.get()
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+
+        let mut counters = self.counters()?;
+        let previous_counters_blob = encode(&counters)?;
+        counters.nonterminal_withdrawals = counters
+            .nonterminal_withdrawals
+            .checked_add(1)
+            .ok_or(StorageError::CounterOverflow)?;
+        let audit = self.prepare_audit_batch(&mut counters, caller, timestamp_ns, audit_kinds)?;
+        let counters_blob = encode(&counters)?;
+        let progress_blob = encode(progress)?;
+        let admin_blob = encode(&Some(admin.clone()))?;
+        let previous_progress_blob = self.external_progress.get().clone();
+        let previous_admin_blob = self.admin_state.get().clone();
+        let withdrawal_blob = encode(withdrawal)?;
+        let key = withdrawal.id.bytes().to_sql_bytes();
+
+        self.handle.update(|connection| {
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_progress = connection.query_scalar::<Vec<u8>>(
+                "SELECT external_progress FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_admin = connection.query_scalar::<Vec<u8>>(
+                "SELECT admin_state FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_counters != previous_counters_blob.to_sql_bytes()
+                || persisted_progress != previous_progress_blob.to_sql_bytes()
+                || persisted_admin != previous_admin_blob.to_sql_bytes()
+            {
+                return Err(DbError::Constraint(
+                    "stale withdrawal fee guard trip".into(),
+                ));
+            }
+            connection.execute(
+                "INSERT INTO withdrawals(key, value) VALUES (?1, ?2)",
+                params![key.clone(), withdrawal_blob.to_sql_bytes()],
+            )?;
+            increment_table_count(connection, "withdrawals")?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            commit_audit_batch(connection, &audit)?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1, external_progress = ?2,
+                    admin_state = ?3, audit_retention = ?4 WHERE id = 1",
+                params![
+                    counters_blob.to_sql_bytes(),
+                    progress_blob.to_sql_bytes(),
+                    admin_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        self.counters.value = counters_blob;
+        self.external_progress.value = progress_blob;
+        self.admin_state.value = admin_blob;
+        self.audit_retention.value = audit.retention_blob;
+        Ok(())
+    }
+
+    /// Atomically refreshes an already-tripped fee guard without making the release runnable.
+    pub fn commit_withdrawal_fee_guard_continue_bundle(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        admin: &AdminState,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        let previous = self
+            .withdrawal(withdrawal.id.bytes())?
+            .ok_or(StorageError::RecordNotFound)?;
+        if !matches!(previous.state, WithdrawalState::Observed)
+            || !matches!(withdrawal.state, WithdrawalState::Observed)
+            || withdrawal.last_settlement_stop_reason.as_deref()
+                != Some("LedgerFeeExceedsServiceFee")
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        let mut expected = previous.clone();
+        expected.last_settlement_stop_reason = withdrawal.last_settlement_stop_reason.clone();
+        if expected != *withdrawal {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        let guard = admin
+            .withdrawal_fee_guard
+            .ok_or(StorageError::Core(CoreError::PayloadConflict))?;
+        if guard.ledger_fee <= guard.charged_service_fee
+            || guard.charged_service_fee != withdrawal.charged_service_fee.get()
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        self.commit_withdrawal_fee_guard_update(
+            &previous,
+            withdrawal,
+            admin,
+            caller,
+            timestamp_ns,
+            audit_kinds,
+            false,
+        )
+    }
+
+    /// Atomically clears the fee guard and makes the same withdrawal release runnable.
+    pub fn commit_withdrawal_fee_guard_clear_bundle(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        admin: &AdminState,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        let previous = self
+            .withdrawal(withdrawal.id.bytes())?
+            .ok_or(StorageError::RecordNotFound)?;
+        let (attempt, settlement) = match &withdrawal.state {
+            WithdrawalState::ReleasePending {
+                attempt,
+                settlement,
+            } => (attempt.clone(), *settlement),
+            _ => return Err(StorageError::Core(CoreError::PayloadConflict)),
+        };
+        let mut expected = previous.clone();
+        expected.apply(WithdrawalEvent::StartRelease {
+            attempt: Box::new(attempt),
+            settlement,
+        })?;
+        expected.last_settlement_stop_reason = None;
+        if !matches!(previous.state, WithdrawalState::Observed)
+            || expected != *withdrawal
+            || admin.withdrawal_fee_guard.is_some()
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        self.commit_withdrawal_fee_guard_update(
+            &previous,
+            withdrawal,
+            admin,
+            caller,
+            timestamp_ns,
+            audit_kinds,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_withdrawal_fee_guard_update(
+        &mut self,
+        previous: &WithdrawalRecord,
+        withdrawal: &WithdrawalRecord,
+        admin: &AdminState,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+        make_release_runnable: bool,
+    ) -> Result<(), StorageError> {
+        let mut counters = self.counters()?;
+        let previous_counters_blob = encode(&counters)?;
+        counters.pending_ledger_operations = adjust_active_count(
+            counters.pending_ledger_operations,
+            is_pending_withdrawal_ledger(previous),
+            is_pending_withdrawal_ledger(withdrawal),
+        )?;
+        counters.nonterminal_withdrawals = adjust_active_count(
+            counters.nonterminal_withdrawals,
+            is_nonterminal_withdrawal(previous),
+            is_nonterminal_withdrawal(withdrawal),
+        )?;
+        let audit = self.prepare_audit_batch(&mut counters, caller, timestamp_ns, audit_kinds)?;
+        let counters_blob = encode(&counters)?;
+        let previous_admin_blob = self.admin_state.get().clone();
+        let admin_blob = encode(&Some(admin.clone()))?;
+        let previous_blob = encode(previous)?;
+        let withdrawal_blob = encode(withdrawal)?;
+        let key = withdrawal.id.bytes().to_sql_bytes();
+
+        self.handle.update(|connection| {
+            let persisted = connection.query_scalar::<Vec<u8>>(
+                "SELECT value FROM withdrawals WHERE key = ?1",
+                params![key.clone()],
+            )?;
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_admin = connection.query_scalar::<Vec<u8>>(
+                "SELECT admin_state FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted != previous_blob.to_sql_bytes()
+                || persisted_counters != previous_counters_blob.to_sql_bytes()
+                || persisted_admin != previous_admin_blob.to_sql_bytes()
+            {
+                return Err(DbError::Constraint("stale withdrawal fee guard update".into()));
+            }
+            connection.execute(
+                "UPDATE withdrawals SET value = ?1 WHERE key = ?2",
+                params![withdrawal_blob.to_sql_bytes(), key.clone()],
+            )?;
+            if make_release_runnable {
+                connection.execute(
+                    "INSERT INTO release_pending_withdrawal_index(key, value) VALUES (?1, ?2)",
+                    params![key.clone(), 0u8.to_sql_bytes()],
+                )?;
+                increment_table_count(connection, "release_pending_withdrawal_index")?;
+                let existing_job = connection.query_optional_scalar::<i64>(
+                    "SELECT 1 FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2",
+                    params![SettlementJobKind::Withdrawal.sql(), key.clone()],
+                )?;
+                if existing_job.is_none() {
+                    enqueue_settlement_job(
+                        connection,
+                        SettlementJobKind::Withdrawal,
+                        withdrawal.id.bytes(),
+                        None,
+                        timestamp_ns,
+                    )?;
+                }
+            }
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            commit_audit_batch(connection, &audit)?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1, admin_state = ?2,
+                    audit_retention = ?3 WHERE id = 1",
+                params![
+                    counters_blob.to_sql_bytes(),
+                    admin_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        self.counters.value = counters_blob;
+        self.admin_state.value = admin_blob;
+        self.audit_retention.value = audit.retention_blob;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5575,6 +7419,10 @@ impl StableStore {
         let progress_blob = encode(progress)?;
         let parent_key_sql = parent_key.to_sql_bytes();
         let operation_key = operation.id.get().to_sql_bytes();
+        let execution_payload_present = self
+            .evm_execution_payloads
+            .get(&operation.id.get())
+            .is_some();
 
         let mut audit_caller = rpc_audit.as_ref().map(|(caller, _, _)| *caller);
         let mut audit_timestamp = rpc_audit.as_ref().map(|(_, timestamp, _)| *timestamp);
@@ -5692,6 +7540,13 @@ impl StableStore {
                 "UPDATE evm_operations SET value = ?1 WHERE key = ?2",
                 params![operation_blob.to_sql_bytes(), operation_key.clone()],
             )?;
+            if execution_payload_present {
+                connection.execute(
+                    "DELETE FROM evm_execution_payloads WHERE key = ?1",
+                    params![operation_key.clone()],
+                )?;
+                decrement_table_count(connection, "evm_execution_payloads")?;
+            }
             if let Some((predecessor_id, previous_blob, next_blob)) =
                 &recovered_predecessor_blobs
             {
@@ -5764,9 +7619,6 @@ impl StableStore {
     }
 
     pub fn put_withdrawal(&mut self, value: &WithdrawalRecord) -> Result<(), StorageError> {
-        if matches!(value.state, WithdrawalState::Observed) {
-            return Err(StorageError::Core(CoreError::PayloadConflict));
-        }
         let previous = self.withdrawal(value.id.bytes())?;
         let fee_delta = match (previous.as_ref().map(|record| &record.state), &value.state) {
             (
@@ -5846,34 +7698,49 @@ impl StableStore {
     }
 
     pub fn withdrawal_liability_summary(&self) -> Result<WithdrawalLiabilitySummary, StorageError> {
-        let mut summary = WithdrawalLiabilitySummary::default();
-        let mut reasons = BTreeSet::new();
-        for entry in self.withdrawals.iter() {
-            let record: WithdrawalRecord = decode(&entry.value())?;
-            if !is_nonterminal_withdrawal(&record) {
-                continue;
-            }
-            summary.count = summary
-                .count
-                .checked_add(1)
-                .ok_or(StorageError::CounterOverflow)?;
-            summary.amount_out = summary
-                .amount_out
-                .checked_add(record.amount_out.get())
-                .ok_or(StorageError::CounterOverflow)?;
-            summary.oldest_observed_at_ns = Some(
-                summary
-                    .oldest_observed_at_ns
-                    .map_or(record.observed_at_ns, |current| {
-                        current.min(record.observed_at_ns)
-                    }),
-            );
-            if let Some(reason) = record.last_settlement_stop_reason {
-                reasons.insert(reason);
-            }
-        }
-        summary.stop_reasons = reasons.into_iter().collect();
-        Ok(summary)
+        self.handle
+            .query(|connection| {
+                let count = connection.query_scalar::<Vec<u8>>(
+                    "SELECT count FROM table_counts WHERE name = 'withdrawal_liability_index'",
+                    params![],
+                )?;
+                let amount = connection.query_scalar::<Vec<u8>>(
+                    "SELECT withdrawal_liability_amount FROM singleton_state WHERE id = 1",
+                    params![],
+                )?;
+                let oldest = connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT key FROM withdrawal_liability_index ORDER BY key LIMIT 1",
+                    params![],
+                )?;
+                let reasons = connection.query_all(
+                    "SELECT key FROM withdrawal_stop_reason_counts ORDER BY key",
+                    params![],
+                    |row| row.get::<Vec<u8>>(0),
+                )?;
+                Ok(WithdrawalLiabilitySummary {
+                    count: u64::from_sql_bytes(count)
+                        .map_err(|_| DbError::Constraint("invalid liability count".into()))?,
+                    amount_out: u128::from_sql_bytes(amount)
+                        .map_err(|_| DbError::Constraint("invalid liability amount".into()))?,
+                    oldest_observed_at_ns: oldest
+                        .map(|key| {
+                            key.get(..8)
+                                .and_then(|bytes| bytes.try_into().ok())
+                                .map(u64::from_be_bytes)
+                                .ok_or_else(|| DbError::Constraint("invalid liability key".into()))
+                        })
+                        .transpose()?,
+                    stop_reasons: reasons
+                        .into_iter()
+                        .map(|reason| {
+                            String::from_utf8(reason).map_err(|_| {
+                                DbError::Constraint("invalid withdrawal stop reason".into())
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                })
+            })
+            .map_err(Into::into)
     }
 
     pub fn deposit_for_operation(
@@ -5909,7 +7776,7 @@ impl StableStore {
             Some(ConfirmationSchedule {
                 operation_id: value.id.get(),
                 submitted_at_ns,
-                next_check_at_ns: 0,
+                next_check_at_ns: submitted_at_ns.saturating_add(60 * 1_000_000_000),
                 checks_completed: 0,
             }),
             None,
@@ -5928,7 +7795,7 @@ impl StableStore {
             Some(ConfirmationSchedule {
                 operation_id: value.id.get(),
                 submitted_at_ns,
-                next_check_at_ns: 0,
+                next_check_at_ns: submitted_at_ns.saturating_add(60 * 1_000_000_000),
                 checks_completed: 0,
             }),
             Some((caller, submitted_at_ns, audit_kinds)),
@@ -5997,8 +7864,7 @@ impl StableStore {
         let next_key = evm_state_index_key(value)?;
         let removes_payload = matches!(
             value.state,
-            EvmOperationState::Submitted { .. }
-                | EvmOperationState::Confirmed { .. }
+            EvmOperationState::Confirmed { .. }
                 | EvmOperationState::Reverted { .. }
                 | EvmOperationState::RecoveryPending { .. }
                 | EvmOperationState::Recovered { .. }
@@ -6775,6 +8641,52 @@ mod tests {
         withdrawal
     }
 
+    fn fee_guard_withdrawal(tag: u8) -> WithdrawalRecord {
+        let mut withdrawal = WithdrawalRecord::observed(
+            WithdrawalId::new([tag; 32]),
+            [0; 20],
+            vec![1],
+            [0; 32],
+            [tag.saturating_add(1); 32],
+            Amount::new(100),
+            Amount::new(20),
+            Amount::new(10),
+            Amount::new(90),
+            1,
+        )
+        .expect("valid guarded withdrawal");
+        withdrawal.last_settlement_stop_reason = Some("LedgerFeeExceedsServiceFee".to_owned());
+        withdrawal
+    }
+
+    fn fee_guard_admin(store: &StableStore, ledger_fee: u128, tripped_at_ns: u64) -> AdminState {
+        let mut admin = store.admin_state().expect("admin state");
+        admin.withdrawal_fee_guard = Some(crate::admin::WithdrawalFeeGuard {
+            ledger_fee,
+            charged_service_fee: 10,
+            tripped_at_ns,
+        });
+        admin
+    }
+
+    fn release_guarded_withdrawal(mut withdrawal: WithdrawalRecord) -> WithdrawalRecord {
+        withdrawal
+            .apply(WithdrawalEvent::StartRelease {
+                attempt: Box::new(TransferAttempt {
+                    attempt_no: 0,
+                    identity: transfer(LedgerOperation::ReleaseWithdrawal, 90, 21),
+                }),
+                settlement: Settlement {
+                    amount_out: Amount::new(90),
+                    service_fee: Amount::new(10),
+                    ledger_fee: Amount::new(1),
+                },
+            })
+            .expect("start guarded release");
+        withdrawal.last_settlement_stop_reason = None;
+        withdrawal
+    }
+
     fn config() -> BridgeInitArgs {
         let principal = Principal::self_authenticating([7; 32]);
         BridgeInitArgs {
@@ -6784,8 +8696,10 @@ mod tests {
             custom_evm_rpc_urls: vec![],
             base_chain_id: 8453,
             bridge_contract: vec![1; 20],
+            timelock_contract: vec![2; 20],
             ecdsa_key_name: "test_key".into(),
             ecdsa_derivation_path: vec![],
+            governance_ecdsa_derivation_path: vec![b"governance-operator".to_vec()],
             deposit_rate_limit_window_seconds: 60,
             deposit_rate_limit_global: 30,
             deposit_rate_limit_per_principal: 3,
@@ -6796,14 +8710,14 @@ mod tests {
             transaction_gas_limit: 500_000,
             max_fee_per_gas: 10,
             max_priority_fee_per_gas: 1,
+            evm_liveness: crate::config::EvmLivenessPolicy::default(),
             eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
             governance_principal: principal,
-            pause_principals: vec![principal],
-            finance_administrator: principal,
+            pause_principal: Principal::from_slice(&[2]),
             fee_recipient: FeeRecipientConfig {
-                owner: principal,
+                owner: Principal::from_slice(&[3]),
                 subaccount: vec![],
             },
         }
@@ -6860,6 +8774,7 @@ mod tests {
         release_indexes: Vec<([u8; 32], u8)>,
         audits: Vec<(u64, StableBlob)>,
         schedule: Option<ConfirmationSchedule>,
+        settlement_jobs: Vec<(i64, Vec<u8>, i64, u64)>,
     }
 
     fn rpc_atomic_snapshot(store: &StableStore, operation_id: Option<u64>) -> RpcAtomicSnapshot {
@@ -6906,6 +8821,26 @@ mod tests {
                 .collect(),
             schedule: operation_id
                 .and_then(|id| store.confirmation_schedule(id).expect("schedule")),
+            settlement_jobs: store
+                .handle
+                .query(|connection| {
+                    connection.query_all(
+                        "SELECT settlement_kind, settlement_id, status, lease_generation
+                         FROM settlement_jobs ORDER BY settlement_kind, settlement_id",
+                        params![],
+                        |row| {
+                            Ok((
+                                row.get::<i64>(0)?,
+                                row.get::<Vec<u8>>(1)?,
+                                row.get::<i64>(2)?,
+                                u64::from_sql_bytes(row.get::<Vec<u8>>(3)?).map_err(|_| {
+                                    DbError::Constraint("invalid test lease generation".into())
+                                })?,
+                            ))
+                        },
+                    )
+                })
+                .expect("settlement jobs"),
         }
     }
 
@@ -6943,6 +8878,376 @@ mod tests {
                 .admin_state()
                 .expect("read administrator state")
                 .deposits_paused
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn governance_nonce_lane_is_stable_and_independent_from_mint_lane() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let mint_before = store.external_progress().expect("mint progress");
+        store
+            .initialize_governance_nonce(7)
+            .expect("initialize operator nonce");
+        let intent = evm_intent(EvmOperationId::new(0), [9; 32]);
+        let mut transaction = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::PauseDepositMints,
+            envelope: intent.assign_nonce(7),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(transaction.clone())
+            .expect("prepare operator transaction");
+        assert_eq!(
+            store.external_progress().expect("mint progress"),
+            mint_before
+        );
+        assert_eq!(
+            store.governance_lane().expect("operator lane"),
+            (true, 8, 1, Some(transaction.clone()))
+        );
+        transaction.state = GovernanceTransactionState::Broadcasting {
+            transaction_hash: [0x71; 32],
+        };
+        store
+            .update_governance_transaction(transaction.clone())
+            .expect("journal broadcasting state");
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen current schema");
+        assert_eq!(
+            reopened.external_progress().expect("mint progress"),
+            mint_before
+        );
+        assert!(reopened.governance_lane().expect("operator lane").0);
+        assert_eq!(reopened.governance_lane().expect("operator lane").1, 8);
+        assert_eq!(
+            reopened.governance_lane().expect("operator lane").3,
+            Some(transaction)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn reverted_execute_keeps_the_recorded_timelock_operation_for_retry() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let operation_id = [0xabu8; 32];
+        let salt = [0xcdu8; 32];
+        store
+            .initialize_governance_nonce(7)
+            .expect("initialize operator nonce");
+
+        let mut scheduled = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
+            envelope: evm_intent(EvmOperationId::new(0), [7; 32]).assign_nonce(7),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(scheduled.clone())
+            .expect("prepare activation schedule");
+        scheduled.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [3; 32],
+            receipt_block_number: 5,
+        };
+        store
+            .complete_governance_transaction(scheduled)
+            .expect("complete activation schedule");
+        drop(store);
+        let mut store = StableStore::reopen(memory).expect("reopen scheduled activation");
+        assert_eq!(
+            store
+                .pending_timelock_operation()
+                .expect("pending activation"),
+            Some(PendingTimelockOperation { operation_id, salt })
+        );
+
+        let mut reverted = GovernanceTransaction {
+            id: 1,
+            kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
+            envelope: evm_intent(EvmOperationId::new(1), [9; 32]).assign_nonce(8),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(reverted.clone())
+            .expect("prepare early execute");
+        reverted.state = GovernanceTransactionState::Reverted {
+            transaction_hash: [1; 32],
+            receipt_block_number: 10,
+        };
+        store
+            .update_governance_transaction(reverted.clone())
+            .expect("record early revert");
+        store
+            .complete_governance_transaction(reverted)
+            .expect("complete early revert");
+        assert_eq!(
+            store
+                .pending_timelock_operation()
+                .expect("pending activation"),
+            Some(PendingTimelockOperation { operation_id, salt })
+        );
+
+        let mut confirmed = GovernanceTransaction {
+            id: 2,
+            kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
+            envelope: evm_intent(EvmOperationId::new(2), [8; 32]).assign_nonce(9),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(confirmed.clone())
+            .expect("prepare mature execute");
+        confirmed.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [2; 32],
+            receipt_block_number: 20,
+        };
+        store
+            .update_governance_transaction(confirmed.clone())
+            .expect("record confirmed execute");
+        store
+            .complete_governance_transaction(confirmed)
+            .expect("complete confirmed execute");
+        assert_eq!(
+            store
+                .pending_timelock_operation()
+                .expect("cleared activation"),
+            None
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn reverted_schedule_releases_activation_and_nonce_conflict_resyncs_monotonically() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        store
+            .initialize_governance_nonce(4)
+            .expect("initialize operator nonce");
+        let operation_id = [0x11; 32];
+        let salt = [0x22; 32];
+        let mut schedule = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
+            envelope: evm_intent(EvmOperationId::new(0), [5; 32]).assign_nonce(4),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(schedule.clone())
+            .expect("prepare schedule");
+        schedule.state = GovernanceTransactionState::Reverted {
+            transaction_hash: [3; 32],
+            receipt_block_number: 9,
+        };
+        store
+            .complete_governance_transaction(schedule)
+            .expect("complete reverted schedule");
+        assert_eq!(
+            store
+                .pending_timelock_operation()
+                .expect("pending activation"),
+            None
+        );
+
+        let mut conflict = GovernanceTransaction {
+            id: 1,
+            kind: GovernanceTransactionKind::PauseWithdrawals,
+            envelope: evm_intent(EvmOperationId::new(1), [6; 32]).assign_nonce(5),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(conflict.clone())
+            .expect("prepare conflicting transaction");
+        conflict.state = GovernanceTransactionState::NonceConflict {
+            transaction_hash: [4; 32],
+        };
+        store
+            .update_governance_transaction(conflict.clone())
+            .expect("persist conflict");
+        assert!(store
+            .resolve_governance_nonce_conflict(&conflict, 5)
+            .is_err());
+        store
+            .resolve_governance_nonce_conflict(&conflict, 8)
+            .expect("resync advanced nonce");
+        assert_eq!(store.governance_lane().expect("lane"), (true, 8, 2, None));
+    }
+
+    #[test]
+    #[serial]
+    fn emergency_aborts_only_unbroadcast_dangerous_transactions_and_reuses_the_nonce() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        store.initialize_governance_nonce(4).expect("nonce");
+        let operation_id = [0x41; 32];
+        let salt = [0x42; 32];
+        let schedule = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
+            envelope: evm_intent(EvmOperationId::new(0), [0x43; 32]).assign_nonce(4),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(schedule.clone())
+            .expect("prepare schedule");
+        store
+            .enqueue_emergency_base_actions()
+            .expect("enqueue emergency");
+        store
+            .abort_unbroadcast_governance_transaction_for_emergency(&schedule)
+            .expect("abort unbroadcast schedule");
+
+        assert_eq!(store.governance_lane().expect("lane"), (true, 4, 1, None));
+        assert_eq!(store.pending_timelock_operation().expect("timelock"), None);
+        assert_eq!(
+            store
+                .next_emergency_base_action()
+                .expect("emergency action"),
+            Some(GovernanceTransactionKind::PauseDepositMints)
+        );
+
+        let broadcasting = GovernanceTransaction {
+            id: 1,
+            kind: GovernanceTransactionKind::SetServiceFee { value: 7 },
+            envelope: evm_intent(EvmOperationId::new(1), [0x44; 32]).assign_nonce(4),
+            state: GovernanceTransactionState::Broadcasting {
+                transaction_hash: [0x45; 32],
+            },
+        };
+        store
+            .prepare_governance_transaction(broadcasting.clone())
+            .expect("prepare fee transaction");
+        store
+            .update_governance_transaction(broadcasting.clone())
+            .expect("record broadcasting");
+        assert!(store
+            .abort_unbroadcast_governance_transaction_for_emergency(&broadcasting)
+            .is_err());
+        assert_eq!(
+            store.governance_lane().expect("lane").3,
+            Some(broadcasting.clone())
+        );
+        store
+            .resolve_governance_nonce_conflict(&broadcasting, 6)
+            .expect("resync broadcasting transaction after nonce advancement");
+        assert_eq!(store.governance_lane().expect("lane"), (true, 6, 2, None));
+    }
+
+    #[test]
+    #[serial]
+    fn emergency_abort_of_signed_execute_retains_the_scheduled_timelock() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        store.initialize_governance_nonce(10).expect("nonce");
+        let operation_id = [0x51; 32];
+        let salt = [0x52; 32];
+        let mut schedule = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
+            envelope: evm_intent(EvmOperationId::new(0), [0x53; 32]).assign_nonce(10),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(schedule.clone())
+            .expect("prepare schedule");
+        schedule.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [0x54; 32],
+            receipt_block_number: 1,
+        };
+        store
+            .complete_governance_transaction(schedule)
+            .expect("confirm schedule");
+
+        let mut execute = GovernanceTransaction {
+            id: 1,
+            kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
+            envelope: evm_intent(EvmOperationId::new(1), [0x55; 32]).assign_nonce(11),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(execute.clone())
+            .expect("prepare execute");
+        execute.state = GovernanceTransactionState::Signed;
+        store
+            .update_governance_transaction(execute.clone())
+            .expect("record signed execute");
+        store
+            .enqueue_emergency_base_actions()
+            .expect("enqueue emergency");
+        store
+            .abort_unbroadcast_governance_transaction_for_emergency(&execute)
+            .expect("abort execute");
+
+        assert_eq!(store.governance_lane().expect("lane"), (true, 11, 2, None));
+        assert_eq!(
+            store.pending_timelock_operation().expect("timelock"),
+            Some(PendingTimelockOperation { operation_id, salt })
+        );
+        assert!(store.emergency_base_actions_pending().expect("emergency"));
+    }
+
+    #[test]
+    #[serial]
+    fn confirmed_cancel_clears_only_the_matching_timelock_operation() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        store
+            .initialize_governance_nonce(10)
+            .expect("initialize nonce");
+        let operation_id = [0x31; 32];
+        let salt = [0x32; 32];
+        let mut schedule = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
+            envelope: evm_intent(EvmOperationId::new(0), [0x33; 32]).assign_nonce(10),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(schedule.clone())
+            .expect("prepare schedule");
+        schedule.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [0x34; 32],
+            receipt_block_number: 1,
+        };
+        store
+            .complete_governance_transaction(schedule)
+            .expect("confirm schedule");
+
+        let wrong = GovernanceTransaction {
+            id: 1,
+            kind: GovernanceTransactionKind::CancelTimelock {
+                operation_id: [0x35; 32],
+            },
+            envelope: evm_intent(EvmOperationId::new(1), [0x36; 32]).assign_nonce(11),
+            state: GovernanceTransactionState::Prepared,
+        };
+        assert!(store.prepare_governance_transaction(wrong).is_err());
+
+        let mut cancel = GovernanceTransaction {
+            id: 1,
+            kind: GovernanceTransactionKind::CancelTimelock { operation_id },
+            envelope: evm_intent(EvmOperationId::new(1), [0x37; 32]).assign_nonce(11),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(cancel.clone())
+            .expect("prepare matching cancel");
+        cancel.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [0x38; 32],
+            receipt_block_number: 2,
+        };
+        store
+            .complete_governance_transaction(cancel)
+            .expect("confirm cancel");
+        assert_eq!(
+            store
+                .pending_timelock_operation()
+                .expect("pending activation"),
+            None
         );
     }
 
@@ -7476,6 +9781,254 @@ mod tests {
 
     #[test]
     #[serial]
+    fn fee_guard_observed_withdrawal_persists_without_release_index_or_job() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize store");
+        let mut record = WithdrawalRecord::observed(
+            WithdrawalId::new([93; 32]),
+            [1; 20],
+            vec![1],
+            [0; 32],
+            [2; 32],
+            Amount::new(100),
+            Amount::new(10),
+            Amount::new(10),
+            Amount::new(90),
+            100,
+        )
+        .expect("observed withdrawal");
+        record.last_settlement_stop_reason = Some("LedgerFeeExceedsServiceFee".into());
+
+        store
+            .put_withdrawal(&record)
+            .expect("persist fee guard record");
+        assert_eq!(
+            store
+                .counters()
+                .expect("counters")
+                .pending_ledger_operations,
+            0
+        );
+        assert!(store
+            .settlement_job(SettlementJobKind::Withdrawal, record.id.bytes())
+            .expect("settlement job")
+            .is_none());
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen fee guard record");
+        assert_eq!(
+            reopened.withdrawal(record.id.bytes()).expect("withdrawal"),
+            Some(record)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn fee_guard_bundles_roll_back_business_guard_audit_and_jobs() {
+        let failpoints = [
+            RpcAtomicFailpoint::Business,
+            RpcAtomicFailpoint::Audit,
+            RpcAtomicFailpoint::Singleton,
+        ];
+        let caller = Principal::self_authenticating([94; 32]);
+
+        for failpoint in failpoints {
+            let memory = VectorMemory::default();
+            let mut store =
+                StableStore::init_configured(memory.clone(), &config()).expect("trip init");
+            let record = fee_guard_withdrawal(94);
+            let admin = fee_guard_admin(&store, 11, 100);
+            let before = rpc_atomic_snapshot(&store, None);
+            set_rpc_atomic_failpoint(Some(failpoint));
+            assert!(store
+                .commit_withdrawal_fee_guard_trip_bundle(
+                    &record,
+                    &ExternalProgress::default(),
+                    &admin,
+                    caller,
+                    100,
+                    vec![AuditEventKind::WithdrawalFeeGuardTripped {
+                        ledger_fee: 11,
+                        charged_service_fee: 10,
+                    }],
+                )
+                .is_err());
+            set_rpc_atomic_failpoint(None);
+            assert_eq!(
+                rpc_atomic_snapshot(&store, None),
+                before,
+                "trip {failpoint:?}"
+            );
+            drop(store);
+            assert_eq!(
+                rpc_atomic_snapshot(&StableStore::reopen(memory).expect("trip reopen"), None),
+                before,
+                "trip reopen {failpoint:?}"
+            );
+        }
+
+        for (clear, tag) in [(false, 95u8), (true, 96u8)] {
+            for failpoint in failpoints {
+                let memory = VectorMemory::default();
+                let mut store =
+                    StableStore::init_configured(memory.clone(), &config()).expect("update init");
+                let record = fee_guard_withdrawal(tag);
+                let initial_admin = fee_guard_admin(&store, 11, 100);
+                store
+                    .commit_withdrawal_fee_guard_trip_bundle(
+                        &record,
+                        &ExternalProgress::default(),
+                        &initial_admin,
+                        caller,
+                        100,
+                        vec![AuditEventKind::WithdrawalFeeGuardTripped {
+                            ledger_fee: 11,
+                            charged_service_fee: 10,
+                        }],
+                    )
+                    .expect("trip fixture");
+                let before = rpc_atomic_snapshot(&store, None);
+                set_rpc_atomic_failpoint(Some(failpoint));
+                let result = if clear {
+                    let next = release_guarded_withdrawal(record.clone());
+                    let mut admin = initial_admin.clone();
+                    admin.withdrawal_fee_guard = None;
+                    store.commit_withdrawal_fee_guard_clear_bundle(
+                        &next,
+                        &admin,
+                        caller,
+                        200,
+                        vec![AuditEventKind::WithdrawalFeeGuardCleared],
+                    )
+                } else {
+                    let admin = fee_guard_admin(&store, 12, 200);
+                    store.commit_withdrawal_fee_guard_continue_bundle(
+                        &record,
+                        &admin,
+                        caller,
+                        200,
+                        vec![AuditEventKind::WithdrawalFeeGuardTripped {
+                            ledger_fee: 12,
+                            charged_service_fee: 10,
+                        }],
+                    )
+                };
+                assert!(result.is_err());
+                set_rpc_atomic_failpoint(None);
+                assert_eq!(
+                    rpc_atomic_snapshot(&store, None),
+                    before,
+                    "clear={clear} {failpoint:?}"
+                );
+                drop(store);
+                assert_eq!(
+                    rpc_atomic_snapshot(&StableStore::reopen(memory).expect("update reopen"), None),
+                    before,
+                    "clear={clear} reopen {failpoint:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn fee_guard_clear_atomically_resumes_the_same_withdrawal_once() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize");
+        let caller = Principal::self_authenticating([97; 32]);
+        let record = fee_guard_withdrawal(97);
+        let admin = fee_guard_admin(&store, 11, 100);
+        let accounting_before = store.accounting().expect("accounting before");
+        store
+            .commit_withdrawal_fee_guard_trip_bundle(
+                &record,
+                &ExternalProgress::default(),
+                &admin,
+                caller,
+                100,
+                vec![AuditEventKind::WithdrawalFeeGuardTripped {
+                    ledger_fee: 11,
+                    charged_service_fee: 10,
+                }],
+            )
+            .expect("trip fee guard");
+        assert!(store
+            .settlement_job(SettlementJobKind::Withdrawal, record.id.bytes())
+            .expect("guard job")
+            .is_none());
+        assert!(store
+            .release_pending_withdrawal_index
+            .get(&record.id.bytes())
+            .is_none());
+
+        store
+            .commit_withdrawal_fee_guard_continue_bundle(&record, &admin, caller, 150, vec![])
+            .expect("unchanged guard");
+        assert_eq!(store.audit_events.len(), 1);
+
+        let changed_admin = fee_guard_admin(&store, 12, 200);
+        store
+            .commit_withdrawal_fee_guard_continue_bundle(
+                &record,
+                &changed_admin,
+                caller,
+                200,
+                vec![AuditEventKind::WithdrawalFeeGuardTripped {
+                    ledger_fee: 12,
+                    charged_service_fee: 10,
+                }],
+            )
+            .expect("changed guard");
+        assert_eq!(store.audit_events.len(), 2);
+
+        let next = release_guarded_withdrawal(record.clone());
+        let mut cleared_admin = changed_admin;
+        cleared_admin.withdrawal_fee_guard = None;
+        store
+            .commit_withdrawal_fee_guard_clear_bundle(
+                &next,
+                &cleared_admin,
+                caller,
+                300,
+                vec![AuditEventKind::WithdrawalFeeGuardCleared],
+            )
+            .expect("clear fee guard");
+        assert_eq!(
+            store.withdrawal(record.id.bytes()).expect("withdrawal"),
+            Some(next)
+        );
+        assert!(store
+            .admin_state()
+            .expect("admin")
+            .withdrawal_fee_guard
+            .is_none());
+        assert!(store
+            .release_pending_withdrawal_index
+            .get(&record.id.bytes())
+            .is_some());
+        assert!(store
+            .settlement_job(SettlementJobKind::Withdrawal, record.id.bytes())
+            .expect("release job")
+            .is_some());
+        let counters = store.counters().expect("counters");
+        assert_eq!(counters.pending_ledger_operations, 1);
+        assert_eq!(counters.nonterminal_withdrawals, 1);
+        assert_eq!(store.audit_events.len(), 3);
+        assert_eq!(
+            store.accounting().expect("accounting after"),
+            accounting_before
+        );
+
+        let snapshot = rpc_atomic_snapshot(&store, None);
+        drop(store);
+        assert_eq!(
+            rpc_atomic_snapshot(&StableStore::reopen(memory).expect("reopen"), None),
+            snapshot
+        );
+    }
+
+    #[test]
+    #[serial]
     fn deposit_admission_constraint_failure_rolls_back_records_indexes_and_counters() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory).expect("initialize rollback fixture");
@@ -7590,7 +10143,7 @@ mod tests {
                     expected_observation_generation: expected_progress
                         .reserve_observation_generation,
                     observed_at_ns: 42,
-                    eth_balance_wei: 20_000_000,
+                    eth_balance_wei: 20_000_001,
                     cycles_balance: 20_000_000,
                     reserve_policy: config().reserve_policy(),
                     mint_snapshot: mint_snapshot(),
@@ -7601,7 +10154,7 @@ mod tests {
         let progress = store.external_progress().expect("progress after admission");
         assert_eq!(progress.reserve_observation_generation, 1);
         assert_eq!(progress.last_reserve_observation_ns, 42);
-        assert_eq!(progress.last_eth_balance_wei, 20_000_000);
+        assert_eq!(progress.last_eth_balance_wei, 20_000_001);
         assert!(progress.reserve_sufficient);
         assert_eq!(
             store
@@ -8194,7 +10747,7 @@ mod tests {
             Err(StorageError::DecodeFailed)
         );
 
-        let store = StableStore::init(VectorMemory::default()).expect("initialize schema v10");
+        let store = StableStore::init(VectorMemory::default()).expect("initialize schema v13");
         assert_eq!(store.schema_version(), SCHEMA_VERSION);
     }
 
@@ -8202,13 +10755,13 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 10);
-        assert_eq!(WIRE_VERSION, 9);
+        assert_eq!(SCHEMA_VERSION, 16);
+        assert_eq!(WIRE_VERSION, 15);
     }
 
     #[test]
     #[serial]
-    fn submitted_evm_confirmation_wait_is_unscheduled_and_removed_atomically() {
+    fn submitted_evm_confirmation_wait_is_scheduled_and_removed_atomically() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory).expect("initialize");
         let operation_id = EvmOperationId::new(41);
@@ -8242,11 +10795,14 @@ mod tests {
             Some(ConfirmationSchedule {
                 operation_id: operation_id.get(),
                 submitted_at_ns: 10,
-                next_check_at_ns: 0,
+                next_check_at_ns: 60_000_000_010,
                 checks_completed: 0,
             })
         );
-        assert_eq!(store.next_settlement_wakeup_ns(10).expect("wakeup"), None);
+        assert_eq!(
+            store.next_settlement_wakeup_ns(10).expect("wakeup"),
+            Some(60_000_000_010)
+        );
         let mut earlier = EvmOperationRecord::prepared(
             EvmOperationId::new(99),
             [9; 32],
@@ -8275,7 +10831,10 @@ mod tests {
             .confirmation_schedule(99)
             .expect("second wait")
             .is_some());
-        assert_eq!(store.next_settlement_wakeup_ns(20).expect("wakeup"), None);
+        assert_eq!(
+            store.next_settlement_wakeup_ns(20).expect("wakeup"),
+            Some(60_000_000_010)
+        );
         store
             .remove_confirmation_schedule(99)
             .expect("remove earlier");
@@ -8866,10 +11425,7 @@ mod tests {
         assert_eq!(reopened.schema_version(), SCHEMA_VERSION);
         assert_eq!(
             reopened.confirmation_schedule(43).expect("schedule"),
-            Some(ConfirmationSchedule {
-                next_check_at_ns: 0,
-                ..schedule
-            })
+            Some(ConfirmationSchedule { ..schedule })
         );
         let reopened_job = reopened
             .settlement_job(SettlementJobKind::Deposit, [1; 32])
@@ -8878,10 +11434,7 @@ mod tests {
         assert_eq!(reopened_job.phase, SettlementJobPhase::Confirmation);
         assert_eq!(reopened_job.confirmation_started_at_ns, Some(10));
         assert_eq!(reopened_job.confirmation_checks, 2);
-        assert_eq!(
-            reopened_job.status,
-            SettlementJobStatus::AwaitingConfirmation
-        );
+        assert_eq!(reopened_job.status, SettlementJobStatus::Scheduled);
         assert_eq!(
             reopened.confirmation_scheduler_health().expect("health"),
             health
@@ -8985,6 +11538,61 @@ mod tests {
                 .expect("terminal summary"),
             WithdrawalLiabilitySummary::default()
         );
+    }
+
+    #[test]
+    #[serial]
+    fn chunked_validation_detects_state_changes_and_maintenance_is_bounded() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        store
+            .put_withdrawal(&withdrawal())
+            .expect("seed withdrawal");
+
+        assert_eq!(
+            store.continue_storage_validation(1),
+            Err(StorageMaintenanceError::NotStarted)
+        );
+        assert_eq!(
+            store.continue_storage_validation(0),
+            Err(StorageMaintenanceError::InvalidArgument {
+                message: "max_rows must be between 1 and 100".into(),
+            })
+        );
+        store.start_storage_validation().expect("start validation");
+        store.put_deposit(&deposit()).expect("interrupt validation");
+        assert_eq!(
+            store.continue_storage_validation(1),
+            Err(StorageMaintenanceError::StateChanged)
+        );
+
+        store
+            .start_storage_validation()
+            .expect("restart validation");
+        loop {
+            let status = store
+                .continue_storage_validation(MAX_VALIDATION_ROWS)
+                .expect("continue validation");
+            if status.complete {
+                assert!(status.scanned_rows >= 4);
+                break;
+            }
+        }
+        assert_eq!(store.storage_integrity_check().expect("integrity"), "ok");
+        assert_eq!(
+            store.refresh_storage_checksum(0),
+            Err(StorageMaintenanceError::InvalidArgument {
+                message: "max_bytes must be between 1 and 4194304".into(),
+            })
+        );
+        loop {
+            let status = store
+                .refresh_storage_checksum(MAX_CHECKSUM_REFRESH_BYTES)
+                .expect("refresh checksum");
+            if status.complete {
+                assert!(status.db_size > 0);
+                break;
+            }
+        }
     }
 
     #[test]
@@ -9176,7 +11784,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn evm_payload_is_exclusive_retained_after_signing_and_removed_after_submission() {
+    fn evm_payload_is_exclusive_retained_through_submission_and_removed_at_terminal() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory).expect("initialize");
         let operation_id = EvmOperationId::new(77);
@@ -9246,11 +11854,11 @@ mod tests {
             .expect("submit operation");
         store
             .put_evm_operation(&operation)
-            .expect("remove payload with submitted state");
+            .expect("retain payload with submitted state");
         assert!(store
             .evm_execution_payload(operation_id.get())
             .expect("read submitted payload")
-            .is_none());
+            .is_some());
         assert!(store
             .deposit_for_operation(operation_id)
             .expect("read nonterminal owner")
@@ -9267,6 +11875,10 @@ mod tests {
             .put_evm_operation(&operation)
             .expect("remove terminal owner index");
         assert!(store
+            .evm_execution_payload(operation_id.get())
+            .expect("read terminal payload")
+            .is_none());
+        assert!(store
             .deposit_for_operation(operation_id)
             .expect("read terminal owner")
             .is_none());
@@ -9281,6 +11893,135 @@ mod tests {
                 finalized_head_block_number: 21,
             })
         );
+    }
+
+    #[test]
+    #[serial]
+    fn pending_evm_replacement_survives_reopen_and_promotes_with_audit_atomically() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        let operation_id = EvmOperationId::new(78);
+        let mut deposit = deposit();
+        deposit
+            .apply(DepositEvent::PrepareMint { operation_id })
+            .expect("prepare deposit mint");
+        store.put_deposit(&deposit).expect("index operation owner");
+
+        let mut operation = EvmOperationRecord::queued(
+            operation_id,
+            deposit.payload_hash,
+            EvmOperationKind::MintDeposit,
+        );
+        let intent = evm_intent(operation_id, deposit.payload_hash);
+        store
+            .put_evm_call_intent(&intent)
+            .expect("store awaiting nonce payload");
+        store
+            .put_evm_operation(&operation)
+            .expect("store queued operation");
+        let mut envelope = intent.assign_nonce(9);
+        operation
+            .apply(EvmOperationEvent::Prepared)
+            .expect("prepare operation");
+        store
+            .prepare_evm_operation(
+                &operation,
+                &envelope,
+                &ExternalProgress {
+                    nonce_initialized: true,
+                    next_evm_nonce: 10,
+                    ..ExternalProgress::default()
+                },
+            )
+            .expect("atomically prepare operation");
+        envelope.signed_transaction = Some(vec![1, 2, 3, 4]);
+        store
+            .put_evm_envelope(&envelope)
+            .expect("persist original signed transaction");
+        operation
+            .apply(EvmOperationEvent::Submitted {
+                transaction_hash: [8; 32],
+            })
+            .expect("submit original transaction");
+        store
+            .put_evm_operation(&operation)
+            .expect("persist submitted operation");
+
+        let original_raw = envelope
+            .signed_transaction
+            .take()
+            .expect("original signed transaction");
+        envelope.prior_signed_transactions.push(original_raw);
+        envelope.signed_transaction = Some(vec![5, 6, 7, 8]);
+        envelope.max_fee_per_gas += 1;
+        envelope.max_priority_fee_per_gas += 1;
+        envelope.replacement_generation = 1;
+        store
+            .replace_submitted_evm_envelope(&envelope)
+            .expect("write replacement before broadcast");
+        drop(store);
+
+        let mut reopened = StableStore::reopen(memory).expect("reopen pending replacement");
+        assert_eq!(
+            reopened
+                .evm_operation(operation_id.get())
+                .expect("read operation")
+                .expect("operation")
+                .state,
+            EvmOperationState::Submitted {
+                transaction_hash: [8; 32]
+            }
+        );
+        assert_eq!(
+            reopened
+                .evm_envelope(operation_id.get())
+                .expect("read pending envelope"),
+            Some(envelope.clone())
+        );
+
+        operation.state = EvmOperationState::Submitted {
+            transaction_hash: [9; 32],
+        };
+        envelope.last_broadcast_at_ns = 200;
+        reopened
+            .promote_submitted_evm_replacement_with_rpc_audit(
+                &operation,
+                &envelope,
+                Principal::self_authenticating([14; 32]),
+                200,
+                vec![AuditEventKind::EvmTransactionReplaced {
+                    operation_id: operation_id.get(),
+                    previous_transaction_hash: vec![8; 32],
+                    transaction_hash: vec![9; 32],
+                    generation: 1,
+                    max_fee_per_gas: envelope.max_fee_per_gas,
+                    max_priority_fee_per_gas: envelope.max_priority_fee_per_gas,
+                }],
+            )
+            .expect("promote replacement");
+        assert_eq!(
+            reopened
+                .evm_operation(operation_id.get())
+                .expect("read promoted operation"),
+            Some(operation)
+        );
+        assert_eq!(
+            reopened
+                .evm_envelope(operation_id.get())
+                .expect("read promoted envelope"),
+            Some(envelope)
+        );
+        assert!(matches!(
+            reopened
+                .audit_events(0, 10)
+                .expect("read replacement audit")
+                .events
+                .as_slice(),
+            [AuditEvent {
+                kind: AuditEventKind::EvmTransactionReplaced { .. },
+                ..
+            }]
+        ));
     }
 
     #[test]
@@ -9687,7 +12428,7 @@ mod tests {
         store
             .commit_deposit_mint_bundle(&next, &operation, &intent)
             .expect("prepare bundle");
-        let envelope = intent.assign_nonce(0);
+        let mut envelope = intent.assign_nonce(0);
         operation
             .apply(EvmOperationEvent::Prepared)
             .expect("prepared");
@@ -9696,6 +12437,10 @@ mod tests {
         store
             .prepare_evm_operation(&operation, &envelope, &progress)
             .expect("persist prepared");
+        envelope.signed_transaction = Some(vec![1, 2, 3, 4]);
+        store
+            .put_evm_envelope(&envelope)
+            .expect("persist signed transaction");
         operation
             .apply(EvmOperationEvent::Submitted {
                 transaction_hash: [9; 32],
@@ -10519,8 +13264,9 @@ mod tests {
             })
             .expect("corrupt count");
         drop(count_store);
+        let reopened = StableStore::reopen(count_memory).expect("bounded reopen ignores rows");
         assert_eq!(
-            StableStore::reopen(count_memory).err(),
+            reopened.validate_relations().err(),
             Some(StorageError::DatabaseFailure)
         );
 
@@ -10542,8 +13288,9 @@ mod tests {
             })
             .expect("corrupt index");
         drop(index_store);
+        let reopened = StableStore::reopen(index_memory).expect("bounded reopen ignores rows");
         assert_eq!(
-            StableStore::reopen(index_memory).err(),
+            reopened.validate_relations().err(),
             Some(StorageError::DatabaseFailure)
         );
 
@@ -10564,8 +13311,9 @@ mod tests {
             })
             .expect("corrupt counter");
         drop(counter_store);
+        let reopened = StableStore::reopen(counter_memory).expect("bounded reopen ignores rows");
         assert_eq!(
-            StableStore::reopen(counter_memory).err(),
+            reopened.validate_relations().err(),
             Some(StorageError::DatabaseFailure)
         );
     }
@@ -10601,8 +13349,9 @@ mod tests {
             .expect("replace index without changing its count");
         drop(store);
 
+        let reopened = StableStore::reopen(memory).expect("bounded reopen ignores rows");
         assert_eq!(
-            StableStore::reopen(memory).err(),
+            reopened.validate_relations().err(),
             Some(StorageError::DatabaseFailure)
         );
     }
@@ -10629,8 +13378,9 @@ mod tests {
             .expect("insert count-consistent orphan payload");
         drop(store);
 
+        let reopened = StableStore::reopen(memory).expect("bounded reopen ignores rows");
         assert_eq!(
-            StableStore::reopen(memory).err(),
+            reopened.validate_relations().err(),
             Some(StorageError::DatabaseFailure)
         );
     }
@@ -10655,8 +13405,9 @@ mod tests {
             .expect("corrupt payload hash");
         drop(store);
 
+        let reopened = StableStore::reopen(memory).expect("bounded reopen ignores rows");
         assert_eq!(
-            StableStore::reopen(memory).err(),
+            reopened.validate_relations().err(),
             Some(StorageError::DatabaseFailure)
         );
     }
@@ -10711,8 +13462,9 @@ mod tests {
             .expect("retain payload while otherwise committing submitted state");
         drop(store);
 
+        let reopened = StableStore::reopen(memory).expect("bounded reopen ignores rows");
         assert_eq!(
-            StableStore::reopen(memory).err(),
+            reopened.validate_relations().err(),
             Some(StorageError::DatabaseFailure)
         );
     }

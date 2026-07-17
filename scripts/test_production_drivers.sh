@@ -57,9 +57,9 @@ case "$1 $2" in
   'receipt 0x'*) if [[ "$2" == "0x$(printf 'a%.0s' {1..64})" ]]; then address=0x3333333333333333333333333333333333333333; else address=0x2222222222222222222222222222222222222222; fi; if [[ "${DEPLOYMENT_RECEIPT_DRIFT:-}" == true || ( "${ACTIVATION_RECEIPT_DRIFT:-}" == true && "$2" != "0x$(printf 'a%.0s' {1..64})" && "$2" != "0x$(printf 'b%.0s' {1..64})" ) ]]; then bh=f; else bh=a; fi; printf '{"blockNumber":"0x1","blockHash":"0x%s","status":"0x1","contractAddress":"%s"}\n' "$(printf "$bh%.0s" {1..64})" "$address";;
   'logs --address') if [[ "${ROLE_EVENT_DRIFT:-}" == true ]]; then role="$(printf 'ff%.0s' {1..32})"; else role="$(printf '00%.0s' {1..32})"; fi; if [[ "${ROLE_EVENT_HASH_DRIFT:-}" == true ]]; then eh=f; else eh=a; fi; printf '[{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]}]\n' \
     "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$role" "$(printf '00%.0s' {1..12})2222222222222222222222222222222222222222" \
-    "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '11%.0s' {1..32})" "$(printf '00%.0s' {1..12})4444444444444444444444444444444444444444" \
-    "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '22%.0s' {1..32})" "$(printf '00%.0s' {1..12})4444444444444444444444444444444444444444" \
-    "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '33%.0s' {1..32})" "$(printf '00%.0s' {1..12})5555555555555555555555555555555555555555";;
+    "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '11%.0s' {1..32})" "$(printf '00%.0s' {1..12})6666666666666666666666666666666666666666" \
+    "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '22%.0s' {1..32})" "$(printf '00%.0s' {1..12})6666666666666666666666666666666666666666" \
+    "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '33%.0s' {1..32})" "$(printf '00%.0s' {1..12})6666666666666666666666666666666666666666";;
   'code 0x3333333333333333333333333333333333333333') echo 0x00;;
   'code 0x2222222222222222222222222222222222222222') [[ "${TIMELOCK_CODE_DRIFT:-}" == true ]] && echo 0x01 || echo 0x00;;
   'code 0x7777777777777777777777777777777777777777') echo 0x00;;
@@ -77,7 +77,7 @@ case "$1 $2" in
     elif [[ "$*" == *'bsns()(address)'* ]]; then echo '"0x0x7777777777777777777777777777777777777777"';
     elif [[ "$*" == *depositMintsPaused* ]]; then if [[ "${CONFIRM_FAIL:-}" == true && -e "$DEPOSIT_PAUSED_MARKER" ]]; then v=false; elif [[ -e "$DEPOSIT_PAUSED_MARKER" ]]; then v=true; elif [[ -e "$EXECUTED_MARKER" || "${BASE_PAUSED:-true}" != true ]]; then v=false; else v=true; fi; echo "\"0x$v\"";
     elif [[ "$*" == *withdrawalsPaused* ]]; then if [[ "${CONFIRM_FAIL:-}" == true && -e "$WITHDRAWAL_PAUSED_MARKER" ]]; then v=false; elif [[ -e "$WITHDRAWAL_PAUSED_MARKER" ]]; then v=true; elif [[ -e "$EXECUTED_MARKER" || "${BASE_PAUSED:-true}" != true ]]; then v=false; else v=true; fi; echo "\"0x$v\"";
-    elif [[ "$*" == *serviceFee* ]]; then echo '"0x1000000"';
+    elif [[ "$*" == *serviceFee* ]]; then echo '"0x50000000"';
     elif [[ "$*" == *getMinDelay* ]]; then echo '"0x259200"';
     elif [[ "$*" == *hasRole* ]]; then if [[ "${ROLE_DRIFT:-}" == true && "$*" != *"0x$(printf '00%.0s' {1..32})"* && "$*" != *' 0x0000000000000000000000000000000000000000'* ]]; then v=false; elif [[ "$*" == *"0x$(printf '00%.0s' {1..32}) 0x2222222222222222222222222222222222222222"* ]]; then v=true; elif [[ "$*" == *"0x$(printf '00%.0s' {1..32})"* || "$*" == *' 0x0000000000000000000000000000000000000000'* ]]; then v=false; else v=true; fi; echo "\"0x$v\"";
     elif [[ "$*" == *isOperationDone* ]]; then [[ -e "$EXECUTED_MARKER" ]] && v=true || v=false; echo "\"0x$v\"";
@@ -94,33 +94,35 @@ case "$1 $2" in
   *) echo "unexpected cast call: $*" >&2; exit 1;;
 esac
 SH
-cat >"$T/bin/dfx" <<'SH'
+cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
-echo "dfx $*" >>"$TRACE"
-if [[ "$*" == *get_public_config* ]]; then printf '{"expected_bridge_signer":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"evm_rpc_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s"}\n' "$RPC_DIGEST";
+echo "icp $*" >>"$TRACE"
+if [[ "$*" == *get_public_config* ]]; then printf '{"expected_bridge_signer":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s"}\n' "$RPC_DIGEST";
 elif [[ "$*" == *get_bridge_status* ]]; then if [[ -e "$IC_RESUMED_MARKER" ]]; then paused=false; else paused="${CANISTER_PAUSED:-true}"; fi; printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "$paused";
 elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
 elif [[ "$*" == *sign_chain_key_challenge* ]]; then printf '{"Ok":"0x'; printf '11%.0s' {1..65}; echo '"}';
 elif [[ "$*" == *resume_new_deposits* ]]; then if [[ "${RESUME_FAIL:-}" == true ]]; then echo '{"Err":"StorageFailure"}'; exit 1; fi; touch "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
 elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; rm -f "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
-elif [[ "$*" == *'canister status'* ]]; then echo '{"controllers":["aaaaa-aa"],"module_hash":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"}';
+elif [[ "$*" == *'canister status bridge-canister -e production -i --identity'* ]]; then echo 'aaaaa-aa';
+elif [[ "$*" == *'canister status'* ]]; then if [[ "${CONTROLLER_DRIFT:-false}" == true ]]; then controllers='["aaaaa-aa","2vxsx-fae"]'; else controllers='["aaaaa-aa"]'; fi; printf '{"controllers":%s,"module_hash":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"}\n' "$controllers";
 else echo '{}'; fi
 SH
-chmod +x "$T/bin/forge" "$T/bin/cast" "$T/bin/dfx"
+chmod +x "$T/bin/forge" "$T/bin/cast" "$T/bin/icp"
 export PATH="$T/bin:$PATH"
 export EXECUTED_MARKER="$T/executed" CANCELLED_MARKER="$T/cancelled" IC_RESUMED_MARKER="$T/ic-resumed" DEPOSIT_PAUSED_MARKER="$T/deposit-paused" WITHDRAWAL_PAUSED_MARKER="$T/withdrawal-paused"
 export BRIDGE_TIMELOCK_CANCELLER_ADDRESS=0x5555555555555555555555555555555555555555
+export BRIDGE_ICP_IDENTITY=production
 export BRIDGE_CANONICAL_CONFIRM_TIMEOUT_SECONDS=1 BRIDGE_CANONICAL_CONFIRM_POLL_SECONDS=1
 export BRIDGE_DEPLOYMENT_BINDING_FILE="$T/deployment-binding.json"
 export RPC_DIGEST="$(python3 -c 'import hashlib,json;print(hashlib.sha256(json.dumps(["https://one.example","https://two.example","https://three.example"],separators=(",",":"),ensure_ascii=False).encode()).hexdigest())')"
 cat >"$T/bundle/profile.json" <<'JSON'
-{"chain_id":8453,"evm_rpc_canister_id":"aaaaa-aa","bridge_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","bridge_contract":"0x3333333333333333333333333333333333333333","bsns_contract":"0x7777777777777777777777777777777777777777","decimals":8,"expected_bridge_signer":"0x1111111111111111111111111111111111111111","runtime_administrator":"0x6666666666666666666666666666666666666666","base_admin_wallet":"0x4444444444444444444444444444444444444444","release_approver":"0x8888888888888888888888888888888888888888","timelock":{"address":"0x2222222222222222222222222222222222222222","runtime_code_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","minimum_delay_seconds":259200,"proposer":"0x4444444444444444444444444444444444444444","executor":"0x4444444444444444444444444444444444444444","canceller":"0x5555555555555555555555555555555555555555"},"root_canister_id":"aaaaa-aa","bridge_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bridge_canister_wasm_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","ic_host":"https://icp-api.io","base_rpc_url":"https://rpc.example","deployment_block":0,"parameters":{"ledger_fee":100000,"service_fee":1000000},"rpc_providers":[{"url":"https://one.example"},{"url":"https://two.example"},{"url":"https://three.example"}]}
+{"chain_id":8453,"evm_rpc_canister_id":"aaaaa-aa","bridge_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","bridge_contract":"0x3333333333333333333333333333333333333333","bsns_contract":"0x7777777777777777777777777777777777777777","decimals":8,"expected_bridge_signer":"0x1111111111111111111111111111111111111111","governance_operator":"0x6666666666666666666666666666666666666666","pause_principal":"7jkta-eyaaa-aaaaq-aaarq-cai","timelock":{"address":"0x2222222222222222222222222222222222222222","runtime_code_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","minimum_delay_seconds":259200,"proposer":"0x6666666666666666666666666666666666666666","executor":"0x6666666666666666666666666666666666666666","canceller":"0x6666666666666666666666666666666666666666"},"root_canister_id":"aaaaa-aa","bridge_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bridge_canister_wasm_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","ic_host":"https://icp-api.io","base_rpc_url":"https://rpc.example","deployment_block":0,"parameters":{"ledger_fee":100000,"service_fee":50000000},"rpc_providers":[{"url":"https://one.example"},{"url":"https://two.example"},{"url":"https://three.example"}]}
 JSON
 cat >"$T/constructors.json" <<'JSON'
-{"timelock":["259200","[0x4444444444444444444444444444444444444444]","[0x5555555555555555555555555555555555555555]","[0x4444444444444444444444444444444444444444]"],"bridge":["KINIC","KINIC","8","0x1111111111111111111111111111111111111111","0x6666666666666666666666666666666666666666","0x2222222222222222222222222222222222222222","0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","1","2","3600","2","1"]}
+{"timelock":["259200","[0x6666666666666666666666666666666666666666]","[0x6666666666666666666666666666666666666666]","[0x6666666666666666666666666666666666666666]"],"bridge":["KINIC","KINIC","8","0x1111111111111111111111111111111111111111","0x6666666666666666666666666666666666666666","0x2222222222222222222222222222222222222222","0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","1","2","3600","2","1"]}
 JSON
 cat >"$T/init.json" <<'JSON'
-{"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_cycle_ceiling":"1","settlement_rate_limit_per_record":1,"finance_administrator":"aaaaa-aa","deposit_rate_limit_window_seconds":1,"ecdsa_key_name":"key_1","base_chain_id":8453,"bridge_contract_hex":"3333333333333333333333333333333333333333","max_priority_fee_per_gas":"1","fee_recipient":{"owner":"aaaaa-aa","subaccount_hex":""},"settlement_rate_limit_window_seconds":1,"ecdsa_derivation_path_utf8":[],"evm_rpc_canister_id":"aaaaa-aa","deposit_rate_limit_per_principal":1,"pause_principals":["aaaaa-aa"],"max_fee_per_gas":"1","eth_floor_wei":"1","custom_evm_rpc_urls":["https://one.example","https://two.example","https://three.example"],"transaction_gas_limit":"1","deposit_rate_limit_global":1,"governance_principal":"aaaaa-aa","index_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","cycles_floor":"1"}
+{"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_cycle_ceiling":"1","settlement_rate_limit_per_record":1,"deposit_rate_limit_window_seconds":1,"ecdsa_key_name":"key_1","base_chain_id":8453,"bridge_contract_hex":"3333333333333333333333333333333333333333","timelock_contract_hex":"2222222222222222222222222222222222222222","max_priority_fee_per_gas":"1","evm_liveness":{"check_interval_seconds":60,"rebroadcast_after_seconds":300,"replacement_after_seconds":1800,"max_replacements":3,"fee_bump_bps":1250,"fee_ceiling_multiplier_bps":40000},"fee_recipient":{"owner":"aaaaa-aa","subaccount_hex":""},"settlement_rate_limit_window_seconds":1,"ecdsa_derivation_path_utf8":["bridge-operator"],"governance_ecdsa_derivation_path_utf8":["governance-operator"],"evm_rpc_canister_id":"aaaaa-aa","deposit_rate_limit_per_principal":1,"pause_principal":"2vxsx-fae","max_fee_per_gas":"1","eth_floor_wei":"1","custom_evm_rpc_urls":["https://one.example","https://two.example","https://three.example"],"transaction_gas_limit":"1","deposit_rate_limit_global":1,"governance_principal":"aaaaa-aa","index_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","cycles_floor":"1"}
 JSON
 mkdir -p "$T/rendered"
 cp "$T/init.json" "$T/rendered/canister-init.json"
@@ -133,29 +135,30 @@ export RENDER_SOURCE="$T/rendered"
 printf wasm >"$T/bundle/bridge-canister.wasm"
 SOURCE_REVISION="$(git -C "$DRIVER_ROOT" rev-parse HEAD)"; SOURCE_TREE="$(git -C "$DRIVER_ROOT" archive HEAD | shasum -a 256 | awk '{print $1}')"
 printf '{"release_id":"release-test","source_revision":"%s","source_tree_sha256":"%s"}\n' "$SOURCE_REVISION" "$SOURCE_TREE" >"$T/bundle/release-manifest.json"
+printf '{"final_controllers":["aaaaa-aa"]}\n' >"$T/bundle/controller-handover.json"
 printf '{"gate_a_manifest_sha256":"%s","bridge_deployment_transaction_hash":"0x%s","bridge_deployment_block_number":1,"bridge_deployment_block_hash":"0x%s","timelock_deployment_transaction_hash":"0x%s","timelock_deployment_block_number":1,"timelock_deployment_block_hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" >"$T/bundle/gate-a-receipt.json"
-if BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+if BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted a forged Gate A hash" >&2; exit 1
 fi
-BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/malicious-init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/malicious-constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh"
+BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/malicious-init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/malicious-constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh"
 python3 - "$TRACE" <<'PY'
 import sys
-s=open(sys.argv[1]).read(); required=['BridgeTimelockController','src/Bridge.sol','cast call','dfx canister install','dfx canister call']; pos=-1
+s=open(sys.argv[1]).read(); required=['get_public_config','get_bridge_status','BridgeTimelockController','src/Bridge.sol','cast call']; pos=-1
 for x in required:
   pos=s.find(x,pos+1); assert pos>=0,(x,s)
 assert '--ledger' in s and 'unpause' not in s
 assert 'MALICIOUS' not in s
 PY
-if TIMELOCK_CODE_DRIFT=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+if TIMELOCK_CODE_DRIFT=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted a deployed Timelock runtime code hash mismatch" >&2; exit 1
 fi
-if CANISTER_PAUSED=false BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+if CANISTER_PAUSED=false BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted deposits_paused=false" >&2; exit 1
 fi
 cat >"$T/bundle/signer-snapshot.json" <<'JSON'
 {"chain_key_eip191_signature":"0x00"}
 JSON
-: >"$TRACE"; BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/snapshot.json"
+: >"$TRACE"; BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/snapshot.json"
 cp "$T/snapshot.json" "$T/bundle/signer-snapshot.json"
 for isolated in chain_failure wrong_chain safe_failure eip1898_unsupported; do
   case "$isolated" in
@@ -164,7 +167,7 @@ for isolated in chain_failure wrong_chain safe_failure eip1898_unsupported; do
     safe_failure) args=(PROVIDER_SAFE_FAILURES=1);;
     eip1898_unsupported) args=(PROVIDER_EIP1898_FAILURES=1);;
   esac
-  env "${args[@]}" BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/isolated-$isolated.json"
+  env "${args[@]}" BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/isolated-$isolated.json"
 done
 for insufficient in chain_failure wrong_chain safe_failure eip1898_unsupported; do
   case "$insufficient" in
@@ -173,56 +176,15 @@ for insufficient in chain_failure wrong_chain safe_failure eip1898_unsupported; 
     safe_failure) args=(PROVIDER_SAFE_FAILURES=2);;
     eip1898_unsupported) args=(PROVIDER_EIP1898_FAILURES=2);;
   esac
-  if env "${args[@]}" BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/insufficient-$insufficient.json" >/dev/null 2>&1; then
+  if env "${args[@]}" BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/insufficient-$insufficient.json" >/dev/null 2>&1; then
     echo "live preflight accepted fewer than two usable providers: $insufficient" >&2; exit 1
   fi
 done
-: >"$TRACE"; export ACTIVATION_PHASE=schedule
-if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=schedule BRIDGE_BASE_ADMIN_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
-  echo "activation driver accepted a forged Gate B hash" >&2; exit 1
-fi
-if BASE_PAUSED=false BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=schedule BRIDGE_BASE_ADMIN_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
-  echo "activation accepted an already-unpaused Base" >&2; exit 1
-fi
-if CANISTER_PAUSED=false BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=schedule BRIDGE_BASE_ADMIN_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
-  echo "activation accepted an already-unpaused Canister" >&2; exit 1
-fi
-BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=schedule BRIDGE_BASE_ADMIN_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-activate-driver.sh"
-grep -q scheduleBatch "$TRACE"; ! grep -q resume_new_deposits "$TRACE"
-: >"$TRACE"; export ACTIVATION_PHASE=execute
-rm -f "$EXECUTED_MARKER" "$CANCELLED_MARKER" "$IC_RESUMED_MARKER" "$DEPOSIT_PAUSED_MARKER" "$WITHDRAWAL_PAUSED_MARKER"
-if EXECUTE_FAIL=true BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=execute BRIDGE_BASE_ADMIN_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_RUNTIME_ADMIN_ADDRESS=0x6666666666666666666666666666666666666666 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-activate-driver.sh" >"$T/execute-fault.log" 2>&1; then
-  echo "activation did not fail after an ambiguous execute send" >&2; exit 1
-fi
-[[ -e "$DEPOSIT_PAUSED_MARKER" && -e "$WITHDRAWAL_PAUSED_MARKER" ]] && grep -q 'INCIDENT:' "$T/execute-fault.log"
-rm -f "$EXECUTED_MARKER" "$CANCELLED_MARKER" "$IC_RESUMED_MARKER" "$DEPOSIT_PAUSED_MARKER" "$WITHDRAWAL_PAUSED_MARKER"
-if RESUME_FAIL=true BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=execute BRIDGE_BASE_ADMIN_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_RUNTIME_ADMIN_ADDRESS=0x6666666666666666666666666666666666666666 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-activate-driver.sh" >"$T/fault.log" 2>&1; then
-  echo "activation did not fail after IC resume failure" >&2; exit 1
-fi
-[[ -e "$DEPOSIT_PAUSED_MARKER" && -e "$WITHDRAWAL_PAUSED_MARKER" ]] && grep -q 'INCIDENT:' "$T/fault.log" && grep -q pauseDepositMints "$TRACE" && grep -q pauseWithdrawals "$TRACE"
-for scenario in ic_outage one_cast confirm; do
-  rm -f "$EXECUTED_MARKER" "$CANCELLED_MARKER" "$IC_RESUMED_MARKER" "$DEPOSIT_PAUSED_MARKER" "$WITHDRAWAL_PAUSED_MARKER"
-  case "$scenario" in ic_outage) extra=(IC_PAUSE_FAIL=true);; one_cast) extra=(DEPOSIT_PAUSE_FAIL=true);; confirm) extra=(CONFIRM_FAIL=true);; esac
-  if env RESUME_FAIL=true "${extra[@]}" BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=execute BRIDGE_BASE_ADMIN_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_RUNTIME_ADMIN_ADDRESS=0x6666666666666666666666666666666666666666 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-activate-driver.sh" >"$T/$scenario.log" 2>&1; then
-    echo "activation did not fail for $scenario compensation fault" >&2; exit 1
-  fi
-  grep -q 'compensation incomplete' "$T/$scenario.log"
-  grep -q pauseDepositMints "$TRACE" && grep -q pauseWithdrawals "$TRACE"
-  if [[ "$scenario" == ic_outage ]]; then [[ -e "$DEPOSIT_PAUSED_MARKER" && -e "$WITHDRAWAL_PAUSED_MARKER" ]]; fi
-  if [[ "$scenario" == one_cast ]]; then [[ ! -e "$DEPOSIT_PAUSED_MARKER" && -e "$WITHDRAWAL_PAUSED_MARKER" ]]; fi
-done
-rm -f "$EXECUTED_MARKER" "$CANCELLED_MARKER" "$IC_RESUMED_MARKER" "$DEPOSIT_PAUSED_MARKER" "$WITHDRAWAL_PAUSED_MARKER"
-if ACTIVATION_RECEIPT_DRIFT=true BRIDGE_CANONICAL_CONFIRM_TIMEOUT_SECONDS=1 BRIDGE_CANONICAL_CONFIRM_POLL_SECONDS=1 BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=execute BRIDGE_BASE_ADMIN_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_RUNTIME_ADMIN_ADDRESS=0x6666666666666666666666666666666666666666 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-activate-driver.sh" >"$T/orphan-activation.log" 2>&1; then
-  echo "activation resumed IC before the execute receipt became canonical Safe" >&2; exit 1
-fi
-[[ ! -e "$IC_RESUMED_MARKER" ]] && grep -q 'INCIDENT:' "$T/orphan-activation.log"
-rm -f "$EXECUTED_MARKER" "$CANCELLED_MARKER" "$IC_RESUMED_MARKER" "$DEPOSIT_PAUSED_MARKER" "$WITHDRAWAL_PAUSED_MARKER"
-LATEST_BLOCK_DRIFT=one BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=execute BRIDGE_BASE_ADMIN_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_RUNTIME_ADMIN_ADDRESS=0x6666666666666666666666666666666666666666 BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-activate-driver.sh"
-python3 - "$TRACE" <<'PY'
-import sys
-s=open(sys.argv[1]).read(); assert s.index('executeBatch') < s.index('resume_new_deposits') and '--ledger' in s
-PY
-: >"$TRACE"; unset ACTIVATION_PHASE; rm -f "$EXECUTED_MARKER" "$CANCELLED_MARKER" "$IC_RESUMED_MARKER"; BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify "$T/bundle"
+: >"$TRACE"
+BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=schedule "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+! grep -q '^cast send' "$TRACE"
+! grep -q resume_new_deposits "$TRACE"
+: >"$TRACE"; "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify "$T/bundle"
 [[ "$(grep -c '^cast chain-id' "$TRACE")" -eq 3 ]]
 python3 - "$TRACE" <<'PY'
 import sys
@@ -233,10 +195,11 @@ for line in open(sys.argv[1]):
     assert '{"blockHash":"0x' in line and '"requireCanonical":true}' in line,line
 assert count>0
 PY
-for drift in base canister roles role_events role_event_hash deployment providers timelock_code approved_hash mid_read_reorg; do
+for drift in base canister controller roles role_events role_event_hash deployment providers timelock_code approved_hash mid_read_reorg; do
   case "$drift" in
     base) args=(BASE_PAUSED=false);;
     canister) args=(CANISTER_PAUSED=false);;
+    controller) args=(CONTROLLER_DRIFT=true);;
     roles) args=(ROLE_DRIFT=true);;
     role_events) args=(ROLE_EVENT_DRIFT=true);;
     role_event_hash) args=(ROLE_EVENT_HASH_DRIFT=true);;
@@ -246,7 +209,7 @@ for drift in base canister roles role_events role_event_hash deployment provider
     approved_hash) args=(BRIDGE_APPROVED_HASH_DRIFT=true);;
     mid_read_reorg) args=(MID_READ_REORG=all);;
   esac
-  if env "${args[@]}" BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/rejected-$drift.json" >/dev/null 2>&1; then
+  if env "${args[@]}" "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/rejected-$drift.json" >/dev/null 2>&1; then
     echo "live preflight accepted $drift drift" >&2; exit 1
   fi
 done
@@ -256,7 +219,7 @@ for drift in stale_head signed_orphan latest_quorum; do
     signed_orphan) args=(SIGNED_BLOCK_DRIFT=all);;
     latest_quorum) args=(LATEST_BLOCK_DRIFT=all);;
   esac
-  if env "${args[@]}" BRIDGE_DFX_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify "$T/bundle" >/dev/null 2>&1; then
+  if env "${args[@]}" "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify "$T/bundle" >/dev/null 2>&1; then
     echo "live preflight accepted $drift" >&2; exit 1
   fi
 done

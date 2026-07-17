@@ -88,16 +88,13 @@ fn payout_and_authorization_tables_are_exhaustive() {
     assert_eq!(payout_debit(true, u128::MAX, 1), None);
     for action in 0..=4 {
         for pause in [false, true] {
-            for finance in [false, true] {
-                for governance in [false, true] {
-                    let expected = (action == 0 && pause)
-                        || ((action == 2 || action == 3) && finance)
-                        || ((action == 1 || action == 4) && governance);
-                    assert_eq!(
-                        administrator_authorized(action, pause, finance, governance),
-                        expected
-                    );
-                }
+            for governance in [false, true] {
+                let expected = (action == 0 && pause)
+                    || ((action == 1 || action == 2 || action == 3 || action == 4) && governance);
+                assert_eq!(
+                    administrator_authorized(action, pause, governance),
+                    expected
+                );
             }
         }
     }

@@ -150,6 +150,29 @@ async fn probe_chain_key(key_name: String) -> Result<ChainKeyProbe, String> {
     })
 }
 
+#[ic_cdk::update]
+async fn derive_chain_key_address(
+    canister_id: Principal,
+    key_name: String,
+    derivation_path: Vec<Vec<u8>>,
+) -> Vec<u8> {
+    let result = ecdsa_public_key(&EcdsaPublicKeyArgs {
+        canister_id: Some(canister_id),
+        derivation_path,
+        key_id: EcdsaKeyId {
+            curve: EcdsaCurve::Secp256k1,
+            name: key_name,
+        },
+    })
+    .await
+    .unwrap_or_else(|error| ic_cdk::trap(format!("ecdsa_public_key: {error:?}")));
+    let key = VerifyingKey::from_sec1_bytes(&result.public_key)
+        .unwrap_or_else(|error| ic_cdk::trap(format!("invalid SEC1 public key: {error}")));
+    let uncompressed = key.to_encoded_point(false);
+    let hash = keccak(&uncompressed.as_bytes()[1..]);
+    hash[12..].to_vec()
+}
+
 #[derive(CandidType, Deserialize)]
 struct StableMockState {
     ledger_id: Option<Principal>,
@@ -172,6 +195,7 @@ struct StableMockState {
     configured_chain_id: u64,
     bridge_runtime_code: Vec<u8>,
     block_mode: BlockMode,
+    broadcast_inconsistent_after_accepts: u8,
     broadcasts: Vec<Vec<u8>>,
     accepted_tx_hashes: Vec<[u8; 32]>,
     eth_balance: u128,
@@ -194,6 +218,7 @@ struct StableMockState {
     receipt_call_count: u64,
     bridge_signer: [u8; 20],
     deposit_mints_paused: bool,
+    withdrawals_paused: bool,
 }
 
 thread_local! {
@@ -218,6 +243,7 @@ thread_local! {
     static CONFIGURED_CHAIN_ID: RefCell<u64> = const { RefCell::new(8_453) };
     static BRIDGE_RUNTIME_CODE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static BLOCK_MODE: RefCell<BlockMode> = const { RefCell::new(BlockMode::Canonical) };
+    static BROADCAST_INCONSISTENT_AFTER_ACCEPTS: RefCell<u8> = const { RefCell::new(0) };
     static BROADCASTS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
     static ACCEPTED_TX_HASHES: RefCell<Vec<[u8; 32]>> = const { RefCell::new(Vec::new()) };
     static ETH_BALANCE: RefCell<u128> = const { RefCell::new(10_000_000_000_000_000_000) };
@@ -240,6 +266,7 @@ thread_local! {
     static RECEIPT_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
     static BRIDGE_SIGNER: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static DEPOSIT_MINTS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
+    static WITHDRAWALS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 #[ic_cdk::init]
@@ -307,6 +334,11 @@ fn set_bridge_runtime_code(code: Vec<u8>) {
 #[ic_cdk::update]
 fn set_block_mode(mode: BlockMode) {
     BLOCK_MODE.with(|current| *current.borrow_mut() = mode);
+}
+
+#[ic_cdk::update]
+fn set_broadcast_inconsistent_after_accepts(count: u8) {
+    BROADCAST_INCONSISTENT_AFTER_ACCEPTS.with(|current| *current.borrow_mut() = count);
 }
 
 #[ic_cdk::update]
@@ -449,6 +481,11 @@ fn set_deposit_mints_paused(value: bool) {
     DEPOSIT_MINTS_PAUSED.with(|current| *current.borrow_mut() = value);
 }
 
+#[ic_cdk::update]
+fn set_withdrawals_paused(value: bool) {
+    WITHDRAWALS_PAUSED.with(|current| *current.borrow_mut() = value);
+}
+
 #[ic_cdk::query]
 fn broadcast_transactions() -> Vec<Vec<u8>> {
     BROADCASTS.with(|values| values.borrow().clone())
@@ -502,6 +539,8 @@ fn pre_upgrade() {
         configured_chain_id: CONFIGURED_CHAIN_ID.with(|v| *v.borrow()),
         bridge_runtime_code: BRIDGE_RUNTIME_CODE.with(|v| v.borrow().clone()),
         block_mode: BLOCK_MODE.with(|v| *v.borrow()),
+        broadcast_inconsistent_after_accepts: BROADCAST_INCONSISTENT_AFTER_ACCEPTS
+            .with(|v| *v.borrow()),
         broadcasts: BROADCASTS.with(|v| v.borrow().clone()),
         accepted_tx_hashes: ACCEPTED_TX_HASHES.with(|v| v.borrow().clone()),
         eth_balance: ETH_BALANCE.with(|v| *v.borrow()),
@@ -524,6 +563,7 @@ fn pre_upgrade() {
         receipt_call_count: RECEIPT_CALL_COUNT.with(|v| *v.borrow()),
         bridge_signer: BRIDGE_SIGNER.with(|v| *v.borrow()),
         deposit_mints_paused: DEPOSIT_MINTS_PAUSED.with(|v| *v.borrow()),
+        withdrawals_paused: WITHDRAWALS_PAUSED.with(|v| *v.borrow()),
     };
     ic_cdk::storage::stable_save((state,)).expect("save mock state");
 }
@@ -552,6 +592,8 @@ fn post_upgrade() {
     CONFIGURED_CHAIN_ID.with(|v| *v.borrow_mut() = state.configured_chain_id);
     BRIDGE_RUNTIME_CODE.with(|v| *v.borrow_mut() = state.bridge_runtime_code);
     BLOCK_MODE.with(|v| *v.borrow_mut() = state.block_mode);
+    BROADCAST_INCONSISTENT_AFTER_ACCEPTS
+        .with(|v| *v.borrow_mut() = state.broadcast_inconsistent_after_accepts);
     BROADCASTS.with(|v| *v.borrow_mut() = state.broadcasts);
     ACCEPTED_TX_HASHES.with(|v| *v.borrow_mut() = state.accepted_tx_hashes);
     ETH_BALANCE.with(|v| *v.borrow_mut() = state.eth_balance);
@@ -574,6 +616,7 @@ fn post_upgrade() {
     RECEIPT_CALL_COUNT.with(|v| *v.borrow_mut() = state.receipt_call_count);
     BRIDGE_SIGNER.with(|v| *v.borrow_mut() = state.bridge_signer);
     DEPOSIT_MINTS_PAUSED.with(|v| *v.borrow_mut() = state.deposit_mints_paused);
+    WITHDRAWALS_PAUSED.with(|v| *v.borrow_mut() = state.withdrawals_paused);
 }
 
 #[ic_cdk::query]
@@ -886,10 +929,15 @@ fn eth_send_raw_transaction(
     let raw_bytes: Vec<u8> = raw.into();
     BROADCASTS.with(|values| values.borrow_mut().push(raw_bytes.clone()));
     let expected_nonce = NEXT_EVM_NONCE.with(|nonce| *nonce.borrow());
-    if eip1559_nonce(&raw_bytes) != Some(expected_nonce) {
+    let Some(raw_nonce) = eip1559_nonce(&raw_bytes) else {
+        return MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::NonceTooLow));
+    };
+    if raw_nonce != expected_nonce && raw_nonce.saturating_add(1) != expected_nonce {
         return MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::NonceTooLow));
     }
-    NEXT_EVM_NONCE.with(|nonce| *nonce.borrow_mut() = expected_nonce.saturating_add(1));
+    if raw_nonce == expected_nonce {
+        NEXT_EVM_NONCE.with(|nonce| *nonce.borrow_mut() = expected_nonce.saturating_add(1));
+    }
     let hash = keccak(&raw_bytes);
     ACCEPTED_TX_HASHES.with(|hashes| hashes.borrow_mut().push(hash));
     LAST_TX_HASH.with(|current| *current.borrow_mut() = hash);
@@ -897,6 +945,27 @@ fn eth_send_raw_transaction(
         && eip1559_calldata(&raw_bytes).is_some()
     {
         PROCESSED_DEPOSIT.with(|processed| *processed.borrow_mut() = true);
+    }
+    let inconsistent = BROADCAST_INCONSISTENT_AFTER_ACCEPTS.with(|remaining| {
+        let current = *remaining.borrow();
+        if current == 0 {
+            false
+        } else {
+            *remaining.borrow_mut() = current - 1;
+            true
+        }
+    });
+    if inconsistent {
+        return MultiRpcResult::Inconsistent(vec![
+            (
+                RpcService::Provider(1),
+                Ok(SendRawTransactionStatus::Ok(Some(hex32(hash)))),
+            ),
+            (
+                RpcService::Provider(2),
+                Err(RpcError::ProviderError(ProviderError::ProviderNotFound)),
+            ),
+        ]);
     }
     MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::Ok(Some(hex32(hash)))))
 }
@@ -1018,6 +1087,10 @@ fn bridge_snapshot_response(block_number: Option<u64>) -> String {
         (
             10,
             u128::from(DEPOSIT_MINTS_PAUSED.with(|value| *value.borrow())),
+        ),
+        (
+            11,
+            u128::from(WITHDRAWALS_PAUSED.with(|value| *value.borrow())),
         ),
     ];
     for (index, value) in values {
@@ -1319,7 +1392,7 @@ fn decode_hex_32(value: &str) -> Option<[u8; 32]> {
 ic_cdk::export_candid!();
 
 pub fn generated_candid_interface() -> String {
-    __export_service()
+    format!("{}\n", __export_service())
 }
 
 #[cfg(test)]

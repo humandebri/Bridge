@@ -3,9 +3,13 @@ import { History, Menu, ShieldCheck } from "lucide-react"
 import { WalletCenter, WalletDialogProvider } from "@/features/wallet/wallet-controls"
 import { SettlementConfirmationCoordinator } from "@/features/bridge/settlement-confirmation-coordinator"
 import blueKinic from "@/assets/blue_kinic.png"
+import { deploymentProfile } from "@/config/profile"
 
 export function AppShell() {
   return <WalletDialogProvider><SettlementConfirmationCoordinator /><div className="min-h-screen">
+    {deploymentProfile.testOnly ? <div role="status" aria-label="Test deployment" className="border-b border-amber-300 bg-amber-100 px-4 py-2 text-center text-xs font-bold tracking-[.08em] text-amber-950">
+      IC MAINNET × BASE SEPOLIA TEST — TEST ASSETS ONLY
+    </div> : null}
     <header className="relative z-20 mx-auto flex max-w-[1155px] items-center gap-3 px-4 py-5 md:px-6 md:py-7">
       <Link to="/" search={{ direction: "deposit" }} className="group flex shrink-0 items-center gap-3 rounded-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:ring-offset-2" aria-label="KINIC Bridge home">
         <img src={blueKinic} alt="" className="size-11 rounded-[13px] object-cover shadow-[0_8px_24px_rgba(20,34,53,.12)] transition-transform duration-300 group-hover:-rotate-2 group-hover:scale-[1.03]" />
