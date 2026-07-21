@@ -211,11 +211,6 @@ export interface BridgeStatus {
   'last_finalized_base_block_hash' : Uint8Array | number[],
   'last_audit_sequence' : [] | [bigint],
 }
-export type ChainKeyChallengeError = { 'Busy' : null } |
-  { 'Unauthorized' : null } |
-  { 'StorageFailure' : null } |
-  { 'InvalidReleaseId' : null } |
-  { 'SigningUnavailable' : null };
 export interface ChecksumRefreshStatus {
   'scanned_bytes' : bigint,
   'db_size' : bigint,
@@ -446,8 +441,6 @@ export type Result_12 = { 'Ok' : DepositReceipt } |
 export type Result_13 = { 'Ok' : FeePayoutReceipt } |
   { 'Err' : AdminError };
 export type Result_14 = { 'Ok' : string } |
-  { 'Err' : ChainKeyChallengeError };
-export type Result_15 = { 'Ok' : string } |
   { 'Err' : StorageMaintenanceError };
 export type Result_2 = { 'Ok' : StorageValidationStatus } |
   { 'Err' : StorageMaintenanceError };
@@ -609,9 +602,8 @@ export interface _SERVICE {
   'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_8>,
   'schedule_activation' : ActorMethod<[], Result_3>,
   'set_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_8>,
-  'sign_chain_key_challenge' : ActorMethod<[string], Result_14>,
   'start_storage_validation' : ActorMethod<[], Result_2>,
-  'storage_integrity_check' : ActorMethod<[], Result_15>,
+  'storage_integrity_check' : ActorMethod<[], Result_14>,
   'submit_base_governance_action' : ActorMethod<
     [BaseGovernanceAction],
     Result_3

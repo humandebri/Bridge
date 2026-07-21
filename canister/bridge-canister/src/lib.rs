@@ -125,15 +125,6 @@ pub struct PublicConfig {
     pub rpc_provider_urls_sha256: Vec<u8>,
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum ChainKeyChallengeError {
-    Busy,
-    Unauthorized,
-    InvalidReleaseId,
-    StorageFailure,
-    SigningUnavailable,
-}
-
 thread_local! {
     static STORE: RefCell<StoreState> = const { RefCell::new(StoreState(None)) };
     static IN_FLIGHT_ACTIONS: RefCell<BTreeSet<ActionKey>> = const { RefCell::new(BTreeSet::new()) };
@@ -175,16 +166,8 @@ enum ActionKey {
     Notification([u8; 32]),
     FeePayout(u64),
     FeePayoutCreation,
-    ChainKeyChallenge,
     BaseObservation,
     BaseGovernance,
-}
-
-fn valid_release_id(release_id: &str) -> bool {
-    (8..=64).contains(&release_id.len())
-        && release_id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 struct InFlightGuard {
@@ -1097,27 +1080,6 @@ async fn execute_activation(
     result
 }
 
-#[ic_cdk::update]
-async fn sign_chain_key_challenge(release_id: String) -> Result<String, ChainKeyChallengeError> {
-    if !valid_release_id(&release_id) {
-        return Err(ChainKeyChallengeError::InvalidReleaseId);
-    }
-    let caller = ic_cdk::api::msg_caller();
-    if !admin::is_governance(caller).map_err(|_| ChainKeyChallengeError::StorageFailure)? {
-        return Err(ChainKeyChallengeError::Unauthorized);
-    }
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::ChainKeyChallenge) else {
-        return Err(ChainKeyChallengeError::Busy);
-    };
-    let config = STORE.with(|store| {
-        storage_or_trap("configuration read", store.borrow().config())
-            .unwrap_or_else(|| ic_cdk::trap("missing configuration"))
-    });
-    signer::sign_chain_key_challenge(&release_id, &config)
-        .await
-        .map_err(|_| ChainKeyChallengeError::SigningUnavailable)
-}
-
 #[ic_cdk::query]
 fn icrc10_supported_standards() -> Vec<consent::Icrc10SupportedStandard> {
     consent::supported_standards()
@@ -1192,10 +1154,9 @@ pub fn generated_candid_interface() -> String {
 
 #[cfg(test)]
 mod candid_tests {
-    use super::{
-        storage::StorageError, storage_or_trap, valid_release_id, ActionKey, InFlightGuard,
-    };
+    use super::{storage::StorageError, storage_or_trap, ActionKey, InFlightGuard};
 
+    #[cfg(not(feature = "test-deployment"))]
     fn normalize(candid: &str) -> String {
         candid
             .chars()
@@ -1203,8 +1164,9 @@ mod candid_tests {
             .collect()
     }
 
+    #[cfg(not(feature = "test-deployment"))]
     #[test]
-    fn checked_in_candid_matches_rust_interface() {
+    fn checked_in_production_candid_matches_rust_interface() {
         let generated = super::__export_service();
         let checked_in = include_str!("../bridge.did");
         assert_eq!(normalize(&generated), normalize(checked_in));
@@ -1227,17 +1189,6 @@ mod candid_tests {
         assert!(InFlightGuard::acquire(key.clone()).is_none());
         drop(guard);
         assert!(InFlightGuard::acquire(key).is_some());
-    }
-
-    #[test]
-    fn release_id_is_strictly_bounded_and_domain_safe() {
-        assert!(valid_release_id("release-1"));
-        assert!(valid_release_id("12345678"));
-        assert!(!valid_release_id("short-1"));
-        assert!(!valid_release_id("Release-1"));
-        assert!(!valid_release_id("release_1"));
-        assert!(!valid_release_id("release-1\naddress=0x00"));
-        assert!(!valid_release_id(&"a".repeat(65)));
     }
 
     #[test]

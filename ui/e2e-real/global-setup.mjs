@@ -239,7 +239,7 @@ async function setup() {
 
   const gatewayPort = await pic.client.startHttpGateway()
   resources.gatewayClient = pic.client
-  startProgressLoop(pic)
+  await startProgressLoop(pic)
   await writeProfile({
     gatewayPort,
     ledgerId: ledgerId.toText(),
@@ -574,19 +574,19 @@ async function setup() {
       if (request.url === "/test/relay") {
         await relayPendingBroadcasts()
         await syncObservedHeads()
-        stopProgressLoop()
+        await stopProgressLoop()
         try {
           await pic.advanceTime(2_000)
           await pic.tick(30)
         } finally {
-          startProgressLoop(pic)
+          await startProgressLoop(pic)
         }
         return send(response, 200, null)
       }
       if (request.url === "/test/advance-confirmation") {
         await relayPendingBroadcasts()
         await syncObservedHeads()
-        stopProgressLoop()
+        await stopProgressLoop()
         try {
           await pic.advanceTime(Number(body.minutes ?? 20) * 60_000)
           await pic.tick(100)
@@ -597,7 +597,7 @@ async function setup() {
           await pic.advanceTime(31_000)
           await pic.tick(5)
         } finally {
-          startProgressLoop(pic)
+          await startProgressLoop(pic)
         }
         return send(response, 200, { time: await pic.getTime() })
       }
@@ -676,26 +676,22 @@ async function setup() {
 async function cleanup() {
   resources.vite?.kill("SIGTERM")
   if (resources.control?.listening) await new Promise((resolve) => resources.control.close(resolve))
-  stopProgressLoop()
+  await stopProgressLoop()
   await resources.gatewayClient?.stopHttpGateway().catch(() => undefined)
   await resources.pic?.tearDown().catch(() => undefined)
   await resources.picServer?.stop().catch(() => undefined)
   resources.anvil?.kill("SIGTERM")
 }
 
-function startProgressLoop(pic) {
-  stopProgressLoop()
-  let ticking = false
-  resources.progressTimer = setInterval(() => {
-    if (ticking) return
-    ticking = true
-    void pic.tick().catch(() => undefined).finally(() => { ticking = false })
-  }, 100)
+async function startProgressLoop(pic) {
+  await stopProgressLoop()
+  await pic.client.autoProgress()
+  resources.progressClient = pic.client
 }
 
-function stopProgressLoop() {
-  if (resources.progressTimer !== undefined) clearInterval(resources.progressTimer)
-  resources.progressTimer = undefined
+async function stopProgressLoop() {
+  if (resources.progressClient) await resources.progressClient.stopProgress()
+  resources.progressClient = undefined
 }
 
 function buildWasm() {

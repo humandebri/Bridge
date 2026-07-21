@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Capture live state and a release-bound chain-key control signature from the reviewed profile.
+# Capture live state and verify the Mint Signer against the reviewed profile.
 set -euo pipefail
 
 MODE="${1:-verify}"
@@ -19,9 +19,9 @@ MANIFEST="$BUNDLE/release-manifest.json"
   echo "profile, manifest, or controller handover evidence is missing" >&2; exit 1;
 }
 if [[ "$MODE" == verify && ! -f "$SNAPSHOT" ]]; then
-  echo "signed snapshot is missing" >&2; exit 1
+  echo "signer snapshot is missing" >&2; exit 1
 fi
-: "${BRIDGE_ICP_IDENTITY:?BRIDGE_ICP_IDENTITY must name the governance identity used for the chain-key challenge}"
+: "${BRIDGE_ICP_IDENTITY:?BRIDGE_ICP_IDENTITY must name the reviewed identity used to resolve the production environment}"
 for tool in cast icp python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 
 PROFILE_VALUES=()
@@ -38,21 +38,13 @@ EXPECTED_RUNTIME=${PROFILE_VALUES[6]}; EXPECTED_WASM=${PROFILE_VALUES[7]}; LEDGE
 [[ "$(icp canister status bridge-canister -e production -i --identity "$BRIDGE_ICP_IDENTITY")" == "$CANISTER" ]] || {
   echo "production ICP environment does not map the reviewed Bridge Canister" >&2; exit 1;
 }
-RELEASE_ID="$(python3 - "$MANIFEST" <<'PY'
-import json,re,sys
-value=json.load(open(sys.argv[1]))['release_id']
-if not isinstance(value,str) or not re.fullmatch(r'[a-z0-9-]{8,64}',value): raise SystemExit('invalid release_id')
-print(value)
-PY
-)"
-
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-live-preflight.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 python3 - "$PROFILE" "$SNAPSHOT" "$TMP" "$MODE" <<'PY'
 import json,subprocess,sys
 from pathlib import Path
 p=json.load(open(sys.argv[1])); root=Path(sys.argv[3]); mode=sys.argv[4]
-signed_height=json.load(open(sys.argv[2]))['finalized_head_block_number'] if mode=='verify' else None
+snapshot_height=json.load(open(sys.argv[2]))['finalized_head_block_number'] if mode=='verify' else None
 observations=[]
 for index,entry in enumerate(p['rpc_providers']):
  try:
@@ -61,8 +53,8 @@ for index,entry in enumerate(p['rpc_providers']):
   if chain!=str(p['chain_id']): raise ValueError('wrong chain')
   finalized=json.loads(subprocess.check_output(['cast','block','finalized','--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
   observation={'provider_index':index,'chain_id':int(chain),'finalized':finalized}
-  if signed_height is not None:
-   observation['signed']=json.loads(subprocess.check_output(['cast','block',str(signed_height),'--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
+  if snapshot_height is not None:
+   observation['snapshot_block']=json.loads(subprocess.check_output(['cast','block',str(snapshot_height),'--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
   observations.append(observation)
  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError):
   continue
@@ -175,11 +167,6 @@ icp canister status bridge-canister -e production --public --json >"$TMP/caniste
 icp canister call "$LEDGER" icrc1_fee '()' -n ic --json >"$TMP/ledger-fee.json"
 cp "$BUNDLE/controller-handover.json" "$TMP/controller-handover.json"
 python3 "$(dirname "$0")/live_fee_guard.py" "$PROFILE" "$TMP/base-state.json" "$TMP/ledger-fee.json" >"$TMP/live-fees.json"
-if [[ "$MODE" == capture ]]; then
-  icp canister call bridge-canister sign_chain_key_challenge "(\"$RELEASE_ID\")" \
-    -e production --identity "$BRIDGE_ICP_IDENTITY" --json >"$TMP/chain-key-challenge.json"
-fi
-
 python3 - "$PROFILE" "$SNAPSHOT" "$TMP" "$MODE" "${OUTPUT:-}" <<'PY'
 import hashlib,json,re,sys,time
 from pathlib import Path
@@ -208,6 +195,9 @@ if not signers: raise SystemExit('Canister public signer missing')
 s=signers[0]
 if isinstance(s,list): canister='0x'+bytes(s).hex()
 else: canister=str(s).lower()
+expected_signer=p['expected_bridge_signer'].lower()
+if base.lower()!=expected_signer or canister.lower()!=expected_signer or base.lower()!=canister.lower():
+  raise SystemExit('profile, Canister public config, and Finalized Base signer mismatch')
 evidence_controllers=handover.get('final_controllers')
 if evidence_controllers != [p['root_canister_id']]: raise SystemExit('handover evidence does not bind the SNS Root-only controller set')
 controller_values=scalars(cstatus,'controllers')
@@ -227,11 +217,6 @@ expected_rpc_digest=hashlib.sha256(json.dumps([x['url'].strip() for x in p['rpc_
 if len(rpc_digests)!=1: raise SystemExit('Canister RPC URL digest missing')
 d=rpc_digests[0]; actual_rpc_digest=bytes(d).hex() if isinstance(d,list) else str(d).lower().removeprefix('0x')
 if actual_rpc_digest!=expected_rpc_digest: raise SystemExit('Canister RPC URL digest drift')
-if sys.argv[4]=='capture':
-  challenge=json.load(open(root/'chain-key-challenge.json')); signatures=scalars(challenge,'Ok')
-  if len(signatures)!=1 or not isinstance(signatures[0],str) or not re.fullmatch(r'0x[0-9a-f]{130}',signatures[0]): raise SystemExit('Canister chain-key challenge signing failed')
-  chain_key_signature=signatures[0]
-else: chain_key_signature=json.load(open(sys.argv[2]))['chain_key_eip191_signature']
 if runtime_hash.lower()!=p['bridge_runtime_bytecode_sha256'].lower(): raise SystemExit('runtime bytecode drift')
 if state['timelock_runtime_code_hash'].lower()!=p['timelock']['runtime_code_hash'].lower(): raise SystemExit('Timelock runtime code hash drift')
 if state['bridge_approved_timelock_runtime_code_hash'].lower()!=p['timelock']['runtime_code_hash'].lower(): raise SystemExit('Bridge approved Timelock runtime code hash drift')
@@ -249,7 +234,7 @@ if state['bsns_runtime_bytecode_sha256'].lower()!=p['bsns_runtime_bytecode_sha25
 out={
  'observed_at_unix':int(time.time()),'chain_id':p['chain_id'],'evm_rpc_canister_id':p['evm_rpc_canister_id'],
  'finalized_head_block_number':height,'finalized_head_block_hash':bhash,'canonical':True,'agreeing_providers':agree,'total_providers':3,
- 'base_bridge_signer':base,'canister_bridge_signer':canister,'chain_key_eip191_signature':chain_key_signature,
+ 'base_bridge_signer':base,'canister_bridge_signer':canister,
  'bridge_runtime_bytecode_sha256':runtime_hash,'expected_bridge_runtime_bytecode_sha256':p['bridge_runtime_bytecode_sha256'],
  'bridge_canister_wasm_sha256':module_hash,'bridge_canister_id':p['bridge_canister_id'],'timelock_address':p['timelock']['address'],
  'timelock_runtime_code_hash':state['timelock_runtime_code_hash'],
@@ -275,13 +260,13 @@ if mode=='capture':
   target=Path(sys.argv[5]); tmp=Path(str(target)+'.tmp'); tmp.write_text(json.dumps(out,sort_keys=True,separators=(',',':'))+'\n'); tmp.replace(target)
 else:
   old=json.load(open(sys.argv[2]))
-  signed=[]
+  snapshot_blocks=[]
   for observation in json.load(open(root/'provider-observations.json')):
-    if 'signed' in observation:
-      b=observation['signed']; signed.append((num(b.get('number')),str(b.get('hash','')).lower()))
+    if 'snapshot_block' in observation:
+      b=observation['snapshot_block']; snapshot_blocks.append((num(b.get('number')),str(b.get('hash','')).lower()))
   expected=(old['finalized_head_block_number'],old['finalized_head_block_hash'].lower())
-  if signed.count(expected)<2: raise SystemExit('signed Finalized block is no longer canonical')
-  if out['finalized_head_block_number'] < old['finalized_head_block_number']: raise SystemExit('latest Finalized head is older than the signed snapshot')
-  comparable=lambda x:{k:v for k,v in x.items() if k not in ('observed_at_unix','chain_key_eip191_signature','finalized_head_block_number','finalized_head_block_hash','agreeing_providers')}
-  if comparable(out)!=comparable(old): raise SystemExit('live state differs from the signed snapshot')
+  if snapshot_blocks.count(expected)<2: raise SystemExit('snapshot Finalized block is no longer canonical')
+  if out['finalized_head_block_number'] < old['finalized_head_block_number']: raise SystemExit('latest Finalized head is older than the captured snapshot')
+  comparable=lambda x:{k:v for k,v in x.items() if k not in ('observed_at_unix','finalized_head_block_number','finalized_head_block_hash','agreeing_providers')}
+  if comparable(out)!=comparable(old): raise SystemExit('live state differs from the captured snapshot')
 PY

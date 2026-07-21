@@ -135,6 +135,22 @@ impl BridgeInitArgs {
         let replacement_checks = policy
             .replacement_after_seconds
             .div_ceil(policy.check_interval_seconds.max(1));
+        let mut replacement_max_fee = self.max_fee_per_gas;
+        let mut replacement_priority_fee = self.max_priority_fee_per_gas;
+        let replacement_fees_increase = (0..policy.max_replacements).all(|_| {
+            let Some((next_max_fee, next_priority_fee)) = next_replacement_fees(
+                replacement_max_fee,
+                replacement_priority_fee,
+                self.max_fee_per_gas,
+                self.max_priority_fee_per_gas,
+                policy,
+            ) else {
+                return false;
+            };
+            replacement_max_fee = next_max_fee;
+            replacement_priority_fee = next_priority_fee;
+            true
+        });
         if !(30..=300).contains(&policy.check_interval_seconds)
             || policy.rebroadcast_after_seconds < policy.check_interval_seconds
             || policy.replacement_after_seconds < policy.rebroadcast_after_seconds
@@ -142,6 +158,7 @@ impl BridgeInitArgs {
             || !(1_000..=5_000).contains(&policy.fee_bump_bps)
             || !(10_000..=100_000).contains(&policy.fee_ceiling_multiplier_bps)
             || replacement_checks.saturating_mul(u64::from(policy.max_replacements) + 1) > 255
+            || !replacement_fees_increase
         {
             return Err("EVM liveness policy is outside the supported safety bounds");
         }
@@ -158,10 +175,10 @@ impl BridgeInitArgs {
     }
 
     pub const fn reserve_policy(&self) -> bridge_core::ReservePolicy {
-        let replacement_fee_ceiling = self
-            .max_fee_per_gas
-            .saturating_mul(self.evm_liveness.fee_ceiling_multiplier_bps as u128)
-            / 10_000;
+        let replacement_fee_ceiling = replacement_fee_ceiling(
+            self.max_fee_per_gas,
+            self.evm_liveness.fee_ceiling_multiplier_bps,
+        );
         bridge_core::ReservePolicy {
             eth_floor_wei: self.eth_floor_wei,
             cycles_floor: self.cycles_floor,
@@ -184,6 +201,45 @@ impl BridgeInitArgs {
             .try_into()
             .expect("validated Timelock contract")
     }
+}
+
+pub(crate) const fn replacement_fee_ceiling(initial: u128, multiplier_bps: u32) -> u128 {
+    initial.saturating_mul(multiplier_bps as u128) / 10_000
+}
+
+pub(crate) fn next_replacement_fees(
+    current_max_fee: u128,
+    current_priority_fee: u128,
+    initial_max_fee: u128,
+    initial_priority_fee: u128,
+    policy: EvmLivenessPolicy,
+) -> Option<(u128, u128)> {
+    let max_fee_ceiling =
+        replacement_fee_ceiling(initial_max_fee, policy.fee_ceiling_multiplier_bps);
+    let priority_fee_ceiling =
+        replacement_fee_ceiling(initial_priority_fee, policy.fee_ceiling_multiplier_bps)
+            .min(max_fee_ceiling);
+    let next_max_fee = bump_fee(current_max_fee, max_fee_ceiling, policy.fee_bump_bps);
+    if next_max_fee <= current_max_fee {
+        return None;
+    }
+    let next_priority_fee = bump_fee(
+        current_priority_fee,
+        priority_fee_ceiling,
+        policy.fee_bump_bps,
+    )
+    .min(next_max_fee);
+    Some((next_max_fee, next_priority_fee))
+}
+
+fn bump_fee(current: u128, ceiling: u128, bump_bps: u16) -> u128 {
+    current
+        .saturating_mul(10_000u128.saturating_add(u128::from(bump_bps)))
+        .saturating_add(9_999)
+        .checked_div(10_000)
+        .unwrap_or(ceiling)
+        .max(current.saturating_add(1))
+        .min(ceiling)
 }
 
 pub fn kinic_ledger_canister_id() -> Principal {
@@ -276,6 +332,46 @@ mod tests {
     }
 
     #[test]
+    fn replacement_policy_requires_a_distinct_fee_for_every_generation() {
+        let mut args = valid_args();
+        assert_eq!(args.validate(), Ok(()));
+
+        args.evm_liveness.fee_ceiling_multiplier_bps = 10_000;
+        assert!(args.validate().is_err());
+
+        args = valid_args();
+        args.max_fee_per_gas = 1;
+        args.max_priority_fee_per_gas = 0;
+        args.evm_liveness.fee_ceiling_multiplier_bps = 10_001;
+        assert!(args.validate().is_err());
+
+        args = valid_args();
+        args.max_fee_per_gas = 1;
+        args.max_priority_fee_per_gas = 0;
+        args.evm_liveness.max_replacements = 2;
+        args.evm_liveness.fee_bump_bps = 5_000;
+        args.evm_liveness.fee_ceiling_multiplier_bps = 20_000;
+        assert!(args.validate().is_err());
+
+        args = valid_args();
+        args.max_fee_per_gas = u128::MAX;
+        args.max_priority_fee_per_gas = 0;
+        assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn replacement_fee_helper_returns_none_at_the_ceiling() {
+        let policy = EvmLivenessPolicy {
+            max_replacements: 2,
+            fee_bump_bps: 5_000,
+            fee_ceiling_multiplier_bps: 20_000,
+            ..EvmLivenessPolicy::default()
+        };
+        assert_eq!(next_replacement_fees(1, 0, 1, 0, policy), Some((2, 0)));
+        assert_eq!(next_replacement_fees(2, 0, 1, 0, policy), None);
+    }
+
+    #[test]
     fn validates_settlement_rate_limit_window_and_ordering() {
         let mut args = valid_args();
         args.settlement_rate_limit_window_seconds = 59;
@@ -290,7 +386,6 @@ mod tests {
         args.settlement_rate_limit_per_principal = 61;
         assert!(args.validate().is_err());
     }
-
     fn valid_args() -> BridgeInitArgs {
         let principal = Principal::from_text("aaaaa-aa").expect("management principal");
         BridgeInitArgs {

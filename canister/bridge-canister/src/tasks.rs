@@ -508,6 +508,35 @@ enum EvmAdvance {
     Stopped(SettlementStopReason),
 }
 
+enum ReplacementPreparation {
+    Rebroadcast(bridge_core::EvmTransactionEnvelope),
+    Replace(bridge_core::EvmTransactionEnvelope),
+}
+
+fn prepare_evm_replacement(
+    mut envelope: bridge_core::EvmTransactionEnvelope,
+    current_raw: &[u8],
+    policy: crate::config::EvmLivenessPolicy,
+) -> ReplacementPreparation {
+    let Some((next_max_fee, next_priority_fee)) = crate::config::next_replacement_fees(
+        envelope.max_fee_per_gas,
+        envelope.max_priority_fee_per_gas,
+        envelope.initial_max_fee_per_gas,
+        envelope.initial_max_priority_fee_per_gas,
+        policy,
+    ) else {
+        return ReplacementPreparation::Rebroadcast(envelope);
+    };
+    envelope
+        .prior_signed_transactions
+        .push(current_raw.to_vec());
+    envelope.max_fee_per_gas = next_max_fee;
+    envelope.max_priority_fee_per_gas = next_priority_fee;
+    envelope.replacement_generation = envelope.replacement_generation.saturating_add(1);
+    envelope.signed_transaction = None;
+    ReplacementPreparation::Replace(envelope)
+}
+
 async fn maintain_missing_evm_transaction(
     config: &crate::config::BridgeInitArgs,
     operation_id: EvmOperationId,
@@ -559,70 +588,104 @@ async fn maintain_missing_evm_transaction(
     if !checks.is_multiple_of(replacement_checks)
         || envelope.replacement_generation >= policy.max_replacements
     {
-        lease.renew_before_external_call()?;
-        let evidence = match evm_rpc::broadcast(config, &current_raw).await {
-            Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => evidence,
-            Ok(evm_rpc::BroadcastOutcome::NonceConflict(_)) => {
-                return Ok(Some(EvmAdvance::Stopped(
-                    SettlementStopReason::NonceConflict,
-                )))
-            }
-            Err(_) => return Ok(None),
-        };
-        lease.ensure_current()?;
-        envelope.last_broadcast_at_ns = ic_cdk::api::time();
-        envelope.rebroadcast_count = envelope.rebroadcast_count.saturating_add(1);
-        STORE
-            .with(|store| {
-                let mut store = store.borrow_mut();
-                store.record_evm_broadcast(&envelope)?;
-                store.append_audit_events_atomically(
-                    ic_cdk::api::canister_self(),
-                    vec![
-                        crate::rpc_audit_event_kind(&evidence),
-                        crate::storage::AuditEventKind::EvmTransactionRebroadcasted {
-                            operation_id: operation_id.get(),
-                            transaction_hash: transaction_hash.to_vec(),
-                            attempt: checks / rebroadcast_checks,
-                        },
-                    ],
-                )
-            })
-            .map_err(|_| SettlementActionError::StorageFailure)?;
-        return Ok(None);
+        return rebroadcast_current_evm_transaction(
+            config,
+            operation_id,
+            transaction_hash,
+            envelope,
+            current_raw,
+            checks,
+            rebroadcast_checks,
+            lease,
+        )
+        .await;
     }
 
-    envelope.prior_signed_transactions.push(current_raw);
-    let fee_ceiling = envelope
-        .initial_max_fee_per_gas
-        .saturating_mul(u128::from(policy.fee_ceiling_multiplier_bps))
-        / 10_000;
-    let priority_ceiling = (envelope
-        .initial_max_priority_fee_per_gas
-        .saturating_mul(u128::from(policy.fee_ceiling_multiplier_bps))
-        / 10_000)
-        .min(fee_ceiling);
-    envelope.max_fee_per_gas = bump_fee(envelope.max_fee_per_gas, fee_ceiling, policy.fee_bump_bps);
-    envelope.max_priority_fee_per_gas = bump_fee(
-        envelope.max_priority_fee_per_gas,
-        priority_ceiling,
-        policy.fee_bump_bps,
-    )
-    .min(envelope.max_fee_per_gas);
-    envelope.replacement_generation = envelope.replacement_generation.saturating_add(1);
-    envelope.signed_transaction = None;
+    let previous_envelope = envelope.clone();
+    envelope = match prepare_evm_replacement(envelope, &current_raw, policy) {
+        ReplacementPreparation::Rebroadcast(envelope) => {
+            return rebroadcast_current_evm_transaction(
+                config,
+                operation_id,
+                transaction_hash,
+                envelope,
+                current_raw,
+                checks,
+                rebroadcast_checks,
+                lease,
+            )
+            .await;
+        }
+        ReplacementPreparation::Replace(envelope) => envelope,
+    };
     lease.renew_before_external_call()?;
     let raw = signer::sign(&envelope, config)
         .await
         .map_err(|_| SettlementActionError::StorageFailure)?;
     lease.ensure_current()?;
     let next_hash = signer::transaction_hash(&raw);
+    if next_hash == transaction_hash {
+        return rebroadcast_current_evm_transaction(
+            config,
+            operation_id,
+            transaction_hash,
+            previous_envelope,
+            current_raw,
+            checks,
+            rebroadcast_checks,
+            lease,
+        )
+        .await;
+    }
     envelope.signed_transaction = Some(raw.clone());
     STORE
         .with(|store| store.borrow_mut().replace_submitted_evm_envelope(&envelope))
         .map_err(|_| SettlementActionError::StorageFailure)?;
-    debug_assert_ne!(next_hash, transaction_hash);
     broadcast_pending_evm_replacement(config, operation_id, transaction_hash, envelope, lease).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn rebroadcast_current_evm_transaction(
+    config: &crate::config::BridgeInitArgs,
+    operation_id: EvmOperationId,
+    transaction_hash: [u8; 32],
+    mut envelope: bridge_core::EvmTransactionEnvelope,
+    current_raw: Vec<u8>,
+    checks: u8,
+    rebroadcast_checks: u8,
+    lease: &mut crate::scheduler::SettlementLease,
+) -> Result<Option<EvmAdvance>, SettlementActionError> {
+    lease.renew_before_external_call()?;
+    let evidence = match evm_rpc::broadcast(config, &current_raw).await {
+        Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => evidence,
+        Ok(evm_rpc::BroadcastOutcome::NonceConflict(_)) => {
+            return Ok(Some(EvmAdvance::Stopped(
+                SettlementStopReason::NonceConflict,
+            )))
+        }
+        Err(_) => return Ok(None),
+    };
+    lease.ensure_current()?;
+    envelope.last_broadcast_at_ns = ic_cdk::api::time();
+    envelope.rebroadcast_count = envelope.rebroadcast_count.saturating_add(1);
+    STORE
+        .with(|store| {
+            let mut store = store.borrow_mut();
+            store.record_evm_broadcast(&envelope)?;
+            store.append_audit_events_atomically(
+                ic_cdk::api::canister_self(),
+                vec![
+                    crate::rpc_audit_event_kind(&evidence),
+                    crate::storage::AuditEventKind::EvmTransactionRebroadcasted {
+                        operation_id: operation_id.get(),
+                        transaction_hash: transaction_hash.to_vec(),
+                        attempt: checks / rebroadcast_checks,
+                    },
+                ],
+            )
+        })
+        .map_err(|_| SettlementActionError::StorageFailure)?;
+    Ok(None)
 }
 
 async fn broadcast_pending_evm_replacement(
@@ -695,16 +758,6 @@ async fn broadcast_pending_evm_replacement(
 
 fn envelope_replacement_limit_reached(checks: u8, replacement_checks: u8, maximum: u8) -> bool {
     checks >= replacement_checks.saturating_mul(maximum.saturating_add(1))
-}
-
-fn bump_fee(current: u128, ceiling: u128, bump_bps: u16) -> u128 {
-    current
-        .saturating_mul(10_000u128.saturating_add(u128::from(bump_bps)))
-        .saturating_add(9_999)
-        .checked_div(10_000)
-        .unwrap_or(ceiling)
-        .max(current.saturating_add(1))
-        .min(ceiling)
 }
 
 enum HoldAdvance {
@@ -1716,16 +1769,58 @@ mod tests {
     }
 
     #[test]
-    fn replacement_fee_bumps_by_twelve_and_a_half_percent_and_stops_at_ceiling() {
-        assert_eq!(bump_fee(100, 400, 1_250), 113);
-        assert_eq!(bump_fee(399, 400, 1_250), 400);
-        assert_eq!(bump_fee(400, 400, 1_250), 400);
-    }
-
-    #[test]
     fn replacement_limit_allows_three_generations_then_stops() {
         assert!(!envelope_replacement_limit_reached(30, 30, 3));
         assert!(!envelope_replacement_limit_reached(90, 30, 3));
         assert!(envelope_replacement_limit_reached(120, 30, 3));
+    }
+
+    #[test]
+    fn replacement_without_a_fee_increase_keeps_the_current_transaction_for_rebroadcast() {
+        let operation_id = EvmOperationId::new(1);
+        let operation =
+            EvmOperationRecord::queued(operation_id, [1; 32], EvmOperationKind::MintDeposit);
+        let intent = EvmCallIntent {
+            operation_id,
+            payload_hash: operation.payload_hash,
+            chain_id: 8453,
+            contract: [7; 20],
+            calldata: vec![1, 2, 3],
+            gas_limit: 100_000,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: 0,
+        };
+        let mut envelope = single_envelope(operation, intent, 9).expect("single envelope");
+        let raw = vec![2, 3, 4];
+        envelope.signed_transaction = Some(raw.clone());
+        envelope.max_fee_per_gas = 2;
+        envelope.initial_max_fee_per_gas = 1;
+        envelope.replacement_generation = 1;
+        let original = envelope.clone();
+        let original_hash = signer::transaction_hash(&raw);
+        let policy = crate::config::EvmLivenessPolicy {
+            max_replacements: 2,
+            fee_bump_bps: 5_000,
+            fee_ceiling_multiplier_bps: 20_000,
+            ..crate::config::EvmLivenessPolicy::default()
+        };
+
+        let ReplacementPreparation::Rebroadcast(rebroadcast) =
+            prepare_evm_replacement(envelope, &raw, policy)
+        else {
+            panic!("fee ceiling must select rebroadcast");
+        };
+        assert_eq!(rebroadcast, original);
+        assert_eq!(rebroadcast.replacement_generation, 1);
+        assert_eq!(rebroadcast.operation_id, operation_id);
+        assert_eq!(
+            signer::transaction_hash(
+                rebroadcast
+                    .signed_transaction
+                    .as_deref()
+                    .expect("signed transaction remains stored")
+            ),
+            original_hash
+        );
     }
 }

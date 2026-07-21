@@ -1,5 +1,4 @@
 use candid::Principal;
-use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -11,7 +10,6 @@ use std::{
     process::{self, Command},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tiny_keccak::{Hasher, Keccak};
 
 const KINIC_LEDGER: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 const KINIC_INDEX: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
@@ -208,13 +206,6 @@ struct ArtifactDigest {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Approval {
-    signer: String,
-    eip191_signature: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct GateAReceipt {
     gate_a_manifest_sha256: String,
     release_id: String,
@@ -249,7 +240,6 @@ struct SignerSnapshot {
     canister_deposits_paused: bool,
     base_bridge_signer: String,
     canister_bridge_signer: String,
-    chain_key_eip191_signature: String,
     base_runtime_administrator: String,
     bridge_runtime_bytecode_sha256: String,
     expected_bridge_runtime_bytecode_sha256: String,
@@ -965,51 +955,6 @@ fn unsigned_manifest_hash(manifest: &ReleaseManifest) -> Result<[u8; 32], String
     Ok(Sha256::digest(bytes).into())
 }
 
-fn verify_eip191(hash: [u8; 32], approval: &Approval, expected: &str) -> Result<(), String> {
-    if !evm_address(&approval.signer) || !approval.signer.eq_ignore_ascii_case(expected) {
-        return Err("chain-key challenge signer does not match expected signer".into());
-    }
-    let bytes = decode_hex(&approval.eip191_signature)?;
-    if bytes.len() != 65 {
-        return Err("EIP-191 signature must be 65 bytes".into());
-    }
-    let signature = Signature::from_slice(&bytes[..64]).map_err(|_| "invalid ECDSA signature")?;
-    let recovery = RecoveryId::try_from(match bytes[64] {
-        27 | 28 => bytes[64] - 27,
-        0 | 1 => bytes[64],
-        _ => return Err("invalid recovery id".into()),
-    })
-    .map_err(|_| "invalid recovery id")?;
-    let mut keccak = Keccak::v256();
-    keccak.update(b"\x19Ethereum Signed Message:\n32");
-    keccak.update(&hash);
-    let mut digest = [0u8; 32];
-    keccak.finalize(&mut digest);
-    let key = VerifyingKey::recover_from_prehash(&digest, &signature, recovery)
-        .map_err(|_| "signature recovery failed")?;
-    let encoded = key.to_encoded_point(false);
-    let mut address_hash = [0u8; 32];
-    let mut address_keccak = Keccak::v256();
-    address_keccak.update(&encoded.as_bytes()[1..]);
-    address_keccak.finalize(&mut address_hash);
-    let recovered = format!("0x{}", hex(&address_hash[12..]));
-    if !recovered.eq_ignore_ascii_case(expected) {
-        return Err("EIP-191 signature recovered an unexpected signer".into());
-    }
-    Ok(())
-}
-
-fn chain_key_challenge_hash(release_id: &str, address: &str) -> [u8; 32] {
-    Sha256::digest(
-        format!(
-            "KINIC Bridge chain-key control v1\nrelease_id={release_id}\naddress={}",
-            address.to_ascii_lowercase()
-        )
-        .as_bytes(),
-    )
-    .into()
-}
-
 fn valid_release_id(release_id: &str) -> bool {
     (8..=64).contains(&release_id.len())
         && release_id
@@ -1647,17 +1592,6 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
             "live snapshot does not match the approved profile or safety requirements".into(),
         );
     }
-    verify_eip191(
-        chain_key_challenge_hash(
-            &bundle.manifest.release_id,
-            &bundle.profile.expected_bridge_signer,
-        ),
-        &Approval {
-            signer: snapshot.canister_bridge_signer.clone(),
-            eip191_signature: snapshot.chain_key_eip191_signature.clone(),
-        },
-        &bundle.profile.expected_bridge_signer,
-    )?;
     validate_rpc_rehearsal(bundle)?;
     Ok(())
 }
@@ -1718,7 +1652,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::ecdsa::SigningKey;
 
     fn test_principal(seed: u8) -> String {
         Principal::self_authenticating([seed; 32]).to_text()
@@ -1728,7 +1661,7 @@ mod tests {
     }
 
     #[test]
-    fn release_id_is_compatible_with_the_canister_challenge_domain() {
+    fn release_id_is_strictly_bounded_and_manifest_safe() {
         assert!(valid_release_id("release-1"));
         assert!(valid_release_id("12345678"));
         assert!(!valid_release_id("short-1"));
@@ -1736,15 +1669,6 @@ mod tests {
         assert!(!valid_release_id("release_1"));
         assert!(!valid_release_id("release-1\naddress=0x00"));
         assert!(!valid_release_id(&"a".repeat(65)));
-    }
-
-    fn key_address(key: &SigningKey) -> String {
-        let point = key.verifying_key().to_encoded_point(false);
-        let mut k = Keccak::v256();
-        k.update(&point.as_bytes()[1..]);
-        let mut h = [0u8; 32];
-        k.finalize(&mut h);
-        format!("0x{}", hex(&h[12..]))
     }
 
     fn valid_profile() -> Profile {
@@ -1941,26 +1865,6 @@ mod tests {
     }
 
     #[test]
-    fn eip191_recovers_chain_key_signer() {
-        let key = SigningKey::from_bytes((&[7u8; 32]).into()).unwrap();
-        let signer = key_address(&key);
-        let hash = [9u8; 32];
-        let mut k = Keccak::v256();
-        k.update(b"\x19Ethereum Signed Message:\n32");
-        k.update(&hash);
-        let mut digest = [0u8; 32];
-        k.finalize(&mut digest);
-        let (signature, recovery) = key.sign_prehash_recoverable(&digest).unwrap();
-        let mut bytes = signature.to_bytes().to_vec();
-        bytes.push(recovery.to_byte() + 27);
-        let approval = Approval {
-            signer: signer.clone(),
-            eip191_signature: format!("0x{}", hex(&bytes)),
-        };
-        verify_eip191(hash, &approval, &signer).unwrap();
-    }
-
-    #[test]
     fn release_inputs_are_deterministic_and_bound_to_profile() {
         let root = env::temp_dir().join(format!("bridge-inputs-{}", process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -2008,23 +1912,8 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn sign_approval(key: &SigningKey, hash: [u8; 32], signer: String) -> Approval {
-        let mut k = Keccak::v256();
-        k.update(b"\x19Ethereum Signed Message:\n32");
-        k.update(&hash);
-        let mut digest = [0u8; 32];
-        k.finalize(&mut digest);
-        let (signature, recovery) = key.sign_prehash_recoverable(&digest).unwrap();
-        let mut bytes = signature.to_bytes().to_vec();
-        bytes.push(recovery.to_byte() + 27);
-        Approval {
-            signer,
-            eip191_signature: format!("0x{}", hex(&bytes)),
-        }
-    }
-
     #[test]
-    fn bundle_gate_validates_hashes_slo_signature_and_live_snapshot() {
+    fn bundle_gate_validates_hashes_slo_and_live_snapshot() {
         let root = env::temp_dir().join(format!(
             "bridge-profile-{}-{}",
             process::id(),
@@ -2035,12 +1924,8 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let bridge_key = SigningKey::from_bytes((&[8u8; 32]).into()).unwrap();
-        let operator_key = SigningKey::from_bytes((&[10u8; 32]).into()).unwrap();
         let now = now_unix().unwrap();
         let mut profile = valid_profile();
-        profile.expected_bridge_signer = key_address(&bridge_key);
-        profile.governance_operator = key_address(&operator_key);
         profile.timelock.proposer = profile.governance_operator.clone();
         profile.timelock.executor = profile.governance_operator.clone();
         profile.timelock.canceller = profile.governance_operator.clone();
@@ -2048,11 +1933,6 @@ mod tests {
         profile.bridge_runtime_bytecode_sha256 = hex(&Sha256::digest(b"runtime"));
         profile.deployment_block = 0;
         let controller = profile.root_canister_id.clone();
-        let chain_key_approval = sign_approval(
-            &bridge_key,
-            chain_key_challenge_hash("release-1", &profile.expected_bridge_signer),
-            profile.expected_bridge_signer.clone(),
-        );
         let mut snapshot = SignerSnapshot {
             observed_at_unix: now,
             chain_id: profile.chain_id,
@@ -2075,7 +1955,6 @@ mod tests {
             canister_deposits_paused: true,
             base_bridge_signer: profile.expected_bridge_signer.clone(),
             canister_bridge_signer: profile.expected_bridge_signer.clone(),
-            chain_key_eip191_signature: chain_key_approval.eip191_signature,
             base_runtime_administrator: profile.governance_operator.clone(),
             bridge_runtime_bytecode_sha256: "1".repeat(64),
             expected_bridge_runtime_bytecode_sha256: "1".repeat(64),
@@ -2390,6 +2269,37 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .unwrap();
         let bundle = validate_bundle(&root, true).unwrap();
         verify_live(&bundle).unwrap();
+
+        let valid_snapshot_bytes = fs::read(root.join("signer-snapshot.json")).unwrap();
+        let mut legacy_snapshot: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
+        legacy_snapshot["chain_key_eip191_signature"] = Value::String("00".repeat(65));
+        fs::write(
+            root.join("signer-snapshot.json"),
+            serde_json::to_vec(&legacy_snapshot).unwrap(),
+        )
+        .unwrap();
+        assert!(read_json::<SignerSnapshot>(&root.join("signer-snapshot.json")).is_err());
+
+        let mut signer_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
+        signer_drift["canister_bridge_signer"] =
+            Value::String("0x9999999999999999999999999999999999999999".into());
+        fs::write(
+            root.join("signer-snapshot.json"),
+            serde_json::to_vec(&signer_drift).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_live(&bundle).is_err());
+
+        let mut base_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
+        base_drift["base_bridge_signer"] =
+            Value::String("0x8888888888888888888888888888888888888888".into());
+        fs::write(
+            root.join("signer-snapshot.json"),
+            serde_json::to_vec(&base_drift).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_live(&bundle).is_err());
+        fs::write(root.join("signer-snapshot.json"), valid_snapshot_bytes).unwrap();
 
         let valid_handover_bytes = fs::read(root.join("controller-handover.json")).unwrap();
         let mut tampered_response: Value = serde_json::from_slice(&valid_handover_bytes).unwrap();

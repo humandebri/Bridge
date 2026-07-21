@@ -8,7 +8,6 @@ use ic_cdk_management_canister::{
 };
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use serde::de::DeserializeOwned;
-use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
 
 const SIGNING_CALL_TIMEOUT_SECONDS: u32 = 60;
@@ -180,39 +179,6 @@ async fn threshold_signature(sign_args: &SignWithEcdsaArgs) -> Result<Vec<u8>, S
     )
 }
 
-/// Signs only the release/address-bound control challenge understood by bridge-profile.
-/// The caller cannot supply a message hash, which keeps this endpoint from becoming a
-/// general-purpose threshold-ECDSA signing oracle.
-pub async fn sign_chain_key_challenge(
-    release_id: &str,
-    config: &BridgeInitArgs,
-) -> Result<String, SignerError> {
-    let key_id = EcdsaKeyId {
-        curve: EcdsaCurve::Secp256k1,
-        name: config.ecdsa_key_name.clone(),
-    };
-    let public_key = signer_public_key(config, &key_id, SignerRole::Mint).await?;
-    let expected =
-        VerifyingKey::from_sec1_bytes(&public_key).map_err(|_| SignerError::InvalidPublicKey)?;
-    let address = ethereum_address_from_key(&expected);
-    let challenge_hash = chain_key_challenge_hash(release_id, address);
-    let signing_hash = eip191_hash(challenge_hash);
-    let sign_args = SignWithEcdsaArgs {
-        message_hash: signing_hash.to_vec(),
-        derivation_path: config.ecdsa_derivation_path.clone(),
-        key_id,
-    };
-    let raw_signature = threshold_signature(&sign_args).await?;
-    let (signature, recovery) = recoverable_signature(signing_hash, &expected, &raw_signature)?;
-    Ok(ethereum_signature_hex(&signature, recovery))
-}
-
-fn ethereum_signature_hex(signature: &Signature, recovery: RecoveryId) -> String {
-    let mut bytes = signature.to_bytes().to_vec();
-    bytes.push(27 + u8::from(recovery.is_y_odd()));
-    format!("0x{}", encode_hex(&bytes))
-}
-
 pub async fn ethereum_address(config: &BridgeInitArgs) -> Result<[u8; 20], SignerError> {
     ethereum_address_for_role(config, SignerRole::Mint).await
 }
@@ -254,24 +220,6 @@ fn ethereum_address_from_key(key: &VerifyingKey) -> [u8; 20] {
     let uncompressed = key.to_encoded_point(false);
     let hash = keccak(&uncompressed.as_bytes()[1..]);
     hash[12..].try_into().expect("Ethereum address")
-}
-
-fn chain_key_challenge_hash(release_id: &str, address: [u8; 20]) -> [u8; 32] {
-    Sha256::digest(
-        format!(
-            "KINIC Bridge chain-key control v1\nrelease_id={release_id}\naddress=0x{}",
-            encode_hex(&address)
-        )
-        .as_bytes(),
-    )
-    .into()
-}
-
-fn eip191_hash(message_hash: [u8; 32]) -> [u8; 32] {
-    let mut payload = Vec::with_capacity(60);
-    payload.extend_from_slice(b"\x19Ethereum Signed Message:\n32");
-    payload.extend_from_slice(&message_hash);
-    keccak(&payload)
 }
 
 fn recoverable_signature(
@@ -356,16 +304,6 @@ fn keccak(bytes: &[u8]) -> [u8; 32] {
     result
 }
 
-fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
-}
-
 fn trim_integer(bytes: &[u8]) -> &[u8] {
     let first = bytes
         .iter()
@@ -414,7 +352,6 @@ fn length_prefix(length: usize, short_offset: u8, long_offset: u8) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
 
     #[test]
     fn threshold_signing_uses_the_fixed_sixty_second_bound() {
@@ -447,29 +384,5 @@ mod tests {
         assert_eq!(encoded[0], 2);
         assert_ne!(transaction_hash(&encoded), [0; 32]);
         assert_eq!(unsigned_transaction(&envelope), encoded);
-    }
-
-    #[test]
-    fn chain_key_challenge_is_release_and_lowercase_address_bound() {
-        assert_eq!(
-            encode_hex(&chain_key_challenge_hash("release-1", [0x11; 20])),
-            "2cab8b92b1a770f804a3e1956f86f42c41c6102e3479c0d7e6e01b982ee72ee3"
-        );
-    }
-
-    #[test]
-    fn challenge_signature_recovery_selects_the_chain_key() {
-        let key = SigningKey::from_bytes((&[7_u8; 32]).into()).expect("test key");
-        let expected = key.verifying_key();
-        let digest = eip191_hash(chain_key_challenge_hash("release-1", [0x11; 20]));
-        let raw: Signature = key.sign_prehash(&digest).expect("sign challenge");
-        let (signature, recovery) =
-            recoverable_signature(digest, expected, &raw.to_bytes()).expect("recover key");
-        let recovered = VerifyingKey::recover_from_prehash(&digest, &signature, recovery)
-            .expect("recover signature");
-        assert_eq!(&recovered, expected);
-        let encoded = ethereum_signature_hex(&signature, recovery);
-        assert_eq!(encoded.len(), 2 + 65 * 2);
-        assert!(encoded.ends_with("1b") || encoded.ends_with("1c"));
     }
 }

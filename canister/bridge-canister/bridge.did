@@ -193,13 +193,6 @@ type BridgeStatus = record {
   last_finalized_base_block_hash : blob;
   last_audit_sequence : opt nat64;
 };
-type ChainKeyChallengeError = variant {
-  Busy;
-  Unauthorized;
-  StorageFailure;
-  InvalidReleaseId;
-  SigningUnavailable;
-};
 type ChecksumRefreshStatus = record {
   scanned_bytes : nat64;
   db_size : nat64;
@@ -435,8 +428,7 @@ type Result_11 = variant {
 };
 type Result_12 = variant { Ok : DepositReceipt; Err : DepositError };
 type Result_13 = variant { Ok : FeePayoutReceipt; Err : AdminError };
-type Result_14 = variant { Ok : text; Err : ChainKeyChallengeError };
-type Result_15 = variant { Ok : text; Err : StorageMaintenanceError };
+type Result_14 = variant { Ok : text; Err : StorageMaintenanceError };
 type Result_2 = variant {
   Ok : StorageValidationStatus;
   Err : StorageMaintenanceError;
@@ -593,8 +585,7 @@ service : (BridgeInitArgs) -> {
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_8);
   schedule_activation : () -> (Result_3);
   set_fee_recipient : (FeeRecipientConfig) -> (Result_8);
-  sign_chain_key_challenge : (text) -> (Result_14);
   start_storage_validation : () -> (Result_2);
-  storage_integrity_check : () -> (Result_15) query;
+  storage_integrity_check : () -> (Result_14) query;
   submit_base_governance_action : (BaseGovernanceAction) -> (Result_3);
 }

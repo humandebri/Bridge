@@ -594,18 +594,7 @@ export const idlFactory = ({ IDL }) => {
   const RotatePausePrincipalArgs = IDL.Record({
     'pause_principal' : IDL.Principal,
   });
-  const ChainKeyChallengeError = IDL.Variant({
-    'Busy' : IDL.Null,
-    'Unauthorized' : IDL.Null,
-    'StorageFailure' : IDL.Null,
-    'InvalidReleaseId' : IDL.Null,
-    'SigningUnavailable' : IDL.Null,
-  });
   const Result_14 = IDL.Variant({
-    'Ok' : IDL.Text,
-    'Err' : ChainKeyChallengeError,
-  });
-  const Result_15 = IDL.Variant({
     'Ok' : IDL.Text,
     'Err' : StorageMaintenanceError,
   });
@@ -683,9 +672,8 @@ export const idlFactory = ({ IDL }) => {
       ),
     'schedule_activation' : IDL.Func([], [Result_3], []),
     'set_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_8], []),
-    'sign_chain_key_challenge' : IDL.Func([IDL.Text], [Result_14], []),
     'start_storage_validation' : IDL.Func([], [Result_2], []),
-    'storage_integrity_check' : IDL.Func([], [Result_15], ['query']),
+    'storage_integrity_check' : IDL.Func([], [Result_14], ['query']),
     'submit_base_governance_action' : IDL.Func(
         [BaseGovernanceAction],
         [Result_3],

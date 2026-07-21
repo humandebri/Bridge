@@ -97,10 +97,9 @@ SH
 cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 echo "icp $*" >>"$TRACE"
-if [[ "$*" == *get_public_config* ]]; then printf '{"expected_bridge_signer":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s"}\n' "$RPC_DIGEST";
+if [[ "$*" == *get_public_config* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"expected_bridge_signer":[%s],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s"}\n' "$signer" "$RPC_DIGEST";
 elif [[ "$*" == *get_bridge_status* ]]; then if [[ -e "$IC_RESUMED_MARKER" ]]; then paused=false; else paused="${CANISTER_PAUSED:-true}"; fi; printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "$paused";
 elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
-elif [[ "$*" == *sign_chain_key_challenge* ]]; then printf '{"Ok":"0x'; printf '11%.0s' {1..65}; echo '"}';
 elif [[ "$*" == *resume_new_deposits* ]]; then if [[ "${RESUME_FAIL:-}" == true ]]; then echo '{"Err":"StorageFailure"}'; exit 1; fi; touch "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
 elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; rm -f "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
 elif [[ "$*" == *'canister status bridge-canister -e production -i --identity'* ]]; then echo 'aaaaa-aa';
@@ -156,9 +155,12 @@ if CANISTER_PAUSED=false BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64}
   echo "deploy driver accepted deposits_paused=false" >&2; exit 1
 fi
 cat >"$T/bundle/signer-snapshot.json" <<'JSON'
-{"chain_key_eip191_signature":"0x00"}
+{}
 JSON
-: >"$TRACE"; BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/snapshot.json"
+: >"$TRACE"; BRIDGE_ICP_IDENTITY=observer "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/snapshot.json"
+if grep -q sign_chain_key_challenge "$TRACE"; then
+  echo "live preflight called the retired chain-key challenge endpoint" >&2; exit 1
+fi
 cp "$T/snapshot.json" "$T/bundle/signer-snapshot.json"
 for isolated in chain_failure wrong_chain safe_failure eip1898_unsupported; do
   case "$isolated" in
@@ -195,10 +197,11 @@ for line in open(sys.argv[1]):
     assert '{"blockHash":"0x' in line and '"requireCanonical":true}' in line,line
 assert count>0
 PY
-for drift in base canister controller roles role_events role_event_hash deployment providers timelock_code approved_hash mid_read_reorg; do
+for drift in base canister signer controller roles role_events role_event_hash deployment providers timelock_code approved_hash mid_read_reorg; do
   case "$drift" in
     base) args=(BASE_PAUSED=false);;
     canister) args=(CANISTER_PAUSED=false);;
+    signer) args=(CANISTER_SIGNER_DRIFT=true);;
     controller) args=(CONTROLLER_DRIFT=true);;
     roles) args=(ROLE_DRIFT=true);;
     role_events) args=(ROLE_EVENT_DRIFT=true);;

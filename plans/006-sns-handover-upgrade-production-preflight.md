@@ -27,7 +27,7 @@ Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operato
 
 ## Evidence契約
 
-Gate Aは`profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4件とする。Gate Bはこれらに`signer-snapshot.json`、`rpc-e2e.json`、`controller-handover.json`、`sns-upgrade.json`、`x402-e2e.json`、`gate-a-receipt.json`を加えた正確に10件とする。鍵ceremonyとrelease approvalは存在しない。chain-key signerのrelease-bound challenge署名は維持する。
+Gate Aは`profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4件とする。Gate Bはこれらに`signer-snapshot.json`、`rpc-e2e.json`、`controller-handover.json`、`sns-upgrade.json`、`x402-e2e.json`、`gate-a-receipt.json`を加えた正確に10件とする。鍵ceremonyとrelease approvalは存在しない。Mint Signerはprofile、Canister公開設定、Finalized Base stateの三者一致で検証する。
 
 `monitor-drill.json`はpause principal、実request ID、audit sequence、audit digestを含む。Gate B snapshotは投票開始時の承認そのものではなく、schedule/execute時のCanister live preflight結果とSNS proposal実行証跡を別々に保存する。SNS proposal IDとGate B hashはCanisterへ自己申告値として渡さず、SNSとevidence側で管理する。manifestは最大90日、schedule用とexecute用は別bundleとする。
 

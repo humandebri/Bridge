@@ -39,7 +39,7 @@ production CanisterはGate A確定前にpause状態でinstallし、固有のMint
 
 profileはCanisterから導出してBaseのFinalized snapshotと照合するMint SignerとGovernance Operator、公式EVM RPC Canister ID、単一emergency pause principal、Wasm/bytecode hash、72時間Timelock、固定limit、fee/reserve関係を含む。`timelock.runtime_code_hash`は`0x`付き32-byte Keccak runtime code hashであり、生成されたBridge constructor引数、配置直後の実code hash、Gate B Finalized snapshotの三者が一致しなければならない。配置後にGate A receiptがBridge/Timelockのcanonical deployment transaction・blockを記録し、Gate B snapshotが3 providerで再照合する。3件のproduction Base RPC providerはcredentialなしのHTTPS URLであり、URL文字列が互いに異ならなければならない。監視欄は通知routingのSHA-256と、検知5分、担当確認15分、Base/IC双方pause 60分のSLOを正確に記録する。
 
-Gate Aはpre-deploy `profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4 artifactを束縛する。Gate Bはこれらへ`signer-snapshot.json`、`rpc-e2e.json`、`gate-a-receipt.json`、`controller-handover.json`、`sns-upgrade.json`、`x402-e2e.json`を加えた正確に10 artifactである。release approver署名と鍵ceremonyは使用しない。chain-key signer challenge署名は維持する。
+Gate Aはpre-deploy `profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4 artifactを束縛する。Gate Bはこれらへ`signer-snapshot.json`、`rpc-e2e.json`、`gate-a-receipt.json`、`controller-handover.json`、`sns-upgrade.json`、`x402-e2e.json`を加えた正確に10 artifactである。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、Canister公開設定、Finalized Base stateの三者一致で検証する。
 
 `validate-bundle --offline`はartifact、profile、5/15/60監視演習を検査する。`verify-live`はoffline検査を内包し、production bundle、取得済みsnapshotのchain/canonical quorum/signer/code/Timelock/controller/reserve、およびmockを使わないEVM RPC rehearsal証跡を検査する。CLI自体はnetwork requestを行わない。snapshot取得、current source revision/treeとの比較、Gate A receiptとのbindingはproduction wrapperが行う。
 

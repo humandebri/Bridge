@@ -193,10 +193,10 @@ async function openHistory(page: Page): Promise<void> {
 }
 
 async function refreshBridgeData(page: Page): Promise<void> {
-  await page
-    .getByRole("region", { name: "KINIC bridge" })
-    .getByRole("button", { name: "Refresh", exact: true })
-    .click()
+  const bridge = page.getByRole("region", { name: "KINIC bridge" })
+  const refresh = bridge.getByRole("button", { name: "Refresh", exact: true })
+  await refresh.click()
+  await expect(refresh).toBeEnabled({ timeout: 90_000 })
 }
 
 async function refreshHistoryUntil(page: Page, state: RegExp): Promise<string> {
