@@ -4,19 +4,20 @@
 
 - **Local implementation**: DONE
 - **Local promotion evidence**: clean commit作成後の再実行待ち
-- **IC mainnet / Base Sepolia / Asset Canister**: 明示承認待ち（未実行）
+- **IC mainnet / Base Sepolia / Cloudflare Worker**: 明示承認待ち（未実行）
 - **Production / SNS**: 対象外
 
 本計画はproduction資産、production Canister、KINIC Ledger、Base Mainnet、SNS controllerを変更しない。外部実行前に、同一commitから生成した`local-e2e.json`を必須とする。
 
 ## 固定構成
 
-`icp.yaml`の`sepolia-local`と`sepolia-staging`は次の専用Canisterだけを含む。
+Plan 007の`sepolia-local`と`sepolia-staging`で配置対象とするIC Canisterは次の3件に限定する。
 
 - `bridge-sepolia`: `test-deployment` featureを明示した専用recipe
 - `ledger-sepolia`: `ledger-suite-icrc-2026-03-09`の固定Wasm
 - `index-sepolia`: 同releaseの固定Wasm
-- `frontend-sepolia`: certified asset Canister
+
+test frontendはIC Asset Canisterへ配置しない。完成した`frontend-profile.json`を埋め込んで静的assetをbuildし、Wranglerのtest専用コマンドでCloudflare Worker `kinic-bridge-ui-test`へ公開する。Workerは静的assetだけを配信し、server-side state、database、KV、secretを持たない。
 
 staging Bridgeは公式EVM RPC Canister `7hfb6-caaaa-aaaar-qadga-cai`を使用する。frontend profileは`testOnly: true`、chain ID `84532`、test専用Canister ID、contract address、runtime hashを必須とする。UIは常時TEST bannerを表示し、Base Mainnet、production Canister ID、非公式EVM RPC IDとの混在を拒否する。
 
@@ -47,14 +48,14 @@ gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実
 4. test minting accountからTEST KINICを配布する。minting accountへBridge権限は与えない。
 5. 一時deployerでBase Sepoliaへ72時間Timelock、Bridge、bSNSを配置する。人間EOA roleがゼロであることを確認する。
 6. test Bridgeからactivationをscheduleする。
-7. 72時間待機中に、完成した`frontend-profile.json`からassetをbuildして`frontend-sepolia`へ配置する。
+7. 72時間待機中に、完成した`frontend-profile.json`から静的assetをbuildし、`ui`で`pnpm run deploy:test`を実行してCloudflare Worker `kinic-bridge-ui-test`へ公開する。
 8. 72時間後にtest Bridgeからexecuteし、canonical Finalized receipt後のIC Deposit resumeを確認する。
 9. OISY、Plug、Base walletで実Deposit/Withdrawal、reload、account/chain変更、pause、upgradeを行い、`sepolia-e2e.json`を作る。
 10. IC DepositとBase両flowをpauseし、pending Timelock operationがない状態で終了する。
 
 Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`だけへ保存する。`production.ids.json`は変更しない。ICP操作はICP CLIだけを使用し、`dfx`を使用しない。
 
-各外部stageは、Canister作成・cycles投入、Base Sepolia transaction、frontend公開の直前にそれぞれ明示承認を得る。Gate A/B、鍵ceremony、SNS handoverは作成しない。
+各外部stageは、Canister作成・cycles投入、Base Sepolia transaction、Cloudflare Worker公開の直前にそれぞれ明示承認を得る。Gate A/B、鍵ceremony、SNS handoverは作成しない。
 
 ## 完了条件
 

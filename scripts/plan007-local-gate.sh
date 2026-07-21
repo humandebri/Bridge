@@ -9,6 +9,11 @@ if rg -n '\bdfx\b' "$ROOT/icp.yaml" "$ROOT/scripts/plan007" "$ROOT/ui/scripts/bu
   exit 1
 fi
 
+if rg -n 'frontend-sepolia|assetstorage|certified-assets' "$ROOT/icp.yaml"; then
+  echo "Plan 007 frontend must be published through Cloudflare Workers, not an IC Asset Canister" >&2
+  exit 1
+fi
+
 "$ROOT/scripts/ci-local.sh" all
 
 if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then

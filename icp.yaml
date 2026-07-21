@@ -24,22 +24,6 @@ canisters:
       configuration:
         path: ui/.e2e-cache/ic-icrc1-index-ng.wasm.gz
         sha256: dab6808d0dfc06e5e88336d0c3d3e45e5448c6e36c2a781f3e9e09bd450f528c
-  - name: frontend-sepolia
-    build:
-      steps:
-        - type: script
-          commands:
-            - node ui/scripts/build-sepolia-assets.mjs
-        - type: pre-built
-          url: https://github.com/dfinity/sdk/raw/refs/tags/0.27.0/src/distributed/assetstorage.wasm.gz
-          sha256: 865eb25df5a6d857147e078bb33c727797957247f7af2635846d65c5397b36a6
-    sync:
-      steps:
-        - type: plugin
-          url: https://github.com/dfinity/certified-assets/releases/download/migration-v2.2.1-6b48585/sync_plugin.wasm
-          sha256: ca7cb5666c30d2875f8d5e10535f8a53f97a86c79c263f7d5bdac2fdd1bbf83c
-          dirs:
-            - ui/dist
 networks:
   - name: local
     mode: managed
@@ -62,11 +46,9 @@ environments:
       - bridge-sepolia
       - ledger-sepolia
       - index-sepolia
-      - frontend-sepolia
   - name: sepolia-staging
     network: ic
     canisters:
       - bridge-sepolia
       - ledger-sepolia
       - index-sepolia
-      - frontend-sepolia

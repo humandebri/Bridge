@@ -10,4 +10,9 @@ describe("Base Sepolia asset profile template", () => {
     expect(JSON.stringify(template)).not.toContain("73mez-iiaaa-aaaaq-aaasq-cai")
     expect(JSON.stringify(template)).not.toContain("7vojr-tyaaa-aaaaq-aaatq-cai")
   })
+
+  it("requires the validated Sepolia build before publishing the test Worker", async () => {
+    const manifest = JSON.parse(await readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"))
+    expect(manifest.scripts["deploy:test"]).toBe("pnpm run build:sepolia && wrangler deploy --name kinic-bridge-ui-test")
+  })
 })

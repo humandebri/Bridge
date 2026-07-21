@@ -47,11 +47,11 @@ credential、seed、private key、hardware wallet backup、credential入りRPC U
 
 ## IC mainnet × Base Sepolia test staging
 
-Plan 007のstagingは`sepolia-staging`環境と`bridge-sepolia`、`ledger-sepolia`、`index-sepolia`、`frontend-sepolia`だけを使用する。production mapping、KINIC Ledger、production Bridge、Base Mainnet、SNSには触れない。
+Plan 007のIC stagingは`sepolia-staging`環境と`bridge-sepolia`、`ledger-sepolia`、`index-sepolia`だけを使用する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。production mapping、KINIC Ledger、production Bridge、Base Mainnet、SNSには触れない。
 
-外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh`をclean commitで実行し、`deployments/sepolia-staging/evidence/local-e2e.json`を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、asset公開はそれぞれ別の明示承認後に行う。
+外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh`をclean commitで実行し、`deployments/sepolia-staging/evidence/local-e2e.json`を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
-staging IDは`.icp/data/mappings/sepolia-staging.ids.json`だけへ保存し、frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildしない。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
+staging Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`だけへ保存する。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`の`pnpm run deploy:test`でCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
 
 ## ICP mainnet Bridge deploy先
 

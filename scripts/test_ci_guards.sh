@@ -6,6 +6,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=ci_guards.sh
 source "$ROOT/scripts/ci_guards.sh"
 
+if rg -n 'frontend-sepolia|assetstorage|certified-assets' "$ROOT/icp.yaml"; then
+  echo "IC configuration must not deploy the Cloudflare-hosted frontend as an Asset Canister" >&2
+  exit 1
+fi
+if ! rg -q '"deploy:test": "pnpm run build:sepolia && wrangler deploy --name kinic-bridge-ui-test"' "$ROOT/ui/package.json"; then
+  echo "test frontend must retain its dedicated Cloudflare Worker deploy command" >&2
+  exit 1
+fi
+
 TEST_TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-ci-guards.XXXXXX")"
 trap 'rm -rf "$TEST_TMP_ROOT"' EXIT
 
