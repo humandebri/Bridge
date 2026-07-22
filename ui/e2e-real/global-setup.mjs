@@ -230,6 +230,10 @@ async function setup() {
   const ledger = pic.createActor(ledgerIdl, ledgerId)
   ledger.setIdentity(testIdentity)
   const index = pic.createActor(indexIdl, indexId)
+  const initializedPublicConfig = await bridge.actor.initialize_public_config()
+  if (!("Ok" in initializedPublicConfig)) {
+    throw new Error(`Failed to initialize public config: ${JSON.stringify(initializedPublicConfig.Err)}`)
+  }
   const publicConfig = await bridge.actor.get_public_config()
   if (bytesHex(publicConfig.expected_bridge_signer).toLowerCase() !== signer.toLowerCase()) throw new Error("Bridge mint signer derivation drifted")
   if (bytesHex(publicConfig.governance_operator).toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge governance operator derivation drifted")
