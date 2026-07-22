@@ -238,3 +238,9 @@ if rg -q '^    run_step smoke run_smoke$' "$CI_LOCAL_SOURCE"; then
   echo "local smoke bypasses its subshell cleanup wrapper" >&2
   exit 1
 fi
+
+if ! rg -q 'mkdir\(path\.dirname\(outputPath\), \{ recursive: true \}\)' \
+  "$ROOT/scripts/plan007/generate-local-e2e.mjs"; then
+  echo "local E2E evidence generator does not create its output directory" >&2
+  exit 1
+fi
