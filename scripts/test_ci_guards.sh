@@ -227,3 +227,14 @@ if verify_lean_no_proof_escape "$INCOMPLETE_LEAN_SOURCE" >/dev/null 2>&1; then
   echo "Lean proof guard accepted sorry" >&2
   exit 1
 fi
+
+CI_LOCAL_SOURCE="$ROOT/scripts/ci-local.sh"
+if ! rg -q '^run_smoke_step\(\)' "$CI_LOCAL_SOURCE" ||
+  ! rg -q '^  trap cleanup_runtime EXIT$' "$CI_LOCAL_SOURCE"; then
+  echo "local smoke must clean up resources inside the run_step subshell" >&2
+  exit 1
+fi
+if rg -q '^    run_step smoke run_smoke$' "$CI_LOCAL_SOURCE"; then
+  echo "local smoke bypasses its subshell cleanup wrapper" >&2
+  exit 1
+fi

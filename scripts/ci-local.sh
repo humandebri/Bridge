@@ -15,19 +15,15 @@ CLEANUP_DONE=0
 # shellcheck source=ci_guards.sh
 source "$ROOT/scripts/ci_guards.sh"
 
-cleanup() {
-  if [[ "$CLEANUP_DONE" -eq 1 ]]; then
-    return
-  fi
-  CLEANUP_DONE=1
-  trap - EXIT INT TERM
-
+cleanup_runtime() {
   if [[ -n "$ANVIL_PID" ]] && kill -0 "$ANVIL_PID" 2>/dev/null; then
     kill "$ANVIL_PID"
     wait "$ANVIL_PID" 2>/dev/null || true
+    ANVIL_PID=""
   fi
   if [[ "$ICP_NETWORK_OWNED" -eq 1 ]]; then
     icp network stop --project-root-override "$ROOT" >/dev/null 2>&1 || true
+    ICP_NETWORK_OWNED=0
   fi
 
   if [[ "$ICP_CONFIG_BACKED_UP" -eq 1 ]]; then
@@ -38,7 +34,18 @@ cleanup() {
     else
       echo "icp.yaml changed during smoke; preserving the current file" >&2
     fi
+    ICP_CONFIG_BACKED_UP=0
   fi
+}
+
+cleanup() {
+  if [[ "$CLEANUP_DONE" -eq 1 ]]; then
+    return
+  fi
+  CLEANUP_DONE=1
+  trap - EXIT INT TERM
+
+  cleanup_runtime
   rm -rf "$TMP_ROOT"
 }
 trap cleanup EXIT
@@ -888,6 +895,13 @@ run_real() {
   pnpm --dir "$ROOT/ui" e2e:real
 }
 
+run_smoke_step() {
+  trap cleanup_runtime EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  run_smoke
+}
+
 case "$MODE" in
   all)
     run_step versions run_versions
@@ -897,7 +911,7 @@ case "$MODE" in
     run_step ui run_ui
     run_step icp run_icp_build
     run_step real run_real
-    run_step smoke run_smoke
+    run_step smoke run_smoke_step
     ;;
   checks)
     run_step versions run_versions
@@ -928,7 +942,7 @@ case "$MODE" in
     run_step icp run_icp_build
     ;;
   smoke)
-    run_step smoke run_smoke
+    run_step smoke run_smoke_step
     ;;
   real)
     run_step real run_real
