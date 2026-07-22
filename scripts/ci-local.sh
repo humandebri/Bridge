@@ -629,7 +629,7 @@ run_smoke() {
     governance_principal = principal \"$smoke_principal\";
     pause_principal = principal \"7jkta-eyaaa-aaaaq-aaarq-cai\";
     fee_recipient = record {
-      owner = principal \"$smoke_principal\";
+      owner = principal \"aaaaa-aa\";
       subaccount = blob \"\";
     };
   })"

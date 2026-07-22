@@ -7543,6 +7543,18 @@ impl StableStore {
         if is_confirmed != revert_audit.is_none() {
             return Err(StorageError::Core(CoreError::PayloadConflict));
         }
+        let mut deposit_admission = self.deposit_admission()?;
+        if is_confirmed
+            && operation.kind == EvmOperationKind::MintDeposit
+            && deposit_admission.base_snapshot.is_none_or(|snapshot| {
+                snapshot.snapshot.finalized_head_block_number < progress.last_finalized_mint_block
+            })
+        {
+            // Advancing finalized mint progress invalidates the cached admission
+            // snapshot. Permit exactly the next refresh attempt; that attempt
+            // reinstates the cooldown before making its outcall.
+            deposit_admission.next_refresh_allowed_at_ns = 0;
+        }
 
         let mut accounting = self.accounting()?;
         let mut counters = self.counters()?;
@@ -7716,6 +7728,7 @@ impl StableStore {
             )?)
         };
         let counters_blob = encode(&counters)?;
+        let deposit_admission_blob = encode(&deposit_admission)?;
         let recovered_predecessor_blobs = recovered_predecessor
             .as_ref()
             .map(|(previous, next)| -> Result<_, StorageError> {
@@ -7813,18 +7826,18 @@ impl StableStore {
             if let (Some(admin_blob), Some(audit)) = (&admin_blob, &prepared_audit) {
                 connection.execute(
                     "UPDATE singleton_state SET accounting = ?1, counters = ?2, external_progress = ?3,
-                        admin_state = ?4, audit_retention = ?5 WHERE id = 1",
-                    params![accounting_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), admin_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+                        admin_state = ?4, audit_retention = ?5, deposit_admission = ?6 WHERE id = 1",
+                    params![accounting_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), admin_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes(), deposit_admission_blob.to_sql_bytes()],
                 )?;
             } else if let Some(audit) = &prepared_audit {
                 connection.execute(
-                    "UPDATE singleton_state SET accounting = ?1, counters = ?2, external_progress = ?3, audit_retention = ?4 WHERE id = 1",
-                    params![accounting_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+                    "UPDATE singleton_state SET accounting = ?1, counters = ?2, external_progress = ?3, audit_retention = ?4, deposit_admission = ?5 WHERE id = 1",
+                    params![accounting_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes(), deposit_admission_blob.to_sql_bytes()],
                 )?;
             } else {
                 connection.execute(
-                    "UPDATE singleton_state SET accounting = ?1, counters = ?2, external_progress = ?3 WHERE id = 1",
-                    params![accounting_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes()],
+                    "UPDATE singleton_state SET accounting = ?1, counters = ?2, external_progress = ?3, deposit_admission = ?4 WHERE id = 1",
+                    params![accounting_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), deposit_admission_blob.to_sql_bytes()],
                 )?;
             }
             terminal_bundle_db_failpoint(TerminalBundleFailpoint::SingletonState)
@@ -7832,6 +7845,7 @@ impl StableStore {
         self.accounting.value = accounting_blob;
         self.counters.value = counters_blob;
         self.external_progress.value = progress_blob;
+        self.deposit_admission.value = deposit_admission_blob;
         if let Some(blob) = admin_blob {
             self.admin_state.value = blob;
         }
@@ -12673,6 +12687,7 @@ mod tests {
         counters: CounterState,
         accounting: AccountingState,
         progress: ExternalProgress,
+        deposit_admission: DepositAdmissionControl,
         deposit: Option<DepositRecord>,
         operation: Option<EvmOperationRecord>,
         owner_present: bool,
@@ -12697,6 +12712,7 @@ mod tests {
             counters: store.counters().expect("counters"),
             accounting: store.accounting().expect("accounting"),
             progress: store.external_progress().expect("progress"),
+            deposit_admission: store.deposit_admission().expect("deposit admission"),
             deposit: store.deposit(deposit_id.bytes()).expect("deposit"),
             operation,
             owner_present: store
@@ -12815,6 +12831,57 @@ mod tests {
                 "reopen failpoint {failpoint:?}"
             );
         }
+    }
+
+    #[test]
+    #[serial]
+    fn confirmed_mint_reopens_snapshot_refresh_after_finalized_progress_advances() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        store.initialize_admin(&config()).expect("admin");
+        let refresh_owner = store
+            .begin_base_snapshot_refresh(100, 300, 1_000)
+            .expect("begin refresh")
+            .expect("refresh owner");
+        let mut snapshot = mint_snapshot();
+        snapshot.finalized_head_block_number = 10;
+        store
+            .finish_base_snapshot_refresh(refresh_owner, 110, snapshot, [7; 20], false)
+            .expect("finish refresh");
+        assert!(store
+            .begin_base_snapshot_refresh(120, 300, 1_000)
+            .expect("cooldown check")
+            .is_none());
+
+        let (_, submitted) = submitted_mint_fixture(&mut store);
+        let mut terminal = submitted;
+        terminal
+            .apply(EvmOperationEvent::Confirmed {
+                transaction_hash: [9; 32],
+                receipt_block_number: 30,
+                finalized_head_block_number: 40,
+            })
+            .expect("confirm mint");
+        let mut progress = store.external_progress().expect("progress");
+        progress.last_finalized_base_block = 40;
+        progress.last_finalized_mint_block = 40;
+        store
+            .commit_evm_terminal_bundle(&terminal, &progress, None)
+            .expect("commit confirmation");
+
+        assert!(store
+            .begin_base_snapshot_refresh(120, 300, 1_000)
+            .expect("refresh after finalized progress")
+            .is_some());
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen");
+        assert_eq!(
+            reopened
+                .deposit_admission()
+                .expect("reopened admission")
+                .refresh_started_at_ns,
+            Some(120)
+        );
     }
 
     #[test]

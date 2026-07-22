@@ -693,12 +693,11 @@ async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
     actor.get_next_deposit_sequence(owner),
     Promise.all(depositIds.map((id) => actor.get_deposit(id))),
     Promise.all(withdrawalIds.map((id) => actor.get_withdrawal(id))),
-    actor.get_audit_events(0n, 500),
+    readAllAuditEvents(actor),
   ])
   if (deposits.some((item) => item.length !== 1) || withdrawals.some((item) => item.length !== 1)) {
     throw new Error("upgrade evidence could not reopen every known settlement record")
   }
-  if (!("Ok" in auditPage)) throw new Error(`upgrade evidence could not read audit events: ${json(auditPage.Err)}`)
   const durableStatus = {
     schema_version: status.schema_version,
     counts: status.counts,
@@ -730,8 +729,31 @@ async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
     owner_sequence: ownerSequence,
     deposits: deposits.map(([item]) => item),
     withdrawals: withdrawals.map(([item]) => item),
-    audit_events: auditPage.Ok,
+    audit_events: auditPage,
   }))
+}
+
+async function readAllAuditEvents(actor) {
+  let cursor = 0n
+  let metadata
+  const events = []
+  for (let pageIndex = 0; pageIndex < 10_000; pageIndex += 1) {
+    const result = await actor.get_audit_events(cursor, 100)
+    if (!("Ok" in result)) throw new Error(`upgrade evidence could not read audit events: ${json(result.Err)}`)
+    const page = result.Ok
+    metadata ??= {
+      pruned_digest: page.pruned_digest,
+      oldest_available_sequence: page.oldest_available_sequence,
+      pruned_count: page.pruned_count,
+      pruned_through_sequence: page.pruned_through_sequence,
+    }
+    events.push(...page.events)
+    const [next] = page.next_sequence
+    if (next === undefined) return { ...metadata, events, next_sequence: [] }
+    if (next <= cursor) throw new Error("upgrade evidence audit pagination did not advance")
+    cursor = next
+  }
+  throw new Error("upgrade evidence audit pagination exceeded its safety bound")
 }
 
 async function terminateChild(child, label) {
