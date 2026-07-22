@@ -25,13 +25,13 @@ describe("deposit history pagination", () => {
     expect(refreshed.items[0]?.state).toEqual({ Minted: null })
   })
 
-  it("refreshes cached deposits outside the newest page without duplicating IDs", () => {
+  it("refreshes only the newest page and explicitly selected nonterminal cached deposits", () => {
     const cached = mergeDepositHistoryPage(undefined, Array.from({ length: 21 }, (_, index) => deposit(21 - index)), { nextCursor: null, oldestAvailableCursor: 1n, historyTruncated: false }, "refresh")
     const latestIds = Array.from({ length: 20 }, (_, index) => new Uint8Array(32).fill(22 - index))
 
-    const ids = depositIdsForRefresh(cached, latestIds)
+    const ids = depositIdsForRefresh(cached, latestIds, (record) => record.owner_sequence === 1n)
 
-    expect(ids).toHaveLength(22)
+    expect(ids).toHaveLength(21)
     expect(ids.some((id) => id.every((byte) => byte === 1))).toBe(true)
   })
 })

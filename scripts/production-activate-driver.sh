@@ -21,4 +21,6 @@ done
 "$SOURCE_ROOT/scripts/production-live-preflight.sh" verify "$BRIDGE_RELEASE_BUNDLE"
 production_validate_gate gate-b "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
 
-echo "preflight complete: submit the fixed ${BRIDGE_ACTIVATION_PHASE}_activation SNS function; direct identity calls and EVM wallet sends are intentionally unavailable" >&2
+echo "preflight complete, but activation was not submitted: submit the fixed ${BRIDGE_ACTIVATION_PHASE}_activation SNS proposal and rerun live verification" >&2
+echo "this driver fails closed until a repository-owned SNS proposal submission and executed-proposal verification path is available" >&2
+exit 2

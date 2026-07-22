@@ -162,6 +162,11 @@ pub fn set_fee_recipient(caller: Principal, value: FeeRecipientConfig) -> Result
         if !authorized(state, caller, ACTION_RECIPIENT) {
             return Err(AdminError::Unauthorized);
         }
+        if value.owner == state.pause_principal || value.owner == state.governance_principal {
+            return Err(AdminError::InvalidArgument(
+                "fee recipient must not overlap governance or pause principal".into(),
+            ));
+        }
         let previous = state.fee_recipient.clone();
         state.fee_recipient = value.clone();
         Ok(crate::storage::AuditEventKind::FeeRecipientChanged {

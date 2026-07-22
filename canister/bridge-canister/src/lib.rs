@@ -9,7 +9,7 @@ use ic_sqlite_vfs::DefaultMemoryImpl;
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ops::{Deref, DerefMut},
 };
 
@@ -116,6 +116,7 @@ pub struct ReserveStatus {
 pub struct PublicConfig {
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
+    pub timelock_contract: Vec<u8>,
     pub ledger_canister_id: candid::Principal,
     pub index_canister_id: candid::Principal,
     pub schema_version: u16,
@@ -123,11 +124,30 @@ pub struct PublicConfig {
     pub governance_operator: Vec<u8>,
     pub evm_rpc_canister_id: candid::Principal,
     pub rpc_provider_urls_sha256: Vec<u8>,
+    pub deposit_rate_limit_window_seconds: u64,
+    pub deposit_rate_limit_global: u16,
+    pub deposit_rate_limit_per_principal: u16,
+    pub settlement_rate_limit_window_seconds: u64,
+    pub settlement_rate_limit_global: u16,
+    pub settlement_rate_limit_per_principal: u16,
+    pub settlement_rate_limit_per_record: u16,
+    pub transaction_gas_limit: u128,
+    pub max_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
+    pub evm_liveness: config::EvmLivenessPolicy,
+    pub eth_floor_wei: u128,
+    pub cycles_floor: u128,
+    pub settlement_cycle_ceiling: u128,
+    pub governance_principal: candid::Principal,
+    pub pause_principal: candid::Principal,
+    pub fee_recipient: config::FeeRecipientConfig,
 }
 
 thread_local! {
     static STORE: RefCell<StoreState> = const { RefCell::new(StoreState(None)) };
     static IN_FLIGHT_ACTIONS: RefCell<BTreeSet<ActionKey>> = const { RefCell::new(BTreeSet::new()) };
+    static NOTIFICATION_CALLERS: RefCell<BTreeMap<Principal, u8>> = const { RefCell::new(BTreeMap::new()) };
+    static NOTIFICATIONS_IN_FLIGHT: RefCell<u8> = const { RefCell::new(0) };
 }
 
 struct StoreState(Option<StableStore>);
@@ -168,10 +188,54 @@ enum ActionKey {
     FeePayoutCreation,
     BaseObservation,
     BaseGovernance,
+    EmergencyPause,
 }
 
 struct InFlightGuard {
     key: ActionKey,
+}
+
+struct NotificationQuotaGuard {
+    caller: Principal,
+}
+
+impl NotificationQuotaGuard {
+    const GLOBAL_LIMIT: u8 = 16;
+    const PER_CALLER_LIMIT: u8 = 2;
+
+    fn acquire(caller: Principal) -> Option<Self> {
+        NOTIFICATIONS_IN_FLIGHT.with(|global| {
+            NOTIFICATION_CALLERS.with(|callers| {
+                let mut global = global.borrow_mut();
+                let mut callers = callers.borrow_mut();
+                let caller_count = callers.get(&caller).copied().unwrap_or(0);
+                if *global >= Self::GLOBAL_LIMIT || caller_count >= Self::PER_CALLER_LIMIT {
+                    return None;
+                }
+                *global += 1;
+                callers.insert(caller, caller_count + 1);
+                Some(Self { caller })
+            })
+        })
+    }
+}
+
+impl Drop for NotificationQuotaGuard {
+    fn drop(&mut self) {
+        NOTIFICATIONS_IN_FLIGHT.with(|global| {
+            let mut global = global.borrow_mut();
+            *global = global.saturating_sub(1);
+        });
+        NOTIFICATION_CALLERS.with(|callers| {
+            let mut callers = callers.borrow_mut();
+            if let Some(count) = callers.get_mut(&self.caller) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    callers.remove(&self.caller);
+                }
+            }
+        });
+    }
 }
 
 impl InFlightGuard {
@@ -294,6 +358,23 @@ async fn notify_withdrawal(
 ) -> Result<api::NotifyWithdrawalReceipt, api::NotifyWithdrawalError> {
     let caller = ic_cdk::api::msg_caller();
     let transaction_hash = api::notification_action_hash(caller, &args)?;
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
+            .ok_or(api::NotifyWithdrawalError::StorageFailure)
+    })?;
+    if ic_cdk::api::canister_liquid_cycle_balance()
+        <= config
+            .cycles_floor
+            .saturating_add(config.settlement_cycle_ceiling)
+    {
+        return Err(api::NotifyWithdrawalError::InsufficientCycles);
+    }
+    let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller) else {
+        return Err(api::NotifyWithdrawalError::RateLimited);
+    };
     let Some(notification_guard) =
         InFlightGuard::acquire(ActionKey::Notification(transaction_hash))
     else {
@@ -479,17 +560,6 @@ async fn confirm_evm(
         if !known {
             return Err(tasks::SettlementActionError::TransactionMismatch);
         }
-        STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            let mut operation = store
-                .evm_operation(operation_id.get())
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-                .ok_or(tasks::SettlementActionError::NotFound)?;
-            operation.state = bridge_core::EvmOperationState::Submitted { transaction_hash };
-            store
-                .put_evm_operation(&operation)
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)
-        })?;
     }
     let job = STORE.with(|store| {
         store
@@ -509,14 +579,20 @@ async fn confirm_evm(
     {
         return Err(tasks::SettlementActionError::WrongState);
     }
-    let Some(guard) = InFlightGuard::acquire(match kind {
-        storage::SettlementJobKind::Deposit => ActionKey::Deposit(id),
-        storage::SettlementJobKind::Withdrawal => ActionKey::Withdrawal(id),
-    }) else {
-        return Err(tasks::SettlementActionError::Busy);
-    };
-    drop(guard);
     let job = claim_manual_job(kind, id, caller)?;
+    if stored_hash != transaction_hash {
+        STORE.with(|store| {
+            let mut store = store.borrow_mut();
+            let mut operation = store
+                .evm_operation(operation_id.get())
+                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+                .ok_or(tasks::SettlementActionError::NotFound)?;
+            operation.state = bridge_core::EvmOperationState::Submitted { transaction_hash };
+            store
+                .put_evm_operation(&operation)
+                .map_err(|_| tasks::SettlementActionError::StorageFailure)
+        })?;
+    }
     let result = scheduler::run_claimed_confirmation(
         job,
         args.receipt_block_number,
@@ -924,10 +1000,20 @@ async fn refresh_base_observation() -> Result<(), RefreshBaseObservationError> {
             .map_err(|_| RefreshBaseObservationError::StorageFailure)?
             .ok_or(RefreshBaseObservationError::StorageFailure)
     })?;
+    let refresh_owner = STORE.with(|store| {
+        store
+            .borrow_mut()
+            .begin_base_snapshot_refresh(now, MIN_REFRESH_INTERVAL_NS, MIN_REFRESH_INTERVAL_NS)
+            .map_err(|_| RefreshBaseObservationError::StorageFailure)
+    })?;
+    let Some(refresh_owner) = refresh_owner else {
+        return Err(RefreshBaseObservationError::Busy);
+    };
     match evm_rpc::bridge_snapshot(&config).await {
         Ok(completed) => STORE.with(|store| {
             let mut store = store.borrow_mut();
             match store.finish_base_snapshot_refresh_with_rpc_audit_and_observation(
+                refresh_owner,
                 ic_cdk::api::time(),
                 completed.snapshot.mint,
                 completed.snapshot.bridge_signer,
@@ -949,7 +1035,7 @@ async fn refresh_base_observation() -> Result<(), RefreshBaseObservationError> {
                     | bridge_core::CoreError::ConflictingFinalizedObservation,
                 )) => {
                     store
-                        .fail_base_snapshot_refresh()
+                        .fail_base_snapshot_refresh(refresh_owner)
                         .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
                     Err(RefreshBaseObservationError::BaseStateMismatch)
                 }
@@ -957,6 +1043,12 @@ async fn refresh_base_observation() -> Result<(), RefreshBaseObservationError> {
             }
         }),
         Err(evm_rpc::ObservationError::ChainIdMismatch) => {
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .fail_base_snapshot_refresh(refresh_owner)
+                    .map_err(|_| RefreshBaseObservationError::StorageFailure)
+            })?;
             STORE.with(|store| {
                 let mut store = store.borrow_mut();
                 let mut admin = store
@@ -973,6 +1065,12 @@ async fn refresh_base_observation() -> Result<(), RefreshBaseObservationError> {
             Err(RefreshBaseObservationError::BaseStateMismatch)
         }
         Err(evm_rpc::ObservationError::Inconsistent) => {
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .fail_base_snapshot_refresh(refresh_owner)
+                    .map_err(|_| RefreshBaseObservationError::StorageFailure)
+            })?;
             append_rpc_decision(&evm_rpc::quorum_loss_decision(
                 "refresh_base_observation",
                 None,
@@ -981,9 +1079,23 @@ async fn refresh_base_observation() -> Result<(), RefreshBaseObservationError> {
             Err(RefreshBaseObservationError::ObservationUnavailable)
         }
         Err(evm_rpc::ObservationError::BaseStateMismatch) => {
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .fail_base_snapshot_refresh(refresh_owner)
+                    .map_err(|_| RefreshBaseObservationError::StorageFailure)
+            })?;
             Err(RefreshBaseObservationError::BaseStateMismatch)
         }
-        Err(_) => Err(RefreshBaseObservationError::ObservationUnavailable),
+        Err(_) => {
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .fail_base_snapshot_refresh(refresh_owner)
+                    .map_err(|_| RefreshBaseObservationError::StorageFailure)
+            })?;
+            Err(RefreshBaseObservationError::ObservationUnavailable)
+        }
     }
 }
 
@@ -1015,6 +1127,7 @@ async fn get_public_config() -> PublicConfig {
         PublicConfig {
             base_chain_id: config.base_chain_id,
             bridge_contract: config.bridge_contract,
+            timelock_contract: config.timelock_contract,
             ledger_canister_id: config.ledger_canister_id,
             index_canister_id: config.index_canister_id,
             schema_version: store.schema_version(),
@@ -1022,6 +1135,23 @@ async fn get_public_config() -> PublicConfig {
             governance_operator: Vec::from(governance_operator),
             evm_rpc_canister_id: config.evm_rpc_canister_id,
             rpc_provider_urls_sha256,
+            deposit_rate_limit_window_seconds: config.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: config.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: config.deposit_rate_limit_per_principal,
+            settlement_rate_limit_window_seconds: config.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: config.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: config.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: config.settlement_rate_limit_per_record,
+            transaction_gas_limit: config.transaction_gas_limit,
+            max_fee_per_gas: config.max_fee_per_gas,
+            max_priority_fee_per_gas: config.max_priority_fee_per_gas,
+            evm_liveness: config.evm_liveness,
+            eth_floor_wei: config.eth_floor_wei,
+            cycles_floor: config.cycles_floor,
+            settlement_cycle_ceiling: config.settlement_cycle_ceiling,
+            governance_principal: config.governance_principal,
+            pause_principal: config.pause_principal,
+            fee_recipient: config.fee_recipient,
         }
     })
 }
@@ -1042,7 +1172,7 @@ async fn submit_base_governance_action(
 #[ic_cdk::update]
 async fn emergency_pause(
 ) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::EmergencyPause) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     base_governance::emergency_pause(ic_cdk::api::msg_caller()).await
@@ -1086,13 +1216,30 @@ fn icrc10_supported_standards() -> Vec<consent::Icrc10SupportedStandard> {
 }
 
 #[ic_cdk::update]
-fn icrc21_canister_call_consent_message(
+async fn icrc21_canister_call_consent_message(
     request: consent::Icrc21ConsentMessageRequest,
 ) -> consent::Icrc21ConsentMessageResponse {
+    let ledger_fee = if request.method == "request_deposit" {
+        let ledger = STORE.with(|store| {
+            store
+                .borrow()
+                .config()
+                .ok()
+                .flatten()
+                .map(|config| config.ledger_canister_id)
+        });
+        match ledger {
+            Some(ledger) => ledger::ledger_fee(ledger).await.ok().map(|fee| fee.get()),
+            None => None,
+        }
+    } else {
+        None
+    };
     consent::consent_message(
         ic_cdk::api::msg_caller(),
         ic_cdk::api::canister_self(),
         request,
+        ledger_fee,
     )
 }
 

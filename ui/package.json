@@ -27,7 +27,7 @@
     "codegen:candid:check": "node scripts/generate-candid.mjs --check",
     "deploy:check": "node scripts/check-deploy-profile.mjs",
     "deploy": "pnpm run deploy:check && pnpm run build && wrangler deploy",
-    "deploy:test": "pnpm run build:sepolia && wrangler deploy --name kinic-bridge-ui-test"
+    "deploy:test": "pnpm run build:sepolia && node scripts/check-sepolia-assets.mjs && wrangler deploy --name kinic-bridge-ui-test"
   },
   "dependencies": {
     "@dfinity/agent": "3.4.3",

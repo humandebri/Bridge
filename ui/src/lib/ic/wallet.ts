@@ -431,6 +431,8 @@ export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): stri
     StorageFailure: "The Bridge could not save the withdrawal.",
     AnonymousCaller: "Connect an IC wallet before notifying the withdrawal.",
     Busy: "This withdrawal notification or withdrawal record is already being processed. Check History before trying again manually.",
+    RateLimited: "Withdrawal notifications are temporarily rate limited. Retry later.",
+    InsufficientCycles: "The Bridge Canister does not have enough cycles to process this notification.",
   }
   const message = key === undefined ? undefined : messages[key]
   return message ?? `Bridge rejected withdrawal notification: ${stringify(error)}`
@@ -444,6 +446,7 @@ function notifyWithdrawalErrorCode(error: unknown): NotifyWithdrawalErrorCode | 
     "WithdrawalConflict", "OwnerMismatch", "RpcInconsistent", "InvalidTransactionHash",
     "TransactionReverted", "LedgerFeeUnavailable", "StorageFailure", "BaseStateMismatch",
     "TransactionNotFound", "BridgeSignerMismatch", "AnonymousCaller", "InvalidBaseResponse",
+    "RateLimited", "InsufficientCycles",
   ].includes(code)) return code as NotifyWithdrawalErrorCode
   return undefined
 }

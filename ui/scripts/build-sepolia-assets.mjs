@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -44,3 +45,5 @@ const result = spawnSync("pnpm", ["run", "build"], {
 })
 if (result.error) throw result.error
 if (result.status !== 0) process.exit(result.status ?? 1)
+const profileSha256 = createHash("sha256").update(JSON.stringify(profile)).digest("hex")
+await writeFile(path.join(uiRoot, "dist/.kinic-sepolia-profile-sha256"), `${profileSha256}\n`, { flag: "w" })

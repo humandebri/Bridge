@@ -263,7 +263,7 @@ async fn reconcile_ledger(
 
         let request = GetBlocksRequest {
             start: Nat::from(next_block),
-            length: Nat::from(PAGE),
+            length: Nat::from(ledger_page_length(next_block, ledger_tip, PAGE)),
         };
         budget -= 1;
         let response = match ledger_call(ledger, "get_transactions")
@@ -335,6 +335,12 @@ async fn reconcile_ledger(
     }
 }
 
+fn ledger_page_length(next_block: u128, ledger_tip: Option<u128>, page: u128) -> u128 {
+    ledger_tip
+        .map(|exclusive_tip| exclusive_tip.saturating_sub(next_block).min(page))
+        .unwrap_or(page)
+}
+
 fn ledger_progress(
     progress: &mut ReconciliationScanProgress,
     next_block: u128,
@@ -361,6 +367,29 @@ fn exact_coverage(start: u128, end: u128, ranges: &[(u128, u128)]) -> bool {
         cursor = range_end;
     }
     cursor == end
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexPageBoundary {
+    Continue(u128),
+    Exhausted,
+    Stalled,
+}
+
+fn index_page_boundary(
+    previous_start: Option<u128>,
+    last: u128,
+    oldest: Option<u128>,
+) -> IndexPageBoundary {
+    if oldest.is_some_and(|oldest| last <= oldest) {
+        IndexPageBoundary::Exhausted
+    } else if previous_start == Some(last) {
+        IndexPageBoundary::Stalled
+    } else {
+        // The index start cursor is exclusive, so the last returned id is the
+        // boundary for the next descending page; subtracting one would skip it.
+        IndexPageBoundary::Continue(last)
+    }
 }
 
 async fn reconcile_index(
@@ -443,21 +472,22 @@ async fn reconcile_index(
                 index_watermark: index_watermark.expect("verified index watermark"),
             };
         };
-        if result
-            .oldest_tx_id
-            .as_ref()
-            .and_then(nat_u128)
-            .is_some_and(|oldest| last <= oldest)
-        {
-            return ReconciliationOutcome::Absent {
-                ledger_watermark,
-                index_watermark: index_watermark.expect("verified index watermark"),
-            };
+        match index_page_boundary(
+            next_start,
+            last,
+            result.oldest_tx_id.as_ref().and_then(nat_u128),
+        ) {
+            IndexPageBoundary::Exhausted => {
+                return ReconciliationOutcome::Absent {
+                    ledger_watermark,
+                    index_watermark: index_watermark.expect("verified index watermark"),
+                };
+            }
+            IndexPageBoundary::Stalled => {
+                return index_progress(progress, ledger_watermark, index_watermark, next_start);
+            }
+            IndexPageBoundary::Continue(start) => next_start = Some(start),
         }
-        if next_start == Some(last) {
-            return index_progress(progress, ledger_watermark, index_watermark, next_start);
-        }
-        next_start = Some(last);
     }
     index_progress(progress, ledger_watermark, index_watermark, next_start)
 }
@@ -636,5 +666,47 @@ mod tests {
         assert!(!exact_coverage(0, 10, &[(0, 4), (5, 10)]));
         assert!(!exact_coverage(0, 10, &[(0, 6), (5, 10)]));
         assert!(!exact_coverage(0, 10, &[(0, 11)]));
+    }
+
+    #[test]
+    fn fixed_ledger_tip_truncates_the_final_page_when_the_ledger_grows() {
+        assert_eq!(ledger_page_length(0, None, 1_000), 1_000);
+        assert_eq!(ledger_page_length(1_000, Some(2_500), 1_000), 1_000);
+        assert_eq!(ledger_page_length(2_000, Some(2_500), 1_000), 500);
+        assert_eq!(ledger_page_length(2_500, Some(2_500), 1_000), 0);
+
+        // The official ledger and archive APIs return half-open ranges. Keeping the
+        // final request inside the fixed tip makes their combined coverage exact,
+        // even if the live ledger has advanced beyond that tip.
+        assert!(exact_coverage(
+            2_000,
+            2_500,
+            &[(2_000, 2_200), (2_200, 2_500)]
+        ));
+        assert!(!exact_coverage(
+            2_000,
+            2_500,
+            &[(2_000, 2_200), (2_200, 3_000)]
+        ));
+    }
+
+    #[test]
+    fn index_pages_use_the_last_id_as_an_exclusive_descending_boundary() {
+        assert_eq!(
+            index_page_boundary(None, 900, Some(0)),
+            IndexPageBoundary::Continue(900)
+        );
+        assert_eq!(
+            index_page_boundary(Some(900), 800, Some(0)),
+            IndexPageBoundary::Continue(800)
+        );
+        assert_eq!(
+            index_page_boundary(Some(1), 0, Some(0)),
+            IndexPageBoundary::Exhausted
+        );
+        assert_eq!(
+            index_page_boundary(Some(800), 800, Some(0)),
+            IndexPageBoundary::Stalled
+        );
     }
 }

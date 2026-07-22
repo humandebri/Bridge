@@ -4,6 +4,10 @@ shared	counter_delta	counter_delta_matches_classification	counter_delta.rs	canis
 shared	evidence_matches	hold_resolution_requires_every_binding	evidence_matches.rs	canister/bridge-core/src/reconciliation.rs
 shared	replay_matches	conflicting_payload_is_rejected	replay_matches.rs	canister/bridge-core/src/deposit.rs
 shared	monotone	evm_rank_never_decreases	monotone.rs	canister/bridge-core/src/evm.rs
+shared	refresh_owner_matches	only_current_refresh_owner_can_finish	refresh_owner_matches.rs	canister/bridge-canister/src/storage.rs
+shared	refresh_generation_next	refresh_generation_is_strictly_monotone	refresh_generation_next.rs	canister/bridge-canister/src/storage.rs
+shared	reserve_token_matches	reserve_token_rejects_any_drift	reserve_token_matches.rs	canister/bridge-canister/src/storage.rs
+shared	lease_generation_next	lease_generation_is_strictly_monotone	lease_generation_next.rs	canister/bridge-canister/src/storage.rs
 shared	checked_requirement	reserve_overflow_is_rejected	checked_requirement.rs	canister/bridge-core/src/reserve.rs
 shared	resources_sufficient	reserve_exact_boundary_and_independent_resources	resources_sufficient.rs	canister/bridge-core/src/reserve.rs
 shared	fee_delta_once	fee_is_counted_exactly_on_first_transfer	fee_delta_once.rs	canister/bridge-core/src/deposit.rs

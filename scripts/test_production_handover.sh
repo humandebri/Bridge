@@ -46,7 +46,7 @@ elif [[ "$*" == *'status bridge-canister -e production --public --json'* ]]; the
   printf '{"controllers":%s}\n' "${HANDOVER_FINAL_CONTROLLERS:-[\"7jkta-eyaaa-aaaaq-aaarq-cai\"]}"
 elif [[ "$*" == *'settings update bridge-canister'* ]]; then
   [[ "${HANDOVER_FAIL:-false}" != true ]] || exit 1
-  echo 'request_id=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >&2
+  [[ "${HANDOVER_NO_REQUEST_ID:-false}" == true ]] || echo 'request_id=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >&2
 else echo "unexpected ICP CLI call: $*" >&2; exit 1
 fi
 SH
@@ -69,6 +69,7 @@ python3 - "$T/handover.json" <<'PY'
 import hashlib,json,sys
 v=json.load(open(sys.argv[1]))
 assert v['final_controllers']==['7jkta-eyaaa-aaaaq-aaarq-cai']
+assert v['schema_version']==2 and v['stage']=='complete'
 assert v['cycles_balance']==1000000 and v['required_freezing_cycles']==100
 transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
 assert v['response_exit_code']==0 and hashlib.sha256(transcript).hexdigest()==v['response_sha256']
@@ -105,7 +106,10 @@ fi
 if HANDOVER_POSTCONDITION_FAIL=true run_handover "$T/postcondition-failed.json" >/dev/null 2>&1; then
   echo "handover wrote evidence without a live controller postcondition" >&2; exit 1
 fi
-[[ ! -e "$T/postcondition-failed.json" ]]
+python3 - "$T/postcondition-failed.json" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1])); assert v['schema_version']==2 and v['stage']=='controller_update_submitted'
+PY
 printf '\n' >>"$T/source/src/main.rs"
 if run_handover "$T/dirty.json" >/dev/null 2>&1; then
   echo "handover accepted a dirty source tree" >&2; exit 1
@@ -119,4 +123,19 @@ fi
 if HANDOVER_FAIL=true run_handover "$T/failed.json" >/dev/null 2>&1; then
   echo "handover accepted a failed controller update" >&2; exit 1
 fi
-[[ ! -e "$T/failed.json" ]]
+python3 - "$T/failed.json" <<'PY'
+import hashlib,json,sys
+v=json.load(open(sys.argv[1])); assert v['schema_version']==2 and v['stage']=='controller_update_uncertain'
+assert v['response_exit_code']!=0
+transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
+assert hashlib.sha256(transcript).hexdigest()==v['response_sha256']
+PY
+if HANDOVER_NO_REQUEST_ID=true run_handover "$T/missing-request-id.json" >/dev/null 2>&1; then
+  echo "handover accepted a success response without a request ID" >&2; exit 1
+fi
+python3 - "$T/missing-request-id.json" <<'PY'
+import hashlib,json,sys
+v=json.load(open(sys.argv[1])); assert v['stage']=='controller_update_uncertain' and v['response_exit_code']==0 and v['request_id']==''
+transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
+assert hashlib.sha256(transcript).hexdigest()==v['response_sha256']
+PY

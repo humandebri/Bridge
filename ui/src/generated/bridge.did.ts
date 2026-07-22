@@ -351,9 +351,11 @@ export type NotifyWithdrawalError = {
   { 'Busy' : null } |
   { 'RpcUnavailable' : null } |
   { 'TransactionNotConfirmed' : null } |
+  { 'InsufficientCycles' : null } |
   { 'WithdrawalConflict' : null } |
   { 'OwnerMismatch' : null } |
   { 'RpcInconsistent' : null } |
+  { 'RateLimited' : null } |
   { 'InvalidTransactionHash' : null } |
   { 'TransactionReverted' : null } |
   { 'LedgerFeeUnavailable' : null } |
@@ -377,14 +379,32 @@ export type NotifyWithdrawalReceipt = {
     }
   };
 export interface PublicConfig {
+  'settlement_rate_limit_global' : number,
   'expected_bridge_signer' : Uint8Array | number[],
+  'settlement_rate_limit_per_principal' : number,
+  'settlement_cycle_ceiling' : bigint,
+  'settlement_rate_limit_per_record' : number,
+  'deposit_rate_limit_window_seconds' : bigint,
   'base_chain_id' : bigint,
   'bridge_contract' : Uint8Array | number[],
+  'max_priority_fee_per_gas' : bigint,
+  'fee_recipient' : FeeRecipientConfig,
+  'settlement_rate_limit_window_seconds' : bigint,
+  'evm_liveness' : EvmLivenessPolicy,
   'evm_rpc_canister_id' : Principal,
+  'deposit_rate_limit_per_principal' : number,
+  'max_fee_per_gas' : bigint,
   'schema_version' : number,
+  'eth_floor_wei' : bigint,
+  'transaction_gas_limit' : bigint,
+  'deposit_rate_limit_global' : number,
+  'pause_principal' : Principal,
+  'governance_principal' : Principal,
   'index_canister_id' : Principal,
   'ledger_canister_id' : Principal,
   'governance_operator' : Uint8Array | number[],
+  'timelock_contract' : Uint8Array | number[],
+  'cycles_floor' : bigint,
   'rpc_provider_urls_sha256' : Uint8Array | number[],
 }
 export interface RecoverMintRevertArgs {

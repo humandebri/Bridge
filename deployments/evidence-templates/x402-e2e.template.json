@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "observed_at_unix": 0,
   "network": "base-sepolia",
   "chain_id": 84532,
@@ -20,5 +20,24 @@
   "receipt_block_number": 0,
   "receipt_block_hash": "0x<64-hex>",
   "receipt_status": 1,
-  "canonical_finalized": true
+  "canonical_finalized": true,
+  "transaction_from": "0x<40-hex>",
+  "transaction_to": "0x<same-bsns-40-hex>",
+  "transaction_value": "0",
+  "transaction_nonce": 0,
+  "transaction_input_hex": "<calldata-hex>",
+  "transaction_input_sha256": "<64-hex>",
+  "token_address": "0x<same-bsns-40-hex>",
+  "authorization_from": "0x<40-hex>",
+  "authorization_to": "0x<40-hex>",
+  "authorization_value": "<positive-decimal-string>",
+  "authorization_valid_after": 0,
+  "authorization_valid_before": 0,
+  "authorization_nonce": "0x<64-hex>",
+  "receipt_transaction_hash": "0x<same-settlement-64-hex>",
+  "receipt_from": "0x<same-transaction-from-40-hex>",
+  "receipt_to": "0x<same-transaction-to-40-hex>",
+  "receipt_logs_sha256": "<64-hex>",
+  "finalized_head_block_number": 0,
+  "finalized_head_block_hash": "0x<64-hex>"
 }

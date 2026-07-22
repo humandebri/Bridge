@@ -8,7 +8,7 @@
 |---|---|
 | IC wallet（OISY / Plug） | ICRC-2 approve、`request_deposit`、`confirm_deposit`、`notify_withdrawal`の同意付き呼び出し |
 | Base wallet | bSNS approveと`createWithdrawal`の署名 |
-| Bridge canister | SQLite schema v16への状態保存、Ledger操作、EVM operation、Finalized再検証、Settlement job実行 |
+| Bridge canister | SQLite schema v17への状態保存、Ledger操作、EVM operation、Finalized再検証、Settlement job実行 |
 | KINIC Ledger / Index | Depositのpull、Withdrawalのrelease、履歴照合 |
 | EVM RPC Canister | 複数providerのquorumでBaseのcanonical Finalized chainを観測 |
 | Base Bridge / bSNS | Deposit mint、Withdrawalのatomic transferFrom・burn・`Committed`記録 |

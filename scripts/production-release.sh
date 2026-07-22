@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=production-validation.sh
+source "$ROOT/scripts/production-validation.sh"
 MODE="${1:-}"
 shift || true
 
@@ -57,13 +59,7 @@ usage() {
 
 SOURCE_ROOT="$ROOT"
 SOURCE_ROOT="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SOURCE_ROOT")"
-[[ -d "$SOURCE_ROOT/.git" ]] || { echo "production source root is not a Git worktree" >&2; exit 1; }
-git -C "$SOURCE_ROOT" diff --quiet --exit-code
-git -C "$SOURCE_ROOT" diff --cached --quiet --exit-code
-[[ -z "$(git -C "$SOURCE_ROOT" ls-files --others --exclude-standard)" ]] || {
-  echo "production release rejects an untracked source tree" >&2
-  exit 1
-}
+production_require_clean_source "$SOURCE_ROOT"
 DRIVER_PATH="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")"
 DRIVER_RELATIVE="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$DRIVER_PATH" "$SOURCE_ROOT")"
 EXPECTED_DRIVER="production-${MODE}-driver.sh"
@@ -101,7 +97,7 @@ PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-profile-build.XXXXXX")"
 RECEIPT_TMP=""
 POST_DEPLOY_PROFILE_TMP=""
 DEPLOYMENT_BINDING=""
-trap 'rm -rf "$RENDERED_INPUTS" "$PROFILE_TARGET"; [[ -z "$RECEIPT_TMP" ]] || rm -f "$RECEIPT_TMP"; [[ -z "$POST_DEPLOY_PROFILE_TMP" ]] || rm -f "$POST_DEPLOY_PROFILE_TMP"; [[ -z "$DEPLOYMENT_BINDING" ]] || rm -f "$DEPLOYMENT_BINDING"' EXIT
+trap 'rm -rf "$RENDERED_INPUTS" "$PROFILE_TARGET"; [[ -z "$RECEIPT_TMP" ]] || rm -f "$RECEIPT_TMP"; [[ -z "$POST_DEPLOY_PROFILE_TMP" ]] || rm -f "$POST_DEPLOY_PROFILE_TMP"' EXIT
 CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --locked --quiet --release \
   --manifest-path "$SOURCE_ROOT/Cargo.toml" -p bridge-profile
 PROFILE_BIN="$PROFILE_TARGET/release/bridge-profile"
@@ -179,23 +175,21 @@ fi
 }
 GATE_MANIFEST_SHA256="${BASH_REMATCH[1]}"
 if [[ "$MODE" == "deploy" ]]; then
-  [[ ! -e "$RECEIPT" && ! -e "$RECEIPT.post-deploy-profile.json" ]] || {
-    echo "Gate A output receipt or post-deploy profile already exists" >&2
-    exit 1
-  }
+  POST_DEPLOY_PROFILE="$RECEIPT.post-deploy-profile.json"
+  production_reserve_output "$RECEIPT" "Gate A receipt"
+  production_reserve_output "$POST_DEPLOY_PROFILE" "post-deploy profile"
   export BRIDGE_GATE_A_MANIFEST_SHA256="$GATE_MANIFEST_SHA256"
   GATE_A_PROFILE_CANONICAL_SHA256="$(run_profile_gate validate "$BUNDLE/profile.json")"
   [[ "$GATE_A_PROFILE_CANONICAL_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {
     echo "Gate A profile canonicalization did not return SHA-256" >&2
     exit 1
   }
-  DEPLOYMENT_BINDING="$(mktemp "${TMPDIR:-/tmp}/bridge-deployment-binding.XXXXXX")"
-  rm -f "$DEPLOYMENT_BINDING"
+  DEPLOYMENT_BINDING="$RECEIPT.deployment-binding.json"
+  production_reserve_output "$DEPLOYMENT_BINDING" "deployment checkpoint"
   export BRIDGE_DEPLOYMENT_BINDING_FILE="$DEPLOYMENT_BINDING"
   "$DRIVER_PATH"
   [[ -f "$DEPLOYMENT_BINDING" ]] || { echo "deployment driver did not produce its canonical binding" >&2; exit 1; }
   RECEIPT_TMP="$RECEIPT.tmp.$$"
-  POST_DEPLOY_PROFILE="$RECEIPT.post-deploy-profile.json"
   POST_DEPLOY_PROFILE_TMP="$POST_DEPLOY_PROFILE.tmp.$$"
   python3 - "$BUNDLE/profile.json" "$DEPLOYMENT_BINDING" "$POST_DEPLOY_PROFILE_TMP" <<'PY'
 import json, os, sys
@@ -219,9 +213,8 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
     json.dump({"gate_a_manifest_sha256": sys.argv[2], "release_id": sys.argv[3], "source_revision": sys.argv[4], "source_tree_sha256": sys.argv[5], "gate_a_profile_sha256": sys.argv[6], "post_deploy_profile_sha256": sys.argv[7], "bridge_canister_wasm_sha256": sys.argv[8], "bridge_runtime_bytecode_sha256": sys.argv[9], "bridge_deployment_transaction_hash": binding["bridge"]["transaction_hash"], "bridge_deployment_block_number": binding["bridge"]["block_number"], "bridge_deployment_block_hash": binding["bridge"]["block_hash"], "timelock_deployment_transaction_hash": binding["timelock"]["transaction_hash"], "timelock_deployment_block_number": binding["timelock"]["block_number"], "timelock_deployment_block_hash": binding["timelock"]["block_hash"]}, output, sort_keys=True, separators=(",", ":"))
     output.write("\n")
 ' "$RECEIPT_TMP" "$GATE_MANIFEST_SHA256" "$RELEASE_ID" "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" "$GATE_A_PROFILE_CANONICAL_SHA256" "$POST_DEPLOY_PROFILE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" "$DEPLOYMENT_BINDING"
-  rm -f "$DEPLOYMENT_BINDING"
-  mv "$POST_DEPLOY_PROFILE_TMP" "$POST_DEPLOY_PROFILE"
-  mv "$RECEIPT_TMP" "$RECEIPT"
+  production_atomic_replace "$POST_DEPLOY_PROFILE_TMP" "$POST_DEPLOY_PROFILE"
+  production_atomic_replace "$RECEIPT_TMP" "$RECEIPT"
   printf 'post_deploy_profile=%s\n' "$POST_DEPLOY_PROFILE"
 else
   export BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_MANIFEST_SHA256"

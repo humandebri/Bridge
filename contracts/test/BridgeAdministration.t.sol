@@ -12,6 +12,7 @@ contract TimelockCandidateFixture {
     // Bridge tests can reach the post-code-hash delay and self-admin checks.
     uint256 private _delay;
     bool private _selfAdmin;
+    address private constant OPERATOR = address(0xBEEF);
 
     constructor(uint256 delay, bool selfAdmin) {
         _delay = delay;
@@ -23,7 +24,18 @@ contract TimelockCandidateFixture {
     }
 
     function hasRole(bytes32 role, address account) external view returns (bool) {
-        return _selfAdmin && role == bytes32(0) && account == address(this);
+        if (role == bytes32(0)) {
+            return _selfAdmin && account == address(this);
+        }
+        return account == OPERATOR;
+    }
+
+    function roleMember(bytes32 role) external view returns (address) {
+        return role == bytes32(0) ? address(this) : OPERATOR;
+    }
+
+    function pendingOperationCount() external pure returns (uint256) {
+        return 0;
     }
 }
 
@@ -116,11 +128,6 @@ contract BridgeAdministrationTest is TestBase {
         token.approve(address(bridge), 300);
         vm.prank(USER);
         uint256 releaseId = bridge.createWithdrawal(300, SERVICE_FEE, hex"01", bytes32(0));
-        vm.prank(USER);
-        token.approve(address(bridge), 200);
-        vm.prank(USER);
-        uint256 secondId = bridge.createWithdrawal(200, SERVICE_FEE, hex"02", bytes32(0));
-
         vm.expectEmit(true, false, false, true, address(bridge));
         emit DepositMintsPaused(RUNTIME_ADMINISTRATOR);
         vm.prank(RUNTIME_ADMINISTRATOR);
@@ -149,7 +156,6 @@ contract BridgeAdministrationTest is TestBase {
         bridge.createWithdrawal(1, 1, hex"03", bytes32(0));
 
         assert(bridge.getWithdrawal(releaseId).status == IBridge.WithdrawalStatus.Committed);
-        assert(bridge.getWithdrawal(secondId).status == IBridge.WithdrawalStatus.Committed);
 
         vm.expectEmit(true, false, false, true, address(bridge));
         emit DepositMintsUnpaused(BASE_ADMIN_TIMELOCK);

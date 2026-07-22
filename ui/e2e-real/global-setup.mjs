@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process"
 import { createServer } from "node:http"
+import { connect } from "node:net"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { gunzipSync } from "node:zlib"
 import path from "node:path"
@@ -27,6 +28,7 @@ const testOwner = testIdentity.getPrincipal()
 const pauseIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(8))
 const pausePrincipal = pauseIdentity.getPrincipal()
 const minter = Principal.selfAuthenticating(new Uint8Array(32).fill(9))
+const feeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(10))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
 const resources = {}
@@ -47,12 +49,16 @@ async function setup() {
   buildWasm()
   execFileSync("forge", ["build", "--root", path.join(root, "contracts")], { stdio: "inherit" })
 
+  if (await isTcpPortOpen("127.0.0.1", 8545)) {
+    throw new Error("TCP port 8545 is already in use; real E2E never reuses an existing endpoint")
+  }
   const anvil = spawn("anvil", [
     "--chain-id", "31337", "--base-fee", "1", "--silent",
+    "--host", "127.0.0.1", "--port", "8545",
     "--cache-path", path.join(runtimeDir, "anvil-cache"),
   ], { stdio: ["ignore", "ignore", "inherit"] })
   resources.anvil = anvil
-  await waitForRpc()
+  await waitForOwnedRpc(anvil)
   const publicClient = createPublicClient({ transport: http(rpcUrl) })
 
   const picServer = await PocketIcServer.start()
@@ -197,7 +203,7 @@ async function setup() {
       settlement_cycle_ceiling: 1n,
       governance_principal: testOwner,
       pause_principal: pausePrincipal,
-      fee_recipient: { owner: testOwner, subaccount: [] },
+      fee_recipient: { owner: feeRecipient, subaccount: [] },
     }]),
     cycles: 500_000_000_000_000n,
     targetSubnetId: subnet.id,
@@ -468,6 +474,7 @@ async function setup() {
       if (request.url === "/ic/deposit") {
         if (connectedAccount !== testOwner.toText()) throw new Error("test IC account changed")
         depositSequences.push(String(body.ownerSequence))
+        await syncObservedHeads()
         const result = await bridge.actor.request_deposit({
           owner_sequence: BigInt(body.ownerSequence),
           base_recipient: hexToBytes(body.baseRecipient),
@@ -602,29 +609,25 @@ async function setup() {
         return send(response, 200, { time: await pic.getTime() })
       }
       if (request.url === "/test/upgrade") {
-        const [beforeStatus, beforeConfig, beforeSequence] = await Promise.all([
-          bridge.actor.get_bridge_status(),
-          bridge.actor.get_public_config(),
-          bridge.actor.get_next_deposit_sequence(testOwner),
-        ])
+        const before = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
         await pic.upgradeCanister({
           canisterId: bridge.canisterId,
           wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
           arg: IDL.encode([], []),
         })
-        const [afterStatus, afterConfig, afterSequence] = await Promise.all([
-          bridge.actor.get_bridge_status(),
-          bridge.actor.get_public_config(),
-          bridge.actor.get_next_deposit_sequence(testOwner),
-        ])
-        if (json(beforeConfig) !== json(afterConfig) || beforeSequence !== afterSequence) throw new Error("same-Wasm upgrade changed configuration or owner sequence")
-        for (const key of ["deposits", "withdrawals", "pending_evm_operations", "reconciliation_holds", "pending_ledger_operations"]) {
-          if (beforeStatus.counts[key] !== afterStatus.counts[key]) throw new Error(`same-Wasm upgrade changed ${key}`)
-        }
-        if (beforeStatus.deposits_paused !== afterStatus.deposits_paused) throw new Error("same-Wasm upgrade changed pause state")
+        const after = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
+        if (json(before) !== json(after)) throw new Error("same-Wasm upgrade changed durable bridge state")
+        if (before.deposits.length === 0) throw new Error("same-Wasm upgrade did not exercise an individual Deposit record")
         const facts = JSON.parse(await readFile(path.join(runtimeDir, "local-e2e-facts.json"), "utf8"))
-        await writeLocalFacts({ ...facts, state_upgrade: true })
-        return send(response, 200, { before: beforeStatus.counts, after: afterStatus.counts })
+        await writeLocalFacts({
+          ...facts,
+          state_upgrade: {
+            verified: true,
+            before,
+            after,
+          },
+        })
+        return send(response, 200, { before, after })
       }
       if (request.url === "/test/account") {
         connectedAccount = String(body.owner)
@@ -674,13 +677,73 @@ async function setup() {
 }
 
 async function cleanup() {
-  resources.vite?.kill("SIGTERM")
+  await terminateChild(resources.vite, "Vite")
   if (resources.control?.listening) await new Promise((resolve) => resources.control.close(resolve))
   await stopProgressLoop()
   await resources.gatewayClient?.stopHttpGateway().catch(() => undefined)
   await resources.pic?.tearDown().catch(() => undefined)
   await resources.picServer?.stop().catch(() => undefined)
-  resources.anvil?.kill("SIGTERM")
+  await terminateChild(resources.anvil, "Anvil")
+}
+
+async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
+  const [status, publicConfig, ownerSequence, deposits, withdrawals, auditPage] = await Promise.all([
+    actor.get_bridge_status(),
+    actor.get_public_config(),
+    actor.get_next_deposit_sequence(owner),
+    Promise.all(depositIds.map((id) => actor.get_deposit(id))),
+    Promise.all(withdrawalIds.map((id) => actor.get_withdrawal(id))),
+    actor.get_audit_events(0n, 500),
+  ])
+  if (deposits.some((item) => item.length !== 1) || withdrawals.some((item) => item.length !== 1)) {
+    throw new Error("upgrade evidence could not reopen every known settlement record")
+  }
+  if (!("Ok" in auditPage)) throw new Error(`upgrade evidence could not read audit events: ${json(auditPage.Err)}`)
+  const durableStatus = {
+    schema_version: status.schema_version,
+    counts: status.counts,
+    deposits_paused: status.deposits_paused,
+    withdrawal_fee_guard_active: status.withdrawal_fee_guard_active,
+    withdrawal_fee_guard_ledger_fee: status.withdrawal_fee_guard_ledger_fee,
+    withdrawal_fee_guard_charged_service_fee: status.withdrawal_fee_guard_charged_service_fee,
+    unpaid_withdrawal_count: status.unpaid_withdrawal_count,
+    unpaid_withdrawal_amount_out: status.unpaid_withdrawal_amount_out,
+    withdrawal_stop_reasons: status.withdrawal_stop_reasons,
+    observed_base_chain_id: status.observed_base_chain_id,
+    observed_bridge_signer: status.observed_bridge_signer,
+    observed_bridge_runtime_sha256: status.observed_bridge_runtime_sha256,
+    last_finalized_base_block: status.last_finalized_base_block,
+    last_finalized_base_block_hash: status.last_finalized_base_block_hash,
+    settlement_scheduler: {
+      scheduled: status.settlement_scheduler.scheduled,
+      stopped: status.settlement_scheduler.stopped,
+      leased: status.settlement_scheduler.leased,
+      expired: status.settlement_scheduler.expired,
+      health: status.settlement_scheduler.health,
+      last_internal_error: status.settlement_scheduler.last_internal_error,
+    },
+    last_audit_sequence: status.last_audit_sequence,
+  }
+  return JSON.parse(json({
+    status: durableStatus,
+    public_config: publicConfig,
+    owner_sequence: ownerSequence,
+    deposits: deposits.map(([item]) => item),
+    withdrawals: withdrawals.map(([item]) => item),
+    audit_events: auditPage.Ok,
+  }))
+}
+
+async function terminateChild(child, label) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  const exited = new Promise((resolve) => child.once("close", resolve))
+  child.kill("SIGTERM")
+  const timedOut = await Promise.race([exited.then(() => false), delay(5_000).then(() => true)])
+  if (timedOut && child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGKILL")
+    await exited
+  }
+  if (child.exitCode === null && child.signalCode === null) throw new Error(`${label} did not terminate`)
 }
 
 async function startProgressLoop(pic) {
@@ -803,7 +866,27 @@ function settlementJson(value) {
 async function readJson(request) { const chunks = []; for await (const chunk of request) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString("utf8") || "null") }
 function send(response, status, value) { response.statusCode = status; response.setHeader("content-type", "application/json"); response.end(value === null ? "null" : json(value)); }
 async function rpc(method, params) { const response = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }); const value = await response.json(); if (value.error) throw new Error(value.error.message); return value.result }
-async function waitForRpc() { for (let attempt = 0; attempt < 100; attempt += 1) { try { if (await rpc("eth_chainId", []) === "0x7a69") return } catch {} await delay(100) } throw new Error("Anvil did not start") }
+async function waitForOwnedRpc(child) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (child.exitCode !== null) throw new Error(`spawned Anvil exited before becoming ready (exit ${child.exitCode})`)
+    try {
+      if (await rpc("eth_chainId", []) === "0x7a69") {
+        process.kill(child.pid, 0)
+        return
+      }
+    } catch {}
+    await delay(100)
+  }
+  throw new Error("spawned Anvil did not become ready on its owned port")
+}
+async function isTcpPortOpen(host, port) {
+  return await new Promise((resolve) => {
+    const socket = connect({ host, port })
+    socket.once("connect", () => { socket.destroy(); resolve(true) })
+    socket.once("error", () => { socket.destroy(); resolve(false) })
+    socket.setTimeout(500, () => { socket.destroy(); resolve(false) })
+  })
+}
 async function waitForUrl(url) { for (let attempt = 0; attempt < 200; attempt += 1) { try { if ((await fetch(url)).ok) return } catch {} await delay(100) } throw new Error(`${url} did not start`) }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 

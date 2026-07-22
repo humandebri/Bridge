@@ -153,3 +153,47 @@ theorem unfinalized_receipt_remains_retryable
     (unfinalized : finalizedBlock < receiptBlock) :
     decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) = .retry := by
   simp [decideWithdrawalFinalization, unfinalized]
+
+/-
+Web Locks and localStorage durability are external assumptions. This model covers the pure queue
+decision executed inside the serialized critical section and retained in session memory first.
+-/
+structure PendingQueueEntry where
+  key : Nat
+  owner : Nat
+  blocked : Bool
+deriving DecidableEq
+
+abbrev PendingQueue := Nat → Option PendingQueueEntry
+
+def upsertPendingQueue (queue : PendingQueue) (incoming : PendingQueueEntry) : PendingQueue :=
+  fun key => if key = incoming.key then some incoming else queue key
+
+def restorePendingQueue (queue : PendingQueue) (incoming : PendingQueueEntry) : PendingQueue :=
+  let blocked := (queue incoming.key).map (fun entry => entry.blocked) |>.getD incoming.blocked
+  upsertPendingQueue queue { incoming with blocked }
+
+theorem serialized_upsert_preserves_different_entry
+    {queue : PendingQueue} {incoming : PendingQueueEntry} {key : Nat}
+    (different : Not (key = incoming.key)) :
+    upsertPendingQueue queue incoming key = queue key := by
+  simp [upsertPendingQueue, different]
+
+theorem restore_preserves_blocked_retry
+    {queue : PendingQueue} {existing incoming : PendingQueueEntry}
+    (blocked : existing.blocked = true)
+    (current : queue incoming.key = some existing) :
+    (restorePendingQueue queue incoming incoming.key).map (fun entry => entry.blocked) = some true := by
+  simp [restorePendingQueue, current, blocked, upsertPendingQueue]
+
+structure PendingQueueWrite where
+  session : PendingQueue
+  durable : Option PendingQueue
+
+def recordPendingQueueWrite (queue : PendingQueue) (durableSucceeded : Bool) :
+    PendingQueueWrite :=
+  { session := queue, durable := if durableSucceeded then some queue else none }
+
+theorem storage_failure_retains_session_queue (queue : PendingQueue) :
+    (recordPendingQueueWrite queue false).session = queue := by
+  rfl

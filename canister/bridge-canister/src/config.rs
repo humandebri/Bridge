@@ -73,6 +73,12 @@ impl BridgeInitArgs {
         if self.bridge_contract.len() != 20 || self.timelock_contract.len() != 20 {
             return Err("bridge and Timelock contracts must be 20 bytes");
         }
+        if self.bridge_contract.iter().all(|byte| *byte == 0)
+            || self.timelock_contract.iter().all(|byte| *byte == 0)
+            || self.bridge_contract == self.timelock_contract
+        {
+            return Err("bridge and Timelock contracts must be nonzero and distinct");
+        }
         if self.base_chain_id == 0
             || self.ecdsa_key_name.is_empty()
             || self.governance_ecdsa_derivation_path.is_empty()
@@ -98,18 +104,18 @@ impl BridgeInitArgs {
         if !self.custom_evm_rpc_urls.is_empty() && self.custom_evm_rpc_urls.len() != 3 {
             return Err("custom EVM RPC must configure exactly three providers");
         }
-        let rpc_urls = self
+        let rpc_hosts = self
             .custom_evm_rpc_urls
             .iter()
-            .map(|url| url.trim().to_ascii_lowercase())
+            .filter_map(|url| rpc_host(url))
             .collect::<BTreeSet<_>>();
-        if rpc_urls.len() != self.custom_evm_rpc_urls.len()
+        if rpc_hosts.len() != self.custom_evm_rpc_urls.len()
             || self
                 .custom_evm_rpc_urls
                 .iter()
                 .any(|url| !credential_free_https(url))
         {
-            return Err("custom EVM RPC providers must be distinct credential-free HTTPS URLs");
+            return Err("custom EVM RPC providers must use distinct credential-free HTTPS hosts");
         }
         if !(60..=300).contains(&self.deposit_rate_limit_window_seconds)
             || self.deposit_rate_limit_per_principal == 0
@@ -122,8 +128,9 @@ impl BridgeInitArgs {
             || self.settlement_rate_limit_per_record == 0
             || self.settlement_rate_limit_per_record > self.settlement_rate_limit_per_principal
             || self.settlement_rate_limit_per_principal > self.settlement_rate_limit_global
+            || self.settlement_rate_limit_global > 100
         {
-            return Err("settlement rate limit must satisfy 60 <= window <= 3600 and 1 <= per-record <= per-principal <= global");
+            return Err("settlement rate limit must satisfy 60 <= window <= 3600 and 1 <= per-record <= per-principal <= global <= 100");
         }
         if self.transaction_gas_limit == 0 || self.max_fee_per_gas == 0 {
             return Err("transaction gas limits must be nonzero");
@@ -167,6 +174,7 @@ impl BridgeInitArgs {
             || self.pause_principal == self.governance_principal
             || self.fee_recipient.owner == Principal::anonymous()
             || self.fee_recipient.owner == self.pause_principal
+            || self.fee_recipient.owner == self.governance_principal
             || !matches!(self.fee_recipient.subaccount.len(), 0 | 32)
         {
             return Err("administrator principals and fee recipient must be valid");
@@ -303,6 +311,20 @@ fn credential_free_https(url: &str) -> bool {
             .all(|segment| PUBLIC_PATH_SEGMENTS.contains(&segment.to_ascii_lowercase().as_str()))
 }
 
+fn rpc_host(url: &str) -> Option<String> {
+    credential_free_https(url).then(|| {
+        let authority = url["https://".len()..]
+            .split('/')
+            .next()
+            .expect("validated URL has an authority");
+        authority
+            .rsplit_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(authority)
+            .to_ascii_lowercase()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +407,29 @@ mod tests {
         args = valid_args();
         args.settlement_rate_limit_per_principal = 61;
         assert!(args.validate().is_err());
+        args = valid_args();
+        args.settlement_rate_limit_global = 101;
+        assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn contracts_must_be_nonzero_and_distinct() {
+        let mut args = valid_args();
+        args.bridge_contract = vec![0; 20];
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.timelock_contract = vec![0; 20];
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.timelock_contract = args.bridge_contract.clone();
+        assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn administrator_roles_are_pairwise_distinct() {
+        let mut args = valid_args();
+        args.fee_recipient.owner = args.governance_principal;
+        assert!(args.validate().is_err());
     }
     fn valid_args() -> BridgeInitArgs {
         let principal = Principal::from_text("aaaaa-aa").expect("management principal");
@@ -458,9 +503,25 @@ mod tests {
         let mut args = valid_args();
         args.custom_evm_rpc_urls = valid.clone();
         assert_eq!(args.validate(), Ok(()));
+        args.custom_evm_rpc_urls = vec![
+            "https://one.example:443/rpc".into(),
+            "https://two.example:8443/v1".into(),
+            "https://three.example:9443".into(),
+        ];
+        assert_eq!(args.validate(), Ok(()));
 
         for invalid in [
             vec![valid[0].clone(), valid[0].to_uppercase(), valid[2].clone()],
+            vec![
+                "https://one.example/rpc".into(),
+                "https://one.example/v1".into(),
+                valid[2].clone(),
+            ],
+            vec![
+                "https://one.example:443/rpc".into(),
+                "https://one.example:8443/v1".into(),
+                valid[2].clone(),
+            ],
             vec![
                 "http://one.example".into(),
                 valid[1].clone(),

@@ -60,6 +60,53 @@ proof fn evm_rank_never_decreases(old: int, new: int)
     ensures kernel::monotone_spec(old, new)
 {}
 
+proof fn only_current_refresh_owner_can_finish(current: int, claimant: int)
+    ensures
+        kernel::refresh_owner_matches_spec(Some(current), claimant) <==> current == claimant,
+        !kernel::refresh_owner_matches_spec(None, claimant),
+{}
+
+proof fn refresh_generation_is_strictly_monotone(current: int)
+    requires 0 <= current < 0xffff_ffff_ffff_ffffint
+    ensures
+        kernel::refresh_generation_next_spec(current) == Some(current + 1),
+        current + 1 > current,
+        kernel::refresh_generation_next_spec(0xffff_ffff_ffff_ffffint) == None::<int>,
+{}
+
+proof fn reserve_token_rejects_any_drift(
+    expected_withdrawals: int,
+    expected_amount: int,
+    expected_operations: int,
+    expected_generation: int,
+    current_withdrawals: int,
+    current_amount: int,
+    current_operations: int,
+    current_generation: int,
+)
+    ensures kernel::reserve_token_matches_spec(
+        expected_withdrawals,
+        expected_amount,
+        expected_operations,
+        expected_generation,
+        current_withdrawals,
+        current_amount,
+        current_operations,
+        current_generation,
+    ) <==> expected_withdrawals == current_withdrawals
+        && expected_amount == current_amount
+        && expected_operations == current_operations
+        && expected_generation == current_generation
+{}
+
+proof fn lease_generation_is_strictly_monotone(current: int)
+    requires 0 <= current < 0xffff_ffff_ffff_ffffint
+    ensures
+        kernel::lease_generation_next_spec(current) == Some(current + 1),
+        current + 1 > current,
+        kernel::lease_generation_next_spec(0xffff_ffff_ffff_ffffint) == None::<int>,
+{}
+
 proof fn reserve_requirement_is_monotone(floor: int, unit: int, small: int, large: int)
     requires 0 <= floor, 0 <= unit, 0 <= small, 0 <= large, small <= large,
         floor <= 340282366920938463463374607431768211455int,

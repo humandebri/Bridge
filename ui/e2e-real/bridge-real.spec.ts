@@ -64,11 +64,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   expect(BigInt(initial.ledgerBalance) - BigInt(afterRecovery.ledgerBalance)).toBe(200_020_000n)
 
   await page.evaluate(() => {
-    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined })
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" })
   })
   const secondPage = await page.context().newPage()
-  await disableWebLocks(secondPage)
   await secondPage.addInitScript(() => {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" })
   })
@@ -110,7 +108,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
     }
   }).toEqual({ knownDepositCount: 2, depositSequences: ["0", "0", "1"], nextDepositSequence: "2" })
 
-  const upgrade = (await postControl(request, "/test/upgrade", {})) as { before: Record<string, string>; after: Record<string, string> }
+  const upgrade = (await postControl(request, "/test/upgrade", {})) as { before: unknown; after: unknown }
   expect(upgrade.after).toEqual(upgrade.before)
   await postControl(request, "/test/relay", {})
   await expect.poll(async () => BigInt((await controlState(request)).bsnsBalance)).toBe(298_000_000n)
@@ -279,10 +277,4 @@ async function installAnvilWallet(page: Page): Promise<void> {
     }
     Object.defineProperty(window, "ethereum", { configurable: true, value: provider })
   }, { account: DEPLOYER, rpcUrl: "http://127.0.0.1:8545" })
-}
-
-async function disableWebLocks(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined })
-  })
 }

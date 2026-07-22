@@ -6,8 +6,8 @@ interface InjectedProvider {
 
 declare global { interface Window { ethereum?: InjectedProvider } }
 
-export async function currentInjectedWallet(): Promise<{ address: `0x${string}`; chainId: number }> {
-  const provider = window.ethereum
+export async function currentInjectedWallet(selectedProvider?: InjectedProvider): Promise<{ address: `0x${string}`; chainId: number }> {
+  const provider = selectedProvider ?? window.ethereum
   if (!provider) throw new Error("The injected Base wallet is unavailable")
   const [accounts, chain] = await Promise.all([
     provider.request({ method: "eth_accounts" }),

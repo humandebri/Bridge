@@ -30,7 +30,7 @@ export async function createWithdrawalAfterRevalidation<Q>({
   refetchFinancials: () => Promise<Q>
   validateFinancials: (quote: Q) => void
   createWithdrawal: (quote: Q) => Promise<`0x${string}`>
-  onBroadcast: (transactionHash: `0x${string}`) => void
+  onBroadcast: (transactionHash: `0x${string}`) => Promise<void> | void
 }): Promise<WithdrawalBroadcastResult> {
   await refetchRuntimeWriteReady(refetchRuntime)
   const [evm, icAccount, quote] = await Promise.all([currentEvmWallet(), currentIcAccount(), refetchFinancials()])
@@ -38,7 +38,7 @@ export async function createWithdrawalAfterRevalidation<Q>({
   validateFinancials(quote)
   const transactionHash = await createWithdrawal(quote)
   try {
-    onBroadcast(transactionHash)
+    await onBroadcast(transactionHash)
     return { transactionHash, pendingSaved: true }
   } catch {
     return { transactionHash, pendingSaved: false }

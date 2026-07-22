@@ -132,12 +132,16 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.InvalidAmount.selector, "InvalidAmount(uint256)");
         _assertSelector(IBridge.InvalidPrincipal.selector, "InvalidPrincipal(bytes)");
         _assertSelector(IBridge.InvalidServiceFee.selector, "InvalidServiceFee(uint256,uint256)");
+        _assertSelector(IBridge.ValueExceedsU128.selector, "ValueExceedsU128(uint256)");
+        _assertSelector(IBridge.InvalidMintWindowDuration.selector, "InvalidMintWindowDuration(uint64,uint64,uint64)");
         _assertSelector(IBridge.ServiceFeeExceedsUserMaximum.selector, "ServiceFeeExceedsUserMaximum(uint256,uint256)");
         _assertSelector(IBridge.DepositAlreadyProcessed.selector, "DepositAlreadyProcessed(bytes32)");
         _assertSelector(IBridge.DepositMintLimitExceeded.selector, "DepositMintLimitExceeded(uint256,uint256)");
         _assertSelector(IBridge.MintWindowLimitExceeded.selector, "MintWindowLimitExceeded(uint256,uint256)");
         _assertSelector(IBridge.DepositMintsArePaused.selector, "DepositMintsArePaused()");
         _assertSelector(IBridge.WithdrawalsArePaused.selector, "WithdrawalsArePaused()");
+        _assertSelector(IBridge.MultipleWithdrawalsInTransaction.selector, "MultipleWithdrawalsInTransaction()");
+        _assertSelector(IBridge.InvalidMintRecipient.selector, "InvalidMintRecipient(address)");
         _assertSelector(IBridge.UnauthorizedBridgeSigner.selector, "UnauthorizedBridgeSigner(address)");
         _assertSelector(IBridge.UnauthorizedRuntimeAdministrator.selector, "UnauthorizedRuntimeAdministrator(address)");
         _assertSelector(IBridge.UnauthorizedBaseAdmin.selector, "UnauthorizedBaseAdmin(address)");
@@ -153,12 +157,27 @@ contract InterfaceSelectorsTest {
             IBridge.TimelockCandidateDelayTooShort.selector, "TimelockCandidateDelayTooShort(address,uint256,uint256)"
         );
         _assertSelector(
+            IBridge.TimelockCandidateDelayTooLong.selector, "TimelockCandidateDelayTooLong(address,uint256,uint256)"
+        );
+        _assertSelector(
             IBridge.TimelockCandidateMissingSelfAdmin.selector, "TimelockCandidateMissingSelfAdmin(address)"
+        );
+        _assertSelector(
+            IBridge.TimelockCandidateInvalidRoleMember.selector,
+            "TimelockCandidateInvalidRoleMember(address,bytes32,address)"
+        );
+        _assertSelector(
+            IBridge.TimelockCandidateHasPendingOperations.selector,
+            "TimelockCandidateHasPendingOperations(address,uint256)"
         );
     }
 
     function testTimelockErrorSelectors() public pure {
         _assertSelector(BridgeTimelockController.RoleSetFrozen.selector, "RoleSetFrozen(bytes32,address)");
+        _assertSelector(BridgeTimelockController.MaximumDelayTooLong.selector, "MaximumDelayTooLong(uint256,uint256)");
+        _assertSelector(
+            BridgeTimelockController.RoleMustHaveSingleMember.selector, "RoleMustHaveSingleMember(bytes32,uint256)"
+        );
     }
 
     function testEventTopics() public pure {

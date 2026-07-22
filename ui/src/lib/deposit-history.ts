@@ -27,8 +27,8 @@ export function mergeDepositHistoryPage(previous: DepositHistoryData | undefined
   }
 }
 
-export function depositIdsForRefresh(previous: DepositHistoryData | undefined, latestIds: Array<Uint8Array | number[]>): Array<Uint8Array | number[]> {
-  const ids = [...latestIds, ...(previous?.items.map((record) => record.deposit_id) ?? [])]
+export function depositIdsForRefresh(previous: DepositHistoryData | undefined, latestIds: Array<Uint8Array | number[]>, refreshCached: (record: DepositView) => boolean = () => false): Array<Uint8Array | number[]> {
+  const ids = [...latestIds, ...(previous?.items.filter(refreshCached).map((record) => record.deposit_id) ?? [])]
   const unique = new Map(ids.map((id) => [bytesKey(id), id]))
   return [...unique.values()]
 }

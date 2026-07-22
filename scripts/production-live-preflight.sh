@@ -98,7 +98,16 @@ def deployment(rpc,tx,address,expected_block):
 def exact_role_members(rpc,timelock,from_block):
  event_topics={run(['cast','keccak','RoleGranted(bytes32,address,address)']).lower():'grant',run(['cast','keccak','RoleRevoked(bytes32,address,address)']).lower():'revoke'}
  members={zero32:set(),roles['PROPOSER_ROLE'].lower():set(),roles['EXECUTOR_ROLE'].lower():set(),roles['CANCELLER_ROLE'].lower():set()}
- entries=json.loads(run(['cast','logs','--address',timelock,'--from-block',str(from_block),'--to-block',str(height),'--rpc-url',rpc,'--json']))
+ entries=[]
+ # Provider eth_getLogs limits vary. Bounded pages also keep a single response
+ # from silently truncating the complete role history.
+ page_start=from_block
+ while page_start<=height:
+  page_end=min(page_start+49_999,height)
+  page=json.loads(run(['cast','logs','--address',timelock,'--from-block',str(page_start),'--to-block',str(page_end),'--rpc-url',rpc,'--json']))
+  if not isinstance(page,list): raise ValueError('Timelock role log response is not a list')
+  entries.extend(page); page_start=page_end+1
+ entries.sort(key=lambda e:(number(e.get('blockNumber',-1)),number(e.get('transactionIndex',0)),number(e.get('logIndex',0))))
  for entry in entries:
   event_number=number(entry.get('blockNumber',-1)); event_hash=str(entry.get('blockHash','')).lower()
   canonical=json.loads(run(['cast','block',str(event_number),'--rpc-url',rpc,'--json']))
@@ -184,6 +193,12 @@ def num(v):
   if isinstance(v,int): return v
   s=str(v).strip().strip('"')
   return int(s,16) if s.startswith('0x') else int(re.sub(r'[^0-9]','',s) or '0')
+def one(key):
+  values=scalars(public,key)
+  if len(values)!=1: raise SystemExit(f'Canister public config has no unique {key}')
+  return values[0]
+def address_value(value):
+  return '0x'+bytes(value).hex() if isinstance(value,list) else str(value).lower()
 base_result=json.load(open(root/'base-state.json')); state=base_result['state']; agree=base_result['agreeing_providers']
 height=state['height']; bhash=state['hash']; base=state['base_bridge_signer']; runtime_hash=state['bridge_runtime_bytecode_sha256']
 delay=state['timelock_minimum_delay_seconds']; self_admin=state['timelock_self_admin']
@@ -217,9 +232,30 @@ expected_rpc_digest=hashlib.sha256(json.dumps([x['url'].strip() for x in p['rpc_
 if len(rpc_digests)!=1: raise SystemExit('Canister RPC URL digest missing')
 d=rpc_digests[0]; actual_rpc_digest=bytes(d).hex() if isinstance(d,list) else str(d).lower().removeprefix('0x')
 if actual_rpc_digest!=expected_rpc_digest: raise SystemExit('Canister RPC URL digest drift')
+evm_liveness=one('evm_liveness'); fee_recipient=one('fee_recipient')
+if not isinstance(evm_liveness,dict) or not isinstance(fee_recipient,dict): raise SystemExit('Canister public config nested values are malformed')
+subaccount=fee_recipient.get('subaccount',[])
+public_config={
+ 'base_chain_id':num(one('base_chain_id')),'bridge_contract':address_value(one('bridge_contract')),
+ 'timelock_contract':address_value(one('timelock_contract')),'ledger_canister_id':str(one('ledger_canister_id')),
+ 'index_canister_id':str(one('index_canister_id')),'schema_version':num(one('schema_version')),
+ 'expected_bridge_signer':address_value(one('expected_bridge_signer')),'governance_operator':address_value(one('governance_operator')),
+ 'evm_rpc_canister_id':str(one('evm_rpc_canister_id')),'rpc_provider_urls_sha256':actual_rpc_digest,
+ 'deposit_rate_limit_window_seconds':num(one('deposit_rate_limit_window_seconds')),
+ 'deposit_rate_limit_global':num(one('deposit_rate_limit_global')),'deposit_rate_limit_per_principal':num(one('deposit_rate_limit_per_principal')),
+ 'settlement_rate_limit_window_seconds':num(one('settlement_rate_limit_window_seconds')),
+ 'settlement_rate_limit_global':num(one('settlement_rate_limit_global')),'settlement_rate_limit_per_principal':num(one('settlement_rate_limit_per_principal')),
+ 'settlement_rate_limit_per_record':num(one('settlement_rate_limit_per_record')),
+ 'transaction_gas_limit':str(num(one('transaction_gas_limit'))),'max_fee_per_gas':str(num(one('max_fee_per_gas'))),
+ 'max_priority_fee_per_gas':str(num(one('max_priority_fee_per_gas'))),'evm_liveness':{k:num(v) for k,v in evm_liveness.items()},
+ 'eth_floor_wei':str(num(one('eth_floor_wei'))),'cycles_floor':str(num(one('cycles_floor'))),
+ 'settlement_cycle_ceiling':str(num(one('settlement_cycle_ceiling'))),'governance_principal':str(one('governance_principal')),
+ 'pause_principal':str(one('pause_principal')),'fee_recipient':{'owner':str(fee_recipient.get('owner','')),
+ 'subaccount_hex':bytes(subaccount).hex() if isinstance(subaccount,list) else str(subaccount).lower().removeprefix('0x')}}
 if runtime_hash.lower()!=p['bridge_runtime_bytecode_sha256'].lower(): raise SystemExit('runtime bytecode drift')
 if state['timelock_runtime_code_hash'].lower()!=p['timelock']['runtime_code_hash'].lower(): raise SystemExit('Timelock runtime code hash drift')
 if state['bridge_approved_timelock_runtime_code_hash'].lower()!=p['timelock']['runtime_code_hash'].lower(): raise SystemExit('Bridge approved Timelock runtime code hash drift')
+if delay!=p['timelock']['minimum_delay_seconds']: raise SystemExit('Timelock minimum delay drift')
 if module_hash.lower()!=p['bridge_canister_wasm_sha256'].lower(): raise SystemExit('Canister Wasm drift')
 if controller!=p['root_canister_id']: raise SystemExit('controller drift')
 if not sufficient: raise SystemExit('settlement reserve is insufficient')
@@ -232,7 +268,7 @@ if not all(state[k] for k in ('timelock_self_admin','timelock_proposer_authorize
 if any(state[k] for k in ('timelock_open_proposer','timelock_open_executor','timelock_open_canceller')): raise SystemExit('Timelock has an open role')
 if state['bsns_runtime_bytecode_sha256'].lower()!=p['bsns_runtime_bytecode_sha256'].lower() or state['bsns_name']!='KINIC' or state['bsns_symbol']!='KINIC' or state['bsns_decimals']!=p['decimals']: raise SystemExit('bSNS runtime or metadata drift')
 out={
- 'observed_at_unix':int(time.time()),'chain_id':p['chain_id'],'evm_rpc_canister_id':p['evm_rpc_canister_id'],
+ 'schema_version':2,'observed_at_unix':int(time.time()),'chain_id':p['chain_id'],'evm_rpc_canister_id':p['evm_rpc_canister_id'],
  'finalized_head_block_number':height,'finalized_head_block_hash':bhash,'canonical':True,'agreeing_providers':agree,'total_providers':3,
  'base_bridge_signer':base,'canister_bridge_signer':canister,
  'bridge_runtime_bytecode_sha256':runtime_hash,'expected_bridge_runtime_bytecode_sha256':p['bridge_runtime_bytecode_sha256'],
@@ -254,7 +290,8 @@ out={
  'timelock_deployment_transaction_hash':state['timelock_deployment_transaction_hash'],'timelock_deployment_block_number':state['timelock_deployment_block_number'],
  'timelock_deployment_block_hash':state['timelock_deployment_block_hash'],
  'bsns_runtime_bytecode_sha256':state['bsns_runtime_bytecode_sha256'],'bsns_name':state['bsns_name'],'bsns_symbol':state['bsns_symbol'],
- 'bsns_decimals':state['bsns_decimals'],'bsns_bridge':state['bsns_bridge'],'rpc_provider_urls_sha256':actual_rpc_digest}
+ 'bsns_decimals':state['bsns_decimals'],'bsns_bridge':state['bsns_bridge'],'rpc_provider_urls_sha256':actual_rpc_digest,
+ 'public_config':public_config}
 mode=sys.argv[4]
 if mode=='capture':
   target=Path(sys.argv[5]); tmp=Path(str(target)+'.tmp'); tmp.write_text(json.dumps(out,sort_keys=True,separators=(',',':'))+'\n'); tmp.replace(target)

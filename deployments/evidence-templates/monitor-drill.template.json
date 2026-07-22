@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "routing_sha256": "<64-hex>",
+  "fault_started_at_unix": 0,
+  "detected_at_unix": 0,
+  "acknowledged_at_unix": 0,
+  "base_paused_at_unix": 0,
+  "ic_paused_at_unix": 0,
+  "base_pause_transaction_hash": "0x<64-hex>",
+  "base_pause_block_number": 0,
+  "base_pause_block_hash": "0x<64-hex>",
+  "base_pause_receipt_status": 1,
+  "base_pause_canonical_finalized": true,
+  "ic_pause_response_hex": "<raw-response-hex>",
+  "ic_pause_response_sha256": "<64-hex>",
+  "pause_principal": "<principal>",
+  "pause_request_id": "0x<64-hex>",
+  "pause_audit_sequence": 0,
+  "pause_audit_sha256": "<64-hex>",
+  "pause_audit_raw_hex": "<raw-audit-event-hex>"
+}

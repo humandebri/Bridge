@@ -30,4 +30,46 @@ contract BridgeAdministrationState {
             assert(serviceFee <= maximumServiceFee);
         }
     }
+
+    function boundedCrossSystemValues(uint256 first, uint256 second, uint256 third) external pure {
+        if (BridgeAdministration.valuesFitU128(first, second, third)) {
+            assert(first <= type(uint128).max);
+            assert(second <= type(uint128).max);
+            assert(third <= type(uint128).max);
+        }
+    }
+
+    function safeTimelockDelay(uint256 delay, uint256 minimumDelay, uint256 maximumDelay) external pure {
+        if (BridgeAdministration.timelockDelayIsValid(delay, minimumDelay, maximumDelay)) {
+            assert(minimumDelay <= delay);
+            assert(delay <= maximumDelay);
+        }
+    }
+
+    function closedTimelockRole(
+        address member,
+        address requiredMember,
+        bool memberHasRole,
+        bool roleIsOpen
+    ) external pure {
+        if (BridgeAdministration.timelockRoleIsClosed(member, requiredMember, memberHasRole, roleIsOpen)) {
+            assert(member != address(0));
+            assert(requiredMember == address(0) || member == requiredMember);
+            assert(memberHasRole);
+            assert(!roleIsOpen);
+        }
+    }
+
+    function noPendingTimelockOperations(uint256 pendingOperationCount) external pure {
+        if (BridgeAdministration.timelockHasNoPendingOperations(pendingOperationCount)) {
+            assert(pendingOperationCount == 0);
+        }
+    }
+
+    function withdrawalClaimIsSingleUse(bool alreadyClaimed) external pure {
+        if (BridgeAdministration.withdrawalClaimAllowed(alreadyClaimed)) {
+            assert(!alreadyClaimed);
+            assert(!BridgeAdministration.withdrawalClaimAllowed(true));
+        }
+    }
 }

@@ -1,14 +1,70 @@
 #!/usr/bin/env bash
 # Shared fail-closed evidence validation for fixed production drivers.
 
+production_require_clean_source() {
+  local source_root="$1" dirty submodule_status
+  [[ -d "$source_root/.git" ]] || { echo "production source root is not a Git worktree" >&2; return 1; }
+  dirty="$(git -C "$source_root" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" || return 1
+  [[ -z "$dirty" ]] || { echo "release source or a nested submodule is dirty" >&2; return 1; }
+  submodule_status="$(git -C "$source_root" submodule status --recursive 2>/dev/null)" || {
+    echo "failed to inspect release source submodules" >&2
+    return 1
+  }
+  if printf '%s\n' "$submodule_status" | sed -nE '/^[+-U]/p' | read -r _; then
+    echo "release source has an uninitialized or non-recorded submodule revision" >&2
+    return 1
+  fi
+}
+
+# Reserve evidence before an irreversible operation. An interrupted attempt
+# deliberately leaves an empty marker so that reruns cannot silently redeploy.
+production_reserve_output() {
+  local target="$1" label="${2:-output}"
+  [[ -n "$target" && ! -L "$target" && ! -e "$target" ]] || {
+    echo "$label already exists or is a symlink" >&2; return 1;
+  }
+  python3 - "$target" "$label" <<'PY'
+import os, sys
+target, label = sys.argv[1:]
+parent = os.path.dirname(os.path.abspath(target)) or '.'
+if not os.path.isdir(parent):
+    raise SystemExit(f'{label} parent directory does not exist')
+fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+dirfd = os.open(parent, os.O_RDONLY)
+try:
+    os.fsync(dirfd)
+finally:
+    os.close(dirfd)
+PY
+}
+
+production_atomic_replace() {
+  local staged="$1" target="$2"
+  python3 - "$staged" "$target" <<'PY'
+import os, sys
+staged, target = sys.argv[1:]
+with open(staged, 'rb') as stream:
+    os.fsync(stream.fileno())
+os.replace(staged, target)
+parent = os.path.dirname(os.path.abspath(target)) or '.'
+fd = os.open(parent, os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+}
+
 production_validate_gate() {
   local mode="$1" bundle="$2" expected_hash="$3"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  [[ -d "$source_root/.git" && -f "$bundle/release-manifest.json" ]] || { echo "release source or manifest is missing" >&2; return 1; }
-  git -C "$source_root" diff --quiet --exit-code || { echo "release source has unstaged changes" >&2; return 1; }
-  git -C "$source_root" diff --cached --quiet --exit-code || { echo "release source has staged changes" >&2; return 1; }
-  [[ -z "$(git -C "$source_root" ls-files --others --exclude-standard)" ]] || { echo "release source has untracked files" >&2; return 1; }
+  [[ -f "$bundle/release-manifest.json" ]] || { echo "release manifest is missing" >&2; return 1; }
+  production_require_clean_source "$source_root" || return 1
   revision="$(git -C "$source_root" rev-parse HEAD)"
   tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')"
   read -r manifest_revision manifest_tree < <(python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print(m.get("source_revision",""),m.get("source_tree_sha256",""))' "$bundle/release-manifest.json")

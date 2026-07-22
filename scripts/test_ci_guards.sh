@@ -10,10 +10,24 @@ if rg -n 'frontend-sepolia|assetstorage|certified-assets' "$ROOT/icp.yaml"; then
   echo "IC configuration must not deploy the Cloudflare-hosted frontend as an Asset Canister" >&2
   exit 1
 fi
-if ! rg -q '"deploy:test": "pnpm run build:sepolia && wrangler deploy --name kinic-bridge-ui-test"' "$ROOT/ui/package.json"; then
-  echo "test frontend must retain its dedicated Cloudflare Worker deploy command" >&2
-  exit 1
-fi
+node - "$ROOT/ui/package.json" <<'JS'
+const fs = require("node:fs")
+const command = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).scripts?.["deploy:test"]
+const requiredSteps = [
+  "pnpm run build:sepolia",
+  "node scripts/check-sepolia-assets.mjs",
+  "wrangler deploy --name kinic-bridge-ui-test",
+]
+const steps = typeof command === "string" ? command.split(/\s*&&\s*/) : []
+let cursor = -1
+for (const step of requiredSteps) {
+  const index = steps.indexOf(step, cursor + 1)
+  if (index === -1) {
+    throw new Error(`test frontend deploy command is missing the ordered step: ${step}`)
+  }
+  cursor = index
+}
+JS
 
 TEST_TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-ci-guards.XXXXXX")"
 trap 'rm -rf "$TEST_TMP_ROOT"' EXIT

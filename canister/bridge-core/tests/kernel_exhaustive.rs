@@ -1,9 +1,10 @@
 use bridge_core::{
     administrator_authorized, audit_next, can_assign_nonce, checked_counter_transition,
     checked_requirement, counter_delta, deposit_phase_allows, deposit_phase_step, evidence_matches,
-    fee_delta_once, mint_admission_total, next_attempt, nonce_next, nonce_too_low_is_submitted,
-    payout_allowed, payout_debit, release_transfer_matches, replay_matches, resources_sufficient,
-    scan_complete, withdrawal_phase_allows, withdrawal_phase_step,
+    fee_delta_once, lease_generation_next, mint_admission_total, next_attempt, nonce_next,
+    nonce_too_low_is_submitted, payout_allowed, payout_debit, refresh_generation_next,
+    refresh_owner_matches, release_transfer_matches, replay_matches, reserve_token_matches,
+    resources_sufficient, scan_complete, withdrawal_phase_allows, withdrawal_phase_step,
 };
 
 #[test]
@@ -76,6 +77,23 @@ fn nonce_and_audit_boundaries_are_deterministic() {
     assert_eq!(nonce_next(u64::MAX), None);
     assert_eq!(audit_next(0), Some(1));
     assert_eq!(audit_next(u64::MAX), None);
+}
+
+#[test]
+fn refresh_reserve_and_lease_tokens_fail_closed() {
+    assert!(refresh_owner_matches(Some(7), 7));
+    assert!(!refresh_owner_matches(Some(7), 8));
+    assert!(!refresh_owner_matches(None, 7));
+    assert_eq!(refresh_generation_next(0), Some(1));
+    assert_eq!(refresh_generation_next(u64::MAX), None);
+    assert_eq!(lease_generation_next(0), Some(1));
+    assert_eq!(lease_generation_next(u64::MAX), None);
+
+    assert!(reserve_token_matches(1, 2, 3, 4, 1, 2, 3, 4));
+    assert!(!reserve_token_matches(9, 2, 3, 4, 1, 2, 3, 4));
+    assert!(!reserve_token_matches(1, 9, 3, 4, 1, 2, 3, 4));
+    assert!(!reserve_token_matches(1, 2, 9, 4, 1, 2, 3, 4));
+    assert!(!reserve_token_matches(1, 2, 3, 9, 1, 2, 3, 4));
 }
 
 #[test]

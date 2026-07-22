@@ -4,7 +4,7 @@ import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { basePublicClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { NotifyWithdrawalCallError, SettlementActionCallError, type IcWalletAdapter } from "@/lib/ic/wallet"
-import { PENDING_CONFIRMATIONS_CHANGED, pendingConfirmationsStorageKey, readPendingConfirmations, removePendingConfirmation, savePendingConfirmation, type PendingConfirmation } from "@/lib/pending-confirmations"
+import { PENDING_CONFIRMATIONS_CHANGED, pendingConfirmationsStorageKey, readPendingConfirmations, savePendingConfirmation, type PendingConfirmation } from "@/lib/pending-confirmations"
 import { CONFIRMATION_POLL_MS, SettlementConfirmationCoordinator, confirmWhenFinalized, runWithConfirmationLock } from "./settlement-confirmation-coordinator"
 
 vi.mock("sonner", () => ({ toast: { info: vi.fn(), success: vi.fn(), warning: vi.fn() } }))
@@ -28,7 +28,7 @@ function adapter(confirmDeposit = vi.fn()): IcWalletAdapter {
   return {
     provider: "plug",
     connect: vi.fn(),
-    getAccount: vi.fn(),
+    getAccount: vi.fn().mockResolvedValue({ owner }),
     disconnect: vi.fn(),
     approve: vi.fn(),
     requestDeposit: vi.fn(),
@@ -45,7 +45,7 @@ function finalizedReceipt() {
 }
 
 beforeEach(() => {
-  for (const entry of readPendingConfirmations()) removePendingConfirmation(entry)
+  window.localStorage.clear()
   for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
     const key = window.localStorage.key(index)
     if (key?.startsWith("kinic.bridge.confirmation-lease.")) window.localStorage.removeItem(key)
@@ -68,7 +68,7 @@ describe("confirmWhenFinalized", () => {
     vi.mocked(createBridgeActor).mockResolvedValue({
       get_deposit: vi.fn().mockResolvedValue([{ base_confirmation: [{ Submitted: { transaction_hash: new Uint8Array(32).fill(4) } }] }]),
     } as never)
-    savePendingConfirmation(deposit)
+    await savePendingConfirmation(deposit)
 
     expect(await confirmWhenFinalized(deposit, adapter())).toEqual({ status: "retry" })
     expect(basePublicClient.getTransactionReceipt).not.toHaveBeenCalled()
@@ -92,7 +92,7 @@ describe("confirmWhenFinalized", () => {
     new SettlementActionCallError("StorageFailure", "storage"),
   ])("retries transient settlement errors without blocking", async (error) => {
     finalizedReceipt()
-    savePendingConfirmation(deposit)
+    await savePendingConfirmation(deposit)
     const result = await confirmWhenFinalized(deposit, adapter(vi.fn().mockRejectedValue(error)))
     expect(result.status).toBe("retry")
     expect(readPendingConfirmations()[0]?.blocked).toBe(false)
@@ -100,7 +100,7 @@ describe("confirmWhenFinalized", () => {
 
   it("blocks an explicit permanent settlement rejection", async () => {
     finalizedReceipt()
-    savePendingConfirmation(deposit)
+    await savePendingConfirmation(deposit)
     expect(await confirmWhenFinalized(deposit, adapter(vi.fn().mockRejectedValue(new SettlementActionCallError("TransactionMismatch", "mismatch"))))).toEqual({ status: "blocked" })
     expect(readPendingConfirmations()[0]?.blocked).toBe(true)
   })
@@ -110,7 +110,7 @@ describe("confirmWhenFinalized", () => {
     const notifyWithdrawal = vi.fn().mockResolvedValue({ Ingested: { withdrawal_id: new Uint8Array(32), settlement: [] } })
     const wallet = adapter()
     wallet.notifyWithdrawal = notifyWithdrawal
-    savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+    await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
     const entry = readPendingConfirmations()[0]
     expect(entry?.kind).toBe("withdrawal")
 
@@ -125,7 +125,7 @@ describe("confirmWhenFinalized", () => {
     const notifyWithdrawal = vi.fn()
     const wallet = adapter()
     wallet.notifyWithdrawal = notifyWithdrawal
-    savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+    await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
     const entry = readPendingConfirmations()[0]!
 
     expect(await confirmWhenFinalized(entry, wallet)).toEqual({ status: "reverted" })
@@ -137,18 +137,18 @@ describe("confirmWhenFinalized", () => {
     finalizedReceipt()
     const wallet = adapter()
     wallet.notifyWithdrawal = vi.fn().mockRejectedValue(new Error("The connected IC wallet does not own this withdrawal."))
-    savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+    await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
     const entry = readPendingConfirmations()[0]!
 
     expect(await confirmWhenFinalized(entry, wallet)).toEqual({ status: "blocked" })
     expect(readPendingConfirmations()[0]?.blocked).toBe(true)
   })
 
-  it.each(["RpcUnavailable", "TransactionNotConfirmed", "Busy"] as const)("retries transient withdrawal error %s", async (code) => {
+  it.each(["RpcUnavailable", "TransactionNotConfirmed", "Busy", "RateLimited", "InsufficientCycles"] as const)("retries transient withdrawal error %s", async (code) => {
     finalizedReceipt()
     const wallet = adapter()
     wallet.notifyWithdrawal = vi.fn().mockRejectedValue(new NotifyWithdrawalCallError(code, code))
-    savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+    await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
     const entry = readPendingConfirmations()[0]!
 
     expect(await confirmWhenFinalized(entry, wallet)).toEqual({ status: "retry", retryAt: undefined })
@@ -229,7 +229,7 @@ describe("SettlementConfirmationCoordinator", () => {
     wallet.notifyWithdrawal = notifyWithdrawal
     vi.mocked(useIcWallet).mockReturnValue({ account: { owner }, adapter: wallet, provider: "plug", connect: vi.fn(), disconnect: vi.fn() })
     vi.mocked(basePublicClient.getTransactionReceipt).mockRejectedValueOnce(new Error("RPC unavailable"))
-    savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+    await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
 
     const firstView = render(<SettlementConfirmationCoordinator />)
     await flushPromises()
@@ -251,7 +251,7 @@ describe("SettlementConfirmationCoordinator", () => {
     const confirmDeposit = vi.fn().mockResolvedValue({ WaitingForConfirmation: { state: { Deposit: { MintPending: null } }, transaction_hash: new Uint8Array(32) } })
     vi.mocked(useIcWallet).mockReturnValue({ account: { owner }, adapter: adapter(confirmDeposit), provider: "plug", connect: vi.fn(), disconnect: vi.fn() })
     vi.mocked(basePublicClient.getTransactionReceipt).mockRejectedValueOnce(new Error("RPC unavailable"))
-    savePendingConfirmation(deposit)
+    await savePendingConfirmation(deposit)
     const view = render(<SettlementConfirmationCoordinator />)
 
     await flushPromises()
@@ -271,8 +271,8 @@ describe("SettlementConfirmationCoordinator", () => {
     finalizedReceipt()
     const confirmDeposit = vi.fn().mockResolvedValue({ WaitingForConfirmation: { state: { Deposit: { MintPending: null } }, transaction_hash: new Uint8Array(32) } })
     vi.mocked(useIcWallet).mockReturnValue({ account: { owner }, adapter: adapter(confirmDeposit), provider: "plug", connect: vi.fn(), disconnect: vi.fn() })
-    savePendingConfirmation(deposit)
-    savePendingConfirmation({ ...deposit, settlementId: `0x${"03".repeat(32)}` })
+    await savePendingConfirmation(deposit)
+    await savePendingConfirmation({ ...deposit, settlementId: `0x${"03".repeat(32)}` })
     const view = render(<SettlementConfirmationCoordinator />)
 
     await flushPromises()

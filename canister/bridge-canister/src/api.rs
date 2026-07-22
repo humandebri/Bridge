@@ -185,6 +185,8 @@ pub enum NotifyWithdrawalError {
     BridgeSignerMismatch,
     StorageFailure,
     Busy,
+    RateLimited,
+    InsufficientCycles,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -706,20 +708,20 @@ pub async fn request_deposit(
     let signer_address = cached_signer_address(&config)
         .await
         .map_err(|_| DepositError::ReserveUnavailable)?;
-    let (expected_counters, expected_observation_generation, finalized_observation) =
-        STORE.with(|store| {
-            let store = store.borrow();
-            let progress = store
-                .external_progress()
-                .map_err(|_| DepositError::StorageFailure)?;
-            Ok::<_, DepositError>((
-                store.counters().map_err(|_| DepositError::StorageFailure)?,
-                progress.reserve_observation_generation,
-                progress
-                    .finalized_observation
-                    .ok_or(DepositError::BaseObservationUnavailable)?,
-            ))
-        })?;
+    let (expected_reserve_token, finalized_observation) = STORE.with(|store| {
+        let store = store.borrow();
+        let progress = store
+            .external_progress()
+            .map_err(|_| DepositError::StorageFailure)?;
+        Ok::<_, DepositError>((
+            store
+                .deposit_reserve_token()
+                .map_err(|_| DepositError::StorageFailure)?,
+            progress
+                .finalized_observation
+                .ok_or(DepositError::BaseObservationUnavailable)?,
+        ))
+    })?;
     let finalized_eth_balance_wei = evm_rpc::signer_eth_balance_at(
         &config,
         signer_address,
@@ -808,8 +810,7 @@ pub async fn request_deposit(
                 &record,
                 Some(DepositReserveAdmission {
                     audit_caller: ic_cdk::api::canister_self(),
-                    expected_counters,
-                    expected_observation_generation,
+                    expected_token: expected_reserve_token,
                     observed_at_ns: reserve_observed_at_ns,
                     eth_balance_wei,
                     cycles_balance,
@@ -946,7 +947,7 @@ async fn base_mint_snapshot(
             expected_signer,
         );
     }
-    let refresh_started = STORE.with(|store| {
+    let refresh_owner = STORE.with(|store| {
         store
             .borrow_mut()
             .begin_base_snapshot_refresh(
@@ -956,9 +957,9 @@ async fn base_mint_snapshot(
             )
             .map_err(|_| DepositError::StorageFailure)
     })?;
-    if !refresh_started {
+    let Some(refresh_owner) = refresh_owner else {
         return Err(DepositError::BaseObservationUnavailable);
-    }
+    };
     let completed = match evm_rpc::bridge_snapshot(config).await {
         Ok(completed) => completed,
         Err(error) => {
@@ -968,6 +969,7 @@ async fn base_mint_snapshot(
                     store
                         .borrow_mut()
                         .fail_base_snapshot_refresh_with_rpc_audit(
+                            refresh_owner,
                             ic_cdk::api::canister_self(),
                             ic_cdk::api::time(),
                             vec![rpc_decision_event_kind(&decision)],
@@ -978,7 +980,7 @@ async fn base_mint_snapshot(
                 STORE.with(|store| {
                     store
                         .borrow_mut()
-                        .fail_base_snapshot_refresh()
+                        .fail_base_snapshot_refresh(refresh_owner)
                         .map_err(|_| DepositError::StorageFailure)
                 })?;
             }
@@ -992,6 +994,7 @@ async fn base_mint_snapshot(
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         match store.finish_base_snapshot_refresh_with_rpc_audit_and_observation(
+            refresh_owner,
             ic_cdk::api::time(),
             snapshot.mint,
             snapshot.bridge_signer,
@@ -1013,7 +1016,7 @@ async fn base_mint_snapshot(
                 | bridge_core::CoreError::ConflictingFinalizedObservation,
             )) => {
                 store
-                    .fail_base_snapshot_refresh()
+                    .fail_base_snapshot_refresh(refresh_owner)
                     .map_err(|_| DepositError::StorageFailure)?;
                 Err(DepositError::BaseObservationUnavailable)
             }

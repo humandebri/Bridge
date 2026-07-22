@@ -5,7 +5,7 @@ import { Principal } from "@dfinity/principal"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { hexToBytes } from "viem"
-import { useAccount, useChainId, useWriteContract } from "wagmi"
+import { useAccount, useChainId, useConnectorClient, useWriteContract } from "wagmi"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -28,6 +28,7 @@ import { currentInjectedWallet, requireWalletSnapshot, sameIcAccount } from "@/l
 import { createWithdrawalAfterRevalidation } from "@/lib/withdrawal-submit"
 import { savePendingConfirmation } from "@/lib/pending-confirmations"
 import { readDepositIntent, removeDepositIntent, saveDepositIntent } from "@/lib/deposit-intents"
+import { withBrowserLock } from "@/lib/browser-lock"
 
 export type BridgeDirection = "deposit" | "withdraw"
 
@@ -50,6 +51,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const ic = useIcWallet()
   const wallets = useWalletDialog()
   const write = useWriteContract()
+  const connectorClient = useConnectorClient()
+  const currentBaseWallet = () => currentInjectedWallet(connectorClient.data?.transport)
   const base = useCurrentBaseQuote()
   const runtime = useRuntimeValidation(chainId)
   const runtimeReadiness = useRuntimeWriteReadiness(runtime.data)
@@ -111,7 +114,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const deposit = useMutation({
     mutationFn: async (attempt: UnresolvedDepositAttempt) => {
       if (!address || !isConnected || !ic.account || !ic.adapter) throw new Error("Reconnect the wallets used for this deposit")
-      const activeEvm = await currentInjectedWallet()
+      const activeEvm = await currentBaseWallet()
       const activeIc = await ic.adapter.getAccount()
       requireWalletSnapshot(
         { address: attempt.recipient, chainId: deploymentProfile.chainId, icAccount: attempt.account },
@@ -119,9 +122,16 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         "before submitting this deposit",
       )
       await refetchRuntimeWriteReady(() => runtime.refetch())
-      saveDepositIntent({ ...attempt, state: "submitted" })
+      await saveDepositIntent({ ...attempt, state: "submitted" })
       setUnresolvedDeposit(attempt)
-      return ic.adapter.requestDeposit(attempt.call)
+      const receipt = await withBrowserLock(`kinic-wallet-prompt:ic:${attempt.account.owner}`, () => ic.adapter!.requestDeposit(attempt.call))
+      const [postEvm, postIc] = await Promise.all([currentBaseWallet(), ic.adapter.getAccount()])
+      requireWalletSnapshot(
+        { address: attempt.recipient, chainId: deploymentProfile.chainId, icAccount: attempt.account },
+        { ...postEvm, icAccount: postIc },
+        "during the wallet prompt",
+      )
+      return receipt
     },
     onSuccess: async (receipt, attempt) => {
       queryClient.setQueryData(["deposit-owner-sequence", attempt.account.owner], receipt.owner_sequence + 1n)
@@ -141,11 +151,20 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         }
       }
       if (submittedTransactionHash) {
-        savePendingConfirmation({ kind: "deposit", settlementId: bytesHex(receipt.deposit_id), transactionHash: bytesHex(submittedTransactionHash), owner: attempt.account.owner })
+        try {
+          await savePendingConfirmation({ kind: "deposit", settlementId: bytesHex(receipt.deposit_id), transactionHash: bytesHex(submittedTransactionHash), owner: attempt.account.owner })
+        } catch {
+          toast.warning(`Deposit ${bytesHex(receipt.deposit_id)} was accepted, but automatic confirmation could not be saved. Copy this ID and recover it from History.`)
+        }
       }
-      removeDepositIntent(attempt.account)
+      try { await removeDepositIntent(attempt.account) } catch { /* The canonical receipt is the recovery source. */ }
       setUnresolvedDeposit(undefined)
       setDepositAmount("")
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["deposit-ledger"] }),
+        queryClient.invalidateQueries({ queryKey: ["base-quote"] }),
+        queryClient.invalidateQueries({ queryKey: ["runtime-validation"] }),
+      ])
       toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. finalized confirmation will be requested through your IC wallet.`)
     },
     onError: (error) => {
@@ -156,7 +175,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const submitDeposit = async () => {
     try {
       if (unresolvedDeposit) {
-        deposit.mutate(unresolvedDeposit)
+        await withBrowserLock(`kinic-deposit-owner:${unresolvedDeposit.account.owner}`, () => deposit.mutateAsync(unresolvedDeposit))
         return
       }
       if (!address || !isConnected) throw new Error("Connect the Base recipient wallet")
@@ -166,29 +185,48 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       if (ledgerData.balance < requiredDepositBalance(depositParsed.value, ledgerData.fee, ledgerData.allowance)) throw new Error(`${deploymentProfile.icToken.symbol} balance does not cover the deposit and required ledger fees`)
       const confirmedAccount = { owner: ic.account.owner, subaccount: ic.account.subaccount }
       const confirmedRecipient = address
-      const activeEvm = await currentInjectedWallet()
+      const activeEvm = await currentBaseWallet()
       const activeIc = await ic.adapter.getAccount()
       const expectedWallets = { address: confirmedRecipient, chainId: deploymentProfile.chainId, icAccount: confirmedAccount }
       requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc })
-      const requiredAllowance = depositParsed.value + ledgerData.fee
-      if (ledgerData.allowance < requiredAllowance) {
-        await refetchRuntimeWriteReady(() => runtime.refetch())
-        await ic.adapter.approve({ amount: requiredAllowance, currentAllowance: ledgerData.allowance, ledgerFee: ledgerData.fee })
-      }
-      const finalEvm = await currentInjectedWallet()
-      const finalIc = await ic.adapter.getAccount()
-      requireWalletSnapshot(expectedWallets, { ...finalEvm, icAccount: finalIc }, "during approval")
-      const attempt: UnresolvedDepositAttempt = {
-        call: { ownerSequence: ownerSequenceData, baseRecipient: hexToBytes(confirmedRecipient), grossAmount: depositParsed.value, maxServiceFee: baseData.serviceFee },
-        account: { owner: confirmedAccount.owner, subaccount: confirmedAccount.subaccount?.slice() },
-        recipient: confirmedRecipient,
-      }
-      saveDepositIntent({ ...attempt, state: "prepared" })
-      setUnresolvedDeposit(attempt)
-      deposit.mutate(attempt)
+      await withBrowserLock(`kinic-deposit-owner:${confirmedAccount.owner}`, async () => {
+        const beforeApproval = await refetchDepositWriteGate(depositParsed.value, ownerSequenceData)
+        const requiredAllowance = depositParsed.value + beforeApproval.ledger.fee
+        if (beforeApproval.ledger.allowance < requiredAllowance) {
+          await withBrowserLock(`kinic-wallet-prompt:ic:${confirmedAccount.owner}`, () => ic.adapter!.approve({ amount: requiredAllowance, currentAllowance: beforeApproval.ledger.allowance, ledgerFee: beforeApproval.ledger.fee }))
+        }
+        const [finalEvm, finalIc] = await Promise.all([currentBaseWallet(), ic.adapter!.getAccount()])
+        requireWalletSnapshot(expectedWallets, { ...finalEvm, icAccount: finalIc }, "during approval")
+        const final = await refetchDepositWriteGate(depositParsed.value, ownerSequenceData)
+        const attempt: UnresolvedDepositAttempt = {
+          call: { ownerSequence: final.sequence, baseRecipient: hexToBytes(confirmedRecipient), grossAmount: depositParsed.value, maxServiceFee: final.base.serviceFee },
+          account: { owner: confirmedAccount.owner, subaccount: confirmedAccount.subaccount?.slice() },
+          recipient: confirmedRecipient,
+        }
+        await saveDepositIntent({ ...attempt, state: "prepared" })
+        setUnresolvedDeposit(attempt)
+        await deposit.mutateAsync(attempt)
+      })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Deposit failed")
     }
+  }
+
+  const refetchDepositWriteGate = async (amount: bigint, expectedSequence: bigint) => {
+    await refetchRuntimeWriteReady(() => runtime.refetch())
+    const [baseResult, ledgerResult, sequenceResult] = await Promise.all([base.refetch(), ledger.refetch(), ownerSequence.refetch()])
+    if (baseResult.isError || baseResult.isStale || !baseResult.data || ledgerResult.isError || ledgerResult.isStale || !ledgerResult.data || sequenceResult.isError || sequenceResult.isStale || sequenceResult.data === undefined) {
+      throw new Error("Deposit limits, balance, fee, allowance, or sequence could not be verified")
+    }
+    const quote = baseResult.data
+    if (quote.depositsPaused) throw new Error("Deposits are paused on Base")
+    if (amount > quote.perDepositLimit) throw new Error("Amount exceeds the current per-deposit limit")
+    if (amount <= quote.serviceFee) throw new Error("Amount must exceed the current service fee")
+    const now = BigInt(Math.floor(Date.now() / 1000))
+    if (now < quote.startedAt + quote.duration && quote.minted + amount - quote.serviceFee > quote.limit) throw new Error("Amount exceeds the remaining mint window limit")
+    if (sequenceResult.data !== expectedSequence) throw new Error("Another deposit used this owner sequence; refresh and review again")
+    if (ledgerResult.data.balance < requiredDepositBalance(amount, ledgerResult.data.fee, ledgerResult.data.allowance)) throw new Error(`${deploymentProfile.icToken.symbol} balance does not cover the deposit and required ledger fees`)
+    return { base: quote, ledger: ledgerResult.data, sequence: sequenceResult.data }
   }
 
   const checkUnresolvedDeposit = async () => {
@@ -200,7 +238,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       const status = classifyDepositRecoverySequence(unresolvedDeposit.call.ownerSequence, nextSequence)
       if (status === "not-accepted") {
         queryClient.setQueryData(["deposit-owner-sequence", unresolvedDeposit.account.owner], nextSequence)
-        removeDepositIntent(unresolvedDeposit.account)
+        await removeDepositIntent(unresolvedDeposit.account)
         setUnresolvedDeposit(undefined)
         toast.info("The deposit was not accepted. You can edit the form or submit a new request.")
       } else if (status === "accepted-or-conflicted") {
@@ -217,7 +255,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         }
         const confirmation = record[0].base_confirmation[0]
         if (confirmation && "Submitted" in confirmation) {
-          savePendingConfirmation({
+          await savePendingConfirmation({
             kind: "deposit",
             settlementId: bytesHex(record[0].deposit_id),
             transactionHash: bytesHex(confirmation.Submitted.transaction_hash),
@@ -225,7 +263,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
           })
         }
         queryClient.setQueryData(["deposit-owner-sequence", unresolvedDeposit.account.owner], nextSequence)
-        removeDepositIntent(unresolvedDeposit.account)
+        await removeDepositIntent(unresolvedDeposit.account)
         setUnresolvedDeposit(undefined)
         toast.success("The accepted deposit was recovered from canonical history.")
       } else {
@@ -249,13 +287,17 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       if (bsnsBalanceData < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
       const confirmedIcAccount = { owner: ic.account.owner, subaccount: ic.account.subaccount }
       const snapshotAddress = address
-      const activeEvm = await currentInjectedWallet()
+      const activeEvm = await currentBaseWallet()
       const activeIc = await ic.adapter.getAccount()
       const expectedWallets = { address: snapshotAddress, chainId: deploymentProfile.chainId, icAccount: confirmedIcAccount }
       requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc })
       const owner = Principal.fromText(confirmedIcAccount.owner).toUint8Array()
       const subaccount = confirmedIcAccount.subaccount ?? new Uint8Array(32)
       await refetchRuntimeWriteReady(() => runtime.refetch())
+      const [approvalQuote, approvalBalance] = await Promise.all([base.refetch(), bsnsBalance.refetch()])
+      if (approvalQuote.isError || approvalQuote.isStale || !approvalQuote.data || approvalBalance.isError || approvalBalance.isStale || approvalBalance.data === undefined) throw new Error("Withdrawal limits, fee, or balance could not be verified")
+      if (approvalQuote.data.withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
+      if (withdrawParsed.value <= approvalQuote.data.serviceFee || approvalBalance.data < withdrawParsed.value) throw new Error("Withdrawal fee or balance changed; review again")
       const client = basePublicClient
       const allowance = await client.readContract({
         address: deploymentProfile.bsnsAddress as `0x${string}`,
@@ -264,31 +306,32 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         args: [snapshotAddress, deploymentProfile.bridgeAddress as `0x${string}`],
       })
       if (allowance < withdrawParsed.value) {
-        const approvalHash = await write.writeContractAsync({
+        const approvalHash = await withBrowserLock(`kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`, () => write.writeContractAsync({
           account: snapshotAddress,
           address: deploymentProfile.bsnsAddress as `0x${string}`,
           abi: bsnsAbi,
           functionName: "approve",
           args: [deploymentProfile.bridgeAddress as `0x${string}`, withdrawParsed.value],
-        })
+        }))
         const approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
         if (approvalReceipt.status !== "success") throw new Error("Token approval failed")
       }
       const broadcast = await createWithdrawalAfterRevalidation({
         expectedWallets,
         refetchRuntime: () => runtime.refetch(),
-        currentEvmWallet: currentInjectedWallet,
+        currentEvmWallet: currentBaseWallet,
         currentIcAccount: () => ic.adapter!.getAccount(),
         refetchFinancials: async () => {
           const [quote, balanceResult] = await Promise.all([base.refetch(), bsnsBalance.refetch()])
           if (quote.isError || quote.isStale || !quote.data || balanceResult.isError || balanceResult.isStale || balanceResult.data === undefined) throw new Error("Fee or balance data changed and could not be verified")
-          return { serviceFee: quote.data.serviceFee, balance: balanceResult.data }
+          return { serviceFee: quote.data.serviceFee, balance: balanceResult.data, withdrawalsPaused: quote.data.withdrawalsPaused }
         },
-        validateFinancials: ({ serviceFee, balance: finalBalance }) => {
+        validateFinancials: ({ serviceFee, balance: finalBalance, withdrawalsPaused }) => {
+          if (withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
           if (withdrawParsed.value <= serviceFee) throw new Error("Amount must be greater than the current service fee")
           if (finalBalance < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
         },
-        createWithdrawal: ({ serviceFee }) => write.writeContractAsync({ account: snapshotAddress, address: deploymentProfile.bridgeAddress as `0x${string}`, abi: bridgeAbi, functionName: "createWithdrawal", args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)] }),
+        createWithdrawal: ({ serviceFee }) => withBrowserLock(`kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`, () => write.writeContractAsync({ account: snapshotAddress, address: deploymentProfile.bridgeAddress as `0x${string}`, abi: bridgeAbi, functionName: "createWithdrawal", args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)] })),
         onBroadcast: (transactionHash) => savePendingConfirmation({
           kind: "withdrawal",
           transactionHash,

@@ -219,6 +219,10 @@ pub enum NotifiedWithdrawalOutcome {
 }
 
 const SMALL_RESPONSE_BYTES: u64 = 4 * 1024;
+// `eth_getBlockByNumber` includes the transaction-hash vector even when full
+// transaction objects are disabled. Busy Base blocks can therefore be much
+// larger than the fixed-size header fields.
+const BLOCK_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 const RECEIPT_RESPONSE_BYTES: u64 = 32 * 1024;
 const SEND_RESPONSE_BYTES: u64 = 2 * 1024;
 const EVM_RPC_TIMEOUT_SECONDS: u32 = 30;
@@ -743,7 +747,7 @@ async fn ensure_chain_id(args: &BridgeInitArgs) -> Result<u64, ObservationError>
 async fn finalized_block(args: &BridgeInitArgs) -> Result<Block, ObservationError> {
     match client(args)
         .get_block_by_number(BlockTag::Finalized)
-        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
         .send()
         .await
     {
@@ -799,7 +803,7 @@ async fn canonical_finalized_receipt(
     }
     let canonical = match client(args)
         .get_block_by_number(BlockTag::Number(Nat256::from(receipt_block)))
-        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
         .send()
         .await
     {
@@ -985,17 +989,22 @@ pub async fn broadcast(
         .await
     {
         MultiRpcResult::Consistent(Ok(status))
-            if send_status_matches_local_hash(&status, transaction_hash) =>
+            if send_status_tracks_local_hash(&status, transaction_hash) =>
         {
+            let local_hash_derived = matches!(status, SendRawTransactionStatus::Ok(None));
             Ok(BroadcastOutcome::Submitted(transaction_rpc_audit_evidence(
                 args,
                 "eth_sendRawTransaction",
                 finalized,
                 transaction_hash,
-                json!({"result": "submitted", "local_hash_matched": true}),
+                json!({
+                    "result": "submitted",
+                    "local_hash_matched": !local_hash_derived,
+                    "local_hash_derived": local_hash_derived,
+                }),
             )))
         }
-        MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::Ok(_))) => Ok(
+        MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::Ok(Some(_)))) => Ok(
             BroadcastOutcome::NonceConflict(transaction_rpc_audit_evidence(
                 args,
                 "eth_sendRawTransaction",
@@ -1033,8 +1042,9 @@ pub async fn broadcast(
     }
 }
 
-fn send_status_matches_local_hash(status: &SendRawTransactionStatus, local: [u8; 32]) -> bool {
-    matches!(status, SendRawTransactionStatus::Ok(Some(returned)) if returned.as_array() == &local)
+fn send_status_tracks_local_hash(status: &SendRawTransactionStatus, local: [u8; 32]) -> bool {
+    matches!(status, SendRawTransactionStatus::Ok(None))
+        || matches!(status, SendRawTransactionStatus::Ok(Some(returned)) if returned.as_array() == &local)
 }
 
 pub async fn notified_withdrawal_outcome(
@@ -1046,14 +1056,14 @@ pub async fn notified_withdrawal_outcome(
     let (receipt, finalized_observation, _receipt_observation) =
         match canonical_finalized_receipt(args, transaction_hash).await? {
             CanonicalFinalizedReceiptOutcome::Missing => {
-                return Ok(NotifiedWithdrawalOutcome::Missing)
+                return Ok(NotifiedWithdrawalOutcome::Missing);
             }
             CanonicalFinalizedReceiptOutcome::Pending {
                 receipt_block_number,
             } => {
                 return Ok(NotifiedWithdrawalOutcome::Pending {
                     receipt_block_number,
-                })
+                });
             }
             CanonicalFinalizedReceiptOutcome::Confirmed {
                 receipt,
@@ -1275,6 +1285,9 @@ fn decode_bool_word(value: &str) -> Result<bool, ObservationError> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfirmedReceiptOutcome {
     Missing,
+    Pending {
+        receipt_block_number: u64,
+    },
     Succeeded {
         receipt_block_number: u64,
         finalized_head_block_number: u64,
@@ -1292,9 +1305,13 @@ pub async fn confirmed_receipt_outcome(
     transaction_hash: [u8; 32],
 ) -> Result<ConfirmedReceiptOutcome, ObservationError> {
     let (receipt, finalized) = match canonical_finalized_receipt(args, transaction_hash).await? {
-        CanonicalFinalizedReceiptOutcome::Missing
-        | CanonicalFinalizedReceiptOutcome::Pending { .. } => {
-            return Ok(ConfirmedReceiptOutcome::Missing)
+        CanonicalFinalizedReceiptOutcome::Missing => return Ok(ConfirmedReceiptOutcome::Missing),
+        CanonicalFinalizedReceiptOutcome::Pending {
+            receipt_block_number,
+        } => {
+            return Ok(ConfirmedReceiptOutcome::Pending {
+                receipt_block_number,
+            });
         }
         CanonicalFinalizedReceiptOutcome::Confirmed {
             receipt,
@@ -1351,6 +1368,7 @@ mod tests {
     #[test]
     fn evm_rpc_runtime_uses_the_fixed_thirty_second_bound() {
         assert_eq!(EVM_RPC_TIMEOUT_SECONDS, 30);
+        assert_eq!(BLOCK_RESPONSE_BYTES, 2 * 1024 * 1024);
     }
 
     #[test]
@@ -1633,9 +1651,9 @@ mod tests {
         let different = SendRawTransactionStatus::Ok(Some(
             Hex32::from_str(&format!("0x{}", "22".repeat(32))).expect("hash"),
         ));
-        assert!(send_status_matches_local_hash(&matching, local));
-        assert!(!send_status_matches_local_hash(&different, local));
-        assert!(!send_status_matches_local_hash(
+        assert!(send_status_tracks_local_hash(&matching, local));
+        assert!(!send_status_tracks_local_hash(&different, local));
+        assert!(send_status_tracks_local_hash(
             &SendRawTransactionStatus::Ok(None),
             local
         ));

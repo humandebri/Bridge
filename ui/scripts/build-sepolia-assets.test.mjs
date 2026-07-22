@@ -13,6 +13,6 @@ describe("Base Sepolia asset profile template", () => {
 
   it("requires the validated Sepolia build before publishing the test Worker", async () => {
     const manifest = JSON.parse(await readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"))
-    expect(manifest.scripts["deploy:test"]).toBe("pnpm run build:sepolia && wrangler deploy --name kinic-bridge-ui-test")
+    expect(manifest.scripts["deploy:test"]).toBe("pnpm run build:sepolia && node scripts/check-sepolia-assets.mjs && wrangler deploy --name kinic-bridge-ui-test")
   })
 })

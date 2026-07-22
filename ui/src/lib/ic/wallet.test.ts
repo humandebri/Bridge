@@ -40,4 +40,10 @@ describe("withdrawal notification errors", () => {
     expect(() => decodeNotifyWithdrawalReply(reply)).toThrow(variant === "BaseStateMismatch" ? "state does not match" : "signer does not match")
   })
 
+  it.each(["RateLimited", "InsufficientCycles"] as const)("decodes %s as a normal bridge rejection", (variant) => {
+    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Err: { [variant]: null } }]))
+
+    expect(() => decodeNotifyWithdrawalReply(reply)).toThrow(variant === "RateLimited" ? "rate limited" : "enough cycles")
+  })
+
 })

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "observed_at_unix": 0,
   "executed_at_unix": 0,
   "proposal_id": 0,
@@ -11,5 +11,14 @@
   "before_module_sha256": "<64-hex>",
   "after_module_sha256": "<64-hex>",
   "before_public_state_sha256": "<64-hex>",
-  "after_public_state_sha256": "<same-64-hex>"
+  "after_public_state_sha256": "<same-64-hex>",
+  "proposal_action": "UpgradeSnsControlledCanister",
+  "proposal_target_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "proposal_wasm_sha256": "<same-release-wasm-64-hex>",
+  "governance_raw_response_hex": "<raw-governance-response-hex>",
+  "governance_raw_response_sha256": "<64-hex>",
+  "certified_response_hex": "<certified-response-hex>",
+  "certified_response_sha256": "<64-hex>",
+  "certificate_hex": "<certificate-hex>",
+  "certificate_sha256": "<64-hex>"
 }

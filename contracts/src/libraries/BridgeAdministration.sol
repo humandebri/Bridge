@@ -31,4 +31,37 @@ library BridgeAdministration {
     function serviceFeeIsValid(uint256 serviceFee, uint256 maximumServiceFee) internal pure returns (bool) {
         return serviceFee <= maximumServiceFee;
     }
+
+    function valueFitsU128(uint256 value) internal pure returns (bool) {
+        return value <= type(uint128).max;
+    }
+
+    function valuesFitU128(uint256 first, uint256 second, uint256 third) internal pure returns (bool) {
+        return valueFitsU128(first) && valueFitsU128(second) && valueFitsU128(third);
+    }
+
+    function timelockDelayIsValid(uint256 delay, uint256 minimumDelay, uint256 maximumDelay)
+        internal
+        pure
+        returns (bool)
+    {
+        return minimumDelay <= delay && delay <= maximumDelay;
+    }
+
+    function timelockRoleIsClosed(address member, address requiredMember, bool memberHasRole, bool roleIsOpen)
+        internal
+        pure
+        returns (bool)
+    {
+        return member != address(0) && (requiredMember == address(0) || member == requiredMember) && memberHasRole
+            && !roleIsOpen;
+    }
+
+    function timelockHasNoPendingOperations(uint256 pendingOperationCount) internal pure returns (bool) {
+        return pendingOperationCount == 0;
+    }
+
+    function withdrawalClaimAllowed(bool alreadyClaimed) internal pure returns (bool) {
+        return !alreadyClaimed;
+    }
 }

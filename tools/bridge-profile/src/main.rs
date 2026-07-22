@@ -17,6 +17,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 17;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -49,6 +50,7 @@ struct Profile {
     governance_principal: String,
     decimals: u8,
     bridge_canister_id: String,
+    canister_schema_version: u16,
     ic_host: String,
     base_rpc_url: String,
     bridge_contract: String,
@@ -69,6 +71,7 @@ struct Profile {
     monitoring: Monitoring,
     parameters: Parameters,
     rate_limits: RateLimits,
+    evm_liveness: EvmLivenessPolicy,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -156,6 +159,17 @@ struct RateLimits {
     settlement_per_record: u16,
 }
 
+#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct EvmLivenessPolicy {
+    check_interval_seconds: u64,
+    rebroadcast_after_seconds: u64,
+    replacement_after_seconds: u64,
+    max_replacements: u8,
+    fee_bump_bps: u16,
+    fee_ceiling_multiplier_bps: u32,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Evidence {
@@ -226,6 +240,7 @@ struct GateAReceipt {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SignerSnapshot {
+    schema_version: u8,
     observed_at_unix: u64,
     chain_id: u64,
     evm_rpc_canister_id: String,
@@ -278,29 +293,83 @@ struct SignerSnapshot {
     settlement_reserve_sufficient: bool,
     ledger_fee: u128,
     base_service_fee: u128,
+    public_config: LivePublicConfig,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LivePublicConfig {
+    base_chain_id: u64,
+    bridge_contract: String,
+    timelock_contract: String,
+    ledger_canister_id: String,
+    index_canister_id: String,
+    schema_version: u16,
+    expected_bridge_signer: String,
+    governance_operator: String,
+    evm_rpc_canister_id: String,
+    rpc_provider_urls_sha256: String,
+    deposit_rate_limit_window_seconds: u64,
+    deposit_rate_limit_global: u16,
+    deposit_rate_limit_per_principal: u16,
+    settlement_rate_limit_window_seconds: u64,
+    settlement_rate_limit_global: u16,
+    settlement_rate_limit_per_principal: u16,
+    settlement_rate_limit_per_record: u16,
+    #[serde(with = "u128_string")]
+    transaction_gas_limit: u128,
+    #[serde(with = "u128_string")]
+    max_fee_per_gas: u128,
+    #[serde(with = "u128_string")]
+    max_priority_fee_per_gas: u128,
+    evm_liveness: EvmLivenessPolicy,
+    #[serde(with = "u128_string")]
+    eth_floor_wei: u128,
+    #[serde(with = "u128_string")]
+    cycles_floor: u128,
+    #[serde(with = "u128_string")]
+    settlement_cycle_ceiling: u128,
+    governance_principal: String,
+    pause_principal: String,
+    fee_recipient: LiveFeeRecipient,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LiveFeeRecipient {
+    owner: String,
+    subaccount_hex: String,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MonitorDrill {
+    schema_version: u8,
     routing_sha256: String,
     fault_started_at_unix: u64,
     detected_at_unix: u64,
     acknowledged_at_unix: u64,
     base_paused_at_unix: u64,
     ic_paused_at_unix: u64,
-    base_pause_reference: String,
-    ic_pause_reference: String,
+    base_pause_transaction_hash: String,
+    base_pause_block_number: u64,
+    base_pause_block_hash: String,
+    base_pause_receipt_status: u8,
+    base_pause_canonical_finalized: bool,
+    ic_pause_response_hex: String,
+    ic_pause_response_sha256: String,
     pause_principal: String,
     pause_request_id: String,
     pause_audit_sequence: u64,
     pause_audit_sha256: String,
+    pause_audit_raw_hex: String,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ControllerHandover {
     schema_version: u8,
+    stage: String,
     observed_at_unix: u64,
     bridge_canister_id: String,
     sns_root_canister_id: String,
@@ -334,6 +403,15 @@ struct SnsUpgrade {
     after_module_sha256: String,
     before_public_state_sha256: String,
     after_public_state_sha256: String,
+    proposal_action: String,
+    proposal_target_canister_id: String,
+    proposal_wasm_sha256: String,
+    governance_raw_response_hex: String,
+    governance_raw_response_sha256: String,
+    certified_response_hex: String,
+    certified_response_sha256: String,
+    certificate_hex: String,
+    certificate_sha256: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -361,6 +439,27 @@ struct X402Evidence {
     receipt_block_hash: String,
     receipt_status: u8,
     canonical_finalized: bool,
+    transaction_from: String,
+    transaction_to: String,
+    #[serde(with = "u128_string")]
+    transaction_value: u128,
+    transaction_nonce: u64,
+    transaction_input_hex: String,
+    transaction_input_sha256: String,
+    token_address: String,
+    authorization_from: String,
+    authorization_to: String,
+    #[serde(with = "u128_string")]
+    authorization_value: u128,
+    authorization_valid_after: u64,
+    authorization_valid_before: u64,
+    authorization_nonce: String,
+    receipt_transaction_hash: String,
+    receipt_from: String,
+    receipt_to: String,
+    receipt_logs_sha256: String,
+    finalized_head_block_number: u64,
+    finalized_head_block_hash: String,
 }
 
 struct ValidatedBundle {
@@ -493,6 +592,19 @@ fn valid_hash32(value: &str) -> bool {
         && value[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn valid_nonempty_hex(value: &str) -> bool {
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    !value.is_empty()
+        && value.len().is_multiple_of(2)
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn hex_sha256_matches(value: &str, expected: &str) -> bool {
+    decode_hex(value)
+        .map(|bytes| hex(&Sha256::digest(bytes)).eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
+}
+
 fn credential_free_https(url: &str) -> bool {
     if !url.is_ascii()
         || url
@@ -550,6 +662,9 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     };
     if profile.chain_id != expected_chain || profile.decimals != 8 {
         return Err("KINIC or chain identity mismatch".into());
+    }
+    if profile.canister_schema_version != CURRENT_STABLE_SCHEMA_VERSION {
+        return Err("profile must bind the current stable schema version".into());
     }
     if !principal(&profile.bridge_canister_id)
         || !credential_free_https(&profile.ic_host)
@@ -692,6 +807,16 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     {
         return Err("unsafe rate-limit configuration".into());
     }
+    let l = profile.evm_liveness;
+    if !(30..=300).contains(&l.check_interval_seconds)
+        || l.rebroadcast_after_seconds < l.check_interval_seconds
+        || l.replacement_after_seconds < l.rebroadcast_after_seconds
+        || !(1..=8).contains(&l.max_replacements)
+        || !(1_000..=5_000).contains(&l.fee_bump_bps)
+        || !(10_000..=100_000).contains(&l.fee_ceiling_multiplier_bps)
+    {
+        return Err("unsafe EVM liveness policy".into());
+    }
     let p = &profile.parameters;
     let _ = p
         .mint_throughput_limit
@@ -701,7 +826,7 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         || p.per_deposit_limit == 0
         || p.mint_throughput_limit == 0
         || p.per_deposit_limit > p.mint_throughput_limit
-        || p.mint_window_duration_seconds == 0
+        || !(60..=86_400).contains(&p.mint_window_duration_seconds)
         || p.max_service_fee != p.ledger_fee.saturating_mul(10_000)
         || p.service_fee != p.ledger_fee.saturating_mul(500)
         || p.service_fee > p.max_service_fee
@@ -849,14 +974,7 @@ fn render_release_inputs(
         "transaction_gas_limit": profile.parameters.transaction_gas_limit.to_string(),
         "max_fee_per_gas": profile.parameters.max_fee_per_gas.to_string(),
         "max_priority_fee_per_gas": profile.parameters.max_priority_fee_per_gas.to_string(),
-        "evm_liveness": {
-            "check_interval_seconds": 60,
-            "rebroadcast_after_seconds": 300,
-            "replacement_after_seconds": 1_800,
-            "max_replacements": 3,
-            "fee_bump_bps": 1_250,
-            "fee_ceiling_multiplier_bps": 40_000
-        },
+        "evm_liveness": profile.evm_liveness,
         "eth_floor_wei": profile.parameters.eth_floor_wei.to_string(),
         "cycles_floor": profile.parameters.cycles_floor.to_string(),
         "settlement_cycle_ceiling": profile.parameters.settlement_cycle_ceiling.to_string(),
@@ -919,7 +1037,7 @@ fn render_release_inputs(
         write_generated(output, "ui-runtime-profile.json", &ui)?,
     );
     let manifest = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "profile_file_sha256": profile_file_sha256,
         "profile_canonical_sha256": profile_canonical_sha256,
         "artifacts": artifacts
@@ -1215,7 +1333,8 @@ fn validate_plan006_evidence(
         .request_id
         .trim_start_matches("0x")
         .to_ascii_lowercase();
-    if handover.schema_version != 1
+    if handover.schema_version != 2
+        || handover.stage != "complete"
         || handover.bridge_canister_id != profile.bridge_canister_id
         || handover.sns_root_canister_id != KINIC_ROOT
         || !principal(&handover.executing_principal)
@@ -1252,7 +1371,7 @@ fn validate_plan006_evidence(
     let upgrade: SnsUpgrade = read_json(&root.join("sns-upgrade.json"))?;
     validate_evidence_time(upgrade.observed_at_unix, manifest.created_at_unix, now)?;
     validate_evidence_time(upgrade.executed_at_unix, manifest.created_at_unix, now)?;
-    if upgrade.schema_version != 1
+    if upgrade.schema_version != 2
         || upgrade.proposal_id == 0
         || upgrade.governance_canister_id != KINIC_GOVERNANCE
         || upgrade.root_canister_id != KINIC_ROOT
@@ -1273,13 +1392,33 @@ fn validate_plan006_evidence(
         || !upgrade
             .before_public_state_sha256
             .eq_ignore_ascii_case(&upgrade.after_public_state_sha256)
+        || upgrade.proposal_action != "UpgradeSnsControlledCanister"
+        || upgrade.proposal_target_canister_id != profile.bridge_canister_id
+        || !upgrade
+            .proposal_wasm_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !valid_nonempty_hex(&upgrade.governance_raw_response_hex)
+        || !valid_sha256(&upgrade.governance_raw_response_sha256)
+        || !hex_sha256_matches(
+            &upgrade.governance_raw_response_hex,
+            &upgrade.governance_raw_response_sha256,
+        )
+        || !valid_nonempty_hex(&upgrade.certified_response_hex)
+        || !valid_sha256(&upgrade.certified_response_sha256)
+        || !hex_sha256_matches(
+            &upgrade.certified_response_hex,
+            &upgrade.certified_response_sha256,
+        )
+        || !valid_nonempty_hex(&upgrade.certificate_hex)
+        || !valid_sha256(&upgrade.certificate_sha256)
+        || !hex_sha256_matches(&upgrade.certificate_hex, &upgrade.certificate_sha256)
     {
         return Err("SNS upgrade evidence is incomplete or not bound to the release Wasm".into());
     }
 
     let x402: X402Evidence = read_json(&root.join("x402-e2e.json"))?;
     validate_evidence_time(x402.observed_at_unix, manifest.created_at_unix, now)?;
-    if x402.schema_version != 1
+    if x402.schema_version != 2
         || x402.network != "base-sepolia"
         || x402.chain_id != 84_532
         || x402.sdk_name.trim().is_empty()
@@ -1292,6 +1431,9 @@ fn validate_plan006_evidence(
         || x402.authorization_standard != "EIP-3009"
         || !evm_address(&x402.bsns_address)
         || !x402
+            .bsns_address
+            .eq_ignore_ascii_case(&profile.bsns_contract)
+        || !x402
             .bsns_runtime_bytecode_sha256
             .eq_ignore_ascii_case(&profile.bsns_runtime_bytecode_sha256)
         || !valid_sha256(&x402.verify_response_sha256)
@@ -1302,6 +1444,29 @@ fn validate_plan006_evidence(
         || !valid_hash32(&x402.receipt_block_hash)
         || x402.receipt_status != 1
         || !x402.canonical_finalized
+        || !evm_address(&x402.transaction_from)
+        || !x402.transaction_to.eq_ignore_ascii_case(&x402.bsns_address)
+        || x402.transaction_value != 0
+        || !valid_nonempty_hex(&x402.transaction_input_hex)
+        || decode_hex(&x402.transaction_input_hex).is_ok_and(|bytes| bytes.len() < 4)
+        || !valid_sha256(&x402.transaction_input_sha256)
+        || !hex_sha256_matches(&x402.transaction_input_hex, &x402.transaction_input_sha256)
+        || !x402.token_address.eq_ignore_ascii_case(&x402.bsns_address)
+        || !evm_address(&x402.authorization_from)
+        || !evm_address(&x402.authorization_to)
+        || x402.authorization_value == 0
+        || x402.authorization_valid_after >= x402.authorization_valid_before
+        || !valid_hash32(&x402.authorization_nonce)
+        || !x402
+            .receipt_transaction_hash
+            .eq_ignore_ascii_case(&x402.settle_transaction_hash)
+        || !x402
+            .receipt_from
+            .eq_ignore_ascii_case(&x402.transaction_from)
+        || !x402.receipt_to.eq_ignore_ascii_case(&x402.transaction_to)
+        || !valid_sha256(&x402.receipt_logs_sha256)
+        || x402.finalized_head_block_number < x402.receipt_block_number
+        || !valid_hash32(&x402.finalized_head_block_hash)
     {
         return Err("x402 evidence is not a finalized Base Sepolia EIP-3009 settlement".into());
     }
@@ -1310,7 +1475,7 @@ fn validate_plan006_evidence(
 
 fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String> {
     let manifest: ReleaseManifest = read_json(&root.join("release-manifest.json"))?;
-    if manifest.schema_version != 1
+    if manifest.schema_version != 2
         || !valid_release_id(&manifest.release_id)
         || manifest.source_revision.trim().is_empty()
         || !valid_sha256(&manifest.source_tree_sha256)
@@ -1447,12 +1612,24 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
         || drill.acknowledged_at_unix < drill.detected_at_unix
         || drill.base_paused_at_unix < drill.acknowledged_at_unix
         || drill.ic_paused_at_unix < drill.acknowledged_at_unix
-        || drill.base_pause_reference.trim().is_empty()
-        || drill.ic_pause_reference.trim().is_empty()
+        || drill.schema_version != 2
+        || !valid_hash32(&drill.base_pause_transaction_hash)
+        || drill.base_pause_block_number == 0
+        || !valid_hash32(&drill.base_pause_block_hash)
+        || drill.base_pause_receipt_status != 1
+        || !drill.base_pause_canonical_finalized
+        || !valid_nonempty_hex(&drill.ic_pause_response_hex)
+        || !valid_sha256(&drill.ic_pause_response_sha256)
+        || !hex_sha256_matches(
+            &drill.ic_pause_response_hex,
+            &drill.ic_pause_response_sha256,
+        )
         || drill.pause_principal != profile.pause_principal
         || !valid_hash32(&drill.pause_request_id)
         || drill.pause_audit_sequence == 0
         || !valid_sha256(&drill.pause_audit_sha256)
+        || !valid_nonempty_hex(&drill.pause_audit_raw_hex)
+        || !hex_sha256_matches(&drill.pause_audit_raw_hex, &drill.pause_audit_sha256)
         || !drill
             .routing_sha256
             .eq_ignore_ascii_case(&profile.monitoring.routing_sha256)
@@ -1471,7 +1648,58 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     })
 }
 
-fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
+fn validate_live_public_config(
+    observed: &LivePublicConfig,
+    profile: &Profile,
+    rpc_url_hash: &str,
+) -> Result<(), String> {
+    let p = &profile.parameters;
+    let r = &profile.rate_limits;
+    if observed.base_chain_id != profile.chain_id
+        || !observed
+            .bridge_contract
+            .eq_ignore_ascii_case(&profile.bridge_contract)
+        || !observed
+            .timelock_contract
+            .eq_ignore_ascii_case(&profile.timelock.address)
+        || observed.ledger_canister_id != profile.ledger_canister_id
+        || observed.index_canister_id != profile.index_canister_id
+        || observed.schema_version != profile.canister_schema_version
+        || !observed
+            .expected_bridge_signer
+            .eq_ignore_ascii_case(&profile.expected_bridge_signer)
+        || !observed
+            .governance_operator
+            .eq_ignore_ascii_case(&profile.governance_operator)
+        || observed.evm_rpc_canister_id != profile.evm_rpc_canister_id
+        || !observed
+            .rpc_provider_urls_sha256
+            .eq_ignore_ascii_case(rpc_url_hash)
+        || observed.deposit_rate_limit_window_seconds != r.deposit_window_seconds
+        || observed.deposit_rate_limit_global != r.deposit_global
+        || observed.deposit_rate_limit_per_principal != r.deposit_per_principal
+        || observed.settlement_rate_limit_window_seconds != r.settlement_window_seconds
+        || observed.settlement_rate_limit_global != r.settlement_global
+        || observed.settlement_rate_limit_per_principal != r.settlement_per_principal
+        || observed.settlement_rate_limit_per_record != r.settlement_per_record
+        || observed.transaction_gas_limit != p.transaction_gas_limit
+        || observed.max_fee_per_gas != p.max_fee_per_gas
+        || observed.max_priority_fee_per_gas != p.max_priority_fee_per_gas
+        || observed.evm_liveness != profile.evm_liveness
+        || observed.eth_floor_wei != p.eth_floor_wei
+        || observed.cycles_floor != p.cycles_floor
+        || observed.settlement_cycle_ceiling != p.settlement_cycle_ceiling
+        || observed.governance_principal != profile.governance_principal
+        || observed.pause_principal != profile.pause_principal
+        || observed.fee_recipient.owner != profile.fee_recipient
+        || !observed.fee_recipient.subaccount_hex.is_empty()
+    {
+        return Err("live Canister PublicConfig does not exactly match the profile".into());
+    }
+    Ok(())
+}
+
+fn verify_live_inputs(bundle: &ValidatedBundle) -> Result<(), String> {
     let snapshot: SignerSnapshot = read_json(&bundle.root.join("signer-snapshot.json"))?;
     let receipt: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
     let now = now_unix()?;
@@ -1488,9 +1716,11 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
             .map(|provider| provider.url.clone())
             .collect::<Vec<_>>(),
     )?);
-    if now
-        .checked_sub(snapshot.observed_at_unix)
-        .is_none_or(|age| age > 5 * 60)
+    validate_live_public_config(&snapshot.public_config, &bundle.profile, &rpc_url_hash)?;
+    if snapshot.schema_version != 2
+        || now
+            .checked_sub(snapshot.observed_at_unix)
+            .is_none_or(|age| age > 5 * 60)
         || snapshot.bridge_canister_id != bundle.profile.bridge_canister_id
         || snapshot.chain_id != bundle.profile.chain_id
         || snapshot.evm_rpc_canister_id != bundle.profile.evm_rpc_canister_id
@@ -1535,7 +1765,7 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
         || !snapshot
             .bridge_approved_timelock_runtime_code_hash
             .eq_ignore_ascii_case(&bundle.profile.timelock.runtime_code_hash)
-        || snapshot.timelock_minimum_delay_seconds < 72 * 60 * 60
+        || snapshot.timelock_minimum_delay_seconds != bundle.profile.timelock.minimum_delay_seconds
         || !snapshot.timelock_self_admin
         || !snapshot
             .timelock_proposer
@@ -1596,6 +1826,21 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
     Ok(())
 }
 
+fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
+    verify_live_inputs(bundle)?;
+    Err(
+        "Gate B is unavailable until repository-owned SNS certificate/proposal and x402 calldata/receipt authenticity verification is implemented"
+            .into(),
+    )
+}
+
+fn verify_gate_a_authenticity(_bundle: &ValidatedBundle) -> Result<(), String> {
+    Err(
+        "Gate A is unavailable until repository-owned Base receipt/log and IC certificate/audit authenticity verification for the monitor drill is implemented"
+            .into(),
+    )
+}
+
 fn run() -> Result<(), String> {
     let args = env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
@@ -1629,6 +1874,7 @@ fn run() -> Result<(), String> {
         }
         Some("validate-bundle") if args.len() == 4 && args[2] == "--offline" => {
             let bundle = validate_bundle(Path::new(&args[3]), false)?;
+            verify_gate_a_authenticity(&bundle)?;
             println!("gate_a=pass manifest_sha256={}", bundle.manifest_sha256);
         }
         Some("verify-live") if args.len() == 3 => {
@@ -1683,6 +1929,7 @@ mod tests {
             governance_principal: KINIC_GOVERNANCE.into(),
             decimals: 8,
             bridge_canister_id: test_principal(9),
+            canister_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
             ic_host: "https://icp-api.io".into(),
             base_rpc_url: "https://prod-one.example/base-mainnet".into(),
             bridge_contract: address(1),
@@ -1746,6 +1993,57 @@ mod tests {
                 settlement_global: 60,
                 settlement_per_principal: 6,
                 settlement_per_record: 3,
+            },
+            evm_liveness: EvmLivenessPolicy {
+                check_interval_seconds: 60,
+                rebroadcast_after_seconds: 300,
+                replacement_after_seconds: 1_800,
+                max_replacements: 3,
+                fee_bump_bps: 1_250,
+                fee_ceiling_multiplier_bps: 40_000,
+            },
+        }
+    }
+
+    fn live_public_config(profile: &Profile) -> LivePublicConfig {
+        let rpc_url_hash = hex(&canonical_sha256(
+            &profile
+                .rpc_providers
+                .iter()
+                .map(|provider| provider.url.clone())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap());
+        LivePublicConfig {
+            base_chain_id: profile.chain_id,
+            bridge_contract: profile.bridge_contract.clone(),
+            timelock_contract: profile.timelock.address.clone(),
+            ledger_canister_id: profile.ledger_canister_id.clone(),
+            index_canister_id: profile.index_canister_id.clone(),
+            schema_version: profile.canister_schema_version,
+            expected_bridge_signer: profile.expected_bridge_signer.clone(),
+            governance_operator: profile.governance_operator.clone(),
+            evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
+            rpc_provider_urls_sha256: rpc_url_hash,
+            deposit_rate_limit_window_seconds: profile.rate_limits.deposit_window_seconds,
+            deposit_rate_limit_global: profile.rate_limits.deposit_global,
+            deposit_rate_limit_per_principal: profile.rate_limits.deposit_per_principal,
+            settlement_rate_limit_window_seconds: profile.rate_limits.settlement_window_seconds,
+            settlement_rate_limit_global: profile.rate_limits.settlement_global,
+            settlement_rate_limit_per_principal: profile.rate_limits.settlement_per_principal,
+            settlement_rate_limit_per_record: profile.rate_limits.settlement_per_record,
+            transaction_gas_limit: profile.parameters.transaction_gas_limit,
+            max_fee_per_gas: profile.parameters.max_fee_per_gas,
+            max_priority_fee_per_gas: profile.parameters.max_priority_fee_per_gas,
+            evm_liveness: profile.evm_liveness,
+            eth_floor_wei: profile.parameters.eth_floor_wei,
+            cycles_floor: profile.parameters.cycles_floor,
+            settlement_cycle_ceiling: profile.parameters.settlement_cycle_ceiling,
+            governance_principal: profile.governance_principal.clone(),
+            pause_principal: profile.pause_principal.clone(),
+            fee_recipient: LiveFeeRecipient {
+                owner: profile.fee_recipient.clone(),
+                subaccount_hex: String::new(),
             },
         }
     }
@@ -1887,12 +2185,57 @@ mod tests {
             );
         }
         let manifest: Value = read_json(&first.join("release-inputs-manifest.json")).unwrap();
+        assert_eq!(manifest["schema_version"], 2);
         assert_eq!(
             manifest["profile_file_sha256"],
             hex(&Sha256::digest(fs::read(&profile_path).unwrap()))
         );
         let canister: Value = read_json(&first.join("canister-init.json")).unwrap();
         assert_eq!(canister["evm_rpc_canister_id"], OFFICIAL_EVM_RPC_CANISTER);
+        assert_eq!(
+            canister["evm_liveness"]["replacement_after_seconds"],
+            valid_profile().evm_liveness.replacement_after_seconds
+        );
+        let expected_init_keys = [
+            "ledger_canister_id",
+            "index_canister_id",
+            "evm_rpc_canister_id",
+            "custom_evm_rpc_urls",
+            "base_chain_id",
+            "bridge_contract_hex",
+            "timelock_contract_hex",
+            "ecdsa_key_name",
+            "ecdsa_derivation_path_utf8",
+            "governance_ecdsa_derivation_path_utf8",
+            "deposit_rate_limit_window_seconds",
+            "deposit_rate_limit_global",
+            "deposit_rate_limit_per_principal",
+            "settlement_rate_limit_window_seconds",
+            "settlement_rate_limit_global",
+            "settlement_rate_limit_per_principal",
+            "settlement_rate_limit_per_record",
+            "transaction_gas_limit",
+            "max_fee_per_gas",
+            "max_priority_fee_per_gas",
+            "evm_liveness",
+            "eth_floor_wei",
+            "cycles_floor",
+            "settlement_cycle_ceiling",
+            "governance_principal",
+            "pause_principal",
+            "fee_recipient",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        assert_eq!(
+            canister
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected_init_keys
+        );
         let constructors: Value = read_json(&first.join("contract-constructor-args.json")).unwrap();
         assert_eq!(
             constructors["bridge"][6],
@@ -1934,6 +2277,7 @@ mod tests {
         profile.deployment_block = 0;
         let controller = profile.root_canister_id.clone();
         let mut snapshot = SignerSnapshot {
+            schema_version: 2,
             observed_at_unix: now,
             chain_id: profile.chain_id,
             evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
@@ -1993,6 +2337,7 @@ mod tests {
             settlement_reserve_sufficient: true,
             ledger_fee: profile.parameters.ledger_fee,
             base_service_fee: profile.parameters.service_fee,
+            public_config: live_public_config(&profile),
         };
         let test_helper = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/evm-rpc-rehearsal/test_rehearsal.py");
@@ -2042,21 +2387,29 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .unwrap();
         assert!(generated.success());
         let drill = MonitorDrill {
+            schema_version: 2,
             routing_sha256: profile.monitoring.routing_sha256.clone(),
             fault_started_at_unix: now - 100,
             detected_at_unix: now - 99,
             acknowledged_at_unix: now - 98,
             base_paused_at_unix: now - 97,
             ic_paused_at_unix: now - 96,
-            base_pause_reference: "0xabc".into(),
-            ic_pause_reference: "block-1".into(),
+            base_pause_transaction_hash: format!("0x{}", "10".repeat(32)),
+            base_pause_block_number: 1,
+            base_pause_block_hash: format!("0x{}", "11".repeat(32)),
+            base_pause_receipt_status: 1,
+            base_pause_canonical_finalized: true,
+            ic_pause_response_hex: hex(b"pause response"),
+            ic_pause_response_sha256: hex(&Sha256::digest(b"pause response")),
             pause_principal: profile.pause_principal.clone(),
             pause_request_id: format!("0x{}", "12".repeat(32)),
             pause_audit_sequence: 1,
-            pause_audit_sha256: "13".repeat(32),
+            pause_audit_sha256: hex(&Sha256::digest([0x13; 32])),
+            pause_audit_raw_hex: hex(&[0x13; 32]),
         };
         let handover = ControllerHandover {
-            schema_version: 1,
+            schema_version: 2,
+            stage: "complete".into(),
             observed_at_unix: now - 95,
             bridge_canister_id: profile.bridge_canister_id.clone(),
             sns_root_canister_id: profile.root_canister_id.clone(),
@@ -2093,7 +2446,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             required_freezing_cycles: 1_000,
         };
         let upgrade = SnsUpgrade {
-            schema_version: 1,
+            schema_version: 2,
             observed_at_unix: now - 90,
             executed_at_unix: now - 91,
             proposal_id: 1,
@@ -2106,9 +2459,18 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             after_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
             before_public_state_sha256: "5".repeat(64),
             after_public_state_sha256: "5".repeat(64),
+            proposal_action: "UpgradeSnsControlledCanister".into(),
+            proposal_target_canister_id: profile.bridge_canister_id.clone(),
+            proposal_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            governance_raw_response_hex: hex(b"governance raw"),
+            governance_raw_response_sha256: hex(&Sha256::digest(b"governance raw")),
+            certified_response_hex: hex(b"certified response"),
+            certified_response_sha256: hex(&Sha256::digest(b"certified response")),
+            certificate_hex: hex(b"certificate"),
+            certificate_sha256: hex(&Sha256::digest(b"certificate")),
         };
         let x402 = X402Evidence {
-            schema_version: 1,
+            schema_version: 2,
             observed_at_unix: now - 80,
             network: "base-sepolia".into(),
             chain_id: 84_532,
@@ -2120,7 +2482,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             facilitator_self_operated: false,
             facilitator_url_sha256: "6".repeat(64),
             authorization_standard: "EIP-3009".into(),
-            bsns_address: "0x7777777777777777777777777777777777777777".into(),
+            bsns_address: profile.bsns_contract.clone(),
             bsns_runtime_bytecode_sha256: profile.bsns_runtime_bytecode_sha256.clone(),
             verify_response_sha256: "7".repeat(64),
             verify_valid: true,
@@ -2130,6 +2492,25 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             receipt_block_hash: format!("0x{}", "99".repeat(32)),
             receipt_status: 1,
             canonical_finalized: true,
+            transaction_from: address(20),
+            transaction_to: profile.bsns_contract.clone(),
+            transaction_value: 0,
+            transaction_nonce: 7,
+            transaction_input_hex: hex(b"input calldata"),
+            transaction_input_sha256: hex(&Sha256::digest(b"input calldata")),
+            token_address: profile.bsns_contract.clone(),
+            authorization_from: address(21),
+            authorization_to: address(22),
+            authorization_value: 1,
+            authorization_valid_after: now - 200,
+            authorization_valid_before: now + 200,
+            authorization_nonce: format!("0x{}", "77".repeat(32)),
+            receipt_transaction_hash: format!("0x{}", "88".repeat(32)),
+            receipt_from: address(20),
+            receipt_to: profile.bsns_contract.clone(),
+            receipt_logs_sha256: "8".repeat(64),
+            finalized_head_block_number: 2,
+            finalized_head_block_hash: format!("0x{}", "aa".repeat(32)),
         };
         let mut docs = vec![
             ("profile.json", serde_json::to_vec(&profile).unwrap()),
@@ -2172,7 +2553,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             })
             .collect();
         let gate_a_manifest = ReleaseManifest {
-            schema_version: 1,
+            schema_version: 2,
             release_id: "release-1".into(),
             test_only: false,
             source_revision: "a".repeat(40),
@@ -2217,6 +2598,8 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .unwrap();
         let gate_a = validate_bundle(&root, false).unwrap();
+        let gate_a_authenticity_error = verify_gate_a_authenticity(&gate_a).unwrap_err();
+        assert!(gate_a_authenticity_error.contains("Gate A is unavailable"));
         let gate_a_profile_sha256 = hex(&canonical_sha256(&profile).unwrap());
         profile.deployment_block = snapshot.bridge_deployment_block_number;
         let post_deploy_profile = serde_json::to_vec(&profile).unwrap();
@@ -2252,7 +2635,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             sha256: hex(&Sha256::digest(receipt_bytes)),
         });
         let manifest = ReleaseManifest {
-            schema_version: 1,
+            schema_version: 2,
             release_id: "release-1".into(),
             test_only: false,
             source_revision: "a".repeat(40),
@@ -2268,7 +2651,9 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .unwrap();
         let bundle = validate_bundle(&root, true).unwrap();
-        verify_live(&bundle).unwrap();
+        let authenticity_error = verify_live(&bundle).unwrap_err();
+        assert!(authenticity_error.contains("Gate B is unavailable"));
+        verify_live_inputs(&bundle).unwrap();
 
         let valid_snapshot_bytes = fs::read(root.join("signer-snapshot.json")).unwrap();
         let mut legacy_snapshot: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
@@ -2288,7 +2673,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::to_vec(&signer_drift).unwrap(),
         )
         .unwrap();
-        assert!(verify_live(&bundle).is_err());
+        assert!(verify_live_inputs(&bundle).is_err());
 
         let mut base_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
         base_drift["base_bridge_signer"] =
@@ -2298,7 +2683,26 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::to_vec(&base_drift).unwrap(),
         )
         .unwrap();
-        assert!(verify_live(&bundle).is_err());
+        assert!(verify_live_inputs(&bundle).is_err());
+        fs::write(root.join("signer-snapshot.json"), valid_snapshot_bytes).unwrap();
+
+        let valid_snapshot_bytes = fs::read(root.join("signer-snapshot.json")).unwrap();
+        let mut delay_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
+        delay_drift["timelock_minimum_delay_seconds"] = Value::from(259_201);
+        fs::write(
+            root.join("signer-snapshot.json"),
+            serde_json::to_vec(&delay_drift).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_live_inputs(&bundle).is_err());
+        let mut public_config_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
+        public_config_drift["public_config"]["max_fee_per_gas"] = Value::String("11".into());
+        fs::write(
+            root.join("signer-snapshot.json"),
+            serde_json::to_vec(&public_config_drift).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_live_inputs(&bundle).is_err());
         fs::write(root.join("signer-snapshot.json"), valid_snapshot_bytes).unwrap();
 
         let valid_handover_bytes = fs::read(root.join("controller-handover.json")).unwrap();
@@ -2352,6 +2756,17 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
                 .is_err()
         );
+        let mut forged_upgrade: Value = serde_json::from_slice(&valid_upgrade_bytes).unwrap();
+        forged_upgrade["governance_raw_response_hex"] = Value::String(hex(b"forged"));
+        fs::write(
+            root.join("sns-upgrade.json"),
+            serde_json::to_vec(&forged_upgrade).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
+                .is_err()
+        );
         fs::write(root.join("sns-upgrade.json"), &valid_upgrade_bytes).unwrap();
 
         let valid_x402_bytes = fs::read(root.join("x402-e2e.json")).unwrap();
@@ -2360,6 +2775,17 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         fs::write(
             root.join("x402-e2e.json"),
             serde_json::to_vec(&wrong_chain).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
+                .is_err()
+        );
+        let mut wrong_token: Value = serde_json::from_slice(&valid_x402_bytes).unwrap();
+        wrong_token["token_address"] = Value::String(address(29));
+        fs::write(
+            root.join("x402-e2e.json"),
+            serde_json::to_vec(&wrong_token).unwrap(),
         )
         .unwrap();
         assert!(

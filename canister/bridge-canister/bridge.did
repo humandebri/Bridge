@@ -333,9 +333,11 @@ type NotifyWithdrawalError = variant {
   Busy;
   RpcUnavailable;
   TransactionNotConfirmed;
+  InsufficientCycles;
   WithdrawalConflict;
   OwnerMismatch;
   RpcInconsistent;
+  RateLimited;
   InvalidTransactionHash;
   TransactionReverted;
   LedgerFeeUnavailable;
@@ -358,14 +360,32 @@ type NotifyWithdrawalReceipt = variant {
   };
 };
 type PublicConfig = record {
+  settlement_rate_limit_global : nat16;
   expected_bridge_signer : blob;
+  settlement_rate_limit_per_principal : nat16;
+  settlement_cycle_ceiling : nat;
+  settlement_rate_limit_per_record : nat16;
+  deposit_rate_limit_window_seconds : nat64;
   base_chain_id : nat64;
   bridge_contract : blob;
+  max_priority_fee_per_gas : nat;
+  fee_recipient : FeeRecipientConfig;
+  settlement_rate_limit_window_seconds : nat64;
+  evm_liveness : EvmLivenessPolicy;
   evm_rpc_canister_id : principal;
+  deposit_rate_limit_per_principal : nat16;
+  max_fee_per_gas : nat;
   schema_version : nat16;
+  eth_floor_wei : nat;
+  transaction_gas_limit : nat;
+  deposit_rate_limit_global : nat16;
+  pause_principal : principal;
+  governance_principal : principal;
   index_canister_id : principal;
   ledger_canister_id : principal;
   governance_operator : blob;
+  timelock_contract : blob;
+  cycles_floor : nat;
   rpc_provider_urls_sha256 : blob;
 };
 type RecoverMintRevertArgs = record {

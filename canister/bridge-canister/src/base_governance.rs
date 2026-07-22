@@ -57,6 +57,7 @@ pub async fn submit(
     let operator = crate::api::cached_governance_operator_address(&config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    require_current_authorization(caller, &action)?;
     let (initialized, _, _, pending) = STORE.with(|store| {
         store
             .borrow()
@@ -75,6 +76,7 @@ pub async fn submit(
         let nonce = evm_rpc::transaction_count(&config, operator)
             .await
             .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        require_current_authorization(caller, &action)?;
         STORE.with(|store| {
             store
                 .borrow_mut()
@@ -98,6 +100,7 @@ pub async fn submit(
     }
     if activation {
         activation_preflight(&config).await?;
+        require_current_authorization(caller, &action)?;
     }
     let (kind, target, calldata) = encode_action(action, id)?;
     let payload_hash: [u8; 32] = Sha256::digest(&calldata).into();
@@ -284,6 +287,40 @@ fn authorized_action(governance: bool, pause: bool, action: &BaseGovernanceActio
     governance || (pause && safe_action)
 }
 
+fn require_current_authorization(
+    caller: Principal,
+    action: &BaseGovernanceAction,
+) -> Result<(), BaseGovernanceError> {
+    let governance =
+        admin::is_governance(caller).map_err(|_| BaseGovernanceError::StorageFailure)?;
+    let pause = is_pause_principal(caller)?;
+    if authorized_action(governance, pause, action) {
+        Ok(())
+    } else {
+        Err(BaseGovernanceError::Unauthorized)
+    }
+}
+
+fn require_current_transaction_authorization(
+    caller: Principal,
+    kind: &storage::GovernanceTransactionKind,
+) -> Result<(), BaseGovernanceError> {
+    let governance =
+        admin::is_governance(caller).map_err(|_| BaseGovernanceError::StorageFailure)?;
+    let pause = is_pause_principal(caller)?;
+    let safe = matches!(
+        kind,
+        storage::GovernanceTransactionKind::PauseDepositMints
+            | storage::GovernanceTransactionKind::PauseWithdrawals
+            | storage::GovernanceTransactionKind::CancelTimelock { .. }
+    );
+    if governance || (pause && safe) {
+        Ok(())
+    } else {
+        Err(BaseGovernanceError::Unauthorized)
+    }
+}
+
 fn action_matches_pending(
     action: &BaseGovernanceAction,
     kind: &storage::GovernanceTransactionKind,
@@ -375,7 +412,7 @@ async fn continue_pending(
         transaction.state,
         storage::GovernanceTransactionState::NonceConflict { .. }
     ) {
-        return recover_nonce_conflict(config, transaction).await;
+        return recover_nonce_conflict(caller, config, transaction).await;
     }
     if let storage::GovernanceTransactionState::Broadcasting { transaction_hash } =
         transaction.state
@@ -385,6 +422,7 @@ async fn continue_pending(
             .map_err(|_| BaseGovernanceError::BroadcastAmbiguous {
                 operation_id: transaction.id,
             })?;
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         if known {
             transaction.state = storage::GovernanceTransactionState::Submitted { transaction_hash };
             persist(&transaction)?;
@@ -396,6 +434,7 @@ async fn continue_pending(
         let observed_nonce = evm_rpc::transaction_count(config, operator)
             .await
             .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         if observed_nonce > transaction.envelope.nonce {
             STORE.with(|store| {
                 store
@@ -419,6 +458,7 @@ async fn continue_pending(
                 receipt_block_number,
                 ..
             }) => {
+                require_current_transaction_authorization(caller, &transaction.kind)?;
                 let activates = matches!(
                     transaction.kind,
                     storage::GovernanceTransactionKind::ExecuteActivation { .. }
@@ -427,6 +467,7 @@ async fn continue_pending(
                     let observed = evm_rpc::bridge_snapshot(config)
                         .await
                         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+                    require_current_transaction_authorization(caller, &transaction.kind)?;
                     if observed.snapshot.deposits_paused || observed.snapshot.withdrawals_paused {
                         return Err(BaseGovernanceError::ObservationUnavailable);
                     }
@@ -446,6 +487,7 @@ async fn continue_pending(
                 receipt_block_number,
                 ..
             }) => {
+                require_current_transaction_authorization(caller, &transaction.kind)?;
                 transaction.state = storage::GovernanceTransactionState::Reverted {
                     transaction_hash,
                     receipt_block_number,
@@ -455,7 +497,9 @@ async fn continue_pending(
                     operation_id: transaction.id,
                 });
             }
-            Ok(evm_rpc::ConfirmedReceiptOutcome::Missing) | Err(_) => {
+            Ok(evm_rpc::ConfirmedReceiptOutcome::Missing)
+            | Ok(evm_rpc::ConfirmedReceiptOutcome::Pending { .. })
+            | Err(_) => {
                 return Err(BaseGovernanceError::BroadcastAmbiguous {
                     operation_id: transaction.id,
                 });
@@ -466,6 +510,7 @@ async fn continue_pending(
         let signed = signer::sign_governance(&transaction.envelope, config)
             .await
             .map_err(|_| BaseGovernanceError::SigningUnavailable)?;
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         transaction.envelope.signed_transaction = Some(signed);
         transaction.state = storage::GovernanceTransactionState::Signed;
         persist(&transaction)?;
@@ -491,6 +536,7 @@ async fn continue_pending(
     }
     match evm_rpc::broadcast(config, &raw).await {
         Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => {
+            require_current_transaction_authorization(caller, &transaction.kind)?;
             let hash = evidence
                 .transaction_hash
                 .ok_or(BaseGovernanceError::StorageFailure)?;
@@ -504,6 +550,7 @@ async fn continue_pending(
             Ok(receipt(&transaction, Some(hash)))
         }
         Ok(evm_rpc::BroadcastOutcome::NonceConflict(evidence)) => {
+            require_current_transaction_authorization(caller, &transaction.kind)?;
             let hash = evidence
                 .transaction_hash
                 .ok_or(BaseGovernanceError::StorageFailure)?;
@@ -514,7 +561,7 @@ async fn continue_pending(
                 transaction_hash: hash,
             };
             persist(&transaction)?;
-            recover_nonce_conflict(config, transaction).await
+            recover_nonce_conflict(caller, config, transaction).await
         }
         Err(_) => Err(BaseGovernanceError::BroadcastAmbiguous {
             operation_id: transaction.id,
@@ -523,6 +570,7 @@ async fn continue_pending(
 }
 
 async fn recover_nonce_conflict(
+    caller: Principal,
     config: &crate::config::BridgeInitArgs,
     mut transaction: storage::GovernanceTransaction,
 ) -> Result<BaseGovernanceReceipt, BaseGovernanceError> {
@@ -545,6 +593,7 @@ async fn recover_nonce_conflict(
                 return Err(BaseGovernanceError::StorageFailure)
             }
         }
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         transaction.state = storage::GovernanceTransactionState::Submitted { transaction_hash };
         persist(&transaction)?;
         return Ok(receipt(&transaction, Some(transaction_hash)));
@@ -558,6 +607,7 @@ async fn recover_nonce_conflict(
     if let NonceConflictRecovery::Resync(observed_nonce) =
         nonce_conflict_recovery(false, transaction.envelope.nonce, Some(observed_nonce))
     {
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         STORE.with(|store| {
             store
                 .borrow_mut()

@@ -46,6 +46,33 @@ macro_rules! monotone_body {
     };
 }
 
+macro_rules! refresh_owner_matches_body {
+    ($current:expr, $claimant:expr) => {
+        match $current {
+            Some(owner) => owner == $claimant,
+            None => false,
+        }
+    };
+}
+
+macro_rules! reserve_token_matches_body {
+    (
+        $expected_withdrawals:expr,
+        $expected_amount:expr,
+        $expected_operations:expr,
+        $expected_generation:expr,
+        $current_withdrawals:expr,
+        $current_amount:expr,
+        $current_operations:expr,
+        $current_generation:expr
+    ) => {
+        $expected_withdrawals == $current_withdrawals
+            && $expected_amount == $current_amount
+            && $expected_operations == $current_operations
+            && $expected_generation == $current_generation
+    };
+}
+
 macro_rules! checked_requirement_body {
     ($floor:expr, $unit:expr, $count:expr, $max:expr, $zero:expr) => {
         if $count != $zero && $unit > ($max - $floor) / $count {
@@ -221,6 +248,45 @@ pub const fn monotone(old_rank: u8, new_rank: u8) -> bool {
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn refresh_owner_matches(current: Option<u64>, claimant: u64) -> bool {
+    refresh_owner_matches_body!(current, claimant)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn refresh_generation_next(current: u64) -> Option<u64> {
+    next_attempt_body!(current, u64::MAX, 1u64)
+}
+
+#[cfg(not(verus_keep_ghost))]
+#[allow(clippy::too_many_arguments)]
+pub const fn reserve_token_matches(
+    expected_withdrawals: u64,
+    expected_amount: u128,
+    expected_operations: u64,
+    expected_generation: u64,
+    current_withdrawals: u64,
+    current_amount: u128,
+    current_operations: u64,
+    current_generation: u64,
+) -> bool {
+    reserve_token_matches_body!(
+        expected_withdrawals,
+        expected_amount,
+        expected_operations,
+        expected_generation,
+        current_withdrawals,
+        current_amount,
+        current_operations,
+        current_generation
+    )
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn lease_generation_next(current: u64) -> Option<u64> {
+    next_attempt_body!(current, u64::MAX, 1u64)
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn checked_requirement(floor: u128, unit: u128, count: u128) -> Option<u128> {
     checked_requirement_body!(floor, unit, count, u128::MAX, 0u128)
 }
@@ -372,6 +438,44 @@ verus! {
 
     pub open spec fn monotone_spec(old_rank: int, new_rank: int) -> bool {
         monotone_body!(old_rank, new_rank)
+    }
+
+    pub open spec fn refresh_owner_matches_spec(current: Option<int>, claimant: int) -> bool {
+        refresh_owner_matches_body!(current, claimant)
+    }
+
+    pub open spec fn refresh_generation_next_spec(current: int) -> Option<int> {
+        let max: int = 18446744073709551615;
+        let one: int = 1;
+        next_attempt_body!(current, max, one)
+    }
+
+    pub open spec fn reserve_token_matches_spec(
+        expected_withdrawals: int,
+        expected_amount: int,
+        expected_operations: int,
+        expected_generation: int,
+        current_withdrawals: int,
+        current_amount: int,
+        current_operations: int,
+        current_generation: int,
+    ) -> bool {
+        reserve_token_matches_body!(
+            expected_withdrawals,
+            expected_amount,
+            expected_operations,
+            expected_generation,
+            current_withdrawals,
+            current_amount,
+            current_operations,
+            current_generation
+        )
+    }
+
+    pub open spec fn lease_generation_next_spec(current: int) -> Option<int> {
+        let max: int = 18446744073709551615;
+        let one: int = 1;
+        next_attempt_body!(current, max, one)
     }
 
 

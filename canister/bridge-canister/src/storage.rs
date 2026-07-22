@@ -265,7 +265,7 @@ fn resolve_hold_bundle_db_failpoint(point: ResolveHoldBundleFailpoint) -> Result
     Ok(())
 }
 
-pub const SCHEMA_VERSION: u16 = 16;
+pub const SCHEMA_VERSION: u16 = 17;
 const WIRE_VERSION: u8 = 15;
 const MAX_STABLE_VALUE_BYTES: usize = 16 * 1024;
 const MAX_AUDIT_EVENTS: u64 = 10_000;
@@ -306,7 +306,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 16, 15);
+INSERT INTO bridge_metadata VALUES (1, 17, 15);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1327,6 +1327,8 @@ pub struct DepositAdmissionControl {
     pub emergency_cancel_required: bool,
     pub base_snapshot: Option<CachedBaseMintSnapshot>,
     pub refresh_started_at_ns: Option<u64>,
+    pub refresh_generation: u64,
+    pub refresh_owner: Option<u64>,
     pub next_refresh_allowed_at_ns: u64,
 }
 
@@ -1833,10 +1835,17 @@ pub struct DepositIntent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DepositReserveToken {
+    pub nonterminal_withdrawals: u64,
+    pub reserved_deposit_mint_amount: u128,
+    pub reserved_deposit_mint_operations: u64,
+    pub observation_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepositReserveAdmission {
     pub audit_caller: Principal,
-    pub expected_counters: CounterState,
-    pub expected_observation_generation: u64,
+    pub expected_token: DepositReserveToken,
     pub observed_at_ns: u64,
     pub eth_balance_wei: u128,
     pub cycles_balance: u128,
@@ -2122,9 +2131,77 @@ fn validate_storage_row(
                 return Err(DbError::Constraint("orphan EVM execution payload".into()));
             }
         }
+        "reconciliation_scans" => {
+            let record: ReconciliationScanProgress =
+                decode_with_context(value.to_vec(), "invalid reconciliation scan")?;
+            if key != reconciliation_scan_key(&record.target) {
+                return Err(DbError::Constraint(
+                    "reconciliation scan key mismatch".into(),
+                ));
+            }
+            let target_exists = match record.target {
+                ReconciliationTarget::Hold(id) => referenced_row_exists(
+                    connection,
+                    "reconciliation_holds",
+                    &id.get().to_sql_bytes(),
+                )?,
+                ReconciliationTarget::FeePayout(id) => {
+                    referenced_row_exists(connection, "fee_payouts", &id.to_sql_bytes())?
+                }
+            };
+            if !target_exists {
+                return Err(DbError::Constraint("orphan reconciliation scan".into()));
+            }
+        }
+        "deposit_intents" => {
+            let record: DepositIntent =
+                decode_with_context(value.to_vec(), "invalid deposit intent")?;
+            if key != record.deposit_id {
+                return Err(DbError::Constraint("deposit intent key mismatch".into()));
+            }
+            Principal::try_from_slice(&record.caller)
+                .map_err(|_| DbError::Constraint("invalid deposit intent caller".into()))?;
+        }
+        "audit_events" => {
+            let record: AuditEvent = decode_with_context(value.to_vec(), "invalid audit event")?;
+            if key != record.sequence.to_sql_bytes() {
+                return Err(DbError::Constraint("audit event key mismatch".into()));
+            }
+        }
+        "fee_payouts" => {
+            let record: crate::admin::FeePayoutRecord =
+                decode_with_context(value.to_vec(), "invalid fee payout")?;
+            if key != record.id.to_sql_bytes() {
+                return Err(DbError::Constraint("fee payout key mismatch".into()));
+            }
+        }
         "deposit_owner_index" => {
             if value.len() != 32 || !referenced_row_exists(connection, "deposits", value)? {
                 return Err(DbError::Constraint("orphan deposit owner index".into()));
+            }
+        }
+        "fee_payout_state_index" => {
+            if key.len() != 9 || value != [0] {
+                return Err(DbError::Constraint("invalid fee payout state index".into()));
+            }
+            let id = u64::from_be_bytes(
+                key[1..]
+                    .try_into()
+                    .map_err(|_| DbError::Constraint("invalid fee payout state index".into()))?,
+            );
+            let record = connection
+                .query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM fee_payouts WHERE key = ?1",
+                    params![id.to_sql_bytes()],
+                )?
+                .ok_or_else(|| DbError::Constraint("orphan fee payout state index".into()))?;
+            let record: crate::admin::FeePayoutRecord =
+                decode_with_context(record, "invalid fee payout")?;
+            let expected = fee_payout_index_key(&record)
+                .map_err(|_| DbError::Constraint("invalid fee payout state index".into()))?
+                .ok_or_else(|| DbError::Constraint("stale fee payout state index".into()))?;
+            if key != expected.as_slice() {
+                return Err(DbError::Constraint("stale fee payout state index".into()));
             }
         }
         "operation_owner_index" => {
@@ -2144,6 +2221,51 @@ fn validate_storage_row(
             if !referenced_row_exists(connection, primary, key)? {
                 return Err(DbError::Constraint(context.into()));
             }
+        }
+        "evm_state_index" => {
+            if key.len() != 10 || value != [0] {
+                return Err(DbError::Constraint("invalid EVM state index".into()));
+            }
+            let id = u64::from_be_bytes(
+                key[2..]
+                    .try_into()
+                    .map_err(|_| DbError::Constraint("invalid EVM state index".into()))?,
+            );
+            let record = connection
+                .query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM evm_operations WHERE key = ?1",
+                    params![id.to_sql_bytes()],
+                )?
+                .ok_or_else(|| DbError::Constraint("orphan EVM state index".into()))?;
+            let record: EvmOperationRecord = decode_with_context(record, "invalid EVM operation")?;
+            let expected = evm_state_index_key(&record)
+                .map_err(|_| DbError::Constraint("invalid EVM state index".into()))?
+                .ok_or_else(|| DbError::Constraint("stale EVM state index".into()))?;
+            if key != expected.as_slice() {
+                return Err(DbError::Constraint("stale EVM state index".into()));
+            }
+        }
+        "open_hold_index" => {
+            if key.len() != 8 || value != [0] {
+                return Err(DbError::Constraint("invalid open hold index".into()));
+            }
+            let record = connection
+                .query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM reconciliation_holds WHERE key = ?1",
+                    params![key],
+                )?
+                .ok_or_else(|| DbError::Constraint("orphan open hold index".into()))?;
+            let record: ReconciliationHoldRecord =
+                decode_with_context(record, "invalid reconciliation hold")?;
+            if !is_open_hold(&record) || key != record.id.get().to_sql_bytes() {
+                return Err(DbError::Constraint("stale open hold index".into()));
+            }
+        }
+        "owner_deposit_sequences" => {
+            Principal::try_from_slice(key)
+                .map_err(|_| DbError::Constraint("invalid owner sequence principal".into()))?;
+            u64::from_sql_bytes(value.to_vec())
+                .map_err(|_| DbError::Constraint("invalid owner sequence".into()))?;
         }
         "withdrawal_liability_index" => {
             if key.len() != 40 || value.len() != 32 {
@@ -2189,7 +2311,11 @@ fn validate_storage_row(
                 .checked_add(1)
                 .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
         }
-        _ => {}
+        _ => {
+            return Err(DbError::Constraint(format!(
+                "unsupported validation table: {table}"
+            )));
+        }
     }
     Ok(())
 }
@@ -2206,6 +2332,17 @@ impl Drop for StableStore {
 }
 
 impl StableStore {
+    pub fn deposit_reserve_token(&self) -> Result<DepositReserveToken, StorageError> {
+        let counters = self.counters()?;
+        let progress = self.external_progress()?;
+        Ok(DepositReserveToken {
+            nonterminal_withdrawals: counters.nonterminal_withdrawals,
+            reserved_deposit_mint_amount: counters.reserved_deposit_mint_amount,
+            reserved_deposit_mint_operations: counters.reserved_deposit_mint_operations,
+            observation_generation: progress.reserve_observation_generation,
+        })
+    }
+
     pub fn init(memory: DefaultMemoryImpl) -> Result<Self, StorageError> {
         Self::init_with_config(memory, None)
     }
@@ -3641,15 +3778,8 @@ impl StableStore {
         }))
     }
 
-    pub fn next_settlement_wakeup_ns(&self, now_ns: u64) -> Result<Option<u64>, StorageError> {
+    pub fn next_settlement_wakeup_ns(&self, _now_ns: u64) -> Result<Option<u64>, StorageError> {
         let values = self.handle.query(|connection| {
-            if let Some(active) = connection.query_optional_scalar::<Vec<u8>>(
-                "SELECT lease_until_ns FROM settlement_jobs
-                 WHERE status = 1 AND lease_until_ns > ?1 ORDER BY lease_until_ns LIMIT 1",
-                params![now_ns.to_sql_bytes()],
-            )? {
-                return Ok(vec![active]);
-            }
             connection.query_all(
                 "SELECT next_run_at_ns FROM settlement_jobs WHERE status = 0
              UNION ALL SELECT lease_until_ns FROM settlement_jobs WHERE status = 1
@@ -3691,13 +3821,27 @@ impl StableStore {
         &mut self,
         now_ns: u64,
         lease_until_ns: u64,
+        max_active_leases: u64,
     ) -> Result<SettlementJobClaim, StorageError> {
         self.handle.update(|connection| {
-            if let Some(active) = connection.query_optional_scalar::<Vec<u8>>(
-                "SELECT lease_until_ns FROM settlement_jobs WHERE status = 1 AND lease_until_ns > ?1
-                 ORDER BY lease_until_ns LIMIT 1", params![now_ns.to_sql_bytes()])? {
-                let lease_until_ns = u64::from_sql_bytes(active).map_err(|_| DbError::Constraint("invalid lease deadline".into()))?;
-                return Ok(SettlementJobClaim::ActiveLease { lease_until_ns });
+            if max_active_leases == 0 {
+                return Err(DbError::Constraint(
+                    "automatic settlement concurrency must be positive".into(),
+                ));
+            }
+            let active_leases = connection.query_scalar::<i64>(
+                "SELECT COUNT(*) FROM settlement_jobs WHERE status = 1 AND lease_until_ns > ?1",
+                params![now_ns.to_sql_bytes()],
+            )?;
+            if u64::try_from(active_leases).map_err(|_| DbError::Constraint("invalid active lease count".into()))? >= max_active_leases {
+                let lease_until_ns = connection.query_scalar::<Vec<u8>>(
+                    "SELECT lease_until_ns FROM settlement_jobs WHERE status = 1 AND lease_until_ns > ?1 ORDER BY lease_until_ns LIMIT 1",
+                    params![now_ns.to_sql_bytes()],
+                )?;
+                return Ok(SettlementJobClaim::ActiveLease {
+                    lease_until_ns: u64::from_sql_bytes(lease_until_ns)
+                        .map_err(|_| DbError::Constraint("invalid lease deadline".into()))?,
+                });
             }
             let rows = connection.query_all(
                 "SELECT settlement_kind, settlement_id, operation_id, phase, confirmation_checks,
@@ -3712,7 +3856,11 @@ impl StableStore {
             let Some((kind_raw, id_raw, operation_raw, phase_raw, checks, started_raw, generation_raw)) = rows.into_iter().next() else { return Ok(SettlementJobClaim::None) };
             let kind = match kind_raw { 0 => SettlementJobKind::Deposit, 1 => SettlementJobKind::Withdrawal, _ => return Err(DbError::Constraint("invalid settlement kind".into())) };
             let settlement_id: [u8; 32] = id_raw.try_into().map_err(|_| DbError::Constraint("invalid settlement id".into()))?;
-            let generation = u64::from_sql_bytes(generation_raw).map_err(|_| DbError::Constraint("invalid lease generation".into()))?.checked_add(1).ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
+            let generation = bridge_core::lease_generation_next(
+                u64::from_sql_bytes(generation_raw)
+                    .map_err(|_| DbError::Constraint("invalid lease generation".into()))?,
+            )
+            .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
             connection.execute(
                 "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
                  lease_generation = ?1, lease_until_ns = ?2, updated_at_ns = ?3
@@ -3739,46 +3887,92 @@ impl StableStore {
         now_ns: u64,
         lease_until_ns: u64,
     ) -> Result<SettlementJobClaim, StorageError> {
-        self.handle.update(|connection| {
-            if let Some(active) = connection.query_optional_scalar::<Vec<u8>>(
-                "SELECT lease_until_ns FROM settlement_jobs WHERE status = 1 AND lease_until_ns > ?1
-                 ORDER BY lease_until_ns LIMIT 1", params![now_ns.to_sql_bytes()])? {
-                let lease_until_ns = u64::from_sql_bytes(active).map_err(|_| DbError::Constraint("invalid lease deadline".into()))?;
-                return Ok(SettlementJobClaim::ActiveLease { lease_until_ns });
-            }
-            let rows = connection.query_all(
-                "SELECT operation_id, phase, confirmation_checks, confirmation_started_at_ns,
+        self.handle
+            .update(|connection| {
+                if let Some(active) = connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT lease_until_ns FROM settlement_jobs
+                 WHERE settlement_kind = ?1 AND settlement_id = ?2
+                   AND status = 1 AND lease_until_ns > ?3",
+                    params![
+                        kind.sql(),
+                        settlement_id.to_sql_bytes(),
+                        now_ns.to_sql_bytes()
+                    ],
+                )? {
+                    let lease_until_ns = u64::from_sql_bytes(active)
+                        .map_err(|_| DbError::Constraint("invalid lease deadline".into()))?;
+                    return Ok(SettlementJobClaim::ActiveLease { lease_until_ns });
+                }
+                let rows = connection.query_all(
+                    "SELECT operation_id, phase, confirmation_checks, confirmation_started_at_ns,
                         lease_generation
                  FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2
                    AND ((status = 0 AND next_run_at_ns <= ?3)
                      OR (status = 1 AND lease_until_ns <= ?3)) LIMIT 1",
-                params![kind.sql(), settlement_id.to_sql_bytes(), now_ns.to_sql_bytes()],
-                |row| Ok((row.get::<Option<Vec<u8>>>(0)?, row.get::<i64>(1)?, row.get::<i64>(2)?, row.get::<Option<Vec<u8>>>(3)?, row.get::<Vec<u8>>(4)?)),
-            )?;
-            let Some((operation, phase, checks, started, generation)) = rows.into_iter().next() else { return Ok(SettlementJobClaim::None) };
-            let generation = u64::from_sql_bytes(generation).map_err(|_| DbError::Constraint("invalid lease generation".into()))?.checked_add(1).ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
-            connection.execute(
-                "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
+                    params![
+                        kind.sql(),
+                        settlement_id.to_sql_bytes(),
+                        now_ns.to_sql_bytes()
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<Option<Vec<u8>>>(0)?,
+                            row.get::<i64>(1)?,
+                            row.get::<i64>(2)?,
+                            row.get::<Option<Vec<u8>>>(3)?,
+                            row.get::<Vec<u8>>(4)?,
+                        ))
+                    },
+                )?;
+                let Some((operation, phase, checks, started, generation)) = rows.into_iter().next()
+                else {
+                    return Ok(SettlementJobClaim::None);
+                };
+                let generation = bridge_core::lease_generation_next(
+                    u64::from_sql_bytes(generation)
+                        .map_err(|_| DbError::Constraint("invalid lease generation".into()))?,
+                )
+                .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
+                connection.execute(
+                    "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
                  lease_generation = ?1, lease_until_ns = ?2, updated_at_ns = ?3
                  WHERE settlement_kind = ?4 AND settlement_id = ?5",
-                params![generation.to_sql_bytes(), lease_until_ns.to_sql_bytes(), now_ns.to_sql_bytes(), kind.sql(), settlement_id.to_sql_bytes()],
-            )?;
-            Ok(SettlementJobClaim::Claimed(SettlementJob {
-                kind,
-                settlement_id,
-                operation_id: operation.map(u64::from_sql_bytes).transpose().map_err(|_| DbError::Constraint("invalid operation id".into()))?,
-                phase: match phase { 0 => SettlementJobPhase::Confirmation, 1 => SettlementJobPhase::Settlement, _ => return Err(DbError::Constraint("invalid settlement phase".into())) },
-                status: SettlementJobStatus::Leased,
-                next_run_at_ns: None,
-                confirmation_checks: u8::try_from(checks).map_err(|_| DbError::Constraint("invalid confirmation count".into()))?,
-                confirmation_started_at_ns: started.map(u64::from_sql_bytes).transpose().map_err(|_| DbError::Constraint("invalid confirmation start".into()))?,
-                lease_generation: generation,
-                lease_until_ns: Some(lease_until_ns),
-                last_error_code: None,
-                last_error_detail: None,
-                updated_at_ns: now_ns,
-            }))
-        }).map_err(Into::into)
+                    params![
+                        generation.to_sql_bytes(),
+                        lease_until_ns.to_sql_bytes(),
+                        now_ns.to_sql_bytes(),
+                        kind.sql(),
+                        settlement_id.to_sql_bytes()
+                    ],
+                )?;
+                Ok(SettlementJobClaim::Claimed(SettlementJob {
+                    kind,
+                    settlement_id,
+                    operation_id: operation
+                        .map(u64::from_sql_bytes)
+                        .transpose()
+                        .map_err(|_| DbError::Constraint("invalid operation id".into()))?,
+                    phase: match phase {
+                        0 => SettlementJobPhase::Confirmation,
+                        1 => SettlementJobPhase::Settlement,
+                        _ => return Err(DbError::Constraint("invalid settlement phase".into())),
+                    },
+                    status: SettlementJobStatus::Leased,
+                    next_run_at_ns: None,
+                    confirmation_checks: u8::try_from(checks)
+                        .map_err(|_| DbError::Constraint("invalid confirmation count".into()))?,
+                    confirmation_started_at_ns: started
+                        .map(u64::from_sql_bytes)
+                        .transpose()
+                        .map_err(|_| DbError::Constraint("invalid confirmation start".into()))?,
+                    lease_generation: generation,
+                    lease_until_ns: Some(lease_until_ns),
+                    last_error_code: None,
+                    last_error_detail: None,
+                    updated_at_ns: now_ns,
+                }))
+            })
+            .map_err(Into::into)
     }
 
     pub fn renew_settlement_lease(
@@ -4027,28 +4221,37 @@ impl StableStore {
         now_ns: u64,
         stale_lock_ns: u64,
         cooldown_ns: u64,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<u64>, StorageError> {
         let mut admission = self.deposit_admission()?;
         let locked = admission
             .refresh_started_at_ns
             .is_some_and(|started| now_ns.saturating_sub(started) < stale_lock_ns);
         if locked || now_ns < admission.next_refresh_allowed_at_ns {
-            return Ok(false);
+            return Ok(None);
         }
+        admission.refresh_generation =
+            bridge_core::refresh_generation_next(admission.refresh_generation)
+                .ok_or(StorageError::DatabaseFailure)?;
+        let owner = admission.refresh_generation;
         admission.refresh_started_at_ns = Some(now_ns);
+        admission.refresh_owner = Some(owner);
         admission.next_refresh_allowed_at_ns = now_ns.saturating_add(cooldown_ns);
         self.set_deposit_admission(&admission)?;
-        Ok(true)
+        Ok(Some(owner))
     }
 
     pub fn finish_base_snapshot_refresh(
         &mut self,
+        owner: u64,
         observed_at_ns: u64,
         snapshot: BaseMintSnapshot,
         bridge_signer: [u8; 20],
         deposits_paused: bool,
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
+        if !bridge_core::refresh_owner_matches(admission.refresh_owner, owner) {
+            return Err(StorageError::DatabaseFailure);
+        }
         admission.base_snapshot = Some(CachedBaseMintSnapshot {
             observed_at_ns,
             snapshot,
@@ -4056,11 +4259,14 @@ impl StableStore {
             deposits_paused,
         });
         admission.refresh_started_at_ns = None;
+        admission.refresh_owner = None;
         self.set_deposit_admission(&admission)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn finish_base_snapshot_refresh_with_rpc_audit(
         &mut self,
+        owner: u64,
         observed_at_ns: u64,
         snapshot: BaseMintSnapshot,
         bridge_signer: [u8; 20],
@@ -4069,6 +4275,7 @@ impl StableStore {
         audit_kinds: Vec<AuditEventKind>,
     ) -> Result<(), StorageError> {
         self.finish_base_snapshot_refresh_with_rpc_audit_and_observation(
+            owner,
             observed_at_ns,
             snapshot,
             bridge_signer,
@@ -4082,6 +4289,7 @@ impl StableStore {
     #[allow(clippy::too_many_arguments)]
     pub fn finish_base_snapshot_refresh_with_rpc_audit_and_observation(
         &mut self,
+        owner: u64,
         observed_at_ns: u64,
         snapshot: BaseMintSnapshot,
         bridge_signer: [u8; 20],
@@ -4091,6 +4299,9 @@ impl StableStore {
         audit_kinds: Vec<AuditEventKind>,
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
+        if !bridge_core::refresh_owner_matches(admission.refresh_owner, owner) {
+            return Err(StorageError::DatabaseFailure);
+        }
         let previous_admission = self.deposit_admission.get().clone();
         let mut progress = self.external_progress()?;
         let previous_progress = self.external_progress.get().clone();
@@ -4104,6 +4315,7 @@ impl StableStore {
             deposits_paused,
         });
         admission.refresh_started_at_ns = None;
+        admission.refresh_owner = None;
         let admission_blob = encode(&admission)?;
         let progress_blob = encode(&progress)?;
         let mut counters = self.counters()?;
@@ -4145,21 +4357,30 @@ impl StableStore {
         Ok(())
     }
 
-    pub fn fail_base_snapshot_refresh(&mut self) -> Result<(), StorageError> {
+    pub fn fail_base_snapshot_refresh(&mut self, owner: u64) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
+        if !bridge_core::refresh_owner_matches(admission.refresh_owner, owner) {
+            return Err(StorageError::DatabaseFailure);
+        }
         admission.refresh_started_at_ns = None;
+        admission.refresh_owner = None;
         self.set_deposit_admission(&admission)
     }
 
     pub fn fail_base_snapshot_refresh_with_rpc_audit(
         &mut self,
+        owner: u64,
         caller: Principal,
         timestamp_ns: u64,
         audit_kinds: Vec<AuditEventKind>,
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
+        if !bridge_core::refresh_owner_matches(admission.refresh_owner, owner) {
+            return Err(StorageError::DatabaseFailure);
+        }
         let previous_admission = self.deposit_admission.get().clone();
         admission.refresh_started_at_ns = None;
+        admission.refresh_owner = None;
         let admission_blob = encode(&admission)?;
         let mut counters = self.counters()?;
         let previous_counters = encode(&counters)?;
@@ -5850,10 +6071,16 @@ impl StableStore {
         let mut progress = previous_progress;
         let mut emit_reserve_audit = false;
         if let Some(admission) = reserve_admission {
-            if admission.expected_counters != previous_counters
-                || admission.expected_observation_generation
-                    != previous_progress.reserve_observation_generation
-                || admission.observed_at_ns < previous_progress.last_reserve_observation_ns
+            if !bridge_core::reserve_token_matches(
+                admission.expected_token.nonterminal_withdrawals,
+                admission.expected_token.reserved_deposit_mint_amount,
+                admission.expected_token.reserved_deposit_mint_operations,
+                admission.expected_token.observation_generation,
+                previous_counters.nonterminal_withdrawals,
+                previous_counters.reserved_deposit_mint_amount,
+                previous_counters.reserved_deposit_mint_operations,
+                previous_progress.reserve_observation_generation,
+            ) || admission.observed_at_ns < previous_progress.last_reserve_observation_ns
             {
                 return Err(StorageError::StaleReserveObservation);
             }
@@ -6106,7 +6333,7 @@ impl StableStore {
                     next_cursor: None,
                     oldest_available_cursor,
                     history_truncated,
-                })
+                });
             }
             Some(sequence) => u64::MAX
                 .checked_sub(sequence)
@@ -9555,13 +9782,15 @@ mod tests {
             for failpoint in failpoints {
                 let memory = VectorMemory::default();
                 let mut store = StableStore::init(memory.clone()).expect("snapshot init");
-                assert!(store
+                let refresh_owner = store
                     .begin_base_snapshot_refresh(105, 1_000, 1)
-                    .expect("begin refresh"));
+                    .expect("begin refresh")
+                    .expect("refresh owner");
                 let before = rpc_atomic_snapshot(&store, None);
                 set_rpc_atomic_failpoint(Some(failpoint));
                 let result = if success {
                     store.finish_base_snapshot_refresh_with_rpc_audit_and_observation(
+                        refresh_owner,
                         106,
                         mint_snapshot(),
                         [86; 20],
@@ -9579,6 +9808,7 @@ mod tests {
                     )
                 } else {
                     store.fail_base_snapshot_refresh_with_rpc_audit(
+                        refresh_owner,
                         caller,
                         106,
                         vec![rpc_audit_kind(tag)],
@@ -9605,9 +9835,10 @@ mod tests {
 
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory.clone()).expect("successful snapshot init");
-        assert!(store
+        let refresh_owner = store
             .begin_base_snapshot_refresh(105, 1_000, 1)
-            .expect("begin successful refresh"));
+            .expect("begin successful refresh")
+            .expect("refresh owner");
         let observation = FinalizedObservationRecord {
             chain_id: 8453,
             block_number: 86,
@@ -9618,6 +9849,7 @@ mod tests {
         };
         store
             .finish_base_snapshot_refresh_with_rpc_audit_and_observation(
+                refresh_owner,
                 106,
                 mint_snapshot(),
                 [86; 20],
@@ -9702,11 +9934,13 @@ mod tests {
         ] {
             let memory = VectorMemory::default();
             let mut store = StableStore::init(memory.clone()).expect("initialize snapshot store");
-            assert!(store
+            let initial_owner = store
                 .begin_base_snapshot_refresh(900, 1_000, 1)
-                .expect("begin initial refresh"));
+                .expect("begin initial refresh")
+                .expect("initial owner");
             store
                 .finish_base_snapshot_refresh_with_rpc_audit_and_observation(
+                    initial_owner,
                     1_000,
                     mint_snapshot(),
                     current.bridge_signer,
@@ -9716,13 +9950,15 @@ mod tests {
                     vec![rpc_audit_kind(90)],
                 )
                 .expect("persist current observation");
-            assert!(store
+            let rejected_owner = store
                 .begin_base_snapshot_refresh(1_050, 1_000, 1)
-                .expect("begin rejected refresh"));
+                .expect("begin rejected refresh")
+                .expect("rejected owner");
             let before = rpc_atomic_snapshot(&store, None);
 
             assert_eq!(
                 store.finish_base_snapshot_refresh_with_rpc_audit_and_observation(
+                    rejected_owner,
                     1_100,
                     mint_snapshot(),
                     candidate.bridge_signer,
@@ -10093,8 +10329,13 @@ mod tests {
             &record,
             Some(DepositReserveAdmission {
                 audit_caller: owner,
-                expected_counters: before_observation,
-                expected_observation_generation: progress_before.reserve_observation_generation,
+                expected_token: DepositReserveToken {
+                    nonterminal_withdrawals: before_observation.nonterminal_withdrawals,
+                    reserved_deposit_mint_amount: before_observation.reserved_deposit_mint_amount,
+                    reserved_deposit_mint_operations: before_observation
+                        .reserved_deposit_mint_operations,
+                    observation_generation: progress_before.reserve_observation_generation,
+                },
                 observed_at_ns: 10,
                 eth_balance_wei: 20_000_000,
                 cycles_balance: 20_000_000,
@@ -10127,10 +10368,9 @@ mod tests {
         let owner = Principal::self_authenticating([33; 32]);
         let record = deposit();
         let intent = intent(record.id.bytes(), owner);
-        let expected_counters = store.counters().expect("counters before admission");
-        let expected_progress = store
-            .external_progress()
-            .expect("progress before admission");
+        let expected_token = store
+            .deposit_reserve_token()
+            .expect("reserve token before admission");
 
         store
             .admit_deposit(
@@ -10139,9 +10379,7 @@ mod tests {
                 &record,
                 Some(DepositReserveAdmission {
                     audit_caller: owner,
-                    expected_counters,
-                    expected_observation_generation: expected_progress
-                        .reserve_observation_generation,
+                    expected_token,
                     observed_at_ns: 42,
                     eth_balance_wei: 20_000_001,
                     cycles_balance: 20_000_000,
@@ -10755,7 +10993,7 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 16);
+        assert_eq!(SCHEMA_VERSION, 17);
         assert_eq!(WIRE_VERSION, 15);
     }
 
@@ -10908,7 +11146,7 @@ mod tests {
 
         assert!(matches!(
             store
-                .claim_due_settlement_job(200, 300)
+                .claim_due_settlement_job(200, 300, u64::MAX)
                 .expect("no due confirmation"),
             SettlementJobClaim::None
         ));
@@ -11063,7 +11301,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn active_lease_deadline_takes_priority_over_an_overdue_scheduled_job() {
+    fn active_lease_does_not_block_an_overdue_job_for_another_record() {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
         let first = deposit();
         let mut second = deposit();
@@ -11084,7 +11322,7 @@ mod tests {
             })
             .expect("first job");
         let SettlementJobClaim::Claimed(_) = store
-            .claim_due_settlement_job(100, 500)
+            .claim_due_settlement_job(100, 500, 2)
             .expect("claim first")
         else {
             panic!("first job was not claimed")
@@ -11104,12 +11342,32 @@ mod tests {
 
         assert_eq!(
             store.next_settlement_wakeup_ns(200).expect("wakeup"),
-            Some(500)
+            Some(1)
         );
         assert!(matches!(
             store
-                .claim_due_settlement_job(200, 600)
-                .expect("active lease"),
+                .claim_due_settlement_job(200, 600, 1)
+                .expect("bounded claim"),
+            SettlementJobClaim::ActiveLease {
+                lease_until_ns: 500
+            }
+        ));
+        let SettlementJobClaim::Claimed(claimed) = store
+            .claim_due_settlement_job(200, 600, 2)
+            .expect("second claim")
+        else {
+            panic!("active lease on the first record blocked the second record")
+        };
+        assert_eq!(claimed.settlement_id, second.id.bytes());
+        assert!(matches!(
+            store
+                .claim_specific_due_settlement_job(
+                    SettlementJobKind::Deposit,
+                    first.id.bytes(),
+                    200,
+                    600,
+                )
+                .expect("specific active lease"),
             SettlementJobClaim::ActiveLease {
                 lease_until_ns: 500
             }
@@ -11135,7 +11393,7 @@ mod tests {
             })
             .expect("job");
         let SettlementJobClaim::Claimed(mut first) = store
-            .claim_due_settlement_job(100, 220)
+            .claim_due_settlement_job(100, 220, u64::MAX)
             .expect("first claim")
         else {
             panic!("job was not claimed")
@@ -11147,7 +11405,7 @@ mod tests {
         assert_eq!(first.lease_until_ns, Some(270));
 
         let SettlementJobClaim::Claimed(second) = store
-            .claim_due_settlement_job(270, 390)
+            .claim_due_settlement_job(270, 390, u64::MAX)
             .expect("expired recovery")
         else {
             panic!("expired lease was not recovered")
@@ -11184,8 +11442,9 @@ mod tests {
                 )
             })
             .expect("job");
-        let SettlementJobClaim::Claimed(job) =
-            store.claim_due_settlement_job(10, 130).expect("claim")
+        let SettlementJobClaim::Claimed(job) = store
+            .claim_due_settlement_job(10, 130, u64::MAX)
+            .expect("claim")
         else {
             panic!("job was not claimed")
         };
@@ -11592,6 +11851,49 @@ mod tests {
                 assert!(status.db_size > 0);
                 break;
             }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn chunked_validation_rejects_malformed_rows_in_every_validation_table() {
+        let previously_unchecked_tables = [
+            "reconciliation_scans",
+            "deposit_intents",
+            "audit_events",
+            "fee_payouts",
+            "fee_payout_state_index",
+            "evm_state_index",
+            "open_hold_index",
+            "owner_deposit_sequences",
+        ];
+
+        for table in previously_unchecked_tables {
+            let store = StableStore::init(VectorMemory::default()).expect("initialize");
+            store
+                .handle
+                .update(|connection| {
+                    connection.execute(
+                        &format!("INSERT INTO {table}(key, value) VALUES (?1, ?2)"),
+                        params![vec![0u8], vec![0u8]],
+                    )?;
+                    increment_table_count(connection, table)
+                })
+                .expect("inject malformed validation row");
+
+            store.start_storage_validation().expect("start validation");
+            let mut rejected = false;
+            for _ in 0..=VALIDATION_TABLES.len() {
+                match store.continue_storage_validation(MAX_VALIDATION_ROWS) {
+                    Err(StorageMaintenanceError::StorageFailure) => {
+                        rejected = true;
+                        break;
+                    }
+                    Ok(status) if !status.complete => {}
+                    result => panic!("{table} unexpectedly passed validation: {result:?}"),
+                }
+            }
+            assert!(rejected, "{table} malformed row was not rejected");
         }
     }
 
@@ -12767,14 +13069,16 @@ mod tests {
             mint_window_duration: 100,
             minted_in_window: Amount::ZERO,
         };
-        assert!(store
+        let refresh_owner = store
             .begin_base_snapshot_refresh(100, 300, 60)
-            .expect("begin refresh"));
-        assert!(!store
+            .expect("begin refresh")
+            .expect("refresh owner");
+        assert!(store
             .begin_base_snapshot_refresh(101, 300, 60)
-            .expect("singleflight rejects overlap"));
+            .expect("singleflight rejects overlap")
+            .is_none());
         store
-            .finish_base_snapshot_refresh(110, snapshot, [7; 20], false)
+            .finish_base_snapshot_refresh(refresh_owner, 110, snapshot, [7; 20], false)
             .expect("cache snapshot");
         let cached = store
             .cached_base_mint_snapshot(160, 60, 10)
@@ -12795,6 +13099,33 @@ mod tests {
                 .expect("progress-invalid cache"),
             None
         );
+    }
+
+    #[test]
+    #[serial]
+    fn stale_snapshot_worker_cannot_finish_or_release_a_new_owner() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        let first = store
+            .begin_base_snapshot_refresh(100, 300, 60)
+            .expect("first begin")
+            .expect("first owner");
+        let second = store
+            .begin_base_snapshot_refresh(500, 300, 60)
+            .expect("take over stale lock")
+            .expect("second owner");
+        assert_ne!(first, second);
+        assert_eq!(
+            store.fail_base_snapshot_refresh(first),
+            Err(StorageError::DatabaseFailure)
+        );
+        assert!(store
+            .begin_base_snapshot_refresh(501, 300, 60)
+            .expect("new owner remains locked")
+            .is_none());
+        store
+            .fail_base_snapshot_refresh(second)
+            .expect("current owner releases lock");
     }
 
     #[allow(clippy::type_complexity)]

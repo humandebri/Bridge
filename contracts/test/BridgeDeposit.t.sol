@@ -115,6 +115,25 @@ contract BridgeDepositTest is TestBase {
         _deployRaw(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, WINDOW_DURATION, 100, 101);
     }
 
+    function testConstructorRejectsValuesOutsideCanisterAndWindowBounds() public {
+        vm.expectRevert(abi.encodeWithSelector(IBridge.ValueExceedsU128.selector, uint256(type(uint128).max) + 1));
+        _deployRaw(uint256(type(uint128).max) + 1, WINDOW_LIMIT, WINDOW_DURATION, MAX_SERVICE_FEE, SERVICE_FEE);
+
+        vm.expectRevert(abi.encodeWithSelector(IBridge.ValueExceedsU128.selector, uint256(type(uint128).max) + 1));
+        _deployRaw(PER_DEPOSIT_LIMIT, uint256(type(uint128).max) + 1, WINDOW_DURATION, MAX_SERVICE_FEE, SERVICE_FEE);
+
+        vm.expectRevert(abi.encodeWithSelector(IBridge.ValueExceedsU128.selector, uint256(type(uint128).max) + 1));
+        _deployRaw(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, WINDOW_DURATION, uint256(type(uint128).max) + 1, SERVICE_FEE);
+
+        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidMintWindowDuration.selector, 1, 1 hours, 30 days));
+        _deployRaw(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, 1, MAX_SERVICE_FEE, SERVICE_FEE);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IBridge.InvalidMintWindowDuration.selector, 30 days + 1, 1 hours, 30 days)
+        );
+        _deployRaw(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, 30 days + 1, MAX_SERVICE_FEE, SERVICE_FEE);
+    }
+
     function testMintDepositDeductsFeeAndMarksOpaqueId() public {
         bytes32 depositId = bytes32(0);
         IBridge.DepositMintRequest memory request = _request(depositId, RECIPIENT, 110, 10);
@@ -136,10 +155,16 @@ contract BridgeDepositTest is TestBase {
     }
 
     function testMintDepositRejectsInvalidRequestFields() public {
+        address tokenAddress = address(bridge.bsns());
         vm.startPrank(BRIDGE_SIGNER);
 
         vm.expectRevert(IBridge.ZeroAddress.selector);
         bridge.mintDeposit(_request(keccak256("zero-recipient"), address(0), 110, 10));
+
+        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidMintRecipient.selector, address(bridge)));
+        bridge.mintDeposit(_request(keccak256("bridge-recipient"), address(bridge), 110, 10));
+        vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidMintRecipient.selector, tokenAddress));
+        bridge.mintDeposit(_request(keccak256("token-recipient"), tokenAddress, 110, 10));
 
         vm.expectRevert(abi.encodeWithSelector(IBridge.ServiceFeeExceedsUserMaximum.selector, 10, 9));
         bridge.mintDeposit(_request(keccak256("fee-maximum"), RECIPIENT, 110, 9));
