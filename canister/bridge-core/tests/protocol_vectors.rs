@@ -98,7 +98,7 @@ fn amount(value: &str) -> u128 {
 }
 
 #[test]
-fn production_quote_kernel_matches_lean_vectors() {
+fn protocol_quote_cases_matches_production() {
     for case in vectors().quote_cases {
         let amount_value = amount(&case.amount);
         let service_fee = amount(&case.service_fee);
@@ -117,7 +117,7 @@ fn production_quote_kernel_matches_lean_vectors() {
 }
 
 #[test]
-fn production_settlement_kernel_matches_lean_vectors() {
+fn protocol_settlement_cases_matches_production() {
     for case in vectors().settlement_cases {
         let actual = outbound_settlement(
             amount(&case.amount_out),

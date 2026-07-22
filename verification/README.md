@@ -4,6 +4,8 @@ Lean projectはcross-chain protocolの正式な抽象仕様である。
 状態遷移、不変条件、frontendの判断、pending queueの更新を`verification/lean/BridgeSpec`へ集約し、Lakeで定理を検査する。
 Lean executableが生成する`verification/generated/protocol-vectors.json`をRust、Solidity、TypeScriptのconsumerで読み、実装の代表的な境界値を同じ期待値と照合する。
 仕様、定理、consumerの対応は`verification/refinement-manifest.tsv`で固定し、未登録または欠落した対応をCIで拒否する。
+manifestはsection、Lean definition、Lean theorem、runner、consumer source、test selectorの6列で構成し、同じsectionに複数consumerを登録できる。
+CIは許可済みのRust、Foundry、Vitest runnerだけを使用し、各selectorが正確に1件成功したことを機械可読な結果から確認する。
 このvector照合は列挙されたcaseに対するbounded conformanceであり、Rust、Solidity、TypeScript実装全体の完全なsemantic refinementではない。
 
 Withdrawalの検証対象は、Base上の不可逆な`Committed` burnとCanister上の未決済債務である。Base refund、release acknowledgement、Withdrawal用EVM operationはモデルに存在しない。

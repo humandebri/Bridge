@@ -1,0 +1,31 @@
+{
+  "environment": "sepolia-staging",
+  "label": "IC Mainnet × Base Sepolia TEST",
+  "testOnly": true,
+  "gateBManifestSha256": null,
+  "profileFileSha256": "17f3bef5fa80cbe014525f7f4d42c5ca46456c817c68bf059cf9c2eecda1dc2c",
+  "profileCanonicalSha256": "17f3bef5fa80cbe014525f7f4d42c5ca46456c817c68bf059cf9c2eecda1dc2c",
+  "icHost": "https://icp-api.io",
+  "baseRpcUrl": "https://base-sepolia-rpc.publicnode.com",
+  "chainId": 84532,
+  "bridgeCanisterId": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "ledgerCanisterId": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+  "indexCanisterId": "qzre3-3iaaa-aaaai-aqmsa-cai",
+  "icToken": {
+    "name": "TEST ICRC1",
+    "symbol": "TICRC1",
+    "decimals": 8
+  },
+  "baseToken": {
+    "symbol": "KINIC",
+    "decimals": 8
+  },
+  "bridgeAddress": "0xa2C9ff494E3883a82621a905f0a7d6d93816d7D0",
+  "bsnsAddress": "0x445b9f13765789Ee0ea3849D5ecaB38004707b84",
+  "expected_bridge_signer": "0x988cbae341dc79f45915012eb714bd0c3db17ea4",
+  "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
+  "rpcProviderUrlsSha256": "0xb94b27aaf40034c9bb0e847ab32eb7c290ad90d5ff83c8d559ed78c23a94a360",
+  "deploymentBlock": "44469858",
+  "bridgeRuntimeHash": "0xb526ba835d163b897c9f8070ed092a6d87f84646a6f7e8415853bb09ca4d0ecc",
+  "bsnsRuntimeHash": "0xa9180dbee5949137226abdd3e7c14dfb40099d492bc9412b691f80a85d608a69"
+}

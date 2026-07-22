@@ -336,6 +336,7 @@ run_proofs() {
   (cd "$ROOT/verification/lean" && lake build)
   python3 "$ROOT/scripts/test_protocol_vectors.py"
   python3 "$ROOT/scripts/protocol_vectors.py" --check
+  python3 "$ROOT/scripts/test_refinement_manifest.py"
   python3 "$ROOT/scripts/check_refinement_manifest.py"
   run_smt
   run_verus

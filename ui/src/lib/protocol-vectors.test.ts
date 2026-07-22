@@ -41,7 +41,7 @@ describe("Lean protocol conformance vectors", () => {
     expect(vectors.queue_count).toBeGreaterThan(0)
   })
 
-  it("matches the production finalized withdrawal decision", () => {
+  it("protocol_finalization_cases_matches_production", () => {
     for (const testCase of vectors.finalization_cases) {
       expect(decideWithdrawalFinalization(
         testCase.receipt_succeeded ? "success" : "reverted",
@@ -51,7 +51,7 @@ describe("Lean protocol conformance vectors", () => {
     }
   })
 
-  it("matches serialized queue restoration and preserves another entry", () => {
+  it("protocol_queue_cases_matches_production", () => {
     for (const testCase of vectors.queue_cases) {
       const other = withdrawal("2", testCase.other_blocked, "other")
       const incoming = withdrawal("1", testCase.incoming_blocked, "incoming")

@@ -72,6 +72,27 @@ theorem paid_debt_preserves_backing
   simp only [settleDebt]
   omega
 
+theorem outbound_settlement_preserves_backing
+    {s : EconomicState}
+    {amountOut ledgerFee serviceFee escrowDebit reserveCredit liabilityDebit : Nat}
+    (accepted : outboundSettlement amountOut ledgerFee serviceFee =
+      some (escrowDebit, reserveCredit, liabilityDebit))
+    (backed : Backed s)
+    (liability : amountOut + serviceFee ≤ s.unpaidLiability)
+    (escrow : amountOut + ledgerFee ≤ s.escrow) :
+    escrowDebit = amountOut + ledgerFee ∧
+      reserveCredit = serviceFee - ledgerFee ∧
+      liabilityDebit = amountOut + serviceFee ∧
+      Backed (settleDebt s amountOut serviceFee ledgerFee) := by
+  unfold outboundSettlement at accepted
+  split at accepted
+  next feeBound =>
+    simp only [Option.some.injEq, Prod.mk.injEq] at accepted
+    obtain ⟨escrowDebitEq, reserveCreditEq, liabilityDebitEq⟩ := accepted
+    exact ⟨escrowDebitEq.symm, reserveCreditEq.symm, liabilityDebitEq.symm,
+      paid_debt_preserves_backing backed feeBound liability escrow⟩
+  next => simp at accepted
+
 theorem withdrawal_notify_requires_finalized_success
     {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat}
     (h : decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) =
