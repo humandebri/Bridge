@@ -606,7 +606,7 @@ def validate_canister_decision(value: Any, scenario: str, details: dict[str, Any
     if value["configured_provider_count"] != 3 or value["required_threshold"] != 2:
         fail("Canister decision has the wrong provider threshold")
     if scenario == "single_provider_failure":
-        if value["kind"] != "QuorumContinued" or value["operation"] != "refresh_base_observation" or value["stop_reason"] is not None or value["ledger_call_performed"] is not False or value["bridge_operation_continued"] is not True:
+        if value["kind"] != "QuorumContinued" or value["operation"] != "request_deposit" or value["stop_reason"] is not None or value["ledger_call_performed"] is not False or value["bridge_operation_continued"] is not True:
             fail("single provider failure lacks a threshold continuation decision")
     elif scenario == "quorum_loss":
         if value["kind"] != "QuorumLoss" or value["operation"] != "notify_withdrawal" or value["stop_reason"] != details["stop_reason"] or value["ledger_call_performed"] is not False or value["bridge_operation_continued"] is not False:

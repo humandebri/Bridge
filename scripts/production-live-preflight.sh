@@ -298,7 +298,7 @@ winner,count=max(groups.items(),key=lambda x:x[1])
 if count<2: raise SystemExit('Base state does not have 2-of-3 agreement at the Finalized block')
 (root/'base-state.json').write_text(json.dumps({'agreeing_providers':count,'state':json.loads(winner)},sort_keys=True,separators=(',',':'))+'\n')
 PY
-icp canister call bridge-canister get_public_config '()' -e production --json >"$TMP/public-config.json"
+icp canister call bridge-canister get_public_config '()' -e production --query --json >"$TMP/public-config.json"
 icp canister call bridge-canister get_bridge_status '()' -e production --json >"$TMP/status.json"
 icp canister status bridge-canister -e production --public --json >"$TMP/canister-status.json"
 icp canister call "$LEDGER" icrc1_fee '()' -n ic --json >"$TMP/ledger-fee.json"

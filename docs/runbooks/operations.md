@@ -6,6 +6,11 @@
 - Fee Recipient、RPC credential、raw transaction、秘密情報を監視ログへ出さない。
 - `get_bridge_status.counts`の`active_evm_payloads`、`retained_audit_events`、`pruned_audit_events`、`retained_deposit_index_entries`を確認する。audit詳細は直近10,000件、Deposit一覧はownerごとに直近100件が上限である。
 
+Status画面とruntime事前検証は、ブラウザからreview済みprofileのBase RPCへ直接問い合わせる表示用観測であり、CanisterのHTTP outcallを発生させない。表示用availabilityはBaseのFinalized/Safe signer ETH残高、Base pause、IC pause、Canisterのcycles floorを組み合わせ、いずれかが60秒を超えた場合はlast-known値を残したままfail closedにする。Deposit、Withdrawal、Governanceなど資産状態を変える最終判断では、このブラウザ観測を信用せず、Canisterが2-of-3 quorumでBaseを再検証する。
+
+CanisterがFinalized headまたはreceipt blockを取得する際のblock response上限は固定16 KiBである。上限超過時は応答上限の自動拡大や自動再試行をせず、RPC unavailableとしてLedger処理前にfail closedにする。
+2026-07-23のBase Sepolia検証では、直近256 Finalized blockの`eth_getBlockByNumber`応答は最大5,542 bytesであり、16 KiB上限内に収まった。
+
 ## 保持制限と監査
 
 `get_audit_events`で指定したsequenceがpruning済みの場合、応答は`oldest_available_sequence`から始まる。削除済みeventの完全な内容はcanister内に残らず、`pruned_count`、`pruned_through_sequence`、`pruned_digest`だけがcommitmentとして残る。今回は外部archiveや第三者timestampingを行わないため、詳細の長期保管が必要な運用では上限到達前に別系統へ取得する。
@@ -21,6 +26,8 @@ SQLite DBやcounterを手作業で変更しない。
 ## Controller限定のstorage保守
 
 保守APIはCanister controllerだけが呼び出せる。Governance principal、pause principal、Runtime Administratorには許可しない。実行前に対象Wasmとstable imageを保存し、処理失敗時にmetadataやDBを手作業で変更しない。
+
+新規install後、controller handover前にcontroller identityから`initialize_public_config()`を一度実行する。これはMint SignerとGovernance Operatorをchain-keyから導出し、両方が成功した場合だけstable stateへ一括保存する。続けて`get_public_config()` queryを実行し、release profileの両アドレスと一致することを確認する。初期化失敗、未初期化query、保存済みアドレスとの不一致はいずれもdeployment blockerであり、空値や手入力値で代替しない。upgradeでは保存値を維持し、再初期化を必須としない。
 
 1. `start_storage_validation()`を一度呼び、`continue_storage_validation(100)`を`complete = true`まで反復する。途中で通常更新が入って`StateChanged`になった場合、古いprogressは破棄されるため、静穏時間帯に明示的に再開始する。
 2. `storage_integrity_check()` queryが`ok`を返すことを確認する。upgrade処理からこの検査は自動実行されない。

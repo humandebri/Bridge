@@ -655,6 +655,30 @@ run_smoke() {
     cat "$canister_status" >&2
     return 1
   fi
+  if icp canister call bridge-canister get_public_config '()' \
+    -e local --query --json \
+    --candid "$ROOT/canister/bridge-canister/bridge.did" \
+    --project-root-override "$ROOT" >/dev/null 2>&1; then
+    echo "get_public_config succeeded before chain-key address initialization" >&2
+    return 1
+  fi
+  public_config_initialization="$(
+    icp canister call bridge-canister initialize_public_config '()' \
+      -e local --json \
+      --candid "$ROOT/canister/bridge-canister/bridge.did" \
+      --project-root-override "$ROOT"
+  )"
+  python3 -c '
+import json, re, sys
+response = json.loads(sys.stdin.read())
+candid = response.get("response_candid") or ""
+if not re.search(r"variant\s*\{\s*Ok\s*\}", candid):
+    raise SystemExit(f"public configuration initialization failed: {response!r}")
+' <<<"$public_config_initialization"
+  icp canister call bridge-canister get_public_config '()' \
+    -e local --query --json \
+    --candid "$ROOT/canister/bridge-canister/bridge.did" \
+    --project-root-override "$ROOT" >/dev/null
   bridge_status="$(
     icp canister call bridge-canister get_bridge_status '()' \
       -e local --query --json \
@@ -685,6 +709,10 @@ for field, (value, candid_type) in expected.items():
     --mode upgrade \
     --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
     --project-root-override "$ROOT"
+  icp canister call bridge-canister get_public_config '()' \
+    -e local --query --json \
+    --candid "$ROOT/canister/bridge-canister/bridge.did" \
+    --project-root-override "$ROOT" >/dev/null
   bridge_status_after_upgrade="$(
     icp canister call bridge-canister get_bridge_status '()' \
       -e local --query --json \

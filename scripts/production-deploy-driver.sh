@@ -29,7 +29,23 @@ read -r CHAIN BRIDGE EXPECTED_TIMELOCK EXPECTED_TIMELOCK_CODE_HASH EXPECTED_BRID
 [[ "$(icp canister status bridge-canister -e production -i --identity "$BRIDGE_ICP_IDENTITY")" == "$CANISTER" ]] || {
   echo "production ICP environment does not map the reviewed Bridge Canister" >&2; exit 1;
 }
-PUBLIC_CONFIG="$(icp canister call bridge-canister get_public_config '()' -e production --json)"
+PUBLIC_CONFIG_INITIALIZATION="$(icp canister call bridge-canister initialize_public_config '()' -e production --identity "$BRIDGE_ICP_IDENTITY" --json)"
+python3 - "$PUBLIC_CONFIG_INITIALIZATION" <<'PY'
+import json,sys
+value=json.loads(sys.argv[1])
+def values(node,key):
+ out=[]
+ if isinstance(node,dict):
+  for k,v in node.items():
+   if k==key: out.append(v)
+   out.extend(values(v,key))
+ elif isinstance(node,list):
+  for item in node: out.extend(values(item,key))
+ return out
+if values(value,'Err') or len(values(value,'Ok')) != 1:
+ raise SystemExit('Bridge public configuration initialization failed')
+PY
+PUBLIC_CONFIG="$(icp canister call bridge-canister get_public_config '()' -e production --query --json)"
 STATUS="$(icp canister call bridge-canister get_bridge_status '()' -e production --json)"
 python3 - "$EXPECTED_SIGNER" "$GOVERNANCE_OPERATOR" "$PUBLIC_CONFIG" "$STATUS" <<'PY'
 import json,sys

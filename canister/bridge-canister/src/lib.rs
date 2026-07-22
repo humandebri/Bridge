@@ -74,14 +74,6 @@ pub struct BridgeStatus {
     pub withdrawal_stop_reasons: Vec<String>,
 }
 
-#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RefreshBaseObservationError {
-    Busy,
-    BaseStateMismatch,
-    ObservationUnavailable,
-    StorageFailure,
-}
-
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SettlementSchedulerStatus {
     pub health: SettlementSchedulerHealth,
@@ -143,6 +135,15 @@ pub struct PublicConfig {
     pub fee_recipient: config::FeeRecipientConfig,
 }
 
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublicConfigInitializationError {
+    Unauthorized,
+    Busy,
+    DerivationUnavailable,
+    ConflictingAddress,
+    StorageFailure,
+}
+
 thread_local! {
     static STORE: RefCell<StoreState> = const { RefCell::new(StoreState(None)) };
     static IN_FLIGHT_ACTIONS: RefCell<BTreeSet<ActionKey>> = const { RefCell::new(BTreeSet::new()) };
@@ -186,7 +187,7 @@ enum ActionKey {
     Notification([u8; 32]),
     FeePayout(u64),
     FeePayoutCreation,
-    BaseObservation,
+    PublicConfigInitialization,
     BaseGovernance,
     EmergencyPause,
 }
@@ -806,16 +807,6 @@ pub(crate) fn rpc_decision_event_kind(evidence: &evm_rpc::RpcDecisionEvidence) -
     }
 }
 
-fn append_rpc_decision(evidence: &evm_rpc::RpcDecisionEvidence) -> Result<(), StorageError> {
-    STORE.with(|store| {
-        store.borrow_mut().append_audit_event(
-            ic_cdk::api::canister_self(),
-            rpc_decision_event_kind(evidence),
-        )?;
-        Ok(())
-    })
-}
-
 #[ic_cdk::query]
 fn get_bridge_status() -> BridgeStatus {
     STORE.with(|store| {
@@ -992,146 +983,74 @@ fn first_prepared_evm_test_id() -> Result<Option<u64>, StorageMaintenanceError> 
 }
 
 #[ic_cdk::update]
-async fn refresh_base_observation() -> Result<(), RefreshBaseObservationError> {
-    const MIN_REFRESH_INTERVAL_NS: u64 = 30_000_000_000;
-
-    let now = ic_cdk::api::time();
-    let recent_observation = STORE.with(|store| {
-        store
-            .borrow()
-            .external_progress()
-            .map_err(|_| RefreshBaseObservationError::StorageFailure)
-            .map(|progress| {
-                progress.finalized_observation.filter(|observation| {
-                    now.saturating_sub(observation.observed_at_ns) <= MIN_REFRESH_INTERVAL_NS
-                })
-            })
+async fn initialize_public_config() -> Result<(), PublicConfigInitializationError> {
+    let caller = ic_cdk::api::msg_caller();
+    if !ic_cdk::api::is_controller(&caller) {
+        return Err(PublicConfigInitializationError::Unauthorized);
+    }
+    let initialized = STORE.with(|store| {
+        let store = store.borrow();
+        Ok::<_, PublicConfigInitializationError>(
+            store
+                .signer_address()
+                .map_err(|_| PublicConfigInitializationError::StorageFailure)?
+                .is_some()
+                && store
+                    .governance_operator_address()
+                    .map_err(|_| PublicConfigInitializationError::StorageFailure)?
+                    .is_some(),
+        )
     })?;
-    if recent_observation.is_some() {
+    if initialized {
         return Ok(());
     }
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseObservation) else {
-        return Err(RefreshBaseObservationError::Busy);
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::PublicConfigInitialization) else {
+        return Err(PublicConfigInitializationError::Busy);
     };
     let config = STORE.with(|store| {
         store
             .borrow()
             .config()
-            .map_err(|_| RefreshBaseObservationError::StorageFailure)?
-            .ok_or(RefreshBaseObservationError::StorageFailure)
+            .map_err(|_| PublicConfigInitializationError::StorageFailure)?
+            .ok_or(PublicConfigInitializationError::StorageFailure)
     })?;
-    let refresh_owner = STORE.with(|store| {
+    let expected_bridge_signer = signer::ethereum_address(&config)
+        .await
+        .map_err(|_| PublicConfigInitializationError::DerivationUnavailable)?;
+    let governance_operator = signer::governance_operator_address(&config)
+        .await
+        .map_err(|_| PublicConfigInitializationError::DerivationUnavailable)?;
+    STORE.with(|store| {
         store
             .borrow_mut()
-            .begin_base_snapshot_refresh(now, MIN_REFRESH_INTERVAL_NS, MIN_REFRESH_INTERVAL_NS)
-            .map_err(|_| RefreshBaseObservationError::StorageFailure)
-    })?;
-    let Some(refresh_owner) = refresh_owner else {
-        return Err(RefreshBaseObservationError::Busy);
-    };
-    match evm_rpc::bridge_snapshot(&config).await {
-        Ok(completed) => STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            match store.finish_base_snapshot_refresh_with_rpc_audit_and_observation(
-                refresh_owner,
-                ic_cdk::api::time(),
-                completed.snapshot.mint,
-                completed.snapshot.bridge_signer,
-                completed.snapshot.deposits_paused,
-                Some(evm_rpc::stable_observation(&completed)),
-                ic_cdk::api::canister_self(),
-                vec![
-                    rpc_audit_event_kind(&completed.rpc_audit),
-                    rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
-                        "refresh_base_observation",
-                        None,
-                        false,
-                    )),
-                ],
-            ) {
-                Ok(()) => Ok(()),
-                Err(storage::StorageError::Core(
-                    bridge_core::CoreError::StaleFinalizedObservation
-                    | bridge_core::CoreError::ConflictingFinalizedObservation,
-                )) => {
-                    store
-                        .fail_base_snapshot_refresh(refresh_owner)
-                        .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
-                    Err(RefreshBaseObservationError::BaseStateMismatch)
+            .initialize_chain_key_addresses(expected_bridge_signer, governance_operator)
+            .map_err(|error| match error {
+                StorageError::Core(bridge_core::CoreError::ConflictingReplay) => {
+                    PublicConfigInitializationError::ConflictingAddress
                 }
-                Err(_) => Err(RefreshBaseObservationError::StorageFailure),
-            }
-        }),
-        Err(evm_rpc::ObservationError::ChainIdMismatch) => {
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .fail_base_snapshot_refresh(refresh_owner)
-                    .map_err(|_| RefreshBaseObservationError::StorageFailure)
-            })?;
-            STORE.with(|store| {
-                let mut store = store.borrow_mut();
-                let mut admin = store
-                    .admin_state()
-                    .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
-                if !admin.deposits_paused {
-                    admin.deposits_paused = true;
-                    store
-                        .set_admin_state(&admin)
-                        .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
-                }
-                Ok(())
-            })?;
-            Err(RefreshBaseObservationError::BaseStateMismatch)
-        }
-        Err(evm_rpc::ObservationError::Inconsistent) => {
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .fail_base_snapshot_refresh(refresh_owner)
-                    .map_err(|_| RefreshBaseObservationError::StorageFailure)
-            })?;
-            append_rpc_decision(&evm_rpc::quorum_loss_decision(
-                "refresh_base_observation",
-                None,
-            ))
-            .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
-            Err(RefreshBaseObservationError::ObservationUnavailable)
-        }
-        Err(evm_rpc::ObservationError::BaseStateMismatch) => {
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .fail_base_snapshot_refresh(refresh_owner)
-                    .map_err(|_| RefreshBaseObservationError::StorageFailure)
-            })?;
-            Err(RefreshBaseObservationError::BaseStateMismatch)
-        }
-        Err(_) => {
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .fail_base_snapshot_refresh(refresh_owner)
-                    .map_err(|_| RefreshBaseObservationError::StorageFailure)
-            })?;
-            Err(RefreshBaseObservationError::ObservationUnavailable)
-        }
-    }
+                _ => PublicConfigInitializationError::StorageFailure,
+            })
+    })
 }
 
-#[ic_cdk::update]
-async fn get_public_config() -> PublicConfig {
+#[ic_cdk::query]
+fn get_public_config() -> PublicConfig {
     let config = STORE.with(|store| {
         let store = store.borrow();
         storage_or_trap("configuration read", store.config())
             .unwrap_or_else(|| ic_cdk::trap("missing configuration"))
     });
-    let expected_bridge_signer = api::cached_signer_address(&config)
-        .await
-        .unwrap_or_else(|_| ic_cdk::trap("chain-key signer derivation failed"));
-    let governance_operator = api::cached_governance_operator_address(&config)
-        .await
-        .unwrap_or_else(|_| ic_cdk::trap("governance operator derivation failed"));
+    let (expected_bridge_signer, governance_operator) = STORE.with(|store| {
+        let store = store.borrow();
+        let expected_bridge_signer = storage_or_trap("signer address read", store.signer_address())
+            .unwrap_or_else(|| ic_cdk::trap("public configuration is not initialized"));
+        let governance_operator = storage_or_trap(
+            "governance operator address read",
+            store.governance_operator_address(),
+        )
+        .unwrap_or_else(|| ic_cdk::trap("public configuration is not initialized"));
+        (expected_bridge_signer, governance_operator)
+    });
     let normalized_rpc_urls = config
         .custom_evm_rpc_urls
         .iter()
@@ -1242,25 +1161,11 @@ fn icrc10_supported_standards() -> Vec<consent::Icrc10SupportedStandard> {
 }
 
 #[ic_cdk::update]
-async fn icrc21_canister_call_consent_message(
+fn icrc21_canister_call_consent_message(
     request: consent::Icrc21ConsentMessageRequest,
 ) -> consent::Icrc21ConsentMessageResponse {
     let ledger_fee = if request.method == "request_deposit" {
-        let ledger = STORE.with(|store| {
-            store
-                .borrow()
-                .config()
-                .ok()
-                .flatten()
-                .map(|config| config.ledger_canister_id)
-        });
-        match ledger {
-            Some(ledger) => ledger::ledger_fee_for_consent(ledger)
-                .await
-                .ok()
-                .map(|fee| fee.get()),
-            None => None,
-        }
+        Some(ledger::KINIC_LEDGER_FEE.get())
     } else {
         None
     };
@@ -1349,6 +1254,10 @@ mod candid_tests {
         let generated = super::__export_service();
         let checked_in = include_str!("../bridge.did");
         assert_eq!(normalize(&generated), normalize(checked_in));
+        assert!(!generated.contains("refresh_base_observation"));
+        let normalized = normalize(&generated);
+        assert!(normalized.contains("get_public_config:()->(PublicConfig)query;"));
+        assert!(normalized.contains("initialize_public_config:()->("));
     }
 
     #[test]

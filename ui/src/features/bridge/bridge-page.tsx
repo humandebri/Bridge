@@ -17,7 +17,7 @@ import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { useWalletDialog } from "@/features/wallet/wallet-controls"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
-import { estimatedAmountOut, formatTokenAmount, parseTokenAmount, requiredDepositBalance } from "@/lib/amounts"
+import { estimatedAmountOut, formatTokenAmount, KINIC_LEDGER_FEE, parseTokenAmount, requiredDepositBalance } from "@/lib/amounts"
 import { classifyDepositRecoverySequence } from "@/lib/deposit-recovery"
 import { createLedgerActor, ledgerAccount } from "@/lib/ic/ledger"
 import { createBridgeActor } from "@/lib/ic/bridge"
@@ -78,8 +78,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       const actor = await createLedgerActor(deploymentProfile.icHost, deploymentProfile.ledgerCanisterId as string)
       const account = ledgerAccount(ic.account!.owner, ic.account!.subaccount)
       const spender = ledgerAccount(deploymentProfile.bridgeCanisterId as string)
-      const [balance, fee, allowance] = await Promise.all([actor.icrc1_balance_of(account), actor.icrc1_fee(), actor.icrc2_allowance({ account, spender })])
-      return { balance, fee, allowance: allowance.allowance }
+      const [balance, allowance] = await Promise.all([actor.icrc1_balance_of(account), actor.icrc2_allowance({ account, spender })])
+      return { balance, fee: KINIC_LEDGER_FEE, allowance: allowance.allowance }
     },
   })
   const bsnsBalance = useQuery({

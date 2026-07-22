@@ -400,6 +400,13 @@ type PublicConfig = record {
   cycles_floor : nat;
   rpc_provider_urls_sha256 : blob;
 };
+type PublicConfigInitializationError = variant {
+  ConflictingAddress;
+  Busy;
+  Unauthorized;
+  StorageFailure;
+  DerivationUnavailable;
+};
 type RecoverMintRevertArgs = record {
   deposit_id : blob;
   reverted_operation_id : nat64;
@@ -430,12 +437,6 @@ type RecoverMintRevertReceipt = variant {
   };
   AlreadyStarted : record { replacement_operation_id : nat64 };
 };
-type RefreshBaseObservationError = variant {
-  Busy;
-  StorageFailure;
-  BaseStateMismatch;
-  ObservationUnavailable;
-};
 type ReserveStatus = record {
   cycles_balance : nat;
   required_eth_wei : nat;
@@ -453,12 +454,15 @@ type Result_1 = variant {
   Ok : FeePayoutActionResult;
   Err : SettlementActionError;
 };
-type Result_10 = variant { Ok; Err : AdminError };
-type Result_11 = variant {
+type Result_10 = variant {
+  Ok : NotifyWithdrawalReceipt;
+  Err : NotifyWithdrawalError;
+};
+type Result_11 = variant { Ok; Err : AdminError };
+type Result_12 = variant {
   Ok : RecoverMintRevertReceipt;
   Err : RecoverMintRevertError;
 };
-type Result_12 = variant { Ok; Err : RefreshBaseObservationError };
 type Result_13 = variant {
   Ok : ChecksumRefreshStatus;
   Err : StorageMaintenanceError;
@@ -484,11 +488,8 @@ type Result_7 = variant {
   Ok : vec opt WithdrawalView;
   Err : GetWithdrawalsError;
 };
-type Result_8 = variant { Ok : DepositIdPage; Err : ListDepositIdsError };
-type Result_9 = variant {
-  Ok : NotifyWithdrawalReceipt;
-  Err : NotifyWithdrawalError;
-};
+type Result_8 = variant { Ok; Err : PublicConfigInitializationError };
+type Result_9 = variant { Ok : DepositIdPage; Err : ListDepositIdsError };
 type RotatePausePrincipalArgs = record { pause_principal : principal };
 type SettlementActionError = variant {
   AutomaticProgressPending : record { next_run_at_ns : opt nat64 };
@@ -604,25 +605,25 @@ service : (BridgeInitArgs) -> {
   get_deposit : (blob) -> (opt DepositView) query;
   get_deposit_by_owner_sequence : (principal, nat64) -> (opt DepositView) query;
   get_next_deposit_sequence : (principal) -> (nat64) query;
-  get_public_config : () -> (PublicConfig);
+  get_public_config : () -> (PublicConfig) query;
   get_withdrawal : (blob) -> (opt WithdrawalView) query;
   get_withdrawals : (vec blob) -> (Result_7) query;
   icrc10_supported_standards : () -> (vec Icrc10SupportedStandard) query;
   icrc21_canister_call_consent_message : (Icrc21ConsentMessageRequest) -> (
       Icrc21ConsentMessageResponse,
     );
-  list_deposit_ids : (ListDepositIdsArgs) -> (Result_8) query;
-  notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_9);
-  pause_new_deposits : () -> (Result_10);
-  recover_mint_revert : (RecoverMintRevertArgs) -> (Result_11);
-  refresh_base_observation : () -> (Result_12);
+  initialize_public_config : () -> (Result_8);
+  list_deposit_ids : (ListDepositIdsArgs) -> (Result_9) query;
+  notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_10);
+  pause_new_deposits : () -> (Result_11);
+  recover_mint_revert : (RecoverMintRevertArgs) -> (Result_12);
   refresh_storage_checksum : (nat64) -> (Result_13);
   request_deposit : (DepositArgs) -> (Result_14);
   request_fee_payout : (nat) -> (Result_15);
-  resume_new_deposits : () -> (Result_10);
-  rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_10);
+  resume_new_deposits : () -> (Result_11);
+  rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_11);
   schedule_activation : () -> (Result_4);
-  set_fee_recipient : (FeeRecipientConfig) -> (Result_10);
+  set_fee_recipient : (FeeRecipientConfig) -> (Result_11);
   start_storage_validation : () -> (Result_2);
   storage_integrity_check : () -> (Result_16) query;
   submit_base_governance_action : (BaseGovernanceAction) -> (Result_4);

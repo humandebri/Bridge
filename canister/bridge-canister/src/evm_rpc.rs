@@ -222,7 +222,7 @@ const SMALL_RESPONSE_BYTES: u64 = 4 * 1024;
 // `eth_getBlockByNumber` includes the transaction-hash vector even when full
 // transaction objects are disabled. Busy Base blocks can therefore be much
 // larger than the fixed-size header fields.
-const BLOCK_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
+const BLOCK_RESPONSE_BYTES: u64 = 16 * 1024;
 const RECEIPT_RESPONSE_BYTES: u64 = 32 * 1024;
 const SEND_RESPONSE_BYTES: u64 = 2 * 1024;
 const EVM_RPC_TIMEOUT_SECONDS: u32 = 30;
@@ -1368,7 +1368,7 @@ mod tests {
     #[test]
     fn evm_rpc_runtime_uses_the_fixed_thirty_second_bound() {
         assert_eq!(EVM_RPC_TIMEOUT_SECONDS, 30);
-        assert_eq!(BLOCK_RESPONSE_BYTES, 2 * 1024 * 1024);
+        assert_eq!(BLOCK_RESPONSE_BYTES, 16 * 1024);
     }
 
     #[test]

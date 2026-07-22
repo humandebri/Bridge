@@ -484,6 +484,17 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : Icrc21ConsentInfo,
     'Err' : Icrc21Error,
   });
+  const PublicConfigInitializationError = IDL.Variant({
+    'ConflictingAddress' : IDL.Null,
+    'Busy' : IDL.Null,
+    'Unauthorized' : IDL.Null,
+    'StorageFailure' : IDL.Null,
+    'DerivationUnavailable' : IDL.Null,
+  });
+  const Result_8 = IDL.Variant({
+    'Ok' : IDL.Null,
+    'Err' : PublicConfigInitializationError,
+  });
   const ListDepositIdsArgs = IDL.Record({
     'owner' : IDL.Principal,
     'limit' : IDL.Nat16,
@@ -496,7 +507,7 @@ export const idlFactory = ({ IDL }) => {
     'deposit_ids' : IDL.Vec(IDL.Vec(IDL.Nat8)),
   });
   const ListDepositIdsError = IDL.Variant({ 'InvalidLimit' : IDL.Null });
-  const Result_8 = IDL.Variant({
+  const Result_9 = IDL.Variant({
     'Ok' : DepositIdPage,
     'Err' : ListDepositIdsError,
   });
@@ -537,11 +548,11 @@ export const idlFactory = ({ IDL }) => {
     'AnonymousCaller' : IDL.Null,
     'InvalidBaseResponse' : IDL.Null,
   });
-  const Result_9 = IDL.Variant({
+  const Result_10 = IDL.Variant({
     'Ok' : NotifyWithdrawalReceipt,
     'Err' : NotifyWithdrawalError,
   });
-  const Result_10 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : AdminError });
+  const Result_11 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : AdminError });
   const RecoverMintRevertArgs = IDL.Record({
     'deposit_id' : IDL.Vec(IDL.Nat8),
     'reverted_operation_id' : IDL.Nat64,
@@ -572,19 +583,9 @@ export const idlFactory = ({ IDL }) => {
     'BridgeSignerMismatch' : IDL.Null,
     'AnonymousCaller' : IDL.Null,
   });
-  const Result_11 = IDL.Variant({
+  const Result_12 = IDL.Variant({
     'Ok' : RecoverMintRevertReceipt,
     'Err' : RecoverMintRevertError,
-  });
-  const RefreshBaseObservationError = IDL.Variant({
-    'Busy' : IDL.Null,
-    'StorageFailure' : IDL.Null,
-    'BaseStateMismatch' : IDL.Null,
-    'ObservationUnavailable' : IDL.Null,
-  });
-  const Result_12 = IDL.Variant({
-    'Ok' : IDL.Null,
-    'Err' : RefreshBaseObservationError,
   });
   const ChecksumRefreshStatus = IDL.Record({
     'scanned_bytes' : IDL.Nat64,
@@ -680,7 +681,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Nat64],
         ['query'],
       ),
-    'get_public_config' : IDL.Func([], [PublicConfig], []),
+    'get_public_config' : IDL.Func([], [PublicConfig], ['query']),
     'get_withdrawal' : IDL.Func(
         [IDL.Vec(IDL.Nat8)],
         [IDL.Opt(WithdrawalView)],
@@ -701,22 +702,22 @@ export const idlFactory = ({ IDL }) => {
         [Icrc21ConsentMessageResponse],
         [],
       ),
-    'list_deposit_ids' : IDL.Func([ListDepositIdsArgs], [Result_8], ['query']),
-    'notify_withdrawal' : IDL.Func([NotifyWithdrawalArgs], [Result_9], []),
-    'pause_new_deposits' : IDL.Func([], [Result_10], []),
-    'recover_mint_revert' : IDL.Func([RecoverMintRevertArgs], [Result_11], []),
-    'refresh_base_observation' : IDL.Func([], [Result_12], []),
+    'initialize_public_config' : IDL.Func([], [Result_8], []),
+    'list_deposit_ids' : IDL.Func([ListDepositIdsArgs], [Result_9], ['query']),
+    'notify_withdrawal' : IDL.Func([NotifyWithdrawalArgs], [Result_10], []),
+    'pause_new_deposits' : IDL.Func([], [Result_11], []),
+    'recover_mint_revert' : IDL.Func([RecoverMintRevertArgs], [Result_12], []),
     'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_13], []),
     'request_deposit' : IDL.Func([DepositArgs], [Result_14], []),
     'request_fee_payout' : IDL.Func([IDL.Nat], [Result_15], []),
-    'resume_new_deposits' : IDL.Func([], [Result_10], []),
+    'resume_new_deposits' : IDL.Func([], [Result_11], []),
     'rotate_pause_principal' : IDL.Func(
         [RotatePausePrincipalArgs],
-        [Result_10],
+        [Result_11],
         [],
       ),
     'schedule_activation' : IDL.Func([], [Result_4], []),
-    'set_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_10], []),
+    'set_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_11], []),
     'start_storage_validation' : IDL.Func([], [Result_2], []),
     'storage_integrity_check' : IDL.Func([], [Result_16], ['query']),
     'submit_base_governance_action' : IDL.Func(

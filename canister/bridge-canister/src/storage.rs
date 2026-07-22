@@ -4423,6 +4423,26 @@ impl StableStore {
         Ok(self.deposit_admission()?.governance_operator_address)
     }
 
+    pub fn initialize_chain_key_addresses(
+        &mut self,
+        signer_address: [u8; 20],
+        governance_operator_address: [u8; 20],
+    ) -> Result<(), StorageError> {
+        let mut admission = self.deposit_admission()?;
+        if admission
+            .signer_address
+            .is_some_and(|stored| stored != signer_address)
+            || admission
+                .governance_operator_address
+                .is_some_and(|stored| stored != governance_operator_address)
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        admission.signer_address = Some(signer_address);
+        admission.governance_operator_address = Some(governance_operator_address);
+        self.set_deposit_admission(&admission)
+    }
+
     pub fn governance_operator_public_key(&self) -> Result<Option<Vec<u8>>, StorageError> {
         Ok(self.deposit_admission()?.governance_operator_public_key)
     }
@@ -9125,6 +9145,57 @@ mod tests {
                 .admin_state()
                 .expect("read administrator state")
                 .deposits_paused
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn chain_key_addresses_initialize_atomically_and_survive_reopen() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        store
+            .initialize_chain_key_addresses([1; 20], [2; 20])
+            .expect("initialize chain-key addresses");
+        store
+            .initialize_chain_key_addresses([1; 20], [2; 20])
+            .expect("exact replay is idempotent");
+        assert_eq!(
+            store.signer_address().expect("signer address"),
+            Some([1; 20])
+        );
+        assert_eq!(
+            store
+                .governance_operator_address()
+                .expect("governance operator address"),
+            Some([2; 20])
+        );
+        drop(store);
+
+        let mut reopened = StableStore::reopen(memory).expect("reopen store");
+        assert_eq!(
+            reopened.signer_address().expect("reopened signer address"),
+            Some([1; 20])
+        );
+        assert_eq!(
+            reopened
+                .governance_operator_address()
+                .expect("reopened governance operator address"),
+            Some([2; 20])
+        );
+        assert!(matches!(
+            reopened.initialize_chain_key_addresses([3; 20], [2; 20]),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        assert_eq!(
+            reopened.signer_address().expect("unchanged signer address"),
+            Some([1; 20])
+        );
+        assert_eq!(
+            reopened
+                .governance_operator_address()
+                .expect("unchanged governance operator address"),
+            Some([2; 20])
         );
     }
 

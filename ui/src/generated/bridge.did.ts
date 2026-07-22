@@ -422,6 +422,11 @@ export interface PublicConfig {
   'cycles_floor' : bigint,
   'rpc_provider_urls_sha256' : Uint8Array | number[],
 }
+export type PublicConfigInitializationError = { 'ConflictingAddress' : null } |
+  { 'Busy' : null } |
+  { 'Unauthorized' : null } |
+  { 'StorageFailure' : null } |
+  { 'DerivationUnavailable' : null };
 export interface RecoverMintRevertArgs {
   'deposit_id' : Uint8Array | number[],
   'reverted_operation_id' : bigint,
@@ -450,10 +455,6 @@ export type RecoverMintRevertReceipt = {
     }
   } |
   { 'AlreadyStarted' : { 'replacement_operation_id' : bigint } };
-export type RefreshBaseObservationError = { 'Busy' : null } |
-  { 'StorageFailure' : null } |
-  { 'BaseStateMismatch' : null } |
-  { 'ObservationUnavailable' : null };
 export interface ReserveStatus {
   'cycles_balance' : bigint,
   'required_eth_wei' : bigint,
@@ -467,12 +468,12 @@ export type Result = { 'Ok' : SettlementActionResult } |
   { 'Err' : SettlementActionError };
 export type Result_1 = { 'Ok' : FeePayoutActionResult } |
   { 'Err' : SettlementActionError };
-export type Result_10 = { 'Ok' : null } |
+export type Result_10 = { 'Ok' : NotifyWithdrawalReceipt } |
+  { 'Err' : NotifyWithdrawalError };
+export type Result_11 = { 'Ok' : null } |
   { 'Err' : AdminError };
-export type Result_11 = { 'Ok' : RecoverMintRevertReceipt } |
+export type Result_12 = { 'Ok' : RecoverMintRevertReceipt } |
   { 'Err' : RecoverMintRevertError };
-export type Result_12 = { 'Ok' : null } |
-  { 'Err' : RefreshBaseObservationError };
 export type Result_13 = { 'Ok' : ChecksumRefreshStatus } |
   { 'Err' : StorageMaintenanceError };
 export type Result_14 = { 'Ok' : DepositReceipt } |
@@ -493,10 +494,10 @@ export type Result_6 = { 'Ok' : AuditEventPage } |
   { 'Err' : AdminError };
 export type Result_7 = { 'Ok' : Array<[] | [WithdrawalView]> } |
   { 'Err' : GetWithdrawalsError };
-export type Result_8 = { 'Ok' : DepositIdPage } |
+export type Result_8 = { 'Ok' : null } |
+  { 'Err' : PublicConfigInitializationError };
+export type Result_9 = { 'Ok' : DepositIdPage } |
   { 'Err' : ListDepositIdsError };
-export type Result_9 = { 'Ok' : NotifyWithdrawalReceipt } |
-  { 'Err' : NotifyWithdrawalError };
 export interface RotatePausePrincipalArgs { 'pause_principal' : Principal }
 export type SettlementActionError = {
     'AutomaticProgressPending' : { 'next_run_at_ns' : [] | [bigint] }
@@ -630,18 +631,18 @@ export interface _SERVICE {
     [Icrc21ConsentMessageRequest],
     Icrc21ConsentMessageResponse
   >,
-  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_8>,
-  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_9>,
-  'pause_new_deposits' : ActorMethod<[], Result_10>,
-  'recover_mint_revert' : ActorMethod<[RecoverMintRevertArgs], Result_11>,
-  'refresh_base_observation' : ActorMethod<[], Result_12>,
+  'initialize_public_config' : ActorMethod<[], Result_8>,
+  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_9>,
+  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_10>,
+  'pause_new_deposits' : ActorMethod<[], Result_11>,
+  'recover_mint_revert' : ActorMethod<[RecoverMintRevertArgs], Result_12>,
   'refresh_storage_checksum' : ActorMethod<[bigint], Result_13>,
   'request_deposit' : ActorMethod<[DepositArgs], Result_14>,
   'request_fee_payout' : ActorMethod<[bigint], Result_15>,
-  'resume_new_deposits' : ActorMethod<[], Result_10>,
-  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_10>,
+  'resume_new_deposits' : ActorMethod<[], Result_11>,
+  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_11>,
   'schedule_activation' : ActorMethod<[], Result_4>,
-  'set_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_10>,
+  'set_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_11>,
   'start_storage_validation' : ActorMethod<[], Result_2>,
   'storage_integrity_check' : ActorMethod<[], Result_16>,
   'submit_base_governance_action' : ActorMethod<

@@ -77,7 +77,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-artifact \
   /secure/work/rpc-e2e.json /secure/work/rehearsal-config.json preflight bridge \
   /secure/work/artifacts/preflight-bridge.json none -- \
   icp canister call <bridge-canister-id> get_public_config '()' \
-  -n ic --json
+  -n ic --query --json
 
 python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-artifact \
   /secure/work/rpc-e2e.json /secure/work/rehearsal-config.json canonical_receipt base \
@@ -142,7 +142,7 @@ asset flowとして次の4件を実行し、各transactionをFinalized headま�
 
 failure scenarioとして次の4件をtest-only設定で実行する。
 
-1. `single_provider_failure`: configured provider 3、required threshold 2、1 provider故障注入のraw参照、threshold成立、Bridge処理継続
+1. `single_provider_failure`: 実取引経路の`request_deposit`でconfigured provider 3、required threshold 2、1 provider故障注入のraw参照、threshold成立、Bridge処理継続
 2. `quorum_loss`: required threshold 2、2 provider以上の故障注入、threshold不成立、`RpcInconsistent`または`RpcUnavailable`、Ledger call前fail-closed
 3. `nonce_known`: `NonceTooLow`後、local transaction hashが2-provider合意で存在し`Submitted`
 4. `nonce_conflict`: local transaction hash不在、`NonceConflict`、自動再署名なし、Deposit pause

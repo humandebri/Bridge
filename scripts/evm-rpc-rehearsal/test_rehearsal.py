@@ -95,7 +95,7 @@ def evidence(scenario, details):
         audit_transaction_hash = H32_A
     decisions = {
         "single_provider_failure": {
-            "kind": "QuorumContinued", "operation": "refresh_base_observation",
+            "kind": "QuorumContinued", "operation": "request_deposit",
             "configured_provider_count": 3, "required_threshold": 2,
             "stop_reason": None, "ledger_call_performed": False,
             "bridge_operation_continued": True, "deposits_paused": False,
