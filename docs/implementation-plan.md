@@ -13,7 +13,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
 Bridge canisterはstable schema v17、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
-Plan 005は本番パラメータの外部計測と単一emergency pause演習待ちであり、Plan 006はSNS handover・Canister操作型Base管理・production preflightを実装中である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、IC mainnet test CanisterとBase Sepoliaの外部実行は明示承認待ちである。
+Plan 005は本番パラメータの外部計測と単一emergency pause演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、Gate A/Gate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、IC mainnet test CanisterとBase Sepoliaの外部実行は明示承認待ちである。
 
 ## 全体構成
 
@@ -224,7 +224,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 
 Plan 005の完了には、SepoliaでのDeposit mint gas 100回とsettlement cycles 100回、Base mainnetの30日fee分布、承認済み日次settlement上限、単一pause principalの実request/audit証跡、固定limitの承認、監視pause/cancel演習が必要である。cycles floorは基礎日次消費と100回計測最大値を用いる30日負荷モデルへ2倍の安全係数を掛けて導出する。
 これらの証跡が揃うまでmainnet candidateを`validated`にしない。
-Plan 006ではSNS Rootへのcontroller handover、upgrade実証、production preflightを完了する。
+Plan 006のrepository実装は完了している。完了判定には、SNS Rootへの実controller handover、実upgrade proposal、認証済みGate A/Gate B、schedule/execute activation receiptをmainnet evidenceとして取得する必要がある。
 
 ## Phase 間の依存とマイルストーン
 

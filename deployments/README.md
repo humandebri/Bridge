@@ -7,12 +7,13 @@ cargo run -p bridge-profile -- derive measurements.json
 cargo run -p bridge-profile -- validate profile.json
 cargo run -p bridge-profile -- validate-test rehearsal-profile.json
 cargo run -p bridge-profile -- validate-bundle --offline evidence/release-id
+cargo run -p bridge-profile -- verify-gate-a-live evidence/release-id
 cargo run -p bridge-profile -- verify-live evidence/release-id
 ```
 
 `derive`はDeposit mint gasとsettlement cyclesを各100件、開始・終了時刻で30日以上のBase fee sample、pause時の基礎日次cycles、承認済み日次settlement上限が揃わなければ失敗する。cycles floorは30日負荷モデルの2倍、settlement ceilingは100回最大値の1.5倍切り上げである。Mint limitとwindow長はderiveせず、profileへraw unitで明示する。通常デプロイ前に使う`validate`は`test_assets_only = true`を必ず拒否する。Sepolia rehearsalだけが明示的な`validate-test`を使える。
 
-本番配置と資産受付開始は、必ず`production-release.sh`を経由する。`deploy`はGate Aのoffline bundle検証を通した後だけ配置コマンドを実行するが、repository-ownedなBase receipt/logとIC certificate/auditの真正性検証が実装されるまではGate Aが必ず非ゼロ終了するため、本番配置は利用できない。将来Gate Aが有効になった場合も、Bridge contractとBridge Canisterはいずれも初期pause状態で配置され、この段階では資産を受け付けない。
+本番配置と資産受付開始は、必ず`production-release.sh`を経由する。`deploy`はoffline構造検査に加え、監視演習のIC certificate、emergency pause reply/audit、Base receipt/logをrepository-owned verifierで検証する。Base側はbundleへ束縛された3つのcredential-free RPC URLを`BRIDGE_GATE_A_RPC_URL_1`〜`3`として渡し、2-of-3の同一Finalized結果を要求する。Bridge contractとBridge Canisterはいずれも初期pause状態で配置され、この段階では資産を受け付けない。
 
 ```sh
 scripts/production-release.sh deploy --bundle evidence/release-id \
@@ -20,14 +21,23 @@ scripts/production-release.sh deploy --bundle evidence/release-id \
   --receipt evidence/release-id/gate-a-receipt.json -- scripts/production-deploy-driver.sh
 ```
 
-配置後は、Canisterをpauseしたままprofile記載のSNS Rootへcontroller handoverし、その結果をlive snapshotで確認する。`activate`はGate Bのlive検証を再実行するが、repository-ownedなSNS proposal提出・実行確認経路が実装されるまでは必ず非ゼロ終了し、成功を報告しない。固定` schedule_activation` / `execute_activation` proposalは別途SNSから提出し、その実行証跡を新しいGate Bへ取り込む。任意のunpause commandは受け付けない。
+配置後は、Canisterをpauseしたままprofile記載のSNS Rootへcontroller handoverし、その結果をlive snapshotで確認する。`activate`はGate Bのlive検証を再実行し、SNS function registryから固定`schedule_activation` / `execute_activation` targetを解決して提案を1件だけ提出する。提出成功はactivation完了を意味しない。`verify-activation`が、認証済みSNS proposal、function registry、Canister module/controllerとactivation状態、Base Timelockの2-of-3 Finalized postconditionをすべて照合して初めて検証済みreceiptを発行する。任意のunpause commandは受け付けない。
 
 ```sh
-BRIDGE_ACTIVATION_PHASE=schedule scripts/production-release.sh activate --bundle evidence/release-id \
+scripts/production-release.sh activate --phase schedule --bundle evidence/release-id \
   --release-inputs deployments/generated/release-id \
   --receipt evidence/release-id/gate-a-receipt.json \
-  --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- scripts/production-activate-driver.sh
+  --submission evidence/activation/schedule-submission.json \
+  --sns-identity proposer --sns-neuron-subaccount 64-hex \
+  --sns-proposer-principal principal \
+  --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION \
+  -- scripts/production-activate-driver.sh
+
+cargo run -p bridge-profile -- verify-activation schedule evidence/release-id \
+  evidence/activation/schedule-submission.json - evidence/activation/schedule-receipt.json
 ```
+
+72時間後の`execute`はfresh Gate Bを要求し、`--prior-schedule-receipt`と`UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE`を必須とする。execute proposalの後も、`verify-activation execute ... schedule-receipt.json execute-receipt.json`が成功するまで資産受付開始を完了扱いにしない。
 
 bundle欠落、test profile、source/profile drift、Gate失敗では後続コマンドを起動しない。Gate Aのdeployコマンドにunpauseまたはresume操作を混在させることも拒否する。
 Gate A profileの`deployment_block`は未配置を示す`0`に固定する。deploy後、wrapperは実receipt blockを入れた`<receipt>.post-deploy-profile.json`を生成し、そのSHA-256をGate A receiptへ固定する。Gate Bはこのpost-deploy profileだけを使う別のlive manifestとし、`parent_gate_a_manifest_sha256`がreceiptのGate A hashと一致し、source/code binding、post-deploy profile hash、実deployment blockが一致しなければならない。さらにGate B profileの`deployment_block`だけを0へ戻したcanonical hashがreceiptのGate A profile hashと一致する必要があり、他fieldの変更は拒否される。Gate B bundle確定前に固定`production-live-preflight.sh capture BUNDLE OUTPUT`でfresh snapshotを生成する。activation直前の`verify`は同じheight/hashとlive stateを再照合し、確定済みbundle自体は変更しない。
@@ -41,7 +51,7 @@ profileはCanisterから導出してBaseのFinalized snapshotと照合するMint
 
 Gate Aはpre-deploy `profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4 artifactを束縛する。Gate Bはこれらへ`signer-snapshot.json`、`rpc-e2e.json`、`gate-a-receipt.json`、`controller-handover.json`、`sns-upgrade.json`を加えた正確に9 artifactである。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、Canister公開設定、Finalized Base stateの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
 
-`validate-bundle --offline`はschema v2 artifact、profile、raw response/receiptへ束縛された5/15/60監視演習を構造検査するが、repository-ownedなBase receipt/logとIC certificate/auditの真正性検証が実装されるまでは必ず非ゼロ終了し、Gate A成功を報告しない。`verify-live`もoffline検査とlive snapshot検査を行うが、repository-ownedなSNS certificate/proposalの真正性検証が実装されるまでは必ず非ゼロ終了し、Gate B成功を報告しない。CLI自体はnetwork requestを行わない。
+`validate-bundle --offline`は構造検査だけを行い、出力にも`authorizing=false`を明記する。Gate Aの認可判定は`verify-gate-a-live`だけであり、IC certificateとBaseの2-of-3 Finalized receipt/logを検証する。`verify-live`はGate Bの構造・fresh snapshotに加え、SNS upgrade proposalを認証済みqueryで再取得し、Root-only controllerとlive module hashをread-stateで照合する。これらのlive commandはネットワークへ接続し、認証・合意・postconditionのいずれかが欠ければ非ゼロ終了する。
 
 credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
 
