@@ -11,11 +11,13 @@
 
 ## 固定構成
 
-Plan 007の`sepolia-local`と`sepolia-staging`で配置対象とするIC Canisterは次の3件に限定する。
+Plan 007のローカルE2Eでは次の3件を使用する。
 
 - `bridge-sepolia`: `test-deployment` featureを明示した専用recipe
 - `ledger-sepolia`: `ledger-suite-icrc-2026-03-09`の固定Wasm
 - `index-sepolia`: 同releaseの固定Wasm
+
+IC mainnet上の`sepolia-staging`で新規作成またはinstallするのは`bridge-sepolia`だけとする。test tokenには既存の共有`testicrc` Canisterを再利用し、staging専用LedgerまたはIndex Canisterは新規作成しない。ローカルE2E用の固定Ledger/Index recipeを外部stagingの作成指示として扱ってはならない。既存`testicrc`の実Canister IDとmetadataは外部stage開始前にlive状態から確認する。
 
 test frontendはIC Asset Canisterへ配置しない。完成した`frontend-profile.json`を埋め込んで静的assetをbuildし、Wranglerのtest専用コマンドでCloudflare Worker `kinic-bridge-ui-test`へ公開する。Workerは静的assetだけを配信し、server-side state、database、KV、secretを持たない。
 
@@ -43,7 +45,7 @@ gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実
 外部stageは次の順序を変更しない。
 
 1. `local-e2e.json`とsource commitを再検証する。
-2. `sepolia-staging`へtest Ledger、Index、Bridgeを作成し、cyclesを補充する。
+2. `sepolia-staging`のBridgeだけを作成または再利用してcyclesを補充する。既存`testicrc`のCanister IDとmetadataを確認し、専用Ledger/Indexは作成しない。
 3. Bridgeをpause状態でinstallし、Mint SignerとGovernance Operatorを取得する。
 4. test minting accountからTEST KINICを配布する。minting accountへBridge権限は与えない。
 5. 一時deployerでBase Sepoliaへ72時間Timelock、Bridge、bSNSを配置する。人間EOA roleがゼロであることを確認する。
@@ -53,7 +55,7 @@ gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実
 9. OISY、Plug、Base walletで実Deposit/Withdrawal、reload、account/chain変更、pause、upgradeを行い、`sepolia-e2e.json`を作る。
 10. IC DepositとBase両flowをpauseし、pending Timelock operationがない状態で終了する。
 
-Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`だけへ保存する。`production.ids.json`は変更しない。ICP操作はICP CLIだけを使用し、`dfx`を使用しない。
+新規作成または再利用するBridge Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`だけへ保存する。既存`testicrc`は作成対象のmappingへ追加しない。`production.ids.json`は変更しない。ICP操作はICP CLIだけを使用し、`dfx`を使用しない。
 
 各外部stageは、Canister作成・cycles投入、Base Sepolia transaction、Cloudflare Worker公開の直前にそれぞれ明示承認を得る。Gate A/B、鍵ceremony、SNS handoverは作成しない。
 

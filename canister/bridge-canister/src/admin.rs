@@ -104,7 +104,7 @@ pub struct FeePayoutReceipt {
 fn mutate(
     caller: Principal,
     action: impl FnOnce(&mut AdminState) -> Result<crate::storage::AuditEventKind, AdminError>,
-) -> Result<(), AdminError> {
+) -> Result<crate::storage::AuditEvent, AdminError> {
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         let mut state = store
@@ -114,14 +114,18 @@ fn mutate(
         store
             .set_admin_state(&state)
             .map_err(|_| AdminError::StorageFailure)?;
-        store
+        let audit = store
             .append_audit_event(caller, event)
             .unwrap_or_else(|error| ic_cdk::trap(format!("audit persistence failed: {error}")));
-        Ok(())
+        Ok(audit)
     })
 }
 
 pub fn pause(caller: Principal) -> Result<(), AdminError> {
+    pause_with_audit(caller).map(drop)
+}
+
+pub fn pause_with_audit(caller: Principal) -> Result<crate::storage::AuditEvent, AdminError> {
     mutate(caller, |state| {
         if !authorized(state, caller, ACTION_PAUSE) {
             return Err(AdminError::Unauthorized);
@@ -152,6 +156,7 @@ pub fn resume(caller: Principal) -> Result<(), AdminError> {
         state.deposits_paused = false;
         Ok(crate::storage::AuditEventKind::DepositsResumed)
     })
+    .map(drop)
 }
 
 pub fn set_fee_recipient(caller: Principal, value: FeeRecipientConfig) -> Result<(), AdminError> {
@@ -174,6 +179,7 @@ pub fn set_fee_recipient(caller: Principal, value: FeeRecipientConfig) -> Result
             current: value,
         })
     })
+    .map(drop)
 }
 
 pub fn rotate_pause_principal(
@@ -199,6 +205,7 @@ pub fn rotate_pause_principal(
         state.pause_principal = args.pause_principal;
         Ok(crate::storage::AuditEventKind::PausePrincipalRotated)
     })
+    .map(drop)
 }
 
 pub fn audit_events(start: u64, limit: u16) -> Result<AuditEventPage, AdminError> {

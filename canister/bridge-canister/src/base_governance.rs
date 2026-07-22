@@ -33,6 +33,48 @@ pub struct BaseGovernanceReceipt {
     pub transaction_hash: Option<Vec<u8>>,
 }
 
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct EmergencyPauseReceipt {
+    pub caller: Principal,
+    pub local_deposits_paused: bool,
+    pub local_pause_audit_sequence: u64,
+    pub local_pause_audit_sha256: Vec<u8>,
+    pub base_governance: BaseGovernanceReceipt,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ActivationOperationView {
+    pub operation_id: Vec<u8>,
+    pub salt: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ActivationStatus {
+    pub deposits_paused: bool,
+    pub pending_timelock_operation: Option<ActivationOperationView>,
+}
+
+pub fn activation_status() -> Result<ActivationStatus, BaseGovernanceError> {
+    STORE.with(|store| {
+        let store = store.borrow();
+        let deposits_paused = store
+            .admin_state()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .deposits_paused;
+        let pending_timelock_operation = store
+            .pending_timelock_operation()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .map(|pending| ActivationOperationView {
+                operation_id: pending.operation_id.to_vec(),
+                salt: pending.salt.to_vec(),
+            });
+        Ok(ActivationStatus {
+            deposits_paused,
+            pending_timelock_operation,
+        })
+    })
+}
+
 pub async fn submit(
     caller: Principal,
     action: BaseGovernanceAction,
@@ -193,18 +235,29 @@ async fn activation_preflight(
 
 pub async fn emergency_pause(
     caller: Principal,
-) -> Result<BaseGovernanceReceipt, BaseGovernanceError> {
-    crate::admin::pause(caller).map_err(|error| match error {
-        crate::admin::AdminError::Unauthorized => BaseGovernanceError::Unauthorized,
-        _ => BaseGovernanceError::StorageFailure,
-    })?;
+) -> Result<EmergencyPauseReceipt, BaseGovernanceError> {
+    let local_pause_audit =
+        crate::admin::pause_with_audit(caller).map_err(|error| match error {
+            crate::admin::AdminError::Unauthorized => BaseGovernanceError::Unauthorized,
+            _ => BaseGovernanceError::StorageFailure,
+        })?;
     STORE.with(|store| {
         store
             .borrow_mut()
             .enqueue_emergency_base_actions()
             .map_err(|_| BaseGovernanceError::StorageFailure)
     })?;
-    let result = process_emergency(caller).await;
+    let audit_bytes =
+        candid::encode_one(&local_pause_audit).map_err(|_| BaseGovernanceError::StorageFailure)?;
+    let result = process_emergency(caller)
+        .await
+        .map(|base_governance| EmergencyPauseReceipt {
+            caller,
+            local_deposits_paused: true,
+            local_pause_audit_sequence: local_pause_audit.sequence,
+            local_pause_audit_sha256: Sha256::digest(audit_bytes).to_vec(),
+            base_governance,
+        });
     crate::scheduler::arm_base_governance(caller);
     result
 }

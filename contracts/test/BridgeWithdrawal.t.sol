@@ -150,7 +150,7 @@ contract BridgeWithdrawalTest is TestBase {
         assert(token.totalSupply() == 1_000);
     }
 
-    function testCommittedWithdrawalCannotBeRemintedByBridgeSigner() public {
+    function testProcessedDepositIdCannotBeReplayedAfterWithdrawal() public {
         uint256 first = _createWithdrawal(400, SERVICE_FEE, hex"01", bytes32(0));
         assert(first == 1);
         assert(bridge.getWithdrawal(first).status == IBridge.WithdrawalStatus.Committed);

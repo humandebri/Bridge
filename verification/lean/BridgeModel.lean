@@ -11,6 +11,12 @@ structure Withdrawal where
   paid : Bool
 deriving DecidableEq
 
+structure LedgerTransfer where
+  amount : Nat
+  ledgerFee : Nat
+  destination : Account
+deriving DecidableEq
+
 def QuoteValid (w : Withdrawal) : Prop :=
   w.amountOut + w.chargedServiceFee = w.amount ∧ w.amountOut > 0
 
@@ -25,8 +31,11 @@ def commit (amount serviceFee : Nat) (destination : Account) : Option Withdrawal
     }
   else none
 
-def pay (w : Withdrawal) (ledgerFee : Nat) : Option Withdrawal :=
-  if ledgerFee ≤ w.chargedServiceFee then some { w with paid := true } else none
+def pay (w : Withdrawal) (transfer : LedgerTransfer) : Option Withdrawal :=
+  if transfer.ledgerFee ≤ w.chargedServiceFee ∧ transfer.amount = w.amountOut ∧
+      transfer.destination = w.destination then
+    some { w with paid := true }
+  else none
 
 theorem committed_quote_is_fixed
     {amount serviceFee : Nat} {destination : Account} {w : Withdrawal}
@@ -41,22 +50,23 @@ theorem committed_quote_is_fixed
     omega
   next => simp at h
 
-theorem payment_preserves_destination_and_amount
-    {w paid : Withdrawal} {ledgerFee : Nat}
-    (h : pay w ledgerFee = some paid) :
-    paid.destination = w.destination ∧ paid.amountOut = w.amountOut := by
+theorem payment_uses_committed_destination_and_amount
+    {w paid : Withdrawal} {transfer : LedgerTransfer}
+    (h : pay w transfer = some paid) :
+    transfer.amount = w.amountOut ∧ transfer.destination = w.destination ∧
+      paid.destination = w.destination ∧ paid.amountOut = w.amountOut := by
   unfold pay at h
   split at h
-  next =>
+  next valid =>
     simp only [Option.some.injEq] at h
     subst paid
-    simp
+    exact ⟨valid.2.1, valid.2.2, rfl, rfl⟩
   next => simp at h
 
 theorem excessive_ledger_fee_stops
-    {w : Withdrawal} {ledgerFee : Nat}
-    (h : w.chargedServiceFee < ledgerFee) :
-    pay w ledgerFee = none := by
+    {w : Withdrawal} {transfer : LedgerTransfer}
+    (h : w.chargedServiceFee < transfer.ledgerFee) :
+    pay w transfer = none := by
   simp [pay, Nat.not_le.mpr h]
 
 structure EconomicState where

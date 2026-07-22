@@ -92,7 +92,7 @@ Withdrawalには次の処理が存在しない。
 - `confirm_withdrawal`などのEVM confirmation API
 - Canister threshold ECDSAによるWithdrawal transaction
 - Withdrawal後のBase refund、release acknowledgement、cancel
-- burn後の再mint
+- Withdrawal IDからburnを取り消す専用refund/remint経路（Bridge Signerの通常Deposit mint権限は別のtrust assumption）
 
 ## UIとCanisterの自動進行境界
 

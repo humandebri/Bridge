@@ -46,7 +46,7 @@ SQLite DBやcounterを手作業で変更しない。
 
 本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、まず`BRIDGE_ACTIVATION_PHASE=schedule`を実行する。Timelock待機中はpauseを維持する。72時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、明示承認後に`BRIDGE_ACTIVATION_PHASE=execute`を実行する。
 
-`execute`はBase両flowのunpause後にICをresumeする。IC resumeまたは確認が失敗した場合、driverはICを再pauseし、独立したRuntime Administrator hardware walletでBase両flowも再pauseする。`INCIDENT:`が出力された場合は成功扱いにせず、再pause確認の成否にかかわらず直ちにincident対応し、BaseとICのlive状態を3-provider quorumとCanister queryで確認する。
+`execute`はBase両flowのunpause後にICをresumeする。IC resumeまたは確認が失敗した場合、driverは同じCanister governance laneでICとBase両flowの再pauseを試みる。独立した人間EVM管理walletやPause Guardianは存在しない。Canister、threshold signing、cycles、EVM RPCの相関障害ではBase再pauseも不能になりうるため、`INCIDENT:`を成功扱いにせず、再pause確認の成否にかかわらず直ちにincident対応し、BaseとICのlive状態を3-provider quorumとCanister queryで確認する。
 - Holdの強制解除、nonce操作、任意transaction送信は行わない。
 ## Confirmed EVM revert
 

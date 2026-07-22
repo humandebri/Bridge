@@ -73,7 +73,7 @@ Base wallet
 
 - **Finalizedが唯一のBase確認境界**：Safe head、一定confirmation数、単一RPCの結果へfallbackしない。Finalized headまたはcanonical hashがquorumで収束しない場合はfail closedする。
 - **ブラウザの役割**：Depositの`confirm_deposit`、Withdrawalの`notify_withdrawal`をユーザーのIC wallet consent付きで開始する。ブラウザの観測値はCanisterの保存値・EVM RPC quorum検証を置き換えない。
-- **Canister timerの役割**：`phase = settlement`のjobを自動実行する。`phase = confirmation`ではMissing transactionの同一raw再送と上限付きreplacementだけを行う。receiptによるterminal遷移はwallet同意付き`confirm_deposit`に限定する。
+- **Canister timerの役割**：`phase = settlement`のjobを自動実行する。Depositの`phase = confirmation`は起床時刻を持たず、wallet同意付き`confirm_deposit`だけがclaimしてreceiptによるterminal遷移を開始する。Base governance laneのCanister管理transactionは別のliveness policyに従い、Missing時の同一raw再送と上限付きreplacementを行う。
 - **Ledger照合**：Ledger transferの不明結果を時間経過だけで失敗扱いにせず、Reconciliation Holdを無期限に保持する。不存在証拠はLedgerとIndexの完全性確認を伴うwatermarkだけである。
 
 ## 主要APIと権限

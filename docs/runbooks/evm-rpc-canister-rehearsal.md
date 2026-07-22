@@ -21,7 +21,8 @@ CIが確認するのは、rehearsal recorderのテスト、公式Canister IDへ�
 
 次が一つでも欠ける場合は開始しない。
 
-- IC上のtest Bridge Canister、test ICRC Ledger、test ICRC Index
+- IC上のtest Bridge Canisterと、事前に配置済みの共有`testicrc` Canister
+- staging専用Ledger/Index Canisterを新規作成していないこと
 - 初期pause状態のBase Sepolia専用Bridge
 - Bridge Canisterの十分なcycles
 - test Ledger残高とBase Sepolia ETH

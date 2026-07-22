@@ -2,9 +2,10 @@ use bridge_core::{
     administrator_authorized, audit_next, can_assign_nonce, checked_counter_transition,
     checked_requirement, counter_delta, deposit_phase_allows, deposit_phase_step, evidence_matches,
     fee_delta_once, lease_generation_next, mint_admission_total, next_attempt, nonce_next,
-    nonce_too_low_is_submitted, payout_allowed, payout_debit, refresh_generation_next,
-    refresh_owner_matches, release_transfer_matches, replay_matches, reserve_token_matches,
-    resources_sufficient, scan_complete, withdrawal_phase_allows, withdrawal_phase_step,
+    nonce_too_low_is_submitted, outbound_settlement, payout_allowed, payout_debit,
+    refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
+    reserve_token_matches, resources_sufficient, scan_complete, withdrawal_phase_allows,
+    withdrawal_phase_step,
 };
 
 #[test]
@@ -155,6 +156,37 @@ fn attempt_and_fee_boundaries_are_checked() {
     assert_eq!(checked_counter_transition(7, false, true), Some(8));
     assert_eq!(checked_counter_transition(7, true, false), Some(6));
     assert_eq!(checked_counter_transition(0, true, false), None);
+}
+
+#[test]
+fn outbound_settlement_matches_the_backing_equation_at_boundaries() {
+    assert_eq!(outbound_settlement(90, 1, 10), Some((91, 9, 100)));
+    assert_eq!(outbound_settlement(90, 10, 10), Some((100, 0, 100)));
+    assert_eq!(outbound_settlement(90, 11, 10), None);
+    assert_eq!(
+        outbound_settlement(u128::MAX, 0, 0),
+        Some((u128::MAX, 0, u128::MAX))
+    );
+    assert_eq!(outbound_settlement(u128::MAX, 1, 1), None);
+    assert_eq!(outbound_settlement(u128::MAX - 1, 1, 2), None);
+
+    for amount_out in 0u128..=8 {
+        for service_fee in 0u128..=8 {
+            for ledger_fee in 0u128..=8 {
+                let result = outbound_settlement(amount_out, ledger_fee, service_fee);
+                if ledger_fee <= service_fee {
+                    let (escrow_debit, reserve_credit, liability_debit) =
+                        result.expect("small valid settlement");
+                    assert_eq!(escrow_debit, amount_out + ledger_fee);
+                    assert_eq!(reserve_credit, service_fee - ledger_fee);
+                    assert_eq!(liability_debit, amount_out + service_fee);
+                    assert_eq!(escrow_debit + reserve_credit, liability_debit);
+                } else {
+                    assert_eq!(result, None);
+                }
+            }
+        }
+    }
 }
 
 #[test]

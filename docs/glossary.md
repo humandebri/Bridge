@@ -51,6 +51,14 @@ _Avoid_: Treasury owner, escrow owner
 単一のBridge資源残高のうち、既存Withdrawal Settlementの完了を優先するため論理的に予約した部分。
 _Avoid_: Settlement wallet, separate treasury
 
+**Asset Safety**:
+Bridgeが曖昧な外部結果を成功扱いせず、二重mint・二重release・裏付けを超えるfee支出を防ぐ性質。形式証明とテストは明示されたモデルおよび外部仮定の範囲だけを保証する。
+_Avoid_: Guaranteed recovery, guaranteed availability
+
+**Settlement Liveness**:
+受理済みのDepositまたはCommitted Withdrawalが最終状態へ進める性質。RPC、Ledger、threshold signing、cycles、wallet同意、運用補充に依存し、本Bridgeはeventual completionを保証しない。
+_Avoid_: Asset Safety, automatic recovery
+
 **Reconciliation Hold**:
 外部transferの成否を確定できず、二重処理を避けるため補償操作を禁止した状態。時間経過だけでは解除しない。
 _Avoid_: Timed out, failed, retryable

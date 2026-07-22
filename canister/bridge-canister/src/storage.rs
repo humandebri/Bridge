@@ -8808,6 +8808,12 @@ mod tests {
         }
     }
 
+    fn withdrawal_transfer(amount: u128, tag: u8) -> LedgerTransferIdentity {
+        let mut identity = transfer(LedgerOperation::ReleaseWithdrawal, amount, tag);
+        identity.to = Account::new(vec![1], [0; 32]).expect("valid withdrawal destination");
+        identity
+    }
+
     fn deposit() -> DepositRecord {
         let mut deposit = DepositRecord::accept(
             DepositRequest {
@@ -8870,7 +8876,7 @@ mod tests {
             .apply(WithdrawalEvent::StartRelease {
                 attempt: Box::new(TransferAttempt {
                     attempt_no: 0,
-                    identity: transfer(LedgerOperation::ReleaseWithdrawal, 90, 20),
+                    identity: withdrawal_transfer(90, 20),
                 }),
                 settlement: Settlement {
                     amount_out: Amount::new(90),
@@ -8915,7 +8921,7 @@ mod tests {
             .apply(WithdrawalEvent::StartRelease {
                 attempt: Box::new(TransferAttempt {
                     attempt_no: 0,
-                    identity: transfer(LedgerOperation::ReleaseWithdrawal, 90, 21),
+                    identity: withdrawal_transfer(90, 21),
                 }),
                 settlement: Settlement {
                     amount_out: Amount::new(90),
@@ -11989,7 +11995,7 @@ mod tests {
                 .apply(WithdrawalEvent::StartRelease {
                     attempt: Box::new(TransferAttempt {
                         attempt_no: 0,
-                        identity: transfer(LedgerOperation::ReleaseWithdrawal, 90, 30),
+                        identity: withdrawal_transfer(90, 30),
                     }),
                     settlement: Settlement {
                         amount_out: Amount::new(90),

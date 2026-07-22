@@ -14,7 +14,7 @@ window あたりの上限 = 許容最大被害額 ÷ 2
 ```
 
 - window 長の初期値: 1 時間
-- production上限値: 未確定。承認済みdeployment profileへraw unitで明示し、deploy後は変更しない。
+- production初期上限値: `15000000000000` raw（150,000 KINIC）。承認済みdeployment profileへ同じ値を明示し、deploy後は変更しない。
 
 監視はwindow長とは別に、異常を5分以内に検知し、15分以内に担当者が確認し、60分以内にBaseとICの双方をpauseする。
 監視体制がこれを満たせないなら、window を延ばすのではなく上限値を下げる。
@@ -75,7 +75,7 @@ service_fee初期値 = 0.5 KINIC
 以下は Bridge 内部で保証できず、値の妥当性を運用監査で維持する（ADR 0005、0011）。
 
 - gas 価格の上限評価
-- Submitted EVM transactionは60秒間隔で確認し、5分Missingで同一rawを再送する。30分未確定ごとに同一nonceのfee-bump replacementを最大3回作成し、各generationは12.5%増、初期feeの4倍をhard ceilingとする。設定された全generationで`max_fee_per_gas`が厳密に増えないpolicyは初期化時に拒否し、実行時に増額不能を検出した場合はreplacementを保存せず同一rawの再送へ戻る。reserve admissionはこの4倍上限を先に確保する。
+- Base governance laneのCanister管理EVM transactionは60秒間隔で確認し、5分Missingで同一rawを再送する。30分未確定ごとに同一nonceのfee-bump replacementを最大3回作成し、各generationは12.5%増、初期feeの4倍をhard ceilingとする。設定された全generationで`max_fee_per_gas`が厳密に増えないpolicyは初期化時に拒否し、実行時に増額不能を検出した場合はreplacementを保存せず同一rawの再送へ戻る。reserve admissionはこの4倍上限を先に確保する。wallet confirmationを待つDeposit transactionにはこのtimer fallbackを適用しない。
 - EVM RPC 費用と management canister call 費用の上限評価
 - 公式EVM RPC Canisterと設定されたquorumがcanonical Finalized chainを正しく返すこと
 - 監視が5分以内検知、15分以内担当確認、60分以内のBase/IC双方pauseを実証できること

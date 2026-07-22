@@ -14,4 +14,4 @@ Base contractのMint Throughput Limitは、sliding windowではなく一定間�
 ## Consequences
 
 - window境界をまたぐ短時間に、最大でwindow上限の2倍がmintされうる。Mint Throughput Limitの値は許容最大被害額をこの2倍で割って導出する（`docs/parameters.md`）。
-- windowの長さと上限値の変更はADR 0009の危険方向の操作（引き上げ）と安全方向の操作（引き下げ）に従う。
+- windowの長さと上限値はconstructorで固定し、既存contract上ではどの権限にも変更を許可しない。異なる値が必要な場合は新しいBridge pairを再配置し、別の安全審査とactivationを行う。

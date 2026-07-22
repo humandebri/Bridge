@@ -3,14 +3,133 @@
 set -euo pipefail
 
 MODE="${1:-verify}"
-if [[ "$MODE" == capture ]]; then
+if [[ "$MODE" == verify-gate-a ]]; then
+  BUNDLE="${2:?usage: production-live-preflight.sh verify-gate-a BUNDLE}"
+  DRILL="$BUNDLE/monitor-drill.json"
+  [[ -f "$DRILL" ]] || { echo "monitor drill evidence is missing" >&2; exit 1; }
+  for tool in cast python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
+  : "${BRIDGE_GATE_A_RPC_URL_1:?missing BRIDGE_GATE_A_RPC_URL_1}"
+  : "${BRIDGE_GATE_A_RPC_URL_2:?missing BRIDGE_GATE_A_RPC_URL_2}"
+  : "${BRIDGE_GATE_A_RPC_URL_3:?missing BRIDGE_GATE_A_RPC_URL_3}"
+  python3 - "$DRILL" "$BRIDGE_GATE_A_RPC_URL_1" "$BRIDGE_GATE_A_RPC_URL_2" "$BRIDGE_GATE_A_RPC_URL_3" <<'PY'
+import hashlib,json,subprocess,sys
+from urllib.parse import urlsplit
+
+drill=json.load(open(sys.argv[1],encoding='utf-8')); providers=sys.argv[2:]
+if len(set(providers))!=3: raise SystemExit('Gate A requires exactly three distinct Base RPC providers')
+for rpc in providers:
+ p=urlsplit(rpc)
+ if p.scheme!='https' or not p.hostname or p.username or p.password or p.query or p.fragment:
+  raise SystemExit('Gate A RPC providers must be credential-free HTTPS URLs')
+digest=hashlib.sha256(json.dumps(providers,separators=(',',':')).encode()).hexdigest()
+if digest.lower()!=str(drill['rpc_provider_urls_sha256']).lower():
+ raise SystemExit('Gate A RPC provider digest differs from the rehearsal binding')
+
+def run(args): return subprocess.check_output(args,text=True,stderr=subprocess.DEVNULL).strip()
+def number(value):
+ if isinstance(value,int): return value
+ value=str(value); return int(value,16) if value.startswith('0x') else int(value)
+def block(rpc,value): return json.loads(run(['cast','block',str(value),'--rpc-url',rpc,'--json']))
+heads=[]
+for index,rpc in enumerate(providers):
+ try:
+  if int(run(['cast','chain-id','--rpc-url',rpc]))!=drill['base_chain_id']: continue
+  value=block(rpc,'finalized'); heads.append((index,number(value['number']),str(value['hash']).lower()))
+ except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
+if not heads: raise SystemExit('Gate A has no usable Finalized provider')
+pairs=[(height,block_hash) for _,height,block_hash in heads]
+winner=max(set(pairs),key=pairs.count)
+eligible={index for index,height,block_hash in heads if (height,block_hash)==winner}
+if len(eligible)<2: raise SystemExit('Gate A Finalized head has no 2-of-3 agreement')
+
+event_topics={
+ 'PauseDepositMints':run(['cast','keccak','DepositMintsPaused(address)']).lower(),
+ 'PauseWithdrawals':run(['cast','keccak','WithdrawalsPaused(address)']).lower(),
+ 'CancelTimelock':run(['cast','keccak','Cancelled(bytes32)']).lower(),
+}
+for action in drill['base_actions']:
+ matches=0
+ for index in eligible:
+  rpc=providers[index]
+  try:
+   receipt=json.loads(run(['cast','receipt',action['transaction_hash'],'--rpc-url',rpc,'--json']))
+   tx=json.loads(run(['cast','tx',action['transaction_hash'],'--rpc-url',rpc,'--json']))
+   canonical=block(rpc,action['block_number'])
+   receipt_hash=str(receipt.get('blockHash','')).lower(); canonical_hash=str(canonical.get('hash','')).lower()
+   receipt_number=number(receipt.get('blockNumber',-1)); status=number(receipt.get('status',0))
+   target=str(tx.get('to','')).lower(); calldata=str(tx.get('input',tx.get('data',''))).lower()
+   event=event_topics[action['kind']]; expected_address=action['target'].lower()
+   log_match=any(str(log.get('address','')).lower()==expected_address and
+     [str(topic).lower() for topic in log.get('topics',[])][:1]==[event]
+     for log in receipt.get('logs',[]))
+   if (receipt_number==action['block_number'] and status==1 and
+       receipt_hash==action['block_hash'].lower()==canonical_hash and
+       target==expected_address and calldata==action['calldata_hex'].lower() and
+       winner[0]>=receipt_number and log_match): matches+=1
+  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
+ if matches<2: raise SystemExit(f"Gate A action {action['kind']} lacks 2-of-3 canonical Finalized agreement")
+print('gate_a_base=pass')
+PY
+  exit 0
+elif [[ "$MODE" == verify-activation ]]; then
+  PHASE="${2:?usage: production-live-preflight.sh verify-activation PHASE BUNDLE OPERATION_ID}"
+  BUNDLE="${3:?usage: production-live-preflight.sh verify-activation PHASE BUNDLE OPERATION_ID}"
+  OPERATION_ID="${4:?usage: production-live-preflight.sh verify-activation PHASE BUNDLE OPERATION_ID}"
+  [[ "$PHASE" == schedule || "$PHASE" == execute ]] || { echo "invalid activation phase" >&2; exit 1; }
+  [[ -f "$BUNDLE/profile.json" ]] || { echo "activation profile is missing" >&2; exit 1; }
+  [[ "$OPERATION_ID" =~ ^0x[0-9a-fA-F]{64}$ ]] || { echo "invalid activation operation ID" >&2; exit 1; }
+  for tool in cast python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
+  python3 - "$PHASE" "$BUNDLE/profile.json" "$OPERATION_ID" <<'PY'
+import json,subprocess,sys
+
+phase,profile_path,operation_id=sys.argv[1:]
+profile=json.load(open(profile_path,encoding='utf-8'))
+providers=[item['url'] for item in profile['rpc_providers']]
+bridge=profile['bridge_contract']; timelock=profile['timelock']['address']
+if len(providers)!=3 or len(set(providers))!=3: raise SystemExit('activation verification requires three distinct RPC providers')
+def run(args): return subprocess.check_output(args,text=True,stderr=subprocess.DEVNULL).strip()
+def number(value):
+ if isinstance(value,int): return value
+ value=str(value); return int(value,16) if value.startswith('0x') else int(value)
+def block(rpc,value): return json.loads(run(['cast','block',str(value),'--rpc-url',rpc,'--json']))
+heads=[]
+for index,rpc in enumerate(providers):
+ try:
+  if int(run(['cast','chain-id','--rpc-url',rpc]))!=profile['chain_id']: continue
+  value=block(rpc,'finalized'); heads.append((index,number(value['number']),str(value['hash']).lower()))
+ except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
+if not heads: raise SystemExit('activation verification has no usable Finalized provider')
+pairs=[(height,block_hash) for _,height,block_hash in heads]
+winner=max(set(pairs),key=pairs.count)
+eligible=[index for index,height,block_hash in heads if (height,block_hash)==winner]
+if len(eligible)<2: raise SystemExit('activation Finalized head has no 2-of-3 agreement')
+
+matches=0
+for index in eligible:
+ rpc=providers[index]
+ try:
+  height=str(winner[0])
+  deposits=run(['cast','call',bridge,'depositMintsPaused()(bool)','--block',height,'--rpc-url',rpc]).lower()=='true'
+  withdrawals=run(['cast','call',bridge,'withdrawalsPaused()(bool)','--block',height,'--rpc-url',rpc]).lower()=='true'
+  signature='isOperationPending(bytes32)(bool)' if phase=='schedule' else 'isOperationDone(bytes32)(bool)'
+  operation=run(['cast','call',timelock,signature,operation_id,'--block',height,'--rpc-url',rpc]).lower()=='true'
+  final=block(rpc,height)
+  if str(final.get('hash','')).lower()!=winner[1]: continue
+  expected_paused=phase=='schedule'
+  if deposits==expected_paused and withdrawals==expected_paused and operation: matches+=1
+ except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
+if matches<2: raise SystemExit('activation Base postcondition lacks 2-of-3 canonical Finalized agreement')
+print(f'activation_base=pass phase={phase} operation_id={operation_id.lower()} finalized_block={winner[0]} finalized_hash={winner[1]}')
+PY
+  exit 0
+elif [[ "$MODE" == capture ]]; then
   BUNDLE="${2:?usage: production-live-preflight.sh capture BUNDLE OUTPUT}"
   OUTPUT="${3:?usage: production-live-preflight.sh capture BUNDLE OUTPUT}"
 elif [[ "$MODE" == verify ]]; then
   BUNDLE="${2:?usage: production-live-preflight.sh verify BUNDLE}"
   OUTPUT=""
 else
-  echo "usage: production-live-preflight.sh {capture BUNDLE OUTPUT|verify BUNDLE}" >&2; exit 2
+  echo "usage: production-live-preflight.sh {capture BUNDLE OUTPUT|verify BUNDLE|verify-gate-a BUNDLE|verify-activation PHASE BUNDLE OPERATION_ID}" >&2; exit 2
 fi
 PROFILE="$BUNDLE/profile.json"
 SNAPSHOT="$BUNDLE/signer-snapshot.json"

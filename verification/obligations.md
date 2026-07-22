@@ -4,12 +4,12 @@
 |---|---|---|---|
 | burnと`Committed`化は原子的で、fee drift時はburn前に失敗する | `Bridge.createWithdrawal` | Foundry unit/fuzz/invariant、SMT harness | EVM atomic rollback |
 | Committed quoteは`amountOut + chargedServiceFee = amount`で固定される | Base record、`Settlement::validate_committed` | Foundry、Rust、Verus `committed_quote_matches` | canonical Finalized state read |
-| BaseにWithdrawalの再mint経路がない | `None | Committed` ABI | selector test、Foundry invariant、SMT | deployed bytecodeが検証対象と一致 |
+| BaseにWithdrawal専用のrefund/remint経路がなく、処理済みDeposit IDをreplayできない | `None | Committed` ABI、Deposit deduplication | ABI snapshot、Foundry unit/invariant、SMT | deployed bytecodeが検証対象と一致。Bridge Signerの通常Deposit mint権限は別のtrust assumption |
 | Baseへ渡るamount・limit・feeは`u128`境界内で、同一transactionはWithdrawalを一度だけclaimする | `Bridge` production predicate、transient claim | Solidity SMT、Foundry | EIP-1153 transaction lifetime、deployed bytecode一致 |
 | Timelock候補はdelay範囲内、closed single-member role、pending operationなしである | `Bridge._validateTimelockCandidate` production predicate | Solidity SMT、Foundry | introspection callとdeployed candidateの真正性 |
 | Ledger送金はcanonical FinalizedのCommitted確認後だけ開始する | `notify_withdrawal`、`Observed → ReleasePending` | Rust、integration（Verusはphase遷移のみ） | EVM RPC quorumの真正性 |
 | frontendはFinalized成功だけを通知し、revertを破棄する | confirmation coordinator、純粋判断関数 | Leanモデル、網羅Vitest | browser storage、RPC、walletの真正性 |
-| 成功・Duplicate・履歴照合成功だけがPaidを終端化する | Withdrawal/Reconciliation state machine | Rust、integration、Verus terminal proof | Ledger履歴の完全性 |
+| 成功・Duplicate・履歴照合成功だけが固定amount・固定IC AccountへのPaidを終端化する | Withdrawal/Reconciliation state machine | Rust、Leanモデル、integration、Verus terminal proof | Ledger履歴の完全性。LeanからRust実装への対応はRust回帰テスト |
 | Fee reserveは`chargedServiceFee - actualLedgerFee`を一度だけ計上する | Withdrawal apply/storage transaction | Rust、Verus backing/fee-once proof | SQLite atomic commit |
 | stale snapshot workerは新しいrefresh ownerを完了・解放できない | snapshot refresh generation/owner | Rust、Verus production-shared owner/generation proof | SQLite atomic commit、async callback identity |
 | Deposit admissionはcounterまたはobservation generation driftを検出する | reserve observation token | Rust、Verus production-shared token proof | SQLite read snapshot |

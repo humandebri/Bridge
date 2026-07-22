@@ -12,6 +12,12 @@ BUNDLE=""
 CONFIRMATION=""
 RECEIPT=""
 RELEASE_INPUTS=""
+ACTIVATION_PHASE=""
+ACTIVATION_SUBMISSION=""
+SNS_IDENTITY=""
+SNS_NEURON_SUBACCOUNT=""
+SNS_PROPOSER_PRINCIPAL=""
+PRIOR_SCHEDULE_RECEIPT=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --bundle)
@@ -34,6 +40,36 @@ while [[ "$#" -gt 0 ]]; do
       CONFIRMATION="$2"
       shift 2
       ;;
+    --phase)
+      [[ "$#" -ge 2 ]] || { echo "--phase requires schedule or execute" >&2; exit 2; }
+      ACTIVATION_PHASE="$2"
+      shift 2
+      ;;
+    --submission)
+      [[ "$#" -ge 2 ]] || { echo "--submission requires a path" >&2; exit 2; }
+      ACTIVATION_SUBMISSION="$2"
+      shift 2
+      ;;
+    --sns-identity)
+      [[ "$#" -ge 2 ]] || { echo "--sns-identity requires a name" >&2; exit 2; }
+      SNS_IDENTITY="$2"
+      shift 2
+      ;;
+    --sns-neuron-subaccount)
+      [[ "$#" -ge 2 ]] || { echo "--sns-neuron-subaccount requires 32-byte hex" >&2; exit 2; }
+      SNS_NEURON_SUBACCOUNT="$2"
+      shift 2
+      ;;
+    --sns-proposer-principal)
+      [[ "$#" -ge 2 ]] || { echo "--sns-proposer-principal requires a principal" >&2; exit 2; }
+      SNS_PROPOSER_PRINCIPAL="$2"
+      shift 2
+      ;;
+    --prior-schedule-receipt)
+      [[ "$#" -ge 2 ]] || { echo "--prior-schedule-receipt requires a path" >&2; exit 2; }
+      PRIOR_SCHEDULE_RECEIPT="$2"
+      shift 2
+      ;;
     --)
       shift
       break
@@ -47,7 +83,8 @@ done
 
 usage() {
   echo "usage: $0 deploy --bundle DIR --release-inputs DIR --receipt FILE -- DEPLOY_DRIVER" >&2
-  echo "       $0 activate --bundle DIR --release-inputs DIR --receipt FILE --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- scripts/production-activate-driver.sh" >&2
+  echo "       $0 activate --phase schedule --bundle DIR --release-inputs DIR --receipt FILE --submission FILE --sns-identity NAME --sns-neuron-subaccount HEX --sns-proposer-principal PRINCIPAL --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION -- scripts/production-activate-driver.sh" >&2
+  echo "       $0 activate --phase execute [same options] --prior-schedule-receipt FILE --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- scripts/production-activate-driver.sh" >&2
   exit 2
 }
 
@@ -127,13 +164,51 @@ export BRIDGE_SOURCE_ROOT="$SOURCE_ROOT"
 
 GATE_OUTPUT=""
 if [[ "$MODE" == "deploy" ]]; then
-  GATE_OUTPUT="$(run_profile_gate validate-bundle --offline "$BUNDLE")"
-  printf '%s\n' "$GATE_OUTPUT"
-else
-  [[ "$CONFIRMATION" == "UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE" ]] || {
-    echo "Gate B activation requires explicit asset-acceptance confirmation" >&2
+  STRUCTURAL_GATE_OUTPUT="$(run_profile_gate validate-bundle --offline "$BUNDLE")"
+  printf '%s\n' "$STRUCTURAL_GATE_OUTPUT"
+  [[ "$STRUCTURAL_GATE_OUTPUT" =~ manifest_sha256=([0-9a-fA-F]{64}) ]] || {
+    echo "offline Gate A validation did not return a manifest hash" >&2
     exit 1
   }
+  STRUCTURAL_MANIFEST_SHA256="${BASH_REMATCH[1]}"
+  GATE_OUTPUT="$(run_profile_gate verify-gate-a-live "$BUNDLE")"
+  printf '%s\n' "$GATE_OUTPUT"
+  [[ "$GATE_OUTPUT" == *"manifest_sha256=$STRUCTURAL_MANIFEST_SHA256"* ]] || {
+    echo "offline and live Gate A validation disagree on the manifest" >&2
+    exit 1
+  }
+else
+  [[ "$ACTIVATION_PHASE" == schedule || "$ACTIVATION_PHASE" == execute ]] || {
+    echo "activation requires --phase schedule or execute" >&2
+    exit 1
+  }
+  EXPECTED_CONFIRMATION="SCHEDULE_PRODUCTION_ASSET_ACTIVATION"
+  if [[ "$ACTIVATION_PHASE" == execute ]]; then
+    EXPECTED_CONFIRMATION="UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE"
+  fi
+  [[ "$CONFIRMATION" == "$EXPECTED_CONFIRMATION" ]] || {
+    echo "activation phase requires its exact explicit confirmation" >&2
+    exit 1
+  }
+  [[ -n "$ACTIVATION_SUBMISSION" && -n "$SNS_IDENTITY" && -n "$SNS_NEURON_SUBACCOUNT" && -n "$SNS_PROPOSER_PRINCIPAL" ]] || {
+    echo "activation requires submission output and fixed SNS proposer identity inputs" >&2
+    exit 1
+  }
+  if [[ "$ACTIVATION_PHASE" == schedule ]]; then
+    [[ -z "$PRIOR_SCHEDULE_RECEIPT" ]] || { echo "schedule forbids a prior schedule receipt" >&2; exit 1; }
+  else
+    [[ -f "$PRIOR_SCHEDULE_RECEIPT" ]] || { echo "execute requires a verified schedule receipt" >&2; exit 1; }
+    python3 -c '
+import json,sys
+r=json.load(open(sys.argv[1],encoding="utf-8"))
+expected=sys.argv[2:5]
+actual=[r.get("phase"),r.get("release_id"),r.get("source_revision")]
+raise SystemExit(0 if actual==expected else 1)
+' "$PRIOR_SCHEDULE_RECEIPT" schedule "$RELEASE_ID" "$CURRENT_SOURCE_REVISION" || {
+      echo "prior schedule receipt is not bound to this release" >&2
+      exit 1
+    }
+  fi
   [[ -f "$RECEIPT" ]] || { echo "Gate B requires the matching Gate A receipt" >&2; exit 1; }
   [[ -f "$BUNDLE/gate-a-receipt.json" ]] || { echo "Gate B bundle is missing its Gate A receipt artifact" >&2; exit 1; }
   cmp -s "$RECEIPT" "$BUNDLE/gate-a-receipt.json" || {
@@ -218,5 +293,10 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
   printf 'post_deploy_profile=%s\n' "$POST_DEPLOY_PROFILE"
 else
   export BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_MANIFEST_SHA256"
+  export BRIDGE_ACTIVATION_PHASE="$ACTIVATION_PHASE"
+  export BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION"
+  export BRIDGE_SNS_IDENTITY="$SNS_IDENTITY"
+  export BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT"
+  export BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL"
   exec "$DRIVER_PATH"
 fi

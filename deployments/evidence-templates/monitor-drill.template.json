@@ -1,21 +1,54 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
+  "rehearsal_id": "<unique-rehearsal-id>",
+  "source_revision": "<reviewed-revision>",
+  "source_tree_sha256": "<64-hex>",
+  "ic_network": "ic",
+  "base_chain_id": 84532,
+  "bridge_canister_id": "<rehearsal-bridge-canister-id>",
+  "bridge_contract": "0x<40-hex>",
+  "timelock_contract": "0x<40-hex>",
+  "bridge_canister_wasm_sha256": "<release-wasm-64-hex>",
+  "bridge_runtime_bytecode_sha256": "<release-runtime-64-hex>",
+  "rpc_provider_urls_sha256": "<ordered-three-provider-url-list-64-hex>",
   "routing_sha256": "<64-hex>",
   "fault_started_at_unix": 0,
   "detected_at_unix": 0,
   "acknowledged_at_unix": 0,
   "base_paused_at_unix": 0,
-  "ic_paused_at_unix": 0,
-  "base_pause_transaction_hash": "0x<64-hex>",
-  "base_pause_block_number": 0,
-  "base_pause_block_hash": "0x<64-hex>",
-  "base_pause_receipt_status": 1,
-  "base_pause_canonical_finalized": true,
-  "ic_pause_response_hex": "<raw-response-hex>",
-  "ic_pause_response_sha256": "<64-hex>",
-  "pause_principal": "<principal>",
-  "pause_request_id": "0x<64-hex>",
-  "pause_audit_sequence": 0,
-  "pause_audit_sha256": "<64-hex>",
-  "pause_audit_raw_hex": "<raw-audit-event-hex>"
+  "pending_timelock_operation_before": false,
+  "base_actions": [
+    {
+      "kind": "PauseDepositMints",
+      "transaction_hash": "0x<64-hex>",
+      "block_number": 0,
+      "block_hash": "0x<64-hex>",
+      "receipt_status": 1,
+      "target": "0x<same-bridge-address>",
+      "calldata_hex": "0x<exact-pauseDepositMints-selector>",
+      "canonical_finalized": true
+    },
+    {
+      "kind": "PauseWithdrawals",
+      "transaction_hash": "0x<64-hex>",
+      "block_number": 0,
+      "block_hash": "0x<64-hex>",
+      "receipt_status": 1,
+      "target": "0x<same-bridge-address>",
+      "calldata_hex": "0x<exact-pauseWithdrawals-selector>",
+      "canonical_finalized": true
+    }
+  ],
+  "ic_pause": {
+    "paused_at_unix": 0,
+    "response_hex": "<candid-emergency-pause-response-hex>",
+    "response_sha256": "<64-hex>",
+    "pause_principal": "<principal>",
+    "request_id": "0x<64-hex>",
+    "certificate_hex": "<cbor-certificate-hex>",
+    "certificate_sha256": "<64-hex>",
+    "audit_sequence": 0,
+    "audit_sha256": "<64-hex>",
+    "audit_raw_hex": "<candid-audit-event-hex>"
+  }
 }

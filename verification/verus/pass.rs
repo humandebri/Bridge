@@ -171,6 +171,18 @@ proof fn committed_quote_fixes_amount_out(
     ensures kernel::committed_quote_matches_spec(amount, amount_out, service_fee)
 {}
 
+proof fn outbound_settlement_uses_the_committed_fee_once(
+    amount_out: int, ledger_fee: int, service_fee: int,
+)
+    requires
+        0 <= amount_out,
+        0 <= ledger_fee <= service_fee,
+        amount_out + service_fee <= 340282366920938463463374607431768211455int,
+    ensures kernel::outbound_settlement_spec(amount_out, ledger_fee, service_fee)
+        == Some((amount_out + ledger_fee, service_fee - ledger_fee,
+            amount_out + service_fee))
+{}
+
 proof fn active_counter_transition_preserves_classification(current: int, old: bool, new: bool)
     requires 0 <= current < 0xffff_ffff_ffff_ffffint,
         old && !new ==> current > 0
@@ -404,7 +416,9 @@ proof fn ambiguous_outbound_resolution_preserves_a_possible_world(
 )
     requires kernel::asset_backed_spec(escrow, supply, fees, unminted, unreleased),
         0 <= amount_out, 0 <= ledger_fee, 0 <= service_fee,
-        amount_out + ledger_fee + service_fee <= unreleased
+        ledger_fee <= service_fee,
+        amount_out + service_fee <= unreleased,
+        amount_out + ledger_fee <= escrow
     ensures ({
         let resolved = kernel::ambiguous_outbound_world_spec(
             happened, escrow, fees, unreleased, amount_out, ledger_fee, service_fee);

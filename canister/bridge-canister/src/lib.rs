@@ -1171,11 +1171,17 @@ async fn submit_base_governance_action(
 
 #[ic_cdk::update]
 async fn emergency_pause(
-) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
+) -> Result<base_governance::EmergencyPauseReceipt, base_governance::BaseGovernanceError> {
     let Some(_guard) = InFlightGuard::acquire(ActionKey::EmergencyPause) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     base_governance::emergency_pause(ic_cdk::api::msg_caller()).await
+}
+
+#[ic_cdk::query]
+fn get_activation_status(
+) -> Result<base_governance::ActivationStatus, base_governance::BaseGovernanceError> {
+    base_governance::activation_status()
 }
 
 #[ic_cdk::update]

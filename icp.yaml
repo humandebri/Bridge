@@ -50,5 +50,3 @@ environments:
     network: ic
     canisters:
       - bridge-sepolia
-      - ledger-sepolia
-      - index-sepolia

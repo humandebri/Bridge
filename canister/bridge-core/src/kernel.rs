@@ -113,6 +113,23 @@ macro_rules! committed_quote_matches_body {
     }};
 }
 
+macro_rules! outbound_settlement_body {
+    ($amount_out:expr, $ledger_fee:expr, $service_fee:expr, $max:expr) => {{
+        if $ledger_fee > $service_fee
+            || $amount_out > $max - $ledger_fee
+            || $amount_out > $max - $service_fee
+        {
+            None
+        } else {
+            Some((
+                $amount_out + $ledger_fee,
+                $service_fee - $ledger_fee,
+                $amount_out + $service_fee,
+            ))
+        }
+    }};
+}
+
 macro_rules! nonce_too_low_submitted_body {
     ($provider_agreement:expr, $local_hash_found:expr) => {
         $provider_agreement && $local_hash_found
@@ -323,6 +340,17 @@ pub const fn committed_quote_matches(amount: u128, amount_out: u128, service_fee
     committed_quote_matches_body!(amount, amount_out, service_fee, u128::MAX)
 }
 
+/// Returns `(escrow_debit, fee_reserve_credit, liability_debit)` for a successful
+/// outbound Ledger transfer. `None` rejects fee inversion or arithmetic overflow.
+#[cfg(not(verus_keep_ghost))]
+pub const fn outbound_settlement(
+    amount_out: u128,
+    ledger_fee: u128,
+    service_fee: u128,
+) -> Option<(u128, u128, u128)> {
+    outbound_settlement_body!(amount_out, ledger_fee, service_fee, u128::MAX)
+}
+
 #[cfg(not(verus_keep_ghost))]
 pub const fn checked_counter_transition(
     current: u64,
@@ -512,6 +540,15 @@ verus! {
         committed_quote_matches_body!(amount, amount_out, service_fee, max)
     }
 
+    pub open spec fn outbound_settlement_spec(
+        amount_out: int,
+        ledger_fee: int,
+        service_fee: int,
+    ) -> Option<(int, int, int)> {
+        let max: int = 340282366920938463463374607431768211455;
+        outbound_settlement_body!(amount_out, ledger_fee, service_fee, max)
+    }
+
     pub open spec fn checked_counter_transition_spec(
         current: int,
         was_active: bool,
@@ -674,8 +711,8 @@ verus! {
         service_fee: int,
     ) -> (int, int, int) {
         if transfer_happened {
-            (escrow - amount_out - ledger_fee, fee_reserve + service_fee,
-                unreleased - amount_out - ledger_fee - service_fee)
+            (escrow - amount_out - ledger_fee, fee_reserve + service_fee - ledger_fee,
+                unreleased - amount_out - service_fee)
         } else {
             (escrow, fee_reserve, unreleased)
         }

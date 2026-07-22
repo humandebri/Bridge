@@ -279,10 +279,16 @@ fn settlement() -> Settlement {
     }
 }
 
+fn withdrawal_transfer(amount: u128, fee: u128, tag: u8) -> LedgerTransferIdentity {
+    let mut identity = transfer(LedgerOperation::ReleaseWithdrawal, amount, fee, tag);
+    identity.to = Account::new(vec![1], [0; 32]).expect("withdrawal destination must be valid");
+    identity
+}
+
 #[test]
 fn withdrawal_payment_is_terminal_and_fee_reserve_is_net_of_ledger_fee() {
     let mut withdrawal = observed_withdrawal();
-    let release_transfer = transfer(LedgerOperation::ReleaseWithdrawal, 90, 5, 20);
+    let release_transfer = withdrawal_transfer(90, 5, 20);
     let start = WithdrawalEvent::StartRelease {
         attempt: Box::new(attempt(release_transfer)),
         settlement: settlement(),
@@ -312,12 +318,7 @@ fn withdrawal_payment_is_terminal_and_fee_reserve_is_net_of_ledger_fee() {
     assert!(matches!(withdrawal.state, WithdrawalState::Paid { .. }));
     assert!(matches!(
         withdrawal.apply(WithdrawalEvent::StartRelease {
-            attempt: Box::new(attempt(transfer(
-                LedgerOperation::ReleaseWithdrawal,
-                90,
-                5,
-                21,
-            ))),
+            attempt: Box::new(attempt(withdrawal_transfer(90, 5, 21))),
             settlement: settlement(),
         }),
         Err(CoreError::InvalidTransition { .. })
@@ -328,12 +329,7 @@ fn withdrawal_payment_is_terminal_and_fee_reserve_is_net_of_ledger_fee() {
 fn withdrawal_release_rejects_a_ledger_fee_not_bound_to_settlement() {
     let mut withdrawal = observed_withdrawal();
     let mismatched = WithdrawalEvent::StartRelease {
-        attempt: Box::new(attempt(transfer(
-            LedgerOperation::ReleaseWithdrawal,
-            90,
-            6,
-            70,
-        ))),
+        attempt: Box::new(attempt(withdrawal_transfer(90, 6, 70))),
         settlement: settlement(),
     };
 
@@ -345,16 +341,32 @@ fn withdrawal_release_rejects_a_ledger_fee_not_bound_to_settlement() {
 }
 
 #[test]
+fn withdrawal_release_rejects_a_destination_not_bound_to_the_record() {
+    let mut wrong_owner = withdrawal_transfer(90, 5, 71);
+    wrong_owner.to = Account::new(vec![2], [0; 32]).expect("alternate owner must be valid");
+    let mut wrong_subaccount = withdrawal_transfer(90, 5, 72);
+    wrong_subaccount.to =
+        Account::new(vec![1], [1; 32]).expect("alternate subaccount must be valid");
+
+    for identity in [wrong_owner, wrong_subaccount] {
+        let mut withdrawal = observed_withdrawal();
+        assert_eq!(
+            withdrawal.apply(WithdrawalEvent::StartRelease {
+                attempt: Box::new(attempt(identity)),
+                settlement: settlement(),
+            }),
+            Err(CoreError::SettlementMismatch)
+        );
+        assert_eq!(withdrawal.state, WithdrawalState::Observed);
+    }
+}
+
+#[test]
 fn withdrawal_hold_requires_evidence_before_payment_becomes_terminal() {
     let mut withdrawal = observed_withdrawal();
     withdrawal
         .apply(WithdrawalEvent::StartRelease {
-            attempt: Box::new(attempt(transfer(
-                LedgerOperation::ReleaseWithdrawal,
-                90,
-                5,
-                40,
-            ))),
+            attempt: Box::new(attempt(withdrawal_transfer(90, 5, 40))),
             settlement: settlement(),
         })
         .expect("start release");
@@ -650,7 +662,7 @@ fn cancelled_deposit_is_terminal_and_id_is_not_reopened() {
 
 #[test]
 fn withdrawal_attempt_changes_only_time_and_memo_after_absence() {
-    let original = transfer(LedgerOperation::ReleaseWithdrawal, 90, 5, 80);
+    let original = withdrawal_transfer(90, 5, 80);
     let first = attempt(original.clone());
     let mut replacement = original.clone();
     replacement.created_at_time_ns += 1;
@@ -674,7 +686,7 @@ fn withdrawal_attempt_changes_only_time_and_memo_after_absence() {
 #[test]
 fn withdrawal_absence_resolution_replay_binds_old_hold_to_exact_replacement() {
     let mut withdrawal = observed_withdrawal();
-    let original = transfer(LedgerOperation::ReleaseWithdrawal, 90, 5, 80);
+    let original = withdrawal_transfer(90, 5, 80);
     withdrawal
         .apply(WithdrawalEvent::StartRelease {
             attempt: Box::new(attempt(original.clone())),
@@ -766,12 +778,7 @@ fn withdrawal_terminal_transition_rechecks_the_committed_quote() {
     let mut withdrawal = observed_withdrawal();
     withdrawal
         .apply(WithdrawalEvent::StartRelease {
-            attempt: Box::new(attempt(transfer(
-                LedgerOperation::ReleaseWithdrawal,
-                90,
-                5,
-                90,
-            ))),
+            attempt: Box::new(attempt(withdrawal_transfer(90, 5, 90))),
             settlement: settlement(),
         })
         .expect("start release");
@@ -887,7 +894,7 @@ fn deposit_state_event_transition_matrix_covers_all_current_events() {
 
 #[test]
 fn withdrawal_state_event_transition_matrix_covers_all_current_events() {
-    let release_transfer = transfer(LedgerOperation::ReleaseWithdrawal, 90, 5, 60);
+    let release_transfer = withdrawal_transfer(90, 5, 60);
     let release_settlement = settlement();
     let states = [
         WithdrawalState::Observed,

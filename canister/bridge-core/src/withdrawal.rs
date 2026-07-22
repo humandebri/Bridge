@@ -240,6 +240,8 @@ impl WithdrawalRecord {
                 self.amount_out.get(),
                 settlement.ledger_fee.get(),
             )
+            || attempt.identity.to.owner() != self.owner
+            || attempt.identity.to.subaccount() != self.subaccount
             || settlement.amount_out != self.amount_out
             || settlement.service_fee != self.charged_service_fee
         {

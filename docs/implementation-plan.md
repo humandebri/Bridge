@@ -72,7 +72,7 @@ Phase 1Eで検証を閉じ、ABIを凍結済みである。
 - Per-Deposit Limit を各 Deposit に適用する。
 - Mint Throughput Limit を fixed window（初期値 1 時間）の新規 deposit mint 総量に適用する。window 境界バーストの 2 倍係数は上限値の導出（`docs/parameters.md`）で織り込む。
 - 両制限とwindow長はdeploy時のimmutable値とし、raw unitで定義する。decimalsの表示変換を判定に使わない。
-- WithdrawalのBase再mint経路を持たない。
+- Withdrawal IDからburnを取り消すBase refund/remint経路を持たない。Bridge Signerの通常Deposit mint権限は別のtrust assumptionとする。
 - 各DepositにPer-Deposit Limitを適用し、同じfixed window内のmintを共有Mint Throughput Limitへ累積する。
 
 ### 1-4. Withdrawal 状態機械（ADR 0018）
@@ -201,7 +201,7 @@ Plan 003で管理権限と監査ログを実装済みである。
 Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みである。
 証明はWasmごとに再実行し、過去版の証明を新しいupgradeへ流用しない（ADR 0008）。
 
-- 各 Deposit が Per-Deposit Limit を超えないこと。mint 流量の消費量が保存されること。WithdrawalからBase再mintできないこと（ADR 0018）。
+- 各 Deposit が Per-Deposit Limit を超えないこと。mint 流量の消費量が保存されること。Withdrawal専用のBase refund/remint経路がなく、処理済みDeposit IDをreplayできないこと（ADR 0018）。
 - 1件のWithdrawalがBase `Committed`からCanister `Paid`へ進み、`Paid`後に再送・減額・送金先変更されないこと（ADR 0018）。
 - Service Fee の上限制約、二重計上防止、成功前の fee 確定禁止、recipient 変更時の reserve 保存、fee reserve を超える送金の禁止（ADR 0004）。
 - Deposit 受付が Settlement Reserve を侵食しないこと。Settlement task が Deposit task より優先されること（ADR 0005）。

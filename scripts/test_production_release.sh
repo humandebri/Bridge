@@ -84,6 +84,15 @@ expect_rejected() {
   fi
 }
 
+ACTIVATION_ARGS=(
+  --phase schedule
+  --submission "$TEST_TMP_ROOT/activation-submission.json"
+  --sns-identity proposer
+  --sns-neuron-subaccount "$(printf 'a%.0s' {1..64})"
+  --sns-proposer-principal "aaaaa-aa"
+  --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION
+)
+
 write_gate 1
 expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 [[ ! -e "$TEST_TMP_ROOT/deployed" ]]
@@ -113,7 +122,7 @@ rg -q '^validate-bundle --offline ' "$TEST_TMP_ROOT/gate-calls"
 
 write_gate 1
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
-  --release-inputs "$TEST_TMP_ROOT/release-inputs" --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ ! -e "$TEST_TMP_ROOT/activated" ]]
 
 write_gate 0
@@ -130,11 +139,11 @@ json.dump(manifest,open(sys.argv[1],'w'),sort_keys=True,separators=(',',':'))
 json.dump({'profile_file_sha256':forged},open(sys.argv[2],'w'),sort_keys=True,separators=(',',':'))
 PY
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
-  --release-inputs "$TEST_TMP_ROOT/release-inputs" --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 mv "$TEST_TMP_ROOT/manifest-valid.json" "$TEST_TMP_ROOT/bundle-b/release-manifest.json"
 mv "$TEST_TMP_ROOT/inputs-valid.json" "$TEST_TMP_ROOT/release-inputs/release-inputs-manifest.json"
 ACTION_MARKER="$TEST_TMP_ROOT/activated" run_release activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
-  --release-inputs "$TEST_TMP_ROOT/release-inputs" --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ -e "$TEST_TMP_ROOT/activated" ]]
 rg -q '^verify-live ' "$TEST_TMP_ROOT/gate-calls"
 [[ ! -e "$TEST_TMP_ROOT/profile-override-used" ]]

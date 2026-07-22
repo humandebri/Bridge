@@ -200,7 +200,13 @@ pub struct Settlement {
 
 impl Settlement {
     pub fn net_service_fee(self) -> Result<Amount, CoreError> {
-        self.service_fee.checked_sub(self.ledger_fee)
+        crate::outbound_settlement(
+            self.amount_out.get(),
+            self.ledger_fee.get(),
+            self.service_fee.get(),
+        )
+        .map(|(_, fee_reserve_credit, _)| Amount::new(fee_reserve_credit))
+        .ok_or(CoreError::SettlementMismatch)
     }
 
     pub fn validate_committed(
@@ -211,14 +217,20 @@ impl Settlement {
         if self.service_fee > max_service_fee {
             return Err(CoreError::ServiceFeeAboveMaximum);
         }
-        if self.ledger_fee > self.service_fee {
-            return Err(CoreError::SettlementMismatch);
-        }
         if !crate::committed_quote_matches(
             amount.get(),
             self.amount_out.get(),
             self.service_fee.get(),
         ) {
+            return Err(CoreError::SettlementMismatch);
+        }
+        if crate::outbound_settlement(
+            self.amount_out.get(),
+            self.ledger_fee.get(),
+            self.service_fee.get(),
+        )
+        .is_none()
+        {
             return Err(CoreError::SettlementMismatch);
         }
         Ok(())

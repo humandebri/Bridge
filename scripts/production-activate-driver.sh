@@ -9,6 +9,10 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 : "${BRIDGE_GATE_B_MANIFEST_SHA256:?missing Gate B evidence hash}"
 : "${BRIDGE_RELEASE_BUNDLE:?missing release bundle}"
 : "${BRIDGE_ACTIVATION_PHASE:?set BRIDGE_ACTIVATION_PHASE=schedule or execute}"
+: "${BRIDGE_ACTIVATION_SUBMISSION_OUT:?missing activation submission output}"
+: "${BRIDGE_SNS_IDENTITY:?missing SNS proposer identity name}"
+: "${BRIDGE_SNS_NEURON_SUBACCOUNT:?missing SNS proposer neuron subaccount}"
+: "${BRIDGE_SNS_PROPOSER_PRINCIPAL:?missing SNS proposer principal}"
 
 [[ "$BRIDGE_ACTIVATION_PHASE" == schedule || "$BRIDGE_ACTIVATION_PHASE" == execute ]] || {
   echo "invalid activation phase" >&2
@@ -21,6 +25,7 @@ done
 "$SOURCE_ROOT/scripts/production-live-preflight.sh" verify "$BRIDGE_RELEASE_BUNDLE"
 production_validate_gate gate-b "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
 
-echo "preflight complete, but activation was not submitted: submit the fixed ${BRIDGE_ACTIVATION_PHASE}_activation SNS proposal and rerun live verification" >&2
-echo "this driver fails closed until a repository-owned SNS proposal submission and executed-proposal verification path is available" >&2
-exit 2
+exec "$SOURCE_ROOT/scripts/production-activation-proposal.sh" \
+  "$BRIDGE_ACTIVATION_PHASE" "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
+  "$BRIDGE_ACTIVATION_SUBMISSION_OUT" "$BRIDGE_SNS_IDENTITY" \
+  "$BRIDGE_SNS_NEURON_SUBACCOUNT" "$BRIDGE_SNS_PROPOSER_PRINCIPAL"
