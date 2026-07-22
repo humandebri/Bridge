@@ -18,6 +18,8 @@ elif [[ "$*" == *list_nervous_system_functions* ]]; then
 {"functions":[{"id":101,"function_type":{"GenericNervousSystemFunction":{"target_canister_id":"aaaaa-aa","target_method_name":"schedule_activation"}}}]}
 JSON
 elif [[ "$*" == *manage_neuron* ]]; then
+  date +%s >"$MANAGE_NEURON_AT"
+  sleep 2
   echo '{"command":{"MakeProposal":{"proposal_id":{"id":42}}}}'
 else
   exit 1
@@ -32,11 +34,11 @@ cat >"$T/bundle/release-manifest.json" <<'JSON'
 {"release_id":"release-test","source_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","source_tree_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 JSON
 
-PATH="$T/bin:$PATH" TRACE="$TRACE" "$ROOT/scripts/production-activation-proposal.sh" \
+PATH="$T/bin:$PATH" TRACE="$TRACE" MANAGE_NEURON_AT="$T/manage-neuron-at" "$ROOT/scripts/production-activation-proposal.sh" \
   schedule "$T/bundle" "$(printf 'c%.0s' {1..64})" "$T/submission.json" proposer \
   "$(printf 'd%.0s' {1..64})" 2vxsx-fae >/dev/null
 
-python3 - "$T/submission.json" <<'PY'
+python3 - "$T/submission.json" "$T/manage-neuron-at" <<'PY'
 import json,sys
 value=json.load(open(sys.argv[1],encoding='utf-8'))
 assert value['schema_version']==3
@@ -46,10 +48,11 @@ assert value['function_id']==101
 assert value['target_method_name']=='schedule_activation'
 assert value['payload_hex']=='4449444c0000'
 assert value['proposer_principal']=='2vxsx-fae'
+assert value['submitted_at_unix'] <= int(open(sys.argv[2],encoding='utf-8').read())
 PY
 [[ "$(grep -c manage_neuron "$TRACE")" -eq 1 ]]
 
-if PATH="$T/bin:$PATH" TRACE="$TRACE" "$ROOT/scripts/production-activation-proposal.sh" \
+if PATH="$T/bin:$PATH" TRACE="$TRACE" MANAGE_NEURON_AT="$T/manage-neuron-at" "$ROOT/scripts/production-activation-proposal.sh" \
   schedule "$T/bundle" "$(printf 'c%.0s' {1..64})" "$T/submission.json" proposer \
   "$(printf 'd%.0s' {1..64})" 2vxsx-fae >/dev/null 2>&1; then
   echo "activation proposal accepted a reused checkpoint path" >&2
@@ -57,7 +60,7 @@ if PATH="$T/bin:$PATH" TRACE="$TRACE" "$ROOT/scripts/production-activation-propo
 fi
 [[ "$(grep -c manage_neuron "$TRACE")" -eq 1 ]]
 
-if PATH="$T/bin:$PATH" TRACE="$TRACE" "$ROOT/scripts/production-activation-proposal.sh" \
+if PATH="$T/bin:$PATH" TRACE="$TRACE" MANAGE_NEURON_AT="$T/manage-neuron-at" "$ROOT/scripts/production-activation-proposal.sh" \
   schedule "$T/bundle" "$(printf 'c%.0s' {1..64})" "$T/rejected.json" proposer \
   "$(printf 'd%.0s' {1..64})" aaaaa-aa >/dev/null 2>&1; then
   echo "activation proposal accepted an identity/principal mismatch" >&2

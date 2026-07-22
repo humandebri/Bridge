@@ -95,6 +95,7 @@ summary=('Schedule the reviewed 72-hour Timelock activation while all asset flow
 argument=(f'(record {{ subaccount = {blob_literal(bytes.fromhex(subaccount))}; command = opt variant {{ '
  f'MakeProposal = record {{ url = ""; title = "{title}"; summary = "{summary}"; action = opt variant {{ '
  f'ExecuteGenericNervousSystemFunction = record {{ function_id = {function_id} : nat64; payload = {blob_literal(payload)} }} }} }} }} }})')
+submitted_at_unix=int(time.time())
 submit_command,stdout,stderr=call('manage_neuron',argument)
 try: response=json.loads(stdout)
 except json.JSONDecodeError: raise SystemExit('SNS proposal response is not JSON')
@@ -111,7 +112,7 @@ evidence={
  'governance_canister_id':governance,'bridge_canister_id':profile['bridge_canister_id'],'function_id':function_id,
  'target_method_name':method,'payload_hex':payload.hex(),'payload_sha256':hashlib.sha256(payload).hexdigest(),
  'proposer_principal':resolved_principal,'neuron_subaccount':subaccount.lower(),
- 'proposal_id':proposal_ids[0],'submitted_at_unix':int(time.time()),
+ 'proposal_id':proposal_ids[0],'submitted_at_unix':submitted_at_unix,
  'registry_response_sha256':hashlib.sha256(registry_stdout.encode()).hexdigest(),
  'proposal_response_hex':stdout.encode().hex(),'proposal_response_sha256':hashlib.sha256(stdout.encode()).hexdigest(),
  'registry_command_argv':registry_command,'proposal_command_argv':[value if value!=argument else '<fixed-candid-payload>' for value in submit_command],
