@@ -3,24 +3,34 @@ use candid::{CandidType, Deserialize};
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DepositPhase {
-    PullPending,
-    Escrowed,
+    FundingPending,
+    EscrowedUnquoted,
     MintPending,
     Minted,
     MintReverted,
-    ReconciliationHold,
+    FundingReconciliationHold,
+    RefundPending,
+    RefundReconciliationHold,
+    Refunded,
     Cancelled,
 }
 
 impl From<&DepositState> for DepositPhase {
     fn from(state: &DepositState) -> Self {
         match state {
-            DepositState::PullPending => Self::PullPending,
-            DepositState::Escrowed { .. } => Self::Escrowed,
+            DepositState::FundingPending => Self::FundingPending,
+            DepositState::EscrowedUnquoted { .. } => Self::EscrowedUnquoted,
             DepositState::MintPending { .. } => Self::MintPending,
             DepositState::Minted { .. } => Self::Minted,
             DepositState::MintReverted { .. } => Self::MintReverted,
-            DepositState::ReconciliationHold { .. } => Self::ReconciliationHold,
+            DepositState::FundingReconciliationHold { .. } => {
+                Self::FundingReconciliationHold
+            }
+            DepositState::RefundPending { .. } => Self::RefundPending,
+            DepositState::RefundReconciliationHold { .. } => {
+                Self::RefundReconciliationHold
+            }
+            DepositState::Refunded { .. } => Self::Refunded,
             DepositState::Cancelled { .. } => Self::Cancelled,
         }
     }
@@ -58,8 +68,8 @@ mod tests {
     #[test]
     fn public_phase_variants_are_stable() {
         assert_eq!(
-            DepositPhase::from(&DepositState::PullPending),
-            DepositPhase::PullPending
+            DepositPhase::from(&DepositState::FundingPending),
+            DepositPhase::FundingPending
         );
         assert_eq!(
             WithdrawalPhase::from(&WithdrawalState::Observed),

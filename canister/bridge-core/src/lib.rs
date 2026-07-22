@@ -14,7 +14,9 @@ mod types;
 mod withdrawal;
 
 pub use accounting::{AccountingState, FeeKind};
-pub use deposit::{DepositEvent, DepositRecord, DepositRequest, DepositState};
+pub use deposit::{
+    DepositEvent, DepositQuote, DepositRecord, DepositRefundReason, DepositRequest, DepositState,
+};
 pub use evm::{
     EvmOperationEvent, EvmOperationKind, EvmOperationRecord, EvmOperationState,
     EvmRecoveryResolution,
@@ -27,7 +29,7 @@ pub use external::{
 pub use kernel::{
     administrator_authorized, audit_next, can_assign_nonce, checked_counter_transition,
     checked_requirement, committed_quote_matches, counter_delta, deposit_phase_allows,
-    deposit_phase_step, evidence_matches, fee_delta_once, lease_generation_next,
+    deposit_phase_step, deposit_refund_amount, evidence_matches, fee_delta_once, lease_generation_next,
     mint_admission_total, monotone, next_attempt, nonce_next, nonce_too_low_is_submitted,
     outbound_settlement, payout_allowed, payout_debit, refresh_generation_next,
     refresh_owner_matches, release_transfer_matches, replay_matches, reserve_token_matches,

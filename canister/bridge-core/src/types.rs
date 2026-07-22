@@ -115,6 +115,7 @@ impl Account {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LedgerOperation {
     PullDeposit,
+    RefundDeposit,
     ReleaseWithdrawal,
     FeePayout,
 }

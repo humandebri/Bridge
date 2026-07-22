@@ -162,6 +162,16 @@ macro_rules! payout_allowed_body {
     }};
 }
 
+macro_rules! deposit_refund_body {
+    ($gross:expr, $ledger_fee:expr) => {{
+        if $gross <= $ledger_fee {
+            None
+        } else {
+            Some($gross - $ledger_fee)
+        }
+    }};
+}
+
 macro_rules! authorized_body {
     ($action:expr, $pause:expr, $governance:expr, $pause_action:expr, $resume_action:expr, $recipient_action:expr, $payout_action:expr, $rotate_action:expr) => {
         ($action == $pause_action && $pause)
@@ -174,20 +184,26 @@ macro_rules! authorized_body {
 }
 
 macro_rules! deposit_step_body {
-    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr, $six:expr) => {{
+    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr, $six:expr, $seven:expr, $eight:expr, $nine:expr) => {{
         if $state == $zero && $event == $zero {
             $one
         } else if $state == $zero && $event == $one {
             $five
         } else if $state == $zero && $event == $two {
-            $six
+            $nine
         } else if $state == $one && $event == $three {
             $two
-        } else if $state == $two && $event == $four {
+        } else if $state == $one && $event == $four {
+            $six
+        } else if $state == $six && $event == $five {
+            $eight
+        } else if $state == $six && $event == $six {
+            $seven
+        } else if $state == $two && $event == $seven {
             $three
-        } else if $state == $two && $event == $five {
+        } else if $state == $two && $event == $eight {
             $four
-        } else if $state == $four && $event == $six {
+        } else if $state == $four && $event == $nine {
             $two
         } else {
             $state
@@ -391,6 +407,11 @@ pub const fn payout_allowed(reserve: u128, pending: u128, amount: u128, fee: u12
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn deposit_refund_amount(gross: u128, ledger_fee: u128) -> Option<u128> {
+    deposit_refund_body!(gross, ledger_fee)
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn payout_debit(confirmed_first_time: bool, amount: u128, fee: u128) -> Option<u128> {
     if !confirmed_first_time {
         Some(0)
@@ -414,7 +435,9 @@ pub const fn audit_next(current: u64) -> Option<u64> {
 /// Compact phase transition used by the rich Deposit state machine.
 #[cfg(not(verus_keep_ghost))]
 pub const fn deposit_phase_step(state: u8, event: u8) -> u8 {
-    deposit_step_body!(state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8)
+    deposit_step_body!(
+        state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8
+    )
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -590,6 +613,10 @@ verus! {
         payout_allowed_body!(reserve, pending, amount, fee, max)
     }
 
+    pub open spec fn deposit_refund_amount_spec(gross: int, ledger_fee: int) -> Option<int> {
+        deposit_refund_body!(gross, ledger_fee)
+    }
+
     pub open spec fn payout_debit_spec(confirmed_first_time: bool, amount: int, fee: int) -> Option<int> {
         let max: int = 340282366920938463463374607431768211455;
         if !confirmed_first_time { Some(0) }
@@ -614,8 +641,9 @@ verus! {
 
     pub open spec fn deposit_phase_step_spec(state: int, event: int) -> int {
         let zero: int = 0; let one: int = 1; let two: int = 2; let three: int = 3;
-        let four: int = 4; let five: int = 5; let six: int = 6;
-        deposit_step_body!(state, event, zero, one, two, three, four, five, six)
+        let four: int = 4; let five: int = 5; let six: int = 6; let seven: int = 7;
+        let eight: int = 8; let nine: int = 9;
+        deposit_step_body!(state, event, zero, one, two, three, four, five, six, seven, eight, nine)
     }
 
     pub open spec fn deposit_phase_allows_spec(state: int, event: int) -> bool {
@@ -634,7 +662,7 @@ verus! {
     }
 
     pub open spec fn reverted_phase_recovery_spec(event: int) -> bool {
-        deposit_phase_step_spec(4, event) != 4 <==> event == 6
+        deposit_phase_step_spec(4, event) != 4 <==> event == 9
     }
 
     pub open spec fn deposit_phase_run_spec(state: int, events: Seq<int>) -> int
@@ -652,7 +680,7 @@ verus! {
     }
 
     pub open spec fn deposit_fee_delta_spec(state: int, event: int, fee: int) -> int {
-        if state == 2 && event == 4 { fee } else { 0 }
+        if state == 2 && event == 7 { fee } else { 0 }
     }
 
     pub open spec fn withdrawal_fee_delta_spec(state: int, event: int, fee: int) -> int {

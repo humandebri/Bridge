@@ -9,7 +9,8 @@ use crate::{
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestReference {
-    Deposit(DepositId),
+    DepositFunding(DepositId),
+    DepositRefund(DepositId),
     Withdrawal(WithdrawalId),
 }
 
@@ -89,10 +90,21 @@ impl ReconciliationHoldRecord {
     feature = "storage-serde",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DepositHoldResolution {
-    Succeeded { ledger_block_index: u128 },
-    Absent { history_watermark: u128 },
+    FundingSucceeded {
+        ledger_block_index: u128,
+    },
+    FundingAbsent {
+        history_watermark: u128,
+    },
+    RefundSucceeded {
+        ledger_block_index: u128,
+    },
+    RefundAbsent {
+        history_watermark: u128,
+        next_identity: Box<LedgerTransferIdentity>,
+    },
 }
 
 #[cfg_attr(
@@ -115,33 +127,22 @@ pub fn resolve_deposit_hold(
     hold: &mut ReconciliationHoldRecord,
     resolution: DepositHoldResolution,
 ) -> Result<ApplyResult, CoreError> {
-    if !crate::evidence_matches(
-        hold.request == RequestReference::Deposit(deposit.id),
-        matches!(deposit.state, DepositState::ReconciliationHold { hold_id } if hold_id == hold.id)
-            || matches!(
-                deposit.state,
-                DepositState::Escrowed { .. }
-                    | DepositState::MintPending { .. }
-                    | DepositState::Minted { .. }
-                    | DepositState::Cancelled { .. }
-            ),
-        hold.transfer == deposit.transfer,
-        true,
-        true,
-    ) {
-        return Err(CoreError::HoldMismatch);
-    }
     let mut next_hold = hold.clone();
     let mut next_deposit = deposit.clone();
     let (hold_outcome, request_outcome) = match resolution {
-        DepositHoldResolution::Succeeded { ledger_block_index } => {
+        DepositHoldResolution::FundingSucceeded { ledger_block_index } => {
+            if hold.request != RequestReference::DepositFunding(deposit.id)
+                || hold.transfer != deposit.transfer
+            {
+                return Err(CoreError::HoldMismatch);
+            }
             let ho = next_hold.resolve_succeeded(ledger_block_index)?;
             let ro = match deposit.state {
-                DepositState::ReconciliationHold { hold_id } if hold_id == hold.id => {
-                    next_deposit.state = DepositState::Escrowed { ledger_block_index };
+                DepositState::FundingReconciliationHold { hold_id } if hold_id == hold.id => {
+                    next_deposit.state = DepositState::EscrowedUnquoted { ledger_block_index };
                     ApplyOutcome::Applied
                 }
-                DepositState::Escrowed {
+                DepositState::EscrowedUnquoted {
                     ledger_block_index: current,
                 }
                 | DepositState::MintPending {
@@ -156,10 +157,15 @@ pub fn resolve_deposit_hold(
             };
             (ho, ro)
         }
-        DepositHoldResolution::Absent { history_watermark } => {
+        DepositHoldResolution::FundingAbsent { history_watermark } => {
+            if hold.request != RequestReference::DepositFunding(deposit.id)
+                || hold.transfer != deposit.transfer
+            {
+                return Err(CoreError::HoldMismatch);
+            }
             let ho = next_hold.resolve_absent(history_watermark)?;
             let ro = match deposit.state {
-                DepositState::ReconciliationHold { hold_id } if hold_id == hold.id => {
+                DepositState::FundingReconciliationHold { hold_id } if hold_id == hold.id => {
                     next_deposit.state = DepositState::Cancelled {
                         hold_id: Some(hold_id),
                         history_watermark: Some(history_watermark),
@@ -172,6 +178,70 @@ pub fn resolve_deposit_hold(
                     history_watermark: Some(current),
                     ledger_failure: None,
                 } if hold_id == hold.id && current == history_watermark => ApplyOutcome::Idempotent,
+                _ => return Err(CoreError::HoldMismatch),
+            };
+            (ho, ro)
+        }
+        DepositHoldResolution::RefundSucceeded { ledger_block_index } => {
+            if hold.request != RequestReference::DepositRefund(deposit.id) {
+                return Err(CoreError::HoldMismatch);
+            }
+            let ho = next_hold.resolve_succeeded(ledger_block_index)?;
+            let ro = match &deposit.state {
+                DepositState::RefundReconciliationHold {
+                    reason,
+                    hold_id,
+                    attempt,
+                } if *hold_id == hold.id && hold.transfer == attempt.identity => {
+                    next_deposit.state = DepositState::Refunded {
+                        reason: *reason,
+                        attempt: attempt.clone(),
+                        ledger_block_index,
+                        source_hold: Some(hold.id),
+                    };
+                    ApplyOutcome::Applied
+                }
+                DepositState::Refunded {
+                    ledger_block_index: current,
+                    source_hold: Some(id),
+                    attempt,
+                    ..
+                } if *id == hold.id
+                    && *current == ledger_block_index
+                    && hold.transfer == attempt.identity =>
+                {
+                    ApplyOutcome::Idempotent
+                }
+                _ => return Err(CoreError::HoldMismatch),
+            };
+            (ho, ro)
+        }
+        DepositHoldResolution::RefundAbsent {
+            history_watermark,
+            next_identity,
+        } => {
+            if hold.request != RequestReference::DepositRefund(deposit.id) {
+                return Err(CoreError::HoldMismatch);
+            }
+            let ho = next_hold.resolve_absent(history_watermark)?;
+            let ro = match &deposit.state {
+                DepositState::RefundReconciliationHold {
+                    reason,
+                    hold_id,
+                    attempt,
+                } if *hold_id == hold.id && hold.transfer == attempt.identity => {
+                    let next_attempt = attempt.retry_after_absence(*next_identity)?;
+                    next_deposit.state = DepositState::RefundPending {
+                        reason: *reason,
+                        attempt: next_attempt,
+                    };
+                    ApplyOutcome::Applied
+                }
+                DepositState::RefundPending { attempt, .. }
+                    if attempt.identity == *next_identity =>
+                {
+                    ApplyOutcome::Idempotent
+                }
                 _ => return Err(CoreError::HoldMismatch),
             };
             (ho, ro)

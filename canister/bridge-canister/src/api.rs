@@ -7,8 +7,8 @@ use crate::{
     storage_or_trap, STORE,
 };
 use bridge_core::{
-    Account, Amount, DepositEvent, DepositId, DepositRecord, DepositRequest, DepositState,
-    EvmOperationId, EvmOperationKind, EvmOperationRecord, EvmOperationState,
+    Account, Amount, DepositEvent, DepositId, DepositQuote, DepositRecord, DepositRefundReason,
+    DepositRequest, DepositState, EvmOperationId, EvmOperationKind, EvmOperationRecord, EvmOperationState,
     FinalizedObservationRecord, LedgerFailure, LedgerOperation, LedgerTransferIdentity, Settlement,
     TransferAttempt, WithdrawalEvent, WithdrawalId, WithdrawalRecord, WithdrawalState,
 };
@@ -49,7 +49,6 @@ pub struct DepositReceipt {
     pub deposit_id: Vec<u8>,
     pub owner_sequence: u64,
     pub state: DepositPhase,
-    pub settlement: Option<crate::tasks::SettlementActionResult>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -71,8 +70,8 @@ pub struct DepositView {
     pub deposit_id: Vec<u8>,
     pub owner_sequence: u64,
     pub gross_amount: Nat,
-    pub net_amount: Nat,
-    pub service_fee: Nat,
+    pub quote: Option<DepositQuoteView>,
+    pub refund: Option<DepositRefundView>,
     pub max_service_fee: Nat,
     pub base_recipient: Vec<u8>,
     pub from_subaccount: Option<Vec<u8>>,
@@ -80,6 +79,42 @@ pub struct DepositView {
     pub last_settlement_stop_reason: Option<String>,
     pub base_confirmation: Option<BaseConfirmationView>,
     pub automatic_progress: Option<AutomaticProgressView>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct DepositQuoteView {
+    pub service_fee: Nat,
+    pub net_amount: Nat,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum DepositRefundReasonView {
+    BasePaused,
+    ServiceFeeRejected,
+    PerDepositLimitExceeded,
+    MintWindowLimitExceeded,
+    ReserveInsufficient,
+}
+
+impl From<DepositRefundReason> for DepositRefundReasonView {
+    fn from(value: DepositRefundReason) -> Self {
+        match value {
+            DepositRefundReason::BasePaused => Self::BasePaused,
+            DepositRefundReason::ServiceFeeRejected => Self::ServiceFeeRejected,
+            DepositRefundReason::PerDepositLimitExceeded => Self::PerDepositLimitExceeded,
+            DepositRefundReason::MintWindowLimitExceeded => Self::MintWindowLimitExceeded,
+            DepositRefundReason::ReserveInsufficient => Self::ReserveInsufficient,
+        }
+    }
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct DepositRefundView {
+    pub reason: DepositRefundReasonView,
+    pub amount: Nat,
+    pub ledger_fee: Nat,
+    pub attempt_no: u64,
+    pub block_index: Option<Nat>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -155,11 +190,9 @@ pub enum NotifyWithdrawalReceipt {
     Ingested {
         withdrawal_id: Vec<u8>,
         finalized_head_block_number: u64,
-        settlement: Option<crate::tasks::SettlementActionResult>,
     },
     Duplicate {
         withdrawal_id: Vec<u8>,
-        settlement: Option<crate::tasks::SettlementActionResult>,
     },
 }
 
@@ -356,7 +389,6 @@ fn existing_notified_withdrawal(
             Some(existing) if existing.payload_hash == payload_hash => {
                 Ok(Some(NotifyWithdrawalReceipt::Duplicate {
                     withdrawal_id: observed.id.to_vec(),
-                    settlement: None,
                 }))
             }
             Some(_) => Err(NotifyWithdrawalError::WithdrawalConflict),
@@ -511,7 +543,6 @@ fn ingest_notified_withdrawal(
         Ok(NotifyWithdrawalReceipt::Ingested {
             withdrawal_id: observed.id.to_vec(),
             finalized_head_block_number,
-            settlement: None,
         })
     })
 }
@@ -582,9 +613,9 @@ pub(crate) fn validate_deposit_args(
     };
     let gross_amount = nat_u128(&args.gross_amount)?;
     let max_service_fee = nat_u128(&args.max_service_fee)?;
-    if gross_amount == 0 {
+    if gross_amount <= ledger::KINIC_LEDGER_FEE.get() {
         return Err(DepositError::InvalidRequest(
-            "gross_amount must be positive".into(),
+            "gross_amount must exceed the fixed ledger fee".into(),
         ));
     }
     Ok(ValidatedDepositArgs {
@@ -689,54 +720,7 @@ pub async fn request_deposit(
                 crate::storage::DepositQuotaError::Storage(_) => DepositError::StorageFailure,
             })
     })?;
-    let snapshot = base_mint_snapshot(&config, now).await?;
-    crate::tasks::ensure_nonce_initialized(&config)
-        .await
-        .map_err(|error| match error {
-            crate::tasks::NonceInitializationError::Observation => {
-                DepositError::BaseObservationUnavailable
-            }
-            crate::tasks::NonceInitializationError::Storage => DepositError::StorageFailure,
-        })?;
     let ledger_fee = ledger::KINIC_LEDGER_FEE;
-    let signer_address = cached_signer_address(&config)
-        .await
-        .map_err(|_| DepositError::ReserveUnavailable)?;
-    let (expected_reserve_token, finalized_observation) = STORE.with(|store| {
-        let store = store.borrow();
-        let progress = store
-            .external_progress()
-            .map_err(|_| DepositError::StorageFailure)?;
-        Ok::<_, DepositError>((
-            store
-                .deposit_reserve_token()
-                .map_err(|_| DepositError::StorageFailure)?,
-            progress
-                .finalized_observation
-                .ok_or(DepositError::BaseObservationUnavailable)?,
-        ))
-    })?;
-    let finalized_eth_balance_wei = evm_rpc::signer_eth_balance_at(
-        &config,
-        signer_address,
-        evm_rpc::FinalizedObservation {
-            chain_id: finalized_observation.chain_id,
-            block_number: finalized_observation.block_number,
-            block_hash: finalized_observation.block_hash,
-            observed_at_ns: finalized_observation.observed_at_ns,
-        },
-    )
-    .await
-    .map_err(|_| DepositError::ReserveUnavailable)?;
-    // Keep the current Safe balance call as the final await. The admission transaction validates
-    // the observation generation and pre-observation counters, and the lower of Finalized and
-    // Safe balances prevents either view from overstating available gas reserve.
-    let safe_eth_balance_wei = evm_rpc::signer_eth_balance(&config, signer_address)
-        .await
-        .map_err(|_| DepositError::ReserveUnavailable)?;
-    let eth_balance_wei = finalized_eth_balance_wei.min(safe_eth_balance_wei);
-    let cycles_balance = ic_cdk::api::canister_liquid_cycle_balance();
-    let reserve_observed_at_ns = ic_cdk::api::time();
     let memo = hash(&[b"KINIC-DEPOSIT", &deposit_id]);
     let canister = ic_cdk::api::canister_self();
     let transfer = LedgerTransferIdentity {
@@ -762,16 +746,13 @@ pub async fn request_deposit(
         from_subaccount,
         payload_hash,
     };
-    let record = DepositRecord::accept(
-        DepositRequest {
-            id: DepositId::new(deposit_id),
-            payload_hash,
-            gross_amount: Amount::new(gross_amount),
-            user_max_service_fee: Amount::new(max_service_fee),
-            transfer: transfer.clone(),
-        },
-        snapshot,
-    )
+    let record = DepositRecord::accept(DepositRequest {
+        id: DepositId::new(deposit_id),
+        payload_hash,
+        gross_amount: Amount::new(gross_amount),
+        user_max_service_fee: Amount::new(max_service_fee),
+        transfer: transfer.clone(),
+    })
     .map_err(|e| DepositError::Rejected(format!("{e:?}")))?;
     let admission = STORE.with(|store| {
         let mut store = store.borrow_mut();
@@ -791,27 +772,8 @@ pub async fn request_deposit(
         {
             return Err(DepositError::DepositsPaused);
         }
-        let progress = store
-            .external_progress()
-            .map_err(|_| DepositError::StorageFailure)?;
-        if snapshot.finalized_head_block_number < progress.last_finalized_mint_block {
-            return Err(DepositError::BaseObservationUnavailable);
-        }
         store
-            .admit_deposit(
-                caller,
-                &intent,
-                &record,
-                Some(DepositReserveAdmission {
-                    audit_caller: ic_cdk::api::canister_self(),
-                    expected_token: expected_reserve_token,
-                    observed_at_ns: reserve_observed_at_ns,
-                    eth_balance_wei,
-                    cycles_balance,
-                    reserve_policy: config.reserve_policy(),
-                    mint_snapshot: snapshot,
-                }),
-            )
+            .admit_deposit(caller, &intent, &record, None)
             .map_err(|error| match error {
                 crate::storage::StorageError::SequenceMismatch { expected } => {
                     DepositError::SequenceMismatch { expected }
