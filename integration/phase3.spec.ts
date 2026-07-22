@@ -47,6 +47,7 @@ describe("Phase 3 PocketIC saga", () => {
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
     const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 6, settlement_rate_limit_per_record: 3, transaction_gas_limit: 500_000n, max_fee_per_gas: 10n, max_priority_fee_per_gas: 1n, evm_liveness: { check_interval_seconds: 60n, rebroadcast_after_seconds: 300n, replacement_after_seconds: 1_800n, max_replacements: 3, fee_bump_bps: 1_250, fee_ceiling_multiplier_bps: 40_000 }, eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(bridgeWasm), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
+    expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
     const configuredSigner: any = await (evm.actor as any).set_bridge_signer_for_canister(bridge.canisterId, init.ecdsa_key_name);
     if (!("Ok" in configuredSigner)) throw new Error(`failed to configure mock bridge signer: ${configuredSigner.Err}`);
@@ -249,6 +250,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(config.base_chain_id).toBe(8453n);
     expect(config.schema_version).toBe(17);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
+    expect(config.ledger_fee).toBe(10_000n);
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
     expect(config.rpc_provider_urls_sha256).toHaveLength(32);
 
@@ -460,14 +462,14 @@ describe("Phase 3 PocketIC saga", () => {
   it("accepts a finalized committed withdrawal and pays ICP without another Base transaction", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(6);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     const ingested = await notifyFixtureWithdrawal(bridge);
     expect(Array.from(ingested.Ok.Ingested.withdrawal_id)).toEqual(Array.from(id));
     expect(phaseName((await (bridge.actor as any).get_withdrawal(id))[0].state)).toBe("Paid");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
     await (ledger.actor as any).set_ledger_fee_available(false);
     await (evm.actor as any).set_observed_transaction(new Uint8Array(32).fill(9), new Uint8Array(20).fill(1), new Uint8Array(20).fill(0x22), 99n);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     const duplicate: any = await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) });
     expect(Array.from(duplicate.Ok.Duplicate.withdrawal_id)).toEqual(Array.from(id));
     expect((await (bridge.actor as any).get_bridge_status()).counts.withdrawals).toBe(1n);
@@ -482,7 +484,7 @@ describe("Phase 3 PocketIC saga", () => {
   it("never calls the Ledger before the user withdrawal reaches the finalized head", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(0xa0);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     await (evm.actor as any).set_finalized_block_sequence([98n]);
     const premature: any = await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) });
     expect(premature).toHaveProperty("Err.TransactionNotConfirmed");
@@ -506,7 +508,7 @@ describe("Phase 3 PocketIC saga", () => {
     for (const [mode, error] of cases) {
       const { evm, bridge, runtimePrincipal } = await setup();
       const id = new Uint8Array(32).fill(80 + cases.findIndex(([candidate]) => candidate === mode));
-      await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+      await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
       await (evm.actor as any).set_receipt_mode(mode);
       const result: any = await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) });
       expect(result).toHaveProperty(`Err.${error}`);
@@ -530,8 +532,8 @@ describe("Phase 3 PocketIC saga", () => {
       id,
       owner: runtimePrincipal.toUint8Array(),
       subaccount: new Uint8Array(32),
-      amount: 100n,
-      max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n,
+      amount: 100_000n,
+      max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n,
     }]);
 
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) }))
@@ -549,8 +551,8 @@ describe("Phase 3 PocketIC saga", () => {
       id,
       owner: runtimePrincipal.toUint8Array(),
       subaccount: new Uint8Array(32),
-      amount: 100n,
-      max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n,
+      amount: 100_000n,
+      max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n,
     }]);
     await (evm.actor as any).set_chain_id_mode(mode);
 
@@ -572,8 +574,8 @@ describe("Phase 3 PocketIC saga", () => {
       id,
       owner: runtimePrincipal.toUint8Array(),
       subaccount: new Uint8Array(32),
-      amount: 100n,
-      max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n,
+      amount: 100_000n,
+      max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n,
     }]);
     await (evm.actor as any).set_block_mode(mode);
 
@@ -586,7 +588,7 @@ describe("Phase 3 PocketIC saga", () => {
   it("rejects a non-committed old receipt before any Ledger release call", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(0xa1);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     await (evm.actor as any).set_withdrawal_status(0);
 
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toEqual({ Err: { BaseStateMismatch: null } });
@@ -597,7 +599,7 @@ describe("Phase 3 PocketIC saga", () => {
   it("rejects signer rotation between the receipt and finalized Base state read before Ledger", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(0xa2);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     expect(await (evm.actor as any).set_bridge_signer(new Uint8Array(20).fill(0xaa))).toHaveProperty("Ok");
 
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toEqual({ Err: { BridgeSignerMismatch: null } });
@@ -608,11 +610,11 @@ describe("Phase 3 PocketIC saga", () => {
   it("rejects non-confirmed and wrong-owner notifications and ingests one concurrent replay", async () => {
     const { evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(86);
-    await (evm.actor as any).set_withdrawal([{ id, owner: Principal.selfAuthenticating(new Uint8Array(32).fill(8)).toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: Principal.selfAuthenticating(new Uint8Array(32).fill(8)).toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     bridge.actor.setPrincipal(Principal.selfAuthenticating(new Uint8Array(32).fill(9)));
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.OwnerMismatch");
     bridge.actor.setPrincipal(runtimePrincipal);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     await (evm.actor as any).set_observed_transaction(new Uint8Array(32).fill(9), new Uint8Array(20).fill(1), new Uint8Array(20).fill(0x22), 101n);
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.TransactionNotConfirmed");
     await (evm.actor as any).set_observed_transaction(new Uint8Array(32).fill(9), new Uint8Array(20).fill(1), new Uint8Array(20).fill(0x22), 99n);
@@ -629,9 +631,9 @@ describe("Phase 3 PocketIC saga", () => {
   it("rejects a conflicting payload for an existing withdrawal ID", async () => {
     const { evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(89);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Ok.Ingested");
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 101n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_001n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.WithdrawalConflict");
   });
 
@@ -639,7 +641,7 @@ describe("Phase 3 PocketIC saga", () => {
     const { evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(88);
     await (evm.actor as any).set_observed_transaction(new Uint8Array(32).fill(9), new Uint8Array(20).fill(1), new Uint8Array(20).fill(0x22), 101n);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     const callsBefore = await (evm.actor as any).receipt_call_count();
     for (let attempt = 0; attempt < 40; attempt += 1) {
       expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.TransactionNotConfirmed");
@@ -647,45 +649,35 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 40n);
   });
 
-  it("returns a ledger fee failure without storing or scheduling the withdrawal", async () => {
+  it("uses the fixed fee without querying Ledger fee availability", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(87);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     await (ledger.actor as any).set_ledger_fee_available(false);
-    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.LedgerFeeUnavailable");
-    await advanceTimeWithoutSettlement(2);
-    expect(await (bridge.actor as any).get_withdrawal(id)).toEqual([]);
+    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Ok.Ingested");
+    const paid: any = await (bridge.actor as any).get_withdrawal(id);
+    expect(paid[0].ledger_fee).toBe(10_000n);
   });
 
-  it("persists a fee-guarded withdrawal without release and resumes the same record after fee recovery", async () => {
+  it("fails closed when the charged service fee is below the fixed Ledger fee", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(0xb7);
-    await (ledger.actor as any).set_ledger_fee(11n);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 10_000n, max_service_fee: 9_999n, charged_service_fee: 9_999n, amount_out: 1n }]);
 
     const guarded: any = await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) });
-    expect(guarded).toEqual({ Err: { LedgerFeeExceedsServiceFee: { ledger_fee: 11n, charged_service_fee: 10n } } });
+    expect(guarded).toEqual({ Err: { LedgerFeeExceedsServiceFee: { ledger_fee: 10_000n, charged_service_fee: 9_999n } } });
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
     const blocked: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(blocked[0].state)).toBe("Observed");
     expect(blocked[0].last_settlement_stop_reason).toEqual(["LedgerFeeExceedsServiceFee"]);
     expect((await (bridge.actor as any).get_bridge_status()).withdrawal_fee_guard_active).toBe(true);
-
-    await pic!.upgradeCanister({ canisterId: bridge.canisterId, wasm: readFileSync(bridgeWasm), arg: IDL.encode([], []) });
-    await (ledger.actor as any).set_ledger_fee(1n);
-    expect(await (bridge.actor as any).continue_withdrawal(id)).toHaveProperty("Ok.Complete");
-    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
-    const paid: any = await (bridge.actor as any).get_withdrawal(id);
-    expect(phaseName(paid[0].state)).toBe("Paid");
-    expect(paid[0].ledger_fee).toBe(1n);
-    expect((await (bridge.actor as any).get_bridge_status()).withdrawal_fee_guard_active).toBe(false);
   });
 
   it("continues an ambiguous Withdrawal release from reconciled Hold to Paid", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     await (ledger.actor as any).set_ledger_mode({ Trap: null });
     const id = new Uint8Array(32).fill(46);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     await notifyFixtureWithdrawal(bridge);
     const held: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(held[0].state)).toBe("ReconciliationHold");
@@ -702,13 +694,13 @@ describe("Phase 3 PocketIC saga", () => {
     const id = new Uint8Array(32).fill(0xb1);
     await (ledger.actor as any).set_ledger_fee(1n);
     await (ledger.actor as any).set_ledger_mode({ BadFee: null });
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     await notifyFixtureWithdrawal(bridge);
 
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
     const stopped: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(stopped[0].state)).toBe("ReleasePending");
-    expect(stopped[0].ledger_fee).toBe(1n);
+    expect(stopped[0].ledger_fee).toBe(10_000n);
     expect(stopped[0].last_settlement_stop_reason[0]).toContain("BadFee");
 
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
@@ -716,7 +708,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(2n);
     const paid: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(paid[0].state)).toBe("Paid");
-    expect(paid[0].ledger_fee).toBe(1n);
+    expect(paid[0].ledger_fee).toBe(10_000n);
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
   });
 
@@ -725,7 +717,7 @@ describe("Phase 3 PocketIC saga", () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(0xb5);
     await (ledger.actor as any).set_ledger_mode({ Trap: null });
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100n, max_service_fee: 10n, charged_service_fee: 10n, amount_out: 90n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     await notifyFixtureWithdrawal(bridge);
     expect(phaseName((await (bridge.actor as any).get_withdrawal(id))[0].state)).toBe("ReconciliationHold");
 
@@ -921,11 +913,13 @@ describe("Phase 3 PocketIC saga", () => {
 
 
   it("pauses only new deposits and allows Governance to resume them", async () => {
-    const { bridge, init, runtimePrincipal } = await setup();
+    const { evm, bridge, init, runtimePrincipal } = await setup();
+    await (evm.actor as any).set_max_service_fee(10_000n);
+    await (evm.actor as any).set_service_fee(10_000n);
     bridge.actor.setPrincipal(init.pause_principal);
     expect(await (bridge.actor as any).pause_new_deposits()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
-    const args = { owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 100n, max_service_fee: 10n };
+    const args = { owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10_000n };
     expect(await (bridge.actor as any).request_deposit(args)).toEqual({ Err: { DepositsPaused: null } });
     expect(await (bridge.actor as any).resume_new_deposits()).toHaveProperty("Ok");
     expect(await (bridge.actor as any).request_deposit(args)).toHaveProperty("Ok");
@@ -1059,9 +1053,11 @@ describe("Phase 3 PocketIC saga", () => {
   });
 
   it("fails a retryable fee payout without trapping its reserve", async () => {
-    const { ledger, bridge, runtimePrincipal } = await setup();
+    const { ledger, evm, bridge, runtimePrincipal } = await setup();
+    await (evm.actor as any).set_max_service_fee(10_000n);
+    await (evm.actor as any).set_service_fee(10_000n);
     for (const tag of [56, 57]) {
-      const deposit: any = await (bridge.actor as any).request_deposit({ owner_sequence: BigInt(tag - 56), base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 100n, max_service_fee: 10n });
+      const deposit: any = await (bridge.actor as any).request_deposit({ owner_sequence: BigInt(tag - 56), base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10_000n });
       expect(deposit).toHaveProperty("Ok");
     }
     const page: any = await (bridge.actor as any).list_deposit_ids({ owner: runtimePrincipal, before_cursor: [], limit: 20 });

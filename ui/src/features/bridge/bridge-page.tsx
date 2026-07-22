@@ -75,10 +75,13 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     queryKey: ["deposit-ledger", ic.account?.owner, bytesHex(ic.account?.subaccount ?? new Uint8Array())],
     enabled: false,
     queryFn: async () => {
-      const actor = await createLedgerActor(deploymentProfile.icHost, deploymentProfile.ledgerCanisterId as string)
+      const ledgerActor = await createLedgerActor(deploymentProfile.icHost, deploymentProfile.ledgerCanisterId as string)
       const account = ledgerAccount(ic.account!.owner, ic.account!.subaccount)
       const spender = ledgerAccount(deploymentProfile.bridgeCanisterId as string)
-      const [balance, allowance] = await Promise.all([actor.icrc1_balance_of(account), actor.icrc2_allowance({ account, spender })])
+      const [balance, allowance] = await Promise.all([
+        ledgerActor.icrc1_balance_of(account),
+        ledgerActor.icrc2_allowance({ account, spender }),
+      ])
       return { balance, fee: KINIC_LEDGER_FEE, allowance: allowance.allowance }
     },
   })

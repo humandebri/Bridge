@@ -417,6 +417,7 @@ export const idlFactory = ({ IDL }) => {
     'deposit_rate_limit_global' : IDL.Nat16,
     'pause_principal' : IDL.Principal,
     'governance_principal' : IDL.Principal,
+    'ledger_fee' : IDL.Nat,
     'index_canister_id' : IDL.Principal,
     'ledger_canister_id' : IDL.Principal,
     'governance_operator' : IDL.Vec(IDL.Nat8),
@@ -539,7 +540,6 @@ export const idlFactory = ({ IDL }) => {
     'RateLimited' : IDL.Null,
     'InvalidTransactionHash' : IDL.Null,
     'TransactionReverted' : IDL.Null,
-    'LedgerFeeUnavailable' : IDL.Null,
     'StorageFailure' : IDL.Null,
     'BaseStateMismatch' : IDL.Null,
     'TransactionNotFound' : IDL.Null,
@@ -619,7 +619,6 @@ export const idlFactory = ({ IDL }) => {
     'RateLimited' : IDL.Record({ 'retry_after_seconds' : IDL.Nat64 }),
     'InvalidRequest' : IDL.Text,
     'DepositConflict' : IDL.Null,
-    'LedgerFeeUnavailable' : IDL.Null,
     'StorageFailure' : IDL.Null,
   });
   const Result_14 = IDL.Variant({

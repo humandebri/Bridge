@@ -74,10 +74,6 @@ fn amount(value: &Nat) -> Option<Amount> {
     nat_u128(value).map(Amount::new)
 }
 
-pub async fn ledger_fee(_ledger: Principal) -> Result<Amount, ()> {
-    Ok(KINIC_LEDGER_FEE)
-}
-
 pub async fn pull(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {
     let args = TransferFromArgs {
         spender_subaccount: Some(

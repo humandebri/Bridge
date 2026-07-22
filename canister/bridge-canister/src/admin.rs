@@ -245,9 +245,7 @@ pub async fn request_fee_payout(
             .map_err(|_| AdminError::StorageFailure)?
             .ok_or(AdminError::StorageFailure)
     })?;
-    let fee = ledger::ledger_fee(config.ledger_canister_id)
-        .await
-        .map_err(|_| AdminError::StorageFailure)?;
+    let fee = ledger::KINIC_LEDGER_FEE;
     let mut record = STORE.with(|store| {
         let mut store = store.borrow_mut();
         let admin = store

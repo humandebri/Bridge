@@ -11,6 +11,8 @@ Status画面とruntime事前検証は、ブラウザからreview済みprofileの
 CanisterがFinalized headまたはreceipt blockを取得する際のblock response上限は固定16 KiBである。上限超過時は応答上限の自動拡大や自動再試行をせず、RPC unavailableとしてLedger処理前にfail closedにする。
 2026-07-23のBase Sepolia検証では、直近256 Finalized blockの`eth_getBlockByNumber`応答は最大5,542 bytesであり、16 KiB上限内に収まった。
 
+KINIC Ledger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示・事前検証へ使う。fee変更時はこの定数だけを変更し、Candid binding、Rust/UI/integration test、staging検証を同じ変更で更新する。
+
 ## 保持制限と監査
 
 `get_audit_events`で指定したsequenceがpruning済みの場合、応答は`oldest_available_sequence`から始まる。削除済みeventの完全な内容はcanister内に残らず、`pruned_count`、`pruned_through_sequence`、`pruned_digest`だけがcommitmentとして残る。今回は外部archiveや第三者timestampingを行わないため、詳細の長期保管が必要な運用では上限到達前に別系統へ取得する。

@@ -388,7 +388,7 @@ export function isRetryableConfirmationError(error: unknown): boolean {
     return ["Busy", "AutomaticProgressPending", "RateLimited", "StorageFailure"].includes(error.code)
   }
   if (error instanceof NotifyWithdrawalCallError) {
-    return ["Busy", "RpcUnavailable", "RpcInconsistent", "TransactionNotFound", "TransactionNotConfirmed", "LedgerFeeUnavailable", "StorageFailure", "RateLimited", "InsufficientCycles"].includes(error.code)
+    return ["Busy", "RpcUnavailable", "RpcInconsistent", "TransactionNotFound", "TransactionNotConfirmed", "StorageFailure", "RateLimited", "InsufficientCycles"].includes(error.code)
   }
   if (!(error instanceof Error)) return true
   return !/reject|declin|denied|cancel|account changed|does not own|reverted|payload already|hash is invalid|state does not match|signer does not match|connect (?:an ic wallet|oisy|plug)|not connected|not installed|reconnect|unauthorized|invalid .*reply|wallet reply.*invalid|response .*mismatch|certifi/i.test(error.message)

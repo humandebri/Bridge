@@ -283,8 +283,8 @@ fn single_envelope(
 
 const LEDGER_DEDUP_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
-fn prepared_release_fee_matches_live(prepared: u128, live: u128) -> bool {
-    prepared == live
+fn prepared_release_fee_matches_configured(prepared: u128, configured: u128) -> bool {
+    prepared == configured
 }
 
 fn resolve_reconciliation_success(
@@ -1502,18 +1502,8 @@ pub(crate) async fn advance_withdrawal(
         let state = SettlementState::Withdrawal(WithdrawalPhase::from(&withdrawal.state));
         match withdrawal.state {
             WithdrawalState::ReleasePending { attempt, .. } => {
-                lease.renew_before_external_call()?;
-                let live_ledger_fee = match ledger::ledger_fee(config.ledger_canister_id).await {
-                    Ok(fee) => fee,
-                    Err(_) => {
-                        return Ok(SettlementActionResult::Stopped {
-                            state,
-                            reason: SettlementStopReason::LedgerUnavailable,
-                        });
-                    }
-                };
-                lease.ensure_current()?;
-                if !prepared_release_fee_matches_live(
+                let live_ledger_fee = ledger::KINIC_LEDGER_FEE;
+                if !prepared_release_fee_matches_configured(
                     attempt.identity.fee.get(),
                     live_ledger_fee.get(),
                 ) {
@@ -1603,17 +1593,7 @@ pub(crate) async fn advance_withdrawal(
             }
             WithdrawalState::Paid { .. } => return Ok(SettlementActionResult::Complete { state }),
             WithdrawalState::Observed => {
-                lease.renew_before_external_call()?;
-                let ledger_fee = match ledger::ledger_fee(config.ledger_canister_id).await {
-                    Ok(fee) => fee,
-                    Err(_) => {
-                        return Ok(SettlementActionResult::Stopped {
-                            state,
-                            reason: SettlementStopReason::LedgerUnavailable,
-                        });
-                    }
-                };
-                lease.ensure_current()?;
+                let ledger_fee = ledger::KINIC_LEDGER_FEE;
                 if ledger_fee.get() > withdrawal.charged_service_fee.get() {
                     STORE.with(|store| {
                         let mut store = store.borrow_mut();
@@ -1884,10 +1864,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prepared_release_fails_closed_when_the_live_ledger_fee_changes() {
-        assert!(prepared_release_fee_matches_live(10_000, 10_000));
-        assert!(!prepared_release_fee_matches_live(10_000, 20_000));
-        assert!(!prepared_release_fee_matches_live(20_000, 10_000));
+    fn prepared_release_requires_the_configured_ledger_fee() {
+        assert!(prepared_release_fee_matches_configured(10_000, 10_000));
+        assert!(!prepared_release_fee_matches_configured(10_000, 20_000));
+        assert!(!prepared_release_fee_matches_configured(20_000, 10_000));
     }
     use bridge_core::{EvmCallIntent, EvmOperationId, EvmOperationRecord};
 

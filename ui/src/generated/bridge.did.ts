@@ -247,7 +247,6 @@ export type DepositError = { 'Busy' : null } |
   { 'RateLimited' : { 'retry_after_seconds' : bigint } } |
   { 'InvalidRequest' : string } |
   { 'DepositConflict' : null } |
-  { 'LedgerFeeUnavailable' : null } |
   { 'StorageFailure' : null };
 export interface DepositIdPage {
   'history_truncated' : boolean,
@@ -373,7 +372,6 @@ export type NotifyWithdrawalError = {
   { 'RateLimited' : null } |
   { 'InvalidTransactionHash' : null } |
   { 'TransactionReverted' : null } |
-  { 'LedgerFeeUnavailable' : null } |
   { 'StorageFailure' : null } |
   { 'BaseStateMismatch' : null } |
   { 'TransactionNotFound' : null } |
@@ -415,6 +413,7 @@ export interface PublicConfig {
   'deposit_rate_limit_global' : number,
   'pause_principal' : Principal,
   'governance_principal' : Principal,
+  'ledger_fee' : bigint,
   'index_canister_id' : Principal,
   'ledger_canister_id' : Principal,
   'governance_operator' : Uint8Array | number[],

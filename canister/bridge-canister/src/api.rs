@@ -56,7 +56,6 @@ pub struct DepositReceipt {
 pub enum DepositError {
     InvalidRequest(String),
     BaseObservationUnavailable,
-    LedgerFeeUnavailable,
     Rejected(String),
     StorageFailure,
     DepositsPaused,
@@ -175,7 +174,6 @@ pub enum NotifyWithdrawalError {
     TransactionNotConfirmed,
     TransactionReverted,
     OwnerMismatch,
-    LedgerFeeUnavailable,
     LedgerFeeExceedsServiceFee {
         ledger_fee: Nat,
         charged_service_fee: Nat,
@@ -286,9 +284,7 @@ pub async fn notify_withdrawal(
     if let Some(receipt) = existing_notified_withdrawal(&observed)? {
         return Ok(receipt);
     }
-    let ledger_fee = ledger::ledger_fee(config.ledger_canister_id)
-        .await
-        .map_err(|_| NotifyWithdrawalError::LedgerFeeUnavailable)?;
+    let ledger_fee = ledger::KINIC_LEDGER_FEE;
     let receipt = ingest_notified_withdrawal(
         observed,
         ledger_fee,
@@ -702,9 +698,7 @@ pub async fn request_deposit(
             }
             crate::tasks::NonceInitializationError::Storage => DepositError::StorageFailure,
         })?;
-    let ledger_fee = ledger::ledger_fee(config.ledger_canister_id)
-        .await
-        .map_err(|_| DepositError::LedgerFeeUnavailable)?;
+    let ledger_fee = ledger::KINIC_LEDGER_FEE;
     let signer_address = cached_signer_address(&config)
         .await
         .map_err(|_| DepositError::ReserveUnavailable)?;
