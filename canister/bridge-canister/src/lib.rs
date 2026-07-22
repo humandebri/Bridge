@@ -293,6 +293,22 @@ async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, 
             .map(|record| record.is_some())
             .map_err(|_| api::DepositError::StorageFailure)
     })?;
+    if !existed {
+        let config = STORE.with(|store| {
+            store
+                .borrow()
+                .config()
+                .map_err(|_| api::DepositError::StorageFailure)?
+                .ok_or(api::DepositError::StorageFailure)
+        })?;
+        if !has_external_call_cycle_budget(
+            ic_cdk::api::canister_liquid_cycle_balance(),
+            config.cycles_floor,
+            config.settlement_cycle_ceiling,
+        ) {
+            return Err(api::DepositError::ReserveUnavailable);
+        }
+    }
     let mut receipt = api::request_deposit(caller, args).await?;
     if existed {
         return Ok(receipt);
@@ -365,11 +381,11 @@ async fn notify_withdrawal(
             .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
             .ok_or(api::NotifyWithdrawalError::StorageFailure)
     })?;
-    if ic_cdk::api::canister_liquid_cycle_balance()
-        <= config
-            .cycles_floor
-            .saturating_add(config.settlement_cycle_ceiling)
-    {
+    if !has_external_call_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.cycles_floor,
+        config.settlement_cycle_ceiling,
+    ) {
         return Err(api::NotifyWithdrawalError::InsufficientCycles);
     }
     let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller) else {
@@ -401,6 +417,10 @@ async fn notify_withdrawal(
     }
     scheduler::arm();
     Ok(receipt)
+}
+
+fn has_external_call_cycle_budget(current: u128, floor: u128, call_ceiling: u128) -> bool {
+    current > floor.saturating_add(call_ceiling)
 }
 
 #[ic_cdk::update]
@@ -1235,7 +1255,10 @@ async fn icrc21_canister_call_consent_message(
                 .map(|config| config.ledger_canister_id)
         });
         match ledger {
-            Some(ledger) => ledger::ledger_fee(ledger).await.ok().map(|fee| fee.get()),
+            Some(ledger) => ledger::ledger_fee_for_consent(ledger)
+                .await
+                .ok()
+                .map(|fee| fee.get()),
             None => None,
         }
     } else {
@@ -1307,7 +1330,10 @@ pub fn generated_candid_interface() -> String {
 
 #[cfg(test)]
 mod candid_tests {
-    use super::{storage::StorageError, storage_or_trap, ActionKey, InFlightGuard};
+    use super::{
+        has_external_call_cycle_budget, storage::StorageError, storage_or_trap, ActionKey,
+        InFlightGuard,
+    };
 
     #[cfg(not(feature = "test-deployment"))]
     fn normalize(candid: &str) -> String {
@@ -1350,5 +1376,12 @@ mod candid_tests {
             storage_or_trap::<()>("test storage read", Err(StorageError::DecodeFailed));
         });
         assert!(trapped.is_err());
+    }
+
+    #[test]
+    fn external_calls_require_budget_above_floor_and_call_ceiling() {
+        assert!(!has_external_call_cycle_budget(150, 100, 50));
+        assert!(has_external_call_cycle_budget(151, 100, 50));
+        assert!(!has_external_call_cycle_budget(u128::MAX, u128::MAX, 1));
     }
 }

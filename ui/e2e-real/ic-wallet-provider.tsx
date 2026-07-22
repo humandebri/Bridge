@@ -17,10 +17,12 @@ const Context = createContext<IcWalletState | undefined>(undefined)
 
 class HarnessWalletAdapter implements IcWalletAdapter {
   readonly provider: IcWalletProvider
+  readonly requiresUserGesture = false
   constructor(provider: IcWalletProvider) { this.provider = provider }
   connect() { return request<IcAccount>("/ic/account") }
   getAccount() { return request<IcAccount>("/ic/account") }
   async disconnect() { await request("/ic/disconnect", {}) }
+  prepare(): Promise<() => Promise<void>> { return Promise.resolve(() => Promise.resolve()) }
   approve(call: ApprovalCall) {
     return request<bigint>("/ic/approve", {
       amount: call.amount.toString(),

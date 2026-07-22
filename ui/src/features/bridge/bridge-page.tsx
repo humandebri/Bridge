@@ -165,7 +165,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         queryClient.invalidateQueries({ queryKey: ["base-quote"] }),
         queryClient.invalidateQueries({ queryKey: ["runtime-validation"] }),
       ])
-      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. finalized confirmation will be requested through your IC wallet.`)
+      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. ${ic.provider === "oisy" ? "Complete finalized confirmation from History." : "Finalized confirmation will be requested through your IC wallet."}`)
     },
     onError: (error) => {
       toast.error(error instanceof Error ? `${error.message}. Retry the same deposit or check whether it was accepted.` : "Deposit response is unresolved")
@@ -173,16 +173,19 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   })
 
   const submitDeposit = async () => {
+    let closeWalletSession: (() => Promise<void>) | undefined
     try {
+      if (!ic.account || !ic.adapter) throw new Error("Connect OISY or Plug")
       if (unresolvedDeposit) {
+        closeWalletSession = await ic.adapter.prepare()
         await withBrowserLock(`kinic-deposit-owner:${unresolvedDeposit.account.owner}`, () => deposit.mutateAsync(unresolvedDeposit))
         return
       }
       if (!address || !isConnected) throw new Error("Connect the Base recipient wallet")
-      if (!ic.account || !ic.adapter) throw new Error("Connect OISY or Plug")
       if (!depositParsed.ok) throw new Error(depositParsed.reason)
       if (!ledgerData || !baseData || ownerSequenceData === undefined) throw new Error("Balance or fee information is unavailable. Choose Refresh.")
       if (ledgerData.balance < requiredDepositBalance(depositParsed.value, ledgerData.fee, ledgerData.allowance)) throw new Error(`${deploymentProfile.icToken.symbol} balance does not cover the deposit and required ledger fees`)
+      closeWalletSession = await ic.adapter.prepare()
       const confirmedAccount = { owner: ic.account.owner, subaccount: ic.account.subaccount }
       const confirmedRecipient = address
       const activeEvm = await currentBaseWallet()
@@ -209,6 +212,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Deposit failed")
+    } finally {
+      await closeWalletSession?.()
     }
   }
 
@@ -340,7 +345,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       })
       setWithdrawAmount("")
       if (broadcast.pendingSaved) {
-        toast.success(`Withdrawal submitted: ${broadcast.transactionHash.slice(0, 12)}…. Confirmation is pending and its status will update automatically.`)
+        toast.success(`Withdrawal submitted: ${broadcast.transactionHash.slice(0, 12)}…. ${ic.provider === "oisy" ? "Complete IC confirmation from History after finalization." : "Confirmation is pending and its status will update automatically."}`)
       } else {
         toast.warning(`Withdrawal ${broadcast.transactionHash} was submitted, but this browser could not save it. Copy the transaction hash; after it succeeds, recover it from History.`)
       }

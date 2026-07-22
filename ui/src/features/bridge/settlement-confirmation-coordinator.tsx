@@ -351,6 +351,7 @@ export async function confirmWhenFinalized(
   }
   if (finalized.number === null || finalized.number < receipt.blockNumber) return { status: "retry" }
   const finalizedBlockNumber = finalized.number
+  if (adapter.requiresUserGesture) return { status: "retry" }
 
   try {
     lease.assertCurrent()

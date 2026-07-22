@@ -53,8 +53,10 @@ export class NotifyWithdrawalCallError extends Error {
 
 export interface IcWalletAdapter {
   readonly provider: IcWalletProvider
+  readonly requiresUserGesture: boolean
   connect(): Promise<IcAccount>
   getAccount(): Promise<IcAccount>
+  prepare(): Promise<() => Promise<void>>
   disconnect(): Promise<void>
   approve(call: ApprovalCall): Promise<bigint>
   requestDeposit(call: DepositCall): Promise<DepositReceipt>
@@ -78,62 +80,102 @@ class BridgeIcrcWallet extends IcrcWallet {
   }
 }
 
+type OisyWalletSession = Pick<BridgeIcrcWallet, "accounts" | "approve" | "callCanister" | "disconnect" | "requestPermissionsNotGranted">
+
 export class OisyAdapter implements IcWalletAdapter {
   readonly provider = "oisy" as const
-  #wallet?: BridgeIcrcWallet
+  readonly requiresUserGesture = true
   #account?: IcAccount
-  constructor(private readonly host: string, private readonly ledgerCanisterId: string, private readonly bridgeCanisterId: string) {}
+  #session?: Promise<{ wallet: OisyWalletSession; account: IcAccount }>
+  constructor(
+    private readonly host: string,
+    private readonly ledgerCanisterId: string,
+    private readonly bridgeCanisterId: string,
+    private readonly connectWallet: () => Promise<OisyWalletSession> = () => BridgeIcrcWallet.connect({ url: OISY_SIGNER_URL, host, connectionOptions: { timeoutInMilliseconds: CALL_TIMEOUT_MS } }),
+  ) {}
 
   async connect(): Promise<IcAccount> {
-    this.#wallet = await BridgeIcrcWallet.connect({ url: OISY_SIGNER_URL, host: this.host, connectionOptions: { timeoutInMilliseconds: CALL_TIMEOUT_MS } })
-    await this.#wallet.requestPermissionsNotGranted({ options: { timeoutInMilliseconds: CALL_TIMEOUT_MS } })
-    const [account] = await this.#wallet.accounts({ options: { timeoutInMilliseconds: CALL_TIMEOUT_MS } })
-    if (!account) throw new Error("OISY returned no ICRC account")
-    this.#account = { owner: account.owner, subaccount: parseSubaccount(account.subaccount) }
-    return this.#account
+    const wallet = await this.openWallet()
+    try {
+      const account = await this.readAccount(wallet)
+      this.#account = account
+      return copyAccount(account)
+    } finally {
+      await wallet.disconnect()
+    }
   }
 
   async disconnect(): Promise<void> {
-    await this.#wallet?.disconnect()
-    this.#wallet = undefined
     this.#account = undefined
+    const session = this.#session
+    this.#session = undefined
+    if (!session) return
+    try {
+      const { wallet } = await session
+      await wallet.disconnect()
+    } catch {
+      // A failed session already closes its popup while unwinding prepare().
+    }
   }
 
-  async getAccount(): Promise<IcAccount> {
-    const wallet = this.requiredWallet()
+  getAccount(): Promise<IcAccount> {
+    return Promise.resolve(copyAccount(this.requiredAccount()))
+  }
+
+  async prepare(): Promise<() => Promise<void>> {
+    if (this.#session) throw new Error("An OISY wallet action is already in progress")
     const expected = this.requiredAccount()
-    const accounts = await wallet.accounts({ options: { timeoutInMilliseconds: CALL_TIMEOUT_MS } })
-    const current = accounts.find((account) => account.owner === expected.owner && sameOptionalBytes(parseSubaccount(account.subaccount), expected.subaccount))
-    if (!current) throw new Error("OISY account changed; reconnect and review the transaction")
-    return { owner: current.owner, subaccount: parseSubaccount(current.subaccount) }
+    const walletPromise = this.openWallet()
+    const session = walletPromise.then(async (wallet) => {
+      try {
+        const account = await this.readAccount(wallet)
+        this.assertExpectedAccount(expected, account)
+        return { wallet, account }
+      } catch (error) {
+        await wallet.disconnect()
+        throw error
+      }
+    })
+    this.#session = session
+    try {
+      await session
+    } catch (error) {
+      if (this.#session === session) this.#session = undefined
+      throw error
+    }
+    return async () => {
+      if (this.#session !== session) return
+      this.#session = undefined
+      const { wallet } = await session
+      await wallet.disconnect()
+    }
   }
 
   async approve(call: ApprovalCall): Promise<bigint> {
-    const wallet = this.requiredWallet()
-    const account = this.requiredAccount()
-    const expiresAt = BigInt(Date.now() + 30 * 60 * 1000) * 1_000_000n
-    const params: ApproveParams = {
-      amount: call.amount,
-      expected_allowance: call.currentAllowance,
-      expires_at: expiresAt,
-      fee: call.ledgerFee,
-      from_subaccount: account.subaccount,
-      spender: { owner: Principal.fromText(this.bridgeCanisterId), subaccount: [] },
-    }
-    return wallet.approve({ owner: account.owner, ledgerCanisterId: this.ledgerCanisterId, params })
+    return this.withWallet(async (wallet, account) => {
+      const expiresAt = BigInt(Date.now() + 30 * 60 * 1000) * 1_000_000n
+      const params: ApproveParams = {
+        amount: call.amount,
+        expected_allowance: call.currentAllowance,
+        expires_at: expiresAt,
+        fee: call.ledgerFee,
+        from_subaccount: account.subaccount,
+        spender: { owner: Principal.fromText(this.bridgeCanisterId), subaccount: [] },
+      }
+      return wallet.approve({ owner: account.owner, ledgerCanisterId: this.ledgerCanisterId, params })
+    })
   }
 
   async requestDeposit(call: DepositCall): Promise<DepositReceipt> {
-    const account = await this.getAccount()
-    return unwrapDepositResult(await this.bridgeCall("request_deposit", [{ owner_sequence: call.ownerSequence, base_recipient: call.baseRecipient, from_subaccount: account.subaccount ? [account.subaccount] : [], gross_amount: call.grossAmount, max_service_fee: call.maxServiceFee }]))
+    return unwrapDepositResult(await this.bridgeCall("request_deposit", (account) => [{ owner_sequence: call.ownerSequence, base_recipient: call.baseRecipient, from_subaccount: account.subaccount ? [account.subaccount] : [], gross_amount: call.grossAmount, max_service_fee: call.maxServiceFee }]))
   }
 
   async notifyWithdrawal(transactionHash: Uint8Array): Promise<NotifyWithdrawalReceipt> {
-    return unwrapNotifyWithdrawalResult(await this.bridgeCall("notify_withdrawal", [{ transaction_hash: transactionHash }]))
+    return unwrapNotifyWithdrawalResult(await this.bridgeCall("notify_withdrawal", () => [{ transaction_hash: transactionHash }]))
   }
 
   async confirmDeposit(call: ConfirmationCall): Promise<SettlementActionResult> {
-    return unwrapSettlementResult(await this.bridgeCall("confirm_deposit", [{ settlement_id: call.settlementId, transaction_hash: call.transactionHash, receipt_block_number: call.receiptBlockNumber, observed_finalized_block_number: call.observedFinalizedBlockNumber }]))
+    return unwrapSettlementResult(await this.bridgeCall("confirm_deposit", () => [{ settlement_id: call.settlementId, transaction_hash: call.transactionHash, receipt_block_number: call.receiptBlockNumber, observed_finalized_block_number: call.observedFinalizedBlockNumber }]))
   }
 
   async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
@@ -145,19 +187,53 @@ export class OisyAdapter implements IcWalletAdapter {
   }
 
   private async continueSettlement(method: "continue_deposit" | "continue_withdrawal", id: Uint8Array): Promise<SettlementActionResult> {
-    return unwrapSettlementResult(await this.bridgeCall(method, [id]))
+    return unwrapSettlementResult(await this.bridgeCall(method, () => [id]))
   }
 
-  private async bridgeCall(method: BridgeWalletMethod, args: unknown[]): Promise<unknown> {
-    const wallet = this.requiredWallet()
-    const account = await this.getAccount()
-    const arg = uint8ArrayToBase64(encodeBridgeCall(method, args))
-    const result = await wallet.callCanister({ canisterId: this.bridgeCanisterId, sender: account.owner, method, arg })
-    const reply = await verifyOisyReply({ host: this.host, canisterId: this.bridgeCanisterId, sender: account.owner, method, arg, result })
-    return decodeBridgeReply(method, reply)
+  private async bridgeCall(method: BridgeWalletMethod, createArgs: (account: IcAccount) => unknown[] = () => []): Promise<unknown> {
+    return this.withWallet(async (wallet, account) => {
+      const arg = uint8ArrayToBase64(encodeBridgeCall(method, createArgs(account)))
+      const result = await wallet.callCanister({ canisterId: this.bridgeCanisterId, sender: account.owner, method, arg })
+      const reply = await verifyOisyReply({ host: this.host, canisterId: this.bridgeCanisterId, sender: account.owner, method, arg, result })
+      return decodeBridgeReply(method, reply)
+    })
   }
 
-  private requiredWallet(): BridgeIcrcWallet { if (!this.#wallet) throw new Error("Connect OISY first"); return this.#wallet }
+  private openWallet(): Promise<OisyWalletSession> {
+    return this.connectWallet()
+  }
+
+  private async readAccount(wallet: OisyWalletSession): Promise<IcAccount> {
+    await wallet.requestPermissionsNotGranted({ options: { timeoutInMilliseconds: CALL_TIMEOUT_MS } })
+    const [account] = await wallet.accounts({ options: { timeoutInMilliseconds: CALL_TIMEOUT_MS } })
+    if (!account) throw new Error("OISY returned no ICRC account")
+    return { owner: account.owner, subaccount: parseSubaccount(account.subaccount) }
+  }
+
+  private async withWallet<T>(operation: (wallet: OisyWalletSession, account: IcAccount) => Promise<T>): Promise<T> {
+    const expected = this.requiredAccount()
+    const prepared = this.#session
+    if (prepared) {
+      const { wallet, account } = await prepared
+      this.assertExpectedAccount(expected, account)
+      return operation(wallet, account)
+    }
+    const wallet = await this.openWallet()
+    try {
+      const current = await this.readAccount(wallet)
+      this.assertExpectedAccount(expected, current)
+      return await operation(wallet, current)
+    } finally {
+      await wallet.disconnect()
+    }
+  }
+
+  private assertExpectedAccount(expected: IcAccount, current: IcAccount): void {
+    if (current.owner !== expected.owner || !sameOptionalBytes(current.subaccount, expected.subaccount)) {
+      throw new Error("OISY account changed; reconnect and review the transaction")
+    }
+  }
+
   private requiredAccount(): IcAccount { if (!this.#account) throw new Error("Connect OISY first"); return this.#account }
 }
 
@@ -173,6 +249,7 @@ declare global { interface Window { ic?: { plug?: PlugApi } } }
 
 export class PlugAdapter implements IcWalletAdapter {
   readonly provider = "plug" as const
+  readonly requiresUserGesture = false
   #account?: IcAccount
   constructor(private readonly host: string, private readonly ledgerCanisterId: string, private readonly bridgeCanisterId: string) {}
 
@@ -186,6 +263,8 @@ export class PlugAdapter implements IcWalletAdapter {
   }
 
   async disconnect(): Promise<void> { await requiredPlug().disconnect(); this.#account = undefined }
+
+  prepare(): Promise<() => Promise<void>> { return Promise.resolve(() => Promise.resolve()) }
 
   async getAccount(): Promise<IcAccount> { return this.assertConnectedPrincipal() }
 
@@ -452,6 +531,7 @@ function notifyWithdrawalErrorCode(error: unknown): NotifyWithdrawalErrorCode | 
 }
 
 function bytes(value: unknown, label: string): Uint8Array { if (value instanceof Uint8Array) return value; throw new Error(`Wallet response ${label} mismatch`) }
+function copyAccount(account: IcAccount): IcAccount { return { owner: account.owner, subaccount: account.subaccount?.slice() } }
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean { return left.length === right.length && left.every((byte, index) => byte === right[index]) }
 function sameOptionalBytes(left?: Uint8Array, right?: Uint8Array): boolean {
   if (!left || !right) return left === right

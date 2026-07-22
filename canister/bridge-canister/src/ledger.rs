@@ -16,8 +16,42 @@ use icrc_ledger_types::{
     },
 };
 use serde::Serialize;
+use std::cell::{Cell, RefCell};
 
 const LEDGER_CALL_TIMEOUT_SECONDS: u32 = 15;
+const CONSENT_FEE_CACHE_TTL_NS: u64 = 60_000_000_000;
+
+thread_local! {
+    static LEDGER_FEE_CACHE: RefCell<Option<CachedLedgerFee>> = const { RefCell::new(None) };
+    static LEDGER_FEE_REFRESH_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CachedLedgerFee {
+    ledger: Principal,
+    fee: Amount,
+    refreshed_at_ns: u64,
+}
+
+struct FeeRefreshGuard;
+
+impl FeeRefreshGuard {
+    fn acquire() -> Option<Self> {
+        LEDGER_FEE_REFRESH_IN_FLIGHT.with(|in_flight| {
+            if in_flight.replace(true) {
+                None
+            } else {
+                Some(Self)
+            }
+        })
+    }
+}
+
+impl Drop for FeeRefreshGuard {
+    fn drop(&mut self) {
+        LEDGER_FEE_REFRESH_IN_FLIGHT.with(|in_flight| in_flight.set(false));
+    }
+}
 
 fn ledger_call(canister: Principal, method: &'static str) -> Call<'static, 'static> {
     Call::bounded_wait(canister, method).change_timeout(LEDGER_CALL_TIMEOUT_SECONDS)
@@ -79,7 +113,78 @@ pub async fn ledger_fee(ledger: Principal) -> Result<Amount, ()> {
         .await
         .map_err(|_| ())?;
     let value: Nat = response.candid().map_err(|_| ())?;
-    amount(&value).ok_or(())
+    let fee = amount(&value).ok_or(())?;
+    cache_ledger_fee(ledger, fee, ic_cdk::api::time());
+    Ok(fee)
+}
+
+pub async fn ledger_fee_for_consent(ledger: Principal) -> Result<Amount, ()> {
+    let now_ns = ic_cdk::api::time();
+    if let Some(fee) = cached_ledger_fee(ledger, now_ns) {
+        return Ok(fee);
+    }
+    let _guard = FeeRefreshGuard::acquire().ok_or(())?;
+    if let Some(fee) = cached_ledger_fee(ledger, ic_cdk::api::time()) {
+        return Ok(fee);
+    }
+    ledger_fee(ledger).await
+}
+
+fn cached_ledger_fee(ledger: Principal, now_ns: u64) -> Option<Amount> {
+    LEDGER_FEE_CACHE.with(|cache| cached_ledger_fee_from(cache.borrow().as_ref(), ledger, now_ns))
+}
+
+fn cached_ledger_fee_from(
+    cached: Option<&CachedLedgerFee>,
+    ledger: Principal,
+    now_ns: u64,
+) -> Option<Amount> {
+    cached.and_then(|cached| {
+        (cached.ledger == ledger
+            && now_ns.saturating_sub(cached.refreshed_at_ns) <= CONSENT_FEE_CACHE_TTL_NS)
+            .then_some(cached.fee)
+    })
+}
+
+fn cache_ledger_fee(ledger: Principal, fee: Amount, refreshed_at_ns: u64) {
+    LEDGER_FEE_CACHE.with(|cache| {
+        *cache.borrow_mut() = Some(CachedLedgerFee {
+            ledger,
+            fee,
+            refreshed_at_ns,
+        });
+    });
+}
+
+#[cfg(test)]
+mod fee_cache_tests {
+    use super::{cached_ledger_fee_from, CachedLedgerFee, CONSENT_FEE_CACHE_TTL_NS};
+    use bridge_core::Amount;
+    use candid::Principal;
+
+    #[test]
+    fn consent_fee_cache_is_scoped_and_expires() {
+        let ledger = Principal::from_slice(&[1]);
+        let other_ledger = Principal::from_slice(&[2]);
+        let cached = CachedLedgerFee {
+            ledger,
+            fee: Amount::new(10_000),
+            refreshed_at_ns: 100,
+        };
+
+        assert_eq!(
+            cached_ledger_fee_from(Some(&cached), ledger, 100 + CONSENT_FEE_CACHE_TTL_NS),
+            Some(Amount::new(10_000))
+        );
+        assert_eq!(
+            cached_ledger_fee_from(Some(&cached), ledger, 101 + CONSENT_FEE_CACHE_TTL_NS),
+            None
+        );
+        assert_eq!(
+            cached_ledger_fee_from(Some(&cached), other_ledger, 100),
+            None
+        );
+    }
 }
 
 pub async fn pull(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {

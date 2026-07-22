@@ -27,8 +27,10 @@ const deposit: PendingConfirmation = {
 function adapter(confirmDeposit = vi.fn()): IcWalletAdapter {
   return {
     provider: "plug",
+    requiresUserGesture: false,
     connect: vi.fn(),
     getAccount: vi.fn().mockResolvedValue({ owner }),
+    prepare: vi.fn().mockResolvedValue(() => Promise.resolve()),
     disconnect: vi.fn(),
     approve: vi.fn(),
     requestDeposit: vi.fn(),
@@ -83,6 +85,17 @@ describe("confirmWhenFinalized", () => {
     finalizedReceipt()
     expect(await confirmWhenFinalized(deposit, wallet)).toEqual({ status: "retry" })
     expect(readPendingConfirmations()).toEqual([])
+  })
+
+  it("leaves finalized OISY confirmations pending for a user-triggered History action", async () => {
+    finalizedReceipt()
+    await savePendingConfirmation(deposit)
+    const confirmDeposit = vi.fn()
+    const wallet = { ...adapter(confirmDeposit), provider: "oisy" as const, requiresUserGesture: true }
+
+    expect(await confirmWhenFinalized(deposit, wallet)).toEqual({ status: "retry" })
+    expect(confirmDeposit).not.toHaveBeenCalled()
+    expect(readPendingConfirmations()[0]?.blocked).toBe(false)
   })
 
   it.each([

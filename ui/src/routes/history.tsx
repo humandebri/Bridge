@@ -159,9 +159,11 @@ function HistoryPage() {
     }
   }
   const checkAndNotify = async (item: WithdrawalHistoryItem) => {
+    let closeWalletSession: (() => Promise<void>) | undefined
     try {
       setRetryingHash(item.hash)
       if (!ic.adapter) throw new Error("Connect the destination IC wallet before retrying")
+      closeWalletSession = await ic.adapter.prepare()
       await refetchRuntimeWriteReady(() => runtime.refetch())
       const receipt = await withBrowserLock(`kinic-wallet-prompt:ic:${ic.account?.owner ?? "unknown"}`, () => ic.adapter!.notifyWithdrawal(hexToBytes(item.hash)))
       await removePendingConfirmation({ kind: "withdrawal", transactionHash: item.hash, owner: ic.account?.owner ?? "" })
@@ -171,38 +173,70 @@ function HistoryPage() {
       await withdrawals.refetch()
       toast.error(error instanceof Error ? error.message : "Withdrawal notification failed")
     } finally {
+      await closeWalletSession?.()
       setRetryingHash(undefined)
     }
   }
   const continueDeposit = async (record: DepositView) => {
     const key = bytesHex(record.deposit_id)
+    let closeWalletSession: (() => Promise<void>) | undefined
     try {
       setActioningId(key)
       if (!ic.adapter) throw new Error("Connect the deposit owner IC wallet")
+      closeWalletSession = await ic.adapter.prepare()
       await refetchRuntimeWriteReady(() => runtime.refetch())
       const result = await withBrowserLock(`kinic-wallet-prompt:ic:${ic.account?.owner ?? "unknown"}`, () => ic.adapter!.continueDeposit(Uint8Array.from(record.deposit_id)))
       toastSettlement(result)
       await deposits.refetch()
     } catch { toast.error("This transfer could not be retried. Try again later.") }
-    finally { setActioningId(undefined) }
+    finally { await closeWalletSession?.(); setActioningId(undefined) }
   }
   const continueWithdrawal = async (item: WithdrawalHistoryItem) => {
     const key = item.id?.toString() ?? item.hash
+    let closeWalletSession: (() => Promise<void>) | undefined
     try {
       setActioningId(key)
       if (!ic.adapter || !item.canister) throw new Error("Connect the withdrawal owner IC wallet")
+      closeWalletSession = await ic.adapter.prepare()
       if (!feeGuardBlocked(item.canister)) await refetchRuntimeWriteReady(() => runtime.refetch())
       const result = await withBrowserLock(`kinic-wallet-prompt:ic:${ic.account?.owner ?? "unknown"}`, () => ic.adapter!.continueWithdrawal(Uint8Array.from(item.canister!.withdrawal_id)))
       toastSettlement(result)
       await withdrawals.refetch()
     } catch { toast.error("This transfer could not be retried. Try again later.") }
-    finally { setActioningId(undefined) }
+    finally { await closeWalletSession?.(); setActioningId(undefined) }
   }
-  const confirmDeposit = (record: DepositView) => {
+  const confirmDeposit = async (record: DepositView) => {
     const submitted = submittedTransaction(record.base_confirmation)
-    if (!submitted || !ic.account) return
-    void savePendingConfirmation({ kind: "deposit", settlementId: bytesHex(record.deposit_id), transactionHash: bytesHex(submitted.transaction_hash), owner: ic.account.owner, blocked: false })
-    toast.info("Waiting for Base finalized confirmation. Your IC wallet will request approval when ready.")
+    if (!submitted || !ic.account || !ic.adapter) return
+    let closeWalletSession: (() => Promise<void>) | undefined
+    try {
+      closeWalletSession = await ic.adapter.prepare()
+      await refetchRuntimeWriteReady(() => runtime.refetch())
+      const transactionHash = bytesHex(submitted.transaction_hash)
+      const [receipt, finalized] = await Promise.all([
+        basePublicClient.getTransactionReceipt({ hash: transactionHash }),
+        basePublicClient.getBlock({ blockTag: "finalized" }),
+      ])
+      if (receipt.status !== "success") throw new Error("The Base transaction reverted")
+      if (finalized.number === null || finalized.number < receipt.blockNumber) throw new Error("The Base transaction is not finalized yet")
+      const result = await withBrowserLock(`kinic-wallet-prompt:ic:${ic.account.owner}`, () => ic.adapter!.confirmDeposit({
+        settlementId: Uint8Array.from(record.deposit_id),
+        transactionHash: Uint8Array.from(submitted.transaction_hash),
+        receiptBlockNumber: receipt.blockNumber,
+        observedFinalizedBlockNumber: finalized.number,
+      }))
+      if ("Submitted" in result) {
+        await savePendingConfirmation({ kind: "deposit", settlementId: bytesHex(record.deposit_id), transactionHash: bytesHex(result.Submitted.transaction_hash), owner: ic.account.owner, blocked: false })
+      } else if (!("WaitingForConfirmation" in result)) {
+        await removePendingConfirmation({ kind: "deposit", settlementId: bytesHex(record.deposit_id), transactionHash, owner: ic.account.owner })
+      }
+      toastSettlement(result)
+      await deposits.refetch()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Finalized deposit confirmation failed")
+    } finally {
+      await closeWalletSession?.()
+    }
   }
   const refresh = () => { void Promise.all([runtime.refetch(), tab === "deposit" ? deposits.refetch() : withdrawals.refetch()]) }
   const refreshing = runtime.isFetching || (tab === "deposit" ? deposits.isFetching : withdrawals.isFetching)
@@ -233,7 +267,7 @@ function Tab({ tab, active, onSelect, children }: { tab: HistoryTab; active: boo
   return <button id={`history-${tab}-tab`} role="tab" aria-selected={active} aria-controls={`history-${tab}-panel`} tabIndex={active ? 0 : -1} className={`rounded-xl px-5 py-2.5 text-sm font-bold transition ${active ? "bg-black text-white" : "text-[var(--muted)] hover:text-[var(--pink)]"}`} onClick={() => onSelect(tab)} onKeyDown={onKeyDown}>{children}</button>
 }
 function Empty({ icon, title, message }: { icon: React.ReactNode; title: string; message: string }) { return <div className="grid min-h-64 place-items-center text-center"><div>{icon}<p className="mt-3 font-bold text-black">{title}</p><p className="mt-1 text-sm text-[var(--muted)]">{message}</p></div></div> }
-function DepositHistory({ query, connected, writesEnabled, actioningId, loadingOlder, onConfirm, onContinue, onScanOlder }: { query: UseQueryResult<DepositHistoryData>; connected: boolean; writesEnabled: boolean; actioningId?: string; loadingOlder: boolean; onConfirm: (record: DepositView) => void; onContinue: (record: DepositView) => Promise<void>; onScanOlder: () => Promise<void> }) { if (!connected) return <Empty icon={<Clock3 className="mx-auto size-6 text-[var(--pink)]" />} title="Connect an IC wallet" message="Connect the wallet used for your deposits." />; if (query.isFetching) return <Empty icon={<RefreshCcw className="mx-auto size-6 animate-spin text-[var(--pink)]" />} title="Loading deposits" message="This may take a moment." />; if (query.isError) return <Empty icon={<Clock3 className="mx-auto size-6 text-[var(--pink)]" />} title="Deposit history is unavailable" message="Choose Refresh to try again." />; if (!query.data) return <Empty icon={<RefreshCcw className="mx-auto size-6 text-[var(--pink)]" />} title="History has not been loaded" message="Choose Refresh to load it." />; if (!query.data.items.length) return <Empty icon={<Clock3 className="mx-auto size-6 text-[var(--pink)]" />} title="No deposits yet" message="Your deposits will appear here." />; return <div className="space-y-3">{query.data.historyTruncated && <p className="rounded-xl bg-[#fff3e4] px-3 py-2 text-xs font-medium text-[#8a4b08]">Some older deposits are no longer available.</p>}{query.data.items.map((record) => { const key = bytesHex(record.deposit_id); const terminal = isDepositTerminal(record.state); const progress = automaticProgressInfo(record.automatic_progress); const submitted = submittedTransaction(record.base_confirmation); const stateName = depositPhaseName(record.state); return <div key={key} className="flex flex-col gap-4 rounded-2xl bg-white p-4 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><p className="text-sm font-bold">Deposit {key.slice(0, 12)}…</p><p className="mt-1 text-sm text-[var(--muted)]">{formatTokenAmount(record.net_amount)} KINIC on Base</p>{submitted && <p className="mt-1 text-xs font-medium text-[var(--pink)]">Waiting for wallet-confirmed finalized verification</p>}{progress && <AutomaticProgress progress={progress} />}{record.last_settlement_stop_reason[0] && <p className="mt-1 text-xs font-bold text-[#b42318]">This deposit needs attention.</p>}</div><div className="flex w-full flex-col-reverse items-stretch gap-2 min-[400px]:flex-row min-[400px]:items-center sm:w-auto">{submitted ? <Button size="sm" variant="ghost" disabled={!writesEnabled} onClick={() => onConfirm(record)}>Confirm finalized tx</Button> : !terminal && (!progress || progress.retryAllowed) && <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry"}</Button>}<Badge tone={depositPhaseTone(record.state)}>{stateName}</Badge></div></div> })}{query.data.nextCursor !== null && <div className="pt-2 text-center"><Button size="sm" variant="ghost" disabled={loadingOlder} onClick={() => void onScanOlder()}>{loadingOlder ? "Loading…" : "Load older deposits"}</Button></div>}</div> }
+function DepositHistory({ query, connected, writesEnabled, actioningId, loadingOlder, onConfirm, onContinue, onScanOlder }: { query: UseQueryResult<DepositHistoryData>; connected: boolean; writesEnabled: boolean; actioningId?: string; loadingOlder: boolean; onConfirm: (record: DepositView) => Promise<void>; onContinue: (record: DepositView) => Promise<void>; onScanOlder: () => Promise<void> }) { if (!connected) return <Empty icon={<Clock3 className="mx-auto size-6 text-[var(--pink)]" />} title="Connect an IC wallet" message="Connect the wallet used for your deposits." />; if (query.isFetching) return <Empty icon={<RefreshCcw className="mx-auto size-6 animate-spin text-[var(--pink)]" />} title="Loading deposits" message="This may take a moment." />; if (query.isError) return <Empty icon={<Clock3 className="mx-auto size-6 text-[var(--pink)]" />} title="Deposit history is unavailable" message="Choose Refresh to try again." />; if (!query.data) return <Empty icon={<RefreshCcw className="mx-auto size-6 text-[var(--pink)]" />} title="History has not been loaded" message="Choose Refresh to load it." />; if (!query.data.items.length) return <Empty icon={<Clock3 className="mx-auto size-6 text-[var(--pink)]" />} title="No deposits yet" message="Your deposits will appear here." />; return <div className="space-y-3">{query.data.historyTruncated && <p className="rounded-xl bg-[#fff3e4] px-3 py-2 text-xs font-medium text-[#8a4b08]">Some older deposits are no longer available.</p>}{query.data.items.map((record) => { const key = bytesHex(record.deposit_id); const terminal = isDepositTerminal(record.state); const progress = automaticProgressInfo(record.automatic_progress); const submitted = submittedTransaction(record.base_confirmation); const stateName = depositPhaseName(record.state); return <div key={key} className="flex flex-col gap-4 rounded-2xl bg-white p-4 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><p className="text-sm font-bold">Deposit {key.slice(0, 12)}…</p><p className="mt-1 text-sm text-[var(--muted)]">{formatTokenAmount(record.net_amount)} KINIC on Base</p>{submitted && <p className="mt-1 text-xs font-medium text-[var(--pink)]">Waiting for wallet-confirmed finalized verification</p>}{progress && <AutomaticProgress progress={progress} />}{record.last_settlement_stop_reason[0] && <p className="mt-1 text-xs font-bold text-[#b42318]">This deposit needs attention.</p>}</div><div className="flex w-full flex-col-reverse items-stretch gap-2 min-[400px]:flex-row min-[400px]:items-center sm:w-auto">{submitted ? <Button size="sm" variant="ghost" disabled={!writesEnabled} onClick={() => void onConfirm(record)}>Confirm finalized tx</Button> : !terminal && (!progress || progress.retryAllowed) && <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry"}</Button>}<Badge tone={depositPhaseTone(record.state)}>{stateName}</Badge></div></div> })}{query.data.nextCursor !== null && <div className="pt-2 text-center"><Button size="sm" variant="ghost" disabled={loadingOlder} onClick={() => void onScanOlder()}>{loadingOlder ? "Loading…" : "Load older deposits"}</Button></div>}</div> }
 export interface WithdrawalHistoryItem { id?: bigint; amount?: bigint; amountOut?: bigint; hash: `0x${string}`; canister?: WithdrawalView }
 interface WithdrawalEventLog extends FinalizedEventLog { args: { withdrawalId: bigint; amount: bigint; maxServiceFee: bigint; chargedServiceFee: bigint; amountOut: bigint } }
 export interface WithdrawalHistoryData extends WithdrawalLogScan<WithdrawalEventLog> { items: WithdrawalHistoryItem[] }
