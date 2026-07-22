@@ -240,7 +240,11 @@ raise SystemExit(0 if [str(v).lower() for v in actual] == [v.lower() for v in ex
   git -C "$SOURCE_ROOT" ls-files --error-unmatch "$LIVE_PREFLIGHT_RELATIVE" >/dev/null \
     || { echo "live preflight is not tracked by the bound source revision" >&2; exit 1; }
   "$LIVE_PREFLIGHT_PATH" verify "$BUNDLE"
-  GATE_OUTPUT="$(run_profile_gate verify-live "$BUNDLE")"
+  if [[ "$ACTIVATION_PHASE" == execute ]]; then
+    GATE_OUTPUT="$(run_profile_gate verify-schedule-receipt-live "$BUNDLE" "$PRIOR_SCHEDULE_RECEIPT")"
+  else
+    GATE_OUTPUT="$(run_profile_gate verify-live "$BUNDLE")"
+  fi
   printf '%s\n' "$GATE_OUTPUT"
 fi
 

@@ -92,6 +92,18 @@ def number(value):
  if isinstance(value,int): return value
  value=str(value); return int(value,16) if value.startswith('0x') else int(value)
 def block(rpc,value): return json.loads(run(['cast','block',str(value),'--rpc-url',rpc,'--json']))
+def bool_call(rpc,address,signature,*args):
+ data=run(['cast','calldata',signature,*args])
+ request=json.dumps({'to':address,'data':data},separators=(',',':'))
+ selector=json.dumps({'blockHash':winner[1],'requireCanonical':True},separators=(',',':'))
+ raw=run(['cast','rpc','--rpc-url',rpc,'eth_call',request,selector])
+ try: value=json.loads(raw)
+ except json.JSONDecodeError: value=raw
+ if not isinstance(value,str) or len(value)!=66 or not value.startswith('0x'):
+  raise ValueError('malformed ABI bool response')
+ decoded=int(value,16)
+ if decoded not in (0,1): raise ValueError('non-boolean ABI response')
+ return decoded==1
 heads=[]
 for index,rpc in enumerate(providers):
  try:
@@ -108,13 +120,10 @@ matches=0
 for index in eligible:
  rpc=providers[index]
  try:
-  height=str(winner[0])
-  deposits=run(['cast','call',bridge,'depositMintsPaused()(bool)','--block',height,'--rpc-url',rpc]).lower()=='true'
-  withdrawals=run(['cast','call',bridge,'withdrawalsPaused()(bool)','--block',height,'--rpc-url',rpc]).lower()=='true'
+  deposits=bool_call(rpc,bridge,'depositMintsPaused()(bool)')
+  withdrawals=bool_call(rpc,bridge,'withdrawalsPaused()(bool)')
   signature='isOperationPending(bytes32)(bool)' if phase=='schedule' else 'isOperationDone(bytes32)(bool)'
-  operation=run(['cast','call',timelock,signature,operation_id,'--block',height,'--rpc-url',rpc]).lower()=='true'
-  final=block(rpc,height)
-  if str(final.get('hash','')).lower()!=winner[1]: continue
+  operation=bool_call(rpc,timelock,signature,operation_id)
   expected_paused=phase=='schedule'
   if deposits==expected_paused and withdrawals==expected_paused and operation: matches+=1
  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass

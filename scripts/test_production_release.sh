@@ -148,6 +148,22 @@ ACTION_MARKER="$TEST_TMP_ROOT/activated" run_release activate --bundle "$TEST_TM
 rg -q '^verify-live ' "$TEST_TMP_ROOT/gate-calls"
 [[ ! -e "$TEST_TMP_ROOT/profile-override-used" ]]
 
+printf '{"phase":"schedule","release_id":"release-test","source_revision":"%s"}\n' \
+  "$SOURCE_REVISION" >"$TEST_TMP_ROOT/schedule-receipt.json"
+EXECUTION_ARGS=(
+  --phase execute
+  --submission "$TEST_TMP_ROOT/execution-submission.json"
+  --sns-identity proposer
+  --sns-neuron-subaccount "$(printf 'b%.0s' {1..64})"
+  --sns-proposer-principal "aaaaa-aa"
+  --prior-schedule-receipt "$TEST_TMP_ROOT/schedule-receipt.json"
+  --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE
+)
+ACTION_MARKER="$TEST_TMP_ROOT/executed" run_release activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${EXECUTION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+[[ -e "$TEST_TMP_ROOT/executed" ]]
+rg -q '^verify-schedule-receipt-live ' "$TEST_TMP_ROOT/gate-calls"
+
 mkdir -p "$TEST_TMP_ROOT/failing-git"
 REAL_GIT="$(command -v git)"
 cat >"$TEST_TMP_ROOT/failing-git/git" <<'SH'

@@ -26,14 +26,14 @@
 | UI | wallet account/chainをwrite直前に再検証し、Web Locksで重複操作を防ぎ、pending intentをversion付きで永続化する |
 | Release | source、submodule、Wasm、runtime bytecode、deployment receipt、live snapshot、controller handoverをhashで連結する |
 | Gate A | offline構造検査を非認可判定として分離し、IC certificateとBase 2-of-3 Finalized receipt/logをlive検証する |
-| Gate B / activation | SNS upgradeとfunction registryを認証済みqueryで照合し、schedule/executeをCanister状態・Base Timelock postcondition付きreceiptへ束縛する |
+| Gate B / activation | SNS upgradeとfunction registryを認証済みqueryで照合し、execute提出前にschedule receiptをlive再認証し、schedule/executeをCanister状態・canonical Finalized Base Timelock postcondition付きreceiptへ束縛する |
 | Local E2E | Anvil/PocketICのport・PID・network stateを所有権付きで管理し、upgrade証跡をschema v2へ固定する |
 
 ## 検証結果
 
 | 対象 | 結果 | コマンド・件数 |
 |---|---|---|
-| Rust workspace | PASS | `cargo test --workspace`、172 tests |
+| Rust workspace | PASS | `cargo test --workspace`、176 tests |
 | Stable storage破損回帰 | PASS | 従来未検査だった8 tableのmalformed rowをすべて拒否 |
 | Solidity | PASS | `forge test`、75 tests（fuzz/invariantを含む） |
 | Formal proofs | PASS | Lean、Solidity SMT、Verus。Withdrawal成功時の`escrow debit = amountOut + ledgerFee`、`fee reserve credit = serviceFee - ledgerFee`、`liability debit = amountOut + serviceFee`を共有kernelで証明 |

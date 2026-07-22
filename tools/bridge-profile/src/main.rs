@@ -1584,6 +1584,13 @@ fn validate_evidence_time(at: u64, manifest_created: u64, now: u64) -> Result<()
     Ok(())
 }
 
+fn validate_activation_time(at: u64, manifest_created: u64, now: u64) -> Result<(), String> {
+    if at < manifest_created || at > now || now - at > MAX_EVIDENCE_AGE_SECS {
+        return Err("activation timestamp predates Gate B, is future-dated, or is too old".into());
+    }
+    Ok(())
+}
+
 fn validate_plan006_evidence(
     root: &Path,
     manifest: &ReleaseManifest,
@@ -2195,6 +2202,59 @@ fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     output.sync_all().map_err(|error| error.to_string())
 }
 
+fn activation_raw_digest_matches(raw: &str, digest: &str) -> Result<bool, String> {
+    Ok(valid_sha256(digest) && hex(&Sha256::digest(decode_hex(raw)?)).eq_ignore_ascii_case(digest))
+}
+
+fn validate_schedule_receipt_binding(
+    receipt: &ActivationReceipt,
+    bundle: &ValidatedBundle,
+) -> Result<(), String> {
+    let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
+    let payload_sha256 = hex(&Sha256::digest(canonical_payload));
+    let now = now_unix()?;
+    if receipt.schema_version != 3
+        || receipt.phase != "schedule"
+        || receipt.release_id != bundle.manifest.release_id
+        || receipt.source_revision != bundle.manifest.source_revision
+        || !receipt
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
+        || !valid_sha256(&receipt.gate_b_manifest_sha256)
+        || receipt
+            .gate_b_manifest_sha256
+            .eq_ignore_ascii_case(&bundle.manifest_sha256)
+        || receipt.proposal_id == 0
+        || receipt.function_id == 0
+        || receipt.target_method_name != "schedule_activation"
+        || !receipt.payload_sha256.eq_ignore_ascii_case(&payload_sha256)
+        || receipt.executed_at_unix == 0
+        || receipt.verified_at_unix < receipt.executed_at_unix
+        || receipt.verified_at_unix > bundle.manifest.created_at_unix
+        || receipt.verified_at_unix > now
+        || now - receipt.verified_at_unix > MAX_EVIDENCE_AGE_SECS
+        || !activation_raw_digest_matches(
+            &receipt.governance_query_response_hex,
+            &receipt.governance_query_response_sha256,
+        )?
+        || !activation_raw_digest_matches(
+            &receipt.function_registry_response_hex,
+            &receipt.function_registry_response_sha256,
+        )?
+        || !activation_raw_digest_matches(
+            &receipt.activation_status_response_hex,
+            &receipt.activation_status_response_sha256,
+        )?
+        || !valid_hash32(&receipt.operation_id)
+        || !valid_hash32(&receipt.operation_salt)
+        || !valid_sha256(&receipt.base_postcondition_sha256)
+        || receipt.prior_schedule_receipt_sha256.is_some()
+    {
+        return Err("prior schedule receipt is malformed or not bound to this release".into());
+    }
+    Ok(())
+}
+
 fn verify_activation(
     phase: &str,
     bundle: &ValidatedBundle,
@@ -2207,7 +2267,7 @@ fn verify_activation(
     }
     let submission: ActivationSubmission = read_json(submission_path)?;
     let now = now_unix()?;
-    validate_evidence_time(
+    validate_activation_time(
         submission.submitted_at_unix,
         bundle.manifest.created_at_unix,
         now,
@@ -2266,18 +2326,7 @@ fn verify_activation(
         _ => unreachable!(),
     };
     if let Some((receipt, _)) = prior.as_ref() {
-        if receipt.schema_version != 3
-            || receipt.phase != "schedule"
-            || receipt.release_id != bundle.manifest.release_id
-            || receipt.source_revision != bundle.manifest.source_revision
-            || !receipt
-                .source_tree_sha256
-                .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
-            || !valid_hash32(&receipt.operation_id)
-            || !valid_hash32(&receipt.operation_salt)
-        {
-            return Err("prior schedule receipt is not bound to this release".into());
-        }
+        validate_schedule_receipt_binding(receipt, bundle)?;
     }
 
     let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
@@ -2344,6 +2393,8 @@ fn verify_activation(
     };
     if proposal_id != Some(submission.proposal_id)
         || executed_at == 0
+        || executed_at < submission.submitted_at_unix
+        || executed_at > now
         || proposal.failed_timestamp_seconds != 0
         || proposal.failure_reason.is_some()
         || proposal.decided_timestamp_seconds == 0
@@ -2452,6 +2503,139 @@ fn verify_activation(
     write_json_new(receipt_path, &receipt)
 }
 
+fn verify_schedule_receipt_live(
+    bundle: &ValidatedBundle,
+    receipt_path: &Path,
+) -> Result<(), String> {
+    let receipt: ActivationReceipt = read_json(receipt_path)?;
+    let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
+    validate_schedule_receipt_binding(&receipt, bundle)?;
+
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let proposal_arg = Encode!(&GetProposalRequest {
+        proposal_id: Some(ProposalId {
+            id: receipt.proposal_id,
+        }),
+    })
+    .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (proposal_raw, registry_raw, activation_raw, controllers, module_hash) =
+        async_runtime()?.block_on(async {
+            let proposal = agent
+                .query(&governance, "get_proposal")
+                .with_arg(proposal_arg)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let registry = agent
+                .query(&governance, "list_nervous_system_functions")
+                .with_arg(canonical_payload.to_vec())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let activation = agent
+                .query(&bridge, "get_activation_status")
+                .with_arg(canonical_payload.to_vec())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let controllers = agent
+                .read_state_canister_controllers(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            let module_hash = agent
+                .read_state_canister_module_hash(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>((proposal, registry, activation, controllers, module_hash))
+        })?;
+
+    let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
+    let proposal = match decoded.result {
+        Some(GetProposalResult::Proposal(proposal)) => proposal,
+        Some(GetProposalResult::Error(error)) => {
+            return Err(format!(
+                "SNS get_proposal returned {}: {}",
+                error.error_type, error.error_message
+            ));
+        }
+        None => return Err("SNS get_proposal returned no result".into()),
+    };
+    let executed_at = proposal.executed_timestamp_seconds;
+    let action = proposal
+        .proposal
+        .and_then(|proposal| proposal.action)
+        .ok_or("schedule proposal has no action")?;
+    let SnsProposalAction::ExecuteGenericNervousSystemFunction(action) = action else {
+        return Err("schedule proposal is not ExecuteGenericNervousSystemFunction".into());
+    };
+    if proposal.id.as_ref().map(|id| id.id) != Some(receipt.proposal_id)
+        || executed_at != receipt.executed_at_unix
+        || proposal.failed_timestamp_seconds != 0
+        || proposal.failure_reason.is_some()
+        || proposal.decided_timestamp_seconds == 0
+        || action.function_id != receipt.function_id
+        || action.payload != canonical_payload
+        || controllers != [Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?]
+        || !hex(&module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+    {
+        return Err(
+            "authenticated schedule proposal or Canister state does not match the receipt".into(),
+        );
+    }
+
+    let registry = Decode!(&registry_raw, ListNervousSystemFunctionsResponseView)
+        .map_err(|error| error.to_string())?;
+    let matching_functions = registry
+        .functions
+        .iter()
+        .filter(|function| {
+            function.id == receipt.function_id
+                && matches!(
+                    function.function_type.as_ref(),
+                    Some(FunctionTypeView::GenericNervousSystemFunction(generic))
+                        if generic.target_canister_id == Some(bridge)
+                            && generic.target_method_name.as_deref()
+                                == Some("schedule_activation")
+                )
+        })
+        .count();
+    if matching_functions != 1 {
+        return Err("authenticated SNS registry no longer has the exact schedule function".into());
+    }
+
+    let activation =
+        Decode!(&activation_raw, ActivationStatusResultView).map_err(|error| error.to_string())?;
+    let ActivationStatusResultView::Ok(activation) = activation else {
+        return Err("authenticated get_activation_status returned an error".into());
+    };
+    let pending = activation
+        .pending_timelock_operation
+        .ok_or("schedule receipt operation is no longer pending in the Canister")?;
+    if !activation.deposits_paused
+        || format!("0x{}", hex(&pending.operation_id)) != receipt.operation_id.to_lowercase()
+        || format!("0x{}", hex(&pending.salt)) != receipt.operation_salt.to_lowercase()
+    {
+        return Err("live Canister activation state does not match the schedule receipt".into());
+    }
+
+    let verifier =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/production-live-preflight.sh");
+    let status = Command::new(verifier)
+        .arg("verify-activation")
+        .arg("schedule")
+        .arg(&bundle.root)
+        .arg(&receipt.operation_id)
+        .status()
+        .map_err(|error| format!("failed to execute schedule Base verifier: {error}"))?;
+    if !status.success() {
+        return Err("prior schedule receipt no longer matches the live Base state".into());
+    }
+    Ok(())
+}
+
 fn verify_gate_a_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     verify_monitor_ic_certificate(bundle)?;
     let verifier =
@@ -2538,7 +2722,19 @@ fn run() -> Result<(), String> {
             )?;
             println!("activation=verified phase={} receipt={}", args[2], args[6]);
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | verify-gate-a-live <bundle-dir> | verify-live <bundle-dir> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        Some("verify-schedule-receipt-live") if args.len() == 4 => {
+            let bundle = validate_bundle(Path::new(&args[2]), true)?;
+            if bundle.manifest.test_only {
+                return Err("schedule receipt verification rejects test-only bundles".into());
+            }
+            verify_live(&bundle)?;
+            verify_schedule_receipt_live(&bundle, Path::new(&args[3]))?;
+            println!(
+                "schedule_receipt=verified manifest_sha256={} receipt={}",
+                bundle.manifest_sha256, args[3]
+            );
+        }
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | verify-gate-a-live <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -2553,6 +2749,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_timestamps_must_follow_gate_b_and_precede_verification() {
+        let created = MAX_EVIDENCE_AGE_SECS + 1_000_000;
+        let now = created + 120;
+        assert!(validate_activation_time(created, created, now).is_ok());
+        assert!(validate_activation_time(created + 60, created, now).is_ok());
+        assert!(validate_activation_time(created - 1, created, now).is_err());
+        assert!(validate_activation_time(now + 1, created, now).is_err());
+        assert!(validate_activation_time(
+            now - MAX_EVIDENCE_AGE_SECS - 1,
+            now - MAX_EVIDENCE_AGE_SECS - 1,
+            now,
+        )
+        .is_err());
+    }
 
     fn test_principal(seed: u8) -> String {
         Principal::self_authenticating([seed; 32]).to_text()
@@ -3294,6 +3506,38 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         // Cryptographic SNS authenticity is verified against the live network by
         // `verify-live`; this fixture exercises only deterministic bundle inputs.
         verify_live_inputs(&bundle).unwrap();
+
+        let payload_sha256 = hex(&Sha256::digest([0x44, 0x49, 0x44, 0x4c, 0x00, 0x00]));
+        let mut schedule_receipt = ActivationReceipt {
+            schema_version: 3,
+            phase: "schedule".into(),
+            release_id: bundle.manifest.release_id.clone(),
+            source_revision: bundle.manifest.source_revision.clone(),
+            source_tree_sha256: bundle.manifest.source_tree_sha256.clone(),
+            gate_b_manifest_sha256: "9".repeat(64),
+            proposal_id: 1,
+            function_id: 1,
+            target_method_name: "schedule_activation".into(),
+            payload_sha256,
+            executed_at_unix: manifest_created - 2,
+            verified_at_unix: manifest_created - 1,
+            governance_query_response_hex: hex(b"proposal"),
+            governance_query_response_sha256: hex(&Sha256::digest(b"proposal")),
+            function_registry_response_hex: hex(b"registry"),
+            function_registry_response_sha256: hex(&Sha256::digest(b"registry")),
+            activation_status_response_hex: hex(b"activation"),
+            activation_status_response_sha256: hex(&Sha256::digest(b"activation")),
+            operation_id: format!("0x{}", "1".repeat(64)),
+            operation_salt: format!("0x{}", "2".repeat(64)),
+            base_postcondition_sha256: "3".repeat(64),
+            prior_schedule_receipt_sha256: None,
+        };
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_ok());
+        schedule_receipt.gate_b_manifest_sha256 = bundle.manifest_sha256.clone();
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
+        schedule_receipt.gate_b_manifest_sha256 = "9".repeat(64);
+        schedule_receipt.activation_status_response_sha256 = "4".repeat(64);
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
 
         let valid_snapshot_bytes = fs::read(root.join("signer-snapshot.json")).unwrap();
         let mut legacy_snapshot: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();

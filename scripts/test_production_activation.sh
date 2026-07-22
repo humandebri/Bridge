@@ -65,3 +65,27 @@ if PATH="$T/bin:$PATH" TRACE="$TRACE" "$ROOT/scripts/production-activation-propo
 fi
 [[ -e "$T/rejected.json" && ! -s "$T/rejected.json" ]]
 [[ "$(grep -c manage_neuron "$TRACE")" -eq 1 ]]
+
+cat >"$T/bin/cast" <<'SH'
+#!/usr/bin/env bash
+printf 'cast %s\n' "$*" >>"$TRACE"
+case "$1" in
+  chain-id) echo 8453 ;;
+  block) printf '{"number":"0x64","hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})" ;;
+  calldata) echo 0x1234 ;;
+  rpc)
+    [[ "$*" == *'"blockHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requireCanonical":true'* ]] || exit 1
+    printf '"0x%s"\n' "$(printf '0%.0s' {1..63})1"
+    ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$T/bin/cast"
+cat >"$T/bundle/profile.json" <<'JSON'
+{"chain_id":8453,"bridge_contract":"0x1111111111111111111111111111111111111111","timelock":{"address":"0x2222222222222222222222222222222222222222"},"rpc_providers":[{"url":"https://rpc1.invalid"},{"url":"https://rpc2.invalid"},{"url":"https://rpc3.invalid"}]}
+JSON
+: >"$TRACE"
+PATH="$T/bin:$PATH" TRACE="$TRACE" "$ROOT/scripts/production-live-preflight.sh" \
+  verify-activation schedule "$T/bundle" "0x$(printf '3%.0s' {1..64})" >/dev/null
+[[ "$(grep -c '^cast rpc ' "$TRACE")" -eq 9 ]]
+! grep -q '^cast call ' "$TRACE"
