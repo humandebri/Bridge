@@ -47,7 +47,7 @@ def main() -> None:
         ("docs/bridge-flow.md", r"SQLite schema v(\d+)", 1),
         ("docs/canister-state-machine.md", r"(?:Stable schema v|schema v)(\d+)", 2),
         ("docs/runbooks/operations.md", r"schema v(\d+)またはwire v\d+", 1),
-        ("plan.md", r"(?:stable schema v|現行stable schemaはv)(\d+)", 2),
+        ("docs/implementation-plan.md", r"(?:stable schema v|現行stable schemaはv)(\d+)", 2),
         ("ui/src/lib/runtime-validation.ts", r"config\.schema_version !== (\d+)", 1),
         ("integration/phase3.spec.ts", r"config\.schema_version\)\.toBe\((\d+)\)", 1),
     )

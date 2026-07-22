@@ -59,4 +59,4 @@ Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`だけへ保存する
 
 ## 完了条件
 
-Plan 007の完了は、local evidenceに加えてOISY/Plug双方の実Deposit、双方宛のWithdrawal release、RPC障害、pause/cancel、reload/duplicate、同一Wasm upgradeを`sepolia-e2e.json`へ固定し、test環境をpauseしてpending operationをゼロにした時点とする。x402、100回gas/cycles計測、SNS proposal upgradeはPlan 005/006に残す。
+Plan 007の完了は、local evidenceに加えてOISY/Plug双方の実Deposit、双方宛のWithdrawal release、RPC障害、pause/cancel、reload/duplicate、同一Wasm upgradeを`sepolia-e2e.json`へ固定し、test環境をpauseしてpending operationをゼロにした時点とする。100回gas/cycles計測とSNS proposal upgradeはPlan 005/006に残す。x402はBridgeの完了条件に含めない。

@@ -15,7 +15,7 @@ Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その�
 
 本番Bridgeは未デプロイであり、Plan 005の外部計測と単一emergency pause演習、Plan 006のSNS handoverとCanister操作型production preflightが完了するまで本番資産を受け付けない。
 
-Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、設計判断は[plan.md](plan.md)、用語は[CONTEXT.md](CONTEXT.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
+Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、実装計画は[docs/implementation-plan.md](docs/implementation-plan.md)、用語は[docs/glossary.md](docs/glossary.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
 
 ## KINIC mainnet canister
 

@@ -2,8 +2,8 @@
 
 > 本文中の旧polling間隔と優先度schedulerは歴史的設計である。現在はADR 0019のstable settlement executor、ADR 0020のwallet確認付きフロント通知、障害時だけのrate limit付き手動Retryを正本とする。
 
-本計画は `docs/adr/` のADRと `CONTEXT.md` の用語定義に基づく。
-用語は CONTEXT.md の定義に従い、本文では再定義しない。
+本計画は `docs/adr/` のADRと `docs/glossary.md` の用語定義に基づく。
+用語は `docs/glossary.md` の定義に従い、本文では再定義しない。
 
 SNS GovernanceをIC/Base双方の最終trust rootとする。Base操作はBridge Canisterが別derivation pathから導出するGovernance Operatorから送信し、人間のEVM管理鍵を置かない。
 Bridge はKINICトークン専用にデプロイする（ADR 0010）。複数SNS tokenを扱う分岐は導入しない。
@@ -215,8 +215,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 - upgrade 前後で未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold が再開できることを、実データ相当の state で検証する。
 - handover を実行し、controller 一覧が SNS Root だけであることを確認する。開発者 identity、fallback identity、NNS Root を残さない。
 - handover 後の upgrade proposal に添付する成果物（Wasm hash、source revision、Verus 結果、テスト結果、stable schema 互換性）の生成を CI で自動化する。
-- 採用時点のx402 SDKとBase上のfacilitatorを使い、EIP-3009によるbSNSのverifyとsettleをtestnetで確認する。
-  x402 resource serverとfacilitatorの運用は本Bridgeの責務に含めない（ADR 0015）。
+- EIP-3009はbSNSの任意連携機能とし、x402 resource serverやfacilitatorとの互換性をBridgeの配置・activation条件に含めない（ADR 0015）。
 - UI 側の要件として、Deposit 前に bSNS では投票と投票報酬を得られないことを明示する（ADR 0002）。UI 実装が別リポジトリの場合は要件として引き渡す。
 
 **完了条件**：handover checklist がすべて満たされ、SNS proposal による upgrade が一度実際に成功する。
@@ -225,7 +224,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 
 Plan 005の完了には、SepoliaでのDeposit mint gas 100回とsettlement cycles 100回、Base mainnetの30日fee分布、承認済み日次settlement上限、単一pause principalの実request/audit証跡、固定limitの承認、監視pause/cancel演習が必要である。cycles floorは基礎日次消費と100回計測最大値を用いる30日負荷モデルへ2倍の安全係数を掛けて導出する。
 これらの証跡が揃うまでmainnet candidateを`validated`にしない。
-Plan 006ではSNS Rootへのcontroller handover、upgrade実証、x402 testnet、production preflightを完了する。
+Plan 006ではSNS Rootへのcontroller handover、upgrade実証、production preflightを完了する。
 
 ## Phase 間の依存とマイルストーン
 

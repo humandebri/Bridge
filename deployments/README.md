@@ -39,9 +39,9 @@ production CanisterはGate A確定前にpause状態でinstallし、固有のMint
 
 profileはCanisterから導出してBaseのFinalized snapshotと照合するMint SignerとGovernance Operator、current stable schema、公式EVM RPC Canister ID、単一emergency pause principal、Wasm/bytecode hash、Timelock、固定limit、fee/liveness/reserve関係を含む。Timelock delayはprofileとlive stateの完全一致を要求する。`timelock.runtime_code_hash`は`0x`付き32-byte Keccak runtime code hashであり、生成されたBridge constructor引数、配置直後の実code hash、Gate B Finalized snapshotの三者が一致しなければならない。配置後にGate A receiptがBridge/Timelockのcanonical deployment transaction・blockを記録し、Gate B snapshotが3 providerで再照合する。3件のproduction Base RPC providerはcredentialなしのHTTPS URLであり、URL文字列が互いに異ならなければならない。監視欄は通知routingのSHA-256と、検知5分、担当確認15分、Base/IC双方pause 60分のSLOを正確に記録する。
 
-Gate Aはpre-deploy `profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4 artifactを束縛する。Gate Bはこれらへ`signer-snapshot.json`、`rpc-e2e.json`、`gate-a-receipt.json`、`controller-handover.json`、`sns-upgrade.json`、`x402-e2e.json`を加えた正確に10 artifactである。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、Canister公開設定、Finalized Base stateの三者一致で検証する。
+Gate Aはpre-deploy `profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4 artifactを束縛する。Gate Bはこれらへ`signer-snapshot.json`、`rpc-e2e.json`、`gate-a-receipt.json`、`controller-handover.json`、`sns-upgrade.json`を加えた正確に9 artifactである。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、Canister公開設定、Finalized Base stateの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
 
-`validate-bundle --offline`はschema v2 artifact、profile、raw response/receiptへ束縛された5/15/60監視演習を構造検査するが、repository-ownedなBase receipt/logとIC certificate/auditの真正性検証が実装されるまでは必ず非ゼロ終了し、Gate A成功を報告しない。`verify-live`もoffline検査とlive snapshot検査を行うが、repository-ownedなSNS certificate/proposalとx402 calldata/receiptの真正性検証が実装されるまでは必ず非ゼロ終了し、Gate B成功を報告しない。CLI自体はnetwork requestを行わない。
+`validate-bundle --offline`はschema v2 artifact、profile、raw response/receiptへ束縛された5/15/60監視演習を構造検査するが、repository-ownedなBase receipt/logとIC certificate/auditの真正性検証が実装されるまでは必ず非ゼロ終了し、Gate A成功を報告しない。`verify-live`もoffline検査とlive snapshot検査を行うが、repository-ownedなSNS certificate/proposalの真正性検証が実装されるまでは必ず非ゼロ終了し、Gate B成功を報告しない。CLI自体はnetwork requestを行わない。
 
 credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
 

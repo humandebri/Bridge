@@ -8,7 +8,7 @@
 
 採択済みの対応計画について、Contract、Canister、UI、release/evidence、local E2Eの修正を実装した。資産移動、管理権限、外部観測、stable storage、ブラウザ再送、デプロイ証跡の各境界は、曖昧または不整合な状態を成功として扱わない。
 
-本番deployとactivationは未完了である。Gate AはBase receipt/logとIC certificate/auditの真正性検証がなく、Gate BはSNS proposalの実行完了照合とx402真正性検証がないため、どちらも必ず非ゼロ終了する。したがって、現状のスクリプトから誤ってproduction deploy、unpause、activation成功を報告することはない。
+本番deployとactivationは未完了である。Gate AはBase receipt/logとIC certificate/auditの真正性検証がなく、Gate BはSNS proposalの実行完了照合がないため、どちらも必ず非ゼロ終了する。したがって、現状のスクリプトから誤ってproduction deploy、unpause、activation成功を報告することはない。x402はBridgeの配置・activation条件から除外した。
 
 なお、当初要求の「P2以上100件」は件数を満たすための水増しを行わない。重大度は具体的な攻撃経路と影響で判定すべきであり、このレポートは再現・修正・回帰検証できた境界だけを完了扱いとする。
 
@@ -44,8 +44,8 @@
 
 ## 残存リスクと本番blocker
 
-- SNS proposalのrepository-ownedな提出・certificate/executed状態照合と、x402 calldata/receiptの真正性検証が未実装である。自己申告のraw bytesとdigestだけでGate Bを通過させないため、これらが実装・検証されるまで`verify-live`とactivation driverは必ず非ゼロ終了する。
+- SNS proposalのrepository-ownedな提出・certificate/executed状態照合が未実装である。自己申告のraw bytesとdigestだけでGate Bを通過させないため、これが実装・検証されるまで`verify-live`とactivation driverは必ず非ゼロ終了する。
 - 監視演習のBase receipt/logとIC certificate/auditをrepository-ownedに検証する経路が未実装である。自己申告のraw bytesとdigestだけでGate Aを通過させないため、真正性検証が実装されるまで`validate-bundle --offline`とdeploy driverは必ず非ゼロ終了する。
-- 実Base RPC 3 provider、実ICRC Ledger、実SNS/controller handover、監視通知、x402の証跡は外部rehearsalが必要である。
+- 実Base RPC 3 provider、実ICRC Ledger、実SNS/controller handover、監視通知の証跡は外部rehearsalが必要である。
 - EVM RPC quorum、Finalized意味論、ICRC履歴、SQLite VFS、threshold key、運用鍵管理は信頼境界として残る。
 - 本番deploy、controller handover、unpause、資産受付開始は、この作業ツリーのテスト成功だけでは承認されない。repository-ownedな真正性検証済みGate A/Gate B evidenceと別の明示承認が必要である。

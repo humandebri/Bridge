@@ -24,13 +24,12 @@ const GATE_A_ARTIFACTS: [&str; 4] = [
     "bridge-canister.wasm",
     "bridge-runtime.bin",
 ];
-const GATE_B_ARTIFACTS: [&str; 10] = [
+const GATE_B_ARTIFACTS: [&str; 9] = [
     "profile.json",
     "signer-snapshot.json",
     "rpc-e2e.json",
     "controller-handover.json",
     "sns-upgrade.json",
-    "x402-e2e.json",
     "monitor-drill.json",
     "bridge-canister.wasm",
     "bridge-runtime.bin",
@@ -412,54 +411,6 @@ struct SnsUpgrade {
     certified_response_sha256: String,
     certificate_hex: String,
     certificate_sha256: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct X402Evidence {
-    schema_version: u8,
-    observed_at_unix: u64,
-    network: String,
-    chain_id: u64,
-    sdk_name: String,
-    sdk_version: String,
-    protocol_version: u8,
-    scheme: String,
-    facilitator_operator: String,
-    facilitator_self_operated: bool,
-    facilitator_url_sha256: String,
-    authorization_standard: String,
-    bsns_address: String,
-    bsns_runtime_bytecode_sha256: String,
-    verify_response_sha256: String,
-    verify_valid: bool,
-    settle_success: bool,
-    settle_transaction_hash: String,
-    receipt_block_number: u64,
-    receipt_block_hash: String,
-    receipt_status: u8,
-    canonical_finalized: bool,
-    transaction_from: String,
-    transaction_to: String,
-    #[serde(with = "u128_string")]
-    transaction_value: u128,
-    transaction_nonce: u64,
-    transaction_input_hex: String,
-    transaction_input_sha256: String,
-    token_address: String,
-    authorization_from: String,
-    authorization_to: String,
-    #[serde(with = "u128_string")]
-    authorization_value: u128,
-    authorization_valid_after: u64,
-    authorization_valid_before: u64,
-    authorization_nonce: String,
-    receipt_transaction_hash: String,
-    receipt_from: String,
-    receipt_to: String,
-    receipt_logs_sha256: String,
-    finalized_head_block_number: u64,
-    finalized_head_block_hash: String,
 }
 
 struct ValidatedBundle {
@@ -1416,60 +1367,6 @@ fn validate_plan006_evidence(
         return Err("SNS upgrade evidence is incomplete or not bound to the release Wasm".into());
     }
 
-    let x402: X402Evidence = read_json(&root.join("x402-e2e.json"))?;
-    validate_evidence_time(x402.observed_at_unix, manifest.created_at_unix, now)?;
-    if x402.schema_version != 2
-        || x402.network != "base-sepolia"
-        || x402.chain_id != 84_532
-        || x402.sdk_name.trim().is_empty()
-        || x402.sdk_version.trim().is_empty()
-        || x402.protocol_version != 2
-        || x402.scheme != "exact"
-        || x402.facilitator_operator.trim().is_empty()
-        || x402.facilitator_self_operated
-        || !valid_sha256(&x402.facilitator_url_sha256)
-        || x402.authorization_standard != "EIP-3009"
-        || !evm_address(&x402.bsns_address)
-        || !x402
-            .bsns_address
-            .eq_ignore_ascii_case(&profile.bsns_contract)
-        || !x402
-            .bsns_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&profile.bsns_runtime_bytecode_sha256)
-        || !valid_sha256(&x402.verify_response_sha256)
-        || !x402.verify_valid
-        || !x402.settle_success
-        || !valid_hash32(&x402.settle_transaction_hash)
-        || x402.receipt_block_number == 0
-        || !valid_hash32(&x402.receipt_block_hash)
-        || x402.receipt_status != 1
-        || !x402.canonical_finalized
-        || !evm_address(&x402.transaction_from)
-        || !x402.transaction_to.eq_ignore_ascii_case(&x402.bsns_address)
-        || x402.transaction_value != 0
-        || !valid_nonempty_hex(&x402.transaction_input_hex)
-        || decode_hex(&x402.transaction_input_hex).is_ok_and(|bytes| bytes.len() < 4)
-        || !valid_sha256(&x402.transaction_input_sha256)
-        || !hex_sha256_matches(&x402.transaction_input_hex, &x402.transaction_input_sha256)
-        || !x402.token_address.eq_ignore_ascii_case(&x402.bsns_address)
-        || !evm_address(&x402.authorization_from)
-        || !evm_address(&x402.authorization_to)
-        || x402.authorization_value == 0
-        || x402.authorization_valid_after >= x402.authorization_valid_before
-        || !valid_hash32(&x402.authorization_nonce)
-        || !x402
-            .receipt_transaction_hash
-            .eq_ignore_ascii_case(&x402.settle_transaction_hash)
-        || !x402
-            .receipt_from
-            .eq_ignore_ascii_case(&x402.transaction_from)
-        || !x402.receipt_to.eq_ignore_ascii_case(&x402.transaction_to)
-        || !valid_sha256(&x402.receipt_logs_sha256)
-        || x402.finalized_head_block_number < x402.receipt_block_number
-        || !valid_hash32(&x402.finalized_head_block_hash)
-    {
-        return Err("x402 evidence is not a finalized Base Sepolia EIP-3009 settlement".into());
-    }
     Ok(())
 }
 
@@ -1829,7 +1726,7 @@ fn verify_live_inputs(bundle: &ValidatedBundle) -> Result<(), String> {
 fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
     verify_live_inputs(bundle)?;
     Err(
-        "Gate B is unavailable until repository-owned SNS certificate/proposal and x402 calldata/receipt authenticity verification is implemented"
+        "Gate B is unavailable until repository-owned SNS certificate/proposal authenticity verification is implemented"
             .into(),
     )
 }
@@ -2469,49 +2366,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             certificate_hex: hex(b"certificate"),
             certificate_sha256: hex(&Sha256::digest(b"certificate")),
         };
-        let x402 = X402Evidence {
-            schema_version: 2,
-            observed_at_unix: now - 80,
-            network: "base-sepolia".into(),
-            chain_id: 84_532,
-            sdk_name: "x402-sdk".into(),
-            sdk_version: "1.0.0".into(),
-            protocol_version: 2,
-            scheme: "exact".into(),
-            facilitator_operator: "external-facilitator".into(),
-            facilitator_self_operated: false,
-            facilitator_url_sha256: "6".repeat(64),
-            authorization_standard: "EIP-3009".into(),
-            bsns_address: profile.bsns_contract.clone(),
-            bsns_runtime_bytecode_sha256: profile.bsns_runtime_bytecode_sha256.clone(),
-            verify_response_sha256: "7".repeat(64),
-            verify_valid: true,
-            settle_success: true,
-            settle_transaction_hash: format!("0x{}", "88".repeat(32)),
-            receipt_block_number: 1,
-            receipt_block_hash: format!("0x{}", "99".repeat(32)),
-            receipt_status: 1,
-            canonical_finalized: true,
-            transaction_from: address(20),
-            transaction_to: profile.bsns_contract.clone(),
-            transaction_value: 0,
-            transaction_nonce: 7,
-            transaction_input_hex: hex(b"input calldata"),
-            transaction_input_sha256: hex(&Sha256::digest(b"input calldata")),
-            token_address: profile.bsns_contract.clone(),
-            authorization_from: address(21),
-            authorization_to: address(22),
-            authorization_value: 1,
-            authorization_valid_after: now - 200,
-            authorization_valid_before: now + 200,
-            authorization_nonce: format!("0x{}", "77".repeat(32)),
-            receipt_transaction_hash: format!("0x{}", "88".repeat(32)),
-            receipt_from: address(20),
-            receipt_to: profile.bsns_contract.clone(),
-            receipt_logs_sha256: "8".repeat(64),
-            finalized_head_block_number: 2,
-            finalized_head_block_hash: format!("0x{}", "aa".repeat(32)),
-        };
         let mut docs = vec![
             ("profile.json", serde_json::to_vec(&profile).unwrap()),
             (
@@ -2524,7 +2378,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 serde_json::to_vec(&handover).unwrap(),
             ),
             ("sns-upgrade.json", serde_json::to_vec(&upgrade).unwrap()),
-            ("x402-e2e.json", serde_json::to_vec(&x402).unwrap()),
             ("monitor-drill.json", serde_json::to_vec(&drill).unwrap()),
             ("bridge-canister.wasm", b"wasm".to_vec()),
             ("bridge-runtime.bin", b"runtime".to_vec()),
@@ -2768,31 +2621,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 .is_err()
         );
         fs::write(root.join("sns-upgrade.json"), &valid_upgrade_bytes).unwrap();
-
-        let valid_x402_bytes = fs::read(root.join("x402-e2e.json")).unwrap();
-        let mut wrong_chain: Value = serde_json::from_slice(&valid_x402_bytes).unwrap();
-        wrong_chain["chain_id"] = Value::from(1);
-        fs::write(
-            root.join("x402-e2e.json"),
-            serde_json::to_vec(&wrong_chain).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
-                .is_err()
-        );
-        let mut wrong_token: Value = serde_json::from_slice(&valid_x402_bytes).unwrap();
-        wrong_token["token_address"] = Value::String(address(29));
-        fs::write(
-            root.join("x402-e2e.json"),
-            serde_json::to_vec(&wrong_token).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
-                .is_err()
-        );
-        fs::write(root.join("x402-e2e.json"), &valid_x402_bytes).unwrap();
 
         fs::remove_file(root.join("controller-handover.json")).unwrap();
         assert!(
