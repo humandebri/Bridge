@@ -24,8 +24,8 @@ read -r CANISTER ROOT CYCLES_FLOOR < <(python3 -c '
 import json,sys
 p=json.load(open(sys.argv[1])); print(p["bridge_canister_id"],p["root_canister_id"],p["parameters"]["cycles_floor"])
 ' "$PROFILE")
-[[ "$CANISTER" == rlhjx-iyaaa-aaaaf-qcnyq-cai && "$ROOT" == 7jkta-eyaaa-aaaaq-aaarq-cai ]] || {
-  echo "handover profile does not bind the fixed production Bridge and KINIC SNS Root" >&2; exit 1;
+[[ "$CANISTER" =~ ^[a-z0-9-]+$ && "$ROOT" == 7jkta-eyaaa-aaaaq-aaarq-cai ]] || {
+  echo "handover profile does not bind a production Bridge and the fixed KINIC SNS Root" >&2; exit 1;
 }
 [[ "$(icp canister status bridge-canister -e production -i --identity "$BRIDGE_ICP_IDENTITY")" == "$CANISTER" ]] || {
   echo "production ICP environment does not map the reviewed Bridge Canister" >&2; exit 1;

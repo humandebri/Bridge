@@ -53,7 +53,6 @@ function assertEmbeddedTestUiProfile(profile: {
 }): void {
   if (profile.chainId === 8453) throw new Error("Test UI deploy rejects Base Mainnet")
   const productionIds = new Set([
-    "rlhjx-iyaaa-aaaaf-qcnyq-cai",
     "73mez-iiaaa-aaaaq-aaasq-cai",
     "7vojr-tyaaa-aaaaq-aaatq-cai",
   ])

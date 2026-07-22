@@ -31,14 +31,14 @@ REVISION="$(git -C "$T/source" rev-parse HEAD)"
 TREE="$(git -C "$T/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
 printf '{"source_revision":"%s","source_tree_sha256":"%s"}\n' "$REVISION" "$TREE" >"$T/bundle/release-manifest.json"
 cat >"$T/bundle/profile.json" <<'JSON'
-{"bridge_canister_id":"rlhjx-iyaaa-aaaaf-qcnyq-cai","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","parameters":{"cycles_floor":"1000"}}
+{"bridge_canister_id":"2vxsx-fae","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","parameters":{"cycles_floor":"1000"}}
 JSON
 export TRACE="$T/trace"
 cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 echo "icp $*" >>"$TRACE"
 if [[ "$*" == *'identity principal'* ]]; then echo 'aaaaa-aa'
-elif [[ "$*" == *'status bridge-canister -e production -i'* ]]; then echo "${HANDOVER_CANISTER_ID:-rlhjx-iyaaa-aaaaf-qcnyq-cai}"
+elif [[ "$*" == *'status bridge-canister -e production -i'* ]]; then echo "${HANDOVER_CANISTER_ID:-2vxsx-fae}"
 elif [[ "$*" == *get_bridge_status* ]]; then printf '{"deposits_paused":%s}\n' "${HANDOVER_PAUSED:-true}"
 elif [[ "$*" == *'status bridge-canister -e production --identity'* ]]; then printf '{"controllers":["%s"],"cycles":%s,"freezing_threshold":86400,"idle_cycles_burned_per_day":100}\n' "${HANDOVER_CONTROLLER:-aaaaa-aa}" "${HANDOVER_CYCLES:-1000000}"
 elif [[ "$*" == *'status bridge-canister -e production --public --json'* ]]; then
@@ -83,7 +83,7 @@ if HANDOVER_PAUSED=false run_handover "$T/unpaused.json" >/dev/null 2>&1; then
   echo "handover accepted an unpaused Bridge" >&2; exit 1
 fi
 [[ ! -e "$T/unpaused.json" ]]
-if HANDOVER_CANISTER_ID=aaaaa-aa run_handover "$T/wrong-canister.json" >/dev/null 2>&1; then
+if HANDOVER_CANISTER_ID=rrkah-fqaaa-aaaaa-aaaaq-cai run_handover "$T/wrong-canister.json" >/dev/null 2>&1; then
   echo "handover accepted a production mapping drift" >&2; exit 1
 fi
 [[ ! -e "$T/wrong-canister.json" ]]

@@ -11,7 +11,6 @@ const profilePath = process.env.BRIDGE_SEPOLIA_PROFILE
 const profile = JSON.parse(await readFile(profilePath, "utf8"))
 
 const productionIds = new Set([
-  "rlhjx-iyaaa-aaaaf-qcnyq-cai",
   "73mez-iiaaa-aaaaq-aaasq-cai",
   "7vojr-tyaaa-aaaaq-aaatq-cai",
 ])

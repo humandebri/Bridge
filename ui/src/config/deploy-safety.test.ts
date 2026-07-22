@@ -27,11 +27,12 @@ describe("test UI deployment safety", () => {
 
   it("accepts an isolated Base Sepolia profile", () => {
     expect(() => assertTestUiProfile(staging)).not.toThrow()
+    expect(() => assertTestUiProfile({ ...staging, bridgeCanisterId: "rlhjx-iyaaa-aaaaf-qcnyq-cai" })).not.toThrow()
   })
 
   it("rejects mainnet chain, production IDs, and a non-official EVM RPC canister", () => {
     expect(() => assertTestUiProfile({ ...staging, chainId: 8453 })).toThrow("Base Mainnet")
-    expect(() => assertTestUiProfile({ ...staging, bridgeCanisterId: "rlhjx-iyaaa-aaaaf-qcnyq-cai" })).toThrow("production canister")
+    expect(() => assertTestUiProfile({ ...staging, bridgeCanisterId: "73mez-iiaaa-aaaaq-aaasq-cai" })).toThrow("production canister")
     expect(() => assertTestUiProfile({ ...staging, evmRpcCanisterId: "aaaaa-aa" })).toThrow("official EVM RPC")
     expect(() => assertTestUiProfile({ ...staging, testOnly: false })).toThrow("testOnly")
   })

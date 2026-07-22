@@ -47,17 +47,17 @@ credential、seed、private key、hardware wallet backup、credential入りRPC U
 
 ## IC mainnet × Base Sepolia test staging
 
-Plan 007のIC stagingは`sepolia-staging`環境と`bridge-sepolia`、`ledger-sepolia`、`index-sepolia`だけを使用する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。production mapping、KINIC Ledger、production Bridge、Base Mainnet、SNSには触れない。
+Plan 007のIC stagingは`sepolia-staging`環境と`bridge-sepolia`、`ledger-sepolia`、`index-sepolia`だけを使用する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。`rlhjx-iyaaa-aaaaf-qcnyq-cai`は未配置の旧production候補からstaging専用Bridgeへ再分類し、production mappingから除外する。KINIC Ledger、Base Mainnet、SNSには触れない。
 
 外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh`をclean commitで実行し、`deployments/sepolia-staging/evidence/local-e2e.json`を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
 staging Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`だけへ保存する。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`の`pnpm run deploy:test`でCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
 
-## ICP mainnet Bridge deploy先
+## ICP mainnet上のBase Sepolia staging Bridge deploy先
 
-暫定deploy先は`rlhjx-iyaaa-aaaaf-qcnyq-cai`とする。2026年7月14日のpreflightではWasm未インストール（`module_hash = null`）で、controllerは`production` identityだった。
+staging deploy先は`rlhjx-iyaaa-aaaaf-qcnyq-cai`とする。2026年7月22日のpreflightではWasm未インストール（`module_hash = null`）で、controllerは`production` identityだった。このIDは`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`にだけ割り当て、production環境は未割当のままにする。
 
-deploy前に対象IDとcontrollerを再確認し、必要なcyclesを補充する。初期検証が完了するまで本番資産を受け付けず、本番資産の受付前にSNS Rootを唯一のcontrollerとしてhandoverする。
+deploy前に対象IDとcontrollerを再確認し、必要なcyclesを補充する。test-only stagingであり、本番資産、production controller handover、SNS操作には使用しない。
 
 ## Base Sepolia contract-only experiment
 
