@@ -1,7 +1,18 @@
 # KINIC–Base Bridge
 
 KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
-Base contractとPlan 001〜004を実装済みであり、現在は本番パラメータと鍵運用を確定するPlan 005を進めている。
+
+## 現在の状態
+
+[実装計画の索引](plans/README.md)を進捗の正本とする。
+
+| 対象 | 状態 | 残作業 |
+|---|---|---|
+| Plan 001〜004 | 完了 | 履歴資料として保持 |
+| Plan 005 | 進行中 | 外部計測、固定limit承認、pause/cancel演習 |
+| Plan 006 | リポジトリ実装済み | SNS handover、本番preflight、mainnet evidence |
+| Plan 007 | Local完了 / External待ち | IC mainnet test Canister、Base Sepolia、test frontend |
+| Production | 未デプロイ | Plan 001〜007と本番運用条件の完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、EVM操作、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
 `bridge-canister`はstable schema v17の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
@@ -41,10 +52,24 @@ Bridge canisterはこのLedgerとIndexだけを対象とする。Ledger metadata
 | OpenZeppelin Contracts | 5.6.1 (`5fd1781b1454fd1ef8e722282f86f9293cacf256`) |
 | Z3 | 4.16.0 |
 | Verus | 0.2026.07.05.49b8806 |
+| Lean | 4.30.0 |
 | Node.js | 24.14.0 |
 | pnpm | 11.0.8 |
 
-Rustは`rust-toolchain.toml`、Rust依存は`Cargo.lock`、Solidity compilerとEVM targetは`contracts/foundry.toml`、OpenZeppelinはgit submoduleのcommitで固定する。Verusが内部で要求するRust 1.96.0はCIのVerus導入stepで別途固定する。
+Rustは`rust-toolchain.toml`、Rust依存は`Cargo.lock`、Leanは`lean-toolchain`、Solidity compilerとEVM targetは`contracts/foundry.toml`、OpenZeppelinはgit submoduleのcommitで固定する。
+Verusが内部で要求するRust 1.96.0はCIのVerus導入stepで別途固定する。
+
+## 新規cloneの準備
+
+```bash
+git submodule update --init --recursive
+pnpm install --frozen-lockfile
+pnpm --dir ui install --frozen-lockfile
+pnpm --dir ui exec playwright install chromium
+```
+
+上記の固定ツールを導入したうえで`scripts/ci-local.sh versions`を実行する。
+CIでの固定ツール導入手順は[`.github/workflows/ci.yml`](.github/workflows/ci.yml)を参照する。
 
 ## 検証
 
@@ -74,7 +99,10 @@ scripts/ci-local.sh real
 ```
 
 `contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
-`proofs`はLeanの`sorry`・`admit`を拒否してcross-system modelを検査し、productionと共有するDeposit、Withdrawal、管理判定coreをSMTCheckerとVerusで証明する。意図的に制約を欠くfixtureが拒否されることも確認する。
+`proofs`はLeanをcross-chain protocolの正式な抽象仕様としてビルドし、`sorry`・`admit`を拒否する。
+Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、manifestにない仕様・定理・consumerのdriftを拒否する。
+この照合は列挙した境界値に対する限定的なconformanceであり、各言語実装全体の完全なsemantic refinementではない。
+productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。
 `ui`はABI/Candid drift、typecheck、lint、unit test、build、desktop/mobile Playwrightを実行する。`real`は実Ledger suiteとAnvilを使うPlaywright統合テストを実行し、`all`にも含まれるが短時間用の`checks`には含まれない。
 証明範囲と外部仮定は[verification/README.md](verification/README.md)と[verification/obligations.md](verification/obligations.md)に記録する。
 
@@ -84,6 +112,15 @@ ABI snapshotは次で明示的に更新し、通常のCIは更新を行わず差
 python3 scripts/abi_snapshot.py --update
 python3 scripts/abi_snapshot.py --check
 ```
+
+Leanの仕様変更後はconformance vectorを明示的に更新し、通常のCIは生成結果との差分だけを検出する。
+
+```bash
+python3 scripts/protocol_vectors.py --update
+python3 scripts/protocol_vectors.py --check
+```
+
+仕様、定理、consumerの対応は[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。
 
 ## ローカルdeploy
 

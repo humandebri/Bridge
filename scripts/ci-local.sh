@@ -333,7 +333,10 @@ run_verus() {
 
 run_proofs() {
   verify_lean_no_proof_escape "$ROOT/verification/lean"
-  lean "$ROOT/verification/lean/BridgeModel.lean"
+  (cd "$ROOT/verification/lean" && lake build)
+  python3 "$ROOT/scripts/test_protocol_vectors.py"
+  python3 "$ROOT/scripts/protocol_vectors.py" --check
+  python3 "$ROOT/scripts/check_refinement_manifest.py"
   run_smt
   run_verus
 }

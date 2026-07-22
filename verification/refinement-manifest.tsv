@@ -1,0 +1,4 @@
+quote_cases	commit	committed_quote_is_fixed	canister/bridge-core/tests/protocol_vectors.rs,contracts/test/ProtocolVectors.t.sol
+settlement_cases	outboundSettlement	paid_debt_preserves_backing	canister/bridge-core/tests/protocol_vectors.rs
+finalization_cases	decideWithdrawalFinalization	withdrawal_notify_requires_finalized_success	ui/src/lib/protocol-vectors.test.ts
+queue_cases	restorePendingQueue	restore_preserves_blocked_retry	ui/src/lib/protocol-vectors.test.ts

@@ -42,7 +42,6 @@ def main() -> None:
     version = int(match.group(1))
     checks = (
         ("README.md", r"(?:stable schema v|schema version )(\d+)", 2),
-        ("report.md", r"stable schemaはv(\d+)だけ", 1),
         ("verification/README.md", r"schema v(\d+)再オープン", 1),
         ("docs/bridge-flow.md", r"SQLite schema v(\d+)", 1),
         ("docs/canister-state-machine.md", r"(?:Stable schema v|schema v)(\d+)", 2),

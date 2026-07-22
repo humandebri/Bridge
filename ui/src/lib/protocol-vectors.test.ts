@@ -1,0 +1,68 @@
+import { describe, expect, it } from "vitest"
+import vectors from "../../../verification/generated/protocol-vectors.json"
+import { decideWithdrawalFinalization } from "./withdrawal-confirmation-state"
+import { pendingConfirmationKey, upsertPendingConfirmation, type PendingConfirmation } from "./pending-confirmations"
+
+const deployment = {
+  bridgeCanisterId: "aaaaa-aa",
+  chainId: 8453,
+  bridgeAddress: "0x1111111111111111111111111111111111111111",
+}
+
+function withdrawal(byte: string, blocked: boolean, owner: string): PendingConfirmation {
+  return {
+    kind: "withdrawal",
+    transactionHash: `0x${byte.repeat(64)}`,
+    owner,
+    blocked,
+    ...deployment,
+  }
+}
+
+describe("Lean protocol conformance vectors", () => {
+  it("accepts exactly the current nonempty vector schema", () => {
+    expect(vectors.schema_version).toBe(1)
+    expect(Object.keys(vectors).sort()).toEqual([
+      "finalization_cases",
+      "finalization_count",
+      "queue_cases",
+      "queue_count",
+      "quote_cases",
+      "quote_count",
+      "schema_version",
+      "settlement_cases",
+      "settlement_count",
+    ])
+    expect(vectors.quote_cases).toHaveLength(vectors.quote_count)
+    expect(vectors.settlement_cases).toHaveLength(vectors.settlement_count)
+    expect(vectors.finalization_cases).toHaveLength(vectors.finalization_count)
+    expect(vectors.queue_cases).toHaveLength(vectors.queue_count)
+    expect(vectors.finalization_count).toBeGreaterThan(0)
+    expect(vectors.queue_count).toBeGreaterThan(0)
+  })
+
+  it("matches the production finalized withdrawal decision", () => {
+    for (const testCase of vectors.finalization_cases) {
+      expect(decideWithdrawalFinalization(
+        testCase.receipt_succeeded ? "success" : "reverted",
+        BigInt(testCase.receipt_block),
+        testCase.finalized_block === null ? null : BigInt(testCase.finalized_block),
+      )).toBe(testCase.decision)
+    }
+  })
+
+  it("matches serialized queue restoration and preserves another entry", () => {
+    for (const testCase of vectors.queue_cases) {
+      const other = withdrawal("2", testCase.other_blocked, "other")
+      const incoming = withdrawal("1", testCase.incoming_blocked, "incoming")
+      const existing = testCase.existing_blocked === null
+        ? []
+        : [withdrawal("1", testCase.existing_blocked, "existing")]
+      const restored = upsertPendingConfirmation([...existing, other], incoming, true)
+      const target = restored.find((entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(incoming))
+      const preservedOther = restored.find((entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(other))
+      expect(target?.blocked).toBe(testCase.expected_blocked)
+      expect(preservedOther?.blocked).toBe(testCase.expected_other_blocked)
+    }
+  })
+})

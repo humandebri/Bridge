@@ -144,6 +144,14 @@ expect_no_match \
   "Version: 0.2026.07.05.49b8806-custom" \
   "$VERUS_VERSION_PATTERN"
 expect_match \
+  "exact Lean release" \
+  "Lean (version 4.30.0, arm64-apple-darwin24.6.0, Release)" \
+  "$LEAN_VERSION_PATTERN"
+expect_no_match \
+  "near-match Lean release" \
+  "Lean (version 4.30.1, arm64-apple-darwin24.6.0, Release)" \
+  "$LEAN_VERSION_PATTERN"
+expect_match \
   "exact Foundry release" \
   "forge Version: 1.7.1" \
   "$FOUNDRY_VERSION_PATTERN"

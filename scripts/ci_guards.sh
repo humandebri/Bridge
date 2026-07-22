@@ -7,6 +7,7 @@ readonly FOUNDRY_VERSION_PATTERN='^forge Version: 1\.7\.1$'
 readonly ANVIL_VERSION_PATTERN='^anvil Version: 1\.7\.1$'
 readonly Z3_VERSION_PATTERN='^Z3 version 4\.16\.0([[:space:]]|$)'
 readonly VERUS_VERSION_PATTERN='^[[:space:]]*Version: 0\.2026\.07\.05\.49b8806$'
+readonly LEAN_VERSION_PATTERN='^Lean \(version 4\.30\.0,'
 readonly NODE_VERSION_PATTERN='^v24\.14\.0$'
 readonly PNPM_VERSION_PATTERN='^11\.0\.8$'
 

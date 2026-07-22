@@ -26,6 +26,7 @@ contracts/.forge-snapshots/
 .tools/
 .pnpm-store/
 verification/output/
+verification/lean/.lake/
 ui/node_modules/
 ui/dist/
 ui/playwright-report/

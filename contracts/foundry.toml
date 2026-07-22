@@ -19,6 +19,7 @@ deny = "warnings"
 ignored_error_codes = [2394, 6335]
 bytecode_hash = "none"
 cbor_metadata = false
+fs_permissions = [{ access = "read", path = "../verification/generated" }]
 
 [profile.default.fuzz]
 runs = 1000
