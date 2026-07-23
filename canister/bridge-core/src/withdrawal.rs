@@ -1,6 +1,6 @@
 use crate::{
-    Amount, ApplyResult, CoreError, EvmOperationId, HoldId, LedgerOperation,
-    LedgerTransferIdentity, Settlement, WithdrawalId,
+    Amount, ApplyResult, CoreError, HoldId, LedgerOperation, LedgerTransferIdentity, Settlement,
+    WithdrawalId,
 };
 
 #[cfg_attr(
@@ -14,49 +14,28 @@ pub enum WithdrawalState {
         attempt: TransferAttempt,
         settlement: Settlement,
     },
-    ReleaseTransferred {
+    Paid {
         attempt: TransferAttempt,
         settlement: Settlement,
         ledger_block_index: u128,
         source_hold: Option<HoldId>,
-    },
-    AcknowledgePending {
-        attempt: TransferAttempt,
-        settlement: Settlement,
-        ledger_block_index: u128,
-        source_hold: Option<HoldId>,
-        operation_id: EvmOperationId,
-    },
-    AcknowledgeReverted {
-        attempt: TransferAttempt,
-        settlement: Settlement,
-        ledger_block_index: u128,
-        source_hold: Option<HoldId>,
-        operation_id: EvmOperationId,
-    },
-    Released {
-        attempt: TransferAttempt,
-        settlement: Settlement,
-        ledger_block_index: u128,
-        source_hold: Option<HoldId>,
-        operation_id: EvmOperationId,
-    },
-    RefundPending {
-        operation_id: EvmOperationId,
-        eligibility: RefundEligibility,
-    },
-    RefundReverted {
-        operation_id: EvmOperationId,
-        eligibility: RefundEligibility,
-    },
-    Refunded {
-        operation_id: EvmOperationId,
     },
     ReconciliationHold {
         hold_id: HoldId,
         attempt: TransferAttempt,
         settlement: Settlement,
     },
+}
+
+impl WithdrawalState {
+    const fn phase_code(&self) -> u8 {
+        match self {
+            Self::Observed => 0,
+            Self::ReleasePending { .. } => 1,
+            Self::Paid { .. } => 2,
+            Self::ReconciliationHold { .. } => 3,
+        }
+    }
 }
 
 #[cfg_attr(
@@ -93,38 +72,6 @@ impl TransferAttempt {
     feature = "storage-serde",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RefundReason {
-    BridgeStopped,
-    AmountBelowMinimum,
-    InvalidRecipient,
-}
-
-#[cfg_attr(
-    feature = "storage-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RefundEligibility {
-    pub finalized_base_block: u64,
-    pub base_status_pending: bool,
-    pub release_attempt_created: bool,
-    pub reason: RefundReason,
-}
-
-impl RefundEligibility {
-    fn validate(self) -> Result<(), CoreError> {
-        if !crate::refund_allowed(self.base_status_pending, self.release_attempt_created) {
-            return Err(CoreError::RefundIneligible);
-        }
-        Ok(())
-    }
-}
-
-#[cfg_attr(
-    feature = "storage-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WithdrawalEvent {
     StartRelease {
@@ -137,25 +84,6 @@ pub enum WithdrawalEvent {
     ReleaseAmbiguous {
         hold_id: HoldId,
     },
-    PrepareAcknowledgement {
-        operation_id: EvmOperationId,
-    },
-    AcknowledgementFinalized {
-        operation_id: EvmOperationId,
-    },
-    AcknowledgementReverted {
-        operation_id: EvmOperationId,
-    },
-    StartRefund {
-        operation_id: EvmOperationId,
-        eligibility: RefundEligibility,
-    },
-    RefundFinalized {
-        operation_id: EvmOperationId,
-    },
-    RefundReverted {
-        operation_id: EvmOperationId,
-    },
 }
 
 #[cfg_attr(
@@ -165,31 +93,53 @@ pub enum WithdrawalEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawalRecord {
     pub id: WithdrawalId,
+    pub base_requester: [u8; 20],
+    pub owner: Vec<u8>,
+    pub subaccount: [u8; 32],
     pub payload_hash: [u8; 32],
     pub amount: Amount,
-    pub min_amount_out: Amount,
     pub max_service_fee: Amount,
+    pub charged_service_fee: Amount,
+    pub amount_out: Amount,
+    pub observed_at_ns: u64,
     pub state: WithdrawalState,
+    pub last_settlement_stop_reason: Option<String>,
 }
 
 impl WithdrawalRecord {
+    #[allow(clippy::too_many_arguments)]
     pub fn observed(
         id: WithdrawalId,
+        base_requester: [u8; 20],
+        owner: Vec<u8>,
+        subaccount: [u8; 32],
         payload_hash: [u8; 32],
         amount: Amount,
-        min_amount_out: Amount,
         max_service_fee: Amount,
+        charged_service_fee: Amount,
+        amount_out: Amount,
+        observed_at_ns: u64,
     ) -> Result<Self, CoreError> {
-        if amount == Amount::ZERO || min_amount_out == Amount::ZERO || min_amount_out > amount {
+        if amount == Amount::ZERO
+            || amount_out == Amount::ZERO
+            || charged_service_fee > max_service_fee
+            || amount_out.checked_add(charged_service_fee)? != amount
+        {
             return Err(CoreError::InvalidAmount);
         }
         Ok(Self {
             id,
+            base_requester,
+            owner,
+            subaccount,
             payload_hash,
             amount,
-            min_amount_out,
             max_service_fee,
+            charged_service_fee,
+            amount_out,
+            observed_at_ns,
             state: WithdrawalState::Observed,
+            last_settlement_stop_reason: None,
         })
     }
 
@@ -208,6 +158,13 @@ impl WithdrawalRecord {
             return Ok(ApplyResult::idempotent());
         }
 
+        if !crate::withdrawal_phase_allows(self.state.phase_code(), event.phase_code()) {
+            return Err(CoreError::InvalidTransition {
+                entity: "withdrawal",
+                event: event.name(),
+            });
+        }
+
         let (next, fee_delta) = match (&self.state, event) {
             (
                 State::Observed,
@@ -216,15 +173,7 @@ impl WithdrawalRecord {
                     settlement,
                 },
             ) => {
-                if attempt.attempt_no != 0
-                    || attempt.identity.operation != LedgerOperation::ReleaseWithdrawal
-                {
-                    return Err(CoreError::InvalidLedgerOperation);
-                }
-                if attempt.identity.amount != settlement.amount_out {
-                    return Err(CoreError::InvalidAmount);
-                }
-                settlement.validate(self.amount, self.min_amount_out, self.max_service_fee)?;
+                self.validate_attempt(&attempt, settlement)?;
                 (
                     State::ReleasePending {
                         attempt: *attempt,
@@ -239,18 +188,18 @@ impl WithdrawalRecord {
                     settlement,
                 },
                 Event::ReleaseSucceeded { ledger_block_index },
-            ) => (
-                State::ReleaseTransferred {
-                    attempt: attempt.clone(),
-                    settlement: *settlement,
-                    ledger_block_index,
-                    source_hold: None,
-                },
-                Amount::new(crate::terminal_retry_fee(
-                    true,
-                    settlement.service_fee.get(),
-                )),
-            ),
+            ) => {
+                self.validate_attempt(attempt, *settlement)?;
+                (
+                    State::Paid {
+                        attempt: attempt.clone(),
+                        settlement: *settlement,
+                        ledger_block_index,
+                        source_hold: None,
+                    },
+                    settlement.net_service_fee()?,
+                )
+            }
             (
                 State::ReleasePending {
                     attempt,
@@ -265,110 +214,6 @@ impl WithdrawalRecord {
                 },
                 Amount::ZERO,
             ),
-            (
-                State::ReleaseTransferred {
-                    attempt,
-                    settlement,
-                    ledger_block_index,
-                    source_hold,
-                },
-                Event::PrepareAcknowledgement { operation_id },
-            ) => (
-                State::AcknowledgePending {
-                    attempt: attempt.clone(),
-                    settlement: *settlement,
-                    ledger_block_index: *ledger_block_index,
-                    source_hold: *source_hold,
-                    operation_id,
-                },
-                Amount::ZERO,
-            ),
-            (
-                State::AcknowledgePending {
-                    attempt,
-                    settlement,
-                    ledger_block_index,
-                    source_hold,
-                    operation_id: current,
-                },
-                Event::AcknowledgementFinalized { operation_id },
-            ) if *current == operation_id => (
-                State::Released {
-                    attempt: attempt.clone(),
-                    settlement: *settlement,
-                    ledger_block_index: *ledger_block_index,
-                    source_hold: *source_hold,
-                    operation_id,
-                },
-                Amount::ZERO,
-            ),
-            (State::AcknowledgePending { .. }, Event::AcknowledgementFinalized { .. }) => {
-                return Err(CoreError::ConflictingReplay);
-            }
-            (
-                State::AcknowledgePending {
-                    attempt,
-                    settlement,
-                    ledger_block_index,
-                    source_hold,
-                    operation_id: current,
-                },
-                Event::AcknowledgementReverted { operation_id },
-            ) if *current == operation_id => (
-                State::AcknowledgeReverted {
-                    attempt: attempt.clone(),
-                    settlement: *settlement,
-                    ledger_block_index: *ledger_block_index,
-                    source_hold: *source_hold,
-                    operation_id,
-                },
-                Amount::ZERO,
-            ),
-            (State::AcknowledgePending { .. }, Event::AcknowledgementReverted { .. }) => {
-                return Err(CoreError::ConflictingReplay);
-            }
-            (
-                State::Observed,
-                Event::StartRefund {
-                    operation_id,
-                    eligibility,
-                },
-            ) => {
-                eligibility.validate()?;
-                (
-                    State::RefundPending {
-                        operation_id,
-                        eligibility,
-                    },
-                    Amount::ZERO,
-                )
-            }
-            (
-                State::RefundPending {
-                    operation_id: current,
-                    ..
-                },
-                Event::RefundFinalized { operation_id },
-            ) if *current == operation_id => (State::Refunded { operation_id }, Amount::ZERO),
-            (State::RefundPending { .. }, Event::RefundFinalized { .. }) => {
-                return Err(CoreError::ConflictingReplay);
-            }
-            (
-                State::RefundPending {
-                    operation_id: current,
-                    eligibility,
-                },
-                Event::RefundReverted { operation_id },
-            ) if *current == operation_id => (
-                State::RefundReverted {
-                    operation_id,
-                    eligibility: *eligibility,
-                },
-                Amount::ZERO,
-            ),
-            (State::RefundPending { .. }, Event::RefundReverted { .. }) => {
-                return Err(CoreError::ConflictingReplay);
-            }
             (_, other) => {
                 return Err(CoreError::InvalidTransition {
                     entity: "withdrawal",
@@ -380,27 +225,39 @@ impl WithdrawalRecord {
         Ok(ApplyResult::applied(fee_delta))
     }
 
+    fn validate_attempt(
+        &self,
+        attempt: &TransferAttempt,
+        settlement: Settlement,
+    ) -> Result<(), CoreError> {
+        if matches!(self.state, WithdrawalState::Observed) && attempt.attempt_no != 0 {
+            return Err(CoreError::InvalidLedgerOperation);
+        }
+        if attempt.identity.operation != LedgerOperation::ReleaseWithdrawal
+            || !crate::release_transfer_matches(
+                attempt.identity.amount.get(),
+                attempt.identity.fee.get(),
+                self.amount_out.get(),
+                settlement.ledger_fee.get(),
+            )
+            || settlement.amount_out != self.amount_out
+            || settlement.service_fee != self.charged_service_fee
+        {
+            return Err(CoreError::SettlementMismatch);
+        }
+        settlement.validate_committed(self.amount, self.max_service_fee)
+    }
+
     fn is_idempotent(&self, event: &WithdrawalEvent) -> bool {
         use WithdrawalEvent as Event;
         use WithdrawalState as State;
-
         match (&self.state, event) {
             (
                 State::ReleasePending {
                     attempt: current_attempt,
                     settlement: current_settlement,
                 }
-                | State::ReleaseTransferred {
-                    attempt: current_attempt,
-                    settlement: current_settlement,
-                    ..
-                }
-                | State::AcknowledgePending {
-                    attempt: current_attempt,
-                    settlement: current_settlement,
-                    ..
-                }
-                | State::Released {
+                | State::Paid {
                     attempt: current_attempt,
                     settlement: current_settlement,
                     ..
@@ -416,15 +273,7 @@ impl WithdrawalRecord {
                 },
             ) => current_attempt == attempt.as_ref() && current_settlement == settlement,
             (
-                State::ReleaseTransferred {
-                    ledger_block_index: current,
-                    ..
-                }
-                | State::AcknowledgePending {
-                    ledger_block_index: current,
-                    ..
-                }
-                | State::Released {
+                State::Paid {
                     ledger_block_index: current,
                     ..
                 },
@@ -436,77 +285,25 @@ impl WithdrawalRecord {
                 },
                 Event::ReleaseAmbiguous { hold_id },
             ) => current == hold_id,
-            (
-                State::AcknowledgePending {
-                    operation_id: current,
-                    ..
-                }
-                | State::Released {
-                    operation_id: current,
-                    ..
-                },
-                Event::PrepareAcknowledgement { operation_id },
-            )
-            | (
-                State::Released {
-                    operation_id: current,
-                    ..
-                },
-                Event::AcknowledgementFinalized { operation_id },
-            ) => current == operation_id,
-            (
-                State::AcknowledgeReverted {
-                    operation_id: current,
-                    ..
-                },
-                Event::AcknowledgementReverted { operation_id },
-            ) => current == operation_id,
-            (
-                State::RefundPending {
-                    operation_id: current,
-                    eligibility: current_eligibility,
-                },
-                Event::StartRefund {
-                    operation_id,
-                    eligibility,
-                },
-            ) => current == operation_id && current_eligibility == eligibility,
-            (
-                State::Refunded {
-                    operation_id: current,
-                },
-                Event::StartRefund { operation_id, .. },
-            )
-            | (
-                State::Refunded {
-                    operation_id: current,
-                },
-                Event::RefundFinalized { operation_id },
-            ) => current == operation_id,
-            (
-                State::RefundReverted {
-                    operation_id: current,
-                    ..
-                },
-                Event::RefundReverted { operation_id },
-            ) => current == operation_id,
             _ => false,
         }
     }
 }
 
 impl WithdrawalEvent {
+    const fn phase_code(&self) -> u8 {
+        match self {
+            Self::StartRelease { .. } => 0,
+            Self::ReleaseSucceeded { .. } => 2,
+            Self::ReleaseAmbiguous { .. } => 3,
+        }
+    }
+
     const fn name(&self) -> &'static str {
         match self {
             Self::StartRelease { .. } => "start_release",
             Self::ReleaseSucceeded { .. } => "release_succeeded",
             Self::ReleaseAmbiguous { .. } => "release_ambiguous",
-            Self::PrepareAcknowledgement { .. } => "prepare_acknowledgement",
-            Self::AcknowledgementFinalized { .. } => "acknowledgement_finalized",
-            Self::AcknowledgementReverted { .. } => "acknowledgement_reverted",
-            Self::StartRefund { .. } => "start_refund",
-            Self::RefundFinalized { .. } => "refund_finalized",
-            Self::RefundReverted { .. } => "refund_reverted",
         }
     }
 }

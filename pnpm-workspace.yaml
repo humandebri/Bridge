@@ -1,0 +1,4 @@
+allowBuilds:
+  '@dfinity/pic': true
+  '@swc/core': true
+  unrs-resolver: true

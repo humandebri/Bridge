@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "rehearsal_id": "<same-id-as-config>",
+  "scenario": "<preflight|deposit_mint|withdrawal_release|ledger_fee_guard|canonical_receipt|single_provider_failure|quorum_loss|nonce_known|nonce_conflict|final_pause>",
+  "observed_at": "<RFC-3339-UTC>",
+  "test_assets_only": true,
+  "external_calls_performed": true,
+  "through_evm_rpc_canister": true,
+  "used_test_double": false,
+  "ic_network": "ic",
+  "base_chain_id": 84532,
+  "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+  "bridge_canister_id": "<test-bridge-canister-principal>",
+  "request_sha256": "<sha256-of-redacted-request-record>",
+  "response_sha256": "<sha256-of-redacted-response-record>",
+  "result": "passed",
+  "details": "<replace-with-the-scenario-specific-object-documented-in-the-runbook>",
+  "canister_audit": {
+    "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+    "call_method": "<multi_request|eth_sendRawTransaction|eth_sendRawTransaction+multi_request|eth_getTransactionReceipt+eth_getBlockByNumber>",
+    "request_digest": "<64-hex-from-EvmRpcObservation>",
+    "quorum_response_digest": "<64-hex-from-EvmRpcObservation>",
+    "safe_block_number": 0,
+    "safe_block_hash": "<0x-32-byte-hash>",
+    "transaction_hash": "<0x-32-byte-hash-or-null>"
+  },
+  "canister_decision": "<EvmRpcDecision object for single_provider_failure, quorum_loss, and nonce_conflict; null otherwise>",
+  "artifacts": [
+    {
+      "kind": "<bridge|base|ledger|audit|module|fault>",
+      "path": "artifacts/<scenario>-<kind>.json",
+      "sha256": "<sha256-of-the-complete-artifact-file>",
+      "bindings": {
+        "<detail-field>": "/<JSON-pointer-into-raw-command-stdout>"
+      }
+    }
+  ]
+}

@@ -15,7 +15,7 @@ BridgeはSNSトークン全量がBaseへ移動する可能性を受け入れる�
 ## Consequences
 
 - 制限対象は新規deposit mintとし、既存Withdrawalのrefund mintは除外する。refundを制限するとユーザー資産の回復を妨げるためである。
-- mint batch内の各DepositへPer-Deposit Limitを適用し、batch全体の新規mint量をMint Throughput Limitへ算入する。
+- 各DepositへPer-Deposit Limitを適用し、同じfixed window内の新規mint量を共有Mint Throughput Limitへ累積する。
 - 制限値はraw unitで定義し、token decimalsの表示変換を安全判断へ使用しない。
 - Verusで、各Depositが1回上限を超えないこと、mint流量の消費量が保存されること、refundが新規deposit mintとして計上されないことを証明対象にする。
 - 本決定は累積移動量またはBridge Exposureの上限を保証しない。短時間の障害・侵害・入力ミスに対する被害速度を制御する。

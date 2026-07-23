@@ -141,8 +141,8 @@ pub struct LedgerTransferIdentity {
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BaseMintSnapshot {
-    pub finalized_block_number: u64,
-    pub finalized_block_timestamp: u64,
+    pub finalized_head_block_number: u64,
+    pub confirmed_block_timestamp: u64,
     pub service_fee: Amount,
     pub max_service_fee: Amount,
     pub per_deposit_limit: Amount,
@@ -156,7 +156,7 @@ impl BaseMintSnapshot {
     pub fn effective_minted_in_window(self) -> Amount {
         let expires_at = u128::from(self.mint_window_started_at)
             .saturating_add(u128::from(self.mint_window_duration));
-        if u128::from(self.finalized_block_timestamp) >= expires_at {
+        if u128::from(self.confirmed_block_timestamp) >= expires_at {
             Amount::ZERO
         } else {
             self.minted_in_window
@@ -199,23 +199,26 @@ pub struct Settlement {
 }
 
 impl Settlement {
-    pub fn validate(
+    pub fn net_service_fee(self) -> Result<Amount, CoreError> {
+        self.service_fee.checked_sub(self.ledger_fee)
+    }
+
+    pub fn validate_committed(
         self,
         amount: Amount,
-        min_amount_out: Amount,
         max_service_fee: Amount,
     ) -> Result<(), CoreError> {
         if self.service_fee > max_service_fee {
             return Err(CoreError::ServiceFeeAboveMaximum);
         }
-        if self.amount_out < min_amount_out {
-            return Err(CoreError::MinimumAmountNotMet);
+        if self.ledger_fee > self.service_fee {
+            return Err(CoreError::SettlementMismatch);
         }
-        let total = self
-            .amount_out
-            .checked_add(self.service_fee)?
-            .checked_add(self.ledger_fee)?;
-        if total != amount {
+        if !crate::committed_quote_matches(
+            amount.get(),
+            self.amount_out.get(),
+            self.service_fee.get(),
+        ) {
             return Err(CoreError::SettlementMismatch);
         }
         Ok(())
@@ -260,8 +263,9 @@ pub enum CoreError {
     ServiceFeeAboveUserMaximum,
     PerDepositLimitExceeded,
     MintWindowLimitExceeded,
-    MinimumAmountNotMet,
     SettlementMismatch,
+    StaleFinalizedObservation,
+    ConflictingFinalizedObservation,
     InvalidLedgerOperation,
     InvalidTransition {
         entity: &'static str,

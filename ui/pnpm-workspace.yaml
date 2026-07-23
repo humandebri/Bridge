@@ -1,0 +1,5 @@
+allowBuilds:
+  '@dfinity/pic': true
+  esbuild: true
+  sharp: true
+  workerd: true

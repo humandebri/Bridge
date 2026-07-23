@@ -7,6 +7,8 @@ readonly FOUNDRY_VERSION_PATTERN='^forge Version: 1\.7\.1$'
 readonly ANVIL_VERSION_PATTERN='^anvil Version: 1\.7\.1$'
 readonly Z3_VERSION_PATTERN='^Z3 version 4\.16\.0([[:space:]]|$)'
 readonly VERUS_VERSION_PATTERN='^[[:space:]]*Version: 0\.2026\.07\.05\.49b8806$'
+readonly NODE_VERSION_PATTERN='^v24\.14\.0$'
+readonly PNPM_VERSION_PATTERN='^11\.0\.8$'
 
 output_has_matching_line() {
   local output="$1"
@@ -65,4 +67,64 @@ verify_smt_failure_fixtures() {
       return 1
     fi
   done
+}
+
+verify_live_evm_rpc_rehearsal_sources() {
+  if [[ "$#" -eq 0 ]]; then
+    echo "no live EVM RPC rehearsal sources supplied" >&2
+    return 1
+  fi
+
+  local source
+  for source in "$@"; do
+    [[ -f "$source" ]] || {
+      echo "live EVM RPC rehearsal source not found: $source" >&2
+      return 1
+    }
+  done
+
+  if rg -n -i \
+    'canister/mock-external|ui/e2e-real|https?://localhost|https?://127\.0\.0\.1|\b31337\b' \
+    "$@"; then
+    echo "live EVM RPC rehearsal source references a local or test-double backend" >&2
+    return 1
+  fi
+  if ! rg -q '7hfb6-caaaa-aaaar-qadga-cai' "$@"; then
+    echo "live EVM RPC rehearsal is not bound to the official EVM RPC Canister" >&2
+    return 1
+  fi
+  if ! rg -q '84532' "$@"; then
+    echo "live EVM RPC rehearsal is not bound to Base Sepolia" >&2
+    return 1
+  fi
+  if ! rg -q 'capture-artifact' "$@" \
+    || ! rg -q 'validate_raw_artifacts' "$@" \
+    || ! rg -q 'CROSS_ARTIFACT_BINDINGS' "$@"; then
+    echo "live EVM RPC rehearsal lacks raw artifact capture and cross-binding" >&2
+    return 1
+  fi
+}
+
+verify_no_obsolete_withdrawal_terms() {
+  if [[ "$#" -eq 0 ]]; then
+    echo "no protocol documentation supplied" >&2
+    return 1
+  fi
+  if rg -n \
+    '\bbeginRelease\b|canonical finalized|finalized (receipt|state|block|chain|Bridge event)' \
+    "$@" --glob '*.md'; then
+    echo "obsolete Withdrawal confirmation terminology found" >&2
+    return 1
+  fi
+}
+
+verify_lean_no_proof_escape() {
+  if [[ "$#" -eq 0 ]]; then
+    echo "no Lean proof source supplied" >&2
+    return 1
+  fi
+  if rg -n '\b(sorry|admit)\b' "$@" --glob '*.lean'; then
+    echo "forbidden Lean proof escape found" >&2
+    return 1
+  fi
 }

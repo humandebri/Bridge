@@ -26,6 +26,9 @@ IC canisterとKINIC Ledgerは接続しない。
 - **MAX_SERVICE_FEE**：`10000000` raw
 - **Initial Service Fee**：`1000000` raw
 
+上記は2026年7月13日にデプロイ済みの旧実験値であり、証跡として変更しない。
+次回の再デプロイでは **Per-Deposit Limit**と**Mint Window Limit**をそれぞれ`15000000000000` raw（150,000 KINIC、総供給量の約2.5%）、**MAX_SERVICE_FEE**を`1000000000` raw（10 KINIC）、**Initial Service Fee**を`50000000` raw（0.5 KINIC）とする。
+
 2026年7月13日のpreflight観測では、chain IDは`84532`、deployer残高は`99000000000000000` wei、nonceは`0`だった。
 観測blockと時刻は日付別manifestに保存する。
 
@@ -80,10 +83,9 @@ PREFLIGHT
 
 `deploy`はBridge signerへのtest ETH送金、72時間Timelock、Bridgeの順にdeployする。
 Bridgeはconstructor内でbSNSを生成する。
-各transactionはfinalized block到達まで確認し、30分以内にfinalizeしなければ同じnonceの代替transactionを送らず停止する。
+各transactionはFinalized block到達まで確認し、30分以内に確認できなければ同じnonceの代替transactionを送らず停止する。
 
-`flow`はDeposit mint、Withdrawal作成、Release acknowledgement、Base Refund、Service Fee変更、DepositとWithdrawalのpauseを実行する。
-Release acknowledgementのledger block `42`はsynthetic値であり、実KINIC Ledgerの証跡ではない。
+`flow`はDeposit mint、Withdrawal作成、Service Fee変更、DepositとWithdrawalのpauseを実行する。Withdrawal後の追加Base transactionは存在しないことも確認する。
 
 `schedule`はDepositとWithdrawalのunpauseをTimelockへbatch scheduleする。
 直後のexecuteを実transactionとして送信し、revert receiptと72時間delayを確認する。
@@ -99,12 +101,12 @@ scripts/base-sepolia-experiment/run-with-keychain.sh resume
 scripts/base-sepolia-experiment/experiment.sh verify
 ```
 
-`verify`はread-onlyであり、contract code、role、固定limit、asset state、全receipt、finalized block、最終pauseをRPCから再読する。
+`verify`はread-onlyであり、contract code、role、固定limit、asset state、全receipt、Finalized block、最終pauseをRPCから再読する。
 
 ## manifestの扱い
 
 `deployments/base-sepolia-contract-experiment.json`は実行中state machineの作業用manifestである。
-スクリプトがaddress、nonce、transaction hash、receipt block、finality、runtime bytecode hash、check結果を更新する。
+スクリプトがaddress、nonce、transaction hash、receipt block、confirmation、runtime bytecode hash、check結果を更新する。
 
 日付別の公開記録は`deployments/base-sepolia/YYYY-MM-DD/manifest.json`へ保存する。
 未実行項目は`pending`とし、addressやtransaction hashを推測で埋めない。
@@ -121,6 +123,6 @@ scripts/base-sepolia-experiment/experiment.sh verify
 ## 終了条件
 
 実験終了時はBridgeがtest-onlyであることをmanifestへ残す。
-Deposit mintとWithdrawalはpause状態、Service Feeは`1000000` rawとする。
-Timelock、Bridge、bSNSのaddressとruntime bytecode hash、全transactionのfinalityを`verify`で再確認する。
-
+2026年7月13日の旧実験では、Deposit mintとWithdrawalはpause状態、Service Feeは`1000000` rawとする。
+次回の再デプロイでは初期Service Feeを`50000000` rawとする。asset-flow試験では管理者変更を確認し、完了前に`50000000` rawへ戻す。
+Timelock、Bridge、bSNSのaddressとruntime bytecode hash、全transactionのconfirmationを`verify`で再確認する。

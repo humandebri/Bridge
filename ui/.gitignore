@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.playwright-cli/
+e2e/*-snapshots/
+.wrangler/
+.dev.vars
+.dev.vars.*

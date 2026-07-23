@@ -1,0 +1,11 @@
+{{! Install a checksum-pinned, locally cached gzip-compressed Wasm artifact. }}
+build:
+  steps:
+    - type: script
+      commands:
+        - >-
+          test "$(shasum -a 256 '{{ path }}' | cut -d ' ' -f 1)" = "{{ sha256 }}" || { echo >&2 'pinned Wasm checksum mismatch for {{ path }}'; exit 1; }
+        - >-
+          gzip -dc '{{ path }}' > "$ICP_WASM_OUTPUT_PATH"
+sync:
+  steps: []

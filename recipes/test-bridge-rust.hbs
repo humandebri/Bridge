@@ -1,0 +1,19 @@
+{{! Build the Bridge staging artifact with the test-deployment feature in an isolated target dir. }}
+build:
+  steps:
+    - type: script
+      commands:
+        - >-
+          command -v ic-wasm >/dev/null 2>&1 || { echo >&2 'ic-wasm is required'; exit 1; }
+        - >-
+          CARGO_TARGET_DIR=target/test-deployment cargo build --locked --package bridge-canister --target wasm32-unknown-unknown --release --features test-deployment
+        - >-
+          cp target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm "$ICP_WASM_OUTPUT_PATH"
+        - >-
+          ic-wasm "$ICP_WASM_OUTPUT_PATH" -o "$ICP_WASM_OUTPUT_PATH" metadata "candid:service" -f '{{ candid }}' -v public --keep-name-section
+        - >-
+          ic-wasm "$ICP_WASM_OUTPUT_PATH" -o "$ICP_WASM_OUTPUT_PATH" metadata "kinic:deployment" -d "test-deployment" --keep-name-section
+        - >-
+          ic-wasm "$ICP_WASM_OUTPUT_PATH" -o "$ICP_WASM_OUTPUT_PATH" shrink --keep-name-section
+sync:
+  steps: []

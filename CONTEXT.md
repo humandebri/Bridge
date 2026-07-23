@@ -11,11 +11,11 @@ ICPでSNSトークンをロックし、Service Feeを引いた量のbSNSをBase�
 _Avoid_: Bridge transaction, transfer
 
 **Withdrawal**:
-Baseでbridged tokenをburnし、ICPでSNSトークンをreleaseまたはBaseでrefundする1件の要求。
+Baseでbridged tokenをburnし、ICPでSNSトークンをreleaseする1件の要求。Base refundは提供しない。
 _Avoid_: Return transfer, redeem transaction
 
 **Bridge Exposure**:
-Baseの発行済みbridged tokenと、burn済みだがICP releaseまたはBase refundが未確定のWithdrawalの合計。Bridgeが裏付ける債務総額を表す。
+Baseの発行済みbridged tokenと、burn済みだがICP releaseが未確定のWithdrawalの合計。Bridgeが裏付ける債務総額を表す。
 _Avoid_: Outstanding supply, moved amount
 
 **Per-Deposit Limit**:
@@ -36,7 +36,7 @@ Bridgeable SNS Tokenを1:1で裏付けるBase上のERC-20。SNS Governanceの投
 _Avoid_: Cross-chain governance token, voting token
 
 **Withdrawal Settlement**:
-WithdrawalがICP ReleaseまたはBase Refundの一方だけで終端した状態。両方の成立を許さない。
+WithdrawalのICP ReleaseがLedger成功または履歴照合で確定し、`Paid`になった状態。Base refundは存在せず、`Committed`後のBase stateは終端である。
 _Avoid_: Withdrawal completion, payout status
 
 **Service Fee**:
@@ -71,14 +71,22 @@ _Avoid_: Timestamp, timeout, last attempted block
 Bridge canisterのコード更新を承認するSNS Governance。SNS Rootが唯一のcontrollerとして採択済みupgradeを実行する。
 _Avoid_: Runtime administrator, developer controller
 
-**Runtime Administrator**:
-Base Bridgeのpauseと上限内Service Fee変更だけを操作する外部管理鍵。canister controllerではない。
-_Avoid_: Upgrade authority, owner
+**Governance Principal**:
+Upgrade Authorityと同じSNS Governance principal。Canister上の管理操作と、closed Base管理操作を送信するGovernance Operator laneを制御する。
+_Avoid_: developer controller, human EVM wallet
+
+**Pause Principal**:
+IC/Base双方のpause、記録済みpending Timelock operationのcancel、許可されたSettlementの進行だけを行う単一IC principal。再開、role rotation、fee管理、upgradeを行わない。
+_Avoid_: Governance Principal, canister controller
+
+**Governance Operator**:
+Bridge CanisterがMint Signerとは別pathから導出し、Base pause、Service Fee、Timelock propose/cancel/executeだけを送信するthreshold address。
+_Avoid_: human wallet, Mint Signer, canister controller
 
 **Bridge Signer**:
-Bridge canisterのthreshold ECDSAで管理され、Baseのdeposit mint、Release acknowledgement、Base Refundだけを実行する単一address。
+Bridge canisterのthreshold ECDSAで管理され、BaseのDeposit mintだけを実行する単一address。Withdrawalのburnは利用者が実行する。
 _Avoid_: Base Admin, Runtime Administrator, owner
 
-**Base Admin**:
-Base contractのunpauseとrole rotationを72時間のOpenZeppelin Timelock経由で承認・実行する単一hardware wallet。mint、refund、limit変更、escrow資産への権限を持たない。
-_Avoid_: Governance Executor, owner, DEFAULT_ADMIN_ROLE holder
+**Base Admin Timelock**:
+Governance Operatorだけをproposer/executor/cancellerに持ち、自己adminと72時間minimum delayを維持するOpenZeppelin Timelock。人間walletへroleを付与しない。
+_Avoid_: human wallet, external DEFAULT_ADMIN_ROLE holder

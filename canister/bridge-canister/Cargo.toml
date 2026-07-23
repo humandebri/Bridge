@@ -10,13 +10,17 @@ version.workspace = true
 crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
+[features]
+default = []
+test-deployment = []
+
 [dependencies]
+async-trait.workspace = true
 bridge-core = { path = "../bridge-core", features = ["storage-serde"] }
 candid.workspace = true
 ciborium.workspace = true
 ic-cdk.workspace = true
 ic-cdk-timers.workspace = true
-ic-stable-structures.workspace = true
 icrc-ledger-types.workspace = true
 evm_rpc_client.workspace = true
 evm_rpc_types.workspace = true
@@ -27,3 +31,12 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tiny-keccak.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ic-sqlite-vfs = { workspace = true, features = ["sqlite-precompiled"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ic-sqlite-vfs = { workspace = true, features = ["sqlite-bundled"] }
+
+[dev-dependencies]
+serial_test = "=3.2.0"

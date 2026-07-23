@@ -1,4 +1,4 @@
-// contracts/test: stateful fuzz the Bridge accounting, terminal Withdrawal states, and admin safety predicates.
+// contracts/test: stateful fuzz Bridge accounting, irreversible Withdrawal commitments, and admin safety predicates.
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
@@ -10,18 +10,17 @@ import {TestBase} from "./TestBase.sol";
 
 contract BridgeInvariantHandler is TestBase {
     address internal constant RUNTIME_ADMINISTRATOR = address(0x22);
-    address internal constant BASE_ADMIN_TIMELOCK = address(0x33);
+    address internal BASE_ADMIN_TIMELOCK;
 
     Bridge private immutable _bridge;
     IBSNS private immutable _token;
     uint256 public cumulativeDepositMinted;
-    uint256 public pendingAmount;
-    uint256 public releasedAmount;
+    uint256 public committedAmount;
     uint256 public depositNonce = 100;
     uint256 public withdrawalCount;
-    uint256 public ledgerBlockNonce;
 
     constructor() {
+        BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
         _bridge = new Bridge(
             "kinic",
             "KINIC",
@@ -29,6 +28,7 @@ contract BridgeInvariantHandler is TestBase {
             address(this),
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
             1_000,
             100_000,
             1 hours,
@@ -36,6 +36,10 @@ contract BridgeInvariantHandler is TestBase {
             10
         );
         _token = _bridge.bsns();
+        vm.startPrank(BASE_ADMIN_TIMELOCK);
+        _bridge.unpauseDepositMints();
+        _bridge.unpauseWithdrawals();
+        vm.stopPrank();
         _initialMint(keccak256("invariant-0"), address(this));
         _initialMint(keccak256("invariant-1"), address(this));
         _initialMint(keccak256("invariant-2"), address(this));
@@ -69,8 +73,11 @@ contract BridgeInvariantHandler is TestBase {
         if (balance == 0) {
             return;
         }
-        uint256 amount = 1 + (seed % balance);
-        uint256 minAmountOut = 1 + (seed % amount);
+        uint256 fee = _bridge.serviceFee();
+        if (balance <= fee) {
+            return;
+        }
+        uint256 amount = fee + 1 + (seed % (balance - fee));
         uint256 principalTag = seed % 200 + 1;
         if (principalTag == 4) {
             principalTag = 5;
@@ -80,60 +87,12 @@ contract BridgeInvariantHandler is TestBase {
             mstore8(add(owner, 0x20), principalTag)
         }
         bytes32 subaccount = bytes32(seed);
+        _token.approve(address(_bridge), amount);
         (bool succeeded,) =
-            address(_bridge).call(abi.encodeCall(IBridge.createWithdrawal, (amount, minAmountOut, owner, subaccount)));
+            address(_bridge).call(abi.encodeCall(IBridge.createWithdrawal, (amount, fee, owner, subaccount)));
         if (succeeded) {
             withdrawalCount++;
-            pendingAmount += amount;
-        }
-    }
-
-    function acknowledgeRelease(uint256 seed) external {
-        if (withdrawalCount == 0) {
-            return;
-        }
-        uint256 withdrawalId = 1 + (seed % withdrawalCount);
-        IBridge.Withdrawal memory withdrawal = _bridge.getWithdrawal(withdrawalId);
-        if (withdrawal.status == IBridge.WithdrawalStatus.Pending) {
-            uint256 amountOut = withdrawal.minAmountOut + (seed % (withdrawal.amount - withdrawal.minAmountOut + 1));
-            uint256 remaining = withdrawal.amount - amountOut;
-            uint256 feeLimit = remaining < _bridge.MAX_SERVICE_FEE() ? remaining : _bridge.MAX_SERVICE_FEE();
-            uint256 serviceFee = feeLimit == 0 ? 0 : seed % (feeLimit + 1);
-            uint256 ledgerFee = remaining - serviceFee;
-            uint256 ledgerBlockIndex = ledgerBlockNonce++;
-            (bool succeeded,) = address(_bridge)
-                .call(
-                    abi.encodeCall(
-                        IBridge.acknowledgeRelease, (withdrawalId, amountOut, serviceFee, ledgerFee, ledgerBlockIndex)
-                    )
-                );
-            if (succeeded) {
-                pendingAmount -= withdrawal.amount;
-                releasedAmount += withdrawal.amount;
-            }
-        } else if (withdrawal.status == IBridge.WithdrawalStatus.Released && seed % 2 == 0) {
-            _bridge.acknowledgeRelease(
-                withdrawalId,
-                withdrawal.amountOut,
-                withdrawal.serviceFee,
-                withdrawal.ledgerFee,
-                withdrawal.ledgerBlockIndex
-            );
-        }
-    }
-
-    function refundWithdrawal(uint256 seed) external {
-        if (withdrawalCount == 0) {
-            return;
-        }
-        uint256 withdrawalId = 1 + (seed % withdrawalCount);
-        IBridge.Withdrawal memory withdrawal = _bridge.getWithdrawal(withdrawalId);
-        if (withdrawal.status != IBridge.WithdrawalStatus.Pending) {
-            return;
-        }
-        (bool succeeded,) = address(_bridge).call(abi.encodeCall(IBridge.refundWithdrawal, (withdrawalId)));
-        if (succeeded) {
-            pendingAmount -= withdrawal.amount;
+            committedAmount += amount;
         }
     }
 
@@ -155,10 +114,7 @@ contract BridgeInvariantTest is TestBase, StdInvariant {
     }
 
     function invariantExposureIsConserved() public view {
-        assert(
-            token.totalSupply() + handler.pendingAmount() + handler.releasedAmount()
-                == handler.cumulativeDepositMinted()
-        );
+        assert(token.totalSupply() + handler.committedAmount() == handler.cumulativeDepositMinted());
     }
 
     function invariantTrackedBalancesEqualSupply() public view {
@@ -168,18 +124,9 @@ contract BridgeInvariantTest is TestBase, StdInvariant {
     function invariantWithdrawalRecordsRemainTerminalAndValid() public view {
         for (uint256 withdrawalId = 1; withdrawalId <= handler.withdrawalCount(); ++withdrawalId) {
             IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(withdrawalId);
-            if (withdrawal.status == IBridge.WithdrawalStatus.Released) {
-                assert(withdrawal.amountOut + withdrawal.serviceFee + withdrawal.ledgerFee == withdrawal.amount);
-                assert(withdrawal.amountOut >= withdrawal.minAmountOut);
-                assert(withdrawal.serviceFee <= bridge.MAX_SERVICE_FEE());
-            } else if (withdrawal.status == IBridge.WithdrawalStatus.Refunded) {
-                assert(withdrawal.amountOut == 0);
-                assert(withdrawal.serviceFee == 0);
-                assert(withdrawal.ledgerFee == 0);
-                assert(withdrawal.ledgerBlockIndex == 0);
-            } else {
-                assert(withdrawal.status == IBridge.WithdrawalStatus.Pending);
-            }
+            assert(withdrawal.status == IBridge.WithdrawalStatus.Committed);
+            assert(withdrawal.amountOut + withdrawal.chargedServiceFee == withdrawal.amount);
+            assert(withdrawal.chargedServiceFee <= withdrawal.maxServiceFee);
         }
     }
 

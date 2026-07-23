@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 
 import {IBSNS} from "../src/interfaces/IBSNS.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
+import {BridgeTimelockController} from "../src/BridgeTimelockController.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC5267} from "@openzeppelin/contracts/interfaces/IERC5267.sol";
@@ -18,6 +19,7 @@ contract BridgeConstructorFixture {
         address bridgeSigner,
         address runtimeAdministrator,
         address baseAdminTimelock,
+        bytes32 approvedTimelockRuntimeCodeHash,
         uint256 perDepositLimit,
         uint256 mintWindowLimit,
         uint64 mintWindowDuration,
@@ -32,6 +34,7 @@ contract BridgeConstructorFixture {
                 bridgeSigner,
                 runtimeAdministrator,
                 baseAdminTimelock,
+                approvedTimelockRuntimeCodeHash,
                 perDepositLimit,
                 mintWindowLimit,
                 mintWindowDuration,
@@ -52,7 +55,7 @@ contract InterfaceSelectorsTest {
     function testBSNSFunctionSelectors() public pure {
         _assertSelector(IBSNS.bridge.selector, "bridge()");
         _assertSelector(IBSNS.bridgeMint.selector, "bridgeMint(address,uint256)");
-        _assertSelector(IBSNS.bridgeBurn.selector, "bridgeBurn(address,uint256)");
+        _assertSelector(IBSNS.bridgeBurn.selector, "bridgeBurn(uint256)");
         _assertSelector(IBSNS.version.selector, "version()");
         _assertSelector(IERC5267.eip712Domain.selector, "eip712Domain()");
         _assertSelector(IERC20Metadata.name.selector, "name()");
@@ -83,12 +86,7 @@ contract InterfaceSelectorsTest {
 
     function testBridgeOperationSelectors() public pure {
         _assertSelector(IBridge.mintDeposit.selector, "mintDeposit((bytes32,address,uint256,uint256,uint256))");
-        _assertSelector(IBridge.mintDeposits.selector, "mintDeposits((bytes32,address,uint256,uint256,uint256)[])");
         _assertSelector(IBridge.createWithdrawal.selector, "createWithdrawal(uint256,uint256,bytes,bytes32)");
-        _assertSelector(
-            IBridge.acknowledgeRelease.selector, "acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)"
-        );
-        _assertSelector(IBridge.refundWithdrawal.selector, "refundWithdrawal(uint256)");
     }
 
     function testBridgeViewSelectors() public pure {
@@ -106,6 +104,7 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.depositMintsPaused.selector, "depositMintsPaused()");
         _assertSelector(IBridge.withdrawalsPaused.selector, "withdrawalsPaused()");
         _assertSelector(IBridge.nextWithdrawalId.selector, "nextWithdrawalId()");
+        _assertSelector(IBridge.approvedTimelockRuntimeCodeHash.selector, "approvedTimelockRuntimeCodeHash()");
         _assertSelector(IBridge.isDepositProcessed.selector, "isDepositProcessed(bytes32)");
         _assertSelector(IBridge.getWithdrawal.selector, "getWithdrawal(uint256)");
     }
@@ -132,27 +131,34 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.RoleAddressesMustDiffer.selector, "RoleAddressesMustDiffer()");
         _assertSelector(IBridge.InvalidAmount.selector, "InvalidAmount(uint256)");
         _assertSelector(IBridge.InvalidPrincipal.selector, "InvalidPrincipal(bytes)");
-        _assertSelector(IBridge.InvalidMinAmountOut.selector, "InvalidMinAmountOut(uint256,uint256)");
         _assertSelector(IBridge.InvalidServiceFee.selector, "InvalidServiceFee(uint256,uint256)");
         _assertSelector(IBridge.ServiceFeeExceedsUserMaximum.selector, "ServiceFeeExceedsUserMaximum(uint256,uint256)");
-        _assertSelector(IBridge.EmptyBatch.selector, "EmptyBatch()");
         _assertSelector(IBridge.DepositAlreadyProcessed.selector, "DepositAlreadyProcessed(bytes32)");
         _assertSelector(IBridge.DepositMintLimitExceeded.selector, "DepositMintLimitExceeded(uint256,uint256)");
         _assertSelector(IBridge.MintWindowLimitExceeded.selector, "MintWindowLimitExceeded(uint256,uint256)");
         _assertSelector(IBridge.DepositMintsArePaused.selector, "DepositMintsArePaused()");
         _assertSelector(IBridge.WithdrawalsArePaused.selector, "WithdrawalsArePaused()");
-        _assertSelector(IBridge.WithdrawalNotFound.selector, "WithdrawalNotFound(uint256)");
-        _assertSelector(IBridge.InvalidWithdrawalStatus.selector, "InvalidWithdrawalStatus(uint256,uint8)");
-        _assertSelector(
-            IBridge.SettlementAmountsMismatch.selector, "SettlementAmountsMismatch(uint256,uint256,uint256,uint256)"
-        );
-        _assertSelector(IBridge.ReleaseAcknowledgementMismatch.selector, "ReleaseAcknowledgementMismatch(uint256)");
-        _assertSelector(
-            IBridge.LedgerBlockAlreadyAcknowledged.selector, "LedgerBlockAlreadyAcknowledged(uint256,uint256)"
-        );
         _assertSelector(IBridge.UnauthorizedBridgeSigner.selector, "UnauthorizedBridgeSigner(address)");
         _assertSelector(IBridge.UnauthorizedRuntimeAdministrator.selector, "UnauthorizedRuntimeAdministrator(address)");
         _assertSelector(IBridge.UnauthorizedBaseAdmin.selector, "UnauthorizedBaseAdmin(address)");
+        _assertSelector(IBridge.TimelockCandidateHasNoCode.selector, "TimelockCandidateHasNoCode(address)");
+        _assertSelector(
+            IBridge.TimelockCandidateCodeHashMismatch.selector,
+            "TimelockCandidateCodeHashMismatch(address,bytes32,bytes32)"
+        );
+        _assertSelector(
+            IBridge.TimelockCandidateIntrospectionFailed.selector, "TimelockCandidateIntrospectionFailed(address)"
+        );
+        _assertSelector(
+            IBridge.TimelockCandidateDelayTooShort.selector, "TimelockCandidateDelayTooShort(address,uint256,uint256)"
+        );
+        _assertSelector(
+            IBridge.TimelockCandidateMissingSelfAdmin.selector, "TimelockCandidateMissingSelfAdmin(address)"
+        );
+    }
+
+    function testTimelockErrorSelectors() public pure {
+        _assertSelector(BridgeTimelockController.RoleSetFrozen.selector, "RoleSetFrozen(bytes32,address)");
     }
 
     function testEventTopics() public pure {
@@ -160,10 +166,9 @@ contract InterfaceSelectorsTest {
         _assertTopic(IBSNS.AuthorizationCanceled.selector, "AuthorizationCanceled(address,bytes32)");
         _assertTopic(IBridge.DepositMinted.selector, "DepositMinted(bytes32,address,uint256,uint256,uint256)");
         _assertTopic(
-            IBridge.WithdrawalCreated.selector, "WithdrawalCreated(uint256,address,uint256,uint256,bytes,bytes32)"
+            IBridge.WithdrawalCommitted.selector,
+            "WithdrawalCommitted(uint256,address,uint256,uint256,uint256,uint256,bytes,bytes32)"
         );
-        _assertTopic(IBridge.WithdrawalReleased.selector, "WithdrawalReleased(uint256,uint256,uint256,uint256,uint256)");
-        _assertTopic(IBridge.WithdrawalRefunded.selector, "WithdrawalRefunded(uint256,address,uint256)");
         _assertTopic(IBridge.ServiceFeeChanged.selector, "ServiceFeeChanged(address,uint256,uint256)");
         _assertTopic(IBridge.DepositMintsPaused.selector, "DepositMintsPaused(address)");
         _assertTopic(IBridge.DepositMintsUnpaused.selector, "DepositMintsUnpaused(address)");
@@ -193,19 +198,28 @@ contract InterfaceSelectorsTest {
 
     function testEnumOrdinalsAndStructOrder() public pure {
         assert(uint8(IBridge.WithdrawalStatus.None) == 0);
-        assert(uint8(IBridge.WithdrawalStatus.Pending) == 1);
-        assert(uint8(IBridge.WithdrawalStatus.Released) == 2);
-        assert(uint8(IBridge.WithdrawalStatus.Refunded) == 3);
+        assert(uint8(IBridge.WithdrawalStatus.Committed) == 1);
         _assertSelector(InterfaceTupleFixture.deposit.selector, "deposit((bytes32,address,uint256,uint256,uint256))");
         _assertSelector(
             InterfaceTupleFixture.withdrawal.selector,
-            "withdrawal((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))"
+            "withdrawal((address,uint256,uint256,uint256,uint256,bytes,bytes32,uint8))"
         );
     }
 
     function testConstructorArgumentOrderFixture() public {
         BridgeConstructorFixture fixture = new BridgeConstructorFixture(
-            "kinic", "KINIC", 8, address(0x11), address(0x22), address(0x33), 100, 200, 1 hours, 10, 1
+            "kinic",
+            "KINIC",
+            8,
+            address(0x11),
+            address(0x22),
+            address(0x33),
+            bytes32(uint256(0x44)),
+            100,
+            200,
+            1 hours,
+            10,
+            1
         );
         bytes32 expected = keccak256(
             abi.encode(
@@ -215,6 +229,7 @@ contract InterfaceSelectorsTest {
                 address(0x11),
                 address(0x22),
                 address(0x33),
+                bytes32(uint256(0x44)),
                 uint256(100),
                 uint256(200),
                 uint64(1 hours),

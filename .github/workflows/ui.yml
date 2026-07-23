@@ -1,0 +1,176 @@
+name: bridge-ui
+
+on:
+  pull_request:
+    paths:
+      - "ui/**"
+      - "canister/bridge-canister/src/**"
+      - "canister/mock-external/src/**"
+      - "canister/bridge-canister/bridge.did"
+      - "contracts/abi/**"
+      - "contracts/src/**"
+      - "contracts/lib/openzeppelin-contracts/**"
+      - ".gitmodules"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "integration/**"
+      - "scripts/ci-local.sh"
+      - ".github/workflows/ui.yml"
+  push:
+    paths:
+      - "ui/**"
+      - "canister/bridge-canister/src/**"
+      - "canister/mock-external/src/**"
+      - "canister/bridge-canister/bridge.did"
+      - "contracts/abi/**"
+      - "contracts/src/**"
+      - "contracts/lib/openzeppelin-contracts/**"
+      - ".gitmodules"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "integration/**"
+      - "scripts/ci-local.sh"
+      - ".github/workflows/ui.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ui
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
+
+      - name: Install Node 24.14.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+
+      - name: Install pnpm 11.0.8
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          version: 11.0.8
+          run_install: false
+
+      - name: Install didc 0.5.4
+        working-directory: .
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            -o "$HOME/.local/bin/didc" \
+            https://github.com/dfinity/candid/releases/download/2025-12-18/didc-linux64
+          echo "32693c76d9c6fe0f273f2c1ebf7e48ba3c383e925e5afd17dd264a06aed9fbcc  $HOME/.local/bin/didc" \
+            | sha256sum --check
+          chmod +x "$HOME/.local/bin/didc"
+          test "$("$HOME/.local/bin/didc" --version)" = "didc 0.5.4"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check generated interfaces
+        run: |
+          pnpm run codegen:abi:check
+          pnpm run codegen:candid:check
+
+      - name: Typecheck, lint, and unit test
+        run: |
+          pnpm run typecheck
+          pnpm run lint
+          pnpm run test
+
+      - name: Build static Worker assets
+        run: pnpm run build
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run desktop and mobile UI checks
+        run: pnpm run e2e
+
+      - name: Upload Playwright screenshots and failure artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: bridge-ui-playwright
+          path: |
+            ui/playwright-report
+            ui/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  real-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ui
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
+
+      - name: Install Node 24.14.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+
+      - name: Install pnpm 11.0.8
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          version: 11.0.8
+          run_install: false
+
+      - name: Install pinned Rust 1.97.0 and the Wasm target
+        uses: dtolnay/rust-toolchain@1a3a6d54512beeaffd394f8d516ca16f2c506a20 # 1.97.0
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Install Foundry 1.7.1
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: v1.7.1
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Download and verify the pinned ICRC Ledger suite
+        run: pnpm run e2e:artifacts
+
+      - name: Run real Anvil and PocketIC integration
+        run: pnpm exec playwright test --config playwright.real.config.ts
+
+      - name: Upload real integration failure artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: bridge-ui-real-integration
+          path: |
+            ui/playwright-report
+            ui/test-results
+          if-no-files-found: ignore
+          retention-days: 7

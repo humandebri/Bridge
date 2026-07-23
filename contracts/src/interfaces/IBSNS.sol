@@ -21,7 +21,7 @@ interface IBSNS is IERC20Metadata, IERC5267 {
 
     function bridgeMint(address recipient, uint256 amount) external;
 
-    function bridgeBurn(address account, uint256 amount) external;
+    function bridgeBurn(uint256 amount) external;
 
     function version() external pure returns (string memory);
 

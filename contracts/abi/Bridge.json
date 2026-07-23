@@ -180,43 +180,6 @@
         "type": "uint256"
       },
       {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "serviceFee",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "ledgerFee",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "ledgerBlockIndex",
-        "type": "uint256"
-      }
-    ],
-    "name": "WithdrawalReleased",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      },
-      {
         "indexed": true,
         "internalType": "address",
         "name": "requester",
@@ -231,7 +194,19 @@
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "minAmountOut",
+        "name": "maxServiceFee",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "chargedServiceFee",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amountOut",
         "type": "uint256"
       },
       {
@@ -247,42 +222,12 @@
         "type": "bytes32"
       }
     ],
-    "name": "WithdrawalCreated",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "requester",
-        "type": "address"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      }
-    ],
-    "name": "WithdrawalRefunded",
+    "name": "WithdrawalCommitted",
     "type": "event"
   },
   {
     "inputs": [],
     "name": "DepositMintsArePaused",
-    "type": "error"
-  },
-  {
-    "inputs": [],
-    "name": "EmptyBatch",
     "type": "error"
   },
   {
@@ -305,6 +250,11 @@
   },
   {
     "inputs": [],
+    "name": "TokenTransferFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "WithdrawalsArePaused",
     "type": "error"
   },
@@ -312,6 +262,19 @@
     "inputs": [],
     "name": "ZeroAddress",
     "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "approvedTimelockRuntimeCodeHash",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
     "inputs": [],
@@ -334,6 +297,81 @@
         "internalType": "address",
         "name": "",
         "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "bridgeSnapshot",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "blockNumber",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "blockTimestamp",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address",
+            "name": "bridgeSigner",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "serviceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "maxServiceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "perDepositLimit",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "mintWindowLimit",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint64",
+            "name": "mintWindowDuration",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint64",
+            "name": "mintWindowStartedAt",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint256",
+            "name": "mintedInWindow",
+            "type": "uint256"
+          },
+          {
+            "internalType": "bool",
+            "name": "depositMintsPaused",
+            "type": "bool"
+          },
+          {
+            "internalType": "bool",
+            "name": "withdrawalsPaused",
+            "type": "bool"
+          }
+        ],
+        "internalType": "struct IBridge.BridgeSnapshot",
+        "name": "",
+        "type": "tuple"
       }
     ],
     "stateMutability": "view",
@@ -553,46 +591,6 @@
   {
     "inputs": [
       {
-        "components": [
-          {
-            "internalType": "bytes32",
-            "name": "depositId",
-            "type": "bytes32"
-          },
-          {
-            "internalType": "address",
-            "name": "recipient",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "grossAmount",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "maxServiceFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "chargedServiceFee",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct IBridge.DepositMintRequest[]",
-        "name": "requests",
-        "type": "tuple[]"
-      }
-    ],
-    "name": "mintDeposits",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
         "internalType": "address",
         "name": "caller",
         "type": "address"
@@ -621,6 +619,81 @@
       }
     ],
     "name": "UnauthorizedRuntimeAdministrator",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "actualCodeHash",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "expectedCodeHash",
+        "type": "bytes32"
+      }
+    ],
+    "name": "TimelockCandidateCodeHashMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "suppliedDelay",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "minimumDelay",
+        "type": "uint256"
+      }
+    ],
+    "name": "TimelockCandidateDelayTooShort",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      }
+    ],
+    "name": "TimelockCandidateHasNoCode",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      }
+    ],
+    "name": "TimelockCandidateIntrospectionFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      }
+    ],
+    "name": "TimelockCandidateMissingSelfAdmin",
     "type": "error"
   },
   {
@@ -736,6 +809,11 @@
         "type": "address"
       },
       {
+        "internalType": "bytes32",
+        "name": "initialApprovedTimelockRuntimeCodeHash",
+        "type": "bytes32"
+      },
+      {
         "internalType": "uint256",
         "name": "initialPerDepositLimit",
         "type": "uint256"
@@ -773,33 +851,7 @@
       },
       {
         "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "serviceFee",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "ledgerFee",
-        "type": "uint256"
-      }
-    ],
-    "name": "SettlementAmountsMismatch",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "minAmountOut",
+        "name": "maxServiceFee",
         "type": "uint256"
       },
       {
@@ -833,38 +885,6 @@
       }
     ],
     "name": "InvalidAmount",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "ledgerBlockIndex",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "existingWithdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "LedgerBlockAlreadyAcknowledged",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "minAmountOut",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      }
-    ],
-    "name": "InvalidMinAmountOut",
     "type": "error"
   },
   {
@@ -950,77 +970,6 @@
         "internalType": "uint256",
         "name": "withdrawalId",
         "type": "uint256"
-      },
-      {
-        "internalType": "enum IBridge.WithdrawalStatus",
-        "name": "currentStatus",
-        "type": "uint8"
-      }
-    ],
-    "name": "InvalidWithdrawalStatus",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "withdrawalServiceFee",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "ledgerFee",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "ledgerBlockIndex",
-        "type": "uint256"
-      }
-    ],
-    "name": "acknowledgeRelease",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "ReleaseAcknowledgementMismatch",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "WithdrawalNotFound",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
       }
     ],
     "name": "getWithdrawal",
@@ -1039,7 +988,17 @@
           },
           {
             "internalType": "uint256",
-            "name": "minAmountOut",
+            "name": "maxServiceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "chargedServiceFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOut",
             "type": "uint256"
           },
           {
@@ -1056,26 +1015,6 @@
             "internalType": "enum IBridge.WithdrawalStatus",
             "name": "status",
             "type": "uint8"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountOut",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "serviceFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "ledgerFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "ledgerBlockIndex",
-            "type": "uint256"
           }
         ],
         "internalType": "struct IBridge.Withdrawal",
@@ -1084,19 +1023,6 @@
       }
     ],
     "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "withdrawalId",
-        "type": "uint256"
-      }
-    ],
-    "name": "refundWithdrawal",
-    "outputs": [],
-    "stateMutability": "nonpayable",
     "type": "function"
   }
 ]

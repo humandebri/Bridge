@@ -8,9 +8,7 @@ import {IBSNS} from "./IBSNS.sol";
 interface IBridge {
     enum WithdrawalStatus {
         None,
-        Pending,
-        Released,
-        Refunded
+        Committed
     }
 
     struct DepositMintRequest {
@@ -24,14 +22,27 @@ interface IBridge {
     struct Withdrawal {
         address requester;
         uint256 amount;
-        uint256 minAmountOut;
+        uint256 maxServiceFee;
+        uint256 chargedServiceFee;
+        uint256 amountOut;
         bytes owner;
         bytes32 subaccount;
         WithdrawalStatus status;
-        uint256 amountOut;
+    }
+
+    struct BridgeSnapshot {
+        uint256 blockNumber;
+        uint256 blockTimestamp;
+        address bridgeSigner;
         uint256 serviceFee;
-        uint256 ledgerFee;
-        uint256 ledgerBlockIndex;
+        uint256 maxServiceFee;
+        uint256 perDepositLimit;
+        uint256 mintWindowLimit;
+        uint64 mintWindowDuration;
+        uint64 mintWindowStartedAt;
+        uint256 mintedInWindow;
+        bool depositMintsPaused;
+        bool withdrawalsPaused;
     }
 
     event DepositMinted(
@@ -41,18 +52,16 @@ interface IBridge {
         uint256 serviceFee,
         uint256 mintedAmount
     );
-    event WithdrawalCreated(
+    event WithdrawalCommitted(
         uint256 indexed withdrawalId,
         address indexed requester,
         uint256 amount,
-        uint256 minAmountOut,
+        uint256 maxServiceFee,
+        uint256 chargedServiceFee,
+        uint256 amountOut,
         bytes owner,
         bytes32 subaccount
     );
-    event WithdrawalReleased(
-        uint256 indexed withdrawalId, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee, uint256 ledgerBlockIndex
-    );
-    event WithdrawalRefunded(uint256 indexed withdrawalId, address indexed requester, uint256 amount);
     event ServiceFeeChanged(address indexed caller, uint256 previousFee, uint256 newFee);
     event DepositMintsPaused(address indexed caller);
     event DepositMintsUnpaused(address indexed caller);
@@ -66,41 +75,30 @@ interface IBridge {
     error RoleAddressesMustDiffer();
     error InvalidAmount(uint256 amount);
     error InvalidPrincipal(bytes owner);
-    error InvalidMinAmountOut(uint256 minAmountOut, uint256 amount);
     error InvalidServiceFee(uint256 serviceFee, uint256 maximumServiceFee);
     error ServiceFeeExceedsUserMaximum(uint256 serviceFee, uint256 userMaximum);
-    error EmptyBatch();
     error DepositAlreadyProcessed(bytes32 depositId);
     error DepositMintLimitExceeded(uint256 mintAmount, uint256 limit);
     error MintWindowLimitExceeded(uint256 requestedAmount, uint256 availableAmount);
     error DepositMintsArePaused();
     error WithdrawalsArePaused();
-    error WithdrawalNotFound(uint256 withdrawalId);
-    error InvalidWithdrawalStatus(uint256 withdrawalId, WithdrawalStatus currentStatus);
-    error SettlementAmountsMismatch(uint256 amount, uint256 amountOut, uint256 serviceFee, uint256 ledgerFee);
-    error ReleaseAcknowledgementMismatch(uint256 withdrawalId);
-    error LedgerBlockAlreadyAcknowledged(uint256 ledgerBlockIndex, uint256 existingWithdrawalId);
+    error TokenTransferFailed();
     error UnauthorizedBridgeSigner(address caller);
     error UnauthorizedRuntimeAdministrator(address caller);
     error UnauthorizedBaseAdmin(address caller);
+    error TimelockCandidateHasNoCode(address candidate);
+    error TimelockCandidateCodeHashMismatch(address candidate, bytes32 actualCodeHash, bytes32 expectedCodeHash);
+    error TimelockCandidateIntrospectionFailed(address candidate);
+    error TimelockCandidateDelayTooShort(address candidate, uint256 suppliedDelay, uint256 minimumDelay);
+    error TimelockCandidateMissingSelfAdmin(address candidate);
 
     function mintDeposit(DepositMintRequest calldata request) external;
 
-    function mintDeposits(DepositMintRequest[] calldata requests) external;
-
-    function createWithdrawal(uint256 amount, uint256 minAmountOut, bytes calldata owner, bytes32 subaccount)
+    function createWithdrawal(uint256 amount, uint256 maxServiceFee, bytes calldata owner, bytes32 subaccount)
         external
         returns (uint256 withdrawalId);
 
-    function acknowledgeRelease(
-        uint256 withdrawalId,
-        uint256 amountOut,
-        uint256 serviceFee,
-        uint256 ledgerFee,
-        uint256 ledgerBlockIndex
-    ) external;
-
-    function refundWithdrawal(uint256 withdrawalId) external;
+    function bridgeSnapshot() external view returns (BridgeSnapshot memory);
 
     function bsns() external view returns (IBSNS);
 
@@ -109,6 +107,8 @@ interface IBridge {
     function runtimeAdministrator() external view returns (address);
 
     function baseAdminTimelock() external view returns (address);
+
+    function approvedTimelockRuntimeCodeHash() external view returns (bytes32);
 
     function serviceFee() external view returns (uint256);
 

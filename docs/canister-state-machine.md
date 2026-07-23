@@ -1,74 +1,92 @@
 # Bridge canister状態機械
 
-## 境界
+## 前提
 
-`bridge-core`は時刻、caller、IC API、Candid、stable structures、外部通信へ依存しない。
-adapterがCandid `Nat`とBase `uint256`を`Amount(u128)`へchecked変換し、finalizedなBase stateから得たfee・limit・mint windowをevent入力として渡す。
-`bridge-canister`は公開Deposit受付、状態照会、運用管理、ICRC Ledger、EVM RPC、threshold ECDSA、timer taskをこのcoreへ接続する。
-公開Candidは`request_deposit`、DepositとWithdrawalの照会、Bridge status、pauseとresume、管理者rotation、Fee Recipient変更、fee payout、監査ログ照会を提供する。
+`bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、stable storageに依存しない決定的な状態遷移を定義する。`bridge-canister`はその状態を単一SQLite DBへ保存し、ICRC Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-## 遷移
+Stable schema v16、record wire version v15だけを受理し、status APIもschema v16を返す。本番未デプロイのため、旧形式のmigration、dual-read、fallbackは持たない。未知schema、wire version、decode不能なDBはfail closedで起動を拒否する。
 
-- Deposit: `PullPending → Escrowed → MintPending → Minted`または`MintReverted`
-- Depositの不明ledger結果: `PullPending → ReconciliationHold → Escrowed`または`Cancelled`
-- Withdrawal release: `Observed → ReleasePending → ReleaseTransferred → AcknowledgePending → Released`または`AcknowledgeReverted`
-- Withdrawal refund: `Observed → RefundPending → Refunded`または`RefundReverted`
-- Withdrawalの不明ledger結果: `ReleasePending → ReconciliationHold → ReleaseTransferred`または新しいtransfer identityを持つ`ReleasePending`
-- EVM操作: `Queued → Prepared → Submitted → Finalized`または`Reverted`
-- Reconciliation Hold: `Open → ResolvedSucceeded`または`ResolvedAbsent`
+`settlement_jobs`がSettlement実行の永続的な正本である。recordと`phase = settlement`のjobは同じSQLite transactionで作成され、init・post-upgrade・job更新後はDBに保存された最短起床時刻からone-shot timerを再登録する。timerは実行の目覚ましであり、timer ID自体に状態上の意味はない。
 
-同一eventのretryは現在のstateとpayloadが一致するときだけ冪等になる。
-同一IDの受付payload hashが異なるretryはconflictとして拒否する。
-`Released`と`Refunded`はterminalで相互遷移せず、Release開始後はRefund経路へ入れない。
-Deposit Service Feeは受付時の単一finalized Base snapshotで固定し、Deposit mint確定時にだけ会計へ加算する。受付は同snapshotの実効window消費量、stableな未確定Mint予約量、新規net量をchecked加算し、limit超過をLedger pull前に拒否する。予約は`PullPending`から保持し、`Minted`または`Cancelled`でだけ解放する。
-Reconciliation Holdはrequest種別・request ID・transfer identity・hold IDが一致する証拠付きresolutionだけを受理する。
-成功証拠はledger block index、不存在証拠は完全履歴確認済みwatermarkを必須とし、request recordとHold recordを一体で遷移・保存する。
-Holdから直接transfer、refund、補償へ遷移しない。
-Depositの不存在が完全履歴scanで確定した場合はDeposit IDを再利用不能な`Cancelled`へ遷移させる。
-Ledgerがallowance不足、残高不足、Bad Feeなど資産移動なしの確定失敗を返した場合も同じIDを`Cancelled`へ終端化し、Mint予約を直ちに解放する。temporarily unavailable、future timestamp、generic errorはretryable failureとして`PullPending`を維持し、確定取消と分離する。
-Withdrawalの不存在が確定した場合だけ、経済的payloadを維持した新しいtransfer identityとattempt番号でReleaseを再開する。
+EVM transactionが`Submitted`になったときだけjobは`phase = confirmation`へ移り、`AwaitingConfirmation`として起床時刻なしで待機する。これはDepositの`MintDeposit`にだけ存在し、`confirm_deposit`が受け取ったtransaction hash・receipt block・観測Finalized blockをclaimする。Canister timerはEVM confirmationのfallbackを行わない。confirmation後はjobをSettlement phaseへ戻し、Ledger送金などの後続処理をtimerで進める。
 
-adapterはcycles残高、signer ETH残高、gas予算からSettlement Reserveを算出する。
-残高を観測できない場合またはreserveが不足する場合は、ICRC pull前に新規Depositだけを拒否し、既存Settlementの処理を継続する。
-nonce未割当のEVM操作はacknowledgement、refund、deposit mintの順に割り当てる。
+## Deposit（ICP → Base）
 
-pause principalは新規Depositを停止できる。
-Governance principalだけがDeposit受付の再開とruntime administrator rotationを実行できる。
-finance administratorだけがFee Recipient変更とfee payoutを実行できる。
-pause、resume、管理者rotation、Fee Recipient変更、fee payout、reserve gate、Base Service Fee観測変更はappend-only監査ログへ保存する。
+Deposit IDはdomain-separated hashの`(caller, owner_sequence)`で決まり、同じsequenceの異なるpayloadは`DepositConflict`になる。受付時のcanonical Finalized Base snapshotからService Fee、limit、pause状態を取得し、gross amount、固定net amount、Ledger transfer identity、EVM payloadを保存する。
 
-`safe`到達はMemory ID 16のreorg可能なsidecar証跡へだけ保存する。primary operation、Deposit、Withdrawal、fee accounting、reserve、pauseは変更しない。safe headの後退、receipt消失、contract状態不一致をprovider合意で確認した場合はsidecarを削除し、同一raw transactionの監視を継続する。
+```text
+PullPending
+  ├─ Ledger成功 / Duplicate ─→ Escrowed → MintPending → Minted
+  ├─ Ledger確定的失敗 ──────→ Cancelled
+  └─ Ledger結果不明 ────────→ ReconciliationHold
+                                  ├─ 成功証拠 ─→ Escrowed
+                                  └─ 完全な不存在証拠 ─→ Cancelled
 
-finalized EVM revertはoperationと所有recordをterminalなReverted状態へ遷移させ、新規Depositを自動pauseする。未解決revertが存在する間はGovernanceによるresumeも拒否し、同一transactionを再送しない。既存Withdrawal settlement、Hold照合、receipt確認は継続する。
+MintPending ── Finalized receipt成功 ─→ Minted
+            └─ Finalized receipt revert ─→ MintReverted
 
-## Stable schema v5
+MintReverted ── Governanceのrecover_mint_revert ─→ MintPending（replacement operation）
+```
 
-| Memory ID | 内容 |
-|---:|---|
-| 0 | schema version cell |
-| 1 | accounting cell |
-| 2 | Deposit map |
-| 3 | Withdrawal map |
-| 4 | EVM operation map |
-| 5 | Reconciliation Hold map |
-| 6 | counters cell |
-| 7 | EVM nonce、Withdrawal log cursor、last finalized Base block、last finalized Mint block |
-| 8 | 署名前後のEIP-1559 transaction envelope |
-| 9 | Reconciliation履歴scan progress |
-| 10 | immutable init configuration |
-| 11 | Deposit caller、client request ID、Base recipient |
-| 12 | administrator state |
-| 13 | append-only audit event map |
-| 14 | fee payout map |
-| 15 | nonce割当前のEVM call intent map |
-| 16 | reorg可能なBase safe receipt・contract state観測map |
-| 17〜31 | 予約済み、再利用禁止 |
+1. UIはBase chain、Bridge runtime、CanisterのFinalized observation、現在のService Fee、ICRC Ledger残高・fee・allowanceを再検証する。allowanceが不足する場合は、gross amountとLedger feeを含む必要量をICRC-2 approveする。
+2. IC walletから`request_deposit`を呼ぶ。Canisterはowner sequence、Base recipient、gross amount、`max_service_fee`を検証し、Base snapshot、reserve、nonce初期化、Ledger feeを確認してからrecordとjobを保存する。
+3. Settlement runnerが`PullPending`でCanisterからBridgeへのICRC-2 pullを実行する。成功またはDuplicateなら`Escrowed`へ進み、確定的失敗なら`Cancelled`、結果不明なら同じtransfer identityを保持した`ReconciliationHold`へ移る。
+4. `Escrowed`から`MintPending`へ遷移し、EVM operation `MintDeposit`を作成する。operationは`Queued → Prepared → Submitted`の順に、nonce割当、transaction envelope保存、threshold ECDSA署名、broadcastを行う。Withdrawal用のEVM operationは作成しない。
+5. broadcast後のtransaction hashはrecordとconfirmation jobへ保存され、`request_deposit`のreceiptまたはHistoryに返される。UIはtransaction hashとDeposit IDをdeployment scope付きのlocalStorageへ保存し、public Base RPCでreceiptとFinalized headを観測する。
+6. receipt blockがFinalized headへ到達したら、認証済みIC walletから`confirm_deposit`を呼ぶ。Canisterはsettlement IDと保存済みtransaction hash、receipt block、観測Finalized blockを照合し、EVM RPCのquorumでcanonical Finalized receiptを再検証する。
+7. 成功ならoperationを`Confirmed`、Depositを`Minted`へ遷移させる。receiptがrevertならoperationを`Reverted`、Depositを`MintReverted`へ遷移させ、新規Depositをpauseする。reverted transactionは自動再送せず、GovernanceだけがFinalized状態と`isDepositProcessed`を再確認したうえで`recover_mint_revert`を実行できる。
+8. confirmation後のSettlementはCanister timerが自動進行するため、ブラウザを閉じてもLedger側の後続処理がある場合は継続する。RPC、署名、nonce、reserveなどで停止したjobは自動再試行せず、原因解消後に所有者またはGovernance・pause principalが`continue_deposit`を呼ぶ。
 
-本番未デプロイのためlegacy migrationは持たず、schema v5だけを受理する。
-異なるschema versionはfail closedで拒否する。
+## Withdrawal（Base → ICP）
 
-各valueは先頭1 byteのwire versionとCBOR payloadからなる最大16 KiBのbounded blobである。
-未知version、decode失敗、超過サイズ、未知schema versionはerrorまたはtrapとしてfail closedに扱い、default stateへ置換しない。
-stateはstable structuresへrecord単位で直接保存し、`pre_upgrade`で一括serializeしない。
-pending/reverted EVM操作、open Hold、pending Ledger操作、予約Mint量、audit sequence、fee payout IDのcounterはmemory ID 6へ保存する。
-`get_bridge_status`は履歴mapを走査せず、counterとprogress cellから状態を返す。
+WithdrawalはBase上のburnを先に確定させ、その後にCanisterがICP側の固定債務を履行する。Base側の`Committed`は終端状態であり、Base refund、release acknowledgement、cancel、Withdrawal用のthreshold ECDSA transactionは存在しない。
+
+```text
+Base wallet
+  └─ approve(amount) + createWithdrawal(amount, maxServiceFee, owner, subaccount)
+       └─ transferFrom + Bridge残高burn + Committed record + WithdrawalCommitted
+            └─ Finalized eventをUIが検出
+                 └─ IC wallet → notify_withdrawal(transaction_hash)
+                      └─ canonical Finalized検証
+                           └─ Observed → ReleasePending → Paid
+                                           └─ ReconciliationHold
+                                                ├─ 成功証拠 ─→ Paid
+                                                └─ 完全な不存在証拠 ─→ ReleasePending
+```
+
+1. UIはBase wallet、送付先IC wallet、Base snapshotのService Fee、bSNS残高、chain/runtimeを直前に再検証する。必要ならbSNSのBridge allowanceを要求額ちょうどに設定する。
+2. Base walletから`createWithdrawal`を送る。Contractは実行時Service Feeが`maxServiceFee`以下で、`amount > serviceFee`であることを確認し、同じtransaction内で`transferFrom`、Bridge残高のburn、固定quoteを持つ`Committed` record作成、`WithdrawalCommitted`発行を原子的に行う。
+
+   ```text
+   chargedServiceFee = 実行時のserviceFee
+   amountOut = amount - chargedServiceFee
+   ```
+
+3. UIはtransaction hashと送付先IC ownerをlocalStorageのpending confirmationへ保存する。これは追加のBase transactionを予約するものではなく、通知を再開するための公開transaction参照である。秘密鍵や署名情報は保存しない。
+4. UIまたはWithdrawal HistoryがFinalized blockのreceiptと`WithdrawalCommitted` eventを検出し、IC walletから`notify_withdrawal`を呼ぶ。Canisterはtransaction hashを起点に、receipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛してquorum検証する。通知を行えるのは対象IC owner、Governance principal、pause principalである。
+5. 検証成功後、Ledger feeがcharged Service Fee以下ならCanisterは同じtransaction payloadの`ReleasePending` recordとSettlement jobを原子的に保存する。fee超過時はreleaseを作らず`Observed` record、停止理由、runtime guard、監査eventを保存する。重複通知は既存recordを返し、新しいjobを起動しない。
+6. Settlement runnerは固定`amountOut`を固定IC Accountへ送る。Ledger成功、Duplicate、または履歴照合による成功確認で`Paid`になり、`chargedServiceFee - actualLedgerFee`だけをfee reserveへ一度加算する。
+7. Ledgerの結果不明は`ReconciliationHold`へ移す。dedup期間内は同一transfer identityで確認し、期間後はLedger全範囲とIndexの同期済みwatermarkで不存在を証明できた場合だけ、同じ宛先・金額を保った新しいtransfer identityで`ReleasePending`へ戻す。想定外の`BadFee`は`LedgerRejected`として停止し、feeやtransfer identityを変更しない。
+8. Base側のpauseは新規Withdrawal作成を止めるが、すでに`Committed`となったICP債務の送金・照合は止めない。停止したSettlementは原因解消後に所有者またはGovernance・pause principalが`continue_withdrawal`を呼ぶ。
+
+## 外部確認の境界
+
+- **Finalizedが唯一のBase確認境界**：Safe head、一定confirmation数、単一RPCの結果へfallbackしない。Finalized headまたはcanonical hashがquorumで収束しない場合はfail closedする。
+- **ブラウザの役割**：Depositの`confirm_deposit`、Withdrawalの`notify_withdrawal`をユーザーのIC wallet consent付きで開始する。ブラウザの観測値はCanisterの保存値・EVM RPC quorum検証を置き換えない。
+- **Canister timerの役割**：`phase = settlement`のjobを自動実行する。`phase = confirmation`ではMissing transactionの同一raw再送と上限付きreplacementだけを行う。receiptによるterminal遷移はwallet同意付き`confirm_deposit`に限定する。
+- **Ledger照合**：Ledger transferの不明結果を時間経過だけで失敗扱いにせず、Reconciliation Holdを無期限に保持する。不存在証拠はLedgerとIndexの完全性確認を伴うwatermarkだけである。
+
+## 主要APIと権限
+
+| API | 主な呼び出し元 | 役割 |
+|---|---|---|
+| `request_deposit` | Deposit ownerのIC wallet | Deposit受付、Ledger pullとBase mint Settlementの開始 |
+| `confirm_deposit` | Deposit owner、Governance、pause principal | 保存済みMint transactionのFinalized確認を開始 |
+| `continue_deposit` | Deposit owner、Governance、pause principal | 停止したDeposit Settlementを再開 |
+| `notify_withdrawal` | WithdrawalのIC owner、Governance、pause principal | Finalized `WithdrawalCommitted`をCanisterへ通知 |
+| `continue_withdrawal` | Withdrawal owner、Governance、pause principal | ICP releaseまたはReconciliationを再開 |
+| `recover_mint_revert` | Governance principalのみ | Finalized revert済みDepositのreplacement mintを開始 |
+| `get_deposit` / `get_deposit_by_owner_sequence` / `get_withdrawal` | 公開query | canonical intent、phase、quote、停止理由、automatic progressを照会 |
+| `get_bridge_status` | 公開query | Finalized観測、reserve、scheduler、未決済Withdrawal、revertを照会 |
+
+管理APIの権限はCanister内で分離する。SNS Governance principalだけがresume、pause principal rotation、Fee Recipient、fee payout、Service Fee、Timelock schedule/executeを行う。単一pause principalはIC/Baseのpause、記録済みpending Timelock operationのcancel、許可されたSettlement進行だけを行う。Base側ではCanisterが別々のthreshold derivation pathからMint SignerとGovernance Operatorを導出し、前者をmint専用、後者をpause、Service Fee、Timelock propose/cancel/execute専用とする。人間のfinance principal、release approver、EVM管理walletは置かない。

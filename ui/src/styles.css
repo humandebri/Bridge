@@ -1,0 +1,49 @@
+@import "tailwindcss";
+@import "@fontsource/manrope/latin-400.css";
+@import "@fontsource/manrope/latin-600.css";
+@import "@fontsource/manrope/latin-700.css";
+
+:root {
+  --paper: #ffffff;
+  --panel: #f8f8f8;
+  --ink: #000000;
+  --muted: #636161;
+  --support: #4d4d4d;
+  --line: #e6e6e6;
+  --line-strong: #d0d0d0;
+  --pink: #ff2686;
+  --pink-pale: #ffcde5;
+  --pink-soft: rgba(255, 129, 190, .15);
+  --success: #11845b;
+  --info: #086cd9;
+  --warning: #d5691b;
+  --danger: #dc2b2b;
+  --focus: #3324d5;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: "Manrope", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+html { min-width: 320px; min-height: 100%; background: var(--paper); }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--paper); }
+button, input { font: inherit; }
+a { color: inherit; text-decoration: none; }
+summary::-webkit-details-marker { display: none; }
+::selection { background: var(--pink-pale); color: var(--ink); }
+.font-display { font-family: "Manrope", sans-serif; font-weight: 700; letter-spacing: -.055em; }
+.font-mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+.font-numeric { font-variant-numeric: tabular-nums; letter-spacing: -.025em; }
+.route-enter { animation: route-in .45s ease both; }
+.menu-popover:not([open]) nav { display: none; }
+.kinic-rail { display: flex; gap: 5px; width: 112px; transform-origin: center; transition: transform .35s ease; }
+.kinic-rail i { display: block; height: 4px; flex: 1; transform: skewX(-28deg); border-radius: 999px; }
+.kinic-rail i:nth-child(1) { background: var(--pink); }
+.kinic-rail i:nth-child(2) { background: #fdb52a; }
+.kinic-rail i:nth-child(3) { background: #2da8df; }
+.kinic-rail i:nth-child(4) { background: #ff5b1a; }
+.kinic-rail.is-withdraw { transform: scaleX(-1); }
+@keyframes route-in { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }

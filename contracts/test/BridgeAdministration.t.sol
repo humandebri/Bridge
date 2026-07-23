@@ -7,15 +7,35 @@ import {IBSNS} from "../src/interfaces/IBSNS.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
 import {TestBase, Vm} from "./TestBase.sol";
 
+contract TimelockCandidateFixture {
+    // Storage-backed values keep the runtime code hash identical across candidates so
+    // Bridge tests can reach the post-code-hash delay and self-admin checks.
+    uint256 private _delay;
+    bool private _selfAdmin;
+
+    constructor(uint256 delay, bool selfAdmin) {
+        _delay = delay;
+        _selfAdmin = selfAdmin;
+    }
+
+    function getMinDelay() external view returns (uint256) {
+        return _delay;
+    }
+
+    function hasRole(bytes32 role, address account) external view returns (bool) {
+        return _selfAdmin && role == bytes32(0) && account == address(this);
+    }
+}
+
 contract BridgeAdministrationTest is TestBase {
     address private constant BRIDGE_SIGNER = address(0x11);
     address private constant RUNTIME_ADMINISTRATOR = address(0x22);
-    address private constant BASE_ADMIN_TIMELOCK = address(0x33);
+    address private BASE_ADMIN_TIMELOCK;
     address private constant USER = address(0x44);
     address private constant OUTSIDER = address(0x55);
     address private constant NEW_BRIDGE_SIGNER = address(0x66);
     address private constant NEW_RUNTIME_ADMINISTRATOR = address(0x77);
-    address private constant NEW_TIMELOCK = address(0x88);
+    address private NEW_TIMELOCK;
     address private constant BASE_ADMIN_WALLET = address(0x99);
     uint256 private constant MAX_SERVICE_FEE = 100;
     uint256 private constant SERVICE_FEE = 10;
@@ -36,6 +56,8 @@ contract BridgeAdministrationTest is TestBase {
     IBSNS private token;
 
     function setUp() public {
+        BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
+        NEW_TIMELOCK = _deployTestTimelock(address(0x34));
         bridge = new Bridge(
             "kinic",
             "KINIC",
@@ -43,6 +65,7 @@ contract BridgeAdministrationTest is TestBase {
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
             PER_DEPOSIT_LIMIT,
             WINDOW_LIMIT,
             WINDOW_DURATION,
@@ -50,6 +73,29 @@ contract BridgeAdministrationTest is TestBase {
             SERVICE_FEE
         );
         token = bridge.bsns();
+        vm.startPrank(BASE_ADMIN_TIMELOCK);
+        bridge.unpauseDepositMints();
+        bridge.unpauseWithdrawals();
+        vm.stopPrank();
+    }
+
+    function testConstructorStartsBothAssetFlowsPaused() public {
+        Bridge freshBridge = new Bridge(
+            "kinic",
+            "KINIC",
+            8,
+            BRIDGE_SIGNER,
+            RUNTIME_ADMINISTRATOR,
+            BASE_ADMIN_TIMELOCK,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
+            PER_DEPOSIT_LIMIT,
+            WINDOW_LIMIT,
+            WINDOW_DURATION,
+            MAX_SERVICE_FEE,
+            SERVICE_FEE
+        );
+        assert(freshBridge.depositMintsPaused());
+        assert(freshBridge.withdrawalsPaused());
     }
 
     function testAdministrationFunctionsRejectEveryWrongAuthority() public {
@@ -67,9 +113,13 @@ contract BridgeAdministrationTest is TestBase {
     function testPausesAreIndependentIdempotentAndBlockOnlyNewWork() public {
         _mintDeposit(keccak256("fund"), USER, 610, SERVICE_FEE, BRIDGE_SIGNER);
         vm.prank(USER);
-        uint256 releaseId = bridge.createWithdrawal(300, 250, hex"01", bytes32(0));
+        token.approve(address(bridge), 300);
         vm.prank(USER);
-        uint256 refundId = bridge.createWithdrawal(200, 150, hex"02", bytes32(0));
+        uint256 releaseId = bridge.createWithdrawal(300, SERVICE_FEE, hex"01", bytes32(0));
+        vm.prank(USER);
+        token.approve(address(bridge), 200);
+        vm.prank(USER);
+        uint256 secondId = bridge.createWithdrawal(200, SERVICE_FEE, hex"02", bytes32(0));
 
         vm.expectEmit(true, false, false, true, address(bridge));
         emit DepositMintsPaused(RUNTIME_ADMINISTRATOR);
@@ -94,21 +144,12 @@ contract BridgeAdministrationTest is TestBase {
         vm.prank(BRIDGE_SIGNER);
         vm.expectRevert(IBridge.DepositMintsArePaused.selector);
         bridge.mintDeposit(_request(keccak256("paused"), USER, 11, SERVICE_FEE));
-        IBridge.DepositMintRequest[] memory batch = new IBridge.DepositMintRequest[](1);
-        batch[0] = _request(keccak256("paused-batch"), USER, 11, SERVICE_FEE);
-        vm.prank(BRIDGE_SIGNER);
-        vm.expectRevert(IBridge.DepositMintsArePaused.selector);
-        bridge.mintDeposits(batch);
         vm.prank(USER);
         vm.expectRevert(IBridge.WithdrawalsArePaused.selector);
         bridge.createWithdrawal(1, 1, hex"03", bytes32(0));
 
-        vm.prank(BRIDGE_SIGNER);
-        bridge.acknowledgeRelease(releaseId, 270, 10, 20, 1);
-        vm.prank(BRIDGE_SIGNER);
-        bridge.refundWithdrawal(refundId);
-        assert(bridge.getWithdrawal(releaseId).status == IBridge.WithdrawalStatus.Released);
-        assert(bridge.getWithdrawal(refundId).status == IBridge.WithdrawalStatus.Refunded);
+        assert(bridge.getWithdrawal(releaseId).status == IBridge.WithdrawalStatus.Committed);
+        assert(bridge.getWithdrawal(secondId).status == IBridge.WithdrawalStatus.Committed);
 
         vm.expectEmit(true, false, false, true, address(bridge));
         emit DepositMintsUnpaused(BASE_ADMIN_TIMELOCK);
@@ -152,19 +193,19 @@ contract BridgeAdministrationTest is TestBase {
         assert(vm.getRecordedLogs().length == 0);
     }
 
-    function testCurrentServiceFeeDoesNotRewritePendingWithdrawalSettlement() public {
+    function testCurrentServiceFeeDoesNotRewriteCommittedWithdrawalQuote() public {
         _mintDeposit(keccak256("withdrawal-fee"), USER, 210, SERVICE_FEE, BRIDGE_SIGNER);
         vm.prank(USER);
-        uint256 withdrawalId = bridge.createWithdrawal(200, 150, hex"01", bytes32(0));
+        token.approve(address(bridge), 200);
+        vm.prank(USER);
+        uint256 withdrawalId = bridge.createWithdrawal(200, SERVICE_FEE, hex"01", bytes32(0));
         vm.prank(RUNTIME_ADMINISTRATOR);
         bridge.setServiceFee(MAX_SERVICE_FEE);
-        vm.prank(BRIDGE_SIGNER);
-        bridge.acknowledgeRelease(withdrawalId, 170, 20, 10, 1);
-
         IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(withdrawalId);
         assert(bridge.serviceFee() == MAX_SERVICE_FEE);
-        assert(withdrawal.serviceFee == 20);
-        assert(withdrawal.status == IBridge.WithdrawalStatus.Released);
+        assert(withdrawal.chargedServiceFee == SERVICE_FEE);
+        assert(withdrawal.amountOut == 190);
+        assert(withdrawal.status == IBridge.WithdrawalStatus.Committed);
     }
 
     function testAdministrationDoesNotChangeConstructorMintLimits() public {
@@ -237,6 +278,87 @@ contract BridgeAdministrationTest is TestBase {
         vm.stopPrank();
     }
 
+    function testConstructorRejectsUnapprovedInitialTimelock() public {
+        vm.expectRevert(abi.encodeWithSelector(IBridge.TimelockCandidateHasNoCode.selector, OUTSIDER));
+        new Bridge(
+            "kinic",
+            "KINIC",
+            8,
+            BRIDGE_SIGNER,
+            RUNTIME_ADMINISTRATOR,
+            OUTSIDER,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
+            PER_DEPOSIT_LIMIT,
+            WINDOW_LIMIT,
+            WINDOW_DURATION,
+            MAX_SERVICE_FEE,
+            SERVICE_FEE
+        );
+
+        address spoof = address(new TimelockCandidateFixture(72 hours, true));
+        vm.expectPartialRevert(IBridge.TimelockCandidateCodeHashMismatch.selector);
+        new Bridge(
+            "kinic",
+            "KINIC",
+            8,
+            BRIDGE_SIGNER,
+            RUNTIME_ADMINISTRATOR,
+            spoof,
+            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
+            PER_DEPOSIT_LIMIT,
+            WINDOW_LIMIT,
+            WINDOW_DURATION,
+            MAX_SERVICE_FEE,
+            SERVICE_FEE
+        );
+    }
+
+    function testTimelockRotationRejectsEoaAndInterfaceSpoofs() public {
+        vm.startPrank(BASE_ADMIN_TIMELOCK);
+        vm.expectRevert(abi.encodeWithSelector(IBridge.TimelockCandidateHasNoCode.selector, OUTSIDER));
+        bridge.rotateBaseAdminTimelock(OUTSIDER);
+
+        address shortDelay = address(new TimelockCandidateFixture(72 hours - 1, true));
+        vm.expectPartialRevert(IBridge.TimelockCandidateCodeHashMismatch.selector);
+        bridge.rotateBaseAdminTimelock(shortDelay);
+
+        address missingSelfAdmin = address(new TimelockCandidateFixture(72 hours, false));
+        vm.expectPartialRevert(IBridge.TimelockCandidateCodeHashMismatch.selector);
+        bridge.rotateBaseAdminTimelock(missingSelfAdmin);
+        vm.stopPrank();
+        assert(bridge.baseAdminTimelock() == BASE_ADMIN_TIMELOCK);
+    }
+
+    function testTimelockRotationChecksDelayAndSelfAdminAfterCodeHash() public {
+        address valid = address(new TimelockCandidateFixture(72 hours, true));
+        address shortDelay = address(new TimelockCandidateFixture(72 hours - 1, true));
+        address missingSelfAdmin = address(new TimelockCandidateFixture(72 hours, false));
+        Bridge fixtureBridge = new Bridge(
+            "kinic",
+            "KINIC",
+            8,
+            BRIDGE_SIGNER,
+            RUNTIME_ADMINISTRATOR,
+            valid,
+            _timelockCodeHash(valid),
+            PER_DEPOSIT_LIMIT,
+            WINDOW_LIMIT,
+            WINDOW_DURATION,
+            MAX_SERVICE_FEE,
+            SERVICE_FEE
+        );
+
+        vm.startPrank(valid);
+        vm.expectRevert(
+            abi.encodeWithSelector(IBridge.TimelockCandidateDelayTooShort.selector, shortDelay, 72 hours - 1, 72 hours)
+        );
+        fixtureBridge.rotateBaseAdminTimelock(shortDelay);
+        vm.expectRevert(abi.encodeWithSelector(IBridge.TimelockCandidateMissingSelfAdmin.selector, missingSelfAdmin));
+        fixtureBridge.rotateBaseAdminTimelock(missingSelfAdmin);
+        vm.stopPrank();
+        assert(fixtureBridge.baseAdminTimelock() == valid);
+    }
+
     function testAdministrativeAuthoritiesHaveNoSignerAssetAuthority() public {
         _assertSignerFunctionsRejected(RUNTIME_ADMINISTRATOR);
         _assertSignerFunctionsRejected(BASE_ADMIN_TIMELOCK);
@@ -282,10 +404,6 @@ contract BridgeAdministrationTest is TestBase {
         vm.startPrank(caller);
         vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedBridgeSigner.selector, caller));
         bridge.mintDeposit(_request(keccak256(abi.encode(caller, "mint")), USER, 11, SERVICE_FEE));
-        vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedBridgeSigner.selector, caller));
-        bridge.acknowledgeRelease(1, 1, 0, 0, 1);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.UnauthorizedBridgeSigner.selector, caller));
-        bridge.refundWithdrawal(1);
         vm.stopPrank();
     }
 

@@ -1,20 +1,12 @@
 # Bridge verification boundary
 
-## 証明済み
+Withdrawalの検証対象は、Base上の不可逆な`Committed` burnとCanister上の未決済債務である。Base refund、release acknowledgement、Withdrawal用EVM operationはモデルに存在しない。
 
-`bridge-core/src/kernel.rs`のproduction共有式をVerusとCargoでdual-compileする。従来の履歴照合に加え、Settlement Reserve、scheduler優先度、nonce、fee payout、administrator権限、audit sequence、EVM rankを証明する。`verus/manifest.tsv`は各資産安全kernelをpass proofと独立negative fixtureへ対応付ける。
+- Foundryはfee driftのburn前revert、固定quote、atomic burn、削除selector不在、Committed後の再mint不能を検査する。
+- `bridge-core/src/kernel.rs`はCargoとVerusで共有し、固定quote、phase遷移、fee一回計上を検査する。
+- LeanはBase supply減少とCanister債務発生、固定宛先への支払、1:1 backingに加え、frontendのFinalized成功・revert・retry判断をモデル化する。
+- Rust/integrationはcanonical Finalized照合、Ledger成功・Duplicate・BadFee・曖昧結果、純額Fee reserve、追加EVM transaction不在を検査する。
 
-## production adapterでモデル化済み
+Solidity SMTはharnessの性質であり、完全なdeployed contract proofではない。frontend LeanモデルはTypeScript実装そのものの証明ではなく、純粋な判断関数との対応を網羅テストで検査する。browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityは外部仮定である。Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
 
-Deposit、Withdrawal、EVM operation、Reconciliation Holdのrecord APIは共有kernelの判定を呼ぶ。rich recordのfield保存、terminal排他、fee coordinator、stable counter更新はRustの遷移表・有限総当たり・再オープンテストでrefinementを確認する。
-
-## テストのみ
-
-StableBTreeMap、wire CBOR、schema v4再オープン、Candid、timer task、ledger/EVM adapterはRust、PocketIC、smoke testの対象でありVerusの証明対象ではない。
-未デプロイのためlegacy schema migrationは設けない。
-
-## 外部仮定
-
-IC message rollback、stable structures、Serde/CBOR、ICRC ledger履歴完全性、Base finality、EVM RPC canisterの集約結果、threshold ECDSA、外部サービスの可用性を信頼境界とする。
-
-reserveに入力するprovider合意済みETH残高、canister cycles残高、gas上限の真正性と妥当性は外部仮定である。
+本番未デプロイのためschema v16再オープンとwire v15だけを検証し、旧schema migration、compatibility shim、dual-read、fallbackは提供しない。

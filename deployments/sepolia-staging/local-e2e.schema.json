@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "created_at", "source_commit", "bridge_wasm_sha256", "bridge_runtime_hash", "bsns_runtime_hash", "candid_sha256", "bridge_abi_sha256", "bsns_abi_sha256", "ledger_release", "ledger_wasm_sha256", "index_wasm_sha256", "tests"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "bridge_wasm_sha256": { "$ref": "#/$defs/sha256" },
+    "bridge_runtime_hash": { "$ref": "#/$defs/evmHash" },
+    "bsns_runtime_hash": { "$ref": "#/$defs/evmHash" },
+    "candid_sha256": { "$ref": "#/$defs/sha256" },
+    "bridge_abi_sha256": { "$ref": "#/$defs/sha256" },
+    "bsns_abi_sha256": { "$ref": "#/$defs/sha256" },
+    "ledger_release": { "const": "ledger-suite-icrc-2026-03-09" },
+    "ledger_wasm_sha256": { "const": "354dd6ecfdc72b5409805b31dea22c9db11df6e14095a5a68924eb63535e6d8a" },
+    "index_wasm_sha256": { "const": "dab6808d0dfc06e5e88336d0c3d3e45e5448c6e36c2a781f3e9e09bd450f528c" },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_72h", "state_upgrade"],
+      "properties": {
+        "full_local_ci": { "const": "passed" },
+        "real_frontend_e2e": { "const": "passed" },
+        "canister_activation": { "const": "passed" },
+        "timelock_72h": { "const": "passed" },
+        "state_upgrade": { "const": "passed" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "evmHash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" }
+  }
+}

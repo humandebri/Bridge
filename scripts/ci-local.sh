@@ -45,50 +45,126 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+run_step() {
+  local name="$1"
+  shift
+  local stderr_file="$TMP_ROOT/${name//[^a-zA-Z0-9_-]/_}.stderr"
+  echo "==> $name" >&2
+  set +e
+  ( set -e; "$@" ) 2> >(tee "$stderr_file" >&2)
+  local status=$?
+  set -e
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      printf '### `%s` — exit `%d`\n\n' "$name" "$status"
+      if [[ -s "$stderr_file" ]]; then
+        printf '<details><summary>stderr (last 80 lines)</summary>\n\n~~~text\n'
+        tail -n 80 "$stderr_file"
+        printf '~~~\n</details>\n\n'
+      else
+        printf '_No stderr output._\n\n'
+      fi
+    } >>"$GITHUB_STEP_SUMMARY"
+  fi
+  return "$status"
+}
+
 run_versions() {
   "$ROOT/scripts/check_tool_versions.sh"
+  python3 "$ROOT/scripts/check_schema_consistency.py"
+  verify_no_obsolete_withdrawal_terms \
+    "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
+  python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
+  python3 "$ROOT/scripts/test_live_fee_guard.py"
   "$ROOT/scripts/test_ci_guards.sh"
+  "$ROOT/scripts/test_production_release.sh"
+  "$ROOT/scripts/test_production_drivers.sh"
+  "$ROOT/scripts/test_production_handover.sh"
+  python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
+  verify_live_evm_rpc_rehearsal_sources \
+    "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
+}
+
+run_no_automatic_execution_guards() {
+  if rg -n '\b(unbounded_wait|set_timer_interval|heartbeat)\b' \
+    "$ROOT/canister/bridge-canister/src"; then
+    echo "unbounded or recurring canister execution path found" >&2
+    return 1
+  fi
+  if rg -n '\bset_timer\b' \
+    "$ROOT/canister/bridge-canister/src" \
+    --glob '!scheduler.rs'; then
+    echo "one-shot timer found outside the stable settlement executor" >&2
+    return 1
+  fi
+  if rg -n '\b(scheduler_priority|scheduler_code|candidate_precedes)\b' \
+    "$ROOT/canister/bridge-core" "$ROOT/canister/bridge-canister/src" "$ROOT/verification/verus"; then
+    echo "retired scheduler implementation found" >&2
+    return 1
+  fi
+  if rg -n '\b(sessionStorage|localStorage)\b' "$ROOT/ui/src" \
+    --glob '!pending-confirmations.ts' \
+    --glob '!pending-confirmations.test.ts' \
+    --glob '!deposit-intents.ts' \
+    --glob '!deposit-intents.test.ts' \
+    --glob '!settlement-confirmation-coordinator.tsx' \
+    --glob '!settlement-confirmation-coordinator.test.tsx'; then
+    echo "browser storage is used outside the confirmation recovery queue" >&2
+    return 1
+  fi
+  if rg -n '\b(getTransactionReceipt|waitForTransactionReceipt)\b' "$ROOT/ui/src/routes/history.tsx"; then
+    echo "browser-side withdrawal receipt precheck found" >&2
+    return 1
+  fi
 }
 
 run_rust() {
+  run_no_automatic_execution_guards
   cargo fmt --manifest-path "$ROOT/Cargo.toml" --all --check
-  cargo clippy --manifest-path "$ROOT/Cargo.toml" --workspace --all-targets -- -D warnings
-  cargo test --manifest-path "$ROOT/Cargo.toml" --workspace
+  cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" --workspace --all-targets -- -D warnings
+  cargo test --locked --manifest-path "$ROOT/Cargo.toml" --workspace
   cargo build \
+    --locked \
     --manifest-path "$ROOT/Cargo.toml" \
     --target wasm32-unknown-unknown \
     --release \
     -p bridge-canister
+  CARGO_TARGET_DIR="$ROOT/target/test-deployment" cargo build \
+    --locked \
+    --manifest-path "$ROOT/Cargo.toml" \
+    --target wasm32-unknown-unknown \
+    --release \
+    -p bridge-canister \
+    --features test-deployment
   cargo build \
+    --locked \
     --manifest-path "$ROOT/Cargo.toml" \
     --target wasm32-unknown-unknown \
     --release \
     -p mock-external
-  cargo build \
-    --manifest-path "$ROOT/Cargo.toml" \
-    --target wasm32-unknown-unknown \
-    --release \
-    -p pause-watchdog
   if [[ "${CI:-}" == "true" ]]; then
-    npm ci --prefix "$ROOT"
+    pnpm --dir "$ROOT" install --frozen-lockfile
   elif [[ ! -d "$ROOT/node_modules" ]]; then
-    echo "node_modules is missing; run npm ci before checks" >&2
+    echo "node_modules is missing; run pnpm install --frozen-lockfile before checks" >&2
     return 1
   fi
-  npm run --prefix "$ROOT" test:e2e
+  pnpm --dir "$ROOT" run test:e2e
   python3 "$ROOT/scripts/test_prepare_local_network.py"
 }
 
 run_contracts() {
   forge fmt --root "$CONTRACTS" --check
-  forge build --root "$CONTRACTS" --sizes
+  forge build --root "$CONTRACTS" --sizes --ignored-error-codes 3860 --ignored-error-codes 6335
   python3 "$ROOT/scripts/abi_snapshot.py" --check
   forge test --root "$CONTRACTS"
   forge coverage \
     --root "$CONTRACTS" \
+    --ir-minimum \
     --report summary \
+    --no-match-coverage 'BridgeTimelockController\.sol' \
     --ignored-error-codes 6335 \
-    --ignored-error-codes 3860
+    --ignored-error-codes 3860 \
+    --ignored-error-codes 5574
 }
 
 build_smt_failure_fixture() {
@@ -127,8 +203,19 @@ run_verus() {
   local failure_fixture
   local failure_log
   local failure_status
+  local kind
   local kernel_name
+  local proof_name
   local expected_fixture
+  local production_path
+  local verus_version
+
+  verus_version="$(verus --version 2>&1)"
+  if ! output_has_matching_line "$verus_version" "$VERUS_VERSION_PATTERN"; then
+    echo "verus version mismatch for proofs" >&2
+    echo "$verus_version" >&2
+    return 1
+  fi
 
   if rg -n '\b(assume|admit|external_body)\b' \
     "$ROOT/canister/bridge-core/src/kernel.rs" \
@@ -140,12 +227,44 @@ run_verus() {
 
   verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass"
 
-  while IFS=$'\t' read -r kernel_name expected_fixture; do
+  while IFS=$'\t' read -r kind kernel_name proof_name expected_fixture production_path; do
     [[ -n "$kernel_name" ]] || continue
-    rg -q "pub const fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs"
-    rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/pass.rs"
+    rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs"
+    rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs"
     rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture"
+    case "$kind" in
+      shared)
+        rg -q "pub const fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs"
+        rg -q "\b${kernel_name}\b" "$ROOT/$production_path"
+        ;;
+      model)
+        [[ "$production_path" == "-" ]]
+        ;;
+      *)
+        echo "invalid Verus manifest kind: $kind" >&2
+        return 1
+        ;;
+    esac
   done < "$ROOT/verification/verus/manifest.tsv"
+
+  rg -o 'pub open spec fn [A-Za-z0-9_]+' "$ROOT/canister/bridge-core/src/kernel.rs" \
+    | sed 's/pub open spec fn //' | sort >"$TMP_ROOT/verus-specs"
+  cut -f2 "$ROOT/verification/verus/manifest.tsv" \
+    | sed 's/$/_spec/' | sort >"$TMP_ROOT/verus-manifest-specs"
+  if ! cmp -s "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs"; then
+    echo "Verus manifest does not cover every spec exactly once" >&2
+    diff -u "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs" >&2 || true
+    return 1
+  fi
+
+  cut -f4 "$ROOT/verification/verus/manifest.tsv" | sort >"$TMP_ROOT/verus-manifest-fixtures"
+  rg --files "$ROOT/verification/verus/fail" -g '*.rs' \
+    | sed 's#^.*/##' | sort >"$TMP_ROOT/verus-failure-fixtures"
+  if ! cmp -s "$TMP_ROOT/verus-manifest-fixtures" "$TMP_ROOT/verus-failure-fixtures"; then
+    echo "Verus failure fixtures and manifest are not one-to-one" >&2
+    diff -u "$TMP_ROOT/verus-manifest-fixtures" "$TMP_ROOT/verus-failure-fixtures" >&2 || true
+    return 1
+  fi
 
   while IFS= read -r failure_fixture; do
     failure_log="$TMP_ROOT/verus-$(basename "$failure_fixture" .rs).log"
@@ -167,8 +286,26 @@ run_verus() {
 }
 
 run_proofs() {
+  verify_lean_no_proof_escape "$ROOT/verification/lean"
+  lean "$ROOT/verification/lean/BridgeModel.lean"
   run_smt
   run_verus
+}
+
+run_ui() {
+  if [[ "${CI:-}" == "true" ]]; then
+    pnpm --dir "$ROOT/ui" install --frozen-lockfile
+  elif [[ ! -d "$ROOT/ui/node_modules" ]]; then
+    echo "ui/node_modules is missing; run pnpm --dir ui install --frozen-lockfile before checks" >&2
+    return 1
+  fi
+  pnpm --dir "$ROOT/ui" run codegen:abi:check
+  pnpm --dir "$ROOT/ui" run codegen:candid:check
+  pnpm --dir "$ROOT/ui" run typecheck
+  pnpm --dir "$ROOT/ui" run lint
+  pnpm --dir "$ROOT/ui" run test
+  pnpm --dir "$ROOT/ui" run build
+  pnpm --dir "$ROOT/ui" run e2e
 }
 
 run_icp_build() {
@@ -281,7 +418,6 @@ run_smoke() {
   local minted_in_window
   local processed
   local release_withdrawal
-  local refund_withdrawal
   local next_withdrawal_id
   local timelock_delay
   local proposer_role
@@ -293,21 +429,19 @@ run_smoke() {
   local current_service_fee
   local limit_caller
   local limit_signature
+  local smoke_principal
+  local bridge_init_args
   local readonly bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
   local readonly runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
-  local readonly base_admin_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+  local readonly unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+  local readonly independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
   local readonly recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
   local readonly deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
   local readonly gross_amount="101000000"
   local readonly service_fee="1000000"
   local readonly minted_amount="100000000"
   local readonly release_amount="50000000"
-  local readonly release_min_amount_out="48000000"
-  local readonly release_amount_out="48000000"
-  local readonly release_ledger_fee="1000000"
-  local readonly release_ledger_block_index="42"
-  local readonly refund_amount="20000000"
-  local readonly refund_min_amount_out="19000000"
+  local readonly release_amount_out="49000000"
   local readonly principal_owner="0x010203"
   local readonly default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
   local readonly timelock_delay_seconds="259200"
@@ -315,7 +449,57 @@ run_smoke() {
   local readonly zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
 
   ensure_icp_network "$network_status"
-  icp deploy -e local --project-root-override "$ROOT"
+  smoke_principal="$(icp identity principal --project-root-override "$ROOT")"
+  bridge_init_args="(record {
+    ledger_canister_id = principal \"73mez-iiaaa-aaaaq-aaasq-cai\";
+    index_canister_id = principal \"7vojr-tyaaa-aaaaq-aaatq-cai\";
+    evm_rpc_canister_id = principal \"73mez-iiaaa-aaaaq-aaasq-cai\";
+    custom_evm_rpc_urls = vec {};
+    base_chain_id = 8_453 : nat64;
+    bridge_contract = blob \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\";
+    timelock_contract = blob \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\";
+    ecdsa_key_name = \"dfx_test_key\";
+    ecdsa_derivation_path = vec {};
+    governance_ecdsa_derivation_path = vec { blob \"governance-operator\" };
+    deposit_rate_limit_window_seconds = 60 : nat64;
+    deposit_rate_limit_global = 30 : nat16;
+    deposit_rate_limit_per_principal = 3 : nat16;
+    settlement_rate_limit_window_seconds = 600 : nat64;
+    settlement_rate_limit_global = 60 : nat16;
+    settlement_rate_limit_per_principal = 6 : nat16;
+    settlement_rate_limit_per_record = 3 : nat16;
+    transaction_gas_limit = 500_000 : nat;
+    max_fee_per_gas = 10 : nat;
+    max_priority_fee_per_gas = 1 : nat;
+    evm_liveness = record {
+      check_interval_seconds = 60 : nat64;
+      rebroadcast_after_seconds = 300 : nat64;
+      replacement_after_seconds = 1_800 : nat64;
+      max_replacements = 3 : nat8;
+      fee_bump_bps = 1_250 : nat16;
+      fee_ceiling_multiplier_bps = 40_000 : nat32;
+    };
+    eth_floor_wei = 1 : nat;
+    cycles_floor = 1 : nat;
+    settlement_cycle_ceiling = 1 : nat;
+    governance_principal = principal \"$smoke_principal\";
+    pause_principal = principal \"7jkta-eyaaa-aaaaq-aaarq-cai\";
+    fee_recipient = record {
+      owner = principal \"$smoke_principal\";
+      subaccount = blob \"\";
+    };
+  })"
+  # The local smoke must install the explicitly built test-deployment artifact. Using
+  # `icp deploy` here would rebuild the production package from the recipe and its
+  # fail-closed mainnet configuration guard would (correctly) reject these local IDs.
+  icp canister create bridge-canister \
+    -e local \
+    --project-root-override "$ROOT"
+  icp canister install bridge-canister \
+    -e local \
+    --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --args "$bridge_init_args" \
+    --project-root-override "$ROOT"
   icp canister status bridge-canister -e local --json \
     --project-root-override "$ROOT" >"$canister_status"
   if ! rg -qi '"status"[[:space:]]*:[[:space:]]*"running"' "$canister_status"; then
@@ -325,15 +509,18 @@ run_smoke() {
   fi
   bridge_status="$(
     icp canister call bridge-canister get_bridge_status '()' \
-      -e local --query --json --project-root-override "$ROOT"
+      -e local --query --json \
+      --candid "$ROOT/canister/bridge-canister/bridge.did" \
+      --project-root-override "$ROOT"
   )"
+  expected_schema_version="$(python3 "$ROOT/scripts/check_schema_consistency.py" --print-version)"
   python3 -c '
 import json, re, sys
 
 response = json.load(sys.stdin)
 candid = response.get("response_candid") or ""
 expected = {
-    "schema_version": ("4", "nat16"),
+    "schema_version": (sys.argv[1], "nat16"),
     "deposits": ("0", "nat64"),
     "withdrawals": ("0", "nat64"),
     "pending_evm_operations": ("0", "nat64"),
@@ -343,7 +530,37 @@ for field, (value, candid_type) in expected.items():
     pattern = rf"\b{field}\s*=\s*{value}\s*:\s*{candid_type}\b"
     if len(re.findall(pattern, candid)) != 1:
         raise SystemExit(f"unexpected get_bridge_status response: {response!r}")
-' <<<"$bridge_status"
+' "$expected_schema_version" <<<"$bridge_status"
+
+  icp canister install bridge-canister \
+    -e local \
+    --mode upgrade \
+    --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --project-root-override "$ROOT"
+  bridge_status_after_upgrade="$(
+    icp canister call bridge-canister get_bridge_status '()' \
+      -e local --query --json \
+      --candid "$ROOT/canister/bridge-canister/bridge.did" \
+      --project-root-override "$ROOT"
+  )"
+  python3 -c '
+import json, re, sys
+
+before = json.loads(sys.argv[1]).get("response_candid") or ""
+after = json.loads(sys.argv[2]).get("response_candid") or ""
+stable_fields = {
+    "schema_version": (sys.argv[3], "nat16"),
+    "deposits": ("0", "nat64"),
+    "withdrawals": ("0", "nat64"),
+    "pending_evm_operations": ("0", "nat64"),
+    "reconciliation_holds": ("0", "nat64"),
+    "deposits_paused": ("true", "bool"),
+}
+for field, (value, candid_type) in stable_fields.items():
+    pattern = rf"\b{field}\s*=\s*{value}(?:\s*:\s*{candid_type})?\b"
+    if len(re.findall(pattern, before)) != 1 or len(re.findall(pattern, after)) != 1:
+        raise SystemExit(f"same-Wasm upgrade did not preserve empty state field {field}")
+' "$bridge_status" "$bridge_status_after_upgrade" "$expected_schema_version"
 
   if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
     echo "port 8545 is already serving an EVM node; refusing to reuse it" >&2
@@ -358,11 +575,11 @@ for field, (value, candid_type) in expected.items():
   fi
 
   base_admin_timelock="$(deploy_contract \
-    "lib/openzeppelin-contracts/contracts/governance/TimelockController.sol:TimelockController" \
+    "src/BridgeTimelockController.sol:BridgeTimelockController" \
     "$timelock_delay_seconds" \
-    "[$base_admin_wallet]" \
-    "[$base_admin_wallet]" \
-    "$zero_address")"
+    "[$runtime_administrator]" \
+    "[$runtime_administrator]" \
+    "[$runtime_administrator]")"
   read -r timelock_delay _ <<<"$(
     cast call "$base_admin_timelock" "getMinDelay()(uint256)" --rpc-url http://127.0.0.1:8545
   )"
@@ -380,18 +597,33 @@ for field, (value, candid_type) in expected.items():
     cast call "$base_admin_timelock" "DEFAULT_ADMIN_ROLE()(bytes32)" --rpc-url http://127.0.0.1:8545
   )"
   require_equal \
-    "Base Admin wallet proposer role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$base_admin_wallet" \
+    "Governance Operator proposer role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Base Admin wallet canceller role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$base_admin_wallet" \
+    "Governance Operator canceller role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Base Admin wallet executor role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$base_admin_wallet" \
+    "legacy independent wallet has no canceller role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$independent_canceller" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "false"
+  require_equal \
+    "independent canceller has no proposer role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$independent_canceller" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "false"
+  require_equal \
+    "independent canceller has no executor role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$independent_canceller" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "false"
+  require_equal \
+    "Governance Operator executor role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
@@ -405,8 +637,8 @@ for field, (value, candid_type) in expected.items():
       "$base_admin_timelock" --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Base Admin wallet has no direct timelock administration" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" "$base_admin_wallet" \
+    "Governance Operator has no direct timelock administration" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
     "false"
 
@@ -418,12 +650,13 @@ for field, (value, candid_type) in expected.items():
     "$bridge_signer" \
     "$runtime_administrator" \
     "$base_admin_timelock" \
+    "$(cast codehash "$base_admin_timelock" --rpc-url http://127.0.0.1:8545)" \
     "1000000000000" \
     "10000000000000" \
     "3600" \
     "100000000" \
     "$service_fee")"
-  for limit_caller in "$bridge_signer" "$runtime_administrator" "$base_admin_wallet"; do
+  for limit_caller in "$bridge_signer" "$runtime_administrator" "$unauthorized_wallet"; do
     for limit_signature in \
       "setMintLimits(uint256,uint256,uint64)" \
       "reduceMintLimits(uint256,uint256,uint64)"; do
@@ -460,6 +693,24 @@ for field, (value, candid_type) in expected.items():
   require_equal "bSNS EIP-712 version" "$token_version" '"1"'
   require_equal "bSNS decimals" "$token_decimals" "8"
 
+  require_equal \
+    "Initial Deposit mint pause" \
+    "$(cast call "$bridge_address" "depositMintsPaused()(bool)" --rpc-url http://127.0.0.1:8545)" \
+    "true"
+  require_equal \
+    "Initial Withdrawal pause" \
+    "$(cast call "$bridge_address" "withdrawalsPaused()(bool)" --rpc-url http://127.0.0.1:8545)" \
+    "true"
+  # Local smoke activation uses Anvil impersonation only to reach the asset-flow checks without
+  # waiting 72 hours. The same run separately verifies that the real admin wallet needs Timelock.
+  cast rpc anvil_impersonateAccount "$base_admin_timelock" --rpc-url http://127.0.0.1:8545 >/dev/null
+  cast rpc anvil_setBalance "$base_admin_timelock" 0x56BC75E2D63100000 --rpc-url http://127.0.0.1:8545 >/dev/null
+  cast send "$bridge_address" "unpauseDepositMints()" \
+    --rpc-url http://127.0.0.1:8545 --from "$base_admin_timelock" --unlocked >/dev/null
+  cast send "$bridge_address" "unpauseWithdrawals()" \
+    --rpc-url http://127.0.0.1:8545 --from "$base_admin_timelock" --unlocked >/dev/null
+  cast rpc anvil_stopImpersonatingAccount "$base_admin_timelock" --rpc-url http://127.0.0.1:8545 >/dev/null
+
   cast send \
     "$bridge_address" \
     "mintDeposit((bytes32,address,uint256,uint256,uint256))" \
@@ -478,10 +729,18 @@ for field, (value, candid_type) in expected.items():
   require_equal "smoke Deposit processed state" "$processed" "true"
 
   cast send \
+    "$bsns_address" \
+    "approve(address,uint256)" \
+    "$bridge_address" \
+    "$release_amount" \
+    --rpc-url http://127.0.0.1:8545 \
+    --from "$recipient" \
+    --unlocked >/dev/null
+  cast send \
     "$bridge_address" \
     "createWithdrawal(uint256,uint256,bytes,bytes32)" \
     "$release_amount" \
-    "$release_min_amount_out" \
+    "$service_fee" \
     "$principal_owner" \
     "$default_subaccount" \
     --rpc-url http://127.0.0.1:8545 \
@@ -490,89 +749,22 @@ for field, (value, candid_type) in expected.items():
   release_withdrawal="$(
     cast call \
       "$bridge_address" \
-      "getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))" \
+      "getWithdrawal(uint256)((address,uint256,uint256,uint256,uint256,bytes,bytes32,uint8))" \
       1 \
       --rpc-url http://127.0.0.1:8545 \
       --json
   )"
   require_equal \
-    "Pending requester" \
+    "Committed requester" \
     "$(printf '%s' "$(json_tuple_field "$release_withdrawal" 0)" | tr '[:upper:]' '[:lower:]')" \
     "$(printf '%s' "$recipient" | tr '[:upper:]' '[:lower:]')"
-  require_equal "Pending amount" "$(json_tuple_field "$release_withdrawal" 1)" "$release_amount"
-  require_equal "Pending min amount" "$(json_tuple_field "$release_withdrawal" 2)" "$release_min_amount_out"
-  require_equal "Pending owner" "$(json_tuple_field "$release_withdrawal" 3)" "$principal_owner"
-  require_equal "Pending subaccount" "$(json_tuple_field "$release_withdrawal" 4)" "$default_subaccount"
-  require_equal "Pending status" "$(json_tuple_field "$release_withdrawal" 5)" "1"
-
-  cast send \
-    "$bridge_address" \
-    "acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)" \
-    1 \
-    "$release_amount_out" \
-    "$service_fee" \
-    "$release_ledger_fee" \
-    "$release_ledger_block_index" \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$bridge_signer" \
-    --unlocked >/dev/null
-  # Exact replay must succeed without changing the record.
-  cast send \
-    "$bridge_address" \
-    "acknowledgeRelease(uint256,uint256,uint256,uint256,uint256)" \
-    1 \
-    "$release_amount_out" \
-    "$service_fee" \
-    "$release_ledger_fee" \
-    "$release_ledger_block_index" \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$bridge_signer" \
-    --unlocked >/dev/null
-  release_withdrawal="$(
-    cast call \
-      "$bridge_address" \
-      "getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))" \
-      1 \
-      --rpc-url http://127.0.0.1:8545 \
-      --json
-  )"
-  require_equal "Released status" "$(json_tuple_field "$release_withdrawal" 5)" "2"
-  require_equal "Released amount out" "$(json_tuple_field "$release_withdrawal" 6)" "$release_amount_out"
-  require_equal "Released service fee" "$(json_tuple_field "$release_withdrawal" 7)" "$service_fee"
-  require_equal "Released ledger fee" "$(json_tuple_field "$release_withdrawal" 8)" "$release_ledger_fee"
-  require_equal \
-    "Released ledger block index" \
-    "$(json_tuple_field "$release_withdrawal" 9)" \
-    "$release_ledger_block_index"
-
-  cast send \
-    "$bridge_address" \
-    "createWithdrawal(uint256,uint256,bytes,bytes32)" \
-    "$refund_amount" \
-    "$refund_min_amount_out" \
-    "$principal_owner" \
-    "$default_subaccount" \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$recipient" \
-    --unlocked >/dev/null
-  cast send \
-    "$bridge_address" \
-    "refundWithdrawal(uint256)" \
-    2 \
-    --rpc-url http://127.0.0.1:8545 \
-    --from "$bridge_signer" \
-    --unlocked >/dev/null
-  refund_withdrawal="$(
-    cast call \
-      "$bridge_address" \
-      "getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))" \
-      2 \
-      --rpc-url http://127.0.0.1:8545 \
-      --json
-  )"
-  require_equal "Refunded status" "$(json_tuple_field "$refund_withdrawal" 5)" "3"
-  require_equal "Refunded service fee" "$(json_tuple_field "$refund_withdrawal" 7)" "0"
-  require_equal "Refunded ledger fee" "$(json_tuple_field "$refund_withdrawal" 8)" "0"
+  require_equal "Committed amount" "$(json_tuple_field "$release_withdrawal" 1)" "$release_amount"
+  require_equal "Committed max Service Fee" "$(json_tuple_field "$release_withdrawal" 2)" "$service_fee"
+  require_equal "Committed charged Service Fee" "$(json_tuple_field "$release_withdrawal" 3)" "$service_fee"
+  require_equal "Committed amount out" "$(json_tuple_field "$release_withdrawal" 4)" "$release_amount_out"
+  require_equal "Committed owner" "$(json_tuple_field "$release_withdrawal" 5)" "$principal_owner"
+  require_equal "Committed subaccount" "$(json_tuple_field "$release_withdrawal" 6)" "$default_subaccount"
+  require_equal "Committed status" "$(json_tuple_field "$release_withdrawal" 7)" "1"
 
   read -r recipient_balance _ <<<"$(
     cast call "$bsns_address" "balanceOf(address)(uint256)" "$recipient" --rpc-url http://127.0.0.1:8545
@@ -588,8 +780,8 @@ for field, (value, candid_type) in expected.items():
   )"
   require_equal "post-settlement recipient balance" "$recipient_balance" "50000000"
   require_equal "post-settlement token supply" "$token_total_supply" "50000000"
-  require_equal "refund mint window consumption" "$minted_in_window" "$minted_amount"
-  require_equal "next Withdrawal ID" "$next_withdrawal_id" "3"
+  require_equal "Withdrawal does not consume mint window" "$minted_in_window" "$minted_amount"
+  require_equal "next Withdrawal ID" "$next_withdrawal_id" "2"
 
   cast send \
     "$bridge_address" \
@@ -627,7 +819,7 @@ for field, (value, candid_type) in expected.items():
     "$bridge_address" \
     "unpauseDepositMints()" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_wallet" >/dev/null 2>&1; then
+    --from "$unauthorized_wallet" >/dev/null 2>&1; then
     echo "Base Admin wallet bypassed the timelock" >&2
     return 1
   fi
@@ -643,7 +835,7 @@ for field, (value, candid_type) in expected.items():
     "$management_salt" \
     "$timelock_delay_seconds" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_wallet" \
+    --from "$runtime_administrator" \
     --unlocked >/dev/null
   if cast send \
     "$base_admin_timelock" \
@@ -654,7 +846,7 @@ for field, (value, candid_type) in expected.items():
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_wallet" \
+    --from "$runtime_administrator" \
     --unlocked >/dev/null 2>&1; then
     echo "Base Admin operation executed before the 72-hour delay" >&2
     return 1
@@ -670,7 +862,7 @@ for field, (value, candid_type) in expected.items():
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$base_admin_wallet" \
+    --from "$runtime_administrator" \
     --unlocked >/dev/null
   require_equal \
     "Timelocked Deposit mint unpause" \
@@ -688,37 +880,61 @@ run_checks() {
   run_rust
   run_contracts
   run_proofs
+  run_ui
   run_icp_build
+}
+
+run_real() {
+  pnpm --dir "$ROOT/ui" e2e:real
 }
 
 case "$MODE" in
   all)
-    run_checks
-    run_smoke
+    run_step versions run_versions
+    run_step rust run_rust
+    run_step contracts run_contracts
+    run_step proofs run_proofs
+    run_step ui run_ui
+    run_step icp run_icp_build
+    run_step real run_real
+    run_step smoke run_smoke
     ;;
   checks)
-    run_checks
+    run_step versions run_versions
+    run_step rust run_rust
+    run_step contracts run_contracts
+    run_step proofs run_proofs
+    run_step ui run_ui
+    run_step icp run_icp_build
     ;;
   versions)
-    run_versions
+    run_step versions run_versions
     ;;
   rust)
-    run_rust
+    run_step rust run_rust
     ;;
   contracts)
-    run_contracts
+    run_step contracts run_contracts
     ;;
   proofs)
-    run_proofs
+    run_step versions run_versions
+    run_step proofs run_proofs
+    ;;
+  ui)
+    run_step versions run_versions
+    run_step ui run_ui
     ;;
   icp)
-    run_icp_build
+    run_step icp run_icp_build
     ;;
   smoke)
-    run_smoke
+    run_step smoke run_smoke
+    ;;
+  real)
+    run_step real run_real
     ;;
   *)
-    echo "usage: $0 {all|checks|versions|rust|contracts|proofs|icp|smoke}" >&2
+    echo "usage: $0 {all|checks|versions|rust|contracts|proofs|ui|icp|smoke|real}" >&2
     exit 2
     ;;
 esac

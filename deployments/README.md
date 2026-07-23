@@ -5,20 +5,76 @@
 ```sh
 cargo run -p bridge-profile -- derive measurements.json
 cargo run -p bridge-profile -- validate profile.json
+cargo run -p bridge-profile -- validate-test rehearsal-profile.json
+cargo run -p bridge-profile -- validate-bundle --offline evidence/release-id
+cargo run -p bridge-profile -- verify-live evidence/release-id
 ```
 
-`derive`はgasとcyclesを各operation 100件、Base feeの30日sampleが揃わなければ失敗する。Mint limitとwindow長はderiveせず、profileへraw unitで明示する。`validate`はmainnetのcanonical KINIC IDs、Sepoliaのtest-only ledger、単一Base Admin wallet、72時間Timelock、固定limit、role分離、3 RPC、fee/reserve関係を検査し、canonical profile SHA-256を出力する。
+`derive`はDeposit mint gasとsettlement cyclesを各100件、開始・終了時刻で30日以上のBase fee sample、pause時の基礎日次cycles、承認済み日次settlement上限が揃わなければ失敗する。cycles floorは30日負荷モデルの2倍、settlement ceilingは100回最大値の1.5倍切り上げである。Mint limitとwindow長はderiveせず、profileへraw unitで明示する。通常デプロイ前に使う`validate`は`test_assets_only = true`を必ず拒否する。Sepolia rehearsalだけが明示的な`validate-test`を使える。
 
-credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileへ記録しない。実profileはceremonyで公開値が揃ってから追加し、`status: "validated"`へ変更する前後のhashをレビューする。
+本番配置と資産受付開始は、必ず`production-release.sh`を経由する。`deploy`はGate Aのoffline bundle検証を通した後だけ配置コマンドを実行する。Bridge contractとBridge Canisterはいずれも初期pause状態で配置され、この段階では資産を受け付けない。
+
+```sh
+scripts/production-release.sh deploy --bundle evidence/release-id \
+  --release-inputs deployments/generated/release-id \
+  --receipt evidence/release-id/gate-a-receipt.json -- scripts/production-deploy-driver.sh
+```
+
+配置後は、Canisterをpauseしたままprofile記載のSNS Rootへcontroller handoverし、その結果をlive snapshotで確認する。`activate`はGate Bのlive検証と最終署名をdriver自身でも再検証し、明示的な資産受付確認が指定された場合だけ固定Timelock操作を行う。任意のunpause commandは受け付けない。
+
+```sh
+BRIDGE_ACTIVATION_PHASE=schedule scripts/production-release.sh activate --bundle evidence/release-id \
+  --release-inputs deployments/generated/release-id \
+  --receipt evidence/release-id/gate-a-receipt.json \
+  --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- scripts/production-activate-driver.sh
+```
+
+bundle欠落、test profile、source/profile drift、Gate失敗、署名欠落では後続コマンドを起動しない。Gate Aのdeployコマンドにunpauseまたはresume操作を混在させることも拒否する。
+Gate A profileの`deployment_block`は未配置を示す`0`に固定する。deploy後、wrapperは実receipt blockを入れた`<receipt>.post-deploy-profile.json`を生成し、そのSHA-256をGate A receiptへ固定する。Gate Bはこのpost-deploy profileだけを使う別のlive manifestとし、`parent_gate_a_manifest_sha256`がreceiptのGate A hashと一致し、source/code binding、post-deploy profile hash、実deployment blockが一致しなければならない。さらにGate B profileの`deployment_block`だけを0へ戻したcanonical hashがreceiptのGate A profile hashと一致する必要があり、他fieldの変更は拒否される。Gate B bundleの署名前に固定`production-live-preflight.sh capture BUNDLE OUTPUT`でfresh snapshotを生成する。activation直前の`verify`は同じheight/hashとlive stateを再照合し、署名済みbundle自体は変更しない。
+外部`--receipt`はGate B bundle内の`gate-a-receipt.json`とbyte単位で一致しなければならない。
+
+初回contract deployだけ一時EOAを使用し、deployerへroleを残さない。以後のBase管理操作はBridge Canisterが導出するGovernance Operatorだけから送信する。production IC操作は`BRIDGE_ICP_IDENTITY`とICP CLIへ統一し、`dfx`を使用しない。Timelock activationはSNS proposalからCanisterの固定schedule/execute APIを呼ぶ二段階とし、各段階でlive preflightを再実行する。失敗または曖昧結果ではIC/Base pauseを維持し、同じsigned transactionを追跡する。
+
+production CanisterはGate A確定前にpause状態でinstallし、固有のMint SignerとGovernance Operatorをprofileへ固定する。Gate A deploy driverは外部指定のconstructor JSONを使用せず、固定sourceからbuildした`bridge-profile`でbundle内profileを一時directoryへ再生成し、稼働中Canisterの2 addressとpause状態を照合してからcontract deploymentへ渡す。Canisterの再installやdeployment binding APIは実行しない。
+
+profileはCanisterから導出してBaseのFinalized snapshotと照合するMint SignerとGovernance Operator、公式EVM RPC Canister ID、単一emergency pause principal、Wasm/bytecode hash、72時間Timelock、固定limit、fee/reserve関係を含む。`timelock.runtime_code_hash`は`0x`付き32-byte Keccak runtime code hashであり、生成されたBridge constructor引数、配置直後の実code hash、Gate B Finalized snapshotの三者が一致しなければならない。配置後にGate A receiptがBridge/Timelockのcanonical deployment transaction・blockを記録し、Gate B snapshotが3 providerで再照合する。3件のproduction Base RPC providerはcredentialなしのHTTPS URLであり、URL文字列が互いに異ならなければならない。監視欄は通知routingのSHA-256と、検知5分、担当確認15分、Base/IC双方pause 60分のSLOを正確に記録する。
+
+Gate Aはpre-deploy `profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4 artifactを束縛する。Gate Bはこれらへ`signer-snapshot.json`、`rpc-e2e.json`、`gate-a-receipt.json`、`controller-handover.json`、`sns-upgrade.json`、`x402-e2e.json`を加えた正確に10 artifactである。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、Canister公開設定、Finalized Base stateの三者一致で検証する。
+
+`validate-bundle --offline`はartifact、profile、5/15/60監視演習を検査する。`verify-live`はoffline検査を内包し、production bundle、取得済みsnapshotのchain/canonical quorum/signer/code/Timelock/controller/reserve、およびmockを使わないEVM RPC rehearsal証跡を検査する。CLI自体はnetwork requestを行わない。snapshot取得、current source revision/treeとの比較、Gate A receiptとのbindingはproduction wrapperが行う。
+
+credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
+
+## IC mainnet × Base Sepolia test staging
+
+Plan 007のstagingは`sepolia-staging`環境と`bridge-sepolia`、`ledger-sepolia`、`index-sepolia`、`frontend-sepolia`だけを使用する。production mapping、KINIC Ledger、production Bridge、Base Mainnet、SNSには触れない。
+
+外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh`をclean commitで実行し、`deployments/sepolia-staging/evidence/local-e2e.json`を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、asset公開はそれぞれ別の明示承認後に行う。
+
+staging IDは`.icp/data/mappings/sepolia-staging.ids.json`だけへ保存し、frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildしない。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
+
+## ICP mainnet Bridge deploy先
+
+暫定deploy先は`rlhjx-iyaaa-aaaaf-qcnyq-cai`とする。2026年7月14日のpreflightではWasm未インストール（`module_hash = null`）で、controllerは`production` identityだった。
+
+deploy前に対象IDとcontrollerを再確認し、必要なcyclesを補充する。初期検証が完了するまで本番資産を受け付けず、本番資産の受付前にSNS Rootを唯一のcontrollerとしてhandoverする。
 
 ## Base Sepolia contract-only experiment
 
 [`scripts/base-sepolia-experiment/`](../scripts/base-sepolia-experiment/)は、固定limit版Bridgeと72時間Timelockの実transaction検証を段階実行する。
 再開手順と秘密情報の扱いは[`docs/runbooks/base-sepolia-rehearsal.md`](../docs/runbooks/base-sepolia-rehearsal.md)に記録する。
 
-作業中の公開manifestは[`base-sepolia-contract-experiment.json`](base-sepolia-contract-experiment.json)であり、スクリプトがstate、transaction、finalityを更新する。
+作業中の公開manifestは[`base-sepolia-contract-experiment.json`](base-sepolia-contract-experiment.json)であり、スクリプトがstate、transaction、confirmationを更新する。
 各回の公開スナップショットは`deployments/base-sepolia/YYYY-MM-DD/manifest.json`へ保存し、未実行項目を推測値で埋めない。
 2026年7月13日の記録は[`base-sepolia/2026-07-13/manifest.json`](base-sepolia/2026-07-13/manifest.json)を参照する。
 
 実験用deployerがBase Admin walletとRuntime Administratorを兼任するため、本番role分離の証跡としては使用しない。
 private key、seed、keystore password、credential付きRPC URLは保存しない。
+
+## EVM RPC Canister経由の実演習
+
+[`scripts/evm-rpc-rehearsal/`](../scripts/evm-rpc-rehearsal/)は、IC上のtest Bridgeから公式EVM RPC Canisterを経由するBase Sepolia実演習の証跡をfail closedで記録する。
+通常CIは外部transactionを送信せず、recorderとlive-only guardだけを検査する。
+実行条件、scenario、秘密情報の扱いは[`docs/runbooks/evm-rpc-canister-rehearsal.md`](../docs/runbooks/evm-rpc-canister-rehearsal.md)を参照する。
+
+公式Canisterとprovider quorumがcanonical Finalized chainを返すことは外部仮定として証跡に残す。

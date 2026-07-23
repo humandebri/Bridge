@@ -60,6 +60,13 @@ pub struct EvmTransactionEnvelope {
     pub max_fee_per_gas: u128,
     pub max_priority_fee_per_gas: u128,
     pub signed_transaction: Option<Vec<u8>>,
+    pub initial_max_fee_per_gas: u128,
+    pub initial_max_priority_fee_per_gas: u128,
+    pub replacement_generation: u8,
+    pub prior_signed_transactions: Vec<Vec<u8>>,
+    pub first_broadcast_at_ns: u64,
+    pub last_broadcast_at_ns: u64,
+    pub rebroadcast_count: u8,
 }
 
 #[cfg_attr(
@@ -78,30 +85,6 @@ pub struct EvmCallIntent {
     pub max_priority_fee_per_gas: u128,
 }
 
-#[cfg_attr(
-    feature = "storage-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SafeReceiptOutcome {
-    Succeeded,
-    Reverted,
-}
-
-#[cfg_attr(
-    feature = "storage-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EvmSafeObservation {
-    pub operation_id: EvmOperationId,
-    pub transaction_hash: [u8; 32],
-    pub receipt_block_number: u64,
-    pub safe_block_number: u64,
-    pub observed_at_ns: u64,
-    pub outcome: SafeReceiptOutcome,
-}
-
 impl EvmCallIntent {
     pub fn assign_nonce(self, nonce: u64) -> EvmTransactionEnvelope {
         EvmTransactionEnvelope {
@@ -115,6 +98,13 @@ impl EvmCallIntent {
             max_fee_per_gas: self.max_fee_per_gas,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             signed_transaction: None,
+            initial_max_fee_per_gas: self.max_fee_per_gas,
+            initial_max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            replacement_generation: 0,
+            prior_signed_transactions: Vec::new(),
+            first_broadcast_at_ns: 0,
+            last_broadcast_at_ns: 0,
+            rebroadcast_count: 0,
         }
     }
 }
@@ -139,31 +129,234 @@ impl EvmTransactionEnvelope {
     feature = "storage-serde",
     derive(serde::Serialize, serde::Deserialize)
 )]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FinalizedObservationRecord {
+    pub chain_id: u64,
+    pub block_number: u64,
+    pub block_hash: [u8; 32],
+    pub observed_at_ns: u64,
+    pub bridge_signer: [u8; 20],
+    pub runtime_sha256: [u8; 32],
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExternalProgress {
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub nonce_initialized: bool,
     pub next_evm_nonce: u64,
-    pub withdrawal_log_cursor: u64,
     pub last_finalized_base_block: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
-    pub last_safe_base_block: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub last_finalized_mint_block: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub last_eth_balance_wei: u128,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub reserve_sufficient: bool,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
+    pub reserve_observation_generation: u64,
     pub last_reserve_observation_ns: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
     pub last_finalized_observation_ns: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
-    pub last_safe_observation_ns: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
-    pub safe_observation_cursor: u64,
-    #[cfg_attr(feature = "storage-serde", serde(default))]
-    pub last_observed_service_fee: Option<u128>,
+    pub finalized_observation: Option<FinalizedObservationRecord>,
+}
+
+impl ExternalProgress {
+    pub fn observe_finalized(
+        &mut self,
+        candidate: FinalizedObservationRecord,
+    ) -> Result<(), CoreError> {
+        if candidate.block_number < self.last_finalized_base_block {
+            return Err(CoreError::StaleFinalizedObservation);
+        }
+        if let Some(current) = self.finalized_observation {
+            if candidate.chain_id != current.chain_id {
+                return Err(CoreError::ConflictingFinalizedObservation);
+            }
+            if candidate.block_number < current.block_number {
+                return Err(CoreError::StaleFinalizedObservation);
+            }
+            if candidate.block_number == current.block_number
+                && (candidate.block_hash != current.block_hash
+                    || candidate.bridge_signer != current.bridge_signer
+                    || candidate.runtime_sha256 != current.runtime_sha256)
+            {
+                return Err(CoreError::ConflictingFinalizedObservation);
+            }
+        }
+
+        let observed_at_ns = self
+            .last_finalized_observation_ns
+            .max(candidate.observed_at_ns);
+        self.last_finalized_base_block = candidate.block_number;
+        self.last_finalized_observation_ns = observed_at_ns;
+        self.finalized_observation = Some(FinalizedObservationRecord {
+            observed_at_ns,
+            ..candidate
+        });
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod finalized_observation_tests {
+    use super::*;
+
+    fn observation(block_number: u64) -> FinalizedObservationRecord {
+        FinalizedObservationRecord {
+            chain_id: 8453,
+            block_number,
+            block_hash: [block_number as u8; 32],
+            observed_at_ns: block_number * 10,
+            bridge_signer: [7; 20],
+            runtime_sha256: [8; 32],
+        }
+    }
+
+    #[test]
+    fn finalized_observations_advance_monotonically() {
+        let mut progress = ExternalProgress::default();
+        let first = observation(10);
+        progress
+            .observe_finalized(first)
+            .expect("first observation");
+        assert_eq!(progress.finalized_observation, Some(first));
+
+        let next = observation(11);
+        progress.observe_finalized(next).expect("newer observation");
+        assert_eq!(progress.last_finalized_base_block, 11);
+        assert_eq!(progress.finalized_observation, Some(next));
+    }
+
+    #[test]
+    fn stale_finalized_observations_leave_progress_unchanged() {
+        let current = observation(11);
+        let mut progress = ExternalProgress::default();
+        progress
+            .observe_finalized(current)
+            .expect("current observation");
+        let before = progress;
+
+        assert_eq!(
+            progress.observe_finalized(observation(10)),
+            Err(CoreError::StaleFinalizedObservation)
+        );
+        assert_eq!(progress, before);
+
+        let mut block_only = ExternalProgress {
+            last_finalized_base_block: 12,
+            ..ExternalProgress::default()
+        };
+        let before = block_only;
+        assert_eq!(
+            block_only.observe_finalized(observation(11)),
+            Err(CoreError::StaleFinalizedObservation)
+        );
+        assert_eq!(block_only, before);
+    }
+
+    #[test]
+    fn repeated_finalized_observation_only_advances_time() {
+        let mut progress = ExternalProgress::default();
+        let first = observation(10);
+        progress
+            .observe_finalized(first)
+            .expect("first observation");
+        let repeated = FinalizedObservationRecord {
+            observed_at_ns: first.observed_at_ns + 5,
+            ..first
+        };
+        progress
+            .observe_finalized(repeated)
+            .expect("matching repeated observation");
+        assert_eq!(progress.finalized_observation, Some(repeated));
+
+        progress
+            .observe_finalized(first)
+            .expect("older timestamp for the same observation");
+        assert_eq!(progress.finalized_observation, Some(repeated));
+    }
+
+    #[test]
+    fn conflicting_finalized_identity_leaves_progress_unchanged() {
+        let current = observation(10);
+        for conflicting in [
+            FinalizedObservationRecord {
+                chain_id: current.chain_id + 1,
+                ..current
+            },
+            FinalizedObservationRecord {
+                block_hash: [9; 32],
+                ..current
+            },
+            FinalizedObservationRecord {
+                bridge_signer: [9; 20],
+                ..current
+            },
+            FinalizedObservationRecord {
+                runtime_sha256: [9; 32],
+                ..current
+            },
+        ] {
+            let mut progress = ExternalProgress::default();
+            progress
+                .observe_finalized(current)
+                .expect("current observation");
+            let before = progress;
+            assert_eq!(
+                progress.observe_finalized(conflicting),
+                Err(CoreError::ConflictingFinalizedObservation)
+            );
+            assert_eq!(progress, before);
+        }
+    }
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReconciliationTarget {
+    Hold(HoldId),
+    FeePayout(u64),
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconciliationArchiveRange {
+    pub canister_id: Vec<u8>,
+    pub method: String,
+    pub start: u128,
+    pub length: u128,
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconciliationLedgerPage {
+    pub end: u128,
+    pub archives: Vec<ReconciliationArchiveRange>,
+    pub next_archive: u16,
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReconciliationScanPhase {
+    Ledger {
+        next_block: u128,
+        ledger_tip: Option<u128>,
+        pending_page: Option<Box<ReconciliationLedgerPage>>,
+    },
+    Index {
+        ledger_watermark: u128,
+        index_watermark: Option<u128>,
+        next_start: Option<u128>,
+    },
 }
 
 #[cfg_attr(
@@ -172,23 +365,21 @@ pub struct ExternalProgress {
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconciliationScanProgress {
-    pub hold_id: HoldId,
-    pub next_block: u128,
-    pub ledger_tip: u128,
-    pub index_watermark: u128,
-    pub archives_complete: bool,
-    pub matched_block: Option<u128>,
+    pub target: ReconciliationTarget,
     pub transfer: LedgerTransferIdentity,
+    pub phase: ReconciliationScanPhase,
 }
 
 impl ReconciliationScanProgress {
-    pub fn can_prove_absent(&self) -> bool {
-        crate::scan_complete(
-            self.next_block,
-            self.ledger_tip,
-            self.index_watermark,
-            self.archives_complete,
-            self.matched_block.is_some(),
-        )
+    pub fn new(target: ReconciliationTarget, transfer: LedgerTransferIdentity) -> Self {
+        Self {
+            target,
+            transfer,
+            phase: ReconciliationScanPhase::Ledger {
+                next_block: 0,
+                ledger_tip: None,
+                pending_page: None,
+            },
+        }
     }
 }

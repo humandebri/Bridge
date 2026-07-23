@@ -1,4 +1,7 @@
-use bridge_core::{Amount, LedgerCallOutcome, LedgerFailure, LedgerTransferIdentity};
+use bridge_core::{
+    Amount, LedgerCallOutcome, LedgerFailure, LedgerTransferIdentity, ReconciliationArchiveRange,
+    ReconciliationLedgerPage, ReconciliationScanPhase, ReconciliationScanProgress,
+};
 use candid::{CandidType, Deserialize, Nat, Principal};
 use ic_cdk::call::Call;
 use icrc_ledger_types::{
@@ -14,11 +17,22 @@ use icrc_ledger_types::{
 };
 use serde::Serialize;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HistoryResolution {
-    Succeeded { block_index: u128 },
-    Absent { watermark: u128 },
-    Incomplete,
+const LEDGER_CALL_TIMEOUT_SECONDS: u32 = 15;
+
+fn ledger_call(canister: Principal, method: &'static str) -> Call<'static, 'static> {
+    Call::bounded_wait(canister, method).change_timeout(LEDGER_CALL_TIMEOUT_SECONDS)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReconciliationOutcome {
+    Progress(Box<ReconciliationScanProgress>),
+    Succeeded {
+        block_index: u128,
+    },
+    Absent {
+        ledger_watermark: u128,
+        index_watermark: u128,
+    },
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Debug)]
@@ -60,7 +74,7 @@ fn amount(value: &Nat) -> Option<Amount> {
 }
 
 pub async fn ledger_fee(ledger: Principal) -> Result<Amount, ()> {
-    let response = Call::unbounded_wait(ledger, "icrc1_fee")
+    let response = ledger_call(ledger, "icrc1_fee")
         .with_arg(())
         .await
         .map_err(|_| ())?;
@@ -90,7 +104,7 @@ pub async fn pull(ledger: Principal, identity: &LedgerTransferIdentity) -> Ledge
         memo: Some(Memo::from(identity.memo.to_vec())),
         created_at_time: Some(identity.created_at_time_ns),
     };
-    let response = match Call::unbounded_wait(ledger, "icrc2_transfer_from")
+    let response = match ledger_call(ledger, "icrc2_transfer_from")
         .with_arg(&args)
         .await
     {
@@ -116,10 +130,7 @@ pub async fn release(ledger: Principal, identity: &LedgerTransferIdentity) -> Le
         memo: Some(Memo::from(identity.memo.to_vec())),
         created_at_time: Some(identity.created_at_time_ns),
     };
-    let response = match Call::unbounded_wait(ledger, "icrc1_transfer")
-        .with_arg(&args)
-        .await
-    {
+    let response = match ledger_call(ledger, "icrc1_transfer").with_arg(&args).await {
         Ok(response) => response,
         Err(_) => return LedgerCallOutcome::Ambiguous,
     };
@@ -130,133 +141,283 @@ pub async fn release(ledger: Principal, identity: &LedgerTransferIdentity) -> Le
     classify_transfer(result)
 }
 
-pub async fn reconcile_history(
+pub async fn reconcile_step(
     ledger: Principal,
-    identity: &LedgerTransferIdentity,
-) -> HistoryResolution {
+    index: Principal,
+    mut progress: ReconciliationScanProgress,
+) -> ReconciliationOutcome {
+    const CALL_BUDGET: u8 = 4;
+    match progress.phase.clone() {
+        ReconciliationScanPhase::Ledger {
+            next_block,
+            ledger_tip,
+            pending_page,
+        } => {
+            reconcile_ledger(
+                ledger,
+                index,
+                &mut progress,
+                next_block,
+                ledger_tip,
+                pending_page.map(|page| *page),
+                CALL_BUDGET,
+            )
+            .await
+        }
+        ReconciliationScanPhase::Index {
+            ledger_watermark,
+            index_watermark,
+            next_start,
+        } => {
+            reconcile_index(
+                index,
+                ledger,
+                &mut progress,
+                ledger_watermark,
+                index_watermark,
+                next_start,
+                CALL_BUDGET,
+            )
+            .await
+        }
+    }
+}
+
+async fn reconcile_ledger(
+    ledger: Principal,
+    index: Principal,
+    progress: &mut ReconciliationScanProgress,
+    mut next_block: u128,
+    mut ledger_tip: Option<u128>,
+    mut pending_page: Option<ReconciliationLedgerPage>,
+    mut budget: u8,
+) -> ReconciliationOutcome {
     const PAGE: u128 = 1_000;
-    let mut cursor = 0u128;
     loop {
+        if let Some(mut page) = pending_page.take() {
+            while usize::from(page.next_archive) < page.archives.len() && budget > 0 {
+                let archive = &page.archives[usize::from(page.next_archive)];
+                let Ok(canister_id) = Principal::try_from_slice(&archive.canister_id) else {
+                    return ledger_progress(progress, next_block, ledger_tip, Some(page));
+                };
+                let request = GetBlocksRequest {
+                    start: Nat::from(archive.start),
+                    length: Nat::from(archive.length),
+                };
+                budget -= 1;
+                let range = match Call::bounded_wait(canister_id, &archive.method)
+                    .change_timeout(LEDGER_CALL_TIMEOUT_SECONDS)
+                    .with_arg(&request)
+                    .await
+                    .ok()
+                    .and_then(|response| response.candid::<TransactionRange>().ok())
+                {
+                    Some(range) if range.transactions.len() as u128 == archive.length => range,
+                    _ => return ledger_progress(progress, next_block, ledger_tip, Some(page)),
+                };
+                for (offset, transaction) in range.transactions.iter().enumerate() {
+                    if matches_identity(transaction, &progress.transfer) {
+                        return ReconciliationOutcome::Succeeded {
+                            block_index: archive.start + offset as u128,
+                        };
+                    }
+                }
+                page.next_archive += 1;
+            }
+            if usize::from(page.next_archive) < page.archives.len() {
+                return ledger_progress(progress, next_block, ledger_tip, Some(page));
+            }
+            next_block = page.end;
+        }
+
+        if ledger_tip.is_some_and(|exclusive_tip| {
+            exclusive_tip == 0
+                || bridge_core::scan_complete(
+                    next_block,
+                    exclusive_tip - 1,
+                    exclusive_tip - 1,
+                    true,
+                    false,
+                )
+        }) {
+            let ledger_watermark = ledger_tip.expect("checked ledger tip");
+            progress.phase = ReconciliationScanPhase::Index {
+                ledger_watermark,
+                index_watermark: None,
+                next_start: None,
+            };
+            return reconcile_index(
+                index,
+                ledger,
+                progress,
+                ledger_watermark,
+                None,
+                None,
+                budget,
+            )
+            .await;
+        }
+        if budget == 0 {
+            return ledger_progress(progress, next_block, ledger_tip, None);
+        }
+
         let request = GetBlocksRequest {
-            start: Nat::from(cursor),
+            start: Nat::from(next_block),
             length: Nat::from(PAGE),
         };
-        let response = match Call::unbounded_wait(ledger, "get_transactions")
+        budget -= 1;
+        let response = match ledger_call(ledger, "get_transactions")
             .with_arg(&request)
             .await
             .ok()
             .and_then(|response| response.candid::<GetTransactionsResponse>().ok())
         {
             Some(response) => response,
-            None => return HistoryResolution::Incomplete,
+            None => return ledger_progress(progress, next_block, ledger_tip, None),
         };
         let Some(log_length) = nat_u128(&response.log_length) else {
-            return HistoryResolution::Incomplete;
+            return ledger_progress(progress, next_block, ledger_tip, None);
         };
+        let fixed_tip = *ledger_tip.get_or_insert(log_length);
+        if log_length < fixed_tip {
+            return ledger_progress(progress, next_block, ledger_tip, None);
+        }
+        let requested_end = fixed_tip.min(next_block.saturating_add(PAGE));
         let Some(first_index) = nat_u128(&response.first_index) else {
-            return HistoryResolution::Incomplete;
+            return ledger_progress(progress, next_block, ledger_tip, None);
         };
         for (offset, transaction) in response.transactions.iter().enumerate() {
-            if matches_identity(transaction, identity) {
-                return HistoryResolution::Succeeded {
+            if matches_identity(transaction, &progress.transfer) {
+                return ReconciliationOutcome::Succeeded {
                     block_index: first_index + offset as u128,
                 };
             }
         }
-        let requested_end = log_length.min(cursor.saturating_add(PAGE));
-        let mut covered = response.transactions.len() as u128;
+
+        let mut coverage = Vec::with_capacity(response.archived_transactions.len() + 1);
+        if !response.transactions.is_empty() {
+            let Some(end) = first_index.checked_add(response.transactions.len() as u128) else {
+                return ledger_progress(progress, next_block, ledger_tip, None);
+            };
+            coverage.push((first_index, end));
+        }
+        let mut archives = Vec::with_capacity(response.archived_transactions.len());
         for archived in response.archived_transactions {
             let (Some(start), Some(length)) =
                 (nat_u128(&archived.start), nat_u128(&archived.length))
             else {
-                return HistoryResolution::Incomplete;
+                return ledger_progress(progress, next_block, ledger_tip, None);
             };
-            let request = GetBlocksRequest {
-                start: Nat::from(start),
-                length: Nat::from(length),
+            let Some(end) = start.checked_add(length) else {
+                return ledger_progress(progress, next_block, ledger_tip, None);
             };
-            let range = match Call::unbounded_wait(
-                archived.callback.canister_id,
-                &archived.callback.method,
-            )
-            .with_arg(&request)
-            .await
-            .ok()
-            .and_then(|response| response.candid::<TransactionRange>().ok())
-            {
-                Some(range) if range.transactions.len() as u128 == length => range,
-                _ => return HistoryResolution::Incomplete,
-            };
-            for (offset, transaction) in range.transactions.iter().enumerate() {
-                if matches_identity(transaction, identity) {
-                    return HistoryResolution::Succeeded {
-                        block_index: start + offset as u128,
-                    };
-                }
+            if length == 0 || archived.callback.method.len() > 128 {
+                return ledger_progress(progress, next_block, ledger_tip, None);
             }
-            covered = match covered.checked_add(length) {
-                Some(value) => value,
-                None => return HistoryResolution::Incomplete,
-            };
+            coverage.push((start, end));
+            archives.push(ReconciliationArchiveRange {
+                canister_id: archived.callback.canister_id.as_slice().to_vec(),
+                method: archived.callback.method,
+                start,
+                length,
+            });
         }
-        if covered != requested_end.saturating_sub(cursor) {
-            return HistoryResolution::Incomplete;
+        coverage.sort_unstable();
+        if !exact_coverage(next_block, requested_end, &coverage) {
+            return ledger_progress(progress, next_block, ledger_tip, None);
         }
-        cursor = requested_end;
-        if cursor == log_length {
-            return HistoryResolution::Absent {
-                watermark: log_length,
-            };
-        }
+        archives.sort_unstable_by_key(|archive| archive.start);
+        pending_page = Some(ReconciliationLedgerPage {
+            end: requested_end,
+            archives,
+            next_archive: 0,
+        });
     }
 }
 
-pub async fn reconcile_index(
+fn ledger_progress(
+    progress: &mut ReconciliationScanProgress,
+    next_block: u128,
+    ledger_tip: Option<u128>,
+    pending_page: Option<ReconciliationLedgerPage>,
+) -> ReconciliationOutcome {
+    progress.phase = ReconciliationScanPhase::Ledger {
+        next_block,
+        ledger_tip,
+        pending_page: pending_page.map(Box::new),
+    };
+    ReconciliationOutcome::Progress(Box::new(progress.clone()))
+}
+
+fn exact_coverage(start: u128, end: u128, ranges: &[(u128, u128)]) -> bool {
+    if start == end {
+        return ranges.is_empty();
+    }
+    let mut cursor = start;
+    for &(range_start, range_end) in ranges {
+        if range_start != cursor || range_end <= range_start || range_end > end {
+            return false;
+        }
+        cursor = range_end;
+    }
+    cursor == end
+}
+
+async fn reconcile_index(
     index: Principal,
     expected_ledger: Principal,
-    identity: &LedgerTransferIdentity,
+    progress: &mut ReconciliationScanProgress,
     ledger_watermark: u128,
-) -> HistoryResolution {
-    let ledger_matches = match Call::unbounded_wait(index, "ledger_id")
-        .with_arg(())
-        .await
-        .ok()
-        .and_then(|response| response.candid::<Principal>().ok())
-    {
-        Some(id) => id == expected_ledger,
-        None => false,
-    };
-    if !ledger_matches {
-        return HistoryResolution::Incomplete;
-    }
-    let status = match Call::unbounded_wait(index, "status")
-        .with_arg(())
-        .await
-        .ok()
-        .and_then(|response| response.candid::<IndexStatus>().ok())
-    {
-        Some(status) => status,
-        None => return HistoryResolution::Incomplete,
-    };
-    let Some(index_watermark) = nat_u128(&status.num_blocks_synced) else {
-        return HistoryResolution::Incomplete;
-    };
-    if index_watermark < ledger_watermark {
-        return HistoryResolution::Incomplete;
+    mut index_watermark: Option<u128>,
+    mut next_start: Option<u128>,
+    mut budget: u8,
+) -> ReconciliationOutcome {
+    if index_watermark.is_none() {
+        if budget < 2 {
+            return index_progress(progress, ledger_watermark, None, next_start);
+        }
+        budget -= 1;
+        let ledger_matches = ledger_call(index, "ledger_id")
+            .with_arg(())
+            .await
+            .ok()
+            .and_then(|response| response.candid::<Principal>().ok())
+            .is_some_and(|id| id == expected_ledger);
+        if !ledger_matches {
+            return index_progress(progress, ledger_watermark, None, next_start);
+        }
+
+        budget -= 1;
+        let status = match ledger_call(index, "status")
+            .with_arg(())
+            .await
+            .ok()
+            .and_then(|response| response.candid::<IndexStatus>().ok())
+        {
+            Some(status) => status,
+            None => return index_progress(progress, ledger_watermark, None, next_start),
+        };
+        let Some(observed_watermark) = nat_u128(&status.num_blocks_synced) else {
+            return index_progress(progress, ledger_watermark, None, next_start);
+        };
+        if observed_watermark < ledger_watermark {
+            return index_progress(progress, ledger_watermark, None, next_start);
+        }
+        index_watermark = Some(observed_watermark);
     }
 
     let account = Account {
-        owner: Principal::from_slice(identity.from.owner()),
-        subaccount: Some(identity.from.subaccount()),
+        owner: Principal::from_slice(progress.transfer.from.owner()),
+        subaccount: Some(progress.transfer.from.subaccount()),
     };
-    let mut start = None;
-    loop {
+    while budget > 0 {
         let args = GetAccountTransactionsArgs {
             account,
-            start: start.clone(),
+            start: next_start.map(Nat::from),
             max_results: Nat::from(100u16),
         };
-        let result = match Call::unbounded_wait(index, "get_account_transactions")
+        budget -= 1;
+        let result = match ledger_call(index, "get_account_transactions")
             .with_arg(&args)
             .await
             .ok()
@@ -266,18 +427,20 @@ pub async fn reconcile_index(
                     .ok()
             }) {
             Some(Ok(result)) => result,
-            _ => return HistoryResolution::Incomplete,
+            _ => return index_progress(progress, ledger_watermark, index_watermark, next_start),
         };
         for transaction in &result.transactions {
-            if matches_identity(&transaction.transaction, identity) {
-                return nat_u128(&transaction.id)
-                    .map(|block_index| HistoryResolution::Succeeded { block_index })
-                    .unwrap_or(HistoryResolution::Incomplete);
+            if matches_identity(&transaction.transaction, &progress.transfer) {
+                return match nat_u128(&transaction.id) {
+                    Some(block_index) => ReconciliationOutcome::Succeeded { block_index },
+                    None => index_progress(progress, ledger_watermark, index_watermark, next_start),
+                };
             }
         }
         let Some(last) = result.transactions.last().and_then(|tx| nat_u128(&tx.id)) else {
-            return HistoryResolution::Absent {
-                watermark: index_watermark,
+            return ReconciliationOutcome::Absent {
+                ledger_watermark,
+                index_watermark: index_watermark.expect("verified index watermark"),
             };
         };
         if result
@@ -286,12 +449,31 @@ pub async fn reconcile_index(
             .and_then(nat_u128)
             .is_some_and(|oldest| last <= oldest)
         {
-            return HistoryResolution::Absent {
-                watermark: index_watermark,
+            return ReconciliationOutcome::Absent {
+                ledger_watermark,
+                index_watermark: index_watermark.expect("verified index watermark"),
             };
         }
-        start = Some(Nat::from(last));
+        if next_start == Some(last) {
+            return index_progress(progress, ledger_watermark, index_watermark, next_start);
+        }
+        next_start = Some(last);
     }
+    index_progress(progress, ledger_watermark, index_watermark, next_start)
+}
+
+fn index_progress(
+    progress: &mut ReconciliationScanProgress,
+    ledger_watermark: u128,
+    index_watermark: Option<u128>,
+    next_start: Option<u128>,
+) -> ReconciliationOutcome {
+    progress.phase = ReconciliationScanPhase::Index {
+        ledger_watermark,
+        index_watermark,
+        next_start,
+    };
+    ReconciliationOutcome::Progress(Box::new(progress.clone()))
 }
 
 fn matches_identity(transaction: &Transaction, identity: &LedgerTransferIdentity) -> bool {
@@ -417,6 +599,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_ledger_call_uses_the_fixed_fifteen_second_bound() {
+        assert_eq!(LEDGER_CALL_TIMEOUT_SECONDS, 15);
+    }
+
+    #[test]
     fn duplicate_is_a_confirmed_success_and_every_error_is_classified() {
         assert_eq!(
             classify_transfer_from(Err(TransferFromError::Duplicate {
@@ -440,5 +627,14 @@ mod tests {
             }
         ));
         assert!(LedgerCallOutcome::Ambiguous.requires_hold());
+    }
+
+    #[test]
+    fn ledger_page_coverage_rejects_gaps_overlaps_and_out_of_range_segments() {
+        assert!(exact_coverage(0, 10, &[(0, 4), (4, 10)]));
+        assert!(exact_coverage(5, 5, &[]));
+        assert!(!exact_coverage(0, 10, &[(0, 4), (5, 10)]));
+        assert!(!exact_coverage(0, 10, &[(0, 6), (5, 10)]));
+        assert!(!exact_coverage(0, 10, &[(0, 11)]));
     }
 }

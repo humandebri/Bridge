@@ -47,8 +47,8 @@ contract BSNS is IBSNS, ERC20, EIP712 {
         _mint(recipient, amount);
     }
 
-    function bridgeBurn(address account, uint256 amount) external override onlyBridge {
-        _burn(account, amount);
+    function bridgeBurn(uint256 amount) external override onlyBridge {
+        _burn(msg.sender, amount);
     }
 
     function authorizationState(address authorizer, bytes32 nonce) external view override returns (bool) {
