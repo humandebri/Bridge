@@ -1,10 +1,12 @@
 import { act, render } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { toast } from "sonner"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { basePublicClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { NotifyWithdrawalCallError, SettlementActionCallError, type IcWalletAdapter } from "@/lib/ic/wallet"
 import { PENDING_CONFIRMATIONS_CHANGED, pendingConfirmationsStorageKey, readPendingConfirmations, savePendingConfirmation, type PendingConfirmation } from "@/lib/pending-confirmations"
+import { WITHDRAWAL_HISTORY_CHANGED } from "@/lib/withdrawal-history"
 import { CONFIRMATION_POLL_MS, SettlementConfirmationCoordinator, confirmWhenFinalized, runWithConfirmationLock } from "./settlement-confirmation-coordinator"
 
 vi.mock("sonner", () => ({ toast: { info: vi.fn(), success: vi.fn(), warning: vi.fn() } }))
@@ -166,6 +168,29 @@ describe("confirmWhenFinalized", () => {
 
     expect(await confirmWhenFinalized(entry, wallet)).toEqual({ status: "retry", retryAt: undefined })
     expect(readPendingConfirmations()[0]?.blocked).toBe(false)
+  })
+
+  it("keeps a fee-guarded withdrawal pending without handing it off to History", async () => {
+    finalizedReceipt()
+    const wallet = adapter()
+    const error = new NotifyWithdrawalCallError(
+      "LedgerFeeExceedsServiceFee",
+      "The current ledger fee exceeds the charged service fee. Retry it from History.",
+    )
+    wallet.notifyWithdrawal = vi.fn().mockRejectedValue(error)
+    await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+    const entry = readPendingConfirmations()[0]!
+    const historyChanged = vi.fn()
+    window.addEventListener(WITHDRAWAL_HISTORY_CHANGED, historyChanged)
+
+    try {
+      expect(await confirmWhenFinalized(entry, wallet)).toEqual({ status: "retry" })
+      expect(readPendingConfirmations()).toEqual([entry])
+      expect(historyChanged).not.toHaveBeenCalled()
+      expect(toast.warning).toHaveBeenCalledWith(error.message)
+    } finally {
+      window.removeEventListener(WITHDRAWAL_HISTORY_CHANGED, historyChanged)
+    }
   })
 })
 

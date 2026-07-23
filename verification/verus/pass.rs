@@ -192,6 +192,25 @@ proof fn active_counter_transition_preserves_classification(current: int, old: b
         old && !new ==> kernel::checked_counter_transition_spec(current, old, new) == Some(current - 1)
 {}
 
+proof fn canonical_probe_accepts_exact_block(receipt_block: int, snapshot_block: int)
+    ensures kernel::canonical_probe_matches_spec(receipt_block, snapshot_block)
+        <==> receipt_block == snapshot_block
+{}
+
+proof fn withdrawal_liability_index_matches_nonterminal_phases(state: int)
+    ensures kernel::withdrawal_liability_indexed_spec(state)
+        <==> state == 0 || state == 1 || state == 3
+{}
+
+proof fn evm_operation_index_matches_pending_phases(state: int)
+    ensures kernel::evm_operation_indexed_spec(state)
+        <==> state == 0 || state == 1 || state == 2
+{}
+
+proof fn reconciliation_hold_index_matches_open_phase(state: int)
+    ensures kernel::reconciliation_hold_indexed_spec(state) <==> state == 0
+{}
+
 proof fn mint_admission_counts_consumed_reserved_and_candidate(
     consumed: int, reserved: int, candidate: int,
 )

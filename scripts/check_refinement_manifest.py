@@ -62,8 +62,8 @@ def checked_target(root: Path, runner: str, target: str) -> Path:
 def parse_manifest(
     document: dict[str, object], manifest_text: str, model: str, theorems: str, root: Path
 ) -> list[Consumer]:
-    if document.get("schema_version") != 1:
-        raise ValueError("protocol vector schema must be exactly v1")
+    if document.get("schema_version") != 2:
+        raise ValueError("protocol vector schema must be exactly v2")
     vector_sections = {
         key
         for key, value in document.items()

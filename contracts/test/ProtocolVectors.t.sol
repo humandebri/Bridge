@@ -42,7 +42,7 @@ contract ProtocolVectorsTest is TestBase {
 
     function test_protocol_quote_cases_matches_production() public {
         string memory json = vm.readFile(VECTORS);
-        assert(vm.parseJsonUint(json, ".schema_version") == 1);
+        assert(vm.parseJsonUint(json, ".schema_version") == 2);
         uint256 count = vm.parseJsonUint(json, ".quote_count");
         assert(count > 0);
 

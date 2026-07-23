@@ -138,7 +138,7 @@ asset flowとして次の4件を実行し、各transactionをFinalized headま�
 1. `deposit_mint`: Deposit ID、Ledger block、mint transaction、Finalized block/hash
 2. `withdrawal_release`: user `approve`、user `createWithdrawal`のFinalized block/hash、固定quote、ICRC transfer block、追加Base transactionがないこと
 3. `ledger_fee_guard`: 観測Ledger feeがcharged Service Feeを超えたときtransfer前に停止し、Base Withdrawalをpauseする。cancel、refund、別transfer identityを作らない
-4. `canonical_receipt`: receipt block number/hash、同heightのcanonical hash、Finalized head
+4. `canonical_receipt`: receipt block number/hash、receipt hashへのEIP-1898 `bridgeSnapshot()` probe、Finalized head
 
 failure scenarioとして次の4件をtest-only設定で実行する。
 
@@ -171,7 +171,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 - 全10 scenarioが公式EVM RPC Canister、Base Sepolia、同じrehearsal ID、同じBridge Canisterへbindingされている。
 - rehearsalのsource revision/tree、Bridge Canister Wasm、Bridge runtime bytecodeがrelease bundleと一致する。
 - quorum成功scenarioの`canister_audit`がraw `get_audit_events` artifactから再導出され、preflight module hashがreleaseのBridge Wasmと一致する。
-- signer triple、receipt/canonical block hash、confirmationが一致する。
+- signer triple、receipt hash、EIP-1898 canonical probe、confirmationが一致する。
 - quorum lossはLedger call前に停止する。
 - unknown nonce conflictは自動再署名せずDepositをpauseする。
 - Base BridgeとCanisterは演習終了時もpause状態に戻す。資産受付開始はこの演習とは別の明示承認とする。

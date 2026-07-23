@@ -1,7 +1,7 @@
 import { IDL } from "@dfinity/candid"
 import { describe, expect, it, vi } from "vitest"
 import { idlFactory } from "@/generated/bridge.idl"
-import { decodeDepositReply, decodeNotifyWithdrawalReply, notifyWithdrawalErrorMessage, OisyAdapter } from "./wallet"
+import { decodeDepositReply, decodeNotifyWithdrawalReply, NotifyWithdrawalCallError, notifyWithdrawalErrorMessage, OisyAdapter } from "./wallet"
 
 // didc's runtime JS intentionally has no static return type; the checked-in TS binding is the typed contract.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
@@ -101,6 +101,24 @@ describe("withdrawal notification errors", () => {
     const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Err: { [variant]: null } }]))
 
     expect(() => decodeNotifyWithdrawalReply(reply)).toThrow(variant === "RateLimited" ? "rate limited" : "enough cycles")
+  })
+
+  it("decodes the fee guard as an actionable bridge rejection", () => {
+    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{
+      Err: { LedgerFeeExceedsServiceFee: { charged_service_fee: 10n, ledger_fee: 11n } },
+    }]))
+
+    let thrown: unknown
+    try {
+      decodeNotifyWithdrawalReply(reply)
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(NotifyWithdrawalCallError)
+    expect((thrown as NotifyWithdrawalCallError).code).toBe("LedgerFeeExceedsServiceFee")
+    expect((thrown as Error).message).toContain("ledger fee exceeds")
+    expect((thrown as Error).message).toContain("remains pending")
+    expect((thrown as Error).message).not.toContain("invalid withdrawal notification error")
   })
 
 })

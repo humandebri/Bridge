@@ -1,4 +1,4 @@
-use bridge_core::{committed_quote_matches, outbound_settlement};
+use bridge_core::{canonical_probe_matches, committed_quote_matches, outbound_settlement};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -13,6 +13,10 @@ struct ProtocolVectors {
     finalization_count: usize,
     queue_cases: Vec<QueueCase>,
     queue_count: usize,
+    fee_guard_pending_cases: Vec<serde_json::Value>,
+    fee_guard_pending_count: usize,
+    canonical_probe_cases: Vec<CanonicalProbeCase>,
+    canonical_probe_count: usize,
 }
 
 #[derive(Deserialize)]
@@ -55,20 +59,38 @@ struct QueueCase {
     expected_other_blocked: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalProbeCase {
+    receipt_block: String,
+    snapshot_block: String,
+    accepted: bool,
+}
+
 fn vectors() -> ProtocolVectors {
     let vectors: ProtocolVectors = serde_json::from_str(include_str!(
         "../../../verification/generated/protocol-vectors.json"
     ))
-    .expect("Lean protocol vectors must match schema v1");
-    assert_eq!(vectors.schema_version, 1);
+    .expect("Lean protocol vectors must match schema v2");
+    assert_eq!(vectors.schema_version, 2);
     assert_eq!(vectors.quote_count, vectors.quote_cases.len());
     assert_eq!(vectors.settlement_count, vectors.settlement_cases.len());
     assert_eq!(vectors.finalization_count, vectors.finalization_cases.len());
     assert_eq!(vectors.queue_count, vectors.queue_cases.len());
+    assert_eq!(
+        vectors.fee_guard_pending_count,
+        vectors.fee_guard_pending_cases.len()
+    );
+    assert_eq!(
+        vectors.canonical_probe_count,
+        vectors.canonical_probe_cases.len()
+    );
     assert!(vectors.quote_count > 0);
     assert!(vectors.settlement_count > 0);
     assert!(vectors.finalization_count > 0);
     assert!(vectors.queue_count > 0);
+    assert!(vectors.fee_guard_pending_count > 0);
+    assert!(vectors.canonical_probe_count > 0);
     for case in &vectors.finalization_cases {
         assert!(!case.receipt_block.is_empty());
         assert!(case
@@ -95,6 +117,10 @@ fn vectors() -> ProtocolVectors {
 
 fn amount(value: &str) -> u128 {
     value.parse().expect("vector amount must be canonical u128")
+}
+
+fn block(value: &str) -> u64 {
+    value.parse().expect("vector block must be canonical u64")
 }
 
 #[test]
@@ -132,5 +158,15 @@ fn protocol_settlement_cases_matches_production() {
             )
         });
         assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn protocol_canonical_probe_cases_matches_production() {
+    for case in vectors().canonical_probe_cases {
+        assert_eq!(
+            canonical_probe_matches(block(&case.receipt_block), block(&case.snapshot_block)),
+            case.accepted
+        );
     }
 }

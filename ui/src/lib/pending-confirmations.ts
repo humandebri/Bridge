@@ -63,8 +63,7 @@ export async function restorePendingConfirmation(value: PendingConfirmationInput
 }
 
 export async function removePendingConfirmation(value: PendingConfirmation | PendingConfirmationInput): Promise<void> {
-  const key = pendingConfirmationKey(value)
-  await update((next) => next.filter((item) => pendingConfirmationKey(item) !== key))
+  await update((next) => removePendingConfirmationFromQueue(next, value))
 }
 
 export async function setPendingConfirmationBlocked(
@@ -142,4 +141,12 @@ export function upsertPendingConfirmation(
   if (index === -1) next.push(entry)
   else next[index] = preserveExistingBlocked ? { ...entry, blocked: next[index]!.blocked } : entry
   return next
+}
+
+export function removePendingConfirmationFromQueue(
+  values: PendingConfirmation[],
+  target: PendingConfirmation | PendingConfirmationInput,
+): PendingConfirmation[] {
+  const key = pendingConfirmationKey(target)
+  return values.filter((item) => pendingConfirmationKey(item) !== key)
 }

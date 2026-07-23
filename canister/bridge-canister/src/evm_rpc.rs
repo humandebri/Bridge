@@ -423,7 +423,10 @@ async fn observe_bridge_at(
 ) -> Result<(BridgeSnapshot, ObservedBridgeIdentity), ObservationError> {
     let value = eth_call_at_observation(args, &selector("bridgeSnapshot()"), observation).await?;
     let snapshot = decode_bridge_snapshot(&value)?;
-    if snapshot.mint.finalized_head_block_number != observation.block_number {
+    if !bridge_core::canonical_probe_matches(
+        observation.block_number,
+        snapshot.mint.finalized_head_block_number,
+    ) {
         return Err(ObservationError::InvalidResponse);
     }
     let runtime = bridge_runtime_at_observation(args, observation).await?;

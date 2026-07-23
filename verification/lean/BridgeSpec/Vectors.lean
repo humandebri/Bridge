@@ -67,6 +67,50 @@ def queueCase (existingBlocked : Option Bool) (incomingBlocked otherBlocked : Bo
     quoted "expected_blocked" ++ ":" ++ boolJson expectedBlocked ++ "," ++
     quoted "expected_other_blocked" ++ ":" ++ boolJson preservedOther ++ "}"
 
+def confirmationKindName : ConfirmationKind → String
+  | .deposit => "deposit"
+  | .withdrawal => "withdrawal"
+
+def notificationFailureName : NotificationFailure → String
+  | .ledgerFeeExceedsServiceFee => "ledger-fee-exceeds-service-fee"
+  | .other => "other"
+
+def feeGuardPendingCase
+    (kind : ConfirmationKind) (failure : NotificationFailure) (durableSucceeded : Bool) : String :=
+  let queue : PendingQueue := fun key =>
+    if key = 1 then some { key := 1, owner := 7, blocked := false }
+    else if key = 2 then some { key := 2, owner := 8, blocked := true }
+    else none
+  let result := handleNotificationFailure queue 1 kind failure durableSucceeded
+  let retainPending := match result with
+    | some outcome => (outcome.write.session 1).isSome
+    | none => false
+  let targetPresent := match result with
+    | some outcome => (outcome.write.session 1).isSome
+    | none => (queue 1).isSome
+  let otherPresent := match result with
+    | some outcome => (outcome.write.session 2).isSome
+    | none => (queue 2).isSome
+  let historyRefresh := match result with
+    | some outcome => outcome.historyRefresh
+    | none => false
+  let complete := match result with
+    | some outcome => outcome.complete
+    | none => false
+  "{" ++ quoted "kind" ++ ":" ++ quoted (confirmationKindName kind) ++ "," ++
+    quoted "failure" ++ ":" ++ quoted (notificationFailureName failure) ++ "," ++
+    quoted "durable_succeeded" ++ ":" ++ boolJson durableSucceeded ++ "," ++
+    quoted "retain_pending" ++ ":" ++ boolJson retainPending ++ "," ++
+    quoted "target_present" ++ ":" ++ boolJson targetPresent ++ "," ++
+    quoted "other_present" ++ ":" ++ boolJson otherPresent ++ "," ++
+    quoted "history_refresh" ++ ":" ++ boolJson historyRefresh ++ "," ++
+    quoted "complete" ++ ":" ++ boolJson complete ++ "}"
+
+def canonicalProbeCase (receiptBlock snapshotBlock : Nat) : String :=
+  "{" ++ quoted "receipt_block" ++ ":" ++ quoted (toString receiptBlock) ++ "," ++
+    quoted "snapshot_block" ++ ":" ++ quoted (toString snapshotBlock) ++ "," ++
+    quoted "accepted" ++ ":" ++ boolJson (canonicalProbeMatches receiptBlock snapshotBlock) ++ "}"
+
 def join (values : List String) : String := String.intercalate "," values
 
 def document : String :=
@@ -78,13 +122,25 @@ def document : String :=
     finalizationCase true 10 (some 10), finalizationCase false 10 (some 10)]
   let queues := [queueCase none false true, queueCase (some false) true false,
     queueCase (some true) false true]
-  "{" ++ quoted "schema_version" ++ ":1," ++ quoted "quote_cases" ++ ":[" ++
+  let feeGuardPending := [
+    feeGuardPendingCase .withdrawal .ledgerFeeExceedsServiceFee true,
+    feeGuardPendingCase .withdrawal .ledgerFeeExceedsServiceFee false,
+    feeGuardPendingCase .withdrawal .other true,
+    feeGuardPendingCase .deposit .ledgerFeeExceedsServiceFee true]
+  let canonicalProbes := [
+    canonicalProbeCase 0 0, canonicalProbeCase 42 42, canonicalProbeCase 42 43,
+    canonicalProbeCase 18446744073709551615 18446744073709551615]
+  "{" ++ quoted "schema_version" ++ ":2," ++ quoted "quote_cases" ++ ":[" ++
     join quotes ++ "]," ++ quoted "quote_count" ++ ":" ++ toString quotes.length ++ "," ++
     quoted "settlement_cases" ++ ":[" ++ join settlements ++ "]," ++
     quoted "settlement_count" ++ ":" ++ toString settlements.length ++ "," ++
     quoted "finalization_cases" ++ ":[" ++ join finalizations ++ "]," ++
     quoted "finalization_count" ++ ":" ++ toString finalizations.length ++ "," ++
     quoted "queue_cases" ++ ":[" ++ join queues ++ "]," ++ quoted "queue_count" ++ ":" ++
-    toString queues.length ++ "}\n"
+    toString queues.length ++ "," ++ quoted "fee_guard_pending_cases" ++ ":[" ++
+    join feeGuardPending ++ "]," ++ quoted "fee_guard_pending_count" ++ ":" ++
+    toString feeGuardPending.length ++ "," ++ quoted "canonical_probe_cases" ++ ":[" ++
+    join canonicalProbes ++ "]," ++ quoted "canonical_probe_count" ++ ":" ++
+    toString canonicalProbes.length ++ "}\n"
 
 end BridgeSpec.Vectors

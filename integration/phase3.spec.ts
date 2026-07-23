@@ -624,7 +624,7 @@ describe("Phase 3 PocketIC saga", () => {
 
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) }))
       .toHaveProperty("Ok.Ingested");
-    expect(Array.from(await (evm.actor as any).pinned_eth_call_block_numbers())).toEqual([100n, 100n]);
+    expect(Array.from(await (evm.actor as any).pinned_eth_call_block_numbers())).toEqual([99n, 100n, 100n]);
   });
 
   it.each([

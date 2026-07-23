@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import vectors from "../../../verification/generated/protocol-vectors.json"
-import { decideWithdrawalFinalization } from "./withdrawal-confirmation-state"
+import { decideNotificationFailure, decideWithdrawalFinalization } from "./withdrawal-confirmation-state"
 import { pendingConfirmationKey, upsertPendingConfirmation, type PendingConfirmation } from "./pending-confirmations"
 
 const deployment = {
@@ -21,8 +21,12 @@ function withdrawal(byte: string, blocked: boolean, owner: string): PendingConfi
 
 describe("Lean protocol conformance vectors", () => {
   it("accepts exactly the current nonempty vector schema", () => {
-    expect(vectors.schema_version).toBe(1)
+    expect(vectors.schema_version).toBe(2)
     expect(Object.keys(vectors).sort()).toEqual([
+      "canonical_probe_cases",
+      "canonical_probe_count",
+      "fee_guard_pending_cases",
+      "fee_guard_pending_count",
       "finalization_cases",
       "finalization_count",
       "queue_cases",
@@ -37,8 +41,12 @@ describe("Lean protocol conformance vectors", () => {
     expect(vectors.settlement_cases).toHaveLength(vectors.settlement_count)
     expect(vectors.finalization_cases).toHaveLength(vectors.finalization_count)
     expect(vectors.queue_cases).toHaveLength(vectors.queue_count)
+    expect(vectors.fee_guard_pending_cases).toHaveLength(vectors.fee_guard_pending_count)
+    expect(vectors.canonical_probe_cases).toHaveLength(vectors.canonical_probe_count)
     expect(vectors.finalization_count).toBeGreaterThan(0)
     expect(vectors.queue_count).toBeGreaterThan(0)
+    expect(vectors.fee_guard_pending_count).toBeGreaterThan(0)
+    expect(vectors.canonical_probe_count).toBeGreaterThan(0)
   })
 
   it("protocol_finalization_cases_matches_production", () => {
@@ -63,6 +71,28 @@ describe("Lean protocol conformance vectors", () => {
       const preservedOther = restored.find((entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(other))
       expect(target?.blocked).toBe(testCase.expected_blocked)
       expect(preservedOther?.blocked).toBe(testCase.expected_other_blocked)
+    }
+  })
+
+  it("protocol_fee_guard_pending_cases_matches_production", () => {
+    for (const testCase of vectors.fee_guard_pending_cases) {
+      const target = withdrawal("1", false, "target")
+      const other = withdrawal("2", true, "other")
+      const errorCode = testCase.failure === "ledger-fee-exceeds-service-fee"
+        ? "LedgerFeeExceedsServiceFee"
+        : "RpcUnavailable"
+      const kind = testCase.kind === "withdrawal" ? "withdrawal" : "deposit"
+      const decision = decideNotificationFailure(kind, errorCode)
+      const retainPending = decision === "retain-pending"
+      const queue = [target, other]
+
+      expect(retainPending).toBe(testCase.retain_pending)
+      expect(queue.some((entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(target)))
+        .toBe(testCase.target_present)
+      expect(queue.some((entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(other)))
+        .toBe(testCase.other_present)
+      expect(testCase.history_refresh).toBe(false)
+      expect(testCase.complete).toBe(false)
     }
   })
 })

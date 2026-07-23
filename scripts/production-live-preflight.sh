@@ -12,7 +12,7 @@ if [[ "$MODE" == verify-gate-a ]]; then
   : "${BRIDGE_GATE_A_RPC_URL_2:?missing BRIDGE_GATE_A_RPC_URL_2}"
   : "${BRIDGE_GATE_A_RPC_URL_3:?missing BRIDGE_GATE_A_RPC_URL_3}"
   python3 - "$DRILL" "$BRIDGE_GATE_A_RPC_URL_1" "$BRIDGE_GATE_A_RPC_URL_2" "$BRIDGE_GATE_A_RPC_URL_3" <<'PY'
-import hashlib,json,subprocess,sys
+import hashlib,json,re,subprocess,sys
 from urllib.parse import urlsplit
 
 drill=json.load(open(sys.argv[1],encoding='utf-8')); providers=sys.argv[2:]
@@ -29,12 +29,31 @@ def run(args): return subprocess.check_output(args,text=True,stderr=subprocess.D
 def number(value):
  if isinstance(value,int): return value
  value=str(value); return int(value,16) if value.startswith('0x') else int(value)
-def block(rpc,value): return json.loads(run(['cast','block',str(value),'--rpc-url',rpc,'--json']))
+def finalized_block(rpc): return json.loads(run(['cast','block','finalized','--rpc-url',rpc,'--json']))
+def canonical_probe(rpc,address,signature,block_hash,expected_block=None):
+ if not re.fullmatch(r'0x[0-9a-f]{64}',block_hash): raise ValueError('invalid canonical probe block hash')
+ data=run(['cast','calldata',signature])
+ request=json.dumps({'to':address,'data':data},separators=(',',':'))
+ selector=json.dumps({'blockHash':block_hash,'requireCanonical':True},separators=(',',':'))
+ raw=run(['cast','rpc','--rpc-url',rpc,'eth_call',request,selector])
+ try: value=json.loads(raw)
+ except json.JSONDecodeError: value=raw
+ if not isinstance(value,str) or not value.startswith('0x') or not re.fullmatch(r'[0-9a-fA-F]*',value[2:]):
+  raise ValueError('malformed canonical probe response')
+ payload=value[2:]
+ if signature=='bridgeSnapshot()':
+  if len(payload)!=12*64: raise ValueError('malformed bridgeSnapshot response')
+  if expected_block is not None and int(payload[:64],16)!=expected_block:
+   raise ValueError('bridgeSnapshot block number mismatch')
+ elif signature=='getMinDelay()':
+  if len(payload)!=64: raise ValueError('malformed getMinDelay response')
+ else:
+  raise ValueError('unsupported canonical probe')
 heads=[]
 for index,rpc in enumerate(providers):
  try:
   if int(run(['cast','chain-id','--rpc-url',rpc]))!=drill['base_chain_id']: continue
-  value=block(rpc,'finalized'); heads.append((index,number(value['number']),str(value['hash']).lower()))
+  value=finalized_block(rpc); heads.append((index,number(value['number']),str(value['hash']).lower()))
  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
 if not heads: raise SystemExit('Gate A has no usable Finalized provider')
 pairs=[(height,block_hash) for _,height,block_hash in heads]
@@ -54,8 +73,7 @@ for action in drill['base_actions']:
   try:
    receipt=json.loads(run(['cast','receipt',action['transaction_hash'],'--rpc-url',rpc,'--json']))
    tx=json.loads(run(['cast','tx',action['transaction_hash'],'--rpc-url',rpc,'--json']))
-   canonical=block(rpc,action['block_number'])
-   receipt_hash=str(receipt.get('blockHash','')).lower(); canonical_hash=str(canonical.get('hash','')).lower()
+   receipt_hash=str(receipt.get('blockHash','')).lower()
    receipt_number=number(receipt.get('blockNumber',-1)); status=number(receipt.get('status',0))
    target=str(tx.get('to','')).lower(); calldata=str(tx.get('input',tx.get('data',''))).lower()
    event=event_topics[action['kind']]; expected_address=action['target'].lower()
@@ -63,9 +81,12 @@ for action in drill['base_actions']:
      [str(topic).lower() for topic in log.get('topics',[])][:1]==[event]
      for log in receipt.get('logs',[]))
    if (receipt_number==action['block_number'] and status==1 and
-       receipt_hash==action['block_hash'].lower()==canonical_hash and
+       receipt_hash==action['block_hash'].lower() and
        target==expected_address and calldata==action['calldata_hex'].lower() and
-       winner[0]>=receipt_number and log_match): matches+=1
+       winner[0]>=receipt_number and log_match):
+    signature='getMinDelay()' if action['kind']=='CancelTimelock' else 'bridgeSnapshot()'
+    canonical_probe(rpc,expected_address,signature,receipt_hash,receipt_number)
+    matches+=1
   except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
  if matches<2: raise SystemExit(f"Gate A action {action['kind']} lacks 2-of-3 canonical Finalized agreement")
 print('gate_a_base=pass')
@@ -91,7 +112,7 @@ def run(args): return subprocess.check_output(args,text=True,stderr=subprocess.D
 def number(value):
  if isinstance(value,int): return value
  value=str(value); return int(value,16) if value.startswith('0x') else int(value)
-def block(rpc,value): return json.loads(run(['cast','block',str(value),'--rpc-url',rpc,'--json']))
+def finalized_block(rpc): return json.loads(run(['cast','block','finalized','--rpc-url',rpc,'--json']))
 def bool_call(rpc,address,signature,*args):
  data=run(['cast','calldata',signature,*args])
  request=json.dumps({'to':address,'data':data},separators=(',',':'))
@@ -108,7 +129,7 @@ heads=[]
 for index,rpc in enumerate(providers):
  try:
   if int(run(['cast','chain-id','--rpc-url',rpc]))!=profile['chain_id']: continue
-  value=block(rpc,'finalized'); heads.append((index,number(value['number']),str(value['hash']).lower()))
+  value=finalized_block(rpc); heads.append((index,number(value['number']),str(value['hash']).lower()))
  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
 if not heads: raise SystemExit('activation verification has no usable Finalized provider')
 pairs=[(height,block_hash) for _,height,block_hash in heads]
@@ -169,10 +190,23 @@ EXPECTED_RUNTIME=${PROFILE_VALUES[6]}; EXPECTED_WASM=${PROFILE_VALUES[7]}; LEDGE
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-live-preflight.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 python3 - "$PROFILE" "$SNAPSHOT" "$TMP" "$MODE" <<'PY'
-import json,subprocess,sys
+import json,re,subprocess,sys
 from pathlib import Path
 p=json.load(open(sys.argv[1])); root=Path(sys.argv[3]); mode=sys.argv[4]
-snapshot_height=json.load(open(sys.argv[2]))['finalized_head_block_number'] if mode=='verify' else None
+snapshot=json.load(open(sys.argv[2])) if mode=='verify' else None
+snapshot_height=snapshot['finalized_head_block_number'] if snapshot else None
+snapshot_hash=str(snapshot['finalized_head_block_hash']).lower() if snapshot else None
+def bridge_snapshot_probe(rpc,block_hash,expected_block):
+ if not re.fullmatch(r'0x[0-9a-f]{64}',block_hash): raise ValueError('invalid snapshot block hash')
+ data=subprocess.check_output(['cast','calldata','bridgeSnapshot()'],text=True,stderr=subprocess.DEVNULL).strip()
+ request=json.dumps({'to':p['bridge_contract'],'data':data},separators=(',',':'))
+ selector=json.dumps({'blockHash':block_hash,'requireCanonical':True},separators=(',',':'))
+ raw=subprocess.check_output(['cast','rpc','--rpc-url',rpc,'eth_call',request,selector],text=True,stderr=subprocess.DEVNULL).strip()
+ try: value=json.loads(raw)
+ except json.JSONDecodeError: value=raw
+ if not isinstance(value,str) or not value.startswith('0x') or not re.fullmatch(r'[0-9a-fA-F]{768}',value[2:]):
+  raise ValueError('malformed bridgeSnapshot response')
+ if int(value[2:66],16)!=expected_block: raise ValueError('bridgeSnapshot block number mismatch')
 observations=[]
 for index,entry in enumerate(p['rpc_providers']):
  try:
@@ -182,7 +216,8 @@ for index,entry in enumerate(p['rpc_providers']):
   finalized=json.loads(subprocess.check_output(['cast','block','finalized','--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
   observation={'provider_index':index,'chain_id':int(chain),'finalized':finalized}
   if snapshot_height is not None:
-   observation['snapshot_block']=json.loads(subprocess.check_output(['cast','block',str(snapshot_height),'--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
+   bridge_snapshot_probe(rpc,snapshot_hash,snapshot_height)
+   observation['snapshot_probe']={'number':snapshot_height,'hash':snapshot_hash}
   observations.append(observation)
  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError):
   continue
@@ -190,7 +225,7 @@ for index,entry in enumerate(p['rpc_providers']):
 PY
 
 python3 - "$PROFILE" "$TMP" <<'PY'
-import hashlib,json,subprocess,sys
+import hashlib,json,re,subprocess,sys
 from pathlib import Path
 p=json.load(open(sys.argv[1])); root=Path(sys.argv[2]); receipt=json.load(open(Path(sys.argv[1]).with_name('gate-a-receipt.json')))
 observations=json.load(open(root/'provider-observations.json'))
@@ -204,29 +239,48 @@ eligible={observation['provider_index'] for observation in observations if (int(
 roles={name:subprocess.check_output(['cast','keccak',name],text=True).strip() for name in ('PROPOSER_ROLE','EXECUTOR_ROLE','CANCELLER_ROLE')}
 zero='0x'+'00'*20; zero32='0x'+'00'*32
 def run(args): return subprocess.check_output(args,text=True).strip().strip('"')
-block_selector=json.dumps({'blockHash':block_hash,'requireCanonical':True},separators=(',',':'))
-def call(rpc,address,sig,*args):
+def raw_call_at_hash(rpc,address,sig,at_hash,*args):
  data=run(['cast','calldata',sig,*args])
  request=json.dumps({'to':address,'data':data},separators=(',',':'))
- result=run(['cast','rpc','--rpc-url',rpc,'eth_call',request,block_selector])
+ selector=json.dumps({'blockHash':at_hash,'requireCanonical':True},separators=(',',':'))
+ return run(['cast','rpc','--rpc-url',rpc,'eth_call',request,selector])
+def call(rpc,address,sig,*args):
+ result=raw_call_at_hash(rpc,address,sig,block_hash,*args)
  return run(['cast','decode-abi',sig,result])
+def canonical_word_probe(rpc,address,sig,at_hash):
+ if not re.fullmatch(r'0x[0-9a-f]{64}',at_hash): raise ValueError('invalid canonical probe block hash')
+ result=raw_call_at_hash(rpc,address,sig,at_hash)
+ if not re.fullmatch(r'0x[0-9a-fA-F]{64}',result): raise ValueError('malformed canonical word probe')
+ return int(result,16)
+def canonical_bridge_probe(rpc,address,at_hash,expected_block=None):
+ if not re.fullmatch(r'0x[0-9a-f]{64}',at_hash): raise ValueError('invalid canonical probe block hash')
+ result=raw_call_at_hash(rpc,address,'bridgeSnapshot()',at_hash)
+ if not re.fullmatch(r'0x[0-9a-fA-F]{768}',result): raise ValueError('malformed bridgeSnapshot probe')
+ observed_block=int(result[2:66],16)
+ if expected_block is not None and observed_block!=expected_block:
+  raise ValueError('bridgeSnapshot block number mismatch')
+ return observed_block
 def code(rpc,address):
- return run(['cast','rpc','--rpc-url',rpc,'eth_getCode',json.dumps(address),block_selector])
+ selector=json.dumps({'blockHash':block_hash,'requireCanonical':True},separators=(',',':'))
+ return run(['cast','rpc','--rpc-url',rpc,'eth_getCode',json.dumps(address),selector])
 def sha_code(value): return hashlib.sha256(bytes.fromhex(value.removeprefix('0x'))).hexdigest()
 def number(value):
  return int(str(value),16) if str(value).startswith('0x') else int(value)
-def deployment(rpc,tx,address,expected_block):
+def deployment(rpc,tx,address,expected_block,probe):
  receipt=json.loads(run(['cast','receipt',tx,'--rpc-url',rpc,'--json']))
  actual_block=number(receipt.get('blockNumber',-1)); actual_hash=str(receipt.get('blockHash','')).lower()
  status=number(receipt.get('status',0)); contract=str(receipt.get('contractAddress','')).lower()
- canonical=json.loads(run(['cast','block',str(expected_block),'--rpc-url',rpc,'--json']))
- if actual_block!=expected_block or status!=1 or contract!=address.lower() or str(canonical.get('hash','')).lower()!=actual_hash:
+ if actual_block!=expected_block or status!=1 or contract!=address.lower():
   raise ValueError('deployment receipt is not canonical or does not create the reviewed contract')
+ if probe=='bridge': canonical_bridge_probe(rpc,address,actual_hash,actual_block)
+ elif probe=='timelock': canonical_word_probe(rpc,address,'getMinDelay()',actual_hash)
+ else: raise ValueError('unsupported deployment probe')
  return actual_hash
 def exact_role_members(rpc,timelock,from_block):
  event_topics={run(['cast','keccak','RoleGranted(bytes32,address,address)']).lower():'grant',run(['cast','keccak','RoleRevoked(bytes32,address,address)']).lower():'revoke'}
  members={zero32:set(),roles['PROPOSER_ROLE'].lower():set(),roles['EXECUTOR_ROLE'].lower():set(),roles['CANCELLER_ROLE'].lower():set()}
  entries=[]
+ canonical_event_blocks=set()
  # Provider eth_getLogs limits vary. Bounded pages also keep a single response
  # from silently truncating the complete role history.
  page_start=from_block
@@ -238,9 +292,12 @@ def exact_role_members(rpc,timelock,from_block):
  entries.sort(key=lambda e:(number(e.get('blockNumber',-1)),number(e.get('transactionIndex',0)),number(e.get('logIndex',0))))
  for entry in entries:
   event_number=number(entry.get('blockNumber',-1)); event_hash=str(entry.get('blockHash','')).lower()
-  canonical=json.loads(run(['cast','block',str(event_number),'--rpc-url',rpc,'--json']))
-  if event_number<from_block or event_number>height or not event_hash or str(canonical.get('hash','')).lower()!=event_hash:
+  if event_number<from_block or event_number>height or not event_hash:
    raise ValueError('Timelock role event is not canonical')
+  event_block=(event_number,event_hash)
+  if event_block not in canonical_event_blocks:
+   canonical_word_probe(rpc,timelock,'getMinDelay()',event_hash)
+   canonical_event_blocks.add(event_block)
   topics=[str(x).lower() for x in entry.get('topics',[])]
   if not topics or topics[0] not in event_topics: continue
   if len(topics)<3: raise ValueError('malformed Timelock role event')
@@ -257,8 +314,8 @@ for provider_index,rpc_entry in enumerate(p['rpc_providers']):
   rpc=rpc_entry['url']; bridge=p['bridge_contract']; timelock=p['timelock']['address']
   bsns=call(rpc,bridge,'bsns()(address)').lower()
   external={p['timelock']['proposer'],p['timelock']['executor'],p['timelock']['canceller'],p['governance_operator'],zero}
-  bridge_deployment_hash=deployment(rpc,receipt['bridge_deployment_transaction_hash'],bridge,receipt['bridge_deployment_block_number'])
-  timelock_deployment_hash=deployment(rpc,receipt['timelock_deployment_transaction_hash'],timelock,receipt['timelock_deployment_block_number'])
+  bridge_deployment_hash=deployment(rpc,receipt['bridge_deployment_transaction_hash'],bridge,receipt['bridge_deployment_block_number'],'bridge')
+  timelock_deployment_hash=deployment(rpc,receipt['timelock_deployment_transaction_hash'],timelock,receipt['timelock_deployment_block_number'],'timelock')
   role_members,roles_exact=exact_role_members(rpc,timelock,receipt['timelock_deployment_block_number'])
   state={
   'height':height,'hash':block_hash,
@@ -287,8 +344,7 @@ for provider_index,rpc_entry in enumerate(p['rpc_providers']):
   'timelock_deployment_transaction_hash':receipt['timelock_deployment_transaction_hash'].lower(),'timelock_deployment_block_number':receipt['timelock_deployment_block_number'],'timelock_deployment_block_hash':timelock_deployment_hash,
   }
   state['timelock_external_admins_absent']=all(call(rpc,timelock,'hasRole(bytes32,address)(bool)',zero32,a).lower()=='false' for a in external if a.lower()!=timelock.lower())
-  final=json.loads(run(['cast','block',str(height),'--rpc-url',rpc,'--json']))
-  if str(final.get('hash','')).lower()!=block_hash: raise ValueError('Finalized block changed while Base state was being read')
+  canonical_bridge_probe(rpc,bridge,block_hash,height)
   states.append(state)
  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError):
   continue
@@ -425,12 +481,12 @@ if mode=='capture':
   target=Path(sys.argv[5]); tmp=Path(str(target)+'.tmp'); tmp.write_text(json.dumps(out,sort_keys=True,separators=(',',':'))+'\n'); tmp.replace(target)
 else:
   old=json.load(open(sys.argv[2]))
-  snapshot_blocks=[]
+  snapshot_probes=[]
   for observation in json.load(open(root/'provider-observations.json')):
-    if 'snapshot_block' in observation:
-      b=observation['snapshot_block']; snapshot_blocks.append((num(b.get('number')),str(b.get('hash','')).lower()))
+    if 'snapshot_probe' in observation:
+      probe=observation['snapshot_probe']; snapshot_probes.append((num(probe.get('number')),str(probe.get('hash','')).lower()))
   expected=(old['finalized_head_block_number'],old['finalized_head_block_hash'].lower())
-  if snapshot_blocks.count(expected)<2: raise SystemExit('snapshot Finalized block is no longer canonical')
+  if snapshot_probes.count(expected)<2: raise SystemExit('snapshot Finalized block is no longer canonical')
   if out['finalized_head_block_number'] < old['finalized_head_block_number']: raise SystemExit('latest Finalized head is older than the captured snapshot')
   comparable=lambda x:{k:v for k,v in x.items() if k not in ('observed_at_unix','finalized_head_block_number','finalized_head_block_hash','agreeing_providers')}
   if comparable(out)!=comparable(old): raise SystemExit('live state differs from the captured snapshot')

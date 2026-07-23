@@ -22,6 +22,7 @@ describe("settlement phase helpers", () => {
     expect(isSettlementActionResult({ Complete: { state: { Deposit: { FuturePhase: null } } } })).toBe(false)
     expect(isSettlementActionResult({ Complete: { state: { Deposit: { Minted: null } }, extra: true } })).toBe(false)
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } } } })).toBe(false)
+    expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { LedgerFeeExceedsServiceFee: null } } })).toBe(true)
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { RpcUnavailable: null } } })).toBe(true)
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { LedgerRejected: null } } })).toBe(false)
     expect(isSettlementActionResult({ Submitted: { state: { Deposit: { MintPending: null } }, transaction_hash: new Uint8Array(31) } })).toBe(false)

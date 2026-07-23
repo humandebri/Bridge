@@ -4,15 +4,16 @@ use super::{
 };
 
 pub(super) fn evm_state_tag(state: EvmOperationState) -> Option<u8> {
-    match state {
-        EvmOperationState::Queued => Some(0),
-        EvmOperationState::Prepared => Some(1),
-        EvmOperationState::Submitted { .. } => Some(2),
-        EvmOperationState::Confirmed { .. }
-        | EvmOperationState::Reverted { .. }
-        | EvmOperationState::RecoveryPending { .. }
-        | EvmOperationState::Recovered { .. } => None,
-    }
+    let tag = match state {
+        EvmOperationState::Queued => 0,
+        EvmOperationState::Prepared => 1,
+        EvmOperationState::Submitted { .. } => 2,
+        EvmOperationState::Confirmed { .. } => 3,
+        EvmOperationState::Reverted { .. } => 4,
+        EvmOperationState::RecoveryPending { .. } => 5,
+        EvmOperationState::Recovered { .. } => 6,
+    };
+    bridge_core::evm_operation_indexed(tag).then_some(tag)
 }
 
 pub(super) fn evm_state_index_key(

@@ -4,8 +4,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/bridge-driver-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/bundle" "$T/source/contracts" "$T/source/scripts" "$T/source/src"
-cp "$ROOT/scripts/production-deploy-driver.sh" "$ROOT/scripts/production-activate-driver.sh" "$ROOT/scripts/production-live-preflight.sh" "$ROOT/scripts/production-validation.sh" "$ROOT/scripts/live_fee_guard.py" "$T/source/scripts/"
-chmod +x "$T/source/scripts/production-deploy-driver.sh" "$T/source/scripts/production-activate-driver.sh" "$T/source/scripts/production-live-preflight.sh"
+cp "$ROOT/scripts/production-deploy-driver.sh" "$ROOT/scripts/production-activate-driver.sh" "$ROOT/scripts/production-activation-proposal.sh" "$ROOT/scripts/production-live-preflight.sh" "$ROOT/scripts/production-validation.sh" "$ROOT/scripts/live_fee_guard.py" "$T/source/scripts/"
+chmod +x "$T/source/scripts/production-deploy-driver.sh" "$T/source/scripts/production-activate-driver.sh" "$T/source/scripts/production-activation-proposal.sh" "$T/source/scripts/production-live-preflight.sh"
 printf '/target\n' >"$T/source/.gitignore"
 cat >"$T/source/Cargo.toml" <<'TOML'
 [package]
@@ -48,6 +48,9 @@ case "$1 $2" in
   'keccak CANCELLER_ROLE') printf '0x%s\n' "$(printf '33%.0s' {1..32})";;
   'keccak RoleGranted(bytes32,address,address)') printf '0x%s\n' "$(printf '44%.0s' {1..32})";;
   'keccak RoleRevoked(bytes32,address,address)') printf '0x%s\n' "$(printf '55%.0s' {1..32})";;
+  'keccak DepositMintsPaused(address)') printf '0x%s\n' "$(printf '66%.0s' {1..32})";;
+  'keccak WithdrawalsPaused(address)') printf '0x%s\n' "$(printf '77%.0s' {1..32})";;
+  'keccak Cancelled(bytes32)') printf '0x%s\n' "$(printf '88%.0s' {1..32})";;
   'keccak 0x00') printf '0x%s\n' "$(printf 'cc%.0s' {1..32})";;
   'keccak 0x01') printf '0x%s\n' "$(printf 'dd%.0s' {1..32})";;
   'nonce 0x4444444444444444444444444444444444444444') [[ -e "$TIMELOCK_DEPLOYED_MARKER" ]] && echo 1 || echo 0;;
@@ -56,8 +59,14 @@ case "$1 $2" in
   'block safe'|'block finalized') if [[ "${PROVIDER_SAFE_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_SAFE_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; fi; h="${LATEST_HEIGHT:-100}"; if [[ "${LATEST_BLOCK_DRIFT:-}" =~ ^(all|one)$ && "$*" == *one.example* ]]; then x=1; elif [[ "${LATEST_BLOCK_DRIFT:-}" == all && "$*" == *two.example* ]]; then x=2; elif [[ "${LATEST_BLOCK_DRIFT:-}" == all ]]; then x=3; else x=a; fi; printf '{"number":"0x%x","hash":"0x%s"}\n' "$h" "$(printf "$x%.0s" {1..64})";;
   'block 100') if [[ "${MID_READ_REORG:-}" == all ]]; then x=f; elif [[ "${MID_READ_REORG:-}" == one && "$*" == *three.example* ]]; then x=f; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all && "$*" == *one.example* ]]; then x=1; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all && "$*" == *two.example* ]]; then x=2; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all ]]; then x=3; else x=a; fi; printf '{"number":"0x64","hash":"0x%s"}\n' "$(printf "$x%.0s" {1..64})";;
   'block 1') printf '{"number":"0x1","hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})";;
-  'receipt 0x'*) if [[ "$2" == "0x$(printf 'a%.0s' {1..64})" ]]; then address=0x3333333333333333333333333333333333333333; else address=0x2222222222222222222222222222222222222222; fi; if [[ "${DEPLOYMENT_RECEIPT_DRIFT:-}" == true || ( "${ACTIVATION_RECEIPT_DRIFT:-}" == true && "$2" != "0x$(printf 'a%.0s' {1..64})" && "$2" != "0x$(printf 'b%.0s' {1..64})" ) ]]; then bh=f; else bh=a; fi; printf '{"blockNumber":"0x1","blockHash":"0x%s","status":"0x1","contractAddress":"%s"}\n' "$(printf "$bh%.0s" {1..64})" "$address";;
-  'logs --address') if [[ "${ROLE_EVENT_DRIFT:-}" == true ]]; then role="$(printf 'ff%.0s' {1..32})"; else role="$(printf '00%.0s' {1..32})"; fi; if [[ "${ROLE_EVENT_HASH_DRIFT:-}" == true ]]; then eh=f; else eh=a; fi; printf '[{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]}]\n' \
+  'receipt deposit-action') printf '{"blockNumber":"0x64","blockHash":"0x%s","status":"0x1","logs":[{"address":"0x3333333333333333333333333333333333333333","topics":["0x%s"]}]}\n' "$(printf 'a%.0s' {1..64})" "$(printf '66%.0s' {1..32})";;
+  'receipt withdrawal-action') printf '{"blockNumber":"0x64","blockHash":"0x%s","status":"0x1","logs":[{"address":"0x3333333333333333333333333333333333333333","topics":["0x%s"]}]}\n' "$(printf 'a%.0s' {1..64})" "$(printf '77%.0s' {1..32})";;
+  'receipt cancel-action') printf '{"blockNumber":"0x64","blockHash":"0x%s","status":"0x1","logs":[{"address":"0x2222222222222222222222222222222222222222","topics":["0x%s"]}]}\n' "$(printf 'a%.0s' {1..64})" "$(printf '88%.0s' {1..32})";;
+  'tx deposit-action') echo '{"to":"0x3333333333333333333333333333333333333333","input":"0x1111"}';;
+  'tx withdrawal-action') echo '{"to":"0x3333333333333333333333333333333333333333","input":"0x2222"}';;
+  'tx cancel-action') echo '{"to":"0x2222222222222222222222222222222222222222","input":"0x3333"}';;
+  'receipt 0x'*) if [[ "$2" == "0x$(printf 'a%.0s' {1..64})" ]]; then address=0x3333333333333333333333333333333333333333; bh=b; else address=0x2222222222222222222222222222222222222222; bh=c; fi; if [[ "${DEPLOYMENT_RECEIPT_DRIFT:-}" == true || ( "${ACTIVATION_RECEIPT_DRIFT:-}" == true && "$2" != "0x$(printf 'a%.0s' {1..64})" && "$2" != "0x$(printf 'b%.0s' {1..64})" ) ]]; then bh=f; fi; printf '{"blockNumber":"0x1","blockHash":"0x%s","status":"0x1","contractAddress":"%s"}\n' "$(printf "$bh%.0s" {1..64})" "$address";;
+  'logs --address') if [[ "${ROLE_EVENT_DRIFT:-}" == true ]]; then role="$(printf 'ff%.0s' {1..32})"; else role="$(printf '00%.0s' {1..32})"; fi; if [[ "${ROLE_EVENT_HASH_DRIFT:-}" == true ]]; then eh=f; else eh=c; fi; printf '[{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]}]\n' \
     "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$role" "$(printf '00%.0s' {1..12})2222222222222222222222222222222222222222" \
     "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '11%.0s' {1..32})" "$(printf '00%.0s' {1..12})6666666666666666666666666666666666666666" \
     "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '22%.0s' {1..32})" "$(printf '00%.0s' {1..12})6666666666666666666666666666666666666666" \
@@ -70,8 +79,11 @@ case "$1 $2" in
   'calldata '*) printf '0x%s\n' "${*:2}";;
   'rpc --rpc-url')
     if [[ "${PROVIDER_EIP1898_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_EIP1898_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; fi
+    if [[ "$*" == *'"blockHash":"0xffff'* ]] || [[ "${MID_READ_REORG:-}" == all ]] || [[ "${MID_READ_REORG:-}" == one && "$*" == *three.example* ]] || [[ "${SIGNED_BLOCK_DRIFT:-}" == all ]]; then exit 1; fi
     if [[ "$*" == *eth_getCode* ]]; then
       if [[ "${TIMELOCK_CODE_DRIFT:-}" == true && "$*" == *0x2222222222222222222222222222222222222222* ]]; then echo '"0x01"'; else echo '"0x00"'; fi
+    elif [[ "$*" == *bridgeSnapshot* ]]; then
+      if [[ "${CANONICAL_PROBE_MALFORMED:-}" == true ]]; then echo '"0x00"'; elif [[ "${CANONICAL_PROBE_BLOCK_MISMATCH:-}" == true ]]; then printf '"0x%064x%s"\n' 99 "$(printf '0%.0s' {1..704})"; elif [[ "$*" == *'"blockHash":"0xbbbb'* ]]; then printf '"0x%064x%s"\n' 1 "$(printf '0%.0s' {1..704})"; else printf '"0x%064x%s"\n' 100 "$(printf '0%.0s' {1..704})"; fi
     elif [[ "$*" == *bridgeSigner* ]]; then if [[ "${PROVIDER_DRIFT:-}" == all && "$*" == *one.example* ]]; then v=0x9999999999999999999999999999999999999991; elif [[ "${PROVIDER_DRIFT:-}" == all && "$*" == *two.example* ]]; then v=0x9999999999999999999999999999999999999992; elif [[ "${PROVIDER_DRIFT:-}" == all ]]; then v=0x9999999999999999999999999999999999999993; else v=0x1111111111111111111111111111111111111111; fi; printf '"0x%s"\n' "$v";
     elif [[ "$*" == *runtimeAdministrator* ]]; then echo '"0x0x6666666666666666666666666666666666666666"';
     elif [[ "$*" == *baseAdminTimelock* ]]; then echo '"0x0x2222222222222222222222222222222222222222"';
@@ -80,7 +92,7 @@ case "$1 $2" in
     elif [[ "$*" == *depositMintsPaused* ]]; then if [[ "${CONFIRM_FAIL:-}" == true && -e "$DEPOSIT_PAUSED_MARKER" ]]; then v=false; elif [[ -e "$DEPOSIT_PAUSED_MARKER" ]]; then v=true; elif [[ -e "$EXECUTED_MARKER" || "${BASE_PAUSED:-true}" != true ]]; then v=false; else v=true; fi; echo "\"0x$v\"";
     elif [[ "$*" == *withdrawalsPaused* ]]; then if [[ "${CONFIRM_FAIL:-}" == true && -e "$WITHDRAWAL_PAUSED_MARKER" ]]; then v=false; elif [[ -e "$WITHDRAWAL_PAUSED_MARKER" ]]; then v=true; elif [[ -e "$EXECUTED_MARKER" || "${BASE_PAUSED:-true}" != true ]]; then v=false; else v=true; fi; echo "\"0x$v\"";
     elif [[ "$*" == *serviceFee* ]]; then echo '"0x50000000"';
-    elif [[ "$*" == *getMinDelay* ]]; then echo '"0x259200"';
+    elif [[ "$*" == *getMinDelay* ]]; then printf '"0x%064x"\n' 259200;
     elif [[ "$*" == *hasRole* ]]; then if [[ "${ROLE_DRIFT:-}" == true && "$*" != *"0x$(printf '00%.0s' {1..32})"* && "$*" != *' 0x0000000000000000000000000000000000000000'* ]]; then v=false; elif [[ "$*" == *"0x$(printf '00%.0s' {1..32}) 0x2222222222222222222222222222222222222222"* ]]; then v=true; elif [[ "$*" == *"0x$(printf '00%.0s' {1..32})"* || "$*" == *' 0x0000000000000000000000000000000000000000'* ]]; then v=false; else v=true; fi; echo "\"0x$v\"";
     elif [[ "$*" == *isOperationDone* ]]; then [[ -e "$EXECUTED_MARKER" ]] && v=true || v=false; echo "\"0x$v\"";
     elif [[ "$*" == *isOperationPending* || "$*" == *isOperationReady* ]]; then [[ -e "$EXECUTED_MARKER" || -e "$CANCELLED_MARKER" ]] && v=false || v=true; echo "\"0x$v\"";
@@ -88,7 +100,7 @@ case "$1 $2" in
     elif [[ "$*" == *'decimals()(uint8)'* ]]; then echo '"0x8"';
     elif [[ "$*" == *'bridge()(address)'* ]]; then echo '"0x0x3333333333333333333333333333333333333333"';
     else echo "unexpected cast rpc: $*" >&2; exit 1; fi;;
-  'decode-abi '*) v="${3#0x}"; if [[ "$2" == *'(string)'* ]]; then printf '"%s"\n' "$v"; else echo "$v"; fi;;
+  'decode-abi '*) v="${3#0x}"; if [[ "$2" == *'(string)'* ]]; then printf '"%s"\n' "$v"; elif [[ "$2" == getMinDelay* ]]; then echo 259200; else echo "$v"; fi;;
   'send '*) if [[ "$*" == *executeBatch* ]]; then [[ "${EXECUTE_FAIL:-}" != true ]] || exit 1; touch "$EXECUTED_MARKER"; tx=e; elif [[ "$*" == *'cancel(bytes32)'* ]]; then if [[ -e "$EXECUTED_MARKER" ]]; then exit 1; fi; touch "$CANCELLED_MARKER"; tx=c; elif [[ "$*" == *pauseDepositMints* ]]; then [[ "${DEPOSIT_PAUSE_FAIL:-}" != true ]] || exit 1; touch "$DEPOSIT_PAUSED_MARKER"; tx=d; elif [[ "$*" == *pauseWithdrawals* ]]; then [[ "${WITHDRAWAL_PAUSE_FAIL:-}" != true ]] || exit 1; touch "$WITHDRAWAL_PAUSED_MARKER"; tx=f; else tx=b; fi; printf '{"status":"0x1","transactionHash":"0x%s"}\n' "$(printf "$tx%.0s" {1..64})";;
   'call 0x3333333333333333333333333333333333333333') case "$3" in bridgeSigner*) if [[ "${PROVIDER_DRIFT:-}" == all && "$*" == *one.example* ]]; then echo 0x9999999999999999999999999999999999999991; elif [[ "${PROVIDER_DRIFT:-}" == all && "$*" == *two.example* ]]; then echo 0x9999999999999999999999999999999999999992; elif [[ "${PROVIDER_DRIFT:-}" == all ]]; then echo 0x9999999999999999999999999999999999999993; else echo 0x1111111111111111111111111111111111111111; fi;; runtimeAdministrator*) echo 0x6666666666666666666666666666666666666666;; baseAdminTimelock*) echo 0x2222222222222222222222222222222222222222;; approvedTimelockRuntimeCodeHash*) [[ "${BRIDGE_APPROVED_HASH_DRIFT:-}" == true ]] && x=dd || x=cc; printf '0x%s\n' "$(printf "$x%.0s" {1..32})";; bsns*) echo 0x7777777777777777777777777777777777777777;; depositMintsPaused*) if [[ "${CONFIRM_FAIL:-}" == true && -e "$DEPOSIT_PAUSED_MARKER" ]]; then echo false; elif [[ -e "$DEPOSIT_PAUSED_MARKER" ]]; then echo true; elif [[ -e "$EXECUTED_MARKER" || "${BASE_PAUSED:-true}" != true ]]; then echo false; else echo true; fi;; withdrawalsPaused*) if [[ "${CONFIRM_FAIL:-}" == true && -e "$WITHDRAWAL_PAUSED_MARKER" ]]; then echo false; elif [[ -e "$WITHDRAWAL_PAUSED_MARKER" ]]; then echo true; elif [[ -e "$EXECUTED_MARKER" || "${BASE_PAUSED:-true}" != true ]]; then echo false; else echo true; fi;; esac;;
   'call 0x2222222222222222222222222222222222222222') case "$3" in getMinDelay*) echo 259200;; hasRole*) if [[ "${ROLE_DRIFT:-}" == true && "$4" != "0x$(printf '00%.0s' {1..32})" && "$5" != 0x0000000000000000000000000000000000000000 ]]; then echo false; elif [[ "$4" == "0x$(printf '00%.0s' {1..32})" && "$5" == 0x2222222222222222222222222222222222222222 ]]; then echo true; elif [[ "$4" == "0x$(printf '00%.0s' {1..32})" || "$5" == 0x0000000000000000000000000000000000000000 ]]; then echo false; else echo true; fi;; hashOperationBatch*) echo 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;; isOperationDone*) [[ -e "$EXECUTED_MARKER" ]] && echo true || echo false;; isOperationPending*|isOperationReady*) [[ -e "$EXECUTED_MARKER" || -e "$CANCELLED_MARKER" ]] && echo false || echo true;; esac;;
@@ -105,6 +117,9 @@ elif [[ "$*" == *get_bridge_status* ]]; then if [[ -e "$IC_RESUMED_MARKER" ]]; t
 elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
 elif [[ "$*" == *resume_new_deposits* ]]; then if [[ "${RESUME_FAIL:-}" == true ]]; then echo '{"Err":"StorageFailure"}'; exit 1; fi; touch "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
 elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; rm -f "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
+elif [[ "$*" == *'identity principal --identity production'* ]]; then echo 'aaaaa-aa';
+elif [[ "$*" == *list_nervous_system_functions* ]]; then echo '{"functions":[{"id":1,"target_canister_id":"aaaaa-aa","target_method_name":"schedule_activation"}]}';
+elif [[ "$*" == *manage_neuron* ]]; then echo '{"command":{"MakeProposal":{"proposal_id":[]}}}';
 elif [[ "$*" == *'canister status bridge-canister -e production -i --identity'* ]]; then echo 'aaaaa-aa';
 elif [[ "$*" == *'canister status'* ]]; then if [[ "${CONTROLLER_DRIFT:-false}" == true ]]; then controllers='["aaaaa-aa","2vxsx-fae"]'; else controllers='["aaaaa-aa"]'; fi; printf '{"controllers":%s,"module_hash":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"}\n' "$controllers";
 else echo '{}'; fi
@@ -140,7 +155,20 @@ printf wasm >"$T/bundle/bridge-canister.wasm"
 SOURCE_REVISION="$(git -C "$DRIVER_ROOT" rev-parse HEAD)"; SOURCE_TREE="$(git -C "$DRIVER_ROOT" archive HEAD | shasum -a 256 | awk '{print $1}')"
 printf '{"release_id":"release-test","source_revision":"%s","source_tree_sha256":"%s"}\n' "$SOURCE_REVISION" "$SOURCE_TREE" >"$T/bundle/release-manifest.json"
 printf '{"final_controllers":["aaaaa-aa"]}\n' >"$T/bundle/controller-handover.json"
-printf '{"gate_a_manifest_sha256":"%s","bridge_deployment_transaction_hash":"0x%s","bridge_deployment_block_number":1,"bridge_deployment_block_hash":"0x%s","timelock_deployment_transaction_hash":"0x%s","timelock_deployment_block_number":1,"timelock_deployment_block_hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" >"$T/bundle/gate-a-receipt.json"
+printf '{"gate_a_manifest_sha256":"%s","bridge_deployment_transaction_hash":"0x%s","bridge_deployment_block_number":1,"bridge_deployment_block_hash":"0x%s","timelock_deployment_transaction_hash":"0x%s","timelock_deployment_block_number":1,"timelock_deployment_block_hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'c%.0s' {1..64})" >"$T/bundle/gate-a-receipt.json"
+printf '{"base_chain_id":8453,"rpc_provider_urls_sha256":"%s","base_actions":[{"kind":"PauseDepositMints","transaction_hash":"deposit-action","block_number":100,"block_hash":"0x%s","target":"0x3333333333333333333333333333333333333333","calldata_hex":"0x1111"},{"kind":"PauseWithdrawals","transaction_hash":"withdrawal-action","block_number":100,"block_hash":"0x%s","target":"0x3333333333333333333333333333333333333333","calldata_hex":"0x2222"},{"kind":"CancelTimelock","transaction_hash":"cancel-action","block_number":100,"block_hash":"0x%s","target":"0x2222222222222222222222222222222222222222","calldata_hex":"0x3333"}]}\n' "$RPC_DIGEST" "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" >"$T/bundle/monitor-drill.json"
+: >"$TRACE"
+BRIDGE_GATE_A_RPC_URL_1=https://one.example BRIDGE_GATE_A_RPC_URL_2=https://two.example BRIDGE_GATE_A_RPC_URL_3=https://three.example \
+  "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-gate-a "$T/bundle" >/dev/null
+[[ "$(grep -c '^cast block finalized' "$TRACE")" -eq 3 ]]
+[[ "$(grep -c '^cast rpc ' "$TRACE")" -eq 9 ]]
+! grep -Eq '^cast block [0-9]+' "$TRACE"
+if CANONICAL_PROBE_MALFORMED=true \
+  BRIDGE_GATE_A_RPC_URL_1=https://one.example BRIDGE_GATE_A_RPC_URL_2=https://two.example BRIDGE_GATE_A_RPC_URL_3=https://three.example \
+  "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-gate-a "$T/bundle" >/dev/null 2>&1; then
+  echo "Gate A accepted malformed canonical probes" >&2
+  exit 1
+fi
 if BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted a forged Gate A hash" >&2; exit 1
 fi
@@ -191,14 +219,30 @@ for insufficient in chain_failure wrong_chain safe_failure eip1898_unsupported; 
   fi
 done
 : >"$TRACE"
-if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ACTIVATION_PHASE=schedule "$DRIVER_ROOT/scripts/production-activate-driver.sh"; then
+SNS_IDENTITY_FIXTURE=production
+SNS_NEURON_SUBACCOUNT_FIXTURE="$(printf '11%.0s' {1..32})"
+SNS_PROPOSER_PRINCIPAL_FIXTURE=aaaaa-aa
+ACTIVATION_SUBMISSION_FIXTURE="$T/activation-submission.json"
+if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
+  BRIDGE_RELEASE_BUNDLE="$T/bundle" \
+  BRIDGE_ACTIVATION_PHASE=schedule \
+  BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION_FIXTURE" \
+  BRIDGE_SNS_IDENTITY="$SNS_IDENTITY_FIXTURE" \
+  BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT_FIXTURE" \
+  BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL_FIXTURE" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"; then
   echo "activation driver reported success without submitting an SNS proposal" >&2
   exit 1
 fi
+grep -q '^icp identity principal --identity production$' "$TRACE"
+grep -q 'list_nervous_system_functions' "$TRACE"
+grep -q 'manage_neuron' "$TRACE"
+[[ -f "$ACTIVATION_SUBMISSION_FIXTURE" && ! -s "$ACTIVATION_SUBMISSION_FIXTURE" ]]
 ! grep -q '^cast send' "$TRACE"
 ! grep -q resume_new_deposits "$TRACE"
 : >"$TRACE"; "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify "$T/bundle"
 [[ "$(grep -c '^cast chain-id' "$TRACE")" -eq 3 ]]
+! grep -Eq '^cast block [0-9]+' "$TRACE"
 python3 - "$TRACE" <<'PY'
 import sys
 count=0
@@ -208,7 +252,7 @@ for line in open(sys.argv[1]):
     assert '{"blockHash":"0x' in line and '"requireCanonical":true}' in line,line
 assert count>0
 PY
-for drift in base canister signer controller roles role_events role_event_hash deployment providers timelock_code approved_hash mid_read_reorg; do
+for drift in base canister signer controller roles role_events role_event_hash deployment providers timelock_code approved_hash mid_read_reorg canonical_probe canonical_probe_block; do
   case "$drift" in
     base) args=(BASE_PAUSED=false);;
     canister) args=(CANISTER_PAUSED=false);;
@@ -222,6 +266,8 @@ for drift in base canister signer controller roles role_events role_event_hash d
     timelock_code) args=(TIMELOCK_CODE_DRIFT=true);;
     approved_hash) args=(BRIDGE_APPROVED_HASH_DRIFT=true);;
     mid_read_reorg) args=(MID_READ_REORG=all);;
+    canonical_probe) args=(CANONICAL_PROBE_MALFORMED=true);;
+    canonical_probe_block) args=(CANONICAL_PROBE_BLOCK_MISMATCH=true);;
   esac
   if env "${args[@]}" "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/rejected-$drift.json" >/dev/null 2>&1; then
     echo "live preflight accepted $drift drift" >&2; exit 1

@@ -681,7 +681,7 @@ fn adjust_stop_reason_count(
     Ok(())
 }
 
-fn apply_withdrawal_liability_record(
+fn adjust_withdrawal_liability_record(
     connection: &UpdateConnection<'_>,
     record: &WithdrawalRecord,
     add: bool,
@@ -690,22 +690,11 @@ fn apply_withdrawal_liability_record(
     if !is_nonterminal_withdrawal(record) {
         return Ok(());
     }
-    let key = withdrawal_liability_key(record);
     if add {
-        connection.execute(
-            "INSERT INTO withdrawal_liability_index(key, value) VALUES(?1, ?2)",
-            params![key, record.id.bytes().to_sql_bytes()],
-        )?;
-        increment_table_count(connection, "withdrawal_liability_index")?;
         *amount = amount
             .checked_add(record.amount_out.get())
             .ok_or_else(|| DbError::Constraint("withdrawal liability overflow".into()))?;
     } else {
-        connection.execute(
-            "DELETE FROM withdrawal_liability_index WHERE key = ?1",
-            params![key],
-        )?;
-        decrement_table_count(connection, "withdrawal_liability_index")?;
         *amount = amount
             .checked_sub(record.amount_out.get())
             .ok_or_else(|| DbError::Constraint("withdrawal liability underflow".into()))?;
@@ -735,9 +724,26 @@ fn replace_withdrawal_row(
     )?;
     let mut amount = u128::from_sql_bytes(raw_amount)
         .map_err(|_| DbError::Constraint("invalid withdrawal liability amount".into()))?;
-    if let Some(old) = persisted {
-        let old = decode_withdrawal_blob(old)?;
-        apply_withdrawal_liability_record(connection, &old, false, &mut amount)?;
+    let old_record = persisted.map(decode_withdrawal_blob).transpose()?;
+    let next_record = decode_withdrawal_blob(next.to_sql_bytes())?;
+    let previous_liability_key = old_record
+        .as_ref()
+        .filter(|record| is_nonterminal_withdrawal(record))
+        .map(withdrawal_liability_key);
+    let next_liability = is_nonterminal_withdrawal(&next_record).then(|| {
+        (
+            withdrawal_liability_key(&next_record),
+            next_record.id.bytes().to_sql_bytes(),
+        )
+    });
+    transition_tracked_entry(
+        connection,
+        "withdrawal_liability_index",
+        previous_liability_key,
+        next_liability,
+    )?;
+    if let Some(old) = old_record {
+        adjust_withdrawal_liability_record(connection, &old, false, &mut amount)?;
         connection.execute(
             "UPDATE withdrawals SET value = ?1 WHERE key = ?2",
             params![next.to_sql_bytes(), key],
@@ -749,8 +755,7 @@ fn replace_withdrawal_row(
         )?;
         increment_table_count(connection, "withdrawals")?;
     }
-    let next_record = decode_withdrawal_blob(next.to_sql_bytes())?;
-    apply_withdrawal_liability_record(connection, &next_record, true, &mut amount)?;
+    adjust_withdrawal_liability_record(connection, &next_record, true, &mut amount)?;
     connection.execute(
         "UPDATE singleton_state SET withdrawal_liability_amount = ?1 WHERE id = 1",
         params![amount.to_sql_bytes()],
@@ -2700,11 +2705,12 @@ impl StableStore {
                         ],
                     )?;
                     increment_table_count(connection, "evm_execution_payloads")?;
-                    connection.execute(
-                        "INSERT INTO evm_state_index(key, value) VALUES(?1, ?2)",
-                        params![evm_index.to_sql_bytes(), 0u8.to_sql_bytes()],
+                    transition_tracked_entry(
+                        connection,
+                        "evm_state_index",
+                        None,
+                        Some((evm_index.to_sql_bytes(), 0u8.to_sql_bytes())),
                     )?;
-                    increment_table_count(connection, "evm_state_index")?;
                     connection.execute(
                         "INSERT INTO audit_events(key, value) VALUES(?1, ?2)",
                         params![sequence.to_sql_bytes(), audit.to_sql_bytes()],
@@ -5540,13 +5546,11 @@ impl StableStore {
                 "UPDATE evm_operations SET value = ?1 WHERE key = ?2",
                 params![operation_blob.to_sql_bytes(), operation_key],
             )?;
-            connection.execute(
-                "DELETE FROM evm_state_index WHERE key = ?1",
-                params![previous_index.to_sql_bytes()],
-            )?;
-            connection.execute(
-                "INSERT INTO evm_state_index(key, value) VALUES (?1, ?2)",
-                params![next_index.to_sql_bytes(), 0u8.to_sql_bytes()],
+            transition_tracked_entry(
+                connection,
+                "evm_state_index",
+                Some(previous_index.to_sql_bytes()),
+                Some((next_index.to_sql_bytes(), 0u8.to_sql_bytes())),
             )?;
             connection.execute(
                 "UPDATE singleton_state SET counters = ?1, external_progress = ?2 WHERE id = 1",
@@ -6343,11 +6347,15 @@ impl StableStore {
             )?;
             increment_table_count(connection, "reconciliation_holds")?;
             hold_bundle_db_failpoint(HoldBundleFailpoint::Hold)?;
-            connection.execute(
-                "INSERT INTO open_hold_index(key, value) VALUES (?1, ?2)",
-                params![hold.id.get().to_sql_bytes(), 0u8.to_sql_bytes()],
+            transition_tracked_entry(
+                connection,
+                "open_hold_index",
+                None,
+                Some((
+                    hold.id.get().to_sql_bytes(),
+                    0u8.to_sql_bytes(),
+                )),
             )?;
-            increment_table_count(connection, "open_hold_index")?;
             hold_bundle_db_failpoint(HoldBundleFailpoint::OpenHoldIndex)?;
             connection.execute(
                 "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
@@ -7613,11 +7621,12 @@ impl StableStore {
                 )?;
             }
             terminal_bundle_db_failpoint(TerminalBundleFailpoint::EvmOperation)?;
-            connection.execute(
-                "DELETE FROM evm_state_index WHERE key = ?1",
-                params![previous_evm_index.to_sql_bytes()],
+            transition_tracked_entry(
+                connection,
+                "evm_state_index",
+                Some(previous_evm_index.to_sql_bytes()),
+                None,
             )?;
-            decrement_table_count(connection, "evm_state_index")?;
             terminal_bundle_db_failpoint(TerminalBundleFailpoint::EvmStateIndex)?;
             connection.execute("DELETE FROM operation_owner_index WHERE key = ?1", params![operation_key])?;
             decrement_table_count(connection, "operation_owner_index")?;
@@ -8041,18 +8050,17 @@ impl StableStore {
                 previous_blob.as_ref().map(StableBlob::as_slice),
                 "stale reconciliation hold write",
             )?;
-            if previous.as_ref().is_some_and(is_open_hold) {
-                remove_table_entry(connection, "open_hold_index", key.clone())?;
-            }
+            let previous_open =
+                previous.as_ref().is_some_and(is_open_hold).then(|| key.clone());
+            let next_open =
+                is_open_hold(value).then(|| (key.clone(), 0u8.to_sql_bytes()));
+            transition_tracked_entry(
+                connection,
+                "open_hold_index",
+                previous_open,
+                next_open,
+            )?;
             record_write_db_failpoint(RecordWriteFailpoint::RemoveIndex)?;
-            if is_open_hold(value) {
-                upsert_table_entry(
-                    connection,
-                    "open_hold_index",
-                    key.clone(),
-                    0u8.to_sql_bytes(),
-                )?;
-            }
             record_write_db_failpoint(RecordWriteFailpoint::AddIndex)?;
             record_write_db_failpoint(RecordWriteFailpoint::OperationOwner)?;
             upsert_table_entry(
@@ -8360,11 +8368,12 @@ impl StableStore {
                 params![hold_blob.to_sql_bytes(), hold.id.get().to_sql_bytes()],
             )?;
             resolve_hold_bundle_db_failpoint(ResolveHoldBundleFailpoint::Hold)?;
-            connection.execute(
-                "DELETE FROM open_hold_index WHERE key = ?1",
-                params![hold.id.get().to_sql_bytes()],
+            transition_tracked_entry(
+                connection,
+                "open_hold_index",
+                Some(hold.id.get().to_sql_bytes()),
+                None,
             )?;
-            decrement_table_count(connection, "open_hold_index")?;
             resolve_hold_bundle_db_failpoint(ResolveHoldBundleFailpoint::OpenHoldIndex)?;
             if let (Some(scan_key), Some(scan_blob)) = (scan_key, &scan_blob) {
                 if connection.query_scalar::<Vec<u8>>(
@@ -8413,7 +8422,12 @@ impl StableStore {
 }
 
 fn is_open_hold(value: &ReconciliationHoldRecord) -> bool {
-    matches!(value.state, ReconciliationHoldState::Open)
+    let state = match value.state {
+        ReconciliationHoldState::Open => 0,
+        ReconciliationHoldState::ResolvedSucceeded { .. } => 1,
+        ReconciliationHoldState::ResolvedAbsent { .. } => 2,
+    };
+    bridge_core::reconciliation_hold_indexed(state)
 }
 
 fn is_pending_deposit_ledger(value: &DepositRecord) -> bool {
@@ -8475,7 +8489,13 @@ fn is_pending_withdrawal_ledger(value: &WithdrawalRecord) -> bool {
 }
 
 fn is_nonterminal_withdrawal(value: &WithdrawalRecord) -> bool {
-    !matches!(value.state, WithdrawalState::Paid { .. })
+    let state = match value.state {
+        WithdrawalState::Observed => 0,
+        WithdrawalState::ReleasePending { .. } => 1,
+        WithdrawalState::Paid { .. } => 2,
+        WithdrawalState::ReconciliationHold { .. } => 3,
+    };
+    bridge_core::withdrawal_liability_indexed(state)
 }
 
 fn is_pending_fee_payout(value: &crate::admin::FeePayoutRecord) -> bool {

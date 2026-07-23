@@ -136,6 +136,30 @@ macro_rules! nonce_too_low_submitted_body {
     };
 }
 
+macro_rules! canonical_probe_matches_body {
+    ($receipt_block:expr, $snapshot_block:expr) => {
+        $receipt_block == $snapshot_block
+    };
+}
+
+macro_rules! withdrawal_liability_indexed_body {
+    ($state:expr, $observed:expr, $release_pending:expr, $reconciliation_hold:expr) => {
+        $state == $observed || $state == $release_pending || $state == $reconciliation_hold
+    };
+}
+
+macro_rules! evm_operation_indexed_body {
+    ($state:expr, $queued:expr, $prepared:expr, $submitted:expr) => {
+        $state == $queued || $state == $prepared || $state == $submitted
+    };
+}
+
+macro_rules! reconciliation_hold_indexed_body {
+    ($state:expr, $open:expr) => {
+        $state == $open
+    };
+}
+
 macro_rules! mint_admission_total_body {
     ($consumed:expr, $reserved:expr, $candidate:expr, $max:expr) => {{
         if $reserved > $max || $consumed > $max - $reserved {
@@ -382,6 +406,26 @@ pub const fn checked_counter_transition(
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn canonical_probe_matches(receipt_block: u64, snapshot_block: u64) -> bool {
+    canonical_probe_matches_body!(receipt_block, snapshot_block)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn withdrawal_liability_indexed(state: u8) -> bool {
+    withdrawal_liability_indexed_body!(state, 0u8, 1u8, 3u8)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn evm_operation_indexed(state: u8) -> bool {
+    evm_operation_indexed_body!(state, 0u8, 1u8, 2u8)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn reconciliation_hold_indexed(state: u8) -> bool {
+    reconciliation_hold_indexed_body!(state, 0u8)
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn nonce_too_low_is_submitted(provider_agreement: bool, local_hash_found: bool) -> bool {
     nonce_too_low_submitted_body!(provider_agreement, local_hash_found)
 }
@@ -582,6 +626,29 @@ verus! {
             next_attempt_body!(current, max, one)
         } else if current == 0 { None }
         else { Some(current - 1) }
+    }
+
+    pub open spec fn canonical_probe_matches_spec(receipt_block: int, snapshot_block: int) -> bool {
+        canonical_probe_matches_body!(receipt_block, snapshot_block)
+    }
+
+    pub open spec fn withdrawal_liability_indexed_spec(state: int) -> bool {
+        let observed: int = 0;
+        let release_pending: int = 1;
+        let reconciliation_hold: int = 3;
+        withdrawal_liability_indexed_body!(state, observed, release_pending, reconciliation_hold)
+    }
+
+    pub open spec fn evm_operation_indexed_spec(state: int) -> bool {
+        let queued: int = 0;
+        let prepared: int = 1;
+        let submitted: int = 2;
+        evm_operation_indexed_body!(state, queued, prepared, submitted)
+    }
+
+    pub open spec fn reconciliation_hold_indexed_spec(state: int) -> bool {
+        let open: int = 0;
+        reconciliation_hold_indexed_body!(state, open)
     }
 
     pub open spec fn nonce_too_low_is_submitted_spec(

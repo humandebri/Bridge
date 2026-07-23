@@ -18,7 +18,7 @@ import {
   type PendingConfirmation,
 } from "@/lib/pending-confirmations"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
-import { decideWithdrawalFinalization } from "@/lib/withdrawal-confirmation-state"
+import { decideNotificationFailure, decideWithdrawalFinalization } from "@/lib/withdrawal-confirmation-state"
 import { withBrowserLock } from "@/lib/browser-lock"
 
 export const CONFIRMATION_POLL_MS = 15_000
@@ -374,6 +374,11 @@ export async function confirmWhenFinalized(
   } catch (error) {
     if (error instanceof ConfirmationLeaseLostError) throw error
     if (!isActive()) return { status: "retry" }
+    if (error instanceof NotifyWithdrawalCallError
+      && decideNotificationFailure(entry.kind, error.code) === "retain-pending") {
+      toast.warning(error.message)
+      return { status: "retry" }
+    }
     if (isRetryableConfirmationError(error)) {
       return { status: "retry", retryAt: error instanceof SettlementActionCallError ? error.retryAt : undefined }
     }

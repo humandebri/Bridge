@@ -11,13 +11,22 @@ from pathlib import Path
 import check_refinement_manifest as refinement
 
 
-SECTIONS = ("quote_cases", "settlement_cases", "finalization_cases", "queue_cases")
-DOCUMENT = {"schema_version": 1, **{section: [{}] for section in SECTIONS}}
+SECTIONS = (
+    "quote_cases",
+    "settlement_cases",
+    "finalization_cases",
+    "queue_cases",
+    "fee_guard_pending_cases",
+    "canonical_probe_cases",
+)
+DOCUMENT = {"schema_version": 2, **{section: [{}] for section in SECTIONS}}
 MODEL = """
 def commit := True
 def outboundSettlement := True
 def decideWithdrawalFinalization := True
 def restorePendingQueue := True
+def handleNotificationFailure := True
+def canonicalProbeMatches := True
 """
 THEOREMS = """
 theorem committed_quote_is_fixed (h : commit) : True := by trivial
@@ -26,6 +35,10 @@ theorem paid_debt_preserves_backing (h : settleDebt) : True := by trivial
 theorem withdrawal_notify_requires_finalized_success
     (h : decideWithdrawalFinalization) : True := by trivial
 theorem restore_preserves_blocked_retry (h : restorePendingQueue) : True := by trivial
+theorem fee_guard_failure_retains_pending
+    (h : handleNotificationFailure) : True := by trivial
+theorem canonical_probe_matches_exactly
+    (h : canonicalProbeMatches) : True := by trivial
 """
 VALID_ROWS = [
     "quote_cases\tcommit\tcommitted_quote_is_fixed\trust\t"
@@ -38,6 +51,10 @@ VALID_ROWS = [
     "ui/src/lib/protocol-vectors.test.ts\tprotocol_finalization_cases_matches_production",
     "queue_cases\trestorePendingQueue\trestore_preserves_blocked_retry\tvitest\t"
     "ui/src/lib/protocol-vectors.test.ts\tprotocol_queue_cases_matches_production",
+    "fee_guard_pending_cases\thandleNotificationFailure\tfee_guard_failure_retains_pending\tvitest\t"
+    "ui/src/lib/protocol-vectors.test.ts\tprotocol_fee_guard_pending_cases_matches_production",
+    "canonical_probe_cases\tcanonicalProbeMatches\tcanonical_probe_matches_exactly\trust\t"
+    "canister/bridge-core/tests/protocol_vectors.rs\tprotocol_canonical_probe_cases_matches_production",
 ]
 
 
@@ -68,7 +85,7 @@ class RefinementManifestTests(unittest.TestCase):
 
     def test_valid_manifest_registers_every_consumer(self) -> None:
         consumers = self.parse()
-        self.assertEqual(len(consumers), 5)
+        self.assertEqual(len(consumers), 7)
         self.assertEqual({consumer.section for consumer in consumers}, set(SECTIONS))
 
     def test_old_settlement_theorem_is_rejected(self) -> None:
