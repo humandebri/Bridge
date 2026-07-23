@@ -210,6 +210,10 @@ async function setup() {
   })
   const bridgeActor = pic.createActor(bridgeIdl, bridgeId)
   const bridge = { actor: bridgeActor, canisterId: bridgeId }
+  const initializedPublicConfig = await bridge.actor.initialize_public_config()
+  if (!("Ok" in initializedPublicConfig)) {
+    throw new Error(`Failed to initialize public config: ${JSON.stringify(initializedPublicConfig.Err)}`)
+  }
   bridge.actor.setIdentity(testIdentity)
   const pauseActor = pic.createActor(bridgeIdl, bridgeId)
   pauseActor.setIdentity(pauseIdentity)
@@ -230,10 +234,6 @@ async function setup() {
   const ledger = pic.createActor(ledgerIdl, ledgerId)
   ledger.setIdentity(testIdentity)
   const index = pic.createActor(indexIdl, indexId)
-  const initializedPublicConfig = await bridge.actor.initialize_public_config()
-  if (!("Ok" in initializedPublicConfig)) {
-    throw new Error(`Failed to initialize public config: ${JSON.stringify(initializedPublicConfig.Err)}`)
-  }
   const publicConfig = await bridge.actor.get_public_config()
   if (bytesHex(publicConfig.expected_bridge_signer).toLowerCase() !== signer.toLowerCase()) throw new Error("Bridge mint signer derivation drifted")
   if (bytesHex(publicConfig.governance_operator).toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge governance operator derivation drifted")
@@ -570,6 +570,21 @@ async function setup() {
         holdNextConfirmDeposit = true
         return send(response, 200, null)
       }
+      if (request.url === "/test/pending-deposit") {
+        const depositId = knownDeposits[0]
+        if (!depositId) throw new Error("no known deposit is available")
+        const [record] = await bridge.actor.get_deposit(depositId)
+        const submitted = record?.base_confirmation[0]?.Submitted
+        if (!submitted) throw new Error("known deposit has no submitted Base transaction")
+        return send(response, 200, {
+          bridgeAddress,
+          bridgeCanisterId: bridge.canisterId.toText(),
+          chainId: 31_337,
+          owner: testOwner.toText(),
+          settlementId: bytesHex(depositId),
+          transactionHash: bytesHex(submitted.transaction_hash),
+        })
+      }
       if (request.url === "/test/release-confirm-deposit") {
         releaseHeldConfirmDeposit?.()
         return send(response, 200, null)
@@ -613,13 +628,21 @@ async function setup() {
         return send(response, 200, { time: await pic.getTime() })
       }
       if (request.url === "/test/upgrade") {
-        const before = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
-        await pic.upgradeCanister({
-          canisterId: bridge.canisterId,
-          wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
-          arg: IDL.encode([], []),
-        })
-        const after = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
+        await stopProgressLoop()
+        let before
+        let after
+        try {
+          await waitForNoLeasedJobs(bridge.actor)
+          before = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
+          await pic.upgradeCanister({
+            canisterId: bridge.canisterId,
+            wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
+            arg: IDL.encode([], []),
+          })
+          after = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
+        } finally {
+          await startProgressLoop(pic)
+        }
         if (json(before) !== json(after)) throw new Error("same-Wasm upgrade changed durable bridge state")
         if (before.deposits.length === 0) throw new Error("same-Wasm upgrade did not exercise an individual Deposit record")
         const facts = JSON.parse(await readFile(path.join(runtimeDir, "local-e2e-facts.json"), "utf8"))
@@ -735,6 +758,15 @@ async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
     withdrawals: withdrawals.map(([item]) => item),
     audit_events: auditPage,
   }))
+}
+
+async function waitForNoLeasedJobs(actor) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const status = await actor.get_bridge_status()
+    if (status.settlement_scheduler.leased === 0n) return
+    await delay(50)
+  }
+  throw new Error("settlement scheduler did not release active leases before upgrade")
 }
 
 async function readAllAuditEvents(actor) {

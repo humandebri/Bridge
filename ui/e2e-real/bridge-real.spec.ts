@@ -13,6 +13,8 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   }, { timeout: 30_000 }).toEqual({ bound: true, synced: true })
   const initial = await controlState(request)
   await page.goto("/")
+  await page.getByRole("checkbox", { name: "Acknowledge unaudited bridge risk" }).check()
+  await page.getByRole("button", { name: "Acknowledge and continue" }).click()
   await expect(page.getByRole("heading", { name: "Bridge KINIC" })).toBeVisible()
   await page.getByRole("button", { name: "Connect Base wallet", exact: true }).click()
   await page.getByRole("button", { name: "Connect Base" }).click()
@@ -56,7 +58,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByRole("button", { name: "Retry same deposit" })).toBeVisible()
   await page.getByRole("button", { name: "Retry same deposit" }).click()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
-  await expect(page.getByText(/Deposit 0x[0-9a-f]+… accepted/i)).toBeVisible()
+  await expect(page.getByText(/Deposit 0x[0-9a-f]+… is scheduled/i)).toBeVisible()
   await expect(page.getByText("Deposit status unavailable", { exact: true })).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Bridge to Base" })).toBeVisible()
   const afterRecovery = await controlState(request)
@@ -67,9 +69,6 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" })
   })
   const secondPage = await page.context().newPage()
-  await secondPage.addInitScript(() => {
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" })
-  })
   await installAnvilWallet(secondPage)
   await secondPage.goto("/")
   await secondPage.getByRole("button", { name: "Connect IC wallet", exact: true }).click()
@@ -78,10 +77,14 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect.poll(async () => page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("kinic.bridge.confirmation-lease.v2:")))).toBe(false)
   const beforeTwoTabConfirmation = await controlState(request)
   await postControl(request, "/test/hold-next-confirm-deposit", {})
-  await postControl(request, "/test/relay", {})
-  await secondPage.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }))
+  await postControl(request, "/test/settle", {})
+  const pendingDeposit = await postControl(request, "/test/pending-deposit", {}) as PendingDepositFixture
   await secondPage.bringToFront()
-  await secondPage.evaluate(() => window.dispatchEvent(new Event("kinic-pending-confirmations-changed")))
+  await secondPage.evaluate((pending) => {
+    const key = `kinic.bridge.pending-confirmations.v4:${pending.chainId}:${pending.bridgeAddress.toLowerCase()}:${pending.bridgeCanisterId}`
+    window.localStorage.setItem(key, JSON.stringify({ version: 4, entries: [{ ...pending, bridgeAddress: pending.bridgeAddress.toLowerCase(), blocked: false, kind: "deposit" }] }))
+    window.dispatchEvent(new Event("kinic-pending-confirmations-changed"))
+  }, pendingDeposit)
   await expect.poll(async () => (await controlState(request)).confirmDepositCalls).toBe(beforeTwoTabConfirmation.confirmDepositCalls + 1)
   await secondPage.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" }))
   await page.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }))
@@ -98,7 +101,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.getByLabel("You send").fill("1.00000000")
   await page.getByRole("button", { name: "Bridge to Base" }).click()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
-  await expect(page.getByText(/Deposit 0x[0-9a-f]+… accepted/i)).toBeVisible()
+  await expect(page.getByText(/Deposit 0x[0-9a-f]+… is scheduled/i)).toBeVisible()
   await expect.poll(async () => {
     const state = await controlState(request)
     return {
@@ -108,6 +111,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
     }
   }).toEqual({ knownDepositCount: 2, depositSequences: ["0", "0", "1"], nextDepositSequence: "2" })
 
+  await postControl(request, "/test/settle", {})
   const upgrade = (await postControl(request, "/test/upgrade", {})) as { before: unknown; after: unknown }
   expect(upgrade.after).toEqual(upgrade.before)
   await postControl(request, "/test/relay", {})
@@ -154,7 +158,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   const retryClock = await page.evaluate(() => Date.now())
   await page.clock.setFixedTime(retryClock + 60_000)
   await expect.poll(async () => (await controlState(request)).notifyCalls, { timeout: 45_000 }).toBeGreaterThanOrEqual(beforeWithdrawal.notifyCalls + 2)
-  await expect(page.getByText("Withdrawal is recorded and the transfer completed.", { exact: true })).toBeVisible()
+  await expect(page.getByText("Withdrawal is recorded. Processing will continue automatically.", { exact: true })).toBeVisible()
   expect((await controlState(request)).bsnsAllowance).toBe("0")
   await openHistory(page)
   await page.getByRole("tab", { name: "Withdrawals" }).click()
@@ -194,6 +198,7 @@ async function refreshBridgeData(page: Page): Promise<void> {
   const bridge = page.getByRole("region", { name: "KINIC bridge" })
   const refresh = bridge.getByRole("button", { name: "Refresh", exact: true })
   await refresh.click()
+  await expect(bridge.getByRole("button", { name: "Refreshing…", exact: true })).toBeVisible()
   await expect(refresh).toBeEnabled({ timeout: 90_000 })
 }
 
@@ -215,6 +220,15 @@ async function postControl(request: APIRequestContext, path: string, data: unkno
   const response = await request.post(`http://127.0.0.1:43119${path}`, { data })
   expect(response.ok(), await response.text()).toBe(true)
   return response.json()
+}
+
+interface PendingDepositFixture {
+  bridgeAddress: string
+  bridgeCanisterId: string
+  chainId: number
+  owner: string
+  settlementId: string
+  transactionHash: string
 }
 
 interface ControlState {
