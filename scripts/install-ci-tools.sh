@@ -26,6 +26,17 @@ install_icp() {
   ICP_CLI_DISABLE_UPDATE=1 ICP_CLI_NO_MODIFY_PATH=1 sh "$installer" --quiet
 }
 
+install_ic_wasm() {
+  local installer="/tmp/ic-wasm-installer.sh"
+  curl --proto '=https' --tlsv1.2 -LsSf \
+    -o "$installer" \
+    https://github.com/dfinity/ic-wasm/releases/download/0.10.0/ic-wasm-installer.sh
+  echo "00c361c9c1d53ef464660c0e414cbaf50b602e21f16811fe4134077deaaecabb  $installer" \
+    | sha256sum --check
+  IC_WASM_NO_MODIFY_PATH=1 sh "$installer" --quiet
+  test "$(ic-wasm --version)" = "ic-wasm 0.10.0"
+}
+
 install_proof_tools() {
   local z3_archive="/tmp/z3.zip"
   local verus_archive="/tmp/verus.zip"
@@ -67,9 +78,14 @@ case "$MODE" in
     ;;
   icp)
     install_icp
+    install_ic_wasm
     ;;
-  proof|all)
+  proof)
     install_proof_tools
+    ;;
+  all)
+    install_proof_tools
+    install_ic_wasm
     ;;
   *)
     echo "usage: $0 {didc|icp|proof|all}" >&2

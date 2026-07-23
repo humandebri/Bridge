@@ -7,7 +7,7 @@
     "pnpm": "11.0.8"
   },
   "scripts": {
-    "test:e2e": "jest --config integration/jest.config.js --runInBand"
+    "test:e2e": "TMPDIR=${TMPDIR:-/tmp} jest --config integration/jest.config.js --runInBand"
   },
   "devDependencies": {
     "@dfinity/agent": "^3.4.3",
