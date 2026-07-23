@@ -13,7 +13,7 @@ CanisterがFinalized headまたはreceipt blockを取得する際のblock respon
 
 KINIC Ledger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示・事前検証へ使う。fee変更時はこの定数だけを変更し、Candid binding、Rust/UI/integration test、staging検証を同じ変更で更新する。
 
-stable schema v18へのupgradeでは、実配置済みstaging schema v17にDeposit関連record、hold、EVM operation、intent、index、owner sequence、Deposit settlement jobが一件もない場合だけmetadataとsingleton schemaを原子的に更新する。該当artifactがある場合と未知schemaは`post_upgrade`でfail closedにするため、upgrade前にstatusと各counterがゼロであることを確認する。
+stable schemaはv19、record wireはv16を唯一の現行形式とする。未本番期間はv19のschema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
 
 ## 保持制限と監査
 
@@ -21,11 +21,13 @@ stable schema v18へのupgradeでは、実配置済みstaging schema v17にDepos
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v18またはwire v15以外のstable state、未知schema、decode不能なDBはfail closedで起動を拒否する。ただし、直前項に記載した空のstaging schema v17だけは限定migrationの対象とする。
+schema v19またはwire v16以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。Ledger feeとService Feeをreview済みprofileへ同期した後、対象ownerまたは運用principalがHistoryから`continue_withdrawal`を実行する。Canisterが最新Ledger feeを再取得し、charged Service Fee以下であることを確認した場合だけ、同じrecordからreleaseを開始してguardを解除する。
 本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。
 SQLite DBやcounterを手作業で変更しない。
+
+schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipientを一つのstable envelopeへ保存し、別intent tableを持たない。pending EVM、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、Withdrawal primary rowとliability index・合計額・stop reason集計は一つのSQLite transactionで更新する。
 
 ## Controller限定のstorage保守
 

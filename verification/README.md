@@ -22,4 +22,4 @@ Bridge Signerは通常のDeposit mint権限を持つため、Withdrawal専用rem
 EVM rollbackとEIP-1153 transient storage lifetime、Web Locks、browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityとSQL row selectionは外部仮定である。
 Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
 
-本番未デプロイのためschema v18再オープンとwire v15を検証する。実配置済みstaging v17から空のDeposit状態だけを受理する限定migration以外に、compatibility shim、dual-read、fallbackは提供しない。
+本番未デプロイのためschema v19再オープンとwire v16を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。

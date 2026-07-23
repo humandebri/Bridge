@@ -39,6 +39,19 @@ fn transient_stop(reason: &tasks::SettlementStopReason) -> bool {
     )
 }
 
+fn terminal_fee_payout_result(result: &tasks::FeePayoutActionResult) -> bool {
+    matches!(
+        result,
+        tasks::FeePayoutActionResult::Complete {
+            state: crate::admin::FeePayoutState::Succeeded { .. }
+                | crate::admin::FeePayoutState::Failed,
+        } | tasks::FeePayoutActionResult::Stopped {
+            state: crate::admin::FeePayoutState::Failed,
+            ..
+        }
+    )
+}
+
 fn transient_retry_at(checks: u8) -> u64 {
     let base_seconds = STORE.with(|store| {
         store
@@ -222,7 +235,11 @@ async fn dispatch_due() -> Option<u64> {
             return None;
         }
     };
-    let _ = run_claimed(job).await;
+    if job.kind == SettlementJobKind::FeePayout {
+        let _ = run_claimed_fee_payout(job).await;
+    } else {
+        let _ = run_claimed(job).await;
+    }
     None
 }
 
@@ -230,6 +247,85 @@ pub(crate) async fn run_claimed(
     job: SettlementJob,
 ) -> Result<SettlementActionResult, SettlementActionError> {
     run_claimed_inner(job, None).await
+}
+
+pub(crate) async fn run_claimed_fee_payout(
+    job: SettlementJob,
+) -> Result<tasks::FeePayoutActionResult, SettlementActionError> {
+    let now = ic_cdk::api::time();
+    let payout_id = crate::storage::fee_payout_id_from_job(job.settlement_id)
+        .map_err(|_| SettlementActionError::InvalidId)?;
+    let mut lease = SettlementLease::new(job);
+    arm();
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::FeePayout(payout_id)) else {
+        finish(
+            &lease.job,
+            Some(now.saturating_add(BUSY_RETRY_NS)),
+            lease.job.confirmation_checks,
+            None,
+            None,
+        )?;
+        return Err(SettlementActionError::Busy);
+    };
+    mark_healthy();
+    let result = tasks::advance_fee_payout(payout_id, &mut lease).await;
+    let outcome = match &result {
+        Ok(result) if terminal_fee_payout_result(result) => {
+            finish(&lease.job, None, lease.job.confirmation_checks, None, None)
+        }
+        Ok(tasks::FeePayoutActionResult::Complete { .. }) => finish(
+            &lease.job,
+            None,
+            lease.job.confirmation_checks,
+            Some((
+                "InvalidFeePayoutCompletion",
+                "nonterminal fee payout returned Complete".into(),
+            )),
+            None,
+        ),
+        Ok(tasks::FeePayoutActionResult::ReconciliationProgress { .. }) => finish(
+            &lease.job,
+            Some(transient_retry_at(lease.job.confirmation_checks)),
+            lease.job.confirmation_checks.saturating_add(1),
+            None,
+            None,
+        ),
+        Ok(tasks::FeePayoutActionResult::Stopped { reason, .. }) if transient_stop(reason) => {
+            finish(
+                &lease.job,
+                Some(transient_retry_at(lease.job.confirmation_checks)),
+                lease.job.confirmation_checks.saturating_add(1),
+                None,
+                None,
+            )
+        }
+        Ok(tasks::FeePayoutActionResult::Stopped { reason, .. }) => finish(
+            &lease.job,
+            None,
+            lease.job.confirmation_checks,
+            Some(("SettlementStopped", format!("{reason:?}"))),
+            None,
+        ),
+        Err(SettlementActionError::Busy) => finish(
+            &lease.job,
+            Some(now.saturating_add(BUSY_RETRY_NS)),
+            lease.job.confirmation_checks,
+            None,
+            None,
+        ),
+        Err(error) => finish(
+            &lease.job,
+            None,
+            lease.job.confirmation_checks,
+            Some(("SettlementActionError", format!("{error:?}"))),
+            None,
+        ),
+    };
+    if outcome.is_err() {
+        mark_fault("failed to persist fee payout job outcome");
+        return Err(SettlementActionError::StorageFailure);
+    }
+    result
 }
 
 pub(crate) async fn run_claimed_confirmation(
@@ -263,6 +359,7 @@ async fn run_claimed_inner(
     let key = match lease.job.kind {
         SettlementJobKind::Deposit => ActionKey::Deposit(lease.job.settlement_id),
         SettlementJobKind::Withdrawal => ActionKey::Withdrawal(lease.job.settlement_id),
+        SettlementJobKind::FeePayout => return Err(SettlementActionError::WrongState),
     };
     let Some(_guard) = InFlightGuard::acquire(key) else {
         finish(
@@ -282,6 +379,7 @@ async fn run_claimed_inner(
         SettlementJobKind::Withdrawal => {
             tasks::advance_withdrawal(lease.job.settlement_id, &mut lease).await
         }
+        SettlementJobKind::FeePayout => return Err(SettlementActionError::WrongState),
     };
     let record_stop_reason = result.as_ref().ok().and_then(tasks::stop_reason_text);
     let outcome = match &result {
@@ -455,6 +553,38 @@ mod tests {
         ));
         assert!(!transient_stop(
             &tasks::SettlementStopReason::BaseStateMismatch
+        ));
+    }
+
+    #[test]
+    fn terminal_fee_payout_results_delete_the_job_without_changing_the_public_result() {
+        use crate::admin::FeePayoutState;
+
+        for result in [
+            tasks::FeePayoutActionResult::Complete {
+                state: FeePayoutState::Succeeded { block_index: 7 },
+            },
+            tasks::FeePayoutActionResult::Complete {
+                state: FeePayoutState::Failed,
+            },
+            tasks::FeePayoutActionResult::Stopped {
+                state: FeePayoutState::Failed,
+                reason: tasks::SettlementStopReason::LedgerRejected("BadFee".into()),
+            },
+        ] {
+            assert!(terminal_fee_payout_result(&result));
+        }
+        assert!(!terminal_fee_payout_result(
+            &tasks::FeePayoutActionResult::Stopped {
+                state: FeePayoutState::Pending,
+                reason: tasks::SettlementStopReason::LedgerUnavailable,
+            }
+        ));
+        assert!(!terminal_fee_payout_result(
+            &tasks::FeePayoutActionResult::Stopped {
+                state: FeePayoutState::ReconciliationHold,
+                reason: tasks::SettlementStopReason::LedgerAmbiguous,
+            }
         ));
     }
 }

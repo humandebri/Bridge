@@ -321,6 +321,7 @@ pub async fn notify_withdrawal(
     let ledger_fee = ledger::KINIC_LEDGER_FEE;
     let receipt = ingest_notified_withdrawal(
         observed,
+        transaction_hash,
         ledger_fee,
         finalized_head_block_number,
         *stable_observation,
@@ -398,9 +399,57 @@ fn existing_notified_withdrawal(
     })
 }
 
+fn notification_commit_error(error: crate::storage::StorageError) -> NotifyWithdrawalError {
+    match error {
+        crate::storage::StorageError::Core(
+            bridge_core::CoreError::ConflictingReplay | bridge_core::CoreError::PayloadConflict,
+        ) => NotifyWithdrawalError::WithdrawalConflict,
+        _ => NotifyWithdrawalError::StorageFailure,
+    }
+}
+
+pub(crate) fn existing_notified_withdrawal_by_hash(
+    caller: Principal,
+    transaction_hash: [u8; 32],
+) -> Result<Option<NotifyWithdrawalReceipt>, NotifyWithdrawalError> {
+    let found = STORE.with(|store| {
+        let store = store.borrow();
+        let Some(withdrawal_id) = store
+            .notified_withdrawal_id(transaction_hash)
+            .map_err(|_| NotifyWithdrawalError::StorageFailure)?
+        else {
+            return Ok(None);
+        };
+        let withdrawal = store
+            .withdrawal(withdrawal_id)
+            .map_err(|_| NotifyWithdrawalError::StorageFailure)?
+            .ok_or(NotifyWithdrawalError::StorageFailure)?;
+        let admin = store
+            .admin_state()
+            .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+        Ok(Some((withdrawal_id, withdrawal.owner, admin)))
+    })?;
+    let Some((withdrawal_id, owner, admin)) = found else {
+        return Ok(None);
+    };
+    let administrator = caller == admin.governance_principal || caller == admin.pause_principal;
+    if !notification_caller_allowed(
+        caller,
+        Principal::try_from_slice(&owner)
+            .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?,
+        administrator,
+    ) {
+        return Err(NotifyWithdrawalError::OwnerMismatch);
+    }
+    Ok(Some(NotifyWithdrawalReceipt::Duplicate {
+        withdrawal_id: withdrawal_id.to_vec(),
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ingest_notified_withdrawal(
     observed: evm_rpc::ObservedWithdrawal,
+    transaction_hash: [u8; 32],
     ledger_fee: Amount,
     finalized_head_block_number: u64,
     stable_observation: FinalizedObservationRecord,
@@ -476,8 +525,9 @@ fn ingest_notified_withdrawal(
                     ic_cdk::api::canister_self(),
                     now_ns,
                     audit,
+                    transaction_hash,
                 )
-                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+                .map_err(notification_commit_error)?;
             return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
                 ledger_fee: Nat::from(ledger_fee.get()),
                 charged_service_fee: Nat::from(observed.charged_service_fee),
@@ -538,8 +588,9 @@ fn ingest_notified_withdrawal(
                 ic_cdk::api::canister_self(),
                 ic_cdk::api::time(),
                 rpc_audit,
+                transaction_hash,
             )
-            .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+            .map_err(notification_commit_error)?;
         Ok(NotifyWithdrawalReceipt::Ingested {
             withdrawal_id: observed.id.to_vec(),
             finalized_head_block_number,
@@ -701,25 +752,6 @@ pub async fn request_deposit(
         return Err(DepositError::DepositsPaused);
     }
     let now = ic_cdk::api::time();
-    STORE.with(|store| {
-        store
-            .borrow_mut()
-            .reserve_deposit_quota(
-                caller,
-                now,
-                config.deposit_rate_limit_window_seconds,
-                config.deposit_rate_limit_global,
-                config.deposit_rate_limit_per_principal,
-            )
-            .map_err(|error| match error {
-                crate::storage::DepositQuotaError::RateLimited(limited) => {
-                    DepositError::RateLimited {
-                        retry_after_seconds: limited.retry_after_seconds,
-                    }
-                }
-                crate::storage::DepositQuotaError::Storage(_) => DepositError::StorageFailure,
-            })
-    })?;
     let ledger_fee = ledger::KINIC_LEDGER_FEE;
     let memo = hash(&[b"KINIC-DEPOSIT", &deposit_id]);
     let canister = ic_cdk::api::canister_self();
@@ -772,12 +804,29 @@ pub async fn request_deposit(
         {
             return Err(DepositError::DepositsPaused);
         }
-        store
-            .admit_deposit(caller, &intent, &record, None)
+        let outcome = store
+            .admit_deposit(
+                caller,
+                &intent,
+                &record,
+                None,
+                Some(crate::storage::DepositQuotaAdmission {
+                    now_ns: now,
+                    window_seconds: config.deposit_rate_limit_window_seconds,
+                    global_limit: config.deposit_rate_limit_global,
+                    per_principal_limit: config.deposit_rate_limit_per_principal,
+                }),
+            )
             .map_err(|error| match error {
                 crate::storage::StorageError::SequenceMismatch { expected } => {
                     DepositError::SequenceMismatch { expected }
                 }
+                crate::storage::StorageError::DepositsPaused => DepositError::DepositsPaused,
+                crate::storage::StorageError::DepositRateLimited {
+                    retry_after_seconds,
+                } => DepositError::RateLimited {
+                    retry_after_seconds,
+                },
                 crate::storage::StorageError::Core(bridge_core::CoreError::ConflictingReplay) => {
                     DepositError::DepositConflict
                 }
@@ -790,7 +839,10 @@ pub async fn request_deposit(
                 ) => DepositError::Rejected("MintWindowLimitExceeded".into()),
                 _ => DepositError::StorageFailure,
             })?;
-        Ok(AdmissionOutcome::Inserted)
+        Ok(match outcome {
+            crate::storage::DepositAdmissionOutcome::Inserted => AdmissionOutcome::Inserted,
+            crate::storage::DepositAdmissionOutcome::Existing => AdmissionOutcome::Existing,
+        })
     })?;
     if matches!(admission, AdmissionOutcome::Existing) {
         return existing_receipt(deposit_id, payload_hash)?.ok_or(DepositError::StorageFailure);

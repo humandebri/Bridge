@@ -95,7 +95,7 @@ beforeEach(() => {
       bridge_contract: Array.from({ length: 20 }, () => 0x11),
       ledger_canister_id: Principal.fromText(configuredLedgerId),
       index_canister_id: Principal.fromText(configuredIndexId),
-      schema_version: 18,
+      schema_version: 19,
       expected_bridge_signer: new Uint8Array(20).fill(0x33),
       evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
       rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
@@ -159,17 +159,18 @@ describe("validateRuntime token bindings", () => {
     expect(getBlockMock).toHaveBeenCalledOnce()
   })
 
-  it("blocks when the Canister EVM RPC binding differs", async () => {
+  it("blocks obsolete schema and mismatched Canister EVM RPC bindings", async () => {
     mocks.createBridgeActor.mockResolvedValue({
       get_public_config: vi.fn().mockResolvedValue({
         base_chain_id: BigInt(profile.chainId), bridge_contract: new Uint8Array(20).fill(0x11),
         ledger_canister_id: Principal.fromText(ledgerId), index_canister_id: Principal.fromText(indexId),
-        schema_version: 10, expected_bridge_signer: new Uint8Array(20).fill(0x33),
+        schema_version: 18, expected_bridge_signer: new Uint8Array(20).fill(0x33),
         evm_rpc_canister_id: Principal.managementCanister(), rpc_provider_urls_sha256: new Uint8Array(32).fill(0xdd),
       }),
       get_bridge_status: vi.fn().mockResolvedValue({ withdrawal_fee_guard_active: false }),
     })
     const result = await validateRuntime(profile)
+    expect(result.blockers).toContain("Unsupported canister schema 18")
     expect(result.blockers).toContain("Canister EVM RPC ID differs from the profile")
     expect(result.blockers).toContain("Canister RPC provider URLs differ from the profile")
   })

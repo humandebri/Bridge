@@ -1,5 +1,5 @@
 use crate::{config::FeeRecipientConfig, ledger, storage::AuditEventPage, STORE};
-use bridge_core::{Account, Amount, LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity};
+use bridge_core::{Account, Amount, LedgerOperation, LedgerTransferIdentity};
 use candid::{CandidType, Deserialize, Nat, Principal};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -220,10 +220,7 @@ pub fn audit_events(start: u64, limit: u16) -> Result<AuditEventPage, AdminError
     })
 }
 
-pub async fn request_fee_payout(
-    caller: Principal,
-    amount: Nat,
-) -> Result<FeePayoutReceipt, AdminError> {
+pub fn request_fee_payout(caller: Principal, amount: Nat) -> Result<FeePayoutReceipt, AdminError> {
     let amount: u128 = amount
         .0
         .to_string()
@@ -232,7 +229,7 @@ pub async fn request_fee_payout(
     if amount == 0 {
         return Err(AdminError::InvalidArgument("amount must be nonzero".into()));
     }
-    let config = STORE.with(|store| {
+    STORE.with(|store| {
         let store = store.borrow();
         let admin = store
             .admin_state()
@@ -240,13 +237,10 @@ pub async fn request_fee_payout(
         if !authorized(&admin, caller, ACTION_PAYOUT) {
             return Err(AdminError::Unauthorized);
         }
-        store
-            .config()
-            .map_err(|_| AdminError::StorageFailure)?
-            .ok_or(AdminError::StorageFailure)
+        Ok(())
     })?;
     let fee = ledger::KINIC_LEDGER_FEE;
-    let mut record = STORE.with(|store| {
+    let record = STORE.with(|store| {
         let mut store = store.borrow_mut();
         let admin = store
             .admin_state()
@@ -308,40 +302,6 @@ pub async fn request_fee_payout(
             .map_err(|_| AdminError::StorageFailure)?;
         Ok(record)
     })?;
-    match ledger::release(config.ledger_canister_id, &record.transfer).await {
-        LedgerCallOutcome::Succeeded { block_index }
-        | LedgerCallOutcome::Duplicate { block_index } => {
-            record.state = FeePayoutState::Succeeded { block_index };
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .complete_fee_payout_success(record.id, block_index)
-                    .map_err(|_| AdminError::StorageFailure)
-            })?;
-        }
-        LedgerCallOutcome::Ambiguous => {
-            record.state = FeePayoutState::ReconciliationHold;
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .hold_fee_payout(record.id)
-                    .map_err(|_| AdminError::StorageFailure)
-            })?;
-        }
-        LedgerCallOutcome::DefinitiveFailure { .. } => {
-            record.state = FeePayoutState::Failed;
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .complete_fee_payout_failure(record.id)
-                    .map_err(|_| AdminError::StorageFailure)
-            })?;
-        }
-        LedgerCallOutcome::RetryableFailure { .. } => {
-            // Keep the record pending. A later attempt requires an explicit
-            // continue_fee_payout call from an authorized administrator.
-        }
-    }
     Ok(FeePayoutReceipt {
         id: record.id,
         amount: Nat::from(record.amount),

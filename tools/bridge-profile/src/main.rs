@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 18;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 19;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",

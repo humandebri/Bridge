@@ -1,12 +1,12 @@
 use crate::{
     evm_calls, evm_rpc,
     phases::{DepositPhase, SettlementState},
-    storage::{AuditEventKind, RpcAuditBatch},
+    storage::{AuditEventKind, DepositRecoveryAdmission, DepositReserveAdmission, RpcAuditBatch},
     STORE,
 };
 use bridge_core::{
     DepositEvent, DepositRecord, DepositState, EvmOperationEvent, EvmOperationId, EvmOperationKind,
-    EvmOperationRecord, EvmOperationState, ExternalProgress, FinalizedObservationRecord,
+    EvmOperationRecord, EvmOperationState, FinalizedObservationRecord,
 };
 use candid::{CandidType, Deserialize, Principal};
 
@@ -199,28 +199,6 @@ fn rpc_audit(observation: &evm_rpc::RecoveryObservation) -> AuditEventKind {
     }
 }
 
-fn progress_at_finalized(
-    observation: &evm_rpc::RecoveryObservation,
-) -> Result<ExternalProgress, RecoverMintRevertError> {
-    STORE.with(|store| {
-        let mut progress = store
-            .borrow()
-            .external_progress()
-            .map_err(|_| RecoverMintRevertError::StorageFailure)?;
-        progress
-            .observe_finalized(FinalizedObservationRecord {
-                chain_id: observation.finalized.chain_id,
-                block_number: observation.finalized.block_number,
-                block_hash: observation.finalized.block_hash,
-                observed_at_ns: observation.finalized.observed_at_ns,
-                bridge_signer: observation.bridge_identity.signer,
-                runtime_sha256: observation.bridge_identity.runtime_sha256,
-            })
-            .map_err(|_| RecoverMintRevertError::BaseStateMismatch)?;
-        Ok(progress)
-    })
-}
-
 fn recovery_audit_started(
     preflight: &Preflight,
     replacement_id: EvmOperationId,
@@ -278,14 +256,12 @@ pub(crate) async fn recover(
     {
         return Err(RecoverMintRevertError::BridgeSignerMismatch);
     }
-    let progress = progress_at_finalized(&observation)?;
-
     match (&preflight.parent, &observation.state) {
         (Parent::Deposit(record), evm_rpc::RecoveryBaseState::DepositProcessed(processed)) => {
             if *processed {
                 return Err(RecoverMintRevertError::BaseStateMismatch);
             }
-            recover_mint(caller, &config, &preflight, record, &observation, progress).await
+            recover_mint(caller, &config, &preflight, record, &observation).await
         }
     }
 }
@@ -296,7 +272,6 @@ async fn recover_mint(
     preflight: &Preflight,
     record: &DepositRecord,
     observation: &evm_rpc::RecoveryObservation,
-    progress: ExternalProgress,
 ) -> Result<RecoverMintRevertReceipt, RecoverMintRevertError> {
     if observation.snapshot.deposits_paused {
         return Err(RecoverMintRevertError::MintWindowUnavailable);
@@ -309,7 +284,7 @@ async fn recover_mint(
     {
         return Err(RecoverMintRevertError::MintWindowUnavailable);
     }
-    let (counters, nonterminal_withdrawals) = STORE.with(|store| {
+    let (counters, nonterminal_withdrawals, expected_token) = STORE.with(|store| {
         let store = store.borrow();
         Ok::<_, RecoverMintRevertError>((
             store
@@ -317,6 +292,9 @@ async fn recover_mint(
                 .map_err(|_| RecoverMintRevertError::StorageFailure)?,
             store
                 .nonterminal_withdrawal_count()
+                .map_err(|_| RecoverMintRevertError::StorageFailure)?,
+            store
+                .deposit_reserve_token()
                 .map_err(|_| RecoverMintRevertError::StorageFailure)?,
         ))
     })?;
@@ -353,6 +331,25 @@ async fn recover_mint(
     if !reserve.sufficient {
         return Err(RecoverMintRevertError::ReserveUnavailable);
     }
+    let admission = DepositRecoveryAdmission {
+        reserve: DepositReserveAdmission {
+            audit_caller: caller,
+            expected_token,
+            observed_at_ns: ic_cdk::api::time(),
+            eth_balance_wei: eth_balance,
+            cycles_balance: ic_cdk::api::canister_liquid_cycle_balance(),
+            reserve_policy: config.reserve_policy(),
+            mint_snapshot: mint,
+        },
+        finalized_observation: FinalizedObservationRecord {
+            chain_id: observation.finalized.chain_id,
+            block_number: observation.finalized.block_number,
+            block_hash: observation.finalized.block_hash,
+            observed_at_ns: observation.finalized.observed_at_ns,
+            bridge_signer: observation.bridge_identity.signer,
+            runtime_sha256: observation.bridge_identity.runtime_sha256,
+        },
+    };
     let intent_record = STORE.with(|store| {
         store
             .borrow()
@@ -406,7 +403,7 @@ async fn recover_mint(
                 &old_next,
                 &replacement,
                 &intent,
-                &progress,
+                admission,
                 RpcAuditBatch {
                     caller,
                     timestamp_ns: ic_cdk::api::time(),
@@ -416,7 +413,20 @@ async fn recover_mint(
                     ],
                 },
             )
-            .map_err(|_| RecoverMintRevertError::StorageFailure)
+            .map_err(|error| match error {
+                crate::storage::StorageError::ReserveUnavailable
+                | crate::storage::StorageError::StaleReserveObservation => {
+                    RecoverMintRevertError::ReserveUnavailable
+                }
+                crate::storage::StorageError::Core(
+                    bridge_core::CoreError::MintWindowLimitExceeded,
+                ) => RecoverMintRevertError::MintWindowUnavailable,
+                crate::storage::StorageError::Core(
+                    bridge_core::CoreError::StaleFinalizedObservation
+                    | bridge_core::CoreError::ConflictingFinalizedObservation,
+                ) => RecoverMintRevertError::BaseStateMismatch,
+                _ => RecoverMintRevertError::StorageFailure,
+            })
     })?;
     Ok(RecoverMintRevertReceipt::Enqueued {
         replacement_operation_id: replacement_id.get(),

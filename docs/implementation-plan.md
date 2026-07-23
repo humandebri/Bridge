@@ -12,7 +12,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v18、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
+Bridge canisterはstable schema v19、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
 Plan 005は本番パラメータの外部計測と単一emergency pause演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、Gate A/Gate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、IC mainnet test CanisterとBase Sepoliaの外部実行は明示承認待ちである。
 
 ## 全体構成
@@ -122,7 +122,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003およびADR 0017から0020で外部連携、運用状態、settlement executor、フロント通知型confirmationを追加し、現行stable schemaはv18である。
+後続のPlan 002と003およびADR 0017から0020で外部連携、運用状態、settlement executor、フロント通知型confirmationを追加し、現行stable schemaはv19である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -130,13 +130,17 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
 - 本番未デプロイ中はlegacy schemaを維持せず、現行stable schemaの再オープンとupgrade保持、未知versionのfail-closedを検証する。
+- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v19・record wire v16とする。
+- Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
+- Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
 
 ### 2-2. Deposit フロー（ADR 0001、0004、0005）
 
-1. 受付時に、対応する Base mint の保守的最大費用を予約できるか検査する。予約できなければ ICP ledger から pull する前に受付を拒否する。
-2. ICRC-2 で SNS トークンを escrow へ pull する。利用者指定の `max_service_fee` を検査する。
-3. Base mint 量は、ロック量から Service Fee を引いた量とする。
-4. mint 成功時にのみ Service Fee を fee reserve へ確定する。
+1. 受付時はlocal pause、入力、rate limit、`gross_amount > 10_000`だけを検査し、mint資源を予約せず`FundingPending`を保存する。
+2. ICRC-2でSNSトークンをescrowへpullし、成功または`Duplicate`を永続化してからBase Finalized状態を観測する。
+3. freshな観測でquoteとmint予約を原子的に確定する。観測不能・不一致・stale observationでは返金せず再観測する。
+4. Base pause、fee拒否、上限超過、reserve不足では、元accountへ`gross_amount - 10_000`を返し、固定Ledger fee 10,000をescrowから負担する。曖昧結果はRefund Reconciliation Holdへ移す。
+5. mint成功時にのみService Feeをfee reserveへ確定し、refundではService Feeを計上しない。
 
 ### 2-3. Withdrawal フロー（ADR 0004、0011、0018）
 

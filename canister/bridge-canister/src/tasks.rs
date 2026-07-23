@@ -2017,6 +2017,7 @@ pub(crate) async fn advance_withdrawal(
 
 pub(crate) async fn advance_fee_payout(
     payout_id: u64,
+    lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<FeePayoutActionResult, SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -2040,7 +2041,9 @@ pub(crate) async fn advance_fee_payout(
             state: payout.state,
         }),
         crate::admin::FeePayoutState::Pending => {
+            lease.renew_before_external_call()?;
             let outcome = ledger::release(config.ledger_canister_id, &payout.transfer).await;
+            lease.ensure_current()?;
             match outcome {
                 LedgerCallOutcome::Succeeded { block_index }
                 | LedgerCallOutcome::Duplicate { block_index } => {
@@ -2088,7 +2091,9 @@ pub(crate) async fn advance_fee_payout(
             if ic_cdk::api::time().saturating_sub(payout.transfer.created_at_time_ns)
                 <= LEDGER_DEDUP_NS
             {
+                lease.renew_before_external_call()?;
                 let outcome = ledger::release(config.ledger_canister_id, &payout.transfer).await;
+                lease.ensure_current()?;
                 if let Some(block_index) = outcome.confirmed_block() {
                     STORE.with(|store| {
                         store
@@ -2098,6 +2103,18 @@ pub(crate) async fn advance_fee_payout(
                     })?;
                     return Ok(FeePayoutActionResult::Complete {
                         state: crate::admin::FeePayoutState::Succeeded { block_index },
+                    });
+                }
+                if let LedgerCallOutcome::DefinitiveFailure { code } = &outcome {
+                    STORE.with(|store| {
+                        store
+                            .borrow_mut()
+                            .complete_fee_payout_failure(payout_id)
+                            .map_err(|_| SettlementActionError::StorageFailure)
+                    })?;
+                    return Ok(FeePayoutActionResult::Stopped {
+                        state: crate::admin::FeePayoutState::Failed,
+                        reason: SettlementStopReason::LedgerRejected(format!("{code:?}")),
                     });
                 }
                 return Ok(FeePayoutActionResult::Stopped {
@@ -2122,6 +2139,7 @@ pub(crate) async fn advance_fee_payout(
                 Ok(progress)
             })?;
             let reconciliation_input = progress.clone();
+            lease.renew_before_external_call()?;
             match ledger::reconcile_step(
                 config.ledger_canister_id,
                 config.index_canister_id,
@@ -2130,6 +2148,7 @@ pub(crate) async fn advance_fee_payout(
             .await
             {
                 ledger::ReconciliationOutcome::Progress(progress) => {
+                    lease.ensure_current()?;
                     STORE.with(|store| {
                         store
                             .borrow_mut()
@@ -2141,6 +2160,7 @@ pub(crate) async fn advance_fee_payout(
                     })
                 }
                 ledger::ReconciliationOutcome::Succeeded { block_index } => {
+                    lease.ensure_current()?;
                     resolve_reconciliation_success(&config, target, block_index);
                     Ok(FeePayoutActionResult::Complete {
                         state: crate::admin::FeePayoutState::Succeeded { block_index },
@@ -2150,6 +2170,7 @@ pub(crate) async fn advance_fee_payout(
                     ledger_watermark,
                     index_watermark,
                 } => {
+                    lease.ensure_current()?;
                     if index_watermark < ledger_watermark {
                         return Ok(FeePayoutActionResult::ReconciliationProgress {
                             state: crate::admin::FeePayoutState::ReconciliationHold,

@@ -33,13 +33,17 @@ def main() -> None:
     parser.add_argument("--print-version", action="store_true")
     args = parser.parse_args()
 
-    storage = (ROOT / "canister/bridge-canister/src/storage.rs").read_text(
+    storage = (ROOT / "canister/bridge-canister/src/storage/schema.rs").read_text(
         encoding="utf-8"
     )
     match = re.search(r"pub const SCHEMA_VERSION: u16 = (\d+);", storage)
     if match is None:
         raise SystemExit("missing SCHEMA_VERSION declaration")
     version = int(match.group(1))
+    wire_match = re.search(r"const WIRE_VERSION: u8 = (\d+);", storage)
+    if wire_match is None:
+        raise SystemExit("missing WIRE_VERSION declaration")
+    wire_version = int(wire_match.group(1))
     checks = (
         ("README.md", r"(?:stable schema v|schema version )(\d+)", 2),
         ("verification/README.md", r"schema v(\d+)再オープン", 1),
@@ -47,11 +51,43 @@ def main() -> None:
         ("docs/canister-state-machine.md", r"(?:Stable schema v|schema v)(\d+)", 2),
         ("docs/runbooks/operations.md", r"schema v(\d+)またはwire v\d+", 1),
         ("docs/implementation-plan.md", r"(?:stable schema v|現行stable schemaはv)(\d+)", 2),
+        (
+            "canister/bridge-canister/src/storage/mod.rs",
+            r"assert_eq!\(SCHEMA_VERSION, (\d+)\);",
+            1,
+        ),
+        (
+            "tools/bridge-profile/src/main.rs",
+            r"CURRENT_STABLE_SCHEMA_VERSION: u16 = (\d+);",
+            1,
+        ),
         ("ui/src/lib/runtime-validation.ts", r"config\.schema_version !== (\d+)", 1),
-        ("integration/phase3.spec.ts", r"config\.schema_version\)\.toBe\((\d+)\)", 1),
+        (
+            "integration/phase3.spec.ts",
+            r"(?:config|before|after)\.schema_version\)\.toBe\((\d+)\)",
+            3,
+        ),
+        (
+            "scripts/test_production_drivers.sh",
+            r'"schema_version":(\d+),"expected_bridge_signer"',
+            1,
+        ),
+        (
+            "scripts/plan007/test-generate-local-e2e.mjs",
+            r'schema_version: "(\d+)"',
+            1,
+        ),
     )
     for path, pattern, expected_count in checks:
         require_versions(path, pattern, version, expected_count)
+    wire_checks = (
+        ("verification/README.md", r"wire v(\d+)", 1),
+        ("docs/canister-state-machine.md", r"record wire version v(\d+)", 1),
+        ("docs/runbooks/operations.md", r"schema v\d+またはwire v(\d+)", 1),
+        ("docs/implementation-plan.md", r"record wire v(\d+)", 1),
+    )
+    for path, pattern, expected_count in wire_checks:
+        require_versions(path, pattern, wire_version, expected_count)
     if args.print_version:
         print(version)
 

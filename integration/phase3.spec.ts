@@ -279,7 +279,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(18);
+    expect(config.schema_version).toBe(19);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(10_000n);
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
@@ -714,25 +714,28 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (bridge.actor as any).get_bridge_status()).counts.withdrawals).toBe(1n);
   });
 
-  it("rejects a conflicting payload for an existing withdrawal ID", async () => {
+  it("returns the canonical duplicate for a known notification hash without re-reading RPC", async () => {
     const { evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(89);
     await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Ok.Ingested");
+    const callsAfterIngest = await (evm.actor as any).receipt_call_count();
     await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_001n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
-    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.WithdrawalConflict");
+    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Ok.Duplicate");
+    expect(await (evm.actor as any).receipt_call_count()).toBe(callsAfterIngest);
   });
 
-  it("returns the observed error for forty invalid notifications without notification quota", async () => {
+  it("persistently rate limits repeated unknown notification hashes before further RPC", async () => {
     const { evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(88);
     await (evm.actor as any).set_observed_transaction(new Uint8Array(32).fill(9), new Uint8Array(20).fill(1), new Uint8Array(20).fill(0x22), 101n);
     await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     const callsBefore = await (evm.actor as any).receipt_call_count();
-    for (let attempt = 0; attempt < 40; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.TransactionNotConfirmed");
     }
-    expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 40n);
+    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.RateLimited");
+    expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 3n);
   });
 
   it("uses the fixed fee without querying Ledger fee availability", async () => {
@@ -1169,8 +1172,10 @@ describe("Phase 3 PocketIC saga", () => {
       expect(phaseName((await (bridge.actor as any).get_deposit(id))[0].state)).toBe("Minted");
     }
     await (ledger.actor as any).set_ledger_mode({ TemporarilyUnavailable: null });
+    const callsBeforeRequest = await (ledger.actor as any).ledger_transfer_calls();
     const failed: any = await (bridge.actor as any).request_fee_payout(1n);
     expect(failed.Ok.state).toEqual({ Pending: null });
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(callsBeforeRequest);
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
     const retried: any = await (bridge.actor as any).continue_fee_payout(failed.Ok.id);
     expect(retried).toHaveProperty("Ok.Complete");
@@ -1242,7 +1247,7 @@ describe("Phase 3 PocketIC saga", () => {
       expect(seeded.Ok).toBe(100);
     }
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(18);
+    expect(before.schema_version).toBe(19);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.pending_evm_operations).toBe(10_000n);
     expect(before.counts.active_evm_payloads).toBe(10_000n);
@@ -1264,7 +1269,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(18);
+    expect(after.schema_version).toBe(19);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(10_000n);
     expect((await maintenance.first_prepared_evm_test_id()).Ok).toEqual([0n]);

@@ -347,6 +347,9 @@ async fn notify_withdrawal(
 ) -> Result<api::NotifyWithdrawalReceipt, api::NotifyWithdrawalError> {
     let caller = ic_cdk::api::msg_caller();
     let transaction_hash = api::notification_action_hash(caller, &args)?;
+    if let Some(receipt) = api::existing_notified_withdrawal_by_hash(caller, transaction_hash)? {
+        return Ok(receipt);
+    }
     let config = STORE.with(|store| {
         store
             .borrow()
@@ -369,6 +372,30 @@ async fn notify_withdrawal(
     else {
         return Err(api::NotifyWithdrawalError::Busy);
     };
+    let mut quota_key = b"notify_withdrawal:".to_vec();
+    quota_key.extend_from_slice(&transaction_hash);
+    STORE
+        .with(|store| {
+            store.borrow_mut().reserve_settlement_quota(
+                caller,
+                quota_key,
+                ic_cdk::api::time(),
+                storage::SettlementQuotaLimits {
+                    window_seconds: config.settlement_rate_limit_window_seconds,
+                    global: config.settlement_rate_limit_global,
+                    per_principal: config.settlement_rate_limit_per_principal,
+                    per_record: config.settlement_rate_limit_per_record,
+                },
+            )
+        })
+        .map_err(|error| match error {
+            storage::SettlementAdmissionError::RateLimited { .. } => {
+                api::NotifyWithdrawalError::RateLimited
+            }
+            storage::SettlementAdmissionError::Storage => {
+                api::NotifyWithdrawalError::StorageFailure
+            }
+        })?;
     let receipt = api::notify_withdrawal(caller, args).await?;
     match &receipt {
         api::NotifyWithdrawalReceipt::Ingested { .. } => {}
@@ -461,6 +488,7 @@ fn current_operation_id(
                     _ => None,
                 }),
             storage::SettlementJobKind::Withdrawal => None,
+            storage::SettlementJobKind::FeePayout => None,
         }
         .ok_or(tasks::SettlementActionError::WrongState)
     })
@@ -507,6 +535,7 @@ async fn confirm_evm(
     let authorized = match kind {
         storage::SettlementJobKind::Deposit => can_advance_deposit(caller, id)?,
         storage::SettlementJobKind::Withdrawal => can_advance_withdrawal(caller, id)?,
+        storage::SettlementJobKind::FeePayout => false,
     };
     if !authorized {
         return Err(tasks::SettlementActionError::Unauthorized);
@@ -1145,13 +1174,13 @@ fn rotate_pause_principal(args: admin::RotatePausePrincipalArgs) -> Result<(), a
     admin::rotate_pause_principal(ic_cdk::api::msg_caller(), args)
 }
 #[ic_cdk::update]
-async fn request_fee_payout(
-    amount: candid::Nat,
-) -> Result<admin::FeePayoutReceipt, admin::AdminError> {
+fn request_fee_payout(amount: candid::Nat) -> Result<admin::FeePayoutReceipt, admin::AdminError> {
     let Some(_guard) = InFlightGuard::acquire(ActionKey::FeePayoutCreation) else {
         return Err(admin::AdminError::Busy);
     };
-    admin::request_fee_payout(ic_cdk::api::msg_caller(), amount).await
+    let receipt = admin::request_fee_payout(ic_cdk::api::msg_caller(), amount)?;
+    scheduler::arm();
+    Ok(receipt)
 }
 
 #[ic_cdk::update]
@@ -1167,10 +1196,34 @@ async fn continue_fee_payout(
     {
         return Err(tasks::SettlementActionError::Unauthorized);
     }
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::FeePayout(payout_id)) else {
+    let Some(guard) = InFlightGuard::acquire(ActionKey::FeePayout(payout_id)) else {
         return Err(tasks::SettlementActionError::Busy);
     };
-    tasks::advance_fee_payout(payout_id).await
+    let terminal = STORE.with(|store| {
+        store
+            .borrow()
+            .fee_payout(payout_id)
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+            .map(|record| match record.state {
+                admin::FeePayoutState::Succeeded { .. } | admin::FeePayoutState::Failed => {
+                    Some(record.state)
+                }
+                _ => None,
+            })
+            .ok_or(tasks::SettlementActionError::NotFound)
+    })?;
+    if let Some(state) = terminal {
+        return Ok(tasks::FeePayoutActionResult::Complete { state });
+    }
+    drop(guard);
+    let job = claim_manual_job(
+        storage::SettlementJobKind::FeePayout,
+        storage::fee_payout_job_id(payout_id),
+        caller,
+    )?;
+    let result = scheduler::run_claimed_fee_payout(job).await?;
+    scheduler::arm();
+    Ok(result)
 }
 #[ic_cdk::query]
 fn get_audit_events(start: u64, limit: u16) -> Result<storage::AuditEventPage, admin::AdminError> {

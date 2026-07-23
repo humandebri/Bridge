@@ -6,7 +6,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "canister/bridge-canister/src/storage.rs"
+SOURCE = ROOT / "canister/bridge-canister/src/storage/mod.rs"
 CALLER_SOURCES = (
     ROOT / "canister/bridge-canister/src/api.rs",
     ROOT / "canister/bridge-canister/src/tasks.rs",
