@@ -309,11 +309,16 @@ async fn recover_mint(
     {
         return Err(RecoverMintRevertError::MintWindowUnavailable);
     }
-    let counters = STORE.with(|store| {
-        store
-            .borrow()
-            .counters()
-            .map_err(|_| RecoverMintRevertError::StorageFailure)
+    let (counters, nonterminal_withdrawals) = STORE.with(|store| {
+        let store = store.borrow();
+        Ok::<_, RecoverMintRevertError>((
+            store
+                .counters()
+                .map_err(|_| RecoverMintRevertError::StorageFailure)?,
+            store
+                .nonterminal_withdrawal_count()
+                .map_err(|_| RecoverMintRevertError::StorageFailure)?,
+        ))
     })?;
     let consumed = bridge_core::mint_admission_total(
         mint.effective_minted_in_window().get(),
@@ -338,7 +343,7 @@ async fn recover_mint(
     let reserve = config
         .reserve_policy()
         .snapshot(
-            counters.nonterminal_withdrawals,
+            nonterminal_withdrawals,
             counters.reserved_deposit_mint_operations,
             1,
             eth_balance,

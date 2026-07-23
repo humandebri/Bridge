@@ -199,9 +199,12 @@ async fn activation_preflight(
             let counters = store
                 .counters()
                 .map_err(|_| BaseGovernanceError::StorageFailure)?;
+            let nonterminal_withdrawals = store
+                .nonterminal_withdrawal_count()
+                .map_err(|_| BaseGovernanceError::StorageFailure)?;
             Ok::<_, BaseGovernanceError>((
                 paused,
-                counters.nonterminal_withdrawals,
+                nonterminal_withdrawals,
                 counters.reserved_deposit_mint_operations,
             ))
         })?;
