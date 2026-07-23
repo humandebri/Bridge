@@ -77,6 +77,15 @@ jobs:
             | sha256sum --check
           sh /tmp/icp-cli-installer.sh --quiet
 
+      - name: Configure CI identity
+        run: |
+          icp identity new bridge-ci \
+            --storage plaintext \
+            --output-seed /tmp/bridge-ci-seed
+          rm -f /tmp/bridge-ci-seed
+          icp identity default bridge-ci
+          test "$(icp identity principal)" != "2vxsx-fae"
+
       - name: Install ic-wasm 0.10.0
         env:
           IC_WASM_NO_MODIFY_PATH: "1"
