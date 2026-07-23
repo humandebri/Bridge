@@ -52,10 +52,6 @@ type AuditEventKind = variant {
     quorum_response_digest : blob;
     request_digest : blob;
   };
-  FeeRecipientChanged : record {
-    previous : FeeRecipientConfig;
-    current : FeeRecipientConfig;
-  };
   WithdrawalFeeGuardCleared;
   DepositsPaused;
   EvmRpcDecision : record {
@@ -127,8 +123,6 @@ type BaseGovernanceAction = variant {
   PauseDepositMints;
   SetServiceFee : record { value : nat };
   PauseWithdrawals;
-  ScheduleActivation;
-  ExecuteActivation;
   CancelPendingTimelock;
 };
 type BaseGovernanceError = variant {
@@ -634,7 +628,6 @@ service : (BridgeInitArgs) -> {
   resume_new_deposits : () -> (Result_11);
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_11);
   schedule_activation : () -> (Result_4);
-  set_fee_recipient : (FeeRecipientConfig) -> (Result_11);
   start_storage_validation : () -> (Result_2);
   storage_integrity_check : () -> (Result_16) query;
   submit_base_governance_action : (BaseGovernanceAction) -> (Result_4);

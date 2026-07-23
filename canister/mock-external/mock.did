@@ -520,7 +520,6 @@ service : (InitArgs) -> {
   set_receipt_mode : (ReceiptMode) -> ();
   set_refund_ledger_mode : (opt LedgerMode) -> ();
   set_safe_block : (nat64, blob) -> (Result_10);
-  set_safe_block_sequence : (vec nat64) -> ();
   set_service_fee : (nat) -> ();
   set_withdrawal : (opt WithdrawalFixture) -> ();
   set_withdrawal_status : (nat8) -> ();

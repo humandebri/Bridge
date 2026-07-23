@@ -6,7 +6,7 @@ import { basePublicClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { NotifyWithdrawalCallError, SettlementActionCallError, type IcWalletAdapter } from "@/lib/ic/wallet"
 import { PENDING_CONFIRMATIONS_CHANGED, pendingConfirmationsStorageKey, readPendingConfirmations, removePendingConfirmation, savePendingConfirmation, type PendingConfirmation } from "@/lib/pending-confirmations"
-import { CONFIRMATION_POLL_MS, SettlementConfirmationCoordinator, confirmWhenFinalized, runWithConfirmationLock } from "./settlement-confirmation-coordinator"
+import { CONFIRMATION_POLL_MS, SettlementConfirmationCoordinator, confirmPendingDepositFromUserAction, confirmWhenFinalized, runWithConfirmationLock } from "./settlement-confirmation-coordinator"
 
 vi.mock("sonner", () => ({ toast: { info: vi.fn(), success: vi.fn(), warning: vi.fn() } }))
 vi.mock("@/features/wallet/ic-wallet-provider", () => ({ useIcWallet: vi.fn() }))
@@ -88,7 +88,7 @@ describe("confirmWhenFinalized", () => {
     expect(readPendingConfirmations()).toEqual([])
   })
 
-  it("leaves finalized OISY confirmations pending for a user-triggered History action", async () => {
+  it("leaves finalized OISY confirmations pending in the background", async () => {
     finalizedReceipt()
     await savePendingConfirmation(deposit)
     const confirmDeposit = vi.fn()
@@ -97,6 +97,134 @@ describe("confirmWhenFinalized", () => {
     expect(await confirmWhenFinalized(deposit, wallet)).toEqual({ status: "retry" })
     expect(confirmDeposit).not.toHaveBeenCalled()
     expect(readPendingConfirmations()[0]?.blocked).toBe(false)
+  })
+
+  it("confirms a finalized OISY deposit from a user action and always closes the prepared session", async () => {
+    finalizedReceipt()
+    const events: string[] = []
+    const closeWalletSession = vi.fn(() => {
+      events.push("close")
+      return Promise.resolve()
+    })
+    const confirmDeposit = vi.fn(() => {
+      events.push("confirm")
+      return Promise.resolve({ Complete: { state: { Deposit: { Minted: null } } } } as const)
+    })
+    const wallet = {
+      ...adapter(confirmDeposit),
+      provider: "oisy" as const,
+      requiresUserGesture: true,
+      prepare: vi.fn(() => {
+        events.push("prepare")
+        return Promise.resolve(closeWalletSession)
+      }),
+    }
+
+    const outcome = await confirmPendingDepositFromUserAction(
+      { kind: "deposit", settlementId: deposit.settlementId, transactionHash: deposit.transactionHash, owner },
+      wallet,
+      () => {
+        events.push("ready")
+        return Promise.resolve()
+      },
+    )
+
+    expect(outcome).toEqual({ status: "complete" })
+    expect(confirmDeposit).toHaveBeenCalledOnce()
+    expect(events).toEqual(["prepare", "ready", "confirm", "close"])
+    expect(closeWalletSession).toHaveBeenCalledOnce()
+    expect(readPendingConfirmations()).toEqual([])
+  })
+
+  it("keeps an unfinalized OISY deposit pending and closes its prepared session", async () => {
+    vi.mocked(basePublicClient.getTransactionReceipt).mockResolvedValue({ blockNumber: 13n, status: "success" } as never)
+    vi.mocked(basePublicClient.getBlock).mockResolvedValue({ number: 12n } as never)
+    const closeWalletSession = vi.fn().mockResolvedValue(undefined)
+    const confirmDeposit = vi.fn()
+    const wallet = {
+      ...adapter(confirmDeposit),
+      provider: "oisy" as const,
+      requiresUserGesture: true,
+      prepare: vi.fn().mockResolvedValue(closeWalletSession),
+    }
+
+    expect(await confirmPendingDepositFromUserAction(
+      { kind: "deposit", settlementId: deposit.settlementId, transactionHash: deposit.transactionHash, owner },
+      wallet,
+      vi.fn().mockResolvedValue(undefined),
+    )).toEqual({ status: "retry" })
+    expect(confirmDeposit).not.toHaveBeenCalled()
+    expect(closeWalletSession).toHaveBeenCalledOnce()
+    expect(readPendingConfirmations()).toHaveLength(1)
+    expect(readPendingConfirmations()[0]?.blocked).toBe(false)
+  })
+
+  it("does not confirm when another tab owns the user-action lock and still closes the session", async () => {
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: {
+        request: vi.fn(async (_name: string, _options: LockOptions, callback: (lock: Lock | null) => Promise<unknown>) => callback(null)),
+      },
+    })
+    const closeWalletSession = vi.fn().mockResolvedValue(undefined)
+    const confirmDeposit = vi.fn()
+    const wallet = {
+      ...adapter(confirmDeposit),
+      provider: "oisy" as const,
+      requiresUserGesture: true,
+      prepare: vi.fn().mockResolvedValue(closeWalletSession),
+    }
+
+    expect(await confirmPendingDepositFromUserAction(
+      { kind: "deposit", settlementId: deposit.settlementId, transactionHash: deposit.transactionHash, owner },
+      wallet,
+      vi.fn().mockResolvedValue(undefined),
+    )).toBeUndefined()
+    expect(confirmDeposit).not.toHaveBeenCalled()
+    expect(closeWalletSession).toHaveBeenCalledOnce()
+    expect(readPendingConfirmations()).toEqual([])
+  })
+
+  it("closes the prepared OISY session when runtime readiness fails", async () => {
+    const closeWalletSession = vi.fn().mockResolvedValue(undefined)
+    const confirmDeposit = vi.fn()
+    const wallet = {
+      ...adapter(confirmDeposit),
+      provider: "oisy" as const,
+      requiresUserGesture: true,
+      prepare: vi.fn().mockResolvedValue(closeWalletSession),
+    }
+
+    await expect(confirmPendingDepositFromUserAction(
+      { kind: "deposit", settlementId: deposit.settlementId, transactionHash: deposit.transactionHash, owner },
+      wallet,
+      vi.fn().mockRejectedValue(new Error("runtime unavailable")),
+    )).rejects.toThrow("runtime unavailable")
+    expect(confirmDeposit).not.toHaveBeenCalled()
+    expect(closeWalletSession).toHaveBeenCalledOnce()
+    expect(readPendingConfirmations()).toEqual([])
+  })
+
+  it("blocks a user-initiated OISY confirmation when the connected owner changed", async () => {
+    finalizedReceipt()
+    const closeWalletSession = vi.fn().mockResolvedValue(undefined)
+    const confirmDeposit = vi.fn()
+    const wallet = {
+      ...adapter(confirmDeposit),
+      provider: "oisy" as const,
+      requiresUserGesture: true,
+      prepare: vi.fn().mockResolvedValue(closeWalletSession),
+      getAccount: vi.fn().mockResolvedValue({ owner: "2vxsx-fae" }),
+    }
+
+    expect(await confirmPendingDepositFromUserAction(
+      { kind: "deposit", settlementId: deposit.settlementId, transactionHash: deposit.transactionHash, owner },
+      wallet,
+      vi.fn().mockResolvedValue(undefined),
+    )).toEqual({ status: "blocked" })
+    expect(confirmDeposit).not.toHaveBeenCalled()
+    expect(closeWalletSession).toHaveBeenCalledOnce()
+    expect(readPendingConfirmations()[0]?.blocked).toBe(true)
   })
 
   it.each([
@@ -298,8 +426,7 @@ describe("SettlementConfirmationCoordinator", () => {
     restoredView.unmount()
   })
 
-  it("does not poll a fee-guarded withdrawal again after blocking it", async () => {
-    vi.useFakeTimers()
+  it("does not recheck a fee-guarded withdrawal on explicit wakes after blocking it", async () => {
     finalizedReceipt()
     const notifyWithdrawal = vi.fn().mockRejectedValue(new NotifyWithdrawalCallError(
       "LedgerFeeExceedsServiceFee",
@@ -315,12 +442,13 @@ describe("SettlementConfirmationCoordinator", () => {
     expect(notifyWithdrawal).toHaveBeenCalledOnce()
     expect(readPendingConfirmations()[0]?.blocked).toBe(true)
 
-    await act(() => vi.advanceTimersByTimeAsync(CONFIRMATION_POLL_MS * 3))
+    await act(() => window.dispatchEvent(new Event(PENDING_CONFIRMATIONS_CHANGED)))
+    await act(() => window.dispatchEvent(new StorageEvent("storage", { key: pendingConfirmationsStorageKey() })))
+    await act(() => document.dispatchEvent(new Event("visibilitychange")))
     await flushPromises()
     expect(notifyWithdrawal).toHaveBeenCalledOnce()
 
     view.unmount()
-    vi.useRealTimers()
   })
 
   it("rechecks immediately when an external event reports new settlement progress", async () => {
@@ -343,7 +471,7 @@ describe("SettlementConfirmationCoordinator", () => {
     vi.useRealTimers()
   })
 
-  it("polls multiple settlements independently and resumes immediately when visible", async () => {
+  it("polls multiple settlements for a wallet that does not require a user gesture", async () => {
     vi.useFakeTimers()
     finalizedReceipt()
     const confirmDeposit = vi.fn().mockResolvedValue({ WaitingForConfirmation: { state: { Deposit: { MintPending: null } }, transaction_hash: new Uint8Array(32) } })
@@ -355,7 +483,7 @@ describe("SettlementConfirmationCoordinator", () => {
     await flushPromises()
     expect(confirmDeposit).toHaveBeenCalledTimes(2)
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" })
-    await act(() => vi.advanceTimersByTimeAsync(CONFIRMATION_POLL_MS))
+    await act(() => vi.advanceTimersByTimeAsync(60_000))
     expect(confirmDeposit).toHaveBeenCalledTimes(2)
 
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" })
@@ -369,6 +497,28 @@ describe("SettlementConfirmationCoordinator", () => {
     await act(() => vi.advanceTimersByTimeAsync(CONFIRMATION_POLL_MS))
     await flushPromises()
     expect(confirmDeposit).toHaveBeenCalledTimes(8)
+    view.unmount()
+    vi.useRealTimers()
+  })
+
+  it("does not poll a wallet that requires a user gesture", async () => {
+    vi.useFakeTimers()
+    finalizedReceipt()
+    const confirmDeposit = vi.fn()
+    const wallet = {
+      ...adapter(confirmDeposit),
+      provider: "oisy" as const,
+      requiresUserGesture: true,
+    }
+    vi.mocked(useIcWallet).mockReturnValue({ account: { owner }, adapter: wallet, provider: "oisy", connect: vi.fn(), disconnect: vi.fn() })
+    await savePendingConfirmation(deposit)
+    const view = render(<SettlementConfirmationCoordinator />)
+
+    await flushPromises()
+    await act(() => vi.advanceTimersByTimeAsync(CONFIRMATION_POLL_MS * 4))
+    await flushPromises()
+    expect(confirmDeposit).not.toHaveBeenCalled()
+
     view.unmount()
     vi.useRealTimers()
   })

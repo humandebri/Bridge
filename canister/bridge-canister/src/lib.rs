@@ -1083,7 +1083,7 @@ async fn submit_base_governance_action(
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     let caller = ic_cdk::api::msg_caller();
-    let result = base_governance::submit(caller, action).await;
+    let result = base_governance::submit(caller, action.into()).await;
     scheduler::arm_base_governance(caller);
     result
 }
@@ -1112,7 +1112,7 @@ async fn schedule_activation(
     let caller = ic_cdk::api::msg_caller();
     let result = base_governance::submit(
         caller,
-        base_governance::BaseGovernanceAction::ScheduleActivation,
+        base_governance::GovernanceAction::ScheduleActivation,
     )
     .await;
     scheduler::arm_base_governance(caller);
@@ -1126,11 +1126,8 @@ async fn execute_activation(
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     let caller = ic_cdk::api::msg_caller();
-    let result = base_governance::submit(
-        caller,
-        base_governance::BaseGovernanceAction::ExecuteActivation,
-    )
-    .await;
+    let result =
+        base_governance::submit(caller, base_governance::GovernanceAction::ExecuteActivation).await;
     scheduler::arm_base_governance(caller);
     result
 }
@@ -1164,10 +1161,6 @@ fn pause_new_deposits() -> Result<(), admin::AdminError> {
 #[ic_cdk::update]
 fn resume_new_deposits() -> Result<(), admin::AdminError> {
     admin::resume(ic_cdk::api::msg_caller())
-}
-#[ic_cdk::update]
-fn set_fee_recipient(value: config::FeeRecipientConfig) -> Result<(), admin::AdminError> {
-    admin::set_fee_recipient(ic_cdk::api::msg_caller(), value)
 }
 #[ic_cdk::update]
 fn rotate_pause_principal(args: admin::RotatePausePrincipalArgs) -> Result<(), admin::AdminError> {

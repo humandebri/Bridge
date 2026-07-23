@@ -32,10 +32,15 @@ test("requires risk acknowledgement on first use", async ({ page }, testInfo) =>
 test("bridge defaults to IC to Base and reports incomplete configuration", async ({ page }, testInfo) => {
   await page.goto("/")
   await expect(page.getByRole("heading", { name: "Bridge KINIC" })).toBeVisible()
-  await expect(page.getByRole("link", { name: "KINIC Bridge home" }).locator("img")).toHaveAttribute("src", /blue_kinic/)
+  const homeLink = page.getByRole("link", { name: "KINIC Bridge home" })
+  await expect(homeLink).toContainText("KINIC Bridge")
+  await expect(homeLink.locator("img")).toHaveAttribute("src", /blue_kinic/)
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", /blue_kinic/)
   await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", /blue_kinic/)
+  await expect(page.getByText("IC ↔ Base", { exact: true })).toHaveCount(0)
   await expect(page.getByText("Internet Computer")).toBeVisible()
+  await expect(page.getByRole("button", { name: "From Internet Computer Connect IC wallet", exact: true }).locator('[data-network-logo="ic"]')).toBeVisible()
+  await expect(page.getByRole("button", { name: "To Base Connect Base wallet", exact: true }).locator('[data-network-logo="base"]')).toBeVisible()
   await expect(page.getByText("Refresh before continuing.")).toBeVisible()
   await expect(page.getByRole("button", { name: "Bridge to Base" })).toBeDisabled()
   await expect(page.getByLabel("You send")).toHaveAttribute("aria-invalid", "true")
@@ -69,26 +74,43 @@ test("direction switch is URL-backed and exposes withdrawal protection", async (
   await page.getByRole("button", { name: "Reverse bridge direction" }).click()
   await expect(page).toHaveURL(/direction=withdraw/)
   await expect(page.locator(".kinic-rail")).toHaveClass(/is-withdraw/)
+  await expect(page.getByRole("button", { name: "From Base Connect Base wallet", exact: true }).locator('[data-network-logo="base"]')).toBeVisible()
+  await expect(page.getByRole("button", { name: "To Internet Computer Connect IC wallet", exact: true }).locator('[data-network-logo="ic"]')).toBeVisible()
   await expect(page.getByRole("button", { name: "Bridge to IC" })).toBeDisabled()
   await expect(page.getByText("Estimated receive", { exact: true })).toBeVisible()
   await expect(page.getByText("Base refund is not available after burn.", { exact: true })).toBeVisible()
   await capture(page, testInfo, "bridge-withdraw")
 })
 
-test("IC and Base wallet controls are separate", async ({ page }) => {
+test("IC and Base wallet controls are separate", async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    const provider = { request: () => Promise.resolve([]) }
+    const wallets = [
+      { uuid: "350670db-19fa-4704-a166-e52e178b59d2", name: "MetaMask", icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'><rect width='96' height='96' fill='orange'/></svg>", rdns: "io.metamask" },
+      { uuid: "7c867694-1697-4d85-bf2e-70d6c97a08b5", name: "Rabby Wallet", icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'><rect width='96' height='96' fill='blue'/></svg>", rdns: "io.rabby" },
+    ]
+    const announce = () => wallets.forEach((info) => window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: { info, provider } })))
+    window.addEventListener("eip6963:requestProvider", announce)
+  })
   await page.goto("/")
   await expect(page.getByRole("button", { name: "Connect IC wallet", exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "Connect Base wallet", exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Connect IC wallet", exact: true }).click()
   await expect(page.getByRole("heading", { name: "IC wallet" })).toBeVisible()
-  await expect(page.getByRole("button", { name: "OISY" })).toBeVisible()
-  await expect(page.getByRole("button", { name: "Plug" })).toBeVisible()
-  await expect(page.getByRole("button", { name: "Connect Base" })).toBeHidden()
+  await expect(page.getByRole("button", { name: "Connect OISY Wallet" })).toBeVisible()
+  await expect(page.getByRole("img", { name: "OISY Wallet logo" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Connect Plug" })).toBeVisible()
+  await expect(page.getByRole("img", { name: "Plug logo" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Connect MetaMask" })).toBeHidden()
+  await capture(page, testInfo, "wallet-ic-options")
   await page.getByRole("button", { name: "Close confirmation" }).click()
   await page.getByRole("button", { name: "Connect Base wallet", exact: true }).click()
   await expect(page.getByRole("heading", { name: "Base wallet" })).toBeVisible()
-  await expect(page.getByRole("button", { name: "Connect Base" })).toBeVisible()
-  await expect(page.getByRole("button", { name: "OISY" })).toBeHidden()
+  await expect(page.getByRole("button", { name: "Connect MetaMask" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Connect Rabby Wallet" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Connect Browser wallet" })).toBeHidden()
+  await expect(page.getByRole("button", { name: "Connect OISY Wallet" })).toBeHidden()
+  await capture(page, testInfo, "wallet-base-options")
 })
 
 test("history and status are separate low-density surfaces", async ({ page }, testInfo) => {

@@ -46,6 +46,21 @@ the 60-second lifetime of a successfully fetched runtime or status result.
 - Change the selected account after confirmation; verify the transaction is aborted and must be
   reviewed again.
 
+## Base wallets
+
+- With MetaMask and Rabby installed, verify both appear by name and logo and the generic browser
+  wallet choice is hidden.
+- Connect each detected wallet in turn and confirm the header shows the selected wallet logo,
+  name, and shortened address.
+- Open WalletConnect, scan the QR code on a mobile wallet, approve Base or Base Sepolia, and
+  confirm the same connected-wallet summary is shown.
+- Reject one browser-wallet request and one WalletConnect request; verify the selection dialog
+  remains usable and no transaction is submitted.
+- Disconnect and reconnect each connection type, then change the active account and Base chain;
+  verify the bridge revalidates both immediately.
+- Confirm the browser reports no Content-Security-Policy violations during WalletConnect pairing,
+  signing, or disconnect.
+
 ## Shared failure checks
 
 - Change the Base chain and verify approve/deposit/withdraw remain disabled.

@@ -9,6 +9,9 @@ try {
   const inputsManifestFile = process.env.BRIDGE_RELEASE_INPUTS_MANIFEST
   const bundle = process.env.BRIDGE_RELEASE_BUNDLE
   if (!profileFile || !inputsManifestFile || !bundle) throw new Error("Production UI deploy requires a signed Gate B bundle and reviewed release input files")
+  if (!/^[0-9a-f]{32}$/i.test(process.env.VITE_WALLETCONNECT_PROJECT_ID?.trim() ?? "")) {
+    throw new Error("Production UI deploy requires a 32-character hexadecimal VITE_WALLETCONNECT_PROJECT_ID")
+  }
   const sourceRoot = resolve(import.meta.dirname, "../..")
   const cargoArgs = ["run", "--locked", "--quiet", "--manifest-path", join(sourceRoot, "Cargo.toml"), "-p", "bridge-profile", "--"]
   const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", bundle], { encoding: "utf8" })

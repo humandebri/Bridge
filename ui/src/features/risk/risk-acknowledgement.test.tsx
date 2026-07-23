@@ -54,4 +54,11 @@ describe("RiskAcknowledgementDialog", () => {
       setItem: () => { throw new Error("storage unavailable") },
     })).not.toThrow()
   })
+
+  it("does not fail when browser storage cannot be accessed", () => {
+    vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
+      throw new Error("storage unavailable")
+    })
+    expect(() => persistRiskAcknowledgement()).not.toThrow()
+  })
 })

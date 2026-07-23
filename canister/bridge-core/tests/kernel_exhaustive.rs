@@ -105,11 +105,11 @@ fn payout_and_authorization_tables_are_exhaustive() {
     assert_eq!(payout_debit(true, 7, 3), Some(10));
     assert_eq!(payout_debit(false, 7, 3), Some(0));
     assert_eq!(payout_debit(true, u128::MAX, 1), None);
-    for action in 0..=4 {
+    for action in 0..=u8::MAX {
         for pause in [false, true] {
             for governance in [false, true] {
                 let expected = (action == 0 && pause)
-                    || ((action == 1 || action == 2 || action == 3 || action == 4) && governance);
+                    || ((action == 1 || action == 2 || action == 3) && governance);
                 assert_eq!(
                     administrator_authorized(action, pause, governance),
                     expected

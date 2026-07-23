@@ -10,7 +10,6 @@ pub struct FeeRecipientConfig {
 
 pub const KINIC_LEDGER_CANISTER_ID: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 pub const KINIC_INDEX_CANISTER_ID: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
-pub const KINIC_DECIMALS: u8 = 8;
 pub const BASE_MAINNET_CHAIN_ID: u64 = 8453;
 pub const OFFICIAL_EVM_RPC_CANISTER_ID: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 

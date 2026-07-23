@@ -236,10 +236,6 @@ export const idlFactory = ({ IDL }) => {
       'quorum_response_digest' : IDL.Vec(IDL.Nat8),
       'request_digest' : IDL.Vec(IDL.Nat8),
     }),
-    'FeeRecipientChanged' : IDL.Record({
-      'previous' : FeeRecipientConfig,
-      'current' : FeeRecipientConfig,
-    }),
     'WithdrawalFeeGuardCleared' : IDL.Null,
     'DepositsPaused' : IDL.Null,
     'EvmRpcDecision' : IDL.Record({
@@ -661,8 +657,6 @@ export const idlFactory = ({ IDL }) => {
     'PauseDepositMints' : IDL.Null,
     'SetServiceFee' : IDL.Record({ 'value' : IDL.Nat }),
     'PauseWithdrawals' : IDL.Null,
-    'ScheduleActivation' : IDL.Null,
-    'ExecuteActivation' : IDL.Null,
     'CancelPendingTimelock' : IDL.Null,
   });
   return IDL.Service({
@@ -731,7 +725,6 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'schedule_activation' : IDL.Func([], [Result_4], []),
-    'set_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_11], []),
     'start_storage_validation' : IDL.Func([], [Result_2], []),
     'storage_integrity_check' : IDL.Func([], [Result_16], ['query']),
     'submit_base_governance_action' : IDL.Func(

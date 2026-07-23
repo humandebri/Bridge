@@ -36,6 +36,14 @@ class ChangedAreaTests(unittest.TestCase):
     def test_integration_ui_change_runs_real(self) -> None:
         self.assert_areas(["ui/src/lib/ic/bridge.ts"], "ui", "real")
 
+    def test_shared_runtime_ui_changes_run_real(self) -> None:
+        for path in (
+            "ui/src/lib/pending-confirmations.ts",
+            "ui/src/lib/runtime-validation.ts",
+        ):
+            with self.subTest(path=path):
+                self.assert_areas([path], "ui", "real")
+
     def test_proof_change_runs_proofs_only(self) -> None:
         self.assert_areas(["verification/lean/Bridge.lean"], "proofs")
 

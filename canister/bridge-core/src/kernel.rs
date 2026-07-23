@@ -197,10 +197,9 @@ macro_rules! deposit_refund_body {
 }
 
 macro_rules! authorized_body {
-    ($action:expr, $pause:expr, $governance:expr, $pause_action:expr, $resume_action:expr, $recipient_action:expr, $payout_action:expr, $rotate_action:expr) => {
+    ($action:expr, $pause:expr, $governance:expr, $pause_action:expr, $resume_action:expr, $payout_action:expr, $rotate_action:expr) => {
         ($action == $pause_action && $pause)
-            || (($action == $recipient_action
-                || $action == $payout_action
+            || (($action == $payout_action
                 || $action == $resume_action
                 || $action == $rotate_action)
                 && $governance)
@@ -468,7 +467,7 @@ pub const fn payout_debit(confirmed_first_time: bool, amount: u128, fee: u128) -
 
 #[cfg(not(verus_keep_ghost))]
 pub const fn administrator_authorized(action: u8, is_pause: bool, is_governance: bool) -> bool {
-    authorized_body!(action, is_pause, is_governance, 0u8, 1u8, 2u8, 3u8, 4u8)
+    authorized_body!(action, is_pause, is_governance, 0u8, 1u8, 2u8, 3u8)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -692,10 +691,9 @@ verus! {
     pub open spec fn administrator_authorized_spec(action: int, pause: bool, governance: bool) -> bool {
         let pause_action: int = 0;
         let resume_action: int = 1;
-        let recipient_action: int = 2;
-        let payout_action: int = 3;
-        let rotate_action: int = 4;
-        authorized_body!(action, pause, governance, pause_action, resume_action, recipient_action, payout_action, rotate_action)
+        let payout_action: int = 2;
+        let rotate_action: int = 3;
+        authorized_body!(action, pause, governance, pause_action, resume_action, payout_action, rotate_action)
     }
 
     pub open spec fn audit_next_spec(current: int) -> Option<int> {

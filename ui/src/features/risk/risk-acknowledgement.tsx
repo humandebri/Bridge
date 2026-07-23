@@ -26,9 +26,10 @@ function readAcknowledgement(): boolean {
   }
 }
 
-export function persistRiskAcknowledgement(storage: Pick<Storage, "setItem"> = window.localStorage): void {
+export function persistRiskAcknowledgement(storage?: Pick<Storage, "setItem">): void {
   try {
-    storage.setItem(riskAcknowledgementStorageKey(), ACKNOWLEDGED_VALUE)
+    const target = storage ?? window.localStorage
+    target.setItem(riskAcknowledgementStorageKey(), ACKNOWLEDGED_VALUE)
   } catch { /* Continue for this page load; a future load will ask again. */ }
 }
 

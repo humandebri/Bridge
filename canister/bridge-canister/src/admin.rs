@@ -6,9 +6,8 @@ use sha2::{Digest, Sha256};
 
 const ACTION_PAUSE: u8 = 0;
 const ACTION_RESUME: u8 = 1;
-const ACTION_RECIPIENT: u8 = 2;
-const ACTION_PAYOUT: u8 = 3;
-const ACTION_ROTATE: u8 = 4;
+const ACTION_PAYOUT: u8 = 2;
+const ACTION_ROTATE: u8 = 3;
 
 fn authorized(state: &AdminState, caller: Principal, action: u8) -> bool {
     bridge_core::administrator_authorized(
@@ -155,29 +154,6 @@ pub fn resume(caller: Principal) -> Result<(), AdminError> {
         }
         state.deposits_paused = false;
         Ok(crate::storage::AuditEventKind::DepositsResumed)
-    })
-    .map(drop)
-}
-
-pub fn set_fee_recipient(caller: Principal, value: FeeRecipientConfig) -> Result<(), AdminError> {
-    if value.owner == Principal::anonymous() || !matches!(value.subaccount.len(), 0 | 32) {
-        return Err(AdminError::InvalidArgument("invalid fee recipient".into()));
-    }
-    mutate(caller, |state| {
-        if !authorized(state, caller, ACTION_RECIPIENT) {
-            return Err(AdminError::Unauthorized);
-        }
-        if value.owner == state.pause_principal || value.owner == state.governance_principal {
-            return Err(AdminError::InvalidArgument(
-                "fee recipient must not overlap governance or pause principal".into(),
-            ));
-        }
-        let previous = state.fee_recipient.clone();
-        state.fee_recipient = value.clone();
-        Ok(crate::storage::AuditEventKind::FeeRecipientChanged {
-            previous,
-            current: value,
-        })
     })
     .map(drop)
 }

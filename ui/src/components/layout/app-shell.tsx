@@ -14,7 +14,7 @@ export function AppShell() {
     <header className="relative z-20 mx-auto flex max-w-[1155px] items-center gap-3 px-4 py-5 md:px-6 md:py-7">
       <Link to="/" search={{ direction: "deposit" }} className="group flex shrink-0 items-center gap-3 rounded-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:ring-offset-2" aria-label="KINIC Bridge home">
         <img src={blueKinic} alt="" className="size-11 rounded-[13px] object-cover shadow-[0_8px_24px_rgba(20,34,53,.12)] transition-transform duration-300 group-hover:-rotate-2 group-hover:scale-[1.03]" />
-        <span className="hidden items-baseline gap-1.5 text-black sm:inline-flex"><strong className="text-lg font-bold tracking-[-.04em]">KINIC</strong><span className="text-[11px] font-bold uppercase tracking-[.16em] text-[var(--muted)]">Bridge</span></span>
+        <span className="hidden text-lg font-bold text-black sm:inline">KINIC Bridge</span>
       </Link>
       <div className="ml-auto flex min-w-0 items-center gap-2 md:gap-5">
         <nav className="hidden items-center gap-1 md:flex" aria-label="Secondary navigation">

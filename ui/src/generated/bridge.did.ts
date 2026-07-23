@@ -65,12 +65,6 @@ export type AuditEventKind = {
       'request_digest' : Uint8Array | number[],
     }
   } |
-  {
-    'FeeRecipientChanged' : {
-      'previous' : FeeRecipientConfig,
-      'current' : FeeRecipientConfig,
-    }
-  } |
   { 'WithdrawalFeeGuardCleared' : null } |
   { 'DepositsPaused' : null } |
   {
@@ -151,8 +145,6 @@ export type BaseConfirmationView = {
 export type BaseGovernanceAction = { 'PauseDepositMints' : null } |
   { 'SetServiceFee' : { 'value' : bigint } } |
   { 'PauseWithdrawals' : null } |
-  { 'ScheduleActivation' : null } |
-  { 'ExecuteActivation' : null } |
   { 'CancelPendingTimelock' : null };
 export type BaseGovernanceError = { 'Busy' : { 'operation_id' : bigint } } |
   { 'BroadcastAmbiguous' : { 'operation_id' : bigint } } |
@@ -654,7 +646,6 @@ export interface _SERVICE {
   'resume_new_deposits' : ActorMethod<[], Result_11>,
   'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_11>,
   'schedule_activation' : ActorMethod<[], Result_4>,
-  'set_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_11>,
   'start_storage_validation' : ActorMethod<[], Result_2>,
   'storage_integrity_check' : ActorMethod<[], Result_16>,
   'submit_base_governance_action' : ActorMethod<

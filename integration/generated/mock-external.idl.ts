@@ -508,7 +508,6 @@ export const idlFactory = ({ IDL }) => {
         [Result_10],
         [],
       ),
-    'set_safe_block_sequence' : IDL.Func([IDL.Vec(IDL.Nat64)], [], []),
     'set_service_fee' : IDL.Func([IDL.Nat], [], []),
     'set_withdrawal' : IDL.Func([IDL.Opt(WithdrawalFixture)], [], []),
     'set_withdrawal_status' : IDL.Func([IDL.Nat8], [], []),

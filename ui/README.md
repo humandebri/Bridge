@@ -39,8 +39,10 @@ The deployment profile has no manual read-only flag or origin allowlist. Control
 when the profile is complete and runtime verification passes. The CSP limits browser connections,
 but it is not canister authorization: direct canister calls remain possible.
 
-OISY and Plug are the only supported IC wallets. Internet Identity and delegated browser
-identities are not used. Deposit history is read from the public canister index; anyone who knows
+OISY Wallet and Plug are the only supported IC wallets. Base wallets are discovered through
+EIP-6963; a production build also exposes WalletConnect when `VITE_WALLETCONNECT_PROJECT_ID` is
+configured. The WalletConnect project must allowlist every deployed UI origin. Internet Identity
+and delegated browser identities are not used. Deposit history is read from the public canister index; anyone who knows
 an owner Principal can enumerate its deposit IDs and correlate them with the Base recipients in
 the corresponding deposit records. Withdrawal History scans Finalized Base logs in 5,000-block
 chunks, with at most four RPC requests per refresh or manual `Scan older` action. The resumable
@@ -84,10 +86,12 @@ not contain an E2E branch.
 Deployment is manual:
 
 ```sh
-pnpm run deploy
+VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> pnpm run deploy
 ```
 
-The normal deploy command fails unless the checked-in UI profile explicitly sets
+The WalletConnect project ID is public client configuration but must be injected through the
+environment rather than committed. The normal deploy command fails unless it is present and the
+checked-in UI profile explicitly sets
 `testOnly: false`. Test-only profiles require the deliberately separate `pnpm run deploy:test`
 command, which targets the `kinic-bridge-ui-test` Worker, and must not be used for a production release.
 

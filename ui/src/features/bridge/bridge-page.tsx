@@ -6,6 +6,8 @@ import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { hexToBytes } from "viem"
 import { useAccount, useChainId, useConnectorClient, useWriteContract } from "wagmi"
+import baseLogo from "@/assets/base-square.svg"
+import icpLogo from "@/assets/icp-logo-mark.svg"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -31,6 +33,12 @@ import { readDepositIntent, removeDepositIntent, saveDepositIntent } from "@/lib
 import { withBrowserLock } from "@/lib/browser-lock"
 
 export type BridgeDirection = "deposit" | "withdraw"
+type BridgeNetwork = "ic" | "base"
+
+const NETWORKS: Record<BridgeNetwork, { label: string; logo: string }> = {
+  ic: { label: "Internet Computer", logo: icpLogo },
+  base: { label: "Base", logo: baseLogo },
+}
 
 interface UnresolvedDepositAttempt {
   call: DepositCall
@@ -329,7 +337,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       })
       setWithdrawAmount("")
       if (broadcast.pendingSaved) {
-        toast.success(`Withdrawal submitted: ${broadcast.transactionHash.slice(0, 12)}…. ${ic.provider === "oisy" ? "Complete IC confirmation from History after finalization." : "Confirmation is pending and its status will update automatically."}`)
+        toast.success(`Withdrawal submitted: ${broadcast.transactionHash.slice(0, 12)}…. Confirmation is pending. Check History after finalization if it has not completed.`)
       } else {
         toast.warning(`Withdrawal ${broadcast.transactionHash} was submitted, but this browser could not save it. Copy the transaction hash; after it succeeds, recover it from History.`)
       }
@@ -356,14 +364,13 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const balance = direction === "deposit" ? ledgerData?.balance : bsnsBalanceData
   const fee = unresolvedDeposit?.call.maxServiceFee ?? baseData?.serviceFee
   const receive = direction === "deposit" ? (unresolvedDeposit ? (unresolvedDeposit.call.grossAmount > unresolvedDeposit.call.maxServiceFee ? unresolvedDeposit.call.grossAmount - unresolvedDeposit.call.maxServiceFee : 0n) : depositParsed.ok && fee !== undefined ? (depositParsed.value > fee ? depositParsed.value - fee : 0n) : undefined) : (estimate > 0n ? estimate : undefined)
-  const source = direction === "deposit" ? { network: "Internet Computer", wallet: unresolvedDeposit?.account.owner ?? ic.account?.owner ?? "Connect IC wallet" } : { network: "Base", wallet: address ?? "Connect Base wallet" }
-  const destination = direction === "deposit" ? { network: "Base", wallet: unresolvedDeposit?.recipient ?? address ?? "Connect Base wallet" } : { network: "Internet Computer", wallet: ic.account?.owner ?? "Connect IC wallet" }
+  const source = direction === "deposit" ? { network: "ic" as const, wallet: unresolvedDeposit?.account.owner ?? ic.account?.owner ?? "Connect IC wallet" } : { network: "base" as const, wallet: address ?? "Connect Base wallet" }
+  const destination = direction === "deposit" ? { network: "base" as const, wallet: unresolvedDeposit?.recipient ?? address ?? "Connect Base wallet" } : { network: "ic" as const, wallet: ic.account?.owner ?? "Connect IC wallet" }
 
   const changeDirection = () => { if (unresolvedDeposit) return; setConfirming(false); onDirectionChange(direction === "deposit" ? "withdraw" : "deposit") }
   return <div className="route-enter grid items-start gap-8 pb-6 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(560px,620px)] lg:gap-16 lg:pb-12 lg:pt-14 xl:gap-20">
     <div className="lg:sticky lg:top-28 lg:pt-12" data-testid="bridge-intro">
-      <p className="text-xs font-bold uppercase tracking-[.18em] text-[var(--pink)]">IC ↔ Base</p>
-      <h1 className="font-display mt-4 max-w-[460px] text-[42px] leading-[1.02] text-black sm:text-[52px] lg:text-[58px]">Bridge KINIC</h1>
+      <h1 className="font-display max-w-[460px] text-[42px] leading-[1.02] text-black sm:text-[52px] lg:text-[58px]">Bridge KINIC</h1>
       <p className="mt-5 max-w-[460px] text-[16px] leading-7 text-[var(--muted)] sm:text-[17px]">Move tokens between IC and Base with both wallets verified.</p>
       <div className="mt-8 hidden items-center gap-3 text-xs font-bold uppercase tracking-[.12em] text-[var(--support)] lg:flex"><span className="h-px w-12 bg-[var(--pink)]" />1:1 across both networks</div>
     </div>
@@ -392,7 +399,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   </div>
 }
 
-function EndpointCard({ label, network, wallet, disabled, onClick }: { label: string; network: string; wallet: string; disabled?: boolean; onClick: () => void }) { return <button type="button" disabled={disabled} onClick={() => onClick()} className="min-w-0 rounded-2xl border border-[var(--line)] bg-white p-3.5 text-left transition duration-300 hover:-translate-y-[2px] hover:border-[var(--pink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:border-[var(--line)]"><span className="text-xs font-medium text-[var(--muted)]">{label}</span><span className="mt-0.5 flex items-center justify-between gap-3"><strong className="text-base text-black">{network}</strong><LockKeyhole className="size-4 text-[var(--pink)]" /></span><span className="mt-1 block truncate text-xs text-[var(--muted)]">{wallet}</span></button> }
+function EndpointCard({ label, network, wallet, disabled, onClick }: { label: string; network: BridgeNetwork; wallet: string; disabled?: boolean; onClick: () => void }) {
+  const details = NETWORKS[network]
+  return <button type="button" disabled={disabled} onClick={() => onClick()} className="min-w-0 rounded-2xl border border-[var(--line)] bg-white p-3.5 text-left transition duration-300 hover:-translate-y-[2px] hover:border-[var(--pink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:border-[var(--line)]"><span className="text-xs font-medium text-[var(--muted)]">{label}</span><span className="mt-0.5 flex items-center justify-between gap-3"><span className="flex min-w-0 items-center gap-2"><img src={details.logo} alt="" aria-hidden="true" data-network-logo={network} className="h-[22px] w-auto shrink-0" /><strong className="truncate text-base text-black">{details.label}</strong></span><LockKeyhole className="size-4 shrink-0 text-[var(--pink)]" /></span><span className="mt-1 block truncate text-xs text-[var(--muted)]">{wallet}</span></button>
+}
 function Quote({ label, value }: { label: string; value: string }) { return <div><p className="text-xs text-[var(--muted)]">{label}</p><p className="font-numeric mt-1 font-bold text-black">{value}</p></div> }
 function ConfirmRow({ label, value }: { label: string; value: string }) { return <div><p className="text-xs text-[var(--muted)]">{label}</p><p className="mt-1 break-all text-sm font-bold text-black">{value}</p></div> }
 

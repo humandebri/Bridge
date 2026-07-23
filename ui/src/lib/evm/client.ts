@@ -1,5 +1,5 @@
 import { createConfig, http } from "wagmi"
-import { injected } from "wagmi/connectors"
+import { injected, walletConnect } from "wagmi/connectors"
 import { createPublicClient, defineChain } from "viem"
 import { deploymentProfile, type DeploymentProfile } from "@/config/profile"
 
@@ -23,9 +23,24 @@ export function createBasePublicClient(profile: DeploymentProfile = deploymentPr
 
 export const basePublicClient = createBasePublicClient()
 
+const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID?.trim()
+const walletConnectMetadata = typeof window === "undefined" ? undefined : {
+  name: "KINIC Bridge",
+  description: "Bridge KINIC between Internet Computer and Base.",
+  url: window.location.origin,
+  icons: [new URL("/kinic-mark.png", window.location.origin).href],
+}
+
 export const wagmiConfig = createConfig({
   chains: [profileChain],
-  connectors: [injected()],
+  connectors: [
+    injected(),
+    ...(walletConnectProjectId ? [walletConnect({
+      projectId: walletConnectProjectId,
+      showQrModal: true,
+      metadata: walletConnectMetadata,
+    })] : []),
+  ],
   transports: { [profileChain.id]: http(deploymentProfile.baseRpcUrl) },
 })
 

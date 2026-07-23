@@ -20,8 +20,10 @@ pub use settlement::{
 use transaction::*;
 use validation::expect_row_shape;
 
+use crate::admin::AdminState;
 use crate::config::BridgeInitArgs;
-use crate::{admin::AdminState, config::FeeRecipientConfig};
+#[cfg(test)]
+use crate::config::FeeRecipientConfig;
 use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
     BaseMintSnapshot, CoreError, DepositHoldResolution, DepositId, DepositRecord, EvmCallIntent,
@@ -303,7 +305,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 19, 16);
+INSERT INTO bridge_metadata VALUES (1, 20, 16);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1456,10 +1458,6 @@ pub enum AuditEventKind {
         max_priority_fee_per_gas: u128,
     },
     PausePrincipalRotated,
-    FeeRecipientChanged {
-        previous: FeeRecipientConfig,
-        current: FeeRecipientConfig,
-    },
     ReserveGateChanged {
         sufficient: bool,
     },
@@ -10936,7 +10934,7 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 19);
+        assert_eq!(SCHEMA_VERSION, 20);
         assert_eq!(WIRE_VERSION, 16);
     }
 

@@ -51,6 +51,8 @@ function run(env) {
   })
 }
 
+const walletConnectProjectId = "0123456789abcdef0123456789abcdef"
+
 describe("production UI Gate B binding", () => {
   it("rejects an arbitrary manifest environment value without a signed bundle", () => {
     const result = run({ BRIDGE_GATE_B_MANIFEST_SHA256: "f".repeat(64) })
@@ -65,8 +67,21 @@ describe("production UI Gate B binding", () => {
       BRIDGE_RELEASE_BUNDLE: f.bundle, BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
       BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
       VITE_DEPLOYMENT_PROFILE_JSON: f.profile, BRIDGE_GATE_B_MANIFEST_SHA256: "f".repeat(64),
+      VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
     })
     expect(result.status).not.toBe(0)
+  })
+
+  it("rejects a production deploy without a WalletConnect project ID", () => {
+    const f = fixture()
+    const result = run({
+      PATH: `${f.bin}:${process.env.PATH}`, FAKE_INPUTS: f.inputs,
+      BRIDGE_RELEASE_BUNDLE: f.bundle, BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
+      BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
+      VITE_DEPLOYMENT_PROFILE_JSON: f.profile, VITE_WALLETCONNECT_PROJECT_ID: "",
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("requires a 32-character hexadecimal VITE_WALLETCONNECT_PROJECT_ID")
   })
 
   it("derives approval from the verified bundle rather than the environment value", () => {
@@ -76,6 +91,7 @@ describe("production UI Gate B binding", () => {
       BRIDGE_RELEASE_BUNDLE: f.bundle, BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
       BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
       VITE_DEPLOYMENT_PROFILE_JSON: f.profile, BRIDGE_GATE_B_MANIFEST_SHA256: "f".repeat(64),
+      VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
     })
     expect(result.status, result.stderr).toBe(0)
   })

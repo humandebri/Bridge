@@ -16,6 +16,7 @@ import {
   savePendingConfirmation,
   setPendingConfirmationBlocked,
   type PendingConfirmation,
+  type PendingConfirmationInput,
 } from "@/lib/pending-confirmations"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
 import { decideWithdrawalFinalization } from "@/lib/withdrawal-confirmation-state"
@@ -28,6 +29,34 @@ export type ConfirmationOutcome =
   | { status: "complete" }
   | { status: "reverted" }
   | { status: "blocked" }
+
+export type ConfirmationTrigger = "background" | "userInitiated"
+
+export async function confirmPendingDepositFromUserAction(
+  input: Extract<PendingConfirmationInput, { kind: "deposit" }>,
+  adapter: IcWalletAdapter,
+  ensureWriteReady: () => Promise<void>,
+): Promise<ConfirmationOutcome | undefined> {
+  const closeWalletSession = await adapter.prepare()
+  try {
+    await ensureWriteReady()
+    const entry: Extract<PendingConfirmation, { kind: "deposit" }> = {
+      ...input,
+      blocked: input.blocked ?? false,
+      bridgeCanisterId: deploymentProfile.bridgeCanisterId ?? "",
+      chainId: deploymentProfile.chainId,
+      bridgeAddress: deploymentProfile.bridgeAddress?.toLowerCase() ?? "",
+    }
+    return await runWithConfirmationLock(pendingConfirmationKey(entry), entry, async (lease) => {
+      lease.assertCurrent()
+      await savePendingConfirmation(input)
+      lease.assertCurrent()
+      return confirmWhenFinalized(entry, adapter, () => true, lease, "userInitiated")
+    })
+  } finally {
+    await closeWalletSession()
+  }
+}
 
 export function SettlementConfirmationCoordinator() {
   const ic = useIcWallet()
@@ -76,15 +105,15 @@ export function SettlementConfirmationCoordinator() {
     const wakeFromStorage = (event: StorageEvent) => {
       if (event.key === pendingConfirmationsStorageKey()) wake()
     }
-    const interval = window.setInterval(tick, CONFIRMATION_POLL_MS)
     window.addEventListener(PENDING_CONFIRMATIONS_CHANGED, wake)
     window.addEventListener("storage", wakeFromStorage)
     document.addEventListener("visibilitychange", wake)
+    const interval = ic.adapter.requiresUserGesture ? undefined : window.setInterval(tick, CONFIRMATION_POLL_MS)
     tick()
 
     return () => {
       active = false
-      window.clearInterval(interval)
+      if (interval !== undefined) window.clearInterval(interval)
       window.removeEventListener(PENDING_CONFIRMATIONS_CHANGED, wake)
       window.removeEventListener("storage", wakeFromStorage)
       document.removeEventListener("visibilitychange", wake)
@@ -304,6 +333,7 @@ export async function confirmWhenFinalized(
   adapter: IcWalletAdapter,
   isActive: () => boolean = () => true,
   lease: ConfirmationLease = UNFENCED_CONFIRMATION_LEASE,
+  trigger: ConfirmationTrigger = "background",
 ): Promise<ConfirmationOutcome> {
   if (entry.kind === "deposit") {
     try {
@@ -351,7 +381,7 @@ export async function confirmWhenFinalized(
   }
   if (finalized.number === null || finalized.number < receipt.blockNumber) return { status: "retry" }
   const finalizedBlockNumber = finalized.number
-  if (adapter.requiresUserGesture) return { status: "retry" }
+  if (adapter.requiresUserGesture && trigger === "background") return { status: "retry" }
 
   try {
     lease.assertCurrent()
@@ -404,7 +434,7 @@ function toastWithdrawalNotification(receipt: Awaited<ReturnType<IcWalletAdapter
 async function handleDepositResult(entry: Extract<PendingConfirmation, { kind: "deposit" }>, result: SettlementActionResult): Promise<ConfirmationOutcome> {
   if ("Submitted" in result) {
     await savePendingConfirmation({ ...entry, transactionHash: bytesHex(result.Submitted.transaction_hash), blocked: false })
-    toast.success("The next Base transaction was submitted and is being monitored.")
+    toast.success("The next Base transaction was submitted. Check History after finalization if it has not completed.")
     return { status: "retry" }
   }
   if ("WaitingForConfirmation" in result) return { status: "retry" }

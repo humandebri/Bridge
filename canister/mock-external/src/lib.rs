@@ -412,11 +412,6 @@ fn set_mint_window(
 }
 
 #[ic_cdk::update]
-fn set_safe_block_sequence(value: Vec<u64>) {
-    SAFE_BLOCK_SEQUENCE.with(|current| *current.borrow_mut() = value);
-}
-
-#[ic_cdk::update]
 fn set_safe_block(block_number: u64, block_hash: Vec<u8>) -> Result<(), String> {
     let block_hash: [u8; 32] = block_hash
         .try_into()

@@ -22,4 +22,4 @@ Bridge Signerは通常のDeposit mint権限を持つため、Withdrawal専用rem
 EIP-1898 `requireCanonical`の正しさ、EVM rollbackとEIP-1153 transient storage lifetime、ABI decoder、Web Locks、browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityとSQL row selectionは外部仮定である。形式証明の対象は、decode後のblock一致、enumから派生indexへの分類、成功したbrowser storage更新後のqueue状態までである。
 Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
 
-本番未デプロイのためschema v19再オープンとwire v16を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
+本番未デプロイのためschema v20再オープンとwire v16を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。

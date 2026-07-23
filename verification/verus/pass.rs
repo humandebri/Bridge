@@ -260,7 +260,7 @@ proof fn payout_includes_fee_and_cannot_exceed_reserve(reserve: int, pending: in
 proof fn role_action_matrix(action: int, pause: bool, governance: bool)
     ensures kernel::administrator_authorized_spec(action, pause, governance)
         <==> (action == 0 && pause)
-            || ((action == 1 || action == 2 || action == 3 || action == 4) && governance)
+            || ((action == 1 || action == 2 || action == 3) && governance)
 {}
 
 proof fn unprivileged_caller_has_no_action(action: int)

@@ -98,11 +98,17 @@ fi
 if HANDOVER_FINAL_CONTROLLERS='["7jkta-eyaaa-aaaaq-aaarq-cai","aaaaa-aa"]' run_handover "$T/extra-controller.json" >/dev/null 2>&1; then
   echo "handover accepted an extra live controller" >&2; exit 1
 fi
-[[ ! -e "$T/extra-controller.json" ]]
+python3 - "$T/extra-controller.json" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1])); assert v['schema_version']==2 and v['stage']=='controller_update_submitted'
+PY
 if HANDOVER_FINAL_CONTROLLERS='["aaaaa-aa"]' run_handover "$T/missing-root.json" >/dev/null 2>&1; then
   echo "handover accepted a live controller set without SNS Root" >&2; exit 1
 fi
-[[ ! -e "$T/missing-root.json" ]]
+python3 - "$T/missing-root.json" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1])); assert v['schema_version']==2 and v['stage']=='controller_update_submitted'
+PY
 if HANDOVER_POSTCONDITION_FAIL=true run_handover "$T/postcondition-failed.json" >/dev/null 2>&1; then
   echo "handover wrote evidence without a live controller postcondition" >&2; exit 1
 fi
