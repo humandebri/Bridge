@@ -194,14 +194,17 @@ fn compact_phase_kernels_match_the_legal_transition_graphs() {
     let deposit_edges = [
         (0, 0, 1),
         (0, 1, 5),
-        (0, 2, 6),
+        (0, 2, 9),
         (1, 3, 2),
-        (2, 4, 3),
-        (2, 5, 4),
-        (4, 6, 2),
+        (1, 4, 6),
+        (6, 5, 8),
+        (6, 6, 7),
+        (2, 7, 3),
+        (2, 8, 4),
+        (4, 9, 2),
     ];
-    for state in 0..=6 {
-        for event in 0..=6 {
+    for state in 0..=9 {
+        for event in 0..=9 {
             let expected = deposit_edges
                 .iter()
                 .find(|(from, input, _)| *from == state && *input == event)

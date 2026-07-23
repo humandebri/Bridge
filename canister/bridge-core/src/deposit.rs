@@ -244,10 +244,7 @@ impl DepositRecord {
                     Amount::ZERO,
                 )
             }
-            (
-                State::EscrowedUnquoted { .. },
-                Event::StartRefund { reason, attempt },
-            ) => {
+            (State::EscrowedUnquoted { .. }, Event::StartRefund { reason, attempt }) => {
                 self.validate_refund_attempt(&attempt)?;
                 (
                     State::RefundPending {
@@ -271,10 +268,7 @@ impl DepositRecord {
                 None,
                 Amount::ZERO,
             ),
-            (
-                State::RefundPending { reason, attempt },
-                Event::RefundAmbiguous { hold_id },
-            ) => (
+            (State::RefundPending { reason, attempt }, Event::RefundAmbiguous { hold_id }) => (
                 State::RefundReconciliationHold {
                     reason: *reason,
                     hold_id,
@@ -290,10 +284,7 @@ impl DepositRecord {
                 },
                 Event::MintConfirmed { operation_id },
             ) if *current == operation_id => {
-                let service_fee = self
-                    .quote
-                    .ok_or(CoreError::InvalidAmount)?
-                    .service_fee;
+                let service_fee = self.quote.ok_or(CoreError::InvalidAmount)?.service_fee;
                 (
                     State::Minted {
                         ledger_block_index: *ledger_block_index,
@@ -423,11 +414,7 @@ impl DepositRecord {
                 Event::RefundAmbiguous { hold_id },
             ) => *current == *hold_id,
             (
-                State::MintPending {
-                    operation_id: current,
-                    ..
-                }
-                | State::Minted {
+                State::Minted {
                     operation_id: current,
                     ..
                 },

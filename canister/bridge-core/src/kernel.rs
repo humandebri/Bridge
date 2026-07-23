@@ -435,9 +435,7 @@ pub const fn audit_next(current: u64) -> Option<u64> {
 /// Compact phase transition used by the rich Deposit state machine.
 #[cfg(not(verus_keep_ghost))]
 pub const fn deposit_phase_step(state: u8, event: u8) -> u8 {
-    deposit_step_body!(
-        state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8
-    )
+    deposit_step_body!(state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8)
 }
 
 #[cfg(not(verus_keep_ghost))]

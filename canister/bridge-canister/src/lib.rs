@@ -273,7 +273,7 @@ fn init(args: config::BridgeInitArgs) {
 
 #[ic_cdk::post_upgrade]
 fn post_upgrade() {
-    let store = StableStore::reopen(DefaultMemoryImpl::default())
+    let store = StableStore::reopen_after_upgrade(DefaultMemoryImpl::default())
         .unwrap_or_else(|error| ic_cdk::trap(format!("stable state reopen failed: {error}")));
     install_store(store);
     ensure_supported_schema();
@@ -285,9 +285,6 @@ fn post_upgrade() {
 async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, api::DepositError> {
     let caller = ic_cdk::api::msg_caller();
     let id = api::deposit_action_id(caller, &args)?;
-    let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
-        return Err(api::DepositError::Busy);
-    };
     let existed = STORE.with(|store| {
         store
             .borrow()
@@ -295,40 +292,14 @@ async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, 
             .map(|record| record.is_some())
             .map_err(|_| api::DepositError::StorageFailure)
     })?;
-    if !existed {
-        let config = STORE.with(|store| {
-            store
-                .borrow()
-                .config()
-                .map_err(|_| api::DepositError::StorageFailure)?
-                .ok_or(api::DepositError::StorageFailure)
-        })?;
-        if !has_external_call_cycle_budget(
-            ic_cdk::api::canister_liquid_cycle_balance(),
-            config.cycles_floor,
-            config.settlement_cycle_ceiling,
-        ) {
-            return Err(api::DepositError::ReserveUnavailable);
-        }
-    }
-    let mut receipt = api::request_deposit(caller, args).await?;
     if existed {
-        return Ok(receipt);
+        return api::request_deposit(caller, args).await;
     }
+    let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
+        return Err(api::DepositError::Busy);
+    };
+    let receipt = api::request_deposit(caller, args).await?;
     drop(guard);
-    if let Some(settlement) =
-        scheduler::run_newly_enqueued(storage::SettlementJobKind::Deposit, id).await
-    {
-        receipt.state = STORE.with(|store| {
-            store
-                .borrow()
-                .deposit(id)
-                .map_err(|_| api::DepositError::StorageFailure)?
-                .map(|record| phases::DepositPhase::from(&record.state))
-                .ok_or(api::DepositError::StorageFailure)
-        })?;
-        receipt.settlement = Some(settlement);
-    }
     scheduler::arm();
     Ok(receipt)
 }
@@ -398,25 +369,12 @@ async fn notify_withdrawal(
     else {
         return Err(api::NotifyWithdrawalError::Busy);
     };
-    let mut receipt = api::notify_withdrawal(caller, args).await?;
-    let id = match &receipt {
-        api::NotifyWithdrawalReceipt::Ingested { withdrawal_id, .. } => withdrawal_id
-            .as_slice()
-            .try_into()
-            .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?,
+    let receipt = api::notify_withdrawal(caller, args).await?;
+    match &receipt {
+        api::NotifyWithdrawalReceipt::Ingested { .. } => {}
         api::NotifyWithdrawalReceipt::Duplicate { .. } => return Ok(receipt),
-    };
-    drop(notification_guard);
-    if let Some(settlement) =
-        scheduler::run_newly_enqueued(storage::SettlementJobKind::Withdrawal, id).await
-    {
-        match &mut receipt {
-            api::NotifyWithdrawalReceipt::Ingested {
-                settlement: slot, ..
-            } => *slot = Some(settlement),
-            api::NotifyWithdrawalReceipt::Duplicate { .. } => unreachable!(),
-        }
     }
+    drop(notification_guard);
     scheduler::arm();
     Ok(receipt)
 }
@@ -436,19 +394,9 @@ async fn recover_mint_revert(
     let Some(guard) = InFlightGuard::acquire(key) else {
         return Err(recovery::RecoverMintRevertError::Busy);
     };
-    let mut receipt = recovery::recover(ic_cdk::api::msg_caller(), args).await?;
+    let receipt = recovery::recover(ic_cdk::api::msg_caller(), args).await?;
     if matches!(receipt, recovery::RecoverMintRevertReceipt::Enqueued { .. }) {
         drop(guard);
-        let settlement = recovery::run_enqueued(&target).await;
-        if let recovery::RecoverMintRevertReceipt::Enqueued {
-            state,
-            settlement: slot,
-            ..
-        } = &mut receipt
-        {
-            *state = recovery::current_state(&target)?;
-            *slot = settlement;
-        }
         scheduler::arm();
     }
     Ok(receipt)
@@ -662,6 +610,7 @@ async fn continue_deposit(
                     record.state,
                     bridge_core::DepositState::Minted { .. }
                         | bridge_core::DepositState::MintReverted { .. }
+                        | bridge_core::DepositState::Refunded { .. }
                         | bridge_core::DepositState::Cancelled { .. }
                 );
                 terminal.then(|| {

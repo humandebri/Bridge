@@ -224,6 +224,7 @@ struct StableMockState {
 thread_local! {
     static LEDGER_ID: RefCell<Option<Principal>> = const { RefCell::new(None) };
     static LEDGER_MODE: RefCell<LedgerMode> = const { RefCell::new(LedgerMode::Succeed) };
+    static REFUND_LEDGER_MODE: RefCell<Option<LedgerMode>> = const { RefCell::new(None) };
     static LEDGER_FEE_AVAILABLE: RefCell<bool> = const { RefCell::new(true) };
     static LEDGER_FEE: RefCell<u128> = const { RefCell::new(1) };
     static LEDGER_TRANSFER_CALLS: RefCell<u64> = const { RefCell::new(0) };
@@ -277,6 +278,11 @@ fn init(args: InitArgs) {
 #[ic_cdk::update]
 fn set_ledger_mode(mode: LedgerMode) {
     LEDGER_MODE.with(|current| *current.borrow_mut() = mode);
+}
+
+#[ic_cdk::update]
+fn set_refund_ledger_mode(mode: Option<LedgerMode>) {
+    REFUND_LEDGER_MODE.with(|current| *current.borrow_mut() = mode);
 }
 
 #[ic_cdk::update]
@@ -676,7 +682,10 @@ fn icrc2_transfer_from(args: TransferFromArgs) -> Result<Nat, TransferFromError>
 #[ic_cdk::update]
 fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
     LEDGER_TRANSFER_CALLS.with(|value| *value.borrow_mut() += 1);
-    match LEDGER_MODE.with(|mode| *mode.borrow()) {
+    let mode = REFUND_LEDGER_MODE
+        .with(|mode| *mode.borrow())
+        .unwrap_or_else(|| LEDGER_MODE.with(|mode| *mode.borrow()));
+    match mode {
         LedgerMode::Trap => ic_cdk::trap("ambiguous mock transfer"),
         LedgerMode::Duplicate => {
             return Err(TransferError::Duplicate {

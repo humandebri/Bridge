@@ -4,6 +4,8 @@ status: accepted
 
 # 不明なledger transferをReconciliation Holdへ留める
 
+> Depositの確定的なpost-pull拒否と専用refund reconciliationについては、ADR 0021が本ADRのDeposit返金禁止部分を置換する。曖昧なfunding結果を補償しない規則は引き続き本ADRに従う。
+
 ICRC transferの結果がdeduplication期間後も不明で、履歴から成否を完全に確定できない場合、対象要求をReconciliation Holdへ無期限に留める。時間経過だけを理由にした再送、Deposit返金、Base Refundを禁止する。
 
 完全な不存在証明後、Depositは再利用不能なCancelledへ終端する。Withdrawalだけはattempt番号を増やし、created-at timeとmemo以外の経済的payloadを保存した新しいTransfer Attemptを作成できる。

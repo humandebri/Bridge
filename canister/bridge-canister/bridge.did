@@ -237,24 +237,40 @@ type DepositIdPage = record {
 };
 type DepositPhase = variant {
   MintPending;
+  Refunded;
+  FundingReconciliationHold;
+  FundingPending;
   MintReverted;
-  PullPending;
+  EscrowedUnquoted;
+  RefundReconciliationHold;
+  RefundPending;
   Minted;
-  Escrowed;
   Cancelled;
-  ReconciliationHold;
 };
+type DepositQuoteView = record { net_amount : nat; service_fee : nat };
 type DepositReceipt = record {
   deposit_id : blob;
   state : DepositPhase;
   owner_sequence : nat64;
-  settlement : opt SettlementActionResult;
+};
+type DepositRefundReasonView = variant {
+  ReserveInsufficient;
+  ServiceFeeRejected;
+  MintWindowLimitExceeded;
+  BasePaused;
+  PerDepositLimitExceeded;
+};
+type DepositRefundView = record {
+  attempt_no : nat64;
+  block_index : opt nat;
+  ledger_fee : nat;
+  amount : nat;
+  reason : DepositRefundReasonView;
 };
 type DepositView = record {
   base_recipient : blob;
-  net_amount : nat;
-  service_fee : nat;
   deposit_id : blob;
+  quote : opt DepositQuoteView;
   max_service_fee : nat;
   from_subaccount : opt blob;
   last_settlement_stop_reason : opt text;
@@ -263,6 +279,7 @@ type DepositView = record {
   automatic_progress : opt AutomaticProgressView;
   base_confirmation : opt BaseConfirmationView;
   gross_amount : nat;
+  refund : opt DepositRefundView;
 };
 type EmergencyPauseReceipt = record {
   local_pause_audit_sequence : nat64;
@@ -359,14 +376,10 @@ type NotifyWithdrawalError = variant {
   InvalidBaseResponse;
 };
 type NotifyWithdrawalReceipt = variant {
-  Duplicate : record {
-    withdrawal_id : blob;
-    settlement : opt SettlementActionResult;
-  };
+  Duplicate : record { withdrawal_id : blob };
   Ingested : record {
     finalized_head_block_number : nat64;
     withdrawal_id : blob;
-    settlement : opt SettlementActionResult;
   };
 };
 type PublicConfig = record {
@@ -432,7 +445,6 @@ type RecoverMintRevertReceipt = variant {
     state : SettlementState;
     finalized_block_hash : blob;
     replacement_operation_id : nat64;
-    settlement : opt SettlementActionResult;
   };
   AlreadyStarted : record { replacement_operation_id : nat64 };
 };

@@ -401,12 +401,10 @@ function unwrapDepositResult(result: unknown): DepositReceipt {
   if (!(id instanceof Uint8Array) && !Array.isArray(id)) throw new Error("Wallet reply has an invalid deposit ID")
   const state: unknown = Reflect.get(ok, "state")
   if (!isDepositPhase(state)) throw new Error("Wallet reply has an invalid deposit state")
-  const settlement: unknown = Reflect.get(ok, "settlement")
-  if (!Array.isArray(settlement)) throw new Error("Wallet reply has an invalid settlement result")
   const ownerSequence: unknown = Reflect.get(ok, "owner_sequence")
   if (typeof ownerSequence !== "bigint") throw new Error("Wallet reply has an invalid owner sequence")
-  if (settlement.length > 1 || (settlement.length === 1 && !isSettlementActionResult(settlement[0]))) throw new Error("Wallet reply has an invalid settlement result")
-  return { deposit_id: id, owner_sequence: ownerSequence, state, settlement: settlement as [] | [SettlementActionResult] }
+  if (Object.keys(ok).length !== 3) throw new Error("Wallet reply has an invalid deposit receipt")
+  return { deposit_id: id, owner_sequence: ownerSequence, state }
 }
 
 export function decodeNotifyWithdrawalReply(reply: Uint8Array): NotifyWithdrawalReceipt {
@@ -432,8 +430,6 @@ function unwrapNotifyWithdrawalResult(result: unknown): NotifyWithdrawalReceipt 
   const payloadRecord = payload as Record<string, unknown>
   const withdrawalId: unknown = payloadRecord.withdrawal_id
   if (!(withdrawalId instanceof Uint8Array) && !Array.isArray(withdrawalId)) throw new Error("Wallet reply has an invalid withdrawal ID")
-  const settlement: unknown = payloadRecord.settlement
-  if (!Array.isArray(settlement) || settlement.length > 1 || (settlement.length === 1 && !isSettlementActionResult(settlement[0]))) throw new Error("Wallet reply has an invalid settlement result")
   if (receiptKey === "Ingested" && typeof payloadRecord.finalized_head_block_number !== "bigint") throw new Error("Wallet reply has an invalid finalized block")
   return receipt as NotifyWithdrawalReceipt
 }

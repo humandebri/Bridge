@@ -265,7 +265,8 @@ fn resolve_hold_bundle_db_failpoint(point: ResolveHoldBundleFailpoint) -> Result
     Ok(())
 }
 
-pub const SCHEMA_VERSION: u16 = 17;
+pub const SCHEMA_VERSION: u16 = 18;
+const DEPLOYED_STAGING_SCHEMA_VERSION: u16 = 17;
 const WIRE_VERSION: u8 = 15;
 const MAX_STABLE_VALUE_BYTES: usize = 16 * 1024;
 const MAX_AUDIT_EVENTS: u64 = 10_000;
@@ -306,7 +307,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 17, 15);
+INSERT INTO bridge_metadata VALUES (1, 18, 15);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1860,6 +1861,7 @@ pub enum StorageError {
     MissingWireVersion,
     UnsupportedWireVersion(u8),
     UnsupportedSchemaVersion(u16),
+    UnsafeSchemaMigration { from: u16, to: u16 },
     ValueTooLarge { actual: usize, maximum: usize },
     CounterOverflow,
     CounterUnderflow,
@@ -1924,6 +1926,58 @@ fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
             u8::try_from(record_wire).unwrap_or(u8::MAX),
         ));
     }
+    Ok(())
+}
+
+fn migrate_deployed_staging_schema(handle: DbHandle) -> Result<(), StorageError> {
+    let (application_schema, record_wire, deposit_artifacts): (i64, i64, i64) =
+        handle.query(|connection| {
+            connection.query_one(
+                "SELECT application_schema_version,
+                        record_wire_version,
+                        (SELECT COUNT(*) FROM deposits)
+                      + (SELECT COUNT(*) FROM reconciliation_holds)
+                      + (SELECT COUNT(*) FROM evm_operations)
+                      + (SELECT COUNT(*) FROM evm_execution_payloads)
+                      + (SELECT COUNT(*) FROM deposit_intents)
+                      + (SELECT COUNT(*) FROM deposit_owner_index)
+                      + (SELECT COUNT(*) FROM pull_pending_deposit_index)
+                      + (SELECT COUNT(*) FROM owner_deposit_sequences)
+                      + (SELECT COUNT(*) FROM settlement_jobs WHERE settlement_kind = 0)
+                 FROM bridge_metadata WHERE id = 1",
+                params![],
+                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?, row.get::<i64>(2)?)),
+            )
+        })?;
+    if application_schema == i64::from(SCHEMA_VERSION) {
+        return Ok(());
+    }
+    if application_schema != i64::from(DEPLOYED_STAGING_SCHEMA_VERSION) {
+        return Err(StorageError::UnsupportedSchemaVersion(
+            u16::try_from(application_schema).unwrap_or(u16::MAX),
+        ));
+    }
+    if record_wire != i64::from(WIRE_VERSION) {
+        return Err(StorageError::UnsupportedWireVersion(
+            u8::try_from(record_wire).unwrap_or(u8::MAX),
+        ));
+    }
+    if deposit_artifacts != 0 {
+        return Err(StorageError::UnsafeSchemaMigration {
+            from: DEPLOYED_STAGING_SCHEMA_VERSION,
+            to: SCHEMA_VERSION,
+        });
+    }
+    handle.update(|connection| {
+        connection.execute(
+            "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
+            params![i64::from(SCHEMA_VERSION)],
+        )?;
+        connection.execute(
+            "UPDATE singleton_state SET schema = ?1 WHERE id = 1",
+            params![SCHEMA_VERSION.to_sql_bytes()],
+        )
+    })?;
     Ok(())
 }
 
@@ -2064,7 +2118,12 @@ fn validate_storage_row(
                     .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
                 progress.reserved_deposit_mint_amount = progress
                     .reserved_deposit_mint_amount
-                    .checked_add(record.net_amount.get())
+                    .checked_add(
+                        record
+                            .reserved_mint_amount()
+                            .map_err(|_| DbError::Constraint("invalid deposit quote".into()))?
+                            .get(),
+                    )
                     .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
             }
         }
@@ -2407,6 +2466,10 @@ impl StableStore {
         #[cfg(test)]
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
+        Self::reopen_handle(handle)
+    }
+
+    fn reopen_handle(handle: DbHandle) -> Result<Self, StorageError> {
         verify_metadata(handle)?;
         let handle = RevisionedHandle(handle);
         let store = Self {
@@ -2449,6 +2512,14 @@ impl StableStore {
         }
         store.validate_singletons()?;
         Ok(store)
+    }
+
+    pub fn reopen_after_upgrade(memory: DefaultMemoryImpl) -> Result<Self, StorageError> {
+        #[cfg(test)]
+        reset_sqlite_test_runtime();
+        let handle = open_database(memory)?;
+        migrate_deployed_staging_schema(handle)?;
+        Self::reopen_handle(handle)
     }
 
     fn validate_singletons(&self) -> Result<(), StorageError> {
@@ -3005,7 +3076,7 @@ impl StableStore {
                     .checked_add(1)
                     .ok_or(StorageError::CounterOverflow)?;
                 reserved_deposit_mint_amount = reserved_deposit_mint_amount
-                    .checked_add(record.net_amount.get())
+                    .checked_add(record.reserved_mint_amount()?.get())
                     .ok_or(StorageError::CounterOverflow)?;
             }
             if let Some(operation_id) = deposit_operation_id(&record) {
@@ -3419,7 +3490,7 @@ impl StableStore {
         caller: Principal,
         now_ns: u64,
         lease_until_ns: u64,
-        overdue_after_ns: u64,
+        _overdue_after_ns: u64,
         limits: SettlementQuotaLimits,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
         let mut admission = decode::<SettlementAdmissionControl>(self.settlement_admission.get())
@@ -3482,15 +3553,6 @@ impl StableStore {
                         row.get::<Vec<u8>>(3)?,
                     )),
                 )?;
-                if let Some((status, phase, Some(next_raw), _)) = target.first() {
-                    if *status == 0 && *phase != 0 {
-                        let next = u64::from_sql_bytes(next_raw.clone())
-                            .map_err(|_| DbError::Constraint("invalid manual schedule".into()))?;
-                        if now_ns < next.saturating_add(overdue_after_ns) {
-                            return Ok(ManualClaimTransaction::AutomaticProgressPending(Some(next)));
-                        }
-                    }
-                }
 
                 let window_ns = limits.window_seconds.saturating_mul(1_000_000_000);
                 let window_id = now_ns / window_ns;
@@ -6117,7 +6179,11 @@ impl StableStore {
             let mint_total = bridge_core::mint_admission_total(
                 admission.mint_snapshot.effective_minted_in_window().get(),
                 previous_counters.reserved_deposit_mint_amount,
-                record.net_amount.get(),
+                record
+                    .quote
+                    .ok_or(StorageError::Core(CoreError::InvalidAmount))?
+                    .net_amount
+                    .get(),
             )
             .ok_or(StorageError::CounterOverflow)?;
             if mint_total > admission.mint_snapshot.mint_window_limit.get() {
@@ -6407,19 +6473,35 @@ impl StableStore {
         let previous = self
             .deposit(deposit.id.bytes())?
             .ok_or(StorageError::RecordNotFound)?;
-        let hold_id = match deposit.state {
-            bridge_core::DepositState::ReconciliationHold { hold_id } => hold_id,
-            _ => return Err(StorageError::Core(CoreError::HoldMismatch)),
-        };
         let mut expected = previous.clone();
-        expected.apply(bridge_core::DepositEvent::PullAmbiguous { hold_id })?;
-        if expected != *deposit
-            || *hold
-                != ReconciliationHoldRecord::open(
-                    hold_id,
-                    bridge_core::RequestReference::Deposit(deposit.id),
+        let (hold_id, request, transfer) = match (&previous.state, &deposit.state) {
+            (
+                bridge_core::DepositState::FundingPending,
+                bridge_core::DepositState::FundingReconciliationHold { hold_id },
+            ) => {
+                expected
+                    .apply(bridge_core::DepositEvent::FundingAmbiguous { hold_id: *hold_id })?;
+                (
+                    *hold_id,
+                    bridge_core::RequestReference::DepositFunding(deposit.id),
                     previous.transfer.clone(),
                 )
+            }
+            (
+                bridge_core::DepositState::RefundPending { attempt, .. },
+                bridge_core::DepositState::RefundReconciliationHold { hold_id, .. },
+            ) => {
+                expected.apply(bridge_core::DepositEvent::RefundAmbiguous { hold_id: *hold_id })?;
+                (
+                    *hold_id,
+                    bridge_core::RequestReference::DepositRefund(deposit.id),
+                    attempt.identity.clone(),
+                )
+            }
+            _ => return Err(StorageError::Core(CoreError::HoldMismatch)),
+        };
+        if expected != *deposit
+            || *hold != ReconciliationHoldRecord::open(hold_id, request, transfer)
         {
             return Err(StorageError::Core(CoreError::HoldMismatch));
         }
@@ -6635,7 +6717,7 @@ impl StableStore {
         operation: &EvmOperationRecord,
         intent: &EvmCallIntent,
     ) -> Result<(), StorageError> {
-        self.commit_deposit_mint_bundle_and_scan(deposit, operation, intent, None)
+        self.commit_deposit_mint_bundle_and_scan(deposit, operation, intent, None, None)
     }
 
     pub fn commit_deposit_mint_bundle_and_scan(
@@ -6644,34 +6726,23 @@ impl StableStore {
         operation: &EvmOperationRecord,
         intent: &EvmCallIntent,
         scan_target: Option<&ReconciliationTarget>,
+        reserve_admission: Option<DepositReserveAdmission>,
     ) -> Result<(), StorageError> {
         let previous = self
             .deposit(deposit.id.bytes())?
             .ok_or(StorageError::RecordNotFound)?;
-        let (ledger_block_index, operation_id) = match deposit.state {
-            bridge_core::DepositState::MintPending {
-                ledger_block_index,
-                operation_id,
-            } => (ledger_block_index, operation_id),
+        let operation_id = match deposit.state {
+            bridge_core::DepositState::MintPending { operation_id, .. } => operation_id,
             _ => return Err(StorageError::Core(CoreError::PayloadConflict)),
         };
+        let quote = deposit
+            .quote
+            .ok_or(StorageError::Core(CoreError::InvalidAmount))?;
         let mut expected = previous.clone();
-        let mut resolved_hold = None;
-        if let bridge_core::DepositState::ReconciliationHold { hold_id } = previous.state {
-            let mut hold = self
-                .reconciliation_hold(hold_id.get())?
-                .ok_or(StorageError::RecordNotFound)?;
-            let previous_hold = hold.clone();
-            resolve_deposit_hold(
-                &mut expected,
-                &mut hold,
-                DepositHoldResolution::Succeeded { ledger_block_index },
-            )?;
-            resolved_hold = Some((previous_hold, hold));
-        } else {
-            expected.apply(bridge_core::DepositEvent::PullSucceeded { ledger_block_index })?;
-        }
-        expected.apply(bridge_core::DepositEvent::PrepareMint { operation_id })?;
+        expected.apply(bridge_core::DepositEvent::CommitQuote {
+            quote,
+            operation_id,
+        })?;
         if expected != *deposit || operation.kind != EvmOperationKind::MintDeposit {
             return Err(StorageError::Core(CoreError::PayloadConflict));
         }
@@ -6681,10 +6752,9 @@ impl StableStore {
             OperationBundleParent::Deposit {
                 previous: &previous,
                 next: deposit,
-                resolved_hold: resolved_hold
-                    .as_ref()
-                    .map(|(previous, next)| (previous, next)),
+                resolved_hold: None,
             },
+            reserve_admission,
             None,
             scan_target,
             None,
@@ -7112,6 +7182,7 @@ impl StableStore {
                 next,
                 resolved_hold: None,
             },
+            None,
             Some(progress),
             None,
             Some((rpc_audit.caller, rpc_audit.timestamp_ns, rpc_audit.kinds)),
@@ -7129,6 +7200,7 @@ impl StableStore {
         operation: &EvmOperationRecord,
         intent: &EvmCallIntent,
         parent: OperationBundleParent<'_>,
+        reserve_admission: Option<DepositReserveAdmission>,
         progress: Option<&ExternalProgress>,
         scan_target: Option<&ReconciliationTarget>,
         rpc_audit: Option<(Principal, u64, Vec<AuditEventKind>)>,
@@ -7160,6 +7232,58 @@ impl StableStore {
         }
         let mut counters = self.counters()?;
         let previous_counters = counters;
+        let previous_progress = self.external_progress()?;
+        let mut admitted_progress = None;
+        if let Some(admission) = reserve_admission {
+            let next = match parent {
+                OperationBundleParent::Deposit { next, .. } => next,
+            };
+            let quote = next
+                .quote
+                .ok_or(StorageError::Core(CoreError::InvalidAmount))?;
+            if !bridge_core::reserve_token_matches(
+                admission.expected_token.nonterminal_withdrawals,
+                admission.expected_token.reserved_deposit_mint_amount,
+                admission.expected_token.reserved_deposit_mint_operations,
+                admission.expected_token.observation_generation,
+                previous_counters.nonterminal_withdrawals,
+                previous_counters.reserved_deposit_mint_amount,
+                previous_counters.reserved_deposit_mint_operations,
+                previous_progress.reserve_observation_generation,
+            ) || admission.observed_at_ns < previous_progress.last_reserve_observation_ns
+            {
+                return Err(StorageError::StaleReserveObservation);
+            }
+            let reserve = admission.reserve_policy.snapshot(
+                previous_counters.nonterminal_withdrawals,
+                previous_counters.reserved_deposit_mint_operations,
+                1,
+                admission.eth_balance_wei,
+                admission.cycles_balance,
+            )?;
+            if !reserve.sufficient {
+                return Err(StorageError::ReserveUnavailable);
+            }
+            let mint_total = bridge_core::mint_admission_total(
+                admission.mint_snapshot.effective_minted_in_window().get(),
+                previous_counters.reserved_deposit_mint_amount,
+                quote.net_amount.get(),
+            )
+            .ok_or(StorageError::CounterOverflow)?;
+            if mint_total > admission.mint_snapshot.mint_window_limit.get() {
+                return Err(StorageError::Core(CoreError::MintWindowLimitExceeded));
+            }
+            let mut next_progress = previous_progress;
+            next_progress.last_eth_balance_wei = admission.eth_balance_wei;
+            next_progress.reserve_sufficient = true;
+            next_progress.last_reserve_observation_ns = admission.observed_at_ns;
+            next_progress.reserve_observation_generation = next_progress
+                .reserve_observation_generation
+                .checked_add(1)
+                .ok_or(StorageError::CounterOverflow)?;
+            admitted_progress = Some(next_progress);
+        }
+        let progress = progress.or(admitted_progress.as_ref());
         if counters.next_evm_operation_id != operation.id.get() {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
@@ -7286,6 +7410,9 @@ impl StableStore {
             })
             .transpose()?;
         let previous_counters_blob = encode(&previous_counters)?;
+        let previous_progress_blob = reserve_admission
+            .map(|_| encode(&previous_progress))
+            .transpose()?;
         let counters_blob = encode(&counters)?;
         let progress_blob = progress.map(encode).transpose()?;
         let scan_blob = scan_target
@@ -7314,6 +7441,15 @@ impl StableStore {
             )?;
             if persisted_counters != previous_counters_blob.to_sql_bytes() {
                 return Err(DbError::Constraint("stale operation ID candidate".into()));
+            }
+            if let Some(expected_progress) = &previous_progress_blob {
+                let persisted_progress = connection.query_scalar::<Vec<u8>>(
+                    "SELECT external_progress FROM singleton_state WHERE id = 1",
+                    params![],
+                )?;
+                if persisted_progress != expected_progress.to_sql_bytes() {
+                    return Err(DbError::Constraint("stale deposit reserve observation".into()));
+                }
             }
             if parent_was_present {
                 let select_sql = match parent_table {
@@ -8676,16 +8812,14 @@ fn is_open_hold(value: &ReconciliationHoldRecord) -> bool {
 }
 
 fn is_pending_deposit_ledger(value: &DepositRecord) -> bool {
-    matches!(value.state, bridge_core::DepositState::PullPending)
+    matches!(
+        value.state,
+        bridge_core::DepositState::FundingPending | bridge_core::DepositState::RefundPending { .. }
+    )
 }
 
 fn is_deposit_mint_reserved(value: &DepositRecord) -> bool {
-    !matches!(
-        value.state,
-        bridge_core::DepositState::Minted { .. }
-            | bridge_core::DepositState::MintReverted { .. }
-            | bridge_core::DepositState::Cancelled { .. }
-    )
+    value.reserves_mint_resources()
 }
 
 fn adjust_reserved_mint_amount(
@@ -8695,14 +8829,24 @@ fn adjust_reserved_mint_amount(
 ) -> Result<u128, StorageError> {
     let without_previous = if previous.is_some_and(is_deposit_mint_reserved) {
         current
-            .checked_sub(previous.expect("checked previous").net_amount.get())
+            .checked_sub(
+                previous
+                    .expect("checked previous")
+                    .reserved_mint_amount()
+                    .map_err(StorageError::Core)?
+                    .get(),
+            )
             .ok_or(StorageError::CounterUnderflow)?
     } else {
         current
     };
     if is_deposit_mint_reserved(next) {
         without_previous
-            .checked_add(next.net_amount.get())
+            .checked_add(
+                next.reserved_mint_amount()
+                    .map_err(StorageError::Core)?
+                    .get(),
+            )
             .ok_or(StorageError::CounterOverflow)
     } else {
         Ok(without_previous)
@@ -8801,8 +8945,8 @@ mod tests {
     use super::*;
     use bridge_core::{
         Account, Amount, ApplyOutcome, BaseMintSnapshot, DepositEvent, DepositHoldResolution,
-        DepositId, DepositRequest, DepositState, EvmCallIntent, EvmOperationEvent, EvmOperationId,
-        EvmOperationKind, HoldId, LedgerOperation, LedgerTransferIdentity,
+        DepositId, DepositQuote, DepositRequest, DepositState, EvmCallIntent, EvmOperationEvent,
+        EvmOperationId, EvmOperationKind, HoldId, LedgerOperation, LedgerTransferIdentity,
         ReconciliationArchiveRange, ReconciliationHoldRecord, ReconciliationHoldState,
         ReconciliationLedgerPage, ReconciliationScanPhase, ReconciliationScanProgress,
         ReconciliationTarget, RequestReference, Settlement, TransferAttempt, WithdrawalEvent,
@@ -8835,33 +8979,27 @@ mod tests {
     }
 
     fn deposit() -> DepositRecord {
-        let mut deposit = DepositRecord::accept(
-            DepositRequest {
-                id: DepositId::new([1; 32]),
-                payload_hash: [2; 32],
-                gross_amount: Amount::new(110),
-                user_max_service_fee: Amount::new(10),
-                transfer: transfer(LedgerOperation::PullDeposit, 110, 10),
-            },
-            BaseMintSnapshot {
-                finalized_head_block_number: 1,
-                confirmed_block_timestamp: 1,
-                service_fee: Amount::new(10),
-                max_service_fee: Amount::new(20),
-                per_deposit_limit: Amount::new(1_000),
-                mint_window_limit: Amount::new(10_000),
-                mint_window_started_at: 0,
-                mint_window_duration: 100,
-                minted_in_window: Amount::ZERO,
-            },
-        )
+        let mut deposit = DepositRecord::accept(DepositRequest {
+            id: DepositId::new([1; 32]),
+            payload_hash: [2; 32],
+            gross_amount: Amount::new(110),
+            user_max_service_fee: Amount::new(10),
+            transfer: transfer(LedgerOperation::PullDeposit, 110, 10),
+        })
         .expect("valid deposit");
         deposit
-            .apply(DepositEvent::PullSucceeded {
+            .apply(DepositEvent::FundingSucceeded {
                 ledger_block_index: 4,
             })
             .expect("escrowed");
         deposit
+    }
+
+    fn test_deposit_quote() -> DepositQuote {
+        DepositQuote {
+            service_fee: Amount::new(10),
+            net_amount: Amount::new(100),
+        }
     }
 
     fn mint_snapshot() -> BaseMintSnapshot {
@@ -9115,7 +9253,10 @@ mod tests {
         let operation_id = EvmOperationId::new(77);
         let mut parent = deposit();
         parent
-            .apply(DepositEvent::PrepareMint { operation_id })
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
             .expect("prepare deposit mint");
         store
             .put_deposit(&parent)
@@ -9789,7 +9930,10 @@ mod tests {
             let operation_id = EvmOperationId::new(83);
             let mut parent = deposit();
             parent
-                .apply(DepositEvent::PrepareMint { operation_id })
+                .apply(DepositEvent::CommitQuote {
+                    quote: test_deposit_quote(),
+                    operation_id,
+                })
                 .expect("mint parent");
             store.put_deposit(&parent).expect("parent");
             let mut operation = EvmOperationRecord::queued(
@@ -10453,56 +10597,30 @@ mod tests {
 
     #[test]
     #[serial]
-    fn deposit_admission_atomically_commits_reserve_observation_and_audit() {
+    fn deposit_admission_does_not_reserve_mint_resources_before_quote() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory.clone()).expect("initialize admission fixture");
         let owner = Principal::self_authenticating([33; 32]);
         let record = deposit();
         let intent = intent(record.id.bytes(), owner);
-        let expected_token = store
-            .deposit_reserve_token()
-            .expect("reserve token before admission");
-
         store
-            .admit_deposit(
-                owner,
-                &intent,
-                &record,
-                Some(DepositReserveAdmission {
-                    audit_caller: owner,
-                    expected_token,
-                    observed_at_ns: 42,
-                    eth_balance_wei: 20_000_001,
-                    cycles_balance: 20_000_000,
-                    reserve_policy: config().reserve_policy(),
-                    mint_snapshot: mint_snapshot(),
-                }),
-            )
-            .expect("admit with fresh resource observation");
+            .admit_deposit(owner, &intent, &record, None)
+            .expect("admit unquoted deposit");
 
         let progress = store.external_progress().expect("progress after admission");
-        assert_eq!(progress.reserve_observation_generation, 1);
-        assert_eq!(progress.last_reserve_observation_ns, 42);
-        assert_eq!(progress.last_eth_balance_wei, 20_000_001);
-        assert!(progress.reserve_sufficient);
+        assert_eq!(progress.reserve_observation_generation, 0);
         assert_eq!(
             store
                 .counters()
                 .expect("counters after admission")
                 .reserved_deposit_mint_operations,
-            1
+            0
         );
-        assert!(matches!(
-            store
-                .audit_events(0, 10)
-                .expect("reserve audit")
-                .events
-                .as_slice(),
-            [AuditEvent {
-                kind: AuditEventKind::ReserveGateChanged { sufficient: true },
-                ..
-            }]
-        ));
+        assert!(store
+            .audit_events(0, 10)
+            .expect("audit events")
+            .events
+            .is_empty());
 
         drop(store);
         let reopened = StableStore::reopen(memory).expect("reopen admission fixture");
@@ -10515,7 +10633,7 @@ mod tests {
                 .counters()
                 .expect("reopened counters")
                 .reserved_deposit_mint_operations,
-            1
+            0
         );
         assert!(reopened
             .deposit(record.id.bytes())
@@ -10567,34 +10685,21 @@ mod tests {
     }
 
     fn held_deposit() -> (DepositRecord, ReconciliationHoldRecord) {
-        let mut deposit = DepositRecord::accept(
-            DepositRequest {
-                id: DepositId::new([11; 32]),
-                payload_hash: [12; 32],
-                gross_amount: Amount::new(110),
-                user_max_service_fee: Amount::new(10),
-                transfer: transfer(LedgerOperation::PullDeposit, 110, 40),
-            },
-            BaseMintSnapshot {
-                finalized_head_block_number: 1,
-                confirmed_block_timestamp: 1,
-                service_fee: Amount::new(10),
-                max_service_fee: Amount::new(20),
-                per_deposit_limit: Amount::new(1_000),
-                mint_window_limit: Amount::new(10_000),
-                mint_window_started_at: 0,
-                mint_window_duration: 100,
-                minted_in_window: Amount::ZERO,
-            },
-        )
+        let mut deposit = DepositRecord::accept(DepositRequest {
+            id: DepositId::new([11; 32]),
+            payload_hash: [12; 32],
+            gross_amount: Amount::new(110),
+            user_max_service_fee: Amount::new(10),
+            transfer: transfer(LedgerOperation::PullDeposit, 110, 40),
+        })
         .expect("valid deposit");
         let hold_id = HoldId::new(12);
         deposit
-            .apply(DepositEvent::PullAmbiguous { hold_id })
+            .apply(DepositEvent::FundingAmbiguous { hold_id })
             .expect("hold deposit");
         let hold = ReconciliationHoldRecord::open(
             hold_id,
-            RequestReference::Deposit(deposit.id),
+            RequestReference::DepositFunding(deposit.id),
             deposit.transfer.clone(),
         );
         (deposit, hold)
@@ -10657,15 +10762,15 @@ mod tests {
             let memory = VectorMemory::default();
             let mut store = StableStore::init(memory.clone()).expect("init");
             let mut previous = deposit();
-            previous.state = DepositState::PullPending;
+            previous.state = DepositState::FundingPending;
             store.put_deposit(&previous).expect("seed parent");
             let hold_id = store.next_hold_id().expect("candidate");
             let mut next = previous.clone();
-            next.apply(DepositEvent::PullAmbiguous { hold_id })
+            next.apply(DepositEvent::FundingAmbiguous { hold_id })
                 .expect("ambiguous");
             let hold = ReconciliationHoldRecord::open(
                 hold_id,
-                RequestReference::Deposit(next.id),
+                RequestReference::DepositFunding(next.id),
                 next.transfer.clone(),
             );
             let before = hold_bundle_snapshot(&store, Some(next.id), None, hold_id);
@@ -10749,15 +10854,15 @@ mod tests {
             let memory = VectorMemory::default();
             let mut store = StableStore::init(memory.clone()).expect("init");
             let mut previous = deposit();
-            previous.state = DepositState::PullPending;
+            previous.state = DepositState::FundingPending;
             store.put_deposit(&previous).expect("seed");
             let hold_id = store.next_hold_id().expect("candidate");
             let mut held = previous.clone();
-            held.apply(DepositEvent::PullAmbiguous { hold_id })
+            held.apply(DepositEvent::FundingAmbiguous { hold_id })
                 .expect("held");
             let hold = ReconciliationHoldRecord::open(
                 hold_id,
-                RequestReference::Deposit(held.id),
+                RequestReference::DepositFunding(held.id),
                 held.transfer.clone(),
             );
             store
@@ -10776,7 +10881,7 @@ mod tests {
                 .resolve_deposit_hold_and_scan(
                     held.id,
                     hold_id,
-                    DepositHoldResolution::Absent {
+                    DepositHoldResolution::FundingAbsent {
                         history_watermark: 100
                     },
                     Some(&scan_target),
@@ -10948,7 +11053,8 @@ mod tests {
         let mut deposit = deposit();
         let withdrawal = withdrawal();
         deposit
-            .apply(DepositEvent::PrepareMint {
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
                 operation_id: EvmOperationId::new(6),
             })
             .expect("prepare mint");
@@ -11084,8 +11190,71 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 18);
         assert_eq!(WIRE_VERSION, 15);
+    }
+
+    fn mark_stored_schema(store: &StableStore, version: u16) {
+        store
+            .handle
+            .0
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
+                    params![i64::from(version)],
+                )?;
+                connection.execute(
+                    "UPDATE singleton_state SET schema = ?1 WHERE id = 1",
+                    params![version.to_sql_bytes()],
+                )
+            })
+            .expect("mark stored schema");
+    }
+
+    #[test]
+    #[serial]
+    fn deployed_empty_schema_17_upgrades_to_current_schema() {
+        let memory = VectorMemory::default();
+        let store = StableStore::init(memory.clone()).expect("initialize current schema");
+        mark_stored_schema(&store, DEPLOYED_STAGING_SCHEMA_VERSION);
+        drop(store);
+
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("upgrade empty staging");
+        assert_eq!(reopened.schema_version(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    #[serial]
+    fn deployed_schema_17_with_deposit_artifacts_fails_closed() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize current schema");
+        store
+            .put_deposit(&deposit())
+            .expect("persist deposit artifact");
+        mark_stored_schema(&store, DEPLOYED_STAGING_SCHEMA_VERSION);
+        drop(store);
+
+        assert!(matches!(
+            StableStore::reopen_after_upgrade(memory),
+            Err(StorageError::UnsafeSchemaMigration {
+                from: DEPLOYED_STAGING_SCHEMA_VERSION,
+                to: SCHEMA_VERSION,
+            })
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn unknown_schema_still_fails_closed_during_upgrade() {
+        let memory = VectorMemory::default();
+        let store = StableStore::init(memory.clone()).expect("initialize current schema");
+        mark_stored_schema(&store, 16);
+        drop(store);
+
+        assert!(matches!(
+            StableStore::reopen_after_upgrade(memory),
+            Err(StorageError::UnsupportedSchemaVersion(16))
+        ));
     }
 
     #[test]
@@ -11096,7 +11265,10 @@ mod tests {
         let operation_id = EvmOperationId::new(41);
         let mut owner = deposit();
         owner
-            .apply(DepositEvent::PrepareMint { operation_id })
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
             .expect("prepare mint owner");
         store.put_deposit(&owner).expect("persist operation owner");
         let mut operation = EvmOperationRecord::prepared(
@@ -11141,7 +11313,8 @@ mod tests {
         earlier_owner.id = DepositId::new([99; 32]);
         earlier_owner.payload_hash = [9; 32];
         earlier_owner
-            .apply(DepositEvent::PrepareMint {
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
                 operation_id: EvmOperationId::new(99),
             })
             .expect("prepare earlier owner");
@@ -11218,7 +11391,10 @@ mod tests {
         let operation_id = EvmOperationId::new(42);
         let mut owner = deposit();
         owner
-            .apply(DepositEvent::PrepareMint { operation_id })
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
             .expect("prepare mint owner");
         store.put_deposit(&owner).expect("persist operation owner");
         let mut operation = EvmOperationRecord::prepared(
@@ -11339,7 +11515,10 @@ mod tests {
         let operation_id = EvmOperationId::new(42);
         let mut owner = deposit();
         owner
-            .apply(DepositEvent::PrepareMint { operation_id })
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
             .expect("prepare mint owner");
         store.put_deposit(&owner).expect("persist operation owner");
         let mut operation = EvmOperationRecord::prepared(
@@ -11593,32 +11772,6 @@ mod tests {
                 )
             })
             .expect("scheduled job");
-        assert!(matches!(
-            store
-                .claim_manual_settlement_job(
-                    SettlementJobKind::Deposit,
-                    record.id.bytes(),
-                    caller,
-                    0,
-                    120,
-                    300,
-                    limits,
-                )
-                .expect("pending"),
-            ManualSettlementClaim::AutomaticProgressPending {
-                next_run_at_ns: Some(1_000)
-            }
-        ));
-        store
-            .handle
-            .update(|connection| {
-                connection.execute(
-                    "UPDATE settlement_jobs SET status = 2, next_run_at_ns = NULL
-                     WHERE settlement_kind = 0 AND settlement_id = ?1",
-                    params![record.id.bytes().to_sql_bytes()],
-                )
-            })
-            .expect("stop job");
         let ManualSettlementClaim::Claimed(job) = store
             .claim_manual_settlement_job(
                 SettlementJobKind::Deposit,
@@ -11629,9 +11782,9 @@ mod tests {
                 300,
                 limits,
             )
-            .expect("manual claim")
+            .expect("scheduled manual claim")
         else {
-            panic!("stopped job was not claimed")
+            panic!("scheduled job was not claimed")
         };
         store
             .finish_settlement_job(&job, None, 0, None, None, 1)
@@ -11732,7 +11885,8 @@ mod tests {
             let mut owner = deposit();
             owner.payload_hash = [4; 32];
             owner
-                .apply(DepositEvent::PrepareMint {
+                .apply(DepositEvent::CommitQuote {
+                    quote: test_deposit_quote(),
                     operation_id: EvmOperationId::new(43),
                 })
                 .expect("prepare scheduled owner");
@@ -12006,7 +12160,8 @@ mod tests {
             let previous = deposit();
             store.put_deposit(&previous).expect("seed deposit");
             let mut next = previous.clone();
-            next.apply(DepositEvent::PrepareMint {
+            next.apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
                 operation_id: EvmOperationId::new(91),
             })
             .expect("prepare mint");
@@ -12183,7 +12338,10 @@ mod tests {
         let operation_id = EvmOperationId::new(77);
         let mut deposit = deposit();
         deposit
-            .apply(DepositEvent::PrepareMint { operation_id })
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
             .expect("prepare deposit mint");
         store.put_deposit(&deposit).expect("index operation owner");
 
@@ -12296,7 +12454,10 @@ mod tests {
         let operation_id = EvmOperationId::new(78);
         let mut deposit = deposit();
         deposit
-            .apply(DepositEvent::PrepareMint { operation_id })
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
             .expect("prepare deposit mint");
         store.put_deposit(&deposit).expect("index operation owner");
 
@@ -12432,15 +12593,25 @@ mod tests {
                 .counters()
                 .expect("counters")
                 .reserved_deposit_mint_amount,
-            100
+            0
         );
         let operation_id = EvmOperationId::new(41);
         pending
-            .apply(DepositEvent::PrepareMint { operation_id })
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
             .expect("prepare mint");
         store
             .put_deposit(&pending)
             .expect("retain pending reservation");
+        assert_eq!(
+            store
+                .counters()
+                .expect("counters")
+                .reserved_deposit_mint_amount,
+            100
+        );
         pending
             .apply(DepositEvent::MintReverted { operation_id })
             .expect("terminal revert");
@@ -12457,7 +12628,10 @@ mod tests {
 
         let mut minted = deposit();
         minted
-            .apply(DepositEvent::PrepareMint { operation_id })
+            .apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
             .expect("prepare replacement fixture");
         minted
             .apply(DepositEvent::MintConfirmed { operation_id })
@@ -12480,7 +12654,7 @@ mod tests {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory).expect("initialize");
         let mut pending = deposit();
-        pending.state = DepositState::PullPending;
+        pending.state = DepositState::FundingPending;
         store
             .put_deposit(&pending)
             .expect("reserve pending deposit");
@@ -12489,7 +12663,7 @@ mod tests {
                 .counters()
                 .expect("counters")
                 .reserved_deposit_mint_amount,
-            100
+            0
         );
         assert_eq!(
             store
@@ -12499,7 +12673,7 @@ mod tests {
             1
         );
         pending
-            .apply(DepositEvent::PullFailed {
+            .apply(DepositEvent::FundingFailed {
                 code: bridge_core::LedgerFailure::BadFee {
                     expected_fee: Amount::new(2),
                 },
@@ -12606,8 +12780,11 @@ mod tests {
             store.put_deposit(&previous).expect("seed escrowed deposit");
             let operation_id = store.next_evm_operation_id().expect("candidate");
             let mut next = previous.clone();
-            next.apply(DepositEvent::PrepareMint { operation_id })
-                .expect("prepare mint");
+            next.apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
+            .expect("prepare mint");
             let operation = EvmOperationRecord::queued(
                 operation_id,
                 next.payload_hash,
@@ -12657,13 +12834,13 @@ mod tests {
             let mut store = StableStore::init(memory.clone()).expect("initialize");
             let hold_id = HoldId::new(56);
             let mut previous = deposit();
-            previous.state = DepositState::PullPending;
+            previous.state = DepositState::FundingPending;
             previous
-                .apply(DepositEvent::PullAmbiguous { hold_id })
+                .apply(DepositEvent::FundingAmbiguous { hold_id })
                 .expect("hold deposit");
             let previous_hold = ReconciliationHoldRecord::open(
                 hold_id,
-                RequestReference::Deposit(previous.id),
+                RequestReference::DepositFunding(previous.id),
                 previous.transfer.clone(),
             );
             store.put_deposit(&previous).expect("persist held deposit");
@@ -12683,13 +12860,16 @@ mod tests {
             resolve_deposit_hold(
                 &mut next,
                 &mut next_hold,
-                DepositHoldResolution::Succeeded {
+                DepositHoldResolution::FundingSucceeded {
                     ledger_block_index: 92,
                 },
             )
             .expect("resolve hold in memory");
-            next.apply(DepositEvent::PrepareMint { operation_id })
-                .expect("prepare mint");
+            next.apply(DepositEvent::CommitQuote {
+                quote: test_deposit_quote(),
+                operation_id,
+            })
+            .expect("prepare mint");
             let operation = EvmOperationRecord::queued(
                 operation_id,
                 next.payload_hash,
@@ -12703,16 +12883,15 @@ mod tests {
                 store.reconciliation_scan(&scan_target).expect("scan"),
             );
             set_operation_bundle_failpoint(Some(failpoint));
-            assert!(
-                store
-                    .commit_deposit_mint_bundle_and_scan(
-                        &next,
-                        &operation,
-                        &intent,
-                        Some(&scan_target),
-                    )
-                    .is_err()
-            );
+            assert!(store
+                .commit_deposit_mint_bundle_and_scan(
+                    &next,
+                    &operation,
+                    &intent,
+                    Some(&scan_target),
+                    None,
+                )
+                .is_err());
             set_operation_bundle_failpoint(None);
             let after = (
                 operation_bundle_snapshot(&store, next.id, &operation),
@@ -12742,7 +12921,8 @@ mod tests {
         store.put_deposit(&previous).expect("seed escrowed deposit");
         let stale_id = EvmOperationId::new(1);
         let mut next = previous.clone();
-        next.apply(DepositEvent::PrepareMint {
+        next.apply(DepositEvent::CommitQuote {
+            quote: test_deposit_quote(),
             operation_id: stale_id,
         })
         .expect("prepare mint");
@@ -12812,8 +12992,11 @@ mod tests {
         store.put_deposit(&previous).expect("seed deposit");
         let operation_id = store.next_evm_operation_id().expect("candidate");
         let mut next = previous;
-        next.apply(DepositEvent::PrepareMint { operation_id })
-            .expect("mint pending");
+        next.apply(DepositEvent::CommitQuote {
+            quote: test_deposit_quote(),
+            operation_id,
+        })
+        .expect("mint pending");
         let mut operation = EvmOperationRecord::queued(
             operation_id,
             next.payload_hash,
@@ -12977,7 +13160,7 @@ mod tests {
                     .resolve_deposit_hold(
                         deposit.id,
                         hold.id,
-                        DepositHoldResolution::Succeeded {
+                        DepositHoldResolution::FundingSucceeded {
                             ledger_block_index: 88,
                         },
                     )
@@ -12995,7 +13178,7 @@ mod tests {
                 .expect("read deposit")
                 .expect("deposit exists")
                 .state,
-            DepositState::Escrowed {
+            DepositState::EscrowedUnquoted {
                 ledger_block_index: 88
             }
         ));
@@ -13014,7 +13197,7 @@ mod tests {
                 .resolve_deposit_hold(
                     deposit.id,
                     hold.id,
-                    DepositHoldResolution::Succeeded {
+                    DepositHoldResolution::FundingSucceeded {
                         ledger_block_index: 88,
                     },
                 )
@@ -13748,7 +13931,7 @@ mod tests {
         let index_memory = VectorMemory::default();
         let mut index_store = StableStore::init(index_memory.clone()).expect("initialize index");
         let mut pending = deposit();
-        pending.state = DepositState::PullPending;
+        pending.state = DepositState::FundingPending;
         index_store
             .put_deposit(&pending)
             .expect("seed pending deposit");
@@ -13774,7 +13957,7 @@ mod tests {
             StableStore::init(counter_memory.clone()).expect("initialize counter");
         counter_store.put_deposit(&deposit()).expect("seed deposit");
         let mut counters = counter_store.counters().expect("counters");
-        counters.reserved_deposit_mint_operations = 0;
+        counters.reserved_deposit_mint_operations = 1;
         let corrupt = encode(&counters).expect("encode corrupt counters");
         counter_store
             .handle

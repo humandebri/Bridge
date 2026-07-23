@@ -378,32 +378,6 @@ async fn run_claimed_inner(
     result
 }
 
-pub(crate) async fn run_newly_enqueued(
-    kind: SettlementJobKind,
-    settlement_id: [u8; 32],
-) -> Option<SettlementActionResult> {
-    let now = ic_cdk::api::time();
-    let claim = STORE.with(|store| {
-        store.borrow_mut().claim_specific_due_settlement_job(
-            kind,
-            settlement_id,
-            now,
-            now.saturating_add(LEASE_NS),
-        )
-    });
-    match claim {
-        Ok(crate::storage::SettlementJobClaim::Claimed(job)) => run_claimed(job).await.ok(),
-        Ok(
-            crate::storage::SettlementJobClaim::ActiveLease { .. }
-            | crate::storage::SettlementJobClaim::None,
-        ) => None,
-        Err(_) => {
-            mark_fault("failed to claim a newly enqueued settlement job");
-            None
-        }
-    }
-}
-
 fn finish(
     job: &SettlementJob,
     next: Option<u64>,

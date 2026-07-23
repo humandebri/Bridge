@@ -120,7 +120,7 @@ describe("confirmWhenFinalized", () => {
 
   it("notifies and removes a finalized withdrawal", async () => {
     finalizedReceipt()
-    const notifyWithdrawal = vi.fn().mockResolvedValue({ Ingested: { withdrawal_id: new Uint8Array(32), settlement: [] } })
+    const notifyWithdrawal = vi.fn().mockResolvedValue({ Ingested: { withdrawal_id: new Uint8Array(32) } })
     const wallet = adapter()
     wallet.notifyWithdrawal = notifyWithdrawal
     await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
@@ -237,7 +237,7 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("restores a submitted withdrawal after an RPC failure and completes it after remount", async () => {
-    const notifyWithdrawal = vi.fn().mockResolvedValue({ Ingested: { withdrawal_id: new Uint8Array(32), settlement: [] } })
+    const notifyWithdrawal = vi.fn().mockResolvedValue({ Ingested: { withdrawal_id: new Uint8Array(32) } })
     const wallet = adapter()
     wallet.notifyWithdrawal = notifyWithdrawal
     vi.mocked(useIcWallet).mockReturnValue({ account: { owner }, adapter: wallet, provider: "plug", connect: vi.fn(), disconnect: vi.fn() })

@@ -111,6 +111,14 @@ pub async fn pull(ledger: Principal, identity: &LedgerTransferIdentity) -> Ledge
 }
 
 pub async fn release(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {
+    transfer(ledger, identity).await
+}
+
+pub async fn refund(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {
+    transfer(ledger, identity).await
+}
+
+async fn transfer(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {
     let args = TransferArg {
         from_subaccount: Some(identity.from.subaccount()),
         to: Account {
@@ -626,8 +634,14 @@ mod tests {
     }
 
     #[test]
-    fn kinic_ledger_fee_matches_the_immutable_deployment_parameter() {
-        assert_eq!(KINIC_LEDGER_FEE, Amount::new(10_000));
+    fn fixed_kinic_ledger_fee_supports_a_positive_refund() {
+        assert_eq!(
+            bridge_core::deposit_refund_amount(
+                KINIC_LEDGER_FEE.get().saturating_add(1),
+                KINIC_LEDGER_FEE.get(),
+            ),
+            Some(1)
+        );
     }
 
     #[test]

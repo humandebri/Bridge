@@ -13,6 +13,8 @@ CanisterがFinalized headまたはreceipt blockを取得する際のblock respon
 
 KINIC Ledger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示・事前検証へ使う。fee変更時はこの定数だけを変更し、Candid binding、Rust/UI/integration test、staging検証を同じ変更で更新する。
 
+stable schema v18へのupgradeでは、実配置済みstaging schema v17にDeposit関連record、hold、EVM operation、intent、index、owner sequence、Deposit settlement jobが一件もない場合だけmetadataとsingleton schemaを原子的に更新する。該当artifactがある場合と未知schemaは`post_upgrade`でfail closedにするため、upgrade前にstatusと各counterがゼロであることを確認する。
+
 ## 保持制限と監査
 
 `get_audit_events`で指定したsequenceがpruning済みの場合、応答は`oldest_available_sequence`から始まる。削除済みeventの完全な内容はcanister内に残らず、`pruned_count`、`pruned_through_sequence`、`pruned_digest`だけがcommitmentとして残る。今回は外部archiveや第三者timestampingを行わないため、詳細の長期保管が必要な運用では上限到達前に別系統へ取得する。
@@ -95,6 +97,8 @@ fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行�
 
 - nonceを確保したoperation: 対象recordのContinueを実行する。別recordが`NonceBlocked`なら、先にnonceを保持するSubmitted/Prepared operationを特定してContinueする。nonceやstable counterを手作業で変更しない。
 - Withdrawal Ledger hold: `continue_withdrawal`で同一Withdrawal ID・IC Account・固定amountOutを維持する。dedup期間内は同一transfer identityを一度だけ再送し、期間後は一回につきreconciliationを1 stepだけ進める。完全な不在証拠なしに別identityを作らない。送金先変更、任意送金、Base refundは行わない。
+- Deposit funding hold: pullの成功証拠または完全な不存在証明まで補償を行わない。成功時は`EscrowedUnquoted`、不存在時は`Cancelled`へ進める。
+- Deposit refund hold: 元account、`gross - KINIC_LEDGER_FEE`、公開設定の`ledger_fee`を照合する。成功証拠で`Refunded`へ進め、完全な不存在証明後だけattempt番号、created-at time、memoを更新する。`BadFee`を含む拒否でpayloadを変更しない。
 - Submitted EVM transaction: Continueを使わない。Finalized到達を観測した後、保存済みtransaction hashと一致する証拠で専用confirmation APIを呼ぶ。
 - 停止理由: Historyまたは`get_deposit`/`get_withdrawal`の`last_settlement_stop_reason`を記録し、外部障害を解消してからContinueする。
 

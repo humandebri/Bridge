@@ -502,6 +502,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'set_per_deposit_limit' : IDL.Func([IDL.Nat], [], []),
     'set_receipt_mode' : IDL.Func([ReceiptMode], [], []),
+    'set_refund_ledger_mode' : IDL.Func([IDL.Opt(LedgerMode)], [], []),
     'set_safe_block' : IDL.Func(
         [IDL.Nat64, IDL.Vec(IDL.Nat8)],
         [Result_10],

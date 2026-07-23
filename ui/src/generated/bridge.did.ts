@@ -255,23 +255,40 @@ export interface DepositIdPage {
   'deposit_ids' : Array<Uint8Array | number[]>,
 }
 export type DepositPhase = { 'MintPending' : null } |
+  { 'Refunded' : null } |
+  { 'FundingReconciliationHold' : null } |
+  { 'FundingPending' : null } |
   { 'MintReverted' : null } |
-  { 'PullPending' : null } |
+  { 'EscrowedUnquoted' : null } |
+  { 'RefundReconciliationHold' : null } |
+  { 'RefundPending' : null } |
   { 'Minted' : null } |
-  { 'Escrowed' : null } |
-  { 'Cancelled' : null } |
-  { 'ReconciliationHold' : null };
+  { 'Cancelled' : null };
+export interface DepositQuoteView {
+  'net_amount' : bigint,
+  'service_fee' : bigint,
+}
 export interface DepositReceipt {
   'deposit_id' : Uint8Array | number[],
   'state' : DepositPhase,
   'owner_sequence' : bigint,
-  'settlement' : [] | [SettlementActionResult],
+}
+export type DepositRefundReasonView = { 'ReserveInsufficient' : null } |
+  { 'ServiceFeeRejected' : null } |
+  { 'MintWindowLimitExceeded' : null } |
+  { 'BasePaused' : null } |
+  { 'PerDepositLimitExceeded' : null };
+export interface DepositRefundView {
+  'attempt_no' : bigint,
+  'block_index' : [] | [bigint],
+  'ledger_fee' : bigint,
+  'amount' : bigint,
+  'reason' : DepositRefundReasonView,
 }
 export interface DepositView {
   'base_recipient' : Uint8Array | number[],
-  'net_amount' : bigint,
-  'service_fee' : bigint,
   'deposit_id' : Uint8Array | number[],
+  'quote' : [] | [DepositQuoteView],
   'max_service_fee' : bigint,
   'from_subaccount' : [] | [Uint8Array | number[]],
   'last_settlement_stop_reason' : [] | [string],
@@ -280,6 +297,7 @@ export interface DepositView {
   'automatic_progress' : [] | [AutomaticProgressView],
   'base_confirmation' : [] | [BaseConfirmationView],
   'gross_amount' : bigint,
+  'refund' : [] | [DepositRefundView],
 }
 export interface EmergencyPauseReceipt {
   'local_pause_audit_sequence' : bigint,
@@ -379,16 +397,12 @@ export type NotifyWithdrawalError = {
   { 'AnonymousCaller' : null } |
   { 'InvalidBaseResponse' : null };
 export type NotifyWithdrawalReceipt = {
-    'Duplicate' : {
-      'withdrawal_id' : Uint8Array | number[],
-      'settlement' : [] | [SettlementActionResult],
-    }
+    'Duplicate' : { 'withdrawal_id' : Uint8Array | number[] }
   } |
   {
     'Ingested' : {
       'finalized_head_block_number' : bigint,
       'withdrawal_id' : Uint8Array | number[],
-      'settlement' : [] | [SettlementActionResult],
     }
   };
 export interface PublicConfig {
@@ -450,7 +464,6 @@ export type RecoverMintRevertReceipt = {
       'state' : SettlementState,
       'finalized_block_hash' : Uint8Array | number[],
       'replacement_operation_id' : bigint,
-      'settlement' : [] | [SettlementActionResult],
     }
   } |
   { 'AlreadyStarted' : { 'replacement_operation_id' : bigint } };

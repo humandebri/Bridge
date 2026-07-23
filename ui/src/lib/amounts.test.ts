@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { estimatedAmountOut, formatTokenAmount, KINIC_LEDGER_FEE, parseTokenAmount, requiredDepositBalance } from "./amounts"
+import { estimatedAmountOut, formatTokenAmount, parseTokenAmount, requiredDepositBalance } from "./amounts"
 
 describe("eight-decimal token amount handling", () => {
-  it("uses the immutable KINIC ledger fee", () => {
-    expect(KINIC_LEDGER_FEE).toBe(10_000n)
-  })
-
   it("parses and formats at exactly eight decimal places without numbers", () => {
     expect(parseTokenAmount("1.00000001")).toEqual({ ok: true, value: 100_000_001n })
     expect(formatTokenAmount(100_000_001n)).toBe("1.00000001")

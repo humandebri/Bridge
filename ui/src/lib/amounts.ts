@@ -1,5 +1,4 @@
 export const TOKEN_DECIMALS = 8
-export const KINIC_LEDGER_FEE = 10_000n
 const SCALE = 100_000_000n
 
 export type AmountResult = { ok: true; value: bigint } | { ok: false; reason: string }

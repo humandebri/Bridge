@@ -492,7 +492,7 @@ async function setup() {
           failNextDepositResponse = false
           return send(response, 503, { error: "Injected response loss after deposit acceptance" })
         }
-        return send(response, 200, { deposit_id: bytesHex(result.Ok.deposit_id), owner_sequence: result.Ok.owner_sequence.toString(), state: result.Ok.state, settlement: result.Ok.settlement[0] ? settlementJson(result.Ok.settlement[0]) : undefined })
+        return send(response, 200, { deposit_id: bytesHex(result.Ok.deposit_id), owner_sequence: result.Ok.owner_sequence.toString(), state: result.Ok.state })
       }
       if (request.url === "/ic/notify") {
         notifyCalls += 1
@@ -515,8 +515,8 @@ async function setup() {
         if ("Err" in result) throw new Error(`withdrawal notification rejected: ${json(result.Err)}`)
         const withdrawalId = "Ingested" in result.Ok ? result.Ok.Ingested.withdrawal_id : result.Ok.Duplicate.withdrawal_id
         if (!knownWithdrawals.some((id) => bytesHex(id) === bytesHex(withdrawalId))) knownWithdrawals.push(withdrawalId)
-        if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id), settlement: result.Ok.Ingested.settlement[0] ? settlementJson(result.Ok.Ingested.settlement[0]) : undefined } })
-        return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id), settlement: result.Ok.Duplicate.settlement[0] ? settlementJson(result.Ok.Duplicate.settlement[0]) : undefined } })
+        if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id) } })
+        return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id) } })
       }
       if (request.url === "/ic/confirm-deposit") {
         confirmDepositCalls += 1

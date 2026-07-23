@@ -23,13 +23,9 @@ impl From<&DepositState> for DepositPhase {
             DepositState::MintPending { .. } => Self::MintPending,
             DepositState::Minted { .. } => Self::Minted,
             DepositState::MintReverted { .. } => Self::MintReverted,
-            DepositState::FundingReconciliationHold { .. } => {
-                Self::FundingReconciliationHold
-            }
+            DepositState::FundingReconciliationHold { .. } => Self::FundingReconciliationHold,
             DepositState::RefundPending { .. } => Self::RefundPending,
-            DepositState::RefundReconciliationHold { .. } => {
-                Self::RefundReconciliationHold
-            }
+            DepositState::RefundReconciliationHold { .. } => Self::RefundReconciliationHold,
             DepositState::Refunded { .. } => Self::Refunded,
             DepositState::Cancelled { .. } => Self::Cancelled,
         }

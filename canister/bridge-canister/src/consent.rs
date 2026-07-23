@@ -128,6 +128,9 @@ pub fn consent_message(
     let Some(total_debit) = validated.gross_amount.checked_add(ledger_fee) else {
         return unavailable("deposit total debit exceeds u128");
     };
+    let Some(refund_amount) = validated.gross_amount.checked_sub(ledger_fee) else {
+        return unavailable("deposit amount does not cover the fixed refund fee");
+    };
     let subaccount = if validated.from_subaccount == [0; 32] {
         "default (32 zero bytes)".to_string()
     } else {
@@ -139,13 +142,14 @@ pub fn consent_message(
             utc_offset_minutes: request.user_preferences.metadata.utc_offset_minutes,
         },
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross bridge amount: `{gross}` KINIC\n\nLedger transfer fee: `{ledger_fee}` KINIC\n\nTotal wallet debit: `{total_debit}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the displayed total using an existing ICRC-2 allowance. Execution still depends on reserve, finalized Base state, and bridge limits.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
+            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross bridge amount: `{gross}` KINIC\n\nLedger transfer fee: `{ledger_fee}` KINIC\n\nTotal wallet debit: `{total_debit}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the displayed total using an existing ICRC-2 allowance. Execution still depends on reserve, finalized Base state, and bridge limits. If post-pull validation rejects the deposit, `{refund_amount}` KINIC (gross minus the fixed ledger fee) is returned to this same IC account and `{ledger_fee}` KINIC is paid from escrow as the refund fee.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
             owner_sequence = validated.owner_sequence,
             gross = format_e8s(validated.gross_amount),
             ledger_fee = format_e8s(ledger_fee),
             total_debit = format_e8s(total_debit),
             fee = format_e8s(validated.max_service_fee),
             minimum = format_e8s(minimum),
+            refund_amount = format_e8s(refund_amount),
             recipient = hex(&validated.base_recipient),
         )),
     })

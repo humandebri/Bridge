@@ -17,7 +17,7 @@ import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { useWalletDialog } from "@/features/wallet/wallet-controls"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
-import { estimatedAmountOut, formatTokenAmount, KINIC_LEDGER_FEE, parseTokenAmount, requiredDepositBalance } from "@/lib/amounts"
+import { estimatedAmountOut, formatTokenAmount, parseTokenAmount, requiredDepositBalance } from "@/lib/amounts"
 import { classifyDepositRecoverySequence } from "@/lib/deposit-recovery"
 import { createLedgerActor, ledgerAccount } from "@/lib/ic/ledger"
 import { createBridgeActor } from "@/lib/ic/bridge"
@@ -76,13 +76,15 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     enabled: false,
     queryFn: async () => {
       const ledgerActor = await createLedgerActor(deploymentProfile.icHost, deploymentProfile.ledgerCanisterId as string)
+      const bridgeActor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
       const account = ledgerAccount(ic.account!.owner, ic.account!.subaccount)
       const spender = ledgerAccount(deploymentProfile.bridgeCanisterId as string)
-      const [balance, allowance] = await Promise.all([
+      const [balance, allowance, publicConfig] = await Promise.all([
         ledgerActor.icrc1_balance_of(account),
         ledgerActor.icrc2_allowance({ account, spender }),
+        bridgeActor.get_public_config(),
       ])
-      return { balance, fee: KINIC_LEDGER_FEE, allowance: allowance.allowance }
+      return { balance, fee: publicConfig.ledger_fee, allowance: allowance.allowance }
     },
   })
   const bsnsBalance = useQuery({
@@ -138,28 +140,6 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     },
     onSuccess: async (receipt, attempt) => {
       queryClient.setQueryData(["deposit-owner-sequence", attempt.account.owner], receipt.owner_sequence + 1n)
-      const settlement = receipt.settlement[0]
-      let submittedTransactionHash = settlement && "Submitted" in settlement
-        ? settlement.Submitted.transaction_hash
-        : undefined
-      if (!submittedTransactionHash) {
-        try {
-          const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
-          const [canonical] = await actor.get_deposit(receipt.deposit_id)
-          const confirmation = canonical?.base_confirmation[0]
-          if (confirmation && "Submitted" in confirmation) submittedTransactionHash = confirmation.Submitted.transaction_hash
-        } catch {
-          toast.warning("The deposit was accepted, but its canonical settlement could not be restored yet. Check it again before starting another deposit.")
-          return
-        }
-      }
-      if (submittedTransactionHash) {
-        try {
-          await savePendingConfirmation({ kind: "deposit", settlementId: bytesHex(receipt.deposit_id), transactionHash: bytesHex(submittedTransactionHash), owner: attempt.account.owner })
-        } catch {
-          toast.warning(`Deposit ${bytesHex(receipt.deposit_id)} was accepted, but automatic confirmation could not be saved. Copy this ID and recover it from History.`)
-        }
-      }
       try { await removeDepositIntent(attempt.account) } catch { /* The canonical receipt is the recovery source. */ }
       setUnresolvedDeposit(undefined)
       setDepositAmount("")
@@ -167,8 +147,9 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         queryClient.invalidateQueries({ queryKey: ["deposit-ledger"] }),
         queryClient.invalidateQueries({ queryKey: ["base-quote"] }),
         queryClient.invalidateQueries({ queryKey: ["runtime-validation"] }),
+        queryClient.invalidateQueries({ queryKey: ["deposit-history"] }),
       ])
-      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. ${ic.provider === "oisy" ? "Complete finalized confirmation from History." : "Finalized confirmation will be requested through your IC wallet."}`)
+      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… is scheduled. Follow its canonical status in History.`)
     },
     onError: (error) => {
       toast.error(error instanceof Error ? `${error.message}. Retry the same deposit or check whether it was accepted.` : "Deposit response is unresolved")
@@ -407,7 +388,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       <Button className="mt-3 h-14 w-full" size="lg" disabled={blockers.length > 0 || deposit.isPending || write.isPending || submittingWithdrawal} onClick={() => setConfirming(true)}>{direction === "deposit" ? (unresolvedDeposit ? "Retry same deposit" : "Bridge to Base") : "Bridge to IC"}<ArrowRight className="size-4" /></Button>
       <p id="bridge-amount-feedback" className="mt-3 min-h-4 text-center text-xs text-[var(--muted)]" aria-live="polite">{blockers.length > 0 ? `Next: ${blockers[0]}` : "Ready to review"}</p>
     </section>
-    <BridgeConfirmationDialog direction={direction} open={confirming} setOpen={setConfirming} source={source.wallet} destination={destination.wallet} amount={amount} receive={receive} sendSymbol={sendToken.symbol} receiveSymbol={receiveToken.symbol} pending={deposit.isPending || write.isPending || submittingWithdrawal} onConfirm={() => { setConfirming(false); if (direction === "deposit") void submitDeposit(); else void submitWithdrawal() }} />
+    <BridgeConfirmationDialog direction={direction} open={confirming} setOpen={setConfirming} source={source.wallet} destination={destination.wallet} amount={amount} receive={receive} sendSymbol={sendToken.symbol} receiveSymbol={receiveToken.symbol} ledgerFee={ledgerData?.fee} pending={deposit.isPending || write.isPending || submittingWithdrawal} onConfirm={() => { setConfirming(false); if (direction === "deposit") void submitDeposit(); else void submitWithdrawal() }} />
   </div>
 }
 
@@ -415,13 +396,14 @@ function EndpointCard({ label, network, wallet, disabled, onClick }: { label: st
 function Quote({ label, value }: { label: string; value: string }) { return <div><p className="text-xs text-[var(--muted)]">{label}</p><p className="font-numeric mt-1 font-bold text-black">{value}</p></div> }
 function ConfirmRow({ label, value }: { label: string; value: string }) { return <div><p className="text-xs text-[var(--muted)]">{label}</p><p className="mt-1 break-all text-sm font-bold text-black">{value}</p></div> }
 
-export function BridgeConfirmationDialog({ direction, open, setOpen, source, destination, amount, receive, sendSymbol, receiveSymbol, pending, onConfirm }: { direction: BridgeDirection; open: boolean; setOpen: (open: boolean) => void; source: string; destination: string; amount: string; receive?: bigint; sendSymbol: string; receiveSymbol: string; pending: boolean; onConfirm: () => void }) {
+export function BridgeConfirmationDialog({ direction, open, setOpen, source, destination, amount, receive, sendSymbol, receiveSymbol, ledgerFee, pending, onConfirm }: { direction: BridgeDirection; open: boolean; setOpen: (open: boolean) => void; source: string; destination: string; amount: string; receive?: bigint; sendSymbol: string; receiveSymbol: string; ledgerFee?: bigint; pending: boolean; onConfirm: () => void }) {
   const [burnAcknowledged, setBurnAcknowledged] = useState(false)
   const close = (value: boolean) => {
     if (!value) setBurnAcknowledged(false)
     setOpen(value)
   }
-  return <Dialog open={open} onOpenChange={close}><DialogContent><DialogHeader><DialogTitle>{direction === "deposit" ? "Confirm bridge to Base" : "Confirm bridge to IC"}</DialogTitle><DialogDescription>Review both wallets and the amount before opening the wallet prompt.</DialogDescription></DialogHeader><div className="mt-5 space-y-4 rounded-2xl bg-[var(--panel)] p-4"><ConfirmRow label="Source" value={source} /><ConfirmRow label="Destination" value={destination} /><ConfirmRow label="Send / receive" value={`${amount || "—"} ${sendSymbol} / ${receive !== undefined ? formatTokenAmount(receive) : "—"} ${receiveSymbol}`} /></div>{direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5"><Checkbox aria-label="Acknowledge irreversible burn" checked={burnAcknowledged} onCheckedChange={(checked) => setBurnAcknowledged(checked === true)} /><span>I understand that confirming burns the Base tokens and no Base refund is available.</span></label>}<DialogFooter><DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose><Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>Confirm and open wallet</Button></DialogFooter></DialogContent></Dialog>
+  const refundFee = ledgerFee === undefined ? "the configured ledger fee" : `${formatTokenAmount(ledgerFee)} KINIC`
+  return <Dialog open={open} onOpenChange={close}><DialogContent><DialogHeader><DialogTitle>{direction === "deposit" ? "Confirm bridge to Base" : "Confirm bridge to IC"}</DialogTitle><DialogDescription>Review both wallets and the amount before opening the wallet prompt.</DialogDescription></DialogHeader><div className="mt-5 space-y-4 rounded-2xl bg-[var(--panel)] p-4"><ConfirmRow label="Source" value={source} /><ConfirmRow label="Destination" value={destination} /><ConfirmRow label="Send / receive" value={`${amount || "—"} ${sendSymbol} / ${receive !== undefined ? formatTokenAmount(receive) : "—"} ${receiveSymbol}`} /></div>{direction === "deposit" && <p className="mt-4 rounded-xl bg-[#fff3e4] px-3 py-2 text-sm leading-5 text-[#8a4b08]">Base conditions are checked again after the ledger pull. If that check rejects the deposit, the bridge returns the gross amount minus {refundFee} to the same IC account and pays {refundFee} from escrow.</p>}{direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5"><Checkbox aria-label="Acknowledge irreversible burn" checked={burnAcknowledged} onCheckedChange={(checked) => setBurnAcknowledged(checked === true)} /><span>I understand that confirming burns the Base tokens and no Base refund is available.</span></label>}<DialogFooter><DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose><Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>Confirm and open wallet</Button></DialogFooter></DialogContent></Dialog>
 }
 
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` { return `0x${Array.from(bytes, (value) => Number(value).toString(16).padStart(2, "0")).join("")}` }

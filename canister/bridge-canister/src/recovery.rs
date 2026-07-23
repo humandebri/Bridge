@@ -1,8 +1,7 @@
 use crate::{
     evm_calls, evm_rpc,
     phases::{DepositPhase, SettlementState},
-    storage::{AuditEventKind, RpcAuditBatch, SettlementJobKind},
-    tasks::SettlementActionResult,
+    storage::{AuditEventKind, RpcAuditBatch},
     STORE,
 };
 use bridge_core::{
@@ -22,7 +21,6 @@ pub enum RecoverMintRevertReceipt {
     Enqueued {
         replacement_operation_id: u64,
         state: SettlementState,
-        settlement: Option<SettlementActionResult>,
         finalized_block_number: u64,
         finalized_block_hash: Vec<u8>,
     },
@@ -303,10 +301,11 @@ async fn recover_mint(
     if observation.snapshot.deposits_paused {
         return Err(RecoverMintRevertError::MintWindowUnavailable);
     }
+    let quote = record.quote.ok_or(RecoverMintRevertError::StorageFailure)?;
     let mint = observation.snapshot.mint;
-    if record.net_amount > mint.per_deposit_limit
-        || record.service_fee > mint.max_service_fee
-        || record.service_fee > record.max_service_fee
+    if quote.net_amount > mint.per_deposit_limit
+        || quote.service_fee > mint.max_service_fee
+        || quote.service_fee > record.max_service_fee
     {
         return Err(RecoverMintRevertError::MintWindowUnavailable);
     }
@@ -319,7 +318,7 @@ async fn recover_mint(
     let consumed = bridge_core::mint_admission_total(
         mint.effective_minted_in_window().get(),
         counters.reserved_deposit_mint_amount,
-        record.net_amount.get(),
+        quote.net_amount.get(),
     )
     .ok_or(RecoverMintRevertError::MintWindowUnavailable)?;
     if consumed > mint.mint_window_limit.get() {
@@ -389,7 +388,7 @@ async fn recover_mint(
             recipient: intent_record.base_recipient,
             gross_amount: record.gross_amount.get(),
             max_service_fee: record.max_service_fee.get(),
-            charged_service_fee: record.service_fee.get(),
+            charged_service_fee: quote.service_fee.get(),
         },
     );
     STORE.with(|store| {
@@ -417,28 +416,7 @@ async fn recover_mint(
     Ok(RecoverMintRevertReceipt::Enqueued {
         replacement_operation_id: replacement_id.get(),
         state: SettlementState::Deposit(DepositPhase::from(&next.state)),
-        settlement: None,
         finalized_block_number: observation.finalized.block_number,
         finalized_block_hash: observation.finalized.block_hash.to_vec(),
-    })
-}
-
-pub(crate) async fn run_enqueued(target: &ValidatedTarget) -> Option<SettlementActionResult> {
-    let kind = match target {
-        ValidatedTarget::Deposit(_) => SettlementJobKind::Deposit,
-    };
-    crate::scheduler::run_newly_enqueued(kind, target.id()).await
-}
-
-pub(crate) fn current_state(
-    target: &ValidatedTarget,
-) -> Result<SettlementState, RecoverMintRevertError> {
-    STORE.with(|store| match target {
-        ValidatedTarget::Deposit(id) => store
-            .borrow()
-            .deposit(*id)
-            .map_err(|_| RecoverMintRevertError::StorageFailure)?
-            .map(|record| SettlementState::Deposit(DepositPhase::from(&record.state)))
-            .ok_or(RecoverMintRevertError::NotFound),
     })
 }
