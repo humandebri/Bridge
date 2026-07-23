@@ -3,6 +3,8 @@ use crate::{
     LedgerOperation, LedgerTransferIdentity, TransferAttempt,
 };
 
+pub const MAX_AUTOMATIC_REFUND_FEE_RETRIES: u64 = 3;
+
 #[cfg_attr(
     feature = "storage-serde",
     derive(serde::Serialize, serde::Deserialize)
@@ -84,6 +86,11 @@ pub enum DepositState {
         hold_id: HoldId,
         attempt: TransferAttempt,
     },
+    RefundRecoveryRequired {
+        reason: DepositRefundReason,
+        attempt: TransferAttempt,
+        expected_fee: Amount,
+    },
     Refunded {
         reason: DepositRefundReason,
         attempt: TransferAttempt,
@@ -121,6 +128,13 @@ pub enum DepositEvent {
     },
     RefundAmbiguous {
         hold_id: HoldId,
+    },
+    RefundBadFee {
+        expected_fee: Amount,
+        next_identity: Option<Box<LedgerTransferIdentity>>,
+    },
+    ResumeRefund {
+        identity: Box<LedgerTransferIdentity>,
     },
     MintConfirmed {
         operation_id: EvmOperationId,
@@ -278,6 +292,67 @@ impl DepositRecord {
                 Amount::ZERO,
             ),
             (
+                State::RefundPending { reason, attempt },
+                Event::RefundBadFee {
+                    expected_fee,
+                    next_identity,
+                },
+            ) => {
+                if let Some(next_identity) = next_identity {
+                    if attempt.attempt_no >= MAX_AUTOMATIC_REFUND_FEE_RETRIES {
+                        return Err(CoreError::RefundIneligible);
+                    }
+                    let next_attempt = attempt.retry_after_bad_fee(*next_identity, expected_fee)?;
+                    if next_attempt.identity.amount.checked_add(expected_fee)?
+                        != self.gross_amount
+                    {
+                        return Err(CoreError::RefundIneligible);
+                    }
+                    (
+                        State::RefundPending {
+                            reason: *reason,
+                            attempt: next_attempt,
+                        },
+                        None,
+                        Amount::ZERO,
+                    )
+                } else {
+                    (
+                        State::RefundRecoveryRequired {
+                            reason: *reason,
+                            attempt: attempt.clone(),
+                            expected_fee,
+                        },
+                        None,
+                        Amount::ZERO,
+                    )
+                }
+            }
+            (
+                State::RefundRecoveryRequired {
+                    reason,
+                    attempt,
+                    expected_fee,
+                },
+                Event::ResumeRefund { identity },
+            ) => {
+                let next = attempt.retry_after_bad_fee(*identity, *expected_fee)?;
+                let normal_refund =
+                    next.identity.amount.checked_add(next.identity.fee)? == self.gross_amount;
+                let compensated_refund = next.identity.amount == self.gross_amount;
+                if !normal_refund && !compensated_refund {
+                    return Err(CoreError::RefundIneligible);
+                }
+                (
+                    State::RefundPending {
+                        reason: *reason,
+                        attempt: next,
+                    },
+                    None,
+                    Amount::ZERO,
+                )
+            }
+            (
                 State::MintPending {
                     ledger_block_index,
                     operation_id: current,
@@ -414,6 +489,30 @@ impl DepositRecord {
                 Event::RefundAmbiguous { hold_id },
             ) => *current == *hold_id,
             (
+                State::RefundPending { attempt, .. },
+                Event::RefundBadFee {
+                    expected_fee,
+                    next_identity: Some(next),
+                },
+            ) => {
+                attempt.identity == **next && attempt.identity.fee == *expected_fee
+            }
+            (
+                State::RefundRecoveryRequired {
+                    attempt,
+                    expected_fee: current,
+                    ..
+                },
+                Event::RefundBadFee {
+                    expected_fee,
+                    next_identity: None,
+                },
+            ) => current == expected_fee && attempt.identity.fee != *expected_fee,
+            (
+                State::RefundPending { attempt, .. },
+                Event::ResumeRefund { identity },
+            ) => attempt.identity == **identity,
+            (
                 State::Minted {
                     operation_id: current,
                     ..
@@ -453,8 +552,9 @@ impl DepositState {
             Self::FundingReconciliationHold { .. } => 5,
             Self::RefundPending { .. } => 6,
             Self::RefundReconciliationHold { .. } => 7,
-            Self::Refunded { .. } => 8,
-            Self::Cancelled { .. } => 9,
+            Self::RefundRecoveryRequired { .. } => 8,
+            Self::Refunded { .. } => 9,
+            Self::Cancelled { .. } => 10,
         }
     }
 }
@@ -469,9 +569,11 @@ impl DepositEvent {
             Self::StartRefund { .. } => 4,
             Self::RefundSucceeded { .. } => 5,
             Self::RefundAmbiguous { .. } => 6,
-            Self::MintConfirmed { .. } => 7,
-            Self::MintReverted { .. } => 8,
-            Self::RetryMint { .. } => 9,
+            Self::RefundBadFee { .. } => 7,
+            Self::ResumeRefund { .. } => 8,
+            Self::MintConfirmed { .. } => 9,
+            Self::MintReverted { .. } => 10,
+            Self::RetryMint { .. } => 11,
         }
     }
 
@@ -484,6 +586,8 @@ impl DepositEvent {
             Self::StartRefund { .. } => "start_refund",
             Self::RefundSucceeded { .. } => "refund_succeeded",
             Self::RefundAmbiguous { .. } => "refund_ambiguous",
+            Self::RefundBadFee { .. } => "refund_bad_fee",
+            Self::ResumeRefund { .. } => "resume_refund",
             Self::MintConfirmed { .. } => "mint_confirmed",
             Self::MintReverted { .. } => "mint_reverted",
             Self::RetryMint { .. } => "retry_mint",

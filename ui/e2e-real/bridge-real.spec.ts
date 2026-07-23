@@ -21,14 +21,14 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByText("To Base").locator("..")).toContainText("Available")
   await page.goto("/")
   await page.getByRole("button", { name: "Connect Base wallet", exact: true }).click()
-  await page.getByRole("button", { name: "Connect Base" }).click()
+  await page.getByRole("button", { name: "Connect Browser wallet", exact: true }).click()
   await expect(page.getByRole("dialog").getByText("0xf39F…2266", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Close confirmation" }).click()
   await expect(page.getByRole("button", { name: /Base wallet connected as 0xf39F/i })).toBeVisible()
 
   await page.getByRole("button", { name: "Connect IC wallet", exact: true }).click()
   await page.getByRole("button", { name: "Plug" }).click()
-  await expect(page.getByRole("dialog").getByText(/^plug · /i)).toBeVisible()
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Disconnect Plug", exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Close confirmation" }).click()
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
 

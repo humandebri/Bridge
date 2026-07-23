@@ -44,4 +44,9 @@ impl AccountingState {
         self.fee_reserve = self.fee_reserve.checked_sub(amount)?;
         Ok(())
     }
+
+    pub fn restore_fee_reserve(&mut self, amount: Amount) -> Result<(), CoreError> {
+        self.fee_reserve = self.fee_reserve.checked_add(amount)?;
+        Ok(())
+    }
 }

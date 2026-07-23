@@ -49,6 +49,27 @@ pub struct TransferAttempt {
 }
 
 impl TransferAttempt {
+    pub fn retry_after_bad_fee(
+        &self,
+        identity: LedgerTransferIdentity,
+        expected_fee: Amount,
+    ) -> Result<Self, CoreError> {
+        if identity.created_at_time_ns <= self.identity.created_at_time_ns
+            || identity.memo == self.identity.memo
+            || identity.operation != self.identity.operation
+            || identity.fee != expected_fee
+            || identity.from != self.identity.from
+            || identity.to != self.identity.to
+            || identity.spender != self.identity.spender
+        {
+            return Err(CoreError::AttemptPayloadChanged);
+        }
+        Ok(Self {
+            attempt_no: crate::next_attempt(self.attempt_no).ok_or(CoreError::AttemptOverflow)?,
+            identity,
+        })
+    }
+
     pub fn retry_after_absence(&self, identity: LedgerTransferIdentity) -> Result<Self, CoreError> {
         if identity.created_at_time_ns <= self.identity.created_at_time_ns
             || identity.memo == self.identity.memo

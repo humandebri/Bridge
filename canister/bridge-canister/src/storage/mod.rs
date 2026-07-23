@@ -1444,6 +1444,14 @@ pub enum AuditEventKind {
         charged_service_fee: u128,
     },
     WithdrawalFeeGuardCleared,
+    DepositRefundRetried {
+        deposit_id: Vec<u8>,
+        previous_attempt_no: u64,
+        previous_fee: u128,
+        next_attempt_no: Option<u64>,
+        next_fee: u128,
+        compensated: bool,
+    },
     EvmTransactionRebroadcasted {
         operation_id: u64,
         transaction_hash: Vec<u8>,
@@ -5665,6 +5673,23 @@ impl StableStore {
     }
 
     pub fn put_deposit(&mut self, value: &DepositRecord) -> Result<(), StorageError> {
+        self.put_deposit_with_audit(value, None)
+    }
+
+    pub fn put_deposit_and_audit(
+        &mut self,
+        value: &DepositRecord,
+        caller: Principal,
+        kind: AuditEventKind,
+    ) -> Result<(), StorageError> {
+        self.put_deposit_with_audit(value, Some((caller, kind)))
+    }
+
+    fn put_deposit_with_audit(
+        &mut self,
+        value: &DepositRecord,
+        audit_kind: Option<(Principal, AuditEventKind)>,
+    ) -> Result<(), StorageError> {
         let previous_stored = self.stored_deposit(value.id.bytes())?;
         let previous = previous_stored.as_ref().map(|stored| stored.record.clone());
         let next_stored = match previous_stored.as_ref() {
@@ -5680,7 +5705,8 @@ impl StableStore {
             },
             None => return Err(StorageError::RecordNotFound),
         };
-        let mut counters = self.counters()?;
+        let previous_counters = self.counters()?;
+        let mut counters = previous_counters;
         counters.pending_ledger_operations = adjust_active_count(
             counters.pending_ledger_operations,
             previous
@@ -5699,8 +5725,42 @@ impl StableStore {
             previous.as_ref(),
             value,
         )?;
+        let previous_accounting = self.accounting()?;
+        let mut accounting = previous_accounting;
+        let previous_compensation = previous
+            .as_ref()
+            .map(refund_compensation_debit)
+            .transpose()?
+            .unwrap_or(Amount::ZERO);
+        let next_compensation = refund_compensation_debit(value)?;
+        if next_compensation > previous_compensation {
+            accounting.spend_fee_reserve(
+                next_compensation
+                    .checked_sub(previous_compensation)
+                    .map_err(StorageError::Core)?,
+            )?;
+        } else if previous_compensation > next_compensation {
+            accounting.restore_fee_reserve(
+                previous_compensation
+                    .checked_sub(next_compensation)
+                    .map_err(StorageError::Core)?,
+            )?;
+        }
+        let audit = audit_kind
+            .map(|(caller, kind)| {
+                self.prepare_audit_batch(
+                    &mut counters,
+                    caller,
+                    ic_cdk::api::time(),
+                    vec![kind],
+                )
+            })
+            .transpose()?;
         let value_blob = encode(&next_stored)?;
         let counters_blob = encode(&counters)?;
+        let previous_counters_blob = encode(&previous_counters)?;
+        let previous_accounting_blob = encode(&previous_accounting)?;
+        let accounting_blob = encode(&accounting)?;
         let operation_owner = deposit_operation_id(value)
             .map(|operation_id| {
                 encode(&OperationOwner::Deposit(value.id.bytes()))
@@ -5726,6 +5786,20 @@ impl StableStore {
                 params![key.clone()],
                 previous_blob.as_ref().map(StableBlob::as_slice),
                 "stale deposit write",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+                previous_counters_blob.as_slice(),
+                "stale deposit counters",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT accounting FROM singleton_state WHERE id = 1",
+                params![],
+                previous_accounting_blob.as_slice(),
+                "stale deposit accounting",
             )?;
             if previous.as_ref().is_some_and(is_pending_deposit_ledger) {
                 remove_table_entry(connection, "pull_pending_deposit_index", key.clone())?;
@@ -5762,10 +5836,22 @@ impl StableStore {
             record_write_db_failpoint(RecordWriteFailpoint::OperationOwner)?;
             upsert_table_entry(connection, "deposits", key, value_blob.to_sql_bytes())?;
             record_write_db_failpoint(RecordWriteFailpoint::Record)?;
-            connection.execute(
-                "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
-                params![counters_blob.to_sql_bytes()],
-            )?;
+            if let Some(audit) = &audit {
+                commit_audit_batch(connection, audit)?;
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, accounting = ?2, audit_retention = ?3 WHERE id = 1",
+                    params![
+                        counters_blob.to_sql_bytes(),
+                        accounting_blob.to_sql_bytes(),
+                        audit.retention_blob.to_sql_bytes()
+                    ],
+                )?;
+            } else {
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, accounting = ?2 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes(), accounting_blob.to_sql_bytes()],
+                )?;
+            }
             record_write_db_failpoint(RecordWriteFailpoint::SingletonState)
         })?;
         Ok(())
@@ -8426,6 +8512,27 @@ fn is_pending_deposit_ledger(value: &DepositRecord) -> bool {
         value.state,
         bridge_core::DepositState::FundingPending | bridge_core::DepositState::RefundPending { .. }
     )
+}
+
+fn refund_compensation_debit(value: &DepositRecord) -> Result<Amount, StorageError> {
+    let attempt = match &value.state {
+        bridge_core::DepositState::RefundPending { attempt, .. }
+        | bridge_core::DepositState::RefundReconciliationHold { attempt, .. }
+        | bridge_core::DepositState::Refunded { attempt, .. } => attempt,
+        _ => return Ok(Amount::ZERO),
+    };
+    let total = attempt
+        .identity
+        .amount
+        .checked_add(attempt.identity.fee)
+        .map_err(StorageError::Core)?;
+    Ok(if total > value.gross_amount {
+        total
+            .checked_sub(value.gross_amount)
+            .map_err(StorageError::Core)?
+    } else {
+        Amount::ZERO
+    })
 }
 
 fn is_deposit_mint_reserved(value: &DepositRecord) -> bool {
