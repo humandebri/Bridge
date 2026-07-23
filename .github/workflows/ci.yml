@@ -77,6 +77,18 @@ jobs:
             | sha256sum --check
           sh /tmp/icp-cli-installer.sh --quiet
 
+      - name: Install ic-wasm 0.10.0
+        env:
+          IC_WASM_NO_MODIFY_PATH: "1"
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            -o /tmp/ic-wasm-installer.sh \
+            https://github.com/dfinity/ic-wasm/releases/download/0.10.0/ic-wasm-installer.sh
+          echo "00c361c9c1d53ef464660c0e414cbaf50b602e21f16811fe4134077deaaecabb  /tmp/ic-wasm-installer.sh" \
+            | sha256sum --check
+          sh /tmp/ic-wasm-installer.sh --quiet
+          test "$(ic-wasm --version)" = "ic-wasm 0.10.0"
+
       - name: Install Z3 4.16.0
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
