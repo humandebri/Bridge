@@ -104,42 +104,12 @@ def restorePendingQueue (queue : PendingQueue) (incoming : PendingQueueEntry) : 
   let blocked := (queue incoming.key).map (fun entry => entry.blocked) |>.getD incoming.blocked
   upsertPendingQueue queue { incoming with blocked }
 
-def removePendingQueue (queue : PendingQueue) (target : Nat) : PendingQueue :=
-  fun key => if key = target then none else queue key
-
 structure PendingQueueWrite where
   session : PendingQueue
   durable : Option PendingQueue
 
 def recordPendingQueueWrite (queue : PendingQueue) (durableSucceeded : Bool) : PendingQueueWrite :=
   { session := queue, durable := if durableSucceeded then some queue else none }
-
-inductive ConfirmationKind where
-  | deposit
-  | withdrawal
-deriving DecidableEq
-
-inductive NotificationFailure where
-  | ledgerFeeExceedsServiceFee
-  | other
-deriving DecidableEq
-
-structure FeeGuardPending where
-  write : PendingQueueWrite
-  historyRefresh : Bool
-  complete : Bool
-
-def handleNotificationFailure
-    (queue : PendingQueue) (target : Nat) (kind : ConfirmationKind)
-    (failure : NotificationFailure) (durableSucceeded : Bool) :
-    Option FeeGuardPending :=
-  if kind = .withdrawal ∧ failure = .ledgerFeeExceedsServiceFee then
-    some {
-      write := recordPendingQueueWrite queue durableSucceeded
-      historyRefresh := false
-      complete := false
-    }
-  else none
 
 def canonicalProbeMatches (receiptBlock snapshotBlock : Nat) : Bool :=
   receiptBlock = snapshotBlock

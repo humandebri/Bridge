@@ -1,6 +1,5 @@
 export const WITHDRAWAL_LOG_CHUNK_SIZE = 5_000n
 export const WITHDRAWAL_SCAN_CHUNKS_PER_STEP = 4
-export const WITHDRAWAL_HISTORY_CHANGED = "kinic-withdrawal-history-changed"
 
 export interface FinalizedEventLog {
   blockNumber: bigint | null

@@ -116,8 +116,9 @@ describe("withdrawal notification errors", () => {
     }
     expect(thrown).toBeInstanceOf(NotifyWithdrawalCallError)
     expect((thrown as NotifyWithdrawalCallError).code).toBe("LedgerFeeExceedsServiceFee")
-    expect((thrown as Error).message).toContain("ledger fee exceeds")
-    expect((thrown as Error).message).toContain("remains pending")
+    expect((thrown as Error).message).toContain("ledger fee exceeded")
+    expect((thrown as Error).message).toContain("Contact the bridge operator")
+    expect((thrown as Error).message).not.toContain("will be retried")
     expect((thrown as Error).message).not.toContain("invalid withdrawal notification error")
   })
 

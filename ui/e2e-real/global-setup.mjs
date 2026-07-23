@@ -22,6 +22,8 @@ const runtimeDir = path.join(uiRoot, ".e2e-runtime")
 const rpcUrl = "http://127.0.0.1:8545"
 const controlPort = 43119
 const uiPort = 4174
+const ACTIVATION_DELAY_SECONDS = 72 * 60 * 60
+const ACTIVATION_TIME_ADVANCES = 3
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 const testIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(7))
 const testOwner = testIdentity.getPrincipal()
@@ -52,8 +54,11 @@ async function setup() {
   if (await isTcpPortOpen("127.0.0.1", 8545)) {
     throw new Error("TCP port 8545 is already in use; real E2E never reuses an existing endpoint")
   }
+  const anvilGenesisTimestamp = Math.floor(Date.now() / 1_000)
+    - ACTIVATION_DELAY_SECONDS * ACTIVATION_TIME_ADVANCES
   const anvil = spawn("anvil", [
     "--chain-id", "31337", "--base-fee", "1", "--silent",
+    "--timestamp", String(anvilGenesisTimestamp),
     "--host", "127.0.0.1", "--port", "8545",
     "--cache-path", path.join(runtimeDir, "anvil-cache"),
   ], { stdio: ["ignore", "ignore", "inherit"] })
@@ -351,7 +356,7 @@ async function setup() {
   }
   await mock.actor.set_receipt_mode({ Confirmed: null })
 
-  await rpc("evm_increaseTime", [259_200])
+  await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const executeSubmitted = await bridge.actor.execute_activation()
   if (!("Ok" in executeSubmitted)) throw new Error(`Canister execute_activation failed: ${json(executeSubmitted.Err)}`)
@@ -384,7 +389,7 @@ async function setup() {
   await syncObservedHeads()
   const secondScheduleConfirmed = await bridge.actor.schedule_activation()
   if (!("Ok" in secondScheduleConfirmed)) throw new Error(`Second activation schedule confirmation failed: ${json(secondScheduleConfirmed.Err)}`)
-  await rpc("evm_increaseTime", [259_200])
+  await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const secondExecuteSubmitted = await bridge.actor.execute_activation()
   if (!("Ok" in secondExecuteSubmitted)) throw new Error(`Second activation execute failed: ${json(secondExecuteSubmitted.Err)}`)
@@ -418,7 +423,7 @@ async function setup() {
   await syncObservedHeads()
   const recoveryScheduleConfirmed = await bridge.actor.schedule_activation()
   if (!("Ok" in recoveryScheduleConfirmed)) throw new Error(`Post-emergency activation schedule confirmation failed: ${json(recoveryScheduleConfirmed.Err)}`)
-  await rpc("evm_increaseTime", [259_200])
+  await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const recoveryExecuteSubmitted = await bridge.actor.execute_activation()
   if (!("Ok" in recoveryExecuteSubmitted)) throw new Error(`Post-emergency activation execute failed: ${json(recoveryExecuteSubmitted.Err)}`)
@@ -434,7 +439,7 @@ async function setup() {
   resources.activationFacts = {
     schedule_transaction: bytesHex(scheduleSubmitted.Ok.transaction_hash[0]),
     early_execute_reverted: true,
-    delay_seconds: 259200,
+    delay_seconds: ACTIVATION_DELAY_SECONDS,
     execute_transaction: bytesHex(executeSubmitted.Ok.transaction_hash[0]),
     repeated_schedule_transaction: bytesHex(secondScheduleSubmitted.Ok.transaction_hash[0]),
     repeated_execute_transaction: bytesHex(secondExecuteSubmitted.Ok.transaction_hash[0]),

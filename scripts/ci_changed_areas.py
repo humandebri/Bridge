@@ -16,11 +16,23 @@ def _matches(path: str, prefixes: tuple[str, ...], exact: tuple[str, ...] = ()) 
     return path in exact or path.startswith(prefixes)
 
 
+def _enable_all(result: dict[str, bool]) -> None:
+    for area in AREAS:
+        result[area] = True
+
+
+def _is_documentation(path: str) -> bool:
+    name = PurePosixPath(path).name
+    return path.endswith(".md") or name.startswith("LICENSE") or name == ".gitignore"
+
+
 def classify(paths: list[str]) -> dict[str, bool]:
     result = {area: False for area in AREAS}
     for raw_path in paths:
         path = PurePosixPath(raw_path.strip()).as_posix()
         if not path or path == ".":
+            continue
+        if _is_documentation(path):
             continue
 
         infrastructure = _matches(
@@ -36,14 +48,22 @@ def classify(paths: list[str]) -> dict[str, bool]:
             ),
         )
         if infrastructure:
-            for area in AREAS:
-                result[area] = True
+            _enable_all(result)
+            continue
+        if _matches(path, ("deployments/", ".icp/data/mappings/")):
+            _enable_all(result)
             continue
 
+        classified = False
+        if _matches(path, ("tools/",)):
+            result["rust"] = True
+            classified = True
         if _matches(path, ("canister/", "integration/")):
             result["rust"] = True
+            classified = True
         if _matches(path, ("contracts/",)):
             result["contracts"] = True
+            classified = True
         if _matches(path, ("verification/",)) or path in {
             "canister/bridge-core/src/kernel.rs",
             "canister/bridge-core/tests/protocol_vectors.rs",
@@ -51,11 +71,13 @@ def classify(paths: list[str]) -> dict[str, bool]:
             "ui/src/lib/protocol-vectors.test.ts",
         }:
             result["proofs"] = True
+            classified = True
         if _matches(path, ("ui/",)) or path in {
             "canister/bridge-canister/bridge.did",
             "canister/mock-external/mock.did",
         } or _matches(path, ("contracts/abi/", "contracts/src/")):
             result["ui"] = True
+            classified = True
         if _matches(
             path,
             (
@@ -78,8 +100,12 @@ def classify(paths: list[str]) -> dict[str, bool]:
             ),
         ):
             result["real"] = True
+            classified = True
         if _matches(path, ("canister/", "recipes/"), ("icp.yaml",)):
             result["icp"] = True
+            classified = True
+        if not classified:
+            _enable_all(result)
 
     return result
 

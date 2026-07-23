@@ -5,8 +5,7 @@ import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { basePublicClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { NotifyWithdrawalCallError, SettlementActionCallError, type IcWalletAdapter } from "@/lib/ic/wallet"
-import { PENDING_CONFIRMATIONS_CHANGED, pendingConfirmationsStorageKey, readPendingConfirmations, savePendingConfirmation, type PendingConfirmation } from "@/lib/pending-confirmations"
-import { WITHDRAWAL_HISTORY_CHANGED } from "@/lib/withdrawal-history"
+import { PENDING_CONFIRMATIONS_CHANGED, pendingConfirmationsStorageKey, readPendingConfirmations, removePendingConfirmation, savePendingConfirmation, type PendingConfirmation } from "@/lib/pending-confirmations"
 import { CONFIRMATION_POLL_MS, SettlementConfirmationCoordinator, confirmWhenFinalized, runWithConfirmationLock } from "./settlement-confirmation-coordinator"
 
 vi.mock("sonner", () => ({ toast: { info: vi.fn(), success: vi.fn(), warning: vi.fn() } }))
@@ -170,26 +169,41 @@ describe("confirmWhenFinalized", () => {
     expect(readPendingConfirmations()[0]?.blocked).toBe(false)
   })
 
-  it("keeps a fee-guarded withdrawal pending without handing it off to History", async () => {
+  it("blocks a fee-guarded withdrawal for manual recovery", async () => {
     finalizedReceipt()
     const wallet = adapter()
-    const error = new NotifyWithdrawalCallError(
+    wallet.notifyWithdrawal = vi.fn().mockRejectedValue(new NotifyWithdrawalCallError(
       "LedgerFeeExceedsServiceFee",
-      "The current ledger fee exceeds the charged service fee. Retry it from History.",
-    )
-    wallet.notifyWithdrawal = vi.fn().mockRejectedValue(error)
+      "The ledger fee invariant was violated.",
+    ))
     await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
     const entry = readPendingConfirmations()[0]!
-    const historyChanged = vi.fn()
-    window.addEventListener(WITHDRAWAL_HISTORY_CHANGED, historyChanged)
+
+    expect(await confirmWhenFinalized(entry, wallet)).toEqual({ status: "blocked" })
+    expect(readPendingConfirmations()).toEqual([{ ...entry, blocked: true }])
+    expect(toast.warning).toHaveBeenCalledWith("Confirmation was not completed. Resume it from History.")
+  })
+
+  it("does not report manual recovery when blocking persistence fails", async () => {
+    finalizedReceipt()
+    const wallet = adapter()
+    wallet.notifyWithdrawal = vi.fn().mockRejectedValue(new NotifyWithdrawalCallError(
+      "LedgerFeeExceedsServiceFee",
+      "The ledger fee invariant was violated.",
+    ))
+    await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+    const entry = readPendingConfirmations()[0]!
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable")
+    })
 
     try {
-      expect(await confirmWhenFinalized(entry, wallet)).toEqual({ status: "retry" })
-      expect(readPendingConfirmations()).toEqual([entry])
-      expect(historyChanged).not.toHaveBeenCalled()
-      expect(toast.warning).toHaveBeenCalledWith(error.message)
+      await expect(confirmWhenFinalized(entry, wallet)).rejects.toThrow("storage unavailable")
+      expect(readPendingConfirmations()).toEqual([{ ...entry, blocked: true }])
+      expect(toast.warning).not.toHaveBeenCalled()
     } finally {
-      window.removeEventListener(WITHDRAWAL_HISTORY_CHANGED, historyChanged)
+      setItem.mockRestore()
+      await removePendingConfirmation(entry)
     }
   })
 })
@@ -282,6 +296,31 @@ describe("SettlementConfirmationCoordinator", () => {
     expect(notifyWithdrawal).toHaveBeenCalledOnce()
     expect(readPendingConfirmations()).toEqual([])
     restoredView.unmount()
+  })
+
+  it("does not poll a fee-guarded withdrawal again after blocking it", async () => {
+    vi.useFakeTimers()
+    finalizedReceipt()
+    const notifyWithdrawal = vi.fn().mockRejectedValue(new NotifyWithdrawalCallError(
+      "LedgerFeeExceedsServiceFee",
+      "The ledger fee invariant was violated.",
+    ))
+    const wallet = adapter()
+    wallet.notifyWithdrawal = notifyWithdrawal
+    vi.mocked(useIcWallet).mockReturnValue({ account: { owner }, adapter: wallet, provider: "plug", connect: vi.fn(), disconnect: vi.fn() })
+    await savePendingConfirmation({ kind: "withdrawal", transactionHash: deposit.transactionHash, owner })
+    const view = render(<SettlementConfirmationCoordinator />)
+
+    await flushPromises()
+    expect(notifyWithdrawal).toHaveBeenCalledOnce()
+    expect(readPendingConfirmations()[0]?.blocked).toBe(true)
+
+    await act(() => vi.advanceTimersByTimeAsync(CONFIRMATION_POLL_MS * 3))
+    await flushPromises()
+    expect(notifyWithdrawal).toHaveBeenCalledOnce()
+
+    view.unmount()
+    vi.useRealTimers()
   })
 
   it("rechecks immediately when an external event reports new settlement progress", async () => {

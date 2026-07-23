@@ -6351,10 +6351,7 @@ impl StableStore {
                 connection,
                 "open_hold_index",
                 None,
-                Some((
-                    hold.id.get().to_sql_bytes(),
-                    0u8.to_sql_bytes(),
-                )),
+                Some((hold.id.get().to_sql_bytes(), 0u8.to_sql_bytes())),
             )?;
             hold_bundle_db_failpoint(HoldBundleFailpoint::OpenHoldIndex)?;
             connection.execute(
@@ -8050,16 +8047,12 @@ impl StableStore {
                 previous_blob.as_ref().map(StableBlob::as_slice),
                 "stale reconciliation hold write",
             )?;
-            let previous_open =
-                previous.as_ref().is_some_and(is_open_hold).then(|| key.clone());
-            let next_open =
-                is_open_hold(value).then(|| (key.clone(), 0u8.to_sql_bytes()));
-            transition_tracked_entry(
-                connection,
-                "open_hold_index",
-                previous_open,
-                next_open,
-            )?;
+            let previous_open = previous
+                .as_ref()
+                .is_some_and(is_open_hold)
+                .then(|| key.clone());
+            let next_open = is_open_hold(value).then(|| (key.clone(), 0u8.to_sql_bytes()));
+            transition_tracked_entry(connection, "open_hold_index", previous_open, next_open)?;
             record_write_db_failpoint(RecordWriteFailpoint::RemoveIndex)?;
             record_write_db_failpoint(RecordWriteFailpoint::AddIndex)?;
             record_write_db_failpoint(RecordWriteFailpoint::OperationOwner)?;

@@ -21,7 +21,7 @@ import type { IcWalletAdapter } from "@/lib/ic/wallet"
 import { refetchRuntimeWriteReady } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 import { depositPhaseName, depositPhaseTone, isDepositTerminal, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName, withdrawalPhaseTone } from "@/lib/settlement-phase"
-import { fetchInBatches, scanWithdrawalLogs, WITHDRAWAL_HISTORY_CHANGED, type FinalizedEventLog, type WithdrawalLogScan } from "@/lib/withdrawal-history"
+import { fetchInBatches, scanWithdrawalLogs, type FinalizedEventLog, type WithdrawalLogScan } from "@/lib/withdrawal-history"
 import { removePendingConfirmation, restorePendingConfirmation, savePendingConfirmation } from "@/lib/pending-confirmations"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
 import { withBrowserLock } from "@/lib/browser-lock"
@@ -116,7 +116,6 @@ function HistoryPage() {
       return readWithdrawalHistory("refresh", previous)
     },
   })
-  const refetchWithdrawals = withdrawals.refetch
   const scheduledDepositVisible = deposits.data?.items.some((record) => record.automatic_progress.length > 0) ?? false
   const scheduledWithdrawalVisible = withdrawals.data?.items.some((item) => (item.canister?.automatic_progress.length ?? 0) > 0) ?? false
   const scheduledRecordVisible = tab === "deposit" ? scheduledDepositVisible : scheduledWithdrawalVisible
@@ -132,11 +131,6 @@ function HistoryPage() {
     document.addEventListener("visibilitychange", onVisibilityChange)
     return () => document.removeEventListener("visibilitychange", onVisibilityChange)
   }, [])
-  useEffect(() => {
-    const refresh = () => void refetchWithdrawals()
-    window.addEventListener(WITHDRAWAL_HISTORY_CHANGED, refresh)
-    return () => window.removeEventListener(WITHDRAWAL_HISTORY_CHANGED, refresh)
-  }, [refetchWithdrawals])
   useEffect(() => {
     if (!(scheduledRecordVisible && pageVisible)) return
     const timer = window.setInterval(() => void (tab === "deposit" ? deposits.refetch() : withdrawals.refetch()), 60_000)

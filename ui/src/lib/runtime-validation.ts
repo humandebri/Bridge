@@ -11,6 +11,23 @@ import { createBasePublicClient } from "@/lib/evm/client"
 export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number }
 
 export const RUNTIME_VALIDATION_TTL_MS = 60_000
+export const FINALIZED_HEAD_MAX_AGE_MS = 45 * 60_000
+export const FINALIZED_HEAD_FUTURE_SKEW_MS = 60_000
+
+export function finalizedHeadTimestampBlocker(timestamp?: bigint, now = Date.now()): string | undefined {
+  if (timestamp === undefined || timestamp <= 0n || !Number.isSafeInteger(now) || now < 0) {
+    return "Finalized Base block timestamp is unavailable"
+  }
+  const observedAtMs = timestamp * 1_000n
+  const nowMs = BigInt(now)
+  if (observedAtMs > nowMs + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS)) {
+    return "Finalized Base block timestamp is ahead of the browser clock"
+  }
+  if (nowMs - observedAtMs > BigInt(FINALIZED_HEAD_MAX_AGE_MS)) {
+    return "Finalized Base head is stale"
+  }
+  return undefined
+}
 
 export function runtimeWriteBlocker(validation?: RuntimeValidation, now = Date.now()): string | undefined {
   if (!validation) return "Refresh to verify the reviewed deployment before continuing."
@@ -56,6 +73,8 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (status.withdrawal_fee_guard_active) blockers.push("Withdrawal fee guard is active; pause Base withdrawals and reconcile fees")
   if (localChainId !== profile.chainId) blockers.push(`Base RPC is on chain ${localChainId}; expected ${profile.chainId}`)
   if (localFinalized.number === null || localFinalized.hash === null) blockers.push("Finalized Base block number or hash is unavailable")
+  const timestampBlocker = finalizedHeadTimestampBlocker(localFinalized.timestamp)
+  if (timestampBlocker) blockers.push(timestampBlocker)
   if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
 
   const finalizedHash = localFinalized.hash

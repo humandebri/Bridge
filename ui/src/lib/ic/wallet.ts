@@ -491,7 +491,7 @@ function settlementActionErrorMessage(error: unknown): string {
 export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): string {
   const key = Object.keys(error)[0]
   const messages: Record<string, string> = {
-    LedgerFeeExceedsServiceFee: "The withdrawal could not be recorded because the current ledger fee exceeds the charged service fee. It remains pending and will be retried after the fee is corrected.",
+    LedgerFeeExceedsServiceFee: "Withdrawals were stopped because the ledger fee exceeded the charged service fee. Contact the bridge operator before resuming from History.",
     RpcUnavailable: "Base RPC is unavailable. Retry the notification manually later.",
     RpcInconsistent: "Base RPC providers disagreed. Retry the notification manually later.",
     InvalidBaseResponse: "Base returned an invalid withdrawal response.",

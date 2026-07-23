@@ -131,38 +131,9 @@ theorem restore_preserves_blocked_retry
     (restorePendingQueue queue incoming incoming.key).map (fun entry => entry.blocked) = some true := by
   simp [restorePendingQueue, current, blocked, upsertPendingQueue]
 
-theorem remove_pending_queue_removes_target
-    {queue : PendingQueue} {target : Nat} :
-    removePendingQueue queue target target = none := by
-  simp [removePendingQueue]
-
-theorem remove_pending_queue_preserves_different_entry
-    {queue : PendingQueue} {target key : Nat} (different : Not (key = target)) :
-    removePendingQueue queue target key = queue key := by
-  simp [removePendingQueue, different]
-
 theorem storage_failure_retains_session_queue (queue : PendingQueue) :
     (recordPendingQueueWrite queue false).session = queue := by
   rfl
-
-theorem fee_guard_failure_retains_pending
-    {queue : PendingQueue} {target : Nat} {kind : ConfirmationKind}
-    {failure : NotificationFailure} {durableSucceeded : Bool} {outcome : FeeGuardPending}
-    (h : handleNotificationFailure queue target kind failure durableSucceeded = some outcome) :
-    kind = .withdrawal ∧
-      failure = .ledgerFeeExceedsServiceFee ∧
-      outcome.write.session target = queue target ∧
-      (∀ key, outcome.write.session key = queue key) ∧
-      outcome.write.durable = (if durableSucceeded then some queue else none) ∧
-      outcome.historyRefresh = false ∧
-      outcome.complete = false := by
-  unfold handleNotificationFailure at h
-  split at h
-  next accepted =>
-    simp only [Option.some.injEq] at h
-    subst outcome
-    exact ⟨accepted.1, accepted.2, rfl, fun _ => rfl, rfl, rfl, rfl⟩
-  next => simp at h
 
 theorem canonical_probe_matches_exactly
     {receiptBlock snapshotBlock : Nat} :

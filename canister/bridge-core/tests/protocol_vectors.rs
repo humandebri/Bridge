@@ -13,8 +13,6 @@ struct ProtocolVectors {
     finalization_count: usize,
     queue_cases: Vec<QueueCase>,
     queue_count: usize,
-    fee_guard_pending_cases: Vec<serde_json::Value>,
-    fee_guard_pending_count: usize,
     canonical_probe_cases: Vec<CanonicalProbeCase>,
     canonical_probe_count: usize,
 }
@@ -78,10 +76,6 @@ fn vectors() -> ProtocolVectors {
     assert_eq!(vectors.finalization_count, vectors.finalization_cases.len());
     assert_eq!(vectors.queue_count, vectors.queue_cases.len());
     assert_eq!(
-        vectors.fee_guard_pending_count,
-        vectors.fee_guard_pending_cases.len()
-    );
-    assert_eq!(
         vectors.canonical_probe_count,
         vectors.canonical_probe_cases.len()
     );
@@ -89,7 +83,6 @@ fn vectors() -> ProtocolVectors {
     assert!(vectors.settlement_count > 0);
     assert!(vectors.finalization_count > 0);
     assert!(vectors.queue_count > 0);
-    assert!(vectors.fee_guard_pending_count > 0);
     assert!(vectors.canonical_probe_count > 0);
     for case in &vectors.finalization_cases {
         assert!(!case.receipt_block.is_empty());

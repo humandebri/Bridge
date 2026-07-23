@@ -19,6 +19,9 @@ and the production OISY signer. Automated test adapters do not satisfy this gate
 
 Attach the runtime-verification screen and record that every check is fresh and passing. Stop the
 test if bridge controls become unavailable or any identifier differs from the reviewed profile.
+The browser must reject a Finalized Base head that is more than 45 minutes old, has no timestamp,
+or is more than 60 seconds ahead of the browser clock. This chain-head limit is independent from
+the 60-second lifetime of a successfully fetched runtime or status result.
 
 ## Plug
 

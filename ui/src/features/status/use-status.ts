@@ -3,7 +3,7 @@ import { useEffect, useReducer } from "react"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { RUNTIME_VALIDATION_TTL_MS, runtimeWriteBlocker, validateRuntime, type RuntimeValidation } from "@/lib/runtime-validation"
+import { finalizedHeadTimestampBlocker, RUNTIME_VALIDATION_TTL_MS, runtimeWriteBlocker, validateRuntime, type RuntimeValidation } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 
 export function useRuntimeValidation(chainId?: number) {
@@ -64,6 +64,8 @@ export function useConfirmedBaseStatus() {
       const signer = deploymentProfile.expected_bridge_signer as `0x${string}`
       const finalized = await client.getBlock({ blockTag: "finalized" })
       if (finalized.number === null || finalized.hash === null) throw new Error("Finalized Base block number or hash is unavailable")
+      const timestampBlocker = finalizedHeadTimestampBlocker(finalized.timestamp)
+      if (timestampBlocker) throw new Error(timestampBlocker)
       const [snapshot, finalizedSignerBalance, safeSignerBalance] = await Promise.all([
         client.readContract({ address, abi: bridgeAbi, functionName: "bridgeSnapshot", blockHash: finalized.hash, requireCanonical: true }),
         client.getBalance({ address: signer, blockTag: "finalized" }),

@@ -1,7 +1,17 @@
 import { Principal } from "@dfinity/principal"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { DeploymentProfile } from "@/config/profile"
-import { bridgeSignerBlockers, refetchRuntimeWriteReady, requireRuntimeWriteReady, RUNTIME_VALIDATION_TTL_MS, runtimeWriteBlocker, validateRuntime } from "./runtime-validation"
+import {
+  bridgeSignerBlockers,
+  FINALIZED_HEAD_FUTURE_SKEW_MS,
+  FINALIZED_HEAD_MAX_AGE_MS,
+  finalizedHeadTimestampBlocker,
+  refetchRuntimeWriteReady,
+  requireRuntimeWriteReady,
+  RUNTIME_VALIDATION_TTL_MS,
+  runtimeWriteBlocker,
+  validateRuntime,
+} from "./runtime-validation"
 
 const mocks = vi.hoisted(() => ({
   createPublicClient: vi.fn(),
@@ -73,7 +83,7 @@ beforeEach(() => {
   baseMetadata = { symbol: "KINIC", decimals: 8 }
   indexLedgerId = ledgerId
   contractSigner = expectedSigner
-  getBlockMock.mockResolvedValue({ number: 12n, hash: finalizedHash })
+  getBlockMock.mockResolvedValue({ number: 12n, hash: finalizedHash, timestamp: BigInt(Math.floor(Date.now() / 1_000)) })
   getCodeMock.mockImplementation(({ address }: { address: string }) => Promise.resolve(address === bridgeAddress ? "0x01" : "0x02"))
   readContractMock.mockImplementation(({ functionName }: { functionName: string }) => {
     if (functionName === "bridgeSnapshot") return Promise.resolve({ bridgeSigner: contractSigner })
@@ -113,6 +123,33 @@ beforeEach(() => {
 })
 
 describe("validateRuntime token bindings", () => {
+  it("accepts only a recent finalized Base timestamp within the browser clock skew", () => {
+    const now = 2_000_000_000_000
+    const nowSeconds = BigInt(now / 1_000)
+    expect(finalizedHeadTimestampBlocker(nowSeconds, now)).toBeUndefined()
+    expect(finalizedHeadTimestampBlocker(nowSeconds - BigInt(FINALIZED_HEAD_MAX_AGE_MS / 1_000), now)).toBeUndefined()
+    expect(finalizedHeadTimestampBlocker(nowSeconds - BigInt(FINALIZED_HEAD_MAX_AGE_MS / 1_000) - 1n, now)).toBe("Finalized Base head is stale")
+    expect(finalizedHeadTimestampBlocker(nowSeconds + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS / 1_000), now)).toBeUndefined()
+    expect(finalizedHeadTimestampBlocker(nowSeconds + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS / 1_000) + 1n, now)).toBe("Finalized Base block timestamp is ahead of the browser clock")
+    expect(finalizedHeadTimestampBlocker(0n, now)).toBe("Finalized Base block timestamp is unavailable")
+    expect(finalizedHeadTimestampBlocker(undefined, now)).toBe("Finalized Base block timestamp is unavailable")
+  })
+
+  it("rejects a stale finalized head before pinned contract reads", async () => {
+    getBlockMock.mockResolvedValue({
+      number: 12n,
+      hash: finalizedHash,
+      timestamp: BigInt(Math.floor((Date.now() - FINALIZED_HEAD_MAX_AGE_MS) / 1_000)) - 1n,
+    })
+
+    await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: ["Finalized Base head is stale"],
+    })
+    expect(getCodeMock).not.toHaveBeenCalled()
+    expect(readContractMock).not.toHaveBeenCalled()
+  })
+
   it("rejects every write until runtime verification is ready", () => {
     expect(() => requireRuntimeWriteReady()).toThrow("Refresh to verify the reviewed deployment")
     expect(() => requireRuntimeWriteReady({ ready: false, blockers: ["Bridge signer differs"], checkedAt: 1 })).toThrow("Bridge signer differs")
