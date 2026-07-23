@@ -1,7 +1,7 @@
 shared	scan_complete	incomplete_scan_cannot_prove_absence	scan_complete.rs	canister/bridge-canister/src/ledger.rs
 shared	next_attempt	attempt_is_strictly_monotone	next_attempt.rs	canister/bridge-core/src/withdrawal.rs
 shared	counter_delta	counter_delta_matches_classification	counter_delta.rs	canister/bridge-core/src/kernel.rs
-shared	evidence_matches	hold_resolution_requires_every_binding	evidence_matches.rs	canister/bridge-core/src/reconciliation.rs
+shared	evidence_matches	hold_resolution_requires_every_binding	evidence_matches.rs	canister/bridge-core/src/kernel.rs
 shared	replay_matches	conflicting_payload_is_rejected	replay_matches.rs	canister/bridge-core/src/deposit.rs
 shared	monotone	evm_rank_never_decreases	monotone.rs	canister/bridge-core/src/evm.rs
 shared	refresh_owner_matches	only_current_refresh_owner_can_finish	refresh_owner_matches.rs	canister/bridge-canister/src/storage.rs
@@ -20,7 +20,7 @@ shared	mint_admission_total	mint_admission_counts_consumed_reserved_and_candidat
 shared	nonce_next	nonce_is_strictly_monotone	nonce_next.rs	canister/bridge-canister/src/tasks.rs
 shared	can_assign_nonce	prepared_blocks_nonce_assignment	can_assign_nonce.rs	canister/bridge-canister/src/tasks.rs
 shared	payout_allowed	payout_includes_fee_and_cannot_exceed_reserve	payout_allowed.rs	canister/bridge-canister/src/admin.rs
-shared	deposit_refund_amount	deposit_refund_debits_exactly_gross	deposit_refund_amount.rs	canister/bridge-core/src/deposit.rs
+shared	deposit_refund_amount	deposit_refund_debits_exactly_gross	deposit_refund_amount.rs	canister/bridge-canister/src/tasks.rs
 shared	payout_debit	payout_includes_fee_and_cannot_exceed_reserve	payout_debit.rs	canister/bridge-canister/src/storage.rs
 shared	administrator_authorized	role_action_matrix	administrator_authorized.rs	canister/bridge-canister/src/admin.rs
 shared	audit_next	audit_sequence_is_strictly_monotone	audit_next.rs	canister/bridge-canister/src/storage.rs
