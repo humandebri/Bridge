@@ -8,7 +8,7 @@
 
 Status画面とruntime事前検証は、ブラウザからreview済みprofileのBase RPCへ直接問い合わせる表示用観測であり、CanisterのHTTP outcallを発生させない。表示用availabilityはBaseのFinalized/Safe signer ETH残高、Base pause、IC pause、Canisterのcycles floorを組み合わせ、いずれかが60秒を超えた場合はlast-known値を残したままfail closedにする。Deposit、Withdrawal、Governanceなど資産状態を変える最終判断では、このブラウザ観測を信用せず、Canisterが2-of-3 quorumでBaseを再検証する。
 
-CanisterがFinalized headまたはreceipt blockを取得する際のblock response上限は固定16 KiBである。上限超過時は応答上限の自動拡大や自動再試行をせず、RPC unavailableとしてLedger処理前にfail closedにする。
+CanisterがFinalized headを取得する際のblock response上限は固定16 KiBである。上限超過時は応答上限の自動拡大や自動再試行をせず、RPC unavailableとしてLedger処理前にfail closedにする。receipt blockは取得せず、2-of-3で一致したreceipt hashへ4 KiB上限の`bridgeSnapshot()` EIP-1898 probeを実行し、`requireCanonical=true`とsnapshotのblock numberでcanonical receiptを確認する。
 2026-07-23のBase Sepolia検証では、直近256 Finalized blockの`eth_getBlockByNumber`応答は最大5,542 bytesであり、16 KiB上限内に収まった。
 
 KINIC Ledger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示・事前検証へ使う。fee変更時はこの定数だけを変更し、Candid binding、Rust/UI/integration test、staging検証を同じ変更で更新する。

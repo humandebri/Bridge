@@ -68,10 +68,10 @@ RPC_AUDIT_SCENARIOS = frozenset(SCENARIOS) - {"quorum_loss"}
 RPC_DECISION_SCENARIOS = frozenset({"single_provider_failure", "quorum_loss", "nonce_conflict"})
 RPC_AUDIT_METHODS = {
     "preflight": {"multi_request"},
-    "deposit_mint": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
+    "deposit_mint": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request", "eth_getTransactionReceipt+multi_request"},
     "withdrawal_release": {"multi_request"},
     "ledger_fee_guard": {"multi_request"},
-    "canonical_receipt": {"multi_request", "eth_getTransactionReceipt+eth_getBlockByNumber"},
+    "canonical_receipt": {"multi_request", "eth_getTransactionReceipt+multi_request"},
     "single_provider_failure": {"multi_request"},
     "nonce_known": {"eth_sendRawTransaction+multi_request"},
     "nonce_conflict": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request"},

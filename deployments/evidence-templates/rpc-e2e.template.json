@@ -17,7 +17,7 @@
   "details": "<replace-with-the-scenario-specific-object-documented-in-the-runbook>",
   "canister_audit": {
     "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
-    "call_method": "<multi_request|eth_sendRawTransaction|eth_sendRawTransaction+multi_request|eth_getTransactionReceipt+eth_getBlockByNumber>",
+    "call_method": "<multi_request|eth_sendRawTransaction|eth_sendRawTransaction+multi_request|eth_getTransactionReceipt+multi_request>",
     "request_digest": "<64-hex-from-EvmRpcObservation>",
     "quorum_response_digest": "<64-hex-from-EvmRpcObservation>",
     "safe_block_number": 0,

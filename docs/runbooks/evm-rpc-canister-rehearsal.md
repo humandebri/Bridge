@@ -115,7 +115,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 
 `external_calls_performed=true`と`through_evm_rpc_canister=true`だけでは証跡にならない。
 quorum成功scenarioは`get_audit_events`の`EvmRpcObservation`から、EVM RPC Canister ID、Candid call method、Canister内部request digest、quorum response digest、Finalized block number/hash、transaction hashを`canister_audit`へ束縛する。
-call methodはscenarioに応じたproduction実値`multi_request`、`eth_sendRawTransaction`、`eth_sendRawTransaction+multi_request`、`eth_getTransactionReceipt+eth_getBlockByNumber`だけを許可する。`nonce_conflict`もbroadcast decision auditを必須とし、単なるstop reason自己申告では完了しない。
+call methodはscenarioに応じたproduction実値`multi_request`、`eth_sendRawTransaction`、`eth_sendRawTransaction+multi_request`、`eth_getTransactionReceipt+multi_request`だけを許可する。receiptのcanonicalityは、2-of-3で一致したreceipt hashへ`bridgeSnapshot()`をEIP-1898 `requireCanonical=true`で実行し、snapshotのblock numberとreceipt heightを一致させる。`nonce_conflict`もbroadcast decision auditを必須とし、単なるstop reason自己申告では完了しない。
 `single_provider_failure`、`quorum_loss`、`nonce_conflict`は`EvmRpcDecision`も`canister_decision`へ束縛し、設定provider数、必要threshold、停止理由、Ledger呼出し有無、Bridge継続、Deposit pause、自動再署名有無を再導出する。threshold APIは採用前のprovider別全responseを返さないため、3/3一致と2/3一致の区別はfault injection artifactへ委ね、Canister auditは設定値`3`、必要threshold`2`、実際の継続・停止判断を証明する。
 `preflight`ではさらに固定`icp canister status <id> -n ic --public --json` captureのmodule hashをreview済みWasm SHA-256へ束縛する。
 予定値、手入力digest、dry-runを証跡として記録してはならない。

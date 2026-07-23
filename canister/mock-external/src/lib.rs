@@ -1,8 +1,8 @@
 use candid::{CandidType, Deserialize, Nat, Principal};
 use evm_rpc_types::{
-    Block, BlockTag, GetLogsArgs, GetTransactionCountArgs, Hex, Hex32, MultiRpcResult, Nat256,
-    ProviderError, RpcConfig, RpcError, RpcService, RpcServices, SendRawTransactionStatus,
-    TransactionReceipt,
+    Block, BlockTag, GetLogsArgs, GetTransactionCountArgs, Hex, Hex32, JsonRpcError,
+    MultiRpcResult, Nat256, ProviderError, RpcConfig, RpcError, RpcService, RpcServices,
+    SendRawTransactionStatus, TransactionReceipt,
 };
 use ic_cdk_management_canister::{
     ecdsa_public_key, sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs,
@@ -844,11 +844,33 @@ fn multi_request(
             *value.borrow_mut() = next;
         });
         let Some(block_number) = eip1898_block_number(&request) else {
+            if RECEIPT_MODE.with(|mode| *mode.borrow()) == ReceiptMode::Orphaned {
+                return MultiRpcResult::Consistent(Err(RpcError::JsonRpcError(JsonRpcError {
+                    code: -32_001,
+                    message: "block is not canonical".into(),
+                })));
+            }
             return MultiRpcResult::Consistent(Err(RpcError::ProviderError(
                 ProviderError::ProviderNotFound,
             )));
         };
         PINNED_ETH_CALL_BLOCK_NUMBERS.with(|values| values.borrow_mut().push(block_number));
+        if request.contains("f702cf2b")
+            && BLOCK_MODE.with(|mode| *mode.borrow()) == BlockMode::CanonicalInconsistent
+        {
+            return MultiRpcResult::Inconsistent(vec![
+                (
+                    RpcService::Provider(1),
+                    Ok(bridge_snapshot_response(Some(block_number))),
+                ),
+                (
+                    RpcService::Provider(2),
+                    Ok(bridge_snapshot_response(Some(
+                        block_number.saturating_add(1),
+                    ))),
+                ),
+            ]);
+        }
     }
     if RECEIPT_MODE.with(|mode| *mode.borrow()) == ReceiptMode::DecodeFailure
         && request.contains("eth_call")
@@ -883,7 +905,12 @@ fn multi_request(
             "null".into()
         }
     } else if request.contains("f702cf2b") {
-        bridge_snapshot_response(eip1898_block_number(&request))
+        let block_number = eip1898_block_number(&request);
+        if BLOCK_MODE.with(|mode| *mode.borrow()) == BlockMode::SameHeightDifferentHash {
+            bridge_snapshot_response(block_number.map(|number| number.saturating_add(1)))
+        } else {
+            bridge_snapshot_response(block_number)
+        }
     } else if request.contains("d5d0d21c") {
         if PROCESSED_DEPOSIT.with(|processed| *processed.borrow()) {
             word(1)
