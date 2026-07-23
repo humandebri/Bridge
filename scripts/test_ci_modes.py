@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Static regression tests for local CI mode composition."""
+
+from pathlib import Path
+import re
+import unittest
+
+
+SOURCE = (Path(__file__).parent / "ci-local.sh").read_text(encoding="utf-8")
+
+
+def function_body(name: str) -> str:
+    match = re.search(rf"^{re.escape(name)}\(\) \{{\n(?P<body>.*?)^\}}$", SOURCE, re.MULTILINE | re.DOTALL)
+    if match is None:
+        raise AssertionError(f"missing function: {name}")
+    return match.group("body")
+
+
+class CiModeTests(unittest.TestCase):
+    def assert_calls(self, aggregate: str, expected: list[str]) -> None:
+        body = function_body(aggregate)
+        positions = [body.find(f"  {name}\n") for name in expected]
+        self.assertTrue(all(position >= 0 for position in positions), (aggregate, positions))
+        self.assertEqual(positions, sorted(positions))
+
+    def test_legacy_aggregate_modes_remain_complete(self) -> None:
+        self.assert_calls("run_rust", ["run_rust_fast", "run_rust_integration"])
+        self.assert_calls("run_contracts", ["run_contracts_fast", "run_contracts_coverage"])
+        self.assert_calls("run_ui", ["run_ui_fast", "run_ui_e2e"])
+
+    def test_complete_checks_keep_all_component_aggregates(self) -> None:
+        self.assert_calls(
+            "run_checks",
+            ["run_versions", "run_rust", "run_contracts", "run_proofs", "run_ui", "run_icp_build"],
+        )
+
+    def test_new_modes_are_exposed(self) -> None:
+        for mode in (
+            "rust-fast",
+            "rust-integration",
+            "contracts-fast",
+            "contracts-coverage",
+            "ui-fast",
+            "ui-e2e",
+        ):
+            self.assertRegex(SOURCE, rf"(?m)^  {re.escape(mode)}\)$")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -17,6 +17,7 @@ ICP_TEST_CANISTER_INSTALL_MODE="install"
 ICP_LOCAL_MAPPING_BACKED_UP=0
 ICP_SMOKE_STATE_PREPARED=0
 CLEANUP_DONE=0
+UI_DEPENDENCIES_READY=0
 
 # shellcheck source=ci_guards.sh
 source "$ROOT/scripts/ci_guards.sh"
@@ -116,6 +117,8 @@ run_versions() {
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   python3 "$ROOT/scripts/test_live_fee_guard.py"
+  python3 "$ROOT/scripts/test_ci_changed_areas.py"
+  python3 "$ROOT/scripts/test_ci_modes.py"
   "$ROOT/scripts/test_ci_guards.sh"
   "$ROOT/scripts/test_production_release.sh"
   "$ROOT/scripts/test_production_drivers.sh"
@@ -161,11 +164,14 @@ run_no_automatic_execution_guards() {
   fi
 }
 
-run_rust() {
+run_rust_fast() {
   run_no_automatic_execution_guards
   cargo fmt --manifest-path "$ROOT/Cargo.toml" --all --check
   cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" --workspace --all-targets -- -D warnings
   cargo test --locked --manifest-path "$ROOT/Cargo.toml" --workspace
+}
+
+run_rust_integration() {
   cargo build \
     --locked \
     --manifest-path "$ROOT/Cargo.toml" \
@@ -197,11 +203,19 @@ run_rust() {
   node "$ROOT/scripts/plan007/test-generate-local-e2e.mjs"
 }
 
-run_contracts() {
+run_rust() {
+  run_rust_fast
+  run_rust_integration
+}
+
+run_contracts_fast() {
   forge fmt --root "$CONTRACTS" --check
   forge build --root "$CONTRACTS" --sizes --ignored-error-codes 2394 --ignored-error-codes 3860 --ignored-error-codes 6335
   python3 "$ROOT/scripts/abi_snapshot.py" --check
   forge test --root "$CONTRACTS"
+}
+
+run_contracts_coverage() {
   forge coverage \
     --root "$CONTRACTS" \
     --ir-minimum \
@@ -211,6 +225,11 @@ run_contracts() {
     --ignored-error-codes 6335 \
     --ignored-error-codes 3860 \
     --ignored-error-codes 5574
+}
+
+run_contracts() {
+  run_contracts_fast
+  run_contracts_coverage
 }
 
 build_smt_failure_fixture() {
@@ -342,20 +361,37 @@ run_proofs() {
   run_verus
 }
 
-run_ui() {
+require_ui_dependencies() {
+  if [[ "$UI_DEPENDENCIES_READY" -eq 1 ]]; then
+    return
+  fi
   if [[ "${CI:-}" == "true" ]]; then
     pnpm --dir "$ROOT/ui" install --frozen-lockfile
   elif [[ ! -d "$ROOT/ui/node_modules" ]]; then
     echo "ui/node_modules is missing; run pnpm --dir ui install --frozen-lockfile before checks" >&2
     return 1
   fi
+  UI_DEPENDENCIES_READY=1
+}
+
+run_ui_fast() {
+  require_ui_dependencies
   pnpm --dir "$ROOT/ui" run codegen:abi:check
   pnpm --dir "$ROOT/ui" run codegen:candid:check
   pnpm --dir "$ROOT/ui" run typecheck
   pnpm --dir "$ROOT/ui" run lint
   pnpm --dir "$ROOT/ui" run test
   pnpm --dir "$ROOT/ui" run build
+}
+
+run_ui_e2e() {
+  require_ui_dependencies
   pnpm --dir "$ROOT/ui" run e2e
+}
+
+run_ui() {
+  run_ui_fast
+  run_ui_e2e
 }
 
 run_icp_build() {
@@ -1096,8 +1132,20 @@ case "$MODE" in
   rust)
     run_step rust run_rust
     ;;
+  rust-fast)
+    run_step rust-fast run_rust_fast
+    ;;
+  rust-integration)
+    run_step rust-integration run_rust_integration
+    ;;
   contracts)
     run_step contracts run_contracts
+    ;;
+  contracts-fast)
+    run_step contracts-fast run_contracts_fast
+    ;;
+  contracts-coverage)
+    run_step contracts-coverage run_contracts_coverage
     ;;
   proofs)
     run_step versions run_versions
@@ -1106,6 +1154,12 @@ case "$MODE" in
   ui)
     run_step versions run_versions
     run_step ui run_ui
+    ;;
+  ui-fast)
+    run_step ui-fast run_ui_fast
+    ;;
+  ui-e2e)
+    run_step ui-e2e run_ui_e2e
     ;;
   icp)
     run_step icp run_icp_build
@@ -1117,7 +1171,7 @@ case "$MODE" in
     run_step real run_real
     ;;
   *)
-    echo "usage: $0 {all|checks|versions|rust|contracts|proofs|ui|icp|smoke|real}" >&2
+    echo "usage: $0 {all|checks|versions|rust|rust-fast|rust-integration|contracts|contracts-fast|contracts-coverage|proofs|ui|ui-fast|ui-e2e|icp|smoke|real}" >&2
     exit 2
     ;;
 esac

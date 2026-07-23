@@ -15,7 +15,7 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | Production | 未デプロイ | Plan 001〜007と本番運用条件の完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、EVM操作、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v17の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+`bridge-canister`はstable schema v18の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 EVM transactionのbroadcast後は確認待ちとして保存し、フロントがpublic Base RPCでreceiptとFinalized headを観測する。
 Finalized到達後、認証済みIC walletがtransaction hash、receipt block、観測Finalized blockを`confirm_deposit`へ送ると、Canisterが証拠と保存済みtransactionを照合してからEVM RPC outcallで再検証する。Withdrawalは追加EVM transactionを生成しない。
 フロントが動作していない間はEVM confirmation待ちを維持し、Canister timerによるconfirmation fallbackは行わない。confirmation後のLedger settlementはstable jobとCanister timerで自動進行する。
@@ -73,19 +73,35 @@ CIでの固定ツール導入手順は[`.github/workflows/ci.yml`](.github/workf
 
 ## 検証
 
-全検証とローカルdeploy smokeを実行する。
+開発中は変更領域に対応するfast modeを実行する。
 
 ```bash
-scripts/ci-local.sh all
+scripts/ci-local.sh rust-fast
+scripts/ci-local.sh contracts-fast
+scripts/ci-local.sh ui-fast
 ```
 
-deployを除く検証だけを実行する。
+Wasm・PocketIC統合、coverage、ブラウザE2Eは必要に応じて個別に実行する。
+
+```bash
+scripts/ci-local.sh rust-integration
+scripts/ci-local.sh contracts-coverage
+scripts/ci-local.sh ui-e2e
+```
+
+PR前はdeployと実Ledger統合を除く全検証を実行する。
 
 ```bash
 scripts/ci-local.sh checks
 ```
 
-個別実行:
+main更新時、夜間、リリース前は全検証とローカルdeploy smokeを実行する。
+
+```bash
+scripts/ci-local.sh all
+```
+
+既存の集約modeとその他の個別実行:
 
 ```bash
 scripts/ci-local.sh versions
@@ -97,6 +113,10 @@ scripts/ci-local.sh icp
 scripts/ci-local.sh smoke
 scripts/ci-local.sh real
 ```
+
+GitHub ActionsはPRの変更パスをRust、Solidity、形式証明、UI、実統合、ICP buildへ分類し、該当するjobだけを並列実行する。
+`pr-gate`は対象jobの結果を集約するが、現時点ではGitHub Branch ProtectionまたはRulesetによる必須化は行っていない。
+feature branchへのpushではPR eventだけを使用し、`main`へのpush、夜間schedule、手動実行では完全な`all` gateを実行する。
 
 `contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
 `proofs`はLeanをcross-chain protocolの正式な抽象仕様としてビルドし、`sorry`・`admit`を拒否する。

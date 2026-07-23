@@ -1,124 +1,290 @@
-# GitHub Actions: reproduce the complete repository test, proof, build, and deploy gate on Linux.
+# GitHub Actions: path-aware PR checks and the complete main/nightly gate.
 name: bridge-ci
 
 on:
   pull_request:
   push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: bridge-ci-${{ github.workflow }}-${{ github.ref }}
+  group: bridge-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-jobs:
-  verify:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+env:
+  CI: "true"
 
+jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+      contracts: ${{ steps.classify.outputs.contracts }}
+      proofs: ${{ steps.classify.outputs.proofs }}
+      ui: ${{ steps.classify.outputs.ui }}
+      real: ${{ steps.classify.outputs.real }}
+      icp: ${{ steps.classify.outputs.icp }}
+      any: ${{ steps.classify.outputs.any }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" | python3 scripts/ci_changed_areas.py --null
+
+      - name: Validate CI configuration
+        run: |
+          bash -n scripts/ci-local.sh
+          bash -n scripts/install-ci-tools.sh
+          python3 scripts/test_ci_changed_areas.py
+          python3 scripts/test_ci_modes.py
+
+  rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           submodules: recursive
-
-      - name: Verify OpenZeppelin revision
-        run: |
-          test "$(git -C contracts/lib/openzeppelin-contracts rev-parse HEAD)" = \
-            "5fd1781b1454fd1ef8e722282f86f9293cacf256"
-
       - name: Install pinned Rust toolchain
         run: rustup show
-
       - name: Install Node.js 24.14.0
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.14.0
-
       - name: Install pnpm 11.0.8
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
           version: 11.0.8
           run_install: false
-
-      - name: Install didc 0.5.4
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o "$HOME/.local/bin/didc" \
-            https://github.com/dfinity/candid/releases/download/2025-12-18/didc-linux64
-          echo "32693c76d9c6fe0f273f2c1ebf7e48ba3c383e925e5afd17dd264a06aed9fbcc  $HOME/.local/bin/didc" \
-            | sha256sum --check
-          chmod +x "$HOME/.local/bin/didc"
-          test "$("$HOME/.local/bin/didc" --version)" = "didc 0.5.4"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
       - name: Install ripgrep
         run: |
           sudo apt-get update
           sudo apt-get install --yes ripgrep
-          rg --version
+      - name: Run Rust fast checks
+        run: scripts/ci-local.sh rust-fast
+      - name: Run Rust integration checks
+        run: scripts/ci-local.sh rust-integration
 
+  contracts:
+    needs: changes
+    if: needs.changes.outputs.contracts == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
       - name: Install Foundry 1.7.1
         uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.7.1
+      - name: Run contract fast checks
+        run: scripts/ci-local.sh contracts-fast
+      - name: Run contract coverage
+        run: scripts/ci-local.sh contracts-coverage
 
+  proofs:
+    needs: changes
+    if: needs.changes.outputs.proofs == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Install Node.js 24.14.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install pnpm 11.0.8
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          version: 11.0.8
+          run_install: false
+      - name: Install Foundry 1.7.1
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: v1.7.1
+      - name: Install proof and interface tools
+        run: scripts/install-ci-tools.sh proof
+      - name: Install UI dependencies
+        run: pnpm --dir ui install --frozen-lockfile
+      - name: Run proof checks
+        run: scripts/ci-local.sh proofs
+
+  ui:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
+      - name: Install Node.js 24.14.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install pnpm 11.0.8
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          version: 11.0.8
+          run_install: false
+      - name: Install didc 0.5.4
+        run: scripts/install-ci-tools.sh didc
+      - name: Install Chromium
+        run: pnpm --dir ui exec playwright install --with-deps chromium
+      - name: Run UI fast checks
+        run: scripts/ci-local.sh ui-fast
+      - name: Run UI browser checks
+        run: scripts/ci-local.sh ui-e2e
+      - name: Upload UI failure artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: bridge-ui-playwright
+          path: |
+            ui/playwright-report
+            ui/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  real:
+    needs: changes
+    if: needs.changes.outputs.real == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Install Node.js 24.14.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install pnpm 11.0.8
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          version: 11.0.8
+          run_install: false
+      - name: Install Foundry 1.7.1
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: v1.7.1
+      - name: Install dependencies and Chromium
+        run: |
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui exec playwright install --with-deps chromium
+      - name: Run real Anvil and PocketIC integration
+        run: scripts/ci-local.sh real
+      - name: Upload real integration failure artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: bridge-ui-real-integration
+          path: |
+            ui/playwright-report
+            ui/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  icp:
+    needs: changes
+    if: needs.changes.outputs.icp == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
+      - name: Install pinned Rust toolchain
+        run: rustup show
       - name: Install ICP CLI 1.0.2
+        run: scripts/install-ci-tools.sh icp
+      - name: Build the canister with ICP CLI
+        run: scripts/ci-local.sh icp
+
+  pr-gate:
+    if: always() && github.event_name == 'pull_request'
+    needs:
+      - changes
+      - rust
+      - contracts
+      - proofs
+      - ui
+      - real
+      - icp
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful applicable checks
         env:
-          ICP_CLI_DISABLE_UPDATE: "1"
-          ICP_CLI_NO_MODIFY_PATH: "1"
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o /tmp/icp-cli-installer.sh \
-            https://github.com/dfinity/icp-cli/releases/download/v1.0.2/icp-cli-installer.sh
-          echo "e7e29ec7a99c854264477f8dcede86670ff3a854f035b6fac40d0c891b9cf70e  /tmp/icp-cli-installer.sh" \
-            | sha256sum --check
-          sh /tmp/icp-cli-installer.sh --quiet
+          failures="$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"' <<<"$RESULTS")"
+          if [[ -n "$failures" ]]; then
+            echo "$failures" >&2
+            exit 1
+          fi
 
-      - name: Install Z3 4.16.0
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o /tmp/z3.zip \
-            https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/z3-4.16.0-x64-glibc-2.39.zip
-          echo "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e  /tmp/z3.zip" \
-            | sha256sum --check
-          unzip -q /tmp/z3.zip -d "$HOME/.local/z3"
-          mkdir -p "$HOME/.local/bin"
-          ln -s "$(find "$HOME/.local/z3" -type f -path '*/bin/z3' -print -quit)" "$HOME/.local/bin/z3"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install Verus 0.2026.07.05
-        run: |
-          rustup toolchain install 1.96.0 --profile minimal
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o /tmp/verus.zip \
-            https://github.com/verus-lang/verus/releases/download/release/0.2026.07.05.49b8806/verus-0.2026.07.05.49b8806-x86-linux.zip
-          echo "cb4fe7db423fdda5e9aa77b2c3e632f8a618b6a991509283aae591f0a914d34c  /tmp/verus.zip" \
-            | sha256sum --check
-          unzip -q /tmp/verus.zip -d "$HOME/.local/verus"
-          mkdir -p "$HOME/.local/bin"
-          ln -s "$(find "$HOME/.local/verus" -type f -name verus -print -quit)" "$HOME/.local/bin/verus"
-
-      - name: Install Lean 4.30.0
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o /tmp/elan-init.sh \
-            https://raw.githubusercontent.com/leanprover/elan/6737edca3d2ca3dbaa1b47b87769b48b420633ae/elan-init.sh
-          echo "a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53  /tmp/elan-init.sh" \
-            | sha256sum --check
-          sh /tmp/elan-init.sh -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-          "$HOME/.elan/bin/lean" --version
-
+  full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
+      - name: Verify OpenZeppelin revision
+        run: test "$(git -C contracts/lib/openzeppelin-contracts rev-parse HEAD)" = "5fd1781b1454fd1ef8e722282f86f9293cacf256"
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Install Node.js 24.14.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install pnpm 11.0.8
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          version: 11.0.8
+          run_install: false
+      - name: Install complete CI toolchain
+        run: scripts/install-ci-tools.sh all
+      - name: Install Foundry 1.7.1
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: v1.7.1
       - name: Install UI dependencies and Chromium
         run: |
           pnpm --dir ui install --frozen-lockfile
           pnpm --dir ui exec playwright install --with-deps chromium
-
       - name: Run complete repository gate
         run: scripts/ci-local.sh all
-
       - name: Verify smoke restored the ICP configuration
         run: git diff --exit-code -- icp.yaml
