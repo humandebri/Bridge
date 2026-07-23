@@ -1,6 +1,34 @@
 import { expect, test } from "@playwright/test"
 import type { Page, TestInfo } from "@playwright/test"
 
+const RISK_ACKNOWLEDGEMENT_KEY = "kinic.bridge.risk-acknowledgement.v1:84532::"
+
+test.beforeEach(async ({ page }, testInfo) => {
+  if (testInfo.title === "requires risk acknowledgement on first use") return
+  await page.addInitScript((key) => window.localStorage.setItem(key, "acknowledged"), RISK_ACKNOWLEDGEMENT_KEY)
+})
+
+test("requires risk acknowledgement on first use", async ({ page }, testInfo) => {
+  await page.goto("/")
+  await expect(page.getByRole("heading", { name: "Unaudited bridge" })).toBeVisible()
+  await expect(page.getByText("This bridge has not been audited.")).toBeVisible()
+  await expect(page.getByRole("button", { name: "Close confirmation" })).toHaveCount(0)
+  await expect(page.getByRole("button", { name: "Acknowledge and continue" })).toBeDisabled()
+  await capture(page, testInfo, "risk-acknowledgement")
+
+  await page.keyboard.press("Escape")
+  await expect(page.getByRole("dialog")).toBeVisible()
+  await page.mouse.click(5, 5)
+  await expect(page.getByRole("dialog")).toBeVisible()
+  await page.getByRole("checkbox", { name: "Acknowledge unaudited bridge risk" }).check()
+  await page.getByRole("button", { name: "Acknowledge and continue" }).click()
+  await expect(page.getByRole("dialog")).toBeHidden()
+  await expect.poll(() => page.evaluate((key) => window.localStorage.getItem(key), RISK_ACKNOWLEDGEMENT_KEY)).toBe("acknowledged")
+
+  await page.reload()
+  await expect(page.getByRole("heading", { name: "Unaudited bridge" })).toBeHidden()
+})
+
 test("bridge defaults to IC to Base and reports incomplete configuration", async ({ page }, testInfo) => {
   await page.goto("/")
   await expect(page.getByRole("heading", { name: "Bridge KINIC" })).toBeVisible()

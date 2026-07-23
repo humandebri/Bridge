@@ -10,6 +10,7 @@ vi.mock("@/features/wallet/wallet-controls", () => ({
   WalletDialogProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 vi.mock("@/features/bridge/settlement-confirmation-coordinator", () => ({ SettlementConfirmationCoordinator: () => null }))
+vi.mock("@/features/risk/risk-acknowledgement", () => ({ RiskAcknowledgementDialog: () => null }))
 
 import { AppShell } from "./app-shell"
 

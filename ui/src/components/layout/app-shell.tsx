@@ -2,11 +2,12 @@ import { Link, Outlet } from "@tanstack/react-router"
 import { History, Menu, ShieldCheck } from "lucide-react"
 import { WalletCenter, WalletDialogProvider } from "@/features/wallet/wallet-controls"
 import { SettlementConfirmationCoordinator } from "@/features/bridge/settlement-confirmation-coordinator"
+import { RiskAcknowledgementDialog } from "@/features/risk/risk-acknowledgement"
 import blueKinic from "@/assets/blue_kinic.png"
 import { deploymentProfile } from "@/config/profile"
 
 export function AppShell() {
-  return <WalletDialogProvider><SettlementConfirmationCoordinator /><div className="min-h-screen">
+  return <WalletDialogProvider><RiskAcknowledgementDialog /><SettlementConfirmationCoordinator /><div className="min-h-screen">
     {deploymentProfile.testOnly ? <div role="status" aria-label="Test deployment" className="border-b border-amber-300 bg-amber-100 px-4 py-2 text-center text-xs font-bold tracking-[.08em] text-amber-950">
       IC MAINNET × BASE SEPOLIA TEST — TEST ASSETS ONLY
     </div> : null}
