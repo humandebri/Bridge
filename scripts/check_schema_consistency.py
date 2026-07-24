@@ -77,6 +77,11 @@ def main() -> None:
             r'schema_version: "(\d+)"',
             1,
         ),
+        (
+            "scripts/plan007/sepolia_e2e.py",
+            r"CURRENT_STABLE_SCHEMA = (\d+)",
+            1,
+        ),
     )
     for path, pattern, expected_count in checks:
         require_versions(path, pattern, version, expected_count)

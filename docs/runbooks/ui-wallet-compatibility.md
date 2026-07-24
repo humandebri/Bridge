@@ -83,6 +83,9 @@ the 60-second lifetime of a successfully fetched runtime or status result.
 
 - Outcome: `PASS` / `FAIL`
 - Evidence links:
+- Deposit operation/Ledger/Base references for Plug and OISY:
+- Withdrawal operation/Ledger/Base references for MetaMask and Rabby:
+- Same-Wasm before/after state SHA-256 and `storage_integrity_check()` result:
 - Deviations or browser/extension issues:
 - Reviewer and review date:
 

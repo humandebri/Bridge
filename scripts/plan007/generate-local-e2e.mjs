@@ -24,6 +24,10 @@ export function validateUpgradeEvidence(upgrade) {
     throw new Error("upgrade evidence has no pending-operation identities")
   }
   if (!state.status?.settlement_scheduler || !state.public_config || !state.audit_events) throw new Error("upgrade evidence omitted scheduler, configuration, or audit state")
+  if (!state.activation_status || !("pending_timelock_operation" in state.activation_status)) {
+    throw new Error("upgrade evidence omitted the pending Timelock operation identity")
+  }
+  if (state.storage_integrity !== "ok") throw new Error("upgrade evidence did not pass storage_integrity_check")
   for (const field of ["deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record"]) {
     if (!(field in state.public_config)) throw new Error(`upgrade evidence omitted rate-limit configuration ${field}`)
   }

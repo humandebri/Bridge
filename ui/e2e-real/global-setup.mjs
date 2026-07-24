@@ -140,12 +140,13 @@ async function setup() {
   await mock.actor.set_max_service_fee(100_000_000n)
   await mock.actor.set_per_deposit_limit(1_000_000_000_000n)
   await mock.actor.set_mint_window(0n, 10_000_000_000_000n, 0n, 3_600n, 1n)
-  const bridgeId = await pic.createCanister({ targetSubnetId: subnet.id })
+  const bridgeId = await pic.createCanister({ controllers: [testOwner], targetSubnetId: subnet.id })
   const mockWasm = await readFile(path.join(root, "target/wasm32-unknown-unknown/release/mock_external.wasm"))
   await pic.installCode({
     canisterId: bridgeId,
     wasm: mockWasm,
     arg: IDL.encode([mockInitType], [{ ledger_id: ledgerId }]),
+    sender: testOwner,
     targetSubnetId: subnet.id,
   })
   const signerProbe = pic.createActor(mockIdl, bridgeId)
@@ -210,16 +211,17 @@ async function setup() {
       pause_principal: pausePrincipal,
       fee_recipient: { owner: feeRecipient, subaccount: [] },
     }]),
+    sender: testOwner,
     cycles: 500_000_000_000_000n,
     targetSubnetId: subnet.id,
   })
   const bridgeActor = pic.createActor(bridgeIdl, bridgeId)
   const bridge = { actor: bridgeActor, canisterId: bridgeId }
+  bridge.actor.setIdentity(testIdentity)
   const initializedPublicConfig = await bridge.actor.initialize_public_config()
   if (!("Ok" in initializedPublicConfig)) {
     throw new Error(`Failed to initialize public config: ${JSON.stringify(initializedPublicConfig.Err)}`)
   }
-  bridge.actor.setIdentity(testIdentity)
   const pauseActor = pic.createActor(bridgeIdl, bridgeId)
   pauseActor.setIdentity(pauseIdentity)
   mock.actor.setIdentity(testIdentity)
@@ -643,6 +645,7 @@ async function setup() {
             canisterId: bridge.canisterId,
             wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
             arg: IDL.encode([], []),
+            sender: testOwner,
           })
           after = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
         } finally {
@@ -719,17 +722,21 @@ async function cleanup() {
 }
 
 async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
-  const [status, publicConfig, ownerSequence, deposits, withdrawals, auditPage] = await Promise.all([
+  const [status, publicConfig, ownerSequence, deposits, withdrawals, auditPage, activationStatus, storageIntegrity] = await Promise.all([
     actor.get_bridge_status(),
     actor.get_public_config(),
     actor.get_next_deposit_sequence(owner),
     Promise.all(depositIds.map((id) => actor.get_deposit(id))),
     Promise.all(withdrawalIds.map((id) => actor.get_withdrawal(id))),
     readAllAuditEvents(actor),
+    actor.get_activation_status(),
+    actor.storage_integrity_check(),
   ])
   if (deposits.some((item) => item.length !== 1) || withdrawals.some((item) => item.length !== 1)) {
     throw new Error("upgrade evidence could not reopen every known settlement record")
   }
+  if (!("Ok" in activationStatus)) throw new Error(`upgrade evidence could not read activation status: ${json(activationStatus.Err)}`)
+  if (storageIntegrity.Ok !== "ok") throw new Error(`upgrade evidence failed storage integrity: ${json(storageIntegrity)}`)
   const durableStatus = {
     schema_version: status.schema_version,
     counts: status.counts,
@@ -762,6 +769,8 @@ async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
     deposits: deposits.map(([item]) => item),
     withdrawals: withdrawals.map(([item]) => item),
     audit_events: auditPage,
+    activation_status: activationStatus.Ok,
+    storage_integrity: storageIntegrity.Ok,
   }))
 }
 

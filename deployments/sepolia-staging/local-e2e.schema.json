@@ -45,7 +45,7 @@
     },
     "upgradeState": {
       "type": "object",
-      "required": ["owner_sequence", "status", "public_config", "deposits", "withdrawals", "audit_events"],
+      "required": ["owner_sequence", "status", "public_config", "deposits", "withdrawals", "audit_events", "activation_status", "storage_integrity"],
       "properties": {
         "owner_sequence": { "type": "string", "pattern": "^[0-9]+$" },
         "status": {
@@ -66,7 +66,12 @@
         },
         "deposits": { "type": "array", "minItems": 1 },
         "withdrawals": { "type": "array" },
-        "audit_events": { "type": "object" }
+        "audit_events": { "type": "object" },
+        "activation_status": {
+          "type": "object",
+          "required": ["pending_timelock_operation", "deposits_paused"]
+        },
+        "storage_integrity": { "const": "ok" }
       }
     }
   }

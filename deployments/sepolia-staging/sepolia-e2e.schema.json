@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "state", "created_at", "updated_at", "binding", "stages", "complete"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "kinic-bridge-sepolia-staging-e2e" },
+    "state": {
+      "enum": [
+        "AWAITING_PREFLIGHT",
+        "AWAITING_INSTALL",
+        "AWAITING_INITIALIZE",
+        "AWAITING_CONTRACTS",
+        "AWAITING_ACTIVATION_SCHEDULE",
+        "AWAITING_ACTIVATION_EXECUTE",
+        "AWAITING_FRONTEND_PUBLISH",
+        "AWAITING_WALLET_E2E",
+        "AWAITING_RPC_REHEARSAL",
+        "AWAITING_FINAL_PAUSE",
+        "COMPLETE"
+      ]
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_commit",
+        "local_e2e_sha256",
+        "bridge_wasm_sha256",
+        "bridge_runtime_hash",
+        "bsns_runtime_hash",
+        "frontend_profile_sha256",
+        "bridge_canister_id",
+        "ledger_canister_id",
+        "index_canister_id"
+      ],
+      "properties": {
+        "source_commit": { "$ref": "#/$defs/gitCommit" },
+        "local_e2e_sha256": { "$ref": "#/$defs/sha256" },
+        "bridge_wasm_sha256": { "$ref": "#/$defs/sha256" },
+        "bridge_runtime_hash": { "$ref": "#/$defs/evmHash" },
+        "bsns_runtime_hash": { "$ref": "#/$defs/evmHash" },
+        "frontend_profile_sha256": { "$ref": "#/$defs/sha256" },
+        "bridge_canister_id": { "$ref": "#/$defs/principal" },
+        "ledger_canister_id": { "$ref": "#/$defs/principal" },
+        "index_canister_id": { "$ref": "#/$defs/principal" }
+      }
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preflight",
+        "install",
+        "initialize",
+        "contracts",
+        "activation_schedule",
+        "activation_execute",
+        "frontend_publish",
+        "wallet_e2e",
+        "rpc_rehearsal",
+        "final_pause"
+      ],
+      "properties": {
+        "preflight": { "$ref": "#/$defs/stage" },
+        "install": { "$ref": "#/$defs/stage" },
+        "initialize": { "$ref": "#/$defs/stage" },
+        "contracts": { "$ref": "#/$defs/stage" },
+        "activation_schedule": { "$ref": "#/$defs/stage" },
+        "activation_execute": { "$ref": "#/$defs/stage" },
+        "frontend_publish": { "$ref": "#/$defs/stage" },
+        "wallet_e2e": { "$ref": "#/$defs/stage" },
+        "rpc_rehearsal": { "$ref": "#/$defs/stage" },
+        "final_pause": { "$ref": "#/$defs/stage" }
+      }
+    },
+    "complete": { "type": "boolean" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "evmHash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "principal": { "type": "string", "pattern": "^[a-z0-9-]{5,63}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "kind"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "kind": { "type": "string", "minLength": 1 }
+      }
+    },
+    "stage": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "stage", "observed_at", "source_commit", "artifacts", "details"],
+          "properties": {
+            "schema_version": { "const": 1 },
+            "stage": {
+              "enum": [
+                "preflight",
+                "install",
+                "initialize",
+                "contracts",
+                "activation_schedule",
+                "activation_execute",
+                "frontend_publish",
+                "wallet_e2e",
+                "rpc_rehearsal",
+                "final_pause"
+              ]
+            },
+            "observed_at": { "type": "string", "format": "date-time" },
+            "source_commit": { "$ref": "#/$defs/gitCommit" },
+            "artifacts": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/artifact" }
+            },
+            "details": { "type": "object" }
+          }
+        }
+      ]
+    }
+  }
+}

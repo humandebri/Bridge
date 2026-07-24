@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""Apply a bounded test RPC fault, run one Bridge call, and always restore providers."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+
+def abort(message: str) -> None:
+    raise RuntimeError(message)
+
+
+def load_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        abort("fault injector config must be an object")
+    return value
+
+
+def exact_keys(value: dict[str, Any], expected: set[str], context: str) -> None:
+    if set(value) != expected:
+        abort(f"{context} has unexpected fields")
+
+
+def post_control(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    if not url.startswith("https://") and os.environ.get("BRIDGE_E2E_ALLOW_HTTP") != "1":
+        abort("fault control endpoints must use HTTPS")
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body, sort_keys=True, separators=(",", ":")).encode(),
+        method="POST",
+        headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            value = json.loads(response.read())
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
+        abort(f"fault controller request failed: {error}")
+    if not isinstance(value, dict):
+        abort("fault controller response must be an object")
+    return value
+
+
+def run_icp(config: dict[str, Any], method: str, candid_args: str, *, query: bool = False) -> dict[str, Any]:
+    command = [
+        "icp",
+        "canister",
+        "call",
+        config["bridge_canister_id"],
+        method,
+        candid_args,
+        "-n",
+        "ic",
+        "--identity",
+        config["identity"],
+        "--json",
+    ]
+    if query:
+        command.append("--query")
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        abort(f"ICP call {method} failed with status {result.returncode}: {result.stderr.strip()}")
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        abort(f"ICP call {method} did not return JSON: {error}")
+    if not isinstance(value, dict):
+        abort(f"ICP call {method} did not return an object")
+    return value
+
+
+def find_decisions(value: Any) -> list[dict[str, Any]]:
+    decisions: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        kind = value.get("kind")
+        sequence = value.get("sequence")
+        timestamp = value.get("timestamp_ns")
+        if isinstance(kind, dict) and isinstance(kind.get("EvmRpcDecision"), dict):
+            if isinstance(sequence, (int, str)) and str(sequence).isdigit() and isinstance(timestamp, (int, str)) and str(timestamp).isdigit():
+                decisions.append(
+                    {
+                        "sequence": int(sequence),
+                        "timestamp_ns": int(timestamp),
+                        "decision": kind["EvmRpcDecision"],
+                    }
+                )
+        for nested in value.values():
+            decisions.extend(find_decisions(nested))
+    elif isinstance(value, list):
+        for nested in value:
+            decisions.extend(find_decisions(nested))
+    return decisions
+
+
+def validate_request(request: dict[str, Any]) -> None:
+    exact_keys(
+        request,
+        {
+            "rehearsal_id",
+            "scenario",
+            "run_reference",
+            "provider_url_digests",
+            "failed_provider_indices",
+            "failure_rule",
+        },
+        "fault request",
+    )
+    expected = [0] if request["scenario"] == "single_provider_failure" else [0, 1]
+    if request["scenario"] not in {"single_provider_failure", "quorum_loss"} or request["failed_provider_indices"] != expected:
+        abort("fault request has an unsupported scenario or failure set")
+    if request["failure_rule"] != "connection-refused":
+        abort("only the reviewed connection-refused fault is supported")
+    digests = request["provider_url_digests"]
+    if not isinstance(digests, list) or len(digests) != 3 or len(set(digests)) != 3:
+        abort("fault request must bind three distinct provider URL digests")
+
+
+def validate_config(config: dict[str, Any], request: dict[str, Any]) -> None:
+    exact_keys(
+        config,
+        {
+            "schema_version",
+            "bridge_canister_id",
+            "identity",
+            "provider_controls",
+            "request_deposit_candid_args",
+            "audit_cursor",
+        },
+        "fault config",
+    )
+    if config["schema_version"] != 1:
+        abort("fault config schema must be v1")
+    if not isinstance(config["bridge_canister_id"], str) or not isinstance(config["identity"], str):
+        abort("fault config requires Bridge canister and identity names")
+    if not isinstance(config["request_deposit_candid_args"], str) or not config["request_deposit_candid_args"]:
+        abort("fault config requires fixed request_deposit Candid arguments")
+    if not isinstance(config["audit_cursor"], int) or config["audit_cursor"] < 0:
+        abort("fault config audit_cursor must be a natural number")
+    controls = config["provider_controls"]
+    if not isinstance(controls, list) or len(controls) != 3:
+        abort("fault config must contain three provider controls")
+    for index, control in enumerate(controls):
+        if not isinstance(control, dict):
+            abort("provider control must be an object")
+        exact_keys(control, {"rpc_url", "control_url"}, f"provider control {index}")
+        rpc_url = control["rpc_url"]
+        control_url = control["control_url"]
+        if not isinstance(rpc_url, str) or not isinstance(control_url, str):
+            abort("provider URLs must be strings")
+        observed = hashlib.sha256(rpc_url.encode()).hexdigest()
+        if observed != request["provider_url_digests"][index]:
+            abort("secure fault config does not match the reviewed provider digest")
+
+
+def execute(request: dict[str, Any], config: dict[str, Any], token: str) -> dict[str, Any]:
+    validate_request(request)
+    validate_config(config, request)
+    applied: list[int] = []
+    restored: list[int] = []
+    primary_error: Exception | None = None
+    selected: dict[str, Any] | None = None
+    try:
+        for index in request["failed_provider_indices"]:
+            response = post_control(
+                config["provider_controls"][index]["control_url"],
+                token,
+                {
+                    "schema_version": 1,
+                    "run_reference": request["run_reference"],
+                    "failure_rule": request["failure_rule"],
+                    "failed": True,
+                },
+            )
+            if response != {"result": "applied"}:
+                abort(f"provider {index} did not confirm fault application")
+            applied.append(index)
+        run_icp(config, "request_deposit", config["request_deposit_candid_args"])
+        audit = run_icp(config, "get_audit_events", f"({config['audit_cursor']} : nat64, 100 : nat16)", query=True)
+        decisions = [item for item in find_decisions(audit) if item["sequence"] >= config["audit_cursor"]]
+        if not decisions:
+            abort("Bridge audit did not contain a new EvmRpcDecision")
+        selected = max(decisions, key=lambda item: item["sequence"])
+    except Exception as error:
+        primary_error = error
+    finally:
+        restore_errors: list[str] = []
+        for index in reversed(applied):
+            try:
+                response = post_control(
+                    config["provider_controls"][index]["control_url"],
+                    token,
+                    {
+                        "schema_version": 1,
+                        "run_reference": request["run_reference"],
+                        "failure_rule": request["failure_rule"],
+                        "failed": False,
+                    },
+                )
+                if response != {"result": "restored"}:
+                    abort(f"provider {index} did not confirm restoration")
+                restored.append(index)
+            except Exception as error:
+                restore_errors.append(str(error))
+        if restore_errors:
+            abort("provider restoration failed: " + "; ".join(restore_errors))
+    if primary_error is not None:
+        raise primary_error
+    if selected is None:
+        abort("fault scenario produced no decision")
+    restored.sort()
+    return {
+        "schema_version": 1,
+        "run_reference": request["run_reference"],
+        "applied_provider_indices": applied,
+        "restored_provider_indices": restored,
+        "result": "completed",
+        "decision_sequence": selected["sequence"],
+        "decision_timestamp_ns": selected["timestamp_ns"],
+        "canister_decision": selected["decision"],
+    }
+
+
+def main() -> int:
+    config_path = os.environ.get("BRIDGE_E2E_FAULT_CONFIG")
+    token = os.environ.get("BRIDGE_E2E_FAULT_CONTROL_TOKEN")
+    if not config_path or not token:
+        abort("BRIDGE_E2E_FAULT_CONFIG and BRIDGE_E2E_FAULT_CONTROL_TOKEN are required")
+    request = json.load(sys.stdin)
+    if not isinstance(request, dict):
+        abort("fault request must be an object")
+    result = execute(request, load_object(Path(config_path)), token)
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(1)

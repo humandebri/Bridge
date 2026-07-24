@@ -30,6 +30,8 @@ const state = {
   deposits: [{ deposit_id: [1], owner_sequence: "1", base_confirmation: [{ Submitted: { transaction_hash: [2] } }] }],
   withdrawals: [],
   audit_events: { events: [{ sequence: "1" }] },
+  activation_status: { pending_timelock_operation: [], deposits_paused: false },
+  storage_integrity: "ok",
 }
 const complete = { verified: true, before: structuredClone(state), after: structuredClone(state) }
 
@@ -43,6 +45,8 @@ for (const mutate of [
   (value) => { delete value.before.status.settlement_scheduler; delete value.after.status.settlement_scheduler },
   (value) => { delete value.before.public_config.settlement_rate_limit_per_record; delete value.after.public_config.settlement_rate_limit_per_record },
   (value) => { value.before.status.counts.pending_evm_operations = 1; value.after.status.counts.pending_evm_operations = 1 },
+  (value) => { delete value.before.activation_status; delete value.after.activation_status },
+  (value) => { value.before.storage_integrity = "failed"; value.after.storage_integrity = "failed" },
 ]) {
   const invalid = structuredClone(complete)
   mutate(invalid)

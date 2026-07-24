@@ -5,6 +5,7 @@
 - **Local implementation**: DONE
 - **Local promotion evidence**: clean commit作成後の再実行待ち
 - **IC mainnet / Base Sepolia / Cloudflare Worker**: 明示承認待ち（未実行）
+- **Staging evidence tooling**: DONE（ordered manifest、offline verifier、RPC fault injector）
 - **Production / SNS**: 対象外
 
 本計画はproduction資産、production Canister、KINIC Ledger、Base Mainnet、SNS controllerを変更しない。外部実行前に、同一commitから生成した`local-e2e.json`を必須とする。
@@ -39,6 +40,8 @@ gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実
 - raw EVM transactionのhash、RPC返却hash、採掘receiptを一致させる。
 
 一件でも失敗した場合、またはworking treeがdirtyな場合は`deployments/sepolia-staging/evidence/local-e2e.json`を発行しない。証跡はsource commit、Bridge Wasm、contract runtime、Candid、ABI、固定Ledger/Index Wasmのhashを記録する。
+
+外部stageは[`sepolia-staging-e2e.md`](../docs/runbooks/sepolia-staging-e2e.md)に従い、`staging-e2e-driver.sh`で順序と証跡を固定する。最終`sepolia-e2e.json`はlocal evidence、frontend profile、live artifact、wallet matrix、RPC rehearsal、upgrade、final pauseを同じsource commitへ束縛する。
 
 ## 承認後の外部stage
 

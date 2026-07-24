@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "bridge_canister_id": "<test-bridge-canister-principal>",
+  "identity": "<local-icp-identity-name>",
+  "provider_controls": [
+    {
+      "rpc_url": "https://<credential-free-test-rpc-proxy-one>",
+      "control_url": "https://<test-rpc-proxy-one>/__kinic_fault"
+    },
+    {
+      "rpc_url": "https://<credential-free-test-rpc-proxy-two>",
+      "control_url": "https://<test-rpc-proxy-two>/__kinic_fault"
+    },
+    {
+      "rpc_url": "https://<credential-free-test-rpc-proxy-three>",
+      "control_url": "https://<test-rpc-proxy-three>/__kinic_fault"
+    }
+  ],
+  "request_deposit_candid_args": "(record { owner_sequence = 0 : nat64; base_recipient = blob \"...\"; from_subaccount = null; gross_amount = 200000000 : nat; max_service_fee = 1000000 : nat })",
+  "audit_cursor": 0
+}
