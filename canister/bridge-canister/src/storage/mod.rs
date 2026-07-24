@@ -305,7 +305,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 20, 16);
+INSERT INTO bridge_metadata VALUES (1, 21, 17);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1180,6 +1180,7 @@ pub struct DepositCallerQuota {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedBaseMintSnapshot {
+    pub generation: u64,
     pub observed_at_ns: u64,
     pub snapshot: BaseMintSnapshot,
     pub bridge_signer: [u8; 20],
@@ -1708,6 +1709,7 @@ pub enum StorageError {
     DatabaseFailure,
     ReserveUnavailable,
     StaleReserveObservation,
+    QuoteSnapshotMismatch,
     Core(CoreError),
 }
 
@@ -4042,6 +4044,7 @@ impl StableStore {
             return Err(StorageError::DatabaseFailure);
         }
         admission.base_snapshot = Some(CachedBaseMintSnapshot {
+            generation: owner,
             observed_at_ns,
             snapshot,
             bridge_signer,
@@ -4098,6 +4101,7 @@ impl StableStore {
             progress.observe_finalized(observation)?;
         }
         admission.base_snapshot = Some(CachedBaseMintSnapshot {
+            generation: owner,
             observed_at_ns,
             snapshot,
             bridge_signer,
@@ -5748,12 +5752,7 @@ impl StableStore {
         }
         let audit = audit_kind
             .map(|(caller, kind)| {
-                self.prepare_audit_batch(
-                    &mut counters,
-                    caller,
-                    ic_cdk::api::time(),
-                    vec![kind],
-                )
+                self.prepare_audit_batch(&mut counters, caller, ic_cdk::api::time(), vec![kind])
             })
             .transpose()?;
         let value_blob = encode(&next_stored)?;
@@ -6993,6 +6992,26 @@ impl StableStore {
             let quote = next
                 .quote
                 .ok_or(StorageError::Core(CoreError::InvalidAmount))?;
+            let expected_net = admission
+                .mint_snapshot
+                .quote(next.gross_amount, next.max_service_fee)
+                .map_err(|_| StorageError::QuoteSnapshotMismatch)?;
+            let snapshot_matches = if recovery.is_some() {
+                true
+            } else {
+                self.deposit_admission()?
+                    .base_snapshot
+                    .is_some_and(|current| {
+                        current.generation == admission.snapshot_generation
+                            && current.snapshot == admission.mint_snapshot
+                    })
+            };
+            if !snapshot_matches
+                || quote.service_fee != admission.mint_snapshot.service_fee
+                || quote.net_amount != expected_net
+            {
+                return Err(StorageError::QuoteSnapshotMismatch);
+            }
             if !bridge_core::reserve_token_matches(
                 admission.expected_token.nonterminal_withdrawals,
                 admission.expected_token.reserved_deposit_mint_amount,
@@ -10415,6 +10434,7 @@ mod tests {
                 cycles_balance: 20_000_000,
                 reserve_policy: config().reserve_policy(),
                 mint_snapshot: mint_snapshot(),
+                snapshot_generation: 0,
             }),
             None,
         );
@@ -11041,8 +11061,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 20);
-        assert_eq!(WIRE_VERSION, 16);
+        assert_eq!(SCHEMA_VERSION, 21);
+        assert_eq!(WIRE_VERSION, 17);
     }
 
     #[test]
@@ -12603,6 +12623,66 @@ mod tests {
 
     #[test]
     #[serial]
+    fn compensated_refund_reserves_and_restores_fee_reserve_atomically() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        store
+            .set_accounting(&AccountingState {
+                fee_reserve: Amount::new(200),
+                ..AccountingState::default()
+            })
+            .expect("seed reserve");
+        let mut record = deposit();
+        let mut identity = transfer(LedgerOperation::RefundDeposit, 100, 30);
+        identity.fee = Amount::new(10);
+        identity.from = record.transfer.to.clone();
+        identity.to = record.transfer.from.clone();
+        record
+            .apply(DepositEvent::StartRefund {
+                reason: bridge_core::DepositRefundReason::ReserveInsufficient,
+                attempt: Box::new(TransferAttempt {
+                    attempt_no: 0,
+                    identity: identity.clone(),
+                }),
+            })
+            .expect("start refund");
+        store.put_deposit(&record).expect("seed refund");
+        record
+            .apply(DepositEvent::RefundBadFee {
+                expected_fee: Amount::new(110),
+                next_identity: None,
+            })
+            .expect("recovery required");
+        store.put_deposit(&record).expect("persist recovery");
+        identity.created_at_time_ns += 1;
+        identity.memo = [31; 32];
+        identity.amount = record.gross_amount;
+        identity.fee = Amount::new(110);
+        record
+            .apply(DepositEvent::ResumeRefund {
+                identity: Box::new(identity),
+            })
+            .expect("compensate");
+        store.put_deposit(&record).expect("reserve compensation");
+        assert_eq!(
+            store.accounting().expect("accounting").fee_reserve,
+            Amount::new(90)
+        );
+        record
+            .apply(DepositEvent::RefundBadFee {
+                expected_fee: Amount::new(111),
+                next_identity: None,
+            })
+            .expect("definitive failure");
+        store.put_deposit(&record).expect("restore reserve");
+        assert_eq!(
+            store.accounting().expect("accounting").fee_reserve,
+            Amount::new(200)
+        );
+    }
+
+    #[test]
+    #[serial]
     fn reverted_evm_counter_is_constant_time_and_idempotent() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory).expect("initialize");
@@ -12715,6 +12795,75 @@ mod tests {
                 operation_bundle_snapshot(&reopened, next.id, &operation),
                 before,
                 "failpoint {failpoint:?} changed reopened state"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn deposit_quote_is_recomputed_from_the_exact_cached_snapshot() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        let refresh_generation = store
+            .begin_base_snapshot_refresh(1, 10, 1)
+            .expect("begin refresh")
+            .expect("refresh owner");
+        let snapshot = mint_snapshot();
+        store
+            .finish_base_snapshot_refresh(refresh_generation, 1, snapshot, [7; 20], false)
+            .expect("cache snapshot");
+        let previous = deposit();
+        store.put_deposit(&previous).expect("seed deposit");
+        let operation_id = store.next_evm_operation_id().expect("operation id");
+        let operation = EvmOperationRecord::queued(
+            operation_id,
+            previous.payload_hash,
+            EvmOperationKind::MintDeposit,
+        );
+        let intent = evm_intent(operation_id, previous.payload_hash);
+        let admission = DepositReserveAdmission {
+            audit_caller: Principal::anonymous(),
+            expected_token: store.deposit_reserve_token().expect("reserve token"),
+            observed_at_ns: 2,
+            eth_balance_wei: u128::MAX,
+            cycles_balance: u128::MAX,
+            reserve_policy: config().reserve_policy(),
+            mint_snapshot: snapshot,
+            snapshot_generation: refresh_generation,
+        };
+
+        for (quote, generation) in [
+            (
+                DepositQuote {
+                    service_fee: Amount::new(9),
+                    net_amount: Amount::new(101),
+                },
+                refresh_generation,
+            ),
+            (test_deposit_quote(), refresh_generation.saturating_add(1)),
+        ] {
+            let mut next = previous.clone();
+            next.apply(DepositEvent::CommitQuote {
+                quote,
+                operation_id,
+            })
+            .expect("arithmetically valid quote");
+            let before = operation_bundle_snapshot(&store, next.id, &operation);
+            let mut candidate = admission;
+            candidate.snapshot_generation = generation;
+            assert_eq!(
+                store.commit_deposit_mint_bundle_and_scan(
+                    &next,
+                    &operation,
+                    &intent,
+                    None,
+                    Some(candidate),
+                ),
+                Err(StorageError::QuoteSnapshotMismatch)
+            );
+            assert_eq!(
+                operation_bundle_snapshot(&store, next.id, &operation),
+                before
             );
         }
     }
@@ -12936,6 +13085,7 @@ mod tests {
                     cycles_balance: u128::MAX,
                     reserve_policy: config().reserve_policy(),
                     mint_snapshot: mint_snapshot(),
+                    snapshot_generation: 0,
                 },
                 finalized_observation: FinalizedObservationRecord {
                     block_number: 41,

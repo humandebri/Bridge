@@ -303,8 +303,7 @@ impl DepositRecord {
                         return Err(CoreError::RefundIneligible);
                     }
                     let next_attempt = attempt.retry_after_bad_fee(*next_identity, expected_fee)?;
-                    if next_attempt.identity.amount.checked_add(expected_fee)?
-                        != self.gross_amount
+                    if next_attempt.identity.amount.checked_add(expected_fee)? != self.gross_amount
                     {
                         return Err(CoreError::RefundIneligible);
                     }
@@ -332,11 +331,12 @@ impl DepositRecord {
                 State::RefundRecoveryRequired {
                     reason,
                     attempt,
-                    expected_fee,
+                    expected_fee: _,
                 },
                 Event::ResumeRefund { identity },
             ) => {
-                let next = attempt.retry_after_bad_fee(*identity, *expected_fee)?;
+                let fee = identity.fee;
+                let next = attempt.retry_after_bad_fee(*identity, fee)?;
                 let normal_refund =
                     next.identity.amount.checked_add(next.identity.fee)? == self.gross_amount;
                 let compensated_refund = next.identity.amount == self.gross_amount;
@@ -494,9 +494,7 @@ impl DepositRecord {
                     expected_fee,
                     next_identity: Some(next),
                 },
-            ) => {
-                attempt.identity == **next && attempt.identity.fee == *expected_fee
-            }
+            ) => attempt.identity == **next && attempt.identity.fee == *expected_fee,
             (
                 State::RefundRecoveryRequired {
                     attempt,
@@ -508,10 +506,9 @@ impl DepositRecord {
                     next_identity: None,
                 },
             ) => current == expected_fee && attempt.identity.fee != *expected_fee,
-            (
-                State::RefundPending { attempt, .. },
-                Event::ResumeRefund { identity },
-            ) => attempt.identity == **identity,
+            (State::RefundPending { attempt, .. }, Event::ResumeRefund { identity }) => {
+                attempt.identity == **identity
+            }
             (
                 State::Minted {
                     operation_id: current,

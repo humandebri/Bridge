@@ -222,6 +222,101 @@ fn deposit_refund_keeps_the_economic_payload_fixed_and_never_confirms_a_service_
 }
 
 #[test]
+fn definitive_bad_fee_rebuilds_refund_identity_and_stops_after_three_retries() {
+    let mut deposit = accepted_deposit();
+    deposit
+        .apply(DepositEvent::FundingSucceeded {
+            ledger_block_index: 42,
+        })
+        .expect("funding");
+    let identity = refund_identity(&deposit, 100, [7; 32]);
+    deposit
+        .apply(DepositEvent::StartRefund {
+            reason: bridge_core::DepositRefundReason::ReserveInsufficient,
+            attempt: Box::new(attempt(identity)),
+        })
+        .expect("start refund");
+
+    for attempt_no in 1..=3 {
+        let expected_fee = Amount::new(10 + u128::from(attempt_no));
+        let mut next = match &deposit.state {
+            DepositState::RefundPending { attempt, .. } => attempt.identity.clone(),
+            _ => panic!("refund must remain pending"),
+        };
+        next.created_at_time_ns += 1;
+        next.memo = [10 + attempt_no as u8; 32];
+        next.fee = expected_fee;
+        next.amount = deposit
+            .gross_amount
+            .checked_sub(expected_fee)
+            .expect("fee below gross");
+        deposit
+            .apply(DepositEvent::RefundBadFee {
+                expected_fee,
+                next_identity: Some(Box::new(next.clone())),
+            })
+            .expect("definitive BadFee retry");
+        assert!(matches!(
+            &deposit.state,
+            DepositState::RefundPending { attempt, .. }
+                if attempt.attempt_no == attempt_no && attempt.identity == next
+        ));
+    }
+
+    deposit
+        .apply(DepositEvent::RefundBadFee {
+            expected_fee: Amount::new(14),
+            next_identity: None,
+        })
+        .expect("automatic retry limit requires recovery");
+    assert!(matches!(
+        deposit.state,
+        DepositState::RefundRecoveryRequired {
+            expected_fee,
+            ..
+        } if expected_fee == Amount::new(14)
+    ));
+}
+
+#[test]
+fn governance_resume_allows_a_fee_reserve_compensated_refund() {
+    let mut deposit = accepted_deposit();
+    deposit
+        .apply(DepositEvent::FundingSucceeded {
+            ledger_block_index: 42,
+        })
+        .expect("funding");
+    let identity = refund_identity(&deposit, 100, [7; 32]);
+    deposit
+        .apply(DepositEvent::StartRefund {
+            reason: bridge_core::DepositRefundReason::ReserveInsufficient,
+            attempt: Box::new(attempt(identity.clone())),
+        })
+        .expect("start refund");
+    deposit
+        .apply(DepositEvent::RefundBadFee {
+            expected_fee: Amount::new(110),
+            next_identity: None,
+        })
+        .expect("recovery required");
+    let mut compensated = identity;
+    compensated.created_at_time_ns += 1;
+    compensated.memo = [8; 32];
+    compensated.fee = Amount::new(110);
+    compensated.amount = deposit.gross_amount;
+    deposit
+        .apply(DepositEvent::ResumeRefund {
+            identity: Box::new(compensated.clone()),
+        })
+        .expect("governance compensation");
+    assert!(matches!(
+        deposit.state,
+        DepositState::RefundPending { attempt, .. }
+            if attempt.attempt_no == 1 && attempt.identity == compensated
+    ));
+}
+
+#[test]
 fn deposit_fee_is_confirmed_only_on_first_confirmed_mint() {
     let mut deposit = accepted_deposit();
     assert_eq!(deposit.quote, None);

@@ -729,7 +729,7 @@ verus! {
     }
 
     pub open spec fn reverted_phase_recovery_spec(event: int) -> bool {
-        deposit_phase_step_spec(4, event) != 4 <==> event == 9
+        deposit_phase_step_spec(4, event) != 4 <==> event == 11
     }
 
     pub open spec fn deposit_phase_run_spec(state: int, events: Seq<int>) -> int
@@ -747,7 +747,7 @@ verus! {
     }
 
     pub open spec fn deposit_fee_delta_spec(state: int, event: int, fee: int) -> int {
-        if state == 2 && event == 7 { fee } else { 0 }
+        if state == 2 && event == 9 { fee } else { 0 }
     }
 
     pub open spec fn withdrawal_fee_delta_spec(state: int, event: int, fee: int) -> int {

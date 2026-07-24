@@ -88,6 +88,7 @@ def classify(paths: list[str]) -> dict[str, bool]:
                 "ui/e2e-real/",
                 "ui/src/features/bridge/",
                 "ui/src/features/wallet/",
+                "ui/src/lib/",
                 "ui/src/lib/evm/",
                 "ui/src/lib/ic/",
             ),
@@ -97,8 +98,6 @@ def classify(paths: list[str]) -> dict[str, bool]:
                 "ui/scripts/download-ledger-artifacts.mjs",
                 "ui/src/routes/history.tsx",
                 "ui/src/routes/index.tsx",
-                "ui/src/lib/pending-confirmations.ts",
-                "ui/src/lib/runtime-validation.ts",
             ),
         ):
             result["real"] = True

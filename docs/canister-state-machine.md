@@ -4,7 +4,7 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、stable storageに依存しない決定的な状態遷移を定義する。`bridge-canister`はその状態を単一SQLite DBへ保存し、ICRC Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-Stable schema v20、record wire version v16だけを受理し、status APIもschema v20を返す。本番未デプロイのためmigration、dual-read、fallbackは持たない。旧schema、未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否し、開発・staging Canisterはreinstallする。
+Stable schema v21、record wire version v17だけを受理し、status APIもschema v21を返す。本番未デプロイのためmigration、dual-read、fallbackは持たない。旧schema、未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否し、開発・staging Canisterはreinstallする。
 
 `settlement_jobs`がSettlement実行の永続的な正本である。recordと`phase = settlement`のjobは同じSQLite transactionで作成され、init・post-upgrade・job更新後はDBに保存された最短起床時刻からone-shot timerを再登録する。timerは実行の目覚ましであり、timer ID自体に状態上の意味はない。
 
@@ -75,7 +75,7 @@ Base wallet
 4. UIまたはWithdrawal HistoryがFinalized blockのreceiptと`WithdrawalCommitted` eventを検出し、IC walletから`notify_withdrawal`を呼ぶ。Canisterはtransaction hashを起点に、receipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛してquorum検証する。通知を行えるのは対象IC owner、Governance principal、pause principalである。
 5. 検証成功後、Ledger feeがcharged Service Fee以下ならCanisterは同じtransaction payloadの`ReleasePending` recordとSettlement jobを原子的に保存する。fee超過時はreleaseを作らず`Observed` record、停止理由、runtime guard、監査eventを保存する。重複通知は既存recordを返し、新しいjobを起動しない。
 6. Settlement runnerは固定`amountOut`を固定IC Accountへ送る。Ledger成功、Duplicate、または履歴照合による成功確認で`Paid`になり、`chargedServiceFee - actualLedgerFee`だけをfee reserveへ一度加算する。
-7. Ledgerの結果不明は`ReconciliationHold`へ移す。dedup期間内は同一transfer identityで確認し、期間後はLedger全範囲とIndexの同期済みwatermarkで不存在を証明できた場合だけ、同じ宛先・金額を保った新しいtransfer identityで`ReleasePending`へ戻す。想定外の`BadFee`は`LedgerRejected`として停止し、feeやtransfer identityを変更しない。
+7. Ledgerの結果不明は`ReconciliationHold`へ移す。dedup期間内は同一transfer identityで確認し、期間後はLedger全範囲とIndexの同期済みwatermarkで不存在を証明できた場合だけ、同じ宛先・金額を保った新しいtransfer identityで`ReleasePending`へ戻す。Deposit refundの確定的な`BadFee`だけはLedgerが返したexpected feeでamountとidentityを再生成し、3回後またはfeeがgross以上なら`RefundRecoveryRequired`へ停止する。
 8. Base側のpauseは新規Withdrawal作成を止めるが、すでに`Committed`となったICP債務の送金・照合は止めない。停止したSettlementは原因解消後に所有者またはGovernance・pause principalが`continue_withdrawal`を呼ぶ。
 
 ## 外部確認の境界

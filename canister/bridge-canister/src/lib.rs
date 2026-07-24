@@ -689,20 +689,13 @@ async fn resume_deposit_refund(
                 .ok_or(tasks::SettlementActionError::NotFound)?,
         ))
     })?;
-    let (previous_attempt, expected_fee) = match &record.state {
-        bridge_core::DepositState::RefundRecoveryRequired {
-            attempt,
-            expected_fee,
-            ..
-        } => (attempt.clone(), *expected_fee),
+    let previous_attempt = match &record.state {
+        bridge_core::DepositState::RefundRecoveryRequired { attempt, .. } => attempt.clone(),
         _ => return Err(tasks::SettlementActionError::WrongState),
     };
     let current_fee = ledger::current_fee(config.ledger_canister_id)
         .await
         .map_err(|_| tasks::SettlementActionError::LedgerUnavailable)?;
-    if current_fee != expected_fee {
-        return Err(tasks::SettlementActionError::WrongState);
-    }
     let compensated = current_fee >= record.gross_amount;
     let amount = if compensated {
         record.gross_amount
@@ -718,8 +711,12 @@ async fn resume_deposit_refund(
         .ok_or(tasks::SettlementActionError::StorageFailure)?;
     let identity = bridge_core::LedgerTransferIdentity {
         operation: bridge_core::LedgerOperation::RefundDeposit,
-        created_at_time_ns: ic_cdk::api::time()
-            .max(previous_attempt.identity.created_at_time_ns.saturating_add(1)),
+        created_at_time_ns: ic_cdk::api::time().max(
+            previous_attempt
+                .identity
+                .created_at_time_ns
+                .saturating_add(1),
+        ),
         memo: tasks::deposit_refund_retry_memo(id, next_attempt_no),
         amount,
         fee: current_fee,

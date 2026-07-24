@@ -340,6 +340,7 @@ async fn recover_mint(
             cycles_balance: ic_cdk::api::canister_liquid_cycle_balance(),
             reserve_policy: config.reserve_policy(),
             mint_snapshot: mint,
+            snapshot_generation: 0,
         },
         finalized_observation: FinalizedObservationRecord {
             chain_id: observation.finalized.chain_id,

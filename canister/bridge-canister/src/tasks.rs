@@ -21,10 +21,7 @@ fn retry_memo(domain: &[u8], hold_id: u64, identity: &LedgerTransferIdentity) ->
     digest.finalize().into()
 }
 
-pub(crate) fn deposit_refund_retry_memo(
-    deposit_id: [u8; 32],
-    attempt_no: u64,
-) -> [u8; 32] {
+pub(crate) fn deposit_refund_retry_memo(deposit_id: [u8; 32], attempt_no: u64) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"KINIC-DEPOSIT-REFUND");
     digest.update(deposit_id);
@@ -1419,25 +1416,26 @@ async fn prepare_escrowed_deposit(
     config: &crate::config::BridgeInitArgs,
     deposit: &bridge_core::DepositRecord,
 ) -> Result<EscrowPreparation, SettlementActionError> {
-    let snapshot = match crate::api::base_mint_snapshot(config, ic_cdk::api::time()).await {
-        Ok(snapshot) => snapshot,
-        Err(crate::api::DepositError::DepositsPaused) => {
-            return Ok(EscrowPreparation::Refund(DepositRefundReason::BasePaused));
-        }
-        Err(crate::api::DepositError::BaseObservationUnavailable) => {
-            return Ok(EscrowPreparation::Stopped(
-                SettlementStopReason::RpcUnavailable,
-            ));
-        }
-        Err(crate::api::DepositError::StorageFailure) => {
-            return Err(SettlementActionError::StorageFailure);
-        }
-        Err(_) => {
-            return Ok(EscrowPreparation::Stopped(
-                SettlementStopReason::InvalidBaseResponse,
-            ));
-        }
-    };
+    let (snapshot, snapshot_generation) =
+        match crate::api::base_mint_snapshot(config, ic_cdk::api::time()).await {
+            Ok(snapshot) => snapshot,
+            Err(crate::api::DepositError::DepositsPaused) => {
+                return Ok(EscrowPreparation::Refund(DepositRefundReason::BasePaused));
+            }
+            Err(crate::api::DepositError::BaseObservationUnavailable) => {
+                return Ok(EscrowPreparation::Stopped(
+                    SettlementStopReason::RpcUnavailable,
+                ));
+            }
+            Err(crate::api::DepositError::StorageFailure) => {
+                return Err(SettlementActionError::StorageFailure);
+            }
+            Err(_) => {
+                return Ok(EscrowPreparation::Stopped(
+                    SettlementStopReason::InvalidBaseResponse,
+                ));
+            }
+        };
     let net_amount = match snapshot.quote(deposit.gross_amount, deposit.max_service_fee) {
         Ok(amount) => amount,
         Err(
@@ -1528,6 +1526,7 @@ async fn prepare_escrowed_deposit(
         cycles_balance: ic_cdk::api::canister_liquid_cycle_balance(),
         reserve_policy: config.reserve_policy(),
         mint_snapshot: snapshot,
+        snapshot_generation,
     };
     let quote = DepositQuote {
         service_fee: snapshot.service_fee,
@@ -1781,8 +1780,7 @@ pub(crate) async fn advance_deposit(
                         code: bridge_core::LedgerFailure::BadFee { expected_fee },
                     } => {
                         let retry = expected_fee < deposit.gross_amount
-                            && attempt.attempt_no
-                                < bridge_core::MAX_AUTOMATIC_REFUND_FEE_RETRIES;
+                            && attempt.attempt_no < bridge_core::MAX_AUTOMATIC_REFUND_FEE_RETRIES;
                         let next_identity = retry.then(|| {
                             let next_attempt_no = attempt.attempt_no.saturating_add(1);
                             LedgerTransferIdentity {
@@ -1837,14 +1835,18 @@ pub(crate) async fn advance_deposit(
                                 )
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
-                        return Ok(SettlementActionResult::Stopped {
-                            state: SettlementState::Deposit(if retry {
-                                DepositPhase::RefundPending
-                            } else {
-                                DepositPhase::RefundRecoveryRequired
-                            }),
-                            reason: SettlementStopReason::LedgerRejected("BadFee".into()),
-                        });
+                        return if retry {
+                            Ok(SettlementActionResult::ReconciliationProgress {
+                                state: SettlementState::Deposit(DepositPhase::RefundPending),
+                            })
+                        } else {
+                            Ok(SettlementActionResult::Stopped {
+                                state: SettlementState::Deposit(
+                                    DepositPhase::RefundRecoveryRequired,
+                                ),
+                                reason: SettlementStopReason::LedgerRejected("BadFee".into()),
+                            })
+                        };
                     }
                     other => {
                         return Ok(SettlementActionResult::Stopped {

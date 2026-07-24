@@ -12,6 +12,7 @@ pub struct DepositReserveAdmission {
     pub cycles_balance: u128,
     pub reserve_policy: bridge_core::ReservePolicy,
     pub mint_snapshot: BaseMintSnapshot,
+    pub snapshot_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

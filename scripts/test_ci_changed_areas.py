@@ -39,7 +39,12 @@ class ChangedAreaTests(unittest.TestCase):
     def test_shared_runtime_ui_changes_run_real(self) -> None:
         for path in (
             "ui/src/lib/pending-confirmations.ts",
+            "ui/src/lib/deposit-intents.ts",
+            "ui/src/lib/deposit-history.ts",
+            "ui/src/lib/withdrawal-notification.ts",
+            "ui/src/lib/withdrawal-submit.ts",
             "ui/src/lib/runtime-validation.ts",
+            "ui/src/lib/future-settlement-module.ts",
         ):
             with self.subTest(path=path):
                 self.assert_areas([path], "ui", "real")

@@ -116,6 +116,8 @@ pub struct DepositRefundView {
     pub ledger_fee: Nat,
     pub attempt_no: u64,
     pub block_index: Option<Nat>,
+    pub recovery_expected_fee: Option<Nat>,
+    pub compensated: bool,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -933,7 +935,7 @@ pub(crate) async fn cached_governance_operator_address(
 pub(crate) async fn base_mint_snapshot(
     config: &BridgeInitArgs,
     now_ns: u64,
-) -> Result<bridge_core::BaseMintSnapshot, DepositError> {
+) -> Result<(bridge_core::BaseMintSnapshot, u64), DepositError> {
     let expected_signer = cached_signer_address(config).await?;
     let minimum_finalized_block = STORE.with(|store| {
         store
@@ -953,7 +955,8 @@ pub(crate) async fn base_mint_snapshot(
             snapshot.bridge_signer,
             snapshot.deposits_paused,
             expected_signer,
-        );
+        )
+        .map(|mint| (mint, snapshot.generation));
     }
     let refresh_owner = STORE.with(|store| {
         store
@@ -1037,6 +1040,7 @@ pub(crate) async fn base_mint_snapshot(
         snapshot.deposits_paused,
         expected_signer,
     )
+    .map(|mint| (mint, refresh_owner))
 }
 
 fn pause_deposits_for_chain_mismatch() -> Result<(), DepositError> {
@@ -1121,6 +1125,9 @@ pub(crate) fn commit_deposit_quote(
             crate::storage::StorageError::StaleReserveObservation => {
                 DepositError::BaseObservationUnavailable
             }
+            crate::storage::StorageError::QuoteSnapshotMismatch => {
+                DepositError::Rejected("QuoteSnapshotMismatch".into())
+            }
             crate::storage::StorageError::Core(bridge_core::CoreError::MintWindowLimitExceeded) => {
                 DepositError::Rejected("MintWindowLimitExceeded".into())
             }
@@ -1180,7 +1187,7 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
                 service_fee: Nat::from(quote.service_fee.get()),
                 net_amount: Nat::from(quote.net_amount.get()),
             }),
-            refund: deposit_refund_view(&record.state),
+            refund: deposit_refund_view(&record),
             max_service_fee: Nat::from(record.max_service_fee.get()),
             base_recipient: intent.base_recipient.to_vec(),
             from_subaccount: (intent.from_subaccount != [0; 32])
@@ -1193,18 +1200,23 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
     })
 }
 
-fn deposit_refund_view(state: &DepositState) -> Option<DepositRefundView> {
-    let (reason, attempt, block_index) = match state {
-        DepositState::RefundPending { reason, attempt } => (*reason, attempt, None),
+fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
+    let (reason, attempt, block_index, recovery_expected_fee) = match &record.state {
+        DepositState::RefundPending { reason, attempt } => (*reason, attempt, None, None),
         DepositState::RefundReconciliationHold {
             reason, attempt, ..
-        } => (*reason, attempt, None),
+        } => (*reason, attempt, None, None),
+        DepositState::RefundRecoveryRequired {
+            reason,
+            attempt,
+            expected_fee,
+        } => (*reason, attempt, None, Some(Nat::from(expected_fee.get()))),
         DepositState::Refunded {
             reason,
             attempt,
             ledger_block_index,
             ..
-        } => (*reason, attempt, Some(Nat::from(*ledger_block_index))),
+        } => (*reason, attempt, Some(Nat::from(*ledger_block_index)), None),
         _ => return None,
     };
     Some(DepositRefundView {
@@ -1213,6 +1225,13 @@ fn deposit_refund_view(state: &DepositState) -> Option<DepositRefundView> {
         ledger_fee: Nat::from(attempt.identity.fee.get()),
         attempt_no: attempt.attempt_no,
         block_index,
+        recovery_expected_fee,
+        compensated: attempt
+            .identity
+            .amount
+            .checked_add(attempt.identity.fee)
+            .ok()
+            .is_some_and(|total| total > record.gross_amount),
     })
 }
 

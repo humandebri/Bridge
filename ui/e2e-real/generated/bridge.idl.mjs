@@ -58,6 +58,7 @@ export const idlFactory = ({ IDL }) => {
     'RefundPending' : IDL.Null,
     'Minted' : IDL.Null,
     'Cancelled' : IDL.Null,
+    'RefundRecoveryRequired' : IDL.Null,
   });
   const WithdrawalPhase = IDL.Variant({
     'Paid' : IDL.Null,
@@ -116,6 +117,7 @@ export const idlFactory = ({ IDL }) => {
     'TransactionMismatch' : IDL.Null,
     'ConfirmationRequired' : IDL.Null,
     'RateLimited' : IDL.Record({ 'retry_after_seconds' : IDL.Nat64 }),
+    'LedgerUnavailable' : IDL.Null,
     'StorageFailure' : IDL.Null,
     'AnonymousCaller' : IDL.Null,
   });
@@ -201,6 +203,14 @@ export const idlFactory = ({ IDL }) => {
   });
   const AuditedEvmOperationKind = IDL.Variant({ 'MintDeposit' : IDL.Null });
   const AuditEventKind = IDL.Variant({
+    'DepositRefundRetried' : IDL.Record({
+      'next_fee' : IDL.Nat,
+      'deposit_id' : IDL.Vec(IDL.Nat8),
+      'next_attempt_no' : IDL.Opt(IDL.Nat64),
+      'previous_attempt_no' : IDL.Nat64,
+      'compensated' : IDL.Bool,
+      'previous_fee' : IDL.Nat,
+    }),
     'MintRevertRecoveryStarted' : IDL.Record({
       'result' : IDL.Text,
       'finalized_block_number' : IDL.Nat64,
@@ -394,8 +404,10 @@ export const idlFactory = ({ IDL }) => {
   const DepositRefundView = IDL.Record({
     'attempt_no' : IDL.Nat64,
     'block_index' : IDL.Opt(IDL.Nat),
+    'recovery_expected_fee' : IDL.Opt(IDL.Nat),
     'ledger_fee' : IDL.Nat,
     'amount' : IDL.Nat,
+    'compensated' : IDL.Bool,
     'reason' : DepositRefundReasonView,
   });
   const DepositView = IDL.Record({
@@ -717,6 +729,7 @@ export const idlFactory = ({ IDL }) => {
     'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_13], []),
     'request_deposit' : IDL.Func([DepositArgs], [Result_14], []),
     'request_fee_payout' : IDL.Func([IDL.Nat], [Result_15], []),
+    'resume_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result], []),
     'resume_new_deposits' : IDL.Func([], [Result_11], []),
     'rotate_pause_principal' : IDL.Func(
         [RotatePausePrincipalArgs],

@@ -279,7 +279,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(20);
+    expect(config.schema_version).toBe(21);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(10_000n);
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
@@ -420,20 +420,21 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(2);
   });
 
-  it("stops refund BadFee without repricing its fixed economic payload", async () => {
+  it("rebuilds a definitively rejected refund with the Ledger expected fee", async () => {
     const { ledger, evm, bridge } = await setup();
     await (evm.actor as any).set_deposit_mints_paused(true);
+    await (ledger.actor as any).set_ledger_fee(12_000n);
     await (ledger.actor as any).set_refund_ledger_mode([{ BadFee: null }]);
     const accepted: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
-    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Stopped.reason.LedgerRejected");
-    const stopped: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
-    expect(phaseName(stopped[0].state)).toBe("RefundPending");
-    expect(stopped[0].refund[0]).toMatchObject({ amount: 10_000n, ledger_fee: 10_000n, attempt_no: 0n });
+    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.ReconciliationProgress");
+    const retrying: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
+    expect(phaseName(retrying[0].state)).toBe("RefundPending");
+    expect(retrying[0].refund[0]).toMatchObject({ amount: 8_000n, ledger_fee: 12_000n, attempt_no: 1n });
 
     await (ledger.actor as any).set_refund_ledger_mode([{ Succeed: null }]);
     expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     const refunded: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
-    expect(refunded[0].refund[0]).toMatchObject({ amount: 10_000n, ledger_fee: 10_000n, attempt_no: 0n });
+    expect(refunded[0].refund[0]).toMatchObject({ amount: 8_000n, ledger_fee: 12_000n, attempt_no: 1n });
   });
 
   it("treats a full expired Mint window as having zero effective consumption", async () => {
@@ -1247,7 +1248,7 @@ describe("Phase 3 PocketIC saga", () => {
       expect(seeded.Ok).toBe(100);
     }
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(20);
+    expect(before.schema_version).toBe(21);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.pending_evm_operations).toBe(10_000n);
     expect(before.counts.active_evm_payloads).toBe(10_000n);
@@ -1269,7 +1270,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(20);
+    expect(after.schema_version).toBe(21);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(10_000n);
     expect((await maintenance.first_prepared_evm_test_id()).Ok).toEqual([0n]);

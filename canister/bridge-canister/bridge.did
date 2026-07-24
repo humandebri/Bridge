@@ -18,6 +18,14 @@ type AuditEvent = record {
   sequence : nat64;
 };
 type AuditEventKind = variant {
+  DepositRefundRetried : record {
+    next_fee : nat;
+    deposit_id : blob;
+    next_attempt_no : opt nat64;
+    previous_attempt_no : nat64;
+    compensated : bool;
+    previous_fee : nat;
+  };
   MintRevertRecoveryStarted : record {
     result : text;
     finalized_block_number : nat64;
@@ -240,6 +248,7 @@ type DepositPhase = variant {
   RefundPending;
   Minted;
   Cancelled;
+  RefundRecoveryRequired;
 };
 type DepositQuoteView = record { net_amount : nat; service_fee : nat };
 type DepositReceipt = record {
@@ -257,8 +266,10 @@ type DepositRefundReasonView = variant {
 type DepositRefundView = record {
   attempt_no : nat64;
   block_index : opt nat;
+  recovery_expected_fee : opt nat;
   ledger_fee : nat;
   amount : nat;
+  compensated : bool;
   reason : DepositRefundReasonView;
 };
 type DepositView = record {
@@ -507,6 +518,7 @@ type SettlementActionError = variant {
   TransactionMismatch;
   ConfirmationRequired;
   RateLimited : record { retry_after_seconds : nat64 };
+  LedgerUnavailable;
   StorageFailure;
   AnonymousCaller;
 };
@@ -625,6 +637,7 @@ service : (BridgeInitArgs) -> {
   refresh_storage_checksum : (nat64) -> (Result_13);
   request_deposit : (DepositArgs) -> (Result_14);
   request_fee_payout : (nat) -> (Result_15);
+  resume_deposit_refund : (blob) -> (Result);
   resume_new_deposits : () -> (Result_11);
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_11);
   schedule_activation : () -> (Result_4);
