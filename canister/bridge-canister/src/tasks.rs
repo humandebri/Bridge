@@ -1819,8 +1819,11 @@ pub(crate) async fn advance_deposit(
                                     next_identity: next_identity.clone().map(Box::new),
                                 })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
+                            let now_ns = ic_cdk::api::time();
+                            current.last_settlement_stop_reason =
+                                (!retry).then(|| "LedgerRejected(\"BadFee\")".to_string());
                             store
-                                .put_deposit_and_audit(
+                                .put_deposit_refund_retry_bundle(
                                     &current,
                                     ic_cdk::api::canister_self(),
                                     crate::storage::AuditEventKind::DepositRefundRetried {
@@ -1832,6 +1835,13 @@ pub(crate) async fn advance_deposit(
                                         next_fee: expected_fee.get(),
                                         compensated: false,
                                     },
+                                    lease.job(),
+                                    if retry {
+                                        crate::storage::RefundJobOutcome::RetryAt(now_ns)
+                                    } else {
+                                        crate::storage::RefundJobOutcome::Stop
+                                    },
+                                    now_ns,
                                 )
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;

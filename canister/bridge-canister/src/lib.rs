@@ -724,6 +724,7 @@ async fn resume_deposit_refund(
         to: previous_attempt.identity.to.clone(),
         spender: None,
     };
+    let job = claim_manual_job(storage::SettlementJobKind::Deposit, id, caller)?;
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         let mut current = store
@@ -739,7 +740,7 @@ async fn resume_deposit_refund(
             })
             .map_err(|_| tasks::SettlementActionError::StorageFailure)?;
         store
-            .put_deposit_and_audit(
+            .put_deposit_refund_retry_bundle(
                 &current,
                 caller,
                 storage::AuditEventKind::DepositRefundRetried {
@@ -750,11 +751,13 @@ async fn resume_deposit_refund(
                     next_fee: current_fee.get(),
                     compensated,
                 },
+                &job,
+                storage::RefundJobOutcome::KeepLeased,
+                ic_cdk::api::time(),
             )
             .map_err(|_| tasks::SettlementActionError::StorageFailure)
     })?;
     drop(_guard);
-    let job = claim_manual_job(storage::SettlementJobKind::Deposit, id, caller)?;
     let result = scheduler::run_claimed(job).await?;
     scheduler::arm();
     Ok(result)

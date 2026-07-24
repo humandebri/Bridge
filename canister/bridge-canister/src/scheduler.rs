@@ -98,6 +98,10 @@ impl SettlementLease {
         self.expected_finalized_block_number
     }
 
+    pub(crate) fn job(&self) -> &SettlementJob {
+        &self.job
+    }
+
     pub(crate) fn renew_before_external_call(&mut self) -> Result<(), SettlementActionError> {
         let now = ic_cdk::api::time();
         let renewed = STORE.with(|store| {
