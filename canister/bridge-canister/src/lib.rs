@@ -578,7 +578,7 @@ async fn confirm_evm(
     {
         return Err(tasks::SettlementActionError::WrongState);
     }
-    let job = claim_manual_job(kind, id, caller)?;
+    let job = claim_confirmation_job(kind, id, caller)?;
     if stored_hash != transaction_hash {
         STORE.with(|store| {
             let mut store = store.borrow_mut();
@@ -808,6 +808,23 @@ fn claim_manual_job(
     id: [u8; 32],
     caller: candid::Principal,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
+    claim_job(kind, id, caller, false)
+}
+
+fn claim_confirmation_job(
+    kind: storage::SettlementJobKind,
+    id: [u8; 32],
+    caller: candid::Principal,
+) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
+    claim_job(kind, id, caller, true)
+}
+
+fn claim_job(
+    kind: storage::SettlementJobKind,
+    id: [u8; 32],
+    caller: candid::Principal,
+    explicit_confirmation: bool,
+) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
     let config = STORE.with(|store| {
         store
             .borrow()
@@ -816,9 +833,8 @@ fn claim_manual_job(
             .ok_or(tasks::SettlementActionError::StorageFailure)
     })?;
     STORE.with(|store| {
-        store
-            .borrow_mut()
-            .claim_manual_settlement_job(
+        let claim = if explicit_confirmation {
+            store.borrow_mut().claim_confirmation_settlement_job(
                 kind,
                 id,
                 caller,
@@ -832,6 +848,23 @@ fn claim_manual_job(
                     per_record: config.settlement_rate_limit_per_record,
                 },
             )
+        } else {
+            store.borrow_mut().claim_manual_settlement_job(
+                kind,
+                id,
+                caller,
+                ic_cdk::api::time(),
+                ic_cdk::api::time().saturating_add(120_000_000_000),
+                300_000_000_000,
+                storage::SettlementQuotaLimits {
+                    window_seconds: config.settlement_rate_limit_window_seconds,
+                    global: config.settlement_rate_limit_global,
+                    per_principal: config.settlement_rate_limit_per_principal,
+                    per_record: config.settlement_rate_limit_per_record,
+                },
+            )
+        };
+        claim
             .map_err(|error| match error {
                 storage::SettlementAdmissionError::RateLimited {
                     retry_after_seconds,
@@ -1119,10 +1152,12 @@ async fn initialize_public_config() -> Result<(), PublicConfigInitializationErro
 
 #[ic_cdk::query]
 fn get_public_config() -> PublicConfig {
-    let config = STORE.with(|store| {
+    let (config, admin) = STORE.with(|store| {
         let store = store.borrow();
-        storage_or_trap("configuration read", store.config())
-            .unwrap_or_else(|| ic_cdk::trap("missing configuration"))
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let admin = storage_or_trap("administrator state read", store.admin_state());
+        (config, admin)
     });
     let (expected_bridge_signer, governance_operator) = STORE.with(|store| {
         let store = store.borrow();
@@ -1173,9 +1208,9 @@ fn get_public_config() -> PublicConfig {
             eth_floor_wei: config.eth_floor_wei,
             cycles_floor: config.cycles_floor,
             settlement_cycle_ceiling: config.settlement_cycle_ceiling,
-            governance_principal: config.governance_principal,
-            pause_principal: config.pause_principal,
-            fee_recipient: config.fee_recipient,
+            governance_principal: admin.governance_principal,
+            pause_principal: admin.pause_principal,
+            fee_recipient: admin.fee_recipient,
         }
     })
 }
@@ -1270,6 +1305,10 @@ fn resume_new_deposits() -> Result<(), admin::AdminError> {
 #[ic_cdk::update]
 fn rotate_pause_principal(args: admin::RotatePausePrincipalArgs) -> Result<(), admin::AdminError> {
     admin::rotate_pause_principal(ic_cdk::api::msg_caller(), args)
+}
+#[ic_cdk::update]
+fn rotate_fee_recipient(args: config::FeeRecipientConfig) -> Result<(), admin::AdminError> {
+    admin::rotate_fee_recipient(ic_cdk::api::msg_caller(), args)
 }
 #[ic_cdk::update]
 fn request_fee_payout(amount: candid::Nat) -> Result<admin::FeePayoutReceipt, admin::AdminError> {

@@ -3,6 +3,17 @@
 このrunbookはPlan 007の外部stageを、同一source commitへ束縛された再開可能な証跡として実行する。
 production Canister、KINIC Ledger、Base Mainnet、SNSを対象にしてはならない。
 
+## Test Ledgerのfee
+
+このstagingはKINICではなく、共有test tokenのTICRC1を使用する。
+TICRC1 Ledgerのfeeは`10000` rawであり、KINIC mainnet Ledgerの`100000` rawとは異なる。
+
+現在のstaging Wasmに含まれる`KINIC_LEDGER_FEE = 10000`は、TICRC1へ合わせたtest-only値である。
+この差は設定driftではなく、stagingとproductionで対象Ledgerが異なるために意図して設けている。
+
+stagingの検証では、Canisterの`get_public_config().ledger_fee`、TICRC1 Ledgerの`icrc1_fee()`、staging profileの値がすべて`10000` rawで一致することを確認する。
+production artifactへこの値を流用せず、KINIC mainnet Ledgerのlive feeと承認済みproduction profileへ定数を同期した別commitからWasmを作成する。
+
 ## 開始条件
 
 - clean commitで`scripts/plan007-local-gate.sh`を実行し、現行commitの`local-e2e.json`を発行する。

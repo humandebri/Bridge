@@ -70,6 +70,7 @@ pub enum DepositError {
 pub struct DepositView {
     pub deposit_id: Vec<u8>,
     pub owner_sequence: u64,
+    pub created_at_ns: u64,
     pub gross_amount: Nat,
     pub quote: Option<DepositQuoteView>,
     pub refund: Option<DepositRefundView>,
@@ -1182,6 +1183,7 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
         Some(DepositView {
             deposit_id: id.to_vec(),
             owner_sequence: intent.owner_sequence,
+            created_at_ns: deposit_created_at_ns(&record),
             gross_amount: Nat::from(record.gross_amount.get()),
             quote: record.quote.map(|quote| DepositQuoteView {
                 service_fee: Nat::from(quote.service_fee.get()),
@@ -1198,6 +1200,10 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
             automatic_progress: automatic_progress(job),
         })
     })
+}
+
+fn deposit_created_at_ns(record: &DepositRecord) -> u64 {
+    record.transfer.created_at_time_ns
 }
 
 fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
@@ -1356,6 +1362,31 @@ mod tests {
             deposit_action_id(first, &args),
             deposit_action_id(first, &next)
         );
+    }
+
+    #[test]
+    fn deposit_view_time_uses_the_original_request_time() {
+        let from = Account::new(vec![1], [0; 32]).expect("valid source");
+        let to = Account::new(vec![2], [0; 32]).expect("valid destination");
+        let record = DepositRecord::accept(DepositRequest {
+            id: DepositId::new([3; 32]),
+            payload_hash: [4; 32],
+            gross_amount: Amount::new(100),
+            user_max_service_fee: Amount::new(10),
+            transfer: LedgerTransferIdentity {
+                operation: LedgerOperation::PullDeposit,
+                created_at_time_ns: 123_456,
+                memo: [5; 32],
+                amount: Amount::new(100),
+                fee: Amount::new(10),
+                from,
+                to,
+                spender: None,
+            },
+        })
+        .expect("valid deposit");
+
+        assert_eq!(deposit_created_at_ns(&record), 123_456);
     }
 
     #[test]

@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 21;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 22;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -1713,6 +1713,12 @@ fn validate_plan006_evidence(
 }
 
 fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String> {
+    if root.join("proof-attestation.json").exists() {
+        return Err(
+            "obsolete self-asserted proof attestation is forbidden; release drivers rerun proofs"
+                .into(),
+        );
+    }
     let manifest: ReleaseManifest = read_json(&root.join("release-manifest.json"))?;
     if manifest.schema_version != 2
         || !valid_release_id(&manifest.release_id)
@@ -3449,6 +3455,17 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::to_vec(&gate_a_manifest).unwrap(),
         )
         .unwrap();
+        fs::write(
+            root.join("proof-attestation.json"),
+            br#"{"lean_result":"passed"}"#,
+        )
+        .unwrap();
+        let obsolete_error = match validate_bundle(&root, false) {
+            Ok(_) => panic!("Gate A accepted an obsolete self-asserted proof attestation"),
+            Err(error) => error,
+        };
+        assert!(obsolete_error.contains("obsolete self-asserted proof attestation"));
+        fs::remove_file(root.join("proof-attestation.json")).unwrap();
         let gate_a = validate_bundle(&root, false).unwrap();
         let gate_a_authenticity_error = verify_gate_a_authenticity(&gate_a).unwrap_err();
         assert!(gate_a_authenticity_error.contains("invalid IC certificate CBOR"));

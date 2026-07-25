@@ -21,9 +21,7 @@ use transaction::*;
 use validation::expect_row_shape;
 
 use crate::admin::AdminState;
-use crate::config::BridgeInitArgs;
-#[cfg(test)]
-use crate::config::FeeRecipientConfig;
+use crate::config::{BridgeInitArgs, FeeRecipientConfig, ImmutableBridgeConfig};
 use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
     BaseMintSnapshot, CoreError, DepositHoldResolution, DepositId, DepositRecord, EvmCallIntent,
@@ -102,7 +100,6 @@ enum ResolveHoldBundleFailpoint {
 enum FeePayoutBundleFailpoint {
     Encode,
     Record,
-    StateIndex,
     Job,
     ReconciliationScan,
     Audit,
@@ -305,7 +302,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 21, 17);
+INSERT INTO bridge_metadata VALUES (1, 22, 18);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -336,7 +333,6 @@ CREATE TABLE reconciliation_scans (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT
 CREATE TABLE audit_events (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE fee_payouts (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE deposit_owner_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
-CREATE TABLE fee_payout_state_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE operation_owner_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE evm_state_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE pull_pending_deposit_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
@@ -405,7 +401,6 @@ INSERT INTO table_counts(name, count) VALUES
  ('audit_events', X'0000000000000000'),
  ('fee_payouts', X'0000000000000000'),
  ('deposit_owner_index', X'0000000000000000'),
- ('fee_payout_state_index', X'0000000000000000'),
  ('operation_owner_index', X'0000000000000000'),
  ('evm_state_index', X'0000000000000000'),
  ('pull_pending_deposit_index', X'0000000000000000'),
@@ -455,24 +450,6 @@ fn deposit_sequence_from_index_key(key: &StableBlob) -> Result<u64, StorageError
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or(StorageError::DecodeFailed)?;
     Ok(u64::MAX - u64::from_be_bytes(reverse_bytes))
-}
-
-fn fee_payout_index_key_for_state(id: u64, state: u8) -> Result<StableBlob, StorageError> {
-    let mut bytes = Vec::with_capacity(9);
-    bytes.push(state);
-    bytes.extend_from_slice(&id.to_be_bytes());
-    StableBlob::new(bytes)
-}
-
-fn fee_payout_index_key(
-    value: &crate::admin::FeePayoutRecord,
-) -> Result<Option<StableBlob>, StorageError> {
-    matches!(
-        value.state,
-        crate::admin::FeePayoutState::Pending | crate::admin::FeePayoutState::ReconciliationHold
-    )
-    .then(|| fee_payout_index_key_for_state(value.id, 0))
-    .transpose()
 }
 
 fn reconciliation_scan_key(target: &ReconciliationTarget) -> [u8; 9] {
@@ -1474,6 +1451,10 @@ pub enum AuditEventKind {
         max_priority_fee_per_gas: u128,
     },
     PausePrincipalRotated,
+    FeeRecipientRotated {
+        previous_sha256: Vec<u8>,
+        current_sha256: Vec<u8>,
+    },
     ReserveGateChanged {
         sufficient: bool,
     },
@@ -1790,7 +1771,7 @@ fn initialize_singleton_state(
     let accounting = encode(&AccountingState::default())?.to_sql_bytes();
     let counters = encode(&CounterState::default())?.to_sql_bytes();
     let external_progress = encode(&ExternalProgress::default())?.to_sql_bytes();
-    let config = encode(&config.cloned())?.to_sql_bytes();
+    let config = encode(&config.map(ImmutableBridgeConfig::from_init))?.to_sql_bytes();
     let admin = encode(&admin)?.to_sql_bytes();
     let deposit_admission = encode(&DepositAdmissionControl::default())?.to_sql_bytes();
     let audit_retention = encode(&AuditRetentionState::default())?.to_sql_bytes();
@@ -1846,8 +1827,6 @@ pub struct StableStore {
     fee_payouts: SqlMap<u64, StableBlob>,
     deposit_owner_index: SqlMap<StableBlob, [u8; 32]>,
     deposit_admission: SqlCell<StableBlob>,
-    #[allow(dead_code)]
-    fee_payout_state_index: SqlMap<StableBlob, u8>,
     operation_owner_index: SqlMap<u64, StableBlob>,
     evm_state_index: SqlMap<StableBlob, u8>,
     pull_pending_deposit_index: SqlMap<[u8; 32], u8>,
@@ -2025,31 +2004,6 @@ fn validate_storage_row(
         "deposit_owner_index" => {
             if value.len() != 32 || !referenced_row_exists(connection, "deposits", value)? {
                 return Err(DbError::Constraint("orphan deposit owner index".into()));
-            }
-        }
-        "fee_payout_state_index" => {
-            expect_row_shape(key, value, 9, 1, "invalid fee payout state index")?;
-            if value != [0] {
-                return Err(DbError::Constraint("invalid fee payout state index".into()));
-            }
-            let id = u64::from_be_bytes(
-                key[1..]
-                    .try_into()
-                    .map_err(|_| DbError::Constraint("invalid fee payout state index".into()))?,
-            );
-            let record = connection
-                .query_optional_scalar::<Vec<u8>>(
-                    "SELECT value FROM fee_payouts WHERE key = ?1",
-                    params![id.to_sql_bytes()],
-                )?
-                .ok_or_else(|| DbError::Constraint("orphan fee payout state index".into()))?;
-            let record: crate::admin::FeePayoutRecord =
-                decode_with_context(record, "invalid fee payout")?;
-            let expected = fee_payout_index_key(&record)
-                .map_err(|_| DbError::Constraint("invalid fee payout state index".into()))?
-                .ok_or_else(|| DbError::Constraint("stale fee payout state index".into()))?;
-            if key != expected.as_slice() {
-                return Err(DbError::Constraint("stale fee payout state index".into()));
             }
         }
         "operation_owner_index" => {
@@ -2255,7 +2209,6 @@ impl StableStore {
             fee_payouts: SqlMap::new(handle, "fee_payouts"),
             deposit_owner_index: SqlMap::new(handle, "deposit_owner_index"),
             deposit_admission: SqlCell::load(handle, SingletonColumn::DepositAdmission)?,
-            fee_payout_state_index: SqlMap::new(handle, "fee_payout_state_index"),
             operation_owner_index: SqlMap::new(handle, "operation_owner_index"),
             evm_state_index: SqlMap::new(handle, "evm_state_index"),
             pull_pending_deposit_index: SqlMap::new(handle, "pull_pending_deposit_index"),
@@ -2760,7 +2713,6 @@ impl StableStore {
             "audit_events",
             "fee_payouts",
             "deposit_owner_index",
-            "fee_payout_state_index",
             "operation_owner_index",
             "evm_state_index",
             "pull_pending_deposit_index",
@@ -3209,8 +3161,55 @@ impl StableStore {
         caller: Principal,
         now_ns: u64,
         lease_until_ns: u64,
-        _overdue_after_ns: u64,
+        overdue_after_ns: u64,
         limits: SettlementQuotaLimits,
+    ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
+        self.claim_settlement_job_with_mode(
+            kind,
+            settlement_id,
+            caller,
+            now_ns,
+            lease_until_ns,
+            overdue_after_ns,
+            limits,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_confirmation_settlement_job(
+        &mut self,
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
+        caller: Principal,
+        now_ns: u64,
+        lease_until_ns: u64,
+        overdue_after_ns: u64,
+        limits: SettlementQuotaLimits,
+    ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
+        self.claim_settlement_job_with_mode(
+            kind,
+            settlement_id,
+            caller,
+            now_ns,
+            lease_until_ns,
+            overdue_after_ns,
+            limits,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn claim_settlement_job_with_mode(
+        &mut self,
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
+        caller: Principal,
+        now_ns: u64,
+        lease_until_ns: u64,
+        overdue_after_ns: u64,
+        limits: SettlementQuotaLimits,
+        explicit_confirmation: bool,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
         let admission_blob = self
             .settlement_admission
@@ -3267,7 +3266,7 @@ impl StableStore {
                 }
 
                 let target = connection.query_all(
-                    "SELECT status, phase, next_run_at_ns, lease_generation
+                    "SELECT status, phase, next_run_at_ns, lease_generation, lease_until_ns
                      FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2",
                     params![kind.sql(), settlement_id.to_sql_bytes()],
                     |row| Ok((
@@ -3275,8 +3274,47 @@ impl StableStore {
                         row.get::<i64>(1)?,
                         row.get::<Option<Vec<u8>>>(2)?,
                         row.get::<Vec<u8>>(3)?,
+                        row.get::<Option<Vec<u8>>>(4)?,
                     )),
                 )?;
+                if let Some((status, phase, next_raw, _, lease_raw)) = target.first() {
+                    let next = next_raw
+                        .clone()
+                        .map(u64::from_sql_bytes)
+                        .transpose()
+                        .map_err(|_| DbError::Constraint("invalid next run time".into()))?;
+                    let lease_until = lease_raw
+                        .clone()
+                        .map(u64::from_sql_bytes)
+                        .transpose()
+                        .map_err(|_| DbError::Constraint("invalid lease deadline".into()))?;
+                    let confirmation = *phase == 0 || *status == 3;
+                    let scheduled = *status == 0;
+                    let active = *status == 1
+                        && lease_until.is_some_and(|deadline| deadline > now_ns);
+                    let stopped = *status == 2;
+                    let overdue = scheduled
+                        && next.is_some_and(|deadline| {
+                            now_ns >= deadline.saturating_add(overdue_after_ns)
+                        });
+                    let expired = *status == 1
+                        && lease_until.is_some_and(|deadline| deadline <= now_ns);
+                    let allowed = if explicit_confirmation {
+                        confirmation
+                    } else {
+                        bridge_core::manual_claim_allowed(
+                            confirmation,
+                            scheduled,
+                            active,
+                            stopped,
+                            overdue,
+                            expired,
+                        )
+                    };
+                    if !allowed {
+                        return Ok(ManualClaimTransaction::AutomaticProgressPending(next));
+                    }
+                }
 
                 let window_ns = limits.window_seconds.saturating_mul(1_000_000_000);
                 let window_id = now_ns / window_ns;
@@ -3302,7 +3340,7 @@ impl StableStore {
 
                 let generation = target
                     .first()
-                    .map(|(_, _, _, raw)| u64::from_sql_bytes(raw.clone()))
+                    .map(|(_, _, _, raw, _)| u64::from_sql_bytes(raw.clone()))
                     .transpose()
                     .map_err(|_| DbError::Constraint("invalid lease generation".into()))?
                     .unwrap_or(0)
@@ -3329,7 +3367,10 @@ impl StableStore {
                         )?;
                     }
                 } else {
-                    let reset_confirmation = target.first().is_some_and(|(status, phase, _, _)| {
+                    let reset_confirmation =
+                        target
+                            .first()
+                            .is_some_and(|(status, phase, _, _, _)| {
                         *status == 2 && *phase == 0
                     });
                     connection.execute(
@@ -3810,7 +3851,13 @@ impl StableStore {
                 params![job.kind.sql(), job.settlement_id.to_sql_bytes()],
             )
         })?;
-        Ok(generation.as_deref() == Some(job.lease_generation.to_sql_bytes().as_slice()))
+        let current = generation
+            .map(u64::from_sql_bytes)
+            .transpose()
+            .map_err(|_| StorageError::DecodeFailed)?;
+        Ok(current.is_some_and(|current| {
+            bridge_core::lease_outcome_is_current(current, job.lease_generation, true)
+        }))
     }
 
     pub fn finish_settlement_job(
@@ -4605,13 +4652,22 @@ impl StableStore {
     }
 
     pub fn config(&self) -> Result<Option<BridgeInitArgs>, StorageError> {
-        decode(&self.config.get()?)
+        let Some(config) = decode::<Option<ImmutableBridgeConfig>>(&self.config.get()?)? else {
+            return Ok(None);
+        };
+        let admin = self.admin_state()?;
+        Ok(Some(config.with_admin(
+            admin.governance_principal,
+            admin.pause_principal,
+            admin.fee_recipient,
+        )))
     }
 
     pub fn set_config_once(&mut self, value: &BridgeInitArgs) -> Result<(), StorageError> {
-        match self.config()? {
-            None => self.config.set(encode(&Some(value.clone()))?),
-            Some(previous) if previous == *value => Ok(()),
+        let next = ImmutableBridgeConfig::from_init(value);
+        match decode::<Option<ImmutableBridgeConfig>>(&self.config.get()?)? {
+            None => self.config.set(encode(&Some(next))?),
+            Some(previous) if previous == next => Ok(()),
             Some(_) => Err(StorageError::Core(CoreError::ConflictingReplay)),
         }
     }
@@ -4635,6 +4691,58 @@ impl StableStore {
     }
     pub fn set_admin_state(&mut self, value: &AdminState) -> Result<(), StorageError> {
         self.admin_state.set(encode(&Some(value.clone()))?)
+    }
+
+    pub fn rotate_fee_recipient_with_audit(
+        &mut self,
+        next_recipient: FeeRecipientConfig,
+        caller: Principal,
+        timestamp_ns: u64,
+        previous_sha256: Vec<u8>,
+        current_sha256: Vec<u8>,
+    ) -> Result<(), StorageError> {
+        let mut admin = self.admin_state()?;
+        admin.fee_recipient = next_recipient;
+        let previous_admin = self.admin_state.get()?;
+        let admin_blob = encode(&Some(admin))?;
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = self.prepare_audit_batch(
+            &mut counters,
+            caller,
+            timestamp_ns,
+            vec![AuditEventKind::FeeRecipientRotated {
+                previous_sha256,
+                current_sha256,
+            }],
+        )?;
+        let counters_blob = encode(&counters)?;
+        self.handle.update(|connection| {
+            let persisted_admin = connection.query_scalar::<Vec<u8>>(
+                "SELECT admin_state FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_admin != previous_admin.to_sql_bytes()
+                || persisted_counters != previous_counters.to_sql_bytes()
+            {
+                return Err(DbError::Constraint("stale fee recipient rotation".into()));
+            }
+            commit_audit_batch(connection, &audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET admin_state = ?1, counters = ?2, audit_retention = ?3 WHERE id = 1",
+                params![
+                    admin_blob.to_sql_bytes(),
+                    counters_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     pub fn pause_deposits_with_rpc_audit(
@@ -5004,7 +5112,6 @@ impl StableStore {
             }],
         )?;
         let value_blob = encode(value)?;
-        let index_key = fee_payout_index_key(value)?.ok_or(StorageError::EncodeFailed)?;
         let previous_counters_blob = encode(&previous_counters)?;
         let counters_blob = encode(&counters)?;
         fee_payout_bundle_storage_failpoint(FeePayoutBundleFailpoint::Encode)?;
@@ -5023,13 +5130,6 @@ impl StableStore {
                 value_blob.to_sql_bytes(),
             )?;
             fee_payout_bundle_db_failpoint(FeePayoutBundleFailpoint::Record)?;
-            insert_tracked_entry(
-                connection,
-                "fee_payout_state_index",
-                index_key.to_sql_bytes(),
-                0u8.to_sql_bytes(),
-            )?;
-            fee_payout_bundle_db_failpoint(FeePayoutBundleFailpoint::StateIndex)?;
             enqueue_settlement_job(
                 connection,
                 SettlementJobKind::FeePayout,
@@ -5256,8 +5356,6 @@ impl StableStore {
         let counters_blob = encode(&counters)?;
         let previous_accounting_blob = encode(&previous_accounting)?;
         let accounting_blob = encode(&accounting)?;
-        let previous_key = fee_payout_index_key(&previous)?;
-        let next_key = fee_payout_index_key(&next)?;
         let scan_key = scan_target.map(reconciliation_scan_key);
         let scan_blob = scan.as_ref().map(encode).transpose()?;
         fee_payout_bundle_storage_failpoint(FeePayoutBundleFailpoint::Encode)?;
@@ -5285,15 +5383,6 @@ impl StableStore {
                 "stale fee payout transition",
             )?;
             fee_payout_bundle_db_failpoint(FeePayoutBundleFailpoint::Record)?;
-            transition_tracked_entry(
-                connection,
-                "fee_payout_state_index",
-                previous_key.as_ref().map(SqlCodec::to_sql_bytes),
-                next_key
-                    .as_ref()
-                    .map(|key| (key.to_sql_bytes(), 0u8.to_sql_bytes())),
-            )?;
-            fee_payout_bundle_db_failpoint(FeePayoutBundleFailpoint::StateIndex)?;
             if let (Some(key), Some(expected_blob)) = (&scan_key, &scan_blob) {
                 let persisted_scan = connection.query_scalar::<Vec<u8>>(
                     "SELECT value FROM reconciliation_scans WHERE key = ?1",
@@ -6056,8 +6145,22 @@ impl StableStore {
             false,
             is_pending_deposit_ledger(record),
         )?;
+        let reservation_candidate =
+            if reserve_admission.is_some() && is_deposit_mint_reserved(record) {
+                record.reserved_mint_amount()?.get()
+            } else {
+                0
+            };
         counters.reserved_deposit_mint_amount =
             adjust_reserved_mint_amount(counters.reserved_deposit_mint_amount, None, record)?;
+        if !bridge_core::reserve_admission_preserves_requirement(
+            previous_counters.reserved_deposit_mint_amount,
+            reservation_candidate,
+            counters.reserved_deposit_mint_amount,
+            0,
+        ) {
+            return Err(StorageError::CounterOverflow);
+        }
         counters.reserved_deposit_mint_operations = adjust_reserved_mint_operations(
             counters.reserved_deposit_mint_operations,
             None,
@@ -7178,6 +7281,7 @@ impl StableStore {
                 next,
                 resolved_hold: _,
             } => {
+                let before_reserved = counters.reserved_deposit_mint_amount;
                 counters.pending_ledger_operations = adjust_active_count(
                     counters.pending_ledger_operations,
                     is_pending_deposit_ledger(previous),
@@ -7188,6 +7292,18 @@ impl StableStore {
                     Some(previous),
                     next,
                 )?;
+                if admitted_progress.is_some()
+                    && !is_deposit_mint_reserved(previous)
+                    && is_deposit_mint_reserved(next)
+                    && !bridge_core::reserve_admission_preserves_requirement(
+                        before_reserved,
+                        next.reserved_mint_amount()?.get(),
+                        counters.reserved_deposit_mint_amount,
+                        0,
+                    )
+                {
+                    return Err(StorageError::CounterOverflow);
+                }
                 counters.reserved_deposit_mint_operations = adjust_reserved_mint_operations(
                     counters.reserved_deposit_mint_operations,
                     Some(previous),
@@ -9117,7 +9233,8 @@ mod tests {
     #[test]
     #[serial]
     fn configured_store_starts_with_new_deposits_paused() {
-        let store = StableStore::init_configured(VectorMemory::default(), &config())
+        let initial = config();
+        let store = StableStore::init_configured(VectorMemory::default(), &initial)
             .expect("initialize configured store");
         assert!(
             store
@@ -9125,6 +9242,7 @@ mod tests {
                 .expect("read administrator state")
                 .deposits_paused
         );
+        assert_eq!(store.config().expect("read config"), Some(initial));
     }
 
     #[test]
@@ -11144,8 +11262,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 21);
-        assert_eq!(WIRE_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 22);
+        assert_eq!(WIRE_VERSION, 18);
     }
 
     #[test]
@@ -11158,7 +11276,11 @@ mod tests {
                 Ok((
                     connection.query_scalar::<i64>(
                         "SELECT COUNT(*) FROM sqlite_master
-                         WHERE type = 'table' AND name IN ('deposit_intents', 'withdrawal_change_log')",
+                         WHERE type = 'table' AND name IN (
+                            'deposit_intents',
+                            'withdrawal_change_log',
+                            'fee_payout_state_index'
+                         )",
                         params![],
                     )?,
                     connection.query_scalar::<i64>(
@@ -11242,7 +11364,7 @@ mod tests {
             .0
             .update(|connection| {
                 connection.execute(
-                    "UPDATE bridge_metadata SET record_wire_version = 15 WHERE id = 1",
+                    "UPDATE bridge_metadata SET record_wire_version = 17 WHERE id = 1",
                     params![],
                 )
             })
@@ -11251,7 +11373,7 @@ mod tests {
 
         assert!(matches!(
             StableStore::reopen_after_upgrade(memory),
-            Err(StorageError::UnsupportedWireVersion(15))
+            Err(StorageError::UnsupportedWireVersion(17))
         ));
     }
 
@@ -11398,7 +11520,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn owner_claims_an_awaiting_confirmation_without_a_timer() {
+    fn manual_claim_cannot_bypass_an_awaiting_confirmation() {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
         let operation_id = EvmOperationId::new(42);
         let mut owner = deposit();
@@ -11429,95 +11551,46 @@ mod tests {
                 .expect("no due confirmation"),
             SettlementJobClaim::None
         ));
-        let SettlementQuotaLimits {
-            window_seconds,
-            global,
-            per_principal,
-            per_record,
-        } = SettlementQuotaLimits {
+        let limits = SettlementQuotaLimits {
             window_seconds: 60,
             global: 10,
             per_principal: 10,
             per_record: 10,
         };
-        let ManualSettlementClaim::Claimed(job) = store
-            .claim_manual_settlement_job(
-                SettlementJobKind::Deposit,
-                owner.id.bytes(),
-                Principal::self_authenticating([42; 32]),
-                200,
-                300,
-                0,
-                SettlementQuotaLimits {
-                    window_seconds,
-                    global,
-                    per_principal,
-                    per_record,
-                },
-            )
-            .expect("claim confirmation")
-        else {
-            panic!("awaiting confirmation was not leased")
-        };
+        let job_before = store
+            .settlement_job(SettlementJobKind::Deposit, owner.id.bytes())
+            .expect("job before manual claim");
+        assert!(matches!(
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    owner.id.bytes(),
+                    Principal::self_authenticating([42; 32]),
+                    200,
+                    300,
+                    0,
+                    limits,
+                )
+                .expect("confirmation claim decision"),
+            ManualSettlementClaim::AutomaticProgressPending { .. }
+        ));
+        assert_eq!(
+            store
+                .settlement_job(SettlementJobKind::Deposit, owner.id.bytes())
+                .expect("job after manual claim"),
+            job_before
+        );
         assert_eq!(
             store
                 .confirmation_schedule(operation_id.get())
-                .expect("leased schedule"),
+                .expect("confirmation schedule"),
             Some(ConfirmationSchedule {
                 operation_id: operation_id.get(),
                 submitted_at_ns: 10,
-                next_check_at_ns: 300,
+                next_check_at_ns: 60_000_000_010,
                 checks_completed: 0,
             })
         );
-        store
-            .finish_settlement_job(
-                &job,
-                None,
-                1,
-                Some(("RpcUnavailable", "confirmation failed")),
-                Some("confirmation failed".into()),
-                400,
-            )
-            .expect("stop leased confirmation");
-        assert_eq!(
-            store
-                .confirmation_schedule(operation_id.get())
-                .expect("stopped schedule lookup"),
-            None
-        );
-
-        store
-            .handle
-            .update(|connection| {
-                connection.execute(
-                    "UPDATE settlement_jobs SET confirmation_checks = 3
-                     WHERE settlement_kind = 0 AND settlement_id = ?1",
-                    params![owner.id.bytes().to_sql_bytes()],
-                )
-            })
-            .expect("seed exhausted confirmation checks");
-        let ManualSettlementClaim::Claimed(retried) = store
-            .claim_manual_settlement_job(
-                SettlementJobKind::Deposit,
-                owner.id.bytes(),
-                Principal::self_authenticating([42; 32]),
-                500,
-                600,
-                0,
-                SettlementQuotaLimits {
-                    window_seconds,
-                    global,
-                    per_principal,
-                    per_record,
-                },
-            )
-            .expect("retry stopped confirmation")
-        else {
-            panic!("stopped confirmation was not reclaimed")
-        };
-        assert_eq!(retried.confirmation_checks, 0);
-        assert_eq!(retried.confirmation_started_at_ns, Some(500));
     }
 
     #[test]
@@ -11787,24 +11860,67 @@ mod tests {
                 )
             })
             .expect("scheduled job");
-        let ManualSettlementClaim::Claimed(job) = store
+        assert!(matches!(
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    record.id.bytes(),
+                    caller,
+                    0,
+                    120,
+                    300,
+                    limits,
+                )
+                .expect("scheduled manual claim decision"),
+            ManualSettlementClaim::AutomaticProgressPending {
+                next_run_at_ns: Some(1_000)
+            }
+        ));
+
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE settlement_jobs SET status = 2, next_run_at_ns = NULL
+                     WHERE settlement_kind = 0 AND settlement_id = ?1",
+                    params![record.id.bytes().to_sql_bytes()],
+                )
+            })
+            .expect("second stopped job");
+        let ManualSettlementClaim::Claimed(_) = store
             .claim_manual_settlement_job(
                 SettlementJobKind::Deposit,
                 record.id.bytes(),
                 caller,
-                0,
-                120,
+                2,
+                122,
                 300,
                 limits,
             )
-            .expect("scheduled manual claim")
+            .expect("stopped manual claim")
         else {
-            panic!("scheduled job was not claimed")
+            panic!("stopped job was not claimed")
         };
-        store
-            .finish_settlement_job(&job, None, 0, None, None, 1)
-            .expect("complete first job");
+        assert!(matches!(
+            store.claim_manual_settlement_job(
+                SettlementJobKind::Deposit,
+                record.id.bytes(),
+                caller,
+                123,
+                243,
+                300,
+                limits,
+            ),
+            Err(SettlementAdmissionError::RateLimited { .. })
+        ));
+    }
 
+    #[test]
+    #[serial]
+    fn manual_claim_uses_overdue_boundary_from_shared_decision() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        let record = deposit();
+        store.put_deposit(&record).expect("deposit");
         store
             .handle
             .update(|connection| {
@@ -11813,26 +11929,45 @@ mod tests {
                     SettlementJobKind::Deposit,
                     record.id.bytes(),
                     None,
-                    0,
-                )?;
-                connection.execute(
-                    "UPDATE settlement_jobs SET status = 2, next_run_at_ns = NULL
-                     WHERE settlement_kind = 0 AND settlement_id = ?1",
-                    params![record.id.bytes().to_sql_bytes()],
+                    100,
                 )
             })
-            .expect("second stopped job");
+            .expect("scheduled job");
+        let limits = SettlementQuotaLimits {
+            window_seconds: 60,
+            global: 10,
+            per_principal: 10,
+            per_record: 10,
+        };
         assert!(matches!(
-            store.claim_manual_settlement_job(
-                SettlementJobKind::Deposit,
-                record.id.bytes(),
-                caller,
-                2,
-                122,
-                300,
-                limits,
-            ),
-            Err(SettlementAdmissionError::RateLimited { .. })
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    record.id.bytes(),
+                    Principal::self_authenticating([61; 32]),
+                    399,
+                    500,
+                    300,
+                    limits,
+                )
+                .expect("pre-overdue decision"),
+            ManualSettlementClaim::AutomaticProgressPending {
+                next_run_at_ns: Some(100)
+            }
+        ));
+        assert!(matches!(
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    record.id.bytes(),
+                    Principal::self_authenticating([61; 32]),
+                    400,
+                    500,
+                    300,
+                    limits,
+                )
+                .expect("overdue decision"),
+            ManualSettlementClaim::Claimed(_)
         ));
     }
 
@@ -12115,7 +12250,6 @@ mod tests {
             "reconciliation_scans",
             "audit_events",
             "fee_payouts",
-            "fee_payout_state_index",
             "evm_state_index",
             "open_hold_index",
             "owner_deposit_sequences",
@@ -13758,21 +13892,17 @@ mod tests {
         Option<crate::admin::FeePayoutRecord>,
         CounterState,
         AccountingState,
-        Option<u8>,
         Option<ReconciliationScanProgress>,
         Option<u64>,
         AuditRetentionState,
         Vec<AuditEvent>,
         Option<SettlementJob>,
-        [u64; 4],
+        [u64; 3],
     ) {
         (
             store.fee_payout(payout_id).expect("payout"),
             store.counters().expect("counters"),
             store.accounting().expect("accounting"),
-            store
-                .fee_payout_state_index
-                .get(&fee_payout_index_key_for_state(payout_id, 0).expect("index key")),
             store.reconciliation_scan(target).expect("scan"),
             store.last_audit_sequence().expect("audit sequence"),
             decode(&store.audit_retention.get().expect("audit retention blob"))
@@ -13783,7 +13913,6 @@ mod tests {
                 .expect("fee payout job"),
             [
                 store.table_count("fee_payouts"),
-                store.table_count("fee_payout_state_index"),
                 store.table_count("reconciliation_scans"),
                 store.table_count("audit_events"),
             ],
@@ -13842,7 +13971,6 @@ mod tests {
         for failpoint in [
             FeePayoutBundleFailpoint::Encode,
             FeePayoutBundleFailpoint::Record,
-            FeePayoutBundleFailpoint::StateIndex,
             FeePayoutBundleFailpoint::Job,
             FeePayoutBundleFailpoint::Audit,
             FeePayoutBundleFailpoint::SingletonState,
@@ -13979,7 +14107,6 @@ mod tests {
         for failpoint in [
             FeePayoutBundleFailpoint::Encode,
             FeePayoutBundleFailpoint::Record,
-            FeePayoutBundleFailpoint::StateIndex,
             FeePayoutBundleFailpoint::ReconciliationScan,
             FeePayoutBundleFailpoint::SingletonState,
         ] {
@@ -14026,7 +14153,6 @@ mod tests {
         for failpoint in [
             FeePayoutBundleFailpoint::Encode,
             FeePayoutBundleFailpoint::Record,
-            FeePayoutBundleFailpoint::StateIndex,
             FeePayoutBundleFailpoint::ReconciliationScan,
             FeePayoutBundleFailpoint::SingletonState,
         ] {
@@ -14110,7 +14236,6 @@ mod tests {
             for failpoint in [
                 FeePayoutBundleFailpoint::Encode,
                 FeePayoutBundleFailpoint::Record,
-                FeePayoutBundleFailpoint::StateIndex,
                 FeePayoutBundleFailpoint::ReconciliationScan,
                 FeePayoutBundleFailpoint::SingletonState,
             ] {
@@ -14605,6 +14730,57 @@ mod tests {
                 "query must not scan the full table: {details:?}"
             );
         }
+    }
+
+    #[test]
+    #[serial]
+    fn fee_recipient_rotation_preserves_accounting_audit_and_reopen() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &initial).expect("initialize configured");
+        let before = store.accounting().expect("accounting");
+        let next = FeeRecipientConfig {
+            owner: Principal::self_authenticating([42; 32]),
+            subaccount: vec![9; 32],
+        };
+        store
+            .rotate_fee_recipient_with_audit(
+                next.clone(),
+                Principal::self_authenticating([7; 32]),
+                99,
+                vec![1; 32],
+                vec![2; 32],
+            )
+            .expect("rotate recipient");
+
+        assert_eq!(store.admin_state().expect("admin").fee_recipient, next);
+        assert_eq!(
+            store
+                .config()
+                .expect("materialized config")
+                .unwrap()
+                .fee_recipient,
+            next
+        );
+        assert_eq!(store.accounting().expect("accounting"), before);
+        assert!(matches!(
+            store.audit_events(0, 10).expect("audit").events[0].kind,
+            AuditEventKind::FeeRecipientRotated { .. }
+        ));
+        drop(store);
+
+        let reopened = StableStore::reopen(memory).expect("reopen");
+        assert_eq!(reopened.admin_state().expect("admin").fee_recipient, next);
+        assert_eq!(
+            reopened
+                .config()
+                .expect("reopened materialized config")
+                .unwrap()
+                .fee_recipient,
+            next
+        );
+        assert_eq!(reopened.accounting().expect("accounting"), before);
     }
 
     #[test]

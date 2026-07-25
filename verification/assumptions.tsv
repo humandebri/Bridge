@@ -1,0 +1,7 @@
+runtime_toolchain	Lean kernel, Verus, Rust/LLVM, Solidity SMTChecker, and the Wasm compiler implement their documented semantics.
+evm_canonicality	EVM RPC quorum and Finalized block observations identify canonical Base state.
+sqlite_atomicity	SQLite transactions, conditional updates, and reopen preserve atomic committed state.
+icrc_history	ICRC Ledger and Index history provide complete authentic success, duplicate, and absence evidence.
+browser_storage	Web Locks and browser storage implement the serialized durable queue operations used by the UI.
+async_callback_identity	The IC runtime delivers callback identity and persisted lease generations without substitution.
+external_asset_state	External escrow and Base supply observations correspond to the abstract EconomicState fields.

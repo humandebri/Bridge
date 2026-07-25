@@ -15,7 +15,7 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | Production | 未デプロイ | Plan 001〜007と本番運用条件の完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、EVM操作、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v21の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+`bridge-canister`はstable schema v22の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 EVM transactionのbroadcast後は確認待ちとして保存し、フロントがpublic Base RPCでreceiptとFinalized headを観測する。
 Finalized到達後、認証済みIC walletがtransaction hash、receipt block、観測Finalized blockを`confirm_deposit`へ送ると、Canisterが証拠と保存済みtransactionを照合してからEVM RPC outcallで再検証する。Withdrawalは追加EVM transactionを生成しない。
 フロントが動作していない間はEVM confirmation待ちを維持し、Canister timerによるconfirmation fallbackは行わない。confirmation後のLedger settlementはstable jobとCanister timerで自動進行する。
@@ -120,7 +120,7 @@ feature branchへのpushではPR eventだけを使用し、`main`へのpush、�
 
 `contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
 `proofs`はLeanをcross-chain protocolの正式な抽象仕様としてビルドし、`sorry`・`admit`を拒否する。
-Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、manifestにない仕様・定理・consumerのdriftを拒否する。
+Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、各vector sectionについてmanifestにない仕様・定理・consumerのdriftを拒否する。
 manifestに登録したconsumerは許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。
 この照合は列挙した境界値に対する限定的なconformanceであり、各言語実装全体の完全なsemantic refinementではない。
 productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。
@@ -141,7 +141,7 @@ python3 scripts/protocol_vectors.py --update
 python3 scripts/protocol_vectors.py --check
 ```
 
-仕様、定理、consumerの対応は[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。
+release対象claim、定理、production link、外部仮定は[verification/phase5-claims.tsv](verification/phase5-claims.tsv)で管理し、vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。
 
 ## ローカルdeploy
 
@@ -149,7 +149,7 @@ python3 scripts/protocol_vectors.py --check
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 21、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 22、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
 5. 72時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。

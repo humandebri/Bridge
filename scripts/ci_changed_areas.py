@@ -64,8 +64,7 @@ def classify(paths: list[str]) -> dict[str, bool]:
         if _matches(path, ("contracts/",)):
             result["contracts"] = True
             classified = True
-        if _matches(path, ("verification/",)) or path in {
-            "canister/bridge-core/src/kernel.rs",
+        if _matches(path, ("verification/", "canister/", "contracts/src/")) or path in {
             "canister/bridge-core/tests/protocol_vectors.rs",
             "contracts/test/ProtocolVectors.t.sol",
             "ui/src/lib/protocol-vectors.test.ts",

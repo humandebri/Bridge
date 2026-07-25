@@ -16,7 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 VECTORS = ROOT / "verification" / "generated" / "protocol-vectors.json"
 MANIFEST = ROOT / "verification" / "refinement-manifest.tsv"
 MODEL = ROOT / "verification" / "lean" / "BridgeSpec" / "Model.lean"
-THEOREMS = ROOT / "verification" / "lean" / "BridgeSpec" / "Theorems.lean"
+REFINEMENTS = ROOT / "verification" / "lean" / "BridgeSpec" / "Refinement.lean"
+CLAIMS = ROOT / "verification" / "lean" / "BridgeSpec" / "Claims.lean"
+CLAIM_MANIFEST = ROOT / "verification" / "phase5-claims.tsv"
+ASSUMPTIONS = ROOT / "verification" / "assumptions.tsv"
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RUNNER_TARGETS = {
     ("rust", "canister/bridge-core/tests/protocol_vectors.rs"),
@@ -33,6 +36,17 @@ class Consumer:
     runner: str
     target: str
     selector: str
+
+
+@dataclass(frozen=True)
+class Claim:
+    claim_id: str
+    abstract_theorem: str
+    refinement_theorem: str
+    section: str
+    evidence: str
+    production_links: str
+    assumption_ids: str
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -59,8 +73,114 @@ def checked_target(root: Path, runner: str, target: str) -> Path:
     return path
 
 
+def checked_repository_file(root: Path, relative_text: str) -> Path:
+    relative = Path(relative_text)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"claim production path must stay inside the repository: {relative_text}")
+    path = (root / relative).resolve()
+    if root.resolve() not in path.parents or not path.is_file():
+        raise ValueError(f"claim production source is missing: {relative_text}")
+    return path
+
+
+def parse_assumptions(text: str) -> set[str]:
+    assumptions: set[str] = set()
+    for number, line in enumerate(text.splitlines(), 1):
+        fields = line.split("\t")
+        if len(fields) != 2 or not all(fields):
+            raise ValueError(f"invalid external assumption row {number}")
+        assumption, _ = fields
+        if not IDENTIFIER.fullmatch(assumption) or assumption in assumptions:
+            raise ValueError(f"invalid or duplicate external assumption: {assumption}")
+        assumptions.add(assumption)
+    if not assumptions:
+        raise ValueError("external assumption registry is empty")
+    return assumptions
+
+
+def parse_claims(
+    text: str,
+    assumptions: set[str],
+    claims_source: str,
+    refinements_source: str,
+    root: Path,
+) -> list[Claim]:
+    claims: list[Claim] = []
+    seen_ids: set[str] = set()
+    seen_abstract: set[str] = set()
+    seen_refinement: set[str] = set()
+    seen_sections: set[str] = set()
+    for number, line in enumerate(text.splitlines(), 1):
+        fields = line.split("\t")
+        if len(fields) != 7 or not all(fields):
+            raise ValueError(f"invalid Phase 5 claim row {number}")
+        claim = Claim(*fields)
+        identifiers = (
+            claim.claim_id,
+            claim.abstract_theorem,
+            claim.refinement_theorem,
+            claim.section,
+        )
+        if not all(IDENTIFIER.fullmatch(value) for value in identifiers):
+            raise ValueError(f"invalid identifier in Phase 5 claim row {number}")
+        if (
+            claim.claim_id in seen_ids
+            or claim.abstract_theorem in seen_abstract
+            or claim.refinement_theorem in seen_refinement
+            or claim.section in seen_sections
+        ):
+            raise ValueError(f"duplicate Phase 5 claim mapping in row {number}")
+        seen_ids.add(claim.claim_id)
+        seen_abstract.add(claim.abstract_theorem)
+        seen_refinement.add(claim.refinement_theorem)
+        seen_sections.add(claim.section)
+        if set(claim.evidence.split(",")) != {"proved", "refinement-tested", "assumed"}:
+            raise ValueError(f"invalid evidence classification for {claim.claim_id}")
+        claim_assumptions = claim.assumption_ids.split(";")
+        unknown = set(claim_assumptions) - assumptions
+        if not claim_assumptions or unknown:
+            raise ValueError(
+                f"unknown external assumption for {claim.claim_id}: {sorted(unknown)}"
+            )
+        for link in claim.production_links.split(";"):
+            if link.count("#") != 1:
+                raise ValueError(f"invalid production link for {claim.claim_id}: {link}")
+            path_text, symbol = link.split("#")
+            if not IDENTIFIER.fullmatch(symbol):
+                raise ValueError(f"invalid production symbol for {claim.claim_id}: {symbol}")
+            source = checked_repository_file(root, path_text).read_text(encoding="utf-8")
+            if re.search(rf"\b{re.escape(symbol)}\b", source) is None:
+                raise ValueError(f"missing production symbol for {claim.claim_id}: {link}")
+        claims.append(claim)
+
+    declared_claims = set(
+        re.findall(r"^theorem ([A-Za-z_][A-Za-z0-9_]*)\b", claims_source, re.MULTILINE)
+    )
+    declared_refinements = set(
+        re.findall(r"^theorem ([A-Za-z_][A-Za-z0-9_]*)\b", refinements_source, re.MULTILINE)
+    )
+    if declared_claims != seen_abstract:
+        raise ValueError(
+            f"Phase 5 abstract theorems {sorted(seen_abstract)} do not match "
+            f"Claims.lean {sorted(declared_claims)}"
+        )
+    if declared_refinements != seen_refinement:
+        raise ValueError(
+            f"Phase 5 refinement theorems {sorted(seen_refinement)} do not match "
+            f"Refinement.lean {sorted(declared_refinements)}"
+        )
+    return claims
+
+
 def parse_manifest(
-    document: dict[str, object], manifest_text: str, model: str, theorems: str, root: Path
+    document: dict[str, object],
+    manifest_text: str,
+    model: str,
+    refinements: str,
+    claims_source: str,
+    claim_manifest_text: str,
+    assumptions_text: str,
+    root: Path,
 ) -> list[Consumer]:
     if document.get("schema_version") != 2:
         raise ValueError("protocol vector schema must be exactly v2")
@@ -106,12 +226,33 @@ def parse_manifest(
         )
     for section, (definition, theorem) in associations.items():
         declaration(model, "def", definition)
-        theorem_source = declaration(theorems, "theorem", theorem)
+        theorem_source = declaration(refinements, "theorem", theorem)
         theorem_statement = theorem_source.split(":= by", 1)[0]
         if re.search(rf"\b{re.escape(definition)}\b", theorem_statement) is None:
             raise ValueError(
                 f"Lean theorem {theorem} does not directly reference {definition} for {section}"
             )
+    assumptions = parse_assumptions(assumptions_text)
+    claims = parse_claims(
+        claim_manifest_text, assumptions, claims_source, refinements, root
+    )
+    claims_by_section = {claim.section: claim for claim in claims}
+    if set(claims_by_section) != vector_sections:
+        raise ValueError(
+            f"Phase 5 claim sections {sorted(claims_by_section)} do not match "
+            f"vectors {sorted(vector_sections)}"
+        )
+    for section, (definition, theorem) in associations.items():
+        claim = claims_by_section[section]
+        if claim.refinement_theorem != theorem:
+            raise ValueError(f"claim refinement theorem mismatch for {section}")
+    registered_refinements = {consumer.theorem for consumer in consumers}
+    claim_refinements = {claim.refinement_theorem for claim in claims}
+    if claim_refinements != registered_refinements:
+        raise ValueError(
+            f"refinement manifest theorems {sorted(registered_refinements)} do not match "
+            f"Phase 5 claims {sorted(claim_refinements)}"
+        )
     return consumers
 
 
@@ -211,7 +352,10 @@ def main() -> int:
             json.loads(VECTORS.read_text(encoding="utf-8")),
             MANIFEST.read_text(encoding="utf-8"),
             MODEL.read_text(encoding="utf-8"),
-            THEOREMS.read_text(encoding="utf-8"),
+            REFINEMENTS.read_text(encoding="utf-8"),
+            CLAIMS.read_text(encoding="utf-8"),
+            CLAIM_MANIFEST.read_text(encoding="utf-8"),
+            ASSUMPTIONS.read_text(encoding="utf-8"),
             ROOT,
         )
         for consumer in consumers:

@@ -14,41 +14,36 @@ import check_refinement_manifest as refinement
 SECTIONS = (
     "quote_cases",
     "settlement_cases",
-    "finalization_cases",
-    "queue_cases",
-    "canonical_probe_cases",
 )
 DOCUMENT = {"schema_version": 2, **{section: [{}] for section in SECTIONS}}
 MODEL = """
 def commit := True
-def outboundSettlement := True
-def decideWithdrawalFinalization := True
-def restorePendingQueue := True
-def canonicalProbeMatches := True
+def checkedSettlement := True
 """
-THEOREMS = """
-theorem committed_quote_is_fixed (h : commit) : True := by trivial
-theorem outbound_settlement_preserves_backing (h : outboundSettlement) : True := by trivial
-theorem paid_debt_preserves_backing (h : settleDebt) : True := by trivial
-theorem withdrawal_notify_requires_finalized_success
-    (h : decideWithdrawalFinalization) : True := by trivial
-theorem restore_preserves_blocked_retry (h : restorePendingQueue) : True := by trivial
-theorem canonical_probe_matches_exactly
-    (h : canonicalProbeMatches) : True := by trivial
+REFINEMENTS = """
+theorem committed_quote_refinement (h : commit) : True := by trivial
+theorem settlement_backing_refinement (h : checkedSettlement) : True := by trivial
+"""
+CLAIMS = """
+theorem committed_quote_claim : True := by trivial
+theorem settlement_backing_claim : True := by trivial
 """
 VALID_ROWS = [
-    "quote_cases\tcommit\tcommitted_quote_is_fixed\trust\t"
+    "quote_cases\tcommit\tcommitted_quote_refinement\trust\t"
     "canister/bridge-core/tests/protocol_vectors.rs\tprotocol_quote_cases_matches_production",
-    "quote_cases\tcommit\tcommitted_quote_is_fixed\tfoundry\t"
+    "quote_cases\tcommit\tcommitted_quote_refinement\tfoundry\t"
     "contracts/test/ProtocolVectors.t.sol\ttest_protocol_quote_cases_matches_production",
-    "settlement_cases\toutboundSettlement\toutbound_settlement_preserves_backing\trust\t"
+    "settlement_cases\tcheckedSettlement\tsettlement_backing_refinement\trust\t"
     "canister/bridge-core/tests/protocol_vectors.rs\tprotocol_settlement_cases_matches_production",
-    "finalization_cases\tdecideWithdrawalFinalization\twithdrawal_notify_requires_finalized_success\tvitest\t"
-    "ui/src/lib/protocol-vectors.test.ts\tprotocol_finalization_cases_matches_production",
-    "queue_cases\trestorePendingQueue\trestore_preserves_blocked_retry\tvitest\t"
-    "ui/src/lib/protocol-vectors.test.ts\tprotocol_queue_cases_matches_production",
-    "canonical_probe_cases\tcanonicalProbeMatches\tcanonical_probe_matches_exactly\trust\t"
-    "canister/bridge-core/tests/protocol_vectors.rs\tprotocol_canonical_probe_cases_matches_production",
+]
+ASSUMPTIONS = "runtime_toolchain\ttool semantics\n"
+CLAIM_ROWS = [
+    "committed_quote\tcommitted_quote_claim\tcommitted_quote_refinement\tquote_cases\t"
+    "proved,refinement-tested,assumed\t"
+    "canister/bridge-core/tests/protocol_vectors.rs#committed_quote_matches\truntime_toolchain",
+    "settlement_backing\tsettlement_backing_claim\tsettlement_backing_refinement\t"
+    "settlement_cases\tproved,refinement-tested,assumed\t"
+    "canister/bridge-core/tests/protocol_vectors.rs#checked_settlement\truntime_toolchain",
 ]
 
 
@@ -59,40 +54,61 @@ class RefinementManifestTests(unittest.TestCase):
         for _, target in refinement.RUNNER_TARGETS:
             path = self.root / target
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("consumer fixture\n", encoding="utf-8")
+            path.write_text(
+                "consumer fixture committed_quote_matches checked_settlement\n",
+                encoding="utf-8",
+            )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def parse(self, rows: list[str] | None = None, theorems: str = THEOREMS):
+    def parse(
+        self,
+        rows: list[str] | None = None,
+        refinements: str = REFINEMENTS,
+        claims: str = CLAIMS,
+        claim_rows: list[str] | None = None,
+        assumptions: str = ASSUMPTIONS,
+    ):
         return refinement.parse_manifest(
             DOCUMENT,
             "\n".join(VALID_ROWS if rows is None else rows) + "\n",
             MODEL,
-            theorems,
+            refinements,
+            claims,
+            "\n".join(CLAIM_ROWS if claim_rows is None else claim_rows) + "\n",
+            assumptions,
             self.root,
         )
 
-    def assert_invalid(self, rows: list[str], message: str, theorems: str = THEOREMS) -> None:
+    def assert_invalid(self, rows: list[str], message: str, **kwargs) -> None:
         with self.assertRaisesRegex(ValueError, message):
-            self.parse(rows, theorems)
+            self.parse(rows, **kwargs)
 
     def test_valid_manifest_registers_every_consumer(self) -> None:
         consumers = self.parse()
-        self.assertEqual(len(consumers), 6)
+        self.assertEqual(len(consumers), 3)
         self.assertEqual({consumer.section for consumer in consumers}, set(SECTIONS))
 
     def test_old_settlement_theorem_is_rejected(self) -> None:
         rows = [
-            row.replace("outbound_settlement_preserves_backing", "paid_debt_preserves_backing")
+            row.replace("settlement_backing_refinement", "paid_debt_preserves_backing")
             if row.startswith("settlement_cases\t") else row
             for row in VALID_ROWS
         ]
-        self.assert_invalid(rows, "does not directly reference outboundSettlement")
+        refinements = (
+            REFINEMENTS
+            + "\ntheorem paid_debt_preserves_backing (h : settleDebt) : True := by trivial\n"
+        )
+        self.assert_invalid(
+            rows, "does not directly reference checkedSettlement", refinements=refinements
+        )
 
     def test_conflicting_association_is_rejected(self) -> None:
         rows = VALID_ROWS.copy()
-        rows[1] = rows[1].replace("committed_quote_is_fixed", "paid_debt_preserves_backing")
+        rows[1] = rows[1].replace(
+            "committed_quote_refinement", "settlement_backing_refinement"
+        )
         self.assert_invalid(rows, "conflicting refinement association")
 
     def test_duplicate_consumer_is_rejected(self) -> None:
@@ -111,8 +127,56 @@ class RefinementManifestTests(unittest.TestCase):
         self.assert_invalid(rows, "must stay inside the repository")
 
     def test_missing_section_is_rejected(self) -> None:
-        rows = [row for row in VALID_ROWS if not row.startswith("queue_cases\t")]
+        rows = [row for row in VALID_ROWS if not row.startswith("settlement_cases\t")]
         self.assert_invalid(rows, "do not match vectors")
+
+    def test_unregistered_abstract_theorem_is_rejected(self) -> None:
+        claims = CLAIMS + "\ntheorem omitted_claim : True := by trivial\n"
+        self.assert_invalid(
+            VALID_ROWS,
+            "do not match Claims.lean",
+            claims=claims,
+        )
+
+    def test_missing_claim_section_is_rejected(self) -> None:
+        self.assert_invalid(
+            VALID_ROWS,
+            "do not match Claims.lean|do not match vectors",
+            claim_rows=CLAIM_ROWS[:1],
+        )
+
+    def test_missing_production_symbol_is_rejected(self) -> None:
+        rows = [
+            row.replace("#checked_settlement", "#missing_symbol")
+            if row.startswith("settlement_backing\t")
+            else row
+            for row in CLAIM_ROWS
+        ]
+        self.assert_invalid(
+            VALID_ROWS,
+            "missing production symbol",
+            claim_rows=rows,
+        )
+
+    def test_unknown_assumption_is_rejected(self) -> None:
+        rows = [
+            row.replace("runtime_toolchain", "unknown_runtime")
+            if row.startswith("committed_quote\t")
+            else row
+            for row in CLAIM_ROWS
+        ]
+        self.assert_invalid(
+            VALID_ROWS,
+            "unknown external assumption",
+            claim_rows=rows,
+        )
+
+    def test_duplicate_claim_is_rejected(self) -> None:
+        self.assert_invalid(
+            VALID_ROWS,
+            "duplicate Phase 5 claim mapping",
+            claim_rows=CLAIM_ROWS + [CLAIM_ROWS[0]],
+        )
 
 
 class ConsumerResultTests(unittest.TestCase):

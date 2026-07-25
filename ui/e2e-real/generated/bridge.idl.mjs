@@ -259,6 +259,10 @@ export const idlFactory = ({ IDL }) => {
       'ledger_call_performed' : IDL.Bool,
       'stop_reason' : IDL.Opt(IDL.Text),
     }),
+    'FeeRecipientRotated' : IDL.Record({
+      'previous_sha256' : IDL.Vec(IDL.Nat8),
+      'current_sha256' : IDL.Vec(IDL.Nat8),
+    }),
     'EvmTransactionRebroadcasted' : IDL.Record({
       'transaction_hash' : IDL.Vec(IDL.Nat8),
       'attempt' : IDL.Nat8,
@@ -417,6 +421,7 @@ export const idlFactory = ({ IDL }) => {
     'max_service_fee' : IDL.Nat,
     'from_subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
     'last_settlement_stop_reason' : IDL.Opt(IDL.Text),
+    'created_at_ns' : IDL.Nat64,
     'state' : DepositPhase,
     'owner_sequence' : IDL.Nat64,
     'automatic_progress' : IDL.Opt(AutomaticProgressView),
@@ -731,6 +736,7 @@ export const idlFactory = ({ IDL }) => {
     'request_fee_payout' : IDL.Func([IDL.Nat], [Result_15], []),
     'resume_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result], []),
     'resume_new_deposits' : IDL.Func([], [Result_11], []),
+    'rotate_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_11], []),
     'rotate_pause_principal' : IDL.Func(
         [RotatePausePrincipalArgs],
         [Result_11],

@@ -40,6 +40,7 @@ function deposit(sequence: number): DepositView {
   return {
     deposit_id: new Uint8Array(32).fill(sequence),
     owner_sequence: BigInt(sequence),
+    created_at_ns: BigInt(sequence),
     gross_amount: 100n,
     quote: [{ net_amount: 90n, service_fee: 10n }],
     refund: [],

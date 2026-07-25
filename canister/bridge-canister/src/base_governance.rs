@@ -115,6 +115,18 @@ pub async fn submit(
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .ok_or(BaseGovernanceError::StorageFailure)
     })?;
+    if let GovernanceAction::SetServiceFee { value } = &action {
+        let value = nat_u128(value).ok_or(BaseGovernanceError::InvalidArgument)?;
+        let observed = evm_rpc::bridge_snapshot(&config)
+            .await
+            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        if !bridge_core::service_fee_change_allowed(
+            value,
+            observed.snapshot.mint.max_service_fee.get(),
+        ) {
+            return Err(BaseGovernanceError::InvalidArgument);
+        }
+    }
     let operator = crate::api::cached_governance_operator_address(&config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;

@@ -74,6 +74,15 @@ def outboundSettlement (amountOut ledgerFee serviceFee : Nat) : Option (Nat × N
     some (amountOut + ledgerFee, serviceFee - ledgerFee, amountOut + serviceFee)
   else none
 
+def checkedSettlement
+    (s : EconomicState) (amountOut serviceFee ledgerFee : Nat) : Option EconomicState :=
+  if s.escrow = s.baseSupply + s.feeReserve + s.unpaidLiability ∧
+      ledgerFee ≤ serviceFee ∧
+      amountOut + serviceFee ≤ s.unpaidLiability ∧
+      amountOut + ledgerFee ≤ s.escrow then
+    some (settleDebt s amountOut serviceFee ledgerFee)
+  else none
+
 inductive WithdrawalFinalizationDecision where
   | retry
   | notify
@@ -113,5 +122,61 @@ def recordPendingQueueWrite (queue : PendingQueue) (durableSucceeded : Bool) : P
 
 def canonicalProbeMatches (receiptBlock snapshotBlock : Nat) : Bool :=
   receiptBlock = snapshotBlock
+
+structure DepositAdmission where
+  serviceFee : Nat
+  maximumServiceFee : Nat
+  grossAmount : Nat
+  perDepositLimit : Nat
+  mintedInWindow : Nat
+  mintWindowLimit : Nat
+deriving DecidableEq
+
+def DepositAdmissible (a : DepositAdmission) : Prop :=
+  a.serviceFee ≤ a.maximumServiceFee ∧
+    a.serviceFee < a.grossAmount ∧
+    a.grossAmount - a.serviceFee ≤ a.perDepositLimit ∧
+    a.mintedInWindow + (a.grossAmount - a.serviceFee) ≤ a.mintWindowLimit
+
+def admitDeposit (a : DepositAdmission) : Option Nat :=
+  if a.serviceFee ≤ a.maximumServiceFee ∧
+      a.serviceFee < a.grossAmount ∧
+      a.grossAmount - a.serviceFee ≤ a.perDepositLimit ∧
+      a.mintedInWindow + (a.grossAmount - a.serviceFee) ≤ a.mintWindowLimit then
+    some (a.grossAmount - a.serviceFee)
+  else none
+
+def commitMintReservation (reserved candidate : Nat) : Nat × Nat :=
+  (reserved + candidate, 0)
+
+structure FeeState where
+  reserve : Nat
+  confirmedDepositFees : Nat
+  confirmedWithdrawalFees : Nat
+  pendingPayout : Nat
+  recipient : Nat
+deriving DecidableEq
+
+def rotateFeeRecipient (state : FeeState) (recipient : Nat) : Option FeeState :=
+  if state.pendingPayout = 0 then some { state with recipient } else none
+
+def serviceFeeChangeAllowed (serviceFee maximumServiceFee : Nat) : Bool :=
+  serviceFee ≤ maximumServiceFee
+
+def feePayoutAllowed (reserve pending amount fee : Nat) : Bool :=
+  pending ≤ reserve && amount + fee ≤ reserve - pending
+
+def payoutDebit (confirmedFirstTime : Bool) (amount fee : Nat) : Nat :=
+  if confirmedFirstTime then amount + fee else 0
+
+def holdRetryAllowed (exactSuccessEvidence completeAbsenceEvidence : Bool) : Bool :=
+  exactSuccessEvidence || completeAbsenceEvidence
+
+def leaseOutcomeCurrent (active : Bool) (currentGeneration outcomeGeneration : Nat) : Bool :=
+  active && currentGeneration = outcomeGeneration
+
+def manualClaimAllowed
+    (confirmation scheduled active stopped overdue expired : Bool) : Bool :=
+  !confirmation && ((!scheduled && !active) || stopped || overdue || expired)
 
 end BridgeSpec

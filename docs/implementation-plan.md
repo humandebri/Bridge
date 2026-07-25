@@ -12,7 +12,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v21、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
+Bridge canisterはstable schema v22、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
 Plan 005は本番パラメータの外部計測と単一emergency pause演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、Gate A/Gate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、IC mainnet test CanisterとBase Sepoliaの外部実行は明示承認待ちである。
 
 ## 全体構成
@@ -122,7 +122,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003およびADR 0017から0020で外部連携、運用状態、settlement executor、フロント通知型confirmationを追加し、現行stable schemaはv21である。
+後続のPlan 002と003およびADR 0017から0020で外部連携、運用状態、settlement executor、フロント通知型confirmationを追加し、現行stable schemaはv22である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -130,7 +130,7 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
 - 本番未デプロイ中はlegacy schemaを維持せず、現行stable schemaの再オープンとupgrade保持、未知versionのfail-closedを検証する。
-- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v21・record wire v17とする。
+- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v22・record wire v18とする。
 - Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
 - Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
 
@@ -205,10 +205,12 @@ Plan 003で管理権限と監査ログを実装済みである。
 Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みである。
 証明はWasmごとに再実行し、過去版の証明を新しいupgradeへ流用しない（ADR 0008）。
 
-- 各 Deposit が Per-Deposit Limit を超えないこと。mint 流量の消費量が保存されること。Withdrawal専用のBase refund/remint経路がなく、処理済みDeposit IDをreplayできないこと（ADR 0018）。
-- 1件のWithdrawalがBase `Committed`からCanister `Paid`へ進み、`Paid`後に再送・減額・送金先変更されないこと（ADR 0018）。
-- Service Fee の上限制約、二重計上防止、成功前の fee 確定禁止、recipient 変更時の reserve 保存、fee reserve を超える送金の禁止（ADR 0004）。
-- Deposit 受付が Settlement Reserve を侵食しないこと。Settlement task が Deposit task より優先されること（ADR 0005）。
+- 各DepositのquoteがService Fee上限、正のnet額、Per-Deposit Limit、Mint Throughput Limitを満たし、quote確定時だけmint予約へ移ること。Withdrawal専用のBase refund/remint経路がなく、処理済みDeposit IDをreplayできないこと（ADR 0018、0021）。
+- canonical観測とLedger成功を前提に、1件のWithdrawalがBase `Committed`からCanister `Paid`へ進み、`Paid`後に再送・減額・送金先変更されないこと（ADR 0018）。外部サービスのlivenessは主張しない。
+- Service Feeの上限制約、二重計上防止、成功前のfee確定禁止、未完了payoutがない場合のrecipient変更によるreserve保存、fee reserveを超える送金の禁止（ADR 0004）。
+- Deposit受付がcandidateを含むSettlement Reserveを満たし、candidateからreservedへの移行で必要資源量を減らさないこと（ADR 0005）。
+- stable settlement executorのactive leaseがCanister全体で最大1件であり、generationが単調増加し、stale callback、confirmation jobの通常claim、scheduled/leased jobの手動迂回を拒否すること（ADR 0019、0020）。
+- release対象claimは`Claims.lean`、implementation対応は`Refinement.lean`へ分離し、claim台帳、vector section、production consumer、外部仮定をCIで完全一致させる。release driverは自己申告attestationを受理せず、不可逆操作直前にclean sourceからproof gateを再実行する。
 - Reconciliation Hold から新規 transfer または補償状態へ直接遷移しないこと（ADR 0006）。
 
 証明範囲は資産の 1:1 裏付けと上記の性質に限定し、cross-chain governance を含めない（ADR 0002）。

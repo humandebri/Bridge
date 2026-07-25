@@ -141,6 +141,7 @@ proof fn candidate_reservation_increases_both_requirements(
             == Some(floor + unit * (current + 1)),
         floor + unit * current <= floor + unit * (current + 1)
 {
+    assert(current <= current + 1);
     vstd::arithmetic::mul::lemma_mul_inequality(current, current + 1, unit);
 }
 
@@ -255,6 +256,50 @@ proof fn payout_includes_fee_and_cannot_exceed_reserve(reserve: int, pending: in
         <==> amount + fee <= reserve - pending,
         kernel::payout_debit_spec(true, amount, fee) == Some(amount + fee),
         kernel::payout_debit_spec(false, amount, fee) == Some(0int)
+{}
+
+proof fn fee_recipient_rotation_requires_no_pending_payout(pending: int)
+    requires 0 <= pending
+    ensures kernel::fee_recipient_rotation_allowed_spec(pending) <==> pending == 0
+{}
+
+proof fn service_fee_change_respects_immutable_maximum(service_fee: int, maximum: int)
+    requires 0 <= service_fee, 0 <= maximum
+    ensures kernel::service_fee_change_allowed_spec(service_fee, maximum)
+        <==> service_fee <= maximum
+{}
+
+proof fn reserve_candidate_becomes_reservation_without_reducing_requirement(
+    reserved: int, candidate: int,
+)
+    requires 0 <= reserved, 0 <= candidate
+    ensures kernel::reserve_admission_preserves_requirement_spec(
+        reserved, candidate, reserved + candidate, 0)
+{}
+
+proof fn stale_or_inactive_lease_outcome_is_rejected(
+    active_generation: int, outcome_generation: int, active: bool,
+)
+    ensures kernel::lease_outcome_is_current_spec(
+        active_generation, outcome_generation, active)
+        <==> active && active_generation == outcome_generation
+{}
+
+proof fn hold_requires_success_or_complete_absence(success: bool, absence: bool)
+    ensures kernel::hold_retry_allowed_spec(success, absence) <==> success || absence
+{}
+
+proof fn manual_claim_cannot_bypass_confirmation_or_active_schedule(
+    confirmation: bool,
+    scheduled: bool,
+    active: bool,
+    stopped: bool,
+    overdue: bool,
+    expired: bool,
+)
+    ensures kernel::manual_claim_allowed_spec(
+        confirmation, scheduled, active, stopped, overdue, expired)
+        <==> !confirmation && ((!scheduled && !active) || stopped || overdue || expired)
 {}
 
 proof fn role_action_matrix(action: int, pause: bool, governance: bool)

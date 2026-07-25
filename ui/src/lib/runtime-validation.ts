@@ -49,6 +49,39 @@ export async function refetchRuntimeWriteReady(refetch: () => Promise<{ data?: R
   return result.data
 }
 
+export async function validateRuntimeHeartbeat(profile: DeploymentProfile, connectedChainId?: number): Promise<RuntimeValidation> {
+  const blockers = profileCompleteness(profile)
+  if (connectedChainId !== undefined && connectedChainId !== profile.chainId) blockers.push(`Wallet is on chain ${connectedChainId}; expected ${profile.chainId}`)
+  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
+
+  const bridgeAddress = profile.bridgeAddress as Address
+  const client = createBasePublicClient(profile)
+  const bridge = await createBridgeActor(profile.icHost, profile.bridgeCanisterId as string)
+  const [status, localChainId, localFinalized] = await Promise.all([
+    bridge.get_bridge_status(),
+    client.getChainId(),
+    client.getBlock({ blockTag: "finalized" }),
+  ])
+  if (status.withdrawal_fee_guard_active) blockers.push("Withdrawal fee guard is active; pause Base withdrawals and reconcile fees")
+  if (localChainId !== profile.chainId) blockers.push(`Base RPC is on chain ${localChainId}; expected ${profile.chainId}`)
+  if (localFinalized.number === null || localFinalized.hash === null) blockers.push("Finalized Base block number or hash is unavailable")
+  const timestampBlocker = finalizedHeadTimestampBlocker(localFinalized.timestamp)
+  if (timestampBlocker) blockers.push(timestampBlocker)
+  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
+
+  const bridgeSnapshot = await client.readContract({
+    address: bridgeAddress,
+    abi: bridgeAbi,
+    functionName: "bridgeSnapshot",
+    blockHash: localFinalized.hash,
+    requireCanonical: true,
+  })
+  if (bridgeSnapshot.bridgeSigner.toLowerCase() !== profile.expected_bridge_signer?.toLowerCase()) {
+    blockers.push("Bridge signer differs from the reviewed profile")
+  }
+  return { ready: blockers.length === 0, blockers, checkedAt: Date.now() }
+}
+
 export async function validateRuntime(profile: DeploymentProfile, connectedChainId?: number): Promise<RuntimeValidation> {
   const blockers = profileCompleteness(profile)
   if (connectedChainId !== undefined && connectedChainId !== profile.chainId) blockers.push(`Wallet is on chain ${connectedChainId}; expected ${profile.chainId}`)
@@ -109,7 +142,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   } catch {
     blockers.push("Index ledger binding is unavailable")
   }
-  if (config.schema_version !== 21) blockers.push(`Unsupported canister schema ${config.schema_version}`)
+  if (config.schema_version !== 22) blockers.push(`Unsupported canister schema ${config.schema_version}`)
   if (ledgerName !== profile.icToken.name || ledgerSymbol !== profile.icToken.symbol || ledgerDecimals !== profile.icToken.decimals) {
     blockers.push(`IC token metadata is not ${profile.icToken.name}/${profile.icToken.symbol}/${profile.icToken.decimals}`)
   }

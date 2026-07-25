@@ -92,6 +92,12 @@ export type AuditEventKind = {
     }
   } |
   {
+    'FeeRecipientRotated' : {
+      'previous_sha256' : Uint8Array | number[],
+      'current_sha256' : Uint8Array | number[],
+    }
+  } |
+  {
     'EvmTransactionRebroadcasted' : {
       'transaction_hash' : Uint8Array | number[],
       'attempt' : number,
@@ -297,6 +303,7 @@ export interface DepositView {
   'max_service_fee' : bigint,
   'from_subaccount' : [] | [Uint8Array | number[]],
   'last_settlement_stop_reason' : [] | [string],
+  'created_at_ns' : bigint,
   'state' : DepositPhase,
   'owner_sequence' : bigint,
   'automatic_progress' : [] | [AutomaticProgressView],
@@ -659,6 +666,7 @@ export interface _SERVICE {
   'request_fee_payout' : ActorMethod<[bigint], Result_15>,
   'resume_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result>,
   'resume_new_deposits' : ActorMethod<[], Result_11>,
+  'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_11>,
   'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_11>,
   'schedule_activation' : ActorMethod<[], Result_4>,
   'start_storage_validation' : ActorMethod<[], Result_2>,

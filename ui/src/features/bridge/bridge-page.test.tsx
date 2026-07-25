@@ -5,14 +5,14 @@ import { BridgeConfirmationDialog, type BridgeDirection } from "./bridge-page"
 function Harness({ direction, onConfirm = vi.fn() }: { direction: BridgeDirection; onConfirm?: () => void }) {
   const sendSymbol = direction === "deposit" ? "TICRC1" : "KINIC"
   const receiveSymbol = direction === "deposit" ? "KINIC" : "TICRC1"
-  return <BridgeConfirmationDialog direction={direction} open setOpen={() => undefined} source="source-wallet" destination="destination-wallet" amount="10" receive={9n} sendSymbol={sendSymbol} receiveSymbol={receiveSymbol} ledgerFee={10_000n} pending={false} onConfirm={onConfirm} />
+  return <BridgeConfirmationDialog direction={direction} open setOpen={() => undefined} source="source-wallet" destination="destination-wallet" amount="10" receive={9n} sendSymbol={sendSymbol} receiveSymbol={receiveSymbol} pending={false} onConfirm={onConfirm} />
 }
 
 describe("BridgeConfirmationDialog", () => {
   it("lets a deposit continue after reviewing its wallets and amount", () => {
     render(<Harness direction="deposit" />)
     expect(screen.getByText("10 TICRC1 / 0.00000009 KINIC")).toBeVisible()
-    expect(screen.getByText(/gross amount minus 0\.0001 KINIC/)).toBeVisible()
+    expect(screen.queryByText(/Base conditions are checked again/)).not.toBeInTheDocument()
     const confirm = screen.getByRole("button", { name: "Confirm and open wallet" })
     expect(confirm).toBeEnabled()
   })

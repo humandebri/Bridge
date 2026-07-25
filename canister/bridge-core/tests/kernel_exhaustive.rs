@@ -1,11 +1,12 @@
 use bridge_core::{
     administrator_authorized, audit_next, can_assign_nonce, checked_counter_transition,
     checked_requirement, counter_delta, deposit_phase_allows, deposit_phase_step, evidence_matches,
-    fee_delta_once, lease_generation_next, mint_admission_total, next_attempt, nonce_next,
+    fee_delta_once, fee_recipient_rotation_allowed, lease_generation_next,
+    lease_outcome_is_current, mint_admission_total, next_attempt, nonce_next,
     nonce_too_low_is_submitted, outbound_settlement, payout_allowed, payout_debit,
     refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
-    reserve_token_matches, resources_sufficient, scan_complete, withdrawal_phase_allows,
-    withdrawal_phase_step,
+    reserve_admission_preserves_requirement, reserve_token_matches, resources_sufficient,
+    scan_complete, service_fee_change_allowed, withdrawal_phase_allows, withdrawal_phase_step,
 };
 
 #[test]
@@ -58,6 +59,25 @@ fn reserve_boundaries_and_overflow_are_checked() {
             );
         }
     }
+}
+
+#[test]
+fn fee_rotation_reserve_admission_and_lease_fences_are_fail_closed() {
+    assert!(fee_recipient_rotation_allowed(0));
+    assert!(!fee_recipient_rotation_allowed(1));
+    assert!(service_fee_change_allowed(10, 10));
+    assert!(!service_fee_change_allowed(11, 10));
+    assert!(reserve_admission_preserves_requirement(7, 1, 8, 0));
+    assert!(!reserve_admission_preserves_requirement(7, 1, 7, 0));
+    assert!(!reserve_admission_preserves_requirement(
+        u128::MAX,
+        1,
+        u128::MAX,
+        1
+    ));
+    assert!(lease_outcome_is_current(4, 4, true));
+    assert!(!lease_outcome_is_current(4, 3, true));
+    assert!(!lease_outcome_is_current(4, 4, false));
 }
 
 #[test]

@@ -1348,14 +1348,19 @@ async fn advance_hold(
             Ok(HoldAdvance::Progress)
         }
         ledger::ReconciliationOutcome::Succeeded { block_index } => {
-            resolve_reconciliation_success(config, target, block_index);
-            Ok(HoldAdvance::Continue)
+            if bridge_core::hold_retry_allowed(true, false) {
+                resolve_reconciliation_success(config, target, block_index);
+                Ok(HoldAdvance::Continue)
+            } else {
+                Ok(HoldAdvance::Progress)
+            }
         }
         ledger::ReconciliationOutcome::Absent {
             ledger_watermark,
             index_watermark,
         } => {
-            if index_watermark < ledger_watermark {
+            let complete_absence = index_watermark >= ledger_watermark;
+            if !bridge_core::hold_retry_allowed(false, complete_absence) {
                 return Ok(HoldAdvance::Progress);
             }
             resolve_reconciliation_absence(config, target, hold.transfer, index_watermark);

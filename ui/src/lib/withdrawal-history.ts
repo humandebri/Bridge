@@ -27,6 +27,11 @@ export async function fetchInBatches<T, U>(items: T[], batchSize: number, fetchB
   return results
 }
 
+export async function fetchUniqueBlockTimestamps(blockNumbers: bigint[], fetchTimestamp: (blockNumber: bigint) => Promise<bigint>): Promise<Map<bigint, bigint>> {
+  const unique = [...new Set(blockNumbers)]
+  return new Map(await Promise.all(unique.map(async (blockNumber) => [blockNumber, await fetchTimestamp(blockNumber)] as const)))
+}
+
 interface ScanOptions<T extends FinalizedEventLog> {
   deploymentBlock: bigint
   finalizedBlock: bigint

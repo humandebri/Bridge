@@ -17,7 +17,7 @@ SCHEMA_VERSION = 1
 KIND = "kinic-bridge-sepolia-staging-e2e"
 CHAIN_ID = 84532
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 21
+CURRENT_STABLE_SCHEMA = 22
 STAGES = (
     "preflight",
     "install",

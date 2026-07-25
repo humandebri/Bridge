@@ -11,6 +11,7 @@ import {
   RUNTIME_VALIDATION_TTL_MS,
   runtimeWriteBlocker,
   validateRuntime,
+  validateRuntimeHeartbeat,
 } from "./runtime-validation"
 
 const mocks = vi.hoisted(() => ({
@@ -18,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   createBridgeActor: vi.fn(),
   createIndexActor: vi.fn(),
   createLedgerActor: vi.fn(),
+  getBridgeStatus: vi.fn(),
+  getPublicConfig: vi.fn(),
   sha256: vi.fn(),
 }))
 
@@ -99,18 +102,20 @@ beforeEach(() => {
     readContract: readContractMock,
   })
   mocks.sha256.mockImplementation((code: string) => code === "0x01" ? bridgeHash : bsnsHash)
+  mocks.getPublicConfig.mockImplementation(() => Promise.resolve({
+    base_chain_id: BigInt(profile.chainId),
+    bridge_contract: Array.from({ length: 20 }, () => 0x11),
+    ledger_canister_id: Principal.fromText(configuredLedgerId),
+    index_canister_id: Principal.fromText(configuredIndexId),
+    schema_version: 22,
+    expected_bridge_signer: new Uint8Array(20).fill(0x33),
+    evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
+    rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
+  }))
+  mocks.getBridgeStatus.mockResolvedValue({ withdrawal_fee_guard_active: false })
   mocks.createBridgeActor.mockResolvedValue({
-    get_public_config: vi.fn().mockImplementation(() => Promise.resolve({
-      base_chain_id: BigInt(profile.chainId),
-      bridge_contract: Array.from({ length: 20 }, () => 0x11),
-      ledger_canister_id: Principal.fromText(configuredLedgerId),
-      index_canister_id: Principal.fromText(configuredIndexId),
-      schema_version: 21,
-      expected_bridge_signer: new Uint8Array(20).fill(0x33),
-      evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
-      rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
-    })),
-    get_bridge_status: vi.fn().mockResolvedValue({ withdrawal_fee_guard_active: false }),
+    get_public_config: mocks.getPublicConfig,
+    get_bridge_status: mocks.getBridgeStatus,
   })
   mocks.createLedgerActor.mockResolvedValue({
     icrc1_name: vi.fn().mockImplementation(() => Promise.resolve(ledgerMetadata.name)),
@@ -176,6 +181,36 @@ describe("validateRuntime token bindings", () => {
     await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({ ready: true })
     contractSigner = `0x${"44".repeat(20)}`
     await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: ["Bridge signer differs from the reviewed profile"],
+    })
+  })
+
+  it("uses only dynamic reads for the runtime heartbeat", async () => {
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
+    expect(mocks.getBridgeStatus).toHaveBeenCalledOnce()
+    expect(readContractMock).toHaveBeenCalledOnce()
+    expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: "bridgeSnapshot",
+      blockHash: finalizedHash,
+      requireCanonical: true,
+    }))
+    expect(mocks.getPublicConfig).not.toHaveBeenCalled()
+    expect(getCodeMock).not.toHaveBeenCalled()
+    expect(mocks.sha256).not.toHaveBeenCalled()
+    expect(mocks.createLedgerActor).not.toHaveBeenCalled()
+    expect(mocks.createIndexActor).not.toHaveBeenCalled()
+  })
+
+  it("fails the runtime heartbeat on a fee guard or signer rotation", async () => {
+    mocks.getBridgeStatus.mockResolvedValueOnce({ withdrawal_fee_guard_active: true })
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: ["Withdrawal fee guard is active; pause Base withdrawals and reconcile fees"],
+    })
+
+    contractSigner = `0x${"44".repeat(20)}`
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
       ready: false,
       blockers: ["Bridge signer differs from the reviewed profile"],
     })

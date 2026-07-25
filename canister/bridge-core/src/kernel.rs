@@ -186,6 +186,43 @@ macro_rules! payout_allowed_body {
     }};
 }
 
+macro_rules! fee_recipient_rotation_allowed_body {
+    ($pending_payout_debit:expr, $zero:expr) => {
+        $pending_payout_debit == $zero
+    };
+}
+
+macro_rules! service_fee_change_allowed_body {
+    ($service_fee:expr, $maximum_service_fee:expr) => {
+        $service_fee <= $maximum_service_fee
+    };
+}
+
+#[cfg(verus_keep_ghost)]
+macro_rules! reserve_admission_preserves_requirement_body {
+    ($before_reserved:expr, $before_candidate:expr, $after_reserved:expr, $after_candidate:expr) => {
+        $before_reserved + $before_candidate == $after_reserved + $after_candidate
+    };
+}
+
+macro_rules! lease_outcome_is_current_body {
+    ($active_generation:expr, $outcome_generation:expr, $active:expr) => {
+        $active && $active_generation == $outcome_generation
+    };
+}
+
+macro_rules! hold_retry_allowed_body {
+    ($exact_success:expr, $complete_absence:expr) => {
+        $exact_success || $complete_absence
+    };
+}
+
+macro_rules! manual_claim_allowed_body {
+    ($confirmation:expr, $scheduled:expr, $active:expr, $stopped:expr, $overdue:expr, $expired:expr) => {
+        !$confirmation && ((!$scheduled && !$active) || $stopped || $overdue || $expired)
+    };
+}
+
 macro_rules! deposit_refund_body {
     ($gross:expr, $ledger_fee:expr) => {{
         if $gross <= $ledger_fee {
@@ -454,6 +491,58 @@ pub const fn payout_allowed(reserve: u128, pending: u128, amount: u128, fee: u12
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn fee_recipient_rotation_allowed(pending_payout_debit: u128) -> bool {
+    fee_recipient_rotation_allowed_body!(pending_payout_debit, 0u128)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn service_fee_change_allowed(service_fee: u128, maximum_service_fee: u128) -> bool {
+    service_fee_change_allowed_body!(service_fee, maximum_service_fee)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn reserve_admission_preserves_requirement(
+    before_reserved: u128,
+    before_candidate: u128,
+    after_reserved: u128,
+    after_candidate: u128,
+) -> bool {
+    match (
+        before_reserved.checked_add(before_candidate),
+        after_reserved.checked_add(after_candidate),
+    ) {
+        (Some(before), Some(after)) => before == after,
+        _ => false,
+    }
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn lease_outcome_is_current(
+    active_generation: u64,
+    outcome_generation: u64,
+    active: bool,
+) -> bool {
+    lease_outcome_is_current_body!(active_generation, outcome_generation, active)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn hold_retry_allowed(exact_success: bool, complete_absence: bool) -> bool {
+    hold_retry_allowed_body!(exact_success, complete_absence)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn manual_claim_allowed(
+    confirmation: bool,
+    scheduled: bool,
+    active: bool,
+    stopped: bool,
+    overdue: bool,
+    expired: bool,
+) -> bool {
+    manual_claim_allowed_body!(confirmation, scheduled, active, stopped, overdue, expired)
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn deposit_refund_amount(gross: u128, ledger_fee: u128) -> Option<u128> {
     deposit_refund_body!(gross, ledger_fee)
 }
@@ -679,6 +768,51 @@ verus! {
     pub open spec fn payout_allowed_spec(reserve: int, pending: int, amount: int, fee: int) -> bool {
         let max: int = 340282366920938463463374607431768211455;
         payout_allowed_body!(reserve, pending, amount, fee, max)
+    }
+
+    pub open spec fn fee_recipient_rotation_allowed_spec(pending_payout_debit: int) -> bool {
+        let zero: int = 0;
+        fee_recipient_rotation_allowed_body!(pending_payout_debit, zero)
+    }
+
+    pub open spec fn service_fee_change_allowed_spec(
+        service_fee: int, maximum_service_fee: int,
+    ) -> bool {
+        service_fee_change_allowed_body!(service_fee, maximum_service_fee)
+    }
+
+    pub open spec fn reserve_admission_preserves_requirement_spec(
+        before_reserved: int,
+        before_candidate: int,
+        after_reserved: int,
+        after_candidate: int,
+    ) -> bool {
+        reserve_admission_preserves_requirement_body!(
+            before_reserved, before_candidate, after_reserved, after_candidate)
+    }
+
+    pub open spec fn lease_outcome_is_current_spec(
+        active_generation: int, outcome_generation: int, active: bool,
+    ) -> bool {
+        lease_outcome_is_current_body!(active_generation, outcome_generation, active)
+    }
+
+    pub open spec fn hold_retry_allowed_spec(
+        exact_success: bool, complete_absence: bool,
+    ) -> bool {
+        hold_retry_allowed_body!(exact_success, complete_absence)
+    }
+
+    pub open spec fn manual_claim_allowed_spec(
+        confirmation: bool,
+        scheduled: bool,
+        active: bool,
+        stopped: bool,
+        overdue: bool,
+        expired: bool,
+    ) -> bool {
+        manual_claim_allowed_body!(
+            confirmation, scheduled, active, stopped, overdue, expired)
     }
 
     pub open spec fn deposit_refund_amount_spec(gross: int, ledger_fee: int) -> Option<int> {

@@ -16,6 +16,42 @@ production_require_clean_source() {
   fi
 }
 
+production_run_proof_gate() {
+  local source_root="$1" expected_revision="$2" expected_tree="$3"
+  local proof_script before_revision before_tree after_revision after_tree
+  proof_script="$source_root/scripts/ci-local.sh"
+  [[ -x "$proof_script" ]] || {
+    echo "tracked proof gate is missing or not executable" >&2
+    return 1
+  }
+  git -C "$source_root" ls-files --error-unmatch scripts/ci-local.sh >/dev/null || {
+    echo "proof gate is not tracked by the bound source revision" >&2
+    return 1
+  }
+  production_require_clean_source "$source_root" || return 1
+  before_revision="$(git -C "$source_root" rev-parse HEAD)" || return 1
+  before_tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')" || return 1
+  [[ "$before_revision" == "$expected_revision" \
+    && "$before_tree" == "$(printf '%s' "$expected_tree" | tr '[:upper:]' '[:lower:]')" ]] || {
+    echo "proof gate source does not match the release manifest" >&2
+    return 1
+  }
+  "$proof_script" proofs || {
+    echo "release proof gate failed" >&2
+    return 1
+  }
+  production_require_clean_source "$source_root" || {
+    echo "release source changed while proofs were running" >&2
+    return 1
+  }
+  after_revision="$(git -C "$source_root" rev-parse HEAD)" || return 1
+  after_tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')" || return 1
+  [[ "$after_revision" == "$before_revision" && "$after_tree" == "$before_tree" ]] || {
+    echo "release source identity changed while proofs were running" >&2
+    return 1
+  }
+}
+
 # Reserve evidence before an irreversible operation. An interrupted attempt
 # deliberately leaves an empty marker so that reruns cannot silently redeploy.
 production_reserve_output() {
@@ -80,6 +116,7 @@ production_validate_gate() {
   rm -rf "$target"
   actual_hash="$(printf '%s\n' "$output" | sed -nE 's/.*manifest_sha256=([0-9a-fA-F]{64}).*/\1/p' | tail -n 1)"
   [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { echo "driver Gate manifest hash mismatch" >&2; return 1; }
+  production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree"
 }
 
 production_render_release_inputs() {

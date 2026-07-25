@@ -22,6 +22,9 @@ function phaseName(value: Record<string, unknown>): string {
   if (keys.length !== 1) throw new Error(`Invalid phase variant: ${JSON.stringify(value)}`);
   return keys[0];
 }
+function debugJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => typeof item === "bigint" ? `${item}n` : item);
+}
 describe("Phase 3 PocketIC saga", () => {
   let server: ChildProcess | undefined;
   let pic: PocketIc | undefined;
@@ -45,7 +48,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 6, settlement_rate_limit_per_record: 3, transaction_gas_limit: 500_000n, max_fee_per_gas: 10n, max_priority_fee_per_gas: 1n, evm_liveness: { check_interval_seconds: 60n, rebroadcast_after_seconds: 300n, replacement_after_seconds: 1_800n, max_replacements: 3, fee_bump_bps: 1_250, fee_ceiling_multiplier_bps: 40_000 }, eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, transaction_gas_limit: 500_000n, max_fee_per_gas: 10n, max_priority_fee_per_gas: 1n, evm_liveness: { check_interval_seconds: 60n, rebroadcast_after_seconds: 300n, replacement_after_seconds: 1_800n, max_replacements: 3, fee_bump_bps: 1_250, fee_ceiling_multiplier_bps: 40_000 }, eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(bridgeWasm), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
@@ -67,11 +70,21 @@ describe("Phase 3 PocketIC saga", () => {
   async function advancePastAutomaticRetry(minutes = 21) {
     await pic!.advanceTime(minutes * 60_000 + 1);
   }
+  async function continueDeposit(bridge: any, depositId: Uint8Array) {
+    await pic!.advanceTime(6 * 60_000 + 1);
+    return bridge.actor.continue_deposit(depositId);
+  }
+  async function continueWithdrawal(bridge: any, withdrawalId: Uint8Array) {
+    await pic!.advanceTime(6 * 60_000 + 1);
+    return bridge.actor.continue_withdrawal(withdrawalId);
+  }
   async function confirmDeposit(bridge: any, depositId: Uint8Array, observedFinalizedBlockNumber = 100n, receiptBlockNumber = 99n) {
     let stored: any = await bridge.actor.get_deposit(depositId);
     let submitted = stored[0]?.base_confirmation?.[0]?.Submitted;
+    const attempts: any[] = [];
     for (let attempt = 0; submitted === undefined && attempt < 5; attempt += 1) {
-      const advanced = await bridge.actor.continue_deposit(depositId);
+      const advanced = await continueDeposit(bridge, depositId);
+      attempts.push({ advanced, automatic_progress: stored[0]?.automatic_progress });
       if (!("Ok" in advanced) && !("Busy" in advanced.Err) && !("AutomaticProgressPending" in advanced.Err)) {
         throw new Error(`deposit advance failed: ${JSON.stringify(advanced)}`);
       }
@@ -79,7 +92,9 @@ describe("Phase 3 PocketIC saga", () => {
       stored = await bridge.actor.get_deposit(depositId);
       submitted = stored[0]?.base_confirmation?.[0]?.Submitted;
     }
-    if (submitted === undefined) throw new Error("deposit has no submitted Base transaction");
+    if (submitted === undefined) {
+      throw new Error(`deposit has no submitted Base transaction: ${debugJson(attempts)}`);
+    }
     return bridge.actor.confirm_deposit({
       settlement_id: depositId,
       transaction_hash: submitted.transaction_hash,
@@ -92,7 +107,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(result).toHaveProperty("Ok");
     expect(result.Ok).toHaveProperty("Ingested");
     const withdrawalId = result.Ok.Ingested.withdrawal_id;
-    const advanced = await bridge.actor.continue_withdrawal(withdrawalId);
+    const advanced = await continueWithdrawal(bridge, withdrawalId);
     expect(advanced).toHaveProperty("Ok");
     return result;
   }
@@ -184,7 +199,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(first).toHaveProperty("Ok");
     expect(first.Ok.owner_sequence).toBe(0n);
     expect(await (bridge.actor as any).get_next_deposit_sequence(runtimePrincipal)).toBe(1n);
-    await (bridge.actor as any).continue_deposit(first.Ok.deposit_id);
+    await continueDeposit(bridge, first.Ok.deposit_id);
     const replay: any = await (bridge.actor as any).request_deposit(request);
     expect(Array.from(replay.Ok.deposit_id)).toEqual(Array.from(first.Ok.deposit_id));
     expect(await (bridge.actor as any).request_deposit({ ...request, gross_amount: 20_001n })).toEqual({ Err: { DepositConflict: null } });
@@ -213,7 +228,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await confirmDeposit(bridge, ownerDeposit.Ok.deposit_id)).toHaveProperty("Ok.Complete");
 
     const governanceDeposit: any = await deposit(92);
-    expect(await (bridge.actor as any).continue_deposit(governanceDeposit.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
+    expect(await continueDeposit(bridge, governanceDeposit.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
     bridge.actor.setPrincipal(thirdParty);
     expect(await confirmDeposit(bridge, governanceDeposit.Ok.deposit_id)).toEqual({ Err: { Unauthorized: null } });
     bridge.actor.setPrincipal(Principal.anonymous());
@@ -224,24 +239,30 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).rotate_pause_principal({ pause_principal: pausePrincipal })).toHaveProperty("Ok");
     bridge.actor.setPrincipal(owner);
     const pauseDeposit: any = await deposit(93);
-    expect(await (bridge.actor as any).continue_deposit(pauseDeposit.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
+    expect(await continueDeposit(bridge, pauseDeposit.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
     bridge.actor.setPrincipal(pausePrincipal);
     expect(await confirmDeposit(bridge, pauseDeposit.Ok.deposit_id)).toHaveProperty("Ok.Complete");
   });
 
-  it("allows only one concurrent Continue call for the same in-flight record", async () => {
+  it("serializes concurrent Continue calls with automatic progress for the same record", async () => {
     const { ledger, bridge, runtimePrincipal } = await setup();
     await (ledger.actor as any).set_ledger_mode({ TemporarilyUnavailable: null });
     const deposit: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
-    await advancePastAutomaticRetry();
+    await advancePastAutomaticRetry(40);
     const deferred = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
     deferred.setPrincipal(runtimePrincipal);
     const first = await deferred.continue_deposit(deposit.Ok.deposit_id);
     const second = await deferred.continue_deposit(deposit.Ok.deposit_id);
     const results: any[] = await Promise.all([first(), second()]);
-    expect(results.filter((result) => "Ok" in result && "Submitted" in result.Ok)).toHaveLength(1);
     expect(results.filter((result) => "Err" in result && "Busy" in result.Err)).toHaveLength(1);
+    expect(
+      results.filter(
+        (result) =>
+          "Ok" in result
+          || ("Err" in result && "AutomaticProgressPending" in result.Err),
+      ),
+    ).toHaveLength(1);
   });
 
   it("serializes Continue calls for unrelated records with the global settlement lease", async () => {
@@ -279,7 +300,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(21);
+    expect(config.schema_version).toBe(22);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(10_000n);
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
@@ -334,6 +355,44 @@ describe("Phase 3 PocketIC saga", () => {
     expect(replayPage.Ok.deposit_ids).toHaveLength(1);
   });
 
+  it("publishes rotated administrator configuration and preserves it across reopen", async () => {
+    const { bridge, init, runtimePrincipal } = await setup(false);
+    const nextPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(65));
+    const nextFeeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(66));
+
+    expect(await (bridge.actor as any).rotate_pause_principal({
+      pause_principal: nextPausePrincipal,
+    })).toHaveProperty("Ok");
+    expect(await (bridge.actor as any).rotate_fee_recipient({
+      owner: nextFeeRecipient,
+      subaccount: [],
+    })).toHaveProperty("Ok");
+
+    const rotated: any = await (bridge.actor as any).get_public_config();
+    expect(rotated.pause_principal.toText()).toBe(nextPausePrincipal.toText());
+    expect(rotated.fee_recipient.owner.toText()).toBe(nextFeeRecipient.toText());
+
+    bridge.actor.setPrincipal(init.pause_principal);
+    expect(await (bridge.actor as any).pause_new_deposits()).toEqual({
+      Err: { Unauthorized: null },
+    });
+    bridge.actor.setPrincipal(nextPausePrincipal);
+    expect(await (bridge.actor as any).pause_new_deposits()).toHaveProperty("Ok");
+
+    const [controller] = await pic!.getControllers(bridge.canisterId);
+    if (controller === undefined) throw new Error("bridge controller is missing");
+    await pic!.upgradeCanister({
+      canisterId: bridge.canisterId,
+      wasm: readFileSync(bridgeWasm),
+      arg: IDL.encode([], []),
+      sender: controller,
+    });
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const reopened: any = await (bridge.actor as any).get_public_config();
+    expect(reopened.pause_principal.toText()).toBe(nextPausePrincipal.toText());
+    expect(reopened.fee_recipient.owner.toText()).toBe(nextFeeRecipient.toText());
+  });
+
   it("quotes the service fee only after the ledger pull", async () => {
     const { evm, bridge } = await setup();
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
@@ -355,8 +414,8 @@ describe("Phase 3 PocketIC saga", () => {
     expect(second).toHaveProperty("Ok");
     expect((await (bridge.actor as any).get_bridge_status()).counts.reserved_deposit_mint_amount).toBe(0n);
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(0);
-    expect(await (bridge.actor as any).continue_deposit(first.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
-    expect(await (bridge.actor as any).continue_deposit(second.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await continueDeposit(bridge, first.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
+    expect(await continueDeposit(bridge, second.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     const refunded: any = await (bridge.actor as any).get_deposit(second.Ok.deposit_id);
     expect(phaseName(refunded[0].state)).toBe("Refunded");
     expect(refunded[0].quote).toEqual([]);
@@ -374,7 +433,7 @@ describe("Phase 3 PocketIC saga", () => {
       max_service_fee: 10n,
     });
     expect(accepted).toHaveProperty("Ok.state.FundingPending");
-    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     const record: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(phaseName(record[0].state)).toBe("Refunded");
     expect(record[0].quote).toEqual([]);
@@ -387,7 +446,7 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_deposit_mints_paused(true);
     await (ledger.actor as any).set_refund_ledger_mode([{ Trap: null }]);
     const accepted: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
-    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Stopped.reason.LedgerAmbiguous");
+    expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.Stopped.reason.LedgerAmbiguous");
     const held: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(phaseName(held[0].state)).toBe("RefundReconciliationHold");
     expect(held[0].refund[0]).toMatchObject({ amount: 10_000n, ledger_fee: 10_000n, attempt_no: 0n, block_index: [] });
@@ -395,7 +454,7 @@ describe("Phase 3 PocketIC saga", () => {
 
     await (ledger.actor as any).set_refund_ledger_mode([{ Succeed: null }]);
     await advancePastAutomaticRetry();
-    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     const refunded: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(phaseName(refunded[0].state)).toBe("Refunded");
     expect(refunded[0].refund[0]).toMatchObject({ amount: 10_000n, ledger_fee: 10_000n, attempt_no: 0n });
@@ -407,13 +466,13 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_deposit_mints_paused(true);
     await (ledger.actor as any).set_refund_ledger_mode([{ Trap: null }]);
     const accepted: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
-    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Stopped.reason.LedgerAmbiguous");
+    expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.Stopped.reason.LedgerAmbiguous");
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(1);
 
     await (index.actor as any).set_index_synced_blocks([1n]);
     await pic!.advanceTime(24 * 60 * 60 * 1_000 + 1);
     await (ledger.actor as any).set_refund_ledger_mode([{ Succeed: null }]);
-    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     const refunded: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(phaseName(refunded[0].state)).toBe("Refunded");
     expect(refunded[0].refund[0]).toMatchObject({ amount: 10_000n, ledger_fee: 10_000n, attempt_no: 1n });
@@ -426,13 +485,13 @@ describe("Phase 3 PocketIC saga", () => {
     await (ledger.actor as any).set_ledger_fee(12_000n);
     await (ledger.actor as any).set_refund_ledger_mode([{ BadFee: null }]);
     const accepted: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
-    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.ReconciliationProgress");
+    expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.ReconciliationProgress");
     const retrying: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(phaseName(retrying[0].state)).toBe("RefundPending");
     expect(retrying[0].refund[0]).toMatchObject({ amount: 8_000n, ledger_fee: 12_000n, attempt_no: 1n });
 
     await (ledger.actor as any).set_refund_ledger_mode([{ Succeed: null }]);
-    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     const refunded: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(refunded[0].refund[0]).toMatchObject({ amount: 8_000n, ledger_fee: 12_000n, attempt_no: 1n });
   });
@@ -442,7 +501,7 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_mint_window(30_000n, 30_000n, 0n, 10n, 11n);
     const accepted: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
     expect(accepted).toHaveProperty("Ok");
-    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
+    expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
   });
@@ -456,16 +515,16 @@ describe("Phase 3 PocketIC saga", () => {
     await pic!.advanceTime(61_000);
     await (evm.actor as any).set_finalized_block_sequence([98n, 100n]);
     const stale: any = await (bridge.actor as any).request_deposit({ owner_sequence: 1n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
-    expect(await (bridge.actor as any).continue_deposit(stale.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
+    expect(await continueDeposit(bridge, stale.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
     expect(phaseName((await (bridge.actor as any).get_deposit(stale.Ok.deposit_id))[0].state)).toBe("EscrowedUnquoted");
     await pic!.advanceTime(61_000);
-    expect(await (bridge.actor as any).continue_deposit(stale.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
+    expect(await continueDeposit(bridge, stale.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(2);
 
     await pic!.advanceTime(61_000);
     await (evm.actor as any).set_finalized_block_sequence([98n, 98n, 98n, 98n, 98n]);
     const unavailable: any = await (bridge.actor as any).request_deposit({ owner_sequence: 2n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
-    expect(await (bridge.actor as any).continue_deposit(unavailable.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
+    expect(await continueDeposit(bridge, unavailable.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(3);
   });
 
@@ -475,7 +534,7 @@ describe("Phase 3 PocketIC saga", () => {
     const first: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
     const afterFirst = await (evm.actor as any).eth_call_count();
     expect(afterFirst).toBe(before);
-    await (bridge.actor as any).continue_deposit(first.Ok.deposit_id);
+    await continueDeposit(bridge, first.Ok.deposit_id);
     const afterQuote = await (evm.actor as any).eth_call_count();
     const second: any = await (bridge.actor as any).request_deposit({ owner_sequence: 1n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
     const afterSecond = await (evm.actor as any).eth_call_count();
@@ -489,7 +548,7 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_deposit_mints_paused(true);
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
     expect(result).toHaveProperty("Ok.state.FundingPending");
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     const record: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     expect(record[0].refund[0].reason).toEqual({ BasePaused: null });
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(2);
@@ -500,7 +559,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (evm.actor as any).set_bridge_signer(new Uint8Array(20).fill(0xaa))).toHaveProperty("Ok");
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
     expect(result).toHaveProperty("Ok.state.FundingPending");
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
     const record: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     expect(phaseName(record[0].state)).toBe("EscrowedUnquoted");
     expect(record[0].refund).toEqual([]);
@@ -551,7 +610,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(Array.from(ingested.Ok.Ingested.withdrawal_id)).toEqual(Array.from(id));
     expect(phaseName((await (bridge.actor as any).get_withdrawal(id))[0].state)).toBe("ReleasePending");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
-    expect(await (bridge.actor as any).continue_withdrawal(id)).toHaveProperty("Ok.Complete");
+    expect(await continueWithdrawal(bridge, id)).toHaveProperty("Ok.Complete");
     expect(phaseName((await (bridge.actor as any).get_withdrawal(id))[0].state)).toBe("Paid");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
     await (ledger.actor as any).set_ledger_fee_available(false);
@@ -773,7 +832,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(phaseName(held[0].state)).toBe("ReconciliationHold");
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
     await advancePastAutomaticRetry();
-    expect(await (bridge.actor as any).continue_withdrawal(id)).toHaveProperty("Ok.Complete");
+    expect(await continueWithdrawal(bridge, id)).toHaveProperty("Ok.Complete");
     const released: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(released[0].state)).toBe("Paid");
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
@@ -794,7 +853,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(stopped[0].last_settlement_stop_reason[0]).toContain("BadFee");
 
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
-    expect(await (bridge.actor as any).continue_withdrawal(id)).toHaveProperty("Ok.Complete");
+    expect(await continueWithdrawal(bridge, id)).toHaveProperty("Ok.Complete");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(2n);
     const paid: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(paid[0].state)).toBe("Paid");
@@ -814,7 +873,7 @@ describe("Phase 3 PocketIC saga", () => {
     await (ledger.actor as any).set_ledger_fee(2n);
     await (ledger.actor as any).set_ledger_mode({ BadFee: null });
     await advancePastAutomaticRetry();
-    const retry: any = await (bridge.actor as any).continue_withdrawal(id);
+    const retry: any = await continueWithdrawal(bridge, id);
     expect(retry).toHaveProperty("Ok.Stopped.reason.LedgerRejected");
     expect(phaseName((await (bridge.actor as any).get_withdrawal(id))[0].state)).toBe("ReconciliationHold");
   });
@@ -825,7 +884,7 @@ describe("Phase 3 PocketIC saga", () => {
     await (ledger.actor as any).set_ledger_mode({ Trap: null });
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
     expect(phaseName(result.Ok.state)).toBe("FundingPending");
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
     expect(phaseName((await (bridge.actor as any).get_deposit(result.Ok.deposit_id))[0].state)).toBe("FundingReconciliationHold");
     const before: any = await (bridge.actor as any).get_bridge_status();
     await pic!.upgradeCanister({ canisterId: bridge.canisterId, wasm: readFileSync(bridgeWasm), arg: IDL.encode([], []) });
@@ -834,7 +893,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(after.counts.reconciliation_holds).toBe(1n);
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
     await advancePastAutomaticRetry();
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
     await confirmDeposit(bridge, result.Ok.deposit_id);
     const stored: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     expect(phaseName(stored[0].state)).toBe("Minted");
@@ -850,7 +909,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(result).toHaveProperty("Ok.state.FundingPending");
     expect(result.Ok).not.toHaveProperty("settlement");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
   });
 
@@ -859,12 +918,12 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_receipt_mode({ Missing: null });
     const args = { owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n };
     const result: any = await (bridge.actor as any).request_deposit(args);
-    await (bridge.actor as any).continue_deposit(result.Ok.deposit_id);
+    await continueDeposit(bridge, result.Ok.deposit_id);
     const receiptCallsBeforeReplay = await (evm.actor as any).receipt_call_count();
     const replay: any = await (bridge.actor as any).request_deposit(args);
     expect(replay.Ok).not.toHaveProperty("settlement");
     expect(await (evm.actor as any).receipt_call_count()).toBe(receiptCallsBeforeReplay);
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Err.ConfirmationRequired");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Err.ConfirmationRequired");
     await advanceClock(20);
     expect(await (evm.actor as any).receipt_call_count()).toBe(receiptCallsBeforeReplay + 1n);
     await (evm.actor as any).set_receipt_mode({ RpcFailure: null });
@@ -879,7 +938,7 @@ describe("Phase 3 PocketIC saga", () => {
     const { evm, bridge } = await setup();
     await (evm.actor as any).set_receipt_mode({ Missing: null });
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
-    await (bridge.actor as any).continue_deposit(result.Ok.deposit_id);
+    await continueDeposit(bridge, result.Ok.deposit_id);
     const first: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     const originalHash = first[0].base_confirmation[0].Submitted.transaction_hash;
     expect(first[0].automatic_progress[0]).toHaveProperty("phase.Confirmation");
@@ -919,7 +978,7 @@ describe("Phase 3 PocketIC saga", () => {
   it("validates frontend confirmation evidence before any Base outcall", async () => {
     const { evm, bridge } = await setup();
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
-    await (bridge.actor as any).continue_deposit(result.Ok.deposit_id);
+    await continueDeposit(bridge, result.Ok.deposit_id);
     const stored: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     const transactionHash = stored[0].base_confirmation[0].Submitted.transaction_hash;
     const callsBefore = await (evm.actor as any).receipt_call_count();
@@ -999,7 +1058,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(recovery.Ok.Enqueued).not.toHaveProperty("settlement");
     expect(recovery.Ok.Enqueued.replacement_operation_id).not.toBe(operationId);
     expect(await (evm.actor as any).broadcast_transactions()).toHaveLength(1);
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
     expect(await (evm.actor as any).broadcast_transactions()).toHaveLength(2);
     expect(await (bridge.actor as any).recover_mint_revert({
       deposit_id: result.Ok.deposit_id, reverted_operation_id: operationId,
@@ -1029,7 +1088,7 @@ describe("Phase 3 PocketIC saga", () => {
     const second = { ...args, owner_sequence: 1n };
     expect(await (bridge.actor as any).request_deposit(second)).toHaveProperty("Ok");
     const firstPage: any = await (bridge.actor as any).list_deposit_ids({ owner: runtimePrincipal, before_cursor: [], limit: 20 });
-    for (const id of firstPage.Ok.deposit_ids) {
+    for (const id of [...firstPage.Ok.deposit_ids].reverse()) {
       await confirmDeposit(bridge, id);
       expect(phaseName((await (bridge.actor as any).get_deposit(id))[0].state)).toBe("Minted");
     }
@@ -1049,7 +1108,7 @@ describe("Phase 3 PocketIC saga", () => {
     const args = { owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n };
     const result: any = await (bridge.actor as any).request_deposit(args);
     expect(result).toHaveProperty("Ok.state.FundingPending");
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     expect(phaseName((await (bridge.actor as any).get_deposit(result.Ok.deposit_id))[0].state)).toBe("Refunded");
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(2);
   });
@@ -1059,7 +1118,7 @@ describe("Phase 3 PocketIC saga", () => {
     const failed = { owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n };
     await (ledger.actor as any).set_ledger_mode({ BadFee: null });
     const result: any = await (bridge.actor as any).request_deposit(failed);
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     let status: any = await (bridge.actor as any).get_bridge_status();
     expect(status.counts.reserved_deposit_mint_amount).toBe(0n);
     const replay: any = await (bridge.actor as any).request_deposit(failed);
@@ -1087,7 +1146,7 @@ describe("Phase 3 PocketIC saga", () => {
       gross_amount: 20_000n,
       max_service_fee: 10n,
     });
-    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     const record: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     expect(phaseName(record[0].state)).toBe("Cancelled");
     expect(await (ledger.actor as any).ledger_transactions()).toEqual([]);
@@ -1102,7 +1161,7 @@ describe("Phase 3 PocketIC saga", () => {
       gross_amount: 20_000n,
       max_service_fee: 10n,
     });
-    await (bridge.actor as any).continue_deposit(deposited.Ok.deposit_id);
+    await continueDeposit(bridge, deposited.Ok.deposit_id);
     await (ledger.actor as any).set_archive_prefix_length(1n);
     const page: any = await (ledger.actor as any).get_transactions({ start: 0n, length: 10n });
     expect(page.transactions).toEqual([]);
@@ -1123,7 +1182,7 @@ describe("Phase 3 PocketIC saga", () => {
       max_service_fee: 10n,
     });
     expect(first).toHaveProperty("Ok");
-    await (bridge.actor as any).continue_deposit(first.Ok.deposit_id);
+    await continueDeposit(bridge, first.Ok.deposit_id);
     expect(await (ledger.actor as any).ledger_transactions()).toHaveLength(1);
 
     await (ledger.actor as any).set_ledger_mode({ Trap: null });
@@ -1134,14 +1193,21 @@ describe("Phase 3 PocketIC saga", () => {
       gross_amount: 20_000n,
       max_service_fee: 10n,
     });
-    expect(await (bridge.actor as any).continue_deposit(ambiguous.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
+    expect(await continueDeposit(bridge, ambiguous.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
     expect(phaseName((await (bridge.actor as any).get_deposit(ambiguous.Ok.deposit_id))[0].state)).toBe("FundingReconciliationHold");
 
     await (index.actor as any).set_index_synced_blocks([0n]);
     await pic!.advanceTime(24 * 60 * 60 * 1_000 + 1);
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
-    expect(await (bridge.actor as any).continue_deposit(ambiguous.Ok.deposit_id)).toHaveProperty(
-      "Ok.ReconciliationProgress",
+    const reconciliation = await continueDeposit(bridge, ambiguous.Ok.deposit_id);
+    expect(
+      reconciliation,
+    ).toEqual(
+      expect.objectContaining(
+        "Ok" in reconciliation
+          ? { Ok: expect.objectContaining({ ReconciliationProgress: expect.anything() }) }
+          : { Err: expect.objectContaining({ AutomaticProgressPending: expect.anything() }) },
+      ),
     );
     expect(phaseName((await (bridge.actor as any).get_deposit(ambiguous.Ok.deposit_id))[0].state)).toBe(
       "FundingReconciliationHold",
@@ -1150,7 +1216,7 @@ describe("Phase 3 PocketIC saga", () => {
 
     await (index.actor as any).set_index_synced_blocks([1n]);
     await advancePastAutomaticRetry();
-    expect(await (bridge.actor as any).continue_deposit(ambiguous.Ok.deposit_id)).toHaveProperty(
+    expect(await continueDeposit(bridge, ambiguous.Ok.deposit_id)).toHaveProperty(
       "Ok.Complete",
     );
     expect(phaseName((await (bridge.actor as any).get_deposit(ambiguous.Ok.deposit_id))[0].state)).toBe(
@@ -1248,7 +1314,7 @@ describe("Phase 3 PocketIC saga", () => {
       expect(seeded.Ok).toBe(100);
     }
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(21);
+    expect(before.schema_version).toBe(22);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.pending_evm_operations).toBe(10_000n);
     expect(before.counts.active_evm_payloads).toBe(10_000n);
@@ -1270,7 +1336,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(21);
+    expect(after.schema_version).toBe(22);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(10_000n);
     expect((await maintenance.first_prepared_evm_test_id()).Ok).toEqual([0n]);

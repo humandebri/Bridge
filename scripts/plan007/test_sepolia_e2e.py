@@ -102,7 +102,7 @@ class SepoliaE2ETests(unittest.TestCase):
             return {"install_mode": "reinstall", "module_sha256": H64, "cycles_balance": 1, "controller_principals": ["aaaaa-aa"]}
         if stage == "initialize":
             return {
-                "schema_version": 21,
+                "schema_version": 22,
                 "chain_id": 84532,
                 "ledger_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
                 "index_canister_id": "qhbym-qaaaa-aaaaa-aaafq-cai",

@@ -495,7 +495,7 @@ json_tuple_field() {
 prepare_temporary_icp_config() {
   cp -p "$ROOT/icp.yaml" "$TMP_ROOT/icp.yaml.original"
   ICP_CONFIG_BACKED_UP=1
-  "$ROOT/scripts/prepare_local_network.py" --project-root "$ROOT" --write >/dev/null
+  python3 "$ROOT/scripts/prepare_local_network.py" --project-root "$ROOT" --write >/dev/null
   cp -p "$ROOT/icp.yaml" "$TMP_ROOT/icp.yaml.applied"
 }
 

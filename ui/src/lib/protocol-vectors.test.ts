@@ -25,21 +25,59 @@ describe("Lean protocol conformance vectors", () => {
     expect(Object.keys(vectors).sort()).toEqual([
       "canonical_probe_cases",
       "canonical_probe_count",
+      "deposit_admission_cases",
+      "deposit_admission_count",
+      "fee_payout_cases",
+      "fee_payout_count",
+      "fee_rotation_cases",
+      "fee_rotation_count",
       "finalization_cases",
       "finalization_count",
+      "hold_cases",
+      "hold_count",
+      "lease_cases",
+      "lease_count",
+      "manual_claim_cases",
+      "manual_claim_count",
+      "payment_cases",
+      "payment_count",
       "queue_cases",
       "queue_count",
       "quote_cases",
       "quote_count",
+      "reservation_cases",
+      "reservation_count",
       "schema_version",
+      "service_fee_cases",
+      "service_fee_count",
       "settlement_cases",
       "settlement_count",
     ])
     expect(vectors.quote_cases).toHaveLength(vectors.quote_count)
     expect(vectors.settlement_cases).toHaveLength(vectors.settlement_count)
+    expect(vectors.payment_cases).toHaveLength(vectors.payment_count)
+    expect(vectors.deposit_admission_cases).toHaveLength(vectors.deposit_admission_count)
+    expect(vectors.reservation_cases).toHaveLength(vectors.reservation_count)
+    expect(vectors.service_fee_cases).toHaveLength(vectors.service_fee_count)
+    expect(vectors.fee_rotation_cases).toHaveLength(vectors.fee_rotation_count)
+    expect(vectors.fee_payout_cases).toHaveLength(vectors.fee_payout_count)
+    expect(vectors.hold_cases).toHaveLength(vectors.hold_count)
+    expect(vectors.lease_cases).toHaveLength(vectors.lease_count)
+    expect(vectors.manual_claim_cases).toHaveLength(vectors.manual_claim_count)
     expect(vectors.finalization_cases).toHaveLength(vectors.finalization_count)
     expect(vectors.queue_cases).toHaveLength(vectors.queue_count)
     expect(vectors.canonical_probe_cases).toHaveLength(vectors.canonical_probe_count)
+    expect(vectors.quote_count).toBeGreaterThan(0)
+    expect(vectors.settlement_count).toBeGreaterThan(0)
+    expect(vectors.payment_count).toBeGreaterThan(0)
+    expect(vectors.deposit_admission_count).toBeGreaterThan(0)
+    expect(vectors.reservation_count).toBeGreaterThan(0)
+    expect(vectors.service_fee_count).toBeGreaterThan(0)
+    expect(vectors.fee_rotation_count).toBeGreaterThan(0)
+    expect(vectors.fee_payout_count).toBeGreaterThan(0)
+    expect(vectors.hold_count).toBeGreaterThan(0)
+    expect(vectors.lease_count).toBeGreaterThan(0)
+    expect(vectors.manual_claim_count).toBeGreaterThan(0)
     expect(vectors.finalization_count).toBeGreaterThan(0)
     expect(vectors.queue_count).toBeGreaterThan(0)
     expect(vectors.canonical_probe_count).toBeGreaterThan(0)

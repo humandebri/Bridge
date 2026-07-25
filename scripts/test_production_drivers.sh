@@ -5,7 +5,17 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/bridge-driver-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/bundle" "$T/source/contracts" "$T/source/scripts" "$T/source/src"
 cp "$ROOT/scripts/production-deploy-driver.sh" "$ROOT/scripts/production-activate-driver.sh" "$ROOT/scripts/production-activation-proposal.sh" "$ROOT/scripts/production-live-preflight.sh" "$ROOT/scripts/production-validation.sh" "$ROOT/scripts/live_fee_guard.py" "$T/source/scripts/"
-chmod +x "$T/source/scripts/production-deploy-driver.sh" "$T/source/scripts/production-activate-driver.sh" "$T/source/scripts/production-activation-proposal.sh" "$T/source/scripts/production-live-preflight.sh"
+cat >"$T/source/scripts/ci-local.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == proofs ]]
+printf 'proofs %s\n' "$*" >>"$TRACE"
+if [[ "${PROOF_GATE_FAIL:-false}" == true ]]; then exit 42; fi
+if [[ "${PROOF_GATE_MUTATE_SOURCE:-false}" == true ]]; then
+  printf '\n// proof mutation\n' >>"$(cd "$(dirname "$0")/.." && pwd)/src/main.rs"
+fi
+SH
+chmod +x "$T/source/scripts/production-deploy-driver.sh" "$T/source/scripts/production-activate-driver.sh" "$T/source/scripts/production-activation-proposal.sh" "$T/source/scripts/production-live-preflight.sh" "$T/source/scripts/ci-local.sh"
 printf '/target\n' >"$T/source/.gitignore"
 cat >"$T/source/Cargo.toml" <<'TOML'
 [package]
@@ -38,6 +48,11 @@ cat >"$T/bin/forge" <<'SH'
 #!/usr/bin/env bash
 echo "forge $*" >>"$TRACE"; [[ " $* " == *" --ledger "* ]]
 if [[ "$*" == *BridgeTimelockController* ]]; then touch "$TIMELOCK_DEPLOYED_MARKER"; echo '{"deployedTo":"0x2222222222222222222222222222222222222222","transactionHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'; else touch "$BRIDGE_DEPLOYED_MARKER"; echo '{"deployedTo":"0x3333333333333333333333333333333333333333","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'; fi
+SH
+cat >"$T/bin/ci-local.sh" <<'SH'
+#!/usr/bin/env bash
+touch "$PATH_PROOF_OVERRIDE_MARKER"
+exit 0
 SH
 cat >"$T/bin/cast" <<'SH'
 #!/usr/bin/env bash
@@ -112,7 +127,7 @@ cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 echo "icp $*" >>"$TRACE"
 if [[ "$*" == *initialize_public_config* ]]; then if [[ "${INITIALIZE_PUBLIC_CONFIG_FAIL:-false}" == true ]]; then echo '{"Err":"DerivationUnavailable"}'; else echo '{"Ok":null}'; fi;
-elif [[ "$*" == *get_public_config* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"base_chain_id":8453,"bridge_contract":[51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51],"timelock_contract":[34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34],"ledger_canister_id":"aaaaa-aa","index_canister_id":"aaaaa-aa","schema_version":21,"expected_bridge_signer":[%s],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s","deposit_rate_limit_window_seconds":1,"deposit_rate_limit_global":1,"deposit_rate_limit_per_principal":1,"settlement_rate_limit_window_seconds":1,"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_rate_limit_per_record":1,"transaction_gas_limit":"1","max_fee_per_gas":"1","max_priority_fee_per_gas":"1","evm_liveness":{"check_interval_seconds":60,"rebroadcast_after_seconds":300,"replacement_after_seconds":1800,"max_replacements":3,"fee_bump_bps":1250,"fee_ceiling_multiplier_bps":40000},"eth_floor_wei":"1","cycles_floor":"1","settlement_cycle_ceiling":"1","governance_principal":"aaaaa-aa","pause_principal":"2vxsx-fae","fee_recipient":{"owner":"aaaaa-aa","subaccount":[]}}\n' "$signer" "$RPC_DIGEST";
+elif [[ "$*" == *get_public_config* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"base_chain_id":8453,"bridge_contract":[51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51],"timelock_contract":[34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34],"ledger_canister_id":"aaaaa-aa","index_canister_id":"aaaaa-aa","schema_version":22,"expected_bridge_signer":[%s],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s","deposit_rate_limit_window_seconds":1,"deposit_rate_limit_global":1,"deposit_rate_limit_per_principal":1,"settlement_rate_limit_window_seconds":1,"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_rate_limit_per_record":1,"transaction_gas_limit":"1","max_fee_per_gas":"1","max_priority_fee_per_gas":"1","evm_liveness":{"check_interval_seconds":60,"rebroadcast_after_seconds":300,"replacement_after_seconds":1800,"max_replacements":3,"fee_bump_bps":1250,"fee_ceiling_multiplier_bps":40000},"eth_floor_wei":"1","cycles_floor":"1","settlement_cycle_ceiling":"1","governance_principal":"aaaaa-aa","pause_principal":"2vxsx-fae","fee_recipient":{"owner":"aaaaa-aa","subaccount":[]}}\n' "$signer" "$RPC_DIGEST";
 elif [[ "$*" == *get_bridge_status* ]]; then if [[ -e "$IC_RESUMED_MARKER" ]]; then paused=false; else paused="${CANISTER_PAUSED:-true}"; fi; printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "$paused";
 elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
 elif [[ "$*" == *resume_new_deposits* ]]; then if [[ "${RESUME_FAIL:-}" == true ]]; then echo '{"Err":"StorageFailure"}'; exit 1; fi; touch "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
@@ -124,8 +139,9 @@ elif [[ "$*" == *'canister status bridge-canister -e production -i --identity'* 
 elif [[ "$*" == *'canister status'* ]]; then if [[ "${CONTROLLER_DRIFT:-false}" == true ]]; then controllers='["aaaaa-aa","2vxsx-fae"]'; else controllers='["aaaaa-aa"]'; fi; printf '{"controllers":%s,"module_hash":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"}\n' "$controllers";
 else echo '{}'; fi
 SH
-chmod +x "$T/bin/forge" "$T/bin/cast" "$T/bin/icp"
+chmod +x "$T/bin/forge" "$T/bin/cast" "$T/bin/icp" "$T/bin/ci-local.sh"
 export PATH="$T/bin:$PATH"
+export PATH_PROOF_OVERRIDE_MARKER="$T/path-proof-override-used"
 export EXECUTED_MARKER="$T/executed" CANCELLED_MARKER="$T/cancelled" IC_RESUMED_MARKER="$T/ic-resumed" DEPOSIT_PAUSED_MARKER="$T/deposit-paused" WITHDRAWAL_PAUSED_MARKER="$T/withdrawal-paused"
 export TIMELOCK_DEPLOYED_MARKER="$T/timelock-deployed" BRIDGE_DEPLOYED_MARKER="$T/bridge-deployed"
 export BRIDGE_TIMELOCK_CANCELLER_ADDRESS=0x5555555555555555555555555555555555555555
@@ -172,15 +188,25 @@ fi
 if BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted a forged Gate A hash" >&2; exit 1
 fi
+if PROOF_GATE_FAIL=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+  echo "deploy driver accepted a failed proof gate" >&2; exit 1
+fi
+[[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
+if PROOF_GATE_MUTATE_SOURCE=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+  echo "deploy driver accepted source mutation during proofs" >&2; exit 1
+fi
+git -C "$DRIVER_ROOT" restore src/main.rs
+[[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
 BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/malicious-init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/malicious-constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh"
 python3 - "$TRACE" <<'PY'
 import sys
-s=open(sys.argv[1]).read(); required=['initialize_public_config','get_public_config','get_bridge_status','BridgeTimelockController','src/Bridge.sol','cast call']; pos=-1
+s=open(sys.argv[1]).read(); required=['proofs proofs','initialize_public_config','get_public_config','get_bridge_status','BridgeTimelockController','src/Bridge.sol','cast call']; pos=-1
 for x in required:
   pos=s.find(x,pos+1); assert pos>=0,(x,s)
 assert '--ledger' in s and 'unpause' not in s
 assert 'MALICIOUS' not in s
 PY
+[[ ! -e "$T/path-proof-override-used" ]]
 if INITIALIZE_PUBLIC_CONFIG_FAIL=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted failed public configuration initialization" >&2; exit 1
 fi

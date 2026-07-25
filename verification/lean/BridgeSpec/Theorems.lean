@@ -93,6 +93,22 @@ theorem outbound_settlement_preserves_backing
       paid_debt_preserves_backing backed feeBound liability escrow⟩
   next => simp at accepted
 
+theorem checked_settlement_preserves_backing
+    {s next : EconomicState} {amountOut serviceFee ledgerFee : Nat}
+    (accepted : checkedSettlement s amountOut serviceFee ledgerFee = some next) :
+    Backed s ∧ ledgerFee ≤ serviceFee ∧
+      amountOut + serviceFee ≤ s.unpaidLiability ∧
+      amountOut + ledgerFee ≤ s.escrow ∧ Backed next := by
+  unfold checkedSettlement at accepted
+  split at accepted
+  next admissible =>
+    simp only [Option.some.injEq] at accepted
+    subst next
+    exact ⟨admissible.1, admissible.2.1, admissible.2.2.1, admissible.2.2.2,
+      paid_debt_preserves_backing admissible.1 admissible.2.1
+        admissible.2.2.1 admissible.2.2.2⟩
+  next => simp at accepted
+
 theorem withdrawal_notify_requires_finalized_success
     {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat}
     (h : decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) =

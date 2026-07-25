@@ -68,6 +68,15 @@ pub struct RotatePausePrincipalArgs {
     pub pause_principal: Principal,
 }
 
+fn fee_recipient_digest(value: &FeeRecipientConfig) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"KINIC-FEE-RECIPIENT");
+    digest.update(value.owner.as_slice());
+    digest.update((value.subaccount.len() as u64).to_be_bytes());
+    digest.update(&value.subaccount);
+    digest.finalize().into()
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum AdminError {
     Busy,
@@ -182,6 +191,44 @@ pub fn rotate_pause_principal(
         Ok(crate::storage::AuditEventKind::PausePrincipalRotated)
     })
     .map(drop)
+}
+
+pub fn rotate_fee_recipient(caller: Principal, next: FeeRecipientConfig) -> Result<(), AdminError> {
+    if next.owner == Principal::anonymous() || !matches!(next.subaccount.len(), 0 | 32) {
+        return Err(AdminError::InvalidArgument("invalid fee recipient".into()));
+    }
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let state = store
+            .admin_state()
+            .map_err(|_| AdminError::StorageFailure)?;
+        if !authorized(&state, caller, ACTION_ROTATE) {
+            return Err(AdminError::Unauthorized);
+        }
+        if next.owner == state.governance_principal || next.owner == state.pause_principal {
+            return Err(AdminError::InvalidArgument(
+                "fee recipient must not overlap governance or pause principal".into(),
+            ));
+        }
+        let pending = store
+            .pending_fee_payout_amount()
+            .map_err(|_| AdminError::StorageFailure)?;
+        if !bridge_core::fee_recipient_rotation_allowed(pending) {
+            return Err(AdminError::Busy);
+        }
+        if next == state.fee_recipient {
+            return Ok(());
+        }
+        store
+            .rotate_fee_recipient_with_audit(
+                next.clone(),
+                caller,
+                ic_cdk::api::time(),
+                fee_recipient_digest(&state.fee_recipient).to_vec(),
+                fee_recipient_digest(&next).to_vec(),
+            )
+            .map_err(|_| AdminError::StorageFailure)
+    })
 }
 
 pub fn audit_events(start: u64, limit: u16) -> Result<AuditEventPage, AdminError> {

@@ -3,17 +3,48 @@ import { useEffect, useReducer } from "react"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { finalizedHeadTimestampBlocker, RUNTIME_VALIDATION_TTL_MS, runtimeWriteBlocker, validateRuntime, type RuntimeValidation } from "@/lib/runtime-validation"
+import { finalizedHeadTimestampBlocker, RUNTIME_VALIDATION_TTL_MS, runtimeWriteBlocker, validateRuntime, validateRuntimeHeartbeat, type RuntimeValidation } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 
-export function useRuntimeValidation(chainId?: number) {
+interface AutomaticQueryOptions {
+  enabled?: boolean
+  gcTime?: number
+  refetchInterval?: number
+  staleTime?: number
+}
+
+export function useRuntimeValidation(chainId?: number, options: AutomaticQueryOptions = {}) {
+  const { enabled = false, gcTime, staleTime } = options
   return useQuery({
     queryKey: ["runtime-validation", chainId],
     queryFn: async () => {
       try { return await validateRuntime(deploymentProfile, chainId) }
       catch (error) { return { ready: false, checkedAt: Date.now(), blockers: [error instanceof Error ? error.message : "Runtime validation failed"] } }
     },
-    enabled: false,
+    enabled,
+    gcTime,
+    staleTime,
+  })
+}
+
+export function useRuntimeHeartbeat(chainId: number | undefined, initialValidation: RuntimeValidation | undefined, options: AutomaticQueryOptions = {}) {
+  const { enabled = false, refetchInterval } = options
+  const initialData = initialValidation?.ready ? initialValidation : undefined
+  return useQuery({
+    queryKey: ["runtime-heartbeat", chainId, initialData?.checkedAt ?? 0],
+    queryFn: async () => {
+      try { return await validateRuntimeHeartbeat(deploymentProfile, chainId) }
+      catch (error) { return { ready: false, checkedAt: Date.now(), blockers: [error instanceof Error ? error.message : "Runtime heartbeat failed"] } }
+    },
+    enabled,
+    initialData,
+    initialDataUpdatedAt: initialData?.checkedAt,
+    staleTime: refetchInterval,
+    refetchOnMount: initialData ? false : undefined,
+    refetchInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: refetchInterval !== undefined,
+    refetchOnReconnect: refetchInterval !== undefined,
   })
 }
 
@@ -41,10 +72,16 @@ export function useBridgeStatus() {
   })
 }
 
-export function useCurrentBaseQuote() {
+export function useCurrentBaseQuote(options: AutomaticQueryOptions = {}) {
+  const { enabled = false, refetchInterval, staleTime } = options
   return useQuery({
     queryKey: ["base-quote", deploymentProfile.bridgeAddress],
-    enabled: false,
+    enabled,
+    staleTime,
+    refetchInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: refetchInterval !== undefined,
+    refetchOnReconnect: refetchInterval !== undefined,
     queryFn: async () => {
       const client = basePublicClient
       const address = deploymentProfile.bridgeAddress as `0x${string}`

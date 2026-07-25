@@ -18,6 +18,7 @@ class ChangedAreaTests(unittest.TestCase):
         self.assert_areas(
             ["canister/bridge-canister/src/api.rs"],
             "rust",
+            "proofs",
             "real",
             "icp",
         )
@@ -26,6 +27,7 @@ class ChangedAreaTests(unittest.TestCase):
         self.assert_areas(
             ["contracts/src/Bridge.sol"],
             "contracts",
+            "proofs",
             "ui",
             "real",
         )

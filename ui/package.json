@@ -30,6 +30,7 @@
     "deploy:test": "pnpm run build:sepolia && node scripts/check-sepolia-assets.mjs && wrangler deploy --name kinic-bridge-ui-test"
   },
   "dependencies": {
+    "@coinbase/wallet-sdk": "^4.3.7",
     "@dfinity/agent": "3.4.3",
     "@dfinity/candid": "3.4.3",
     "@dfinity/oisy-wallet-signer": "6.0.0",

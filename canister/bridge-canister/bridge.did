@@ -74,6 +74,10 @@ type AuditEventKind = variant {
     ledger_call_performed : bool;
     stop_reason : opt text;
   };
+  FeeRecipientRotated : record {
+    previous_sha256 : blob;
+    current_sha256 : blob;
+  };
   EvmTransactionRebroadcasted : record {
     transaction_hash : blob;
     attempt : nat8;
@@ -279,6 +283,7 @@ type DepositView = record {
   max_service_fee : nat;
   from_subaccount : opt blob;
   last_settlement_stop_reason : opt text;
+  created_at_ns : nat64;
   state : DepositPhase;
   owner_sequence : nat64;
   automatic_progress : opt AutomaticProgressView;
@@ -639,6 +644,7 @@ service : (BridgeInitArgs) -> {
   request_fee_payout : (nat) -> (Result_15);
   resume_deposit_refund : (blob) -> (Result);
   resume_new_deposits : () -> (Result_11);
+  rotate_fee_recipient : (FeeRecipientConfig) -> (Result_11);
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_11);
   schedule_activation : () -> (Result_4);
   start_storage_validation : () -> (Result_2);

@@ -6,6 +6,14 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/bridge-handover-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/source/scripts" "$T/source/src" "$T/bin" "$T/bundle"
 cp "$ROOT/scripts/production-handover-driver.sh" "$ROOT/scripts/production-validation.sh" "$T/source/scripts/"
+cat >"$T/source/scripts/ci-local.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == proofs ]]
+printf 'proofs %s\n' "$*" >>"$TRACE"
+if [[ "${PROOF_GATE_FAIL:-false}" == true ]]; then exit 42; fi
+SH
+chmod +x "$T/source/scripts/ci-local.sh"
 printf '/target\n' >"$T/source/.gitignore"
 cat >"$T/source/Cargo.toml" <<'TOML'
 [package]
@@ -78,6 +86,12 @@ a=v['command_argv']; assert a.count('--remove-all-controllers')==1 and a.count('
 assert a[a.index('--add-controller')+1]=='7jkta-eyaaa-aaaaq-aaarq-cai'
 PY
 rg -q 'settings update bridge-canister -e production --remove-all-controllers --add-controller 7jkta-eyaaa-aaaaq-aaarq-cai --force --identity production --debug' "$TRACE"
+rg -q '^proofs proofs$' "$TRACE"
+
+if PROOF_GATE_FAIL=true run_handover "$T/proof-failed.json" >/dev/null 2>&1; then
+  echo "handover accepted a failed proof gate" >&2; exit 1
+fi
+[[ ! -e "$T/proof-failed.json" ]]
 
 if HANDOVER_PAUSED=false run_handover "$T/unpaused.json" >/dev/null 2>&1; then
   echo "handover accepted an unpaused Bridge" >&2; exit 1

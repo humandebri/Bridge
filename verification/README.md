@@ -3,7 +3,9 @@
 Lean projectはcross-chain protocolの正式な抽象仕様である。
 状態遷移、不変条件、frontendの判断、pending queueの更新を`verification/lean/BridgeSpec`へ集約し、Lakeで定理を検査する。
 Lean executableが生成する`verification/generated/protocol-vectors.json`をRust、Solidity、TypeScriptのconsumerで読み、実装の代表的な境界値を同じ期待値と照合する。
-仕様、定理、consumerの対応は`verification/refinement-manifest.tsv`で固定し、未登録または欠落した対応をCIで拒否する。
+release対象claimは`Claims.lean`、実装対応は`Refinement.lean`へ分離する。
+`verification/phase5-claims.tsv`はclaim、両定理、vector section、evidence分類、production symbol、外部仮定を固定し、`verification/refinement-manifest.tsv`は各sectionのconsumerを固定する。
+CIは両Lean file、claim台帳、全vector section、全consumerの完全一致を検査する。
 manifestはsection、Lean definition、Lean theorem、runner、consumer source、test selectorの6列で構成し、同じsectionに複数consumerを登録できる。
 CIは許可済みのRust、Foundry、Vitest runnerだけを使用し、各selectorが正確に1件成功したことを機械可読な結果から確認する。
 このvector照合は列挙されたcaseに対するbounded conformanceであり、Rust、Solidity、TypeScript実装全体の完全なsemantic refinementではない。
@@ -20,6 +22,16 @@ Solidity SMTはproduction共有predicateの性質であり、完全なdeployed c
 frontend LeanモデルはTypeScript実装そのものの証明ではなく、生成vectorと純粋な判断関数との対応をテストで検査する。
 Bridge Signerは通常のDeposit mint権限を持つため、Withdrawal専用remint経路の不在は、侵害されたSignerが別の未処理Deposit IDをmintできないことを意味しない。
 EIP-1898 `requireCanonical`の正しさ、EVM rollbackとEIP-1153 transient storage lifetime、ABI decoder、Web Locks、browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityとSQL row selectionは外部仮定である。形式証明の対象は、decode後のblock一致、enumから派生indexへの分類、成功したbrowser storage更新後のqueue状態までである。
+Verus/Rust/LLVM、Lean kernel、Solidity SMTChecker、Wasm compilerはtrusted computing baseであり、source-level proofをWasm binary verificationとは呼ばない。
 Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
 
-本番未デプロイのためschema v21再オープンとwire v17を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
+本番未デプロイのためschema v22再オープンとwire v18を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
+
+## Release proof gate
+
+自己申告のproof attestationは使用しない。
+固定production driverは不可逆操作の直前に、manifestへ束縛されたclean checkout内の`scripts/ci-local.sh proofs`を直接実行する。
+実行前後のHEAD、archive tree hash、worktree、submodule revisionが一致しない場合、またはproofが失敗した場合はreleaseを中止する。
+`proof-attestation.json`がGate bundleに残っている場合も、obsolete artifactとして拒否する。
+
+このgateはローカルの固定sourceとtoolchainを信頼境界とし、第三者CI provenanceやWasm binary verificationを主張しない。

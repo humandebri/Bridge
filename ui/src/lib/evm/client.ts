@@ -1,5 +1,5 @@
 import { createConfig, http } from "wagmi"
-import { injected, walletConnect } from "wagmi/connectors"
+import { coinbaseWallet, injected, metaMask, walletConnect } from "wagmi/connectors"
 import { createPublicClient, defineChain } from "viem"
 import { deploymentProfile, type DeploymentProfile } from "@/config/profile"
 
@@ -34,6 +34,11 @@ const walletConnectMetadata = typeof window === "undefined" ? undefined : {
 export const wagmiConfig = createConfig({
   chains: [profileChain],
   connectors: [
+    coinbaseWallet({
+      appName: "KINIC Bridge",
+      appLogoUrl: typeof window === "undefined" ? null : new URL("/kinic-mark.png", window.location.origin).href,
+    }),
+    metaMask(),
     injected(),
     ...(walletConnectProjectId ? [walletConnect({
       projectId: walletConnectProjectId,

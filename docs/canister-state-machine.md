@@ -4,7 +4,9 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、stable storageに依存しない決定的な状態遷移を定義する。`bridge-canister`はその状態を単一SQLite DBへ保存し、ICRC Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-Stable schema v21、record wire version v17だけを受理し、status APIもschema v21を返す。本番未デプロイのためmigration、dual-read、fallbackは持たない。旧schema、未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否し、開発・staging Canisterはreinstallする。
+Stable schema v22、record wire version v18だけを受理し、status APIもschema v22を返す。本番未デプロイのためmigration、dual-read、fallbackは持たない。旧schema、未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否し、開発・staging Canisterはreinstallする。
+
+install時の不変なruntime設定は`singleton_state.config`、rotation可能なGovernance principal、Pause principal、Fee Recipientは`singleton_state.admin_state`だけを永続的な正本とする。`get_public_config()`は両者を合成し、管理状態には常にrotation後の現在値を返す。
 
 `settlement_jobs`がSettlement実行の永続的な正本である。recordと`phase = settlement`のjobは同じSQLite transactionで作成され、init・post-upgrade・job更新後はDBに保存された最短起床時刻からone-shot timerを再登録する。timerは実行の目覚ましであり、timer ID自体に状態上の意味はない。
 

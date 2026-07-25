@@ -54,6 +54,102 @@ pub struct EvmLivenessPolicy {
     pub fee_ceiling_multiplier_bps: u32,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImmutableBridgeConfig {
+    pub ledger_canister_id: Principal,
+    pub index_canister_id: Principal,
+    pub evm_rpc_canister_id: Principal,
+    pub custom_evm_rpc_urls: Vec<String>,
+    pub base_chain_id: u64,
+    pub bridge_contract: Vec<u8>,
+    pub timelock_contract: Vec<u8>,
+    pub ecdsa_key_name: String,
+    pub ecdsa_derivation_path: Vec<Vec<u8>>,
+    pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
+    pub deposit_rate_limit_window_seconds: u64,
+    pub deposit_rate_limit_global: u16,
+    pub deposit_rate_limit_per_principal: u16,
+    pub settlement_rate_limit_window_seconds: u64,
+    pub settlement_rate_limit_global: u16,
+    pub settlement_rate_limit_per_principal: u16,
+    pub settlement_rate_limit_per_record: u16,
+    pub transaction_gas_limit: u128,
+    pub max_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
+    pub evm_liveness: EvmLivenessPolicy,
+    pub eth_floor_wei: u128,
+    pub cycles_floor: u128,
+    pub settlement_cycle_ceiling: u128,
+}
+
+impl ImmutableBridgeConfig {
+    pub(crate) fn from_init(value: &BridgeInitArgs) -> Self {
+        Self {
+            ledger_canister_id: value.ledger_canister_id,
+            index_canister_id: value.index_canister_id,
+            evm_rpc_canister_id: value.evm_rpc_canister_id,
+            custom_evm_rpc_urls: value.custom_evm_rpc_urls.clone(),
+            base_chain_id: value.base_chain_id,
+            bridge_contract: value.bridge_contract.clone(),
+            timelock_contract: value.timelock_contract.clone(),
+            ecdsa_key_name: value.ecdsa_key_name.clone(),
+            ecdsa_derivation_path: value.ecdsa_derivation_path.clone(),
+            governance_ecdsa_derivation_path: value.governance_ecdsa_derivation_path.clone(),
+            deposit_rate_limit_window_seconds: value.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: value.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: value.deposit_rate_limit_per_principal,
+            settlement_rate_limit_window_seconds: value.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: value.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: value.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: value.settlement_rate_limit_per_record,
+            transaction_gas_limit: value.transaction_gas_limit,
+            max_fee_per_gas: value.max_fee_per_gas,
+            max_priority_fee_per_gas: value.max_priority_fee_per_gas,
+            evm_liveness: value.evm_liveness,
+            eth_floor_wei: value.eth_floor_wei,
+            cycles_floor: value.cycles_floor,
+            settlement_cycle_ceiling: value.settlement_cycle_ceiling,
+        }
+    }
+
+    pub(crate) fn with_admin(
+        self,
+        governance_principal: Principal,
+        pause_principal: Principal,
+        fee_recipient: FeeRecipientConfig,
+    ) -> BridgeInitArgs {
+        BridgeInitArgs {
+            ledger_canister_id: self.ledger_canister_id,
+            index_canister_id: self.index_canister_id,
+            evm_rpc_canister_id: self.evm_rpc_canister_id,
+            custom_evm_rpc_urls: self.custom_evm_rpc_urls,
+            base_chain_id: self.base_chain_id,
+            bridge_contract: self.bridge_contract,
+            timelock_contract: self.timelock_contract,
+            ecdsa_key_name: self.ecdsa_key_name,
+            ecdsa_derivation_path: self.ecdsa_derivation_path,
+            governance_ecdsa_derivation_path: self.governance_ecdsa_derivation_path,
+            deposit_rate_limit_window_seconds: self.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: self.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: self.deposit_rate_limit_per_principal,
+            settlement_rate_limit_window_seconds: self.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: self.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: self.settlement_rate_limit_per_record,
+            transaction_gas_limit: self.transaction_gas_limit,
+            max_fee_per_gas: self.max_fee_per_gas,
+            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            evm_liveness: self.evm_liveness,
+            eth_floor_wei: self.eth_floor_wei,
+            cycles_floor: self.cycles_floor,
+            settlement_cycle_ceiling: self.settlement_cycle_ceiling,
+            governance_principal,
+            pause_principal,
+            fee_recipient,
+        }
+    }
+}
+
 impl Default for EvmLivenessPolicy {
     fn default() -> Self {
         Self {

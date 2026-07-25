@@ -12,9 +12,17 @@ CanisterがFinalized headを取得する際のblock response上限は固定16 Ki
 本番preflightも、receipt、deployment、保存snapshot、Timelock role eventの既知block hashをBridgeの`bridgeSnapshot()`またはTimelockの`getMinDelay()`へEIP-1898で固定する。番号指定block取得は行わず、full block応答はFinalized headのhash発見だけに使う。
 2026-07-23のBase Sepolia検証では、直近256 Finalized blockの`eth_getBlockByNumber`応答は最大5,542 bytesであり、16 KiB上限内に収まった。
 
-KINIC Ledger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示・事前検証へ使う。fee変更時はこの定数だけを変更し、Candid binding、Rust/UI/integration test、staging検証を同じ変更で更新する。
+Canisterが使用するLedger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。
+Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示し、事前検証へ使う。
 
-stable schemaはv21、record wireはv17を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
+Plan 007のSepolia stagingはKINICではなくTICRC1を使用するため、現在のtest-only値は`10000` rawである。
+KINIC mainnet Ledgerのfeeは`100000` rawであり、stagingとの差は意図した環境差である。
+詳しい検証条件は`sepolia-staging-e2e.md`の「Test Ledgerのfee」に記載する。
+
+production artifactへstaging Wasmを流用しない。
+production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
+
+stable schemaはv22、record wireはv18を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
 
 ## 保持制限と監査
 
@@ -22,7 +30,7 @@ stable schemaはv21、record wireはv17を唯一の現行形式とする。未�
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v21またはwire v17以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
+schema v22またはwire v18以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。Ledger feeとService Feeをreview済みprofileへ同期した後、対象ownerまたは運用principalがHistoryから`continue_withdrawal`を実行する。Canisterが最新Ledger feeを再取得し、charged Service Fee以下であることを確認した場合だけ、同じrecordからreleaseを開始してguardを解除する。
 本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。
@@ -59,6 +67,9 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 - Governance Operatorのnonce競合時は、Canisterが自分のtransaction hashをquorum RPCで再確認する。hashが存在すればconfirmationへ戻り、存在せずpending nonceだけが前進していれば競合操作を失敗終了してnonceを前進させる。hashまたはnonceの証拠が一致しない間は新しい署名を作らず停止する。
 
 本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。72時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
+
+deploy、controller handover、activation schedule/executeの固定driverは、不可逆操作の直前にclean sourceから`scripts/ci-local.sh proofs`を再実行する。
+proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`proof-attestation.json`を含むbundleはfail closedとする。
 
 `execute`提出前に`verify-schedule-receipt-live`がschedule receipt内部のdigest、認証済みSNS proposal/function registry、Canisterのpending operation、Base TimelockのFinalized pending状態を再照合する。その後、Base両flowのunpause確定後にCanisterがICをresumeする。proposalの`Executed`表示だけではCandidのdomain errorや後続EVM失敗を除外できないため、`bridge-profile verify-activation execute`がprior schedule receipt、認証済みCanister状態、Base Timelock done、Base/IC双方のunpauseを照合してexecute receiptを発行するまで受付開始を完了扱いにしない。独立した人間EVM管理walletやPause Guardianは存在せず、release driverも失敗時のBase再pause成功を保証しない。Canister、threshold signing、cycles、EVM RPCの相関障害ではBase再pauseが不能になりうるため、検証失敗を成功扱いにせず直ちにincident対応し、BaseとICのlive状態を3-provider quorumと認証済みCanister queryで確認する。
 - Holdの強制解除、nonce操作、任意transaction送信は行わない。

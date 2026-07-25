@@ -4,9 +4,14 @@ import { useAccount, useConnect, useConnectors, useDisconnect, type Connector } 
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { deploymentProfile } from "@/config/profile"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import type { IcWalletProvider } from "@/lib/ic/wallet"
+import baseLogo from "@/assets/base-square.svg"
 import blueKinic from "@/assets/blue_kinic.png"
+import icpLogo from "@/assets/icp-logo-mark.svg"
+import coinbaseLogo from "@/assets/wallets/coinbase-wallet.svg"
+import metamaskLogo from "@/assets/wallets/metamask-wallet.svg"
 import oisyLogo from "@/assets/wallets/oisy-wallet.svg"
 import plugLogo from "@/assets/wallets/plug-wallet.svg"
 
@@ -46,9 +51,12 @@ export function useWalletDialog() {
 function short(value: string) { return `${value.slice(0, 6)}…${value.slice(-4)}` }
 
 export function visibleEvmConnectors(connectors: readonly Connector[]): Connector[] {
-  const hasNamedInjected = connectors.some((connector) => connector.type === "injected" && !isGenericInjected(connector))
+  const hasPlug = connectors.some(isPlug)
+  const supportedConnectors = connectors.filter((connector) => !isPlug(connector))
+  const hasNamedInjected = supportedConnectors.some((connector) => connector.type === "injected" && !isGenericInjected(connector))
   return [...connectors]
-    .filter((connector) => !(hasNamedInjected && connector.type === "injected" && isGenericInjected(connector)))
+    .filter((connector) => !isPlug(connector))
+    .filter((connector) => !((hasPlug || hasNamedInjected) && connector.type === "injected" && isGenericInjected(connector)))
     .sort((left, right) => {
       const leftWalletConnect = isWalletConnect(left)
       const rightWalletConnect = isWalletConnect(right)
@@ -65,7 +73,23 @@ function isWalletConnect(connector: Connector): boolean {
   return connector.id === "walletConnect" || connector.type === "walletConnect"
 }
 
+function isMetaMask(connector: Connector): boolean {
+  return connector.id === "metaMaskSDK" || connector.id === "metaMask" || connector.id === "io.metamask" || connector.type === "metaMask"
+}
+
+function isCoinbaseWallet(connector: Connector): boolean {
+  return connector.id === "coinbaseWalletSDK" || connector.type === "coinbaseWallet"
+}
+
+function isPlug(connector: Connector): boolean {
+  return connector.name.trim().toLowerCase() === "plug"
+    || connector.name.trim().toLowerCase() === "plug wallet"
+    || connector.id.toLowerCase().includes("plug")
+}
+
 function connectorIcon(connector?: Connector): string | undefined {
+  if (connector && isCoinbaseWallet(connector)) return coinbaseLogo
+  if (connector && isMetaMask(connector)) return metamaskLogo
   return connector?.icon?.startsWith("data:image/") ? connector.icon : undefined
 }
 
@@ -92,8 +116,8 @@ function WalletSummary({ side, value, walletName, icon, walletConnect, onClick }
   onClick: () => void
 }) {
   const connected = Boolean(value)
-  const label = side === "ic" ? "IC wallet" : "Base wallet"
-  const displayValue = value ? `${walletName ? `${walletName} · ` : ""}${short(value)}` : "Connect"
+  const label = side === "ic" ? "IC wallet" : "EVM wallet"
+  const displayValue = value ? short(value) : "Connect"
   return <button type="button" onClick={onClick} aria-label={connected ? `${label} connected as ${value}` : `Connect ${label}`} className="group relative flex size-12 min-w-12 items-center justify-center gap-2 rounded-2xl border border-[var(--line)] bg-white px-0 text-left transition duration-300 hover:-translate-y-0.5 hover:border-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] min-[360px]:h-12 min-[360px]:w-auto min-[360px]:min-w-[76px] min-[360px]:justify-start min-[360px]:px-2 sm:min-w-[142px] sm:px-3">
     <WalletGlyph side={side} name={walletName ?? label} icon={icon} walletConnect={walletConnect} compact />
     <span className="hidden min-w-0 leading-none min-[360px]:block">
@@ -112,23 +136,31 @@ function WalletDialog() {
   const { disconnect } = useDisconnect()
   const ic = useIcWallet()
   const connectIc = (provider: IcWalletProvider) => void ic.connect(provider).catch(showWalletError)
-  const connectEvm = (nextConnector: Connector) => void connectAsync({ connector: nextConnector }).catch(showWalletError)
+  const connectEvm = (nextConnector: Connector) => void connectAsync({
+    connector: nextConnector,
+    chainId: deploymentProfile.chainId,
+  }).catch(showWalletError)
   const target = dialog.target
-  const title = target === "ic" ? "IC wallet" : target === "base" ? "Base wallet" : "Connect wallets"
+  const title = target === "ic" ? "IC wallet" : target === "base" ? "EVM wallet" : "Connect wallets"
   const description = target === "ic"
-    ? "Choose the wallet that owns the Internet Computer account."
+    ? ic.account
+      ? "Review or disconnect the Internet Computer wallet connected to this bridge."
+      : "Choose the wallet that owns the Internet Computer account."
     : target === "base"
-      ? "Choose the EVM wallet that will sign transactions on Base."
+      ? isConnected && address
+        ? "Review or disconnect the EVM wallet connected to Base."
+        : "Choose the EVM wallet that will sign transactions on Base."
       : "Connect both sides of the bridge. Verify every account again before moving KINIC."
+  const headerLogo = target === "ic" ? icpLogo : target === "base" ? baseLogo : blueKinic
   const connectedBrand = ic.provider ? icWalletBrands[ic.provider] : undefined
   const pendingConnectorUid = variables?.connector && "uid" in variables.connector ? variables.connector.uid : undefined
 
   return <Dialog open={dialog.open} onOpenChange={(open) => dialog.setOpen(open)}><DialogContent className="max-h-[min(720px,calc(100vh-2rem))] overflow-y-auto">
-    <DialogHeader><div className="mb-3 flex items-center gap-3"><img src={blueKinic} alt="" className="size-10 rounded-xl object-cover" /><DialogTitle>{title}</DialogTitle></div><DialogDescription>{description}</DialogDescription></DialogHeader>
+    <DialogHeader><div className="mb-3 flex items-center gap-3"><span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-white"><img src={headerLogo} alt="" data-dialog-network-logo={target} className={target === "ic" ? "w-9" : "size-10 object-cover"} /></span><DialogTitle>{title}</DialogTitle></div><DialogDescription>{description}</DialogDescription></DialogHeader>
     <div className="mt-6 space-y-6">
-      {(!target || target === "base") && <WalletSection label="Base wallet">
+      {(!target || target === "base") && <WalletSection label="EVM wallet">
         {isConnected && address ? <ConnectedWallet
-          name={connector?.name ?? "Base wallet"}
+          name={connector?.name ?? "EVM wallet"}
           value={short(address)}
           icon={connectorIcon(connector)}
           walletConnect={connector ? isWalletConnect(connector) : false}
@@ -138,7 +170,7 @@ function WalletDialog() {
           {connectors.map((nextConnector) => <WalletOption
             key={nextConnector.uid}
             name={isGenericInjected(nextConnector) ? "Browser wallet" : nextConnector.name}
-            description={isWalletConnect(nextConnector) ? "Scan with a mobile wallet" : isGenericInjected(nextConnector) ? "Use an installed extension" : "Detected in this browser"}
+            description={isWalletConnect(nextConnector) ? "Scan with a mobile wallet" : isCoinbaseWallet(nextConnector) ? "Coinbase app or smart wallet" : isMetaMask(nextConnector) ? "Browser extension or mobile wallet" : isGenericInjected(nextConnector) ? "Use an installed extension" : "Detected in this browser"}
             icon={connectorIcon(nextConnector)}
             walletConnect={isWalletConnect(nextConnector)}
             side="base"
@@ -240,5 +272,6 @@ function WalletGlyph({ side, name, icon, walletConnect, compact }: {
   const size = compact ? "size-7" : "size-10"
   if (icon) return <span className={`${size} grid shrink-0 place-items-center overflow-hidden rounded-xl bg-white`}><img src={icon} alt={`${name} logo`} className={`${compact ? "size-7" : "size-9"} object-contain`} /></span>
   if (walletConnect) return <span className={`${size} grid shrink-0 place-items-center rounded-xl bg-[#3b99fc] text-white`}><QrCode className={compact ? "size-4" : "size-5"} aria-hidden="true" /></span>
-  return <span className={`${size} grid shrink-0 place-items-center rounded-xl text-[10px] font-bold text-white ${side === "ic" ? "bg-[var(--pink)]" : "bg-[#0052ff]"}`}>{side === "ic" ? "IC" : "B"}</span>
+  const networkName = side === "ic" ? "Internet Computer" : "Base"
+  return <span className={`${size} grid shrink-0 place-items-center overflow-hidden rounded-xl bg-white`}><img src={side === "ic" ? icpLogo : baseLogo} alt={`${networkName} logo`} data-network-logo={side} className={side === "ic" ? `${compact ? "w-7" : "w-9"} h-auto` : `${compact ? "size-7" : "size-9"} object-contain`} /></span>
 }

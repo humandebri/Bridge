@@ -3,8 +3,8 @@
   "label": "IC Mainnet × Base Sepolia TEST",
   "testOnly": true,
   "gateBManifestSha256": null,
-  "profileFileSha256": "17f3bef5fa80cbe014525f7f4d42c5ca46456c817c68bf059cf9c2eecda1dc2c",
-  "profileCanonicalSha256": "17f3bef5fa80cbe014525f7f4d42c5ca46456c817c68bf059cf9c2eecda1dc2c",
+  "profileFileSha256": "75390e09ebbd2e3426779b99dcab526c2a7b802cb9e4571d8637cb34413d1dff",
+  "profileCanonicalSha256": "75390e09ebbd2e3426779b99dcab526c2a7b802cb9e4571d8637cb34413d1dff",
   "icHost": "https://icp-api.io",
   "baseRpcUrl": "https://base-sepolia-rpc.publicnode.com",
   "chainId": 84532,
@@ -20,12 +20,12 @@
     "symbol": "KINIC",
     "decimals": 8
   },
-  "bridgeAddress": "0xa2C9ff494E3883a82621a905f0a7d6d93816d7D0",
-  "bsnsAddress": "0x445b9f13765789Ee0ea3849D5ecaB38004707b84",
-  "expected_bridge_signer": "0x988cbae341dc79f45915012eb714bd0c3db17ea4",
+  "bridgeAddress": "0x1cbaf84FFC4BfF69501515CcA3C7636E64B68aBB",
+  "bsnsAddress": "0xEE6B915913D575AdFBB84b2E574035b3B7a0CDbc",
+  "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
   "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
   "rpcProviderUrlsSha256": "0xb94b27aaf40034c9bb0e847ab32eb7c290ad90d5ff83c8d559ed78c23a94a360",
-  "deploymentBlock": "44469858",
-  "bridgeRuntimeHash": "0xb526ba835d163b897c9f8070ed092a6d87f84646a6f7e8415853bb09ca4d0ecc",
-  "bsnsRuntimeHash": "0xa9180dbee5949137226abdd3e7c14dfb40099d492bc9412b691f80a85d608a69"
+  "deploymentBlock": "44546551",
+  "bridgeRuntimeHash": "0x89eaf12f390d61a7754e02ea670817262996254b8389b0420a1591cffb38a04a",
+  "bsnsRuntimeHash": "0x5aa9b09bc7c409ec53250aa481097c6063c3c7c6a59f0004f9dbe5f1fdeff057"
 }

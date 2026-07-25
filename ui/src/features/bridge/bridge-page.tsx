@@ -14,18 +14,19 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { deploymentProfile } from "@/config/profile"
-import { useCurrentBaseQuote, useRuntimeValidation, useRuntimeWriteReadiness } from "@/features/status/use-status"
+import { useCurrentBaseQuote, useRuntimeHeartbeat, useRuntimeValidation, useRuntimeWriteReadiness } from "@/features/status/use-status"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { useWalletDialog } from "@/features/wallet/wallet-controls"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { estimatedAmountOut, formatTokenAmount, parseTokenAmount, requiredDepositBalance } from "@/lib/amounts"
+import { shortenWalletAddress } from "@/lib/wallet-address"
 import { classifyDepositRecoverySequence } from "@/lib/deposit-recovery"
 import { createLedgerActor, ledgerAccount } from "@/lib/ic/ledger"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import type { DepositCall, IcAccount } from "@/lib/ic/wallet"
 import { basePublicClient } from "@/lib/evm/client"
-import { refetchRuntimeWriteReady } from "@/lib/runtime-validation"
+import { refetchRuntimeWriteReady, RUNTIME_VALIDATION_TTL_MS } from "@/lib/runtime-validation"
 import { currentInjectedWallet, requireWalletSnapshot, sameIcAccount } from "@/lib/wallet-snapshot"
 import { createWithdrawalAfterRevalidation } from "@/lib/withdrawal-submit"
 import { savePendingConfirmation } from "@/lib/pending-confirmations"
@@ -34,6 +35,14 @@ import { withBrowserLock } from "@/lib/browser-lock"
 
 export type BridgeDirection = "deposit" | "withdraw"
 type BridgeNetwork = "ic" | "base"
+const AUTO_REFRESH_INTERVAL_MS = 45_000
+const automaticQueryOptions = {
+  refetchInterval: AUTO_REFRESH_INTERVAL_MS,
+  refetchIntervalInBackground: false,
+  refetchOnWindowFocus: true,
+  refetchOnReconnect: true,
+  staleTime: RUNTIME_VALIDATION_TTL_MS,
+} as const
 
 const NETWORKS: Record<BridgeNetwork, { label: string; logo: string }> = {
   ic: { label: "Internet Computer", logo: icpLogo },
@@ -51,6 +60,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const [withdrawAmount, setWithdrawAmount] = useState("")
   const [confirming, setConfirming] = useState(false)
   const [unresolvedDeposit, setUnresolvedDeposit] = useState<UnresolvedDepositAttempt>()
+  const [resolvedIntentOwner, setResolvedIntentOwner] = useState<string>()
   const [checkingDeposit, setCheckingDeposit] = useState(false)
   const [submittingWithdrawal, setSubmittingWithdrawal] = useState(false)
   const queryClient = useQueryClient()
@@ -61,9 +71,18 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const write = useWriteContract()
   const connectorClient = useConnectorClient()
   const currentBaseWallet = () => currentInjectedWallet(connectorClient.data?.transport)
-  const base = useCurrentBaseQuote()
-  const runtime = useRuntimeValidation(chainId)
-  const runtimeReadiness = useRuntimeWriteReadiness(runtime.data)
+  const runtime = useRuntimeValidation(chainId, { enabled: true, gcTime: Infinity, staleTime: Infinity })
+  const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, {
+    enabled: runtime.data?.ready === true,
+    refetchInterval: AUTO_REFRESH_INTERVAL_MS,
+  })
+  const activeRuntimeValidation = runtime.data?.ready === true ? heartbeat.data : runtime.data
+  const runtimeReadiness = useRuntimeWriteReadiness(activeRuntimeValidation)
+  const base = useCurrentBaseQuote({
+    enabled: runtimeReadiness.ready,
+    refetchInterval: AUTO_REFRESH_INTERVAL_MS,
+    staleTime: RUNTIME_VALIDATION_TTL_MS,
+  })
   const sendToken = direction === "deposit" ? deploymentProfile.icToken : deploymentProfile.baseToken
   const receiveToken = direction === "deposit" ? deploymentProfile.baseToken : deploymentProfile.icToken
   const baseData = !base.isError && !base.isStale ? base.data : undefined
@@ -73,7 +92,11 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const ownerSequenceKey = ["deposit-owner-sequence", ic.account?.owner] as const
   const ownerSequence = useQuery({
     queryKey: ownerSequenceKey,
-    enabled: false,
+    enabled: direction === "deposit"
+      && Boolean(ic.account)
+      && resolvedIntentOwner === ic.account?.owner
+      && !unresolvedDeposit,
+    ...automaticQueryOptions,
     queryFn: async () => {
       const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
       return actor.get_next_deposit_sequence(Principal.fromText(ic.account!.owner))
@@ -81,7 +104,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   })
   const ledger = useQuery({
     queryKey: ["deposit-ledger", ic.account?.owner, bytesHex(ic.account?.subaccount ?? new Uint8Array())],
-    enabled: false,
+    enabled: direction === "deposit" && Boolean(ic.account),
+    ...automaticQueryOptions,
     queryFn: async () => {
       const ledgerActor = await createLedgerActor(deploymentProfile.icHost, deploymentProfile.ledgerCanisterId as string)
       const bridgeActor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
@@ -97,16 +121,17 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   })
   const bsnsBalance = useQuery({
     queryKey: ["bsns-balance", address],
-    enabled: false,
+    enabled: direction === "withdraw" && Boolean(address),
+    ...automaticQueryOptions,
     queryFn: () => basePublicClient.readContract({ address: deploymentProfile.bsnsAddress as `0x${string}`, abi: bsnsAbi, functionName: "balanceOf", args: [address!] }),
   })
   const ledgerData = !ledger.isError && !ledger.isStale ? ledger.data : undefined
   const bsnsBalanceData = !bsnsBalance.isError && !bsnsBalance.isStale ? bsnsBalance.data : undefined
   const estimate = withdrawParsed.ok && baseData ? estimatedAmountOut(withdrawParsed.value, baseData.serviceFee) : 0n
   const ownerSequenceData = !ownerSequence.isError && !ownerSequence.isStale ? ownerSequence.data : undefined
-  const refreshing = runtime.isFetching || base.isFetching || ledger.isFetching || bsnsBalance.isFetching || (!unresolvedDeposit && ownerSequence.isFetching)
+  const refreshing = runtime.isFetching || heartbeat.isFetching || base.isFetching || ledger.isFetching || bsnsBalance.isFetching || (!unresolvedDeposit && ownerSequence.isFetching)
   const refreshBridgeData = () => {
-    const calls: Promise<unknown>[] = [runtime.refetch(), base.refetch()]
+    const calls: Promise<unknown>[] = [runtime.refetch(), heartbeat.refetch(), base.refetch()]
     if (direction === "deposit" && ic.account) {
       calls.push(ledger.refetch())
       if (!unresolvedDeposit) calls.push(ownerSequence.refetch())
@@ -119,7 +144,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     const account = ic.account
     let active = true
     queueMicrotask(() => {
-      if (active) setUnresolvedDeposit(account ? readDepositIntent(account) : undefined)
+      if (active) {
+        setUnresolvedDeposit(account ? readDepositIntent(account) : undefined)
+        setResolvedIntentOwner(account?.owner)
+      }
     })
     return () => { active = false }
   }, [ic.account])
@@ -276,7 +304,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const submitWithdrawal = async () => {
     try {
       setSubmittingWithdrawal(true)
-      if (!address) throw new Error("Connect the Base wallet that owns bSNS")
+      if (!address) throw new Error("Connect the EVM wallet that owns bSNS")
       if (!ic.account || !ic.adapter) throw new Error("Connect the destination IC wallet")
       if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
       if (baseData === undefined || bsnsBalanceData === undefined) throw new Error("Fee or balance data is unavailable or stale")
@@ -349,13 +377,13 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const retryRecipientMatches = unresolvedDeposit && address ? address.toLowerCase() === unresolvedDeposit.recipient.toLowerCase() : false
   const runtimeReason = runtimeReadiness.ready
     ? undefined
-    : runtime.isFetching
+    : runtime.isFetching || heartbeat.isFetching
       ? "Checking availability…"
-      : runtime.data
+      : activeRuntimeValidation
         ? "Bridge is temporarily unavailable. Try Refresh."
         : "Refresh before continuing."
   const depositBlockers = unresolvedDeposit
-    ? [runtimeReason, !ic.account && "Reconnect the original IC wallet", !address && "Reconnect the original Base wallet", ic.account && !retryAccountMatches && "Reconnect the original IC wallet", address && !retryRecipientMatches && "Reconnect the original Base wallet"].filter(Boolean) as string[]
+    ? [runtimeReason, !ic.account && "Reconnect the original IC wallet", !address && "Reconnect the original EVM wallet", ic.account && !retryAccountMatches && "Reconnect the original IC wallet", address && !retryRecipientMatches && "Reconnect the original EVM wallet"].filter(Boolean) as string[]
     : [!address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || !ledgerData || ownerSequenceData === undefined) && "Balance or fee information is unavailable", !depositParsed.ok && (depositParsed.reason ?? "Enter an amount")].filter(Boolean) as string[]
   const withdrawalBlockers = [!address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || bsnsBalanceData === undefined) && "Fee and balance data is unavailable", !withdrawParsed.ok && (withdrawParsed.reason ?? "Enter an amount"), withdrawParsed.ok && baseData && withdrawParsed.value <= baseData.serviceFee && "Amount must exceed the service fee"].filter(Boolean) as string[]
   const blockers = direction === "deposit" ? depositBlockers : withdrawalBlockers
@@ -364,14 +392,14 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const balance = direction === "deposit" ? ledgerData?.balance : bsnsBalanceData
   const fee = unresolvedDeposit?.call.maxServiceFee ?? baseData?.serviceFee
   const receive = direction === "deposit" ? (unresolvedDeposit ? (unresolvedDeposit.call.grossAmount > unresolvedDeposit.call.maxServiceFee ? unresolvedDeposit.call.grossAmount - unresolvedDeposit.call.maxServiceFee : 0n) : depositParsed.ok && fee !== undefined ? (depositParsed.value > fee ? depositParsed.value - fee : 0n) : undefined) : (estimate > 0n ? estimate : undefined)
-  const source = direction === "deposit" ? { network: "ic" as const, wallet: unresolvedDeposit?.account.owner ?? ic.account?.owner ?? "Connect IC wallet" } : { network: "base" as const, wallet: address ?? "Connect Base wallet" }
-  const destination = direction === "deposit" ? { network: "base" as const, wallet: unresolvedDeposit?.recipient ?? address ?? "Connect Base wallet" } : { network: "ic" as const, wallet: ic.account?.owner ?? "Connect IC wallet" }
+  const source = direction === "deposit" ? { network: "ic" as const, wallet: unresolvedDeposit?.account.owner ?? ic.account?.owner ?? "Connect IC wallet" } : { network: "base" as const, wallet: address ?? "Connect EVM wallet" }
+  const destination = direction === "deposit" ? { network: "base" as const, wallet: unresolvedDeposit?.recipient ?? address ?? "Connect EVM wallet" } : { network: "ic" as const, wallet: ic.account?.owner ?? "Connect IC wallet" }
 
   const changeDirection = () => { if (unresolvedDeposit) return; setConfirming(false); onDirectionChange(direction === "deposit" ? "withdraw" : "deposit") }
-  return <div className="route-enter grid items-start gap-8 pb-6 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(560px,620px)] lg:gap-16 lg:pb-12 lg:pt-14 xl:gap-20">
+  return <div className="route-enter grid items-start gap-8 pb-6 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(560px,620px)] lg:gap-16 lg:pb-7 lg:pt-14 xl:gap-20">
     <div className="lg:sticky lg:top-28 lg:pt-12" data-testid="bridge-intro">
       <h1 className="font-display max-w-[460px] text-[42px] leading-[1.02] text-black sm:text-[52px] lg:text-[58px]">Bridge KINIC</h1>
-      <p className="mt-5 max-w-[460px] text-[16px] leading-7 text-[var(--muted)] sm:text-[17px]">Move tokens between IC and Base with both wallets verified.</p>
+      <p className="mt-5 max-w-[460px] text-[16px] leading-7 text-[var(--muted)] sm:text-[17px]">Move tokens between IC and Base.</p>
       <div className="mt-8 hidden items-center gap-3 text-xs font-bold uppercase tracking-[.12em] text-[var(--support)] lg:flex"><span className="h-px w-12 bg-[var(--pink)]" />1:1 across both networks</div>
     </div>
     <section className="overflow-hidden rounded-[24px] border border-[var(--line)] bg-[var(--panel)] p-4 shadow-[0_24px_70px_rgba(20,34,53,.09)] sm:p-5" aria-label="KINIC bridge" data-testid="bridge-panel">
@@ -390,30 +418,30 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-sm"><Quote label="Current bridge fee" value={fee !== undefined ? `${formatTokenAmount(fee)} ${sendToken.symbol}` : "—"} /><Quote label="Estimated receive" value={receive !== undefined ? `${formatTokenAmount(receive)} ${receiveToken.symbol}` : "—"} /></div>
       {direction === "withdraw" && <div className="mt-3 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm leading-5 text-[#8a4b08]"><strong className="text-black">Base refund is not available after burn.</strong><p className="mt-1">If delivery is interrupted, the bridge retries the same fixed amount to this same IC account.</p></div>}
-      {unresolvedDeposit && <div className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]"><p className="font-bold text-black">Deposit status unavailable</p><p className="mt-1 leading-5">Check whether the deposit was accepted before starting another one.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="ghost" disabled={checkingDeposit || deposit.isPending} onClick={() => void checkUnresolvedDeposit()}>{checkingDeposit ? "Checking…" : "Check status"}</Button><Link to="/history" search={{ tab: "deposit" }} className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-bold underline underline-offset-4">Open History</Link></div></div>}
+      {unresolvedDeposit && <div className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]"><p className="font-bold text-black">Deposit status unavailable</p><p className="mt-1 leading-5">Check whether the deposit was accepted before starting another one.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="ghost" disabled={checkingDeposit || deposit.isPending} onClick={() => void checkUnresolvedDeposit()}>{checkingDeposit ? "Checking…" : "Check status"}</Button><Link to="/history" className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-bold underline underline-offset-4">Open History</Link></div></div>}
       {runtimeReason && <div className="mt-4 flex items-center justify-between gap-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] px-4 py-3 text-sm text-[#d5691b]"><span>{runtimeReason}</span><Link to="/status" className="font-bold underline underline-offset-4">View status</Link></div>}
       <Button className="mt-3 h-14 w-full" size="lg" disabled={blockers.length > 0 || deposit.isPending || write.isPending || submittingWithdrawal} onClick={() => setConfirming(true)}>{direction === "deposit" ? (unresolvedDeposit ? "Retry same deposit" : "Bridge to Base") : "Bridge to IC"}<ArrowRight className="size-4" /></Button>
       <p id="bridge-amount-feedback" className="mt-3 min-h-4 text-center text-xs text-[var(--muted)]" aria-live="polite">{blockers.length > 0 ? `Next: ${blockers[0]}` : "Ready to review"}</p>
     </section>
-    <BridgeConfirmationDialog direction={direction} open={confirming} setOpen={setConfirming} source={source.wallet} destination={destination.wallet} amount={amount} receive={receive} sendSymbol={sendToken.symbol} receiveSymbol={receiveToken.symbol} ledgerFee={ledgerData?.fee} pending={deposit.isPending || write.isPending || submittingWithdrawal} onConfirm={() => { setConfirming(false); if (direction === "deposit") void submitDeposit(); else void submitWithdrawal() }} />
+    <BridgeConfirmationDialog direction={direction} open={confirming} setOpen={setConfirming} source={source.wallet} destination={destination.wallet} amount={amount} receive={receive} sendSymbol={sendToken.symbol} receiveSymbol={receiveToken.symbol} pending={deposit.isPending || write.isPending || submittingWithdrawal} onConfirm={() => { setConfirming(false); if (direction === "deposit") void submitDeposit(); else void submitWithdrawal() }} />
   </div>
 }
 
 function EndpointCard({ label, network, wallet, disabled, onClick }: { label: string; network: BridgeNetwork; wallet: string; disabled?: boolean; onClick: () => void }) {
   const details = NETWORKS[network]
-  return <button type="button" disabled={disabled} onClick={() => onClick()} className="min-w-0 rounded-2xl border border-[var(--line)] bg-white p-3.5 text-left transition duration-300 hover:-translate-y-[2px] hover:border-[var(--pink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:border-[var(--line)]"><span className="text-xs font-medium text-[var(--muted)]">{label}</span><span className="mt-0.5 flex items-center justify-between gap-3"><span className="flex min-w-0 items-center gap-2"><img src={details.logo} alt="" aria-hidden="true" data-network-logo={network} className="h-[22px] w-auto shrink-0" /><strong className="truncate text-base text-black">{details.label}</strong></span><LockKeyhole className="size-4 shrink-0 text-[var(--pink)]" /></span><span className="mt-1 block truncate text-xs text-[var(--muted)]">{wallet}</span></button>
+  const displayWallet = shortenWalletAddress(wallet)
+  return <button type="button" disabled={disabled} onClick={() => onClick()} className="min-w-0 rounded-2xl border border-[var(--line)] bg-white p-3.5 text-left transition duration-300 hover:-translate-y-[2px] hover:border-[var(--pink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:border-[var(--line)]"><span className="text-xs font-medium text-[var(--muted)]">{label}</span><span className="mt-0.5 flex items-center justify-between gap-3"><span className="flex min-w-0 items-center gap-2"><img src={details.logo} alt="" aria-hidden="true" data-network-logo={network} className="h-[22px] w-auto shrink-0" /><strong className="truncate text-base text-black">{details.label}</strong></span><LockKeyhole className="size-4 shrink-0 text-[var(--pink)]" /></span><span className="mt-1 block truncate text-xs text-[var(--muted)]" title={displayWallet === wallet ? undefined : wallet}>{displayWallet}</span></button>
 }
 function Quote({ label, value }: { label: string; value: string }) { return <div><p className="text-xs text-[var(--muted)]">{label}</p><p className="font-numeric mt-1 font-bold text-black">{value}</p></div> }
 function ConfirmRow({ label, value }: { label: string; value: string }) { return <div><p className="text-xs text-[var(--muted)]">{label}</p><p className="mt-1 break-all text-sm font-bold text-black">{value}</p></div> }
 
-export function BridgeConfirmationDialog({ direction, open, setOpen, source, destination, amount, receive, sendSymbol, receiveSymbol, ledgerFee, pending, onConfirm }: { direction: BridgeDirection; open: boolean; setOpen: (open: boolean) => void; source: string; destination: string; amount: string; receive?: bigint; sendSymbol: string; receiveSymbol: string; ledgerFee?: bigint; pending: boolean; onConfirm: () => void }) {
+export function BridgeConfirmationDialog({ direction, open, setOpen, source, destination, amount, receive, sendSymbol, receiveSymbol, pending, onConfirm }: { direction: BridgeDirection; open: boolean; setOpen: (open: boolean) => void; source: string; destination: string; amount: string; receive?: bigint; sendSymbol: string; receiveSymbol: string; pending: boolean; onConfirm: () => void }) {
   const [burnAcknowledged, setBurnAcknowledged] = useState(false)
   const close = (value: boolean) => {
     if (!value) setBurnAcknowledged(false)
     setOpen(value)
   }
-  const refundFee = ledgerFee === undefined ? "the configured ledger fee" : `${formatTokenAmount(ledgerFee)} KINIC`
-  return <Dialog open={open} onOpenChange={close}><DialogContent><DialogHeader><DialogTitle>{direction === "deposit" ? "Confirm bridge to Base" : "Confirm bridge to IC"}</DialogTitle><DialogDescription>Review both wallets and the amount before opening the wallet prompt.</DialogDescription></DialogHeader><div className="mt-5 space-y-4 rounded-2xl bg-[var(--panel)] p-4"><ConfirmRow label="Source" value={source} /><ConfirmRow label="Destination" value={destination} /><ConfirmRow label="Send / receive" value={`${amount || "—"} ${sendSymbol} / ${receive !== undefined ? formatTokenAmount(receive) : "—"} ${receiveSymbol}`} /></div>{direction === "deposit" && <p className="mt-4 rounded-xl bg-[#fff3e4] px-3 py-2 text-sm leading-5 text-[#8a4b08]">Base conditions are checked again after the ledger pull. If that check rejects the deposit, the bridge returns the gross amount minus {refundFee} to the same IC account and pays {refundFee} from escrow.</p>}{direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5"><Checkbox aria-label="Acknowledge irreversible burn" checked={burnAcknowledged} onCheckedChange={(checked) => setBurnAcknowledged(checked === true)} /><span>I understand that confirming burns the Base tokens and no Base refund is available.</span></label>}<DialogFooter><DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose><Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>Confirm and open wallet</Button></DialogFooter></DialogContent></Dialog>
+  return <Dialog open={open} onOpenChange={close}><DialogContent><DialogHeader><DialogTitle>{direction === "deposit" ? "Confirm bridge to Base" : "Confirm bridge to IC"}</DialogTitle><DialogDescription>Review both wallets and the amount before opening the wallet prompt.</DialogDescription></DialogHeader><div className="mt-5 space-y-4 rounded-2xl bg-[var(--panel)] p-4"><ConfirmRow label="Source" value={source} /><ConfirmRow label="Destination" value={destination} /><ConfirmRow label="Send / receive" value={`${amount || "—"} ${sendSymbol} / ${receive !== undefined ? formatTokenAmount(receive) : "—"} ${receiveSymbol}`} /></div>{direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5"><Checkbox aria-label="Acknowledge irreversible burn" checked={burnAcknowledged} onCheckedChange={(checked) => setBurnAcknowledged(checked === true)} /><span>I understand that confirming burns the Base tokens and no Base refund is available.</span></label>}<DialogFooter><DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose><Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>Confirm and open wallet</Button></DialogFooter></DialogContent></Dialog>
 }
 
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` { return `0x${Array.from(bytes, (value) => Number(value).toString(16).padStart(2, "0")).join("")}` }
