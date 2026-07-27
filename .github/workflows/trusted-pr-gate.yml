@@ -18,15 +18,19 @@ jobs:
   classify:
     runs-on: ubuntu-24.04
     outputs:
+      base_sha: ${{ steps.base.outputs.sha }}
       matrix: ${{ steps.classify.outputs.matrix }}
       any: ${{ steps.classify.outputs.any }}
     steps:
       - name: Check out trusted base
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Pin current trusted base
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Fetch untrusted head as data
         env:
           HEAD_REF: refs/pull/${{ github.event.pull_request.number }}/head
@@ -37,7 +41,7 @@ jobs:
       - name: Classify changed paths with trusted classifier
         id: classify
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" |
@@ -61,7 +65,7 @@ jobs:
       - name: Check out trusted base policy
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ needs.classify.outputs.base_sha }}
           path: trusted-policy
           persist-credentials: false
       - name: Check out exact untrusted head
