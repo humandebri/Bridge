@@ -13,13 +13,17 @@ class TrustedPrGateTests(unittest.TestCase):
     def test_policy_is_loaded_from_the_base_commit(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", workflow)
-        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", workflow)
+        self.assertIn("ref: ${{ github.event.pull_request.base.ref }}", workflow)
+        self.assertIn('echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"', workflow)
+        self.assertIn("BASE_SHA: ${{ steps.base.outputs.sha }}", workflow)
+        self.assertIn("base_sha: ${{ steps.base.outputs.sha }}", workflow)
+        self.assertIn("ref: ${{ needs.classify.outputs.base_sha }}", workflow)
         self.assertIn(
             "python3 scripts/ci_changed_areas.py --null --github-output \"$GITHUB_OUTPUT\"",
             workflow,
         )
         self.assertLess(
-            workflow.index("ref: ${{ github.event.pull_request.base.sha }}"),
+            workflow.index("ref: ${{ github.event.pull_request.base.ref }}"),
             workflow.index("python3 scripts/ci_changed_areas.py"),
         )
 
