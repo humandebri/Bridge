@@ -503,34 +503,30 @@ async fn continue_pending(
     if let storage::GovernanceTransactionState::Broadcasting { transaction_hash } =
         transaction.state
     {
-        let known = evm_rpc::transaction_known(config, transaction_hash)
-            .await
-            .map_err(|_| BaseGovernanceError::BroadcastAmbiguous {
-                operation_id: transaction.id,
-            })?;
-        require_current_transaction_authorization(caller, &transaction.kind)?;
-        if known {
-            transaction.state = storage::GovernanceTransactionState::Submitted { transaction_hash };
-            persist(&transaction)?;
-            return Ok(receipt(&transaction, Some(transaction_hash)));
+        if let Ok(known) = evm_rpc::transaction_known(config, transaction_hash).await {
+            require_current_transaction_authorization(caller, &transaction.kind)?;
+            if known {
+                transaction.state =
+                    storage::GovernanceTransactionState::Submitted { transaction_hash };
+                persist(&transaction)?;
+                return Ok(receipt(&transaction, Some(transaction_hash)));
+            }
         }
-        let operator = crate::api::cached_governance_operator_address(config)
-            .await
-            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-        let observed_nonce = evm_rpc::transaction_count(config, operator)
-            .await
-            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-        require_current_transaction_authorization(caller, &transaction.kind)?;
-        if observed_nonce > transaction.envelope.nonce {
-            STORE.with(|store| {
-                store
-                    .borrow_mut()
-                    .resolve_governance_nonce_conflict(&transaction, observed_nonce)
-                    .map_err(|_| BaseGovernanceError::StorageFailure)
-            })?;
-            return Err(BaseGovernanceError::NonceConflict {
-                operation_id: transaction.id,
-            });
+        if let Ok(operator) = crate::api::cached_governance_operator_address(config).await {
+            if let Ok(observed_nonce) = evm_rpc::transaction_count(config, operator).await {
+                require_current_transaction_authorization(caller, &transaction.kind)?;
+                if observed_nonce > transaction.envelope.nonce {
+                    STORE.with(|store| {
+                        store
+                            .borrow_mut()
+                            .resolve_governance_nonce_conflict(&transaction, observed_nonce)
+                            .map_err(|_| BaseGovernanceError::StorageFailure)
+                    })?;
+                    return Err(BaseGovernanceError::NonceConflict {
+                        operation_id: transaction.id,
+                    });
+                }
+            }
         }
         if dangerous_governance_kind(&transaction.kind) && emergency_base_actions_pending()? {
             return Err(BaseGovernanceError::BroadcastAmbiguous {
