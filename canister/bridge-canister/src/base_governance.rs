@@ -546,9 +546,15 @@ async fn continue_pending(
                     storage::GovernanceTransactionKind::ExecuteActivation { .. }
                 );
                 if activates {
-                    let observed = evm_rpc::bridge_snapshot(config)
-                        .await
-                        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+                    let observed = match evm_rpc::bridge_snapshot(config).await {
+                        Ok(observed) => observed,
+                        Err(error) => {
+                            ic_cdk::println!(
+                                "activation snapshot observation failed: {error:?}"
+                            );
+                            return Err(BaseGovernanceError::ObservationUnavailable);
+                        }
+                    };
                     require_current_transaction_authorization(caller, &transaction.kind)?;
                     if observed.snapshot.deposits_paused || observed.snapshot.withdrawals_paused {
                         return Err(BaseGovernanceError::ObservationUnavailable);
