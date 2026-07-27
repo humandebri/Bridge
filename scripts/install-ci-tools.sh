@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Install checksum-pinned tools that are not provided by setup actions.
+set -euo pipefail
+
+MODE="${1:-all}"
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR"
+
+install_didc() {
+  curl --proto '=https' --tlsv1.2 -LsSf \
+    -o "$BIN_DIR/didc" \
+    https://github.com/dfinity/candid/releases/download/2025-12-18/didc-linux64
+  echo "32693c76d9c6fe0f273f2c1ebf7e48ba3c383e925e5afd17dd264a06aed9fbcc  $BIN_DIR/didc" \
+    | sha256sum --check
+  chmod +x "$BIN_DIR/didc"
+  test "$("$BIN_DIR/didc" --version)" = "didc 0.5.4"
+}
+
+install_icp() {
+  local installer="/tmp/icp-cli-installer.sh"
+  curl --proto '=https' --tlsv1.2 -LsSf \
+    -o "$installer" \
+    https://github.com/dfinity/icp-cli/releases/download/v1.0.2/icp-cli-installer.sh
+  echo "e7e29ec7a99c854264477f8dcede86670ff3a854f035b6fac40d0c891b9cf70e  $installer" \
+    | sha256sum --check
+  ICP_CLI_DISABLE_UPDATE=1 ICP_CLI_NO_MODIFY_PATH=1 sh "$installer" --quiet
+}
+
+install_ic_wasm() {
+  local installer="/tmp/ic-wasm-installer.sh"
+  curl --proto '=https' --tlsv1.2 -LsSf \
+    -o "$installer" \
+    https://github.com/dfinity/ic-wasm/releases/download/0.10.0/ic-wasm-installer.sh
+  echo "00c361c9c1d53ef464660c0e414cbaf50b602e21f16811fe4134077deaaecabb  $installer" \
+    | sha256sum --check
+  IC_WASM_NO_MODIFY_PATH=1 sh "$installer" --quiet
+  test "$(ic-wasm --version)" = "ic-wasm 0.10.0"
+}
+
+install_proof_tools() {
+  local z3_archive="/tmp/z3.zip"
+  local verus_archive="/tmp/verus.zip"
+  local elan_installer="/tmp/elan-init.sh"
+
+  install_didc
+  install_icp
+  sudo apt-get update
+  sudo apt-get install --yes ripgrep
+
+  curl --proto '=https' --tlsv1.2 -LsSf \
+    -o "$z3_archive" \
+    https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/z3-4.16.0-x64-glibc-2.39.zip
+  echo "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e  $z3_archive" \
+    | sha256sum --check
+  unzip -q "$z3_archive" -d "$HOME/.local/z3"
+  ln -sf "$(find "$HOME/.local/z3" -type f -path '*/bin/z3' -print -quit)" "$BIN_DIR/z3"
+
+  rustup toolchain install 1.96.0 --profile minimal
+  curl --proto '=https' --tlsv1.2 -LsSf \
+    -o "$verus_archive" \
+    https://github.com/verus-lang/verus/releases/download/release/0.2026.07.05.49b8806/verus-0.2026.07.05.49b8806-x86-linux.zip
+  echo "cb4fe7db423fdda5e9aa77b2c3e632f8a618b6a991509283aae591f0a914d34c  $verus_archive" \
+    | sha256sum --check
+  unzip -q "$verus_archive" -d "$HOME/.local/verus"
+  ln -sf "$(find "$HOME/.local/verus" -type f -name verus -print -quit)" "$BIN_DIR/verus"
+
+  curl --proto '=https' --tlsv1.2 -LsSf \
+    -o "$elan_installer" \
+    https://raw.githubusercontent.com/leanprover/elan/6737edca3d2ca3dbaa1b47b87769b48b420633ae/elan-init.sh
+  echo "a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53  $elan_installer" \
+    | sha256sum --check
+  sh "$elan_installer" -y --default-toolchain none
+}
+
+case "$MODE" in
+  didc)
+    install_didc
+    ;;
+  icp)
+    install_icp
+    install_ic_wasm
+    ;;
+  proof)
+    install_proof_tools
+    ;;
+  all)
+    install_proof_tools
+    install_ic_wasm
+    ;;
+  *)
+    echo "usage: $0 {didc|icp|proof|all}" >&2
+    exit 2
+    ;;
+esac
+
+{
+  echo "$BIN_DIR"
+  if [[ "$MODE" == "proof" || "$MODE" == "all" ]]; then
+    echo "$HOME/.elan/bin"
+  fi
+} >>"${GITHUB_PATH:?GITHUB_PATH is required}"

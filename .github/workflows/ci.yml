@@ -143,3 +143,16 @@ jobs:
 
       - name: Verify smoke restored the ICP configuration
         run: git diff --exit-code -- icp.yaml
+
+  # Temporary compatibility context used only to bootstrap the trusted gate.
+  # Branch protection switches to trusted-pr-gate immediately after this lands.
+  pr-gate:
+    if: always()
+    needs: [verify]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Require the complete repository gate
+        env:
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: test "$VERIFY_RESULT" = success
