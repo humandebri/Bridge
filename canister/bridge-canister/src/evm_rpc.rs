@@ -1,6 +1,6 @@
 use crate::config::BridgeInitArgs;
 use async_trait::async_trait;
-use bridge_core::{Amount, BaseMintSnapshot, FinalizedObservationRecord};
+use bridge_core::{Amount, BaseMintSnapshot, EvmFeeQuote, FinalizedObservationRecord};
 use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use evm_rpc_client::{CandidResponseConverter, EvmRpcClient, NoRetry};
 use evm_rpc_types::{
@@ -226,6 +226,11 @@ const BLOCK_RESPONSE_BYTES: u64 = 16 * 1024;
 const RECEIPT_RESPONSE_BYTES: u64 = 32 * 1024;
 const SEND_RESPONSE_BYTES: u64 = 2 * 1024;
 const EVM_RPC_TIMEOUT_SECONDS: u32 = 30;
+const GAS_PRICE_ORACLE: [u8; 20] = [
+    0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x0f,
+];
+const MAX_SIGNED_TRANSACTION_OVERHEAD_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BoundedRuntime;
@@ -342,6 +347,211 @@ fn parse_u128(value: &str) -> Result<u128, ObservationError> {
         return Ok(0);
     }
     u128::from_str_radix(significant, 16).map_err(|_| ObservationError::InvalidResponse)
+}
+
+fn nat256_u128(value: Nat256) -> Result<u128, ObservationError> {
+    let bytes = value.into_be_bytes();
+    if bytes[..16].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::Overflow);
+    }
+    Ok(u128::from_be_bytes(
+        bytes[16..]
+            .try_into()
+            .map_err(|_| ObservationError::InvalidResponse)?,
+    ))
+}
+
+fn ceil_bps(value: u128, basis_points: u32) -> Result<u128, ObservationError> {
+    value
+        .checked_mul(u128::from(basis_points))
+        .and_then(|scaled| scaled.checked_add(9_999))
+        .map(|scaled| scaled / 10_000)
+        .ok_or(ObservationError::Overflow)
+}
+
+async fn consistent_hex_request(
+    args: &BridgeInitArgs,
+    request: serde_json::Value,
+) -> Result<u128, ObservationError> {
+    match client(args)
+        .multi_request(request)
+        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+        .try_send()
+        .await
+        .map_err(|_| ObservationError::Rpc)?
+    {
+        MultiRpcResult::Consistent(Ok(value)) => parse_u128(&value),
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
+    }
+}
+
+fn canonical_block_parameter(block_hash: &[u8; 32]) -> serde_json::Value {
+    json!({
+        "blockHash": format!("0x{}", hex(block_hash)),
+        "requireCanonical": true,
+    })
+}
+
+async fn safe_block(args: &BridgeInitArgs) -> Result<Block, ObservationError> {
+    match client(args)
+        .get_block_by_number(BlockTag::Safe)
+        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+        .try_send()
+        .await
+        .map_err(|_| ObservationError::Rpc)?
+    {
+        MultiRpcResult::Consistent(Ok(block)) => Ok(block),
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
+    }
+}
+
+async fn gas_price_oracle_fee(
+    args: &BridgeInitArgs,
+    signature: &str,
+    argument: &[u8],
+    block_hash: [u8; 32],
+) -> Result<u128, ObservationError> {
+    let mut calldata = selector(signature).to_vec();
+    calldata.extend_from_slice(argument);
+    consistent_hex_request(
+        args,
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+            "params": [{
+                "to": format!("0x{}", hex(&GAS_PRICE_ORACLE)),
+                "data": format!("0x{}", hex(&calldata)),
+            }, canonical_block_parameter(&block_hash)],
+        }),
+    )
+    .await
+}
+
+pub async fn mint_fee_quote(
+    args: &BridgeInitArgs,
+    signer: [u8; 20],
+    calldata: &[u8],
+) -> Result<EvmFeeQuote, ObservationError> {
+    ensure_chain_id(args).await?;
+    let block = safe_block(args).await?;
+    let safe_block_number = u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?;
+    let safe_block_hash = *block.hash.as_array();
+    let base_fee_per_gas = nat256_u128(
+        block
+            .base_fee_per_gas
+            .ok_or(ObservationError::InvalidResponse)?,
+    )?;
+    let max_priority_fee_per_gas = consistent_hex_request(
+        args,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "eth_maxPriorityFeePerGas", "params": []}),
+    )
+    .await?;
+    if max_priority_fee_per_gas > args.evm_fee.max_priority_fee_per_gas_ceiling {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let gas_estimate = consistent_hex_request(
+        args,
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "eth_estimateGas",
+            "params": [{
+                "from": format!("0x{}", hex(&signer)),
+                "to": format!("0x{}", hex(&args.bridge_contract)),
+                "data": format!("0x{}", hex(calldata)),
+            }, canonical_block_parameter(&safe_block_hash)],
+        }),
+    )
+    .await?;
+    let gas_limit = ceil_bps(gas_estimate, args.evm_fee.gas_limit_multiplier_bps)?;
+    if gas_limit > args.evm_fee.gas_limit_ceiling {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let initial_max_fee_per_gas = ceil_bps(base_fee_per_gas, args.evm_fee.base_fee_multiplier_bps)?
+        .checked_add(max_priority_fee_per_gas)
+        .ok_or(ObservationError::Overflow)?;
+    if initial_max_fee_per_gas > args.evm_fee.max_fee_per_gas_ceiling {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let (reachable_max_fee_per_gas, _) = crate::config::reachable_replacement_fees(
+        initial_max_fee_per_gas,
+        max_priority_fee_per_gas,
+        args.evm_fee,
+        args.evm_liveness,
+    );
+    let max_serialized_size = calldata
+        .len()
+        .checked_add(MAX_SIGNED_TRANSACTION_OVERHEAD_BYTES)
+        .ok_or(ObservationError::Overflow)?;
+    let mut size_word = [0u8; 32];
+    size_word[16..].copy_from_slice(
+        &u128::try_from(max_serialized_size)
+            .map_err(|_| ObservationError::Overflow)?
+            .to_be_bytes(),
+    );
+    let observed_l1_fee_upper_bound_wei = gas_price_oracle_fee(
+        args,
+        "getL1FeeUpperBound(uint256)",
+        &size_word,
+        safe_block_hash,
+    )
+    .await?;
+    let reserved_l1_fee_wei =
+        ceil_bps(observed_l1_fee_upper_bound_wei, args.evm_fee.l1_fee_multiplier_bps)?;
+    if reserved_l1_fee_wei > args.evm_fee.l1_fee_per_transaction_ceiling_wei {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let reserved_eth_wei = gas_limit
+        .checked_mul(reachable_max_fee_per_gas)
+        .and_then(|fee| fee.checked_add(reserved_l1_fee_wei))
+        .ok_or(ObservationError::Overflow)?;
+    let observed_at_ns = ic_cdk::api::time();
+    let valid_until_ns = observed_at_ns
+        .checked_add(
+            args.evm_fee
+                .quote_validity_seconds
+                .checked_mul(1_000_000_000)
+                .ok_or(ObservationError::Overflow)?,
+        )
+        .ok_or(ObservationError::Overflow)?;
+    let quote = EvmFeeQuote {
+        safe_block_number,
+        safe_block_hash,
+        observed_at_ns,
+        valid_until_ns,
+        base_fee_per_gas,
+        max_priority_fee_per_gas,
+        gas_estimate,
+        gas_limit,
+        initial_max_fee_per_gas,
+        reachable_max_fee_per_gas,
+        observed_l1_fee_upper_bound_wei,
+        reserved_l1_fee_wei,
+        reserved_eth_wei,
+    };
+    quote
+        .validate()
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    Ok(quote)
+}
+
+pub async fn signed_transaction_l1_fee(
+    args: &BridgeInitArgs,
+    raw: &[u8],
+    block_hash: [u8; 32],
+) -> Result<u128, ObservationError> {
+    let head_offset = ((raw.len() + 31) / 32)
+        .checked_mul(32)
+        .ok_or(ObservationError::Overflow)?;
+    let padded_len = ((raw.len() + 31) / 32)
+        .checked_mul(32)
+        .ok_or(ObservationError::Overflow)?;
+    let mut encoded = vec![0u8; 64 + padded_len];
+    encoded[31] = 32;
+    let raw_len = u128::try_from(raw.len()).map_err(|_| ObservationError::Overflow)?;
+    encoded[48..64].copy_from_slice(&raw_len.to_be_bytes());
+    encoded[64..64 + raw.len()].copy_from_slice(raw);
+    debug_assert_eq!(head_offset, padded_len);
+    gas_price_oracle_fee(args, "getL1Fee(bytes)", &encoded, block_hash).await
 }
 
 async fn eth_call_at_observation(
@@ -1718,9 +1928,16 @@ mod tests {
             settlement_rate_limit_global: 3,
             settlement_rate_limit_per_principal: 2,
             settlement_rate_limit_per_record: 1,
-            transaction_gas_limit: 1,
-            max_fee_per_gas: 2,
-            max_priority_fee_per_gas: 1,
+            evm_fee: crate::config::EvmFeePolicy {
+                gas_limit_ceiling: 1,
+                max_fee_per_gas_ceiling: 2,
+                max_priority_fee_per_gas_ceiling: 1,
+                l1_fee_per_transaction_ceiling_wei: 1,
+                quote_validity_seconds: 90,
+                gas_limit_multiplier_bps: 13_000,
+                base_fee_multiplier_bps: 60_000,
+                l1_fee_multiplier_bps: 15_000,
+            },
             evm_liveness: crate::config::EvmLivenessPolicy::default(),
             eth_floor_wei: 1,
             cycles_floor: 1,

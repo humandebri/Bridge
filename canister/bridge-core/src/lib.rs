@@ -22,7 +22,7 @@ pub use evm::{
     EvmRecoveryResolution,
 };
 pub use external::{
-    EvmCallIntent, EvmTransactionEnvelope, ExternalProgress, FinalizedObservationRecord,
+    EvmCallIntent, EvmFeeQuote, EvmTransactionEnvelope, ExternalProgress, FinalizedObservationRecord,
     LedgerCallOutcome, LedgerFailure, ReconciliationArchiveRange, ReconciliationLedgerPage,
     ReconciliationScanPhase, ReconciliationScanProgress, ReconciliationTarget,
 };

@@ -833,6 +833,12 @@ fn multi_request(
             ]),
         };
     }
+    if request.contains("eth_maxPriorityFeePerGas") {
+        return MultiRpcResult::Consistent(Ok("0x1".into()));
+    }
+    if request.contains("eth_estimateGas") {
+        return MultiRpcResult::Consistent(Ok("0x186a0".into()));
+    }
     if request.contains("eth_call") {
         ETH_CALL_COUNT.with(|value| {
             let next = value.borrow().saturating_add(1);
@@ -872,7 +878,13 @@ fn multi_request(
     {
         return MultiRpcResult::Consistent(Ok("not-hex".into()));
     }
-    let response = if request.contains("eth_getCode") {
+    let response = if request.contains("420000000000000000000000000000000000000f") {
+        if request.contains("f1c7a58b") {
+            word(1_000)
+        } else {
+            word(500)
+        }
+    } else if request.contains("eth_getCode") {
         BRIDGE_RUNTIME_CODE.with(|code| format!("\"0x{}\"", bytes_hex(&code.borrow())))
     } else if request.contains("eth_getTransactionByHash") {
         let requested = serde_json::from_str::<serde_json::Value>(&request)

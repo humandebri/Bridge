@@ -373,6 +373,7 @@ mod tests {
             max_priority_fee_per_gas: 1,
             initial_max_fee_per_gas: 20,
             initial_max_priority_fee_per_gas: 1,
+            fee_quote: None,
             replacement_generation: 0,
             prior_signed_transactions: vec![],
             first_broadcast_at_ns: 0,

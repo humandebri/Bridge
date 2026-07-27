@@ -113,6 +113,22 @@ export type AuditEventKind = {
       'charged_service_fee' : bigint,
       'ledger_fee' : bigint,
     }
+  } |
+  {
+    'EvmFeeQuoteObserved' : {
+      'reserved_l1_fee_wei' : bigint,
+      'observed_l1_fee_upper_bound_wei' : bigint,
+      'base_fee_per_gas' : bigint,
+      'max_priority_fee_per_gas' : bigint,
+      'observed_at_ns' : bigint,
+      'gas_estimate' : bigint,
+      'initial_max_fee_per_gas' : bigint,
+      'safe_block_hash' : Uint8Array | number[],
+      'reserved_eth_wei' : bigint,
+      'reachable_max_fee_per_gas' : bigint,
+      'gas_limit' : bigint,
+      'safe_block_number' : bigint,
+    }
   };
 export interface AuditEventPage {
   'pruned_digest' : Uint8Array | number[],
@@ -174,19 +190,17 @@ export interface BridgeInitArgs {
   'ecdsa_key_name' : string,
   'base_chain_id' : bigint,
   'bridge_contract' : Uint8Array | number[],
-  'max_priority_fee_per_gas' : bigint,
   'fee_recipient' : FeeRecipientConfig,
   'settlement_rate_limit_window_seconds' : bigint,
   'evm_liveness' : EvmLivenessPolicy,
   'ecdsa_derivation_path' : Array<Uint8Array | number[]>,
   'evm_rpc_canister_id' : Principal,
   'deposit_rate_limit_per_principal' : number,
-  'max_fee_per_gas' : bigint,
   'governance_ecdsa_derivation_path' : Array<Uint8Array | number[]>,
   'eth_floor_wei' : bigint,
   'custom_evm_rpc_urls' : Array<string>,
-  'transaction_gas_limit' : bigint,
   'deposit_rate_limit_global' : number,
+  'evm_fee' : EvmFeePolicy,
   'pause_principal' : Principal,
   'governance_principal' : Principal,
   'index_canister_id' : Principal,
@@ -306,9 +320,33 @@ export interface EmergencyPauseReceipt {
   'local_pause_audit_sha256' : Uint8Array | number[],
   'local_deposits_paused' : boolean,
 }
+export interface EvmFeePolicy {
+  'l1_fee_per_transaction_ceiling_wei' : bigint,
+  'quote_validity_seconds' : bigint,
+  'gas_limit_ceiling' : bigint,
+  'max_priority_fee_per_gas_ceiling' : bigint,
+  'l1_fee_multiplier_bps' : number,
+  'gas_limit_multiplier_bps' : number,
+  'base_fee_multiplier_bps' : number,
+  'max_fee_per_gas_ceiling' : bigint,
+}
+export interface EvmFeeQuoteStatus {
+  'reserved_l1_fee_wei' : bigint,
+  'observed_l1_fee_upper_bound_wei' : bigint,
+  'base_fee_per_gas' : bigint,
+  'max_priority_fee_per_gas' : bigint,
+  'valid_until_ns' : bigint,
+  'observed_at_ns' : bigint,
+  'gas_estimate' : bigint,
+  'initial_max_fee_per_gas' : bigint,
+  'safe_block_hash' : Uint8Array | number[],
+  'reserved_eth_wei' : bigint,
+  'reachable_max_fee_per_gas' : bigint,
+  'gas_limit' : bigint,
+  'safe_block_number' : bigint,
+}
 export interface EvmLivenessPolicy {
   'rebroadcast_after_seconds' : bigint,
-  'fee_ceiling_multiplier_bps' : number,
   'fee_bump_bps' : number,
   'replacement_after_seconds' : bigint,
   'check_interval_seconds' : bigint,
@@ -420,17 +458,15 @@ export interface PublicConfig {
   'deposit_rate_limit_window_seconds' : bigint,
   'base_chain_id' : bigint,
   'bridge_contract' : Uint8Array | number[],
-  'max_priority_fee_per_gas' : bigint,
   'fee_recipient' : FeeRecipientConfig,
   'settlement_rate_limit_window_seconds' : bigint,
   'evm_liveness' : EvmLivenessPolicy,
   'evm_rpc_canister_id' : Principal,
   'deposit_rate_limit_per_principal' : number,
-  'max_fee_per_gas' : bigint,
   'schema_version' : number,
   'eth_floor_wei' : bigint,
-  'transaction_gas_limit' : bigint,
   'deposit_rate_limit_global' : number,
+  'evm_fee' : EvmFeePolicy,
   'pause_principal' : Principal,
   'governance_principal' : Principal,
   'ledger_fee' : bigint,
@@ -476,10 +512,14 @@ export type RecoverMintRevertReceipt = {
 export interface ReserveStatus {
   'cycles_balance' : bigint,
   'required_eth_wei' : bigint,
+  'last_fee_quote' : [] | [EvmFeeQuoteStatus],
   'eth_surplus_wei' : bigint,
   'cycles_surplus' : bigint,
+  'reserved_deposit_eth_wei' : bigint,
   'sufficient' : boolean,
   'eth_balance_wei' : bigint,
+  'eth_floor_wei' : bigint,
+  'candidate_mint_eth_wei' : bigint,
   'required_cycles' : bigint,
 }
 export type Result = { 'Ok' : SettlementActionResult } |
@@ -581,6 +621,7 @@ export type SettlementStopReason = { 'LedgerFeeExceedsServiceFee' : null } |
   { 'InvalidBaseResponse' : null };
 export interface StatusCounts {
   'pending_evm_operations' : bigint,
+  'reserved_deposit_mint_eth_wei' : bigint,
   'retained_audit_events' : bigint,
   'reconciliation_holds' : bigint,
   'retained_deposit_index_entries' : bigint,

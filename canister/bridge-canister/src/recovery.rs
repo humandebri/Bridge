@@ -324,6 +324,8 @@ async fn recover_mint(
             nonterminal_withdrawals,
             counters.reserved_deposit_mint_operations,
             1,
+            counters.reserved_deposit_mint_eth_wei,
+            record.reserved_eth_wei(),
             eth_balance,
             ic_cdk::api::canister_liquid_cycle_balance(),
         )
@@ -393,6 +395,9 @@ async fn recover_mint(
             max_service_fee: record.max_service_fee.get(),
             charged_service_fee: quote.service_fee.get(),
         },
+        record
+            .fee_quote
+            .ok_or(RecoverMintRevertError::ReserveUnavailable)?,
     );
     STORE.with(|store| {
         store

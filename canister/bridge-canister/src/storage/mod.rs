@@ -306,7 +306,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 23, 19);
+INSERT INTO bridge_metadata VALUES (1, 24, 20);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1158,6 +1158,7 @@ pub struct CounterState {
     pub next_deposit_index_sequence: u64,
     pub reserved_deposit_mint_amount: u128,
     pub reserved_deposit_mint_operations: u64,
+    pub reserved_deposit_mint_eth_wei: u128,
     pub unresolved_evm_reverts: u64,
     pub awaiting_nonce_evm_operations: u64,
     pub pending_fee_payout_debit: u128,
@@ -1499,6 +1500,20 @@ pub enum AuditEventKind {
     ReserveGateChanged {
         sufficient: bool,
     },
+    EvmFeeQuoteObserved {
+        safe_block_number: u64,
+        safe_block_hash: Vec<u8>,
+        observed_at_ns: u64,
+        base_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+        gas_estimate: u128,
+        gas_limit: u128,
+        initial_max_fee_per_gas: u128,
+        reachable_max_fee_per_gas: u128,
+        observed_l1_fee_upper_bound_wei: u128,
+        reserved_l1_fee_wei: u128,
+        reserved_eth_wei: u128,
+    },
     FeePayoutRequested {
         amount: u128,
     },
@@ -1614,6 +1629,7 @@ pub struct StorageCounts {
     pub pending_ledger_operations: u64,
     pub reserved_deposit_mint_amount: u128,
     pub reserved_deposit_mint_operations: u64,
+    pub reserved_deposit_mint_eth_wei: u128,
     pub unresolved_evm_reverts: u64,
     pub last_finalized_base_block: u64,
     pub active_evm_payloads: u64,
@@ -1667,6 +1683,7 @@ struct StorageValidationProgress {
     reconciliation_holds: u64,
     reserved_deposit_mint_amount: u128,
     reserved_deposit_mint_operations: u64,
+    reserved_deposit_mint_eth_wei: u128,
     settlement_job_status_counts: [u64; 4],
 }
 
@@ -1718,6 +1735,7 @@ pub struct DepositFundingAttempt {
     pub created_at_ns: u64,
     pub updated_at_ns: u64,
     pub last_failure: Option<LedgerFailure>,
+    pub fee_quote: bridge_core::EvmFeeQuote,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1745,6 +1763,7 @@ pub struct DepositReserveToken {
     pub nonterminal_withdrawals: u64,
     pub reserved_deposit_mint_amount: u128,
     pub reserved_deposit_mint_operations: u64,
+    pub reserved_deposit_mint_eth_wei: u128,
     pub observation_generation: u64,
 }
 
@@ -1971,10 +1990,22 @@ fn validate_storage_row(
                     )
                     .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
             }
+            progress.reserved_deposit_mint_eth_wei = progress
+                .reserved_deposit_mint_eth_wei
+                .checked_add(record.reserved_eth_wei())
+                .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
         }
         "deposit_funding_attempts" => {
             let attempt: DepositFundingAttempt =
                 decode_with_context(value.to_vec(), "invalid deposit funding attempt")?;
+            attempt
+                .fee_quote
+                .validate()
+                .map_err(|_| DbError::Constraint("invalid funding fee quote".into()))?;
+            progress.reserved_deposit_mint_eth_wei = progress
+                .reserved_deposit_mint_eth_wei
+                .checked_add(attempt.fee_quote.reserved_eth_wei)
+                .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
             if key != attempt.intent.deposit_id.to_sql_bytes()
                 || attempt.transfer.operation != bridge_core::LedgerOperation::PullDeposit
             {
@@ -2254,6 +2285,7 @@ impl StableStore {
             nonterminal_withdrawals: self.table_count_value("withdrawal_liability_index")?,
             reserved_deposit_mint_amount: counters.reserved_deposit_mint_amount,
             reserved_deposit_mint_operations: counters.reserved_deposit_mint_operations,
+            reserved_deposit_mint_eth_wei: counters.reserved_deposit_mint_eth_wei,
             observation_generation: progress.reserve_observation_generation,
         })
     }
@@ -2400,6 +2432,7 @@ impl StableStore {
                     reconciliation_holds: 0,
                     reserved_deposit_mint_amount: 0,
                     reserved_deposit_mint_operations: 0,
+                    reserved_deposit_mint_eth_wei: 0,
                     settlement_job_status_counts: [0; 4],
                 };
                 connection.execute(
@@ -2589,6 +2622,8 @@ impl StableStore {
                             != progress.reserved_deposit_mint_amount
                         || counters.reserved_deposit_mint_operations
                             != progress.reserved_deposit_mint_operations
+                        || counters.reserved_deposit_mint_eth_wei
+                            != progress.reserved_deposit_mint_eth_wei
                     {
                         return Err(DbError::Constraint("counter mismatch".into()));
                     }
@@ -2839,6 +2874,13 @@ impl StableStore {
                 Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
             })
         })?;
+        let funding_attempts = self.handle.query(|connection| {
+            connection.query_all(
+                "SELECT value FROM deposit_funding_attempts",
+                params![],
+                |row| row.get::<Vec<u8>>(0),
+            )
+        })?;
         let withdrawals = self.handle.query(|connection| {
             connection.query_all("SELECT key, value FROM withdrawals", params![], |row| {
                 Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
@@ -2872,6 +2914,7 @@ impl StableStore {
         let mut pending_ledger_operations = 0u64;
         let mut reserved_deposit_mint_operations = 0u64;
         let mut reserved_deposit_mint_amount = 0u128;
+        let mut reserved_deposit_mint_eth_wei = 0u128;
         let mut nonterminal_withdrawals = 0u64;
         let mut reconciliation_holds = 0u64;
 
@@ -2896,6 +2939,9 @@ impl StableStore {
                     .checked_add(record.reserved_mint_amount()?.get())
                     .ok_or(StorageError::CounterOverflow)?;
             }
+            reserved_deposit_mint_eth_wei = reserved_deposit_mint_eth_wei
+                .checked_add(record.reserved_eth_wei())
+                .ok_or(StorageError::CounterOverflow)?;
             if let Some(operation_id) = deposit_operation_id(&record) {
                 let owner = encode(&OperationOwner::Deposit(key))?.to_sql_bytes();
                 expected_owners.insert((operation_id, owner.clone()));
@@ -2909,6 +2955,13 @@ impl StableStore {
                     return Err(StorageError::DatabaseFailure);
                 }
             }
+        }
+        for bytes in funding_attempts {
+            let attempt: DepositFundingAttempt = decode(&StableBlob::new(bytes)?)?;
+            attempt.fee_quote.validate().map_err(StorageError::Core)?;
+            reserved_deposit_mint_eth_wei = reserved_deposit_mint_eth_wei
+                .checked_add(attempt.fee_quote.reserved_eth_wei)
+                .ok_or(StorageError::CounterOverflow)?;
         }
         for (key, bytes) in withdrawals {
             let key: [u8; 32] = key.try_into().map_err(|_| StorageError::DecodeFailed)?;
@@ -3127,6 +3180,7 @@ impl StableStore {
             || counters.pending_ledger_operations != pending_ledger_operations
             || counters.reserved_deposit_mint_operations != reserved_deposit_mint_operations
             || counters.reserved_deposit_mint_amount != reserved_deposit_mint_amount
+            || counters.reserved_deposit_mint_eth_wei != reserved_deposit_mint_eth_wei
             || counters.unresolved_evm_reverts != unresolved_evm_reverts
             || counters.awaiting_nonce_evm_operations != awaiting_nonce_evm_operations
         {
@@ -6080,6 +6134,11 @@ impl StableStore {
             previous.as_ref(),
             value,
         )?;
+        counters.reserved_deposit_mint_eth_wei = adjust_reserved_mint_eth(
+            counters.reserved_deposit_mint_eth_wei,
+            previous.as_ref(),
+            value,
+        )?;
         let audit = audit_kind
             .map(|(caller, kind)| {
                 self.prepare_audit_batch(&mut counters, caller, ic_cdk::api::time(), vec![kind])
@@ -6237,6 +6296,26 @@ impl StableStore {
         attempt: &DepositFundingAttempt,
         quota: DepositQuotaAdmission,
     ) -> Result<DepositAdmissionOutcome, StorageError> {
+        self.prepare_deposit_funding_attempt_inner(owner, attempt, quota, None)
+    }
+
+    pub fn prepare_deposit_funding_attempt_with_reserve(
+        &mut self,
+        owner: Principal,
+        attempt: &DepositFundingAttempt,
+        quota: DepositQuotaAdmission,
+        reserve: DepositReserveAdmission,
+    ) -> Result<DepositAdmissionOutcome, StorageError> {
+        self.prepare_deposit_funding_attempt_inner(owner, attempt, quota, Some(reserve))
+    }
+
+    fn prepare_deposit_funding_attempt_inner(
+        &mut self,
+        owner: Principal,
+        attempt: &DepositFundingAttempt,
+        quota: DepositQuotaAdmission,
+        reserve: Option<DepositReserveAdmission>,
+    ) -> Result<DepositAdmissionOutcome, StorageError> {
         if self.deposit(attempt.intent.deposit_id)?.is_some() {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
@@ -6277,7 +6356,84 @@ impl StableStore {
         let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
         reserve_deposit_funding_quota(&mut admission, owner, attempt.intent.deposit_id, quota)?;
         let admission_blob = encode(&admission)?;
+        let previous_counters = self.counters()?;
+        let previous_progress = self.external_progress()?;
+        let nonterminal_withdrawals = self.table_count_value("withdrawal_liability_index")?;
+        let mut counters = previous_counters;
+        let mut progress = previous_progress;
+        if let Some(reserve) = reserve {
+            if attempt.fee_quote.valid_until_ns < reserve.observed_at_ns
+                || reserve.expected_token.nonterminal_withdrawals != nonterminal_withdrawals
+                || reserve.expected_token.reserved_deposit_mint_amount
+                    != previous_counters.reserved_deposit_mint_amount
+                || reserve.expected_token.reserved_deposit_mint_operations
+                    != previous_counters.reserved_deposit_mint_operations
+                || reserve.expected_token.reserved_deposit_mint_eth_wei
+                    != previous_counters.reserved_deposit_mint_eth_wei
+                || reserve.expected_token.observation_generation
+                    != previous_progress.reserve_observation_generation
+                || reserve.observed_at_ns < previous_progress.last_reserve_observation_ns
+            {
+                return Err(StorageError::StaleReserveObservation);
+            }
+            let snapshot = reserve.reserve_policy.snapshot(
+                nonterminal_withdrawals,
+                previous_counters.reserved_deposit_mint_operations,
+                1,
+                previous_counters.reserved_deposit_mint_eth_wei,
+                attempt.fee_quote.reserved_eth_wei,
+                reserve.eth_balance_wei,
+                reserve.cycles_balance,
+            )?;
+            if !snapshot.sufficient {
+                return Err(StorageError::ReserveUnavailable);
+            }
+            progress.last_eth_balance_wei = reserve.eth_balance_wei;
+            progress.reserve_sufficient = true;
+            progress.last_reserve_observation_ns = reserve.observed_at_ns;
+            progress.reserve_observation_generation = progress
+                .reserve_observation_generation
+                .checked_add(1)
+                .ok_or(StorageError::CounterOverflow)?;
+            progress.last_fee_quote = Some(attempt.fee_quote);
+        }
+        counters.reserved_deposit_mint_eth_wei = counters
+            .reserved_deposit_mint_eth_wei
+            .checked_add(attempt.fee_quote.reserved_eth_wei)
+            .ok_or(StorageError::CounterOverflow)?;
+        let audit = reserve
+            .map(|reserve| {
+                let quote = attempt.fee_quote;
+                self.prepare_audit_batch(
+                    &mut counters,
+                    reserve.audit_caller,
+                    quote.observed_at_ns,
+                    vec![AuditEventKind::EvmFeeQuoteObserved {
+                        safe_block_number: quote.safe_block_number,
+                        safe_block_hash: quote.safe_block_hash.to_vec(),
+                        observed_at_ns: quote.observed_at_ns,
+                        base_fee_per_gas: quote.base_fee_per_gas,
+                        max_priority_fee_per_gas: quote.max_priority_fee_per_gas,
+                        gas_estimate: quote.gas_estimate,
+                        gas_limit: quote.gas_limit,
+                        initial_max_fee_per_gas: quote.initial_max_fee_per_gas,
+                        reachable_max_fee_per_gas: quote.reachable_max_fee_per_gas,
+                        observed_l1_fee_upper_bound_wei: quote.observed_l1_fee_upper_bound_wei,
+                        reserved_l1_fee_wei: quote.reserved_l1_fee_wei,
+                        reserved_eth_wei: quote.reserved_eth_wei,
+                    }],
+                )
+            })
+            .transpose()?;
         let attempt_blob = encode(attempt)?;
+        let previous_counters_blob = encode(&previous_counters)?;
+        let counters_blob = encode(&counters)?;
+        let previous_progress_blob = encode(&previous_progress)?;
+        let progress_blob = encode(&progress)?;
+        let retention_blob = audit.as_ref().map_or_else(
+            || self.audit_retention.get(),
+            |batch| Ok(batch.retention_blob.clone()),
+        )?;
         let key = attempt.intent.deposit_id.to_sql_bytes();
         self.handle.update(|connection| {
             expect_blob(
@@ -6293,6 +6449,20 @@ impl StableStore {
                 params![],
                 previous_admission_blob.as_slice(),
                 "stale deposit funding admission",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+                previous_counters_blob.as_slice(),
+                "stale deposit funding reserve",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT external_progress FROM singleton_state WHERE id = 1",
+                params![],
+                previous_progress_blob.as_slice(),
+                "stale deposit funding reserve",
             )?;
             if connection
                 .query_optional_scalar::<Vec<u8>>(
@@ -6317,9 +6487,18 @@ impl StableStore {
                 key,
                 attempt_blob.to_sql_bytes(),
             )?;
+            if let Some(audit) = &audit {
+                commit_audit_batch(connection, audit)?;
+            }
             connection.execute(
-                "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
-                params![admission_blob.to_sql_bytes()],
+                "UPDATE singleton_state SET deposit_admission = ?1, counters = ?2,
+                    external_progress = ?3, audit_retention = ?4 WHERE id = 1",
+                params![
+                    admission_blob.to_sql_bytes(),
+                    counters_blob.to_sql_bytes(),
+                    progress_blob.to_sql_bytes(),
+                    retention_blob.to_sql_bytes()
+                ],
             )
         })?;
         Ok(DepositAdmissionOutcome::Inserted)
@@ -6352,6 +6531,108 @@ impl StableStore {
         Ok(())
     }
 
+    pub fn refresh_deposit_funding_fee_quote(
+        &mut self,
+        previous: &DepositFundingAttempt,
+        next_quote: bridge_core::EvmFeeQuote,
+        admission: DepositReserveAdmission,
+    ) -> Result<DepositFundingAttempt, StorageError> {
+        next_quote.validate().map_err(StorageError::Core)?;
+        let current = self
+            .deposit_funding_attempt(previous.intent.deposit_id)?
+            .ok_or(StorageError::RecordNotFound)?;
+        if current != *previous {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        let previous_counters = self.counters()?;
+        let previous_progress = self.external_progress()?;
+        let nonterminal_withdrawals = self.table_count_value("withdrawal_liability_index")?;
+        if admission.expected_token.nonterminal_withdrawals != nonterminal_withdrawals
+            || admission.expected_token.reserved_deposit_mint_amount
+                != previous_counters.reserved_deposit_mint_amount
+            || admission.expected_token.reserved_deposit_mint_operations
+                != previous_counters.reserved_deposit_mint_operations
+            || admission.expected_token.reserved_deposit_mint_eth_wei
+                != previous_counters.reserved_deposit_mint_eth_wei
+            || admission.expected_token.observation_generation
+                != previous_progress.reserve_observation_generation
+            || admission.observed_at_ns > next_quote.valid_until_ns
+        {
+            return Err(StorageError::StaleReserveObservation);
+        }
+        let reserved_without_previous = previous_counters
+            .reserved_deposit_mint_eth_wei
+            .checked_sub(previous.fee_quote.reserved_eth_wei)
+            .ok_or(StorageError::CounterUnderflow)?;
+        let reserve = admission.reserve_policy.snapshot(
+            nonterminal_withdrawals,
+            previous_counters.reserved_deposit_mint_operations,
+            0,
+            reserved_without_previous,
+            next_quote.reserved_eth_wei,
+            admission.eth_balance_wei,
+            admission.cycles_balance,
+        )?;
+        if !reserve.sufficient {
+            return Err(StorageError::ReserveUnavailable);
+        }
+        let mut next = previous.clone();
+        next.fee_quote = next_quote;
+        next.updated_at_ns = admission.observed_at_ns;
+        let mut counters = previous_counters;
+        counters.reserved_deposit_mint_eth_wei = reserved_without_previous
+            .checked_add(next_quote.reserved_eth_wei)
+            .ok_or(StorageError::CounterOverflow)?;
+        let mut progress = previous_progress;
+        progress.last_eth_balance_wei = admission.eth_balance_wei;
+        progress.reserve_sufficient = true;
+        progress.last_reserve_observation_ns = admission.observed_at_ns;
+        progress.reserve_observation_generation = progress
+            .reserve_observation_generation
+            .checked_add(1)
+            .ok_or(StorageError::CounterOverflow)?;
+        progress.last_fee_quote = Some(next_quote);
+        let previous_blob = encode(previous)?;
+        let next_blob = encode(&next)?;
+        let previous_counters_blob = encode(&previous_counters)?;
+        let counters_blob = encode(&counters)?;
+        let previous_progress_blob = encode(&previous_progress)?;
+        let progress_blob = encode(&progress)?;
+        let key = previous.intent.deposit_id.to_sql_bytes();
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT value FROM deposit_funding_attempts WHERE key = ?1",
+                params![key.clone()],
+                previous_blob.as_slice(),
+                "stale funding fee quote",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+                previous_counters_blob.as_slice(),
+                "stale funding fee quote",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT external_progress FROM singleton_state WHERE id = 1",
+                params![],
+                previous_progress_blob.as_slice(),
+                "stale funding fee quote",
+            )?;
+            connection.execute(
+                "UPDATE deposit_funding_attempts SET value = ?1 WHERE key = ?2",
+                params![next_blob.to_sql_bytes(), key],
+            )?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1, external_progress = ?2 WHERE id = 1",
+                params![counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes()],
+            )
+        })?;
+        Ok(next)
+    }
+
     pub fn remove_deposit_funding_attempt(
         &mut self,
         owner: Principal,
@@ -6361,6 +6642,14 @@ impl StableStore {
         let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
         release_deposit_funding_quota(&mut admission, owner, attempt.intent.deposit_id)?;
         let admission_blob = encode(&admission)?;
+        let previous_counters = self.counters()?;
+        let mut counters = previous_counters;
+        counters.reserved_deposit_mint_eth_wei = counters
+            .reserved_deposit_mint_eth_wei
+            .checked_sub(attempt.fee_quote.reserved_eth_wei)
+            .ok_or(StorageError::CounterUnderflow)?;
+        let previous_counters_blob = encode(&previous_counters)?;
+        let counters_blob = encode(&counters)?;
         let attempt_blob = encode(attempt)?;
         let key = attempt.intent.deposit_id.to_sql_bytes();
         self.handle.update(|connection| {
@@ -6378,10 +6667,17 @@ impl StableStore {
                 previous_admission_blob.as_slice(),
                 "stale deposit funding reservation",
             )?;
+            expect_blob(
+                connection,
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+                previous_counters_blob.as_slice(),
+                "stale deposit funding reserve",
+            )?;
             delete_tracked_entry(connection, "deposit_funding_attempts", key)?;
             connection.execute(
-                "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
-                params![admission_blob.to_sql_bytes()],
+                "UPDATE singleton_state SET deposit_admission = ?1, counters = ?2 WHERE id = 1",
+                params![admission_blob.to_sql_bytes(), counters_blob.to_sql_bytes()],
             )
         })?;
         Ok(())
@@ -6483,6 +6779,12 @@ impl StableStore {
         let previous_counters = self.counters()?;
         let nonterminal_withdrawals = self.table_count_value("withdrawal_liability_index")?;
         let mut counters = previous_counters;
+        if let Some((attempt, _)) = funding_promotion {
+            counters.reserved_deposit_mint_eth_wei = counters
+                .reserved_deposit_mint_eth_wei
+                .checked_sub(attempt.fee_quote.reserved_eth_wei)
+                .ok_or(StorageError::CounterUnderflow)?;
+        }
         if let Some((_, Some(hold))) = funding_promotion {
             if counters.next_hold_id != hold.id.get() {
                 return Err(StorageError::Core(CoreError::ConflictingReplay));
@@ -6505,7 +6807,9 @@ impl StableStore {
                 previous_counters.reserved_deposit_mint_amount,
                 previous_counters.reserved_deposit_mint_operations,
                 previous_progress.reserve_observation_generation,
-            ) || admission.observed_at_ns < previous_progress.last_reserve_observation_ns
+            ) || admission.expected_token.reserved_deposit_mint_eth_wei
+                != previous_counters.reserved_deposit_mint_eth_wei
+                || admission.observed_at_ns < previous_progress.last_reserve_observation_ns
             {
                 return Err(StorageError::StaleReserveObservation);
             }
@@ -6513,6 +6817,8 @@ impl StableStore {
                 nonterminal_withdrawals,
                 previous_counters.reserved_deposit_mint_operations,
                 1,
+                previous_counters.reserved_deposit_mint_eth_wei,
+                0,
                 admission.eth_balance_wei,
                 admission.cycles_balance,
             )?;
@@ -6576,6 +6882,10 @@ impl StableStore {
             None,
             record,
         )?;
+        counters.reserved_deposit_mint_eth_wei = counters
+            .reserved_deposit_mint_eth_wei
+            .checked_add(record.reserved_eth_wei())
+            .ok_or(StorageError::CounterOverflow)?;
 
         let audit = emit_reserve_audit
             .then(|| {
@@ -7703,7 +8013,9 @@ impl StableStore {
                 previous_counters.reserved_deposit_mint_amount,
                 previous_counters.reserved_deposit_mint_operations,
                 previous_progress.reserve_observation_generation,
-            ) || admission.observed_at_ns < previous_progress.last_reserve_observation_ns
+            ) || admission.expected_token.reserved_deposit_mint_eth_wei
+                != previous_counters.reserved_deposit_mint_eth_wei
+                || admission.observed_at_ns < previous_progress.last_reserve_observation_ns
             {
                 return Err(StorageError::StaleReserveObservation);
             }
@@ -7711,6 +8023,8 @@ impl StableStore {
                 nonterminal_withdrawals,
                 previous_counters.reserved_deposit_mint_operations,
                 1,
+                previous_counters.reserved_deposit_mint_eth_wei,
+                next.reserved_eth_wei(),
                 admission.eth_balance_wei,
                 admission.cycles_balance,
             )?;
@@ -7809,6 +8123,11 @@ impl StableStore {
                 }
                 counters.reserved_deposit_mint_operations = adjust_reserved_mint_operations(
                     counters.reserved_deposit_mint_operations,
+                    Some(previous),
+                    next,
+                )?;
+                counters.reserved_deposit_mint_eth_wei = adjust_reserved_mint_eth(
+                    counters.reserved_deposit_mint_eth_wei,
                     Some(previous),
                     next,
                 )?;
@@ -8242,6 +8561,11 @@ impl StableStore {
                 )?;
                 counters.reserved_deposit_mint_operations = adjust_reserved_mint_operations(
                     counters.reserved_deposit_mint_operations,
+                    Some(&previous),
+                    &next,
+                )?;
+                counters.reserved_deposit_mint_eth_wei = adjust_reserved_mint_eth(
+                    counters.reserved_deposit_mint_eth_wei,
                     Some(&previous),
                     &next,
                 )?;
@@ -9045,6 +9369,11 @@ impl StableStore {
                         Some(previous),
                         next,
                     )?;
+                    counters.reserved_deposit_mint_eth_wei = adjust_reserved_mint_eth(
+                        counters.reserved_deposit_mint_eth_wei,
+                        Some(previous),
+                        next,
+                    )?;
                     let (previous_blob, next_blob) = self.deposit_record_blobs(previous, next)?;
                     (
                         "deposits",
@@ -9209,6 +9538,7 @@ impl StableStore {
             pending_ledger_operations: counters.pending_ledger_operations,
             reserved_deposit_mint_amount: counters.reserved_deposit_mint_amount,
             reserved_deposit_mint_operations: counters.reserved_deposit_mint_operations,
+            reserved_deposit_mint_eth_wei: counters.reserved_deposit_mint_eth_wei,
             unresolved_evm_reverts: counters.unresolved_evm_reverts,
             last_finalized_base_block: self.external_progress()?.last_finalized_base_block,
             active_evm_payloads: self.evm_execution_payloads.len(),
@@ -9280,6 +9610,19 @@ fn adjust_reserved_mint_operations(
         previous.is_some_and(is_deposit_mint_reserved),
         is_deposit_mint_reserved(next),
     )
+}
+
+fn adjust_reserved_mint_eth(
+    current: u128,
+    previous: Option<&DepositRecord>,
+    next: &DepositRecord,
+) -> Result<u128, StorageError> {
+    let without_previous = current
+        .checked_sub(previous.map_or(0, DepositRecord::reserved_eth_wei))
+        .ok_or(StorageError::CounterUnderflow)?;
+    without_previous
+        .checked_add(next.reserved_eth_wei())
+        .ok_or(StorageError::CounterOverflow)
 }
 
 fn is_pending_withdrawal_ledger(value: &WithdrawalRecord) -> bool {
@@ -9401,12 +9744,31 @@ mod tests {
         identity
     }
 
+    fn fee_quote() -> bridge_core::EvmFeeQuote {
+        bridge_core::EvmFeeQuote {
+            safe_block_number: 1,
+            safe_block_hash: [1; 32],
+            observed_at_ns: 1,
+            valid_until_ns: u64::MAX,
+            base_fee_per_gas: 1,
+            max_priority_fee_per_gas: 1,
+            gas_estimate: 1,
+            gas_limit: 1,
+            initial_max_fee_per_gas: 1,
+            reachable_max_fee_per_gas: 1,
+            observed_l1_fee_upper_bound_wei: 1,
+            reserved_l1_fee_wei: 1,
+            reserved_eth_wei: 2,
+        }
+    }
+
     fn deposit() -> DepositRecord {
         let mut deposit = DepositRecord::accept(DepositRequest {
             id: DepositId::new([1; 32]),
             payload_hash: [2; 32],
             gross_amount: Amount::new(110),
             user_max_service_fee: Amount::new(10),
+            fee_quote: Some(fee_quote()),
             transfer: transfer(LedgerOperation::PullDeposit, 110, 10),
         })
         .expect("valid deposit");
@@ -9424,6 +9786,7 @@ mod tests {
             payload_hash: [32; 32],
             gross_amount: Amount::new(110),
             user_max_service_fee: Amount::new(10),
+            fee_quote: Some(fee_quote()),
             transfer: transfer(LedgerOperation::PullDeposit, 110, 30),
         })
         .expect("valid funding deposit")
@@ -9444,6 +9807,7 @@ mod tests {
             created_at_ns: 1,
             updated_at_ns: 1,
             last_failure: None,
+            fee_quote: fee_quote(),
         };
         (attempt, record, intent)
     }
@@ -9572,9 +9936,16 @@ mod tests {
             settlement_rate_limit_global: 60,
             settlement_rate_limit_per_principal: 6,
             settlement_rate_limit_per_record: 3,
-            transaction_gas_limit: 500_000,
-            max_fee_per_gas: 10,
-            max_priority_fee_per_gas: 1,
+            evm_fee: crate::config::EvmFeePolicy {
+                gas_limit_ceiling: 500_000,
+                max_fee_per_gas_ceiling: 10,
+                max_priority_fee_per_gas_ceiling: 1,
+                l1_fee_per_transaction_ceiling_wei: 1,
+                quote_validity_seconds: 90,
+                gas_limit_multiplier_bps: 13_000,
+                base_fee_multiplier_bps: 60_000,
+                l1_fee_multiplier_bps: 15_000,
+            },
             evm_liveness: crate::config::EvmLivenessPolicy::default(),
             eth_floor_wei: 1,
             cycles_floor: 1,
@@ -9616,6 +9987,7 @@ mod tests {
             gas_limit: 100_000,
             max_fee_per_gas: 2,
             max_priority_fee_per_gas: 1,
+            fee_quote: None,
         }
     }
 
@@ -10628,6 +11000,7 @@ mod tests {
                 payload_hash,
                 gross_amount: Amount::new(110),
                 user_max_service_fee: Amount::new(10),
+                fee_quote: Some(fee_quote()),
                 transfer,
             })
             .expect("deposit record");
@@ -11147,6 +11520,8 @@ mod tests {
                     reserved_deposit_mint_amount: before_observation.reserved_deposit_mint_amount,
                     reserved_deposit_mint_operations: before_observation
                         .reserved_deposit_mint_operations,
+                    reserved_deposit_mint_eth_wei: before_observation
+                        .reserved_deposit_mint_eth_wei,
                     observation_generation: progress_before.reserve_observation_generation,
                 },
                 observed_at_ns: 10,
@@ -11341,6 +11716,7 @@ mod tests {
             payload_hash: [12; 32],
             gross_amount: Amount::new(110),
             user_max_service_fee: Amount::new(10),
+            fee_quote: Some(fee_quote()),
             transfer: transfer(LedgerOperation::PullDeposit, 110, 40),
         })
         .expect("valid deposit");
@@ -11734,6 +12110,7 @@ mod tests {
             pending_ledger_operations: 1,
             reserved_deposit_mint_amount: 100,
             reserved_deposit_mint_operations: 1,
+            reserved_deposit_mint_eth_wei: 2,
             ..CounterState::default()
         };
 
@@ -11781,6 +12158,7 @@ mod tests {
                 pending_ledger_operations: 1,
                 reserved_deposit_mint_amount: 100,
                 reserved_deposit_mint_operations: 1,
+                reserved_deposit_mint_eth_wei: 2,
                 unresolved_evm_reverts: 0,
                 last_finalized_base_block: 0,
                 active_evm_payloads: 0,
@@ -11838,8 +12216,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 23);
-        assert_eq!(WIRE_VERSION, 19);
+        assert_eq!(SCHEMA_VERSION, 24);
+        assert_eq!(WIRE_VERSION, 20);
     }
 
     #[test]
@@ -12608,6 +12986,7 @@ mod tests {
             payload_hash: record.payload_hash,
             gross_amount: record.gross_amount,
             user_max_service_fee: record.max_service_fee,
+            fee_quote: Some(fee_quote()),
             transfer: record.transfer.clone(),
         })
         .expect("funding record");
@@ -14818,6 +15197,7 @@ mod tests {
                 pending_ledger_operations: 0,
                 reserved_deposit_mint_amount: 0,
                 reserved_deposit_mint_operations: 0,
+                reserved_deposit_mint_eth_wei: 0,
                 unresolved_evm_reverts: 0,
                 last_finalized_base_block: 0,
                 active_evm_payloads: 0,

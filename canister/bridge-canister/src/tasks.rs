@@ -282,6 +282,7 @@ fn single_envelope(
         signed_transaction: None,
         initial_max_fee_per_gas: intent.max_fee_per_gas,
         initial_max_priority_fee_per_gas: intent.max_priority_fee_per_gas,
+        fee_quote: intent.fee_quote,
         replacement_generation: 0,
         prior_signed_transactions: Vec::new(),
         first_broadcast_at_ns: 0,
@@ -550,16 +551,37 @@ enum ReplacementPreparation {
     Replace(bridge_core::EvmTransactionEnvelope),
 }
 
+async fn mint_transaction_fits_reservation(
+    config: &crate::config::BridgeInitArgs,
+    envelope: &bridge_core::EvmTransactionEnvelope,
+    raw: &[u8],
+) -> Result<bool, evm_rpc::ObservationError> {
+    let Some(quote) = envelope.fee_quote else {
+        return Ok(true);
+    };
+    if ic_cdk::api::time() > quote.valid_until_ns {
+        return Ok(false);
+    }
+    evm_rpc::signed_transaction_l1_fee(config, raw, quote.safe_block_hash)
+        .await
+        .map(|fee| fee <= quote.reserved_l1_fee_wei)
+}
+
 fn prepare_evm_replacement(
     mut envelope: bridge_core::EvmTransactionEnvelope,
     current_raw: &[u8],
+    fee_policy: crate::config::EvmFeePolicy,
     policy: crate::config::EvmLivenessPolicy,
 ) -> ReplacementPreparation {
     let Some((next_max_fee, next_priority_fee)) = crate::config::next_replacement_fees(
         envelope.max_fee_per_gas,
         envelope.max_priority_fee_per_gas,
-        envelope.initial_max_fee_per_gas,
-        envelope.initial_max_priority_fee_per_gas,
+        envelope
+            .fee_quote
+            .map_or(fee_policy.max_fee_per_gas_ceiling, |quote| {
+                quote.reachable_max_fee_per_gas
+            }),
+        fee_policy.max_priority_fee_per_gas_ceiling,
         policy,
     ) else {
         return ReplacementPreparation::Rebroadcast(envelope);
@@ -639,7 +661,7 @@ async fn maintain_missing_evm_transaction(
     }
 
     let previous_envelope = envelope.clone();
-    envelope = match prepare_evm_replacement(envelope, &current_raw, policy) {
+    envelope = match prepare_evm_replacement(envelope, &current_raw, config.evm_fee, policy) {
         ReplacementPreparation::Rebroadcast(envelope) => {
             return rebroadcast_current_evm_transaction(
                 config,
@@ -660,6 +682,14 @@ async fn maintain_missing_evm_transaction(
         .await
         .map_err(|_| SettlementActionError::StorageFailure)?;
     lease.ensure_current()?;
+    if !mint_transaction_fits_reservation(config, &envelope, &raw)
+        .await
+        .unwrap_or(false)
+    {
+        return Ok(Some(EvmAdvance::Stopped(
+            SettlementStopReason::BaseStateMismatch,
+        )));
+    }
     let next_hash = signer::transaction_hash(&raw);
     if next_hash == transaction_hash {
         return rebroadcast_current_evm_transaction(
@@ -693,6 +723,14 @@ async fn rebroadcast_current_evm_transaction(
     lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<Option<EvmAdvance>, SettlementActionError> {
     lease.renew_before_external_call()?;
+    if !mint_transaction_fits_reservation(config, &envelope, &current_raw)
+        .await
+        .unwrap_or(false)
+    {
+        return Ok(Some(EvmAdvance::Stopped(
+            SettlementStopReason::BaseStateMismatch,
+        )));
+    }
     let evidence = match evm_rpc::broadcast(config, &current_raw).await {
         Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => evidence,
         Ok(evm_rpc::BroadcastOutcome::NonceConflict(rpc_audit)) => {
@@ -743,6 +781,14 @@ async fn broadcast_pending_evm_replacement(
         return Err(SettlementActionError::StorageFailure);
     }
     lease.renew_before_external_call()?;
+    if !mint_transaction_fits_reservation(config, &envelope, &raw)
+        .await
+        .unwrap_or(false)
+    {
+        return Ok(Some(EvmAdvance::Stopped(
+            SettlementStopReason::BaseStateMismatch,
+        )));
+    }
     let evidence = match evm_rpc::broadcast(config, &raw).await {
         Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => evidence,
         Ok(evm_rpc::BroadcastOutcome::NonceConflict(rpc_audit)) => {
@@ -1002,6 +1048,14 @@ async fn advance_evm_operation(
                     }
                 }
             };
+            if !mint_transaction_fits_reservation(config, &envelope, &raw)
+                .await
+                .unwrap_or(false)
+            {
+                return Ok(EvmAdvance::Stopped(
+                    SettlementStopReason::BaseStateMismatch,
+                ));
+            }
             lease.renew_before_external_call()?;
             let broadcast = match evm_rpc::broadcast(config, &raw).await {
                 Ok(outcome) => outcome,
@@ -2279,6 +2333,7 @@ mod tests {
             gas_limit: 100_000,
             max_fee_per_gas: 10,
             max_priority_fee_per_gas: 1,
+            fee_quote: None,
         };
         let envelope = single_envelope(operation, intent, 9).expect("single envelope");
         assert_eq!(envelope.operation_id, operation_id);
@@ -2309,6 +2364,7 @@ mod tests {
             gas_limit: 100_000,
             max_fee_per_gas: 1,
             max_priority_fee_per_gas: 0,
+            fee_quote: None,
         };
         let mut envelope = single_envelope(operation, intent, 9).expect("single envelope");
         let raw = vec![2, 3, 4];
@@ -2321,12 +2377,21 @@ mod tests {
         let policy = crate::config::EvmLivenessPolicy {
             max_replacements: 2,
             fee_bump_bps: 5_000,
-            fee_ceiling_multiplier_bps: 20_000,
             ..crate::config::EvmLivenessPolicy::default()
+        };
+        let fee_policy = crate::config::EvmFeePolicy {
+            gas_limit_ceiling: 100_000,
+            max_fee_per_gas_ceiling: 2,
+            max_priority_fee_per_gas_ceiling: 0,
+            l1_fee_per_transaction_ceiling_wei: 1,
+            quote_validity_seconds: 90,
+            gas_limit_multiplier_bps: 13_000,
+            base_fee_multiplier_bps: 60_000,
+            l1_fee_multiplier_bps: 15_000,
         };
 
         let ReplacementPreparation::Rebroadcast(rebroadcast) =
-            prepare_evm_replacement(envelope, &raw, policy)
+            prepare_evm_replacement(envelope, &raw, fee_policy, policy)
         else {
             panic!("fee ceiling must select rebroadcast");
         };

@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router"
 import { RefreshCcw } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useChainId } from "wagmi"
+import { formatEther, formatGwei } from "viem"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useBridgeStatus, useConfirmedBaseStatus, useRuntimeValidation } from "@/features/status/use-status"
@@ -119,6 +120,22 @@ function StatusPage() {
       <Stat label="Withdrawals" value={canisterData?.counts.withdrawals.toString() ?? "—"} />
       <Stat label="Unpaid withdrawals" value={canisterData?.unpaid_withdrawal_count.toString() ?? "—"} />
       <Stat label="Unpaid amount" value={canisterData ? `${formatTokenAmount(canisterData.unpaid_withdrawal_amount_out)} KINIC` : "—"} />
+    </section>
+    <section className="mt-5 rounded-[20px] bg-[var(--panel)] p-6">
+      <h2 className="text-xl font-bold">Base mint reserve</h2>
+      <p className="mt-1 text-sm text-[var(--muted)]">ETH held for the signer floor and each pending Base mint.</p>
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric label="Signer floor" value={canisterData ? `${formatEther(canisterData.reserve.eth_floor_wei)} ETH` : "—"} />
+        <Metric label="Pending mints" value={canisterData ? `${formatEther(canisterData.reserve.reserved_deposit_eth_wei)} ETH` : "—"} />
+        <Metric label="Candidate mint" value={canisterData ? `${formatEther(canisterData.reserve.candidate_mint_eth_wei)} ETH` : "—"} />
+        <Metric label="Total required" value={canisterData ? `${formatEther(canisterData.reserve.required_eth_wei)} ETH` : "—"} />
+      </div>
+      {canisterData?.reserve.last_fee_quote[0] && <div className="mt-5 grid gap-4 border-t border-[var(--line)] pt-5 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric label="Observed Base fee" value={`${formatGwei(canisterData.reserve.last_fee_quote[0].base_fee_per_gas)} gwei`} />
+        <Metric label="Mint gas limit" value={canisterData.reserve.last_fee_quote[0].gas_limit.toString()} />
+        <Metric label="Reachable fee cap" value={`${formatGwei(canisterData.reserve.last_fee_quote[0].reachable_max_fee_per_gas)} gwei`} />
+        <Metric label="Reserved L1 data fee" value={`${formatEther(canisterData.reserve.last_fee_quote[0].reserved_l1_fee_wei)} ETH`} />
+      </div>}
     </section>
     <section className="mt-5 rounded-[20px] bg-[var(--panel)] p-6">
       <h2 className="text-xl font-bold">Withdrawal operations</h2>

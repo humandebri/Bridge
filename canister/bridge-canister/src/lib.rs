@@ -42,6 +42,7 @@ pub struct StatusCounts {
     pub pending_ledger_operations: u64,
     pub reserved_deposit_mint_amount: u128,
     pub reserved_deposit_mint_operations: u64,
+    pub reserved_deposit_mint_eth_wei: u128,
     pub unresolved_evm_reverts: u64,
     pub active_evm_payloads: u64,
     pub retained_audit_events: u64,
@@ -98,10 +99,51 @@ pub struct ReserveStatus {
     pub eth_balance_wei: u128,
     pub cycles_balance: u128,
     pub required_eth_wei: u128,
+    pub eth_floor_wei: u128,
+    pub reserved_deposit_eth_wei: u128,
+    pub candidate_mint_eth_wei: u128,
     pub required_cycles: u128,
     pub eth_surplus_wei: u128,
     pub cycles_surplus: u128,
     pub sufficient: bool,
+    pub last_fee_quote: Option<EvmFeeQuoteStatus>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvmFeeQuoteStatus {
+    pub safe_block_number: u64,
+    pub safe_block_hash: [u8; 32],
+    pub observed_at_ns: u64,
+    pub valid_until_ns: u64,
+    pub base_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
+    pub gas_estimate: u128,
+    pub gas_limit: u128,
+    pub initial_max_fee_per_gas: u128,
+    pub reachable_max_fee_per_gas: u128,
+    pub observed_l1_fee_upper_bound_wei: u128,
+    pub reserved_l1_fee_wei: u128,
+    pub reserved_eth_wei: u128,
+}
+
+impl From<bridge_core::EvmFeeQuote> for EvmFeeQuoteStatus {
+    fn from(quote: bridge_core::EvmFeeQuote) -> Self {
+        Self {
+            safe_block_number: quote.safe_block_number,
+            safe_block_hash: quote.safe_block_hash,
+            observed_at_ns: quote.observed_at_ns,
+            valid_until_ns: quote.valid_until_ns,
+            base_fee_per_gas: quote.base_fee_per_gas,
+            max_priority_fee_per_gas: quote.max_priority_fee_per_gas,
+            gas_estimate: quote.gas_estimate,
+            gas_limit: quote.gas_limit,
+            initial_max_fee_per_gas: quote.initial_max_fee_per_gas,
+            reachable_max_fee_per_gas: quote.reachable_max_fee_per_gas,
+            observed_l1_fee_upper_bound_wei: quote.observed_l1_fee_upper_bound_wei,
+            reserved_l1_fee_wei: quote.reserved_l1_fee_wei,
+            reserved_eth_wei: quote.reserved_eth_wei,
+        }
+    }
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -124,9 +166,7 @@ pub struct PublicConfig {
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
     pub settlement_rate_limit_per_record: u16,
-    pub transaction_gas_limit: u128,
-    pub max_fee_per_gas: u128,
-    pub max_priority_fee_per_gas: u128,
+    pub evm_fee: config::EvmFeePolicy,
     pub evm_liveness: config::EvmLivenessPolicy,
     pub eth_floor_wei: u128,
     pub cycles_floor: u128,
@@ -926,6 +966,8 @@ fn get_bridge_status() -> BridgeStatus {
                 ),
                 counts.reserved_deposit_mint_operations,
                 0,
+                counts.reserved_deposit_mint_eth_wei,
+                0,
                 progress.last_eth_balance_wei,
                 ic_cdk::api::canister_liquid_cycle_balance(),
             )
@@ -965,6 +1007,7 @@ fn get_bridge_status() -> BridgeStatus {
                 pending_ledger_operations: counts.pending_ledger_operations,
                 reserved_deposit_mint_amount: counts.reserved_deposit_mint_amount,
                 reserved_deposit_mint_operations: counts.reserved_deposit_mint_operations,
+                reserved_deposit_mint_eth_wei: counts.reserved_deposit_mint_eth_wei,
                 unresolved_evm_reverts: counts.unresolved_evm_reverts,
                 active_evm_payloads: counts.active_evm_payloads,
                 retained_audit_events: counts.retained_audit_events,
@@ -992,10 +1035,14 @@ fn get_bridge_status() -> BridgeStatus {
                 eth_balance_wei: reserve.eth_balance_wei,
                 cycles_balance: reserve.cycles_balance,
                 required_eth_wei: reserve.required_eth_wei,
+                eth_floor_wei: config.eth_floor_wei,
+                reserved_deposit_eth_wei: reserve.reserved_mint_eth_wei,
+                candidate_mint_eth_wei: reserve.candidate_mint_eth_wei,
                 required_cycles: reserve.required_cycles,
                 eth_surplus_wei: reserve.eth_surplus_wei,
                 cycles_surplus: reserve.cycles_surplus,
                 sufficient: reserve.sufficient,
+                last_fee_quote: progress.last_fee_quote.map(Into::into),
             },
             deposits_paused: admin.deposits_paused,
             withdrawal_fee_guard_active: admin.withdrawal_fee_guard.is_some(),
@@ -1180,9 +1227,7 @@ fn get_public_config() -> PublicConfig {
             settlement_rate_limit_global: config.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: config.settlement_rate_limit_per_principal,
             settlement_rate_limit_per_record: config.settlement_rate_limit_per_record,
-            transaction_gas_limit: config.transaction_gas_limit,
-            max_fee_per_gas: config.max_fee_per_gas,
-            max_priority_fee_per_gas: config.max_priority_fee_per_gas,
+            evm_fee: config.evm_fee,
             evm_liveness: config.evm_liveness,
             eth_floor_wei: config.eth_floor_wei,
             cycles_floor: config.cycles_floor,

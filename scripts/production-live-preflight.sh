@@ -416,8 +416,8 @@ expected_rpc_digest=hashlib.sha256(b'[]').hexdigest()
 if len(rpc_digests)!=1: raise SystemExit('Canister RPC URL digest missing')
 d=rpc_digests[0]; actual_rpc_digest=bytes(d).hex() if isinstance(d,list) else str(d).lower().removeprefix('0x')
 if actual_rpc_digest!=expected_rpc_digest: raise SystemExit('Canister RPC URL digest drift')
-evm_liveness=one('evm_liveness'); fee_recipient=one('fee_recipient')
-if not isinstance(evm_liveness,dict) or not isinstance(fee_recipient,dict): raise SystemExit('Canister public config nested values are malformed')
+evm_liveness=one('evm_liveness'); evm_fee=one('evm_fee'); fee_recipient=one('fee_recipient')
+if not isinstance(evm_liveness,dict) or not isinstance(evm_fee,dict) or not isinstance(fee_recipient,dict): raise SystemExit('Canister public config nested values are malformed')
 subaccount=fee_recipient.get('subaccount',[])
 public_config={
  'base_chain_id':num(one('base_chain_id')),'bridge_contract':address_value(one('bridge_contract')),
@@ -430,8 +430,8 @@ public_config={
  'settlement_rate_limit_window_seconds':num(one('settlement_rate_limit_window_seconds')),
  'settlement_rate_limit_global':num(one('settlement_rate_limit_global')),'settlement_rate_limit_per_principal':num(one('settlement_rate_limit_per_principal')),
  'settlement_rate_limit_per_record':num(one('settlement_rate_limit_per_record')),
- 'transaction_gas_limit':str(num(one('transaction_gas_limit'))),'max_fee_per_gas':str(num(one('max_fee_per_gas'))),
- 'max_priority_fee_per_gas':str(num(one('max_priority_fee_per_gas'))),'evm_liveness':{k:num(v) for k,v in evm_liveness.items()},
+ 'evm_fee':{k:(str(num(v)) if k in ('gas_limit_ceiling','max_fee_per_gas_ceiling','max_priority_fee_per_gas_ceiling','l1_fee_per_transaction_ceiling_wei') else num(v)) for k,v in evm_fee.items()},
+ 'evm_liveness':{k:num(v) for k,v in evm_liveness.items()},
  'eth_floor_wei':str(num(one('eth_floor_wei'))),'cycles_floor':str(num(one('cycles_floor'))),
  'settlement_cycle_ceiling':str(num(one('settlement_cycle_ceiling'))),'governance_principal':str(one('governance_principal')),
  'pause_principal':str(one('pause_principal')),'fee_recipient':{'owner':str(fee_recipient.get('owner','')),

@@ -57,6 +57,7 @@ fn accepted_deposit() -> DepositRecord {
         payload_hash: [2; 32],
         gross_amount: Amount::new(110),
         user_max_service_fee: Amount::new(10),
+        fee_quote: None,
         transfer: transfer(LedgerOperation::PullDeposit, 110, 1, 10),
     })
     .expect("valid deposit")
@@ -540,40 +541,40 @@ fn accounting_is_checked_and_separates_fee_kinds() {
 }
 
 #[test]
-fn settlement_reserve_is_checked_per_nonterminal_withdrawal() {
+fn settlement_reserve_counts_eth_only_for_mints_and_cycles_for_all_work() {
     let policy = ReservePolicy {
         eth_floor_wei: 100,
         cycles_floor: 200,
         settlement_cycle_ceiling: 30,
-        transaction_gas_limit: 10,
-        max_fee_per_gas: 4,
     };
-    let exact = policy.snapshot(2, 0, 0, 180, 260).expect("exact reserve");
+    let exact = policy
+        .snapshot(2, 0, 0, 80, 0, 180, 260)
+        .expect("exact reserve");
     assert!(exact.sufficient);
     assert_eq!(exact.required_eth_wei, 180);
     assert_eq!(exact.required_cycles, 260);
     assert!(
         !policy
-            .snapshot(2, 0, 0, 179, 260)
+            .snapshot(2, 0, 0, 80, 0, 179, 260)
             .expect("low ETH")
             .sufficient
     );
     assert!(
         !policy
-            .snapshot(2, 0, 0, 180, 259)
+            .snapshot(2, 0, 0, 80, 0, 180, 259)
             .expect("low cycles")
             .sufficient
     );
     let candidate = policy
-        .snapshot(1, 0, 1, 180, 260)
+        .snapshot(1, 0, 1, 40, 40, 180, 260)
         .expect("candidate reservation");
     assert_eq!(candidate.reserved_operation_count, 2);
     let existing_withdrawal = policy
-        .snapshot(1, 0, 0, 140, 230)
+        .snapshot(1, 0, 0, 40, 0, 140, 230)
         .expect("existing withdrawal reserve");
     assert!(existing_withdrawal.sufficient);
     let competing_deposit = policy
-        .snapshot(1, 0, 1, 140, 230)
+        .snapshot(1, 0, 1, 40, 40, 140, 230)
         .expect("competing deposit reserve");
     assert!(!competing_deposit.sufficient);
     assert_eq!(competing_deposit.nonterminal_withdrawals, 1);
@@ -583,7 +584,7 @@ fn settlement_reserve_is_checked_per_nonterminal_withdrawal() {
         ..policy
     };
     assert_eq!(
-        overflow.snapshot(1, 0, 0, u128::MAX, u128::MAX),
+        overflow.snapshot(1, 0, 0, 1, 0, u128::MAX, u128::MAX),
         Err(CoreError::ArithmeticOverflow)
     );
 }

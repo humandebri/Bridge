@@ -91,6 +91,20 @@ type AuditEventKind = variant {
     charged_service_fee : nat;
     ledger_fee : nat;
   };
+  EvmFeeQuoteObserved : record {
+    reserved_l1_fee_wei : nat;
+    observed_l1_fee_upper_bound_wei : nat;
+    base_fee_per_gas : nat;
+    max_priority_fee_per_gas : nat;
+    observed_at_ns : nat64;
+    gas_estimate : nat;
+    initial_max_fee_per_gas : nat;
+    safe_block_hash : blob;
+    reserved_eth_wei : nat;
+    reachable_max_fee_per_gas : nat;
+    gas_limit : nat;
+    safe_block_number : nat64;
+  };
 };
 type AuditEventPage = record {
   pruned_digest : blob;
@@ -153,19 +167,17 @@ type BridgeInitArgs = record {
   ecdsa_key_name : text;
   base_chain_id : nat64;
   bridge_contract : blob;
-  max_priority_fee_per_gas : nat;
   fee_recipient : FeeRecipientConfig;
   settlement_rate_limit_window_seconds : nat64;
   evm_liveness : EvmLivenessPolicy;
   ecdsa_derivation_path : vec blob;
   evm_rpc_canister_id : principal;
   deposit_rate_limit_per_principal : nat16;
-  max_fee_per_gas : nat;
   governance_ecdsa_derivation_path : vec blob;
   eth_floor_wei : nat;
   custom_evm_rpc_urls : vec text;
-  transaction_gas_limit : nat;
   deposit_rate_limit_global : nat16;
+  evm_fee : EvmFeePolicy;
   pause_principal : principal;
   governance_principal : principal;
   index_canister_id : principal;
@@ -288,9 +300,33 @@ type EmergencyPauseReceipt = record {
   local_pause_audit_sha256 : blob;
   local_deposits_paused : bool;
 };
+type EvmFeePolicy = record {
+  l1_fee_per_transaction_ceiling_wei : nat;
+  quote_validity_seconds : nat64;
+  gas_limit_ceiling : nat;
+  max_priority_fee_per_gas_ceiling : nat;
+  l1_fee_multiplier_bps : nat32;
+  gas_limit_multiplier_bps : nat32;
+  base_fee_multiplier_bps : nat32;
+  max_fee_per_gas_ceiling : nat;
+};
+type EvmFeeQuoteStatus = record {
+  reserved_l1_fee_wei : nat;
+  observed_l1_fee_upper_bound_wei : nat;
+  base_fee_per_gas : nat;
+  max_priority_fee_per_gas : nat;
+  valid_until_ns : nat64;
+  observed_at_ns : nat64;
+  gas_estimate : nat;
+  initial_max_fee_per_gas : nat;
+  safe_block_hash : blob;
+  reserved_eth_wei : nat;
+  reachable_max_fee_per_gas : nat;
+  gas_limit : nat;
+  safe_block_number : nat64;
+};
 type EvmLivenessPolicy = record {
   rebroadcast_after_seconds : nat64;
-  fee_ceiling_multiplier_bps : nat32;
   fee_bump_bps : nat16;
   replacement_after_seconds : nat64;
   check_interval_seconds : nat64;
@@ -397,17 +433,15 @@ type PublicConfig = record {
   deposit_rate_limit_window_seconds : nat64;
   base_chain_id : nat64;
   bridge_contract : blob;
-  max_priority_fee_per_gas : nat;
   fee_recipient : FeeRecipientConfig;
   settlement_rate_limit_window_seconds : nat64;
   evm_liveness : EvmLivenessPolicy;
   evm_rpc_canister_id : principal;
   deposit_rate_limit_per_principal : nat16;
-  max_fee_per_gas : nat;
   schema_version : nat16;
   eth_floor_wei : nat;
-  transaction_gas_limit : nat;
   deposit_rate_limit_global : nat16;
+  evm_fee : EvmFeePolicy;
   pause_principal : principal;
   governance_principal : principal;
   ledger_fee : nat;
@@ -457,10 +491,14 @@ type RecoverMintRevertReceipt = variant {
 type ReserveStatus = record {
   cycles_balance : nat;
   required_eth_wei : nat;
+  last_fee_quote : opt EvmFeeQuoteStatus;
   eth_surplus_wei : nat;
   cycles_surplus : nat;
+  reserved_deposit_eth_wei : nat;
   sufficient : bool;
   eth_balance_wei : nat;
+  eth_floor_wei : nat;
+  candidate_mint_eth_wei : nat;
   required_cycles : nat;
 };
 type Result = variant {
@@ -567,6 +605,7 @@ type SettlementStopReason = variant {
 };
 type StatusCounts = record {
   pending_evm_operations : nat64;
+  reserved_deposit_mint_eth_wei : nat;
   retained_audit_events : nat64;
   reconciliation_holds : nat64;
   retained_deposit_index_entries : nat64;

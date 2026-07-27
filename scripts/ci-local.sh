@@ -730,16 +730,22 @@ run_smoke() {
     settlement_rate_limit_global = 60 : nat16;
     settlement_rate_limit_per_principal = 6 : nat16;
     settlement_rate_limit_per_record = 3 : nat16;
-    transaction_gas_limit = 500_000 : nat;
-    max_fee_per_gas = 10 : nat;
-    max_priority_fee_per_gas = 1 : nat;
+    evm_fee = record {
+      gas_limit_ceiling = 500_000 : nat;
+      max_fee_per_gas_ceiling = 200_000_000_000 : nat;
+      max_priority_fee_per_gas_ceiling = 10_000_000_000 : nat;
+      l1_fee_per_transaction_ceiling_wei = 10_000_000_000_000_000 : nat;
+      quote_validity_seconds = 90 : nat64;
+      gas_limit_multiplier_bps = 13_000 : nat32;
+      base_fee_multiplier_bps = 60_000 : nat32;
+      l1_fee_multiplier_bps = 15_000 : nat32;
+    };
     evm_liveness = record {
       check_interval_seconds = 60 : nat64;
       rebroadcast_after_seconds = 300 : nat64;
       replacement_after_seconds = 1_800 : nat64;
       max_replacements = 3 : nat8;
       fee_bump_bps = 1_250 : nat16;
-      fee_ceiling_multiplier_bps = 40_000 : nat32;
     };
     eth_floor_wei = 1 : nat;
     cycles_floor = 1 : nat;

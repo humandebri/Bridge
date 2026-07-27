@@ -1,5 +1,5 @@
 use crate::{
-    Amount, ApplyResult, CoreError, DepositId, EvmOperationId, HoldId, LedgerFailure,
+    Amount, ApplyResult, CoreError, DepositId, EvmFeeQuote, EvmOperationId, HoldId, LedgerFailure,
     LedgerOperation, LedgerTransferIdentity, TransferAttempt,
 };
 
@@ -14,6 +14,7 @@ pub struct DepositRequest {
     pub gross_amount: Amount,
     pub user_max_service_fee: Amount,
     pub transfer: LedgerTransferIdentity,
+    pub fee_quote: Option<EvmFeeQuote>,
 }
 
 #[cfg_attr(
@@ -145,6 +146,7 @@ pub struct DepositRecord {
     pub gross_amount: Amount,
     pub max_service_fee: Amount,
     pub quote: Option<DepositQuote>,
+    pub fee_quote: Option<EvmFeeQuote>,
     pub transfer: LedgerTransferIdentity,
     pub state: DepositState,
     pub last_settlement_stop_reason: Option<String>,
@@ -164,6 +166,7 @@ impl DepositRecord {
             gross_amount: request.gross_amount,
             max_service_fee: request.user_max_service_fee,
             quote: None,
+            fee_quote: request.fee_quote,
             transfer: request.transfer,
             state: DepositState::FundingPending,
             last_settlement_stop_reason: None,
@@ -191,6 +194,19 @@ impl DepositRecord {
                 entity: "deposit",
                 event: "missing_quote",
             })
+    }
+
+    pub fn reserved_eth_wei(&self) -> u128 {
+        if matches!(
+            self.state,
+            DepositState::EscrowedUnquoted { .. }
+                | DepositState::FundingReconciliationHold { .. }
+                | DepositState::MintPending { .. }
+        ) {
+            self.fee_quote.map_or(0, |quote| quote.reserved_eth_wei)
+        } else {
+            0
+        }
     }
 
     pub fn apply(&mut self, event: DepositEvent) -> Result<ApplyResult, CoreError> {

@@ -812,6 +812,7 @@ pub(crate) fn promote_funding_success(
         payload_hash: attempt.intent.payload_hash,
         gross_amount: Amount::new(attempt.gross_amount),
         user_max_service_fee: Amount::new(attempt.max_service_fee),
+        fee_quote: Some(attempt.fee_quote),
         transfer: attempt.transfer.clone(),
     })
     .map_err(|error| DepositError::Rejected(format!("{error:?}")))?;
@@ -854,6 +855,7 @@ pub(crate) fn promote_funding_ambiguous(
         payload_hash: attempt.intent.payload_hash,
         gross_amount: Amount::new(attempt.gross_amount),
         user_max_service_fee: Amount::new(attempt.max_service_fee),
+        fee_quote: Some(attempt.fee_quote),
         transfer: attempt.transfer.clone(),
     })
     .map_err(|error| DepositError::Rejected(format!("{error:?}")))?;
@@ -931,6 +933,49 @@ pub async fn request_deposit(
         return Err(DepositError::DepositsPaused);
     }
     let now = ic_cdk::api::time();
+    let (mint_snapshot, snapshot_generation) = base_mint_snapshot(&config, now).await?;
+    mint_snapshot
+        .quote(Amount::new(gross_amount), Amount::new(max_service_fee))
+        .map_err(preflight_error)?;
+    let signer = cached_signer_address(&config).await?;
+    let fee_calldata = evm_calls::mint_deposit_calldata(&evm_calls::MintDepositArgs {
+        deposit_id,
+        recipient: base_recipient,
+        gross_amount,
+        max_service_fee,
+        charged_service_fee: mint_snapshot.service_fee.get(),
+    });
+    let fee_quote = evm_rpc::mint_fee_quote(&config, signer, &fee_calldata)
+        .await
+        .map_err(|_| DepositError::BaseObservationUnavailable)?;
+    let eth_balance = evm_rpc::signer_eth_balance_at(
+        &config,
+        signer,
+        evm_rpc::FinalizedObservation {
+            chain_id: config.base_chain_id,
+            block_number: fee_quote.safe_block_number,
+            block_hash: fee_quote.safe_block_hash,
+            observed_at_ns: fee_quote.observed_at_ns,
+        },
+    )
+    .await
+    .map_err(|_| DepositError::BaseObservationUnavailable)?;
+    let reserve_token = STORE.with(|store| {
+        store
+            .borrow()
+            .deposit_reserve_token()
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
+    let reserve_admission = DepositReserveAdmission {
+        audit_caller: caller,
+        expected_token: reserve_token,
+        observed_at_ns: ic_cdk::api::time(),
+        eth_balance_wei: eth_balance,
+        cycles_balance: ic_cdk::api::canister_liquid_cycle_balance(),
+        reserve_policy: config.reserve_policy(),
+        mint_snapshot,
+        snapshot_generation,
+    };
     let cached_preflight = STORE.with(|store| {
         let store = store.borrow();
         let minimum_finalized_block = store
@@ -1016,6 +1061,7 @@ pub async fn request_deposit(
         created_at_ns: now,
         updated_at_ns: now,
         last_failure: None,
+        fee_quote,
     };
     let outcome = if existing_attempt.is_some() {
         crate::storage::DepositAdmissionOutcome::Existing
@@ -1023,7 +1069,12 @@ pub async fn request_deposit(
         STORE.with(|store| {
             store
                 .borrow_mut()
-                .prepare_deposit_funding_attempt(caller, &proposed, quota)
+                .prepare_deposit_funding_attempt_with_reserve(
+                    caller,
+                    &proposed,
+                    quota,
+                    reserve_admission,
+                )
                 .map_err(deposit_storage_error)
         })?
     };
@@ -1038,6 +1089,20 @@ pub async fn request_deposit(
         if previous.intent != intent || previous.transfer != transfer {
             return Err(DepositError::DepositConflict);
         }
+        let previous = if previous.fee_quote != fee_quote {
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .refresh_deposit_funding_fee_quote(
+                        &previous,
+                        fee_quote,
+                        reserve_admission,
+                    )
+                    .map_err(deposit_storage_error)
+            })?
+        } else {
+            previous
+        };
         match previous.state {
             DepositFundingAttemptState::Retryable { retry_after_ns } if now >= retry_after_ns => {
                 let mut next = previous.clone();
@@ -1102,7 +1167,46 @@ pub async fn request_deposit(
             bridge_core::FundingAttemptDecision::PromoteSuccess,
             bridge_core::LedgerCallOutcome::Succeeded { block_index }
             | bridge_core::LedgerCallOutcome::Duplicate { block_index },
-        ) => promote_funding_success(&attempt, block_index, &config),
+        ) => {
+            let observed_at_ns = ic_cdk::api::time();
+            if observed_at_ns > attempt.fee_quote.valid_until_ns {
+                return Err(DepositError::FundingUnavailable {
+                    retry_after_seconds: 1,
+                });
+            }
+            let current_eth = evm_rpc::signer_eth_balance(&config, signer)
+                .await
+                .map_err(|_| DepositError::FundingUnavailable {
+                    retry_after_seconds: 1,
+                })?;
+            let reserve = STORE.with(|store| {
+                let store = store.borrow();
+                let counters = store
+                    .counters()
+                    .map_err(|_| DepositError::StorageFailure)?;
+                let withdrawals = store
+                    .nonterminal_withdrawal_count()
+                    .map_err(|_| DepositError::StorageFailure)?;
+                config
+                    .reserve_policy()
+                    .snapshot(
+                        withdrawals,
+                        counters.reserved_deposit_mint_operations,
+                        0,
+                        counters.reserved_deposit_mint_eth_wei,
+                        0,
+                        current_eth,
+                        ic_cdk::api::canister_liquid_cycle_balance(),
+                    )
+                    .map_err(|_| DepositError::StorageFailure)
+            })?;
+            if !reserve.sufficient {
+                return Err(DepositError::FundingUnavailable {
+                    retry_after_seconds: 1,
+                });
+            }
+            promote_funding_success(&attempt, block_index, &config)
+        }
         (
             bridge_core::FundingAttemptDecision::PromoteAmbiguous,
             bridge_core::LedgerCallOutcome::Ambiguous,
@@ -1402,6 +1506,9 @@ pub(crate) fn commit_deposit_quote(
             max_service_fee: deposit.max_service_fee.get(),
             charged_service_fee: quote.service_fee.get(),
         },
+        deposit
+            .fee_quote
+            .ok_or(DepositError::BaseObservationUnavailable)?,
     );
     store
         .commit_deposit_mint_bundle_and_scan(
@@ -1686,6 +1793,7 @@ mod tests {
             payload_hash: [4; 32],
             gross_amount: Amount::new(100),
             user_max_service_fee: Amount::new(10),
+            fee_quote: None,
             transfer: LedgerTransferIdentity {
                 operation: LedgerOperation::PullDeposit,
                 created_at_time_ns: 123_456,
