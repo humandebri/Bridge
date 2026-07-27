@@ -116,7 +116,7 @@ fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行�
 - nonceを確保したoperation: 対象recordのContinueを実行する。別recordが`NonceBlocked`なら、先にnonceを保持するSubmitted/Prepared operationを特定してContinueする。nonceやstable counterを手作業で変更しない。
 - Withdrawal Ledger hold: `continue_withdrawal`で同一Withdrawal ID・IC Account・固定amountOutを維持する。dedup期間内は同一transfer identityを一度だけ再送し、期間後は一回につきreconciliationを1 stepだけ進める。完全な不在証拠なしに別identityを作らない。送金先変更、任意送金、Base refundは行わない。
 - Deposit funding hold: pullの成功証拠または完全な不存在証明まで補償を行わない。成功時は`EscrowedUnquoted`、不存在時は`Cancelled`へ進める。
-- Deposit refund hold: 元account、attemptに保存した`gross - ledger_fee`、feeを照合する。成功証拠で`Refunded`へ進め、曖昧結果は完全な不存在証明後だけattempt番号、created-at time、memoを更新する。確定的な`BadFee`はexpected feeで最大3回自動再試行し、以後はgovernance限定`resume_deposit_refund`で再開する。feeがgross以上ならfee reserveからfeeを補償し、ユーザーへgross全額を返す。
+- Deposit refund hold: 元account、attemptに保存した`gross - ledger_fee`、feeを照合する。成功証拠で`Refunded`へ進め、曖昧結果は完全な不存在証明後だけattempt番号、created-at time、memoを更新する。確定的な`BadFee`は固定fee設定の不一致として停止し、返金payloadを変更しない。Ledger feeを変更せず、Canister設定とLedger設定の不一致を解消してから同じrecordを再実行する。
 - Submitted EVM transaction: Continueを使わない。Finalized到達を観測した後、保存済みtransaction hashと一致する証拠で専用confirmation APIを呼ぶ。
 - 停止理由: Historyまたは`get_deposit`/`get_withdrawal`の`last_settlement_stop_reason`を記録し、外部障害を解消してからContinueする。
 

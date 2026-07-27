@@ -620,7 +620,7 @@ proof fn audit_overflow_is_rejected()
 {}
 
 proof fn deposit_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
-    requires state == 3 || state == 9 || state == 10
+    requires state == 3 || state == 8 || state == 9
     ensures kernel::deposit_phase_run_spec(state, events) == state
     decreases events.len()
 {
@@ -658,7 +658,7 @@ proof fn reverted_phases_only_reopen_through_recovery_events(event: int)
 
 proof fn deposit_fee_delta_occurs_only_on_mint(state: int, event: int, fee: int)
     ensures kernel::deposit_fee_delta_spec(state, event, fee)
-        == if state == 2 && event == 9 { fee } else { 0 }
+        == if state == 2 && event == 7 { fee } else { 0 }
 {}
 
 proof fn deposit_refund_debits_exactly_gross(gross: int, ledger_fee: int)
@@ -681,7 +681,7 @@ proof fn withdrawal_fee_delta_occurs_only_on_release(state: int, event: int, fee
 {}
 
 proof fn deposit_post_mint_never_charges(state: int, events: Seq<int>, fee: int)
-    requires state == 3 || state == 9 || state == 10, 0 <= fee
+    requires state == 3 || state == 8 || state == 9, 0 <= fee
     ensures kernel::deposit_fee_total_spec(state, events, fee) == 0
     decreases events.len()
 {
@@ -707,17 +707,17 @@ proof fn withdrawal_post_transfer_never_charges(state: int, events: Seq<int>, fe
 }
 
 proof fn deposit_fee_is_charged_at_most_once(state: int, events: Seq<int>, fee: int)
-    requires 0 <= state <= 10, 0 <= fee
+    requires 0 <= state <= 9, 0 <= fee
     ensures 0 <= kernel::deposit_fee_total_spec(state, events, fee) <= fee
     decreases events.len()
 {
     if events.len() > 0 {
         let event = events[0];
         let next = kernel::deposit_phase_step_spec(state, event);
-        if state == 2 && event == 9 {
+        if state == 2 && event == 7 {
             deposit_post_mint_never_charges(3, events.drop_first(), fee);
         } else {
-            assert(0 <= next <= 10);
+            assert(0 <= next <= 9);
             deposit_fee_is_charged_at_most_once(next, events.drop_first(), fee);
         }
     }

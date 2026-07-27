@@ -16,7 +16,6 @@ mod withdrawal;
 pub use accounting::{AccountingState, FeeKind};
 pub use deposit::{
     DepositEvent, DepositQuote, DepositRecord, DepositRefundReason, DepositRequest, DepositState,
-    MAX_AUTOMATIC_REFUND_FEE_RETRIES,
 };
 pub use evm::{
     EvmOperationEvent, EvmOperationKind, EvmOperationRecord, EvmOperationState,

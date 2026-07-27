@@ -531,30 +531,26 @@ macro_rules! authorized_body {
 }
 
 macro_rules! deposit_step_body {
-    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr, $six:expr, $seven:expr, $eight:expr, $nine:expr, $ten:expr, $eleven:expr) => {{
+    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr, $six:expr, $seven:expr, $eight:expr, $nine:expr) => {{
         if $state == $zero && $event == $zero {
             $one
         } else if $state == $zero && $event == $one {
             $five
         } else if $state == $zero && $event == $two {
-            $ten
+            $nine
         } else if $state == $one && $event == $three {
             $two
         } else if $state == $one && $event == $four {
             $six
         } else if $state == $six && $event == $five {
-            $nine
+            $eight
         } else if $state == $six && $event == $six {
             $seven
-        } else if $state == $six && $event == $seven {
-            $eight
-        } else if $state == $eight && $event == $eight {
-            $six
-        } else if $state == $two && $event == $nine {
+        } else if $state == $two && $event == $seven {
             $three
-        } else if $state == $two && $event == $ten {
+        } else if $state == $two && $event == $eight {
             $four
-        } else if $state == $four && $event == $eleven {
+        } else if $state == $four && $event == $nine {
             $two
         } else {
             $state
@@ -1185,12 +1181,12 @@ pub const fn audit_next(current: u64) -> Option<u64> {
 /// Compact phase transition used by the rich Deposit state machine.
 #[cfg(not(verus_keep_ghost))]
 pub const fn deposit_phase_step(state: u8, event: u8) -> u8 {
-    deposit_step_body!(state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8)
+    deposit_step_body!(state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8)
 }
 
 #[cfg(not(verus_keep_ghost))]
 pub const fn deposit_phase_allows(state: u8, event: u8) -> bool {
-    deposit_phase_step(state, event) != state || (state == 6 && event == 7)
+    deposit_phase_step(state, event) != state
 }
 
 /// Compact phase transition used by the rich Withdrawal state machine.
@@ -1475,12 +1471,12 @@ verus! {
     pub open spec fn deposit_phase_step_spec(state: int, event: int) -> int {
         let zero: int = 0; let one: int = 1; let two: int = 2; let three: int = 3;
         let four: int = 4; let five: int = 5; let six: int = 6; let seven: int = 7;
-        let eight: int = 8; let nine: int = 9; let ten: int = 10; let eleven: int = 11;
-        deposit_step_body!(state, event, zero, one, two, three, four, five, six, seven, eight, nine, ten, eleven)
+        let eight: int = 8; let nine: int = 9;
+        deposit_step_body!(state, event, zero, one, two, three, four, five, six, seven, eight, nine)
     }
 
     pub open spec fn deposit_phase_allows_spec(state: int, event: int) -> bool {
-        deposit_phase_step_spec(state, event) != state || (state == 6 && event == 7)
+        deposit_phase_step_spec(state, event) != state
     }
 
     pub open spec fn withdrawal_phase_step_spec(state: int, event: int) -> int {
@@ -1495,7 +1491,7 @@ verus! {
     }
 
     pub open spec fn reverted_phase_recovery_spec(event: int) -> bool {
-        deposit_phase_step_spec(4, event) != 4 <==> event == 11
+        deposit_phase_step_spec(4, event) != 4 <==> event == 9
     }
 
     pub open spec fn deposit_phase_run_spec(state: int, events: Seq<int>) -> int
@@ -1513,7 +1509,7 @@ verus! {
     }
 
     pub open spec fn deposit_fee_delta_spec(state: int, event: int, fee: int) -> int {
-        if state == 2 && event == 9 { fee } else { 0 }
+        if state == 2 && event == 7 { fee } else { 0 }
     }
 
     pub open spec fn withdrawal_fee_delta_spec(state: int, event: int, fee: int) -> int {

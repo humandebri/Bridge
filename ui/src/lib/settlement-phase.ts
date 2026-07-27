@@ -1,6 +1,6 @@
 import type { DepositPhase, SettlementActionResult, SettlementState, WithdrawalPhase } from "@/generated/bridge.did"
 
-const depositNames = ["EscrowedUnquoted", "MintPending", "Minted", "MintReverted", "FundingReconciliationHold", "RefundPending", "RefundReconciliationHold", "RefundRecoveryRequired", "Refunded", "Cancelled"] as const
+const depositNames = ["EscrowedUnquoted", "MintPending", "Minted", "MintReverted", "FundingReconciliationHold", "RefundPending", "RefundReconciliationHold", "Refunded", "Cancelled"] as const
 const withdrawalNames = ["Observed", "ReleasePending", "Paid", "ReconciliationHold"] as const
 
 function variantName(value: unknown, allowed: readonly string[]): string | undefined {
@@ -30,7 +30,6 @@ export function depositPhaseName(phase: DepositPhase): string {
     FundingReconciliationHold: "Funding needs review",
     RefundPending: "Refunding",
     RefundReconciliationHold: "Refund needs review",
-    RefundRecoveryRequired: "Refund recovery required",
     Refunded: "Refunded",
     Cancelled: "Cancelled",
   }
@@ -67,7 +66,7 @@ export function isWithdrawalTerminal(phase: WithdrawalPhase): boolean {
 export function depositPhaseTone(phase: DepositPhase): "good" | "warn" | "neutral" {
   const name = variantName(phase, depositNames)
   if (name === "Minted" || name === "Refunded") return "good"
-  if (name === "FundingReconciliationHold" || name === "RefundReconciliationHold" || name === "RefundRecoveryRequired") return "warn"
+  if (name === "FundingReconciliationHold" || name === "RefundReconciliationHold") return "warn"
   return isDepositTerminal(phase) ? "warn" : "neutral"
 }
 

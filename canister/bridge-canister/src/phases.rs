@@ -10,7 +10,6 @@ pub enum DepositPhase {
     FundingReconciliationHold,
     RefundPending,
     RefundReconciliationHold,
-    RefundRecoveryRequired,
     Refunded,
     Cancelled,
 }
@@ -28,7 +27,6 @@ impl From<&DepositState> for DepositPhase {
             DepositState::FundingReconciliationHold { .. } => Self::FundingReconciliationHold,
             DepositState::RefundPending { .. } => Self::RefundPending,
             DepositState::RefundReconciliationHold { .. } => Self::RefundReconciliationHold,
-            DepositState::RefundRecoveryRequired { .. } => Self::RefundRecoveryRequired,
             DepositState::Refunded { .. } => Self::Refunded,
             DepositState::Cancelled { .. } => Self::Cancelled,
         }

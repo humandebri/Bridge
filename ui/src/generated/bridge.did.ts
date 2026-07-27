@@ -24,16 +24,6 @@ export interface AuditEvent {
   'sequence' : bigint,
 }
 export type AuditEventKind = {
-    'DepositRefundRetried' : {
-      'next_fee' : bigint,
-      'deposit_id' : Uint8Array | number[],
-      'next_attempt_no' : [] | [bigint],
-      'previous_attempt_no' : bigint,
-      'compensated' : boolean,
-      'previous_fee' : bigint,
-    }
-  } |
-  {
     'MintRevertRecoveryStarted' : {
       'result' : string,
       'finalized_block_number' : bigint,
@@ -272,8 +262,7 @@ export type DepositPhase = { 'MintPending' : null } |
   { 'RefundReconciliationHold' : null } |
   { 'RefundPending' : null } |
   { 'Minted' : null } |
-  { 'Cancelled' : null } |
-  { 'RefundRecoveryRequired' : null };
+  { 'Cancelled' : null };
 export interface DepositQuoteView {
   'net_amount' : bigint,
   'service_fee' : bigint,
@@ -291,10 +280,8 @@ export type DepositRefundReasonView = { 'ReserveInsufficient' : null } |
 export interface DepositRefundView {
   'attempt_no' : bigint,
   'block_index' : [] | [bigint],
-  'recovery_expected_fee' : [] | [bigint],
   'ledger_fee' : bigint,
   'amount' : bigint,
-  'compensated' : boolean,
   'reason' : DepositRefundReasonView,
 }
 export interface DepositView {
@@ -542,7 +529,6 @@ export type SettlementActionError = {
   { 'TransactionMismatch' : null } |
   { 'ConfirmationRequired' : null } |
   { 'RateLimited' : { 'retry_after_seconds' : bigint } } |
-  { 'LedgerUnavailable' : null } |
   { 'StorageFailure' : null } |
   { 'AnonymousCaller' : null };
 export type SettlementActionResult = {
@@ -671,7 +657,6 @@ export interface _SERVICE {
   'refresh_storage_checksum' : ActorMethod<[bigint], Result_13>,
   'request_deposit' : ActorMethod<[DepositArgs], Result_14>,
   'request_fee_payout' : ActorMethod<[bigint], Result_15>,
-  'resume_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result>,
   'resume_new_deposits' : ActorMethod<[], Result_11>,
   'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_11>,
   'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_11>,

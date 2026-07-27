@@ -21,7 +21,7 @@ fn retry_memo(domain: &[u8], hold_id: u64, identity: &LedgerTransferIdentity) ->
     digest.finalize().into()
 }
 
-pub(crate) fn deposit_refund_retry_memo(deposit_id: [u8; 32], attempt_no: u64) -> [u8; 32] {
+fn deposit_refund_memo(deposit_id: [u8; 32], attempt_no: u64) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"KINIC-DEPOSIT-REFUND");
     digest.update(deposit_id);
@@ -93,7 +93,6 @@ pub enum SettlementActionError {
     Unauthorized,
     Busy,
     StorageFailure,
-    LedgerUnavailable,
     ConfirmationRequired,
     InvalidConfirmationObservation,
     TransactionMismatch,
@@ -1404,7 +1403,7 @@ fn start_deposit_refund(
         let identity = LedgerTransferIdentity {
             operation: LedgerOperation::RefundDeposit,
             created_at_time_ns: ic_cdk::api::time(),
-            memo: deposit_refund_retry_memo(deposit_id, 0),
+            memo: deposit_refund_memo(deposit_id, 0),
             amount,
             fee,
             from: deposit.transfer.to.clone(),
@@ -1800,88 +1799,6 @@ pub(crate) async fn advance_deposit(
                             reason: SettlementStopReason::LedgerAmbiguous,
                         });
                     }
-                    LedgerCallOutcome::DefinitiveFailure {
-                        code: bridge_core::LedgerFailure::BadFee { expected_fee },
-                    } => {
-                        let retry = expected_fee < deposit.gross_amount
-                            && attempt.attempt_no < bridge_core::MAX_AUTOMATIC_REFUND_FEE_RETRIES;
-                        let next_identity = retry.then(|| {
-                            let next_attempt_no = attempt.attempt_no.saturating_add(1);
-                            LedgerTransferIdentity {
-                                operation: LedgerOperation::RefundDeposit,
-                                created_at_time_ns: ic_cdk::api::time()
-                                    .max(attempt.identity.created_at_time_ns.saturating_add(1)),
-                                memo: deposit_refund_retry_memo(deposit_id, next_attempt_no),
-                                amount: deposit
-                                    .gross_amount
-                                    .checked_sub(expected_fee)
-                                    .expect("fee checked below gross"),
-                                fee: expected_fee,
-                                from: attempt.identity.from.clone(),
-                                to: attempt.identity.to.clone(),
-                                spender: None,
-                            }
-                        });
-                        STORE.with(|store| {
-                            let mut store = store.borrow_mut();
-                            let mut current = store
-                                .deposit(deposit_id)
-                                .map_err(|_| SettlementActionError::StorageFailure)?
-                                .ok_or(SettlementActionError::NotFound)?;
-                            if !matches!(
-                                &current.state,
-                                bridge_core::DepositState::RefundPending {
-                                    attempt: current_attempt,
-                                    ..
-                                } if current_attempt == &attempt
-                            ) {
-                                return Err(SettlementActionError::Busy);
-                            }
-                            current
-                                .apply(DepositEvent::RefundBadFee {
-                                    expected_fee,
-                                    next_identity: next_identity.clone().map(Box::new),
-                                })
-                                .map_err(|_| SettlementActionError::StorageFailure)?;
-                            let now_ns = ic_cdk::api::time();
-                            current.last_settlement_stop_reason =
-                                (!retry).then(|| "LedgerRejected(\"BadFee\")".to_string());
-                            store
-                                .put_deposit_refund_retry_bundle(
-                                    &current,
-                                    ic_cdk::api::canister_self(),
-                                    crate::storage::AuditEventKind::DepositRefundRetried {
-                                        deposit_id: deposit_id.to_vec(),
-                                        previous_attempt_no: attempt.attempt_no,
-                                        previous_fee: attempt.identity.fee.get(),
-                                        next_attempt_no: retry
-                                            .then_some(attempt.attempt_no.saturating_add(1)),
-                                        next_fee: expected_fee.get(),
-                                        compensated: false,
-                                    },
-                                    lease.job(),
-                                    if retry {
-                                        crate::storage::RefundJobOutcome::RetryAt(now_ns)
-                                    } else {
-                                        crate::storage::RefundJobOutcome::Stop
-                                    },
-                                    now_ns,
-                                )
-                                .map_err(|_| SettlementActionError::StorageFailure)
-                        })?;
-                        return if retry {
-                            Ok(SettlementActionResult::ReconciliationProgress {
-                                state: SettlementState::Deposit(DepositPhase::RefundPending),
-                            })
-                        } else {
-                            Ok(SettlementActionResult::Stopped {
-                                state: SettlementState::Deposit(
-                                    DepositPhase::RefundRecoveryRequired,
-                                ),
-                                reason: SettlementStopReason::LedgerRejected("BadFee".into()),
-                            })
-                        };
-                    }
                     other => {
                         return Ok(SettlementActionResult::Stopped {
                             state,
@@ -1889,14 +1806,6 @@ pub(crate) async fn advance_deposit(
                         });
                     }
                 }
-            }
-            bridge_core::DepositState::RefundRecoveryRequired { .. } => {
-                return Ok(SettlementActionResult::Stopped {
-                    state: SettlementState::Deposit(DepositPhase::RefundRecoveryRequired),
-                    reason: SettlementStopReason::LedgerRejected(
-                        "RefundRecoveryRequired".to_owned(),
-                    ),
-                });
             }
             bridge_core::DepositState::Minted { .. }
             | bridge_core::DepositState::MintReverted { .. }

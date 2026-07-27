@@ -8,7 +8,6 @@ describe("settlement phase helpers", () => {
     expect(depositPhaseName({ EscrowedUnquoted: null })).toBe("Checking Base")
     expect(depositPhaseName({ Refunded: null })).toBe("Refunded")
     expect(depositPhaseTone({ RefundReconciliationHold: null })).toBe("warn")
-    expect(depositPhaseTone({ RefundRecoveryRequired: null })).toBe("warn")
     expect(isDepositTerminal({ Refunded: null })).toBe(true)
     expect(isDepositTerminal({ Cancelled: null })).toBe(true)
     expect(withdrawalPhaseName({ ReleasePending: null })).toBe("Processing")

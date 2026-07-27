@@ -77,7 +77,7 @@ Base wallet
 4. UIまたはWithdrawal HistoryがFinalized blockのreceiptと`WithdrawalCommitted` eventを検出し、IC walletから`notify_withdrawal`を呼ぶ。Canisterはtransaction hashを起点に、receipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛してquorum検証する。通知を行えるのは対象IC owner、Governance principal、pause principalである。
 5. 検証成功後、Ledger feeがcharged Service Fee以下ならCanisterは同じtransaction payloadの`ReleasePending` recordとSettlement jobを原子的に保存する。fee超過時はreleaseを作らず`Observed` record、停止理由、runtime guard、監査eventを保存する。重複通知は既存recordを返し、新しいjobを起動しない。
 6. Settlement runnerは固定`amountOut`を固定IC Accountへ送る。Ledger成功、Duplicate、または履歴照合による成功確認で`Paid`になり、`chargedServiceFee - actualLedgerFee`だけをfee reserveへ一度加算する。
-7. Ledgerの結果不明は`ReconciliationHold`へ移す。dedup期間内は同一transfer identityで確認し、期間後はLedger全範囲とIndexの同期済みwatermarkで不存在を証明できた場合だけ、同じ宛先・金額を保った新しいtransfer identityで`ReleasePending`へ戻す。Deposit refundの確定的な`BadFee`だけはLedgerが返したexpected feeでamountとidentityを再生成し、3回後またはfeeがgross以上なら`RefundRecoveryRequired`へ停止する。
+7. Ledgerの結果不明は`ReconciliationHold`へ移す。dedup期間内は同一transfer identityで確認し、期間後はLedger全範囲とIndexの同期済みwatermarkで不存在を証明できた場合だけ、同じ宛先・金額を保った新しいtransfer identityで`ReleasePending`へ戻す。Deposit refundの確定的な`BadFee`は固定fee設定の不一致として停止し、amount、fee、transfer identityを変更しない。
 8. Base側のpauseは新規Withdrawal作成を止めるが、すでに`Committed`となったICP債務の送金・照合は止めない。停止したSettlementは原因解消後に所有者またはGovernance・pause principalが`continue_withdrawal`を呼ぶ。
 
 ## 外部確認の境界

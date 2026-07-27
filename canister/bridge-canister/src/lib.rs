@@ -737,111 +737,6 @@ async fn continue_deposit(
 }
 
 #[ic_cdk::update]
-async fn resume_deposit_refund(
-    deposit_id: Vec<u8>,
-) -> Result<tasks::SettlementActionResult, tasks::SettlementActionError> {
-    let id: [u8; 32] = deposit_id
-        .as_slice()
-        .try_into()
-        .map_err(|_| tasks::SettlementActionError::InvalidId)?;
-    let caller = ic_cdk::api::msg_caller();
-    if caller == candid::Principal::anonymous()
-        || !admin::is_governance(caller)
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-    {
-        return Err(tasks::SettlementActionError::Unauthorized);
-    }
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
-        return Err(tasks::SettlementActionError::Busy);
-    };
-    let (config, record) = STORE.with(|store| {
-        let store = store.borrow();
-        Ok::<_, tasks::SettlementActionError>((
-            store
-                .config()
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-                .ok_or(tasks::SettlementActionError::StorageFailure)?,
-            store
-                .deposit(id)
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-                .ok_or(tasks::SettlementActionError::NotFound)?,
-        ))
-    })?;
-    let previous_attempt = match &record.state {
-        bridge_core::DepositState::RefundRecoveryRequired { attempt, .. } => attempt.clone(),
-        _ => return Err(tasks::SettlementActionError::WrongState),
-    };
-    let current_fee = ledger::current_fee(config.ledger_canister_id)
-        .await
-        .map_err(|_| tasks::SettlementActionError::LedgerUnavailable)?;
-    let compensated = current_fee >= record.gross_amount;
-    let amount = if compensated {
-        record.gross_amount
-    } else {
-        record
-            .gross_amount
-            .checked_sub(current_fee)
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-    };
-    let next_attempt_no = previous_attempt
-        .attempt_no
-        .checked_add(1)
-        .ok_or(tasks::SettlementActionError::StorageFailure)?;
-    let identity = bridge_core::LedgerTransferIdentity {
-        operation: bridge_core::LedgerOperation::RefundDeposit,
-        created_at_time_ns: ic_cdk::api::time().max(
-            previous_attempt
-                .identity
-                .created_at_time_ns
-                .saturating_add(1),
-        ),
-        memo: tasks::deposit_refund_retry_memo(id, next_attempt_no),
-        amount,
-        fee: current_fee,
-        from: previous_attempt.identity.from.clone(),
-        to: previous_attempt.identity.to.clone(),
-        spender: None,
-    };
-    let job = claim_governance_job(storage::SettlementJobKind::Deposit, id, caller)?;
-    STORE.with(|store| {
-        let mut store = store.borrow_mut();
-        let mut current = store
-            .deposit(id)
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-            .ok_or(tasks::SettlementActionError::NotFound)?;
-        if current.state != record.state {
-            return Err(tasks::SettlementActionError::Busy);
-        }
-        current
-            .apply(bridge_core::DepositEvent::ResumeRefund {
-                identity: Box::new(identity),
-            })
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?;
-        store
-            .put_deposit_refund_retry_bundle(
-                &current,
-                caller,
-                storage::AuditEventKind::DepositRefundRetried {
-                    deposit_id: id.to_vec(),
-                    previous_attempt_no: previous_attempt.attempt_no,
-                    previous_fee: previous_attempt.identity.fee.get(),
-                    next_attempt_no: Some(next_attempt_no),
-                    next_fee: current_fee.get(),
-                    compensated,
-                },
-                &job,
-                storage::RefundJobOutcome::KeepLeased,
-                ic_cdk::api::time(),
-            )
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)
-    })?;
-    drop(_guard);
-    let result = scheduler::run_claimed(job).await?;
-    scheduler::arm();
-    Ok(result)
-}
-
-#[ic_cdk::update]
 async fn continue_withdrawal(
     withdrawal_id: Vec<u8>,
 ) -> Result<tasks::SettlementActionResult, tasks::SettlementActionError> {
@@ -895,27 +790,6 @@ fn claim_confirmation_job(
     caller: candid::Principal,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
     claim_job(kind, id, caller, true)
-}
-
-fn claim_governance_job(
-    kind: storage::SettlementJobKind,
-    id: [u8; 32],
-    caller: candid::Principal,
-) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
-    STORE.with(|store| {
-        store
-            .borrow_mut()
-            .claim_governance_settlement_job(
-                kind,
-                id,
-                caller,
-                ic_cdk::api::time(),
-                ic_cdk::api::time().saturating_add(120_000_000_000),
-                300_000_000_000,
-            )
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)
-            .and_then(manual_claim_result)
-    })
 }
 
 fn manual_claim_result(

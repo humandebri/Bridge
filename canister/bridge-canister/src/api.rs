@@ -129,8 +129,6 @@ pub struct DepositRefundView {
     pub ledger_fee: Nat,
     pub attempt_no: u64,
     pub block_index: Option<Nat>,
-    pub recovery_expected_fee: Option<Nat>,
-    pub compensated: bool,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1499,22 +1497,17 @@ fn deposit_created_at_ns(record: &DepositRecord) -> u64 {
 }
 
 fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
-    let (reason, attempt, block_index, recovery_expected_fee) = match &record.state {
-        DepositState::RefundPending { reason, attempt } => (*reason, attempt, None, None),
+    let (reason, attempt, block_index) = match &record.state {
+        DepositState::RefundPending { reason, attempt } => (*reason, attempt, None),
         DepositState::RefundReconciliationHold {
             reason, attempt, ..
-        } => (*reason, attempt, None, None),
-        DepositState::RefundRecoveryRequired {
-            reason,
-            attempt,
-            expected_fee,
-        } => (*reason, attempt, None, Some(Nat::from(expected_fee.get()))),
+        } => (*reason, attempt, None),
         DepositState::Refunded {
             reason,
             attempt,
             ledger_block_index,
             ..
-        } => (*reason, attempt, Some(Nat::from(*ledger_block_index)), None),
+        } => (*reason, attempt, Some(Nat::from(*ledger_block_index))),
         _ => return None,
     };
     Some(DepositRefundView {
@@ -1523,13 +1516,6 @@ fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
         ledger_fee: Nat::from(attempt.identity.fee.get()),
         attempt_no: attempt.attempt_no,
         block_index,
-        recovery_expected_fee,
-        compensated: attempt
-            .identity
-            .amount
-            .checked_add(attempt.identity.fee)
-            .ok()
-            .is_some_and(|total| total > record.gross_amount),
     })
 }
 

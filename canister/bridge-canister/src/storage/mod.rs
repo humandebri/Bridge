@@ -37,7 +37,7 @@ use bridge_core::{
 };
 use candid::{CandidType, Principal};
 use ic_sqlite_vfs::db::migrate::Migration;
-use ic_sqlite_vfs::db::{ChecksumRefresh, UpdateConnection, Value};
+use ic_sqlite_vfs::db::{ChecksumRefresh, UpdateConnection};
 #[cfg(test)]
 use ic_sqlite_vfs::MemoryId;
 use ic_sqlite_vfs::{params, DbError, DbHandle, DefaultMemoryImpl, MemoryManager};
@@ -1294,13 +1294,6 @@ pub enum SettlementJobStatus {
     AwaitingConfirmation,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RefundJobOutcome {
-    KeepLeased,
-    RetryAt(u64),
-    Stop,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SettlementJobPhase {
     Confirmation,
@@ -1485,14 +1478,6 @@ pub enum AuditEventKind {
         charged_service_fee: u128,
     },
     WithdrawalFeeGuardCleared,
-    DepositRefundRetried {
-        deposit_id: Vec<u8>,
-        previous_attempt_no: u64,
-        previous_fee: u128,
-        next_attempt_no: Option<u64>,
-        next_fee: u128,
-        compensated: bool,
-    },
     EvmTransactionRebroadcasted {
         operation_id: u64,
         transaction_hash: Vec<u8>,
@@ -6028,7 +6013,7 @@ impl StableStore {
     }
 
     pub fn put_deposit(&mut self, value: &DepositRecord) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, None, None)
+        self.put_deposit_with_audit(value, None, None)
     }
 
     pub fn put_deposit_and_audit(
@@ -6037,27 +6022,7 @@ impl StableStore {
         caller: Principal,
         kind: AuditEventKind,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, Some((caller, kind)), None, None)
-    }
-
-    pub fn put_deposit_refund_retry_bundle(
-        &mut self,
-        value: &DepositRecord,
-        caller: Principal,
-        kind: AuditEventKind,
-        job: &SettlementJob,
-        outcome: RefundJobOutcome,
-        now_ns: u64,
-    ) -> Result<(), StorageError> {
-        if job.kind != SettlementJobKind::Deposit || job.settlement_id != value.id.bytes() {
-            return Err(StorageError::Core(CoreError::ConflictingReplay));
-        }
-        self.put_deposit_with_audit(
-            value,
-            Some((caller, kind)),
-            Some((job, outcome, now_ns)),
-            None,
-        )
+        self.put_deposit_with_audit(value, Some((caller, kind)), None)
     }
 
     pub fn put_deposit_funding_callback(
@@ -6065,14 +6030,13 @@ impl StableStore {
         value: &DepositRecord,
         token: &SettlementCallbackToken,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, None, Some(token))
+        self.put_deposit_with_audit(value, None, Some(token))
     }
 
     fn put_deposit_with_audit(
         &mut self,
         value: &DepositRecord,
         audit_kind: Option<(Principal, AuditEventKind)>,
-        refund_job: Option<(&SettlementJob, RefundJobOutcome, u64)>,
         callback_token: Option<&SettlementCallbackToken>,
     ) -> Result<(), StorageError> {
         let previous_stored = self.stored_deposit(value.id.bytes())?;
@@ -6116,40 +6080,14 @@ impl StableStore {
             previous.as_ref(),
             value,
         )?;
-        let previous_accounting = self.accounting()?;
-        let mut accounting = previous_accounting;
-        let previous_compensation = previous
-            .as_ref()
-            .map(refund_compensation_debit)
-            .transpose()?
-            .unwrap_or(Amount::ZERO);
-        let next_compensation = refund_compensation_debit(value)?;
-        if next_compensation > previous_compensation {
-            accounting.spend_fee_reserve(
-                next_compensation
-                    .checked_sub(previous_compensation)
-                    .map_err(StorageError::Core)?,
-            )?;
-        } else if previous_compensation > next_compensation {
-            accounting.restore_fee_reserve(
-                previous_compensation
-                    .checked_sub(next_compensation)
-                    .map_err(StorageError::Core)?,
-            )?;
-        }
         let audit = audit_kind
             .map(|(caller, kind)| {
-                let audit_time_ns = refund_job
-                    .map(|(_, _, now_ns)| now_ns)
-                    .unwrap_or_else(ic_cdk::api::time);
-                self.prepare_audit_batch(&mut counters, caller, audit_time_ns, vec![kind])
+                self.prepare_audit_batch(&mut counters, caller, ic_cdk::api::time(), vec![kind])
             })
             .transpose()?;
         let value_blob = encode(&next_stored)?;
         let counters_blob = encode(&counters)?;
         let previous_counters_blob = encode(&previous_counters)?;
-        let previous_accounting_blob = encode(&previous_accounting)?;
-        let accounting_blob = encode(&accounting)?;
         let operation_owner = deposit_operation_id(value)
             .map(|operation_id| {
                 encode(&OperationOwner::Deposit(value.id.bytes()))
@@ -6175,9 +6113,7 @@ impl StableStore {
                      WHERE settlement_kind = ?1 AND settlement_id = ?2 AND status = 1",
                     params![token.kind.sql(), token.settlement_id.to_sql_bytes()],
                 )?;
-                if current.as_deref()
-                    != Some(token.lease_generation.to_sql_bytes().as_slice())
-                {
+                if current.as_deref() != Some(token.lease_generation.to_sql_bytes().as_slice()) {
                     return Err(DbError::Constraint("stale settlement callback".into()));
                 }
             }
@@ -6194,13 +6130,6 @@ impl StableStore {
                 params![],
                 previous_counters_blob.as_slice(),
                 "stale deposit counters",
-            )?;
-            expect_blob(
-                connection,
-                "SELECT accounting FROM singleton_state WHERE id = 1",
-                params![],
-                previous_accounting_blob.as_slice(),
-                "stale deposit accounting",
             )?;
             if previous.as_ref().is_some_and(is_pending_deposit_ledger) {
                 remove_table_entry(connection, "pull_pending_deposit_index", key.clone())?;
@@ -6240,74 +6169,16 @@ impl StableStore {
             if let Some(audit) = &audit {
                 commit_audit_batch(connection, audit)?;
                 connection.execute(
-                    "UPDATE singleton_state SET counters = ?1, accounting = ?2, audit_retention = ?3 WHERE id = 1",
+                    "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
                     params![
                         counters_blob.to_sql_bytes(),
-                        accounting_blob.to_sql_bytes(),
                         audit.retention_blob.to_sql_bytes()
                     ],
                 )?;
             } else {
                 connection.execute(
-                    "UPDATE singleton_state SET counters = ?1, accounting = ?2 WHERE id = 1",
-                    params![counters_blob.to_sql_bytes(), accounting_blob.to_sql_bytes()],
-                )?;
-            }
-            if let Some((job, outcome, now_ns)) = refund_job {
-                let current = connection.query_optional_scalar::<Vec<u8>>(
-                    "SELECT lease_generation FROM settlement_jobs
-                     WHERE settlement_kind = ?1 AND settlement_id = ?2 AND status = 1",
-                    params![job.kind.sql(), job.settlement_id.to_sql_bytes()],
-                )?;
-                if current.as_deref() != Some(job.lease_generation.to_sql_bytes().as_slice()) {
-                    return Err(DbError::Constraint("stale refund settlement lease".into()));
-                }
-                let (status, next_run_at_ns, last_error_code, last_error_detail, checks) =
-                    match outcome {
-                        RefundJobOutcome::KeepLeased => {
-                            return record_write_db_failpoint(
-                                RecordWriteFailpoint::SingletonState,
-                            );
-                        }
-                        RefundJobOutcome::RetryAt(next) => (
-                            0,
-                            Some(next.to_sql_bytes()),
-                            None,
-                            None,
-                            job.confirmation_checks.saturating_add(1),
-                        ),
-                        RefundJobOutcome::Stop => (
-                            2,
-                            None,
-                            Some("SettlementStopped"),
-                            Some("LedgerRejected(\"BadFee\")"),
-                            job.confirmation_checks,
-                        ),
-                    };
-                let next_run_at_param = next_run_at_ns
-                    .as_deref()
-                    .map_or(Value::Null, Value::Blob);
-                let last_error_code_param =
-                    last_error_code.map_or(Value::Null, Value::Text);
-                let last_error_detail_param =
-                    last_error_detail.map_or(Value::Null, Value::Text);
-                connection.execute(
-                    "UPDATE settlement_jobs SET status = ?1, next_run_at_ns = ?2,
-                     confirmation_checks = ?3, lease_until_ns = NULL,
-                     last_error_code = ?4, last_error_detail = ?5, updated_at_ns = ?6
-                     WHERE settlement_kind = ?7 AND settlement_id = ?8 AND status = 1
-                       AND lease_generation = ?9",
-                    params![
-                        i64::from(status),
-                        next_run_at_param,
-                        i64::from(checks),
-                        last_error_code_param,
-                        last_error_detail_param,
-                        now_ns.to_sql_bytes(),
-                        job.kind.sql(),
-                        job.settlement_id.to_sql_bytes(),
-                        job.lease_generation.to_sql_bytes(),
-                    ],
+                    "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes()],
                 )?;
             }
             record_write_db_failpoint(RecordWriteFailpoint::SingletonState)
@@ -9362,27 +9233,6 @@ fn is_pending_deposit_ledger(value: &DepositRecord) -> bool {
         value.state,
         bridge_core::DepositState::FundingPending | bridge_core::DepositState::RefundPending { .. }
     )
-}
-
-fn refund_compensation_debit(value: &DepositRecord) -> Result<Amount, StorageError> {
-    let attempt = match &value.state {
-        bridge_core::DepositState::RefundPending { attempt, .. }
-        | bridge_core::DepositState::RefundReconciliationHold { attempt, .. }
-        | bridge_core::DepositState::Refunded { attempt, .. } => attempt,
-        _ => return Ok(Amount::ZERO),
-    };
-    let total = attempt
-        .identity
-        .amount
-        .checked_add(attempt.identity.fee)
-        .map_err(StorageError::Core)?;
-    Ok(if total > value.gross_amount {
-        total
-            .checked_sub(value.gross_amount)
-            .map_err(StorageError::Core)?
-    } else {
-        Amount::ZERO
-    })
 }
 
 fn is_deposit_mint_reserved(value: &DepositRecord) -> bool {
@@ -14183,183 +14033,6 @@ mod tests {
                 .pending_ledger_operations,
             0
         );
-    }
-
-    #[test]
-    #[serial]
-    fn compensated_refund_reserves_and_restores_fee_reserve_atomically() {
-        let memory = VectorMemory::default();
-        let mut store = StableStore::init(memory).expect("initialize");
-        store
-            .set_accounting(&AccountingState {
-                fee_reserve: Amount::new(200),
-                ..AccountingState::default()
-            })
-            .expect("seed reserve");
-        let mut record = deposit();
-        let mut identity = transfer(LedgerOperation::RefundDeposit, 100, 30);
-        identity.fee = Amount::new(10);
-        identity.from = record.transfer.to.clone();
-        identity.to = record.transfer.from.clone();
-        record
-            .apply(DepositEvent::StartRefund {
-                reason: bridge_core::DepositRefundReason::ReserveInsufficient,
-                attempt: Box::new(TransferAttempt {
-                    attempt_no: 0,
-                    identity: identity.clone(),
-                }),
-            })
-            .expect("start refund");
-        store.put_deposit(&record).expect("seed refund");
-        record
-            .apply(DepositEvent::RefundBadFee {
-                expected_fee: Amount::new(110),
-                next_identity: None,
-            })
-            .expect("recovery required");
-        store.put_deposit(&record).expect("persist recovery");
-        identity.created_at_time_ns += 1;
-        identity.memo = [31; 32];
-        identity.amount = record.gross_amount;
-        identity.fee = Amount::new(110);
-        record
-            .apply(DepositEvent::ResumeRefund {
-                identity: Box::new(identity),
-            })
-            .expect("compensate");
-        store.put_deposit(&record).expect("reserve compensation");
-        assert_eq!(
-            store.accounting().expect("accounting").fee_reserve,
-            Amount::new(90)
-        );
-        record
-            .apply(DepositEvent::RefundBadFee {
-                expected_fee: Amount::new(111),
-                next_identity: None,
-            })
-            .expect("definitive failure");
-        store.put_deposit(&record).expect("restore reserve");
-        assert_eq!(
-            store.accounting().expect("accounting").fee_reserve,
-            Amount::new(200)
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn refund_retry_record_audit_and_job_are_fenced_in_one_transaction() {
-        let memory = VectorMemory::default();
-        let mut store = StableStore::init(memory).expect("initialize");
-        let mut record = deposit();
-        let mut identity = transfer(LedgerOperation::RefundDeposit, 100, 30);
-        identity.fee = Amount::new(10);
-        identity.from = record.transfer.to.clone();
-        identity.to = record.transfer.from.clone();
-        record
-            .apply(DepositEvent::StartRefund {
-                reason: bridge_core::DepositRefundReason::ReserveInsufficient,
-                attempt: Box::new(TransferAttempt {
-                    attempt_no: 0,
-                    identity: identity.clone(),
-                }),
-            })
-            .expect("start refund");
-        store.put_deposit(&record).expect("seed refund");
-        store
-            .handle
-            .update(|connection| {
-                enqueue_settlement_job(
-                    connection,
-                    SettlementJobKind::Deposit,
-                    record.id.bytes(),
-                    None,
-                    0,
-                )
-            })
-            .expect("schedule refund");
-        let SettlementJobClaim::Claimed(job) = store
-            .claim_specific_due_settlement_job(
-                SettlementJobKind::Deposit,
-                record.id.bytes(),
-                0,
-                100,
-            )
-            .expect("claim refund")
-        else {
-            panic!("refund job was not claimed")
-        };
-
-        let expected_fee = Amount::new(11);
-        identity.created_at_time_ns += 1;
-        identity.memo = [31; 32];
-        identity.amount = record
-            .gross_amount
-            .checked_sub(expected_fee)
-            .expect("positive refund");
-        identity.fee = expected_fee;
-        let mut retry = record.clone();
-        retry
-            .apply(DepositEvent::RefundBadFee {
-                expected_fee,
-                next_identity: Some(Box::new(identity)),
-            })
-            .expect("build retry");
-        let audit = AuditEventKind::DepositRefundRetried {
-            deposit_id: retry.id.bytes().to_vec(),
-            previous_attempt_no: 0,
-            previous_fee: 10,
-            next_attempt_no: Some(1),
-            next_fee: expected_fee.get(),
-            compensated: false,
-        };
-
-        let mut stale_job = job.clone();
-        stale_job.lease_generation += 1;
-        assert_eq!(
-            store.put_deposit_refund_retry_bundle(
-                &retry,
-                Principal::anonymous(),
-                audit.clone(),
-                &stale_job,
-                RefundJobOutcome::RetryAt(50),
-                40,
-            ),
-            Err(StorageError::DatabaseFailure)
-        );
-        assert_eq!(
-            store.deposit(record.id.bytes()).expect("record"),
-            Some(record.clone())
-        );
-        assert_eq!(
-            store
-                .settlement_job(SettlementJobKind::Deposit, record.id.bytes())
-                .expect("job")
-                .expect("present")
-                .status,
-            SettlementJobStatus::Leased
-        );
-
-        store
-            .put_deposit_refund_retry_bundle(
-                &retry,
-                Principal::anonymous(),
-                audit,
-                &job,
-                RefundJobOutcome::RetryAt(50),
-                40,
-            )
-            .expect("commit retry bundle");
-        assert_eq!(
-            store.deposit(record.id.bytes()).expect("record"),
-            Some(retry)
-        );
-        let pending = store
-            .settlement_job(SettlementJobKind::Deposit, record.id.bytes())
-            .expect("job")
-            .expect("present");
-        assert_eq!(pending.status, SettlementJobStatus::Scheduled);
-        assert_eq!(pending.next_run_at_ns, Some(50));
-        assert_eq!(pending.confirmation_checks, 1);
     }
 
     #[test]

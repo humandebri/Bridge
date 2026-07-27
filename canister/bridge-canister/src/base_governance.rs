@@ -549,9 +549,7 @@ async fn continue_pending(
                     let observed = match evm_rpc::bridge_snapshot(config).await {
                         Ok(observed) => observed,
                         Err(error) => {
-                            ic_cdk::println!(
-                                "activation snapshot observation failed: {error:?}"
-                            );
+                            ic_cdk::println!("activation snapshot observation failed: {error:?}");
                             return Err(BaseGovernanceError::ObservationUnavailable);
                         }
                     };
@@ -631,6 +629,7 @@ async fn continue_pending(
             operation_id: transaction.id,
         });
     }
+    require_current_transaction_authorization(caller, &transaction.kind)?;
     transaction.state = storage::GovernanceTransactionState::Broadcasting { transaction_hash };
     if transaction.envelope.first_broadcast_at_ns == 0 {
         transaction.envelope.first_broadcast_at_ns = now;

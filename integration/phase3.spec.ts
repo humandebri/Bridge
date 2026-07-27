@@ -30,7 +30,7 @@ describe("Phase 3 PocketIC saga", () => {
   let pic: PocketIc | undefined;
   let serverUrl = "";
 
-  async function setup(activate = true) {
+  async function setup(activate = true, governanceRebroadcastAfterSeconds = 300n) {
     const mockBytes = readFileSync(mockWasm);
     const subnet = await pic!.getFiduciarySubnet();
     if (subnet === undefined) throw new Error("Fiduciary subnet was not created");
@@ -48,7 +48,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, transaction_gas_limit: 500_000n, max_fee_per_gas: 10n, max_priority_fee_per_gas: 1n, evm_liveness: { check_interval_seconds: 60n, rebroadcast_after_seconds: 300n, replacement_after_seconds: 1_800n, max_replacements: 3, fee_bump_bps: 1_250, fee_ceiling_multiplier_bps: 40_000 }, eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, transaction_gas_limit: 500_000n, max_fee_per_gas: 10n, max_priority_fee_per_gas: 1n, evm_liveness: { check_interval_seconds: 60n, rebroadcast_after_seconds: governanceRebroadcastAfterSeconds, replacement_after_seconds: 1_800n, max_replacements: 3, fee_bump_bps: 1_250, fee_ceiling_multiplier_bps: 40_000 }, eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(bridgeWasm), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
@@ -243,6 +243,48 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await continueDeposit(bridge, pauseDeposit.Ok.deposit_id)).toHaveProperty("Ok.Submitted");
     bridge.actor.setPrincipal(pausePrincipal);
     expect(await confirmDeposit(bridge, pauseDeposit.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+  });
+
+  it("reauthorizes governance rebroadcasts after RPC awaits and preserves the signed transaction across upgrade", async () => {
+    const { bridge, evm, runtimePrincipal } = await setup(true, 0n);
+    const oldPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(34));
+    const currentPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(35));
+    const pauseAction = { PauseDepositMints: null };
+
+    await (evm.actor as any).set_broadcast_inconsistent_after_accepts(1);
+    bridge.actor.setPrincipal(oldPausePrincipal);
+    expect(await (bridge.actor as any).submit_base_governance_action(pauseAction)).toHaveProperty("Err.BroadcastAmbiguous");
+    const initialBroadcasts: Uint8Array[] = await (evm.actor as any).broadcast_transactions();
+    expect(initialBroadcasts).toHaveLength(1);
+
+    await (evm.actor as any).set_chain_id_mode({ Inconsistent: null });
+    const oldPauseActor = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
+    oldPauseActor.setPrincipal(oldPausePrincipal);
+    const retryAsOldPause = await oldPauseActor.submit_base_governance_action(pauseAction);
+    const governanceActor = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
+    governanceActor.setPrincipal(runtimePrincipal);
+    const rotatePause = await governanceActor.rotate_pause_principal({ pause_principal: currentPausePrincipal });
+    const [oldPauseResult, rotationResult] = await Promise.all([retryAsOldPause(), rotatePause()]);
+    expect(rotationResult).toHaveProperty("Ok");
+    expect(oldPauseResult).toEqual({ Err: { Unauthorized: null } });
+    expect(await (evm.actor as any).broadcast_transactions()).toHaveLength(1);
+
+    bridge.actor.setPrincipal(currentPausePrincipal);
+    expect(await (bridge.actor as any).submit_base_governance_action(pauseAction)).toHaveProperty("Err.BroadcastAmbiguous");
+    const rebroadcasts: Uint8Array[] = await (evm.actor as any).broadcast_transactions();
+    expect(rebroadcasts).toHaveLength(2);
+    expect(Buffer.from(rebroadcasts[1])).toEqual(Buffer.from(rebroadcasts[0]));
+
+    await pic!.upgradeCanister({
+      canisterId: bridge.canisterId,
+      wasm: readFileSync(bridgeWasm),
+      arg: IDL.encode([], []),
+    });
+    bridge.actor.setPrincipal(currentPausePrincipal);
+    expect(await (bridge.actor as any).submit_base_governance_action(pauseAction)).toHaveProperty("Err.BroadcastAmbiguous");
+    const postUpgradeBroadcasts: Uint8Array[] = await (evm.actor as any).broadcast_transactions();
+    expect(postUpgradeBroadcasts).toHaveLength(3);
+    expect(Buffer.from(postUpgradeBroadcasts[2])).toEqual(Buffer.from(postUpgradeBroadcasts[0]));
   });
 
   it("serializes concurrent Continue calls with automatic progress for the same record", async () => {
@@ -473,21 +515,22 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(2);
   });
 
-  it("rebuilds a definitively rejected refund with the Ledger expected fee", async () => {
+  it("stops a refund BadFee without changing the fixed refund payload", async () => {
     const { ledger, evm, bridge } = await setup();
     await (evm.actor as any).set_deposit_mints_paused(true);
     await (ledger.actor as any).set_ledger_fee(12_000n);
     await (ledger.actor as any).set_refund_ledger_mode([{ BadFee: null }]);
     const accepted: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
-    expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.ReconciliationProgress");
-    const retrying: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
-    expect(phaseName(retrying[0].state)).toBe("RefundPending");
-    expect(retrying[0].refund[0]).toMatchObject({ amount: 8_000n, ledger_fee: 12_000n, attempt_no: 1n });
+    expect(await (bridge.actor as any).continue_deposit(accepted.Ok.deposit_id)).toHaveProperty("Ok.Stopped");
+    const stopped: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
+    expect(phaseName(stopped[0].state)).toBe("RefundPending");
+    expect(stopped[0].refund[0]).toMatchObject({ amount: 10_000n, ledger_fee: 10_000n, attempt_no: 0n });
+    expect(stopped[0].last_settlement_stop_reason[0]).toContain("BadFee");
 
     await (ledger.actor as any).set_refund_ledger_mode([{ Succeed: null }]);
     expect(await continueDeposit(bridge, accepted.Ok.deposit_id)).toHaveProperty("Ok.Complete");
     const refunded: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
-    expect(refunded[0].refund[0]).toMatchObject({ amount: 8_000n, ledger_fee: 12_000n, attempt_no: 1n });
+    expect(refunded[0].refund[0]).toMatchObject({ amount: 10_000n, ledger_fee: 10_000n, attempt_no: 0n });
   });
 
   it("treats a full expired Mint window as having zero effective consumption", async () => {
