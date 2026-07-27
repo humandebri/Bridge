@@ -91,6 +91,13 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn('(cd "$lean_root" && lake build)', driver)
         self.assertIn('echo "ambiguous Lean proof layout"', driver)
         self.assertIn('echo "unknown Lean proof layout"', driver)
+        self.assertIn("      executable)", driver)
+        self.assertIn(
+            "Verus executable obligation does not call production symbol", driver
+        )
+        self.assertIn(
+            """awk -F $'\\t' '$1 != "executable" { print $2 }'""", driver
+        )
 
 
 if __name__ == "__main__":
