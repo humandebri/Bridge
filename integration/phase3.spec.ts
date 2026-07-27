@@ -48,7 +48,8 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, transaction_gas_limit: 500_000n, max_fee_per_gas: 10n, max_priority_fee_per_gas: 1n, evm_liveness: { check_interval_seconds: 60n, rebroadcast_after_seconds: governanceRebroadcastAfterSeconds, replacement_after_seconds: 1_800n, max_replacements: 3, fee_bump_bps: 1_250, fee_ceiling_multiplier_bps: 40_000 }, eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const governanceCheckIntervalSeconds = governanceRebroadcastAfterSeconds < 60n ? 30n : 60n;
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, transaction_gas_limit: 500_000n, max_fee_per_gas: 10n, max_priority_fee_per_gas: 1n, evm_liveness: { check_interval_seconds: governanceCheckIntervalSeconds, rebroadcast_after_seconds: governanceRebroadcastAfterSeconds, replacement_after_seconds: 1_800n, max_replacements: 3, fee_bump_bps: 1_250, fee_ceiling_multiplier_bps: 40_000 }, eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(bridgeWasm), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
@@ -246,7 +247,7 @@ describe("Phase 3 PocketIC saga", () => {
   });
 
   it("reauthorizes governance rebroadcasts after RPC awaits and preserves the signed transaction across upgrade", async () => {
-    const { bridge, evm, runtimePrincipal } = await setup(true, 0n);
+    const { bridge, evm, runtimePrincipal } = await setup(true, 30n);
     const oldPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(34));
     const currentPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(35));
     const pauseAction = { PauseDepositMints: null };
@@ -256,6 +257,13 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).submit_base_governance_action(pauseAction)).toHaveProperty("Err.BroadcastAmbiguous");
     const initialBroadcasts: Uint8Array[] = await (evm.actor as any).broadcast_transactions();
     expect(initialBroadcasts).toHaveLength(1);
+
+    await pic!.upgradeCanister({
+      canisterId: bridge.canisterId,
+      wasm: readFileSync(bridgeWasm),
+      arg: IDL.encode([], []),
+    });
+    await pic!.advanceTime(30_001);
 
     await (evm.actor as any).set_chain_id_mode({ Inconsistent: null });
     const oldPauseActor = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
@@ -274,17 +282,6 @@ describe("Phase 3 PocketIC saga", () => {
     const rebroadcasts: Uint8Array[] = await (evm.actor as any).broadcast_transactions();
     expect(rebroadcasts).toHaveLength(2);
     expect(Buffer.from(rebroadcasts[1])).toEqual(Buffer.from(rebroadcasts[0]));
-
-    await pic!.upgradeCanister({
-      canisterId: bridge.canisterId,
-      wasm: readFileSync(bridgeWasm),
-      arg: IDL.encode([], []),
-    });
-    bridge.actor.setPrincipal(currentPausePrincipal);
-    expect(await (bridge.actor as any).submit_base_governance_action(pauseAction)).toHaveProperty("Err.BroadcastAmbiguous");
-    const postUpgradeBroadcasts: Uint8Array[] = await (evm.actor as any).broadcast_transactions();
-    expect(postUpgradeBroadcasts).toHaveLength(3);
-    expect(Buffer.from(postUpgradeBroadcasts[2])).toEqual(Buffer.from(postUpgradeBroadcasts[0]));
   });
 
   it("serializes concurrent Continue calls with automatic progress for the same record", async () => {
