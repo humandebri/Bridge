@@ -150,6 +150,10 @@ thread_local! {
     static IN_FLIGHT_ACTIONS: RefCell<BTreeSet<ActionKey>> = const { RefCell::new(BTreeSet::new()) };
     static NOTIFICATION_CALLERS: RefCell<BTreeMap<Principal, u8>> = const { RefCell::new(BTreeMap::new()) };
     static NOTIFICATIONS_IN_FLIGHT: RefCell<u8> = const { RefCell::new(0) };
+    static NOTIFICATION_CALLER_ADMISSION: RefCell<BTreeMap<Principal, NotificationAdmissionBucket>> =
+        const { RefCell::new(BTreeMap::new()) };
+    static NOTIFICATION_HASH_ADMISSION: RefCell<BTreeMap<[u8; 32], NotificationAdmissionBucket>> =
+        const { RefCell::new(BTreeMap::new()) };
 }
 
 struct StoreState(Option<StableStore>);
@@ -199,6 +203,96 @@ struct InFlightGuard {
 
 struct NotificationQuotaGuard {
     caller: Principal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NotificationAdmissionBucket {
+    window_id: u64,
+    count: u8,
+    last_seen_ns: u64,
+}
+
+struct NotificationAdmissionGuard;
+
+impl NotificationAdmissionGuard {
+    const WINDOW_NS: u64 = 600 * 1_000_000_000;
+    const PER_CALLER_LIMIT: u8 = 6;
+    const PER_HASH_LIMIT: u8 = 3;
+    const MAX_CALLER_BUCKETS: usize = 4_096;
+    const MAX_HASH_BUCKETS: usize = 8_192;
+
+    fn acquire(caller: Principal, transaction_hash: [u8; 32], now_ns: u64) -> bool {
+        let window_id = now_ns / Self::WINDOW_NS;
+        NOTIFICATION_CALLER_ADMISSION.with(|callers| {
+            NOTIFICATION_HASH_ADMISSION.with(|hashes| {
+                let mut callers = callers.borrow_mut();
+                let mut hashes = hashes.borrow_mut();
+                if !bridge_core::notification_admission_allowed(
+                    bucket_count(&callers, &caller, window_id),
+                    bucket_count(&hashes, &transaction_hash, window_id),
+                    Self::PER_CALLER_LIMIT,
+                    Self::PER_HASH_LIMIT,
+                ) {
+                    return false;
+                }
+                record_notification_bucket(
+                    &mut callers,
+                    caller,
+                    window_id,
+                    now_ns,
+                    Self::MAX_CALLER_BUCKETS,
+                );
+                record_notification_bucket(
+                    &mut hashes,
+                    transaction_hash,
+                    window_id,
+                    now_ns,
+                    Self::MAX_HASH_BUCKETS,
+                );
+                true
+            })
+        })
+    }
+}
+
+fn bucket_count<K: Ord>(
+    buckets: &BTreeMap<K, NotificationAdmissionBucket>,
+    key: &K,
+    window_id: u64,
+) -> u8 {
+    buckets
+        .get(key)
+        .filter(|bucket| bucket.window_id == window_id)
+        .map_or(0, |bucket| bucket.count)
+}
+
+fn record_notification_bucket<K: Ord + Clone>(
+    buckets: &mut BTreeMap<K, NotificationAdmissionBucket>,
+    key: K,
+    window_id: u64,
+    now_ns: u64,
+    capacity: usize,
+) {
+    if !buckets.contains_key(&key) && buckets.len() >= capacity {
+        if let Some(oldest) = buckets
+            .iter()
+            .min_by_key(|(_, bucket)| (bucket.window_id, bucket.last_seen_ns))
+            .map(|(key, _)| key.clone())
+        {
+            buckets.remove(&oldest);
+        }
+    }
+    let bucket = buckets.entry(key).or_insert(NotificationAdmissionBucket {
+        window_id,
+        count: 0,
+        last_seen_ns: now_ns,
+    });
+    if bucket.window_id != window_id {
+        bucket.window_id = window_id;
+        bucket.count = 0;
+    }
+    bucket.count = bucket.count.saturating_add(1);
+    bucket.last_seen_ns = now_ns;
 }
 
 impl NotificationQuotaGuard {
@@ -268,6 +362,7 @@ fn init(args: config::BridgeInitArgs) {
         });
     install_store(store);
     scheduler::arm();
+    scheduler::arm_funding_recovery();
     scheduler::arm_base_governance(Principal::anonymous());
 }
 
@@ -278,6 +373,7 @@ fn post_upgrade() {
     install_store(store);
     ensure_supported_schema();
     scheduler::arm();
+    scheduler::arm_funding_recovery();
     scheduler::arm_base_governance(Principal::anonymous());
 }
 
@@ -298,10 +394,13 @@ async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, 
     let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
         return Err(api::DepositError::Busy);
     };
-    let receipt = api::request_deposit(caller, args).await?;
+    let receipt = api::request_deposit(caller, args).await;
     drop(guard);
-    scheduler::arm();
-    Ok(receipt)
+    scheduler::arm_funding_recovery();
+    if receipt.is_ok() {
+        scheduler::arm();
+    }
+    receipt
 }
 
 #[ic_cdk::query]
@@ -372,30 +471,9 @@ async fn notify_withdrawal(
     else {
         return Err(api::NotifyWithdrawalError::Busy);
     };
-    let mut quota_key = b"notify_withdrawal:".to_vec();
-    quota_key.extend_from_slice(&transaction_hash);
-    STORE
-        .with(|store| {
-            store.borrow_mut().reserve_settlement_quota(
-                caller,
-                quota_key,
-                ic_cdk::api::time(),
-                storage::SettlementQuotaLimits {
-                    window_seconds: config.settlement_rate_limit_window_seconds,
-                    global: config.settlement_rate_limit_global,
-                    per_principal: config.settlement_rate_limit_per_principal,
-                    per_record: config.settlement_rate_limit_per_record,
-                },
-            )
-        })
-        .map_err(|error| match error {
-            storage::SettlementAdmissionError::RateLimited { .. } => {
-                api::NotifyWithdrawalError::RateLimited
-            }
-            storage::SettlementAdmissionError::Storage => {
-                api::NotifyWithdrawalError::StorageFailure
-            }
-        })?;
+    if !NotificationAdmissionGuard::acquire(caller, transaction_hash, ic_cdk::api::time()) {
+        return Err(api::NotifyWithdrawalError::RateLimited);
+    }
     let receipt = api::notify_withdrawal(caller, args).await?;
     match &receipt {
         api::NotifyWithdrawalReceipt::Ingested { .. } => {}
@@ -724,7 +802,7 @@ async fn resume_deposit_refund(
         to: previous_attempt.identity.to.clone(),
         spender: None,
     };
-    let job = claim_manual_job(storage::SettlementJobKind::Deposit, id, caller)?;
+    let job = claim_governance_job(storage::SettlementJobKind::Deposit, id, caller)?;
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         let mut current = store
@@ -819,6 +897,39 @@ fn claim_confirmation_job(
     claim_job(kind, id, caller, true)
 }
 
+fn claim_governance_job(
+    kind: storage::SettlementJobKind,
+    id: [u8; 32],
+    caller: candid::Principal,
+) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .claim_governance_settlement_job(
+                kind,
+                id,
+                caller,
+                ic_cdk::api::time(),
+                ic_cdk::api::time().saturating_add(120_000_000_000),
+                300_000_000_000,
+            )
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)
+            .and_then(manual_claim_result)
+    })
+}
+
+fn manual_claim_result(
+    claim: storage::ManualSettlementClaim,
+) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
+    match claim {
+        storage::ManualSettlementClaim::Claimed(job) => Ok(job),
+        storage::ManualSettlementClaim::AutomaticProgressPending { next_run_at_ns } => {
+            Err(tasks::SettlementActionError::AutomaticProgressPending { next_run_at_ns })
+        }
+        storage::ManualSettlementClaim::Busy => Err(tasks::SettlementActionError::Busy),
+    }
+}
+
 fn claim_job(
     kind: storage::SettlementJobKind,
     id: [u8; 32],
@@ -875,13 +986,7 @@ fn claim_job(
                     tasks::SettlementActionError::StorageFailure
                 }
             })
-            .and_then(|claim| match claim {
-                storage::ManualSettlementClaim::Claimed(job) => Ok(job),
-                storage::ManualSettlementClaim::AutomaticProgressPending { next_run_at_ns } => {
-                    Err(tasks::SettlementActionError::AutomaticProgressPending { next_run_at_ns })
-                }
-                storage::ManualSettlementClaim::Busy => Err(tasks::SettlementActionError::Busy),
-            })
+            .and_then(manual_claim_result)
     })
 }
 
@@ -1378,7 +1483,8 @@ pub fn generated_candid_interface() -> String {
 mod candid_tests {
     use super::{
         has_external_call_cycle_budget, storage::StorageError, storage_or_trap, ActionKey,
-        InFlightGuard,
+        InFlightGuard, NotificationAdmissionGuard, NOTIFICATION_CALLER_ADMISSION,
+        NOTIFICATION_HASH_ADMISSION,
     };
 
     #[cfg(not(feature = "test-deployment"))]
@@ -1433,5 +1539,28 @@ mod candid_tests {
         assert!(!has_external_call_cycle_budget(150, 100, 50));
         assert!(has_external_call_cycle_budget(151, 100, 50));
         assert!(!has_external_call_cycle_budget(u128::MAX, u128::MAX, 1));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn notification_admission_is_scoped_to_caller_and_hash_windows() {
+        NOTIFICATION_CALLER_ADMISSION.with(|buckets| buckets.borrow_mut().clear());
+        NOTIFICATION_HASH_ADMISSION.with(|buckets| buckets.borrow_mut().clear());
+        let caller = candid::Principal::from_slice(&[1]);
+        for index in 0..NotificationAdmissionGuard::PER_CALLER_LIMIT {
+            assert!(NotificationAdmissionGuard::acquire(caller, [index; 32], 0,));
+        }
+        assert!(!NotificationAdmissionGuard::acquire(caller, [99; 32], 0));
+        assert!(NotificationAdmissionGuard::acquire(
+            caller,
+            [99; 32],
+            NotificationAdmissionGuard::WINDOW_NS,
+        ));
+
+        let other = candid::Principal::from_slice(&[2]);
+        for _ in 0..NotificationAdmissionGuard::PER_HASH_LIMIT {
+            assert!(NotificationAdmissionGuard::acquire(other, [7; 32], 0));
+        }
+        assert!(!NotificationAdmissionGuard::acquire(other, [7; 32], 0));
     }
 }

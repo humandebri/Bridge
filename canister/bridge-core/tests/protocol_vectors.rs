@@ -1,9 +1,11 @@
 use bridge_core::{
     canonical_probe_matches, committed_quote_matches, fee_recipient_rotation_allowed,
-    hold_retry_allowed, lease_outcome_is_current, manual_claim_allowed, outbound_settlement,
-    payout_allowed, payout_debit, release_transfer_matches,
+    funding_attempt_decision, hold_retry_allowed, lease_lane_claim_decision,
+    lease_outcome_is_current, manual_claim_allowed, notification_admission_allowed,
+    outbound_settlement, payout_allowed, payout_debit, release_transfer_matches,
     reserve_admission_preserves_requirement, restored_pending_blocked, service_fee_change_allowed,
-    withdrawal_finalization_decision, Amount, BaseMintSnapshot, WithdrawalFinalizationDecision,
+    withdrawal_finalization_decision, Amount, BaseMintSnapshot, FundingAttemptDecision,
+    LeaseLaneClaimDecision, WithdrawalFinalizationDecision,
 };
 use serde::Deserialize;
 
@@ -33,6 +35,12 @@ struct ProtocolVectors {
     lease_count: usize,
     manual_claim_cases: Vec<ManualClaimCase>,
     manual_claim_count: usize,
+    notification_admission_cases: Vec<NotificationAdmissionCase>,
+    notification_admission_count: usize,
+    lease_lane_cases: Vec<LeaseLaneCase>,
+    lease_lane_count: usize,
+    funding_attempt_cases: Vec<FundingAttemptCase>,
+    funding_attempt_count: usize,
     finalization_cases: Vec<FinalizationCase>,
     finalization_count: usize,
     queue_cases: Vec<QueueCase>,
@@ -174,6 +182,33 @@ struct ManualClaimCase {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct NotificationAdmissionCase {
+    caller_count: String,
+    hash_count: String,
+    caller_limit: String,
+    hash_limit: String,
+    allowed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LeaseLaneCase {
+    target_active: bool,
+    target_automatic: bool,
+    active_in_lane: String,
+    capacity: String,
+    decision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FundingAttemptCase {
+    outcome_kind: String,
+    decision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FinalizationCase {
     receipt_succeeded: bool,
     receipt_block: String,
@@ -219,6 +254,15 @@ fn vectors() -> ProtocolVectors {
     assert_eq!(vectors.hold_count, vectors.hold_cases.len());
     assert_eq!(vectors.lease_count, vectors.lease_cases.len());
     assert_eq!(vectors.manual_claim_count, vectors.manual_claim_cases.len());
+    assert_eq!(
+        vectors.notification_admission_count,
+        vectors.notification_admission_cases.len()
+    );
+    assert_eq!(vectors.lease_lane_count, vectors.lease_lane_cases.len());
+    assert_eq!(
+        vectors.funding_attempt_count,
+        vectors.funding_attempt_cases.len()
+    );
     assert_eq!(vectors.finalization_count, vectors.finalization_cases.len());
     assert_eq!(vectors.queue_count, vectors.queue_cases.len());
     assert_eq!(
@@ -236,6 +280,9 @@ fn vectors() -> ProtocolVectors {
     assert!(vectors.hold_count > 0);
     assert!(vectors.lease_count > 0);
     assert!(vectors.manual_claim_count > 0);
+    assert!(vectors.notification_admission_count > 0);
+    assert!(vectors.lease_lane_count > 0);
+    assert!(vectors.funding_attempt_count > 0);
     assert!(vectors.finalization_count > 0);
     assert!(vectors.queue_count > 0);
     assert!(vectors.canonical_probe_count > 0);
@@ -504,6 +551,67 @@ fn protocol_manual_claim_cases_matches_production() {
             ),
             case.allowed
         );
+    }
+}
+
+#[test]
+fn protocol_notification_admission_cases_matches_production() {
+    for case in vectors().notification_admission_cases {
+        assert_eq!(
+            notification_admission_allowed(
+                block(&case.caller_count)
+                    .try_into()
+                    .expect("caller count fits u8"),
+                block(&case.hash_count)
+                    .try_into()
+                    .expect("hash count fits u8"),
+                block(&case.caller_limit)
+                    .try_into()
+                    .expect("caller limit fits u8"),
+                block(&case.hash_limit)
+                    .try_into()
+                    .expect("hash limit fits u8"),
+            ),
+            case.allowed
+        );
+    }
+}
+
+#[test]
+fn protocol_lease_lane_cases_matches_production() {
+    for case in vectors().lease_lane_cases {
+        let actual = lease_lane_claim_decision(
+            case.target_active,
+            case.target_automatic,
+            block(&case.active_in_lane),
+            block(&case.capacity),
+        );
+        let expected = match case.decision.as_str() {
+            "allow" => LeaseLaneClaimDecision::Allow,
+            "automatic-progress-pending" => LeaseLaneClaimDecision::AutomaticProgressPending,
+            "busy" => LeaseLaneClaimDecision::Busy,
+            value => panic!("unknown lease lane decision: {value}"),
+        };
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn protocol_funding_attempt_cases_matches_production() {
+    for case in vectors().funding_attempt_cases {
+        let actual = funding_attempt_decision(
+            block(&case.outcome_kind)
+                .try_into()
+                .expect("funding outcome kind fits u8"),
+        );
+        let expected = match case.decision.as_str() {
+            "promote-success" => FundingAttemptDecision::PromoteSuccess,
+            "promote-ambiguous" => FundingAttemptDecision::PromoteAmbiguous,
+            "release" => FundingAttemptDecision::Release,
+            "retain" => FundingAttemptDecision::Retain,
+            value => panic!("unknown funding attempt decision: {value}"),
+        };
+        assert_eq!(actual, expected);
     }
 }
 

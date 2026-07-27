@@ -179,4 +179,52 @@ def manualClaimAllowed
     (confirmation scheduled active stopped overdue expired : Bool) : Bool :=
   !confirmation && (!active || expired) && (!scheduled || stopped || overdue || expired)
 
+structure NotificationIsolationState where
+  notificationCount : Nat
+  settlementAdmission : Nat
+  settlementJobs : Nat
+deriving DecidableEq
+
+def processNotification (state : NotificationIsolationState) : NotificationIsolationState :=
+  { state with notificationCount := state.notificationCount + 1 }
+
+def notificationAdmissionAllowed
+    (callerCount hashCount callerLimit hashLimit : Nat) : Bool :=
+  callerCount < callerLimit && hashCount < hashLimit
+
+inductive LeaseLaneClaimDecision where
+  | allow
+  | automaticProgressPending
+  | busy
+deriving DecidableEq
+
+def decideLeaseLaneClaim
+    (targetActive targetAutomatic : Bool) (activeInLane capacity : Nat) :
+    LeaseLaneClaimDecision :=
+  if targetActive then
+    if targetAutomatic then .automaticProgressPending else .busy
+  else if activeInLane ≥ capacity then .busy
+  else .allow
+
+inductive FundingOutcomeKind where
+  | success
+  | duplicate
+  | ambiguous
+  | definitiveFailure
+  | retryableFailure
+deriving DecidableEq
+
+inductive FundingAttemptDecision where
+  | promoteSuccess
+  | promoteAmbiguous
+  | release
+  | retain
+deriving DecidableEq
+
+def decideFundingAttempt : FundingOutcomeKind → FundingAttemptDecision
+  | .success | .duplicate => .promoteSuccess
+  | .ambiguous => .promoteAmbiguous
+  | .definitiveFailure => .release
+  | .retryableFailure => .retain
+
 end BridgeSpec

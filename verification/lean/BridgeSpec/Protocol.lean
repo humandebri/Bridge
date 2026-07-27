@@ -349,6 +349,60 @@ theorem manual_claim_cannot_select_confirmation_or_active_scheduled_job
   · simp [manualClaimAllowedFor, manualClaimAllowed, scheduled.1, scheduled.2.1,
       scheduled.2.2.1, scheduled.2.2.2]
 
+theorem notification_quota_isolation (state : NotificationIsolationState) :
+    let next := processNotification state
+    next.settlementAdmission = state.settlementAdmission ∧
+      next.settlementJobs = state.settlementJobs := by
+  simp [processNotification]
+
+structure LeaseLaneSnapshot where
+  targetActive : Bool
+  targetAutomatic : Bool
+  activeInRequestedLane : Nat
+deriving DecidableEq
+
+def observeUnrelatedLease (snapshot : LeaseLaneSnapshot) : LeaseLaneSnapshot := snapshot
+
+theorem lease_lane_isolation (snapshot : LeaseLaneSnapshot) (capacity : Nat) :
+    decideLeaseLaneClaim
+        (observeUnrelatedLease snapshot).targetActive
+        (observeUnrelatedLease snapshot).targetAutomatic
+        (observeUnrelatedLease snapshot).activeInRequestedLane
+        capacity =
+      decideLeaseLaneClaim snapshot.targetActive snapshot.targetAutomatic
+        snapshot.activeInRequestedLane capacity := by
+  rfl
+
+structure FundingLifecycle where
+  attemptActive : Bool
+  formalArtifacts : Nat
+  promotions : Nat
+deriving DecidableEq
+
+def applyFundingDecision
+    (state : FundingLifecycle) (decision : FundingAttemptDecision) : FundingLifecycle :=
+  match decision with
+  | .release => { state with attemptActive := false }
+  | .retain => state
+  | .promoteSuccess | .promoteAmbiguous =>
+      if state.attemptActive then
+        { attemptActive := false, formalArtifacts := 1, promotions := state.promotions + 1 }
+      else state
+
+theorem funding_attempt_lifecycle :
+    let initial : FundingLifecycle :=
+      { attemptActive := true, formalArtifacts := 0, promotions := 0 }
+    let released := applyFundingDecision initial (decideFundingAttempt .definitiveFailure)
+    let succeeded := applyFundingDecision initial (decideFundingAttempt .success)
+    let duplicated := applyFundingDecision initial (decideFundingAttempt .duplicate)
+    let ambiguous := applyFundingDecision initial (decideFundingAttempt .ambiguous)
+    released.formalArtifacts = 0 ∧ released.promotions = 0 ∧
+      succeeded.formalArtifacts = 1 ∧ succeeded.promotions = 1 ∧
+      duplicated.formalArtifacts = 1 ∧ duplicated.promotions = 1 ∧
+      ambiguous.formalArtifacts = 1 ∧ ambiguous.promotions = 1 ∧
+      (applyFundingDecision succeeded (decideFundingAttempt .duplicate)) = succeeded := by
+  decide
+
 structure ExecutorWitness where
   cyclesSufficient : Bool
   fair : Bool

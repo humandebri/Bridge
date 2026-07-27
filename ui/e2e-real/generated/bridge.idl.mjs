@@ -51,7 +51,6 @@ export const idlFactory = ({ IDL }) => {
     'MintPending' : IDL.Null,
     'Refunded' : IDL.Null,
     'FundingReconciliationHold' : IDL.Null,
-    'FundingPending' : IDL.Null,
     'MintReverted' : IDL.Null,
     'EscrowedUnquoted' : IDL.Null,
     'RefundReconciliationHold' : IDL.Null,
@@ -637,8 +636,15 @@ export const idlFactory = ({ IDL }) => {
     'state' : DepositPhase,
     'owner_sequence' : IDL.Nat64,
   });
+  const FundingFailure = IDL.Variant({
+    'InsufficientAllowance' : IDL.Record({ 'allowance' : IDL.Nat }),
+    'BadBurn' : IDL.Record({ 'minimum' : IDL.Nat }),
+    'BadFee' : IDL.Record({ 'expected_fee' : IDL.Nat }),
+    'InsufficientFunds' : IDL.Record({ 'balance' : IDL.Nat }),
+  });
   const DepositError = IDL.Variant({
     'Busy' : IDL.Null,
+    'FundingRejected' : FundingFailure,
     'BaseObservationUnavailable' : IDL.Null,
     'SequenceMismatch' : IDL.Record({ 'expected' : IDL.Nat64 }),
     'ReserveUnavailable' : IDL.Null,
@@ -648,6 +654,7 @@ export const idlFactory = ({ IDL }) => {
     'InvalidRequest' : IDL.Text,
     'DepositConflict' : IDL.Null,
     'StorageFailure' : IDL.Null,
+    'FundingUnavailable' : IDL.Record({ 'retry_after_seconds' : IDL.Nat64 }),
   });
   const Result_14 = IDL.Variant({
     'Ok' : DepositReceipt,

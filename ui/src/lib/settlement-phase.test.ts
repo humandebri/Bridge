@@ -5,7 +5,7 @@ describe("settlement phase helpers", () => {
   it("preserves public display names and terminal tones", () => {
     expect(depositPhaseName({ Minted: null })).toBe("Complete")
     expect(depositPhaseTone({ Minted: null })).toBe("good")
-    expect(depositPhaseName({ FundingPending: null })).toBe("Scheduled")
+    expect(depositPhaseName({ EscrowedUnquoted: null })).toBe("Checking Base")
     expect(depositPhaseName({ Refunded: null })).toBe("Refunded")
     expect(depositPhaseTone({ RefundReconciliationHold: null })).toBe("warn")
     expect(depositPhaseTone({ RefundRecoveryRequired: null })).toBe("warn")

@@ -8,7 +8,7 @@
 |---|---|
 | IC wallet（OISY / Plug） | ICRC-2 approve、`request_deposit`、`confirm_deposit`、`notify_withdrawal`の同意付き呼び出し |
 | Base wallet | bSNS approveと`createWithdrawal`の署名 |
-| Bridge canister | SQLite schema v22への状態保存、Ledger操作、EVM operation、Finalized再検証、Settlement job実行 |
+| Bridge canister | SQLite schema v23への状態保存、Ledger操作、EVM operation、Finalized再検証、Settlement job実行 |
 | KINIC Ledger / Index | Depositのpull、Withdrawalのrelease、履歴照合 |
 | EVM RPC Canister | 複数providerのquorumでBaseのcanonical Finalized chainを観測 |
 | Base Bridge / bSNS | Deposit mint、Withdrawalのatomic transferFrom・burn・`Committed`記録 |
@@ -57,7 +57,7 @@ Finalized確認に失敗した場合、Safe head、固定confirmation数、単�
 ## Depositの詳細
 
 1. UIはBase chain、Bridge runtime、CanisterのFinalized observation、Service Fee、ICRC Ledgerの残高・fee・allowance、Base recipientを直前に再検証する。必要なICRC-2 allowanceはgross amountとLedger feeを含む。
-2. IC walletが`request_deposit`を呼ぶ。freshな既存cacheでfee・limit違反を確定できる場合だけrecord作成前に拒否する。その他は既存schemaへ`FundingPending` recordとstable executor job、固定transfer identity、sequence、quotaを単一transactionで保存し、外部callを行わず即時に返す。preflightは予約ではなく、pull後の再検証失敗ではpullとrefundのLedger feeを負担し得る。
+2. IC walletが`request_deposit`を呼ぶ。Canisterは内部funding attemptと固定transfer identity、quota reservationだけを保存し、同じupdate callでICRC-2 pullを行う。Success／Duplicate後だけ正式Depositへ昇格し、確定的な資金不足ではattemptとreservationを削除する。
 3. leaseを取得したexecutorだけがICRC-2 pullを実行する。成功またはDuplicateなら`EscrowedUnquoted`、確定的失敗なら既存`Cancelled`へ進める。結果不明またはcallback消失は同じtransactionで`FundingReconciliationHold`とidentityを保存し、成功証拠または完全な不存在証明なしに再送しない。
 4. pull確定後にFinalized Base状態を観測し、pause、fee、limit、reserveを再検証する。成功時だけquote、`MintDeposit`、mint予約を原子的に保存する。freshな拒否はgrossからCanister公開設定のLedger feeを引いて元accountへ返す。RPC障害、不一致、stale観測では返金せず再観測する。
 5. `MintDeposit` operationを`Queued → Prepared → Submitted`へ進め、transaction hashをcanonical Historyへ保存する。UIは受付receiptに即時hashを期待しない。

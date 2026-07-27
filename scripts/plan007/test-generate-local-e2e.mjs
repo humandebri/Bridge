@@ -14,7 +14,7 @@ assert.deepEqual(schema.$defs.stateUpgrade.required, ["verified", "before", "aft
 const state = {
   owner_sequence: "2",
   status: {
-    schema_version: "22",
+    schema_version: "23",
     counts: { pending_evm_operations: "1", pending_ledger_operations: "1" },
     settlement_scheduler: { scheduled: "1", leased: "0" },
   },

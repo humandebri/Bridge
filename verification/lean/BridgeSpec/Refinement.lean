@@ -167,4 +167,20 @@ theorem manual_claim_refinement
       manualClaimAllowed confirmation scheduled active stopped overdue expired := by
   rfl
 
+theorem notification_admission_refinement
+    (callerCount hashCount callerLimit hashLimit : U64) :
+    notificationAdmissionImpl callerCount hashCount callerLimit hashLimit =
+      notificationAdmissionAllowed callerCount.val hashCount.val callerLimit.val hashLimit.val := by
+  rfl
+
+theorem lease_lane_refinement
+    (targetActive targetAutomatic : Bool) (activeInLane capacity : U64) :
+    leaseLaneClaimImpl targetActive targetAutomatic activeInLane capacity =
+      decideLeaseLaneClaim targetActive targetAutomatic activeInLane.val capacity.val := by
+  rfl
+
+theorem funding_attempt_refinement (outcome : FundingOutcomeKind) :
+    fundingAttemptImpl outcome = decideFundingAttempt outcome := by
+  rfl
+
 end BridgeSpec.Refinement

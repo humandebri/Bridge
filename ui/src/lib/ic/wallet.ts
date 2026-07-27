@@ -394,7 +394,7 @@ export function decodeDepositReply(reply: Uint8Array): DepositReceipt {
 
 function unwrapDepositResult(result: unknown): DepositReceipt {
   if (!isObject(result)) throw new Error("Wallet reply has an invalid shape")
-  if ("Err" in result) throw new Error(`Bridge rejected deposit: ${stringify(Reflect.get(result, "Err"))}`)
+  if ("Err" in result) throw new Error(depositErrorMessage(Reflect.get(result, "Err")))
   const ok: unknown = Reflect.get(result, "Ok")
   if (!isObject(ok) || !isDepositPhase(Reflect.get(ok, "state"))) throw new Error("Wallet reply has an invalid deposit receipt")
   const id: unknown = Reflect.get(ok, "deposit_id")
@@ -405,6 +405,49 @@ function unwrapDepositResult(result: unknown): DepositReceipt {
   if (typeof ownerSequence !== "bigint") throw new Error("Wallet reply has an invalid owner sequence")
   if (Object.keys(ok).length !== 3) throw new Error("Wallet reply has an invalid deposit receipt")
   return { deposit_id: id, owner_sequence: ownerSequence, state }
+}
+
+function depositErrorMessage(error: unknown): string {
+  if (!isObject(error)) return "Bridge rejected deposit"
+  const unavailable = Reflect.get(error, "FundingUnavailable") as unknown
+  const retryAfter: unknown = isObject(unavailable)
+    ? (Reflect.get(unavailable, "retry_after_seconds") as unknown)
+    : undefined
+  if (typeof retryAfter === "bigint") {
+    return `Deposit funding is temporarily unavailable. Retry the same deposit in ${retryAfter.toString()} seconds`
+  }
+  const rejected = Reflect.get(error, "FundingRejected") as unknown
+  if (isObject(rejected)) {
+    const allowance = Reflect.get(rejected, "InsufficientAllowance") as unknown
+    const allowanceAmount: unknown = isObject(allowance)
+      ? (Reflect.get(allowance, "allowance") as unknown)
+      : undefined
+    if (typeof allowanceAmount === "bigint") {
+      return `Deposit funding was rejected because the ledger allowance is insufficient (current ${allowanceAmount.toString()})`
+    }
+    const funds = Reflect.get(rejected, "InsufficientFunds") as unknown
+    const balance: unknown = isObject(funds)
+      ? (Reflect.get(funds, "balance") as unknown)
+      : undefined
+    if (typeof balance === "bigint") {
+      return `Deposit funding was rejected because the ledger balance is insufficient (current ${balance.toString()})`
+    }
+    const badFee = Reflect.get(rejected, "BadFee") as unknown
+    const expectedFee: unknown = isObject(badFee)
+      ? (Reflect.get(badFee, "expected_fee") as unknown)
+      : undefined
+    if (typeof expectedFee === "bigint") {
+      return `Deposit funding was rejected because the ledger fee changed (expected ${expectedFee.toString()})`
+    }
+    const badBurn = Reflect.get(rejected, "BadBurn") as unknown
+    const minimum: unknown = isObject(badBurn)
+      ? (Reflect.get(badBurn, "minimum") as unknown)
+      : undefined
+    if (typeof minimum === "bigint") {
+      return `Deposit funding was rejected because the amount is below the ledger minimum (${minimum.toString()})`
+    }
+  }
+  return `Bridge rejected deposit: ${stringify(error)}`
 }
 
 export function decodeNotifyWithdrawalReply(reply: Uint8Array): NotifyWithdrawalReceipt {

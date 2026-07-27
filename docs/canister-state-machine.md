@@ -4,7 +4,7 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、stable storageに依存しない決定的な状態遷移を定義する。`bridge-canister`はその状態を単一SQLite DBへ保存し、ICRC Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-Stable schema v22、record wire version v18だけを受理し、status APIもschema v22を返す。本番未デプロイのためmigration、dual-read、fallbackは持たない。旧schema、未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否し、開発・staging Canisterはreinstallする。
+Stable schema v23、record wire version v19だけを受理し、status APIもschema v23を返す。本番未デプロイのためmigration、dual-read、fallbackは持たない。旧schema、未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否し、開発・staging Canisterはreinstallする。
 
 install時の不変なruntime設定は`singleton_state.config`、rotation可能なGovernance principal、Pause principal、Fee Recipientは`singleton_state.admin_state`だけを永続的な正本とする。`get_public_config()`は両者を合成し、管理状態には常にrotation後の現在値を返す。
 
@@ -14,13 +14,13 @@ EVM transactionが`Submitted`になったときだけjobは`phase = confirmation
 
 ## Deposit（ICP → Base）
 
-Deposit IDはdomain-separated hashの`(caller, owner_sequence)`で決まり、同じsequenceの異なるpayloadは`DepositConflict`になる。受付時はfreshな既存cacheから確定できるfee・limit違反だけをrecord作成前に拒否する。それ以外は既存schemaへ`FundingPending` record、stable executor job、固定transfer identity、sequence、quotaを単一transactionで保存し、外部callを行わず即時に返す。quote、nonce、mint reserveはまだ予約せず、pull後にfresh snapshotと最新counterで再検証するため、受付後の失敗ではpullとrefund双方のLedger feeを負担し得る。
+Deposit IDはdomain-separated hashの`(caller, owner_sequence)`で決まり、同じsequenceの異なるpayloadは`DepositConflict`になる。受付時は正式Depositとは別のfunding attempt、固定transfer identity、quota reservationだけを保存し、同じupdate callでICRC-2 pullを行う。確定失敗では正式record、history、sequence、job、committed quotaを残さない。Success／Duplicateは`EscrowedUnquoted`へ、結果不明は`FundingReconciliationHold`へ原子的に昇格する。
 
 ```text
-FundingPending
-  ├─ Ledger成功 / Duplicate ─→ EscrowedUnquoted
-  ├─ Ledger確定的失敗 ──────→ Cancelled
-  └─ Ledger結果不明 ────────→ FundingReconciliationHold
+FundingAttempt
+  ├─ Ledger成功 / Duplicate ─→ EscrowedUnquoted（正式Deposit作成）
+  ├─ Ledger確定的失敗 ──────→ attempt削除（正式Depositなし）
+  └─ Ledger結果不明 ────────→ FundingReconciliationHold（正式Deposit作成）
                                   ├─ 成功証拠 ─→ EscrowedUnquoted
                                   └─ 完全な不存在証拠 ─→ Cancelled
 
@@ -40,8 +40,8 @@ MintReverted ── Governanceのrecover_mint_revert ─→ MintPending（replac
 ```
 
 1. UIはBase chain、Bridge runtime、CanisterのFinalized observation、現在のService Fee、ICRC Ledger残高・fee・allowanceを再検証する。allowanceが不足する場合は、gross amountとLedger feeを含む必要量をICRC-2 approveする。
-2. IC walletから`request_deposit`を呼ぶ。Canisterは`FundingPending` recordとjobを保存して即時に返す。
-3. leaseを取得したexecutorだけがpullを行う。成功またはDuplicateなら`EscrowedUnquoted`へ原子的に昇格し、確定的失敗は既存`Cancelled`へ進める。結果不明またはcallback消失は`FundingReconciliationHold`へ移し、成功証拠または完全な不存在証明なしに再送しない。
+2. IC walletから`request_deposit`を呼ぶ。Canisterは内部funding attemptを予約し、同じcallでICRC-2 pullを行う。
+3. 成功またはDuplicateなら`EscrowedUnquoted`へ原子的に昇格し、確定的失敗はattemptとreservationを削除する。結果不明は`FundingReconciliationHold`へ移し、callback消失は専用recovery scanが同一transfer identityを照合する。成功証拠または完全な不存在証明なしに別identityを送らない。
 4. `EscrowedUnquoted`でFinalized Base snapshot、local mint counter、reserve observation tokenを再検証する。成功時だけoptional quote、EVM operation、mint予約を原子的に保存する。freshな拒否は固定payloadのrefundへ進め、一時障害や不一致では返金しない。
 5. `MintPending` operationは`Queued → Prepared → Submitted`の順に進む。broadcast後のtransaction hashはcanonical recordとconfirmation jobへ保存され、UIはHistoryから取得する。
 6. receipt blockがFinalized headへ到達したら、認証済みIC walletから`confirm_deposit`を呼ぶ。Canisterはsettlement IDと保存済みtransaction hash、receipt block、観測Finalized blockを照合し、EVM RPCのquorumでcanonical Finalized receiptを再検証する。

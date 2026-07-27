@@ -29,6 +29,39 @@ pub enum SettlementJobKind {
     FeePayout,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SettlementLeaseLane {
+    Automatic,
+    PublicManual,
+    GovernanceRecovery,
+}
+
+impl SettlementLeaseLane {
+    pub(super) const fn sql(self) -> i64 {
+        match self {
+            Self::Automatic => 0,
+            Self::PublicManual => 1,
+            Self::GovernanceRecovery => 2,
+        }
+    }
+
+    pub(super) const fn capacity(self) -> u64 {
+        match self {
+            Self::Automatic | Self::PublicManual => 4,
+            Self::GovernanceRecovery => 1,
+        }
+    }
+
+    pub(super) fn from_sql(value: i64) -> Result<Self, StorageError> {
+        match value {
+            0 => Ok(Self::Automatic),
+            1 => Ok(Self::PublicManual),
+            2 => Ok(Self::GovernanceRecovery),
+            _ => Err(StorageError::DecodeFailed),
+        }
+    }
+}
+
 impl SettlementJobKind {
     pub(super) const fn sql(self) -> i64 {
         match self {

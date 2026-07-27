@@ -3,7 +3,6 @@ use candid::{CandidType, Deserialize};
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DepositPhase {
-    FundingPending,
     EscrowedUnquoted,
     MintPending,
     Minted,
@@ -19,7 +18,9 @@ pub enum DepositPhase {
 impl From<&DepositState> for DepositPhase {
     fn from(state: &DepositState) -> Self {
         match state {
-            DepositState::FundingPending => Self::FundingPending,
+            DepositState::FundingPending => {
+                unreachable!("funding attempts are not public deposit records")
+            }
             DepositState::EscrowedUnquoted { .. } => Self::EscrowedUnquoted,
             DepositState::MintPending { .. } => Self::MintPending,
             DepositState::Minted { .. } => Self::Minted,
@@ -66,8 +67,10 @@ mod tests {
     #[test]
     fn public_phase_variants_are_stable() {
         assert_eq!(
-            DepositPhase::from(&DepositState::FundingPending),
-            DepositPhase::FundingPending
+            DepositPhase::from(&DepositState::EscrowedUnquoted {
+                ledger_block_index: 1,
+            }),
+            DepositPhase::EscrowedUnquoted
         );
         assert_eq!(
             WithdrawalPhase::from(&WithdrawalState::Observed),

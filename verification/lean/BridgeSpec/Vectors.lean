@@ -139,6 +139,38 @@ def manualClaimCase
     field "allowed"
       (boolJson (manualClaimAllowed confirmation scheduled active stopped overdue expired)) ++ "}"
 
+def notificationAdmissionCase
+    (callerCount hashCount callerLimit hashLimit : Nat) : String :=
+  "{" ++ natField "caller_count" callerCount ++ "," ++
+    natField "hash_count" hashCount ++ "," ++ natField "caller_limit" callerLimit ++ "," ++
+    natField "hash_limit" hashLimit ++ "," ++
+    field "allowed"
+      (boolJson (notificationAdmissionAllowed callerCount hashCount callerLimit hashLimit)) ++ "}"
+
+def leaseLaneDecisionName : LeaseLaneClaimDecision → String
+  | .allow => "allow"
+  | .automaticProgressPending => "automatic-progress-pending"
+  | .busy => "busy"
+
+def leaseLaneCase
+    (targetActive targetAutomatic : Bool) (activeInLane capacity : Nat) : String :=
+  let decision :=
+    decideLeaseLaneClaim targetActive targetAutomatic activeInLane capacity
+  "{" ++ field "target_active" (boolJson targetActive) ++ "," ++
+    field "target_automatic" (boolJson targetAutomatic) ++ "," ++
+    natField "active_in_lane" activeInLane ++ "," ++ natField "capacity" capacity ++ "," ++
+    stringField "decision" (leaseLaneDecisionName decision) ++ "}"
+
+def fundingDecisionName : FundingAttemptDecision → String
+  | .promoteSuccess => "promote-success"
+  | .promoteAmbiguous => "promote-ambiguous"
+  | .release => "release"
+  | .retain => "retain"
+
+def fundingAttemptCase (outcomeKind : Nat) (outcome : FundingOutcomeKind) : String :=
+  "{" ++ natField "outcome_kind" outcomeKind ++ "," ++
+    stringField "decision" (fundingDecisionName (decideFundingAttempt outcome)) ++ "}"
+
 def decisionName : WithdrawalFinalizationDecision → String
   | .retry => "retry"
   | .notify => "notify"
@@ -222,6 +254,22 @@ def document : String :=
     manualClaimCase false false true false false true,
     manualClaimCase false false false true false false,
     manualClaimCase false false false false false false]
+  let notificationAdmissions := [
+    notificationAdmissionCase 0 0 6 3,
+    notificationAdmissionCase 5 2 6 3,
+    notificationAdmissionCase 6 0 6 3,
+    notificationAdmissionCase 0 3 6 3]
+  let leaseLanes := [
+    leaseLaneCase false false 0 4,
+    leaseLaneCase false false 4 4,
+    leaseLaneCase true true 0 4,
+    leaseLaneCase true false 0 4]
+  let fundingAttempts := [
+    fundingAttemptCase 0 .success,
+    fundingAttemptCase 1 .duplicate,
+    fundingAttemptCase 2 .ambiguous,
+    fundingAttemptCase 3 .definitiveFailure,
+    fundingAttemptCase 4 .retryableFailure]
   let finalizations := [finalizationCase true 10 none, finalizationCase false 10 none,
     finalizationCase true 10 (some 9), finalizationCase false 10 (some 9),
     finalizationCase true 10 (some 10), finalizationCase false 10 (some 10)]
@@ -238,6 +286,9 @@ def document : String :=
     jsonSection "fee_payout" feePayouts ++ "," ++
     jsonSection "hold" holds ++ "," ++ jsonSection "lease" leases ++ "," ++
     jsonSection "manual_claim" manualClaims ++ "," ++
+    jsonSection "notification_admission" notificationAdmissions ++ "," ++
+    jsonSection "lease_lane" leaseLanes ++ "," ++
+    jsonSection "funding_attempt" fundingAttempts ++ "," ++
     jsonSection "finalization" finalizations ++ "," ++ jsonSection "queue" queues ++ "," ++
     jsonSection "canonical_probe" probes ++ "}\n"
 

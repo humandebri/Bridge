@@ -192,12 +192,16 @@ impl BridgeInitArgs {
             );
         }
         #[cfg(not(feature = "test-deployment"))]
-        if self.custom_evm_rpc_urls.len() != 3 {
-            return Err("production custom EVM RPC must configure exactly three providers");
+        if !self.custom_evm_rpc_urls.is_empty() {
+            return Err("production builds use the built-in Base mainnet EVM RPC providers");
         }
         #[cfg(feature = "test-deployment")]
-        if !self.custom_evm_rpc_urls.is_empty() && self.custom_evm_rpc_urls.len() != 3 {
-            return Err("custom EVM RPC must configure exactly three providers");
+        if (self.custom_evm_rpc_urls.is_empty() && self.base_chain_id != BASE_MAINNET_CHAIN_ID)
+            || (!self.custom_evm_rpc_urls.is_empty() && self.custom_evm_rpc_urls.len() != 3)
+        {
+            return Err(
+                "test deployments require built-in Base mainnet or exactly three custom providers",
+            );
         }
         let rpc_hosts = self
             .custom_evm_rpc_urls
@@ -532,11 +536,7 @@ mod tests {
             ledger_canister_id: kinic_ledger_canister_id(),
             index_canister_id: kinic_index_canister_id(),
             evm_rpc_canister_id: official_evm_rpc_canister_id(),
-            custom_evm_rpc_urls: vec![
-                "https://one.example".into(),
-                "https://two.example".into(),
-                "https://three.example".into(),
-            ],
+            custom_evm_rpc_urls: vec![],
             base_chain_id: BASE_MAINNET_CHAIN_ID,
             bridge_contract: vec![1; 20],
             timelock_contract: vec![2; 20],
@@ -584,10 +584,15 @@ mod tests {
         args.evm_rpc_canister_id = Principal::management_canister();
         assert!(args.validate().is_err());
         args = valid_args();
-        args.custom_evm_rpc_urls.clear();
+        args.custom_evm_rpc_urls = vec![
+            "https://one.example".into(),
+            "https://two.example".into(),
+            "https://three.example".into(),
+        ];
         assert!(args.validate().is_err());
     }
 
+    #[cfg(feature = "test-deployment")]
     #[test]
     fn custom_rpc_urls_must_be_distinct_credential_free_https() {
         let valid = vec![
@@ -677,6 +682,12 @@ mod tests {
         args.ledger_canister_id = Principal::anonymous();
         args.index_canister_id = Principal::management_canister();
         args.evm_rpc_canister_id = Principal::management_canister();
+        assert!(args.validate().is_err());
+        args.custom_evm_rpc_urls = vec![
+            "https://one.example".into(),
+            "https://two.example".into(),
+            "https://three.example".into(),
+        ];
         assert_eq!(args.validate(), Ok(()));
     }
 }

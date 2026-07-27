@@ -1,10 +1,10 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Deposit受付とLedger pullをstable executorで分離する
 
-`request_deposit`は外部callを行わない。TTL内かつminimum finalized height以上のcached Base snapshotが既にある場合だけ、共有admission decisionでpause、Service Fee、ユーザー上限、Per-Deposit Limit、現在のMint Throughput Limitをpreflightし、確定的な違反を既存`DepositError`でrecord作成前に拒否する。cacheなし、stale cache、reserve観測不足は早期拒否理由にしない。
+このADRは、無資金intentによるadmission DoSを解消するschema v23のfunding-attempt方式により置き換えられた。
 
 preflight通過はquoteやmint reserveの確約ではない。Canisterは既存schemaへ`FundingPending` record、stable executor job、固定transfer identity、sequence、quotaを単一transactionで保存して即時に返す。Ledger pullはjob leaseを取得したexecutorだけが行う。pull成功またはDuplicateを確定した場合だけ`EscrowedUnquoted`へ昇格し、fresh Finalized Base snapshot、最新counter、reserve tokenに対するpause、Service Fee、Per-Deposit Limit、Mint Throughput Limit、reserveを再検証する。
 

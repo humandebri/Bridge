@@ -1,6 +1,6 @@
 import type { DepositPhase, SettlementActionResult, SettlementState, WithdrawalPhase } from "@/generated/bridge.did"
 
-const depositNames = ["FundingPending", "EscrowedUnquoted", "MintPending", "Minted", "MintReverted", "FundingReconciliationHold", "RefundPending", "RefundReconciliationHold", "RefundRecoveryRequired", "Refunded", "Cancelled"] as const
+const depositNames = ["EscrowedUnquoted", "MintPending", "Minted", "MintReverted", "FundingReconciliationHold", "RefundPending", "RefundReconciliationHold", "RefundRecoveryRequired", "Refunded", "Cancelled"] as const
 const withdrawalNames = ["Observed", "ReleasePending", "Paid", "ReconciliationHold"] as const
 
 function variantName(value: unknown, allowed: readonly string[]): string | undefined {
@@ -23,7 +23,6 @@ export function depositPhaseName(phase: DepositPhase): string {
   const name = variantName(phase, depositNames)
   if (!name) throw new Error("Invalid deposit phase")
   const labels: Record<(typeof depositNames)[number], string> = {
-    FundingPending: "Scheduled",
     EscrowedUnquoted: "Checking Base",
     MintPending: "Processing",
     Minted: "Complete",

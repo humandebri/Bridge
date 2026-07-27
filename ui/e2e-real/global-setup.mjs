@@ -179,7 +179,11 @@ async function setup() {
       ledger_canister_id: ledgerId,
       index_canister_id: indexId,
       evm_rpc_canister_id: mock.canisterId,
-      custom_evm_rpc_urls: [],
+      custom_evm_rpc_urls: [
+        "https://one.example",
+        "https://two.example",
+        "https://three.example",
+      ],
       base_chain_id: 31_337n,
       bridge_contract: hexToBytes(bridgeAddress),
       timelock_contract: hexToBytes(timelockAddress),

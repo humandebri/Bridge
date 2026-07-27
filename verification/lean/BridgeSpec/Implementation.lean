@@ -93,6 +93,18 @@ def manualClaimImpl
     (confirmation scheduled active stopped overdue expired : Bool) : Bool :=
   manualClaimAllowed confirmation scheduled active stopped overdue expired
 
+def notificationAdmissionImpl
+    (callerCount hashCount callerLimit hashLimit : U64) : Bool :=
+  notificationAdmissionAllowed callerCount.val hashCount.val callerLimit.val hashLimit.val
+
+def leaseLaneClaimImpl
+    (targetActive targetAutomatic : Bool) (activeInLane capacity : U64) :
+    LeaseLaneClaimDecision :=
+  decideLeaseLaneClaim targetActive targetAutomatic activeInLane.val capacity.val
+
+def fundingAttemptImpl (outcome : FundingOutcomeKind) : FundingAttemptDecision :=
+  decideFundingAttempt outcome
+
 def finalizationImpl
     (receiptSucceeded : Bool) (receiptBlock : U64) (finalizedBlock : Option U64) :
     WithdrawalFinalizationDecision :=

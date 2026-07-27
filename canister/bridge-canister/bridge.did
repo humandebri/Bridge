@@ -225,6 +225,7 @@ type DepositArgs = record {
 };
 type DepositError = variant {
   Busy;
+  FundingRejected : FundingFailure;
   BaseObservationUnavailable;
   SequenceMismatch : record { expected : nat64 };
   ReserveUnavailable;
@@ -234,6 +235,7 @@ type DepositError = variant {
   InvalidRequest : text;
   DepositConflict;
   StorageFailure;
+  FundingUnavailable : record { retry_after_seconds : nat64 };
 };
 type DepositIdPage = record {
   history_truncated : bool;
@@ -245,7 +247,6 @@ type DepositPhase = variant {
   MintPending;
   Refunded;
   FundingReconciliationHold;
-  FundingPending;
   MintReverted;
   EscrowedUnquoted;
   RefundReconciliationHold;
@@ -323,6 +324,12 @@ type FeePayoutState = variant {
   Pending;
 };
 type FeeRecipientConfig = record { owner : principal; subaccount : blob };
+type FundingFailure = variant {
+  InsufficientAllowance : record { allowance : nat };
+  BadBurn : record { minimum : nat };
+  BadFee : record { expected_fee : nat };
+  InsufficientFunds : record { balance : nat };
+};
 type GetWithdrawalsError = variant { TooManyIds };
 type Icrc10SupportedStandard = record { url : text; name : text };
 type Icrc21ConsentInfo = record {

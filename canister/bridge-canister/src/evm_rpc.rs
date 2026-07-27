@@ -353,8 +353,9 @@ async fn eth_call_at_observation(
     match client(args)
         .multi_request(request)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(value)) => Ok(value),
         MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
@@ -631,8 +632,9 @@ async fn bridge_runtime_at_observation(
     let value = match client(args)
         .multi_request(request)
         .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(value)) => value,
         MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
@@ -714,8 +716,9 @@ async fn observed_chain_id(args: &BridgeInitArgs) -> Result<u64, ObservationErro
     let value = match client(args)
         .multi_request(request)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(value)) => value,
         MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
@@ -751,8 +754,9 @@ async fn finalized_block(args: &BridgeInitArgs) -> Result<Block, ObservationErro
     match client(args)
         .get_block_by_number(BlockTag::Finalized)
         .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(block)) => Ok(block),
         MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
@@ -784,8 +788,9 @@ async fn canonical_finalized_receipt(
     let receipt = match client(args)
         .get_transaction_receipt(hash.clone())
         .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(receipt)) => receipt,
         MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
@@ -818,8 +823,9 @@ async fn canonical_finalized_receipt(
     let probe_value = match client(args)
         .multi_request(probe)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(value)) => value,
         MultiRpcResult::Consistent(Err(error)) => return Err(canonical_probe_error(error)),
@@ -866,8 +872,9 @@ pub async fn transaction_count(
             block: BlockTag::Pending,
         })
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(value)) => {
             u64::try_from(value).map_err(|_| ObservationError::Overflow)
@@ -886,8 +893,9 @@ pub async fn signer_eth_balance(
     match client(args)
         .multi_request(request)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(value)) => parse_u128(&value),
         MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
@@ -910,8 +918,9 @@ pub async fn signer_eth_balance_at(
     match client(args)
         .multi_request(request)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(value)) => parse_u128(&value),
         MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
@@ -962,8 +971,9 @@ pub async fn transaction_known(
     match client(args)
         .multi_request(request)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
+        .map_err(|_| ObservationError::Rpc)?
     {
         MultiRpcResult::Consistent(Ok(value)) => {
             transaction_response_matches_hash(&value, transaction_hash)
@@ -1004,16 +1014,17 @@ pub async fn broadcast(
     args: &BridgeInitArgs,
     raw: &[u8],
 ) -> Result<BroadcastOutcome, ObservationError> {
-    let finalized = finalized_observation(args).await?;
     let transaction_hash = signed_transaction_hash(raw);
     let raw =
         Hex::from_str(&format!("0x{}", hex(raw))).map_err(|_| ObservationError::InvalidResponse)?;
-    match client(args)
+    let broadcast_result = client(args)
         .send_raw_transaction(raw)
         .with_response_size_estimate(SEND_RESPONSE_BYTES)
-        .send()
+        .try_send()
         .await
-    {
+        .map_err(|_| ObservationError::Rpc)?;
+    let finalized = finalized_observation(args).await?;
+    match broadcast_result {
         MultiRpcResult::Consistent(Ok(status))
             if send_status_tracks_local_hash(&status, transaction_hash) =>
         {

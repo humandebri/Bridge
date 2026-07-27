@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 22;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 23;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -1237,11 +1237,20 @@ fn render_release_inputs(
     validate_profile(&profile, production)?;
     let profile_file_sha256 = hex(&Sha256::digest(&profile_bytes));
     let profile_canonical_sha256 = hex(&canonical_sha256(&profile)?);
-    let rpc_url_value = Value::Array(
+    let canister_rpc_urls = if production {
+        Vec::new()
+    } else {
         profile
             .rpc_providers
             .iter()
-            .map(|provider| Value::String(provider.url.trim().to_string()))
+            .map(|provider| provider.url.trim().to_string())
+            .collect::<Vec<_>>()
+    };
+    let rpc_url_value = Value::Array(
+        canister_rpc_urls
+            .iter()
+            .cloned()
+            .map(Value::String)
             .collect(),
     );
     let mut rpc_url_bytes = Vec::new();
@@ -1252,7 +1261,7 @@ fn render_release_inputs(
         "ledger_canister_id": profile.ledger_canister_id,
         "index_canister_id": profile.index_canister_id,
         "evm_rpc_canister_id": profile.evm_rpc_canister_id,
-        "custom_evm_rpc_urls": profile.rpc_providers.iter().map(|p| p.url.clone()).collect::<Vec<_>>(),
+        "custom_evm_rpc_urls": canister_rpc_urls,
         "base_chain_id": profile.chain_id,
         "bridge_contract_hex": contract_hex,
         "timelock_contract_hex": profile.timelock.address.trim_start_matches("0x"),
@@ -3065,6 +3074,7 @@ mod tests {
         );
         let canister: Value = read_json(&first.join("canister-init.json")).unwrap();
         assert_eq!(canister["evm_rpc_canister_id"], OFFICIAL_EVM_RPC_CANISTER);
+        assert_eq!(canister["custom_evm_rpc_urls"], serde_json::json!([]));
         assert_eq!(
             canister["evm_liveness"]["replacement_after_seconds"],
             valid_profile().evm_liveness.replacement_after_seconds
@@ -3118,12 +3128,7 @@ mod tests {
         assert_eq!(ui["evmRpcCanisterId"], OFFICIAL_EVM_RPC_CANISTER);
         assert_eq!(
             ui["rpcProviderUrlsSha256"],
-            format!(
-                "0x{}",
-                hex(&Sha256::digest(
-                    br#"["https://prod-one.example/base-mainnet","https://prod-two.example/base-mainnet","https://prod-three.example/base-mainnet"]"#
-                ))
-            )
+            format!("0x{}", hex(&Sha256::digest(b"[]")))
         );
         fs::remove_dir_all(root).unwrap();
     }

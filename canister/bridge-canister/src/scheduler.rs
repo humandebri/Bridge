@@ -1,4 +1,6 @@
 #[cfg(target_arch = "wasm32")]
+use crate::storage::DepositFundingAttemptState;
+#[cfg(target_arch = "wasm32")]
 use crate::storage::SettlementJobClaim;
 use crate::{
     storage::{ConfirmationSchedulerHealth, SettlementJob, SettlementJobKind},
@@ -16,6 +18,15 @@ const BUSY_RETRY_NS: u64 = 60 * 1_000_000_000;
 const MAX_TRANSIENT_RETRY_NS: u64 = 15 * 60 * 1_000_000_000;
 #[cfg(target_arch = "wasm32")]
 const MAX_AUTOMATIC_SETTLEMENTS: u64 = 4;
+#[cfg(target_arch = "wasm32")]
+const FUNDING_RECOVERY_INTERVAL_SECONDS: u64 = 30;
+#[cfg(any(target_arch = "wasm32", test))]
+const LEDGER_DEDUP_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn funding_absence_releasable(created_at_time_ns: u64, now_ns: u64) -> bool {
+    now_ns.saturating_sub(created_at_time_ns) >= LEDGER_DEDUP_NS
+}
 
 fn transient_retry_delay_ns(base_seconds: u64, attempts: u8) -> u64 {
     let multiplier = 1u64 << attempts.min(4);
@@ -130,6 +141,195 @@ impl SettlementLease {
 thread_local! {
     static SETTLEMENT_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
     static BASE_GOVERNANCE_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
+    static FUNDING_RECOVERY_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn arm_funding_recovery() {
+    #[cfg(target_arch = "wasm32")]
+    FUNDING_RECOVERY_TIMER.with(|slot| {
+        if slot.borrow().is_some()
+            || !STORE.with(|store| store.borrow().has_deposit_funding_attempts())
+        {
+            return;
+        }
+        let timer = ic_cdk_timers::set_timer(
+            Duration::from_secs(FUNDING_RECOVERY_INTERVAL_SECONDS),
+            async {
+                FUNDING_RECOVERY_TIMER.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+                recover_one_funding_attempt().await;
+                arm_funding_recovery();
+            },
+        );
+        *slot.borrow_mut() = Some(timer);
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn recover_one_funding_attempt() {
+    let now = ic_cdk::api::time();
+    let attempt = STORE.with(|store| {
+        store
+            .borrow()
+            .next_deposit_funding_attempt_for_recovery(now)
+    });
+    let Ok(Some(attempt)) = attempt else {
+        return;
+    };
+    let Ok(owner) = candid::Principal::try_from_slice(&attempt.intent.caller) else {
+        mark_fault("invalid funding-attempt owner");
+        return;
+    };
+    match &attempt.state {
+        DepositFundingAttemptState::Prepared | DepositFundingAttemptState::Retryable { .. } => {
+            if STORE
+                .with(|store| {
+                    store
+                        .borrow_mut()
+                        .remove_deposit_funding_attempt(owner, &attempt)
+                })
+                .is_err()
+            {
+                mark_fault("failed to prune a funding attempt");
+            }
+            return;
+        }
+        DepositFundingAttemptState::Dispatched { .. } => {}
+        DepositFundingAttemptState::Reconciling { .. } => {}
+    }
+
+    let current = match &attempt.state {
+        DepositFundingAttemptState::Dispatched { .. } => {
+            let mut next = attempt.clone();
+            next.state = DepositFundingAttemptState::Reconciling {
+                progress: Box::new(bridge_core::ReconciliationScanProgress::new(
+                    bridge_core::ReconciliationTarget::FundingAttempt(bridge_core::DepositId::new(
+                        attempt.intent.deposit_id,
+                    )),
+                    attempt.transfer.clone(),
+                )),
+                next_check_at_ns: now,
+            };
+            next.updated_at_ns = now;
+            if STORE
+                .with(|store| {
+                    store
+                        .borrow_mut()
+                        .update_deposit_funding_attempt(&attempt, &next)
+                })
+                .is_err()
+            {
+                mark_fault("failed to start funding reconciliation");
+                return;
+            }
+            next
+        }
+        DepositFundingAttemptState::Reconciling { .. } => attempt,
+        DepositFundingAttemptState::Prepared | DepositFundingAttemptState::Retryable { .. } => {
+            return
+        }
+    };
+    let DepositFundingAttemptState::Reconciling { progress, .. } = &current.state else {
+        return;
+    };
+    let config = STORE.with(|store| store.borrow().config()).ok().flatten();
+    let Some(config) = config else {
+        mark_fault("missing funding reconciliation config");
+        return;
+    };
+    match crate::ledger::reconcile_step(
+        config.ledger_canister_id,
+        config.index_canister_id,
+        progress.as_ref().clone(),
+    )
+    .await
+    {
+        crate::ledger::ReconciliationOutcome::Progress(progress) => {
+            let mut next = current.clone();
+            next.state = DepositFundingAttemptState::Reconciling {
+                progress,
+                next_check_at_ns: ic_cdk::api::time()
+                    .saturating_add(FUNDING_RECOVERY_INTERVAL_SECONDS * 1_000_000_000),
+            };
+            next.updated_at_ns = ic_cdk::api::time();
+            if STORE
+                .with(|store| {
+                    store
+                        .borrow_mut()
+                        .update_deposit_funding_attempt(&current, &next)
+                })
+                .is_err()
+            {
+                mark_fault("failed to persist funding reconciliation progress");
+            }
+        }
+        crate::ledger::ReconciliationOutcome::Succeeded { block_index } => {
+            if crate::api::promote_funding_success(&current, block_index, &config).is_err() {
+                mark_fault("failed to promote reconciled funding");
+            } else {
+                arm();
+            }
+        }
+        crate::ledger::ReconciliationOutcome::Absent { .. } => {
+            let now = ic_cdk::api::time();
+            if funding_absence_releasable(current.transfer.created_at_time_ns, now) {
+                if STORE
+                    .with(|store| {
+                        store
+                            .borrow_mut()
+                            .remove_deposit_funding_attempt(owner, &current)
+                    })
+                    .is_err()
+                {
+                    mark_fault("failed to release absent funding attempt");
+                }
+            } else {
+                let mut next = current.clone();
+                let DepositFundingAttemptState::Reconciling { progress, .. } = &current.state
+                else {
+                    return;
+                };
+                next.state = DepositFundingAttemptState::Reconciling {
+                    progress: progress.clone(),
+                    next_check_at_ns: current
+                        .transfer
+                        .created_at_time_ns
+                        .saturating_add(LEDGER_DEDUP_NS),
+                };
+                next.updated_at_ns = now;
+                if STORE
+                    .with(|store| {
+                        store
+                            .borrow_mut()
+                            .update_deposit_funding_attempt(&current, &next)
+                    })
+                    .is_err()
+                {
+                    mark_fault("failed to defer funding absence resolution");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod funding_recovery_tests {
+    use super::{funding_absence_releasable, LEDGER_DEDUP_NS};
+
+    #[test]
+    fn absence_only_releases_after_the_full_dedup_window() {
+        let created_at = 17;
+        assert!(!funding_absence_releasable(
+            created_at,
+            created_at + LEDGER_DEDUP_NS - 1
+        ));
+        assert!(funding_absence_releasable(
+            created_at,
+            created_at + LEDGER_DEDUP_NS
+        ));
+        assert!(!funding_absence_releasable(created_at, created_at - 1));
+    }
 }
 
 pub fn arm_base_governance(caller: candid::Principal) {
@@ -157,8 +357,8 @@ pub fn arm_base_governance(caller: candid::Principal) {
             BASE_GOVERNANCE_TIMER.with(|slot| {
                 slot.borrow_mut().take();
             });
+            arm_base_governance(caller);
             let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
-                arm_base_governance(caller);
                 return;
             };
             let effective_caller = STORE.with(|store| {
@@ -169,7 +369,6 @@ pub fn arm_base_governance(caller: candid::Principal) {
                     .unwrap_or(caller)
             });
             let _ = crate::base_governance::process_emergency(effective_caller).await;
-            arm_base_governance(caller);
         });
         *slot.borrow_mut() = Some(timer);
     });

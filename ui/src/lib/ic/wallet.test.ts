@@ -21,6 +21,21 @@ describe("OISY deposit reply decoding", () => {
     expect(() => decodeDepositReply(reply)).toThrow("Bridge rejected deposit")
     expect(() => decodeDepositReply(reply)).toThrow("42")
   })
+
+  it("decodes typed funding rejection and retry guidance", () => {
+    const rejected = new Uint8Array(IDL.encode(
+      [resultType("request_deposit")],
+      [{ Err: { FundingRejected: { InsufficientAllowance: { allowance: 7n } } } }],
+    ))
+    const unavailable = new Uint8Array(IDL.encode(
+      [resultType("request_deposit")],
+      [{ Err: { FundingUnavailable: { retry_after_seconds: 30n } } }],
+    ))
+
+    expect(() => decodeDepositReply(rejected)).toThrow("allowance is insufficient")
+    expect(() => decodeDepositReply(rejected)).toThrow("current 7")
+    expect(() => decodeDepositReply(unavailable)).toThrow("Retry the same deposit in 30 seconds")
+  })
 })
 
 describe("OISY popup lifecycle", () => {

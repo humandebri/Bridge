@@ -347,6 +347,9 @@ fn resolve_reconciliation_success(
                 "fee payout completion",
                 store.complete_fee_payout_success_and_scan(id, block_index, &scan_target),
             ),
+            ReconciliationTarget::FundingAttempt(_) => {
+                ic_cdk::trap("funding-attempt scans use the dedicated recovery lane")
+            }
         }
     });
 }
@@ -419,6 +422,9 @@ fn resolve_reconciliation_absence(
                 "failed fee payout persistence",
                 store.complete_fee_payout_failure_and_scan(id, &scan_target),
             ),
+            ReconciliationTarget::FundingAttempt(_) => {
+                ic_cdk::trap("funding-attempt scans use the dedicated recovery lane")
+            }
         }
     });
 }

@@ -5,7 +5,10 @@ mod settlement;
 mod transaction;
 mod validation;
 
-use admission::consume_deposit_quota;
+use admission::{
+    commit_deposit_funding_quota, consume_deposit_quota, release_deposit_funding_quota,
+    reserve_deposit_funding_quota,
+};
 pub use admission::{
     DepositAdmissionOutcome, DepositQuotaAdmission, DepositRecoveryAdmission,
     DepositReserveAdmission,
@@ -15,7 +18,8 @@ pub use schema::{RETIRED_STABLE_STRUCTURE_MEMORY_IDS, SCHEMA_VERSION, SQLITE_MEM
 use schema::{VALIDATION_TABLES, WIRE_VERSION};
 pub(crate) use settlement::{fee_payout_id_from_job, fee_payout_job_id};
 pub use settlement::{
-    ConfirmationSchedule, SettlementAdmissionError, SettlementJobKind, SettlementQuotaLimits,
+    ConfirmationSchedule, SettlementAdmissionError, SettlementJobKind, SettlementLeaseLane,
+    SettlementQuotaLimits,
 };
 use transaction::*;
 use validation::expect_row_shape;
@@ -27,7 +31,7 @@ use bridge_core::{
     BaseMintSnapshot, CoreError, DepositHoldResolution, DepositId, DepositRecord, EvmCallIntent,
     EvmOperationEvent, EvmOperationKind, EvmOperationRecord, EvmOperationState,
     EvmTransactionEnvelope, ExternalProgress, FeeKind, FinalizedObservationRecord, HoldId,
-    LedgerTransferIdentity, ReconciliationHoldRecord, ReconciliationHoldState,
+    LedgerFailure, LedgerTransferIdentity, ReconciliationHoldRecord, ReconciliationHoldState,
     ReconciliationScanProgress, ReconciliationTarget, WithdrawalEvent, WithdrawalHoldResolution,
     WithdrawalId, WithdrawalRecord, WithdrawalState,
 };
@@ -302,7 +306,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 22, 18);
+INSERT INTO bridge_metadata VALUES (1, 23, 19);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -325,6 +329,7 @@ CREATE TABLE table_counts (
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE deposits (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE deposit_funding_attempts (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE withdrawals (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE evm_operations (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE reconciliation_holds (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
@@ -360,6 +365,7 @@ CREATE TABLE settlement_jobs (
     confirmation_started_at_ns BLOB CHECK (confirmation_started_at_ns IS NULL OR length(confirmation_started_at_ns) = 8),
     lease_generation BLOB NOT NULL CHECK (length(lease_generation) = 8),
     lease_until_ns BLOB CHECK (lease_until_ns IS NULL OR length(lease_until_ns) = 8),
+    lease_lane INTEGER NOT NULL DEFAULT 0 CHECK (lease_lane IN (0, 1, 2)),
     last_error_code TEXT,
     last_error_detail TEXT,
     updated_at_ns BLOB NOT NULL CHECK (length(updated_at_ns) = 8),
@@ -393,6 +399,7 @@ INSERT INTO settlement_job_status_counts(status, count) VALUES
 
 INSERT INTO table_counts(name, count) VALUES
  ('deposits', X'0000000000000000'),
+ ('deposit_funding_attempts', X'0000000000000000'),
  ('withdrawals', X'0000000000000000'),
  ('evm_operations', X'0000000000000000'),
  ('reconciliation_holds', X'0000000000000000'),
@@ -456,6 +463,13 @@ fn reconciliation_scan_key(target: &ReconciliationTarget) -> [u8; 9] {
     let (tag, id) = match target {
         ReconciliationTarget::Hold(id) => (0, id.get()),
         ReconciliationTarget::FeePayout(id) => (1, *id),
+        ReconciliationTarget::FundingAttempt(id) => {
+            let digest: [u8; 32] = Sha256::digest(id.bytes()).into();
+            (
+                2,
+                u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 prefix")),
+            )
+        }
     };
     let mut key = [0; 9];
     key[0] = tag;
@@ -1049,7 +1063,7 @@ fn upsert_confirmation_schedule(
             next_run_at_ns=excluded.next_run_at_ns,
             confirmation_checks=excluded.confirmation_checks,
             confirmation_started_at_ns=excluded.confirmation_started_at_ns,
-            lease_until_ns=NULL, last_error_code=NULL, last_error_detail=NULL,
+            lease_until_ns=NULL, lease_lane=0, last_error_code=NULL, last_error_detail=NULL,
             updated_at_ns=excluded.updated_at_ns",
         params![
             kind.sql(),
@@ -1077,7 +1091,7 @@ fn enqueue_settlement_job(
          ON CONFLICT(settlement_kind, settlement_id) DO UPDATE SET
             operation_id=excluded.operation_id, phase=1, status=0,
             next_run_at_ns=excluded.next_run_at_ns, confirmation_checks=0,
-            confirmation_started_at_ns=NULL, lease_until_ns=NULL,
+            confirmation_started_at_ns=NULL, lease_until_ns=NULL, lease_lane=0,
             last_error_code=NULL, last_error_detail=NULL,
             updated_at_ns=excluded.updated_at_ns";
     match operation_id {
@@ -1099,7 +1113,7 @@ fn enqueue_settlement_job(
              ON CONFLICT(settlement_kind, settlement_id) DO UPDATE SET
                 operation_id=NULL, phase=1, status=0,
                 next_run_at_ns=excluded.next_run_at_ns, confirmation_checks=0,
-                confirmation_started_at_ns=NULL, lease_until_ns=NULL,
+                confirmation_started_at_ns=NULL, lease_until_ns=NULL, lease_lane=0,
                 last_error_code=NULL, last_error_detail=NULL,
                 updated_at_ns=excluded.updated_at_ns",
             params![
@@ -1155,6 +1169,12 @@ pub struct DepositCallerQuota {
     pub count: u16,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepositFundingReservation {
+    pub deposit_id: [u8; 32],
+    pub caller: Vec<u8>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedBaseMintSnapshot {
     pub generation: u64,
@@ -1169,6 +1189,7 @@ pub struct DepositAdmissionControl {
     pub window_id: u64,
     pub global_count: u16,
     pub caller_counts: Vec<DepositCallerQuota>,
+    pub funding_reservations: Vec<DepositFundingReservation>,
     pub signer_address: Option<[u8; 20]>,
     pub signer_public_key: Option<Vec<u8>>,
     pub governance_operator_address: Option<[u8; 20]>,
@@ -1320,6 +1341,7 @@ pub struct SettlementJob {
     pub confirmation_started_at_ns: Option<u64>,
     pub lease_generation: u64,
     pub lease_until_ns: Option<u64>,
+    pub lease_lane: SettlementLeaseLane,
     pub last_error_code: Option<String>,
     pub last_error_detail: Option<String>,
     pub updated_at_ns: u64,
@@ -1374,7 +1396,7 @@ pub enum ManualSettlementClaim {
 }
 
 enum ManualClaimTransaction {
-    Claimed(StableBlob),
+    Claimed,
     AutomaticProgressPending(Option<u64>),
     Busy,
     RateLimited(u64),
@@ -1687,6 +1709,33 @@ pub struct DepositIntent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DepositFundingAttemptState {
+    Prepared,
+    Dispatched {
+        dispatched_at_ns: u64,
+    },
+    Retryable {
+        retry_after_ns: u64,
+    },
+    Reconciling {
+        progress: Box<ReconciliationScanProgress>,
+        next_check_at_ns: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepositFundingAttempt {
+    pub intent: DepositIntent,
+    pub gross_amount: u128,
+    pub max_service_fee: u128,
+    pub transfer: LedgerTransferIdentity,
+    pub state: DepositFundingAttemptState,
+    pub created_at_ns: u64,
+    pub updated_at_ns: u64,
+    pub last_failure: Option<LedgerFailure>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredDeposit {
     record: DepositRecord,
     owner_sequence: u64,
@@ -1848,6 +1897,7 @@ pub struct StableStore {
     handle: RevisionedHandle,
     accounting: SqlCell<StableBlob>,
     deposits: SqlMap<[u8; 32], StableBlob>,
+    deposit_funding_attempts: SqlMap<[u8; 32], StableBlob>,
     withdrawals: SqlMap<[u8; 32], StableBlob>,
     evm_operations: SqlMap<u64, StableBlob>,
     reconciliation_holds: SqlMap<u64, StableBlob>,
@@ -1937,6 +1987,27 @@ fn validate_storage_row(
                     .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
             }
         }
+        "deposit_funding_attempts" => {
+            let attempt: DepositFundingAttempt =
+                decode_with_context(value.to_vec(), "invalid deposit funding attempt")?;
+            if key != attempt.intent.deposit_id.to_sql_bytes()
+                || attempt.transfer.operation != bridge_core::LedgerOperation::PullDeposit
+            {
+                return Err(DbError::Constraint(
+                    "deposit funding attempt key mismatch".into(),
+                ));
+            }
+            if !attempt
+                .transfer
+                .from
+                .owner()
+                .eq(attempt.intent.caller.as_slice())
+            {
+                return Err(DbError::Constraint(
+                    "deposit funding attempt owner mismatch".into(),
+                ));
+            }
+        }
         "withdrawals" => {
             let record: WithdrawalRecord =
                 decode_with_context(value.to_vec(), "invalid withdrawal")?;
@@ -2017,6 +2088,11 @@ fn validate_storage_row(
                 ReconciliationTarget::FeePayout(id) => {
                     referenced_row_exists(connection, "fee_payouts", &id.to_sql_bytes())?
                 }
+                ReconciliationTarget::FundingAttempt(id) => referenced_row_exists(
+                    connection,
+                    "deposit_funding_attempts",
+                    &id.bytes().to_sql_bytes(),
+                )?,
             };
             if !target_exists {
                 return Err(DbError::Constraint("orphan reconciliation scan".into()));
@@ -2230,6 +2306,7 @@ impl StableStore {
             handle,
             accounting: SqlCell::load(handle, SingletonColumn::Accounting)?,
             deposits: SqlMap::new(handle, "deposits"),
+            deposit_funding_attempts: SqlMap::new(handle, "deposit_funding_attempts"),
             withdrawals: SqlMap::new(handle, "withdrawals"),
             evm_operations: SqlMap::new(handle, "evm_operations"),
             reconciliation_holds: SqlMap::new(handle, "reconciliation_holds"),
@@ -2739,6 +2816,7 @@ impl StableStore {
     fn validate_relations(&self) -> Result<(), StorageError> {
         const COUNTED_TABLES: &[&str] = &[
             "deposits",
+            "deposit_funding_attempts",
             "withdrawals",
             "evm_operations",
             "reconciliation_holds",
@@ -3205,7 +3283,8 @@ impl StableStore {
             now_ns,
             lease_until_ns,
             overdue_after_ns,
-            limits,
+            Some(limits),
+            SettlementLeaseLane::PublicManual,
             false,
         )
     }
@@ -3228,8 +3307,32 @@ impl StableStore {
             now_ns,
             lease_until_ns,
             overdue_after_ns,
-            limits,
+            Some(limits),
+            SettlementLeaseLane::PublicManual,
             true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_governance_settlement_job(
+        &mut self,
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
+        caller: Principal,
+        now_ns: u64,
+        lease_until_ns: u64,
+        overdue_after_ns: u64,
+    ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
+        self.claim_settlement_job_with_mode(
+            kind,
+            settlement_id,
+            caller,
+            now_ns,
+            lease_until_ns,
+            overdue_after_ns,
+            None,
+            SettlementLeaseLane::GovernanceRecovery,
+            false,
         )
     }
 
@@ -3242,7 +3345,8 @@ impl StableStore {
         now_ns: u64,
         lease_until_ns: u64,
         overdue_after_ns: u64,
-        limits: SettlementQuotaLimits,
+        limits: Option<SettlementQuotaLimits>,
+        lane: SettlementLeaseLane,
         explicit_confirmation: bool,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
         let admission_blob = self
@@ -3285,22 +3389,9 @@ impl StableStore {
         let outcome = self
             .handle
             .update(|connection| {
-                let active = connection.query_all(
-                    "SELECT settlement_kind, settlement_id, lease_until_ns
-                     FROM settlement_jobs WHERE status = 1 AND lease_until_ns > ?1
-                     ORDER BY lease_until_ns LIMIT 1",
-                    params![now_ns.to_sql_bytes()],
-                    |row| Ok((row.get::<i64>(0)?, row.get::<Vec<u8>>(1)?, row.get::<Vec<u8>>(2)?)),
-                )?;
-                if let Some((active_kind, active_id, _)) = active.into_iter().next() {
-                    if active_kind == kind.sql() && active_id == settlement_id {
-                        return Ok(ManualClaimTransaction::AutomaticProgressPending(None));
-                    }
-                    return Ok(ManualClaimTransaction::Busy);
-                }
-
                 let target = connection.query_all(
-                    "SELECT status, phase, next_run_at_ns, lease_generation, lease_until_ns
+                    "SELECT status, phase, next_run_at_ns, lease_generation, lease_until_ns,
+                            lease_lane
                      FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2",
                     params![kind.sql(), settlement_id.to_sql_bytes()],
                     |row| Ok((
@@ -3309,9 +3400,10 @@ impl StableStore {
                         row.get::<Option<Vec<u8>>>(2)?,
                         row.get::<Vec<u8>>(3)?,
                         row.get::<Option<Vec<u8>>>(4)?,
+                        row.get::<i64>(5)?,
                     )),
                 )?;
-                if let Some((status, phase, next_raw, _, lease_raw)) = target.first() {
+                if let Some((status, phase, next_raw, _, lease_raw, active_lane)) = target.first() {
                     let next = next_raw
                         .clone()
                         .map(u64::from_sql_bytes)
@@ -3326,6 +3418,20 @@ impl StableStore {
                     let scheduled = *status == 0;
                     let active = *status == 1
                         && lease_until.is_some_and(|deadline| deadline > now_ns);
+                    match bridge_core::lease_lane_claim_decision(
+                        active,
+                        *active_lane == SettlementLeaseLane::Automatic.sql(),
+                        0,
+                        lane.capacity(),
+                    ) {
+                        bridge_core::LeaseLaneClaimDecision::AutomaticProgressPending => {
+                            return Ok(ManualClaimTransaction::AutomaticProgressPending(None));
+                        }
+                        bridge_core::LeaseLaneClaimDecision::Busy => {
+                            return Ok(ManualClaimTransaction::Busy);
+                        }
+                        bridge_core::LeaseLaneClaimDecision::Allow => {}
+                    }
                     let stopped = *status == 2;
                     let overdue = scheduled
                         && next.is_some_and(|deadline| {
@@ -3353,31 +3459,54 @@ impl StableStore {
                     }
                 }
 
-                let window_ns = limits.window_seconds.saturating_mul(1_000_000_000);
-                let window_id = now_ns / window_ns;
-                if admission.window_id != window_id {
-                    admission = SettlementAdmissionControl { window_id, ..Default::default() };
+                let active_in_lane = connection.query_scalar::<i64>(
+                    "SELECT COUNT(*) FROM settlement_jobs
+                     WHERE status = 1 AND lease_until_ns > ?1 AND lease_lane = ?2",
+                    params![now_ns.to_sql_bytes(), lane.sql()],
+                )?;
+                let active_in_lane = u64::try_from(active_in_lane)
+                    .map_err(|_| DbError::Constraint("invalid lane lease count".into()))?;
+                if matches!(
+                    bridge_core::lease_lane_claim_decision(
+                        false,
+                        false,
+                        active_in_lane,
+                        lane.capacity(),
+                    ),
+                    bridge_core::LeaseLaneClaimDecision::Busy
+                ) {
+                    return Ok(ManualClaimTransaction::Busy);
                 }
-                let caller_count = admission.caller_counts.iter().find(|entry| entry.caller == caller).map_or(0, |entry| entry.count);
-                let record_count = admission.record_counts.iter().find(|entry| entry.key == record_key).map_or(0, |entry| entry.count);
-                let retry_after_seconds = ((window_id + 1).saturating_mul(window_ns).saturating_sub(now_ns).saturating_add(999_999_999) / 1_000_000_000).max(1);
-                if admission.global_count >= limits.global || caller_count >= limits.per_principal || record_count >= limits.per_record {
-                    return Ok(ManualClaimTransaction::RateLimited(retry_after_seconds));
-                }
-                admission.global_count = admission.global_count.checked_add(1).ok_or_else(|| DbError::Constraint("settlement quota overflow".into()))?;
-                match admission.caller_counts.iter_mut().find(|entry| entry.caller == caller) {
-                    Some(entry) => entry.count = entry.count.checked_add(1).ok_or_else(|| DbError::Constraint("caller quota overflow".into()))?,
-                    None => admission.caller_counts.push(SettlementCallerQuota { caller, count: 1 }),
-                }
-                match admission.record_counts.iter_mut().find(|entry| entry.key == record_key) {
-                    Some(entry) => entry.count = entry.count.checked_add(1).ok_or_else(|| DbError::Constraint("record quota overflow".into()))?,
-                    None => admission.record_counts.push(SettlementRecordQuota { key: record_key.clone(), count: 1 }),
-                }
-                let admission_blob = encode(&admission).map_err(|_| DbError::Constraint("settlement quota encoding failed".into()))?;
+
+                let admission_blob = if let Some(limits) = limits {
+                    let window_ns = limits.window_seconds.saturating_mul(1_000_000_000);
+                    let window_id = now_ns / window_ns;
+                    if admission.window_id != window_id {
+                        admission = SettlementAdmissionControl { window_id, ..Default::default() };
+                    }
+                    let caller_count = admission.caller_counts.iter().find(|entry| entry.caller == caller).map_or(0, |entry| entry.count);
+                    let record_count = admission.record_counts.iter().find(|entry| entry.key == record_key).map_or(0, |entry| entry.count);
+                    let retry_after_seconds = ((window_id + 1).saturating_mul(window_ns).saturating_sub(now_ns).saturating_add(999_999_999) / 1_000_000_000).max(1);
+                    if admission.global_count >= limits.global || caller_count >= limits.per_principal || record_count >= limits.per_record {
+                        return Ok(ManualClaimTransaction::RateLimited(retry_after_seconds));
+                    }
+                    admission.global_count = admission.global_count.checked_add(1).ok_or_else(|| DbError::Constraint("settlement quota overflow".into()))?;
+                    match admission.caller_counts.iter_mut().find(|entry| entry.caller == caller) {
+                        Some(entry) => entry.count = entry.count.checked_add(1).ok_or_else(|| DbError::Constraint("caller quota overflow".into()))?,
+                        None => admission.caller_counts.push(SettlementCallerQuota { caller, count: 1 }),
+                    }
+                    match admission.record_counts.iter_mut().find(|entry| entry.key == record_key) {
+                        Some(entry) => entry.count = entry.count.checked_add(1).ok_or_else(|| DbError::Constraint("record quota overflow".into()))?,
+                        None => admission.record_counts.push(SettlementRecordQuota { key: record_key.clone(), count: 1 }),
+                    }
+                    Some(encode(&admission).map_err(|_| DbError::Constraint("settlement quota encoding failed".into()))?)
+                } else {
+                    None
+                };
 
                 let generation = target
                     .first()
-                    .map(|(_, _, _, raw, _)| u64::from_sql_bytes(raw.clone()))
+                    .map(|(_, _, _, raw, _, _)| u64::from_sql_bytes(raw.clone()))
                     .transpose()
                     .map_err(|_| DbError::Constraint("invalid lease generation".into()))?
                     .unwrap_or(0)
@@ -3388,31 +3517,35 @@ impl StableStore {
                         connection.execute(
                             "INSERT INTO settlement_jobs(settlement_kind, settlement_id, operation_id, phase,
                              status, next_run_at_ns, confirmation_checks, confirmation_started_at_ns,
-                             lease_generation, lease_until_ns, last_error_code, last_error_detail, updated_at_ns)
-                             VALUES(?1, ?2, ?3, 0, 1, NULL, 0, ?4, ?5, ?6, NULL, NULL, ?4)",
+                             lease_generation, lease_until_ns, lease_lane, last_error_code,
+                             last_error_detail, updated_at_ns)
+                             VALUES(?1, ?2, ?3, 0, 1, NULL, 0, ?4, ?5, ?6, ?7, NULL, NULL, ?4)",
                             params![kind.sql(), settlement_id.to_sql_bytes(), operation_id.to_sql_bytes(),
-                                now_ns.to_sql_bytes(), generation.to_sql_bytes(), lease_until_ns.to_sql_bytes()],
+                                now_ns.to_sql_bytes(), generation.to_sql_bytes(), lease_until_ns.to_sql_bytes(),
+                                lane.sql()],
                         )?;
                     } else {
                         connection.execute(
                             "INSERT INTO settlement_jobs(settlement_kind, settlement_id, operation_id, phase,
                              status, next_run_at_ns, confirmation_checks, confirmation_started_at_ns,
-                             lease_generation, lease_until_ns, last_error_code, last_error_detail, updated_at_ns)
-                             VALUES(?1, ?2, NULL, 1, 1, NULL, 0, NULL, ?3, ?4, NULL, NULL, ?5)",
+                             lease_generation, lease_until_ns, lease_lane, last_error_code,
+                             last_error_detail, updated_at_ns)
+                             VALUES(?1, ?2, NULL, 1, 1, NULL, 0, NULL, ?3, ?4, ?5, NULL, NULL, ?6)",
                             params![kind.sql(), settlement_id.to_sql_bytes(), generation.to_sql_bytes(),
-                                lease_until_ns.to_sql_bytes(), now_ns.to_sql_bytes()],
+                                lease_until_ns.to_sql_bytes(), lane.sql(), now_ns.to_sql_bytes()],
                         )?;
                     }
                 } else {
                     let reset_confirmation =
                         target
                             .first()
-                            .is_some_and(|(status, phase, _, _, _)| {
+                            .is_some_and(|(status, phase, _, _, _, _)| {
                         *status == 2 && *phase == 0
                     });
                     connection.execute(
                         "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
                          lease_generation = ?1, lease_until_ns = ?2,
+                         lease_lane = ?7,
                          confirmation_checks = CASE WHEN ?4 = 1 THEN 0 ELSE confirmation_checks END,
                          confirmation_started_at_ns = CASE WHEN ?4 = 1 THEN ?3 ELSE confirmation_started_at_ns END,
                          last_error_code = NULL, last_error_detail = NULL, updated_at_ns = ?3
@@ -3424,19 +3557,22 @@ impl StableStore {
                             i64::from(reset_confirmation),
                             kind.sql(),
                             settlement_id.to_sql_bytes(),
+                            lane.sql(),
                         ],
                     )?;
                 }
-                connection.execute(
-                    "UPDATE singleton_state SET settlement_admission = ?1 WHERE id = 1",
-                    params![admission_blob.to_sql_bytes()],
-                )?;
-                Ok(ManualClaimTransaction::Claimed(admission_blob))
+                if let Some(admission_blob) = admission_blob.as_ref() {
+                    connection.execute(
+                        "UPDATE singleton_state SET settlement_admission = ?1 WHERE id = 1",
+                        params![admission_blob.to_sql_bytes()],
+                    )?;
+                }
+                Ok(ManualClaimTransaction::Claimed)
             })
             .map_err(|_| SettlementAdmissionError::Storage)?;
 
         match outcome {
-            ManualClaimTransaction::Claimed(_admission_blob) => {
+            ManualClaimTransaction::Claimed => {
                 let job = self
                     .settlement_job(kind, settlement_id)
                     .map_err(|_| SettlementAdmissionError::Storage)?
@@ -3575,7 +3711,7 @@ impl StableStore {
             connection.query_all(
                 "SELECT operation_id, phase, status, next_run_at_ns, confirmation_checks,
                     confirmation_started_at_ns, lease_generation, lease_until_ns,
-                    last_error_code, last_error_detail, updated_at_ns
+                    lease_lane, last_error_code, last_error_detail, updated_at_ns
              FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2",
                 params![kind.sql(), settlement_id.to_sql_bytes()],
                 |row| {
@@ -3588,9 +3724,10 @@ impl StableStore {
                         row.get::<Option<Vec<u8>>>(5)?,
                         row.get::<Vec<u8>>(6)?,
                         row.get::<Option<Vec<u8>>>(7)?,
-                        row.get::<Option<String>>(8)?,
+                        row.get::<i64>(8)?,
                         row.get::<Option<String>>(9)?,
-                        row.get::<Vec<u8>>(10)?,
+                        row.get::<Option<String>>(10)?,
+                        row.get::<Vec<u8>>(11)?,
                     ))
                 },
             )
@@ -3604,6 +3741,7 @@ impl StableStore {
             started,
             generation,
             lease,
+            lease_lane,
             error_code,
             error_detail,
             updated,
@@ -3635,6 +3773,7 @@ impl StableStore {
                 .map(u64::from_sql_bytes)
                 .transpose()
                 .map_err(|_| StorageError::DecodeFailed)?,
+            lease_lane: SettlementLeaseLane::from_sql(lease_lane)?,
             last_error_code: error_code,
             last_error_detail: error_detail,
             updated_at_ns: u64::from_sql_bytes(updated).map_err(|_| StorageError::DecodeFailed)?,
@@ -3691,12 +3830,15 @@ impl StableStore {
                 ));
             }
             let active_leases = connection.query_scalar::<i64>(
-                "SELECT COUNT(*) FROM settlement_jobs WHERE status = 1 AND lease_until_ns > ?1",
+                "SELECT COUNT(*) FROM settlement_jobs
+                 WHERE status = 1 AND lease_until_ns > ?1 AND lease_lane = 0",
                 params![now_ns.to_sql_bytes()],
             )?;
             if u64::try_from(active_leases).map_err(|_| DbError::Constraint("invalid active lease count".into()))? >= max_active_leases {
                 let lease_until_ns = connection.query_scalar::<Vec<u8>>(
-                    "SELECT lease_until_ns FROM settlement_jobs WHERE status = 1 AND lease_until_ns > ?1 ORDER BY lease_until_ns LIMIT 1",
+                    "SELECT lease_until_ns FROM settlement_jobs
+                     WHERE status = 1 AND lease_until_ns > ?1 AND lease_lane = 0
+                     ORDER BY lease_until_ns LIMIT 1",
                     params![now_ns.to_sql_bytes()],
                 )?;
                 return Ok(SettlementJobClaim::ActiveLease {
@@ -3724,7 +3866,7 @@ impl StableStore {
             .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
             connection.execute(
                 "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
-                 lease_generation = ?1, lease_until_ns = ?2, updated_at_ns = ?3
+                 lease_generation = ?1, lease_until_ns = ?2, lease_lane = 0, updated_at_ns = ?3
                  WHERE settlement_kind = ?4 AND settlement_id = ?5",
                 params![generation.to_sql_bytes(), lease_until_ns.to_sql_bytes(), now_ns.to_sql_bytes(), kind.sql(), settlement_id.to_sql_bytes()],
             )?;
@@ -3736,6 +3878,7 @@ impl StableStore {
                 confirmation_checks: u8::try_from(checks).map_err(|_| DbError::Constraint("invalid confirmation count".into()))?,
                 confirmation_started_at_ns: started_raw.map(u64::from_sql_bytes).transpose().map_err(|_| DbError::Constraint("invalid confirmation start".into()))?,
                 lease_generation: generation, lease_until_ns: Some(lease_until_ns),
+                lease_lane: SettlementLeaseLane::Automatic,
                 last_error_code: None, last_error_detail: None, updated_at_ns: now_ns,
             }))
         }).map_err(Into::into)
@@ -3796,7 +3939,7 @@ impl StableStore {
                 .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
                 connection.execute(
                     "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
-                 lease_generation = ?1, lease_until_ns = ?2, updated_at_ns = ?3
+                 lease_generation = ?1, lease_until_ns = ?2, lease_lane = 0, updated_at_ns = ?3
                  WHERE settlement_kind = ?4 AND settlement_id = ?5",
                     params![
                         generation.to_sql_bytes(),
@@ -3828,6 +3971,7 @@ impl StableStore {
                         .map_err(|_| DbError::Constraint("invalid confirmation start".into()))?,
                     lease_generation: generation,
                     lease_until_ns: Some(lease_until_ns),
+                    lease_lane: SettlementLeaseLane::Automatic,
                     last_error_code: None,
                     last_error_detail: None,
                     updated_at_ns: now_ns,
@@ -3979,7 +4123,8 @@ impl StableStore {
             } else if let Some(next) = next_run_at_ns {
                 connection.execute(
                     "UPDATE settlement_jobs SET status = 0, next_run_at_ns = ?1, lease_until_ns = NULL,
-                     confirmation_checks = ?2, last_error_code = NULL, last_error_detail = NULL, updated_at_ns = ?3
+                     lease_lane = 0, confirmation_checks = ?2, last_error_code = NULL,
+                     last_error_detail = NULL, updated_at_ns = ?3
                      WHERE settlement_kind = ?4 AND settlement_id = ?5",
                     params![next.to_sql_bytes(), i64::from(confirmation_checks), now_ns.to_sql_bytes(), job.kind.sql(), job.settlement_id.to_sql_bytes()],
                 )
@@ -6170,6 +6315,207 @@ impl StableStore {
         Ok(())
     }
 
+    pub fn deposit_funding_attempt(
+        &self,
+        deposit_id: [u8; 32],
+    ) -> Result<Option<DepositFundingAttempt>, StorageError> {
+        self.deposit_funding_attempts
+            .get(&deposit_id)
+            .map(|blob| decode(&blob))
+            .transpose()
+    }
+
+    pub fn has_deposit_funding_attempts(&self) -> bool {
+        self.deposit_funding_attempts.len() != 0
+    }
+
+    pub fn next_deposit_funding_attempt_for_recovery(
+        &self,
+        now_ns: u64,
+    ) -> Result<Option<DepositFundingAttempt>, StorageError> {
+        let rows = self.handle.query(|connection| {
+            connection.query_all(
+                "SELECT value FROM deposit_funding_attempts ORDER BY key",
+                params![],
+                |row| row.get::<Vec<u8>>(0),
+            )
+        })?;
+        rows.into_iter()
+            .map(|bytes| decode::<DepositFundingAttempt>(&StableBlob::new(bytes)?))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|attempt| match &attempt.state {
+                DepositFundingAttemptState::Prepared
+                | DepositFundingAttemptState::Retryable { .. } => {
+                    now_ns >= attempt.updated_at_ns.saturating_add(120_000_000_000)
+                }
+                DepositFundingAttemptState::Dispatched { dispatched_at_ns } => {
+                    now_ns >= dispatched_at_ns.saturating_add(30_000_000_000)
+                }
+                DepositFundingAttemptState::Reconciling {
+                    next_check_at_ns, ..
+                } => now_ns >= *next_check_at_ns,
+            })
+            .min_by_key(|attempt| attempt.updated_at_ns)
+            .map_or(Ok(None), |attempt| Ok(Some(attempt)))
+    }
+
+    pub fn prepare_deposit_funding_attempt(
+        &mut self,
+        owner: Principal,
+        attempt: &DepositFundingAttempt,
+        quota: DepositQuotaAdmission,
+    ) -> Result<DepositAdmissionOutcome, StorageError> {
+        if self.deposit(attempt.intent.deposit_id)?.is_some() {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        if let Some(existing) = self.deposit_funding_attempt(attempt.intent.deposit_id)? {
+            if existing.intent.payload_hash == attempt.intent.payload_hash
+                && existing.intent == attempt.intent
+                && existing.transfer == attempt.transfer
+            {
+                return Ok(DepositAdmissionOutcome::Existing);
+            }
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        if attempt.intent.caller != owner.as_slice()
+            || attempt.transfer.from.owner() != owner.as_slice()
+            || attempt.transfer.from.subaccount() != attempt.intent.from_subaccount
+            || attempt.transfer.amount.get() != attempt.gross_amount
+            || attempt.transfer.operation != bridge_core::LedgerOperation::PullDeposit
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        let admin_blob = self.admin_state.get()?;
+        let admin =
+            decode::<Option<AdminState>>(&admin_blob)?.ok_or(StorageError::RecordNotFound)?;
+        if admin.deposits_paused {
+            return Err(StorageError::DepositsPaused);
+        }
+        let owner_sequence_key = owner_sequence_key(owner)?;
+        let expected_sequence = self
+            .owner_deposit_sequences
+            .get(&owner_sequence_key)
+            .unwrap_or(0);
+        if attempt.intent.owner_sequence != expected_sequence {
+            return Err(StorageError::SequenceMismatch {
+                expected: expected_sequence,
+            });
+        }
+        let previous_admission_blob = self.deposit_admission.get()?;
+        let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
+        reserve_deposit_funding_quota(&mut admission, owner, attempt.intent.deposit_id, quota)?;
+        let admission_blob = encode(&admission)?;
+        let attempt_blob = encode(attempt)?;
+        let key = attempt.intent.deposit_id.to_sql_bytes();
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT admin_state FROM singleton_state WHERE id = 1",
+                params![],
+                admin_blob.as_slice(),
+                "stale deposit funding admission",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_admission_blob.as_slice(),
+                "stale deposit funding admission",
+            )?;
+            if connection
+                .query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM deposits WHERE key = ?1",
+                    params![key.clone()],
+                )?
+                .is_some()
+                || connection
+                    .query_optional_scalar::<Vec<u8>>(
+                        "SELECT value FROM deposit_funding_attempts WHERE key = ?1",
+                        params![key.clone()],
+                    )?
+                    .is_some()
+            {
+                return Err(DbError::Constraint(
+                    "stale deposit funding admission".into(),
+                ));
+            }
+            insert_tracked_entry(
+                connection,
+                "deposit_funding_attempts",
+                key,
+                attempt_blob.to_sql_bytes(),
+            )?;
+            connection.execute(
+                "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                params![admission_blob.to_sql_bytes()],
+            )
+        })?;
+        Ok(DepositAdmissionOutcome::Inserted)
+    }
+
+    pub fn update_deposit_funding_attempt(
+        &mut self,
+        previous: &DepositFundingAttempt,
+        next: &DepositFundingAttempt,
+    ) -> Result<(), StorageError> {
+        if previous.intent != next.intent || previous.transfer != next.transfer {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        let key = previous.intent.deposit_id.to_sql_bytes();
+        let previous_blob = encode(previous)?;
+        let next_blob = encode(next)?;
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT value FROM deposit_funding_attempts WHERE key = ?1",
+                params![key.clone()],
+                previous_blob.as_slice(),
+                "stale deposit funding attempt",
+            )?;
+            connection.execute(
+                "UPDATE deposit_funding_attempts SET value = ?1 WHERE key = ?2",
+                params![next_blob.to_sql_bytes(), key],
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn remove_deposit_funding_attempt(
+        &mut self,
+        owner: Principal,
+        attempt: &DepositFundingAttempt,
+    ) -> Result<(), StorageError> {
+        let previous_admission_blob = self.deposit_admission.get()?;
+        let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
+        release_deposit_funding_quota(&mut admission, owner, attempt.intent.deposit_id)?;
+        let admission_blob = encode(&admission)?;
+        let attempt_blob = encode(attempt)?;
+        let key = attempt.intent.deposit_id.to_sql_bytes();
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT value FROM deposit_funding_attempts WHERE key = ?1",
+                params![key.clone()],
+                attempt_blob.as_slice(),
+                "stale deposit funding attempt",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_admission_blob.as_slice(),
+                "stale deposit funding reservation",
+            )?;
+            delete_tracked_entry(connection, "deposit_funding_attempts", key)?;
+            connection.execute(
+                "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                params![admission_blob.to_sql_bytes()],
+            )
+        })?;
+        Ok(())
+    }
+
     pub fn admit_deposit(
         &mut self,
         owner: Principal,
@@ -6177,6 +6523,7 @@ impl StableStore {
         record: &DepositRecord,
         reserve_admission: Option<DepositReserveAdmission>,
         quota_admission: Option<DepositQuotaAdmission>,
+        funding_promotion: Option<(&DepositFundingAttempt, Option<&ReconciliationHoldRecord>)>,
     ) -> Result<DepositAdmissionOutcome, StorageError> {
         if let Some(existing) = self.stored_deposit(record.id.bytes())? {
             if existing.record.payload_hash == record.payload_hash && existing.intent() == *intent {
@@ -6192,9 +6539,43 @@ impl StableStore {
         {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
+        if let Some((attempt, hold)) = funding_promotion {
+            if attempt.intent != *intent
+                || attempt.transfer != record.transfer
+                || !matches!(
+                    attempt.state,
+                    DepositFundingAttemptState::Dispatched { .. }
+                        | DepositFundingAttemptState::Retryable { .. }
+                        | DepositFundingAttemptState::Reconciling { .. }
+                )
+            {
+                return Err(StorageError::Core(CoreError::ConflictingReplay));
+            }
+            match (hold, &record.state) {
+                (None, bridge_core::DepositState::EscrowedUnquoted { .. }) => {}
+                (Some(hold), bridge_core::DepositState::FundingReconciliationHold { hold_id })
+                    if hold.id == *hold_id
+                        && hold.request
+                            == bridge_core::RequestReference::DepositFunding(record.id)
+                        && hold.transfer == record.transfer
+                        && is_open_hold(hold) => {}
+                _ => return Err(StorageError::Core(CoreError::ConflictingReplay)),
+            }
+        }
 
-        let quota_state = quota_admission
-            .map(|quota| -> Result<_, StorageError> {
+        let quota_state = match (quota_admission, funding_promotion) {
+            (Some(quota), Some((attempt, _))) => {
+                let previous_admission_blob = self.deposit_admission.get()?;
+                let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
+                commit_deposit_funding_quota(
+                    &mut admission,
+                    owner,
+                    attempt.intent.deposit_id,
+                    quota,
+                )?;
+                Some((None, previous_admission_blob, encode(&admission)?))
+            }
+            (Some(quota), None) => {
                 let previous_admin_blob = self.admin_state.get()?;
                 let admin = decode::<Option<AdminState>>(&previous_admin_blob)?
                     .ok_or(StorageError::RecordNotFound)?;
@@ -6204,13 +6585,15 @@ impl StableStore {
                 let previous_admission_blob = self.deposit_admission.get()?;
                 let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
                 consume_deposit_quota(&mut admission, owner, quota)?;
-                Ok((
-                    previous_admin_blob,
+                Some((
+                    Some(previous_admin_blob),
                     previous_admission_blob,
                     encode(&admission)?,
                 ))
-            })
-            .transpose()?;
+            }
+            (None, Some(_)) => return Err(StorageError::RecordNotFound),
+            (None, None) => None,
+        };
 
         let owner_sequence_key = owner_sequence_key(owner)?;
         let expected_owner_sequence = self
@@ -6229,6 +6612,15 @@ impl StableStore {
         let previous_counters = self.counters()?;
         let nonterminal_withdrawals = self.table_count_value("withdrawal_liability_index")?;
         let mut counters = previous_counters;
+        if let Some((_, Some(hold))) = funding_promotion {
+            if counters.next_hold_id != hold.id.get() {
+                return Err(StorageError::Core(CoreError::ConflictingReplay));
+            }
+            counters.next_hold_id = counters
+                .next_hold_id
+                .checked_add(1)
+                .ok_or(StorageError::CounterOverflow)?;
+        }
         let previous_progress = self.external_progress()?;
         let mut progress = previous_progress;
         let mut emit_reserve_audit = false;
@@ -6360,6 +6752,13 @@ impl StableStore {
         let previous_owner_sequence_blob =
             owner_sequence_exists.then(|| expected_owner_sequence.to_sql_bytes());
         let deposit_key = record.id.bytes().to_sql_bytes();
+        let promotion_attempt = funding_promotion
+            .map(|(attempt, _)| encode(attempt))
+            .transpose()?;
+        let promotion_hold = funding_promotion
+            .and_then(|(_, hold)| hold)
+            .map(|hold| encode(hold).map(|blob| (hold, blob)))
+            .transpose()?;
         self.handle.update(|connection| {
             expect_blob(
                 connection,
@@ -6383,13 +6782,15 @@ impl StableStore {
                 ));
             }
             if let Some((previous_admin, previous_admission, _)) = &quota_state {
-                expect_blob(
-                    connection,
-                    "SELECT admin_state FROM singleton_state WHERE id = 1",
-                    params![],
-                    previous_admin.as_slice(),
-                    "stale deposit admission",
-                )?;
+                if let Some(previous_admin) = previous_admin {
+                    expect_blob(
+                        connection,
+                        "SELECT admin_state FROM singleton_state WHERE id = 1",
+                        params![],
+                        previous_admin.as_slice(),
+                        "stale deposit admission",
+                    )?;
+                }
                 expect_blob(
                     connection,
                     "SELECT deposit_admission FROM singleton_state WHERE id = 1",
@@ -6405,6 +6806,15 @@ impl StableStore {
                 previous_owner_sequence_blob.as_deref(),
                 "stale deposit owner sequence",
             )?;
+            if let Some(attempt_blob) = promotion_attempt.as_ref() {
+                expect_blob(
+                    connection,
+                    "SELECT value FROM deposit_funding_attempts WHERE key = ?1",
+                    params![deposit_key.clone()],
+                    attempt_blob.as_slice(),
+                    "stale deposit funding promotion",
+                )?;
+            }
             insert_tracked_entry(
                 connection,
                 "deposits",
@@ -6435,6 +6845,38 @@ impl StableStore {
                 None,
                 progress.last_reserve_observation_ns,
             )?;
+            if let Some((hold, hold_blob)) = promotion_hold.as_ref() {
+                insert_tracked_entry(
+                    connection,
+                    "reconciliation_holds",
+                    hold.id.get().to_sql_bytes(),
+                    hold_blob.to_sql_bytes(),
+                )?;
+                insert_tracked_entry(
+                    connection,
+                    "open_hold_index",
+                    hold.id.get().to_sql_bytes(),
+                    0u8.to_sql_bytes(),
+                )?;
+                connection.execute(
+                    "UPDATE settlement_jobs SET status = 2, next_run_at_ns = NULL,
+                     lease_until_ns = NULL, lease_lane = 0,
+                     last_error_code = 'LedgerAmbiguous',
+                     last_error_detail = 'deposit funding requires reconciliation'
+                     WHERE settlement_kind = ?1 AND settlement_id = ?2",
+                    params![
+                        SettlementJobKind::Deposit.sql(),
+                        record.id.bytes().to_sql_bytes()
+                    ],
+                )?;
+            }
+            if promotion_attempt.is_some() {
+                delete_tracked_entry(
+                    connection,
+                    "deposit_funding_attempts",
+                    record.id.bytes().to_sql_bytes(),
+                )?;
+            }
             if let Some(audit) = &audit {
                 commit_audit_batch(connection, audit)?;
             }
@@ -9137,6 +9579,25 @@ mod tests {
         .expect("valid funding deposit")
     }
 
+    fn funding_attempt(
+        owner: Principal,
+        state: DepositFundingAttemptState,
+    ) -> (DepositFundingAttempt, DepositRecord, DepositIntent) {
+        let record = deposit_for(owner);
+        let intent = intent(record.id.bytes(), owner);
+        let attempt = DepositFundingAttempt {
+            intent: intent.clone(),
+            gross_amount: record.gross_amount.get(),
+            max_service_fee: record.max_service_fee.get(),
+            transfer: record.transfer.clone(),
+            state,
+            created_at_ns: 1,
+            updated_at_ns: 1,
+            last_failure: None,
+        };
+        (attempt, record, intent)
+    }
+
     fn deposit_for(owner: Principal) -> DepositRecord {
         let mut deposit = deposit();
         deposit.transfer.from =
@@ -9275,6 +9736,13 @@ mod tests {
                 subaccount: vec![],
             },
         }
+    }
+
+    fn initialize_unpaused_admin(store: &mut StableStore) {
+        store.initialize_admin(&config()).expect("admin");
+        let mut admin = store.admin_state().expect("admin state");
+        admin.deposits_paused = false;
+        store.set_admin_state(&admin).expect("unpause deposits");
     }
 
     fn intent(id: [u8; 32], owner: Principal) -> DepositIntent {
@@ -9884,7 +10352,7 @@ mod tests {
                 .next_deposit_sequence(principal)
                 .expect("read owner sequence");
             store
-                .admit_deposit(principal, &deposit_intent, &record, None, None)
+                .admit_deposit(principal, &deposit_intent, &record, None, None, None)
                 .expect("admit deposit");
         }
 
@@ -9924,14 +10392,14 @@ mod tests {
                 .next_deposit_sequence(owner)
                 .expect("read owner sequence");
             store
-                .admit_deposit(owner, &deposit_intent, &record, None, None)
+                .admit_deposit(owner, &deposit_intent, &record, None, None, None)
                 .expect("admit deposit");
         }
         let mut other_record = deposit_for(other);
         other_record.id = DepositId::new([200; 32]);
         let other_intent = intent([200; 32], other);
         store
-            .admit_deposit(other, &other_intent, &other_record, None, None)
+            .admit_deposit(other, &other_intent, &other_record, None, None, None)
             .expect("admit other owner deposit");
 
         let page = store
@@ -10279,11 +10747,11 @@ mod tests {
         let record = deposit_for(owner);
         let intent = intent(record.id.bytes(), owner);
         store
-            .admit_deposit(owner, &intent, &record, None, None)
+            .admit_deposit(owner, &intent, &record, None, None, None)
             .expect("first admission");
         assert_eq!(
             store
-                .admit_deposit(owner, &intent, &record, None, None)
+                .admit_deposit(owner, &intent, &record, None, None, None)
                 .expect("idempotent admission"),
             DepositAdmissionOutcome::Existing
         );
@@ -10334,7 +10802,7 @@ mod tests {
         };
         let before = store.deposit_admission.get().expect("quota before");
         assert_eq!(
-            store.admit_deposit(owner, &intent, &record, None, Some(quota)),
+            store.admit_deposit(owner, &intent, &record, None, Some(quota), None),
             Err(StorageError::DepositsPaused)
         );
         assert_eq!(store.deposit_admission.get().expect("paused quota"), before);
@@ -10344,14 +10812,14 @@ mod tests {
         store.set_admin_state(&admin).expect("resume deposits");
         assert_eq!(
             store
-                .admit_deposit(owner, &intent, &record, None, Some(quota))
+                .admit_deposit(owner, &intent, &record, None, Some(quota), None)
                 .expect("admit deposit"),
             DepositAdmissionOutcome::Inserted
         );
         let consumed = store.deposit_admission.get().expect("consumed quota");
         assert_eq!(
             store
-                .admit_deposit(owner, &intent, &record, None, Some(quota))
+                .admit_deposit(owner, &intent, &record, None, Some(quota), None)
                 .expect("idempotent retry"),
             DepositAdmissionOutcome::Existing
         );
@@ -10362,7 +10830,7 @@ mod tests {
 
         let (other_record, other_intent) = make(other, [32; 32], [42; 32]);
         assert_eq!(
-            store.admit_deposit(other, &other_intent, &other_record, None, Some(quota)),
+            store.admit_deposit(other, &other_intent, &other_record, None, Some(quota), None),
             Err(StorageError::DepositRateLimited {
                 retry_after_seconds: 60
             })
@@ -10759,7 +11227,7 @@ mod tests {
         let before = store.counters().expect("counters before");
 
         assert_eq!(
-            store.admit_deposit(owner, &intent, &record, None, None),
+            store.admit_deposit(owner, &intent, &record, None, None, None),
             Err(StorageError::DatabaseFailure)
         );
         assert_eq!(store.deposit(record.id.bytes()).expect("deposit"), None);
@@ -10839,6 +11307,7 @@ mod tests {
                 snapshot_generation: 0,
             }),
             None,
+            None,
         );
 
         assert_eq!(result, Err(StorageError::StaleReserveObservation));
@@ -10866,7 +11335,7 @@ mod tests {
         let record = deposit_for(owner);
         let intent = intent(record.id.bytes(), owner);
         store
-            .admit_deposit(owner, &intent, &record, None, None)
+            .admit_deposit(owner, &intent, &record, None, None, None)
             .expect("admit unquoted deposit");
 
         let progress = store.external_progress().expect("progress after admission");
@@ -10977,7 +11446,7 @@ mod tests {
         let mut gap = intent(record.id.bytes(), owner);
         gap.owner_sequence = 1;
         assert!(matches!(
-            store.admit_deposit(owner, &gap, &record, None, None),
+            store.admit_deposit(owner, &gap, &record, None, None, None),
             Err(StorageError::SequenceMismatch { expected: 0 })
         ));
         assert_eq!(
@@ -10989,7 +11458,7 @@ mod tests {
 
         let accepted = intent(record.id.bytes(), owner);
         store
-            .admit_deposit(owner, &accepted, &record, None, None)
+            .admit_deposit(owner, &accepted, &record, None, None, None)
             .expect("accept sequence zero");
         record.last_settlement_stop_reason = Some("metadata envelope regression".to_owned());
         store.put_deposit(&record).expect("update deposit record");
@@ -11519,8 +11988,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 22);
-        assert_eq!(WIRE_VERSION, 18);
+        assert_eq!(SCHEMA_VERSION, 23);
+        assert_eq!(WIRE_VERSION, 19);
     }
 
     #[test]
@@ -11991,6 +12460,458 @@ mod tests {
 
     #[test]
     #[serial]
+    fn funding_definitive_failure_releases_attempt_without_formal_artifacts() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        initialize_unpaused_admin(&mut store);
+        let owner = Principal::self_authenticating([61; 32]);
+        let (attempt, record, _) = funding_attempt(
+            owner,
+            DepositFundingAttemptState::Dispatched {
+                dispatched_at_ns: 1,
+            },
+        );
+        let quota = DepositQuotaAdmission {
+            now_ns: 1,
+            window_seconds: 60,
+            global_limit: 30,
+            per_principal_limit: 3,
+        };
+        assert_eq!(
+            store
+                .prepare_deposit_funding_attempt(owner, &attempt, quota)
+                .expect("reserve attempt"),
+            DepositAdmissionOutcome::Inserted
+        );
+        store
+            .remove_deposit_funding_attempt(owner, &attempt)
+            .expect("release definitive failure");
+
+        assert_eq!(
+            store
+                .deposit_funding_attempt(record.id.bytes())
+                .expect("attempt"),
+            None
+        );
+        assert_eq!(store.deposit(record.id.bytes()).expect("deposit"), None);
+        assert_eq!(
+            store
+                .settlement_job(SettlementJobKind::Deposit, record.id.bytes())
+                .expect("job"),
+            None
+        );
+        assert_eq!(store.next_deposit_sequence(owner).expect("sequence"), 0);
+        assert!(store
+            .list_deposit_ids(owner, None, 10)
+            .expect("history")
+            .deposit_ids
+            .is_empty());
+        let admission = store.deposit_admission().expect("admission");
+        assert_eq!(admission.global_count, 0);
+        assert!(admission.caller_counts.is_empty());
+        assert!(admission.funding_reservations.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn funding_attempt_reopen_preserves_recovery_deadlines_and_identity() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        initialize_unpaused_admin(&mut store);
+        let owner = Principal::self_authenticating([64; 32]);
+        let (mut attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        attempt.created_at_ns = 10;
+        attempt.updated_at_ns = 10;
+        let quota = DepositQuotaAdmission {
+            now_ns: 10,
+            window_seconds: 60,
+            global_limit: 30,
+            per_principal_limit: 3,
+        };
+        store
+            .prepare_deposit_funding_attempt(owner, &attempt, quota)
+            .expect("reserve prepared attempt");
+        drop(store);
+
+        let mut reopened = StableStore::reopen(memory).expect("reopen");
+        assert_eq!(
+            reopened
+                .deposit_funding_attempt(attempt.intent.deposit_id)
+                .expect("persisted attempt"),
+            Some(attempt.clone())
+        );
+        assert_eq!(
+            reopened
+                .next_deposit_funding_attempt_for_recovery(10 + 120_000_000_000 - 1)
+                .expect("before prepared deadline"),
+            None
+        );
+        assert_eq!(
+            reopened
+                .next_deposit_funding_attempt_for_recovery(10 + 120_000_000_000)
+                .expect("at prepared deadline"),
+            Some(attempt.clone())
+        );
+
+        let mut dispatched = attempt.clone();
+        dispatched.state = DepositFundingAttemptState::Dispatched {
+            dispatched_at_ns: 500,
+        };
+        dispatched.updated_at_ns = 500;
+        reopened
+            .update_deposit_funding_attempt(&attempt, &dispatched)
+            .expect("mark dispatched");
+        assert_eq!(
+            reopened
+                .next_deposit_funding_attempt_for_recovery(500 + 30_000_000_000 - 1)
+                .expect("before dispatch deadline"),
+            None
+        );
+        assert_eq!(
+            reopened
+                .next_deposit_funding_attempt_for_recovery(500 + 30_000_000_000)
+                .expect("at dispatch deadline"),
+            Some(dispatched.clone())
+        );
+
+        let mut retryable = dispatched.clone();
+        retryable.state = DepositFundingAttemptState::Retryable {
+            retry_after_ns: 700,
+        };
+        retryable.updated_at_ns = 700;
+        reopened
+            .update_deposit_funding_attempt(&dispatched, &retryable)
+            .expect("mark retryable");
+        assert_eq!(retryable.transfer, attempt.transfer);
+        assert_eq!(
+            reopened
+                .next_deposit_funding_attempt_for_recovery(700 + 120_000_000_000)
+                .expect("retryable prune deadline"),
+            Some(retryable)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn funding_success_promotes_attempt_once_atomically() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        initialize_unpaused_admin(&mut store);
+        let owner = Principal::self_authenticating([62; 32]);
+        let (attempt, record, intent) = funding_attempt(
+            owner,
+            DepositFundingAttemptState::Dispatched {
+                dispatched_at_ns: 1,
+            },
+        );
+        let quota = DepositQuotaAdmission {
+            now_ns: 1,
+            window_seconds: 60,
+            global_limit: 30,
+            per_principal_limit: 3,
+        };
+        store
+            .prepare_deposit_funding_attempt(owner, &attempt, quota)
+            .expect("reserve attempt");
+        assert_eq!(
+            store
+                .admit_deposit(
+                    owner,
+                    &intent,
+                    &record,
+                    None,
+                    Some(quota),
+                    Some((&attempt, None)),
+                )
+                .expect("promote"),
+            DepositAdmissionOutcome::Inserted
+        );
+
+        assert_eq!(
+            store
+                .deposit_funding_attempt(record.id.bytes())
+                .expect("attempt"),
+            None
+        );
+        assert_eq!(
+            store.deposit(record.id.bytes()).expect("deposit"),
+            Some(record.clone())
+        );
+        assert_eq!(store.next_deposit_sequence(owner).expect("sequence"), 1);
+        assert_eq!(
+            store
+                .list_deposit_ids(owner, None, 10)
+                .expect("history")
+                .deposit_ids,
+            vec![record.id.bytes()]
+        );
+        assert!(store
+            .settlement_job(SettlementJobKind::Deposit, record.id.bytes())
+            .expect("job")
+            .is_some());
+        let admission = store.deposit_admission().expect("admission");
+        assert_eq!(admission.global_count, 1);
+        assert_eq!(admission.caller_counts[0].count, 1);
+        assert!(admission.funding_reservations.is_empty());
+
+        assert_eq!(
+            store
+                .admit_deposit(owner, &intent, &record, None, None, None)
+                .expect("idempotent replay"),
+            DepositAdmissionOutcome::Existing
+        );
+        assert_eq!(store.next_deposit_sequence(owner).expect("sequence"), 1);
+        assert_eq!(
+            store.deposit_admission().expect("admission").global_count,
+            1
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn accepted_funding_promotes_after_new_deposits_are_paused() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        initialize_unpaused_admin(&mut store);
+        let owner = Principal::self_authenticating([65; 32]);
+        let (attempt, record, intent) = funding_attempt(
+            owner,
+            DepositFundingAttemptState::Dispatched {
+                dispatched_at_ns: 1,
+            },
+        );
+        let quota = DepositQuotaAdmission {
+            now_ns: 1,
+            window_seconds: 60,
+            global_limit: 30,
+            per_principal_limit: 3,
+        };
+        store
+            .prepare_deposit_funding_attempt(owner, &attempt, quota)
+            .expect("reserve attempt");
+        let mut admin = store.admin_state().expect("admin state");
+        admin.deposits_paused = true;
+        store.set_admin_state(&admin).expect("pause new deposits");
+
+        assert_eq!(
+            store
+                .admit_deposit(
+                    owner,
+                    &intent,
+                    &record,
+                    None,
+                    Some(quota),
+                    Some((&attempt, None)),
+                )
+                .expect("promote accepted funding"),
+            DepositAdmissionOutcome::Inserted
+        );
+
+        assert!(store.admin_state().expect("admin state").deposits_paused);
+        assert_eq!(
+            store
+                .deposit_funding_attempt(record.id.bytes())
+                .expect("attempt"),
+            None
+        );
+        assert_eq!(
+            store.deposit(record.id.bytes()).expect("deposit"),
+            Some(record.clone())
+        );
+        assert_eq!(store.next_deposit_sequence(owner).expect("sequence"), 1);
+        assert_eq!(
+            store
+                .list_deposit_ids(owner, None, 10)
+                .expect("history")
+                .deposit_ids,
+            vec![record.id.bytes()]
+        );
+        assert!(store
+            .settlement_job(SettlementJobKind::Deposit, record.id.bytes())
+            .expect("job")
+            .is_some());
+        let admission = store.deposit_admission().expect("admission");
+        assert_eq!(admission.global_count, 1);
+        assert_eq!(admission.caller_counts[0].count, 1);
+        assert!(admission.funding_reservations.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn funding_ambiguous_promotes_once_with_open_hold() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        initialize_unpaused_admin(&mut store);
+        let owner = Principal::self_authenticating([63; 32]);
+        let (mut attempt, mut record, intent) = funding_attempt(
+            owner,
+            DepositFundingAttemptState::Dispatched {
+                dispatched_at_ns: 1,
+            },
+        );
+        attempt.state = DepositFundingAttemptState::Reconciling {
+            progress: Box::new(ReconciliationScanProgress::new(
+                ReconciliationTarget::FundingAttempt(record.id),
+                attempt.transfer.clone(),
+            )),
+            next_check_at_ns: 2,
+        };
+        let hold_id = HoldId::new(0);
+        record = DepositRecord::accept(DepositRequest {
+            id: record.id,
+            payload_hash: record.payload_hash,
+            gross_amount: record.gross_amount,
+            user_max_service_fee: record.max_service_fee,
+            transfer: record.transfer.clone(),
+        })
+        .expect("funding record");
+        record
+            .apply(DepositEvent::FundingAmbiguous { hold_id })
+            .expect("ambiguous");
+        let hold = ReconciliationHoldRecord::open(
+            hold_id,
+            RequestReference::DepositFunding(record.id),
+            record.transfer.clone(),
+        );
+        let quota = DepositQuotaAdmission {
+            now_ns: 1,
+            window_seconds: 60,
+            global_limit: 30,
+            per_principal_limit: 3,
+        };
+        store
+            .prepare_deposit_funding_attempt(owner, &attempt, quota)
+            .expect("reserve attempt");
+        store
+            .admit_deposit(
+                owner,
+                &intent,
+                &record,
+                None,
+                Some(quota),
+                Some((&attempt, Some(&hold))),
+            )
+            .expect("promote hold");
+
+        assert_eq!(
+            store.reconciliation_hold(hold_id.get()).expect("hold"),
+            Some(hold)
+        );
+        let job = store
+            .settlement_job(SettlementJobKind::Deposit, record.id.bytes())
+            .expect("job")
+            .expect("present");
+        assert_eq!(job.status, SettlementJobStatus::Stopped);
+        assert_eq!(store.next_deposit_sequence(owner).expect("sequence"), 1);
+        assert_eq!(
+            store.deposit_admission().expect("admission").global_count,
+            1
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn manual_and_governance_lease_lanes_are_record_scoped_and_independent() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        let limits = SettlementQuotaLimits {
+            window_seconds: 60,
+            global: 20,
+            per_principal: 20,
+            per_record: 2,
+        };
+        let caller = Principal::self_authenticating([77; 32]);
+        let mut ids = Vec::new();
+        for value in 1u8..=6 {
+            let mut record = deposit();
+            record.id = DepositId::new([value; 32]);
+            record.payload_hash = [value.saturating_add(20); 32];
+            store.put_deposit(&record).expect("deposit");
+            store
+                .handle
+                .update(|connection| {
+                    enqueue_settlement_job(
+                        connection,
+                        SettlementJobKind::Deposit,
+                        record.id.bytes(),
+                        None,
+                        1,
+                    )
+                })
+                .expect("job");
+            ids.push(record.id.bytes());
+        }
+
+        for id in ids.iter().take(4) {
+            let ManualSettlementClaim::Claimed(job) = store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    *id,
+                    caller,
+                    100,
+                    500,
+                    0,
+                    limits,
+                )
+                .expect("public manual claim")
+            else {
+                panic!("independent record was blocked")
+            };
+            assert_eq!(job.lease_lane, SettlementLeaseLane::PublicManual);
+        }
+        assert!(matches!(
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    ids[0],
+                    caller,
+                    100,
+                    500,
+                    0,
+                    limits,
+                )
+                .expect("same-record decision"),
+            ManualSettlementClaim::Busy
+        ));
+        assert!(matches!(
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    ids[4],
+                    caller,
+                    100,
+                    500,
+                    0,
+                    limits,
+                )
+                .expect("public lane capacity"),
+            ManualSettlementClaim::Busy
+        ));
+        let ManualSettlementClaim::Claimed(governance) = store
+            .claim_governance_settlement_job(
+                SettlementJobKind::Deposit,
+                ids[4],
+                caller,
+                100,
+                500,
+                0,
+            )
+            .expect("governance lane")
+        else {
+            panic!("public lane blocked governance")
+        };
+        assert_eq!(
+            governance.lease_lane,
+            SettlementLeaseLane::GovernanceRecovery
+        );
+
+        let SettlementJobClaim::Claimed(automatic) = store
+            .claim_due_settlement_job(100, 500, 4)
+            .expect("automatic lane")
+        else {
+            panic!("manual lanes blocked automatic work")
+        };
+        assert_eq!(automatic.settlement_id, ids[5]);
+        assert_eq!(automatic.lease_lane, SettlementLeaseLane::Automatic);
+    }
+
+    #[test]
+    #[serial]
     fn lease_renewal_uses_real_update_time_and_stale_generation_cannot_finish() {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
         let record = deposit();
@@ -12393,9 +13314,7 @@ mod tests {
                     limits,
                 )
                 .expect("active overdue decision"),
-            ManualSettlementClaim::AutomaticProgressPending {
-                next_run_at_ns: None
-            }
+            ManualSettlementClaim::Busy
         ));
     }
 

@@ -1,4 +1,4 @@
-use crate::{Amount, CoreError, EvmOperationId, HoldId, LedgerTransferIdentity};
+use crate::{Amount, CoreError, DepositId, EvmOperationId, HoldId, LedgerTransferIdentity};
 
 #[cfg_attr(
     feature = "storage-serde",
@@ -316,6 +316,7 @@ mod finalized_observation_tests {
 pub enum ReconciliationTarget {
     Hold(HoldId),
     FeePayout(u64),
+    FundingAttempt(DepositId),
 }
 
 #[cfg_attr(

@@ -346,6 +346,50 @@ macro_rules! manual_claim_decision_body {
     };
 }
 
+macro_rules! notification_admission_body {
+    ($caller_count:expr, $hash_count:expr, $caller_limit:expr, $hash_limit:expr) => {
+        $caller_count < $caller_limit && $hash_count < $hash_limit
+    };
+}
+
+macro_rules! lease_lane_claim_body {
+    (
+        $target_active:expr,
+        $target_automatic:expr,
+        $active_in_lane:expr,
+        $capacity:expr,
+        $allow:expr,
+        $automatic_pending:expr,
+        $busy:expr
+    ) => {
+        if $target_active {
+            if $target_automatic {
+                $automatic_pending
+            } else {
+                $busy
+            }
+        } else if $active_in_lane >= $capacity {
+            $busy
+        } else {
+            $allow
+        }
+    };
+}
+
+macro_rules! funding_attempt_decision_body {
+    ($kind:expr, $success:expr, $ambiguous:expr, $release:expr, $retain:expr) => {
+        if $kind == 0u8 || $kind == 1u8 {
+            $success
+        } else if $kind == 2u8 {
+            $ambiguous
+        } else if $kind == 3u8 {
+            $release
+        } else {
+            $retain
+        }
+    };
+}
+
 verus! {
     #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
     pub enum FeeRecipientRotationDecision {
@@ -366,6 +410,21 @@ verus! {
     pub enum ManualClaimDecision {
         Allow,
         AutomaticProgressPending,
+    }
+
+    #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
+    pub enum LeaseLaneClaimDecision {
+        Allow,
+        AutomaticProgressPending,
+        Busy,
+    }
+
+    #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
+    pub enum FundingAttemptDecision {
+        PromoteSuccess,
+        PromoteAmbiguous,
+        Release,
+        Retain,
     }
 }
 
@@ -988,6 +1047,77 @@ pub const fn manual_claim_allowed(
     expired: bool,
 ) -> bool {
     manual_claim_allowed_body!(confirmation, scheduled, active, stopped, overdue, expired)
+}
+
+verus! {
+    pub fn notification_admission_allowed(
+        caller_count: u8,
+        hash_count: u8,
+        caller_limit: u8,
+        hash_limit: u8,
+    ) -> (result: bool)
+        ensures
+            result == (caller_count < caller_limit && hash_count < hash_limit),
+    {
+        notification_admission_body!(caller_count, hash_count, caller_limit, hash_limit)
+    }
+}
+
+verus! {
+    pub fn lease_lane_claim_decision(
+        target_active: bool,
+        target_automatic: bool,
+        active_in_lane: u64,
+        capacity: u64,
+    ) -> (result: LeaseLaneClaimDecision)
+        ensures
+            match result {
+                LeaseLaneClaimDecision::Allow =>
+                    !target_active && active_in_lane < capacity,
+                LeaseLaneClaimDecision::AutomaticProgressPending =>
+                    target_active && target_automatic,
+                LeaseLaneClaimDecision::Busy =>
+                    (target_active && !target_automatic)
+                        || (!target_active && active_in_lane >= capacity),
+            },
+    {
+        lease_lane_claim_body!(
+            target_active,
+            target_automatic,
+            active_in_lane,
+            capacity,
+            LeaseLaneClaimDecision::Allow,
+            LeaseLaneClaimDecision::AutomaticProgressPending,
+            LeaseLaneClaimDecision::Busy
+        )
+    }
+}
+
+verus! {
+    pub fn funding_attempt_decision(
+        outcome_kind: u8,
+    ) -> (result: FundingAttemptDecision)
+        ensures
+            match result {
+                FundingAttemptDecision::PromoteSuccess =>
+                    outcome_kind == 0u8 || outcome_kind == 1u8,
+                FundingAttemptDecision::PromoteAmbiguous => outcome_kind == 2u8,
+                FundingAttemptDecision::Release => outcome_kind == 3u8,
+                FundingAttemptDecision::Retain =>
+                    outcome_kind != 0u8
+                        && outcome_kind != 1u8
+                        && outcome_kind != 2u8
+                        && outcome_kind != 3u8,
+            },
+    {
+        funding_attempt_decision_body!(
+            outcome_kind,
+            FundingAttemptDecision::PromoteSuccess,
+            FundingAttemptDecision::PromoteAmbiguous,
+            FundingAttemptDecision::Release,
+            FundingAttemptDecision::Retain
+        )
+    }
 }
 
 verus! {

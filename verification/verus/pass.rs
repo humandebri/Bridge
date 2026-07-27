@@ -83,6 +83,27 @@ pub open spec fn manual_claim_decision_view(result: kernel::ManualClaimDecision)
     }
 }
 
+pub open spec fn lease_lane_claim_decision_view(
+    result: kernel::LeaseLaneClaimDecision,
+) -> int {
+    match result {
+        kernel::LeaseLaneClaimDecision::Allow => 0,
+        kernel::LeaseLaneClaimDecision::AutomaticProgressPending => 1,
+        kernel::LeaseLaneClaimDecision::Busy => 2,
+    }
+}
+
+pub open spec fn funding_attempt_decision_view(
+    result: kernel::FundingAttemptDecision,
+) -> int {
+    match result {
+        kernel::FundingAttemptDecision::PromoteSuccess => 0,
+        kernel::FundingAttemptDecision::PromoteAmbiguous => 1,
+        kernel::FundingAttemptDecision::Release => 2,
+        kernel::FundingAttemptDecision::Retain => 3,
+    }
+}
+
 proof fn incomplete_scan_cannot_prove_absence(next: int, tip: int, watermark: int)
     requires next <= tip || watermark < tip
     ensures !kernel::scan_complete_spec(next, tip, watermark, true, false)
@@ -534,6 +555,49 @@ fn manual_claim_decision_matches_shared_guard(
 {
     kernel::manual_claim_decision(
         confirmation, scheduled, active, stopped, overdue, expired)
+}
+
+fn notification_admission_checks_caller_and_hash_windows(
+    caller_count: u8,
+    hash_count: u8,
+    caller_limit: u8,
+    hash_limit: u8,
+) -> (result: bool)
+    ensures result <==> caller_count < caller_limit && hash_count < hash_limit,
+{
+    kernel::notification_admission_allowed(
+        caller_count, hash_count, caller_limit, hash_limit)
+}
+
+fn lease_lane_claim_is_record_and_lane_scoped(
+    target_active: bool,
+    target_automatic: bool,
+    active_in_lane: u64,
+    capacity: u64,
+) -> (result: kernel::LeaseLaneClaimDecision)
+    ensures
+        lease_lane_claim_decision_view(result) == 0
+            <==> !target_active && active_in_lane < capacity,
+        lease_lane_claim_decision_view(result) == 1
+            <==> target_active && target_automatic,
+{
+    kernel::lease_lane_claim_decision(
+        target_active, target_automatic, active_in_lane, capacity)
+}
+
+fn funding_outcome_classifies_reservation_action(
+    outcome_kind: u8,
+) -> (result: kernel::FundingAttemptDecision)
+    ensures
+        funding_attempt_decision_view(result) == 0
+            <==> outcome_kind == 0 || outcome_kind == 1,
+        funding_attempt_decision_view(result) == 1 <==> outcome_kind == 2,
+        funding_attempt_decision_view(result) == 2 <==> outcome_kind == 3,
+        funding_attempt_decision_view(result) == 3
+            <==> outcome_kind != 0 && outcome_kind != 1
+                && outcome_kind != 2 && outcome_kind != 3,
+{
+    kernel::funding_attempt_decision(outcome_kind)
 }
 
 proof fn role_action_matrix(action: int, pause: bool, governance: bool)

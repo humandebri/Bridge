@@ -247,6 +247,7 @@ export interface DepositArgs {
   'gross_amount' : bigint,
 }
 export type DepositError = { 'Busy' : null } |
+  { 'FundingRejected' : FundingFailure } |
   { 'BaseObservationUnavailable' : null } |
   { 'SequenceMismatch' : { 'expected' : bigint } } |
   { 'ReserveUnavailable' : null } |
@@ -255,7 +256,8 @@ export type DepositError = { 'Busy' : null } |
   { 'RateLimited' : { 'retry_after_seconds' : bigint } } |
   { 'InvalidRequest' : string } |
   { 'DepositConflict' : null } |
-  { 'StorageFailure' : null };
+  { 'StorageFailure' : null } |
+  { 'FundingUnavailable' : { 'retry_after_seconds' : bigint } };
 export interface DepositIdPage {
   'history_truncated' : boolean,
   'oldest_available_cursor' : [] | [bigint],
@@ -265,7 +267,6 @@ export interface DepositIdPage {
 export type DepositPhase = { 'MintPending' : null } |
   { 'Refunded' : null } |
   { 'FundingReconciliationHold' : null } |
-  { 'FundingPending' : null } |
   { 'MintReverted' : null } |
   { 'EscrowedUnquoted' : null } |
   { 'RefundReconciliationHold' : null } |
@@ -344,6 +345,12 @@ export interface FeeRecipientConfig {
   'owner' : Principal,
   'subaccount' : Uint8Array | number[],
 }
+export type FundingFailure = {
+    'InsufficientAllowance' : { 'allowance' : bigint }
+  } |
+  { 'BadBurn' : { 'minimum' : bigint } } |
+  { 'BadFee' : { 'expected_fee' : bigint } } |
+  { 'InsufficientFunds' : { 'balance' : bigint } };
 export type GetWithdrawalsError = { 'TooManyIds' : null };
 export interface Icrc10SupportedStandard { 'url' : string, 'name' : string }
 export interface Icrc21ConsentInfo {

@@ -613,13 +613,31 @@ async fn continue_pending(
         .ok_or(BaseGovernanceError::StorageFailure)?
         .to_vec();
     let transaction_hash = evm_rpc::signed_transaction_hash(&raw);
-    if !matches!(
+    let rebroadcasting = matches!(
         transaction.state,
         storage::GovernanceTransactionState::Broadcasting { .. }
-    ) {
-        transaction.state = storage::GovernanceTransactionState::Broadcasting { transaction_hash };
-        persist(&transaction)?;
+    );
+    let now = ic_cdk::api::time();
+    if rebroadcasting
+        && !rebroadcast_due(
+            transaction.envelope.last_broadcast_at_ns,
+            now,
+            config.evm_liveness.rebroadcast_after_seconds,
+        )
+    {
+        return Err(BaseGovernanceError::BroadcastAmbiguous {
+            operation_id: transaction.id,
+        });
     }
+    transaction.state = storage::GovernanceTransactionState::Broadcasting { transaction_hash };
+    if transaction.envelope.first_broadcast_at_ns == 0 {
+        transaction.envelope.first_broadcast_at_ns = now;
+    } else if rebroadcasting {
+        transaction.envelope.rebroadcast_count =
+            transaction.envelope.rebroadcast_count.saturating_add(1);
+    }
+    transaction.envelope.last_broadcast_at_ns = now;
+    persist(&transaction)?;
     match evm_rpc::broadcast(config, &raw).await {
         Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => {
             require_current_transaction_authorization(caller, &transaction.kind)?;
@@ -726,6 +744,12 @@ fn nonce_conflict_recovery(
             _ => NonceConflictRecovery::Retry,
         }
     }
+}
+
+fn rebroadcast_due(last_broadcast_at_ns: u64, now_ns: u64, after_seconds: u64) -> bool {
+    last_broadcast_at_ns == 0
+        || now_ns.saturating_sub(last_broadcast_at_ns)
+            >= after_seconds.saturating_mul(1_000_000_000)
 }
 
 fn persist(transaction: &storage::GovernanceTransaction) -> Result<(), BaseGovernanceError> {
@@ -964,8 +988,8 @@ fn keccak(value: &[u8]) -> [u8; 32] {
 mod tests {
     use super::{
         action_matches_pending, activation_operation_id, activation_salt, authorized_action,
-        execute_activation_calldata, nonce_conflict_recovery, selector, should_resume_activation,
-        word_u128, GovernanceAction, NonceConflictRecovery,
+        execute_activation_calldata, nonce_conflict_recovery, rebroadcast_due, selector,
+        should_resume_activation, word_u128, GovernanceAction, NonceConflictRecovery,
     };
     use crate::storage::GovernanceTransactionKind;
 
@@ -1057,6 +1081,15 @@ mod tests {
             nonce_conflict_recovery(false, 7, None),
             NonceConflictRecovery::Retry
         );
+    }
+
+    #[test]
+    fn governance_rebroadcast_waits_for_the_configured_interval() {
+        let second = 1_000_000_000;
+        assert!(rebroadcast_due(0, 1, 300));
+        assert!(!rebroadcast_due(10 * second, 309 * second, 300));
+        assert!(rebroadcast_due(10 * second, 310 * second, 300));
+        assert!(!rebroadcast_due(10 * second, 9 * second, 300));
     }
 
     #[test]
