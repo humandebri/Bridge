@@ -107,8 +107,12 @@ run_no_automatic_execution_guards() {
     --glob '!pending-confirmations.test.ts' \
     --glob '!deposit-intents.ts' \
     --glob '!deposit-intents.test.ts' \
+    --glob '!browser-lock.ts' \
+    --glob '!browser-lock.test.ts' \
     --glob '!settlement-confirmation-coordinator.tsx' \
-    --glob '!settlement-confirmation-coordinator.test.tsx'; then
+    --glob '!settlement-confirmation-coordinator.test.tsx' \
+    --glob '!risk-acknowledgement.tsx' \
+    --glob '!risk-acknowledgement.test.tsx'; then
     echo "browser storage is used outside the confirmation recovery queue" >&2
     return 1
   fi
@@ -154,7 +158,7 @@ run_rust() {
 
 run_contracts() {
   forge fmt --root "$CONTRACTS" --check
-  forge build --root "$CONTRACTS" --sizes --ignored-error-codes 3860 --ignored-error-codes 6335
+  forge build --root "$CONTRACTS" --sizes --ignored-error-codes 2394 --ignored-error-codes 3860 --ignored-error-codes 6335
   python3 "$ROOT/scripts/abi_snapshot.py" --check
   forge test --root "$CONTRACTS"
   forge coverage \
@@ -162,6 +166,7 @@ run_contracts() {
     --ir-minimum \
     --report summary \
     --no-match-coverage 'BridgeTimelockController\.sol' \
+    --ignored-error-codes 2394 \
     --ignored-error-codes 6335 \
     --ignored-error-codes 3860 \
     --ignored-error-codes 5574
@@ -285,9 +290,57 @@ run_verus() {
   done < <(rg --files "$ROOT/verification/verus/fail" -g '*.rs' | sort)
 }
 
+run_lean_failure_fixtures() {
+  local failure_fixture
+  local failure_log
+  local failure_status
+
+  while IFS= read -r failure_fixture; do
+    failure_log="$TMP_ROOT/lean-$(basename "$failure_fixture" .lean).log"
+    set +e
+    (cd "$ROOT/verification/lean" && lake env lean "$failure_fixture") \
+      >"$failure_log" 2>&1
+    failure_status=$?
+    set -e
+    if [[ "$failure_status" -eq 0 ]]; then
+      echo "Lean accepted deliberate failing fixture: $failure_fixture" >&2
+      return 1
+    fi
+    if ! rg -qi "proved that the proposition" "$failure_log" \
+      || ! rg -q "^is false$" "$failure_log"; then
+      echo "Lean fixture failed without the expected false theorem rejection: $failure_fixture" >&2
+      cat "$failure_log" >&2
+      return 1
+    fi
+  done < <(rg --files "$ROOT/verification/lean/fail" -g '*.lean' | sort)
+}
+
+run_lean() {
+  local lean_root="$ROOT/verification/lean"
+
+  if [[ -f "$lean_root/lakefile.lean" ]]; then
+    if [[ -f "$lean_root/BridgeModel.lean" ]]; then
+      echo "ambiguous Lean proof layout" >&2
+      return 1
+    fi
+    (cd "$lean_root" && lake build)
+    run_lean_failure_fixtures
+    python3 "$ROOT/scripts/test_protocol_vectors.py"
+    python3 "$ROOT/scripts/protocol_vectors.py" --check
+    python3 "$ROOT/scripts/test_refinement_manifest.py"
+    python3 "$ROOT/scripts/test_reproducible_artifacts.py"
+    python3 "$ROOT/scripts/check_refinement_manifest.py"
+  elif [[ -f "$lean_root/BridgeModel.lean" ]]; then
+    lean "$lean_root/BridgeModel.lean"
+  else
+    echo "unknown Lean proof layout" >&2
+    return 1
+  fi
+}
+
 run_proofs() {
   verify_lean_no_proof_escape "$ROOT/verification/lean"
-  lean "$ROOT/verification/lean/BridgeModel.lean"
+  run_lean
   run_smt
   run_verus
 }

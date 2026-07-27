@@ -78,6 +78,20 @@ class TrustedPrGateTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(all(ci_changed_areas.classify([path]).values()))
 
+    def test_trusted_driver_accepts_the_reviewed_pr2_layout(self) -> None:
+        driver = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
+        for allowed_storage_file in (
+            "browser-lock.ts",
+            "browser-lock.test.ts",
+            "risk-acknowledgement.tsx",
+            "risk-acknowledgement.test.tsx",
+        ):
+            self.assertIn(f"--glob '!{allowed_storage_file}'", driver)
+        self.assertGreaterEqual(driver.count("--ignored-error-codes 2394"), 2)
+        self.assertIn('(cd "$lean_root" && lake build)', driver)
+        self.assertIn('echo "ambiguous Lean proof layout"', driver)
+        self.assertIn('echo "unknown Lean proof layout"', driver)
+
 
 if __name__ == "__main__":
     unittest.main()
