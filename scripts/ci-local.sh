@@ -234,15 +234,60 @@ run_verus() {
 
   while IFS=$'\t' read -r kind kernel_name proof_name expected_fixture production_path; do
     [[ -n "$kernel_name" ]] || continue
-    rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs"
-    rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs"
-    rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture"
     case "$kind" in
       shared)
-        rg -q "pub const fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs"
-        rg -q "\b${kernel_name}\b" "$ROOT/$production_path"
+        rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus manifest spec is missing: $kernel_name" >&2
+          return 1
+        }
+        rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus manifest proof is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
+          return 1
+        }
+        rg -q "pub const fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "shared Verus kernel is missing: $kernel_name" >&2
+          return 1
+        }
+        rg -q "\b${kernel_name}\b" "$ROOT/$production_path" || {
+          echo "shared Verus kernel is not referenced by production path: $kernel_name -> $production_path" >&2
+          return 1
+        }
+        ;;
+      executable)
+        rg -q "^fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus executable obligation is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "kernel::${kernel_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus executable obligation does not call production symbol: $kernel_name" >&2
+          return 1
+        }
+        rg -q "kernel::${kernel_name}\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not call production symbol: $expected_fixture" >&2
+          return 1
+        }
+        rg -q "pub fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus executable kernel is missing: $kernel_name" >&2
+          return 1
+        }
         ;;
       model)
+        rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus manifest spec is missing: $kernel_name" >&2
+          return 1
+        }
+        rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus manifest proof is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
+          return 1
+        }
         [[ "$production_path" == "-" ]]
         ;;
       *)
@@ -254,7 +299,7 @@ run_verus() {
 
   rg -o 'pub open spec fn [A-Za-z0-9_]+' "$ROOT/canister/bridge-core/src/kernel.rs" \
     | sed 's/pub open spec fn //' | sort >"$TMP_ROOT/verus-specs"
-  cut -f2 "$ROOT/verification/verus/manifest.tsv" \
+  awk -F $'\t' '$1 != "executable" { print $2 }' "$ROOT/verification/verus/manifest.tsv" \
     | sed 's/$/_spec/' | sort >"$TMP_ROOT/verus-manifest-specs"
   if ! cmp -s "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs"; then
     echo "Verus manifest does not cover every spec exactly once" >&2
