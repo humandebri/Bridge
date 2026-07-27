@@ -136,8 +136,8 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 
 ### 2-2. Deposit フロー（ADR 0001、0004、0005）
 
-1. 受付時はlocal pause、入力、rate limit、`gross_amount > 10_000`だけを検査し、mint資源を予約せず`FundingPending`を保存する。
-2. ICRC-2でSNSトークンをescrowへpullし、成功または`Duplicate`を永続化してからBase Finalized状態を観測する。
+1. 受付時はlocal pause、入力、`gross_amount > 10_000`を検査し、正式Depositと分離したbounded funding attemptへ固定transfer identityとquota reservationを保存する。
+2. 同じupdate callでICRC-2 pullを実行し、成功または`Duplicate`だけを正式Depositへ昇格する。確定的失敗はattemptとreservationを削除し、曖昧・callback消失は同じidentityでreconciliationする。
 3. freshな観測でquoteとmint予約を原子的に確定する。観測不能・不一致・stale observationでは返金せず再観測する。
 4. Base pause、fee拒否、上限超過、reserve不足では、元accountへ`gross_amount - 10_000`を返し、固定Ledger fee 10,000をescrowから負担する。曖昧結果はRefund Reconciliation Holdへ移す。
 5. mint成功時にのみService Feeをfee reserveへ確定し、refundではService Feeを計上しない。
@@ -169,15 +169,16 @@ PicJSでDeposit、Withdrawal、Holdのupgrade保持、stuck receiptを検証す�
 - Pending nonceはPending、現在ETH残高はSafeを維持し、reserveにはSafe残高とFinalized残高の小さい方を使う。
 - Withdrawalの受付観測は`eth_getLogs`で発見し、Finalized headの状態読みで確定する。読み取りは3 provider中2の合意を要求する。Canister送信transactionの確認起動はADR 0020に従う。
 
-### 3-2. Settlement Reserve と scheduler（ADR 0005）
+### 3-2. Settlement Reserve と stable executor（ADR 0005、0019）
 
 - ETH と cycles の一部を Settlement Reserve として会計上予約する。
 - 必要量は固定 floor に加え、未完了 Settlement の保守的最大費用を含めて算出する。
-- schedulerのEVM jobはDeposit mintだけを扱い、Withdrawal jobはICRC Ledger送金と照合だけを扱う。
+- stable executorのjobは型付きkindごとのclaim policyを持ち、Deposit mintとWithdrawalのICRC Ledger送金・照合を混同しない。
+- active leaseは最大1件、generationは単調増加とし、stale callback、confirmation jobの通常claim、進行中scheduled jobのgeneric manual claimを拒否する。
 - Settlement Reserve を満たせないとき、新規 Deposit の受付を停止する。
 - gas 価格、EVM RPC 費用、management canister call 費用の上限評価を外部仮定として文書化し、監査対象にする。
 
-Settlement Reserve、nonce割当前のSettlement優先scheduler、新規Deposit pause、Fee Recipient、fee payout、stable監査ログはPlan 003で実装済みである。
+Settlement Reserve、stable executor、新規Deposit pause、Fee Recipient、fee payout、stable監査ログはPlan 003およびADR 0019の構成で実装済みである。
 本番の数値と鍵保管方式はPlan 005と006で確定する。
 
 ### 3-3. Reconciliation Hold（ADR 0006）
@@ -210,7 +211,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 - Service Feeの上限制約、二重計上防止、成功前のfee確定禁止、未完了payoutがない場合のrecipient変更によるreserve保存、fee reserveを超える送金の禁止（ADR 0004）。
 - Deposit受付がcandidateを含むSettlement Reserveを満たし、candidateからreservedへの移行で必要資源量を減らさないこと（ADR 0005）。
 - stable settlement executorのactive leaseがCanister全体で最大1件であり、generationが単調増加し、stale callback、confirmation jobの通常claim、scheduled/leased jobの手動迂回を拒否すること（ADR 0019、0020）。
-- release対象claimは`Claims.lean`、implementation対応は`Refinement.lean`へ分離し、claim台帳、vector section、production consumer、外部仮定をCIで完全一致させる。release driverは自己申告attestationを受理せず、不可逆操作直前にclean sourceからproof gateを再実行する。
+- release対象claimは`Claims.lean`、有限幅semanticsは`Implementation.lean`、implementation対応は`Refinement.lean`、統合traceは`Protocol.lean`へ分離し、claim台帳、vector section、production consumer、外部仮定をCIで完全一致させる。release driverは自己申告attestationを受理せず、不可逆操作直前にclean sourceからproof gateと二重artifact buildを再実行する。
 - Reconciliation Hold から新規 transfer または補償状態へ直接遷移しないこと（ADR 0006）。
 
 証明範囲は資産の 1:1 裏付けと上記の性質に限定し、cross-chain governance を含めない（ADR 0002）。

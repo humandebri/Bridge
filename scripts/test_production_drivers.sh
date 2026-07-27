@@ -15,7 +15,14 @@ if [[ "${PROOF_GATE_MUTATE_SOURCE:-false}" == true ]]; then
   printf '\n// proof mutation\n' >>"$(cd "$(dirname "$0")/.." && pwd)/src/main.rs"
 fi
 SH
+cat >"$T/source/scripts/rebuild-release-artifacts.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'rebuild %s\n' "$*" >>"$TRACE"
+[[ "${REPRODUCIBLE_BUILD_FAIL:-false}" != true ]]
+SH
 chmod +x "$T/source/scripts/production-deploy-driver.sh" "$T/source/scripts/production-activate-driver.sh" "$T/source/scripts/production-activation-proposal.sh" "$T/source/scripts/production-live-preflight.sh" "$T/source/scripts/ci-local.sh"
+chmod +x "$T/source/scripts/rebuild-release-artifacts.sh"
 printf '/target\n' >"$T/source/.gitignore"
 cat >"$T/source/Cargo.toml" <<'TOML'
 [package]
@@ -192,6 +199,10 @@ if PROOF_GATE_FAIL=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})
   echo "deploy driver accepted a failed proof gate" >&2; exit 1
 fi
 [[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
+if REPRODUCIBLE_BUILD_FAIL=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+  echo "deploy driver accepted a failed reproducible artifact build" >&2; exit 1
+fi
+[[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
 if PROOF_GATE_MUTATE_SOURCE=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted source mutation during proofs" >&2; exit 1
 fi
@@ -200,7 +211,7 @@ git -C "$DRIVER_ROOT" restore src/main.rs
 BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/malicious-init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/malicious-constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh"
 python3 - "$TRACE" <<'PY'
 import sys
-s=open(sys.argv[1]).read(); required=['proofs proofs','initialize_public_config','get_public_config','get_bridge_status','BridgeTimelockController','src/Bridge.sol','cast call']; pos=-1
+s=open(sys.argv[1]).read(); required=['proofs proofs','rebuild ','initialize_public_config','get_public_config','get_bridge_status','BridgeTimelockController','src/Bridge.sol','cast call']; pos=-1
 for x in required:
   pos=s.find(x,pos+1); assert pos>=0,(x,s)
 assert '--ledger' in s and 'unpause' not in s

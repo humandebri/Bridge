@@ -57,8 +57,8 @@ Finalized確認に失敗した場合、Safe head、固定confirmation数、単�
 ## Depositの詳細
 
 1. UIはBase chain、Bridge runtime、CanisterのFinalized observation、Service Fee、ICRC Ledgerの残高・fee・allowance、Base recipientを直前に再検証する。必要なICRC-2 allowanceはgross amountとLedger feeを含む。
-2. IC walletが`request_deposit`を呼ぶ。Canisterは`FundingPending`とjobを保存して即時returnし、受付中にLedger/Base call、quote、nonce、mint予約を行わない。
-3. timerまたは明示ContinueがICRC-2 pullを実行する。成功またはDuplicateなら`EscrowedUnquoted`、確定的な失敗なら`Cancelled`、結果不明なら`FundingReconciliationHold`になる。
+2. IC walletが`request_deposit`を呼ぶ。freshな既存cacheでfee・limit違反を確定できる場合だけrecord作成前に拒否する。その他は既存schemaへ`FundingPending` recordとstable executor job、固定transfer identity、sequence、quotaを単一transactionで保存し、外部callを行わず即時に返す。preflightは予約ではなく、pull後の再検証失敗ではpullとrefundのLedger feeを負担し得る。
+3. leaseを取得したexecutorだけがICRC-2 pullを実行する。成功またはDuplicateなら`EscrowedUnquoted`、確定的失敗なら既存`Cancelled`へ進める。結果不明またはcallback消失は同じtransactionで`FundingReconciliationHold`とidentityを保存し、成功証拠または完全な不存在証明なしに再送しない。
 4. pull確定後にFinalized Base状態を観測し、pause、fee、limit、reserveを再検証する。成功時だけquote、`MintDeposit`、mint予約を原子的に保存する。freshな拒否はgrossからCanister公開設定のLedger feeを引いて元accountへ返す。RPC障害、不一致、stale観測では返金せず再観測する。
 5. `MintDeposit` operationを`Queued → Prepared → Submitted`へ進め、transaction hashをcanonical Historyへ保存する。UIは受付receiptに即時hashを期待しない。
 6. receipt blockがFinalized head以下になったら、UIはIC walletの同意画面を表示して`confirm_deposit`を呼ぶ。Canisterは、受け取ったsettlement ID・transaction hash・receipt block・観測Finalized blockを保存値と照合する。

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import PurePosixPath
@@ -126,6 +127,13 @@ def main() -> int:
     result = classify(paths)
     lines = [f"{area}={'true' if enabled else 'false'}" for area, enabled in result.items()]
     lines.append(f"any={'true' if any(result.values()) else 'false'}")
+    lines.append(
+        "matrix="
+        + json.dumps(
+            [area for area, enabled in result.items() if enabled],
+            separators=(",", ":"),
+        )
+    )
     output_path = args.github_output or os.environ.get("GITHUB_OUTPUT")
     if output_path:
         with open(output_path, "a", encoding="utf-8") as output:

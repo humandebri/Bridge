@@ -16,12 +16,33 @@ def function_body(name: str) -> str:
     return match.group("body")
 
 
+def mode_body(name: str) -> str:
+    match = re.search(
+        rf"^  {re.escape(name)}\)\n(?P<body>.*?)^    ;;$",
+        SOURCE,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"missing mode: {name}")
+    return match.group("body")
+
+
 class CiModeTests(unittest.TestCase):
     def assert_calls(self, aggregate: str, expected: list[str]) -> None:
         body = function_body(aggregate)
         positions = [body.find(f"  {name}\n") for name in expected]
         self.assertTrue(all(position >= 0 for position in positions), (aggregate, positions))
         self.assertEqual(positions, sorted(positions))
+
+    def test_all_builds_test_deployment_wasm_before_smoke(self) -> None:
+        body = mode_body("all")
+        rust = body.index("    run_step rust run_rust\n")
+        real = body.index("    run_step real run_real\n")
+        smoke = body.index("    run_step smoke run_smoke_step\n")
+        self.assertLess(rust, smoke)
+        self.assertLess(rust, real)
+        self.assertLess(real, smoke)
+        self.assertTrue(body.rstrip().endswith("run_step smoke run_smoke_step"))
 
     def test_legacy_aggregate_modes_remain_complete(self) -> None:
         self.assert_calls("run_rust", ["run_rust_fast", "run_rust_integration"])

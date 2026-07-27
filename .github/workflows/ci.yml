@@ -2,7 +2,6 @@
 name: bridge-ci
 
 on:
-  pull_request:
   push:
     branches:
       - main
@@ -231,7 +230,7 @@ jobs:
         run: scripts/ci-local.sh icp
 
   pr-gate:
-    if: always() && github.event_name == 'pull_request'
+    if: false
     needs:
       - changes
       - rust

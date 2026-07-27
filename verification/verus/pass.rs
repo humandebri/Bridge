@@ -7,6 +7,82 @@ use vstd::prelude::*;
 mod kernel;
 
 verus! {
+pub open spec fn settlement_decision_view(
+    result: Option<kernel::SettlementDecision>,
+) -> Option<(int, int, int)> {
+    match result {
+        Some(decision) => Some((
+            decision.escrow_debit as int,
+            decision.reserve_credit as int,
+            decision.liability_debit as int,
+        )),
+        None => None,
+    }
+}
+
+pub open spec fn deposit_admission_decision_view(
+    result: Option<kernel::DepositAdmissionDecision>,
+) -> Option<(int, int)> {
+    match result {
+        Some(decision) =>
+            Some((decision.net_amount as int, decision.next_window_total as int)),
+        None => None,
+    }
+}
+
+pub open spec fn reservation_decision_view(
+    result: Option<kernel::ReservationDecision>,
+) -> Option<(int, int)> {
+    match result {
+        Some(decision) => Some((decision.reserved as int, decision.candidate as int)),
+        None => None,
+    }
+}
+
+pub open spec fn payout_decision_view(
+    result: Option<kernel::PayoutDecision>,
+) -> Option<int> {
+    match result {
+        Some(decision) => Some(decision.debit as int),
+        None => None,
+    }
+}
+
+pub open spec fn fee_rotation_decision_view(
+    result: kernel::FeeRecipientRotationDecision,
+) -> int {
+    match result {
+        kernel::FeeRecipientRotationDecision::Allow => 0,
+        kernel::FeeRecipientRotationDecision::Unauthorized => 1,
+        kernel::FeeRecipientRotationDecision::InvalidInput => 2,
+        kernel::FeeRecipientRotationDecision::Busy => 3,
+    }
+}
+
+pub open spec fn lease_outcome_decision_view(result: kernel::LeaseOutcomeDecision) -> int {
+    match result {
+        kernel::LeaseOutcomeDecision::Accept => 0,
+        kernel::LeaseOutcomeDecision::Reject => 1,
+    }
+}
+
+pub open spec fn hold_resolution_decision_view(
+    result: kernel::HoldResolutionDecision,
+) -> int {
+    match result {
+        kernel::HoldResolutionDecision::Wait => 0,
+        kernel::HoldResolutionDecision::ResolveSucceeded => 1,
+        kernel::HoldResolutionDecision::ResolveAbsent => 2,
+    }
+}
+
+pub open spec fn manual_claim_decision_view(result: kernel::ManualClaimDecision) -> int {
+    match result {
+        kernel::ManualClaimDecision::Allow => 0,
+        kernel::ManualClaimDecision::AutomaticProgressPending => 1,
+    }
+}
+
 proof fn incomplete_scan_cannot_prove_absence(next: int, tip: int, watermark: int)
     requires next <= tip || watermark < tip
     ensures !kernel::scan_complete_spec(next, tip, watermark, true, false)
@@ -184,6 +260,92 @@ proof fn outbound_settlement_uses_the_committed_fee_once(
             amount_out + service_fee))
 {}
 
+fn settlement_decision_returns_exact_checked_delta(
+    amount_out: u128, ledger_fee: u128, service_fee: u128,
+) -> (result: Option<kernel::SettlementDecision>)
+    requires
+        ledger_fee <= service_fee,
+        amount_out as int + service_fee as int
+            <= 340282366920938463463374607431768211455int,
+    ensures settlement_decision_view(result)
+        == Some((amount_out as int + ledger_fee as int,
+            service_fee as int - ledger_fee as int,
+            amount_out as int + service_fee as int))
+{
+    assert(ledger_fee as int <= service_fee as int);
+    assert(amount_out as int + ledger_fee as int
+        <= 340282366920938463463374607431768211455int);
+    assert(amount_out <= u128::MAX - ledger_fee);
+    assert(amount_out <= u128::MAX - service_fee);
+    kernel::settlement_decision(amount_out, ledger_fee, service_fee)
+}
+
+fn deposit_admission_decision_checks_every_bound(
+    gross: u128, fee: u128, maximum_fee: u128, per_deposit: u128,
+    consumed: u128, reserved: u128, window_limit: u128,
+) -> (result: Option<kernel::DepositAdmissionDecision>)
+    requires
+        fee <= maximum_fee,
+        fee < gross,
+        (gross - fee) <= per_deposit,
+        consumed as int + reserved as int + (gross as int - fee as int)
+            <= 340282366920938463463374607431768211455int,
+        consumed as int + reserved as int + (gross as int - fee as int)
+            <= window_limit as int,
+    ensures deposit_admission_decision_view(result)
+        == Some((gross as int - fee as int,
+            consumed as int + reserved as int + (gross as int - fee as int)))
+{
+    assert((gross - fee) as int == gross as int - fee as int);
+    assert(consumed <= u128::MAX - reserved);
+    assert((consumed + reserved) as int == consumed as int + reserved as int);
+    assert(consumed + reserved <= u128::MAX - (gross - fee));
+    assert((consumed + reserved + (gross - fee)) as int
+        == consumed as int + reserved as int + (gross as int - fee as int));
+    kernel::deposit_admission_decision(
+        gross, fee, maximum_fee, per_deposit, consumed, reserved, window_limit)
+}
+
+fn reservation_decision_preserves_candidate_requirement(
+    reserved: u128, candidate: u128,
+) -> (result: Option<kernel::ReservationDecision>)
+    requires
+        reserved as int + candidate as int
+            <= 340282366920938463463374607431768211455int,
+    ensures reservation_decision_view(result)
+        == Some((reserved as int + candidate as int, 0int))
+{
+    assert(reserved <= u128::MAX - candidate);
+    kernel::reservation_decision(reserved, candidate)
+}
+
+fn payout_decision_returns_the_only_allowed_debit(
+    reserve: u128, pending: u128, amount: u128, fee: u128,
+    confirmed_first_time: bool,
+) -> (result: Option<kernel::PayoutDecision>)
+    requires
+        pending <= reserve,
+        amount as int + fee as int
+            <= 340282366920938463463374607431768211455int,
+        amount as int + fee as int <= reserve as int - pending as int,
+    ensures payout_decision_view(result)
+        == Some(if confirmed_first_time { amount as int + fee as int } else { 0int })
+{
+    assert(amount <= u128::MAX - fee);
+    assert(amount + fee <= reserve - pending);
+    kernel::payout_decision(reserve, pending, amount, fee, confirmed_first_time)
+}
+
+fn lease_outcome_decision_rejects_stale_or_inactive(
+    active_generation: u64, outcome_generation: u64, active: bool,
+) -> (result: kernel::LeaseOutcomeDecision)
+    ensures
+        lease_outcome_decision_view(result) == 0
+            <==> active && active_generation == outcome_generation
+{
+    kernel::lease_outcome_decision(active_generation, outcome_generation, active)
+}
+
 proof fn active_counter_transition_preserves_classification(current: int, old: bool, new: bool)
     requires 0 <= current < 0xffff_ffff_ffff_ffffint,
         old && !new ==> current > 0
@@ -196,6 +358,32 @@ proof fn active_counter_transition_preserves_classification(current: int, old: b
 proof fn canonical_probe_accepts_exact_block(receipt_block: int, snapshot_block: int)
     ensures kernel::canonical_probe_matches_spec(receipt_block, snapshot_block)
         <==> receipt_block == snapshot_block
+{}
+
+proof fn withdrawal_finalization_decision_is_fail_closed(
+    receipt_succeeded: bool,
+    receipt_block: int,
+    finalized_block: Option<int>,
+)
+    ensures kernel::withdrawal_finalization_decision_spec(
+        receipt_succeeded, receipt_block, finalized_block)
+        == match finalized_block {
+            None => 0int,
+            Some(finalized) if finalized < receipt_block => 0int,
+            Some(_) if receipt_succeeded => 1int,
+            Some(_) => 2int,
+        }
+{}
+
+proof fn pending_queue_restore_preserves_existing_block(
+    existing_blocked: Option<bool>,
+    incoming_blocked: bool,
+)
+    ensures kernel::restored_pending_blocked_spec(existing_blocked, incoming_blocked)
+        == match existing_blocked {
+            Some(blocked) => blocked,
+            None => incoming_blocked,
+        }
 {}
 
 proof fn withdrawal_liability_index_matches_nonterminal_phases(state: int)
@@ -263,6 +451,23 @@ proof fn fee_recipient_rotation_requires_no_pending_payout(pending: int)
     ensures kernel::fee_recipient_rotation_allowed_spec(pending) <==> pending == 0
 {}
 
+fn fee_recipient_rotation_decision_is_fail_closed(
+    authorized: bool,
+    anonymous: bool,
+    role_collision: bool,
+    subaccount_len: usize,
+    pending_payout_debit: u128,
+) -> (result: kernel::FeeRecipientRotationDecision)
+    ensures
+        fee_rotation_decision_view(result) == 0
+            <==> authorized && !anonymous && !role_collision
+                && (subaccount_len == 0 || subaccount_len == 32)
+                && pending_payout_debit == 0,
+{
+    kernel::fee_recipient_rotation_decision(
+        authorized, anonymous, role_collision, subaccount_len, pending_payout_debit)
+}
+
 proof fn service_fee_change_respects_immutable_maximum(service_fee: int, maximum: int)
     requires 0 <= service_fee, 0 <= maximum
     ensures kernel::service_fee_change_allowed_spec(service_fee, maximum)
@@ -289,6 +494,17 @@ proof fn hold_requires_success_or_complete_absence(success: bool, absence: bool)
     ensures kernel::hold_retry_allowed_spec(success, absence) <==> success || absence
 {}
 
+fn hold_resolution_decision_classifies_evidence(
+    success: bool, absence: bool,
+) -> (result: kernel::HoldResolutionDecision)
+    ensures
+        hold_resolution_decision_view(result) == 1 <==> success,
+        hold_resolution_decision_view(result) == 2 <==> !success && absence,
+        hold_resolution_decision_view(result) == 0 <==> !success && !absence,
+{
+    kernel::hold_resolution_decision(success, absence)
+}
+
 proof fn manual_claim_cannot_bypass_confirmation_or_active_schedule(
     confirmation: bool,
     scheduled: bool,
@@ -299,8 +515,26 @@ proof fn manual_claim_cannot_bypass_confirmation_or_active_schedule(
 )
     ensures kernel::manual_claim_allowed_spec(
         confirmation, scheduled, active, stopped, overdue, expired)
-        <==> !confirmation && ((!scheduled && !active) || stopped || overdue || expired)
+        <==> !confirmation
+            && (!active || expired)
+            && (!scheduled || stopped || overdue || expired)
 {}
+
+fn manual_claim_decision_matches_shared_guard(
+    confirmation: bool,
+    scheduled: bool,
+    active: bool,
+    stopped: bool,
+    overdue: bool,
+    expired: bool,
+) -> (result: kernel::ManualClaimDecision)
+    ensures manual_claim_decision_view(result) == 0
+        <==> kernel::manual_claim_allowed_spec(
+            confirmation, scheduled, active, stopped, overdue, expired),
+{
+    kernel::manual_claim_decision(
+        confirmation, scheduled, active, stopped, overdue, expired)
+}
 
 proof fn role_action_matrix(action: int, pause: bool, governance: bool)
     ensures kernel::administrator_authorized_spec(action, pause, governance)

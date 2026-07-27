@@ -27,9 +27,9 @@ use bridge_core::{
     BaseMintSnapshot, CoreError, DepositHoldResolution, DepositId, DepositRecord, EvmCallIntent,
     EvmOperationEvent, EvmOperationKind, EvmOperationRecord, EvmOperationState,
     EvmTransactionEnvelope, ExternalProgress, FeeKind, FinalizedObservationRecord, HoldId,
-    ReconciliationHoldRecord, ReconciliationHoldState, ReconciliationScanProgress,
-    ReconciliationTarget, WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId,
-    WithdrawalRecord, WithdrawalState,
+    LedgerTransferIdentity, ReconciliationHoldRecord, ReconciliationHoldState,
+    ReconciliationScanProgress, ReconciliationTarget, WithdrawalEvent, WithdrawalHoldResolution,
+    WithdrawalId, WithdrawalRecord, WithdrawalState,
 };
 use candid::{CandidType, Principal};
 use ic_sqlite_vfs::db::migrate::Migration;
@@ -1323,6 +1323,40 @@ pub struct SettlementJob {
     pub last_error_code: Option<String>,
     pub last_error_detail: Option<String>,
     pub updated_at_ns: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettlementCallbackToken {
+    kind: SettlementJobKind,
+    settlement_id: [u8; 32],
+    lease_generation: u64,
+    transfer_identity_hash: [u8; 32],
+}
+
+impl SettlementCallbackToken {
+    pub fn for_deposit(
+        job: &SettlementJob,
+        transfer: &LedgerTransferIdentity,
+    ) -> Result<Self, StorageError> {
+        if job.kind != SettlementJobKind::Deposit {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        let encoded = encode(transfer)?;
+        Ok(Self {
+            kind: job.kind,
+            settlement_id: job.settlement_id,
+            lease_generation: job.lease_generation,
+            transfer_identity_hash: Sha256::digest(encoded.as_slice()).into(),
+        })
+    }
+
+    fn matches_deposit(&self, record: &DepositRecord) -> Result<bool, StorageError> {
+        let encoded = encode(&record.transfer)?;
+        let transfer_identity_hash: [u8; 32] = Sha256::digest(encoded.as_slice()).into();
+        Ok(self.kind == SettlementJobKind::Deposit
+            && self.settlement_id == record.id.bytes()
+            && self.transfer_identity_hash == transfer_identity_hash)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3302,13 +3336,16 @@ impl StableStore {
                     let allowed = if explicit_confirmation {
                         confirmation
                     } else {
-                        bridge_core::manual_claim_allowed(
-                            confirmation,
-                            scheduled,
-                            active,
-                            stopped,
-                            overdue,
-                            expired,
+                        matches!(
+                            bridge_core::manual_claim_decision(
+                                confirmation,
+                                scheduled,
+                                active,
+                                stopped,
+                                overdue,
+                                expired,
+                            ),
+                            bridge_core::ManualClaimDecision::Allow
                         )
                     };
                     if !allowed {
@@ -3605,20 +3642,18 @@ impl StableStore {
     }
 
     pub fn next_settlement_wakeup_ns(&self, _now_ns: u64) -> Result<Option<u64>, StorageError> {
-        let values = self.handle.query(|connection| {
-            connection.query_all(
-                "SELECT next_run_at_ns FROM settlement_jobs WHERE status = 0
-             UNION ALL SELECT lease_until_ns FROM settlement_jobs WHERE status = 1
-             ORDER BY 1 LIMIT 1",
-                params![],
-                |row| row.get::<Vec<u8>>(0),
-            )
-        })?;
-        values
-            .into_iter()
-            .next()
-            .map(|value| u64::from_sql_bytes(value).map_err(|_| StorageError::DecodeFailed))
+        self.handle
+            .query(|connection| {
+                connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT next_run_at_ns FROM settlement_jobs WHERE status = 0
+                     UNION ALL SELECT lease_until_ns FROM settlement_jobs WHERE status = 1
+                     ORDER BY 1 LIMIT 1",
+                    params![],
+                )
+            })?
+            .map(u64::from_sql_bytes)
             .transpose()
+            .map_err(|_| StorageError::DecodeFailed)
     }
 
     pub fn park_awaiting_confirmation(
@@ -3856,7 +3891,10 @@ impl StableStore {
             .transpose()
             .map_err(|_| StorageError::DecodeFailed)?;
         Ok(current.is_some_and(|current| {
-            bridge_core::lease_outcome_is_current(current, job.lease_generation, true)
+            matches!(
+                bridge_core::lease_outcome_decision(current, job.lease_generation, true),
+                bridge_core::LeaseOutcomeDecision::Accept
+            )
         }))
     }
 
@@ -5413,6 +5451,78 @@ impl StableStore {
         self.external_progress.set(encode(value)?)
     }
 
+    pub fn record_reserve_observation(
+        &mut self,
+        eth_balance_wei: u128,
+        observed_at_ns: u64,
+        caller: Principal,
+    ) -> Result<(), StorageError> {
+        let previous_progress = self.external_progress()?;
+        if observed_at_ns < previous_progress.last_reserve_observation_ns {
+            return Err(StorageError::StaleReserveObservation);
+        }
+        let mut progress = previous_progress;
+        progress.last_eth_balance_wei = eth_balance_wei;
+        progress.reserve_sufficient = true;
+        progress.reserve_observation_generation = progress
+            .reserve_observation_generation
+            .checked_add(1)
+            .ok_or(StorageError::CounterOverflow)?;
+        progress.last_reserve_observation_ns = observed_at_ns;
+
+        let previous_counters = self.counters()?;
+        let mut counters = previous_counters;
+        let audit = (!previous_progress.reserve_sufficient)
+            .then(|| {
+                self.prepare_audit_batch(
+                    &mut counters,
+                    caller,
+                    observed_at_ns,
+                    vec![AuditEventKind::ReserveGateChanged { sufficient: true }],
+                )
+            })
+            .transpose()?;
+        let previous_progress_blob = encode(&previous_progress)?;
+        let progress_blob = encode(&progress)?;
+        let previous_counters_blob = encode(&previous_counters)?;
+        let counters_blob = encode(&counters)?;
+        let retention_blob = audit.as_ref().map_or_else(
+            || self.audit_retention.get(),
+            |batch| Ok(batch.retention_blob.clone()),
+        )?;
+        self.handle.update(|connection| {
+            let persisted_progress = connection.query_scalar::<Vec<u8>>(
+                "SELECT external_progress FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_progress != previous_progress_blob.to_sql_bytes()
+                || persisted_counters != previous_counters_blob.to_sql_bytes()
+            {
+                return Err(DbError::Constraint(
+                    "stale reserve observation state".into(),
+                ));
+            }
+            if let Some(batch) = &audit {
+                commit_audit_batch(connection, batch)?;
+            }
+            connection.execute(
+                "UPDATE singleton_state
+                 SET external_progress = ?1, counters = ?2, audit_retention = ?3
+                 WHERE id = 1",
+                params![
+                    progress_blob.to_sql_bytes(),
+                    counters_blob.to_sql_bytes(),
+                    retention_blob.to_sql_bytes()
+                ],
+            )
+        })?;
+        Ok(())
+    }
+
     pub fn put_evm_envelope(&mut self, value: &EvmTransactionEnvelope) -> Result<(), StorageError> {
         let id = value.operation_id.get();
         if let Some(previous) = self.evm_execution_payload(id)? {
@@ -5773,7 +5883,7 @@ impl StableStore {
     }
 
     pub fn put_deposit(&mut self, value: &DepositRecord) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, None)
+        self.put_deposit_with_audit(value, None, None, None)
     }
 
     pub fn put_deposit_and_audit(
@@ -5782,7 +5892,7 @@ impl StableStore {
         caller: Principal,
         kind: AuditEventKind,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, Some((caller, kind)), None)
+        self.put_deposit_with_audit(value, Some((caller, kind)), None, None)
     }
 
     pub fn put_deposit_refund_retry_bundle(
@@ -5797,7 +5907,20 @@ impl StableStore {
         if job.kind != SettlementJobKind::Deposit || job.settlement_id != value.id.bytes() {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
-        self.put_deposit_with_audit(value, Some((caller, kind)), Some((job, outcome, now_ns)))
+        self.put_deposit_with_audit(
+            value,
+            Some((caller, kind)),
+            Some((job, outcome, now_ns)),
+            None,
+        )
+    }
+
+    pub fn put_deposit_funding_callback(
+        &mut self,
+        value: &DepositRecord,
+        token: &SettlementCallbackToken,
+    ) -> Result<(), StorageError> {
+        self.put_deposit_with_audit(value, None, None, Some(token))
     }
 
     fn put_deposit_with_audit(
@@ -5805,9 +5928,16 @@ impl StableStore {
         value: &DepositRecord,
         audit_kind: Option<(Principal, AuditEventKind)>,
         refund_job: Option<(&SettlementJob, RefundJobOutcome, u64)>,
+        callback_token: Option<&SettlementCallbackToken>,
     ) -> Result<(), StorageError> {
         let previous_stored = self.stored_deposit(value.id.bytes())?;
         let previous = previous_stored.as_ref().map(|stored| stored.record.clone());
+        if let Some(token) = callback_token {
+            let previous = previous.as_ref().ok_or(StorageError::RecordNotFound)?;
+            if !token.matches_deposit(previous)? {
+                return Err(StorageError::Core(CoreError::ConflictingReplay));
+            }
+        }
         let next_stored = match previous_stored.as_ref() {
             Some(stored) => StoredDeposit {
                 record: value.clone(),
@@ -5894,6 +6024,18 @@ impl StableStore {
         let key = value.id.bytes().to_sql_bytes();
         let previous_blob = previous_stored.as_ref().map(encode).transpose()?;
         self.handle.update(|connection| {
+            if let Some(token) = callback_token {
+                let current = connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT lease_generation FROM settlement_jobs
+                     WHERE settlement_kind = ?1 AND settlement_id = ?2 AND status = 1",
+                    params![token.kind.sql(), token.settlement_id.to_sql_bytes()],
+                )?;
+                if current.as_deref()
+                    != Some(token.lease_generation.to_sql_bytes().as_slice())
+                {
+                    return Err(DbError::Constraint("stale settlement callback".into()));
+                }
+            }
             expect_optional_blob(
                 connection,
                 "SELECT value FROM deposits WHERE key = ?1",
@@ -6114,17 +6256,20 @@ impl StableStore {
             if !reserve.sufficient {
                 return Err(StorageError::ReserveUnavailable);
             }
-            let mint_total = bridge_core::mint_admission_total(
+            let quote = record
+                .quote
+                .ok_or(StorageError::Core(CoreError::InvalidAmount))?;
+            let deposit_decision = bridge_core::deposit_admission_decision(
+                record.gross_amount.get(),
+                quote.service_fee.get(),
+                record.max_service_fee.get(),
+                admission.mint_snapshot.per_deposit_limit.get(),
                 admission.mint_snapshot.effective_minted_in_window().get(),
                 previous_counters.reserved_deposit_mint_amount,
-                record
-                    .quote
-                    .ok_or(StorageError::Core(CoreError::InvalidAmount))?
-                    .net_amount
-                    .get(),
+                admission.mint_snapshot.mint_window_limit.get(),
             )
-            .ok_or(StorageError::CounterOverflow)?;
-            if mint_total > admission.mint_snapshot.mint_window_limit.get() {
+            .ok_or(StorageError::Core(CoreError::MintWindowLimitExceeded))?;
+            if deposit_decision.net_amount != quote.net_amount.get() {
                 return Err(StorageError::Core(CoreError::MintWindowLimitExceeded));
             }
             progress.last_eth_balance_wei = admission.eth_balance_wei;
@@ -6153,12 +6298,14 @@ impl StableStore {
             };
         counters.reserved_deposit_mint_amount =
             adjust_reserved_mint_amount(counters.reserved_deposit_mint_amount, None, record)?;
-        if !bridge_core::reserve_admission_preserves_requirement(
+        let reservation = bridge_core::reservation_decision(
             previous_counters.reserved_deposit_mint_amount,
             reservation_candidate,
-            counters.reserved_deposit_mint_amount,
-            0,
-        ) {
+        )
+        .ok_or(StorageError::CounterOverflow)?;
+        if reservation.reserved != counters.reserved_deposit_mint_amount
+            || reservation.candidate != 0
+        {
             return Err(StorageError::CounterOverflow);
         }
         counters.reserved_deposit_mint_operations = adjust_reserved_mint_operations(
@@ -6410,9 +6557,32 @@ impl StableStore {
         deposit: &DepositRecord,
         hold: &ReconciliationHoldRecord,
     ) -> Result<(), StorageError> {
+        self.commit_deposit_hold_bundle_fenced(deposit, hold, None)
+    }
+
+    pub fn commit_deposit_funding_hold_bundle(
+        &mut self,
+        deposit: &DepositRecord,
+        hold: &ReconciliationHoldRecord,
+        token: &SettlementCallbackToken,
+    ) -> Result<(), StorageError> {
+        self.commit_deposit_hold_bundle_fenced(deposit, hold, Some(token))
+    }
+
+    fn commit_deposit_hold_bundle_fenced(
+        &mut self,
+        deposit: &DepositRecord,
+        hold: &ReconciliationHoldRecord,
+        callback_token: Option<&SettlementCallbackToken>,
+    ) -> Result<(), StorageError> {
         let previous = self
             .deposit(deposit.id.bytes())?
             .ok_or(StorageError::RecordNotFound)?;
+        if let Some(token) = callback_token {
+            if !token.matches_deposit(&previous)? {
+                return Err(StorageError::Core(CoreError::ConflictingReplay));
+            }
+        }
         let mut expected = previous.clone();
         let (hold_id, request, transfer) = match (&previous.state, &deposit.state) {
             (
@@ -6451,6 +6621,7 @@ impl StableStore {
                 previous: &previous,
                 next: deposit,
             },
+            callback_token,
         )
     }
 
@@ -6490,6 +6661,7 @@ impl StableStore {
                 previous: &previous,
                 next: withdrawal,
             },
+            None,
         )
     }
 
@@ -6497,6 +6669,7 @@ impl StableStore {
         &mut self,
         hold: &ReconciliationHoldRecord,
         parent: HoldBundleParent<'_>,
+        callback_token: Option<&SettlementCallbackToken>,
     ) -> Result<(), StorageError> {
         if !is_open_hold(hold) || self.reconciliation_hold(hold.id.get())?.is_some() {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
@@ -6560,6 +6733,16 @@ impl StableStore {
         let counters_blob = encode(&counters)?;
         let key = key.to_sql_bytes();
         self.handle.update(|connection| {
+            if let Some(token) = callback_token {
+                let current = connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT lease_generation FROM settlement_jobs
+                     WHERE settlement_kind = ?1 AND settlement_id = ?2 AND status = 1",
+                    params![token.kind.sql(), token.settlement_id.to_sql_bytes()],
+                )?;
+                if current.as_deref() != Some(token.lease_generation.to_sql_bytes().as_slice()) {
+                    return Err(DbError::Constraint("stale settlement callback".into()));
+                }
+            }
             let persisted_counters = connection.query_scalar::<Vec<u8>>(
                 "SELECT counters FROM singleton_state WHERE id = 1",
                 params![],
@@ -7221,13 +7404,17 @@ impl StableStore {
             if !reserve.sufficient {
                 return Err(StorageError::ReserveUnavailable);
             }
-            let mint_total = bridge_core::mint_admission_total(
+            let deposit_decision = bridge_core::deposit_admission_decision(
+                next.gross_amount.get(),
+                quote.service_fee.get(),
+                next.max_service_fee.get(),
+                admission.mint_snapshot.per_deposit_limit.get(),
                 admission.mint_snapshot.effective_minted_in_window().get(),
                 previous_counters.reserved_deposit_mint_amount,
-                quote.net_amount.get(),
+                admission.mint_snapshot.mint_window_limit.get(),
             )
-            .ok_or(StorageError::CounterOverflow)?;
-            if mint_total > admission.mint_snapshot.mint_window_limit.get() {
+            .ok_or(StorageError::Core(CoreError::MintWindowLimitExceeded))?;
+            if deposit_decision.net_amount != quote.net_amount.get() {
                 return Err(StorageError::Core(CoreError::MintWindowLimitExceeded));
             }
             let mut next_progress = previous_progress;
@@ -7295,14 +7482,17 @@ impl StableStore {
                 if admitted_progress.is_some()
                     && !is_deposit_mint_reserved(previous)
                     && is_deposit_mint_reserved(next)
-                    && !bridge_core::reserve_admission_preserves_requirement(
+                {
+                    let reservation = bridge_core::reservation_decision(
                         before_reserved,
                         next.reserved_mint_amount()?.get(),
-                        counters.reserved_deposit_mint_amount,
-                        0,
                     )
-                {
-                    return Err(StorageError::CounterOverflow);
+                    .ok_or(StorageError::CounterOverflow)?;
+                    if reservation.reserved != counters.reserved_deposit_mint_amount
+                        || reservation.candidate != 0
+                    {
+                        return Err(StorageError::CounterOverflow);
+                    }
                 }
                 counters.reserved_deposit_mint_operations = adjust_reserved_mint_operations(
                     counters.reserved_deposit_mint_operations,
@@ -8934,6 +9124,17 @@ mod tests {
             })
             .expect("escrowed");
         deposit
+    }
+
+    fn funding_pending_deposit() -> DepositRecord {
+        DepositRecord::accept(DepositRequest {
+            id: DepositId::new([31; 32]),
+            payload_hash: [32; 32],
+            gross_amount: Amount::new(110),
+            user_max_service_fee: Amount::new(10),
+            transfer: transfer(LedgerOperation::PullDeposit, 110, 30),
+        })
+        .expect("valid funding deposit")
     }
 
     fn deposit_for(owner: Principal) -> DepositRecord {
@@ -10704,6 +10905,62 @@ mod tests {
 
     #[test]
     #[serial]
+    fn reserve_observation_is_atomic_audited_and_reopenable() {
+        let memory = VectorMemory::default();
+        let caller = Principal::self_authenticating([34; 32]);
+        let mut store = StableStore::init(memory.clone()).expect("initialize reserve fixture");
+
+        store
+            .record_reserve_observation(50, 100, caller)
+            .expect("record reserve observation");
+        let first = store.external_progress().expect("first reserve progress");
+        assert_eq!(first.last_eth_balance_wei, 50);
+        assert!(first.reserve_sufficient);
+        assert_eq!(first.reserve_observation_generation, 1);
+        assert_eq!(first.last_reserve_observation_ns, 100);
+        assert!(matches!(
+            store
+                .audit_events(0, 10)
+                .expect("reserve audit")
+                .events
+                .as_slice(),
+            [AuditEvent {
+                caller: event_caller,
+                kind: AuditEventKind::ReserveGateChanged { sufficient: true },
+                ..
+            }] if *event_caller == caller
+        ));
+
+        assert_eq!(
+            store.record_reserve_observation(60, 99, caller),
+            Err(StorageError::StaleReserveObservation)
+        );
+        assert_eq!(
+            store.external_progress().expect("progress after stale"),
+            first
+        );
+        store
+            .record_reserve_observation(60, 101, caller)
+            .expect("refresh sufficient reserve");
+        assert_eq!(
+            store
+                .audit_events(0, 10)
+                .expect("deduplicated reserve audit")
+                .events
+                .len(),
+            1
+        );
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen reserve fixture");
+        let progress = reopened.external_progress().expect("reopened reserve");
+        assert_eq!(progress.last_eth_balance_wei, 60);
+        assert_eq!(progress.reserve_observation_generation, 2);
+        assert_eq!(progress.last_reserve_observation_ns, 101);
+    }
+
+    #[test]
+    #[serial]
     fn owner_sequence_advances_only_on_admission_and_survives_reopen() {
         let memory = VectorMemory::default();
         let owner = Principal::self_authenticating([21; 32]);
@@ -11917,6 +12174,161 @@ mod tests {
 
     #[test]
     #[serial]
+    fn funding_callback_requires_current_generation_and_exact_transfer_identity() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        let pending = funding_pending_deposit();
+        store.put_deposit(&pending).expect("seed funding deposit");
+        store
+            .handle
+            .update(|connection| {
+                enqueue_settlement_job(
+                    connection,
+                    SettlementJobKind::Deposit,
+                    pending.id.bytes(),
+                    None,
+                    0,
+                )
+            })
+            .expect("schedule funding job");
+        let SettlementJobClaim::Claimed(job) = store
+            .claim_due_settlement_job(0, 100, 1)
+            .expect("claim funding job")
+        else {
+            panic!("funding job was not claimed")
+        };
+        let token =
+            SettlementCallbackToken::for_deposit(&job, &pending.transfer).expect("callback token");
+        let mut succeeded = pending.clone();
+        succeeded
+            .apply(DepositEvent::FundingSucceeded {
+                ledger_block_index: 9,
+            })
+            .expect("funding succeeds");
+
+        let mut stale = token;
+        stale.lease_generation += 1;
+        assert!(store
+            .put_deposit_funding_callback(&succeeded, &stale)
+            .is_err());
+        assert_eq!(
+            store
+                .deposit(pending.id.bytes())
+                .expect("read pending")
+                .expect("present"),
+            pending
+        );
+
+        let mut foreign_transfer = pending.transfer.clone();
+        foreign_transfer.memo = [99; 32];
+        let foreign =
+            SettlementCallbackToken::for_deposit(&job, &foreign_transfer).expect("foreign token");
+        assert!(store
+            .put_deposit_funding_callback(&succeeded, &foreign)
+            .is_err());
+        assert_eq!(
+            store
+                .deposit(pending.id.bytes())
+                .expect("read pending")
+                .expect("present"),
+            pending
+        );
+
+        store
+            .put_deposit_funding_callback(&succeeded, &token)
+            .expect("current callback");
+        assert_eq!(
+            store
+                .deposit(pending.id.bytes())
+                .expect("read succeeded")
+                .expect("present"),
+            succeeded
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn funding_callback_rolls_back_every_record_write_failpoint_and_reopens() {
+        for failpoint in [
+            RecordWriteFailpoint::Encode,
+            RecordWriteFailpoint::RemoveIndex,
+            RecordWriteFailpoint::AddIndex,
+            RecordWriteFailpoint::OperationOwner,
+            RecordWriteFailpoint::Record,
+            RecordWriteFailpoint::SingletonState,
+        ] {
+            let memory = VectorMemory::default();
+            let mut store = StableStore::init(memory.clone()).expect("initialize");
+            let pending = funding_pending_deposit();
+            store.put_deposit(&pending).expect("seed funding deposit");
+            store
+                .handle
+                .update(|connection| {
+                    enqueue_settlement_job(
+                        connection,
+                        SettlementJobKind::Deposit,
+                        pending.id.bytes(),
+                        None,
+                        0,
+                    )
+                })
+                .expect("schedule funding job");
+            let SettlementJobClaim::Claimed(job) = store
+                .claim_due_settlement_job(0, 100, 1)
+                .expect("claim funding job")
+            else {
+                panic!("funding job was not claimed")
+            };
+            let token = SettlementCallbackToken::for_deposit(&job, &pending.transfer)
+                .expect("callback token");
+            let mut succeeded = pending.clone();
+            succeeded
+                .apply(DepositEvent::FundingSucceeded {
+                    ledger_block_index: 9,
+                })
+                .expect("funding succeeds");
+            let counters = store.counters().expect("counters before");
+
+            set_record_write_failpoint(Some(failpoint));
+            assert!(
+                store
+                    .put_deposit_funding_callback(&succeeded, &token)
+                    .is_err(),
+                "{failpoint:?}"
+            );
+            set_record_write_failpoint(None);
+            assert_eq!(
+                store
+                    .deposit(pending.id.bytes())
+                    .expect("read pending")
+                    .expect("present"),
+                pending,
+                "{failpoint:?}"
+            );
+            assert_eq!(store.counters().expect("counters after"), counters);
+            assert_eq!(
+                store
+                    .settlement_job(SettlementJobKind::Deposit, pending.id.bytes())
+                    .expect("job after")
+                    .expect("present")
+                    .lease_generation,
+                job.lease_generation
+            );
+            drop(store);
+            let reopened = StableStore::reopen(memory).expect("reopen");
+            assert_eq!(
+                reopened
+                    .deposit(pending.id.bytes())
+                    .expect("reopened pending")
+                    .expect("present"),
+                pending,
+                "{failpoint:?}"
+            );
+            assert_eq!(reopened.counters().expect("reopened counters"), counters);
+        }
+    }
+
+    #[test]
+    #[serial]
     fn manual_claim_uses_overdue_boundary_from_shared_decision() {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
         let record = deposit();
@@ -11968,6 +12380,22 @@ mod tests {
                 )
                 .expect("overdue decision"),
             ManualSettlementClaim::Claimed(_)
+        ));
+        assert!(matches!(
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    record.id.bytes(),
+                    Principal::self_authenticating([62; 32]),
+                    401,
+                    500,
+                    300,
+                    limits,
+                )
+                .expect("active overdue decision"),
+            ManualSettlementClaim::AutomaticProgressPending {
+                next_run_at_ns: None
+            }
         ));
     }
 

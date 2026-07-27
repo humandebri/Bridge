@@ -201,12 +201,12 @@ pub struct Settlement {
 
 impl Settlement {
     pub fn net_service_fee(self) -> Result<Amount, CoreError> {
-        crate::outbound_settlement(
+        crate::settlement_decision(
             self.amount_out.get(),
             self.ledger_fee.get(),
             self.service_fee.get(),
         )
-        .map(|(_, fee_reserve_credit, _)| Amount::new(fee_reserve_credit))
+        .map(|decision| Amount::new(decision.reserve_credit))
         .ok_or(CoreError::SettlementMismatch)
     }
 
@@ -225,7 +225,7 @@ impl Settlement {
         ) {
             return Err(CoreError::SettlementMismatch);
         }
-        if crate::outbound_settlement(
+        if crate::settlement_decision(
             self.amount_out.get(),
             self.ledger_fee.get(),
             self.service_fee.get(),

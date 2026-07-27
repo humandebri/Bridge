@@ -13,7 +13,14 @@ set -euo pipefail
 printf 'proofs %s\n' "$*" >>"$TRACE"
 if [[ "${PROOF_GATE_FAIL:-false}" == true ]]; then exit 42; fi
 SH
+cat >"$T/source/scripts/rebuild-release-artifacts.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'rebuild %s\n' "$*" >>"$TRACE"
+[[ "${REPRODUCIBLE_BUILD_FAIL:-false}" != true ]]
+SH
 chmod +x "$T/source/scripts/ci-local.sh"
+chmod +x "$T/source/scripts/rebuild-release-artifacts.sh"
 printf '/target\n' >"$T/source/.gitignore"
 cat >"$T/source/Cargo.toml" <<'TOML'
 [package]
@@ -87,11 +94,16 @@ assert a[a.index('--add-controller')+1]=='7jkta-eyaaa-aaaaq-aaarq-cai'
 PY
 rg -q 'settings update bridge-canister -e production --remove-all-controllers --add-controller 7jkta-eyaaa-aaaaq-aaarq-cai --force --identity production --debug' "$TRACE"
 rg -q '^proofs proofs$' "$TRACE"
+rg -q '^rebuild ' "$TRACE"
 
 if PROOF_GATE_FAIL=true run_handover "$T/proof-failed.json" >/dev/null 2>&1; then
   echo "handover accepted a failed proof gate" >&2; exit 1
 fi
 [[ ! -e "$T/proof-failed.json" ]]
+if REPRODUCIBLE_BUILD_FAIL=true run_handover "$T/rebuild-failed.json" >/dev/null 2>&1; then
+  echo "handover accepted a failed reproducible artifact build" >&2; exit 1
+fi
+[[ ! -e "$T/rebuild-failed.json" ]]
 
 if HANDOVER_PAUSED=false run_handover "$T/unpaused.json" >/dev/null 2>&1; then
   echo "handover accepted an unpaused Bridge" >&2; exit 1

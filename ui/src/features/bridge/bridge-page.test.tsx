@@ -12,7 +12,7 @@ describe("BridgeConfirmationDialog", () => {
   it("lets a deposit continue after reviewing its wallets and amount", () => {
     render(<Harness direction="deposit" />)
     expect(screen.getByText("10 TICRC1 / 0.00000009 KINIC")).toBeVisible()
-    expect(screen.queryByText(/Base conditions are checked again/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Base conditions are checked again/)).toBeVisible()
     const confirm = screen.getByRole("button", { name: "Confirm and open wallet" })
     expect(confirm).toBeEnabled()
   })

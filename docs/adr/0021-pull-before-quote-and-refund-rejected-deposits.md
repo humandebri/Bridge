@@ -2,24 +2,26 @@
 status: accepted
 ---
 
-# Ledger pull後にDepositをquoteし、拒否時は固定feeで返金する
+# Deposit受付とLedger pullをstable executorで分離する
 
-Deposit受付ではBase quote、mint nonce、mint reserveを予約せず、`FundingPending`とLedger pull jobだけを保存する。pull成功またはDuplicateを確定した後に`EscrowedUnquoted`へ進み、同一のFinalized Base snapshotに対するpause、Service Fee、Per-Deposit Limit、Mint Throughput Limit、reserveを再検証する。
+`request_deposit`は外部callを行わない。TTL内かつminimum finalized height以上のcached Base snapshotが既にある場合だけ、共有admission decisionでpause、Service Fee、ユーザー上限、Per-Deposit Limit、現在のMint Throughput Limitをpreflightし、確定的な違反を既存`DepositError`でrecord作成前に拒否する。cacheなし、stale cache、reserve観測不足は早期拒否理由にしない。
 
-検証に成功した場合だけquote、MintDeposit operation、mint予約を単一storage transactionで確定する。freshな観測で拒否を確定した場合は、元のIC accountへ`gross_amount - KINIC_LEDGER_FEE`を返し、escrowから`KINIC_LEDGER_FEE`を支払う。返金ではService Feeを確定せず、escrow debit合計をgross amountに固定する。定数の正本は`canister/bridge-canister/src/ledger.rs`とする。
+preflight通過はquoteやmint reserveの確約ではない。Canisterは既存schemaへ`FundingPending` record、stable executor job、固定transfer identity、sequence、quotaを単一transactionで保存して即時に返す。Ledger pullはjob leaseを取得したexecutorだけが行う。pull成功またはDuplicateを確定した場合だけ`EscrowedUnquoted`へ昇格し、fresh Finalized Base snapshot、最新counter、reserve tokenに対するpause、Service Fee、Per-Deposit Limit、Mint Throughput Limit、reserveを再検証する。
 
-RPC障害、provider不一致、Bridge signer不一致、stale observationは返金理由にせず、`EscrowedUnquoted`で停止して再観測する。返金結果が不明なら`RefundReconciliationHold`へ移し、成功証拠または完全な不存在証明なしに新attemptを作らない。不存在証明後のattemptは番号、created-at time、memoだけを変更し、from、to、amount、feeを維持する。
+確定的なLedger失敗は既存`Cancelled`へ進める。結果不明またはcallback消失は同じtransactionで`FundingReconciliationHold`とtransfer identityを保存する。成功証拠またはtip・watermark・連続segmentを含む完全な不存在certificateなしに再送、取消し、補償へ進まない。
+
+quoteとmint予約はpull確定後だけ単一storage transactionで確定する。RPC障害、provider不一致、Bridge signer不一致、stale observationは返金理由にせず、`EscrowedUnquoted`で停止して再観測する。
 
 ## Considered Options
 
-- Base quoteをpull前に固定する案は、pullまでに変化したpause、limit、reserveを安全に扱えず不採用とする。
-- pull後の拒否を無期限holdにする案は資産安全を保つが、確定的な業務拒否でも利用者資産を拘束するため不採用とする。
-- refund feeを動的に追従する案は経済payloadを変化させるため不採用とし、デプロイ固定値を使う。
+- update call内でLedger pullまで行う案は、callback消失時に正式recordとtransfer identityの原子的な正本を失うため不採用とする。
+- 正式recordと分離したfunding attempt tableはschema変更と公開履歴の意味論変更を伴うため不採用とする。
+- 時間経過だけで曖昧なpullを再送する案は二重pullを生じ得るため不採用とする。
 
 ## Consequences
 
-- `gross_amount <= KINIC_LEDGER_FEE`はrecord作成、Ledger call、owner sequence消費より前に拒否する。
-- 未quote状態ではService Feeとnet amountを0値で表現せず、quoteを保持しない。
-- `FundingPending`と`RefundPending`はLedger pending counterへ含めるが、mint予約はquote済みmint状態だけを集計する。
-- `request_deposit`、Withdrawal notification、mint-revert recoveryはjob保存後に即時returnし、timerまたは明示Continueが進行する。
-- ADR 0006の「Deposit返金を禁止する」決定を、このADRの確定的post-pull拒否と専用refund reconciliationに限って置換する。曖昧なfunding結果を補償しない原則は維持する。
+- `FundingPending`は正式Depositのcounter、history、sequence、jobへ含めるが、quote、nonce、mint reserveを持たない。
+- 公開`DepositError`、schema v22、wire v18、`FundingPending`の履歴意味論を維持する。
+- lease callbackはjob ID、generation、transfer identityのCASを満たす場合だけ状態を更新する。
+- timer、manual、confirmationのどの経路もHold証拠要件とlease claimを迂回しない。
+- preflight後の競合や状態変化で最終admissionが失敗した場合は既存refund経路へ進み、ユーザーはpullとrefundの両方のLedger feeを負担し得る。

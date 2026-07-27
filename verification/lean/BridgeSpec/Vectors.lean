@@ -217,6 +217,7 @@ def document : String :=
   let manualClaims := [
     manualClaimCase true false false false false false,
     manualClaimCase false true true false false false,
+    manualClaimCase false true true false true false,
     manualClaimCase false true false false true false,
     manualClaimCase false false true false false true,
     manualClaimCase false false false true false false,

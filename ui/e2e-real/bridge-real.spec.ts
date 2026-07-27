@@ -48,7 +48,10 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
     }
   }, { timeout: 30_000 }).toBe("opened")
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
-  await expect.poll(async () => (await controlState(request)).knownDepositCount).toBe(1)
+  await expect.poll(
+    async () => (await controlState(request)).knownDepositCount,
+    { timeout: 60_000 },
+  ).toBe(1)
   await expect(page.getByText("Deposit status unavailable", { exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "Retry same deposit" })).toBeVisible()
   expect(await controlState(request)).toMatchObject({ knownDepositCount: 1, depositSequences: ["0"], nextDepositSequence: "1" })

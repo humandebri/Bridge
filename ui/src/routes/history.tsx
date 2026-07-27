@@ -16,6 +16,7 @@ import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import type { AutomaticProgressView, BaseConfirmationView, DepositView, SettlementActionResult, WithdrawalView } from "@/generated/bridge.did"
 import {
+  activityAutoRefreshEnabled,
   mergeActivityItems,
   olderActivitySources,
   visibleActivityItems,
@@ -166,10 +167,6 @@ function HistoryPage() {
   )
   const visibleItems = useMemo(() => visibleActivityItems(allItems, filter, boundaries), [allItems, boundaries, filter])
   const olderSources = useMemo(() => olderActivitySources(filter, boundaries), [boundaries, filter])
-  const scheduledRecordVisible =
-    (deposits.data?.items.some((record) => record.automatic_progress.length > 0) ?? false)
-    || (withdrawals.data?.items.some((item) => (item.canister?.automatic_progress.length ?? 0) > 0) ?? false)
-
   useEffect(() => {
     if (!ic.account) return
     for (const record of deposits.data?.items ?? []) {
@@ -183,7 +180,7 @@ function HistoryPage() {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange)
   }, [])
   useEffect(() => {
-    if (!(scheduledRecordVisible && pageVisible)) return
+    if (!activityAutoRefreshEnabled(pageVisible, Boolean(ic.account), Boolean(address))) return
     const timer = window.setInterval(() => {
       void Promise.all([
         ic.account ? deposits.refetch() : Promise.resolve(),
@@ -191,7 +188,7 @@ function HistoryPage() {
       ])
     }, 60_000)
     return () => window.clearInterval(timer)
-  }, [address, deposits, ic.account, pageVisible, scheduledRecordVisible, withdrawals])
+  }, [address, deposits, ic.account, pageVisible, withdrawals])
 
   const scanOlderWithdrawals = async () => {
     if (!withdrawals.data || withdrawals.data.olderCursor === null) return

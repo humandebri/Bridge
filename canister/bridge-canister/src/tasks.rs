@@ -1348,11 +1348,12 @@ async fn advance_hold(
             Ok(HoldAdvance::Progress)
         }
         ledger::ReconciliationOutcome::Succeeded { block_index } => {
-            if bridge_core::hold_retry_allowed(true, false) {
-                resolve_reconciliation_success(config, target, block_index);
-                Ok(HoldAdvance::Continue)
-            } else {
-                Ok(HoldAdvance::Progress)
+            match bridge_core::hold_resolution_decision(true, false) {
+                bridge_core::HoldResolutionDecision::ResolveSucceeded => {
+                    resolve_reconciliation_success(config, target, block_index);
+                    Ok(HoldAdvance::Continue)
+                }
+                _ => Ok(HoldAdvance::Progress),
             }
         }
         ledger::ReconciliationOutcome::Absent {
@@ -1360,11 +1361,13 @@ async fn advance_hold(
             index_watermark,
         } => {
             let complete_absence = index_watermark >= ledger_watermark;
-            if !bridge_core::hold_retry_allowed(false, complete_absence) {
-                return Ok(HoldAdvance::Progress);
+            match bridge_core::hold_resolution_decision(false, complete_absence) {
+                bridge_core::HoldResolutionDecision::ResolveAbsent => {
+                    resolve_reconciliation_absence(config, target, hold.transfer, index_watermark);
+                    Ok(HoldAdvance::Continue)
+                }
+                _ => Ok(HoldAdvance::Progress),
             }
-            resolve_reconciliation_absence(config, target, hold.transfer, index_watermark);
-            Ok(HoldAdvance::Continue)
         }
     }
 }
@@ -1565,6 +1568,11 @@ pub(crate) async fn advance_deposit(
         let state = SettlementState::Deposit(DepositPhase::from(&deposit.state));
         match deposit.state {
             bridge_core::DepositState::FundingPending => {
+                let callback_token = crate::storage::SettlementCallbackToken::for_deposit(
+                    lease.job(),
+                    &deposit.transfer,
+                )
+                .map_err(|_| SettlementActionError::StorageFailure)?;
                 lease.renew_before_external_call()?;
                 let outcome = ledger::pull(config.ledger_canister_id, &deposit.transfer).await;
                 lease.ensure_current()?;
@@ -1583,7 +1591,7 @@ pub(crate) async fn advance_deposit(
                                 })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
                             store
-                                .put_deposit(&current)
+                                .put_deposit_funding_callback(&current, &callback_token)
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                     }
@@ -1606,7 +1614,11 @@ pub(crate) async fn advance_deposit(
                                 current.transfer.clone(),
                             );
                             store
-                                .commit_deposit_hold_bundle(&current, &hold)
+                                .commit_deposit_funding_hold_bundle(
+                                    &current,
+                                    &hold,
+                                    &callback_token,
+                                )
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                         return Ok(SettlementActionResult::Stopped {
@@ -1622,6 +1634,7 @@ pub(crate) async fn advance_deposit(
                                 &mut store.borrow_mut(),
                                 deposit_id,
                                 code,
+                                &callback_token,
                             )
                             .map_err(|_| SettlementActionError::StorageFailure)
                         })?;

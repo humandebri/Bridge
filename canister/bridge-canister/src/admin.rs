@@ -202,19 +202,28 @@ pub fn rotate_fee_recipient(caller: Principal, next: FeeRecipientConfig) -> Resu
         let state = store
             .admin_state()
             .map_err(|_| AdminError::StorageFailure)?;
-        if !authorized(&state, caller, ACTION_ROTATE) {
-            return Err(AdminError::Unauthorized);
-        }
-        if next.owner == state.governance_principal || next.owner == state.pause_principal {
-            return Err(AdminError::InvalidArgument(
-                "fee recipient must not overlap governance or pause principal".into(),
-            ));
-        }
         let pending = store
             .pending_fee_payout_amount()
             .map_err(|_| AdminError::StorageFailure)?;
-        if !bridge_core::fee_recipient_rotation_allowed(pending) {
-            return Err(AdminError::Busy);
+        match bridge_core::fee_recipient_rotation_decision(
+            authorized(&state, caller, ACTION_ROTATE),
+            next.owner == Principal::anonymous(),
+            next.owner == state.governance_principal || next.owner == state.pause_principal,
+            next.subaccount.len(),
+            pending,
+        ) {
+            bridge_core::FeeRecipientRotationDecision::Allow => {}
+            bridge_core::FeeRecipientRotationDecision::Unauthorized => {
+                return Err(AdminError::Unauthorized);
+            }
+            bridge_core::FeeRecipientRotationDecision::InvalidInput => {
+                return Err(AdminError::InvalidArgument(
+                    "fee recipient must not overlap governance or pause principal".into(),
+                ));
+            }
+            bridge_core::FeeRecipientRotationDecision::Busy => {
+                return Err(AdminError::Busy);
+            }
         }
         if next == state.fee_recipient {
             return Ok(());
@@ -279,9 +288,12 @@ pub fn request_fee_payout(caller: Principal, amount: Nat) -> Result<FeePayoutRec
             .map_err(|_| AdminError::StorageFailure)?
             .fee_reserve
             .get();
-        if !bridge_core::payout_allowed(reserve, reserved, amount, fee.get()) {
-            return Err(AdminError::InsufficientFeeReserve);
-        }
+        let payout = bridge_core::payout_decision(reserve, reserved, amount, fee.get(), true)
+            .ok_or(AdminError::InsufficientFeeReserve)?;
+        let payout_amount = payout
+            .debit
+            .checked_sub(fee.get())
+            .ok_or(AdminError::InsufficientFeeReserve)?;
         let id = store
             .next_fee_payout_id()
             .map_err(|_| AdminError::StorageFailure)?;
@@ -305,7 +317,7 @@ pub fn request_fee_payout(caller: Principal, amount: Nat) -> Result<FeePayoutRec
             operation: LedgerOperation::FeePayout,
             created_at_time_ns,
             memo,
-            amount: Amount::new(amount),
+            amount: Amount::new(payout_amount),
             fee,
             from: Account::new(canister.as_slice().to_vec(), [0; 32])
                 .map_err(|_| AdminError::StorageFailure)?,
@@ -315,7 +327,7 @@ pub fn request_fee_payout(caller: Principal, amount: Nat) -> Result<FeePayoutRec
         };
         let record = FeePayoutRecord {
             id,
-            amount,
+            amount: payout_amount,
             recipient: admin.fee_recipient,
             transfer,
             state: FeePayoutState::Pending,

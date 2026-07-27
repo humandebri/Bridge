@@ -1,12 +1,15 @@
 use bridge_core::{
     administrator_authorized, audit_next, can_assign_nonce, checked_counter_transition,
-    checked_requirement, counter_delta, deposit_phase_allows, deposit_phase_step, evidence_matches,
-    fee_delta_once, fee_recipient_rotation_allowed, lease_generation_next,
-    lease_outcome_is_current, mint_admission_total, next_attempt, nonce_next,
-    nonce_too_low_is_submitted, outbound_settlement, payout_allowed, payout_debit,
+    checked_requirement, counter_delta, deposit_admission_decision, deposit_phase_allows,
+    deposit_phase_step, evidence_matches, fee_delta_once, fee_recipient_rotation_allowed,
+    fee_recipient_rotation_decision, hold_resolution_decision, lease_generation_next,
+    lease_outcome_is_current, manual_claim_decision, mint_admission_total, next_attempt,
+    nonce_next, nonce_too_low_is_submitted, outbound_settlement, payout_allowed, payout_debit,
     refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
-    reserve_admission_preserves_requirement, reserve_token_matches, resources_sufficient,
-    scan_complete, service_fee_change_allowed, withdrawal_phase_allows, withdrawal_phase_step,
+    reservation_decision, reserve_admission_preserves_requirement, reserve_token_matches,
+    resources_sufficient, scan_complete, service_fee_change_allowed, settlement_decision,
+    withdrawal_phase_allows, withdrawal_phase_step, FeeRecipientRotationDecision,
+    HoldResolutionDecision, ManualClaimDecision,
 };
 
 #[test]
@@ -78,6 +81,70 @@ fn fee_rotation_reserve_admission_and_lease_fences_are_fail_closed() {
     assert!(lease_outcome_is_current(4, 4, true));
     assert!(!lease_outcome_is_current(4, 3, true));
     assert!(!lease_outcome_is_current(4, 4, false));
+}
+
+#[test]
+fn typed_decisions_preserve_every_shared_guard() {
+    assert_eq!(
+        fee_recipient_rotation_decision(true, false, false, 32, 0),
+        FeeRecipientRotationDecision::Allow
+    );
+    assert_eq!(
+        fee_recipient_rotation_decision(false, false, false, 32, 0),
+        FeeRecipientRotationDecision::Unauthorized
+    );
+    assert_eq!(
+        fee_recipient_rotation_decision(true, false, true, 32, 0),
+        FeeRecipientRotationDecision::InvalidInput
+    );
+    assert_eq!(
+        fee_recipient_rotation_decision(true, false, false, 32, 1),
+        FeeRecipientRotationDecision::Busy
+    );
+    assert_eq!(
+        hold_resolution_decision(false, false),
+        HoldResolutionDecision::Wait
+    );
+    assert_eq!(
+        hold_resolution_decision(true, false),
+        HoldResolutionDecision::ResolveSucceeded
+    );
+    assert_eq!(
+        hold_resolution_decision(false, true),
+        HoldResolutionDecision::ResolveAbsent
+    );
+    assert_eq!(
+        manual_claim_decision(false, false, false, false, false, false),
+        ManualClaimDecision::Allow
+    );
+    assert_eq!(
+        manual_claim_decision(true, false, false, true, true, true),
+        ManualClaimDecision::AutomaticProgressPending
+    );
+    assert_eq!(
+        manual_claim_decision(false, true, true, false, true, false),
+        ManualClaimDecision::AutomaticProgressPending,
+        "an overdue job must not bypass a still-active lease"
+    );
+    assert_eq!(
+        settlement_decision(100, 3, 5).map(|decision| (
+            decision.escrow_debit,
+            decision.reserve_credit,
+            decision.liability_debit,
+        )),
+        outbound_settlement(100, 3, 5)
+    );
+    assert_eq!(
+        reservation_decision(7, 3).map(|decision| (decision.reserved, decision.candidate)),
+        Some((10, 0))
+    );
+    assert_eq!(reservation_decision(u128::MAX, 1), None);
+    let admission = deposit_admission_decision(105, 5, 5, 100, 0, 0, 100)
+        .expect("exact boundary must be admitted");
+    assert_eq!(admission.net_amount, 100);
+    assert_eq!(admission.next_window_total, 100);
+    assert!(deposit_admission_decision(105, 6, 5, 100, 0, 0, 100).is_none());
+    assert!(deposit_admission_decision(105, 5, 5, 100, 0, 1, 100).is_none());
 }
 
 #[test]

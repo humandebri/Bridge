@@ -116,7 +116,9 @@ production_validate_gate() {
   rm -rf "$target"
   actual_hash="$(printf '%s\n' "$output" | sed -nE 's/.*manifest_sha256=([0-9a-fA-F]{64}).*/\1/p' | tail -n 1)"
   [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { echo "driver Gate manifest hash mismatch" >&2; return 1; }
-  production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree"
+  production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || return 1
+  "$source_root/scripts/rebuild-release-artifacts.sh" \
+    "$bundle" "$manifest_revision" "$manifest_tree"
 }
 
 production_render_release_inputs() {

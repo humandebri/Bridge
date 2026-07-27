@@ -697,6 +697,48 @@ fn derive_deposit_id(caller: Principal, owner_sequence: u64) -> [u8; 32] {
     ])
 }
 
+fn cached_deposit_preflight(
+    snapshot: bridge_core::BaseMintSnapshot,
+    reserved_mint_amount: u128,
+    gross_amount: Amount,
+    user_max_service_fee: Amount,
+) -> Result<(), bridge_core::CoreError> {
+    let net_amount = snapshot.quote(gross_amount, user_max_service_fee)?;
+    let decision = bridge_core::deposit_admission_decision(
+        gross_amount.get(),
+        snapshot.service_fee.get(),
+        snapshot.max_service_fee.get(),
+        snapshot.per_deposit_limit.get(),
+        snapshot.effective_minted_in_window().get(),
+        reserved_mint_amount,
+        snapshot.mint_window_limit.get(),
+    )
+    .ok_or(bridge_core::CoreError::MintWindowLimitExceeded)?;
+    if decision.net_amount != net_amount.get() {
+        return Err(bridge_core::CoreError::MintWindowLimitExceeded);
+    }
+    Ok(())
+}
+
+fn preflight_error(error: bridge_core::CoreError) -> DepositError {
+    match error {
+        bridge_core::CoreError::ServiceFeeAboveMaximum
+        | bridge_core::CoreError::ServiceFeeAboveUserMaximum
+        | bridge_core::CoreError::InvalidAmount
+        | bridge_core::CoreError::ArithmeticOverflow
+        | bridge_core::CoreError::ArithmeticUnderflow => {
+            DepositError::Rejected("ServiceFeeRejected".into())
+        }
+        bridge_core::CoreError::PerDepositLimitExceeded => {
+            DepositError::Rejected("PerDepositLimitExceeded".into())
+        }
+        bridge_core::CoreError::MintWindowLimitExceeded => {
+            DepositError::Rejected("MintWindowLimitExceeded".into())
+        }
+        other => DepositError::Rejected(format!("{other:?}")),
+    }
+}
+
 pub fn next_deposit_sequence(owner: Principal) -> u64 {
     STORE.with(|store| {
         store
@@ -755,6 +797,38 @@ pub async fn request_deposit(
         return Err(DepositError::DepositsPaused);
     }
     let now = ic_cdk::api::time();
+    let cached_preflight = STORE.with(|store| {
+        let store = store.borrow();
+        let minimum_finalized_block = store
+            .external_progress()
+            .map_err(|_| DepositError::StorageFailure)?
+            .last_finalized_mint_block;
+        let Some(cached) = store
+            .cached_base_mint_snapshot(now, BASE_SNAPSHOT_TTL_NS, minimum_finalized_block)
+            .map_err(|_| DepositError::StorageFailure)?
+        else {
+            return Ok(None);
+        };
+        if cached.deposits_paused {
+            return Ok(Some(Err(DepositError::DepositsPaused)));
+        }
+        let reserved = store
+            .counters()
+            .map_err(|_| DepositError::StorageFailure)?
+            .reserved_deposit_mint_amount;
+        Ok(Some(
+            cached_deposit_preflight(
+                cached.snapshot,
+                reserved,
+                Amount::new(gross_amount),
+                Amount::new(max_service_fee),
+            )
+            .map_err(preflight_error),
+        ))
+    })?;
+    if let Some(result) = cached_preflight {
+        result?;
+    }
     let ledger_fee = ledger::KINIC_LEDGER_FEE;
     let memo = hash(&[b"KINIC-DEPOSIT", &deposit_id]);
     let canister = ic_cdk::api::canister_self();
@@ -876,6 +950,7 @@ pub(crate) fn cancel_deposit_in_store(
     store: &mut crate::storage::StableStore,
     deposit_id: [u8; 32],
     code: LedgerFailure,
+    callback_token: &crate::storage::SettlementCallbackToken,
 ) -> Result<(), DepositError> {
     let mut deposit = store
         .deposit(deposit_id)
@@ -885,7 +960,7 @@ pub(crate) fn cancel_deposit_in_store(
         .apply(DepositEvent::FundingFailed { code })
         .map_err(|error| DepositError::Rejected(format!("{error:?}")))?;
     store
-        .put_deposit(&deposit)
+        .put_deposit_funding_callback(&deposit, callback_token)
         .map_err(|_| DepositError::StorageFailure)
 }
 
@@ -1336,6 +1411,41 @@ fn base_confirmation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preflight_snapshot() -> bridge_core::BaseMintSnapshot {
+        bridge_core::BaseMintSnapshot {
+            finalized_head_block_number: 10,
+            confirmed_block_timestamp: 20,
+            service_fee: Amount::new(5),
+            max_service_fee: Amount::new(5),
+            per_deposit_limit: Amount::new(100),
+            mint_window_limit: Amount::new(200),
+            mint_window_started_at: 0,
+            mint_window_duration: 100,
+            minted_in_window: Amount::new(50),
+        }
+    }
+
+    #[test]
+    fn cached_preflight_rejects_only_deterministic_quote_and_window_failures() {
+        let snapshot = preflight_snapshot();
+        assert_eq!(
+            cached_deposit_preflight(snapshot, 40, Amount::new(100), Amount::new(5)),
+            Ok(())
+        );
+        assert_eq!(
+            cached_deposit_preflight(snapshot, 60, Amount::new(100), Amount::new(5)),
+            Err(bridge_core::CoreError::MintWindowLimitExceeded)
+        );
+        assert_eq!(
+            cached_deposit_preflight(snapshot, 0, Amount::new(106), Amount::new(5)),
+            Err(bridge_core::CoreError::PerDepositLimitExceeded)
+        );
+        assert_eq!(
+            cached_deposit_preflight(snapshot, 0, Amount::new(100), Amount::new(4)),
+            Err(bridge_core::CoreError::ServiceFeeAboveUserMaximum)
+        );
+    }
 
     #[test]
     fn deposit_identity_binds_caller_and_owner_sequence_and_calldata_is_static() {

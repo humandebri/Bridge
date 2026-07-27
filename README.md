@@ -114,9 +114,8 @@ scripts/ci-local.sh smoke
 scripts/ci-local.sh real
 ```
 
-GitHub ActionsはPRの変更パスをRust、Solidity、形式証明、UI、実統合、ICP buildへ分類し、該当するjobだけを並列実行する。
-`pr-gate`は対象jobの結果を集約するが、現時点ではGitHub Branch ProtectionまたはRulesetによる必須化は行っていない。
-feature branchへのpushではPR eventだけを使用し、`main`へのpush、夜間schedule、手動実行では完全な`all` gateを実行する。
+GitHub Actionsの`trusted-pr-gate`は`pull_request_target`でbase branch版classifierだけを実行し、PRの正確なhead SHAをread-only・secretなしのephemeral runnerで検証する。未知pathとCI関連変更は全suiteへfail closedする。
+bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をrequiredかつstrictに設定する必要がある。旧`pr-gate`はrequired判定から外し、`main`へのpush、夜間schedule、手動実行では完全な`all` gateを実行する。
 
 `contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
 `proofs`はLeanをcross-chain protocolの正式な抽象仕様としてビルドし、`sorry`・`admit`を拒否する。
@@ -141,7 +140,7 @@ python3 scripts/protocol_vectors.py --update
 python3 scripts/protocol_vectors.py --check
 ```
 
-release対象claim、定理、production link、外部仮定は[verification/phase5-claims.tsv](verification/phase5-claims.tsv)で管理し、vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。
+release対象claim、抽象・有限幅・trace定理、Verus義務、production link、transaction test、外部仮定は[verification/phase5-claims.tsv](verification/phase5-claims.tsv)で管理し、vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。不可逆なproduction操作の直前にはproof gateに続いてWasmとcontract runtimeをclean sourceから二回buildし、release manifestとのhash完全一致を要求する。
 
 ## ローカルdeploy
 

@@ -119,6 +119,7 @@ run_versions() {
   python3 "$ROOT/scripts/test_live_fee_guard.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
+  python3 "$ROOT/scripts/test_trusted_pr_gate.py"
   "$ROOT/scripts/test_ci_guards.sh"
   "$ROOT/scripts/test_production_release.sh"
   "$ROOT/scripts/test_production_drivers.sh"
@@ -298,20 +299,20 @@ run_verus() {
 
   while IFS=$'\t' read -r kind kernel_name proof_name expected_fixture production_path; do
     [[ -n "$kernel_name" ]] || continue
-    rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
-      echo "Verus manifest spec is missing: $kernel_name" >&2
-      return 1
-    }
-    rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
-      echo "Verus manifest proof is missing: $proof_name" >&2
-      return 1
-    }
-    rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
-      echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
-      return 1
-    }
     case "$kind" in
       shared)
+        rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus manifest spec is missing: $kernel_name" >&2
+          return 1
+        }
+        rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus manifest proof is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
+          return 1
+        }
         rg -q "pub const fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
           echo "shared Verus kernel is missing: $kernel_name" >&2
           return 1
@@ -321,7 +322,37 @@ run_verus() {
           return 1
         }
         ;;
+      executable)
+        rg -q "^fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus executable obligation is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "kernel::${kernel_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus executable obligation does not call production symbol: $kernel_name" >&2
+          return 1
+        }
+        rg -q "kernel::${kernel_name}\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not call production symbol: $expected_fixture" >&2
+          return 1
+        }
+        rg -q "pub fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus executable kernel is missing: $kernel_name" >&2
+          return 1
+        }
+        ;;
       model)
+        rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus manifest spec is missing: $kernel_name" >&2
+          return 1
+        }
+        rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus manifest proof is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
+          return 1
+        }
         [[ "$production_path" == "-" ]]
         ;;
       *)
@@ -333,7 +364,7 @@ run_verus() {
 
   rg -o 'pub open spec fn [A-Za-z0-9_]+' "$ROOT/canister/bridge-core/src/kernel.rs" \
     | sed 's/pub open spec fn //' | sort >"$TMP_ROOT/verus-specs"
-  cut -f2 "$ROOT/verification/verus/manifest.tsv" \
+  awk -F $'\t' '$1 != "executable" { print $2 }' "$ROOT/verification/verus/manifest.tsv" \
     | sed 's/$/_spec/' | sort >"$TMP_ROOT/verus-manifest-specs"
   if ! cmp -s "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs"; then
     echo "Verus manifest does not cover every spec exactly once" >&2
@@ -369,12 +400,39 @@ run_verus() {
   done < <(rg --files "$ROOT/verification/verus/fail" -g '*.rs' | sort)
 }
 
+run_lean_failure_fixtures() {
+  local failure_fixture
+  local failure_log
+  local failure_status
+
+  while IFS= read -r failure_fixture; do
+    failure_log="$TMP_ROOT/lean-$(basename "$failure_fixture" .lean).log"
+    set +e
+    (cd "$ROOT/verification/lean" && lake env lean "$failure_fixture") \
+      >"$failure_log" 2>&1
+    failure_status=$?
+    set -e
+    if [[ "$failure_status" -eq 0 ]]; then
+      echo "Lean accepted deliberate failing fixture: $failure_fixture" >&2
+      return 1
+    fi
+    if ! rg -qi "proved that the proposition" "$failure_log" \
+      || ! rg -q "^is false$" "$failure_log"; then
+      echo "Lean fixture failed without the expected false theorem rejection: $failure_fixture" >&2
+      cat "$failure_log" >&2
+      return 1
+    fi
+  done < <(rg --files "$ROOT/verification/lean/fail" -g '*.lean' | sort)
+}
+
 run_proofs() {
   verify_lean_no_proof_escape "$ROOT/verification/lean"
   (cd "$ROOT/verification/lean" && lake build)
+  run_lean_failure_fixtures
   python3 "$ROOT/scripts/test_protocol_vectors.py"
   python3 "$ROOT/scripts/protocol_vectors.py" --check
   python3 "$ROOT/scripts/test_refinement_manifest.py"
+  python3 "$ROOT/scripts/test_reproducible_artifacts.py"
   python3 "$ROOT/scripts/check_refinement_manifest.py"
   run_smt
   run_verus

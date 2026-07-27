@@ -2,7 +2,8 @@ use bridge_core::{
     canonical_probe_matches, committed_quote_matches, fee_recipient_rotation_allowed,
     hold_retry_allowed, lease_outcome_is_current, manual_claim_allowed, outbound_settlement,
     payout_allowed, payout_debit, release_transfer_matches,
-    reserve_admission_preserves_requirement, service_fee_change_allowed, Amount, BaseMintSnapshot,
+    reserve_admission_preserves_requirement, restored_pending_blocked, service_fee_change_allowed,
+    withdrawal_finalization_decision, Amount, BaseMintSnapshot, WithdrawalFinalizationDecision,
 };
 use serde::Deserialize;
 
@@ -503,6 +504,35 @@ fn protocol_manual_claim_cases_matches_production() {
             ),
             case.allowed
         );
+    }
+}
+
+#[test]
+fn protocol_finalization_cases_matches_rust_decision() {
+    for case in vectors().finalization_cases {
+        let decision = withdrawal_finalization_decision(
+            case.receipt_succeeded,
+            block(&case.receipt_block),
+            case.finalized_block.as_deref().map(block),
+        );
+        let expected = match case.decision.as_str() {
+            "retry" => WithdrawalFinalizationDecision::Retry,
+            "notify" => WithdrawalFinalizationDecision::Notify,
+            "discard-reverted" => WithdrawalFinalizationDecision::DiscardReverted,
+            value => panic!("unknown finalization decision: {value}"),
+        };
+        assert_eq!(decision, expected);
+    }
+}
+
+#[test]
+fn protocol_queue_cases_matches_rust_decision() {
+    for case in vectors().queue_cases {
+        assert_eq!(
+            restored_pending_blocked(case.existing_blocked, case.incoming_blocked),
+            case.expected_blocked
+        );
+        assert_eq!(case.other_blocked, case.expected_other_blocked);
     }
 }
 

@@ -1,0 +1,140 @@
+name: trusted-pr-gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trusted-pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+
+jobs:
+  classify:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.classify.outputs.matrix }}
+      any: ${{ steps.classify.outputs.any }}
+    steps:
+      - name: Check out trusted base
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch untrusted head as data
+        env:
+          HEAD_REF: refs/pull/${{ github.event.pull_request.number }}/head
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin "$HEAD_REF"
+          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
+      - name: Classify changed paths with trusted classifier
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" |
+            python3 scripts/ci_changed_areas.py --null --github-output "$GITHUB_OUTPUT"
+      - name: Validate trusted classifier
+        run: |
+          python3 scripts/test_ci_changed_areas.py
+          python3 scripts/test_ci_modes.py
+          python3 scripts/test_trusted_pr_gate.py
+
+  test:
+    needs: classify
+    if: needs.classify.outputs.any == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        area: ${{ fromJSON(needs.classify.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out trusted base policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-policy
+          persist-credentials: false
+      - name: Check out exact untrusted head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: source
+          submodules: recursive
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Install Node.js 24.14.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install pnpm 11.0.8
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          version: 11.0.8
+          run_install: false
+      - name: Install Foundry 1.7.1
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: v1.7.1
+      - name: Install complete CI toolchain
+        run: trusted-policy/scripts/install-ci-tools.sh all
+      - name: Install UI dependencies
+        run: pnpm --dir source/ui install --frozen-lockfile
+      - name: Install Chromium when required
+        if: matrix.area == 'ui' || matrix.area == 'real'
+        run: pnpm --dir source/ui exec playwright install --with-deps chromium
+      - name: Install trusted driver alongside untrusted source
+        run: |
+          test -d source/scripts
+          test ! -L source/scripts
+          rm -f source/scripts/ci-local.trusted.sh
+          cp trusted-policy/scripts/ci-local.sh source/scripts/ci-local.trusted.sh
+      - name: Run selected trusted check
+        env:
+          AREA: ${{ matrix.area }}
+        run: |
+          cd source
+          case "$AREA" in
+            rust)
+              scripts/ci-local.trusted.sh rust-fast
+              scripts/ci-local.trusted.sh rust-integration
+              ;;
+            contracts)
+              scripts/ci-local.trusted.sh contracts-fast
+              scripts/ci-local.trusted.sh contracts-coverage
+              ;;
+            proofs) scripts/ci-local.trusted.sh proofs ;;
+            ui)
+              scripts/ci-local.trusted.sh ui-fast
+              scripts/ci-local.trusted.sh ui-e2e
+              ;;
+            real) scripts/ci-local.trusted.sh real ;;
+            icp) scripts/ci-local.trusted.sh icp ;;
+            *) exit 2 ;;
+          esac
+
+  trusted-pr-gate:
+    if: always()
+    needs: [classify, test]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Require trusted classification and applicable checks
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          test "$CLASSIFY_RESULT" = success
+          test "$TEST_RESULT" = success -o "$TEST_RESULT" = skipped

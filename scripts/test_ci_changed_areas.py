@@ -2,6 +2,11 @@
 """Regression tests for change-to-CI-area classification."""
 
 import unittest
+import json
+import os
+import subprocess
+import sys
+import tempfile
 
 import ci_changed_areas
 
@@ -79,6 +84,31 @@ class ChangedAreaTests(unittest.TestCase):
         self.assert_areas(
             ["docs/bridge-flow.md", "config/new-policy.toml"],
             *ci_changed_areas.AREAS,
+        )
+
+    def test_github_output_contains_enabled_area_matrix(self) -> None:
+        with tempfile.NamedTemporaryFile() as output:
+            subprocess.run(
+                [
+                    sys.executable,
+                    ci_changed_areas.__file__,
+                    "--github-output",
+                    output.name,
+                    "canister/bridge-canister/src/api.rs",
+                ],
+                check=True,
+                env={**os.environ, "GITHUB_OUTPUT": output.name},
+                capture_output=True,
+                text=True,
+            )
+            output.seek(0)
+            values = dict(
+                line.rstrip().split("=", 1)
+                for line in output.read().decode("utf-8").splitlines()
+            )
+        self.assertEqual(
+            json.loads(values["matrix"]),
+            ["rust", "proofs", "real", "icp"],
         )
 
 

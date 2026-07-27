@@ -172,7 +172,7 @@ pub async fn submit(
         return continue_pending(caller, &config, pending).await;
     }
     if activation {
-        activation_preflight(&config).await?;
+        activation_preflight(&config, caller).await?;
         require_current_authorization(caller, &action)?;
     }
     let (kind, target, calldata) = encode_action(action, id)?;
@@ -213,6 +213,7 @@ pub async fn submit(
 
 async fn activation_preflight(
     config: &crate::config::BridgeInitArgs,
+    caller: Principal,
 ) -> Result<(), BaseGovernanceError> {
     let expected_signer = crate::api::cached_signer_address(config)
         .await
@@ -220,51 +221,49 @@ async fn activation_preflight(
     let observed = evm_rpc::bridge_snapshot(config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let (locally_paused, nonterminal_withdrawals, reserved_mint_operations) =
-        STORE.with(|store| {
-            let store = store.borrow();
-            let paused = store
-                .admin_state()
-                .map(|state| state.deposits_paused)
-                .unwrap_or(false);
-            let counters = store
-                .counters()
-                .map_err(|_| BaseGovernanceError::StorageFailure)?;
-            let nonterminal_withdrawals = store
-                .nonterminal_withdrawal_count()
-                .map_err(|_| BaseGovernanceError::StorageFailure)?;
-            Ok::<_, BaseGovernanceError>((
-                paused,
-                nonterminal_withdrawals,
-                counters.reserved_deposit_mint_operations,
-            ))
-        })?;
     let finalized_eth = evm_rpc::signer_eth_balance_at(config, expected_signer, observed.finalized)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     let safe_eth = evm_rpc::signer_eth_balance(config, expected_signer)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let reserve_sufficient = config
-        .reserve_policy()
-        .snapshot(
-            nonterminal_withdrawals,
-            reserved_mint_operations,
-            0,
-            finalized_eth.min(safe_eth),
-            ic_cdk::api::canister_liquid_cycle_balance(),
-        )
-        .map(|snapshot| snapshot.sufficient)
-        .unwrap_or(false);
-    if !locally_paused
-        || !reserve_sufficient
-        || observed.snapshot.bridge_signer != expected_signer
+    if observed.snapshot.bridge_signer != expected_signer
         || !observed.snapshot.deposits_paused
         || !observed.snapshot.withdrawals_paused
     {
         return Err(BaseGovernanceError::ObservationUnavailable);
     }
-    Ok(())
+    let observed_eth = finalized_eth.min(safe_eth);
+    let observed_at_ns = ic_cdk::api::time();
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let locally_paused = store
+            .admin_state()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .deposits_paused;
+        let counters = store
+            .counters()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        let nonterminal_withdrawals = store
+            .nonterminal_withdrawal_count()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        let reserve = config
+            .reserve_policy()
+            .snapshot(
+                nonterminal_withdrawals,
+                counters.reserved_deposit_mint_operations,
+                0,
+                observed_eth,
+                ic_cdk::api::canister_liquid_cycle_balance(),
+            )
+            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        if !locally_paused || !reserve.sufficient {
+            return Err(BaseGovernanceError::ObservationUnavailable);
+        }
+        store
+            .record_reserve_observation(observed_eth, observed_at_ns, caller)
+            .map_err(|_| BaseGovernanceError::StorageFailure)
+    })
 }
 
 pub async fn emergency_pause(

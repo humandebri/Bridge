@@ -14,7 +14,7 @@ EVM transactionが`Submitted`になったときだけjobは`phase = confirmation
 
 ## Deposit（ICP → Base）
 
-Deposit IDはdomain-separated hashの`(caller, owner_sequence)`で決まり、同じsequenceの異なるpayloadは`DepositConflict`になる。受付時はlocal pause、入力、rate limit、`gross_amount > KINIC_LEDGER_FEE`だけを検証し、quote、nonce、mint reserveを予約しない。
+Deposit IDはdomain-separated hashの`(caller, owner_sequence)`で決まり、同じsequenceの異なるpayloadは`DepositConflict`になる。受付時はfreshな既存cacheから確定できるfee・limit違反だけをrecord作成前に拒否する。それ以外は既存schemaへ`FundingPending` record、stable executor job、固定transfer identity、sequence、quotaを単一transactionで保存し、外部callを行わず即時に返す。quote、nonce、mint reserveはまだ予約せず、pull後にfresh snapshotと最新counterで再検証するため、受付後の失敗ではpullとrefund双方のLedger feeを負担し得る。
 
 ```text
 FundingPending
@@ -40,8 +40,8 @@ MintReverted ── Governanceのrecover_mint_revert ─→ MintPending（replac
 ```
 
 1. UIはBase chain、Bridge runtime、CanisterのFinalized observation、現在のService Fee、ICRC Ledger残高・fee・allowanceを再検証する。allowanceが不足する場合は、gross amountとLedger feeを含む必要量をICRC-2 approveする。
-2. IC walletから`request_deposit`を呼ぶ。Canisterは`FundingPending` recordとjobを保存して即時returnし、外部Ledger/Base callは行わない。
-3. Settlement runnerがICRC-2 pullを実行する。成功またはDuplicateなら`EscrowedUnquoted`へ進み、確定的失敗なら`Cancelled`、結果不明なら同じidentityを保持した`FundingReconciliationHold`へ移る。
+2. IC walletから`request_deposit`を呼ぶ。Canisterは`FundingPending` recordとjobを保存して即時に返す。
+3. leaseを取得したexecutorだけがpullを行う。成功またはDuplicateなら`EscrowedUnquoted`へ原子的に昇格し、確定的失敗は既存`Cancelled`へ進める。結果不明またはcallback消失は`FundingReconciliationHold`へ移し、成功証拠または完全な不存在証明なしに再送しない。
 4. `EscrowedUnquoted`でFinalized Base snapshot、local mint counter、reserve observation tokenを再検証する。成功時だけoptional quote、EVM operation、mint予約を原子的に保存する。freshな拒否は固定payloadのrefundへ進め、一時障害や不一致では返金しない。
 5. `MintPending` operationは`Queued → Prepared → Submitted`の順に進む。broadcast後のtransaction hashはcanonical recordとconfirmation jobへ保存され、UIはHistoryから取得する。
 6. receipt blockがFinalized headへ到達したら、認証済みIC walletから`confirm_deposit`を呼ぶ。Canisterはsettlement IDと保存済みtransaction hash、receipt block、観測Finalized blockを照合し、EVM RPCのquorumでcanonical Finalized receiptを再検証する。

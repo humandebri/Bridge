@@ -177,6 +177,6 @@ def leaseOutcomeCurrent (active : Bool) (currentGeneration outcomeGeneration : N
 
 def manualClaimAllowed
     (confirmation scheduled active stopped overdue expired : Bool) : Bool :=
-  !confirmation && ((!scheduled && !active) || stopped || overdue || expired)
+  !confirmation && (!active || expired) && (!scheduled || stopped || overdue || expired)
 
 end BridgeSpec
