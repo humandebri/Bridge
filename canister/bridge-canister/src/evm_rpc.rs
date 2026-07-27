@@ -1022,7 +1022,10 @@ pub async fn broadcast(
         .with_response_size_estimate(SEND_RESPONSE_BYTES)
         .try_send()
         .await
-        .map_err(|_| ObservationError::Rpc)?;
+        .map_err(|error| {
+            ic_cdk::println!("EVM RPC broadcast transport error: {error:?}");
+            ObservationError::Rpc
+        })?;
     let finalized = finalized_observation(args).await?;
     match broadcast_result {
         MultiRpcResult::Consistent(Ok(status))
