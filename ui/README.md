@@ -39,12 +39,18 @@ The deployment profile has no manual read-only flag or origin allowlist. Control
 when the profile is complete and runtime verification passes. The CSP limits browser connections,
 but it is not canister authorization: direct canister calls remain possible.
 
-OISY and Plug are the only supported IC wallets. Internet Identity and delegated browser
-identities are not used. Deposit history is read from the public canister index; anyone who knows
+OISY Wallet and Plug are the only supported IC wallets. MetaMask is always offered for Base,
+other Base wallets are discovered through EIP-6963, and Plug is excluded from the Base wallet list.
+A production build also exposes WalletConnect when `VITE_WALLETCONNECT_PROJECT_ID` is configured.
+The WalletConnect project must allowlist every deployed UI origin. Internet Identity
+and delegated browser identities are not used. Deposit history is read from the public canister index; anyone who knows
 an owner Principal can enumerate its deposit IDs and correlate them with the Base recipients in
 the corresponding deposit records. Withdrawal History scans Finalized Base logs in 5,000-block
 chunks, with at most four RPC requests per refresh or manual `Scan older` action. The resumable
 cursor is held only in the React Query cache and is not persisted in browser storage.
+
+The bundled MetaMask fox icon comes from MetaMask's official
+[Brand Assets](https://metamask.io/ja/assets) download.
 
 The Bridge form reads a latest-state `Current bridge fee` quote. Before enabling a write, runtime
 validation asks the Canister to refresh its quorum-backed Finalized observation and treats that observation
@@ -54,6 +60,10 @@ binds every Base contract state and bytecode read to that canonical hash with EI
 browser's single-RPC result is supplemental; it cannot make the form writable without the Canister
 observation. The update endpoint is globally rate-limited and single-flight so the first write after
 deployment can establish an observation without turning refresh into an unbounded RPC path.
+The open Bridge form performs the complete deployment validation once, then refreshes only the
+Finalized head, fee guard, reviewed signer, current terms, and connected-wallet balances every
+45 seconds while the tab is visible. Focus and reconnect trigger the same lightweight refresh.
+Manual Refresh and every write-time gate still run the complete validation.
 
 Deposit idempotency and recovery use the Canister's public owner sequence. `Refresh bridge data`
 reads it once; the form does not generate a client request ID or persist a pending payload in
@@ -84,10 +94,12 @@ not contain an E2E branch.
 Deployment is manual:
 
 ```sh
-pnpm run deploy
+VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> pnpm run deploy
 ```
 
-The normal deploy command fails unless the checked-in UI profile explicitly sets
+The WalletConnect project ID is public client configuration but must be injected through the
+environment rather than committed. The normal deploy command fails unless it is present and the
+checked-in UI profile explicitly sets
 `testOnly: false`. Test-only profiles require the deliberately separate `pnpm run deploy:test`
 command, which targets the `kinic-bridge-ui-test` Worker, and must not be used for a production release.
 

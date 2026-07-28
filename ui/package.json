@@ -27,9 +27,10 @@
     "codegen:candid:check": "node scripts/generate-candid.mjs --check",
     "deploy:check": "node scripts/check-deploy-profile.mjs",
     "deploy": "pnpm run deploy:check && pnpm run build && wrangler deploy",
-    "deploy:test": "pnpm run build && wrangler deploy --name kinic-bridge-ui-test"
+    "deploy:test": "pnpm run build:sepolia && node scripts/check-sepolia-assets.mjs && wrangler deploy --name kinic-bridge-ui-test"
   },
   "dependencies": {
+    "@coinbase/wallet-sdk": "^4.3.7",
     "@dfinity/agent": "3.4.3",
     "@dfinity/candid": "3.4.3",
     "@dfinity/oisy-wallet-signer": "6.0.0",
@@ -47,6 +48,7 @@
     "@radix-ui/react-tooltip": "1.2.12",
     "@tanstack/react-query": "5.101.2",
     "@tanstack/react-router": "1.170.17",
+    "@walletconnect/ethereum-provider": "2.23.10",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "1.24.0",

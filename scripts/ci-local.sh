@@ -10,36 +10,77 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-phase0.XXXXXX")"
 ANVIL_PID=""
 ICP_NETWORK_OWNED=0
 ICP_CONFIG_BACKED_UP=0
+ICP_TEST_CANISTER_CREATED=0
+ICP_TEST_CANISTER_SNAPSHOT=""
+ICP_TEST_CANISTER_WAS_RUNNING=0
+ICP_TEST_CANISTER_INSTALL_MODE="install"
+ICP_LOCAL_MAPPING_BACKED_UP=0
+ICP_SMOKE_STATE_PREPARED=0
 CLEANUP_DONE=0
+UI_DEPENDENCIES_READY=0
 
 # shellcheck source=ci_guards.sh
 source "$ROOT/scripts/ci_guards.sh"
 
-cleanup() {
-  if [[ "$CLEANUP_DONE" -eq 1 ]]; then
-    return
-  fi
-  CLEANUP_DONE=1
-  trap - EXIT INT TERM
-
+cleanup_runtime() {
+  local cleanup_failed=0
   if [[ -n "$ANVIL_PID" ]] && kill -0 "$ANVIL_PID" 2>/dev/null; then
     kill "$ANVIL_PID"
     wait "$ANVIL_PID" 2>/dev/null || true
+    ANVIL_PID=""
+  fi
+  if [[ "$ICP_NETWORK_OWNED" -eq 0 ]] && declare -F restore_smoke_canister_state >/dev/null; then
+    restore_smoke_canister_state || cleanup_failed=1
   fi
   if [[ "$ICP_NETWORK_OWNED" -eq 1 ]]; then
-    icp network stop --project-root-override "$ROOT" >/dev/null 2>&1 || true
+    if icp network stop --project-root-override "$ROOT" >/dev/null 2>&1; then
+      rm -f "$ROOT/.icp/cache/networks/local/bridge-ci-project-marker.json" || cleanup_failed=1
+      ICP_NETWORK_OWNED=0
+    else
+      echo "failed to stop the Bridge-owned local ICP network; ownership marker retained" >&2
+      cleanup_failed=1
+    fi
   fi
 
   if [[ "$ICP_CONFIG_BACKED_UP" -eq 1 ]]; then
     if cmp -s "$ROOT/icp.yaml" "$TMP_ROOT/icp.yaml.original"; then
-      :
+      ICP_CONFIG_BACKED_UP=0
     elif cmp -s "$ROOT/icp.yaml" "$TMP_ROOT/icp.yaml.applied"; then
-      cp -p "$TMP_ROOT/icp.yaml.original" "$ROOT/icp.yaml"
+      if cp -p "$TMP_ROOT/icp.yaml.original" "$ROOT/icp.yaml"; then
+        ICP_CONFIG_BACKED_UP=0
+      else
+        cleanup_failed=1
+      fi
     else
       echo "icp.yaml changed during smoke; preserving the current file" >&2
+      ICP_CONFIG_BACKED_UP=0
     fi
   fi
-  rm -rf "$TMP_ROOT"
+  if [[ "$cleanup_failed" -ne 0 ]]; then
+    echo "local CI cleanup was incomplete; retained snapshots and current state require manual inspection" >&2
+    return 1
+  fi
+}
+
+cleanup() {
+  local original_status=$?
+  if [[ "$CLEANUP_DONE" -eq 1 ]]; then
+    exit "$original_status"
+  fi
+  CLEANUP_DONE=1
+  trap - EXIT INT TERM
+
+  local cleanup_failed=0
+  cleanup_runtime || cleanup_failed=1
+  if [[ "$cleanup_failed" -ne 0 ]]; then
+    echo "local CI cleanup failed; recovery artifacts retained at $TMP_ROOT" >&2
+    if [[ "$original_status" -eq 0 ]]; then exit 1; else exit "$original_status"; fi
+  fi
+  rm -rf "$TMP_ROOT" || {
+    echo "local CI temporary directory cleanup failed: $TMP_ROOT" >&2
+    if [[ "$original_status" -eq 0 ]]; then exit 1; else exit "$original_status"; fi
+  }
+  exit "$original_status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -76,11 +117,17 @@ run_versions() {
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   python3 "$ROOT/scripts/test_live_fee_guard.py"
+  python3 "$ROOT/scripts/test_ci_changed_areas.py"
+  python3 "$ROOT/scripts/test_ci_modes.py"
+  python3 "$ROOT/scripts/test_trusted_pr_gate.py"
   "$ROOT/scripts/test_ci_guards.sh"
   "$ROOT/scripts/test_production_release.sh"
   "$ROOT/scripts/test_production_drivers.sh"
+  "$ROOT/scripts/test_production_activation.sh"
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
+  python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
+  python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
     "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
 }
@@ -122,11 +169,14 @@ run_no_automatic_execution_guards() {
   fi
 }
 
-run_rust() {
+run_rust_fast() {
   run_no_automatic_execution_guards
   cargo fmt --manifest-path "$ROOT/Cargo.toml" --all --check
   cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" --workspace --all-targets -- -D warnings
   cargo test --locked --manifest-path "$ROOT/Cargo.toml" --workspace
+}
+
+run_rust_integration() {
   cargo build \
     --locked \
     --manifest-path "$ROOT/Cargo.toml" \
@@ -154,13 +204,23 @@ run_rust() {
   fi
   pnpm --dir "$ROOT" run test:e2e
   python3 "$ROOT/scripts/test_prepare_local_network.py"
+  bash "$ROOT/scripts/test_ci_local_safety.sh"
+  node "$ROOT/scripts/plan007/test-generate-local-e2e.mjs"
 }
 
-run_contracts() {
+run_rust() {
+  run_rust_fast
+  run_rust_integration
+}
+
+run_contracts_fast() {
   forge fmt --root "$CONTRACTS" --check
   forge build --root "$CONTRACTS" --sizes --ignored-error-codes 2394 --ignored-error-codes 3860 --ignored-error-codes 6335
   python3 "$ROOT/scripts/abi_snapshot.py" --check
   forge test --root "$CONTRACTS"
+}
+
+run_contracts_coverage() {
   forge coverage \
     --root "$CONTRACTS" \
     --ir-minimum \
@@ -170,6 +230,11 @@ run_contracts() {
     --ignored-error-codes 6335 \
     --ignored-error-codes 3860 \
     --ignored-error-codes 5574
+}
+
+run_contracts() {
+  run_contracts_fast
+  run_contracts_coverage
 }
 
 build_smt_failure_fixture() {
@@ -360,50 +425,50 @@ run_lean_failure_fixtures() {
   done < <(rg --files "$ROOT/verification/lean/fail" -g '*.lean' | sort)
 }
 
-run_lean() {
-  local lean_root="$ROOT/verification/lean"
-
-  if [[ -f "$lean_root/lakefile.lean" ]]; then
-    if [[ -f "$lean_root/BridgeModel.lean" ]]; then
-      echo "ambiguous Lean proof layout" >&2
-      return 1
-    fi
-    (cd "$lean_root" && lake build)
-    run_lean_failure_fixtures
-    python3 "$ROOT/scripts/test_protocol_vectors.py"
-    python3 "$ROOT/scripts/protocol_vectors.py" --check
-    python3 "$ROOT/scripts/test_refinement_manifest.py"
-    python3 "$ROOT/scripts/test_reproducible_artifacts.py"
-    python3 "$ROOT/scripts/check_refinement_manifest.py"
-  elif [[ -f "$lean_root/BridgeModel.lean" ]]; then
-    lean "$lean_root/BridgeModel.lean"
-  else
-    echo "unknown Lean proof layout" >&2
-    return 1
-  fi
-}
-
 run_proofs() {
   verify_lean_no_proof_escape "$ROOT/verification/lean"
-  run_lean
+  (cd "$ROOT/verification/lean" && lake build)
+  run_lean_failure_fixtures
+  python3 "$ROOT/scripts/test_protocol_vectors.py"
+  python3 "$ROOT/scripts/protocol_vectors.py" --check
+  python3 "$ROOT/scripts/test_refinement_manifest.py"
+  python3 "$ROOT/scripts/test_reproducible_artifacts.py"
+  python3 "$ROOT/scripts/check_refinement_manifest.py"
   run_smt
   run_verus
 }
 
-run_ui() {
+require_ui_dependencies() {
+  if [[ "$UI_DEPENDENCIES_READY" -eq 1 ]]; then
+    return
+  fi
   if [[ "${CI:-}" == "true" ]]; then
     pnpm --dir "$ROOT/ui" install --frozen-lockfile
   elif [[ ! -d "$ROOT/ui/node_modules" ]]; then
     echo "ui/node_modules is missing; run pnpm --dir ui install --frozen-lockfile before checks" >&2
     return 1
   fi
+  UI_DEPENDENCIES_READY=1
+}
+
+run_ui_fast() {
+  require_ui_dependencies
   pnpm --dir "$ROOT/ui" run codegen:abi:check
   pnpm --dir "$ROOT/ui" run codegen:candid:check
   pnpm --dir "$ROOT/ui" run typecheck
   pnpm --dir "$ROOT/ui" run lint
   pnpm --dir "$ROOT/ui" run test
   pnpm --dir "$ROOT/ui" run build
+}
+
+run_ui_e2e() {
+  require_ui_dependencies
   pnpm --dir "$ROOT/ui" run e2e
+}
+
+run_ui() {
+  run_ui_fast
+  run_ui_e2e
 }
 
 run_icp_build() {
@@ -414,7 +479,15 @@ run_icp_build() {
 wait_for_anvil() {
   local attempt
   for attempt in {1..50}; do
+    if [[ -z "$ANVIL_PID" ]] || ! kill -0 "$ANVIL_PID" 2>/dev/null; then
+      echo "spawned Anvil exited before becoming ready" >&2
+      return 1
+    fi
     if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+      kill -0 "$ANVIL_PID" 2>/dev/null || {
+        echo "Anvil RPC is not owned by the spawned process" >&2
+        return 1
+      }
       return 0
     fi
     sleep 0.2
@@ -480,15 +553,26 @@ json_tuple_field() {
 prepare_temporary_icp_config() {
   cp -p "$ROOT/icp.yaml" "$TMP_ROOT/icp.yaml.original"
   ICP_CONFIG_BACKED_UP=1
-  "$ROOT/scripts/prepare_local_network.py" --project-root "$ROOT" --write >/dev/null
+  python3 "$ROOT/scripts/prepare_local_network.py" --project-root "$ROOT" --write >/dev/null
   cp -p "$ROOT/icp.yaml" "$TMP_ROOT/icp.yaml.applied"
 }
 
 ensure_icp_network() {
   local network_status="$1"
+  local marker="$ROOT/.icp/cache/networks/local/bridge-ci-project-marker.json"
 
   if icp network status --json --project-root-override "$ROOT" \
     >"$network_status" 2>/dev/null; then
+    python3 - "$marker" "$ROOT" <<'PY'
+import json, os, sys
+marker, expected_root = sys.argv[1:]
+try:
+    value = json.load(open(marker, encoding="utf-8"))
+except (OSError, ValueError) as error:
+    raise SystemExit(f"running ICP network has no valid Bridge CI project marker: {error}")
+if value != {"project_root": os.path.realpath(expected_root), "network": "local", "purpose": "bridge-ci-smoke"}:
+    raise SystemExit("running ICP network marker does not match this Bridge CI project")
+PY
     return
   fi
 
@@ -497,6 +581,85 @@ ensure_icp_network() {
   ICP_NETWORK_OWNED=1
   icp network start -d --project-root-override "$ROOT"
   icp network status --json --project-root-override "$ROOT" >"$network_status"
+  mkdir -p "$(dirname "$marker")"
+  python3 - "$marker" "$ROOT" <<'PY'
+import json, os, sys
+marker, root = sys.argv[1:]
+with open(marker, "w", encoding="utf-8") as output:
+    json.dump({"project_root": os.path.realpath(root), "network": "local", "purpose": "bridge-ci-smoke"}, output, sort_keys=True)
+    output.write("\n")
+PY
+}
+
+prepare_smoke_canister_state() {
+  local status="$TMP_ROOT/original-bridge-canister-status.json"
+  ICP_SMOKE_STATE_PREPARED=1
+  if [[ -f "$ROOT/.icp/cache/mappings/local.ids.json" ]]; then
+    cp -p "$ROOT/.icp/cache/mappings/local.ids.json" "$TMP_ROOT/local.ids.json.original"
+    ICP_LOCAL_MAPPING_BACKED_UP=1
+  fi
+  if icp canister status bridge-canister -e local --json --project-root-override "$ROOT" >"$status" 2>/dev/null; then
+    ICP_TEST_CANISTER_SNAPSHOT="$(icp canister snapshot create bridge-canister -e local -q --project-root-override "$ROOT")"
+    ICP_TEST_CANISTER_INSTALL_MODE="reinstall"
+    if rg -qi '"status"[[:space:]]*:[[:space:]]*"running"' "$status"; then
+      ICP_TEST_CANISTER_WAS_RUNNING=1
+    fi
+  else
+    icp canister create bridge-canister -e local --project-root-override "$ROOT"
+    ICP_TEST_CANISTER_CREATED=1
+  fi
+}
+
+restore_smoke_canister_state() {
+  local restore_failed=0 restored=0
+  if [[ "$ICP_SMOKE_STATE_PREPARED" -eq 0 ]]; then
+    return
+  fi
+  if [[ "$ICP_TEST_CANISTER_CREATED" -eq 1 ]]; then
+    icp canister stop bridge-canister -e local --project-root-override "$ROOT" >/dev/null 2>&1 || true
+    if icp canister delete bridge-canister -e local --project-root-override "$ROOT" >/dev/null 2>&1; then
+      ICP_TEST_CANISTER_CREATED=0
+    else
+      echo "failed to delete the temporary Bridge smoke canister" >&2
+      restore_failed=1
+    fi
+  elif [[ -n "$ICP_TEST_CANISTER_SNAPSHOT" ]]; then
+    icp canister stop bridge-canister -e local --project-root-override "$ROOT" >/dev/null 2>&1 || true
+    if icp canister snapshot restore bridge-canister "$ICP_TEST_CANISTER_SNAPSHOT" -e local --project-root-override "$ROOT" >/dev/null; then
+      restored=1
+      if icp canister snapshot delete bridge-canister "$ICP_TEST_CANISTER_SNAPSHOT" -e local --project-root-override "$ROOT" >/dev/null; then
+        ICP_TEST_CANISTER_SNAPSHOT=""
+      else
+        echo "failed to delete the restored Bridge smoke snapshot" >&2
+        restore_failed=1
+      fi
+    else
+      echo "failed to restore the Bridge smoke snapshot; snapshot retained" >&2
+      restore_failed=1
+    fi
+    if [[ "$ICP_TEST_CANISTER_WAS_RUNNING" -eq 1 && "$restored" -eq 1 ]]; then
+      if ! icp canister start bridge-canister -e local --project-root-override "$ROOT" >/dev/null; then
+        echo "failed to restart the Bridge smoke canister after cleanup" >&2
+        restore_failed=1
+      fi
+    fi
+  fi
+  if [[ "$ICP_LOCAL_MAPPING_BACKED_UP" -eq 1 ]]; then
+    if cp -p "$TMP_ROOT/local.ids.json.original" "$ROOT/.icp/cache/mappings/local.ids.json"; then
+      ICP_LOCAL_MAPPING_BACKED_UP=0
+    else
+      echo "failed to restore the local canister mapping" >&2
+      restore_failed=1
+    fi
+  elif [[ "$ICP_TEST_CANISTER_CREATED" -eq 0 ]]; then
+    rm -f "$ROOT/.icp/cache/mappings/local.ids.json" || restore_failed=1
+  fi
+  if [[ "$restore_failed" -eq 0 ]]; then
+    ICP_SMOKE_STATE_PREPARED=0
+  elif [[ "$restored" -eq 0 && -n "$ICP_TEST_CANISTER_SNAPSHOT" ]]; then
+    echo "snapshot $ICP_TEST_CANISTER_SNAPSHOT remains available for manual recovery" >&2
+  fi
+  return "$restore_failed"
 }
 
 run_smoke() {
@@ -547,6 +710,7 @@ run_smoke() {
   local readonly zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
 
   ensure_icp_network "$network_status"
+  prepare_smoke_canister_state
   smoke_principal="$(icp identity principal --project-root-override "$ROOT")"
   bridge_init_args="(record {
     ledger_canister_id = principal \"73mez-iiaaa-aaaaq-aaasq-cai\";
@@ -583,18 +747,17 @@ run_smoke() {
     governance_principal = principal \"$smoke_principal\";
     pause_principal = principal \"7jkta-eyaaa-aaaaq-aaarq-cai\";
     fee_recipient = record {
-      owner = principal \"$smoke_principal\";
+      owner = principal \"aaaaa-aa\";
       subaccount = blob \"\";
     };
   })"
   # The local smoke must install the explicitly built test-deployment artifact. Using
   # `icp deploy` here would rebuild the production package from the recipe and its
   # fail-closed mainnet configuration guard would (correctly) reject these local IDs.
-  icp canister create bridge-canister \
-    -e local \
-    --project-root-override "$ROOT"
   icp canister install bridge-canister \
     -e local \
+    --mode "$ICP_TEST_CANISTER_INSTALL_MODE" \
+    --yes \
     --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
     --args "$bridge_init_args" \
     --project-root-override "$ROOT"
@@ -605,6 +768,30 @@ run_smoke() {
     cat "$canister_status" >&2
     return 1
   fi
+  if icp canister call bridge-canister get_public_config '()' \
+    -e local --query --json \
+    --candid "$ROOT/canister/bridge-canister/bridge.did" \
+    --project-root-override "$ROOT" >/dev/null 2>&1; then
+    echo "get_public_config succeeded before chain-key address initialization" >&2
+    return 1
+  fi
+  public_config_initialization="$(
+    icp canister call bridge-canister initialize_public_config '()' \
+      -e local --json \
+      --candid "$ROOT/canister/bridge-canister/bridge.did" \
+      --project-root-override "$ROOT"
+  )"
+  python3 -c '
+import json, re, sys
+response = json.loads(sys.stdin.read())
+candid = response.get("response_candid") or ""
+if not re.search(r"variant\s*\{\s*Ok\s*\}", candid):
+    raise SystemExit(f"public configuration initialization failed: {response!r}")
+' <<<"$public_config_initialization"
+  icp canister call bridge-canister get_public_config '()' \
+    -e local --query --json \
+    --candid "$ROOT/canister/bridge-canister/bridge.did" \
+    --project-root-override "$ROOT" >/dev/null
   bridge_status="$(
     icp canister call bridge-canister get_bridge_status '()' \
       -e local --query --json \
@@ -635,6 +822,10 @@ for field, (value, candid_type) in expected.items():
     --mode upgrade \
     --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
     --project-root-override "$ROOT"
+  icp canister call bridge-canister get_public_config '()' \
+    -e local --query --json \
+    --candid "$ROOT/canister/bridge-canister/bridge.did" \
+    --project-root-override "$ROOT" >/dev/null
   bridge_status_after_upgrade="$(
     icp canister call bridge-canister get_bridge_status '()' \
       -e local --query --json \
@@ -664,7 +855,7 @@ for field, (value, candid_type) in stable_fields.items():
     echo "port 8545 is already serving an EVM node; refusing to reuse it" >&2
     return 1
   fi
-  anvil --chain-id 31337 --silent >"$TMP_ROOT/anvil.log" 2>&1 &
+  anvil --chain-id 31337 --host 127.0.0.1 --port 8545 --silent >"$TMP_ROOT/anvil.log" 2>&1 &
   ANVIL_PID=$!
   wait_for_anvil
   if [[ "$(cast chain-id --rpc-url http://127.0.0.1:8545)" != "31337" ]]; then
@@ -986,6 +1177,13 @@ run_real() {
   pnpm --dir "$ROOT/ui" e2e:real
 }
 
+run_smoke_step() {
+  trap cleanup_runtime EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  run_smoke
+}
+
 case "$MODE" in
   all)
     run_step versions run_versions
@@ -995,7 +1193,7 @@ case "$MODE" in
     run_step ui run_ui
     run_step icp run_icp_build
     run_step real run_real
-    run_step smoke run_smoke
+    run_step smoke run_smoke_step
     ;;
   checks)
     run_step versions run_versions
@@ -1011,8 +1209,20 @@ case "$MODE" in
   rust)
     run_step rust run_rust
     ;;
+  rust-fast)
+    run_step rust-fast run_rust_fast
+    ;;
+  rust-integration)
+    run_step rust-integration run_rust_integration
+    ;;
   contracts)
     run_step contracts run_contracts
+    ;;
+  contracts-fast)
+    run_step contracts-fast run_contracts_fast
+    ;;
+  contracts-coverage)
+    run_step contracts-coverage run_contracts_coverage
     ;;
   proofs)
     run_step versions run_versions
@@ -1022,17 +1232,23 @@ case "$MODE" in
     run_step versions run_versions
     run_step ui run_ui
     ;;
+  ui-fast)
+    run_step ui-fast run_ui_fast
+    ;;
+  ui-e2e)
+    run_step ui-e2e run_ui_e2e
+    ;;
   icp)
     run_step icp run_icp_build
     ;;
   smoke)
-    run_step smoke run_smoke
+    run_step smoke run_smoke_step
     ;;
   real)
     run_step real run_real
     ;;
   *)
-    echo "usage: $0 {all|checks|versions|rust|contracts|proofs|ui|icp|smoke|real}" >&2
+    echo "usage: $0 {all|checks|versions|rust|rust-fast|rust-integration|contracts|contracts-fast|contracts-coverage|proofs|ui|ui-fast|ui-e2e|icp|smoke|real}" >&2
     exit 2
     ;;
 esac

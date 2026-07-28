@@ -52,9 +52,12 @@ class TrustedPrGateTests(unittest.TestCase):
             "cp trusted-policy/scripts/ci-local.sh source/scripts/ci-local.trusted.sh",
             workflow,
         )
-        self.assertIn("rust) scripts/ci-local.trusted.sh rust", workflow)
-        self.assertIn("contracts) scripts/ci-local.trusted.sh contracts", workflow)
-        self.assertIn("ui) scripts/ci-local.trusted.sh ui", workflow)
+        self.assertIn("scripts/ci-local.trusted.sh rust-fast", workflow)
+        self.assertIn("scripts/ci-local.trusted.sh rust-integration", workflow)
+        self.assertIn("scripts/ci-local.trusted.sh contracts-fast", workflow)
+        self.assertIn("scripts/ci-local.trusted.sh contracts-coverage", workflow)
+        self.assertIn("scripts/ci-local.trusted.sh ui-fast", workflow)
+        self.assertIn("scripts/ci-local.trusted.sh ui-e2e", workflow)
         self.assertLess(
             workflow.index(
                 "cp trusted-policy/scripts/ci-local.sh source/scripts/ci-local.trusted.sh"
@@ -88,9 +91,7 @@ class TrustedPrGateTests(unittest.TestCase):
         ):
             self.assertIn(f"--glob '!{allowed_storage_file}'", driver)
         self.assertGreaterEqual(driver.count("--ignored-error-codes 2394"), 2)
-        self.assertIn('(cd "$lean_root" && lake build)', driver)
-        self.assertIn('echo "ambiguous Lean proof layout"', driver)
-        self.assertIn('echo "unknown Lean proof layout"', driver)
+        self.assertIn('(cd "$ROOT/verification/lean" && lake build)', driver)
         self.assertIn("      executable)", driver)
         self.assertIn(
             "Verus executable obligation does not call production symbol", driver
@@ -98,6 +99,14 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn(
             """awk -F $'\\t' '$1 != "executable" { print $2 }'""", driver
         )
+
+    def test_pr_controlled_gate_does_not_return(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("pr-gate:", workflow)
+        self.assertNotIn("ci_changed_areas.py", workflow)
 
 
 if __name__ == "__main__":

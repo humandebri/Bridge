@@ -49,6 +49,7 @@ jobs:
       - name: Validate trusted classifier
         run: |
           python3 scripts/test_ci_changed_areas.py
+          python3 scripts/test_ci_modes.py
           python3 scripts/test_trusted_pr_gate.py
 
   test:
@@ -110,10 +111,19 @@ jobs:
         run: |
           cd source
           case "$AREA" in
-            rust) scripts/ci-local.trusted.sh rust ;;
-            contracts) scripts/ci-local.trusted.sh contracts ;;
+            rust)
+              scripts/ci-local.trusted.sh rust-fast
+              scripts/ci-local.trusted.sh rust-integration
+              ;;
+            contracts)
+              scripts/ci-local.trusted.sh contracts-fast
+              scripts/ci-local.trusted.sh contracts-coverage
+              ;;
             proofs) scripts/ci-local.trusted.sh proofs ;;
-            ui) scripts/ci-local.trusted.sh ui ;;
+            ui)
+              scripts/ci-local.trusted.sh ui-fast
+              scripts/ci-local.trusted.sh ui-e2e
+              ;;
             real) scripts/ci-local.trusted.sh real ;;
             icp) scripts/ci-local.trusted.sh icp ;;
             *) exit 2 ;;

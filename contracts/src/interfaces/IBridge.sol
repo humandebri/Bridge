@@ -76,12 +76,16 @@ interface IBridge {
     error InvalidAmount(uint256 amount);
     error InvalidPrincipal(bytes owner);
     error InvalidServiceFee(uint256 serviceFee, uint256 maximumServiceFee);
+    error ValueExceedsU128(uint256 value);
+    error InvalidMintWindowDuration(uint64 suppliedDuration, uint64 minimumDuration, uint64 maximumDuration);
     error ServiceFeeExceedsUserMaximum(uint256 serviceFee, uint256 userMaximum);
     error DepositAlreadyProcessed(bytes32 depositId);
     error DepositMintLimitExceeded(uint256 mintAmount, uint256 limit);
     error MintWindowLimitExceeded(uint256 requestedAmount, uint256 availableAmount);
     error DepositMintsArePaused();
     error WithdrawalsArePaused();
+    error MultipleWithdrawalsInTransaction();
+    error InvalidMintRecipient(address recipient);
     error TokenTransferFailed();
     error UnauthorizedBridgeSigner(address caller);
     error UnauthorizedRuntimeAdministrator(address caller);
@@ -90,7 +94,10 @@ interface IBridge {
     error TimelockCandidateCodeHashMismatch(address candidate, bytes32 actualCodeHash, bytes32 expectedCodeHash);
     error TimelockCandidateIntrospectionFailed(address candidate);
     error TimelockCandidateDelayTooShort(address candidate, uint256 suppliedDelay, uint256 minimumDelay);
+    error TimelockCandidateDelayTooLong(address candidate, uint256 suppliedDelay, uint256 maximumDelay);
     error TimelockCandidateMissingSelfAdmin(address candidate);
+    error TimelockCandidateInvalidRoleMember(address candidate, bytes32 role, address member);
+    error TimelockCandidateHasPendingOperations(address candidate, uint256 pendingOperationCount);
 
     function mintDeposit(DepositMintRequest calldata request) external;
 

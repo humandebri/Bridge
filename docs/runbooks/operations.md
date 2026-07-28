@@ -6,21 +6,43 @@
 - Fee Recipient、RPC credential、raw transaction、秘密情報を監視ログへ出さない。
 - `get_bridge_status.counts`の`active_evm_payloads`、`retained_audit_events`、`pruned_audit_events`、`retained_deposit_index_entries`を確認する。audit詳細は直近10,000件、Deposit一覧はownerごとに直近100件が上限である。
 
+Status画面とruntime事前検証は、ブラウザからreview済みprofileのBase RPCへ直接問い合わせる表示用観測であり、CanisterのHTTP outcallを発生させない。表示用availabilityはBaseのFinalized/Safe signer ETH残高、Base pause、IC pause、Canisterのcycles floorを組み合わせ、いずれかが60秒を超えた場合はlast-known値を残したままfail closedにする。Deposit、Withdrawal、Governanceなど資産状態を変える最終判断では、このブラウザ観測を信用せず、Canisterが2-of-3 quorumでBaseを再検証する。
+
+CanisterがFinalized headを取得する際のblock response上限は固定16 KiBである。上限超過時は応答上限の自動拡大や自動再試行をせず、RPC unavailableとしてLedger処理前にfail closedにする。receipt blockは取得せず、2-of-3で一致したreceipt hashへ4 KiB上限の`bridgeSnapshot()` EIP-1898 probeを実行し、`requireCanonical=true`とsnapshotのblock numberでcanonical receiptを確認する。
+本番preflightも、receipt、deployment、保存snapshot、Timelock role eventの既知block hashをBridgeの`bridgeSnapshot()`またはTimelockの`getMinDelay()`へEIP-1898で固定する。番号指定block取得は行わず、full block応答はFinalized headのhash発見だけに使う。
+2026-07-23のBase Sepolia検証では、直近256 Finalized blockの`eth_getBlockByNumber`応答は最大5,542 bytesであり、16 KiB上限内に収まった。
+
+Canisterが使用するLedger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。
+Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示し、事前検証へ使う。
+
+Plan 007のSepolia stagingはKINICではなくTICRC1を使用するため、現在のtest-only値は`10000` rawである。
+KINIC mainnet Ledgerのfeeは`100000` rawであり、stagingとの差は意図した環境差である。
+詳しい検証条件は`sepolia-staging-e2e.md`の「Test Ledgerのfee」に記載する。
+
+production artifactへstaging Wasmを流用しない。
+production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
+
+stable schemaはv22、record wireはv18を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
+
 ## 保持制限と監査
 
 `get_audit_events`で指定したsequenceがpruning済みの場合、応答は`oldest_available_sequence`から始まる。削除済みeventの完全な内容はcanister内に残らず、`pruned_count`、`pruned_through_sequence`、`pruned_digest`だけがcommitmentとして残る。今回は外部archiveや第三者timestampingを行わないため、詳細の長期保管が必要な運用では上限到達前に別系統へ取得する。
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v16またはwire v15以外のstable state、未知schema、decode不能なDBはfail closedで起動を拒否する。
+schema v22またはwire v18以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。Ledger feeとService Feeをreview済みprofileへ同期した後、対象ownerまたは運用principalがHistoryから`continue_withdrawal`を実行する。Canisterが最新Ledger feeを再取得し、charged Service Fee以下であることを確認した場合だけ、同じrecordからreleaseを開始してguardを解除する。
 本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。
 SQLite DBやcounterを手作業で変更しない。
 
+schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipientを一つのstable envelopeへ保存し、別intent tableを持たない。pending EVM、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、Withdrawal primary rowとliability index・合計額・stop reason集計は一つのSQLite transactionで更新する。
+
 ## Controller限定のstorage保守
 
 保守APIはCanister controllerだけが呼び出せる。Governance principal、pause principal、Runtime Administratorには許可しない。実行前に対象Wasmとstable imageを保存し、処理失敗時にmetadataやDBを手作業で変更しない。
+
+新規install後、controller handover前にcontroller identityから`initialize_public_config()`を一度実行する。これはMint SignerとGovernance Operatorをchain-keyから導出し、両方が成功した場合だけstable stateへ一括保存する。続けて`get_public_config()` queryを実行し、release profileの両アドレスと一致することを確認する。初期化失敗、未初期化query、保存済みアドレスとの不一致はいずれもdeployment blockerであり、空値や手入力値で代替しない。upgradeでは保存値を維持し、再初期化を必須としない。
 
 1. `start_storage_validation()`を一度呼び、`continue_storage_validation(100)`を`complete = true`まで反復する。途中で通常更新が入って`StateChanged`になった場合、古いprogressは破棄されるため、静穏時間帯に明示的に再開始する。
 2. `storage_integrity_check()` queryが`ok`を返すことを確認する。upgrade処理からこの検査は自動実行されない。
@@ -38,15 +60,18 @@ SQLite DBやcounterを手作業で変更しない。
 
 監視SLOは同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。単一emergency pause principalの実request IDとaudit event、両transaction/callの確定時刻をevidenceへ入れる。SLO未達、証跡欠落、公式EVM RPC Canister IDまたはchainの不一致、Canisterによるpending Timelock cancel不能はいずれもproduction承認blockerである。EVM RPC Canister配下providerの運営主体・基盤・可用性は外部仮定として扱う。
 
-- hardware pause principalから`pause_new_deposits`を実行する。既にSubmittedのEVM operationはフロントからのconfirmationを待ち続けるため、各確認待ちと停止理由も監視する。
+- 承認済みpause principal identityから`pause_new_deposits`を実行する。既にSubmittedのEVM operationはフロントからのconfirmationを待ち続けるため、各確認待ちと停止理由も監視する。
 - Base側の異常では単一emergency pause principalがCanisterの`emergency_pause`を呼び、Canister由来Governance OperatorがDeposit/Withdrawal pauseと記録済みTimelock cancelを送信する。unpauseはSNS proposalからCanisterを経由してTimelockで実行し、limitは変更しない。
 - 緊急pauseと競合した未送信のfee・schedule・execute操作は破棄され、未使用nonceだけが再利用される。RPC送信開始済みの操作は`Broadcasting`として保持し、同じhashの存在またはpending nonce前進をquorumで確認できるまで再送・破棄しない。既送信executeが成功しても緊急actionが残る間はICをresumeせず、Base pauseを優先する。
 - 再開ごとの`schedule_activation`はCanisterの単調増加operation IDから新しいTimelock saltを導出する。過去に完了したactivationを再利用せず、保存されたoperation IDとsaltの組だけを`execute_activation`またはcancelへ渡す。
 - Governance Operatorのnonce競合時は、Canisterが自分のtransaction hashをquorum RPCで再確認する。hashが存在すればconfirmationへ戻り、存在せずpending nonceだけが前進していれば競合操作を失敗終了してnonceを前進させる。hashまたはnonceの証拠が一致しない間は新しい署名を作らず停止する。
 
-本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、まず`BRIDGE_ACTIVATION_PHASE=schedule`を実行する。Timelock待機中はpauseを維持する。72時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、明示承認後に`BRIDGE_ACTIVATION_PHASE=execute`を実行する。
+本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。72時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
 
-`execute`はBase両flowのunpause後にICをresumeする。IC resumeまたは確認が失敗した場合、driverはICを再pauseし、独立したRuntime Administrator hardware walletでBase両flowも再pauseする。`INCIDENT:`が出力された場合は成功扱いにせず、再pause確認の成否にかかわらず直ちにincident対応し、BaseとICのlive状態を3-provider quorumとCanister queryで確認する。
+deploy、controller handover、activation schedule/executeの固定driverは、不可逆操作の直前にclean sourceから`scripts/ci-local.sh proofs`を再実行する。
+proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`proof-attestation.json`を含むbundleはfail closedとする。
+
+`execute`提出前に`verify-schedule-receipt-live`がschedule receipt内部のdigest、認証済みSNS proposal/function registry、Canisterのpending operation、Base TimelockのFinalized pending状態を再照合する。その後、Base両flowのunpause確定後にCanisterがICをresumeする。proposalの`Executed`表示だけではCandidのdomain errorや後続EVM失敗を除外できないため、`bridge-profile verify-activation execute`がprior schedule receipt、認証済みCanister状態、Base Timelock done、Base/IC双方のunpauseを照合してexecute receiptを発行するまで受付開始を完了扱いにしない。独立した人間EVM管理walletやPause Guardianは存在せず、release driverも失敗時のBase再pause成功を保証しない。Canister、threshold signing、cycles、EVM RPCの相関障害ではBase再pauseが不能になりうるため、検証失敗を成功扱いにせず直ちにincident対応し、BaseとICのlive状態を3-provider quorumと認証済みCanister queryで確認する。
 - Holdの強制解除、nonce操作、任意transaction送信は行わない。
 ## Confirmed EVM revert
 
@@ -86,6 +111,8 @@ fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行�
 
 - nonceを確保したoperation: 対象recordのContinueを実行する。別recordが`NonceBlocked`なら、先にnonceを保持するSubmitted/Prepared operationを特定してContinueする。nonceやstable counterを手作業で変更しない。
 - Withdrawal Ledger hold: `continue_withdrawal`で同一Withdrawal ID・IC Account・固定amountOutを維持する。dedup期間内は同一transfer identityを一度だけ再送し、期間後は一回につきreconciliationを1 stepだけ進める。完全な不在証拠なしに別identityを作らない。送金先変更、任意送金、Base refundは行わない。
+- Deposit funding hold: pullの成功証拠または完全な不存在証明まで補償を行わない。成功時は`EscrowedUnquoted`、不存在時は`Cancelled`へ進める。
+- Deposit refund hold: 元account、attemptに保存した`gross - ledger_fee`、feeを照合する。成功証拠で`Refunded`へ進め、曖昧結果は完全な不存在証明後だけattempt番号、created-at time、memoを更新する。確定的な`BadFee`はexpected feeで最大3回自動再試行し、以後はgovernance限定`resume_deposit_refund`で再開する。feeがgross以上ならfee reserveからfeeを補償し、ユーザーへgross全額を返す。
 - Submitted EVM transaction: Continueを使わない。Finalized到達を観測した後、保存済みtransaction hashと一致する証拠で専用confirmation APIを呼ぶ。
 - 停止理由: Historyまたは`get_deposit`/`get_withdrawal`の`last_settlement_stop_reason`を記録し、外部障害を解消してからContinueする。
 

@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -10,7 +11,6 @@ const profilePath = process.env.BRIDGE_SEPOLIA_PROFILE
 const profile = JSON.parse(await readFile(profilePath, "utf8"))
 
 const productionIds = new Set([
-  "rlhjx-iyaaa-aaaaf-qcnyq-cai",
   "73mez-iiaaa-aaaaq-aaasq-cai",
   "7vojr-tyaaa-aaaaq-aaatq-cai",
 ])
@@ -44,3 +44,5 @@ const result = spawnSync("pnpm", ["run", "build"], {
 })
 if (result.error) throw result.error
 if (result.status !== 0) process.exit(result.status ?? 1)
+const profileSha256 = createHash("sha256").update(JSON.stringify(profile)).digest("hex")
+await writeFile(path.join(uiRoot, "dist/.kinic-sepolia-profile-sha256"), `${profileSha256}\n`, { flag: "w" })

@@ -21,7 +21,8 @@ CIが確認するのは、rehearsal recorderのテスト、公式Canister IDへ�
 
 次が一つでも欠ける場合は開始しない。
 
-- IC上のtest Bridge Canister、test ICRC Ledger、test ICRC Index
+- IC上のtest Bridge Canisterと、事前に配置済みの共有`testicrc` Canister
+- staging専用Ledger/Index Canisterを新規作成していないこと
 - 初期pause状態のBase Sepolia専用Bridge
 - Bridge Canisterの十分なcycles
 - test Ledger残高とBase Sepolia ETH
@@ -76,7 +77,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-artifact \
   /secure/work/rpc-e2e.json /secure/work/rehearsal-config.json preflight bridge \
   /secure/work/artifacts/preflight-bridge.json none -- \
   icp canister call <bridge-canister-id> get_public_config '()' \
-  -n ic --json
+  -n ic --query --json
 
 python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-artifact \
   /secure/work/rpc-e2e.json /secure/work/rehearsal-config.json canonical_receipt base \
@@ -114,7 +115,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 
 `external_calls_performed=true`と`through_evm_rpc_canister=true`だけでは証跡にならない。
 quorum成功scenarioは`get_audit_events`の`EvmRpcObservation`から、EVM RPC Canister ID、Candid call method、Canister内部request digest、quorum response digest、Finalized block number/hash、transaction hashを`canister_audit`へ束縛する。
-call methodはscenarioに応じたproduction実値`multi_request`、`eth_sendRawTransaction`、`eth_sendRawTransaction+multi_request`、`eth_getTransactionReceipt+eth_getBlockByNumber`だけを許可する。`nonce_conflict`もbroadcast decision auditを必須とし、単なるstop reason自己申告では完了しない。
+call methodはscenarioに応じたproduction実値`multi_request`、`eth_sendRawTransaction`、`eth_sendRawTransaction+multi_request`、`eth_getTransactionReceipt+multi_request`だけを許可する。receiptのcanonicalityは、2-of-3で一致したreceipt hashへ`bridgeSnapshot()`をEIP-1898 `requireCanonical=true`で実行し、snapshotのblock numberとreceipt heightを一致させる。`nonce_conflict`もbroadcast decision auditを必須とし、単なるstop reason自己申告では完了しない。
 `single_provider_failure`、`quorum_loss`、`nonce_conflict`は`EvmRpcDecision`も`canister_decision`へ束縛し、設定provider数、必要threshold、停止理由、Ledger呼出し有無、Bridge継続、Deposit pause、自動再署名有無を再導出する。threshold APIは採用前のprovider別全responseを返さないため、3/3一致と2/3一致の区別はfault injection artifactへ委ね、Canister auditは設定値`3`、必要threshold`2`、実際の継続・停止判断を証明する。
 `preflight`ではさらに固定`icp canister status <id> -n ic --public --json` captureのmodule hashをreview済みWasm SHA-256へ束縛する。
 予定値、手入力digest、dry-runを証跡として記録してはならない。
@@ -137,11 +138,11 @@ asset flowとして次の4件を実行し、各transactionをFinalized headま�
 1. `deposit_mint`: Deposit ID、Ledger block、mint transaction、Finalized block/hash
 2. `withdrawal_release`: user `approve`、user `createWithdrawal`のFinalized block/hash、固定quote、ICRC transfer block、追加Base transactionがないこと
 3. `ledger_fee_guard`: 観測Ledger feeがcharged Service Feeを超えたときtransfer前に停止し、Base Withdrawalをpauseする。cancel、refund、別transfer identityを作らない
-4. `canonical_receipt`: receipt block number/hash、同heightのcanonical hash、Finalized head
+4. `canonical_receipt`: receipt block number/hash、receipt hashへのEIP-1898 `bridgeSnapshot()` probe、Finalized head
 
 failure scenarioとして次の4件をtest-only設定で実行する。
 
-1. `single_provider_failure`: configured provider 3、required threshold 2、1 provider故障注入のraw参照、threshold成立、Bridge処理継続
+1. `single_provider_failure`: 実取引経路の`request_deposit`でconfigured provider 3、required threshold 2、1 provider故障注入のraw参照、threshold成立、Bridge処理継続
 2. `quorum_loss`: required threshold 2、2 provider以上の故障注入、threshold不成立、`RpcInconsistent`または`RpcUnavailable`、Ledger call前fail-closed
 3. `nonce_known`: `NonceTooLow`後、local transaction hashが2-provider合意で存在し`Submitted`
 4. `nonce_conflict`: local transaction hash不在、`NonceConflict`、自動再署名なし、Deposit pause
@@ -170,7 +171,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 - 全10 scenarioが公式EVM RPC Canister、Base Sepolia、同じrehearsal ID、同じBridge Canisterへbindingされている。
 - rehearsalのsource revision/tree、Bridge Canister Wasm、Bridge runtime bytecodeがrelease bundleと一致する。
 - quorum成功scenarioの`canister_audit`がraw `get_audit_events` artifactから再導出され、preflight module hashがreleaseのBridge Wasmと一致する。
-- signer triple、receipt/canonical block hash、confirmationが一致する。
+- signer triple、receipt hash、EIP-1898 canonical probe、confirmationが一致する。
 - quorum lossはLedger call前に停止する。
 - unknown nonce conflictは自動再署名せずDepositをpauseする。
 - Base BridgeとCanisterは演習終了時もpause状態に戻す。資産受付開始はこの演習とは別の明示承認とする。

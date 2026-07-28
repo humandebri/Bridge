@@ -15,7 +15,6 @@ export const BASE_MAINNET_CHAIN_ID = 8453
 export const BASE_SEPOLIA_CHAIN_ID = 84532
 export const OFFICIAL_EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
 export const PRODUCTION_CANISTER_IDS = new Set([
-  "rlhjx-iyaaa-aaaaf-qcnyq-cai",
   "73mez-iiaaa-aaaaq-aaasq-cai",
   "7vojr-tyaaa-aaaaq-aaatq-cai",
 ])

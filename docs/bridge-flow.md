@@ -8,7 +8,7 @@
 |---|---|
 | IC wallet（OISY / Plug） | ICRC-2 approve、`request_deposit`、`confirm_deposit`、`notify_withdrawal`の同意付き呼び出し |
 | Base wallet | bSNS approveと`createWithdrawal`の署名 |
-| Bridge canister | SQLite schema v16への状態保存、Ledger操作、EVM operation、Finalized再検証、Settlement job実行 |
+| Bridge canister | SQLite schema v22への状態保存、Ledger操作、EVM operation、Finalized再検証、Settlement job実行 |
 | KINIC Ledger / Index | Depositのpull、Withdrawalのrelease、履歴照合 |
 | EVM RPC Canister | 複数providerのquorumでBaseのcanonical Finalized chainを観測 |
 | Base Bridge / bSNS | Deposit mint、Withdrawalのatomic transferFrom・burn・`Committed`記録 |
@@ -21,14 +21,17 @@ flowchart TB
   subgraph Deposit["Deposit: ICP → Base"]
     D1["IC walletでICRC-2 approve"] --> D2["request_deposit"]
     D2 --> D3["CanisterがLedger pull"]
-    D3 --> D4["MintDepositを署名・broadcast"]
+    D3 --> DQ["Finalized Base観測・quote・mint予約"]
+    DQ --> D4["MintDepositを署名・broadcast"]
     D4 --> D5["Submittedとtx hashを保存"]
     D5 --> D6["BrowserがreceiptとFinalized headを観測"]
     D6 --> D7["IC wallet consent付きconfirm_deposit"]
     D7 --> D8["Canisterがcanonical Finalized receiptをquorum再検証"]
     D8 --> D9["DepositをMintedへ更新"]
     D9 --> D10["Settlement jobをCanister timerで完了"]
-    D3 -.-> DH["結果不明: ReconciliationHold"]
+    D3 -.-> DH["結果不明: FundingReconciliationHold"]
+    DQ -.-> RF["確定拒否: RefundPending → Refunded"]
+    RF -.-> RH["結果不明: RefundReconciliationHold"]
     D8 -.-> DR["revert: MintReverted + 新規Deposit pause"]
   end
 
@@ -54,10 +57,10 @@ Finalized確認に失敗した場合、Safe head、固定confirmation数、単�
 ## Depositの詳細
 
 1. UIはBase chain、Bridge runtime、CanisterのFinalized observation、Service Fee、ICRC Ledgerの残高・fee・allowance、Base recipientを直前に再検証する。必要なICRC-2 allowanceはgross amountとLedger feeを含む。
-2. IC walletが`request_deposit`を呼ぶ。`owner_sequence`とpayloadからDeposit IDが決まり、同じsequenceの別payloadは拒否される。CanisterはFinalized Base snapshot、reserve、nonce、Ledger feeを確認し、Deposit recordとSettlement jobを保存する。
-3. CanisterはICRC-2のpullを実行する。成功またはDuplicateなら`Escrowed`、確定的なLedger失敗なら`Cancelled`、結果不明なら`ReconciliationHold`になる。
-4. `MintDeposit` operationを`Queued → Prepared → Submitted`へ進める。nonce割当、transaction envelope保存、threshold ECDSA署名、broadcastの各結果をstable stateへ保存する。Deposit mintのtransactionだけがCanister発EVM operationである。
-5. `Submitted`のtransaction hashはCanisterに保存され、UIにも返される。UIは`settlement_id`、hash、owner、active deployment identifiersをlocalStorageへ保存し、表示中はpublic Base RPCを15秒間隔で確認する。秘密情報は保存しない。
+2. IC walletが`request_deposit`を呼ぶ。freshな既存cacheでfee・limit違反を確定できる場合だけrecord作成前に拒否する。その他は既存schemaへ`FundingPending` recordとstable executor job、固定transfer identity、sequence、quotaを単一transactionで保存し、外部callを行わず即時に返す。preflightは予約ではなく、pull後の再検証失敗ではpullとrefundのLedger feeを負担し得る。
+3. leaseを取得したexecutorだけがICRC-2 pullを実行する。成功またはDuplicateなら`EscrowedUnquoted`、確定的失敗なら既存`Cancelled`へ進める。結果不明またはcallback消失は同じtransactionで`FundingReconciliationHold`とidentityを保存し、成功証拠または完全な不存在証明なしに再送しない。
+4. pull確定後にFinalized Base状態を観測し、pause、fee、limit、reserveを再検証する。成功時だけquote、`MintDeposit`、mint予約を原子的に保存する。freshな拒否はgrossからCanister公開設定のLedger feeを引いて元accountへ返す。RPC障害、不一致、stale観測では返金せず再観測する。
+5. `MintDeposit` operationを`Queued → Prepared → Submitted`へ進め、transaction hashをcanonical Historyへ保存する。UIは受付receiptに即時hashを期待しない。
 6. receipt blockがFinalized head以下になったら、UIはIC walletの同意画面を表示して`confirm_deposit`を呼ぶ。Canisterは、受け取ったsettlement ID・transaction hash・receipt block・観測Finalized blockを保存値と照合する。
 7. CanisterはEVM RPC Canisterのquorumからcanonical Finalized receiptを再取得し、成功なら`Minted`へ進める。receiptがrevertなら対象operationを`Reverted`、Depositを`MintReverted`へ遷移させ、新規Depositをpauseする。
 8. 確認後のSettlementはstable job executorが進める。ブラウザを閉じても、Ledger側に残る処理はCanister timerで実行される。EVM confirmationそのものをtimerが代行することはない。
@@ -92,7 +95,7 @@ Withdrawalには次の処理が存在しない。
 - `confirm_withdrawal`などのEVM confirmation API
 - Canister threshold ECDSAによるWithdrawal transaction
 - Withdrawal後のBase refund、release acknowledgement、cancel
-- burn後の再mint
+- Withdrawal IDからburnを取り消す専用refund/remint経路（Bridge Signerの通常Deposit mint権限は別のtrust assumption）
 
 ## UIとCanisterの自動進行境界
 

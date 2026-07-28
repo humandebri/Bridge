@@ -13,9 +13,13 @@ optimizer_runs = 200
 via_ir = true
 deny = "warnings"
 # OpenZeppelin 5.6.1 uses `error` as a local identifier; solc 0.8.36 only warns that it may become reserved.
-ignored_error_codes = [6335]
+# The Bridge intentionally retains its withdrawal sentinel for the whole
+# transaction; this is the composability restriction that prevents multiple
+# irreversible Withdrawal events from one transaction.
+ignored_error_codes = [2394, 6335]
 bytecode_hash = "none"
 cbor_metadata = false
+fs_permissions = [{ access = "read", path = "../verification/generated" }]
 
 [profile.default.fuzz]
 runs = 1000

@@ -19,6 +19,9 @@ and the production OISY signer. Automated test adapters do not satisfy this gate
 
 Attach the runtime-verification screen and record that every check is fresh and passing. Stop the
 test if bridge controls become unavailable or any identifier differs from the reviewed profile.
+The browser must reject a Finalized Base head that is more than 45 minutes old, has no timestamp,
+or is more than 60 seconds ahead of the browser clock. This chain-head limit is independent from
+the 60-second lifetime of a successfully fetched runtime or status result.
 
 ## Plug
 
@@ -43,6 +46,21 @@ test if bridge controls become unavailable or any identifier differs from the re
 - Change the selected account after confirmation; verify the transaction is aborted and must be
   reviewed again.
 
+## Base wallets
+
+- With MetaMask and Rabby installed, verify both appear by name and logo and the generic browser
+  wallet choice is hidden.
+- Connect each detected wallet in turn and confirm the header shows the selected wallet logo,
+  name, and shortened address.
+- Open WalletConnect, scan the QR code on a mobile wallet, approve Base or Base Sepolia, and
+  confirm the same connected-wallet summary is shown.
+- Reject one browser-wallet request and one WalletConnect request; verify the selection dialog
+  remains usable and no transaction is submitted.
+- Disconnect and reconnect each connection type, then change the active account and Base chain;
+  verify the bridge revalidates both immediately.
+- Confirm the browser reports no Content-Security-Policy violations during WalletConnect pairing,
+  signing, or disconnect.
+
 ## Shared failure checks
 
 - Change the Base chain and verify approve/deposit/withdraw remain disabled.
@@ -65,6 +83,9 @@ test if bridge controls become unavailable or any identifier differs from the re
 
 - Outcome: `PASS` / `FAIL`
 - Evidence links:
+- Deposit operation/Ledger/Base references for Plug and OISY:
+- Withdrawal operation/Ledger/Base references for MetaMask and Rabby:
+- Same-Wasm before/after state SHA-256 and `storage_integrity_check()` result:
 - Deviations or browser/extension issues:
 - Reviewer and review date:
 

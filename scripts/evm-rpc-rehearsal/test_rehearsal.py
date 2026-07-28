@@ -83,10 +83,10 @@ def evidence(scenario, details):
                     "fault_injection_reference": "/run_reference",
                 })
     audit_methods = {
-        "deposit_mint": "eth_getTransactionReceipt+eth_getBlockByNumber",
+        "deposit_mint": "eth_getTransactionReceipt+multi_request",
         "withdrawal_release": "multi_request",
         "ledger_fee_guard": "multi_request",
-        "canonical_receipt": "eth_getTransactionReceipt+eth_getBlockByNumber",
+        "canonical_receipt": "eth_getTransactionReceipt+multi_request",
         "nonce_known": "eth_sendRawTransaction+multi_request",
         "nonce_conflict": "eth_sendRawTransaction+multi_request",
     }
@@ -95,7 +95,7 @@ def evidence(scenario, details):
         audit_transaction_hash = H32_A
     decisions = {
         "single_provider_failure": {
-            "kind": "QuorumContinued", "operation": "refresh_base_observation",
+            "kind": "QuorumContinued", "operation": "request_deposit",
             "configured_provider_count": 3, "required_threshold": 2,
             "stop_reason": None, "ledger_call_performed": False,
             "bridge_operation_continued": True, "deposits_paused": False,

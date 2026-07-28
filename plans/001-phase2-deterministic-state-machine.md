@@ -5,7 +5,7 @@
 
 > **実行者向け指示**: この計画を上から順に実行し、各ステップの検証結果を確認してから次へ進むこと。`STOP条件`に該当した場合は実装を続けず、差分と判断材料を報告すること。完了時は`plans/README.md`の状態を更新する。
 
-> **ドリフト確認（最初に実行）**: `git diff --stat 5fc223c..HEAD -- Cargo.toml canister/bridge-core canister/bridge-canister scripts/ci-local.sh docs/adr/0008-handover-bridge-upgrades-to-sns-control.md plan.md`。対象ファイルにPhase 2の意図と異なる変更がある場合、下記Current stateを現行コードと照合し、不一致ならSTOPする。
+> **ドリフト確認（最初に実行）**: `git diff --stat 5fc223c..HEAD -- Cargo.toml canister/bridge-core canister/bridge-canister scripts/ci-local.sh docs/adr/0008-handover-bridge-upgrades-to-sns-control.md docs/implementation-plan.md`。対象ファイルにPhase 2の意図と異なる変更がある場合、下記Current stateを現行コードと照合し、不一致ならSTOPする。
 
 ## Status
 
@@ -31,12 +31,12 @@ Base側のbSNS、Deposit、Withdrawal、pause、Timelock、ABI snapshotはPhase 
 - `scripts/ci-local.sh:53-63` — Rust gateはfmt、clippy、workspace test、Wasm build、local-network preparationを実行する。core testとschema testはこのgateに載せる。
 - `scripts/ci-local.sh:138-141` — ICP build gateは`icp project show`と`icp build bridge-canister`だけで、Candidの業務APIやupgrade互換性は未検査である。
 - `docs/adr/0008-handover-bridge-upgrades-to-sns-control.md` — stable structuresへ直接保存し、全stateを`pre_upgrade`でserializeしないこと、未完了Deposit/Withdrawal/EVM transaction/Reconciliation Holdをupgrade後に再開できることを要求している。
-- `plan.md:110-127` — Phase 2はstate設計、Settlement Reserveを侵食しないDeposit受付、Service Fee保護、Deposit flowを定義する。Phase 3の外部連携より先にpure logicを作る方針である。
+- `docs/implementation-plan.md:110-127` — Phase 2はstate設計、Settlement Reserveを侵食しないDeposit受付、Service Fee保護、Deposit flowを定義する。Phase 3の外部連携より先にpure logicを作る方針である。
 - `docs/parameters.md:16-57` — Mint Throughput Limit、Per-Deposit Limit、`MAX_SERVICE_FEE`、Settlement Reserveの値はTBDである。Plan 001では値を埋めず、raw unitとchecked arithmeticの契約だけを持つ。
 
 ### 守るべき設計語彙と制約
 
-- `CONTEXT.md`のDeposit、Withdrawal、Bridge Exposure、Service Fee、Settlement Reserve、Reconciliation Holdをそのまま状態名・コメント・テスト名に使う。`Withdrawal Settlement`はBaseの`Pending → Released`または`Pending → Refunded`の一方だけで終端する。
+- `docs/glossary.md`のDeposit、Withdrawal、Bridge Exposure、Service Fee、Settlement Reserve、Reconciliation Holdをそのまま状態名・コメント・テスト名に使う。`Withdrawal Settlement`はBaseの`Pending → Released`または`Pending → Refunded`の一方だけで終端する。
 - ADR 0001/0004/0005/0006/0008の決定を変更しない。特に、refundは新規Deposit mint throughputを消費せず、Service Feeは成功確定時だけ確定し、不明なledger transferは時間経過だけで再送・返金しない。
 - Base contractのABIは`docs/base-interface.md`と`contracts/abi/*.json`が正本であり、Plan 001ではSolidity ABIを変更しない。
 - 外部I/Oはcoreから呼ばない。ICRC ledger、EVM RPC、threshold ECDSA、timer、management canister、HTTPを導入するのはPlan 002以後とする。
@@ -45,7 +45,7 @@ Base側のbSNS、Deposit、Withdrawal、pause、Timelock、ABI snapshotはPhase 
 
 | 目的 | コマンド | 成功条件 |
 |---|---|---|
-| Drift check | `git diff --stat 5fc223c..HEAD -- Cargo.toml canister/bridge-core canister/bridge-canister scripts/ci-local.sh docs/adr/0008-handover-bridge-upgrades-to-sns-control.md plan.md` | Phase 2の未計画差分がない |
+| Drift check | `git diff --stat 5fc223c..HEAD -- Cargo.toml canister/bridge-core canister/bridge-canister scripts/ci-local.sh docs/adr/0008-handover-bridge-upgrades-to-sns-control.md docs/implementation-plan.md` | Phase 2の未計画差分がない |
 | Rust format | `cargo fmt --manifest-path Cargo.toml --all --check` | exit 0 |
 | Rust lint | `cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings` | exit 0、warningなし |
 | Unit/property tests | `cargo test --manifest-path Cargo.toml --workspace` | coreとcanisterの全testがpass |
@@ -68,7 +68,7 @@ Base側のbSNS、Deposit、Withdrawal、pause、Timelock、ABI snapshotはPhase 
 
 - `contracts/src/**`、`contracts/test/**`、`contracts/abi/**` — Phase 1Eで凍結済みのBase contractとABI。
 - ICRC ledger transfer、EVM RPC送信、threshold ECDSA、nonce queue、Settlement Reserveの実コスト計算、Runtime Administrator、Fee Recipient運用 — Plan 002/003へ延期する。
-- `docs/parameters.md`のTBD数値、Base Admin wallet、SNS Root handover、mainnet/testnet deploy、x402 facilitator — Plan 005/006へ延期する。KINIC LedgerとIndexの本番識別子は確定済みである。
+- `docs/parameters.md`のTBD数値、Base Admin wallet、SNS Root handover、mainnet/testnet deploy — Plan 005/006へ延期する。KINIC LedgerとIndexの本番識別子は確定済みである。x402 facilitatorはBridgeの配置・activation範囲外とする。
 - `pre_upgrade`で全stateを一括serializeする実装。stable structuresのmemory layoutを正本にする。
 
 ## Steps

@@ -9,7 +9,6 @@ export interface LedgerActor {
   icrc1_name(): Promise<string>
   icrc1_decimals(): Promise<number>
   icrc1_symbol(): Promise<string>
-  icrc1_fee(): Promise<bigint>
   icrc2_allowance(args: { account: LedgerAccount; spender: LedgerAccount }): Promise<LedgerAllowance>
 }
 
@@ -45,7 +44,6 @@ export async function createLedgerActor(host: string, canisterId: string): Promi
     icrc1_name: async () => metadataText(await readMetadata(), "icrc1:name"),
     icrc1_decimals: async () => metadataNat(await readMetadata(), "icrc1:decimals"),
     icrc1_symbol: async () => metadataText(await readMetadata(), "icrc1:symbol"),
-    icrc1_fee: () => ledger.transactionFee({ certified: false }),
     icrc2_allowance: async ({ account: owner, spender }) => {
       const result = await ledger.allowance({
         account: candidAccount(owner),

@@ -1,10 +1,21 @@
 # KINIC–Base Bridge
 
 KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
-Base contractとPlan 001〜004を実装済みであり、現在は本番パラメータと鍵運用を確定するPlan 005を進めている。
+
+## 現在の状態
+
+[実装計画の索引](plans/README.md)を進捗の正本とする。
+
+| 対象 | 状態 | 残作業 |
+|---|---|---|
+| Plan 001〜004 | 完了 | 履歴資料として保持 |
+| Plan 005 | 進行中 | 外部計測、固定limit承認、pause/cancel演習 |
+| Plan 006 | リポジトリ実装済み | SNS handover、本番preflight、mainnet evidence |
+| Plan 007 | Local完了 / External待ち | IC mainnet test Canister、Base Sepolia、test frontend |
+| Production | 未デプロイ | Plan 001〜007と本番運用条件の完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、EVM操作、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v16の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+`bridge-canister`はstable schema v22の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 EVM transactionのbroadcast後は確認待ちとして保存し、フロントがpublic Base RPCでreceiptとFinalized headを観測する。
 Finalized到達後、認証済みIC walletがtransaction hash、receipt block、観測Finalized blockを`confirm_deposit`へ送ると、Canisterが証拠と保存済みtransactionを照合してからEVM RPC outcallで再検証する。Withdrawalは追加EVM transactionを生成しない。
 フロントが動作していない間はEVM confirmation待ちを維持し、Canister timerによるconfirmation fallbackは行わない。confirmation後のLedger settlementはstable jobとCanister timerで自動進行する。
@@ -15,7 +26,7 @@ Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その�
 
 本番Bridgeは未デプロイであり、Plan 005の外部計測と単一emergency pause演習、Plan 006のSNS handoverとCanister操作型production preflightが完了するまで本番資産を受け付けない。
 
-Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、設計判断は[plan.md](plan.md)、用語は[CONTEXT.md](CONTEXT.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
+Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、実装計画は[docs/implementation-plan.md](docs/implementation-plan.md)、用語は[docs/glossary.md](docs/glossary.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
 
 ## KINIC mainnet canister
 
@@ -41,26 +52,56 @@ Bridge canisterはこのLedgerとIndexだけを対象とする。Ledger metadata
 | OpenZeppelin Contracts | 5.6.1 (`5fd1781b1454fd1ef8e722282f86f9293cacf256`) |
 | Z3 | 4.16.0 |
 | Verus | 0.2026.07.05.49b8806 |
+| Lean | 4.30.0 |
 | Node.js | 24.14.0 |
 | pnpm | 11.0.8 |
 
-Rustは`rust-toolchain.toml`、Rust依存は`Cargo.lock`、Solidity compilerとEVM targetは`contracts/foundry.toml`、OpenZeppelinはgit submoduleのcommitで固定する。Verusが内部で要求するRust 1.96.0はCIのVerus導入stepで別途固定する。
+Rustは`rust-toolchain.toml`、Rust依存は`Cargo.lock`、Leanは`lean-toolchain`、Solidity compilerとEVM targetは`contracts/foundry.toml`、OpenZeppelinはgit submoduleのcommitで固定する。
+Verusが内部で要求するRust 1.96.0はCIのVerus導入stepで別途固定する。
+
+## 新規cloneの準備
+
+```bash
+git submodule update --init --recursive
+pnpm install --frozen-lockfile
+pnpm --dir ui install --frozen-lockfile
+pnpm --dir ui exec playwright install chromium
+```
+
+上記の固定ツールを導入したうえで`scripts/ci-local.sh versions`を実行する。
+CIでの固定ツール導入手順は[`.github/workflows/ci.yml`](.github/workflows/ci.yml)を参照する。
 
 ## 検証
 
-全検証とローカルdeploy smokeを実行する。
+開発中は変更領域に対応するfast modeを実行する。
 
 ```bash
-scripts/ci-local.sh all
+scripts/ci-local.sh rust-fast
+scripts/ci-local.sh contracts-fast
+scripts/ci-local.sh ui-fast
 ```
 
-deployを除く検証だけを実行する。
+Wasm・PocketIC統合、coverage、ブラウザE2Eは必要に応じて個別に実行する。
+
+```bash
+scripts/ci-local.sh rust-integration
+scripts/ci-local.sh contracts-coverage
+scripts/ci-local.sh ui-e2e
+```
+
+PR前はdeployと実Ledger統合を除く全検証を実行する。
 
 ```bash
 scripts/ci-local.sh checks
 ```
 
-個別実行:
+main更新時、夜間、リリース前は全検証とローカルdeploy smokeを実行する。
+
+```bash
+scripts/ci-local.sh all
+```
+
+既存の集約modeとその他の個別実行:
 
 ```bash
 scripts/ci-local.sh versions
@@ -73,8 +114,15 @@ scripts/ci-local.sh smoke
 scripts/ci-local.sh real
 ```
 
+GitHub Actionsの`trusted-pr-gate`は`pull_request_target`でbase branch版classifierだけを実行し、PRの正確なhead SHAをread-only・secretなしのephemeral runnerで検証する。未知pathとCI関連変更は全suiteへfail closedする。
+bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をrequiredかつstrictに設定する必要がある。旧`pr-gate`はrequired判定から外し、`main`へのpush、夜間schedule、手動実行では完全な`all` gateを実行する。
+
 `contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
-`proofs`はLeanの`sorry`・`admit`を拒否してcross-system modelを検査し、productionと共有するDeposit、Withdrawal、管理判定coreをSMTCheckerとVerusで証明する。意図的に制約を欠くfixtureが拒否されることも確認する。
+`proofs`はLeanをcross-chain protocolの正式な抽象仕様としてビルドし、`sorry`・`admit`を拒否する。
+Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、各vector sectionについてmanifestにない仕様・定理・consumerのdriftを拒否する。
+manifestに登録したconsumerは許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。
+この照合は列挙した境界値に対する限定的なconformanceであり、各言語実装全体の完全なsemantic refinementではない。
+productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。
 `ui`はABI/Candid drift、typecheck、lint、unit test、build、desktop/mobile Playwrightを実行する。`real`は実Ledger suiteとAnvilを使うPlaywright統合テストを実行し、`all`にも含まれるが短時間用の`checks`には含まれない。
 証明範囲と外部仮定は[verification/README.md](verification/README.md)と[verification/obligations.md](verification/obligations.md)に記録する。
 
@@ -85,13 +133,22 @@ python3 scripts/abi_snapshot.py --update
 python3 scripts/abi_snapshot.py --check
 ```
 
+Leanの仕様変更後はconformance vectorを明示的に更新し、通常のCIは生成結果との差分だけを検出する。
+
+```bash
+python3 scripts/protocol_vectors.py --update
+python3 scripts/protocol_vectors.py --check
+```
+
+release対象claim、抽象・有限幅・trace定理、Verus義務、production link、transaction test、外部仮定は[verification/phase5-claims.tsv](verification/phase5-claims.tsv)で管理し、vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。不可逆なproduction操作の直前にはproof gateに続いてWasmとcontract runtimeをclean sourceから二回buildし、release manifestとのhash完全一致を要求する。
+
 ## ローカルdeploy
 
 `smoke`は次を自動実行する。
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 16、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 22、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
 5. 72時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
@@ -115,4 +172,4 @@ icp network stop --project-root-override .
 
 手動実行の`prepare_local_network.py --write`は`icp.yaml`を永続的に変更する。必要なら停止後に利用者が元のportへ戻す。
 
-`--mode reinstall`はstateを削除するため使用しない。
+本番未デプロイ期間に旧schemaが残るdevelopment/staging Canisterは、stateを保持するupgradeではなく明示的な`--mode reinstall`で現行schemaへ揃える。本番deploy後はreinstallを禁止し、migration方針を別途導入する。

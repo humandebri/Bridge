@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process"
 import { createServer } from "node:http"
+import { connect } from "node:net"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { gunzipSync } from "node:zlib"
 import path from "node:path"
@@ -21,12 +22,15 @@ const runtimeDir = path.join(uiRoot, ".e2e-runtime")
 const rpcUrl = "http://127.0.0.1:8545"
 const controlPort = 43119
 const uiPort = 4174
+const ACTIVATION_DELAY_SECONDS = 72 * 60 * 60
+const ACTIVATION_TIME_ADVANCES = 3
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 const testIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(7))
 const testOwner = testIdentity.getPrincipal()
 const pauseIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(8))
 const pausePrincipal = pauseIdentity.getPrincipal()
 const minter = Principal.selfAuthenticating(new Uint8Array(32).fill(9))
+const feeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(10))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
 const resources = {}
@@ -47,12 +51,19 @@ async function setup() {
   buildWasm()
   execFileSync("forge", ["build", "--root", path.join(root, "contracts")], { stdio: "inherit" })
 
+  if (await isTcpPortOpen("127.0.0.1", 8545)) {
+    throw new Error("TCP port 8545 is already in use; real E2E never reuses an existing endpoint")
+  }
+  const anvilGenesisTimestamp = Math.floor(Date.now() / 1_000)
+    - ACTIVATION_DELAY_SECONDS * ACTIVATION_TIME_ADVANCES
   const anvil = spawn("anvil", [
     "--chain-id", "31337", "--base-fee", "1", "--silent",
+    "--timestamp", String(anvilGenesisTimestamp),
+    "--host", "127.0.0.1", "--port", "8545",
     "--cache-path", path.join(runtimeDir, "anvil-cache"),
   ], { stdio: ["ignore", "ignore", "inherit"] })
   resources.anvil = anvil
-  await waitForRpc()
+  await waitForOwnedRpc(anvil)
   const publicClient = createPublicClient({ transport: http(rpcUrl) })
 
   const picServer = await PocketIcServer.start()
@@ -129,12 +140,13 @@ async function setup() {
   await mock.actor.set_max_service_fee(100_000_000n)
   await mock.actor.set_per_deposit_limit(1_000_000_000_000n)
   await mock.actor.set_mint_window(0n, 10_000_000_000_000n, 0n, 3_600n, 1n)
-  const bridgeId = await pic.createCanister({ targetSubnetId: subnet.id })
+  const bridgeId = await pic.createCanister({ controllers: [testOwner], targetSubnetId: subnet.id })
   const mockWasm = await readFile(path.join(root, "target/wasm32-unknown-unknown/release/mock_external.wasm"))
   await pic.installCode({
     canisterId: bridgeId,
     wasm: mockWasm,
     arg: IDL.encode([mockInitType], [{ ledger_id: ledgerId }]),
+    sender: testOwner,
     targetSubnetId: subnet.id,
   })
   const signerProbe = pic.createActor(mockIdl, bridgeId)
@@ -197,14 +209,19 @@ async function setup() {
       settlement_cycle_ceiling: 1n,
       governance_principal: testOwner,
       pause_principal: pausePrincipal,
-      fee_recipient: { owner: testOwner, subaccount: [] },
+      fee_recipient: { owner: feeRecipient, subaccount: [] },
     }]),
+    sender: testOwner,
     cycles: 500_000_000_000_000n,
     targetSubnetId: subnet.id,
   })
   const bridgeActor = pic.createActor(bridgeIdl, bridgeId)
   const bridge = { actor: bridgeActor, canisterId: bridgeId }
   bridge.actor.setIdentity(testIdentity)
+  const initializedPublicConfig = await bridge.actor.initialize_public_config()
+  if (!("Ok" in initializedPublicConfig)) {
+    throw new Error(`Failed to initialize public config: ${JSON.stringify(initializedPublicConfig.Err)}`)
+  }
   const pauseActor = pic.createActor(bridgeIdl, bridgeId)
   pauseActor.setIdentity(pauseIdentity)
   mock.actor.setIdentity(testIdentity)
@@ -341,7 +358,7 @@ async function setup() {
   }
   await mock.actor.set_receipt_mode({ Confirmed: null })
 
-  await rpc("evm_increaseTime", [259_200])
+  await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const executeSubmitted = await bridge.actor.execute_activation()
   if (!("Ok" in executeSubmitted)) throw new Error(`Canister execute_activation failed: ${json(executeSubmitted.Err)}`)
@@ -374,7 +391,7 @@ async function setup() {
   await syncObservedHeads()
   const secondScheduleConfirmed = await bridge.actor.schedule_activation()
   if (!("Ok" in secondScheduleConfirmed)) throw new Error(`Second activation schedule confirmation failed: ${json(secondScheduleConfirmed.Err)}`)
-  await rpc("evm_increaseTime", [259_200])
+  await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const secondExecuteSubmitted = await bridge.actor.execute_activation()
   if (!("Ok" in secondExecuteSubmitted)) throw new Error(`Second activation execute failed: ${json(secondExecuteSubmitted.Err)}`)
@@ -408,7 +425,7 @@ async function setup() {
   await syncObservedHeads()
   const recoveryScheduleConfirmed = await bridge.actor.schedule_activation()
   if (!("Ok" in recoveryScheduleConfirmed)) throw new Error(`Post-emergency activation schedule confirmation failed: ${json(recoveryScheduleConfirmed.Err)}`)
-  await rpc("evm_increaseTime", [259_200])
+  await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const recoveryExecuteSubmitted = await bridge.actor.execute_activation()
   if (!("Ok" in recoveryExecuteSubmitted)) throw new Error(`Post-emergency activation execute failed: ${json(recoveryExecuteSubmitted.Err)}`)
@@ -424,7 +441,7 @@ async function setup() {
   resources.activationFacts = {
     schedule_transaction: bytesHex(scheduleSubmitted.Ok.transaction_hash[0]),
     early_execute_reverted: true,
-    delay_seconds: 259200,
+    delay_seconds: ACTIVATION_DELAY_SECONDS,
     execute_transaction: bytesHex(executeSubmitted.Ok.transaction_hash[0]),
     repeated_schedule_transaction: bytesHex(secondScheduleSubmitted.Ok.transaction_hash[0]),
     repeated_execute_transaction: bytesHex(secondExecuteSubmitted.Ok.transaction_hash[0]),
@@ -468,6 +485,7 @@ async function setup() {
       if (request.url === "/ic/deposit") {
         if (connectedAccount !== testOwner.toText()) throw new Error("test IC account changed")
         depositSequences.push(String(body.ownerSequence))
+        await syncObservedHeads()
         const result = await bridge.actor.request_deposit({
           owner_sequence: BigInt(body.ownerSequence),
           base_recipient: hexToBytes(body.baseRecipient),
@@ -481,7 +499,7 @@ async function setup() {
           failNextDepositResponse = false
           return send(response, 503, { error: "Injected response loss after deposit acceptance" })
         }
-        return send(response, 200, { deposit_id: bytesHex(result.Ok.deposit_id), owner_sequence: result.Ok.owner_sequence.toString(), state: result.Ok.state, settlement: result.Ok.settlement[0] ? settlementJson(result.Ok.settlement[0]) : undefined })
+        return send(response, 200, { deposit_id: bytesHex(result.Ok.deposit_id), owner_sequence: result.Ok.owner_sequence.toString(), state: result.Ok.state })
       }
       if (request.url === "/ic/notify") {
         notifyCalls += 1
@@ -504,8 +522,8 @@ async function setup() {
         if ("Err" in result) throw new Error(`withdrawal notification rejected: ${json(result.Err)}`)
         const withdrawalId = "Ingested" in result.Ok ? result.Ok.Ingested.withdrawal_id : result.Ok.Duplicate.withdrawal_id
         if (!knownWithdrawals.some((id) => bytesHex(id) === bytesHex(withdrawalId))) knownWithdrawals.push(withdrawalId)
-        if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id), settlement: result.Ok.Ingested.settlement[0] ? settlementJson(result.Ok.Ingested.settlement[0]) : undefined } })
-        return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id), settlement: result.Ok.Duplicate.settlement[0] ? settlementJson(result.Ok.Duplicate.settlement[0]) : undefined } })
+        if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id) } })
+        return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id) } })
       }
       if (request.url === "/ic/confirm-deposit") {
         confirmDepositCalls += 1
@@ -559,6 +577,21 @@ async function setup() {
         holdNextConfirmDeposit = true
         return send(response, 200, null)
       }
+      if (request.url === "/test/pending-deposit") {
+        const depositId = knownDeposits[0]
+        if (!depositId) throw new Error("no known deposit is available")
+        const [record] = await bridge.actor.get_deposit(depositId)
+        const submitted = record?.base_confirmation[0]?.Submitted
+        if (!submitted) throw new Error("known deposit has no submitted Base transaction")
+        return send(response, 200, {
+          bridgeAddress,
+          bridgeCanisterId: bridge.canisterId.toText(),
+          chainId: 31_337,
+          owner: testOwner.toText(),
+          settlementId: bytesHex(depositId),
+          transactionHash: bytesHex(submitted.transaction_hash),
+        })
+      }
       if (request.url === "/test/release-confirm-deposit") {
         releaseHeldConfirmDeposit?.()
         return send(response, 200, null)
@@ -602,29 +635,34 @@ async function setup() {
         return send(response, 200, { time: await pic.getTime() })
       }
       if (request.url === "/test/upgrade") {
-        const [beforeStatus, beforeConfig, beforeSequence] = await Promise.all([
-          bridge.actor.get_bridge_status(),
-          bridge.actor.get_public_config(),
-          bridge.actor.get_next_deposit_sequence(testOwner),
-        ])
-        await pic.upgradeCanister({
-          canisterId: bridge.canisterId,
-          wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
-          arg: IDL.encode([], []),
-        })
-        const [afterStatus, afterConfig, afterSequence] = await Promise.all([
-          bridge.actor.get_bridge_status(),
-          bridge.actor.get_public_config(),
-          bridge.actor.get_next_deposit_sequence(testOwner),
-        ])
-        if (json(beforeConfig) !== json(afterConfig) || beforeSequence !== afterSequence) throw new Error("same-Wasm upgrade changed configuration or owner sequence")
-        for (const key of ["deposits", "withdrawals", "pending_evm_operations", "reconciliation_holds", "pending_ledger_operations"]) {
-          if (beforeStatus.counts[key] !== afterStatus.counts[key]) throw new Error(`same-Wasm upgrade changed ${key}`)
+        await stopProgressLoop()
+        let before
+        let after
+        try {
+          await waitForNoLeasedJobs(bridge.actor)
+          before = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
+          await pic.upgradeCanister({
+            canisterId: bridge.canisterId,
+            wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
+            arg: IDL.encode([], []),
+            sender: testOwner,
+          })
+          after = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
+        } finally {
+          await startProgressLoop(pic)
         }
-        if (beforeStatus.deposits_paused !== afterStatus.deposits_paused) throw new Error("same-Wasm upgrade changed pause state")
+        if (json(before) !== json(after)) throw new Error("same-Wasm upgrade changed durable bridge state")
+        if (before.deposits.length === 0) throw new Error("same-Wasm upgrade did not exercise an individual Deposit record")
         const facts = JSON.parse(await readFile(path.join(runtimeDir, "local-e2e-facts.json"), "utf8"))
-        await writeLocalFacts({ ...facts, state_upgrade: true })
-        return send(response, 200, { before: beforeStatus.counts, after: afterStatus.counts })
+        await writeLocalFacts({
+          ...facts,
+          state_upgrade: {
+            verified: true,
+            before,
+            after,
+          },
+        })
+        return send(response, 200, { before, after })
       }
       if (request.url === "/test/account") {
         connectedAccount = String(body.owner)
@@ -674,13 +712,110 @@ async function setup() {
 }
 
 async function cleanup() {
-  resources.vite?.kill("SIGTERM")
+  await terminateChild(resources.vite, "Vite")
   if (resources.control?.listening) await new Promise((resolve) => resources.control.close(resolve))
   await stopProgressLoop()
   await resources.gatewayClient?.stopHttpGateway().catch(() => undefined)
   await resources.pic?.tearDown().catch(() => undefined)
   await resources.picServer?.stop().catch(() => undefined)
-  resources.anvil?.kill("SIGTERM")
+  await terminateChild(resources.anvil, "Anvil")
+}
+
+async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
+  const [status, publicConfig, ownerSequence, deposits, withdrawals, auditPage, activationStatus, storageIntegrity] = await Promise.all([
+    actor.get_bridge_status(),
+    actor.get_public_config(),
+    actor.get_next_deposit_sequence(owner),
+    Promise.all(depositIds.map((id) => actor.get_deposit(id))),
+    Promise.all(withdrawalIds.map((id) => actor.get_withdrawal(id))),
+    readAllAuditEvents(actor),
+    actor.get_activation_status(),
+    actor.storage_integrity_check(),
+  ])
+  if (deposits.some((item) => item.length !== 1) || withdrawals.some((item) => item.length !== 1)) {
+    throw new Error("upgrade evidence could not reopen every known settlement record")
+  }
+  if (!("Ok" in activationStatus)) throw new Error(`upgrade evidence could not read activation status: ${json(activationStatus.Err)}`)
+  if (storageIntegrity.Ok !== "ok") throw new Error(`upgrade evidence failed storage integrity: ${json(storageIntegrity)}`)
+  const durableStatus = {
+    schema_version: status.schema_version,
+    counts: status.counts,
+    deposits_paused: status.deposits_paused,
+    withdrawal_fee_guard_active: status.withdrawal_fee_guard_active,
+    withdrawal_fee_guard_ledger_fee: status.withdrawal_fee_guard_ledger_fee,
+    withdrawal_fee_guard_charged_service_fee: status.withdrawal_fee_guard_charged_service_fee,
+    unpaid_withdrawal_count: status.unpaid_withdrawal_count,
+    unpaid_withdrawal_amount_out: status.unpaid_withdrawal_amount_out,
+    withdrawal_stop_reasons: status.withdrawal_stop_reasons,
+    observed_base_chain_id: status.observed_base_chain_id,
+    observed_bridge_signer: status.observed_bridge_signer,
+    observed_bridge_runtime_sha256: status.observed_bridge_runtime_sha256,
+    last_finalized_base_block: status.last_finalized_base_block,
+    last_finalized_base_block_hash: status.last_finalized_base_block_hash,
+    settlement_scheduler: {
+      scheduled: status.settlement_scheduler.scheduled,
+      stopped: status.settlement_scheduler.stopped,
+      leased: status.settlement_scheduler.leased,
+      expired: status.settlement_scheduler.expired,
+      health: status.settlement_scheduler.health,
+      last_internal_error: status.settlement_scheduler.last_internal_error,
+    },
+    last_audit_sequence: status.last_audit_sequence,
+  }
+  return JSON.parse(json({
+    status: durableStatus,
+    public_config: publicConfig,
+    owner_sequence: ownerSequence,
+    deposits: deposits.map(([item]) => item),
+    withdrawals: withdrawals.map(([item]) => item),
+    audit_events: auditPage,
+    activation_status: activationStatus.Ok,
+    storage_integrity: storageIntegrity.Ok,
+  }))
+}
+
+async function waitForNoLeasedJobs(actor) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const status = await actor.get_bridge_status()
+    if (status.settlement_scheduler.leased === 0n) return
+    await delay(50)
+  }
+  throw new Error("settlement scheduler did not release active leases before upgrade")
+}
+
+async function readAllAuditEvents(actor) {
+  let cursor = 0n
+  let metadata
+  const events = []
+  for (let pageIndex = 0; pageIndex < 10_000; pageIndex += 1) {
+    const result = await actor.get_audit_events(cursor, 100)
+    if (!("Ok" in result)) throw new Error(`upgrade evidence could not read audit events: ${json(result.Err)}`)
+    const page = result.Ok
+    metadata ??= {
+      pruned_digest: page.pruned_digest,
+      oldest_available_sequence: page.oldest_available_sequence,
+      pruned_count: page.pruned_count,
+      pruned_through_sequence: page.pruned_through_sequence,
+    }
+    events.push(...page.events)
+    const [next] = page.next_sequence
+    if (next === undefined) return { ...metadata, events, next_sequence: [] }
+    if (next <= cursor) throw new Error("upgrade evidence audit pagination did not advance")
+    cursor = next
+  }
+  throw new Error("upgrade evidence audit pagination exceeded its safety bound")
+}
+
+async function terminateChild(child, label) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  const exited = new Promise((resolve) => child.once("close", resolve))
+  child.kill("SIGTERM")
+  const timedOut = await Promise.race([exited.then(() => false), delay(5_000).then(() => true)])
+  if (timedOut && child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGKILL")
+    await exited
+  }
+  if (child.exitCode === null && child.signalCode === null) throw new Error(`${label} did not terminate`)
 }
 
 async function startProgressLoop(pic) {
@@ -803,7 +938,27 @@ function settlementJson(value) {
 async function readJson(request) { const chunks = []; for await (const chunk of request) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString("utf8") || "null") }
 function send(response, status, value) { response.statusCode = status; response.setHeader("content-type", "application/json"); response.end(value === null ? "null" : json(value)); }
 async function rpc(method, params) { const response = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }); const value = await response.json(); if (value.error) throw new Error(value.error.message); return value.result }
-async function waitForRpc() { for (let attempt = 0; attempt < 100; attempt += 1) { try { if (await rpc("eth_chainId", []) === "0x7a69") return } catch {} await delay(100) } throw new Error("Anvil did not start") }
+async function waitForOwnedRpc(child) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (child.exitCode !== null) throw new Error(`spawned Anvil exited before becoming ready (exit ${child.exitCode})`)
+    try {
+      if (await rpc("eth_chainId", []) === "0x7a69") {
+        process.kill(child.pid, 0)
+        return
+      }
+    } catch {}
+    await delay(100)
+  }
+  throw new Error("spawned Anvil did not become ready on its owned port")
+}
+async function isTcpPortOpen(host, port) {
+  return await new Promise((resolve) => {
+    const socket = connect({ host, port })
+    socket.once("connect", () => { socket.destroy(); resolve(true) })
+    socket.once("error", () => { socket.destroy(); resolve(false) })
+    socket.setTimeout(500, () => { socket.destroy(); resolve(false) })
+  })
+}
 async function waitForUrl(url) { for (let attempt = 0; attempt < 200; attempt += 1) { try { if ((await fetch(url)).ok) return } catch {} await delay(100) } throw new Error(`${url} did not start`) }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 

@@ -115,6 +115,7 @@ impl Account {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LedgerOperation {
     PullDeposit,
+    RefundDeposit,
     ReleaseWithdrawal,
     FeePayout,
 }
@@ -200,7 +201,13 @@ pub struct Settlement {
 
 impl Settlement {
     pub fn net_service_fee(self) -> Result<Amount, CoreError> {
-        self.service_fee.checked_sub(self.ledger_fee)
+        crate::settlement_decision(
+            self.amount_out.get(),
+            self.ledger_fee.get(),
+            self.service_fee.get(),
+        )
+        .map(|decision| Amount::new(decision.reserve_credit))
+        .ok_or(CoreError::SettlementMismatch)
     }
 
     pub fn validate_committed(
@@ -211,14 +218,20 @@ impl Settlement {
         if self.service_fee > max_service_fee {
             return Err(CoreError::ServiceFeeAboveMaximum);
         }
-        if self.ledger_fee > self.service_fee {
-            return Err(CoreError::SettlementMismatch);
-        }
         if !crate::committed_quote_matches(
             amount.get(),
             self.amount_out.get(),
             self.service_fee.get(),
         ) {
+            return Err(CoreError::SettlementMismatch);
+        }
+        if crate::settlement_decision(
+            self.amount_out.get(),
+            self.ledger_fee.get(),
+            self.service_fee.get(),
+        )
+        .is_none()
+        {
             return Err(CoreError::SettlementMismatch);
         }
         Ok(())

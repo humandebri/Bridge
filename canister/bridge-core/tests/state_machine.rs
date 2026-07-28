@@ -1,11 +1,11 @@
 use bridge_core::{
-    resolve_deposit_hold, resolve_withdrawal_hold, Account, AccountingState, Amount, ApplyOutcome,
-    BaseMintSnapshot, CoreError, DepositEvent, DepositHoldResolution, DepositId, DepositRecord,
-    DepositRequest, DepositState, EvmOperationEvent, EvmOperationId, EvmOperationKind,
-    EvmOperationRecord, EvmOperationState, EvmRecoveryResolution, FeeKind, HoldId, LedgerOperation,
-    LedgerTransferIdentity, ReconciliationHoldRecord, ReconciliationHoldState, RequestReference,
-    ReservePolicy, Settlement, TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution,
-    WithdrawalId, WithdrawalRecord, WithdrawalState,
+    deposit_refund_amount, resolve_deposit_hold, resolve_withdrawal_hold, Account, AccountingState,
+    Amount, ApplyOutcome, BaseMintSnapshot, CoreError, DepositEvent, DepositHoldResolution,
+    DepositId, DepositQuote, DepositRecord, DepositRequest, DepositState, EvmOperationEvent,
+    EvmOperationId, EvmOperationKind, EvmOperationRecord, EvmOperationState, EvmRecoveryResolution,
+    FeeKind, HoldId, LedgerOperation, LedgerTransferIdentity, ReconciliationHoldRecord,
+    ReconciliationHoldState, RequestReference, ReservePolicy, Settlement, TransferAttempt,
+    WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId, WithdrawalRecord, WithdrawalState,
 };
 
 fn account(tag: u8) -> Account {
@@ -52,17 +52,40 @@ fn attempt(identity: LedgerTransferIdentity) -> TransferAttempt {
 }
 
 fn accepted_deposit() -> DepositRecord {
-    DepositRecord::accept(
-        DepositRequest {
-            id: DepositId::new([1; 32]),
-            payload_hash: [2; 32],
-            gross_amount: Amount::new(110),
-            user_max_service_fee: Amount::new(10),
-            transfer: transfer(LedgerOperation::PullDeposit, 110, 1, 10),
-        },
-        base_snapshot(10),
-    )
+    DepositRecord::accept(DepositRequest {
+        id: DepositId::new([1; 32]),
+        payload_hash: [2; 32],
+        gross_amount: Amount::new(110),
+        user_max_service_fee: Amount::new(10),
+        transfer: transfer(LedgerOperation::PullDeposit, 110, 1, 10),
+    })
     .expect("valid deposit")
+}
+
+fn test_deposit_quote() -> DepositQuote {
+    DepositQuote {
+        service_fee: Amount::new(10),
+        net_amount: Amount::new(100),
+    }
+}
+
+fn refund_identity(
+    deposit: &DepositRecord,
+    created_at_time_ns: u64,
+    memo: [u8; 32],
+) -> LedgerTransferIdentity {
+    LedgerTransferIdentity {
+        operation: LedgerOperation::RefundDeposit,
+        created_at_time_ns,
+        memo,
+        amount: Amount::new(
+            deposit_refund_amount(deposit.gross_amount.get(), 10).expect("valid refund"),
+        ),
+        fee: Amount::new(10),
+        from: deposit.transfer.to.clone(),
+        to: deposit.transfer.from.clone(),
+        spender: None,
+    }
 }
 
 #[test]
@@ -83,6 +106,8 @@ fn amount_and_quote_boundaries_are_checked() {
         base_snapshot(10).quote(Amount::new(9), Amount::new(10)),
         Err(CoreError::ArithmeticUnderflow)
     );
+    assert_eq!(deposit_refund_amount(10_000, 10_000), None);
+    assert_eq!(deposit_refund_amount(10_001, 10_000), Some(1));
 
     let mut above_user = base_snapshot(10);
     above_user.service_fee = Amount::new(11);
@@ -110,28 +135,214 @@ fn amount_and_quote_boundaries_are_checked() {
 }
 
 #[test]
+fn deposit_refund_keeps_the_economic_payload_fixed_and_never_confirms_a_service_fee() {
+    let mut deposit = accepted_deposit();
+    deposit
+        .apply(DepositEvent::FundingSucceeded {
+            ledger_block_index: 42,
+        })
+        .expect("funding");
+    let identity = refund_identity(&deposit, 100, [7; 32]);
+    deposit
+        .apply(DepositEvent::StartRefund {
+            reason: bridge_core::DepositRefundReason::ReserveInsufficient,
+            attempt: Box::new(attempt(identity.clone())),
+        })
+        .expect("start refund");
+    assert_eq!(deposit.quote, None);
+
+    let hold_id = HoldId::new(11);
+    deposit
+        .apply(DepositEvent::RefundAmbiguous { hold_id })
+        .expect("hold refund");
+    let mut hold = ReconciliationHoldRecord::open(
+        hold_id,
+        RequestReference::DepositRefund(deposit.id),
+        identity.clone(),
+    );
+    let mut changed = identity.clone();
+    changed.created_at_time_ns = 101;
+    changed.memo = [8; 32];
+    changed.amount = Amount::new(99);
+    assert_eq!(
+        resolve_deposit_hold(
+            &mut deposit,
+            &mut hold,
+            DepositHoldResolution::RefundAbsent {
+                history_watermark: 200,
+                next_identity: Box::new(changed),
+            },
+        ),
+        Err(CoreError::AttemptPayloadChanged)
+    );
+    assert!(matches!(
+        deposit.state,
+        DepositState::RefundReconciliationHold { .. }
+    ));
+    assert_eq!(hold.state, ReconciliationHoldState::Open);
+
+    let mut retry = identity;
+    retry.created_at_time_ns = 101;
+    retry.memo = [8; 32];
+    assert_eq!(
+        resolve_deposit_hold(
+            &mut deposit,
+            &mut hold,
+            DepositHoldResolution::RefundAbsent {
+                history_watermark: 200,
+                next_identity: Box::new(retry.clone()),
+            },
+        )
+        .expect("absence permits one fixed retry")
+        .fee_delta,
+        Amount::ZERO
+    );
+    assert!(matches!(
+        &deposit.state,
+        DepositState::RefundPending { attempt, .. }
+            if attempt.attempt_no == 1 && attempt.identity == retry
+    ));
+    assert_eq!(
+        deposit
+            .apply(DepositEvent::RefundSucceeded {
+                ledger_block_index: 201
+            })
+            .expect("refund success")
+            .fee_delta,
+        Amount::ZERO
+    );
+    assert!(matches!(
+        deposit.state,
+        DepositState::Refunded {
+            ledger_block_index: 201,
+            ..
+        }
+    ));
+    assert_eq!(deposit.quote, None);
+}
+
+#[test]
+fn definitive_bad_fee_rebuilds_refund_identity_and_stops_after_three_retries() {
+    let mut deposit = accepted_deposit();
+    deposit
+        .apply(DepositEvent::FundingSucceeded {
+            ledger_block_index: 42,
+        })
+        .expect("funding");
+    let identity = refund_identity(&deposit, 100, [7; 32]);
+    deposit
+        .apply(DepositEvent::StartRefund {
+            reason: bridge_core::DepositRefundReason::ReserveInsufficient,
+            attempt: Box::new(attempt(identity)),
+        })
+        .expect("start refund");
+
+    for attempt_no in 1..=3 {
+        let expected_fee = Amount::new(10 + u128::from(attempt_no));
+        let mut next = match &deposit.state {
+            DepositState::RefundPending { attempt, .. } => attempt.identity.clone(),
+            _ => panic!("refund must remain pending"),
+        };
+        next.created_at_time_ns += 1;
+        next.memo = [10 + attempt_no as u8; 32];
+        next.fee = expected_fee;
+        next.amount = deposit
+            .gross_amount
+            .checked_sub(expected_fee)
+            .expect("fee below gross");
+        deposit
+            .apply(DepositEvent::RefundBadFee {
+                expected_fee,
+                next_identity: Some(Box::new(next.clone())),
+            })
+            .expect("definitive BadFee retry");
+        assert!(matches!(
+            &deposit.state,
+            DepositState::RefundPending { attempt, .. }
+                if attempt.attempt_no == attempt_no && attempt.identity == next
+        ));
+    }
+
+    deposit
+        .apply(DepositEvent::RefundBadFee {
+            expected_fee: Amount::new(14),
+            next_identity: None,
+        })
+        .expect("automatic retry limit requires recovery");
+    assert!(matches!(
+        deposit.state,
+        DepositState::RefundRecoveryRequired {
+            expected_fee,
+            ..
+        } if expected_fee == Amount::new(14)
+    ));
+}
+
+#[test]
+fn governance_resume_allows_a_fee_reserve_compensated_refund() {
+    let mut deposit = accepted_deposit();
+    deposit
+        .apply(DepositEvent::FundingSucceeded {
+            ledger_block_index: 42,
+        })
+        .expect("funding");
+    let identity = refund_identity(&deposit, 100, [7; 32]);
+    deposit
+        .apply(DepositEvent::StartRefund {
+            reason: bridge_core::DepositRefundReason::ReserveInsufficient,
+            attempt: Box::new(attempt(identity.clone())),
+        })
+        .expect("start refund");
+    deposit
+        .apply(DepositEvent::RefundBadFee {
+            expected_fee: Amount::new(110),
+            next_identity: None,
+        })
+        .expect("recovery required");
+    let mut compensated = identity;
+    compensated.created_at_time_ns += 1;
+    compensated.memo = [8; 32];
+    compensated.fee = Amount::new(110);
+    compensated.amount = deposit.gross_amount;
+    deposit
+        .apply(DepositEvent::ResumeRefund {
+            identity: Box::new(compensated.clone()),
+        })
+        .expect("governance compensation");
+    assert!(matches!(
+        deposit.state,
+        DepositState::RefundPending { attempt, .. }
+            if attempt.attempt_no == 1 && attempt.identity == compensated
+    ));
+}
+
+#[test]
 fn deposit_fee_is_confirmed_only_on_first_confirmed_mint() {
     let mut deposit = accepted_deposit();
-    assert_eq!(deposit.net_amount, Amount::new(100));
+    assert_eq!(deposit.quote, None);
     assert_eq!(deposit.verify_retry([2; 32]), Ok(()));
     assert_eq!(
         deposit.verify_retry([3; 32]),
         Err(CoreError::PayloadConflict)
     );
 
-    let pull = DepositEvent::PullSucceeded {
+    let pull = DepositEvent::FundingSucceeded {
         ledger_block_index: 42,
     };
-    assert_eq!(deposit.apply(pull).expect("pull").fee_delta, Amount::ZERO);
+    assert_eq!(
+        deposit.apply(pull.clone()).expect("pull").fee_delta,
+        Amount::ZERO
+    );
     assert_eq!(
         deposit.apply(pull).expect("replay").outcome,
         ApplyOutcome::Idempotent
     );
 
-    let prepare = DepositEvent::PrepareMint {
+    let prepare = DepositEvent::CommitQuote {
+        quote: test_deposit_quote(),
         operation_id: EvmOperationId::new(7),
     };
-    deposit.apply(prepare).expect("prepare mint");
+    deposit.apply(prepare.clone()).expect("prepare mint");
     assert_eq!(
         deposit.apply(prepare).expect("prepare replay").outcome,
         ApplyOutcome::Idempotent
@@ -141,7 +352,10 @@ fn deposit_fee_is_confirmed_only_on_first_confirmed_mint() {
         operation_id: EvmOperationId::new(7),
     };
     assert_eq!(
-        deposit.apply(confirmed).expect("mint confirmed").fee_delta,
+        deposit
+            .apply(confirmed.clone())
+            .expect("mint confirmed")
+            .fee_delta,
         Amount::new(10)
     );
     assert_eq!(
@@ -156,20 +370,21 @@ fn deposit_hold_requires_matching_evidence_resolution() {
     let mut deposit = accepted_deposit();
     let hold_id = HoldId::new(9);
     deposit
-        .apply(DepositEvent::PullAmbiguous { hold_id })
+        .apply(DepositEvent::FundingAmbiguous { hold_id })
         .expect("enter hold");
     assert_eq!(
-        deposit.apply(DepositEvent::PrepareMint {
+        deposit.apply(DepositEvent::CommitQuote {
+            quote: test_deposit_quote(),
             operation_id: EvmOperationId::new(1),
         }),
         Err(CoreError::InvalidTransition {
             entity: "deposit",
-            event: "prepare_mint",
+            event: "commit_quote",
         })
     );
     let mut hold = ReconciliationHoldRecord::open(
         hold_id,
-        RequestReference::Deposit(deposit.id),
+        RequestReference::DepositFunding(deposit.id),
         deposit.transfer.clone(),
     );
     let mut mismatched = hold.clone();
@@ -178,7 +393,7 @@ fn deposit_hold_requires_matching_evidence_resolution() {
         resolve_deposit_hold(
             &mut deposit,
             &mut mismatched,
-            DepositHoldResolution::Succeeded {
+            DepositHoldResolution::FundingSucceeded {
                 ledger_block_index: 88,
             },
         ),
@@ -190,7 +405,7 @@ fn deposit_hold_requires_matching_evidence_resolution() {
         resolve_deposit_hold(
             &mut deposit,
             &mut wrong_request,
-            DepositHoldResolution::Succeeded {
+            DepositHoldResolution::FundingSucceeded {
                 ledger_block_index: 88,
             },
         ),
@@ -202,7 +417,7 @@ fn deposit_hold_requires_matching_evidence_resolution() {
         resolve_deposit_hold(
             &mut deposit,
             &mut wrong_transfer,
-            DepositHoldResolution::Succeeded {
+            DepositHoldResolution::FundingSucceeded {
                 ledger_block_index: 88,
             },
         ),
@@ -211,14 +426,14 @@ fn deposit_hold_requires_matching_evidence_resolution() {
     resolve_deposit_hold(
         &mut deposit,
         &mut hold,
-        DepositHoldResolution::Succeeded {
+        DepositHoldResolution::FundingSucceeded {
             ledger_block_index: 88,
         },
     )
     .expect("resolve hold");
     assert_eq!(
         deposit.state,
-        DepositState::Escrowed {
+        DepositState::EscrowedUnquoted {
             ledger_block_index: 88
         }
     );
@@ -230,9 +445,9 @@ fn definitive_pull_failure_cancels_and_releases_the_deposit_path() {
     let failure = bridge_core::LedgerFailure::InsufficientAllowance {
         allowance: Amount::ZERO,
     };
-    let event = DepositEvent::PullFailed { code: failure };
+    let event = DepositEvent::FundingFailed { code: failure };
     assert_eq!(
-        deposit.apply(event).expect("cancel").outcome,
+        deposit.apply(event.clone()).expect("cancel").outcome,
         ApplyOutcome::Applied
     );
     assert_eq!(
@@ -248,7 +463,7 @@ fn definitive_pull_failure_cancels_and_releases_the_deposit_path() {
         } if current == failure
     ));
     assert!(matches!(
-        deposit.apply(DepositEvent::PullSucceeded {
+        deposit.apply(DepositEvent::FundingSucceeded {
             ledger_block_index: 1,
         }),
         Err(CoreError::InvalidTransition { .. })
@@ -279,10 +494,16 @@ fn settlement() -> Settlement {
     }
 }
 
+fn withdrawal_transfer(amount: u128, fee: u128, tag: u8) -> LedgerTransferIdentity {
+    let mut identity = transfer(LedgerOperation::ReleaseWithdrawal, amount, fee, tag);
+    identity.to = Account::new(vec![1], [0; 32]).expect("withdrawal destination must be valid");
+    identity
+}
+
 #[test]
 fn withdrawal_payment_is_terminal_and_fee_reserve_is_net_of_ledger_fee() {
     let mut withdrawal = observed_withdrawal();
-    let release_transfer = transfer(LedgerOperation::ReleaseWithdrawal, 90, 5, 20);
+    let release_transfer = withdrawal_transfer(90, 5, 20);
     let start = WithdrawalEvent::StartRelease {
         attempt: Box::new(attempt(release_transfer)),
         settlement: settlement(),
@@ -312,12 +533,7 @@ fn withdrawal_payment_is_terminal_and_fee_reserve_is_net_of_ledger_fee() {
     assert!(matches!(withdrawal.state, WithdrawalState::Paid { .. }));
     assert!(matches!(
         withdrawal.apply(WithdrawalEvent::StartRelease {
-            attempt: Box::new(attempt(transfer(
-                LedgerOperation::ReleaseWithdrawal,
-                90,
-                5,
-                21,
-            ))),
+            attempt: Box::new(attempt(withdrawal_transfer(90, 5, 21))),
             settlement: settlement(),
         }),
         Err(CoreError::InvalidTransition { .. })
@@ -328,12 +544,7 @@ fn withdrawal_payment_is_terminal_and_fee_reserve_is_net_of_ledger_fee() {
 fn withdrawal_release_rejects_a_ledger_fee_not_bound_to_settlement() {
     let mut withdrawal = observed_withdrawal();
     let mismatched = WithdrawalEvent::StartRelease {
-        attempt: Box::new(attempt(transfer(
-            LedgerOperation::ReleaseWithdrawal,
-            90,
-            6,
-            70,
-        ))),
+        attempt: Box::new(attempt(withdrawal_transfer(90, 6, 70))),
         settlement: settlement(),
     };
 
@@ -345,16 +556,32 @@ fn withdrawal_release_rejects_a_ledger_fee_not_bound_to_settlement() {
 }
 
 #[test]
+fn withdrawal_release_rejects_a_destination_not_bound_to_the_record() {
+    let mut wrong_owner = withdrawal_transfer(90, 5, 71);
+    wrong_owner.to = Account::new(vec![2], [0; 32]).expect("alternate owner must be valid");
+    let mut wrong_subaccount = withdrawal_transfer(90, 5, 72);
+    wrong_subaccount.to =
+        Account::new(vec![1], [1; 32]).expect("alternate subaccount must be valid");
+
+    for identity in [wrong_owner, wrong_subaccount] {
+        let mut withdrawal = observed_withdrawal();
+        assert_eq!(
+            withdrawal.apply(WithdrawalEvent::StartRelease {
+                attempt: Box::new(attempt(identity)),
+                settlement: settlement(),
+            }),
+            Err(CoreError::SettlementMismatch)
+        );
+        assert_eq!(withdrawal.state, WithdrawalState::Observed);
+    }
+}
+
+#[test]
 fn withdrawal_hold_requires_evidence_before_payment_becomes_terminal() {
     let mut withdrawal = observed_withdrawal();
     withdrawal
         .apply(WithdrawalEvent::StartRelease {
-            attempt: Box::new(attempt(transfer(
-                LedgerOperation::ReleaseWithdrawal,
-                90,
-                5,
-                40,
-            ))),
+            attempt: Box::new(attempt(withdrawal_transfer(90, 5, 40))),
             settlement: settlement(),
         })
         .expect("start release");
@@ -543,12 +770,15 @@ fn confirmed_revert_is_terminal_and_propagates_to_owned_records() {
 
     let mut deposit = accepted_deposit();
     deposit
-        .apply(DepositEvent::PullSucceeded {
+        .apply(DepositEvent::FundingSucceeded {
             ledger_block_index: 42,
         })
         .expect("pull");
     deposit
-        .apply(DepositEvent::PrepareMint { operation_id })
+        .apply(DepositEvent::CommitQuote {
+            quote: test_deposit_quote(),
+            operation_id,
+        })
         .expect("prepare mint");
     deposit
         .apply(DepositEvent::MintReverted { operation_id })
@@ -565,18 +795,18 @@ fn reconciliation_resolution_is_evidence_typed_and_terminal() {
     let mut deposit = accepted_deposit();
     let hold_id = HoldId::new(1);
     deposit
-        .apply(DepositEvent::PullAmbiguous { hold_id })
+        .apply(DepositEvent::FundingAmbiguous { hold_id })
         .expect("hold deposit");
     let mut hold = ReconciliationHoldRecord::open(
         hold_id,
-        RequestReference::Deposit(deposit.id),
+        RequestReference::DepositFunding(deposit.id),
         deposit.transfer.clone(),
     );
-    let resolution = DepositHoldResolution::Absent {
+    let resolution = DepositHoldResolution::FundingAbsent {
         history_watermark: 100,
     };
     assert_eq!(
-        resolve_deposit_hold(&mut deposit, &mut hold, resolution)
+        resolve_deposit_hold(&mut deposit, &mut hold, resolution.clone())
             .expect("resolve")
             .outcome,
         ApplyOutcome::Applied,
@@ -591,7 +821,7 @@ fn reconciliation_resolution_is_evidence_typed_and_terminal() {
         resolve_deposit_hold(
             &mut deposit,
             &mut hold,
-            DepositHoldResolution::Succeeded {
+            DepositHoldResolution::FundingSucceeded {
                 ledger_block_index: 2,
             },
         ),
@@ -619,17 +849,17 @@ fn cancelled_deposit_is_terminal_and_id_is_not_reopened() {
     let mut deposit = accepted_deposit();
     let hold_id = HoldId::new(70);
     deposit
-        .apply(DepositEvent::PullAmbiguous { hold_id })
+        .apply(DepositEvent::FundingAmbiguous { hold_id })
         .expect("hold deposit");
     let mut hold = ReconciliationHoldRecord::open(
         hold_id,
-        RequestReference::Deposit(deposit.id),
+        RequestReference::DepositFunding(deposit.id),
         deposit.transfer.clone(),
     );
     resolve_deposit_hold(
         &mut deposit,
         &mut hold,
-        DepositHoldResolution::Absent {
+        DepositHoldResolution::FundingAbsent {
             history_watermark: 900,
         },
     )
@@ -641,7 +871,7 @@ fn cancelled_deposit_is_terminal_and_id_is_not_reopened() {
         Err(CoreError::PayloadConflict)
     );
     assert!(matches!(
-        deposit.apply(DepositEvent::PullSucceeded {
+        deposit.apply(DepositEvent::FundingSucceeded {
             ledger_block_index: 901
         }),
         Err(CoreError::InvalidTransition { .. })
@@ -650,7 +880,7 @@ fn cancelled_deposit_is_terminal_and_id_is_not_reopened() {
 
 #[test]
 fn withdrawal_attempt_changes_only_time_and_memo_after_absence() {
-    let original = transfer(LedgerOperation::ReleaseWithdrawal, 90, 5, 80);
+    let original = withdrawal_transfer(90, 5, 80);
     let first = attempt(original.clone());
     let mut replacement = original.clone();
     replacement.created_at_time_ns += 1;
@@ -674,7 +904,7 @@ fn withdrawal_attempt_changes_only_time_and_memo_after_absence() {
 #[test]
 fn withdrawal_absence_resolution_replay_binds_old_hold_to_exact_replacement() {
     let mut withdrawal = observed_withdrawal();
-    let original = transfer(LedgerOperation::ReleaseWithdrawal, 90, 5, 80);
+    let original = withdrawal_transfer(90, 5, 80);
     withdrawal
         .apply(WithdrawalEvent::StartRelease {
             attempt: Box::new(attempt(original.clone())),
@@ -766,12 +996,7 @@ fn withdrawal_terminal_transition_rechecks_the_committed_quote() {
     let mut withdrawal = observed_withdrawal();
     withdrawal
         .apply(WithdrawalEvent::StartRelease {
-            attempt: Box::new(attempt(transfer(
-                LedgerOperation::ReleaseWithdrawal,
-                90,
-                5,
-                90,
-            ))),
+            attempt: Box::new(attempt(withdrawal_transfer(90, 5, 90))),
             settlement: settlement(),
         })
         .expect("start release");
@@ -807,9 +1032,11 @@ fn expected_apply(result: Result<bridge_core::ApplyResult, CoreError>) -> Expect
 
 #[test]
 fn deposit_state_event_transition_matrix_covers_all_current_events() {
+    let refund_attempt = attempt(refund_identity(&accepted_deposit(), 100, [7; 32]));
+    let refund_reason = bridge_core::DepositRefundReason::ReserveInsufficient;
     let states = [
-        DepositState::PullPending,
-        DepositState::Escrowed {
+        DepositState::FundingPending,
+        DepositState::EscrowedUnquoted {
             ledger_block_index: 11,
         },
         DepositState::MintPending {
@@ -824,8 +1051,23 @@ fn deposit_state_event_transition_matrix_covers_all_current_events() {
             ledger_block_index: 11,
             operation_id: EvmOperationId::new(2),
         },
-        DepositState::ReconciliationHold {
+        DepositState::FundingReconciliationHold {
             hold_id: HoldId::new(3),
+        },
+        DepositState::RefundPending {
+            reason: refund_reason,
+            attempt: refund_attempt.clone(),
+        },
+        DepositState::RefundReconciliationHold {
+            reason: refund_reason,
+            hold_id: HoldId::new(3),
+            attempt: refund_attempt.clone(),
+        },
+        DepositState::Refunded {
+            reason: refund_reason,
+            attempt: refund_attempt.clone(),
+            ledger_block_index: 11,
+            source_hold: None,
         },
         DepositState::Cancelled {
             hold_id: None,
@@ -836,19 +1078,30 @@ fn deposit_state_event_transition_matrix_covers_all_current_events() {
         },
     ];
     let events = [
-        DepositEvent::PullSucceeded {
+        DepositEvent::FundingSucceeded {
             ledger_block_index: 11,
         },
-        DepositEvent::PullAmbiguous {
+        DepositEvent::FundingAmbiguous {
             hold_id: HoldId::new(3),
         },
-        DepositEvent::PullFailed {
+        DepositEvent::FundingFailed {
             code: bridge_core::LedgerFailure::InsufficientAllowance {
                 allowance: Amount::ZERO,
             },
         },
-        DepositEvent::PrepareMint {
+        DepositEvent::CommitQuote {
+            quote: test_deposit_quote(),
             operation_id: EvmOperationId::new(2),
+        },
+        DepositEvent::StartRefund {
+            reason: refund_reason,
+            attempt: Box::new(refund_attempt),
+        },
+        DepositEvent::RefundSucceeded {
+            ledger_block_index: 11,
+        },
+        DepositEvent::RefundAmbiguous {
+            hold_id: HoldId::new(3),
         },
         DepositEvent::MintConfirmed {
             operation_id: EvmOperationId::new(2),
@@ -863,19 +1116,30 @@ fn deposit_state_event_transition_matrix_covers_all_current_events() {
     ];
     use ExpectedTransition::{Applied as A, Idempotent as I, Rejected as R};
     let expected = [
-        [A, A, A, R, R, R, R],
-        [I, R, R, A, R, R, R],
-        [R, R, R, I, A, A, R],
-        [R, R, R, I, I, R, R],
-        [R, R, R, R, R, I, A],
-        [R, I, R, R, R, R, R],
-        [R, R, I, R, R, R, R],
+        [A, A, A, R, R, R, R, R, R, R],
+        [I, R, R, A, A, R, R, R, R, R],
+        [R, R, R, I, R, R, R, A, A, R],
+        [R, R, R, R, R, R, R, I, R, R],
+        [R, R, R, R, R, R, R, R, I, A],
+        [R, I, R, R, R, R, R, R, R, R],
+        [R, R, R, R, I, A, A, R, R, R],
+        [R, R, R, R, R, R, I, R, R, R],
+        [R, R, R, R, R, I, R, R, R, R],
+        [R, R, I, R, R, R, R, R, R, R],
     ];
 
     for (state_index, state) in states.into_iter().enumerate() {
-        for (event_index, event) in events.into_iter().enumerate() {
+        for (event_index, event) in events.clone().into_iter().enumerate() {
             let mut record = accepted_deposit();
             record.state = state.clone();
+            if matches!(
+                record.state,
+                DepositState::MintPending { .. }
+                    | DepositState::Minted { .. }
+                    | DepositState::MintReverted { .. }
+            ) {
+                record.quote = Some(test_deposit_quote());
+            }
             assert_eq!(
                 expected_apply(record.apply(event)),
                 expected[state_index][event_index],
@@ -887,7 +1151,7 @@ fn deposit_state_event_transition_matrix_covers_all_current_events() {
 
 #[test]
 fn withdrawal_state_event_transition_matrix_covers_all_current_events() {
-    let release_transfer = transfer(LedgerOperation::ReleaseWithdrawal, 90, 5, 60);
+    let release_transfer = withdrawal_transfer(90, 5, 60);
     let release_settlement = settlement();
     let states = [
         WithdrawalState::Observed,
@@ -1067,12 +1331,13 @@ fn reverted_operations_require_explicit_recovery_transitions() {
     let replacement_id = EvmOperationId::new(8);
     let mut deposit = accepted_deposit();
     deposit
-        .apply(DepositEvent::PullSucceeded {
+        .apply(DepositEvent::FundingSucceeded {
             ledger_block_index: 11,
         })
         .expect("escrow deposit");
     deposit
-        .apply(DepositEvent::PrepareMint {
+        .apply(DepositEvent::CommitQuote {
+            quote: test_deposit_quote(),
             operation_id: reverted_id,
         })
         .expect("prepare mint");

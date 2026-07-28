@@ -6,6 +6,29 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=ci_guards.sh
 source "$ROOT/scripts/ci_guards.sh"
 
+if rg -n 'frontend-sepolia|assetstorage|certified-assets' "$ROOT/icp.yaml"; then
+  echo "IC configuration must not deploy the Cloudflare-hosted frontend as an Asset Canister" >&2
+  exit 1
+fi
+node - "$ROOT/ui/package.json" <<'JS'
+const fs = require("node:fs")
+const command = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).scripts?.["deploy:test"]
+const requiredSteps = [
+  "pnpm run build:sepolia",
+  "node scripts/check-sepolia-assets.mjs",
+  "wrangler deploy --name kinic-bridge-ui-test",
+]
+const steps = typeof command === "string" ? command.split(/\s*&&\s*/) : []
+let cursor = -1
+for (const step of requiredSteps) {
+  const index = steps.indexOf(step, cursor + 1)
+  if (index === -1) {
+    throw new Error(`test frontend deploy command is missing the ordered step: ${step}`)
+  }
+  cursor = index
+}
+JS
+
 TEST_TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-ci-guards.XXXXXX")"
 trap 'rm -rf "$TEST_TMP_ROOT"' EXIT
 
@@ -121,6 +144,14 @@ expect_no_match \
   "Version: 0.2026.07.05.49b8806-custom" \
   "$VERUS_VERSION_PATTERN"
 expect_match \
+  "exact Lean release" \
+  "Lean (version 4.30.0, arm64-apple-darwin24.6.0, Release)" \
+  "$LEAN_VERSION_PATTERN"
+expect_no_match \
+  "near-match Lean release" \
+  "Lean (version 4.30.1, arm64-apple-darwin24.6.0, Release)" \
+  "$LEAN_VERSION_PATTERN"
+expect_match \
   "exact Foundry release" \
   "forge Version: 1.7.1" \
   "$FOUNDRY_VERSION_PATTERN"
@@ -216,5 +247,22 @@ INCOMPLETE_LEAN_SOURCE="$TEST_TMP_ROOT/Incomplete.lean"
 printf '%s\n' 'theorem incomplete : True := by sorry' >"$INCOMPLETE_LEAN_SOURCE"
 if verify_lean_no_proof_escape "$INCOMPLETE_LEAN_SOURCE" >/dev/null 2>&1; then
   echo "Lean proof guard accepted sorry" >&2
+  exit 1
+fi
+
+CI_LOCAL_SOURCE="$ROOT/scripts/ci-local.sh"
+if ! rg -q '^run_smoke_step\(\)' "$CI_LOCAL_SOURCE" ||
+  ! rg -q '^  trap cleanup_runtime EXIT$' "$CI_LOCAL_SOURCE"; then
+  echo "local smoke must clean up resources inside the run_step subshell" >&2
+  exit 1
+fi
+if rg -q '^    run_step smoke run_smoke$' "$CI_LOCAL_SOURCE"; then
+  echo "local smoke bypasses its subshell cleanup wrapper" >&2
+  exit 1
+fi
+
+if ! rg -q 'mkdir\(path\.dirname\(outputPath\), \{ recursive: true \}\)' \
+  "$ROOT/scripts/plan007/generate-local-e2e.mjs"; then
+  echo "local E2E evidence generator does not create its output directory" >&2
   exit 1
 fi

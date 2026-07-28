@@ -17,10 +17,12 @@ const Context = createContext<IcWalletState | undefined>(undefined)
 
 class HarnessWalletAdapter implements IcWalletAdapter {
   readonly provider: IcWalletProvider
+  readonly requiresUserGesture = false
   constructor(provider: IcWalletProvider) { this.provider = provider }
   connect() { return request<IcAccount>("/ic/account") }
   getAccount() { return request<IcAccount>("/ic/account") }
   async disconnect() { await request("/ic/disconnect", {}) }
+  prepare(): Promise<() => Promise<void>> { return Promise.resolve(() => Promise.resolve()) }
   approve(call: ApprovalCall) {
     return request<bigint>("/ic/approve", {
       amount: call.amount.toString(),
@@ -35,15 +37,15 @@ class HarnessWalletAdapter implements IcWalletAdapter {
       grossAmount: call.grossAmount.toString(),
       maxServiceFee: call.maxServiceFee.toString(),
     }, (value) => {
-      const receipt = value as { deposit_id: string; owner_sequence: string; state: DepositPhase; settlement?: SettlementActionResult }
-      return { deposit_id: bytes(receipt.deposit_id), owner_sequence: BigInt(receipt.owner_sequence), state: receipt.state, settlement: receipt.settlement ? [receipt.settlement] : [] }
+      const receipt = value as { deposit_id: string; owner_sequence: string; state: DepositPhase }
+      return { deposit_id: bytes(receipt.deposit_id), owner_sequence: BigInt(receipt.owner_sequence), state: receipt.state }
     })
   }
   notifyWithdrawal(transactionHash: Uint8Array) {
     return request<NotifyWithdrawalReceipt>("/ic/notify", { transactionHash: hex(transactionHash) }, (value) => {
-      const receipt = value as { Ingested?: { finalized_head_block_number: string; withdrawal_id: string; settlement?: SettlementActionResult }; Duplicate?: { withdrawal_id: string; settlement?: SettlementActionResult } }
-      if (receipt.Ingested) return { Ingested: { finalized_head_block_number: BigInt(receipt.Ingested.finalized_head_block_number), withdrawal_id: bytes(receipt.Ingested.withdrawal_id), settlement: receipt.Ingested.settlement ? [receipt.Ingested.settlement] : [] } }
-      if (receipt.Duplicate) return { Duplicate: { withdrawal_id: bytes(receipt.Duplicate.withdrawal_id), settlement: receipt.Duplicate.settlement ? [receipt.Duplicate.settlement] : [] } }
+      const receipt = value as { Ingested?: { finalized_head_block_number: string; withdrawal_id: string }; Duplicate?: { withdrawal_id: string } }
+      if (receipt.Ingested) return { Ingested: { finalized_head_block_number: BigInt(receipt.Ingested.finalized_head_block_number), withdrawal_id: bytes(receipt.Ingested.withdrawal_id) } }
+      if (receipt.Duplicate) return { Duplicate: { withdrawal_id: bytes(receipt.Duplicate.withdrawal_id) } }
       throw new Error("Harness returned an invalid notification receipt")
     })
   }

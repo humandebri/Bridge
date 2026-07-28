@@ -26,8 +26,7 @@ bSNSは非アップグレード型であり、後からの機能追加には再d
 - `receiveWithAuthorization`はcallerと受取人の一致を要求し、第三者が署名を流用して送金だけを先に実行するfront-runningを防ぐ。
 - authorization送金は既存balanceの移転だけを許可し、mintとburnの権限を追加しない。
   Bridgeだけが供給量を操作するという制約は維持する。
-- x402 resource serverとfacilitatorの運用はBridgeの責務に含めない。
-  本番前に、採用時点のx402仕様とBase上のfacilitatorで互換性を再検証する。
+- x402 resource serverとfacilitatorの運用および互換性検証はBridgeの責務に含めず、Bridgeの配置・activationをblockしない。
 
 EIP-3009の署名形式とsecurity considerationsは[EIP-3009](https://eips.ethereum.org/EIPS/eip-3009)を正本とする。
-x402で利用可能なEVM tokenの判定は[x402 Network & Token Support](https://docs.x402.org/core-concepts/network-and-token-support)に従い、本番前に変更の有無を確認する。
+x402連携を別途提供する場合、利用可能なEVM tokenの判定はその連携時点の[x402 Network & Token Support](https://docs.x402.org/core-concepts/network-and-token-support)に従う。

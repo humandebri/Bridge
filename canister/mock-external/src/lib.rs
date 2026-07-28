@@ -1,8 +1,8 @@
 use candid::{CandidType, Deserialize, Nat, Principal};
 use evm_rpc_types::{
-    Block, BlockTag, GetLogsArgs, GetTransactionCountArgs, Hex, Hex32, MultiRpcResult, Nat256,
-    ProviderError, RpcConfig, RpcError, RpcService, RpcServices, SendRawTransactionStatus,
-    TransactionReceipt,
+    Block, BlockTag, GetLogsArgs, GetTransactionCountArgs, Hex, Hex32, JsonRpcError,
+    MultiRpcResult, Nat256, ProviderError, RpcConfig, RpcError, RpcService, RpcServices,
+    SendRawTransactionStatus, TransactionReceipt,
 };
 use ic_cdk_management_canister::{
     ecdsa_public_key, sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs,
@@ -224,6 +224,7 @@ struct StableMockState {
 thread_local! {
     static LEDGER_ID: RefCell<Option<Principal>> = const { RefCell::new(None) };
     static LEDGER_MODE: RefCell<LedgerMode> = const { RefCell::new(LedgerMode::Succeed) };
+    static REFUND_LEDGER_MODE: RefCell<Option<LedgerMode>> = const { RefCell::new(None) };
     static LEDGER_FEE_AVAILABLE: RefCell<bool> = const { RefCell::new(true) };
     static LEDGER_FEE: RefCell<u128> = const { RefCell::new(1) };
     static LEDGER_TRANSFER_CALLS: RefCell<u64> = const { RefCell::new(0) };
@@ -277,6 +278,11 @@ fn init(args: InitArgs) {
 #[ic_cdk::update]
 fn set_ledger_mode(mode: LedgerMode) {
     LEDGER_MODE.with(|current| *current.borrow_mut() = mode);
+}
+
+#[ic_cdk::update]
+fn set_refund_ledger_mode(mode: Option<LedgerMode>) {
+    REFUND_LEDGER_MODE.with(|current| *current.borrow_mut() = mode);
 }
 
 #[ic_cdk::update]
@@ -403,11 +409,6 @@ fn set_mint_window(
     MINT_WINDOW_STARTED_AT.with(|current| *current.borrow_mut() = started_at);
     MINT_WINDOW_DURATION.with(|current| *current.borrow_mut() = duration);
     BLOCK_TIMESTAMP.with(|current| *current.borrow_mut() = block_timestamp);
-}
-
-#[ic_cdk::update]
-fn set_safe_block_sequence(value: Vec<u64>) {
-    SAFE_BLOCK_SEQUENCE.with(|current| *current.borrow_mut() = value);
 }
 
 #[ic_cdk::update]
@@ -676,7 +677,10 @@ fn icrc2_transfer_from(args: TransferFromArgs) -> Result<Nat, TransferFromError>
 #[ic_cdk::update]
 fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
     LEDGER_TRANSFER_CALLS.with(|value| *value.borrow_mut() += 1);
-    match LEDGER_MODE.with(|mode| *mode.borrow()) {
+    let mode = REFUND_LEDGER_MODE
+        .with(|mode| *mode.borrow())
+        .unwrap_or_else(|| LEDGER_MODE.with(|mode| *mode.borrow()));
+    match mode {
         LedgerMode::Trap => ic_cdk::trap("ambiguous mock transfer"),
         LedgerMode::Duplicate => {
             return Err(TransferError::Duplicate {
@@ -835,11 +839,33 @@ fn multi_request(
             *value.borrow_mut() = next;
         });
         let Some(block_number) = eip1898_block_number(&request) else {
+            if RECEIPT_MODE.with(|mode| *mode.borrow()) == ReceiptMode::Orphaned {
+                return MultiRpcResult::Consistent(Err(RpcError::JsonRpcError(JsonRpcError {
+                    code: -32_001,
+                    message: "block is not canonical".into(),
+                })));
+            }
             return MultiRpcResult::Consistent(Err(RpcError::ProviderError(
                 ProviderError::ProviderNotFound,
             )));
         };
         PINNED_ETH_CALL_BLOCK_NUMBERS.with(|values| values.borrow_mut().push(block_number));
+        if request.contains("f702cf2b")
+            && BLOCK_MODE.with(|mode| *mode.borrow()) == BlockMode::CanonicalInconsistent
+        {
+            return MultiRpcResult::Inconsistent(vec![
+                (
+                    RpcService::Provider(1),
+                    Ok(bridge_snapshot_response(Some(block_number))),
+                ),
+                (
+                    RpcService::Provider(2),
+                    Ok(bridge_snapshot_response(Some(
+                        block_number.saturating_add(1),
+                    ))),
+                ),
+            ]);
+        }
     }
     if RECEIPT_MODE.with(|mode| *mode.borrow()) == ReceiptMode::DecodeFailure
         && request.contains("eth_call")
@@ -874,7 +900,12 @@ fn multi_request(
             "null".into()
         }
     } else if request.contains("f702cf2b") {
-        bridge_snapshot_response(eip1898_block_number(&request))
+        let block_number = eip1898_block_number(&request);
+        if BLOCK_MODE.with(|mode| *mode.borrow()) == BlockMode::SameHeightDifferentHash {
+            bridge_snapshot_response(block_number.map(|number| number.saturating_add(1)))
+        } else {
+            bridge_snapshot_response(block_number)
+        }
     } else if request.contains("d5d0d21c") {
         if PROCESSED_DEPOSIT.with(|processed| *processed.borrow()) {
             word(1)

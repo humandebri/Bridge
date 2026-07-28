@@ -1,4 +1,5 @@
 import { deploymentProfile } from "@/config/profile"
+import { withBrowserLock } from "@/lib/browser-lock"
 
 export type PendingConfirmationKind = "deposit" | "withdrawal"
 
@@ -25,7 +26,8 @@ export type PendingConfirmationInput =
   | (Omit<PendingDepositConfirmation, "blocked" | "bridgeCanisterId" | "chainId" | "bridgeAddress"> & { blocked?: boolean })
   | (Omit<PendingWithdrawalConfirmation, "blocked" | "bridgeCanisterId" | "chainId" | "bridgeAddress"> & { blocked?: boolean })
 
-const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v3"
+const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v4"
+let sessionQueue: PendingConfirmation[] | undefined
 export const PENDING_CONFIRMATIONS_CHANGED = "kinic-pending-confirmations-changed"
 
 export function pendingConfirmationKey(value: PendingConfirmation | PendingConfirmationInput): string {
@@ -36,46 +38,41 @@ export function pendingConfirmationKey(value: PendingConfirmation | PendingConfi
 
 export function readPendingConfirmations(): PendingConfirmation[] {
   if (typeof window === "undefined") return []
+  if (sessionQueue !== undefined) return sessionQueue.filter(matchesActiveDeployment)
   try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(pendingConfirmationsStorageKey()) ?? "[]")
-    if (!Array.isArray(value)) return []
-    return value.filter(isPendingConfirmation).filter(matchesActiveDeployment)
+    const value: unknown = JSON.parse(window.localStorage.getItem(pendingConfirmationsStorageKey()) ?? "null")
+    if (!isStoredQueue(value)) return []
+    return value.entries.filter(isPendingConfirmation).filter(matchesActiveDeployment)
   } catch {
     return []
   }
 }
 
-export function savePendingConfirmation(value: PendingConfirmationInput): void {
-  const next = readPendingConfirmations()
-  const entry = {
-    ...value,
-    blocked: value.blocked ?? false,
-    ...activeDeployment(),
-  }
-  const key = pendingConfirmationKey(entry)
-  const index = next.findIndex((item) => pendingConfirmationKey(item) === key)
-  if (index === -1) next.push(entry)
-  else next[index] = entry
-  write(next)
+export async function savePendingConfirmation(value: PendingConfirmationInput): Promise<void> {
+  await update((next) => {
+    const entry = { ...value, blocked: value.blocked ?? false, ...activeDeployment() }
+    return upsertPendingConfirmation(next, entry, false)
+  })
 }
 
-export function restorePendingConfirmation(value: PendingConfirmationInput): void {
+export async function restorePendingConfirmation(value: PendingConfirmationInput): Promise<void> {
+  await update((next) => {
+    const entry = { ...value, blocked: value.blocked ?? false, ...activeDeployment() }
+    return upsertPendingConfirmation(next, entry, true)
+  })
+}
+
+export async function removePendingConfirmation(value: PendingConfirmation | PendingConfirmationInput): Promise<void> {
   const key = pendingConfirmationKey(value)
-  const existing = readPendingConfirmations().find((item) => pendingConfirmationKey(item) === key)
-  savePendingConfirmation({ ...value, blocked: existing?.blocked ?? value.blocked })
+  await update((next) => next.filter((item) => pendingConfirmationKey(item) !== key))
 }
 
-export function removePendingConfirmation(value: PendingConfirmation | PendingConfirmationInput): void {
-  const key = pendingConfirmationKey(value)
-  write(readPendingConfirmations().filter((item) => pendingConfirmationKey(item) !== key))
-}
-
-export function setPendingConfirmationBlocked(
+export async function setPendingConfirmationBlocked(
   value: PendingConfirmation | PendingConfirmationInput,
   blocked: boolean,
-): void {
+): Promise<void> {
   const key = pendingConfirmationKey(value)
-  write(readPendingConfirmations().map((item) => pendingConfirmationKey(item) === key ? { ...item, blocked } : item))
+  await update((next) => next.map((item) => pendingConfirmationKey(item) === key ? { ...item, blocked } : item))
 }
 
 function activeDeployment() {
@@ -93,9 +90,18 @@ function matchesActiveDeployment(value: PendingConfirmation): boolean {
     && value.bridgeAddress === active.bridgeAddress
 }
 
-function write(values: PendingConfirmation[]): void {
-  window.localStorage.setItem(pendingConfirmationsStorageKey(), JSON.stringify(values))
-  window.dispatchEvent(new Event(PENDING_CONFIRMATIONS_CHANGED))
+async function update(change: (values: PendingConfirmation[]) => PendingConfirmation[]): Promise<void> {
+  const key = pendingConfirmationsStorageKey()
+  await withBrowserLock(`kinic-storage:${key}`, () => {
+    const values = change(readPendingConfirmations())
+    sessionQueue = values
+    try {
+      window.localStorage.setItem(key, JSON.stringify({ version: 4, entries: values }))
+      sessionQueue = undefined
+    } finally {
+      window.dispatchEvent(new Event(PENDING_CONFIRMATIONS_CHANGED))
+    }
+  })
 }
 
 export function pendingConfirmationsStorageKey(): string {
@@ -117,4 +123,23 @@ function isPendingConfirmation(value: unknown): value is PendingConfirmation {
   return item.kind === "deposit"
     && typeof item.settlementId === "string"
     && /^0x[0-9a-fA-F]{64}$/.test(item.settlementId)
+}
+
+function isStoredQueue(value: unknown): value is { version: 4; entries: unknown[] } {
+  if (typeof value !== "object" || value === null) return false
+  const queue = value as Record<string, unknown>
+  return queue.version === 4 && Array.isArray(queue.entries)
+}
+
+export function upsertPendingConfirmation(
+  values: PendingConfirmation[],
+  entry: PendingConfirmation,
+  preserveExistingBlocked: boolean,
+): PendingConfirmation[] {
+  const next = [...values]
+  const key = pendingConfirmationKey(entry)
+  const index = next.findIndex((item) => pendingConfirmationKey(item) === key)
+  if (index === -1) next.push(entry)
+  else next[index] = preserveExistingBlocked ? { ...entry, blocked: next[index]!.blocked } : entry
+  return next
 }

@@ -100,7 +100,10 @@ chargedServiceFee <= maxServiceFee
 amountOut = amount - chargedServiceFee
 ```
 
-Withdrawal stateは`None | Committed`だけであり、CommittedはBase上の不可逆な終端状態である。`acknowledgeRelease`、`cancelRelease`、`refundWithdrawal`、Ledger block情報はABIに存在しない。burn後のICP側債務はCanisterが元のWithdrawal IDとIC Accountを維持して再試行・照合する。
+Withdrawal stateは`None | Committed`だけであり、CommittedはBase上の不可逆な終端状態である。
+`acknowledgeRelease`、`cancelRelease`、`refundWithdrawal`、Withdrawal専用remint、Ledger block情報はABIに存在しない。
+burn後のICP側債務はCanisterが元のWithdrawal IDとIC Accountを維持して再試行、照合する。
+この制約はBridge Signerに付与された通常のDeposit mint権限を取り消すものではなく、侵害されたSignerによる別の未処理Deposit IDのmintはmint throughput limitとpauseによって被害速度を制限する。
 
 ## Pauseと固定limit
 

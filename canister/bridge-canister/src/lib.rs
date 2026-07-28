@@ -9,7 +9,7 @@ use ic_sqlite_vfs::DefaultMemoryImpl;
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ops::{Deref, DerefMut},
 };
 
@@ -74,14 +74,6 @@ pub struct BridgeStatus {
     pub withdrawal_stop_reasons: Vec<String>,
 }
 
-#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RefreshBaseObservationError {
-    Busy,
-    BaseStateMismatch,
-    ObservationUnavailable,
-    StorageFailure,
-}
-
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SettlementSchedulerStatus {
     pub health: SettlementSchedulerHealth,
@@ -116,18 +108,48 @@ pub struct ReserveStatus {
 pub struct PublicConfig {
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
+    pub timelock_contract: Vec<u8>,
     pub ledger_canister_id: candid::Principal,
+    pub ledger_fee: u128,
     pub index_canister_id: candid::Principal,
     pub schema_version: u16,
     pub expected_bridge_signer: Vec<u8>,
     pub governance_operator: Vec<u8>,
     pub evm_rpc_canister_id: candid::Principal,
     pub rpc_provider_urls_sha256: Vec<u8>,
+    pub deposit_rate_limit_window_seconds: u64,
+    pub deposit_rate_limit_global: u16,
+    pub deposit_rate_limit_per_principal: u16,
+    pub settlement_rate_limit_window_seconds: u64,
+    pub settlement_rate_limit_global: u16,
+    pub settlement_rate_limit_per_principal: u16,
+    pub settlement_rate_limit_per_record: u16,
+    pub transaction_gas_limit: u128,
+    pub max_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
+    pub evm_liveness: config::EvmLivenessPolicy,
+    pub eth_floor_wei: u128,
+    pub cycles_floor: u128,
+    pub settlement_cycle_ceiling: u128,
+    pub governance_principal: candid::Principal,
+    pub pause_principal: candid::Principal,
+    pub fee_recipient: config::FeeRecipientConfig,
+}
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublicConfigInitializationError {
+    Unauthorized,
+    Busy,
+    DerivationUnavailable,
+    ConflictingAddress,
+    StorageFailure,
 }
 
 thread_local! {
     static STORE: RefCell<StoreState> = const { RefCell::new(StoreState(None)) };
     static IN_FLIGHT_ACTIONS: RefCell<BTreeSet<ActionKey>> = const { RefCell::new(BTreeSet::new()) };
+    static NOTIFICATION_CALLERS: RefCell<BTreeMap<Principal, u8>> = const { RefCell::new(BTreeMap::new()) };
+    static NOTIFICATIONS_IN_FLIGHT: RefCell<u8> = const { RefCell::new(0) };
 }
 
 struct StoreState(Option<StableStore>);
@@ -166,12 +188,56 @@ enum ActionKey {
     Notification([u8; 32]),
     FeePayout(u64),
     FeePayoutCreation,
-    BaseObservation,
+    PublicConfigInitialization,
     BaseGovernance,
+    EmergencyPause,
 }
 
 struct InFlightGuard {
     key: ActionKey,
+}
+
+struct NotificationQuotaGuard {
+    caller: Principal,
+}
+
+impl NotificationQuotaGuard {
+    const GLOBAL_LIMIT: u8 = 16;
+    const PER_CALLER_LIMIT: u8 = 2;
+
+    fn acquire(caller: Principal) -> Option<Self> {
+        NOTIFICATIONS_IN_FLIGHT.with(|global| {
+            NOTIFICATION_CALLERS.with(|callers| {
+                let mut global = global.borrow_mut();
+                let mut callers = callers.borrow_mut();
+                let caller_count = callers.get(&caller).copied().unwrap_or(0);
+                if *global >= Self::GLOBAL_LIMIT || caller_count >= Self::PER_CALLER_LIMIT {
+                    return None;
+                }
+                *global += 1;
+                callers.insert(caller, caller_count + 1);
+                Some(Self { caller })
+            })
+        })
+    }
+}
+
+impl Drop for NotificationQuotaGuard {
+    fn drop(&mut self) {
+        NOTIFICATIONS_IN_FLIGHT.with(|global| {
+            let mut global = global.borrow_mut();
+            *global = global.saturating_sub(1);
+        });
+        NOTIFICATION_CALLERS.with(|callers| {
+            let mut callers = callers.borrow_mut();
+            if let Some(count) = callers.get_mut(&self.caller) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    callers.remove(&self.caller);
+                }
+            }
+        });
+    }
 }
 
 impl InFlightGuard {
@@ -207,7 +273,7 @@ fn init(args: config::BridgeInitArgs) {
 
 #[ic_cdk::post_upgrade]
 fn post_upgrade() {
-    let store = StableStore::reopen(DefaultMemoryImpl::default())
+    let store = StableStore::reopen_after_upgrade(DefaultMemoryImpl::default())
         .unwrap_or_else(|error| ic_cdk::trap(format!("stable state reopen failed: {error}")));
     install_store(store);
     ensure_supported_schema();
@@ -219,9 +285,6 @@ fn post_upgrade() {
 async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, api::DepositError> {
     let caller = ic_cdk::api::msg_caller();
     let id = api::deposit_action_id(caller, &args)?;
-    let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
-        return Err(api::DepositError::Busy);
-    };
     let existed = STORE.with(|store| {
         store
             .borrow()
@@ -229,24 +292,14 @@ async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, 
             .map(|record| record.is_some())
             .map_err(|_| api::DepositError::StorageFailure)
     })?;
-    let mut receipt = api::request_deposit(caller, args).await?;
     if existed {
-        return Ok(receipt);
+        return api::request_deposit(caller, args).await;
     }
+    let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
+        return Err(api::DepositError::Busy);
+    };
+    let receipt = api::request_deposit(caller, args).await?;
     drop(guard);
-    if let Some(settlement) =
-        scheduler::run_newly_enqueued(storage::SettlementJobKind::Deposit, id).await
-    {
-        receipt.state = STORE.with(|store| {
-            store
-                .borrow()
-                .deposit(id)
-                .map_err(|_| api::DepositError::StorageFailure)?
-                .map(|record| phases::DepositPhase::from(&record.state))
-                .ok_or(api::DepositError::StorageFailure)
-        })?;
-        receipt.settlement = Some(settlement);
-    }
     scheduler::arm();
     Ok(receipt)
 }
@@ -294,32 +347,67 @@ async fn notify_withdrawal(
 ) -> Result<api::NotifyWithdrawalReceipt, api::NotifyWithdrawalError> {
     let caller = ic_cdk::api::msg_caller();
     let transaction_hash = api::notification_action_hash(caller, &args)?;
+    if let Some(receipt) = api::existing_notified_withdrawal_by_hash(caller, transaction_hash)? {
+        return Ok(receipt);
+    }
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
+            .ok_or(api::NotifyWithdrawalError::StorageFailure)
+    })?;
+    if !has_external_call_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.cycles_floor,
+        config.settlement_cycle_ceiling,
+    ) {
+        return Err(api::NotifyWithdrawalError::InsufficientCycles);
+    }
+    let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller) else {
+        return Err(api::NotifyWithdrawalError::RateLimited);
+    };
     let Some(notification_guard) =
         InFlightGuard::acquire(ActionKey::Notification(transaction_hash))
     else {
         return Err(api::NotifyWithdrawalError::Busy);
     };
-    let mut receipt = api::notify_withdrawal(caller, args).await?;
-    let id = match &receipt {
-        api::NotifyWithdrawalReceipt::Ingested { withdrawal_id, .. } => withdrawal_id
-            .as_slice()
-            .try_into()
-            .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?,
+    let mut quota_key = b"notify_withdrawal:".to_vec();
+    quota_key.extend_from_slice(&transaction_hash);
+    STORE
+        .with(|store| {
+            store.borrow_mut().reserve_settlement_quota(
+                caller,
+                quota_key,
+                ic_cdk::api::time(),
+                storage::SettlementQuotaLimits {
+                    window_seconds: config.settlement_rate_limit_window_seconds,
+                    global: config.settlement_rate_limit_global,
+                    per_principal: config.settlement_rate_limit_per_principal,
+                    per_record: config.settlement_rate_limit_per_record,
+                },
+            )
+        })
+        .map_err(|error| match error {
+            storage::SettlementAdmissionError::RateLimited { .. } => {
+                api::NotifyWithdrawalError::RateLimited
+            }
+            storage::SettlementAdmissionError::Storage => {
+                api::NotifyWithdrawalError::StorageFailure
+            }
+        })?;
+    let receipt = api::notify_withdrawal(caller, args).await?;
+    match &receipt {
+        api::NotifyWithdrawalReceipt::Ingested { .. } => {}
         api::NotifyWithdrawalReceipt::Duplicate { .. } => return Ok(receipt),
-    };
-    drop(notification_guard);
-    if let Some(settlement) =
-        scheduler::run_newly_enqueued(storage::SettlementJobKind::Withdrawal, id).await
-    {
-        match &mut receipt {
-            api::NotifyWithdrawalReceipt::Ingested {
-                settlement: slot, ..
-            } => *slot = Some(settlement),
-            api::NotifyWithdrawalReceipt::Duplicate { .. } => unreachable!(),
-        }
     }
+    drop(notification_guard);
     scheduler::arm();
     Ok(receipt)
+}
+
+fn has_external_call_cycle_budget(current: u128, floor: u128, call_ceiling: u128) -> bool {
+    current > floor.saturating_add(call_ceiling)
 }
 
 #[ic_cdk::update]
@@ -333,19 +421,9 @@ async fn recover_mint_revert(
     let Some(guard) = InFlightGuard::acquire(key) else {
         return Err(recovery::RecoverMintRevertError::Busy);
     };
-    let mut receipt = recovery::recover(ic_cdk::api::msg_caller(), args).await?;
+    let receipt = recovery::recover(ic_cdk::api::msg_caller(), args).await?;
     if matches!(receipt, recovery::RecoverMintRevertReceipt::Enqueued { .. }) {
         drop(guard);
-        let settlement = recovery::run_enqueued(&target).await;
-        if let recovery::RecoverMintRevertReceipt::Enqueued {
-            state,
-            settlement: slot,
-            ..
-        } = &mut receipt
-        {
-            *state = recovery::current_state(&target)?;
-            *slot = settlement;
-        }
         scheduler::arm();
     }
     Ok(receipt)
@@ -410,6 +488,7 @@ fn current_operation_id(
                     _ => None,
                 }),
             storage::SettlementJobKind::Withdrawal => None,
+            storage::SettlementJobKind::FeePayout => None,
         }
         .ok_or(tasks::SettlementActionError::WrongState)
     })
@@ -456,6 +535,7 @@ async fn confirm_evm(
     let authorized = match kind {
         storage::SettlementJobKind::Deposit => can_advance_deposit(caller, id)?,
         storage::SettlementJobKind::Withdrawal => can_advance_withdrawal(caller, id)?,
+        storage::SettlementJobKind::FeePayout => false,
     };
     if !authorized {
         return Err(tasks::SettlementActionError::Unauthorized);
@@ -479,17 +559,6 @@ async fn confirm_evm(
         if !known {
             return Err(tasks::SettlementActionError::TransactionMismatch);
         }
-        STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            let mut operation = store
-                .evm_operation(operation_id.get())
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-                .ok_or(tasks::SettlementActionError::NotFound)?;
-            operation.state = bridge_core::EvmOperationState::Submitted { transaction_hash };
-            store
-                .put_evm_operation(&operation)
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)
-        })?;
     }
     let job = STORE.with(|store| {
         store
@@ -509,14 +578,20 @@ async fn confirm_evm(
     {
         return Err(tasks::SettlementActionError::WrongState);
     }
-    let Some(guard) = InFlightGuard::acquire(match kind {
-        storage::SettlementJobKind::Deposit => ActionKey::Deposit(id),
-        storage::SettlementJobKind::Withdrawal => ActionKey::Withdrawal(id),
-    }) else {
-        return Err(tasks::SettlementActionError::Busy);
-    };
-    drop(guard);
-    let job = claim_manual_job(kind, id, caller)?;
+    let job = claim_confirmation_job(kind, id, caller)?;
+    if stored_hash != transaction_hash {
+        STORE.with(|store| {
+            let mut store = store.borrow_mut();
+            let mut operation = store
+                .evm_operation(operation_id.get())
+                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+                .ok_or(tasks::SettlementActionError::NotFound)?;
+            operation.state = bridge_core::EvmOperationState::Submitted { transaction_hash };
+            store
+                .put_evm_operation(&operation)
+                .map_err(|_| tasks::SettlementActionError::StorageFailure)
+        })?;
+    }
     let result = scheduler::run_claimed_confirmation(
         job,
         args.receipt_block_number,
@@ -564,6 +639,7 @@ async fn continue_deposit(
                     record.state,
                     bridge_core::DepositState::Minted { .. }
                         | bridge_core::DepositState::MintReverted { .. }
+                        | bridge_core::DepositState::Refunded { .. }
                         | bridge_core::DepositState::Cancelled { .. }
                 );
                 terminal.then(|| {
@@ -577,6 +653,111 @@ async fn continue_deposit(
     }
     drop(guard);
     let job = claim_manual_job(storage::SettlementJobKind::Deposit, id, caller)?;
+    let result = scheduler::run_claimed(job).await?;
+    scheduler::arm();
+    Ok(result)
+}
+
+#[ic_cdk::update]
+async fn resume_deposit_refund(
+    deposit_id: Vec<u8>,
+) -> Result<tasks::SettlementActionResult, tasks::SettlementActionError> {
+    let id: [u8; 32] = deposit_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| tasks::SettlementActionError::InvalidId)?;
+    let caller = ic_cdk::api::msg_caller();
+    if caller == candid::Principal::anonymous()
+        || !admin::is_governance(caller)
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+    {
+        return Err(tasks::SettlementActionError::Unauthorized);
+    }
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
+        return Err(tasks::SettlementActionError::Busy);
+    };
+    let (config, record) = STORE.with(|store| {
+        let store = store.borrow();
+        Ok::<_, tasks::SettlementActionError>((
+            store
+                .config()
+                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+                .ok_or(tasks::SettlementActionError::StorageFailure)?,
+            store
+                .deposit(id)
+                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+                .ok_or(tasks::SettlementActionError::NotFound)?,
+        ))
+    })?;
+    let previous_attempt = match &record.state {
+        bridge_core::DepositState::RefundRecoveryRequired { attempt, .. } => attempt.clone(),
+        _ => return Err(tasks::SettlementActionError::WrongState),
+    };
+    let current_fee = ledger::current_fee(config.ledger_canister_id)
+        .await
+        .map_err(|_| tasks::SettlementActionError::LedgerUnavailable)?;
+    let compensated = current_fee >= record.gross_amount;
+    let amount = if compensated {
+        record.gross_amount
+    } else {
+        record
+            .gross_amount
+            .checked_sub(current_fee)
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+    };
+    let next_attempt_no = previous_attempt
+        .attempt_no
+        .checked_add(1)
+        .ok_or(tasks::SettlementActionError::StorageFailure)?;
+    let identity = bridge_core::LedgerTransferIdentity {
+        operation: bridge_core::LedgerOperation::RefundDeposit,
+        created_at_time_ns: ic_cdk::api::time().max(
+            previous_attempt
+                .identity
+                .created_at_time_ns
+                .saturating_add(1),
+        ),
+        memo: tasks::deposit_refund_retry_memo(id, next_attempt_no),
+        amount,
+        fee: current_fee,
+        from: previous_attempt.identity.from.clone(),
+        to: previous_attempt.identity.to.clone(),
+        spender: None,
+    };
+    let job = claim_manual_job(storage::SettlementJobKind::Deposit, id, caller)?;
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let mut current = store
+            .deposit(id)
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+            .ok_or(tasks::SettlementActionError::NotFound)?;
+        if current.state != record.state {
+            return Err(tasks::SettlementActionError::Busy);
+        }
+        current
+            .apply(bridge_core::DepositEvent::ResumeRefund {
+                identity: Box::new(identity),
+            })
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?;
+        store
+            .put_deposit_refund_retry_bundle(
+                &current,
+                caller,
+                storage::AuditEventKind::DepositRefundRetried {
+                    deposit_id: id.to_vec(),
+                    previous_attempt_no: previous_attempt.attempt_no,
+                    previous_fee: previous_attempt.identity.fee.get(),
+                    next_attempt_no: Some(next_attempt_no),
+                    next_fee: current_fee.get(),
+                    compensated,
+                },
+                &job,
+                storage::RefundJobOutcome::KeepLeased,
+                ic_cdk::api::time(),
+            )
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)
+    })?;
+    drop(_guard);
     let result = scheduler::run_claimed(job).await?;
     scheduler::arm();
     Ok(result)
@@ -627,6 +808,23 @@ fn claim_manual_job(
     id: [u8; 32],
     caller: candid::Principal,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
+    claim_job(kind, id, caller, false)
+}
+
+fn claim_confirmation_job(
+    kind: storage::SettlementJobKind,
+    id: [u8; 32],
+    caller: candid::Principal,
+) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
+    claim_job(kind, id, caller, true)
+}
+
+fn claim_job(
+    kind: storage::SettlementJobKind,
+    id: [u8; 32],
+    caller: candid::Principal,
+    explicit_confirmation: bool,
+) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
     let config = STORE.with(|store| {
         store
             .borrow()
@@ -635,9 +833,8 @@ fn claim_manual_job(
             .ok_or(tasks::SettlementActionError::StorageFailure)
     })?;
     STORE.with(|store| {
-        store
-            .borrow_mut()
-            .claim_manual_settlement_job(
+        let claim = if explicit_confirmation {
+            store.borrow_mut().claim_confirmation_settlement_job(
                 kind,
                 id,
                 caller,
@@ -651,6 +848,23 @@ fn claim_manual_job(
                     per_record: config.settlement_rate_limit_per_record,
                 },
             )
+        } else {
+            store.borrow_mut().claim_manual_settlement_job(
+                kind,
+                id,
+                caller,
+                ic_cdk::api::time(),
+                ic_cdk::api::time().saturating_add(120_000_000_000),
+                300_000_000_000,
+                storage::SettlementQuotaLimits {
+                    window_seconds: config.settlement_rate_limit_window_seconds,
+                    global: config.settlement_rate_limit_global,
+                    per_principal: config.settlement_rate_limit_per_principal,
+                    per_record: config.settlement_rate_limit_per_record,
+                },
+            )
+        };
+        claim
             .map_err(|error| match error {
                 storage::SettlementAdmissionError::RateLimited {
                     retry_after_seconds,
@@ -708,16 +922,6 @@ pub(crate) fn rpc_decision_event_kind(evidence: &evm_rpc::RpcDecisionEvidence) -
         automatically_resigned: evidence.automatically_resigned,
         transaction_hash: evidence.transaction_hash.map(|hash| hash.to_vec()),
     }
-}
-
-fn append_rpc_decision(evidence: &evm_rpc::RpcDecisionEvidence) -> Result<(), StorageError> {
-    STORE.with(|store| {
-        store.borrow_mut().append_audit_event(
-            ic_cdk::api::canister_self(),
-            rpc_decision_event_kind(evidence),
-        )?;
-        Ok(())
-    })
 }
 
 #[ic_cdk::query]
@@ -896,110 +1100,76 @@ fn first_prepared_evm_test_id() -> Result<Option<u64>, StorageMaintenanceError> 
 }
 
 #[ic_cdk::update]
-async fn refresh_base_observation() -> Result<(), RefreshBaseObservationError> {
-    const MIN_REFRESH_INTERVAL_NS: u64 = 30_000_000_000;
-
-    let now = ic_cdk::api::time();
-    let recent_observation = STORE.with(|store| {
-        store
-            .borrow()
-            .external_progress()
-            .map_err(|_| RefreshBaseObservationError::StorageFailure)
-            .map(|progress| {
-                progress.finalized_observation.filter(|observation| {
-                    now.saturating_sub(observation.observed_at_ns) <= MIN_REFRESH_INTERVAL_NS
-                })
-            })
+async fn initialize_public_config() -> Result<(), PublicConfigInitializationError> {
+    let caller = ic_cdk::api::msg_caller();
+    if !ic_cdk::api::is_controller(&caller) {
+        return Err(PublicConfigInitializationError::Unauthorized);
+    }
+    let initialized = STORE.with(|store| {
+        let store = store.borrow();
+        Ok::<_, PublicConfigInitializationError>(
+            store
+                .signer_address()
+                .map_err(|_| PublicConfigInitializationError::StorageFailure)?
+                .is_some()
+                && store
+                    .governance_operator_address()
+                    .map_err(|_| PublicConfigInitializationError::StorageFailure)?
+                    .is_some(),
+        )
     })?;
-    if recent_observation.is_some() {
+    if initialized {
         return Ok(());
     }
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseObservation) else {
-        return Err(RefreshBaseObservationError::Busy);
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::PublicConfigInitialization) else {
+        return Err(PublicConfigInitializationError::Busy);
     };
     let config = STORE.with(|store| {
         store
             .borrow()
             .config()
-            .map_err(|_| RefreshBaseObservationError::StorageFailure)?
-            .ok_or(RefreshBaseObservationError::StorageFailure)
+            .map_err(|_| PublicConfigInitializationError::StorageFailure)?
+            .ok_or(PublicConfigInitializationError::StorageFailure)
     })?;
-    match evm_rpc::bridge_snapshot(&config).await {
-        Ok(completed) => STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            match store.finish_base_snapshot_refresh_with_rpc_audit_and_observation(
-                ic_cdk::api::time(),
-                completed.snapshot.mint,
-                completed.snapshot.bridge_signer,
-                completed.snapshot.deposits_paused,
-                Some(evm_rpc::stable_observation(&completed)),
-                ic_cdk::api::canister_self(),
-                vec![
-                    rpc_audit_event_kind(&completed.rpc_audit),
-                    rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
-                        "refresh_base_observation",
-                        None,
-                        false,
-                    )),
-                ],
-            ) {
-                Ok(()) => Ok(()),
-                Err(storage::StorageError::Core(
-                    bridge_core::CoreError::StaleFinalizedObservation
-                    | bridge_core::CoreError::ConflictingFinalizedObservation,
-                )) => {
-                    store
-                        .fail_base_snapshot_refresh()
-                        .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
-                    Err(RefreshBaseObservationError::BaseStateMismatch)
+    let expected_bridge_signer = signer::ethereum_address(&config)
+        .await
+        .map_err(|_| PublicConfigInitializationError::DerivationUnavailable)?;
+    let governance_operator = signer::governance_operator_address(&config)
+        .await
+        .map_err(|_| PublicConfigInitializationError::DerivationUnavailable)?;
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .initialize_chain_key_addresses(expected_bridge_signer, governance_operator)
+            .map_err(|error| match error {
+                StorageError::Core(bridge_core::CoreError::ConflictingReplay) => {
+                    PublicConfigInitializationError::ConflictingAddress
                 }
-                Err(_) => Err(RefreshBaseObservationError::StorageFailure),
-            }
-        }),
-        Err(evm_rpc::ObservationError::ChainIdMismatch) => {
-            STORE.with(|store| {
-                let mut store = store.borrow_mut();
-                let mut admin = store
-                    .admin_state()
-                    .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
-                if !admin.deposits_paused {
-                    admin.deposits_paused = true;
-                    store
-                        .set_admin_state(&admin)
-                        .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
-                }
-                Ok(())
-            })?;
-            Err(RefreshBaseObservationError::BaseStateMismatch)
-        }
-        Err(evm_rpc::ObservationError::Inconsistent) => {
-            append_rpc_decision(&evm_rpc::quorum_loss_decision(
-                "refresh_base_observation",
-                None,
-            ))
-            .map_err(|_| RefreshBaseObservationError::StorageFailure)?;
-            Err(RefreshBaseObservationError::ObservationUnavailable)
-        }
-        Err(evm_rpc::ObservationError::BaseStateMismatch) => {
-            Err(RefreshBaseObservationError::BaseStateMismatch)
-        }
-        Err(_) => Err(RefreshBaseObservationError::ObservationUnavailable),
-    }
+                _ => PublicConfigInitializationError::StorageFailure,
+            })
+    })
 }
 
-#[ic_cdk::update]
-async fn get_public_config() -> PublicConfig {
-    let config = STORE.with(|store| {
+#[ic_cdk::query]
+fn get_public_config() -> PublicConfig {
+    let (config, admin) = STORE.with(|store| {
         let store = store.borrow();
-        storage_or_trap("configuration read", store.config())
-            .unwrap_or_else(|| ic_cdk::trap("missing configuration"))
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let admin = storage_or_trap("administrator state read", store.admin_state());
+        (config, admin)
     });
-    let expected_bridge_signer = api::cached_signer_address(&config)
-        .await
-        .unwrap_or_else(|_| ic_cdk::trap("chain-key signer derivation failed"));
-    let governance_operator = api::cached_governance_operator_address(&config)
-        .await
-        .unwrap_or_else(|_| ic_cdk::trap("governance operator derivation failed"));
+    let (expected_bridge_signer, governance_operator) = STORE.with(|store| {
+        let store = store.borrow();
+        let expected_bridge_signer = storage_or_trap("signer address read", store.signer_address())
+            .unwrap_or_else(|| ic_cdk::trap("public configuration is not initialized"));
+        let governance_operator = storage_or_trap(
+            "governance operator address read",
+            store.governance_operator_address(),
+        )
+        .unwrap_or_else(|| ic_cdk::trap("public configuration is not initialized"));
+        (expected_bridge_signer, governance_operator)
+    });
     let normalized_rpc_urls = config
         .custom_evm_rpc_urls
         .iter()
@@ -1015,13 +1185,32 @@ async fn get_public_config() -> PublicConfig {
         PublicConfig {
             base_chain_id: config.base_chain_id,
             bridge_contract: config.bridge_contract,
+            timelock_contract: config.timelock_contract,
             ledger_canister_id: config.ledger_canister_id,
+            ledger_fee: ledger::KINIC_LEDGER_FEE.get(),
             index_canister_id: config.index_canister_id,
             schema_version: store.schema_version(),
             expected_bridge_signer: Vec::from(expected_bridge_signer),
             governance_operator: Vec::from(governance_operator),
             evm_rpc_canister_id: config.evm_rpc_canister_id,
             rpc_provider_urls_sha256,
+            deposit_rate_limit_window_seconds: config.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: config.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: config.deposit_rate_limit_per_principal,
+            settlement_rate_limit_window_seconds: config.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: config.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: config.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: config.settlement_rate_limit_per_record,
+            transaction_gas_limit: config.transaction_gas_limit,
+            max_fee_per_gas: config.max_fee_per_gas,
+            max_priority_fee_per_gas: config.max_priority_fee_per_gas,
+            evm_liveness: config.evm_liveness,
+            eth_floor_wei: config.eth_floor_wei,
+            cycles_floor: config.cycles_floor,
+            settlement_cycle_ceiling: config.settlement_cycle_ceiling,
+            governance_principal: admin.governance_principal,
+            pause_principal: admin.pause_principal,
+            fee_recipient: admin.fee_recipient,
         }
     })
 }
@@ -1034,18 +1223,24 @@ async fn submit_base_governance_action(
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     let caller = ic_cdk::api::msg_caller();
-    let result = base_governance::submit(caller, action).await;
+    let result = base_governance::submit(caller, action.into()).await;
     scheduler::arm_base_governance(caller);
     result
 }
 
 #[ic_cdk::update]
 async fn emergency_pause(
-) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+) -> Result<base_governance::EmergencyPauseReceipt, base_governance::BaseGovernanceError> {
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::EmergencyPause) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     base_governance::emergency_pause(ic_cdk::api::msg_caller()).await
+}
+
+#[ic_cdk::query]
+fn get_activation_status(
+) -> Result<base_governance::ActivationStatus, base_governance::BaseGovernanceError> {
+    base_governance::activation_status()
 }
 
 #[ic_cdk::update]
@@ -1057,7 +1252,7 @@ async fn schedule_activation(
     let caller = ic_cdk::api::msg_caller();
     let result = base_governance::submit(
         caller,
-        base_governance::BaseGovernanceAction::ScheduleActivation,
+        base_governance::GovernanceAction::ScheduleActivation,
     )
     .await;
     scheduler::arm_base_governance(caller);
@@ -1071,11 +1266,8 @@ async fn execute_activation(
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     let caller = ic_cdk::api::msg_caller();
-    let result = base_governance::submit(
-        caller,
-        base_governance::BaseGovernanceAction::ExecuteActivation,
-    )
-    .await;
+    let result =
+        base_governance::submit(caller, base_governance::GovernanceAction::ExecuteActivation).await;
     scheduler::arm_base_governance(caller);
     result
 }
@@ -1089,10 +1281,16 @@ fn icrc10_supported_standards() -> Vec<consent::Icrc10SupportedStandard> {
 fn icrc21_canister_call_consent_message(
     request: consent::Icrc21ConsentMessageRequest,
 ) -> consent::Icrc21ConsentMessageResponse {
+    let ledger_fee = if request.method == "request_deposit" {
+        Some(ledger::KINIC_LEDGER_FEE.get())
+    } else {
+        None
+    };
     consent::consent_message(
         ic_cdk::api::msg_caller(),
         ic_cdk::api::canister_self(),
         request,
+        ledger_fee,
     )
 }
 
@@ -1105,21 +1303,21 @@ fn resume_new_deposits() -> Result<(), admin::AdminError> {
     admin::resume(ic_cdk::api::msg_caller())
 }
 #[ic_cdk::update]
-fn set_fee_recipient(value: config::FeeRecipientConfig) -> Result<(), admin::AdminError> {
-    admin::set_fee_recipient(ic_cdk::api::msg_caller(), value)
-}
-#[ic_cdk::update]
 fn rotate_pause_principal(args: admin::RotatePausePrincipalArgs) -> Result<(), admin::AdminError> {
     admin::rotate_pause_principal(ic_cdk::api::msg_caller(), args)
 }
 #[ic_cdk::update]
-async fn request_fee_payout(
-    amount: candid::Nat,
-) -> Result<admin::FeePayoutReceipt, admin::AdminError> {
+fn rotate_fee_recipient(args: config::FeeRecipientConfig) -> Result<(), admin::AdminError> {
+    admin::rotate_fee_recipient(ic_cdk::api::msg_caller(), args)
+}
+#[ic_cdk::update]
+fn request_fee_payout(amount: candid::Nat) -> Result<admin::FeePayoutReceipt, admin::AdminError> {
     let Some(_guard) = InFlightGuard::acquire(ActionKey::FeePayoutCreation) else {
         return Err(admin::AdminError::Busy);
     };
-    admin::request_fee_payout(ic_cdk::api::msg_caller(), amount).await
+    let receipt = admin::request_fee_payout(ic_cdk::api::msg_caller(), amount)?;
+    scheduler::arm();
+    Ok(receipt)
 }
 
 #[ic_cdk::update]
@@ -1135,10 +1333,34 @@ async fn continue_fee_payout(
     {
         return Err(tasks::SettlementActionError::Unauthorized);
     }
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::FeePayout(payout_id)) else {
+    let Some(guard) = InFlightGuard::acquire(ActionKey::FeePayout(payout_id)) else {
         return Err(tasks::SettlementActionError::Busy);
     };
-    tasks::advance_fee_payout(payout_id).await
+    let terminal = STORE.with(|store| {
+        store
+            .borrow()
+            .fee_payout(payout_id)
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+            .map(|record| match record.state {
+                admin::FeePayoutState::Succeeded { .. } | admin::FeePayoutState::Failed => {
+                    Some(record.state)
+                }
+                _ => None,
+            })
+            .ok_or(tasks::SettlementActionError::NotFound)
+    })?;
+    if let Some(state) = terminal {
+        return Ok(tasks::FeePayoutActionResult::Complete { state });
+    }
+    drop(guard);
+    let job = claim_manual_job(
+        storage::SettlementJobKind::FeePayout,
+        storage::fee_payout_job_id(payout_id),
+        caller,
+    )?;
+    let result = scheduler::run_claimed_fee_payout(job).await?;
+    scheduler::arm();
+    Ok(result)
 }
 #[ic_cdk::query]
 fn get_audit_events(start: u64, limit: u16) -> Result<storage::AuditEventPage, admin::AdminError> {
@@ -1154,7 +1376,10 @@ pub fn generated_candid_interface() -> String {
 
 #[cfg(test)]
 mod candid_tests {
-    use super::{storage::StorageError, storage_or_trap, ActionKey, InFlightGuard};
+    use super::{
+        has_external_call_cycle_budget, storage::StorageError, storage_or_trap, ActionKey,
+        InFlightGuard,
+    };
 
     #[cfg(not(feature = "test-deployment"))]
     fn normalize(candid: &str) -> String {
@@ -1170,6 +1395,10 @@ mod candid_tests {
         let generated = super::__export_service();
         let checked_in = include_str!("../bridge.did");
         assert_eq!(normalize(&generated), normalize(checked_in));
+        assert!(!generated.contains("refresh_base_observation"));
+        let normalized = normalize(&generated);
+        assert!(normalized.contains("get_public_config:()->(PublicConfig)query;"));
+        assert!(normalized.contains("initialize_public_config:()->("));
     }
 
     #[test]
@@ -1197,5 +1426,12 @@ mod candid_tests {
             storage_or_trap::<()>("test storage read", Err(StorageError::DecodeFailed));
         });
         assert!(trapped.is_err());
+    }
+
+    #[test]
+    fn external_calls_require_budget_above_floor_and_call_ceiling() {
+        assert!(!has_external_call_cycle_budget(150, 100, 50));
+        assert!(has_external_call_cycle_budget(151, 100, 50));
+        assert!(!has_external_call_cycle_budget(u128::MAX, u128::MAX, 1));
     }
 }

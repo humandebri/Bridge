@@ -18,6 +18,7 @@ use icrc_ledger_types::{
 use serde::Serialize;
 
 const LEDGER_CALL_TIMEOUT_SECONDS: u32 = 15;
+pub const KINIC_LEDGER_FEE: Amount = Amount::new(10_000);
 
 fn ledger_call(canister: Principal, method: &'static str) -> Call<'static, 'static> {
     Call::bounded_wait(canister, method).change_timeout(LEDGER_CALL_TIMEOUT_SECONDS)
@@ -73,15 +74,6 @@ fn amount(value: &Nat) -> Option<Amount> {
     nat_u128(value).map(Amount::new)
 }
 
-pub async fn ledger_fee(ledger: Principal) -> Result<Amount, ()> {
-    let response = ledger_call(ledger, "icrc1_fee")
-        .with_arg(())
-        .await
-        .map_err(|_| ())?;
-    let value: Nat = response.candid().map_err(|_| ())?;
-    amount(&value).ok_or(())
-}
-
 pub async fn pull(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {
     let args = TransferFromArgs {
         spender_subaccount: Some(
@@ -119,6 +111,23 @@ pub async fn pull(ledger: Principal, identity: &LedgerTransferIdentity) -> Ledge
 }
 
 pub async fn release(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {
+    transfer(ledger, identity).await
+}
+
+pub async fn refund(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {
+    transfer(ledger, identity).await
+}
+
+pub async fn current_fee(ledger: Principal) -> Result<Amount, ()> {
+    let response = ledger_call(ledger, "icrc1_fee")
+        .with_arg(())
+        .await
+        .map_err(|_| ())?;
+    let fee: Nat = response.candid().map_err(|_| ())?;
+    amount(&fee).ok_or(())
+}
+
+async fn transfer(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {
     let args = TransferArg {
         from_subaccount: Some(identity.from.subaccount()),
         to: Account {
@@ -263,7 +272,7 @@ async fn reconcile_ledger(
 
         let request = GetBlocksRequest {
             start: Nat::from(next_block),
-            length: Nat::from(PAGE),
+            length: Nat::from(ledger_page_length(next_block, ledger_tip, PAGE)),
         };
         budget -= 1;
         let response = match ledger_call(ledger, "get_transactions")
@@ -335,6 +344,12 @@ async fn reconcile_ledger(
     }
 }
 
+fn ledger_page_length(next_block: u128, ledger_tip: Option<u128>, page: u128) -> u128 {
+    ledger_tip
+        .map(|exclusive_tip| exclusive_tip.saturating_sub(next_block).min(page))
+        .unwrap_or(page)
+}
+
 fn ledger_progress(
     progress: &mut ReconciliationScanProgress,
     next_block: u128,
@@ -361,6 +376,29 @@ fn exact_coverage(start: u128, end: u128, ranges: &[(u128, u128)]) -> bool {
         cursor = range_end;
     }
     cursor == end
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexPageBoundary {
+    Continue(u128),
+    Exhausted,
+    Stalled,
+}
+
+fn index_page_boundary(
+    previous_start: Option<u128>,
+    last: u128,
+    oldest: Option<u128>,
+) -> IndexPageBoundary {
+    if oldest.is_some_and(|oldest| last <= oldest) {
+        IndexPageBoundary::Exhausted
+    } else if previous_start == Some(last) {
+        IndexPageBoundary::Stalled
+    } else {
+        // The index start cursor is exclusive, so the last returned id is the
+        // boundary for the next descending page; subtracting one would skip it.
+        IndexPageBoundary::Continue(last)
+    }
 }
 
 async fn reconcile_index(
@@ -443,21 +481,22 @@ async fn reconcile_index(
                 index_watermark: index_watermark.expect("verified index watermark"),
             };
         };
-        if result
-            .oldest_tx_id
-            .as_ref()
-            .and_then(nat_u128)
-            .is_some_and(|oldest| last <= oldest)
-        {
-            return ReconciliationOutcome::Absent {
-                ledger_watermark,
-                index_watermark: index_watermark.expect("verified index watermark"),
-            };
+        match index_page_boundary(
+            next_start,
+            last,
+            result.oldest_tx_id.as_ref().and_then(nat_u128),
+        ) {
+            IndexPageBoundary::Exhausted => {
+                return ReconciliationOutcome::Absent {
+                    ledger_watermark,
+                    index_watermark: index_watermark.expect("verified index watermark"),
+                };
+            }
+            IndexPageBoundary::Stalled => {
+                return index_progress(progress, ledger_watermark, index_watermark, next_start);
+            }
+            IndexPageBoundary::Continue(start) => next_start = Some(start),
         }
-        if next_start == Some(last) {
-            return index_progress(progress, ledger_watermark, index_watermark, next_start);
-        }
-        next_start = Some(last);
     }
     index_progress(progress, ledger_watermark, index_watermark, next_start)
 }
@@ -604,6 +643,17 @@ mod tests {
     }
 
     #[test]
+    fn fixed_kinic_ledger_fee_supports_a_positive_refund() {
+        assert_eq!(
+            bridge_core::deposit_refund_amount(
+                KINIC_LEDGER_FEE.get().saturating_add(1),
+                KINIC_LEDGER_FEE.get(),
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn duplicate_is_a_confirmed_success_and_every_error_is_classified() {
         assert_eq!(
             classify_transfer_from(Err(TransferFromError::Duplicate {
@@ -636,5 +686,47 @@ mod tests {
         assert!(!exact_coverage(0, 10, &[(0, 4), (5, 10)]));
         assert!(!exact_coverage(0, 10, &[(0, 6), (5, 10)]));
         assert!(!exact_coverage(0, 10, &[(0, 11)]));
+    }
+
+    #[test]
+    fn fixed_ledger_tip_truncates_the_final_page_when_the_ledger_grows() {
+        assert_eq!(ledger_page_length(0, None, 1_000), 1_000);
+        assert_eq!(ledger_page_length(1_000, Some(2_500), 1_000), 1_000);
+        assert_eq!(ledger_page_length(2_000, Some(2_500), 1_000), 500);
+        assert_eq!(ledger_page_length(2_500, Some(2_500), 1_000), 0);
+
+        // The official ledger and archive APIs return half-open ranges. Keeping the
+        // final request inside the fixed tip makes their combined coverage exact,
+        // even if the live ledger has advanced beyond that tip.
+        assert!(exact_coverage(
+            2_000,
+            2_500,
+            &[(2_000, 2_200), (2_200, 2_500)]
+        ));
+        assert!(!exact_coverage(
+            2_000,
+            2_500,
+            &[(2_000, 2_200), (2_200, 3_000)]
+        ));
+    }
+
+    #[test]
+    fn index_pages_use_the_last_id_as_an_exclusive_descending_boundary() {
+        assert_eq!(
+            index_page_boundary(None, 900, Some(0)),
+            IndexPageBoundary::Continue(900)
+        );
+        assert_eq!(
+            index_page_boundary(Some(900), 800, Some(0)),
+            IndexPageBoundary::Continue(800)
+        );
+        assert_eq!(
+            index_page_boundary(Some(1), 0, Some(0)),
+            IndexPageBoundary::Exhausted
+        );
+        assert_eq!(
+            index_page_boundary(Some(800), 800, Some(0)),
+            IndexPageBoundary::Stalled
+        );
     }
 }

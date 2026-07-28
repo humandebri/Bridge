@@ -1,4 +1,5 @@
-use candid::Principal;
+use candid::{CandidType, Decode, Encode, Principal, Reserved};
+use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -6,10 +7,13 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     env, fs,
+    fs::OpenOptions,
+    io::Write,
     path::{Component, Path, PathBuf},
     process::{self, Command},
     time::{SystemTime, UNIX_EPOCH},
 };
+use tiny_keccak::{Hasher, Keccak};
 
 const KINIC_LEDGER: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 const KINIC_INDEX: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
@@ -17,19 +21,19 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 22;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
     "bridge-canister.wasm",
     "bridge-runtime.bin",
 ];
-const GATE_B_ARTIFACTS: [&str; 10] = [
+const GATE_B_ARTIFACTS: [&str; 9] = [
     "profile.json",
     "signer-snapshot.json",
     "rpc-e2e.json",
     "controller-handover.json",
     "sns-upgrade.json",
-    "x402-e2e.json",
     "monitor-drill.json",
     "bridge-canister.wasm",
     "bridge-runtime.bin",
@@ -49,6 +53,7 @@ struct Profile {
     governance_principal: String,
     decimals: u8,
     bridge_canister_id: String,
+    canister_schema_version: u16,
     ic_host: String,
     base_rpc_url: String,
     bridge_contract: String,
@@ -69,6 +74,7 @@ struct Profile {
     monitoring: Monitoring,
     parameters: Parameters,
     rate_limits: RateLimits,
+    evm_liveness: EvmLivenessPolicy,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -156,6 +162,17 @@ struct RateLimits {
     settlement_per_record: u16,
 }
 
+#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct EvmLivenessPolicy {
+    check_interval_seconds: u64,
+    rebroadcast_after_seconds: u64,
+    replacement_after_seconds: u64,
+    max_replacements: u8,
+    fee_bump_bps: u16,
+    fee_ceiling_multiplier_bps: u32,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Evidence {
@@ -226,6 +243,7 @@ struct GateAReceipt {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SignerSnapshot {
+    schema_version: u8,
     observed_at_unix: u64,
     chain_id: u64,
     evm_rpc_canister_id: String,
@@ -278,29 +296,112 @@ struct SignerSnapshot {
     settlement_reserve_sufficient: bool,
     ledger_fee: u128,
     base_service_fee: u128,
+    public_config: LivePublicConfig,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LivePublicConfig {
+    base_chain_id: u64,
+    bridge_contract: String,
+    timelock_contract: String,
+    ledger_canister_id: String,
+    index_canister_id: String,
+    schema_version: u16,
+    expected_bridge_signer: String,
+    governance_operator: String,
+    evm_rpc_canister_id: String,
+    rpc_provider_urls_sha256: String,
+    deposit_rate_limit_window_seconds: u64,
+    deposit_rate_limit_global: u16,
+    deposit_rate_limit_per_principal: u16,
+    settlement_rate_limit_window_seconds: u64,
+    settlement_rate_limit_global: u16,
+    settlement_rate_limit_per_principal: u16,
+    settlement_rate_limit_per_record: u16,
+    #[serde(with = "u128_string")]
+    transaction_gas_limit: u128,
+    #[serde(with = "u128_string")]
+    max_fee_per_gas: u128,
+    #[serde(with = "u128_string")]
+    max_priority_fee_per_gas: u128,
+    evm_liveness: EvmLivenessPolicy,
+    #[serde(with = "u128_string")]
+    eth_floor_wei: u128,
+    #[serde(with = "u128_string")]
+    cycles_floor: u128,
+    #[serde(with = "u128_string")]
+    settlement_cycle_ceiling: u128,
+    governance_principal: String,
+    pause_principal: String,
+    fee_recipient: LiveFeeRecipient,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LiveFeeRecipient {
+    owner: String,
+    subaccount_hex: String,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MonitorDrill {
+    schema_version: u8,
+    rehearsal_id: String,
+    source_revision: String,
+    source_tree_sha256: String,
+    ic_network: String,
+    base_chain_id: u64,
+    bridge_canister_id: String,
+    bridge_contract: String,
+    timelock_contract: String,
+    bridge_canister_wasm_sha256: String,
+    bridge_runtime_bytecode_sha256: String,
+    rpc_provider_urls_sha256: String,
     routing_sha256: String,
     fault_started_at_unix: u64,
     detected_at_unix: u64,
     acknowledged_at_unix: u64,
     base_paused_at_unix: u64,
-    ic_paused_at_unix: u64,
-    base_pause_reference: String,
-    ic_pause_reference: String,
+    pending_timelock_operation_before: bool,
+    base_actions: Vec<MonitorBaseAction>,
+    ic_pause: MonitorIcPause,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitorBaseAction {
+    kind: String,
+    transaction_hash: String,
+    block_number: u64,
+    block_hash: String,
+    receipt_status: u8,
+    target: String,
+    calldata_hex: String,
+    canonical_finalized: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitorIcPause {
+    paused_at_unix: u64,
+    response_hex: String,
+    response_sha256: String,
     pause_principal: String,
-    pause_request_id: String,
-    pause_audit_sequence: u64,
-    pause_audit_sha256: String,
+    request_id: String,
+    certificate_hex: String,
+    certificate_sha256: String,
+    audit_sequence: u64,
+    audit_sha256: String,
+    audit_raw_hex: String,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ControllerHandover {
     schema_version: u8,
+    stage: String,
     observed_at_unix: u64,
     bridge_canister_id: String,
     sns_root_canister_id: String,
@@ -334,33 +435,206 @@ struct SnsUpgrade {
     after_module_sha256: String,
     before_public_state_sha256: String,
     after_public_state_sha256: String,
+    proposal_action: String,
+    proposal_target_canister_id: String,
+    proposal_wasm_sha256: String,
+    governance_query_response_hex: String,
+    governance_query_response_sha256: String,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct X402Evidence {
+struct ActivationSubmission {
     schema_version: u8,
-    observed_at_unix: u64,
-    network: String,
-    chain_id: u64,
-    sdk_name: String,
-    sdk_version: String,
-    protocol_version: u8,
-    scheme: String,
-    facilitator_operator: String,
-    facilitator_self_operated: bool,
-    facilitator_url_sha256: String,
-    authorization_standard: String,
-    bsns_address: String,
-    bsns_runtime_bytecode_sha256: String,
-    verify_response_sha256: String,
-    verify_valid: bool,
-    settle_success: bool,
-    settle_transaction_hash: String,
-    receipt_block_number: u64,
-    receipt_block_hash: String,
-    receipt_status: u8,
-    canonical_finalized: bool,
+    phase: String,
+    release_id: String,
+    source_revision: String,
+    source_tree_sha256: String,
+    gate_b_manifest_sha256: String,
+    governance_canister_id: String,
+    bridge_canister_id: String,
+    function_id: u64,
+    target_method_name: String,
+    payload_hex: String,
+    payload_sha256: String,
+    proposer_principal: String,
+    neuron_subaccount: String,
+    proposal_id: u64,
+    submitted_at_unix: u64,
+    registry_response_sha256: String,
+    proposal_response_hex: String,
+    proposal_response_sha256: String,
+    registry_command_argv: Vec<String>,
+    proposal_command_argv: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ActivationReceipt {
+    schema_version: u8,
+    phase: String,
+    release_id: String,
+    source_revision: String,
+    source_tree_sha256: String,
+    gate_b_manifest_sha256: String,
+    proposal_id: u64,
+    function_id: u64,
+    target_method_name: String,
+    payload_sha256: String,
+    executed_at_unix: u64,
+    verified_at_unix: u64,
+    governance_query_response_hex: String,
+    governance_query_response_sha256: String,
+    function_registry_response_hex: String,
+    function_registry_response_sha256: String,
+    activation_status_response_hex: String,
+    activation_status_response_sha256: String,
+    operation_id: String,
+    operation_salt: String,
+    base_postcondition_sha256: String,
+    prior_schedule_receipt_sha256: Option<String>,
+}
+
+#[derive(CandidType, Deserialize, Serialize)]
+struct ProposalId {
+    id: u64,
+}
+
+#[derive(CandidType, Serialize)]
+struct GetProposalRequest {
+    proposal_id: Option<ProposalId>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct GetProposalResponse {
+    result: Option<GetProposalResult>,
+}
+
+#[derive(CandidType, Deserialize)]
+enum GetProposalResult {
+    Error(GovernanceErrorView),
+    Proposal(ProposalDataView),
+}
+
+#[derive(CandidType, Deserialize)]
+struct GovernanceErrorView {
+    error_message: String,
+    error_type: i32,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ProposalDataView {
+    id: Option<ProposalId>,
+    failure_reason: Option<GovernanceErrorView>,
+    failed_timestamp_seconds: u64,
+    decided_timestamp_seconds: u64,
+    proposal: Option<ProposalView>,
+    executed_timestamp_seconds: u64,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ProposalView {
+    action: Option<SnsProposalAction>,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(CandidType, Deserialize)]
+enum SnsProposalAction {
+    ManageNervousSystemParameters(Reserved),
+    AddGenericNervousSystemFunction(Reserved),
+    SetTopicsForCustomProposals(Reserved),
+    ManageDappCanisterSettings(Reserved),
+    RemoveGenericNervousSystemFunction(Reserved),
+    UpgradeSnsToNextVersion(Reserved),
+    AdvanceSnsTargetVersion(Reserved),
+    RegisterDappCanisters(Reserved),
+    RegisterExtension(Reserved),
+    UpgradeExtension(Reserved),
+    ExecuteExtensionOperation(Reserved),
+    TransferSnsTreasuryFunds(Reserved),
+    UpgradeSnsControlledCanister(UpgradeSnsControlledCanisterView),
+    DeregisterDappCanisters(Reserved),
+    MintSnsTokens(Reserved),
+    Unspecified(Reserved),
+    ManageSnsMetadata(Reserved),
+    ExecuteGenericNervousSystemFunction(ExecuteGenericFunctionView),
+    ManageLedgerParameters(Reserved),
+    Motion(Reserved),
+}
+
+#[derive(CandidType, Deserialize)]
+struct UpgradeSnsControlledCanisterView {
+    new_canister_wasm: Vec<u8>,
+    canister_id: Option<Principal>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ExecuteGenericFunctionView {
+    function_id: u64,
+    payload: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ListNervousSystemFunctionsResponseView {
+    functions: Vec<NervousSystemFunctionView>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct NervousSystemFunctionView {
+    id: u64,
+    function_type: Option<FunctionTypeView>,
+}
+
+#[derive(CandidType, Deserialize)]
+enum FunctionTypeView {
+    NativeNervousSystemFunction(Reserved),
+    GenericNervousSystemFunction(GenericNervousSystemFunctionView),
+}
+
+#[derive(CandidType, Deserialize)]
+struct GenericNervousSystemFunctionView {
+    target_canister_id: Option<Principal>,
+    target_method_name: Option<String>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ActivationOperationStatusView {
+    operation_id: Vec<u8>,
+    salt: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ActivationStatusView {
+    deposits_paused: bool,
+    pending_timelock_operation: Option<ActivationOperationStatusView>,
+}
+
+#[derive(CandidType, Deserialize)]
+enum ActivationStatusResultView {
+    Ok(ActivationStatusView),
+    Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize)]
+struct EmergencyPauseReceiptView {
+    caller: Principal,
+    local_deposits_paused: bool,
+    local_pause_audit_sequence: u64,
+    local_pause_audit_sha256: Vec<u8>,
+    base_governance: BaseGovernanceReceiptView,
+}
+
+#[derive(CandidType, Deserialize)]
+struct BaseGovernanceReceiptView {
+    operation_id: u64,
+    nonce: u64,
+    transaction_hash: Option<Vec<u8>>,
+}
+
+#[derive(CandidType, Deserialize)]
+enum EmergencyPauseResultView {
+    Ok(EmergencyPauseReceiptView),
+    Err(Reserved),
 }
 
 struct ValidatedBundle {
@@ -493,6 +767,139 @@ fn valid_hash32(value: &str) -> bool {
         && value[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn valid_nonempty_hex(value: &str) -> bool {
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    !value.is_empty()
+        && value.len().is_multiple_of(2)
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn evm_selector(signature: &str) -> String {
+    let mut hash = [0u8; 32];
+    let mut keccak = Keccak::v256();
+    keccak.update(signature.as_bytes());
+    keccak.finalize(&mut hash);
+    format!("0x{}", hex(&hash[..4]))
+}
+
+fn validate_monitor_drill(
+    drill: &MonitorDrill,
+    manifest: &ReleaseManifest,
+    profile: &Profile,
+    now: u64,
+) -> Result<(), String> {
+    for at in [
+        drill.fault_started_at_unix,
+        drill.detected_at_unix,
+        drill.acknowledged_at_unix,
+        drill.base_paused_at_unix,
+        drill.ic_pause.paused_at_unix,
+    ] {
+        validate_evidence_time(at, manifest.created_at_unix, now)?;
+    }
+    let elapsed = |at: u64| {
+        at.checked_sub(drill.fault_started_at_unix)
+            .ok_or("monitor timestamp precedes fault")
+    };
+    let expected_cancel_count = usize::from(drill.pending_timelock_operation_before);
+    let count = |kind: &str| drill.base_actions.iter().filter(|a| a.kind == kind).count();
+    let transactions = drill
+        .base_actions
+        .iter()
+        .map(|action| action.transaction_hash.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let actions_valid = drill.base_actions.iter().all(|action| {
+        let (target, selector, exact_length) = match action.kind.as_str() {
+            "PauseDepositMints" => (
+                &drill.bridge_contract,
+                evm_selector("pauseDepositMints()"),
+                10,
+            ),
+            "PauseWithdrawals" => (
+                &drill.bridge_contract,
+                evm_selector("pauseWithdrawals()"),
+                10,
+            ),
+            "CancelTimelock" => (
+                &drill.timelock_contract,
+                evm_selector("cancel(bytes32)"),
+                74,
+            ),
+            _ => return false,
+        };
+        valid_hash32(&action.transaction_hash)
+            && action.block_number != 0
+            && valid_hash32(&action.block_hash)
+            && action.receipt_status == 1
+            && action.target.eq_ignore_ascii_case(target)
+            && action
+                .calldata_hex
+                .to_ascii_lowercase()
+                .starts_with(&selector)
+            && action.calldata_hex.len() == exact_length
+            && action.canonical_finalized
+    });
+    if drill.schema_version != 3
+        || drill.rehearsal_id.trim().is_empty()
+        || drill.source_revision != manifest.source_revision
+        || !drill
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        || drill.ic_network != "ic"
+        || drill.base_chain_id != 84_532
+        || !principal(&drill.bridge_canister_id)
+        || !evm_address(&drill.bridge_contract)
+        || !evm_address(&drill.timelock_contract)
+        || !drill
+            .bridge_canister_wasm_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !drill
+            .bridge_runtime_bytecode_sha256
+            .eq_ignore_ascii_case(&profile.bridge_runtime_bytecode_sha256)
+        || !valid_sha256(&drill.rpc_provider_urls_sha256)
+        || elapsed(drill.detected_at_unix)? > 5 * 60
+        || elapsed(drill.acknowledged_at_unix)? > 15 * 60
+        || elapsed(drill.base_paused_at_unix)? > 60 * 60
+        || elapsed(drill.ic_pause.paused_at_unix)? > 60 * 60
+        || drill.acknowledged_at_unix < drill.detected_at_unix
+        || drill.base_paused_at_unix < drill.acknowledged_at_unix
+        || drill.ic_pause.paused_at_unix < drill.acknowledged_at_unix
+        || count("PauseDepositMints") != 1
+        || count("PauseWithdrawals") != 1
+        || count("CancelTimelock") != expected_cancel_count
+        || drill.base_actions.len() != 2 + expected_cancel_count
+        || transactions.len() != drill.base_actions.len()
+        || !actions_valid
+        || !valid_nonempty_hex(&drill.ic_pause.response_hex)
+        || !hex_sha256_matches(
+            &drill.ic_pause.response_hex,
+            &drill.ic_pause.response_sha256,
+        )
+        || !principal(&drill.ic_pause.pause_principal)
+        || !valid_hash32(&drill.ic_pause.request_id)
+        || !valid_nonempty_hex(&drill.ic_pause.certificate_hex)
+        || !hex_sha256_matches(
+            &drill.ic_pause.certificate_hex,
+            &drill.ic_pause.certificate_sha256,
+        )
+        || drill.ic_pause.audit_sequence == 0
+        || !valid_nonempty_hex(&drill.ic_pause.audit_raw_hex)
+        || !hex_sha256_matches(&drill.ic_pause.audit_raw_hex, &drill.ic_pause.audit_sha256)
+        || !drill
+            .routing_sha256
+            .eq_ignore_ascii_case(&profile.monitoring.routing_sha256)
+    {
+        return Err("monitor drill does not satisfy the authenticated 5/15/60 contract".into());
+    }
+    Ok(())
+}
+
+fn hex_sha256_matches(value: &str, expected: &str) -> bool {
+    decode_hex(value)
+        .map(|bytes| hex(&Sha256::digest(bytes)).eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
+}
+
 fn credential_free_https(url: &str) -> bool {
     if !url.is_ascii()
         || url
@@ -550,6 +957,9 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     };
     if profile.chain_id != expected_chain || profile.decimals != 8 {
         return Err("KINIC or chain identity mismatch".into());
+    }
+    if profile.canister_schema_version != CURRENT_STABLE_SCHEMA_VERSION {
+        return Err("profile must bind the current stable schema version".into());
     }
     if !principal(&profile.bridge_canister_id)
         || !credential_free_https(&profile.ic_host)
@@ -692,6 +1102,16 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     {
         return Err("unsafe rate-limit configuration".into());
     }
+    let l = profile.evm_liveness;
+    if !(30..=300).contains(&l.check_interval_seconds)
+        || l.rebroadcast_after_seconds < l.check_interval_seconds
+        || l.replacement_after_seconds < l.rebroadcast_after_seconds
+        || !(1..=8).contains(&l.max_replacements)
+        || !(1_000..=5_000).contains(&l.fee_bump_bps)
+        || !(10_000..=100_000).contains(&l.fee_ceiling_multiplier_bps)
+    {
+        return Err("unsafe EVM liveness policy".into());
+    }
     let p = &profile.parameters;
     let _ = p
         .mint_throughput_limit
@@ -701,7 +1121,7 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         || p.per_deposit_limit == 0
         || p.mint_throughput_limit == 0
         || p.per_deposit_limit > p.mint_throughput_limit
-        || p.mint_window_duration_seconds == 0
+        || !(60..=86_400).contains(&p.mint_window_duration_seconds)
         || p.max_service_fee != p.ledger_fee.saturating_mul(10_000)
         || p.service_fee != p.ledger_fee.saturating_mul(500)
         || p.service_fee > p.max_service_fee
@@ -849,14 +1269,7 @@ fn render_release_inputs(
         "transaction_gas_limit": profile.parameters.transaction_gas_limit.to_string(),
         "max_fee_per_gas": profile.parameters.max_fee_per_gas.to_string(),
         "max_priority_fee_per_gas": profile.parameters.max_priority_fee_per_gas.to_string(),
-        "evm_liveness": {
-            "check_interval_seconds": 60,
-            "rebroadcast_after_seconds": 300,
-            "replacement_after_seconds": 1_800,
-            "max_replacements": 3,
-            "fee_bump_bps": 1_250,
-            "fee_ceiling_multiplier_bps": 40_000
-        },
+        "evm_liveness": profile.evm_liveness,
         "eth_floor_wei": profile.parameters.eth_floor_wei.to_string(),
         "cycles_floor": profile.parameters.cycles_floor.to_string(),
         "settlement_cycle_ceiling": profile.parameters.settlement_cycle_ceiling.to_string(),
@@ -919,7 +1332,7 @@ fn render_release_inputs(
         write_generated(output, "ui-runtime-profile.json", &ui)?,
     );
     let manifest = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "profile_file_sha256": profile_file_sha256,
         "profile_canonical_sha256": profile_canonical_sha256,
         "artifacts": artifacts
@@ -1171,6 +1584,13 @@ fn validate_evidence_time(at: u64, manifest_created: u64, now: u64) -> Result<()
     Ok(())
 }
 
+fn validate_activation_time(at: u64, manifest_created: u64, now: u64) -> Result<(), String> {
+    if at < manifest_created || at > now || now - at > MAX_EVIDENCE_AGE_SECS {
+        return Err("activation timestamp predates Gate B, is future-dated, or is too old".into());
+    }
+    Ok(())
+}
+
 fn validate_plan006_evidence(
     root: &Path,
     manifest: &ReleaseManifest,
@@ -1215,7 +1635,8 @@ fn validate_plan006_evidence(
         .request_id
         .trim_start_matches("0x")
         .to_ascii_lowercase();
-    if handover.schema_version != 1
+    if handover.schema_version != 2
+        || handover.stage != "complete"
         || handover.bridge_canister_id != profile.bridge_canister_id
         || handover.sns_root_canister_id != KINIC_ROOT
         || !principal(&handover.executing_principal)
@@ -1252,7 +1673,7 @@ fn validate_plan006_evidence(
     let upgrade: SnsUpgrade = read_json(&root.join("sns-upgrade.json"))?;
     validate_evidence_time(upgrade.observed_at_unix, manifest.created_at_unix, now)?;
     validate_evidence_time(upgrade.executed_at_unix, manifest.created_at_unix, now)?;
-    if upgrade.schema_version != 1
+    if upgrade.schema_version != 3
         || upgrade.proposal_id == 0
         || upgrade.governance_canister_id != KINIC_GOVERNANCE
         || upgrade.root_canister_id != KINIC_ROOT
@@ -1273,44 +1694,33 @@ fn validate_plan006_evidence(
         || !upgrade
             .before_public_state_sha256
             .eq_ignore_ascii_case(&upgrade.after_public_state_sha256)
+        || upgrade.proposal_action != "UpgradeSnsControlledCanister"
+        || upgrade.proposal_target_canister_id != profile.bridge_canister_id
+        || !upgrade
+            .proposal_wasm_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !valid_nonempty_hex(&upgrade.governance_query_response_hex)
+        || !valid_sha256(&upgrade.governance_query_response_sha256)
+        || !hex_sha256_matches(
+            &upgrade.governance_query_response_hex,
+            &upgrade.governance_query_response_sha256,
+        )
     {
         return Err("SNS upgrade evidence is incomplete or not bound to the release Wasm".into());
     }
 
-    let x402: X402Evidence = read_json(&root.join("x402-e2e.json"))?;
-    validate_evidence_time(x402.observed_at_unix, manifest.created_at_unix, now)?;
-    if x402.schema_version != 1
-        || x402.network != "base-sepolia"
-        || x402.chain_id != 84_532
-        || x402.sdk_name.trim().is_empty()
-        || x402.sdk_version.trim().is_empty()
-        || x402.protocol_version != 2
-        || x402.scheme != "exact"
-        || x402.facilitator_operator.trim().is_empty()
-        || x402.facilitator_self_operated
-        || !valid_sha256(&x402.facilitator_url_sha256)
-        || x402.authorization_standard != "EIP-3009"
-        || !evm_address(&x402.bsns_address)
-        || !x402
-            .bsns_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&profile.bsns_runtime_bytecode_sha256)
-        || !valid_sha256(&x402.verify_response_sha256)
-        || !x402.verify_valid
-        || !x402.settle_success
-        || !valid_hash32(&x402.settle_transaction_hash)
-        || x402.receipt_block_number == 0
-        || !valid_hash32(&x402.receipt_block_hash)
-        || x402.receipt_status != 1
-        || !x402.canonical_finalized
-    {
-        return Err("x402 evidence is not a finalized Base Sepolia EIP-3009 settlement".into());
-    }
     Ok(())
 }
 
 fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String> {
+    if root.join("proof-attestation.json").exists() {
+        return Err(
+            "obsolete self-asserted proof attestation is forbidden; release drivers rerun proofs"
+                .into(),
+        );
+    }
     let manifest: ReleaseManifest = read_json(&root.join("release-manifest.json"))?;
-    if manifest.schema_version != 1
+    if manifest.schema_version != 2
         || !valid_release_id(&manifest.release_id)
         || manifest.source_revision.trim().is_empty()
         || !valid_sha256(&manifest.source_tree_sha256)
@@ -1427,38 +1837,7 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
         return Err("manifest/profile test-only mismatch".into());
     }
     let drill: MonitorDrill = read_json(&root.join("monitor-drill.json"))?;
-    for at in [
-        drill.fault_started_at_unix,
-        drill.detected_at_unix,
-        drill.acknowledged_at_unix,
-        drill.base_paused_at_unix,
-        drill.ic_paused_at_unix,
-    ] {
-        validate_evidence_time(at, manifest.created_at_unix, now)?;
-    }
-    let elapsed = |at: u64| {
-        at.checked_sub(drill.fault_started_at_unix)
-            .ok_or("monitor timestamp precedes fault")
-    };
-    if elapsed(drill.detected_at_unix)? > 5 * 60
-        || elapsed(drill.acknowledged_at_unix)? > 15 * 60
-        || elapsed(drill.base_paused_at_unix)? > 60 * 60
-        || elapsed(drill.ic_paused_at_unix)? > 60 * 60
-        || drill.acknowledged_at_unix < drill.detected_at_unix
-        || drill.base_paused_at_unix < drill.acknowledged_at_unix
-        || drill.ic_paused_at_unix < drill.acknowledged_at_unix
-        || drill.base_pause_reference.trim().is_empty()
-        || drill.ic_pause_reference.trim().is_empty()
-        || drill.pause_principal != profile.pause_principal
-        || !valid_hash32(&drill.pause_request_id)
-        || drill.pause_audit_sequence == 0
-        || !valid_sha256(&drill.pause_audit_sha256)
-        || !drill
-            .routing_sha256
-            .eq_ignore_ascii_case(&profile.monitoring.routing_sha256)
-    {
-        return Err("monitor drill does not satisfy the 5/15/60 SLO".into());
-    }
+    validate_monitor_drill(&drill, &manifest, &profile, now)?;
     if gate_b {
         validate_plan006_evidence(root, &manifest, &profile, now)?;
     }
@@ -1471,7 +1850,58 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     })
 }
 
-fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
+fn validate_live_public_config(
+    observed: &LivePublicConfig,
+    profile: &Profile,
+    rpc_url_hash: &str,
+) -> Result<(), String> {
+    let p = &profile.parameters;
+    let r = &profile.rate_limits;
+    if observed.base_chain_id != profile.chain_id
+        || !observed
+            .bridge_contract
+            .eq_ignore_ascii_case(&profile.bridge_contract)
+        || !observed
+            .timelock_contract
+            .eq_ignore_ascii_case(&profile.timelock.address)
+        || observed.ledger_canister_id != profile.ledger_canister_id
+        || observed.index_canister_id != profile.index_canister_id
+        || observed.schema_version != profile.canister_schema_version
+        || !observed
+            .expected_bridge_signer
+            .eq_ignore_ascii_case(&profile.expected_bridge_signer)
+        || !observed
+            .governance_operator
+            .eq_ignore_ascii_case(&profile.governance_operator)
+        || observed.evm_rpc_canister_id != profile.evm_rpc_canister_id
+        || !observed
+            .rpc_provider_urls_sha256
+            .eq_ignore_ascii_case(rpc_url_hash)
+        || observed.deposit_rate_limit_window_seconds != r.deposit_window_seconds
+        || observed.deposit_rate_limit_global != r.deposit_global
+        || observed.deposit_rate_limit_per_principal != r.deposit_per_principal
+        || observed.settlement_rate_limit_window_seconds != r.settlement_window_seconds
+        || observed.settlement_rate_limit_global != r.settlement_global
+        || observed.settlement_rate_limit_per_principal != r.settlement_per_principal
+        || observed.settlement_rate_limit_per_record != r.settlement_per_record
+        || observed.transaction_gas_limit != p.transaction_gas_limit
+        || observed.max_fee_per_gas != p.max_fee_per_gas
+        || observed.max_priority_fee_per_gas != p.max_priority_fee_per_gas
+        || observed.evm_liveness != profile.evm_liveness
+        || observed.eth_floor_wei != p.eth_floor_wei
+        || observed.cycles_floor != p.cycles_floor
+        || observed.settlement_cycle_ceiling != p.settlement_cycle_ceiling
+        || observed.governance_principal != profile.governance_principal
+        || observed.pause_principal != profile.pause_principal
+        || observed.fee_recipient.owner != profile.fee_recipient
+        || !observed.fee_recipient.subaccount_hex.is_empty()
+    {
+        return Err("live Canister PublicConfig does not exactly match the profile".into());
+    }
+    Ok(())
+}
+
+fn verify_live_inputs(bundle: &ValidatedBundle) -> Result<(), String> {
     let snapshot: SignerSnapshot = read_json(&bundle.root.join("signer-snapshot.json"))?;
     let receipt: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
     let now = now_unix()?;
@@ -1488,9 +1918,11 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
             .map(|provider| provider.url.clone())
             .collect::<Vec<_>>(),
     )?);
-    if now
-        .checked_sub(snapshot.observed_at_unix)
-        .is_none_or(|age| age > 5 * 60)
+    validate_live_public_config(&snapshot.public_config, &bundle.profile, &rpc_url_hash)?;
+    if snapshot.schema_version != 2
+        || now
+            .checked_sub(snapshot.observed_at_unix)
+            .is_none_or(|age| age > 5 * 60)
         || snapshot.bridge_canister_id != bundle.profile.bridge_canister_id
         || snapshot.chain_id != bundle.profile.chain_id
         || snapshot.evm_rpc_canister_id != bundle.profile.evm_rpc_canister_id
@@ -1535,7 +1967,7 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
         || !snapshot
             .bridge_approved_timelock_runtime_code_hash
             .eq_ignore_ascii_case(&bundle.profile.timelock.runtime_code_hash)
-        || snapshot.timelock_minimum_delay_seconds < 72 * 60 * 60
+        || snapshot.timelock_minimum_delay_seconds != bundle.profile.timelock.minimum_delay_seconds
         || !snapshot.timelock_self_admin
         || !snapshot
             .timelock_proposer
@@ -1596,6 +2028,635 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
     Ok(())
 }
 
+fn mainnet_agent(host: &str, evidence_window: bool) -> Result<Agent, String> {
+    let mut builder = Agent::builder()
+        .with_url(host)
+        .with_verify_query_signatures(true);
+    if evidence_window {
+        builder =
+            builder.with_ingress_expiry(std::time::Duration::from_secs(MAX_EVIDENCE_AGE_SECS));
+    }
+    builder.build().map_err(|error| error.to_string())
+}
+
+fn async_runtime() -> Result<tokio::runtime::Runtime, String> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+fn verify_monitor_ic_certificate(bundle: &ValidatedBundle) -> Result<(), String> {
+    let drill: MonitorDrill = read_json(&bundle.root.join("monitor-drill.json"))?;
+    let certificate_bytes = decode_hex(&drill.ic_pause.certificate_hex)?;
+    let certificate: ic_agent::Certificate = ciborium::from_reader(certificate_bytes.as_slice())
+        .map_err(|error| format!("invalid IC certificate CBOR: {error}"))?;
+    let canister = Principal::from_text(&drill.bridge_canister_id).map_err(|e| e.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, true)?;
+    agent
+        .verify(&certificate, canister)
+        .map_err(|error| format!("IC pause certificate verification failed: {error}"))?;
+    let request_bytes = decode_hex(&drill.ic_pause.request_id)?;
+    let request_hash: [u8; 32] = request_bytes
+        .try_into()
+        .map_err(|_| "IC pause request ID must be 32 bytes")?;
+    let request_id = ic_agent::RequestId::new(&request_hash);
+    let status = ic_agent::lookup_value(
+        &certificate,
+        [
+            "request_status".as_bytes(),
+            request_id.as_slice(),
+            "status".as_bytes(),
+        ],
+    )
+    .map_err(|error| format!("IC pause status is not certified: {error}"))?;
+    if status != b"replied" {
+        return Err("IC pause request did not have a certified replied status".into());
+    }
+    let reply = ic_agent::lookup_value(
+        &certificate,
+        [
+            "request_status".as_bytes(),
+            request_id.as_slice(),
+            "reply".as_bytes(),
+        ],
+    )
+    .map_err(|error| format!("IC pause reply is not certified: {error}"))?;
+    let expected_reply = decode_hex(&drill.ic_pause.response_hex)?;
+    if reply != expected_reply {
+        return Err("certified IC pause reply differs from monitor evidence".into());
+    }
+    let decoded = Decode!(reply, EmergencyPauseResultView).map_err(|error| error.to_string())?;
+    let EmergencyPauseResultView::Ok(receipt) = decoded else {
+        return Err("certified emergency_pause reply is an error".into());
+    };
+    let pause_principal =
+        Principal::from_text(&drill.ic_pause.pause_principal).map_err(|error| error.to_string())?;
+    let audit_sha = decode_hex(&drill.ic_pause.audit_sha256)?;
+    let first_pause = drill
+        .base_actions
+        .iter()
+        .find(|action| action.kind == "PauseDepositMints")
+        .ok_or("monitor evidence is missing PauseDepositMints")?;
+    let expected_transaction = decode_hex(&first_pause.transaction_hash)?;
+    if receipt.caller != pause_principal
+        || drill.ic_pause.pause_principal != bundle.profile.pause_principal
+        || !receipt.local_deposits_paused
+        || receipt.local_pause_audit_sequence != drill.ic_pause.audit_sequence
+        || receipt.local_pause_audit_sha256 != audit_sha
+        || receipt.base_governance.operation_id == 0
+        || receipt.base_governance.transaction_hash.as_deref()
+            != Some(expected_transaction.as_slice())
+    {
+        return Err("certified emergency_pause receipt is not bound to the drill evidence".into());
+    }
+    let _ = receipt.base_governance.nonce;
+    Ok(())
+}
+
+fn verify_sns_upgrade_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
+    let upgrade: SnsUpgrade = read_json(&bundle.root.join("sns-upgrade.json"))?;
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|e| e.to_string())?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let arg = Encode!(&GetProposalRequest {
+        proposal_id: Some(ProposalId {
+            id: upgrade.proposal_id,
+        }),
+    })
+    .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (response, controllers, module_hash) = async_runtime()?.block_on(async {
+        let response = agent
+            .query(&governance, "get_proposal")
+            .with_arg(arg)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let controllers = agent
+            .read_state_canister_controllers(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        let module_hash = agent
+            .read_state_canister_module_hash(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((response, controllers, module_hash))
+    })?;
+    if response != decode_hex(&upgrade.governance_query_response_hex)? {
+        return Err("authenticated SNS proposal response differs from the evidence".into());
+    }
+    let decoded = Decode!(&response, GetProposalResponse).map_err(|error| error.to_string())?;
+    let proposal = match decoded.result {
+        Some(GetProposalResult::Proposal(proposal)) => proposal,
+        Some(GetProposalResult::Error(error)) => {
+            return Err(format!(
+                "SNS get_proposal returned {}: {}",
+                error.error_type, error.error_message
+            ));
+        }
+        None => return Err("SNS get_proposal returned no result".into()),
+    };
+    let proposal_id = proposal.id.as_ref().map(|id| id.id);
+    let action = proposal
+        .proposal
+        .and_then(|proposal| proposal.action)
+        .ok_or("SNS proposal has no action")?;
+    let SnsProposalAction::UpgradeSnsControlledCanister(action) = action else {
+        return Err("SNS proposal is not UpgradeSnsControlledCanister".into());
+    };
+    let wasm_hash = hex(&Sha256::digest(&action.new_canister_wasm));
+    if proposal_id != Some(upgrade.proposal_id)
+        || proposal.executed_timestamp_seconds == 0
+        || proposal.executed_timestamp_seconds != upgrade.executed_at_unix
+        || proposal.failed_timestamp_seconds != 0
+        || proposal.failure_reason.is_some()
+        || proposal.decided_timestamp_seconds == 0
+        || action.canister_id != Some(bridge)
+        || !wasm_hash.eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+        || controllers != [Principal::from_text(KINIC_ROOT).map_err(|e| e.to_string())?]
+        || !hex(&module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+    {
+        return Err(
+            "authenticated SNS upgrade or live controller/module state does not match the release"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
+    verify_live_inputs(bundle)?;
+    verify_sns_upgrade_authenticity(bundle)
+}
+
+fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err("receipt parent directory does not exist".into());
+    }
+    let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    output
+        .write_all(&bytes)
+        .map_err(|error| error.to_string())?;
+    output.write_all(b"\n").map_err(|error| error.to_string())?;
+    output.sync_all().map_err(|error| error.to_string())
+}
+
+fn activation_raw_digest_matches(raw: &str, digest: &str) -> Result<bool, String> {
+    Ok(valid_sha256(digest) && hex(&Sha256::digest(decode_hex(raw)?)).eq_ignore_ascii_case(digest))
+}
+
+fn validate_schedule_receipt_binding(
+    receipt: &ActivationReceipt,
+    bundle: &ValidatedBundle,
+) -> Result<(), String> {
+    let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
+    let payload_sha256 = hex(&Sha256::digest(canonical_payload));
+    let now = now_unix()?;
+    if receipt.schema_version != 3
+        || receipt.phase != "schedule"
+        || receipt.release_id != bundle.manifest.release_id
+        || receipt.source_revision != bundle.manifest.source_revision
+        || !receipt
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
+        || !valid_sha256(&receipt.gate_b_manifest_sha256)
+        || receipt
+            .gate_b_manifest_sha256
+            .eq_ignore_ascii_case(&bundle.manifest_sha256)
+        || receipt.proposal_id == 0
+        || receipt.function_id == 0
+        || receipt.target_method_name != "schedule_activation"
+        || !receipt.payload_sha256.eq_ignore_ascii_case(&payload_sha256)
+        || receipt.executed_at_unix == 0
+        || receipt.verified_at_unix < receipt.executed_at_unix
+        || receipt.verified_at_unix > bundle.manifest.created_at_unix
+        || receipt.verified_at_unix > now
+        || now - receipt.verified_at_unix > MAX_EVIDENCE_AGE_SECS
+        || !activation_raw_digest_matches(
+            &receipt.governance_query_response_hex,
+            &receipt.governance_query_response_sha256,
+        )?
+        || !activation_raw_digest_matches(
+            &receipt.function_registry_response_hex,
+            &receipt.function_registry_response_sha256,
+        )?
+        || !activation_raw_digest_matches(
+            &receipt.activation_status_response_hex,
+            &receipt.activation_status_response_sha256,
+        )?
+        || !valid_hash32(&receipt.operation_id)
+        || !valid_hash32(&receipt.operation_salt)
+        || !valid_sha256(&receipt.base_postcondition_sha256)
+        || receipt.prior_schedule_receipt_sha256.is_some()
+    {
+        return Err("prior schedule receipt is malformed or not bound to this release".into());
+    }
+    Ok(())
+}
+
+fn verify_activation(
+    phase: &str,
+    bundle: &ValidatedBundle,
+    submission_path: &Path,
+    prior_path: Option<&Path>,
+    receipt_path: &Path,
+) -> Result<(), String> {
+    if phase != "schedule" && phase != "execute" {
+        return Err("activation phase must be schedule or execute".into());
+    }
+    let submission: ActivationSubmission = read_json(submission_path)?;
+    let now = now_unix()?;
+    validate_activation_time(
+        submission.submitted_at_unix,
+        bundle.manifest.created_at_unix,
+        now,
+    )?;
+    let method = if phase == "schedule" {
+        "schedule_activation"
+    } else {
+        "execute_activation"
+    };
+    let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
+    let proposal_response = decode_hex(&submission.proposal_response_hex)?;
+    if submission.schema_version != 3
+        || submission.phase != phase
+        || submission.release_id != bundle.manifest.release_id
+        || submission.source_revision != bundle.manifest.source_revision
+        || !submission
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
+        || !submission
+            .gate_b_manifest_sha256
+            .eq_ignore_ascii_case(&bundle.manifest_sha256)
+        || submission.governance_canister_id != KINIC_GOVERNANCE
+        || submission.bridge_canister_id != bundle.profile.bridge_canister_id
+        || submission.function_id == 0
+        || submission.target_method_name != method
+        || decode_hex(&submission.payload_hex)? != canonical_payload
+        || !submission
+            .payload_sha256
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(canonical_payload)))
+        || !principal(&submission.proposer_principal)
+        || submission.neuron_subaccount.len() != 64
+        || !submission
+            .neuron_subaccount
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || submission.proposal_id == 0
+        || !valid_sha256(&submission.registry_response_sha256)
+        || !submission
+            .proposal_response_sha256
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(&proposal_response)))
+        || submission.registry_command_argv.is_empty()
+        || submission.proposal_command_argv.is_empty()
+    {
+        return Err(
+            "activation submission is not exactly bound to the reviewed Gate B release".into(),
+        );
+    }
+
+    let prior = match (phase, prior_path) {
+        ("schedule", None) => None,
+        ("schedule", Some(_)) => return Err("schedule verification forbids a prior receipt".into()),
+        ("execute", Some(path)) => Some((read_json::<ActivationReceipt>(path)?, path)),
+        ("execute", None) => {
+            return Err("execute verification requires the schedule receipt".into())
+        }
+        _ => unreachable!(),
+    };
+    if let Some((receipt, _)) = prior.as_ref() {
+        validate_schedule_receipt_binding(receipt, bundle)?;
+    }
+
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let proposal_arg = Encode!(&GetProposalRequest {
+        proposal_id: Some(ProposalId {
+            id: submission.proposal_id,
+        }),
+    })
+    .map_err(|error| error.to_string())?;
+    let empty_arg = canonical_payload.to_vec();
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (proposal_raw, registry_raw, activation_raw, controllers, module_hash) =
+        async_runtime()?.block_on(async {
+            let proposal = agent
+                .query(&governance, "get_proposal")
+                .with_arg(proposal_arg)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let registry = agent
+                .query(&governance, "list_nervous_system_functions")
+                .with_arg(empty_arg.clone())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let activation = agent
+                .query(&bridge, "get_activation_status")
+                .with_arg(empty_arg)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let controllers = agent
+                .read_state_canister_controllers(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            let module_hash = agent
+                .read_state_canister_module_hash(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>((proposal, registry, activation, controllers, module_hash))
+        })?;
+
+    let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
+    let proposal = match decoded.result {
+        Some(GetProposalResult::Proposal(proposal)) => proposal,
+        Some(GetProposalResult::Error(error)) => {
+            return Err(format!(
+                "SNS get_proposal returned {}: {}",
+                error.error_type, error.error_message
+            ));
+        }
+        None => return Err("SNS get_proposal returned no result".into()),
+    };
+    let proposal_id = proposal.id.as_ref().map(|id| id.id);
+    let executed_at = proposal.executed_timestamp_seconds;
+    let action = proposal
+        .proposal
+        .and_then(|proposal| proposal.action)
+        .ok_or("activation proposal has no action")?;
+    let SnsProposalAction::ExecuteGenericNervousSystemFunction(action) = action else {
+        return Err("activation proposal is not ExecuteGenericNervousSystemFunction".into());
+    };
+    if proposal_id != Some(submission.proposal_id)
+        || executed_at == 0
+        || executed_at < submission.submitted_at_unix
+        || executed_at > now
+        || proposal.failed_timestamp_seconds != 0
+        || proposal.failure_reason.is_some()
+        || proposal.decided_timestamp_seconds == 0
+        || action.function_id != submission.function_id
+        || action.payload != canonical_payload
+        || controllers != [Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?]
+        || !hex(&module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+    {
+        return Err(
+            "authenticated activation proposal or live Canister state does not match the release"
+                .into(),
+        );
+    }
+
+    let registry = Decode!(&registry_raw, ListNervousSystemFunctionsResponseView)
+        .map_err(|error| error.to_string())?;
+    let matching_functions = registry
+        .functions
+        .iter()
+        .filter(|function| {
+            function.id == submission.function_id
+                && matches!(
+                    function.function_type.as_ref(),
+                    Some(FunctionTypeView::GenericNervousSystemFunction(generic))
+                        if generic.target_canister_id == Some(bridge)
+                            && generic.target_method_name.as_deref() == Some(method)
+                )
+        })
+        .count();
+    if matching_functions != 1 {
+        return Err(
+            "authenticated SNS function registry has no unique exact activation target".into(),
+        );
+    }
+
+    let activation =
+        Decode!(&activation_raw, ActivationStatusResultView).map_err(|error| error.to_string())?;
+    let ActivationStatusResultView::Ok(activation) = activation else {
+        return Err("authenticated get_activation_status returned an error".into());
+    };
+    let (operation_id, operation_salt) = if phase == "schedule" {
+        let pending = activation
+            .pending_timelock_operation
+            .ok_or("scheduled activation has no pending Timelock operation")?;
+        if !activation.deposits_paused
+            || pending.operation_id.len() != 32
+            || pending.salt.len() != 32
+        {
+            return Err("scheduled activation status is unsafe or malformed".into());
+        }
+        (
+            format!("0x{}", hex(&pending.operation_id)),
+            format!("0x{}", hex(&pending.salt)),
+        )
+    } else {
+        if activation.deposits_paused || activation.pending_timelock_operation.is_some() {
+            return Err(
+                "executed activation did not unpause and clear the Timelock operation".into(),
+            );
+        }
+        let prior = &prior.as_ref().expect("execute prior checked").0;
+        (prior.operation_id.clone(), prior.operation_salt.clone())
+    };
+
+    let verifier =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/production-live-preflight.sh");
+    let base_output = Command::new(verifier)
+        .arg("verify-activation")
+        .arg(phase)
+        .arg(&bundle.root)
+        .arg(&operation_id)
+        .output()
+        .map_err(|error| format!("failed to execute activation Base verifier: {error}"))?;
+    if !base_output.status.success() {
+        return Err("activation Base postcondition verifier rejected the live state".into());
+    }
+    let prior_schedule_receipt_sha256 = prior
+        .as_ref()
+        .map(|(_, path)| fs::read(path).map(|bytes| hex(&Sha256::digest(bytes))))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let receipt = ActivationReceipt {
+        schema_version: 3,
+        phase: phase.into(),
+        release_id: bundle.manifest.release_id.clone(),
+        source_revision: bundle.manifest.source_revision.clone(),
+        source_tree_sha256: bundle.manifest.source_tree_sha256.clone(),
+        gate_b_manifest_sha256: bundle.manifest_sha256.clone(),
+        proposal_id: submission.proposal_id,
+        function_id: submission.function_id,
+        target_method_name: method.into(),
+        payload_sha256: submission.payload_sha256.clone(),
+        executed_at_unix: executed_at,
+        verified_at_unix: now,
+        governance_query_response_hex: hex(&proposal_raw),
+        governance_query_response_sha256: hex(&Sha256::digest(&proposal_raw)),
+        function_registry_response_hex: hex(&registry_raw),
+        function_registry_response_sha256: hex(&Sha256::digest(&registry_raw)),
+        activation_status_response_hex: hex(&activation_raw),
+        activation_status_response_sha256: hex(&Sha256::digest(&activation_raw)),
+        operation_id,
+        operation_salt,
+        base_postcondition_sha256: hex(&Sha256::digest(&base_output.stdout)),
+        prior_schedule_receipt_sha256,
+    };
+    write_json_new(receipt_path, &receipt)
+}
+
+fn verify_schedule_receipt_live(
+    bundle: &ValidatedBundle,
+    receipt_path: &Path,
+) -> Result<(), String> {
+    let receipt: ActivationReceipt = read_json(receipt_path)?;
+    let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
+    validate_schedule_receipt_binding(&receipt, bundle)?;
+
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let proposal_arg = Encode!(&GetProposalRequest {
+        proposal_id: Some(ProposalId {
+            id: receipt.proposal_id,
+        }),
+    })
+    .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (proposal_raw, registry_raw, activation_raw, controllers, module_hash) =
+        async_runtime()?.block_on(async {
+            let proposal = agent
+                .query(&governance, "get_proposal")
+                .with_arg(proposal_arg)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let registry = agent
+                .query(&governance, "list_nervous_system_functions")
+                .with_arg(canonical_payload.to_vec())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let activation = agent
+                .query(&bridge, "get_activation_status")
+                .with_arg(canonical_payload.to_vec())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let controllers = agent
+                .read_state_canister_controllers(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            let module_hash = agent
+                .read_state_canister_module_hash(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>((proposal, registry, activation, controllers, module_hash))
+        })?;
+
+    let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
+    let proposal = match decoded.result {
+        Some(GetProposalResult::Proposal(proposal)) => proposal,
+        Some(GetProposalResult::Error(error)) => {
+            return Err(format!(
+                "SNS get_proposal returned {}: {}",
+                error.error_type, error.error_message
+            ));
+        }
+        None => return Err("SNS get_proposal returned no result".into()),
+    };
+    let executed_at = proposal.executed_timestamp_seconds;
+    let action = proposal
+        .proposal
+        .and_then(|proposal| proposal.action)
+        .ok_or("schedule proposal has no action")?;
+    let SnsProposalAction::ExecuteGenericNervousSystemFunction(action) = action else {
+        return Err("schedule proposal is not ExecuteGenericNervousSystemFunction".into());
+    };
+    if proposal.id.as_ref().map(|id| id.id) != Some(receipt.proposal_id)
+        || executed_at != receipt.executed_at_unix
+        || proposal.failed_timestamp_seconds != 0
+        || proposal.failure_reason.is_some()
+        || proposal.decided_timestamp_seconds == 0
+        || action.function_id != receipt.function_id
+        || action.payload != canonical_payload
+        || controllers != [Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?]
+        || !hex(&module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+    {
+        return Err(
+            "authenticated schedule proposal or Canister state does not match the receipt".into(),
+        );
+    }
+
+    let registry = Decode!(&registry_raw, ListNervousSystemFunctionsResponseView)
+        .map_err(|error| error.to_string())?;
+    let matching_functions = registry
+        .functions
+        .iter()
+        .filter(|function| {
+            function.id == receipt.function_id
+                && matches!(
+                    function.function_type.as_ref(),
+                    Some(FunctionTypeView::GenericNervousSystemFunction(generic))
+                        if generic.target_canister_id == Some(bridge)
+                            && generic.target_method_name.as_deref()
+                                == Some("schedule_activation")
+                )
+        })
+        .count();
+    if matching_functions != 1 {
+        return Err("authenticated SNS registry no longer has the exact schedule function".into());
+    }
+
+    let activation =
+        Decode!(&activation_raw, ActivationStatusResultView).map_err(|error| error.to_string())?;
+    let ActivationStatusResultView::Ok(activation) = activation else {
+        return Err("authenticated get_activation_status returned an error".into());
+    };
+    let pending = activation
+        .pending_timelock_operation
+        .ok_or("schedule receipt operation is no longer pending in the Canister")?;
+    if !activation.deposits_paused
+        || format!("0x{}", hex(&pending.operation_id)) != receipt.operation_id.to_lowercase()
+        || format!("0x{}", hex(&pending.salt)) != receipt.operation_salt.to_lowercase()
+    {
+        return Err("live Canister activation state does not match the schedule receipt".into());
+    }
+
+    let verifier =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/production-live-preflight.sh");
+    let status = Command::new(verifier)
+        .arg("verify-activation")
+        .arg("schedule")
+        .arg(&bundle.root)
+        .arg(&receipt.operation_id)
+        .status()
+        .map_err(|error| format!("failed to execute schedule Base verifier: {error}"))?;
+    if !status.success() {
+        return Err("prior schedule receipt no longer matches the live Base state".into());
+    }
+    Ok(())
+}
+
+fn verify_gate_a_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
+    verify_monitor_ic_certificate(bundle)?;
+    let verifier =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/production-live-preflight.sh");
+    let status = Command::new(verifier)
+        .arg("verify-gate-a")
+        .arg(&bundle.root)
+        .status()
+        .map_err(|error| format!("failed to execute Gate A Base verifier: {error}"))?;
+    if !status.success() {
+        return Err("Gate A Base receipt/log verifier rejected the monitor drill".into());
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args = env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
@@ -1619,7 +2680,6 @@ fn run() -> Result<(), String> {
             if bundle.manifest.test_only {
                 return Err("production release inputs reject test-only bundles".into());
             }
-            verify_live(&bundle)?;
             render_release_inputs(
                 &Path::new(&args[2]).join("profile.json"),
                 Path::new(&args[3]),
@@ -1629,6 +2689,17 @@ fn run() -> Result<(), String> {
         }
         Some("validate-bundle") if args.len() == 4 && args[2] == "--offline" => {
             let bundle = validate_bundle(Path::new(&args[3]), false)?;
+            println!(
+                "gate_a=structural-pass authorizing=false manifest_sha256={}",
+                bundle.manifest_sha256
+            );
+        }
+        Some("verify-gate-a-live") if args.len() == 3 => {
+            let bundle = validate_bundle(Path::new(&args[2]), false)?;
+            if bundle.manifest.test_only {
+                return Err("Gate A rejects test-only bundles".into());
+            }
+            verify_gate_a_authenticity(&bundle)?;
             println!("gate_a=pass manifest_sha256={}", bundle.manifest_sha256);
         }
         Some("verify-live") if args.len() == 3 => {
@@ -1637,7 +2708,39 @@ fn run() -> Result<(), String> {
             verify_live(&bundle)?;
             println!("gate_b=pass manifest_sha256={}", bundle.manifest_sha256);
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | verify-live <bundle-dir>".into()),
+        Some("verify-activation") if args.len() == 7 => {
+            let bundle = validate_bundle(Path::new(&args[3]), true)?;
+            if bundle.manifest.test_only {
+                return Err("activation verification rejects test-only bundles".into());
+            }
+            verify_live(&bundle)?;
+            let prior = if args[5] == "-" {
+                None
+            } else {
+                Some(Path::new(&args[5]))
+            };
+            verify_activation(
+                &args[2],
+                &bundle,
+                Path::new(&args[4]),
+                prior,
+                Path::new(&args[6]),
+            )?;
+            println!("activation=verified phase={} receipt={}", args[2], args[6]);
+        }
+        Some("verify-schedule-receipt-live") if args.len() == 4 => {
+            let bundle = validate_bundle(Path::new(&args[2]), true)?;
+            if bundle.manifest.test_only {
+                return Err("schedule receipt verification rejects test-only bundles".into());
+            }
+            verify_live(&bundle)?;
+            verify_schedule_receipt_live(&bundle, Path::new(&args[3]))?;
+            println!(
+                "schedule_receipt=verified manifest_sha256={} receipt={}",
+                bundle.manifest_sha256, args[3]
+            );
+        }
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | verify-gate-a-live <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -1652,6 +2755,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_timestamps_must_follow_gate_b_and_precede_verification() {
+        let created = MAX_EVIDENCE_AGE_SECS + 1_000_000;
+        let now = created + 120;
+        assert!(validate_activation_time(created, created, now).is_ok());
+        assert!(validate_activation_time(created + 60, created, now).is_ok());
+        assert!(validate_activation_time(created - 1, created, now).is_err());
+        assert!(validate_activation_time(now + 1, created, now).is_err());
+        assert!(validate_activation_time(
+            now - MAX_EVIDENCE_AGE_SECS - 1,
+            now - MAX_EVIDENCE_AGE_SECS - 1,
+            now,
+        )
+        .is_err());
+    }
 
     fn test_principal(seed: u8) -> String {
         Principal::self_authenticating([seed; 32]).to_text()
@@ -1683,6 +2802,7 @@ mod tests {
             governance_principal: KINIC_GOVERNANCE.into(),
             decimals: 8,
             bridge_canister_id: test_principal(9),
+            canister_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
             ic_host: "https://icp-api.io".into(),
             base_rpc_url: "https://prod-one.example/base-mainnet".into(),
             bridge_contract: address(1),
@@ -1746,6 +2866,57 @@ mod tests {
                 settlement_global: 60,
                 settlement_per_principal: 6,
                 settlement_per_record: 3,
+            },
+            evm_liveness: EvmLivenessPolicy {
+                check_interval_seconds: 60,
+                rebroadcast_after_seconds: 300,
+                replacement_after_seconds: 1_800,
+                max_replacements: 3,
+                fee_bump_bps: 1_250,
+                fee_ceiling_multiplier_bps: 40_000,
+            },
+        }
+    }
+
+    fn live_public_config(profile: &Profile) -> LivePublicConfig {
+        let rpc_url_hash = hex(&canonical_sha256(
+            &profile
+                .rpc_providers
+                .iter()
+                .map(|provider| provider.url.clone())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap());
+        LivePublicConfig {
+            base_chain_id: profile.chain_id,
+            bridge_contract: profile.bridge_contract.clone(),
+            timelock_contract: profile.timelock.address.clone(),
+            ledger_canister_id: profile.ledger_canister_id.clone(),
+            index_canister_id: profile.index_canister_id.clone(),
+            schema_version: profile.canister_schema_version,
+            expected_bridge_signer: profile.expected_bridge_signer.clone(),
+            governance_operator: profile.governance_operator.clone(),
+            evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
+            rpc_provider_urls_sha256: rpc_url_hash,
+            deposit_rate_limit_window_seconds: profile.rate_limits.deposit_window_seconds,
+            deposit_rate_limit_global: profile.rate_limits.deposit_global,
+            deposit_rate_limit_per_principal: profile.rate_limits.deposit_per_principal,
+            settlement_rate_limit_window_seconds: profile.rate_limits.settlement_window_seconds,
+            settlement_rate_limit_global: profile.rate_limits.settlement_global,
+            settlement_rate_limit_per_principal: profile.rate_limits.settlement_per_principal,
+            settlement_rate_limit_per_record: profile.rate_limits.settlement_per_record,
+            transaction_gas_limit: profile.parameters.transaction_gas_limit,
+            max_fee_per_gas: profile.parameters.max_fee_per_gas,
+            max_priority_fee_per_gas: profile.parameters.max_priority_fee_per_gas,
+            evm_liveness: profile.evm_liveness,
+            eth_floor_wei: profile.parameters.eth_floor_wei,
+            cycles_floor: profile.parameters.cycles_floor,
+            settlement_cycle_ceiling: profile.parameters.settlement_cycle_ceiling,
+            governance_principal: profile.governance_principal.clone(),
+            pause_principal: profile.pause_principal.clone(),
+            fee_recipient: LiveFeeRecipient {
+                owner: profile.fee_recipient.clone(),
+                subaccount_hex: String::new(),
             },
         }
     }
@@ -1887,12 +3058,57 @@ mod tests {
             );
         }
         let manifest: Value = read_json(&first.join("release-inputs-manifest.json")).unwrap();
+        assert_eq!(manifest["schema_version"], 2);
         assert_eq!(
             manifest["profile_file_sha256"],
             hex(&Sha256::digest(fs::read(&profile_path).unwrap()))
         );
         let canister: Value = read_json(&first.join("canister-init.json")).unwrap();
         assert_eq!(canister["evm_rpc_canister_id"], OFFICIAL_EVM_RPC_CANISTER);
+        assert_eq!(
+            canister["evm_liveness"]["replacement_after_seconds"],
+            valid_profile().evm_liveness.replacement_after_seconds
+        );
+        let expected_init_keys = [
+            "ledger_canister_id",
+            "index_canister_id",
+            "evm_rpc_canister_id",
+            "custom_evm_rpc_urls",
+            "base_chain_id",
+            "bridge_contract_hex",
+            "timelock_contract_hex",
+            "ecdsa_key_name",
+            "ecdsa_derivation_path_utf8",
+            "governance_ecdsa_derivation_path_utf8",
+            "deposit_rate_limit_window_seconds",
+            "deposit_rate_limit_global",
+            "deposit_rate_limit_per_principal",
+            "settlement_rate_limit_window_seconds",
+            "settlement_rate_limit_global",
+            "settlement_rate_limit_per_principal",
+            "settlement_rate_limit_per_record",
+            "transaction_gas_limit",
+            "max_fee_per_gas",
+            "max_priority_fee_per_gas",
+            "evm_liveness",
+            "eth_floor_wei",
+            "cycles_floor",
+            "settlement_cycle_ceiling",
+            "governance_principal",
+            "pause_principal",
+            "fee_recipient",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        assert_eq!(
+            canister
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected_init_keys
+        );
         let constructors: Value = read_json(&first.join("contract-constructor-args.json")).unwrap();
         assert_eq!(
             constructors["bridge"][6],
@@ -1934,6 +3150,7 @@ mod tests {
         profile.deployment_block = 0;
         let controller = profile.root_canister_id.clone();
         let mut snapshot = SignerSnapshot {
+            schema_version: 2,
             observed_at_unix: now,
             chain_id: profile.chain_id,
             evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
@@ -1993,6 +3210,7 @@ mod tests {
             settlement_reserve_sufficient: true,
             ledger_fee: profile.parameters.ledger_fee,
             base_service_fee: profile.parameters.service_fee,
+            public_config: live_public_config(&profile),
         };
         let test_helper = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/evm-rpc-rehearsal/test_rehearsal.py");
@@ -2042,21 +3260,62 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .unwrap();
         assert!(generated.success());
         let drill = MonitorDrill {
+            schema_version: 3,
+            rehearsal_id: "rehearsal-1".into(),
+            source_revision: "a".repeat(40),
+            source_tree_sha256: "2".repeat(64),
+            ic_network: "ic".into(),
+            base_chain_id: 84_532,
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            bridge_contract: profile.bridge_contract.clone(),
+            timelock_contract: profile.timelock.address.clone(),
+            bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
+            rpc_provider_urls_sha256: "6".repeat(64),
             routing_sha256: profile.monitoring.routing_sha256.clone(),
             fault_started_at_unix: now - 100,
             detected_at_unix: now - 99,
             acknowledged_at_unix: now - 98,
             base_paused_at_unix: now - 97,
-            ic_paused_at_unix: now - 96,
-            base_pause_reference: "0xabc".into(),
-            ic_pause_reference: "block-1".into(),
-            pause_principal: profile.pause_principal.clone(),
-            pause_request_id: format!("0x{}", "12".repeat(32)),
-            pause_audit_sequence: 1,
-            pause_audit_sha256: "13".repeat(32),
+            pending_timelock_operation_before: false,
+            base_actions: vec![
+                MonitorBaseAction {
+                    kind: "PauseDepositMints".into(),
+                    transaction_hash: format!("0x{}", "10".repeat(32)),
+                    block_number: 1,
+                    block_hash: format!("0x{}", "11".repeat(32)),
+                    receipt_status: 1,
+                    target: profile.bridge_contract.clone(),
+                    calldata_hex: evm_selector("pauseDepositMints()"),
+                    canonical_finalized: true,
+                },
+                MonitorBaseAction {
+                    kind: "PauseWithdrawals".into(),
+                    transaction_hash: format!("0x{}", "14".repeat(32)),
+                    block_number: 2,
+                    block_hash: format!("0x{}", "15".repeat(32)),
+                    receipt_status: 1,
+                    target: profile.bridge_contract.clone(),
+                    calldata_hex: evm_selector("pauseWithdrawals()"),
+                    canonical_finalized: true,
+                },
+            ],
+            ic_pause: MonitorIcPause {
+                paused_at_unix: now - 96,
+                response_hex: hex(b"pause response"),
+                response_sha256: hex(&Sha256::digest(b"pause response")),
+                pause_principal: profile.pause_principal.clone(),
+                request_id: format!("0x{}", "12".repeat(32)),
+                certificate_hex: hex(b"certificate"),
+                certificate_sha256: hex(&Sha256::digest(b"certificate")),
+                audit_sequence: 1,
+                audit_sha256: hex(&Sha256::digest([0x13; 32])),
+                audit_raw_hex: hex(&[0x13; 32]),
+            },
         };
         let handover = ControllerHandover {
-            schema_version: 1,
+            schema_version: 2,
+            stage: "complete".into(),
             observed_at_unix: now - 95,
             bridge_canister_id: profile.bridge_canister_id.clone(),
             sns_root_canister_id: profile.root_canister_id.clone(),
@@ -2093,7 +3352,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             required_freezing_cycles: 1_000,
         };
         let upgrade = SnsUpgrade {
-            schema_version: 1,
+            schema_version: 3,
             observed_at_unix: now - 90,
             executed_at_unix: now - 91,
             proposal_id: 1,
@@ -2106,30 +3365,11 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             after_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
             before_public_state_sha256: "5".repeat(64),
             after_public_state_sha256: "5".repeat(64),
-        };
-        let x402 = X402Evidence {
-            schema_version: 1,
-            observed_at_unix: now - 80,
-            network: "base-sepolia".into(),
-            chain_id: 84_532,
-            sdk_name: "x402-sdk".into(),
-            sdk_version: "1.0.0".into(),
-            protocol_version: 2,
-            scheme: "exact".into(),
-            facilitator_operator: "external-facilitator".into(),
-            facilitator_self_operated: false,
-            facilitator_url_sha256: "6".repeat(64),
-            authorization_standard: "EIP-3009".into(),
-            bsns_address: "0x7777777777777777777777777777777777777777".into(),
-            bsns_runtime_bytecode_sha256: profile.bsns_runtime_bytecode_sha256.clone(),
-            verify_response_sha256: "7".repeat(64),
-            verify_valid: true,
-            settle_success: true,
-            settle_transaction_hash: format!("0x{}", "88".repeat(32)),
-            receipt_block_number: 1,
-            receipt_block_hash: format!("0x{}", "99".repeat(32)),
-            receipt_status: 1,
-            canonical_finalized: true,
+            proposal_action: "UpgradeSnsControlledCanister".into(),
+            proposal_target_canister_id: profile.bridge_canister_id.clone(),
+            proposal_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            governance_query_response_hex: hex(b"governance raw"),
+            governance_query_response_sha256: hex(&Sha256::digest(b"governance raw")),
         };
         let mut docs = vec![
             ("profile.json", serde_json::to_vec(&profile).unwrap()),
@@ -2143,7 +3383,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 serde_json::to_vec(&handover).unwrap(),
             ),
             ("sns-upgrade.json", serde_json::to_vec(&upgrade).unwrap()),
-            ("x402-e2e.json", serde_json::to_vec(&x402).unwrap()),
             ("monitor-drill.json", serde_json::to_vec(&drill).unwrap()),
             ("bridge-canister.wasm", b"wasm".to_vec()),
             ("bridge-runtime.bin", b"runtime".to_vec()),
@@ -2172,7 +3411,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             })
             .collect();
         let gate_a_manifest = ReleaseManifest {
-            schema_version: 1,
+            schema_version: 2,
             release_id: "release-1".into(),
             test_only: false,
             source_revision: "a".repeat(40),
@@ -2216,7 +3455,20 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::to_vec(&gate_a_manifest).unwrap(),
         )
         .unwrap();
+        fs::write(
+            root.join("proof-attestation.json"),
+            br#"{"lean_result":"passed"}"#,
+        )
+        .unwrap();
+        let obsolete_error = match validate_bundle(&root, false) {
+            Ok(_) => panic!("Gate A accepted an obsolete self-asserted proof attestation"),
+            Err(error) => error,
+        };
+        assert!(obsolete_error.contains("obsolete self-asserted proof attestation"));
+        fs::remove_file(root.join("proof-attestation.json")).unwrap();
         let gate_a = validate_bundle(&root, false).unwrap();
+        let gate_a_authenticity_error = verify_gate_a_authenticity(&gate_a).unwrap_err();
+        assert!(gate_a_authenticity_error.contains("invalid IC certificate CBOR"));
         let gate_a_profile_sha256 = hex(&canonical_sha256(&profile).unwrap());
         profile.deployment_block = snapshot.bridge_deployment_block_number;
         let post_deploy_profile = serde_json::to_vec(&profile).unwrap();
@@ -2252,7 +3504,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             sha256: hex(&Sha256::digest(receipt_bytes)),
         });
         let manifest = ReleaseManifest {
-            schema_version: 1,
+            schema_version: 2,
             release_id: "release-1".into(),
             test_only: false,
             source_revision: "a".repeat(40),
@@ -2268,7 +3520,41 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .unwrap();
         let bundle = validate_bundle(&root, true).unwrap();
-        verify_live(&bundle).unwrap();
+        // Cryptographic SNS authenticity is verified against the live network by
+        // `verify-live`; this fixture exercises only deterministic bundle inputs.
+        verify_live_inputs(&bundle).unwrap();
+
+        let payload_sha256 = hex(&Sha256::digest([0x44, 0x49, 0x44, 0x4c, 0x00, 0x00]));
+        let mut schedule_receipt = ActivationReceipt {
+            schema_version: 3,
+            phase: "schedule".into(),
+            release_id: bundle.manifest.release_id.clone(),
+            source_revision: bundle.manifest.source_revision.clone(),
+            source_tree_sha256: bundle.manifest.source_tree_sha256.clone(),
+            gate_b_manifest_sha256: "9".repeat(64),
+            proposal_id: 1,
+            function_id: 1,
+            target_method_name: "schedule_activation".into(),
+            payload_sha256,
+            executed_at_unix: manifest_created - 2,
+            verified_at_unix: manifest_created - 1,
+            governance_query_response_hex: hex(b"proposal"),
+            governance_query_response_sha256: hex(&Sha256::digest(b"proposal")),
+            function_registry_response_hex: hex(b"registry"),
+            function_registry_response_sha256: hex(&Sha256::digest(b"registry")),
+            activation_status_response_hex: hex(b"activation"),
+            activation_status_response_sha256: hex(&Sha256::digest(b"activation")),
+            operation_id: format!("0x{}", "1".repeat(64)),
+            operation_salt: format!("0x{}", "2".repeat(64)),
+            base_postcondition_sha256: "3".repeat(64),
+            prior_schedule_receipt_sha256: None,
+        };
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_ok());
+        schedule_receipt.gate_b_manifest_sha256 = bundle.manifest_sha256.clone();
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
+        schedule_receipt.gate_b_manifest_sha256 = "9".repeat(64);
+        schedule_receipt.activation_status_response_sha256 = "4".repeat(64);
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
 
         let valid_snapshot_bytes = fs::read(root.join("signer-snapshot.json")).unwrap();
         let mut legacy_snapshot: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
@@ -2288,7 +3574,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::to_vec(&signer_drift).unwrap(),
         )
         .unwrap();
-        assert!(verify_live(&bundle).is_err());
+        assert!(verify_live_inputs(&bundle).is_err());
 
         let mut base_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
         base_drift["base_bridge_signer"] =
@@ -2298,7 +3584,26 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::to_vec(&base_drift).unwrap(),
         )
         .unwrap();
-        assert!(verify_live(&bundle).is_err());
+        assert!(verify_live_inputs(&bundle).is_err());
+        fs::write(root.join("signer-snapshot.json"), valid_snapshot_bytes).unwrap();
+
+        let valid_snapshot_bytes = fs::read(root.join("signer-snapshot.json")).unwrap();
+        let mut delay_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
+        delay_drift["timelock_minimum_delay_seconds"] = Value::from(259_201);
+        fs::write(
+            root.join("signer-snapshot.json"),
+            serde_json::to_vec(&delay_drift).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_live_inputs(&bundle).is_err());
+        let mut public_config_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
+        public_config_drift["public_config"]["max_fee_per_gas"] = Value::String("11".into());
+        fs::write(
+            root.join("signer-snapshot.json"),
+            serde_json::to_vec(&public_config_drift).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_live_inputs(&bundle).is_err());
         fs::write(root.join("signer-snapshot.json"), valid_snapshot_bytes).unwrap();
 
         let valid_handover_bytes = fs::read(root.join("controller-handover.json")).unwrap();
@@ -2352,21 +3657,18 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
                 .is_err()
         );
-        fs::write(root.join("sns-upgrade.json"), &valid_upgrade_bytes).unwrap();
-
-        let valid_x402_bytes = fs::read(root.join("x402-e2e.json")).unwrap();
-        let mut wrong_chain: Value = serde_json::from_slice(&valid_x402_bytes).unwrap();
-        wrong_chain["chain_id"] = Value::from(1);
+        let mut forged_upgrade: Value = serde_json::from_slice(&valid_upgrade_bytes).unwrap();
+        forged_upgrade["governance_query_response_hex"] = Value::String(hex(b"forged"));
         fs::write(
-            root.join("x402-e2e.json"),
-            serde_json::to_vec(&wrong_chain).unwrap(),
+            root.join("sns-upgrade.json"),
+            serde_json::to_vec(&forged_upgrade).unwrap(),
         )
         .unwrap();
         assert!(
             validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
                 .is_err()
         );
-        fs::write(root.join("x402-e2e.json"), &valid_x402_bytes).unwrap();
+        fs::write(root.join("sns-upgrade.json"), &valid_upgrade_bytes).unwrap();
 
         fs::remove_file(root.join("controller-handover.json")).unwrap();
         assert!(

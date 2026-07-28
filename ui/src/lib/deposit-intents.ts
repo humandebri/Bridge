@@ -1,5 +1,6 @@
 import { deploymentProfile } from "@/config/profile"
 import type { DepositCall, IcAccount } from "@/lib/ic/wallet"
+import { withBrowserLock } from "@/lib/browser-lock"
 
 export type DurableDepositIntentState = "prepared" | "submitted" | "accepted"
 
@@ -10,33 +11,55 @@ export interface DurableDepositIntent {
   state: DurableDepositIntentState
 }
 
-const PREFIX = "kinic.bridge.deposit-intent.v1"
+const PREFIX = "kinic.bridge.deposit-intent.v2"
+const sessionIntents = new Map<string, DurableDepositIntent>()
+const removedSessionIntents = new Set<string>()
 
 export function readDepositIntent(account: IcAccount): DurableDepositIntent | undefined {
   if (typeof window === "undefined") return undefined
+  const key = storageKey(account)
+  if (removedSessionIntents.has(key)) return undefined
+  const sessionIntent = sessionIntents.get(key)
+  if (sessionIntent) return cloneIntent(sessionIntent)
   try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(storageKey(account)) ?? "null")
+    const value: unknown = JSON.parse(window.localStorage.getItem(key) ?? "null")
     return isStoredIntent(value) ? fromStored(value) : undefined
   } catch {
     return undefined
   }
 }
 
-export function saveDepositIntent(intent: DurableDepositIntent): void {
-  window.localStorage.setItem(storageKey(intent.account), JSON.stringify({
-    owner: intent.account.owner,
-    subaccount: hex(intent.account.subaccount ?? new Uint8Array()),
-    recipient: intent.recipient,
-    ownerSequence: intent.call.ownerSequence.toString(),
-    baseRecipient: hex(intent.call.baseRecipient),
-    grossAmount: intent.call.grossAmount.toString(),
-    maxServiceFee: intent.call.maxServiceFee.toString(),
-    state: intent.state,
-  }))
+export async function saveDepositIntent(intent: DurableDepositIntent): Promise<void> {
+  const key = storageKey(intent.account)
+  removedSessionIntents.delete(key)
+  sessionIntents.set(key, cloneIntent(intent))
+  await withBrowserLock(`kinic-storage:${key}`, () => {
+    try {
+      window.localStorage.setItem(key, JSON.stringify({
+        owner: intent.account.owner,
+        subaccount: hex(intent.account.subaccount ?? new Uint8Array()),
+        recipient: intent.recipient,
+        ownerSequence: intent.call.ownerSequence.toString(),
+        baseRecipient: hex(intent.call.baseRecipient),
+        grossAmount: intent.call.grossAmount.toString(),
+        maxServiceFee: intent.call.maxServiceFee.toString(),
+        state: intent.state,
+      }))
+      sessionIntents.delete(key)
+    } catch { /* Session memory still prevents an automatic duplicate prompt. */ }
+  })
 }
 
-export function removeDepositIntent(account: IcAccount): void {
-  window.localStorage.removeItem(storageKey(account))
+export async function removeDepositIntent(account: IcAccount): Promise<void> {
+  const key = storageKey(account)
+  sessionIntents.delete(key)
+  removedSessionIntents.add(key)
+  await withBrowserLock(`kinic-storage:${key}`, () => {
+    try {
+      window.localStorage.removeItem(key)
+      removedSessionIntents.delete(key)
+    } catch { /* Already removed from session memory. */ }
+  })
 }
 
 function storageKey(account: IcAccount): string {
@@ -97,4 +120,12 @@ function hex(value: Uint8Array | number[]): string {
 
 function bytes(value: string): Uint8Array {
   return Uint8Array.from(value.slice(2).match(/.{2}/g) ?? [], (byte) => Number.parseInt(byte, 16))
+}
+
+function cloneIntent(intent: DurableDepositIntent): DurableDepositIntent {
+  return {
+    ...intent,
+    account: { ...intent.account, subaccount: intent.account.subaccount?.slice() },
+    call: { ...intent.call, baseRecipient: intent.call.baseRecipient.slice() },
+  }
 }

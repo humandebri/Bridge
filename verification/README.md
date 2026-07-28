@@ -1,12 +1,40 @@
 # Bridge verification boundary
 
+Lean projectはcross-chain protocolの正式な抽象仕様である。
+状態遷移、不変条件、frontendの判断、pending queueの更新を`verification/lean/BridgeSpec`へ集約し、Lakeで定理を検査する。
+Lean executableが生成する`verification/generated/protocol-vectors.json`をRust、Solidity、TypeScriptのconsumerで読み、実装の代表的な境界値を同じ期待値と照合する。
+release対象claimは`Claims.lean`、有限幅semanticsは`Implementation.lean`、抽象モデルとの対応は`Refinement.lean`、統合状態traceとcertificateは`Protocol.lean`へ分離する。
+`verification/phase5-claims.tsv`はclaim、抽象定理、bounded refinement、trace定理、Verus義務、vector section、production symbol、transaction test、外部仮定に加え、abstract=`proved`、bounded=`proved`、trace=`proved`、Verus=`proved | executable-proved`、production=`refinement-tested`、external=`assumed`を列ごとに固定する。checkerがmanifestの実際の証拠種別から期待値を算出し、全列が一致した行だけを`complete`として受理する。`complete`は「production全体が証明済み」という意味ではなく、その行に登録したsource-level evidenceがすべてgateを通ったことだけを表す。
+CIはこれらの全Lean theorem、Verus manifest、claim台帳、全vector section、全consumerを完全一致検査し、production linkはcompilerで型検査する。
+refinement manifestはsection、抽象定義、有限幅implementation定義、対応定理、runner、consumer source、test selectorの7列で構成し、同じsectionに複数consumerを登録できる。
+CIは許可済みのRust、Foundry、Vitest runnerだけを使用し、各selectorが正確に1件成功したことを機械可読な結果から確認する。
+このvector照合は列挙されたcaseに対するbounded conformanceであり、Rust、Solidity、TypeScript実装全体の完全なsemantic refinementではない。
+
 Withdrawalの検証対象は、Base上の不可逆な`Committed` burnとCanister上の未決済債務である。Base refund、release acknowledgement、Withdrawal用EVM operationはモデルに存在しない。
 
-- Foundryはfee driftのburn前revert、固定quote、atomic burn、削除selector不在、Committed後の再mint不能を検査する。
-- `bridge-core/src/kernel.rs`はCargoとVerusで共有し、固定quote、phase遷移、fee一回計上を検査する。
-- LeanはBase supply減少とCanister債務発生、固定宛先への支払、1:1 backingに加え、frontendのFinalized成功・revert・retry判断をモデル化する。
+- Foundryはfee driftのburn前revert、固定quote、atomic burn、処理済みDeposit IDのreplay拒否を検査し、ABI snapshotはWithdrawal専用のrefund/remint selectorが存在しないことを検査する。
+- settlement、deposit admission、reservation、fee recipient rotation、fee payout、hold resolution、lease outcome、manual claimのtyped decisionはCargoとVerusが同じ実行関数本体を使用し、Verusが結果variant、全delta fieldと境界拒否を直接検査する。manifest上の`shared`義務はCargo式とVerus specで式macroを共有するpredicate proofであり、実行関数全体のproofとは呼ばない。
+- `bridge-core/src/kernel.rs`はさらにsnapshot refresh owner、reserve observation token、settlement lease generation、canonical probe block一致、Withdrawal・EVM・reconciliation holdの派生index分類をproductionと共有し、Verusで各predicateを検査する。
+- LeanはBase supply減少とCanister債務発生、固定宛先への支払、1:1 backingに加え、frontendのFinalized成功・revert・retry判断とserialized queue更新を正式な抽象モデルとして定義する。
 - Rust/integrationはcanonical Finalized照合、Ledger成功・Duplicate・BadFee・曖昧結果、純額Fee reserve、追加EVM transaction不在を検査する。
 
-Solidity SMTはharnessの性質であり、完全なdeployed contract proofではない。frontend LeanモデルはTypeScript実装そのものの証明ではなく、純粋な判断関数との対応を網羅テストで検査する。browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityは外部仮定である。Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
+Solidity SMTはproduction共有predicateの性質であり、完全なdeployed contract proofではない。
+frontend LeanモデルはTypeScript実装そのものの証明ではなく、生成vectorと純粋な判断関数との対応をテストで検査する。
+Bridge Signerは通常のDeposit mint権限を持つため、Withdrawal専用remint経路の不在は、侵害されたSignerが別の未処理Deposit IDをmintできないことを意味しない。
+EIP-1898 `requireCanonical`の正しさ、EVM rollbackとEIP-1153 transient storage lifetime、ABI decoder、Web Locks、browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityとSQL row selectionは外部仮定である。形式証明の対象は、decode後のblock一致、enumから派生indexへの分類、成功したbrowser storage更新後のqueue状態までである。
+Verus/Rust/LLVM、Lean kernel、Solidity SMTChecker、Wasm compilerはtrusted computing baseであり、source-level proofをWasm binary verificationとは呼ばない。
+Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
 
-本番未デプロイのためschema v16再オープンとwire v15だけを検証し、旧schema migration、compatibility shim、dual-read、fallbackは提供しない。
+Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_step_preserves_safe`が受理された各生遷移について安全性を直接証明し、有限trace定理はそのlemmaから帰納する。canonical・Ledger certificateは対象identityを含むが、その履歴やRPC情報の真正性は外部仮定である。
+
+本番未デプロイのためschema v22再オープンとwire v18を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
+
+## Release proof gate
+
+自己申告のproof attestationは使用しない。
+固定production driverは不可逆操作の直前に、manifestへ束縛されたclean checkout内の`scripts/ci-local.sh proofs`を直接実行する。
+実行前後のHEAD、archive tree hash、worktree、submodule revisionが一致しない場合、またはproofが失敗した場合はreleaseを中止する。
+`proof-attestation.json`がGate bundleに残っている場合も、obsolete artifactとして拒否する。
+proof成功後は、同じclean revisionからBridge Canister WasmとBridge contract runtimeをofflineで二回buildし、二つのbuildとrelease manifestのSHA-256が完全一致しなければ不可逆操作へ進まない。
+
+このgateはローカルの固定sourceとtoolchainを信頼境界とする再現性検査であり、第三者CI provenance、compiler correctness、sourceとbinaryのsemantic equivalenceは主張しない。

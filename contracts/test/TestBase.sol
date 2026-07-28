@@ -26,6 +26,12 @@ interface Vm {
     function deployCode(string calldata artifactPath, bytes calldata constructorArgs)
         external
         returns (address deployed);
+    function readFile(string calldata path) external view returns (string memory data);
+    function parseJsonUint(string calldata json, string calldata key) external pure returns (uint256 value);
+    function parseJsonBool(string calldata json, string calldata key) external pure returns (bool value);
+    function parseJsonString(string calldata json, string calldata key) external pure returns (string memory value);
+    function parseUint(string calldata value) external pure returns (uint256 parsed);
+    function toString(uint256 value) external pure returns (string memory text);
 }
 
 abstract contract TestBase {

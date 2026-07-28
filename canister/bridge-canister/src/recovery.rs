@@ -1,13 +1,12 @@
 use crate::{
     evm_calls, evm_rpc,
     phases::{DepositPhase, SettlementState},
-    storage::{AuditEventKind, RpcAuditBatch, SettlementJobKind},
-    tasks::SettlementActionResult,
+    storage::{AuditEventKind, DepositRecoveryAdmission, DepositReserveAdmission, RpcAuditBatch},
     STORE,
 };
 use bridge_core::{
     DepositEvent, DepositRecord, DepositState, EvmOperationEvent, EvmOperationId, EvmOperationKind,
-    EvmOperationRecord, EvmOperationState, ExternalProgress, FinalizedObservationRecord,
+    EvmOperationRecord, EvmOperationState, FinalizedObservationRecord,
 };
 use candid::{CandidType, Deserialize, Principal};
 
@@ -22,7 +21,6 @@ pub enum RecoverMintRevertReceipt {
     Enqueued {
         replacement_operation_id: u64,
         state: SettlementState,
-        settlement: Option<SettlementActionResult>,
         finalized_block_number: u64,
         finalized_block_hash: Vec<u8>,
     },
@@ -201,28 +199,6 @@ fn rpc_audit(observation: &evm_rpc::RecoveryObservation) -> AuditEventKind {
     }
 }
 
-fn progress_at_finalized(
-    observation: &evm_rpc::RecoveryObservation,
-) -> Result<ExternalProgress, RecoverMintRevertError> {
-    STORE.with(|store| {
-        let mut progress = store
-            .borrow()
-            .external_progress()
-            .map_err(|_| RecoverMintRevertError::StorageFailure)?;
-        progress
-            .observe_finalized(FinalizedObservationRecord {
-                chain_id: observation.finalized.chain_id,
-                block_number: observation.finalized.block_number,
-                block_hash: observation.finalized.block_hash,
-                observed_at_ns: observation.finalized.observed_at_ns,
-                bridge_signer: observation.bridge_identity.signer,
-                runtime_sha256: observation.bridge_identity.runtime_sha256,
-            })
-            .map_err(|_| RecoverMintRevertError::BaseStateMismatch)?;
-        Ok(progress)
-    })
-}
-
 fn recovery_audit_started(
     preflight: &Preflight,
     replacement_id: EvmOperationId,
@@ -280,14 +256,12 @@ pub(crate) async fn recover(
     {
         return Err(RecoverMintRevertError::BridgeSignerMismatch);
     }
-    let progress = progress_at_finalized(&observation)?;
-
     match (&preflight.parent, &observation.state) {
         (Parent::Deposit(record), evm_rpc::RecoveryBaseState::DepositProcessed(processed)) => {
             if *processed {
                 return Err(RecoverMintRevertError::BaseStateMismatch);
             }
-            recover_mint(caller, &config, &preflight, record, &observation, progress).await
+            recover_mint(caller, &config, &preflight, record, &observation).await
         }
     }
 }
@@ -298,28 +272,36 @@ async fn recover_mint(
     preflight: &Preflight,
     record: &DepositRecord,
     observation: &evm_rpc::RecoveryObservation,
-    progress: ExternalProgress,
 ) -> Result<RecoverMintRevertReceipt, RecoverMintRevertError> {
     if observation.snapshot.deposits_paused {
         return Err(RecoverMintRevertError::MintWindowUnavailable);
     }
+    let quote = record.quote.ok_or(RecoverMintRevertError::StorageFailure)?;
     let mint = observation.snapshot.mint;
-    if record.net_amount > mint.per_deposit_limit
-        || record.service_fee > mint.max_service_fee
-        || record.service_fee > record.max_service_fee
+    if quote.net_amount > mint.per_deposit_limit
+        || quote.service_fee > mint.max_service_fee
+        || quote.service_fee > record.max_service_fee
     {
         return Err(RecoverMintRevertError::MintWindowUnavailable);
     }
-    let counters = STORE.with(|store| {
-        store
-            .borrow()
-            .counters()
-            .map_err(|_| RecoverMintRevertError::StorageFailure)
+    let (counters, nonterminal_withdrawals, expected_token) = STORE.with(|store| {
+        let store = store.borrow();
+        Ok::<_, RecoverMintRevertError>((
+            store
+                .counters()
+                .map_err(|_| RecoverMintRevertError::StorageFailure)?,
+            store
+                .nonterminal_withdrawal_count()
+                .map_err(|_| RecoverMintRevertError::StorageFailure)?,
+            store
+                .deposit_reserve_token()
+                .map_err(|_| RecoverMintRevertError::StorageFailure)?,
+        ))
     })?;
     let consumed = bridge_core::mint_admission_total(
         mint.effective_minted_in_window().get(),
         counters.reserved_deposit_mint_amount,
-        record.net_amount.get(),
+        quote.net_amount.get(),
     )
     .ok_or(RecoverMintRevertError::MintWindowUnavailable)?;
     if consumed > mint.mint_window_limit.get() {
@@ -339,7 +321,7 @@ async fn recover_mint(
     let reserve = config
         .reserve_policy()
         .snapshot(
-            counters.nonterminal_withdrawals,
+            nonterminal_withdrawals,
             counters.reserved_deposit_mint_operations,
             1,
             eth_balance,
@@ -349,6 +331,26 @@ async fn recover_mint(
     if !reserve.sufficient {
         return Err(RecoverMintRevertError::ReserveUnavailable);
     }
+    let admission = DepositRecoveryAdmission {
+        reserve: DepositReserveAdmission {
+            audit_caller: caller,
+            expected_token,
+            observed_at_ns: ic_cdk::api::time(),
+            eth_balance_wei: eth_balance,
+            cycles_balance: ic_cdk::api::canister_liquid_cycle_balance(),
+            reserve_policy: config.reserve_policy(),
+            mint_snapshot: mint,
+            snapshot_generation: 0,
+        },
+        finalized_observation: FinalizedObservationRecord {
+            chain_id: observation.finalized.chain_id,
+            block_number: observation.finalized.block_number,
+            block_hash: observation.finalized.block_hash,
+            observed_at_ns: observation.finalized.observed_at_ns,
+            bridge_signer: observation.bridge_identity.signer,
+            runtime_sha256: observation.bridge_identity.runtime_sha256,
+        },
+    };
     let intent_record = STORE.with(|store| {
         store
             .borrow()
@@ -389,7 +391,7 @@ async fn recover_mint(
             recipient: intent_record.base_recipient,
             gross_amount: record.gross_amount.get(),
             max_service_fee: record.max_service_fee.get(),
-            charged_service_fee: record.service_fee.get(),
+            charged_service_fee: quote.service_fee.get(),
         },
     );
     STORE.with(|store| {
@@ -402,7 +404,7 @@ async fn recover_mint(
                 &old_next,
                 &replacement,
                 &intent,
-                &progress,
+                admission,
                 RpcAuditBatch {
                     caller,
                     timestamp_ns: ic_cdk::api::time(),
@@ -412,33 +414,25 @@ async fn recover_mint(
                     ],
                 },
             )
-            .map_err(|_| RecoverMintRevertError::StorageFailure)
+            .map_err(|error| match error {
+                crate::storage::StorageError::ReserveUnavailable
+                | crate::storage::StorageError::StaleReserveObservation => {
+                    RecoverMintRevertError::ReserveUnavailable
+                }
+                crate::storage::StorageError::Core(
+                    bridge_core::CoreError::MintWindowLimitExceeded,
+                ) => RecoverMintRevertError::MintWindowUnavailable,
+                crate::storage::StorageError::Core(
+                    bridge_core::CoreError::StaleFinalizedObservation
+                    | bridge_core::CoreError::ConflictingFinalizedObservation,
+                ) => RecoverMintRevertError::BaseStateMismatch,
+                _ => RecoverMintRevertError::StorageFailure,
+            })
     })?;
     Ok(RecoverMintRevertReceipt::Enqueued {
         replacement_operation_id: replacement_id.get(),
         state: SettlementState::Deposit(DepositPhase::from(&next.state)),
-        settlement: None,
         finalized_block_number: observation.finalized.block_number,
         finalized_block_hash: observation.finalized.block_hash.to_vec(),
-    })
-}
-
-pub(crate) async fn run_enqueued(target: &ValidatedTarget) -> Option<SettlementActionResult> {
-    let kind = match target {
-        ValidatedTarget::Deposit(_) => SettlementJobKind::Deposit,
-    };
-    crate::scheduler::run_newly_enqueued(kind, target.id()).await
-}
-
-pub(crate) fn current_state(
-    target: &ValidatedTarget,
-) -> Result<SettlementState, RecoverMintRevertError> {
-    STORE.with(|store| match target {
-        ValidatedTarget::Deposit(id) => store
-            .borrow()
-            .deposit(*id)
-            .map_err(|_| RecoverMintRevertError::StorageFailure)?
-            .map(|record| SettlementState::Deposit(DepositPhase::from(&record.state)))
-            .ok_or(RecoverMintRevertError::NotFound),
     })
 }

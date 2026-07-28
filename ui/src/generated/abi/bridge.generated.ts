@@ -246,6 +246,11 @@ export const bridgeAbi = [
   },
   {
     "inputs": [],
+    "name": "MultipleWithdrawalsInTransaction",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "RoleAddressesMustDiffer",
     "type": "error"
   },
@@ -651,6 +656,64 @@ export const bridgeAbi = [
         "type": "address"
       },
       {
+        "internalType": "bytes32",
+        "name": "role",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "address",
+        "name": "member",
+        "type": "address"
+      }
+    ],
+    "name": "TimelockCandidateInvalidRoleMember",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "pendingOperationCount",
+        "type": "uint256"
+      }
+    ],
+    "name": "TimelockCandidateHasPendingOperations",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "suppliedDelay",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "maximumDelay",
+        "type": "uint256"
+      }
+    ],
+    "name": "TimelockCandidateDelayTooLong",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "candidate",
+        "type": "address"
+      },
+      {
         "internalType": "uint256",
         "name": "suppliedDelay",
         "type": "uint256"
@@ -735,6 +798,17 @@ export const bridgeAbi = [
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      }
+    ],
+    "name": "InvalidMintRecipient",
+    "type": "error"
   },
   {
     "inputs": [
@@ -969,6 +1043,17 @@ export const bridgeAbi = [
     "inputs": [
       {
         "internalType": "uint256",
+        "name": "value",
+        "type": "uint256"
+      }
+    ],
+    "name": "ValueExceedsU128",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
         "name": "withdrawalId",
         "type": "uint256"
       }
@@ -1025,5 +1110,26 @@ export const bridgeAbi = [
     ],
     "stateMutability": "view",
     "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint64",
+        "name": "suppliedDuration",
+        "type": "uint64"
+      },
+      {
+        "internalType": "uint64",
+        "name": "minimumDuration",
+        "type": "uint64"
+      },
+      {
+        "internalType": "uint64",
+        "name": "maximumDuration",
+        "type": "uint64"
+      }
+    ],
+    "name": "InvalidMintWindowDuration",
+    "type": "error"
   }
 ] as const

@@ -7,6 +7,14 @@ import {IBSNS} from "../src/interfaces/IBSNS.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
 import {TestBase} from "./TestBase.sol";
 
+contract WithdrawalBatcher {
+    function createTwice(IBridge bridge, IBSNS token) external {
+        token.approve(address(bridge), 700);
+        bridge.createWithdrawal(400, 100, hex"01", bytes32(0));
+        bridge.createWithdrawal(300, 100, hex"02", bytes32(0));
+    }
+}
+
 contract BridgeWithdrawalTest is TestBase {
     address private constant BRIDGE_SIGNER = address(0x11);
     address private constant RUNTIME_ADMINISTRATOR = address(0x22);
@@ -104,6 +112,16 @@ contract BridgeWithdrawalTest is TestBase {
         bridge.createWithdrawal(SERVICE_FEE, SERVICE_FEE, hex"01", bytes32(0));
     }
 
+    function testWithdrawalRejectsAmountsOutsideCanisterBounds() public {
+        uint256 overflow = uint256(type(uint128).max) + 1;
+        vm.startPrank(USER);
+        vm.expectRevert(abi.encodeWithSelector(IBridge.ValueExceedsU128.selector, overflow));
+        bridge.createWithdrawal(overflow, SERVICE_FEE, hex"01", bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(IBridge.ValueExceedsU128.selector, overflow));
+        bridge.createWithdrawal(100, overflow, hex"01", bytes32(0));
+        vm.stopPrank();
+    }
+
     function testPrincipalValidationAndPauseRemainBurnGuards() public {
         bytes memory thirtyBytes = new bytes(30);
         vm.startPrank(USER);
@@ -132,13 +150,11 @@ contract BridgeWithdrawalTest is TestBase {
         assert(token.totalSupply() == 1_000);
     }
 
-    function testSequentialCommittedWithdrawalsCannotBeRemintedByBridgeSigner() public {
+    function testProcessedDepositIdCannotBeReplayedAfterWithdrawal() public {
         uint256 first = _createWithdrawal(400, SERVICE_FEE, hex"01", bytes32(0));
-        uint256 second = _createWithdrawal(300, MAX_SERVICE_FEE, hex"02", SUBACCOUNT);
-        assert(first == 1 && second == 2);
+        assert(first == 1);
         assert(bridge.getWithdrawal(first).status == IBridge.WithdrawalStatus.Committed);
-        assert(bridge.getWithdrawal(second).status == IBridge.WithdrawalStatus.Committed);
-        assert(token.totalSupply() == 300);
+        assert(token.totalSupply() == 600);
 
         vm.prank(BRIDGE_SIGNER);
         vm.expectRevert(
@@ -147,7 +163,23 @@ contract BridgeWithdrawalTest is TestBase {
         bridge.mintDeposit(
             IBridge.DepositMintRequest(keccak256("withdrawal-funding"), USER, 710, SERVICE_FEE, SERVICE_FEE)
         );
-        assert(token.totalSupply() == 300);
+        assert(token.totalSupply() == 600);
+    }
+
+    function testMultipleWithdrawalsInOneTransactionRevertAtomically() public {
+        WithdrawalBatcher batcher = new WithdrawalBatcher();
+        vm.prank(BRIDGE_SIGNER);
+        bridge.mintDeposit(
+            IBridge.DepositMintRequest(keccak256("batcher-funding"), address(batcher), 710, SERVICE_FEE, SERVICE_FEE)
+        );
+
+        vm.expectRevert(IBridge.MultipleWithdrawalsInTransaction.selector);
+        batcher.createTwice(bridge, token);
+
+        assert(token.balanceOf(address(batcher)) == 700);
+        assert(token.totalSupply() == 1_700);
+        assert(bridge.nextWithdrawalId() == 1);
+        assert(bridge.getWithdrawal(1).status == IBridge.WithdrawalStatus.None);
     }
 
     function testFuzzCommittedQuote(uint256 amountSeed, uint256 feeSeed, bytes32 subaccount) public {

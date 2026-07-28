@@ -1,9 +1,15 @@
 use bridge_core::{
     administrator_authorized, audit_next, can_assign_nonce, checked_counter_transition,
-    checked_requirement, counter_delta, deposit_phase_allows, deposit_phase_step, evidence_matches,
-    fee_delta_once, mint_admission_total, next_attempt, nonce_next, nonce_too_low_is_submitted,
-    payout_allowed, payout_debit, release_transfer_matches, replay_matches, resources_sufficient,
-    scan_complete, withdrawal_phase_allows, withdrawal_phase_step,
+    checked_requirement, counter_delta, deposit_admission_decision, deposit_phase_allows,
+    deposit_phase_step, evidence_matches, fee_delta_once, fee_recipient_rotation_allowed,
+    fee_recipient_rotation_decision, hold_resolution_decision, lease_generation_next,
+    lease_outcome_is_current, manual_claim_decision, mint_admission_total, next_attempt,
+    nonce_next, nonce_too_low_is_submitted, outbound_settlement, payout_allowed, payout_debit,
+    refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
+    reservation_decision, reserve_admission_preserves_requirement, reserve_token_matches,
+    resources_sufficient, scan_complete, service_fee_change_allowed, settlement_decision,
+    withdrawal_phase_allows, withdrawal_phase_step, FeeRecipientRotationDecision,
+    HoldResolutionDecision, ManualClaimDecision,
 };
 
 #[test]
@@ -59,6 +65,89 @@ fn reserve_boundaries_and_overflow_are_checked() {
 }
 
 #[test]
+fn fee_rotation_reserve_admission_and_lease_fences_are_fail_closed() {
+    assert!(fee_recipient_rotation_allowed(0));
+    assert!(!fee_recipient_rotation_allowed(1));
+    assert!(service_fee_change_allowed(10, 10));
+    assert!(!service_fee_change_allowed(11, 10));
+    assert!(reserve_admission_preserves_requirement(7, 1, 8, 0));
+    assert!(!reserve_admission_preserves_requirement(7, 1, 7, 0));
+    assert!(!reserve_admission_preserves_requirement(
+        u128::MAX,
+        1,
+        u128::MAX,
+        1
+    ));
+    assert!(lease_outcome_is_current(4, 4, true));
+    assert!(!lease_outcome_is_current(4, 3, true));
+    assert!(!lease_outcome_is_current(4, 4, false));
+}
+
+#[test]
+fn typed_decisions_preserve_every_shared_guard() {
+    assert_eq!(
+        fee_recipient_rotation_decision(true, false, false, 32, 0),
+        FeeRecipientRotationDecision::Allow
+    );
+    assert_eq!(
+        fee_recipient_rotation_decision(false, false, false, 32, 0),
+        FeeRecipientRotationDecision::Unauthorized
+    );
+    assert_eq!(
+        fee_recipient_rotation_decision(true, false, true, 32, 0),
+        FeeRecipientRotationDecision::InvalidInput
+    );
+    assert_eq!(
+        fee_recipient_rotation_decision(true, false, false, 32, 1),
+        FeeRecipientRotationDecision::Busy
+    );
+    assert_eq!(
+        hold_resolution_decision(false, false),
+        HoldResolutionDecision::Wait
+    );
+    assert_eq!(
+        hold_resolution_decision(true, false),
+        HoldResolutionDecision::ResolveSucceeded
+    );
+    assert_eq!(
+        hold_resolution_decision(false, true),
+        HoldResolutionDecision::ResolveAbsent
+    );
+    assert_eq!(
+        manual_claim_decision(false, false, false, false, false, false),
+        ManualClaimDecision::Allow
+    );
+    assert_eq!(
+        manual_claim_decision(true, false, false, true, true, true),
+        ManualClaimDecision::AutomaticProgressPending
+    );
+    assert_eq!(
+        manual_claim_decision(false, true, true, false, true, false),
+        ManualClaimDecision::AutomaticProgressPending,
+        "an overdue job must not bypass a still-active lease"
+    );
+    assert_eq!(
+        settlement_decision(100, 3, 5).map(|decision| (
+            decision.escrow_debit,
+            decision.reserve_credit,
+            decision.liability_debit,
+        )),
+        outbound_settlement(100, 3, 5)
+    );
+    assert_eq!(
+        reservation_decision(7, 3).map(|decision| (decision.reserved, decision.candidate)),
+        Some((10, 0))
+    );
+    assert_eq!(reservation_decision(u128::MAX, 1), None);
+    let admission = deposit_admission_decision(105, 5, 5, 100, 0, 0, 100)
+        .expect("exact boundary must be admitted");
+    assert_eq!(admission.net_amount, 100);
+    assert_eq!(admission.next_window_total, 100);
+    assert!(deposit_admission_decision(105, 6, 5, 100, 0, 0, 100).is_none());
+    assert!(deposit_admission_decision(105, 5, 5, 100, 0, 1, 100).is_none());
+}
+
+#[test]
 fn mint_admission_includes_existing_reservations_and_checks_overflow() {
     assert_eq!(mint_admission_total(90, 9, 1), Some(100));
     assert_eq!(mint_admission_total(90, 10, 1), Some(101));
@@ -79,6 +168,23 @@ fn nonce_and_audit_boundaries_are_deterministic() {
 }
 
 #[test]
+fn refresh_reserve_and_lease_tokens_fail_closed() {
+    assert!(refresh_owner_matches(Some(7), 7));
+    assert!(!refresh_owner_matches(Some(7), 8));
+    assert!(!refresh_owner_matches(None, 7));
+    assert_eq!(refresh_generation_next(0), Some(1));
+    assert_eq!(refresh_generation_next(u64::MAX), None);
+    assert_eq!(lease_generation_next(0), Some(1));
+    assert_eq!(lease_generation_next(u64::MAX), None);
+
+    assert!(reserve_token_matches(1, 2, 3, 4, 1, 2, 3, 4));
+    assert!(!reserve_token_matches(9, 2, 3, 4, 1, 2, 3, 4));
+    assert!(!reserve_token_matches(1, 9, 3, 4, 1, 2, 3, 4));
+    assert!(!reserve_token_matches(1, 2, 9, 4, 1, 2, 3, 4));
+    assert!(!reserve_token_matches(1, 2, 3, 9, 1, 2, 3, 4));
+}
+
+#[test]
 fn payout_and_authorization_tables_are_exhaustive() {
     assert!(payout_allowed(12, 2, 7, 3));
     assert!(!payout_allowed(11, 2, 7, 3));
@@ -86,11 +192,11 @@ fn payout_and_authorization_tables_are_exhaustive() {
     assert_eq!(payout_debit(true, 7, 3), Some(10));
     assert_eq!(payout_debit(false, 7, 3), Some(0));
     assert_eq!(payout_debit(true, u128::MAX, 1), None);
-    for action in 0..=4 {
+    for action in 0..=u8::MAX {
         for pause in [false, true] {
             for governance in [false, true] {
                 let expected = (action == 0 && pause)
-                    || ((action == 1 || action == 2 || action == 3 || action == 4) && governance);
+                    || ((action == 1 || action == 2 || action == 3) && governance);
                 assert_eq!(
                     administrator_authorized(action, pause, governance),
                     expected
@@ -140,18 +246,54 @@ fn attempt_and_fee_boundaries_are_checked() {
 }
 
 #[test]
+fn outbound_settlement_matches_the_backing_equation_at_boundaries() {
+    assert_eq!(outbound_settlement(90, 1, 10), Some((91, 9, 100)));
+    assert_eq!(outbound_settlement(90, 10, 10), Some((100, 0, 100)));
+    assert_eq!(outbound_settlement(90, 11, 10), None);
+    assert_eq!(
+        outbound_settlement(u128::MAX, 0, 0),
+        Some((u128::MAX, 0, u128::MAX))
+    );
+    assert_eq!(outbound_settlement(u128::MAX, 1, 1), None);
+    assert_eq!(outbound_settlement(u128::MAX - 1, 1, 2), None);
+
+    for amount_out in 0u128..=8 {
+        for service_fee in 0u128..=8 {
+            for ledger_fee in 0u128..=8 {
+                let result = outbound_settlement(amount_out, ledger_fee, service_fee);
+                if ledger_fee <= service_fee {
+                    let (escrow_debit, reserve_credit, liability_debit) =
+                        result.expect("small valid settlement");
+                    assert_eq!(escrow_debit, amount_out + ledger_fee);
+                    assert_eq!(reserve_credit, service_fee - ledger_fee);
+                    assert_eq!(liability_debit, amount_out + service_fee);
+                    assert_eq!(escrow_debit + reserve_credit, liability_debit);
+                } else {
+                    assert_eq!(result, None);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn compact_phase_kernels_match_the_legal_transition_graphs() {
     let deposit_edges = [
         (0, 0, 1),
         (0, 1, 5),
-        (0, 2, 6),
+        (0, 2, 10),
         (1, 3, 2),
-        (2, 4, 3),
-        (2, 5, 4),
-        (4, 6, 2),
+        (1, 4, 6),
+        (6, 5, 9),
+        (6, 6, 7),
+        (6, 7, 8),
+        (8, 8, 6),
+        (2, 9, 3),
+        (2, 10, 4),
+        (4, 11, 2),
     ];
-    for state in 0..=6 {
-        for event in 0..=6 {
+    for state in 0..=10 {
+        for event in 0..=11 {
             let expected = deposit_edges
                 .iter()
                 .find(|(from, input, _)| *from == state && *input == event)

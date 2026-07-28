@@ -6,7 +6,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "canister/bridge-canister/src/storage.rs"
+SOURCE = ROOT / "canister/bridge-canister/src/storage/mod.rs"
 CALLER_SOURCES = (
     ROOT / "canister/bridge-canister/src/api.rs",
     ROOT / "canister/bridge-canister/src/tasks.rs",
@@ -122,7 +122,11 @@ def main() -> int:
     for function_name in ("put_deposit", "put_withdrawal", "put_reconciliation_hold"):
         start = storage.index(f"fn {function_name}(")
         body = closure(storage, start)
-        if "self.handle.update(|connection|" not in body:
+        transaction_body = body
+        if function_name == "put_deposit" and "put_deposit_with_audit(" in body:
+            helper_start = storage.index("fn put_deposit_with_audit(")
+            transaction_body = closure(storage, helper_start)
+        if "self.handle.update(|connection|" not in transaction_body:
             print(
                 f"{SOURCE}: {function_name} must commit record, indexes, and counters in one SQLite transaction",
                 file=sys.stderr,
@@ -138,7 +142,7 @@ def main() -> int:
             "self.operation_owner_index.insert(",
             "self.counters.set(",
         ):
-            if token in body:
+            if token in transaction_body:
                 print(
                     f"{SOURCE}: {function_name} uses forbidden sequential write {token}",
                     file=sys.stderr,

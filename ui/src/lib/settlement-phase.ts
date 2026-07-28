@@ -1,6 +1,6 @@
 import type { DepositPhase, SettlementActionResult, SettlementState, WithdrawalPhase } from "@/generated/bridge.did"
 
-const depositNames = ["PullPending", "Escrowed", "MintPending", "Minted", "MintReverted", "ReconciliationHold", "Cancelled"] as const
+const depositNames = ["FundingPending", "EscrowedUnquoted", "MintPending", "Minted", "MintReverted", "FundingReconciliationHold", "RefundPending", "RefundReconciliationHold", "RefundRecoveryRequired", "Refunded", "Cancelled"] as const
 const withdrawalNames = ["Observed", "ReleasePending", "Paid", "ReconciliationHold"] as const
 
 function variantName(value: unknown, allowed: readonly string[]): string | undefined {
@@ -23,12 +23,16 @@ export function depositPhaseName(phase: DepositPhase): string {
   const name = variantName(phase, depositNames)
   if (!name) throw new Error("Invalid deposit phase")
   const labels: Record<(typeof depositNames)[number], string> = {
-    PullPending: "Starting",
-    Escrowed: "Processing",
+    FundingPending: "Scheduled",
+    EscrowedUnquoted: "Checking Base",
     MintPending: "Processing",
     Minted: "Complete",
     MintReverted: "Needs attention",
-    ReconciliationHold: "On hold",
+    FundingReconciliationHold: "Funding needs review",
+    RefundPending: "Refunding",
+    RefundReconciliationHold: "Refund needs review",
+    RefundRecoveryRequired: "Refund recovery required",
+    Refunded: "Refunded",
     Cancelled: "Cancelled",
   }
   return labels[name as (typeof depositNames)[number]]
@@ -53,7 +57,7 @@ export function settlementStateName(state: SettlementState): string {
 
 export function isDepositTerminal(phase: DepositPhase): boolean {
   const name = variantName(phase, depositNames)
-  return name === "Minted" || name === "MintReverted" || name === "Cancelled"
+  return name === "Minted" || name === "MintReverted" || name === "Refunded" || name === "Cancelled"
 }
 
 export function isWithdrawalTerminal(phase: WithdrawalPhase): boolean {
@@ -63,7 +67,8 @@ export function isWithdrawalTerminal(phase: WithdrawalPhase): boolean {
 
 export function depositPhaseTone(phase: DepositPhase): "good" | "warn" | "neutral" {
   const name = variantName(phase, depositNames)
-  if (name === "Minted") return "good"
+  if (name === "Minted" || name === "Refunded") return "good"
+  if (name === "FundingReconciliationHold" || name === "RefundReconciliationHold" || name === "RefundRecoveryRequired") return "warn"
   return isDepositTerminal(phase) ? "warn" : "neutral"
 }
 
@@ -102,7 +107,7 @@ function isSettlementStopReason(value: unknown): boolean {
   const payload: unknown = Reflect.get(value, key)
   if (key === "LedgerRejected") return typeof payload === "string"
   return [
-    "RpcUnavailable", "TransactionNotConfirmed",
+    "LedgerFeeExceedsServiceFee", "RpcUnavailable", "TransactionNotConfirmed",
     "RpcInconsistent", "LedgerAmbiguous", "LedgerUnavailable", "NonceConflict", "NonceUnavailable",
     "TransactionReverted", "NonceBlocked", "BaseStateMismatch", "TransactionNotFound",
     "BridgeSignerMismatch", "SigningUnavailable", "InvalidBaseResponse",

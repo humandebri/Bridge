@@ -16,9 +16,11 @@ import {
   savePendingConfirmation,
   setPendingConfirmationBlocked,
   type PendingConfirmation,
+  type PendingConfirmationInput,
 } from "@/lib/pending-confirmations"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
 import { decideWithdrawalFinalization } from "@/lib/withdrawal-confirmation-state"
+import { withBrowserLock } from "@/lib/browser-lock"
 
 export const CONFIRMATION_POLL_MS = 15_000
 
@@ -27,6 +29,34 @@ export type ConfirmationOutcome =
   | { status: "complete" }
   | { status: "reverted" }
   | { status: "blocked" }
+
+export type ConfirmationTrigger = "background" | "userInitiated"
+
+export async function confirmPendingDepositFromUserAction(
+  input: Extract<PendingConfirmationInput, { kind: "deposit" }>,
+  adapter: IcWalletAdapter,
+  ensureWriteReady: () => Promise<void>,
+): Promise<ConfirmationOutcome | undefined> {
+  const closeWalletSession = await adapter.prepare()
+  try {
+    await ensureWriteReady()
+    const entry: Extract<PendingConfirmation, { kind: "deposit" }> = {
+      ...input,
+      blocked: input.blocked ?? false,
+      bridgeCanisterId: deploymentProfile.bridgeCanisterId ?? "",
+      chainId: deploymentProfile.chainId,
+      bridgeAddress: deploymentProfile.bridgeAddress?.toLowerCase() ?? "",
+    }
+    return await runWithConfirmationLock(pendingConfirmationKey(entry), entry, async (lease) => {
+      lease.assertCurrent()
+      await savePendingConfirmation(input)
+      lease.assertCurrent()
+      return confirmWhenFinalized(entry, adapter, () => true, lease, "userInitiated")
+    })
+  } finally {
+    await closeWalletSession()
+  }
+}
 
 export function SettlementConfirmationCoordinator() {
   const ic = useIcWallet()
@@ -75,15 +105,15 @@ export function SettlementConfirmationCoordinator() {
     const wakeFromStorage = (event: StorageEvent) => {
       if (event.key === pendingConfirmationsStorageKey()) wake()
     }
-    const interval = window.setInterval(tick, CONFIRMATION_POLL_MS)
     window.addEventListener(PENDING_CONFIRMATIONS_CHANGED, wake)
     window.addEventListener("storage", wakeFromStorage)
     document.addEventListener("visibilitychange", wake)
+    const interval = ic.adapter.requiresUserGesture ? undefined : window.setInterval(tick, CONFIRMATION_POLL_MS)
     tick()
 
     return () => {
       active = false
-      window.clearInterval(interval)
+      if (interval !== undefined) window.clearInterval(interval)
       window.removeEventListener(PENDING_CONFIRMATIONS_CHANGED, wake)
       window.removeEventListener("storage", wakeFromStorage)
       document.removeEventListener("visibilitychange", wake)
@@ -303,6 +333,7 @@ export async function confirmWhenFinalized(
   adapter: IcWalletAdapter,
   isActive: () => boolean = () => true,
   lease: ConfirmationLease = UNFENCED_CONFIRMATION_LEASE,
+  trigger: ConfirmationTrigger = "background",
 ): Promise<ConfirmationOutcome> {
   if (entry.kind === "deposit") {
     try {
@@ -315,7 +346,8 @@ export async function confirmWhenFinalized(
       if (confirmation && "Submitted" in confirmation) {
         const canonicalHash = bytesHex(confirmation.Submitted.transaction_hash)
         if (canonicalHash.toLowerCase() !== entry.transactionHash.toLowerCase()) {
-          savePendingConfirmation({ ...entry, transactionHash: canonicalHash })
+          lease.assertCurrent()
+          await savePendingConfirmation({ ...entry, transactionHash: canonicalHash })
           return { status: "retry" }
         }
       }
@@ -341,36 +373,41 @@ export async function confirmWhenFinalized(
     const decision = decideWithdrawalFinalization(receipt.status, receipt.blockNumber, finalized.number)
     if (decision === "retry") return { status: "retry" }
     if (decision === "discard-reverted") {
-      removePendingConfirmation(entry)
+      lease.assertCurrent()
+      await removePendingConfirmation(entry)
       toast.warning("The Base withdrawal transaction reverted, so no withdrawal was created. You can try again.")
       return { status: "reverted" }
     }
   }
   if (finalized.number === null || finalized.number < receipt.blockNumber) return { status: "retry" }
+  const finalizedBlockNumber = finalized.number
+  if (adapter.requiresUserGesture && trigger === "background") return { status: "retry" }
 
   try {
     lease.assertCurrent()
     toast.info("Base transaction is finalized. Review the IC wallet confirmation.")
     if (entry.kind === "withdrawal") {
-      const receipt = await adapter.notifyWithdrawal(hexToBytes(entry.transactionHash))
-      removePendingConfirmation(entry)
+      const receipt = await withIcOwnerPrompt(entry.owner, adapter, () => adapter.notifyWithdrawal(hexToBytes(entry.transactionHash)))
+      lease.assertCurrent()
+      await removePendingConfirmation(entry)
       toastWithdrawalNotification(receipt)
       return { status: "complete" }
     }
-    const result = await adapter.confirmDeposit({
+    const result = await withIcOwnerPrompt(entry.owner, adapter, () => adapter.confirmDeposit({
       settlementId: hexToBytes(entry.settlementId),
       transactionHash: hexToBytes(entry.transactionHash),
       receiptBlockNumber: receipt.blockNumber,
-      observedFinalizedBlockNumber: finalized.number,
-    })
-    return handleDepositResult(entry, result)
+      observedFinalizedBlockNumber: finalizedBlockNumber,
+    }))
+    lease.assertCurrent()
+    return await handleDepositResult(entry, result)
   } catch (error) {
     if (error instanceof ConfirmationLeaseLostError) throw error
     if (!isActive()) return { status: "retry" }
     if (isRetryableConfirmationError(error)) {
       return { status: "retry", retryAt: error instanceof SettlementActionCallError ? error.retryAt : undefined }
     }
-    setPendingConfirmationBlocked(entry, true)
+    await setPendingConfirmationBlocked(entry, true)
     toast.warning("Confirmation was not completed. Resume it from History.")
     return { status: "blocked" }
   }
@@ -381,7 +418,7 @@ export function isRetryableConfirmationError(error: unknown): boolean {
     return ["Busy", "AutomaticProgressPending", "RateLimited", "StorageFailure"].includes(error.code)
   }
   if (error instanceof NotifyWithdrawalCallError) {
-    return ["Busy", "RpcUnavailable", "RpcInconsistent", "TransactionNotFound", "TransactionNotConfirmed", "LedgerFeeUnavailable", "StorageFailure"].includes(error.code)
+    return ["Busy", "RpcUnavailable", "RpcInconsistent", "TransactionNotFound", "TransactionNotConfirmed", "StorageFailure", "RateLimited", "InsufficientCycles"].includes(error.code)
   }
   if (!(error instanceof Error)) return true
   return !/reject|declin|denied|cancel|account changed|does not own|reverted|payload already|hash is invalid|state does not match|signer does not match|connect (?:an ic wallet|oisy|plug)|not connected|not installed|reconnect|unauthorized|invalid .*reply|wallet reply.*invalid|response .*mismatch|certifi/i.test(error.message)
@@ -394,14 +431,14 @@ function toastWithdrawalNotification(receipt: Awaited<ReturnType<IcWalletAdapter
   else toast.info(presentation.message)
 }
 
-function handleDepositResult(entry: Extract<PendingConfirmation, { kind: "deposit" }>, result: SettlementActionResult): ConfirmationOutcome {
+async function handleDepositResult(entry: Extract<PendingConfirmation, { kind: "deposit" }>, result: SettlementActionResult): Promise<ConfirmationOutcome> {
   if ("Submitted" in result) {
-    savePendingConfirmation({ ...entry, transactionHash: bytesHex(result.Submitted.transaction_hash), blocked: false })
-    toast.success("The next Base transaction was submitted and is being monitored.")
+    await savePendingConfirmation({ ...entry, transactionHash: bytesHex(result.Submitted.transaction_hash), blocked: false })
+    toast.success("The next Base transaction was submitted. Check History after finalization if it has not completed.")
     return { status: "retry" }
   }
   if ("WaitingForConfirmation" in result) return { status: "retry" }
-  removePendingConfirmation(entry)
+  await removePendingConfirmation(entry)
   if ("Stopped" in result) toast.warning("Settlement stopped and needs attention in History.")
   else toast.success("Base confirmation was verified by the bridge.")
   return { status: "complete" }
@@ -409,4 +446,13 @@ function handleDepositResult(entry: Extract<PendingConfirmation, { kind: "deposi
 
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` {
   return `0x${Array.from(bytes, (value) => Number(value).toString(16).padStart(2, "0")).join("")}`
+}
+
+async function withIcOwnerPrompt<T>(owner: string, adapter: IcWalletAdapter, prompt: () => Promise<T>): Promise<T> {
+  return withBrowserLock(`kinic-wallet-prompt:ic:${owner}`, async () => {
+    if ((await adapter.getAccount()).owner !== owner) throw new Error("The connected IC account changed before the wallet prompt")
+    const result = await prompt()
+    if ((await adapter.getAccount()).owner !== owner) throw new Error("The connected IC account changed during the wallet prompt")
+    return result
+  })
 }

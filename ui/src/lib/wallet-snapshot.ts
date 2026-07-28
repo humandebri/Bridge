@@ -6,15 +6,15 @@ interface InjectedProvider {
 
 declare global { interface Window { ethereum?: InjectedProvider } }
 
-export async function currentInjectedWallet(): Promise<{ address: `0x${string}`; chainId: number }> {
-  const provider = window.ethereum
-  if (!provider) throw new Error("The injected Base wallet is unavailable")
+export async function currentInjectedWallet(selectedProvider?: InjectedProvider): Promise<{ address: `0x${string}`; chainId: number }> {
+  const provider = selectedProvider ?? window.ethereum
+  if (!provider) throw new Error("The injected EVM wallet is unavailable")
   const [accounts, chain] = await Promise.all([
     provider.request({ method: "eth_accounts" }),
     provider.request({ method: "eth_chainId" }),
   ])
-  if (!Array.isArray(accounts) || typeof accounts[0] !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(accounts[0])) throw new Error("The Base wallet is disconnected")
-  if (typeof chain !== "string" || !/^0x[0-9a-fA-F]+$/.test(chain)) throw new Error("The Base wallet returned an invalid chain")
+  if (!Array.isArray(accounts) || typeof accounts[0] !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(accounts[0])) throw new Error("The EVM wallet is disconnected")
+  if (typeof chain !== "string" || !/^0x[0-9a-fA-F]+$/.test(chain)) throw new Error("The EVM wallet returned an invalid chain")
   return { address: accounts[0] as `0x${string}`, chainId: Number.parseInt(chain.slice(2), 16) }
 }
 

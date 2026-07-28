@@ -10,7 +10,6 @@ pub struct FeeRecipientConfig {
 
 pub const KINIC_LEDGER_CANISTER_ID: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 pub const KINIC_INDEX_CANISTER_ID: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
-pub const KINIC_DECIMALS: u8 = 8;
 pub const BASE_MAINNET_CHAIN_ID: u64 = 8453;
 pub const OFFICIAL_EVM_RPC_CANISTER_ID: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 
@@ -55,6 +54,102 @@ pub struct EvmLivenessPolicy {
     pub fee_ceiling_multiplier_bps: u32,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImmutableBridgeConfig {
+    pub ledger_canister_id: Principal,
+    pub index_canister_id: Principal,
+    pub evm_rpc_canister_id: Principal,
+    pub custom_evm_rpc_urls: Vec<String>,
+    pub base_chain_id: u64,
+    pub bridge_contract: Vec<u8>,
+    pub timelock_contract: Vec<u8>,
+    pub ecdsa_key_name: String,
+    pub ecdsa_derivation_path: Vec<Vec<u8>>,
+    pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
+    pub deposit_rate_limit_window_seconds: u64,
+    pub deposit_rate_limit_global: u16,
+    pub deposit_rate_limit_per_principal: u16,
+    pub settlement_rate_limit_window_seconds: u64,
+    pub settlement_rate_limit_global: u16,
+    pub settlement_rate_limit_per_principal: u16,
+    pub settlement_rate_limit_per_record: u16,
+    pub transaction_gas_limit: u128,
+    pub max_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
+    pub evm_liveness: EvmLivenessPolicy,
+    pub eth_floor_wei: u128,
+    pub cycles_floor: u128,
+    pub settlement_cycle_ceiling: u128,
+}
+
+impl ImmutableBridgeConfig {
+    pub(crate) fn from_init(value: &BridgeInitArgs) -> Self {
+        Self {
+            ledger_canister_id: value.ledger_canister_id,
+            index_canister_id: value.index_canister_id,
+            evm_rpc_canister_id: value.evm_rpc_canister_id,
+            custom_evm_rpc_urls: value.custom_evm_rpc_urls.clone(),
+            base_chain_id: value.base_chain_id,
+            bridge_contract: value.bridge_contract.clone(),
+            timelock_contract: value.timelock_contract.clone(),
+            ecdsa_key_name: value.ecdsa_key_name.clone(),
+            ecdsa_derivation_path: value.ecdsa_derivation_path.clone(),
+            governance_ecdsa_derivation_path: value.governance_ecdsa_derivation_path.clone(),
+            deposit_rate_limit_window_seconds: value.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: value.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: value.deposit_rate_limit_per_principal,
+            settlement_rate_limit_window_seconds: value.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: value.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: value.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: value.settlement_rate_limit_per_record,
+            transaction_gas_limit: value.transaction_gas_limit,
+            max_fee_per_gas: value.max_fee_per_gas,
+            max_priority_fee_per_gas: value.max_priority_fee_per_gas,
+            evm_liveness: value.evm_liveness,
+            eth_floor_wei: value.eth_floor_wei,
+            cycles_floor: value.cycles_floor,
+            settlement_cycle_ceiling: value.settlement_cycle_ceiling,
+        }
+    }
+
+    pub(crate) fn with_admin(
+        self,
+        governance_principal: Principal,
+        pause_principal: Principal,
+        fee_recipient: FeeRecipientConfig,
+    ) -> BridgeInitArgs {
+        BridgeInitArgs {
+            ledger_canister_id: self.ledger_canister_id,
+            index_canister_id: self.index_canister_id,
+            evm_rpc_canister_id: self.evm_rpc_canister_id,
+            custom_evm_rpc_urls: self.custom_evm_rpc_urls,
+            base_chain_id: self.base_chain_id,
+            bridge_contract: self.bridge_contract,
+            timelock_contract: self.timelock_contract,
+            ecdsa_key_name: self.ecdsa_key_name,
+            ecdsa_derivation_path: self.ecdsa_derivation_path,
+            governance_ecdsa_derivation_path: self.governance_ecdsa_derivation_path,
+            deposit_rate_limit_window_seconds: self.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: self.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: self.deposit_rate_limit_per_principal,
+            settlement_rate_limit_window_seconds: self.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: self.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: self.settlement_rate_limit_per_record,
+            transaction_gas_limit: self.transaction_gas_limit,
+            max_fee_per_gas: self.max_fee_per_gas,
+            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            evm_liveness: self.evm_liveness,
+            eth_floor_wei: self.eth_floor_wei,
+            cycles_floor: self.cycles_floor,
+            settlement_cycle_ceiling: self.settlement_cycle_ceiling,
+            governance_principal,
+            pause_principal,
+            fee_recipient,
+        }
+    }
+}
+
 impl Default for EvmLivenessPolicy {
     fn default() -> Self {
         Self {
@@ -72,6 +167,12 @@ impl BridgeInitArgs {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.bridge_contract.len() != 20 || self.timelock_contract.len() != 20 {
             return Err("bridge and Timelock contracts must be 20 bytes");
+        }
+        if self.bridge_contract.iter().all(|byte| *byte == 0)
+            || self.timelock_contract.iter().all(|byte| *byte == 0)
+            || self.bridge_contract == self.timelock_contract
+        {
+            return Err("bridge and Timelock contracts must be nonzero and distinct");
         }
         if self.base_chain_id == 0
             || self.ecdsa_key_name.is_empty()
@@ -98,18 +199,18 @@ impl BridgeInitArgs {
         if !self.custom_evm_rpc_urls.is_empty() && self.custom_evm_rpc_urls.len() != 3 {
             return Err("custom EVM RPC must configure exactly three providers");
         }
-        let rpc_urls = self
+        let rpc_hosts = self
             .custom_evm_rpc_urls
             .iter()
-            .map(|url| url.trim().to_ascii_lowercase())
+            .filter_map(|url| rpc_host(url))
             .collect::<BTreeSet<_>>();
-        if rpc_urls.len() != self.custom_evm_rpc_urls.len()
+        if rpc_hosts.len() != self.custom_evm_rpc_urls.len()
             || self
                 .custom_evm_rpc_urls
                 .iter()
                 .any(|url| !credential_free_https(url))
         {
-            return Err("custom EVM RPC providers must be distinct credential-free HTTPS URLs");
+            return Err("custom EVM RPC providers must use distinct credential-free HTTPS hosts");
         }
         if !(60..=300).contains(&self.deposit_rate_limit_window_seconds)
             || self.deposit_rate_limit_per_principal == 0
@@ -122,8 +223,9 @@ impl BridgeInitArgs {
             || self.settlement_rate_limit_per_record == 0
             || self.settlement_rate_limit_per_record > self.settlement_rate_limit_per_principal
             || self.settlement_rate_limit_per_principal > self.settlement_rate_limit_global
+            || self.settlement_rate_limit_global > 100
         {
-            return Err("settlement rate limit must satisfy 60 <= window <= 3600 and 1 <= per-record <= per-principal <= global");
+            return Err("settlement rate limit must satisfy 60 <= window <= 3600 and 1 <= per-record <= per-principal <= global <= 100");
         }
         if self.transaction_gas_limit == 0 || self.max_fee_per_gas == 0 {
             return Err("transaction gas limits must be nonzero");
@@ -167,6 +269,7 @@ impl BridgeInitArgs {
             || self.pause_principal == self.governance_principal
             || self.fee_recipient.owner == Principal::anonymous()
             || self.fee_recipient.owner == self.pause_principal
+            || self.fee_recipient.owner == self.governance_principal
             || !matches!(self.fee_recipient.subaccount.len(), 0 | 32)
         {
             return Err("administrator principals and fee recipient must be valid");
@@ -303,6 +406,20 @@ fn credential_free_https(url: &str) -> bool {
             .all(|segment| PUBLIC_PATH_SEGMENTS.contains(&segment.to_ascii_lowercase().as_str()))
 }
 
+fn rpc_host(url: &str) -> Option<String> {
+    credential_free_https(url).then(|| {
+        let authority = url["https://".len()..]
+            .split('/')
+            .next()
+            .expect("validated URL has an authority");
+        authority
+            .rsplit_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(authority)
+            .to_ascii_lowercase()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +502,29 @@ mod tests {
         args = valid_args();
         args.settlement_rate_limit_per_principal = 61;
         assert!(args.validate().is_err());
+        args = valid_args();
+        args.settlement_rate_limit_global = 101;
+        assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn contracts_must_be_nonzero_and_distinct() {
+        let mut args = valid_args();
+        args.bridge_contract = vec![0; 20];
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.timelock_contract = vec![0; 20];
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.timelock_contract = args.bridge_contract.clone();
+        assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn administrator_roles_are_pairwise_distinct() {
+        let mut args = valid_args();
+        args.fee_recipient.owner = args.governance_principal;
+        assert!(args.validate().is_err());
     }
     fn valid_args() -> BridgeInitArgs {
         let principal = Principal::from_text("aaaaa-aa").expect("management principal");
@@ -458,9 +598,25 @@ mod tests {
         let mut args = valid_args();
         args.custom_evm_rpc_urls = valid.clone();
         assert_eq!(args.validate(), Ok(()));
+        args.custom_evm_rpc_urls = vec![
+            "https://one.example:443/rpc".into(),
+            "https://two.example:8443/v1".into(),
+            "https://three.example:9443".into(),
+        ];
+        assert_eq!(args.validate(), Ok(()));
 
         for invalid in [
             vec![valid[0].clone(), valid[0].to_uppercase(), valid[2].clone()],
+            vec![
+                "https://one.example/rpc".into(),
+                "https://one.example/v1".into(),
+                valid[2].clone(),
+            ],
+            vec![
+                "https://one.example:443/rpc".into(),
+                "https://one.example:8443/v1".into(),
+                valid[2].clone(),
+            ],
             vec![
                 "http://one.example".into(),
                 valid[1].clone(),

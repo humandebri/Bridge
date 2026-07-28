@@ -1,13 +1,26 @@
 import { Principal } from "@dfinity/principal"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { DeploymentProfile } from "@/config/profile"
-import { bridgeSignerBlockers, CANISTER_FINALIZED_OBSERVATION_TTL_MS, canisterFinalizedObservationBlockers, refetchRuntimeWriteReady, requireRuntimeWriteReady, RUNTIME_VALIDATION_TTL_MS, runtimeWriteBlocker, validateRuntime } from "./runtime-validation"
+import {
+  bridgeSignerBlockers,
+  FINALIZED_HEAD_FUTURE_SKEW_MS,
+  FINALIZED_HEAD_MAX_AGE_MS,
+  finalizedHeadTimestampBlocker,
+  refetchRuntimeWriteReady,
+  requireRuntimeWriteReady,
+  RUNTIME_VALIDATION_TTL_MS,
+  runtimeWriteBlocker,
+  validateRuntime,
+  validateRuntimeHeartbeat,
+} from "./runtime-validation"
 
 const mocks = vi.hoisted(() => ({
   createPublicClient: vi.fn(),
   createBridgeActor: vi.fn(),
   createIndexActor: vi.fn(),
   createLedgerActor: vi.fn(),
+  getBridgeStatus: vi.fn(),
+  getPublicConfig: vi.fn(),
   sha256: vi.fn(),
 }))
 
@@ -61,23 +74,9 @@ let configuredIndexId = indexId
 let baseMetadata = { symbol: "KINIC", decimals: 8 }
 let indexLedgerId = ledgerId
 let contractSigner = expectedSigner
-let canisterStatus: ReturnType<typeof validCanisterStatus>
-let canonicalObservedBlock = 10n
 const getBlockMock = vi.fn()
 const getCodeMock = vi.fn()
 const readContractMock = vi.fn()
-
-function validCanisterStatus(now = Date.now()) {
-  return {
-    base_chain_id_matches_config: true,
-    last_finalized_base_block: 10n,
-    last_finalized_base_block_hash: new Uint8Array(32).fill(0x44),
-    last_finalized_observation_ns: BigInt(now) * 1_000_000n,
-    observed_base_chain_id: [BigInt(profile.chainId)] as [bigint],
-    observed_bridge_signer: new Uint8Array(20).fill(0x33),
-    observed_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
-  }
-}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -87,11 +86,7 @@ beforeEach(() => {
   baseMetadata = { symbol: "KINIC", decimals: 8 }
   indexLedgerId = ledgerId
   contractSigner = expectedSigner
-  canonicalObservedBlock = 10n
-  canisterStatus = validCanisterStatus()
-  getBlockMock.mockImplementation(({ blockHash }: { blockHash?: `0x${string}` }) => Promise.resolve(blockHash
-      ? { number: canonicalObservedBlock, hash: blockHash }
-      : { number: 12n, hash: `0x${"66".repeat(32)}` }))
+  getBlockMock.mockResolvedValue({ number: 12n, hash: finalizedHash, timestamp: BigInt(Math.floor(Date.now() / 1_000)) })
   getCodeMock.mockImplementation(({ address }: { address: string }) => Promise.resolve(address === bridgeAddress ? "0x01" : "0x02"))
   readContractMock.mockImplementation(({ functionName }: { functionName: string }) => {
     if (functionName === "bridgeSnapshot") return Promise.resolve({ bridgeSigner: contractSigner })
@@ -107,19 +102,20 @@ beforeEach(() => {
     readContract: readContractMock,
   })
   mocks.sha256.mockImplementation((code: string) => code === "0x01" ? bridgeHash : bsnsHash)
+  mocks.getPublicConfig.mockImplementation(() => Promise.resolve({
+    base_chain_id: BigInt(profile.chainId),
+    bridge_contract: Array.from({ length: 20 }, () => 0x11),
+    ledger_canister_id: Principal.fromText(configuredLedgerId),
+    index_canister_id: Principal.fromText(configuredIndexId),
+    schema_version: 22,
+    expected_bridge_signer: new Uint8Array(20).fill(0x33),
+    evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
+    rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
+  }))
+  mocks.getBridgeStatus.mockResolvedValue({ withdrawal_fee_guard_active: false })
   mocks.createBridgeActor.mockResolvedValue({
-    refresh_base_observation: vi.fn().mockResolvedValue({ Ok: null }),
-    get_public_config: vi.fn().mockImplementation(() => Promise.resolve({
-      base_chain_id: BigInt(profile.chainId),
-      bridge_contract: Array.from({ length: 20 }, () => 0x11),
-      ledger_canister_id: Principal.fromText(configuredLedgerId),
-      index_canister_id: Principal.fromText(configuredIndexId),
-      schema_version: 16,
-      expected_bridge_signer: new Uint8Array(20).fill(0x33),
-      evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
-      rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
-    })),
-    get_bridge_status: vi.fn().mockImplementation(() => Promise.resolve(canisterStatus)),
+    get_public_config: mocks.getPublicConfig,
+    get_bridge_status: mocks.getBridgeStatus,
   })
   mocks.createLedgerActor.mockResolvedValue({
     icrc1_name: vi.fn().mockImplementation(() => Promise.resolve(ledgerMetadata.name)),
@@ -132,6 +128,33 @@ beforeEach(() => {
 })
 
 describe("validateRuntime token bindings", () => {
+  it("accepts only a recent finalized Base timestamp within the browser clock skew", () => {
+    const now = 2_000_000_000_000
+    const nowSeconds = BigInt(now / 1_000)
+    expect(finalizedHeadTimestampBlocker(nowSeconds, now)).toBeUndefined()
+    expect(finalizedHeadTimestampBlocker(nowSeconds - BigInt(FINALIZED_HEAD_MAX_AGE_MS / 1_000), now)).toBeUndefined()
+    expect(finalizedHeadTimestampBlocker(nowSeconds - BigInt(FINALIZED_HEAD_MAX_AGE_MS / 1_000) - 1n, now)).toBe("Finalized Base head is stale")
+    expect(finalizedHeadTimestampBlocker(nowSeconds + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS / 1_000), now)).toBeUndefined()
+    expect(finalizedHeadTimestampBlocker(nowSeconds + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS / 1_000) + 1n, now)).toBe("Finalized Base block timestamp is ahead of the browser clock")
+    expect(finalizedHeadTimestampBlocker(0n, now)).toBe("Finalized Base block timestamp is unavailable")
+    expect(finalizedHeadTimestampBlocker(undefined, now)).toBe("Finalized Base block timestamp is unavailable")
+  })
+
+  it("rejects a stale finalized head before pinned contract reads", async () => {
+    getBlockMock.mockResolvedValue({
+      number: 12n,
+      hash: finalizedHash,
+      timestamp: BigInt(Math.floor((Date.now() - FINALIZED_HEAD_MAX_AGE_MS) / 1_000)) - 1n,
+    })
+
+    await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: ["Finalized Base head is stale"],
+    })
+    expect(getCodeMock).not.toHaveBeenCalled()
+    expect(readContractMock).not.toHaveBeenCalled()
+  })
+
   it("rejects every write until runtime verification is ready", () => {
     expect(() => requireRuntimeWriteReady()).toThrow("Refresh to verify the reviewed deployment")
     expect(() => requireRuntimeWriteReady({ ready: false, blockers: ["Bridge signer differs"], checkedAt: 1 })).toThrow("Bridge signer differs")
@@ -163,6 +186,36 @@ describe("validateRuntime token bindings", () => {
     })
   })
 
+  it("uses only dynamic reads for the runtime heartbeat", async () => {
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
+    expect(mocks.getBridgeStatus).toHaveBeenCalledOnce()
+    expect(readContractMock).toHaveBeenCalledOnce()
+    expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: "bridgeSnapshot",
+      blockHash: finalizedHash,
+      requireCanonical: true,
+    }))
+    expect(mocks.getPublicConfig).not.toHaveBeenCalled()
+    expect(getCodeMock).not.toHaveBeenCalled()
+    expect(mocks.sha256).not.toHaveBeenCalled()
+    expect(mocks.createLedgerActor).not.toHaveBeenCalled()
+    expect(mocks.createIndexActor).not.toHaveBeenCalled()
+  })
+
+  it("fails the runtime heartbeat on a fee guard or signer rotation", async () => {
+    mocks.getBridgeStatus.mockResolvedValueOnce({ withdrawal_fee_guard_active: true })
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: ["Withdrawal fee guard is active; pause Base withdrawals and reconcile fees"],
+    })
+
+    contractSigner = `0x${"44".repeat(20)}`
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: ["Bridge signer differs from the reviewed profile"],
+    })
+  })
+
   it("accepts the reviewed TICRC1 ledger, index, and KINIC Base token", async () => {
     await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
     expect(mocks.sha256).toHaveBeenCalledWith("0x01")
@@ -171,65 +224,25 @@ describe("validateRuntime token bindings", () => {
     expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({ blockHash: finalizedHash, requireCanonical: true }))
   })
 
-  it("uses the Canister quorum snapshot even when the browser finalized head is newer", async () => {
+  it("pins code and configuration reads to the browser RPC finalized hash", async () => {
     const result = await validateRuntime(profile, profile.chainId)
     expect(result).toMatchObject({ ready: true, blockers: [] })
-    expect(getBlockMock).toHaveBeenCalledWith({ blockHash: finalizedHash })
+    expect(getBlockMock).toHaveBeenCalledWith({ blockTag: "finalized" })
+    expect(getBlockMock).toHaveBeenCalledOnce()
   })
 
-  it("rejects a Canister observation ahead of the browser RPC finalized head", async () => {
-    canisterStatus.last_finalized_base_block = 13n
-    const result = await validateRuntime(profile, profile.chainId)
-    expect(result.blockers).toContain("Canister finalized block is ahead of the configured Base RPC finalized head")
-  })
-
-  it("rejects a Canister hash that the browser RPC does not bind to the observed height", async () => {
-    canonicalObservedBlock = 9n
-    const result = await validateRuntime(profile, profile.chainId)
-    expect(result.blockers).toContain("Canister finalized block hash is not canonical on the configured Base RPC")
-  })
-
-  it("rejects missing, stale, or future Canister observations", () => {
-    const now = 100_000
-    const missing = validCanisterStatus(now)
-    missing.last_finalized_base_block_hash = new Uint8Array()
-    missing.observed_bridge_signer = new Uint8Array()
-    expect(canisterFinalizedObservationBlockers(profile, 10n, missing, now)).toEqual(expect.arrayContaining([
-      "Canister finalized block observation is unavailable",
-      "Canister observed Bridge signer is unavailable",
-    ]))
-
-    const stale = validCanisterStatus(now - CANISTER_FINALIZED_OBSERVATION_TTL_MS - 1)
-    expect(canisterFinalizedObservationBlockers(profile, 10n, stale, now)).toContain("Canister finalized block observation is unavailable or stale")
-    const future = validCanisterStatus(now + 5_001)
-    expect(canisterFinalizedObservationBlockers(profile, 10n, future, now)).toContain("Canister finalized block observation is unavailable or stale")
-  })
-
-  it("requires the Canister-observed chain, signer, and runtime hash to match the profile", () => {
-    const status = validCanisterStatus(100_000)
-    status.observed_base_chain_id = [1n]
-    status.base_chain_id_matches_config = false
-    status.observed_bridge_signer = new Uint8Array(20).fill(0x55)
-    status.observed_bridge_runtime_sha256 = new Uint8Array(32).fill(0x66)
-    expect(canisterFinalizedObservationBlockers(profile, 10n, status, 100_000)).toEqual(expect.arrayContaining([
-      "Canister observed a different Base chain",
-      "Canister observed Bridge signer differs from the reviewed profile",
-      "Canister observed Bridge runtime bytecode differs from the reviewed profile",
-    ]))
-  })
-
-  it("blocks when the Canister EVM RPC binding differs", async () => {
+  it("blocks obsolete schema and mismatched Canister EVM RPC bindings", async () => {
     mocks.createBridgeActor.mockResolvedValue({
-      refresh_base_observation: vi.fn().mockResolvedValue({ Ok: null }),
       get_public_config: vi.fn().mockResolvedValue({
         base_chain_id: BigInt(profile.chainId), bridge_contract: new Uint8Array(20).fill(0x11),
         ledger_canister_id: Principal.fromText(ledgerId), index_canister_id: Principal.fromText(indexId),
-        schema_version: 10, expected_bridge_signer: new Uint8Array(20).fill(0x33),
+        schema_version: 18, expected_bridge_signer: new Uint8Array(20).fill(0x33),
         evm_rpc_canister_id: Principal.managementCanister(), rpc_provider_urls_sha256: new Uint8Array(32).fill(0xdd),
       }),
-      get_bridge_status: vi.fn().mockImplementation(() => Promise.resolve(canisterStatus)),
+      get_bridge_status: vi.fn().mockResolvedValue({ withdrawal_fee_guard_active: false }),
     })
     const result = await validateRuntime(profile)
+    expect(result.blockers).toContain("Unsupported canister schema 18")
     expect(result.blockers).toContain("Canister EVM RPC ID differs from the profile")
     expect(result.blockers).toContain("Canister RPC provider URLs differ from the profile")
   })

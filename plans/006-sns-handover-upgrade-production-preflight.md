@@ -15,7 +15,7 @@ Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operato
 ## 固定stage
 
 1. clean revisionでCI、Verus、ABI/Candid、current schema reopenと未知schema fail-closedを完了する。
-2. 同一Wasmのtest canisterで100回計測、RPC 10 scenario、x402、実データ相当stateのupgrade、pause/cancel演習を完了する。
+2. 同一Wasmのtest canisterで100回計測、RPC 10 scenario、実データ相当stateのupgrade、pause/cancel演習を完了する。
 3. production Canisterへ通常のpause状態で同一Wasmをinstallし、Canister固有のMint SignerとGovernance Operatorを導出する。追加のbootstrap lifecycleやdeployment binding APIは設けない。
 4. 最終profile、予測contract address、4 artifactのGate Aを固定する。
 5. 一時deployerでTimelockとBridgeをpause状態で配置する。constructorは導出済みMint Signer、Governance Operator、Timelockだけをroleへ設定し、deployerへroleを残さない。
@@ -27,7 +27,7 @@ Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operato
 
 ## Evidence契約
 
-Gate Aは`profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4件とする。Gate Bはこれらに`signer-snapshot.json`、`rpc-e2e.json`、`controller-handover.json`、`sns-upgrade.json`、`x402-e2e.json`、`gate-a-receipt.json`を加えた正確に10件とする。鍵ceremonyとrelease approvalは存在しない。Mint Signerはprofile、Canister公開設定、Finalized Base stateの三者一致で検証する。
+Gate Aは`profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4件とする。Gate Bはこれらに`signer-snapshot.json`、`rpc-e2e.json`、`controller-handover.json`、`sns-upgrade.json`、`gate-a-receipt.json`を加えた正確に9件とする。鍵ceremonyとrelease approvalは存在しない。Mint Signerはprofile、Canister公開設定、Finalized Base stateの三者一致で検証する。x402はBridgeの配置・activation条件に含めない。
 
 `monitor-drill.json`はpause principal、実request ID、audit sequence、audit digestを含む。Gate B snapshotは投票開始時の承認そのものではなく、schedule/execute時のCanister live preflight結果とSNS proposal実行証跡を別々に保存する。SNS proposal IDとGate B hashはCanisterへ自己申告値として渡さず、SNSとevidence側で管理する。manifestは最大90日、schedule用とexecute用は別bundleとする。
 
@@ -35,8 +35,8 @@ Gate Aは`profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridg
 
 - 人間の永続EVM roleが0件である。
 - SNS Root-only controllerとSNS proposal upgradeが成功している。
-- RPC 10 scenarioと外部facilitatorによるBase Sepolia EIP-3009 settlementが完了している。
+- RPC 10 scenarioが完了している。
 - Canister発のTimelock schedule/executeとcanonical Finalized receiptが存在する。
 - Base/IC双方がactiveで、controller、code、role、reserveにdriftがない。
 
-x402 facilitatorがcustom bSNSをsettleできない場合はblockedとし、Permit2や独自facilitatorへ置換しない。最後の明示承認までは本番資産受付を開始しない。
+EIP-3009はbSNSの任意連携機能であり、外部facilitatorとの互換性はBridgeの本番準備をblockしない。最後の明示承認までは本番資産受付を開始しない。

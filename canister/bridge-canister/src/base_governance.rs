@@ -10,8 +10,27 @@ pub enum BaseGovernanceAction {
     PauseWithdrawals,
     SetServiceFee { value: Nat },
     CancelPendingTimelock,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GovernanceAction {
+    PauseDepositMints,
+    PauseWithdrawals,
+    SetServiceFee { value: Nat },
+    CancelPendingTimelock,
     ScheduleActivation,
     ExecuteActivation,
+}
+
+impl From<BaseGovernanceAction> for GovernanceAction {
+    fn from(value: BaseGovernanceAction) -> Self {
+        match value {
+            BaseGovernanceAction::PauseDepositMints => Self::PauseDepositMints,
+            BaseGovernanceAction::PauseWithdrawals => Self::PauseWithdrawals,
+            BaseGovernanceAction::SetServiceFee { value } => Self::SetServiceFee { value },
+            BaseGovernanceAction::CancelPendingTimelock => Self::CancelPendingTimelock,
+        }
+    }
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -33,9 +52,51 @@ pub struct BaseGovernanceReceipt {
     pub transaction_hash: Option<Vec<u8>>,
 }
 
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct EmergencyPauseReceipt {
+    pub caller: Principal,
+    pub local_deposits_paused: bool,
+    pub local_pause_audit_sequence: u64,
+    pub local_pause_audit_sha256: Vec<u8>,
+    pub base_governance: BaseGovernanceReceipt,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ActivationOperationView {
+    pub operation_id: Vec<u8>,
+    pub salt: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ActivationStatus {
+    pub deposits_paused: bool,
+    pub pending_timelock_operation: Option<ActivationOperationView>,
+}
+
+pub fn activation_status() -> Result<ActivationStatus, BaseGovernanceError> {
+    STORE.with(|store| {
+        let store = store.borrow();
+        let deposits_paused = store
+            .admin_state()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .deposits_paused;
+        let pending_timelock_operation = store
+            .pending_timelock_operation()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .map(|pending| ActivationOperationView {
+                operation_id: pending.operation_id.to_vec(),
+                salt: pending.salt.to_vec(),
+            });
+        Ok(ActivationStatus {
+            deposits_paused,
+            pending_timelock_operation,
+        })
+    })
+}
+
 pub async fn submit(
     caller: Principal,
-    action: BaseGovernanceAction,
+    action: GovernanceAction,
 ) -> Result<BaseGovernanceReceipt, BaseGovernanceError> {
     let governance =
         admin::is_governance(caller).map_err(|_| BaseGovernanceError::StorageFailure)?;
@@ -45,7 +106,7 @@ pub async fn submit(
     }
     let activation = matches!(
         action,
-        BaseGovernanceAction::ScheduleActivation | BaseGovernanceAction::ExecuteActivation
+        GovernanceAction::ScheduleActivation | GovernanceAction::ExecuteActivation
     );
     let config = STORE.with(|store| {
         store
@@ -54,9 +115,22 @@ pub async fn submit(
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .ok_or(BaseGovernanceError::StorageFailure)
     })?;
+    if let GovernanceAction::SetServiceFee { value } = &action {
+        let value = nat_u128(value).ok_or(BaseGovernanceError::InvalidArgument)?;
+        let observed = evm_rpc::bridge_snapshot(&config)
+            .await
+            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        if !bridge_core::service_fee_change_allowed(
+            value,
+            observed.snapshot.mint.max_service_fee.get(),
+        ) {
+            return Err(BaseGovernanceError::InvalidArgument);
+        }
+    }
     let operator = crate::api::cached_governance_operator_address(&config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    require_current_authorization(caller, &action)?;
     let (initialized, _, _, pending) = STORE.with(|store| {
         store
             .borrow()
@@ -75,6 +149,7 @@ pub async fn submit(
         let nonce = evm_rpc::transaction_count(&config, operator)
             .await
             .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        require_current_authorization(caller, &action)?;
         STORE.with(|store| {
             store
                 .borrow_mut()
@@ -97,7 +172,8 @@ pub async fn submit(
         return continue_pending(caller, &config, pending).await;
     }
     if activation {
-        activation_preflight(&config).await?;
+        activation_preflight(&config, caller).await?;
+        require_current_authorization(caller, &action)?;
     }
     let (kind, target, calldata) = encode_action(action, id)?;
     let payload_hash: [u8; 32] = Sha256::digest(&calldata).into();
@@ -137,6 +213,7 @@ pub async fn submit(
 
 async fn activation_preflight(
     config: &crate::config::BridgeInitArgs,
+    caller: Principal,
 ) -> Result<(), BaseGovernanceError> {
     let expected_signer = crate::api::cached_signer_address(config)
         .await
@@ -144,64 +221,76 @@ async fn activation_preflight(
     let observed = evm_rpc::bridge_snapshot(config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let (locally_paused, nonterminal_withdrawals, reserved_mint_operations) =
-        STORE.with(|store| {
-            let store = store.borrow();
-            let paused = store
-                .admin_state()
-                .map(|state| state.deposits_paused)
-                .unwrap_or(false);
-            let counters = store
-                .counters()
-                .map_err(|_| BaseGovernanceError::StorageFailure)?;
-            Ok::<_, BaseGovernanceError>((
-                paused,
-                counters.nonterminal_withdrawals,
-                counters.reserved_deposit_mint_operations,
-            ))
-        })?;
     let finalized_eth = evm_rpc::signer_eth_balance_at(config, expected_signer, observed.finalized)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     let safe_eth = evm_rpc::signer_eth_balance(config, expected_signer)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let reserve_sufficient = config
-        .reserve_policy()
-        .snapshot(
-            nonterminal_withdrawals,
-            reserved_mint_operations,
-            0,
-            finalized_eth.min(safe_eth),
-            ic_cdk::api::canister_liquid_cycle_balance(),
-        )
-        .map(|snapshot| snapshot.sufficient)
-        .unwrap_or(false);
-    if !locally_paused
-        || !reserve_sufficient
-        || observed.snapshot.bridge_signer != expected_signer
+    if observed.snapshot.bridge_signer != expected_signer
         || !observed.snapshot.deposits_paused
         || !observed.snapshot.withdrawals_paused
     {
         return Err(BaseGovernanceError::ObservationUnavailable);
     }
-    Ok(())
+    let observed_eth = finalized_eth.min(safe_eth);
+    let observed_at_ns = ic_cdk::api::time();
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let locally_paused = store
+            .admin_state()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .deposits_paused;
+        let counters = store
+            .counters()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        let nonterminal_withdrawals = store
+            .nonterminal_withdrawal_count()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        let reserve = config
+            .reserve_policy()
+            .snapshot(
+                nonterminal_withdrawals,
+                counters.reserved_deposit_mint_operations,
+                0,
+                observed_eth,
+                ic_cdk::api::canister_liquid_cycle_balance(),
+            )
+            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        if !locally_paused || !reserve.sufficient {
+            return Err(BaseGovernanceError::ObservationUnavailable);
+        }
+        store
+            .record_reserve_observation(observed_eth, observed_at_ns, caller)
+            .map_err(|_| BaseGovernanceError::StorageFailure)
+    })
 }
 
 pub async fn emergency_pause(
     caller: Principal,
-) -> Result<BaseGovernanceReceipt, BaseGovernanceError> {
-    crate::admin::pause(caller).map_err(|error| match error {
-        crate::admin::AdminError::Unauthorized => BaseGovernanceError::Unauthorized,
-        _ => BaseGovernanceError::StorageFailure,
-    })?;
+) -> Result<EmergencyPauseReceipt, BaseGovernanceError> {
+    let local_pause_audit =
+        crate::admin::pause_with_audit(caller).map_err(|error| match error {
+            crate::admin::AdminError::Unauthorized => BaseGovernanceError::Unauthorized,
+            _ => BaseGovernanceError::StorageFailure,
+        })?;
     STORE.with(|store| {
         store
             .borrow_mut()
             .enqueue_emergency_base_actions()
             .map_err(|_| BaseGovernanceError::StorageFailure)
     })?;
-    let result = process_emergency(caller).await;
+    let audit_bytes =
+        candid::encode_one(&local_pause_audit).map_err(|_| BaseGovernanceError::StorageFailure)?;
+    let result = process_emergency(caller)
+        .await
+        .map(|base_governance| EmergencyPauseReceipt {
+            caller,
+            local_deposits_paused: true,
+            local_pause_audit_sequence: local_pause_audit.sequence,
+            local_pause_audit_sha256: Sha256::digest(audit_bytes).to_vec(),
+            base_governance,
+        });
     crate::scheduler::arm_base_governance(caller);
     result
 }
@@ -228,24 +317,24 @@ pub(crate) async fn process_emergency(
     let action = if let Some(transaction) = pending {
         match transaction.kind {
             storage::GovernanceTransactionKind::PauseDepositMints => {
-                BaseGovernanceAction::PauseDepositMints
+                GovernanceAction::PauseDepositMints
             }
             storage::GovernanceTransactionKind::PauseWithdrawals => {
-                BaseGovernanceAction::PauseWithdrawals
+                GovernanceAction::PauseWithdrawals
             }
             storage::GovernanceTransactionKind::CancelTimelock { .. } => {
-                BaseGovernanceAction::CancelPendingTimelock
+                GovernanceAction::CancelPendingTimelock
             }
             storage::GovernanceTransactionKind::SetServiceFee { value } => {
-                BaseGovernanceAction::SetServiceFee {
+                GovernanceAction::SetServiceFee {
                     value: value.into(),
                 }
             }
             storage::GovernanceTransactionKind::ScheduleActivation { .. } => {
-                BaseGovernanceAction::ScheduleActivation
+                GovernanceAction::ScheduleActivation
             }
             storage::GovernanceTransactionKind::ExecuteActivation { .. } => {
-                BaseGovernanceAction::ExecuteActivation
+                GovernanceAction::ExecuteActivation
             }
         }
     } else {
@@ -254,13 +343,13 @@ pub(crate) async fn process_emergency(
             .map_err(|_| BaseGovernanceError::StorageFailure)?
         {
             Some(storage::GovernanceTransactionKind::PauseDepositMints) => {
-                BaseGovernanceAction::PauseDepositMints
+                GovernanceAction::PauseDepositMints
             }
             Some(storage::GovernanceTransactionKind::PauseWithdrawals) => {
-                BaseGovernanceAction::PauseWithdrawals
+                GovernanceAction::PauseWithdrawals
             }
             Some(storage::GovernanceTransactionKind::CancelTimelock { .. }) => {
-                BaseGovernanceAction::CancelPendingTimelock
+                GovernanceAction::CancelPendingTimelock
             }
             Some(storage::GovernanceTransactionKind::SetServiceFee { .. }) | None => {
                 return Err(BaseGovernanceError::InvalidArgument)
@@ -274,43 +363,77 @@ pub(crate) async fn process_emergency(
     submit(caller, action).await
 }
 
-fn authorized_action(governance: bool, pause: bool, action: &BaseGovernanceAction) -> bool {
+fn authorized_action(governance: bool, pause: bool, action: &GovernanceAction) -> bool {
     let safe_action = matches!(
         action,
-        BaseGovernanceAction::PauseDepositMints
-            | BaseGovernanceAction::PauseWithdrawals
-            | BaseGovernanceAction::CancelPendingTimelock
+        GovernanceAction::PauseDepositMints
+            | GovernanceAction::PauseWithdrawals
+            | GovernanceAction::CancelPendingTimelock
     );
     governance || (pause && safe_action)
 }
 
+fn require_current_authorization(
+    caller: Principal,
+    action: &GovernanceAction,
+) -> Result<(), BaseGovernanceError> {
+    let governance =
+        admin::is_governance(caller).map_err(|_| BaseGovernanceError::StorageFailure)?;
+    let pause = is_pause_principal(caller)?;
+    if authorized_action(governance, pause, action) {
+        Ok(())
+    } else {
+        Err(BaseGovernanceError::Unauthorized)
+    }
+}
+
+fn require_current_transaction_authorization(
+    caller: Principal,
+    kind: &storage::GovernanceTransactionKind,
+) -> Result<(), BaseGovernanceError> {
+    let governance =
+        admin::is_governance(caller).map_err(|_| BaseGovernanceError::StorageFailure)?;
+    let pause = is_pause_principal(caller)?;
+    let safe = matches!(
+        kind,
+        storage::GovernanceTransactionKind::PauseDepositMints
+            | storage::GovernanceTransactionKind::PauseWithdrawals
+            | storage::GovernanceTransactionKind::CancelTimelock { .. }
+    );
+    if governance || (pause && safe) {
+        Ok(())
+    } else {
+        Err(BaseGovernanceError::Unauthorized)
+    }
+}
+
 fn action_matches_pending(
-    action: &BaseGovernanceAction,
+    action: &GovernanceAction,
     kind: &storage::GovernanceTransactionKind,
 ) -> bool {
     match (action, kind) {
         (
-            BaseGovernanceAction::PauseDepositMints,
+            GovernanceAction::PauseDepositMints,
             storage::GovernanceTransactionKind::PauseDepositMints,
         )
         | (
-            BaseGovernanceAction::PauseWithdrawals,
+            GovernanceAction::PauseWithdrawals,
             storage::GovernanceTransactionKind::PauseWithdrawals,
         )
         | (
-            BaseGovernanceAction::CancelPendingTimelock,
+            GovernanceAction::CancelPendingTimelock,
             storage::GovernanceTransactionKind::CancelTimelock { .. },
         )
         | (
-            BaseGovernanceAction::ScheduleActivation,
+            GovernanceAction::ScheduleActivation,
             storage::GovernanceTransactionKind::ScheduleActivation { .. },
         )
         | (
-            BaseGovernanceAction::ExecuteActivation,
+            GovernanceAction::ExecuteActivation,
             storage::GovernanceTransactionKind::ExecuteActivation { .. },
         ) => true,
         (
-            BaseGovernanceAction::SetServiceFee { value },
+            GovernanceAction::SetServiceFee { value },
             storage::GovernanceTransactionKind::SetServiceFee { value: pending },
         ) => nat_u128(value).is_some_and(|value| value == *pending),
         _ => false,
@@ -375,7 +498,7 @@ async fn continue_pending(
         transaction.state,
         storage::GovernanceTransactionState::NonceConflict { .. }
     ) {
-        return recover_nonce_conflict(config, transaction).await;
+        return recover_nonce_conflict(caller, config, transaction).await;
     }
     if let storage::GovernanceTransactionState::Broadcasting { transaction_hash } =
         transaction.state
@@ -385,6 +508,7 @@ async fn continue_pending(
             .map_err(|_| BaseGovernanceError::BroadcastAmbiguous {
                 operation_id: transaction.id,
             })?;
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         if known {
             transaction.state = storage::GovernanceTransactionState::Submitted { transaction_hash };
             persist(&transaction)?;
@@ -396,6 +520,7 @@ async fn continue_pending(
         let observed_nonce = evm_rpc::transaction_count(config, operator)
             .await
             .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         if observed_nonce > transaction.envelope.nonce {
             STORE.with(|store| {
                 store
@@ -419,6 +544,7 @@ async fn continue_pending(
                 receipt_block_number,
                 ..
             }) => {
+                require_current_transaction_authorization(caller, &transaction.kind)?;
                 let activates = matches!(
                     transaction.kind,
                     storage::GovernanceTransactionKind::ExecuteActivation { .. }
@@ -427,6 +553,7 @@ async fn continue_pending(
                     let observed = evm_rpc::bridge_snapshot(config)
                         .await
                         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+                    require_current_transaction_authorization(caller, &transaction.kind)?;
                     if observed.snapshot.deposits_paused || observed.snapshot.withdrawals_paused {
                         return Err(BaseGovernanceError::ObservationUnavailable);
                     }
@@ -446,6 +573,7 @@ async fn continue_pending(
                 receipt_block_number,
                 ..
             }) => {
+                require_current_transaction_authorization(caller, &transaction.kind)?;
                 transaction.state = storage::GovernanceTransactionState::Reverted {
                     transaction_hash,
                     receipt_block_number,
@@ -455,7 +583,9 @@ async fn continue_pending(
                     operation_id: transaction.id,
                 });
             }
-            Ok(evm_rpc::ConfirmedReceiptOutcome::Missing) | Err(_) => {
+            Ok(evm_rpc::ConfirmedReceiptOutcome::Missing)
+            | Ok(evm_rpc::ConfirmedReceiptOutcome::Pending { .. })
+            | Err(_) => {
                 return Err(BaseGovernanceError::BroadcastAmbiguous {
                     operation_id: transaction.id,
                 });
@@ -466,6 +596,7 @@ async fn continue_pending(
         let signed = signer::sign_governance(&transaction.envelope, config)
             .await
             .map_err(|_| BaseGovernanceError::SigningUnavailable)?;
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         transaction.envelope.signed_transaction = Some(signed);
         transaction.state = storage::GovernanceTransactionState::Signed;
         persist(&transaction)?;
@@ -491,6 +622,7 @@ async fn continue_pending(
     }
     match evm_rpc::broadcast(config, &raw).await {
         Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => {
+            require_current_transaction_authorization(caller, &transaction.kind)?;
             let hash = evidence
                 .transaction_hash
                 .ok_or(BaseGovernanceError::StorageFailure)?;
@@ -504,6 +636,7 @@ async fn continue_pending(
             Ok(receipt(&transaction, Some(hash)))
         }
         Ok(evm_rpc::BroadcastOutcome::NonceConflict(evidence)) => {
+            require_current_transaction_authorization(caller, &transaction.kind)?;
             let hash = evidence
                 .transaction_hash
                 .ok_or(BaseGovernanceError::StorageFailure)?;
@@ -514,7 +647,7 @@ async fn continue_pending(
                 transaction_hash: hash,
             };
             persist(&transaction)?;
-            recover_nonce_conflict(config, transaction).await
+            recover_nonce_conflict(caller, config, transaction).await
         }
         Err(_) => Err(BaseGovernanceError::BroadcastAmbiguous {
             operation_id: transaction.id,
@@ -523,6 +656,7 @@ async fn continue_pending(
 }
 
 async fn recover_nonce_conflict(
+    caller: Principal,
     config: &crate::config::BridgeInitArgs,
     mut transaction: storage::GovernanceTransaction,
 ) -> Result<BaseGovernanceReceipt, BaseGovernanceError> {
@@ -545,6 +679,7 @@ async fn recover_nonce_conflict(
                 return Err(BaseGovernanceError::StorageFailure)
             }
         }
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         transaction.state = storage::GovernanceTransactionState::Submitted { transaction_hash };
         persist(&transaction)?;
         return Ok(receipt(&transaction, Some(transaction_hash)));
@@ -558,6 +693,7 @@ async fn recover_nonce_conflict(
     if let NonceConflictRecovery::Resync(observed_nonce) =
         nonce_conflict_recovery(false, transaction.envelope.nonce, Some(observed_nonce))
     {
+        require_current_transaction_authorization(caller, &transaction.kind)?;
         STORE.with(|store| {
             store
                 .borrow_mut()
@@ -635,7 +771,7 @@ fn is_pause_principal(caller: Principal) -> Result<bool, BaseGovernanceError> {
 }
 
 fn encode_action(
-    action: BaseGovernanceAction,
+    action: GovernanceAction,
     governance_operation_id: u64,
 ) -> Result<(storage::GovernanceTransactionKind, [u8; 20], Vec<u8>), BaseGovernanceError> {
     let (bridge, timelock) = STORE.with(|store| {
@@ -647,17 +783,17 @@ fn encode_action(
         Ok::<_, BaseGovernanceError>((config.contract_array(), config.timelock_array()))
     })?;
     match action {
-        BaseGovernanceAction::PauseDepositMints => Ok((
+        GovernanceAction::PauseDepositMints => Ok((
             storage::GovernanceTransactionKind::PauseDepositMints,
             bridge,
             selector("pauseDepositMints()"),
         )),
-        BaseGovernanceAction::PauseWithdrawals => Ok((
+        GovernanceAction::PauseWithdrawals => Ok((
             storage::GovernanceTransactionKind::PauseWithdrawals,
             bridge,
             selector("pauseWithdrawals()"),
         )),
-        BaseGovernanceAction::SetServiceFee { value } => {
+        GovernanceAction::SetServiceFee { value } => {
             let value = nat_u128(&value).ok_or(BaseGovernanceError::InvalidArgument)?;
             let mut calldata = selector("setServiceFee(uint256)");
             calldata.extend_from_slice(&word_u128(value));
@@ -667,7 +803,7 @@ fn encode_action(
                 calldata,
             ))
         }
-        BaseGovernanceAction::CancelPendingTimelock => {
+        GovernanceAction::CancelPendingTimelock => {
             let pending = STORE.with(|store| {
                 store
                     .borrow()
@@ -685,7 +821,7 @@ fn encode_action(
                 calldata,
             ))
         }
-        BaseGovernanceAction::ScheduleActivation => {
+        GovernanceAction::ScheduleActivation => {
             let salt = activation_salt(governance_operation_id);
             let operation_id = activation_operation_id(bridge, salt);
             Ok((
@@ -694,7 +830,7 @@ fn encode_action(
                 schedule_activation_calldata(bridge, salt),
             ))
         }
-        BaseGovernanceAction::ExecuteActivation => {
+        GovernanceAction::ExecuteActivation => {
             let pending = STORE
                 .with(|store| store.borrow().pending_timelock_operation())
                 .map_err(|_| BaseGovernanceError::StorageFailure)?
@@ -829,7 +965,7 @@ mod tests {
     use super::{
         action_matches_pending, activation_operation_id, activation_salt, authorized_action,
         execute_activation_calldata, nonce_conflict_recovery, selector, should_resume_activation,
-        word_u128, BaseGovernanceAction, NonceConflictRecovery,
+        word_u128, GovernanceAction, NonceConflictRecovery,
     };
     use crate::storage::GovernanceTransactionKind;
 
@@ -845,54 +981,54 @@ mod tests {
         assert!(authorized_action(
             false,
             true,
-            &BaseGovernanceAction::PauseDepositMints
+            &GovernanceAction::PauseDepositMints
         ));
         assert!(authorized_action(
             false,
             true,
-            &BaseGovernanceAction::PauseWithdrawals
+            &GovernanceAction::PauseWithdrawals
         ));
         assert!(authorized_action(
             false,
             true,
-            &BaseGovernanceAction::CancelPendingTimelock
+            &GovernanceAction::CancelPendingTimelock
         ));
         assert!(!authorized_action(
             false,
             true,
-            &BaseGovernanceAction::SetServiceFee { value: 1u8.into() },
+            &GovernanceAction::SetServiceFee { value: 1u8.into() },
         ));
         assert!(authorized_action(
             true,
             false,
-            &BaseGovernanceAction::SetServiceFee { value: 1u8.into() },
+            &GovernanceAction::SetServiceFee { value: 1u8.into() },
         ));
         assert!(!authorized_action(
             false,
             false,
-            &BaseGovernanceAction::PauseWithdrawals
+            &GovernanceAction::PauseWithdrawals
         ));
     }
 
     #[test]
     fn pending_action_matching_rejects_safe_action_disguises_and_changed_arguments() {
         assert!(!action_matches_pending(
-            &BaseGovernanceAction::PauseDepositMints,
+            &GovernanceAction::PauseDepositMints,
             &GovernanceTransactionKind::ExecuteActivation {
                 operation_id: [1; 32],
                 salt: [2; 32],
             },
         ));
         assert!(!action_matches_pending(
-            &BaseGovernanceAction::PauseWithdrawals,
+            &GovernanceAction::PauseWithdrawals,
             &GovernanceTransactionKind::SetServiceFee { value: 7 },
         ));
         assert!(!action_matches_pending(
-            &BaseGovernanceAction::SetServiceFee { value: 8u8.into() },
+            &GovernanceAction::SetServiceFee { value: 8u8.into() },
             &GovernanceTransactionKind::SetServiceFee { value: 7 },
         ));
         assert!(action_matches_pending(
-            &BaseGovernanceAction::SetServiceFee { value: 7u8.into() },
+            &GovernanceAction::SetServiceFee { value: 7u8.into() },
             &GovernanceTransactionKind::SetServiceFee { value: 7 },
         ));
     }

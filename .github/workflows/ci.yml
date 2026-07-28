@@ -1,82 +1,49 @@
-# GitHub Actions: reproduce the complete repository test, proof, build, and deploy gate on Linux.
+# GitHub Actions: complete main, nightly, and manually dispatched repository gate.
 name: bridge-ci
 
 on:
-  pull_request:
   push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: true
 
+env:
+  CI: "true"
+
 jobs:
-  verify:
+  full:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           submodules: recursive
-
+          persist-credentials: false
       - name: Verify OpenZeppelin revision
-        run: |
-          test "$(git -C contracts/lib/openzeppelin-contracts rev-parse HEAD)" = \
-            "5fd1781b1454fd1ef8e722282f86f9293cacf256"
-
+        run: test "$(git -C contracts/lib/openzeppelin-contracts rev-parse HEAD)" = "5fd1781b1454fd1ef8e722282f86f9293cacf256"
       - name: Install pinned Rust toolchain
         run: rustup show
-
       - name: Install Node.js 24.14.0
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.14.0
-
       - name: Install pnpm 11.0.8
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
           version: 11.0.8
           run_install: false
-
-      - name: Install didc 0.5.4
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o "$HOME/.local/bin/didc" \
-            https://github.com/dfinity/candid/releases/download/2025-12-18/didc-linux64
-          echo "32693c76d9c6fe0f273f2c1ebf7e48ba3c383e925e5afd17dd264a06aed9fbcc  $HOME/.local/bin/didc" \
-            | sha256sum --check
-          chmod +x "$HOME/.local/bin/didc"
-          test "$("$HOME/.local/bin/didc" --version)" = "didc 0.5.4"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install ripgrep
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes ripgrep
-          rg --version
-
-      - name: Install Foundry 1.7.1
-        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
-        with:
-          version: v1.7.1
-
-      - name: Install ICP CLI 1.0.2
-        env:
-          ICP_CLI_DISABLE_UPDATE: "1"
-          ICP_CLI_NO_MODIFY_PATH: "1"
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o /tmp/icp-cli-installer.sh \
-            https://github.com/dfinity/icp-cli/releases/download/v1.0.2/icp-cli-installer.sh
-          echo "e7e29ec7a99c854264477f8dcede86670ff3a854f035b6fac40d0c891b9cf70e  /tmp/icp-cli-installer.sh" \
-            | sha256sum --check
-          sh /tmp/icp-cli-installer.sh --quiet
-
+      - name: Install complete CI toolchain
+        run: scripts/install-ci-tools.sh all
       - name: Configure CI identity
         run: |
           icp identity new bridge-ci \
@@ -85,74 +52,15 @@ jobs:
           rm -f /tmp/bridge-ci-seed
           icp identity default bridge-ci
           test "$(icp identity principal)" != "2vxsx-fae"
-
-      - name: Install ic-wasm 0.10.0
-        env:
-          IC_WASM_NO_MODIFY_PATH: "1"
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o /tmp/ic-wasm-installer.sh \
-            https://github.com/dfinity/ic-wasm/releases/download/0.10.0/ic-wasm-installer.sh
-          echo "00c361c9c1d53ef464660c0e414cbaf50b602e21f16811fe4134077deaaecabb  /tmp/ic-wasm-installer.sh" \
-            | sha256sum --check
-          sh /tmp/ic-wasm-installer.sh --quiet
-          test "$(ic-wasm --version)" = "ic-wasm 0.10.0"
-
-      - name: Install Z3 4.16.0
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o /tmp/z3.zip \
-            https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/z3-4.16.0-x64-glibc-2.39.zip
-          echo "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e  /tmp/z3.zip" \
-            | sha256sum --check
-          unzip -q /tmp/z3.zip -d "$HOME/.local/z3"
-          mkdir -p "$HOME/.local/bin"
-          ln -s "$(find "$HOME/.local/z3" -type f -path '*/bin/z3' -print -quit)" "$HOME/.local/bin/z3"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install Verus 0.2026.07.05
-        run: |
-          rustup toolchain install 1.96.0 --profile minimal
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o /tmp/verus.zip \
-            https://github.com/verus-lang/verus/releases/download/release/0.2026.07.05.49b8806/verus-0.2026.07.05.49b8806-x86-linux.zip
-          echo "cb4fe7db423fdda5e9aa77b2c3e632f8a618b6a991509283aae591f0a914d34c  /tmp/verus.zip" \
-            | sha256sum --check
-          unzip -q /tmp/verus.zip -d "$HOME/.local/verus"
-          mkdir -p "$HOME/.local/bin"
-          ln -s "$(find "$HOME/.local/verus" -type f -name verus -print -quit)" "$HOME/.local/bin/verus"
-
-      - name: Install Lean 4.30.0
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            -o /tmp/elan-init.sh \
-            https://raw.githubusercontent.com/leanprover/elan/6737edca3d2ca3dbaa1b47b87769b48b420633ae/elan-init.sh
-          echo "a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53  /tmp/elan-init.sh" \
-            | sha256sum --check
-          sh /tmp/elan-init.sh -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-          "$HOME/.elan/bin/lean" --version
-
+      - name: Install Foundry 1.7.1
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: v1.7.1
       - name: Install UI dependencies and Chromium
         run: |
           pnpm --dir ui install --frozen-lockfile
           pnpm --dir ui exec playwright install --with-deps chromium
-
       - name: Run complete repository gate
         run: scripts/ci-local.sh all
-
       - name: Verify smoke restored the ICP configuration
         run: git diff --exit-code -- icp.yaml
-
-  # Temporary compatibility context used only to bootstrap the trusted gate.
-  # Branch protection switches to trusted-pr-gate immediately after this lands.
-  pr-gate:
-    if: always()
-    needs: [verify]
-    runs-on: ubuntu-24.04
-    permissions: {}
-    steps:
-      - name: Require the complete repository gate
-        env:
-          VERIFY_RESULT: ${{ needs.verify.result }}
-        run: test "$VERIFY_RESULT" = success

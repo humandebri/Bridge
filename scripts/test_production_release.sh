@@ -33,10 +33,10 @@ RS
 printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' 'printf '\''{"bridge":{"transaction_hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","block_number":1,"block_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"timelock":{"transaction_hash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","block_number":1,"block_hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}\n'\'' >"$BRIDGE_DEPLOYMENT_BINDING_FILE"' >"$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' >"$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TEST_TMP_ROOT/source/scripts/production-live-preflight.sh"
-cp "$ROOT/scripts/production-release.sh" "$TEST_TMP_ROOT/source/scripts/production-release.sh"
+cp "$ROOT/scripts/production-release.sh" "$ROOT/scripts/production-validation.sh" "$TEST_TMP_ROOT/source/scripts/"
 chmod +x "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh" "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh" "$TEST_TMP_ROOT/source/scripts/production-live-preflight.sh" "$TEST_TMP_ROOT/source/scripts/production-release.sh"
 git -C "$TEST_TMP_ROOT/source" add source.txt .gitignore Cargo.toml Cargo.lock src/main.rs
-git -C "$TEST_TMP_ROOT/source" add scripts/production-deploy-driver.sh scripts/production-activate-driver.sh scripts/production-live-preflight.sh scripts/production-release.sh
+git -C "$TEST_TMP_ROOT/source" add scripts/production-deploy-driver.sh scripts/production-activate-driver.sh scripts/production-live-preflight.sh scripts/production-release.sh scripts/production-validation.sh
 git -C "$TEST_TMP_ROOT/source" commit -qm 'test source'
 printf '%s\n' '#!/usr/bin/env bash' 'touch "$PROFILE_OVERRIDE_MARKER"' 'exit 0' >"$TEST_TMP_ROOT/malicious-profile"
 chmod +x "$TEST_TMP_ROOT/malicious-profile"
@@ -84,6 +84,15 @@ expect_rejected() {
   fi
 }
 
+ACTIVATION_ARGS=(
+  --phase schedule
+  --submission "$TEST_TMP_ROOT/activation-submission.json"
+  --sns-identity proposer
+  --sns-neuron-subaccount "$(printf 'a%.0s' {1..64})"
+  --sns-proposer-principal "aaaaa-aa"
+  --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION
+)
+
 write_gate 1
 expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 [[ ! -e "$TEST_TMP_ROOT/deployed" ]]
@@ -113,7 +122,7 @@ rg -q '^validate-bundle --offline ' "$TEST_TMP_ROOT/gate-calls"
 
 write_gate 1
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
-  --release-inputs "$TEST_TMP_ROOT/release-inputs" --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ ! -e "$TEST_TMP_ROOT/activated" ]]
 
 write_gate 0
@@ -130,11 +139,42 @@ json.dump(manifest,open(sys.argv[1],'w'),sort_keys=True,separators=(',',':'))
 json.dump({'profile_file_sha256':forged},open(sys.argv[2],'w'),sort_keys=True,separators=(',',':'))
 PY
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
-  --release-inputs "$TEST_TMP_ROOT/release-inputs" --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 mv "$TEST_TMP_ROOT/manifest-valid.json" "$TEST_TMP_ROOT/bundle-b/release-manifest.json"
 mv "$TEST_TMP_ROOT/inputs-valid.json" "$TEST_TMP_ROOT/release-inputs/release-inputs-manifest.json"
 ACTION_MARKER="$TEST_TMP_ROOT/activated" run_release activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
-  --release-inputs "$TEST_TMP_ROOT/release-inputs" --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ -e "$TEST_TMP_ROOT/activated" ]]
 rg -q '^verify-live ' "$TEST_TMP_ROOT/gate-calls"
 [[ ! -e "$TEST_TMP_ROOT/profile-override-used" ]]
+
+printf '{"phase":"schedule","release_id":"release-test","source_revision":"%s"}\n' \
+  "$SOURCE_REVISION" >"$TEST_TMP_ROOT/schedule-receipt.json"
+EXECUTION_ARGS=(
+  --phase execute
+  --submission "$TEST_TMP_ROOT/execution-submission.json"
+  --sns-identity proposer
+  --sns-neuron-subaccount "$(printf 'b%.0s' {1..64})"
+  --sns-proposer-principal "aaaaa-aa"
+  --prior-schedule-receipt "$TEST_TMP_ROOT/schedule-receipt.json"
+  --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE
+)
+ACTION_MARKER="$TEST_TMP_ROOT/executed" run_release activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${EXECUTION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+[[ -e "$TEST_TMP_ROOT/executed" ]]
+rg -q '^verify-schedule-receipt-live ' "$TEST_TMP_ROOT/gate-calls"
+
+mkdir -p "$TEST_TMP_ROOT/failing-git"
+REAL_GIT="$(command -v git)"
+cat >"$TEST_TMP_ROOT/failing-git/git" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"submodule status --recursive"* ]]; then exit 42; fi
+exec "$REAL_GIT" "$@"
+SH
+chmod +x "$TEST_TMP_ROOT/failing-git/git"
+if PATH="$TEST_TMP_ROOT/failing-git:$PATH" REAL_GIT="$REAL_GIT" bash -c \
+  'source "$1"; production_require_clean_source "$2"' _ \
+  "$TEST_TMP_ROOT/source/scripts/production-validation.sh" "$TEST_TMP_ROOT/source" >/dev/null 2>&1; then
+  echo "production source validation accepted a failed submodule inspection" >&2
+  exit 1
+fi

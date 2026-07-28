@@ -4,19 +4,28 @@ use crate::{
     signer, storage_or_trap, STORE,
 };
 use bridge_core::{
-    DepositEvent, DepositHoldResolution, EvmOperationEvent, EvmOperationId, EvmOperationKind,
-    EvmOperationState, LedgerCallOutcome, LedgerOperation, LedgerTransferIdentity,
-    ReconciliationHoldRecord, ReconciliationScanProgress, ReconciliationTarget, RequestReference,
-    TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId, WithdrawalState,
+    Amount, DepositEvent, DepositHoldResolution, DepositQuote, DepositRefundReason,
+    EvmOperationEvent, EvmOperationId, EvmOperationKind, EvmOperationState, LedgerCallOutcome,
+    LedgerOperation, LedgerTransferIdentity, ReconciliationHoldRecord, ReconciliationScanProgress,
+    ReconciliationTarget, RequestReference, TransferAttempt, WithdrawalEvent,
+    WithdrawalHoldResolution, WithdrawalId, WithdrawalState,
 };
 use candid::{CandidType, Deserialize};
 use sha2::{Digest, Sha256};
 
-fn retry_memo(hold_id: u64, identity: &LedgerTransferIdentity) -> [u8; 32] {
+fn retry_memo(domain: &[u8], hold_id: u64, identity: &LedgerTransferIdentity) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"KINIC-WITHDRAWAL-RETRY");
+    digest.update(domain);
     digest.update(hold_id.to_be_bytes());
     digest.update(identity.created_at_time_ns.to_be_bytes());
+    digest.finalize().into()
+}
+
+pub(crate) fn deposit_refund_retry_memo(deposit_id: [u8; 32], attempt_no: u64) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"KINIC-DEPOSIT-REFUND");
+    digest.update(deposit_id);
+    digest.update(attempt_no.to_be_bytes());
     digest.finalize().into()
 }
 
@@ -84,6 +93,7 @@ pub enum SettlementActionError {
     Unauthorized,
     Busy,
     StorageFailure,
+    LedgerUnavailable,
     ConfirmationRequired,
     InvalidConfirmationObservation,
     TransactionMismatch,
@@ -159,6 +169,17 @@ fn confirmation_evidence(
         ConfirmationEvidence::WaitForFinalized
     } else {
         ConfirmationEvidence::Verified
+    }
+}
+
+fn visible_confirmation_hash(
+    stored_transaction_hash: [u8; 32],
+    observed_transaction_hash: [u8; 32],
+) -> [u8; 32] {
+    if observed_transaction_hash != stored_transaction_hash {
+        observed_transaction_hash
+    } else {
+        stored_transaction_hash
     }
 }
 
@@ -272,6 +293,10 @@ fn single_envelope(
 
 const LEDGER_DEDUP_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
+fn prepared_release_fee_matches_configured(prepared: u128, configured: u128) -> bool {
+    prepared == configured
+}
+
 fn resolve_reconciliation_success(
     config: &crate::config::BridgeInitArgs,
     target: ReconciliationTarget,
@@ -288,12 +313,20 @@ fn resolve_reconciliation_success(
                 )
                 .unwrap_or_else(|| ic_cdk::trap("missing reconciliation hold"));
                 match hold.request {
-                    RequestReference::Deposit(id) => advance_deposit_hold(
+                    RequestReference::DepositFunding(id) => advance_deposit_hold(
                         &mut store,
-                        config,
                         id,
                         hold_id,
-                        DepositHoldResolution::Succeeded {
+                        DepositHoldResolution::FundingSucceeded {
+                            ledger_block_index: block_index,
+                        },
+                        Some(&scan_target),
+                    ),
+                    RequestReference::DepositRefund(id) => advance_deposit_hold(
+                        &mut store,
+                        id,
+                        hold_id,
+                        DepositHoldResolution::RefundSucceeded {
                             ledger_block_index: block_index,
                         },
                         Some(&scan_target),
@@ -335,19 +368,39 @@ fn resolve_reconciliation_absence(
                 )
                 .unwrap_or_else(|| ic_cdk::trap("missing reconciliation hold"));
                 match hold.request {
-                    RequestReference::Deposit(id) => advance_deposit_hold(
+                    RequestReference::DepositFunding(id) => advance_deposit_hold(
                         &mut store,
-                        config,
                         id,
                         hold_id,
-                        DepositHoldResolution::Absent { history_watermark },
+                        DepositHoldResolution::FundingAbsent { history_watermark },
                         Some(&scan_target),
                     ),
+                    RequestReference::DepositRefund(id) => {
+                        let mut next_identity = transfer;
+                        next_identity.created_at_time_ns = ic_cdk::api::time()
+                            .max(next_identity.created_at_time_ns.saturating_add(1));
+                        next_identity.memo = retry_memo(
+                            b"KINIC-DEPOSIT-REFUND-RETRY",
+                            hold_id.get(),
+                            &next_identity,
+                        );
+                        advance_deposit_hold(
+                            &mut store,
+                            id,
+                            hold_id,
+                            DepositHoldResolution::RefundAbsent {
+                                history_watermark,
+                                next_identity: Box::new(next_identity),
+                            },
+                            Some(&scan_target),
+                        );
+                    }
                     RequestReference::Withdrawal(id) => {
                         let mut next_identity = transfer;
                         next_identity.created_at_time_ns = ic_cdk::api::time()
                             .max(next_identity.created_at_time_ns.saturating_add(1));
-                        next_identity.memo = retry_memo(hold_id.get(), &next_identity);
+                        next_identity.memo =
+                            retry_memo(b"KINIC-WITHDRAWAL-RETRY", hold_id.get(), &next_identity);
                         advance_withdrawal_hold(
                             &mut store,
                             config,
@@ -372,39 +425,18 @@ fn resolve_reconciliation_absence(
 
 fn advance_deposit_hold(
     store: &mut crate::storage::StableStore,
-    config: &crate::config::BridgeInitArgs,
     deposit_id: bridge_core::DepositId,
     hold_id: bridge_core::HoldId,
     resolution: DepositHoldResolution,
     scan_target: Option<&ReconciliationTarget>,
 ) {
-    let DepositHoldResolution::Succeeded {
-        ledger_block_index: block_index,
-    } = resolution
-    else {
-        store
-            .resolve_deposit_hold_and_scan(deposit_id, hold_id, resolution, scan_target)
-            .unwrap_or_else(|error| {
-                ic_cdk::trap(format!(
-                    "deposit reconciliation persistence failed: {error}"
-                ))
-            });
-        return;
-    };
-    let recipient = store
-        .deposit_intent(deposit_id.bytes())
-        .unwrap_or_else(|error| ic_cdk::trap(format!("deposit intent read failed: {error}")))
-        .unwrap_or_else(|| ic_cdk::trap("missing deposit intent"))
-        .base_recipient;
-    crate::api::prepare_mint_in_store_and_scan(
-        store,
-        deposit_id.bytes(),
-        block_index,
-        recipient,
-        config,
-        scan_target,
-    )
-    .unwrap_or_else(|error| ic_cdk::trap(format!("mint preparation failed: {error:?}")));
+    store
+        .resolve_deposit_hold_and_scan(deposit_id, hold_id, resolution, scan_target)
+        .unwrap_or_else(|error| {
+            ic_cdk::trap(format!(
+                "deposit reconciliation persistence failed: {error}"
+            ))
+        });
 }
 
 fn advance_withdrawal_hold(
@@ -658,10 +690,12 @@ async fn rebroadcast_current_evm_transaction(
     lease.renew_before_external_call()?;
     let evidence = match evm_rpc::broadcast(config, &current_raw).await {
         Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => evidence,
-        Ok(evm_rpc::BroadcastOutcome::NonceConflict(_)) => {
+        Ok(evm_rpc::BroadcastOutcome::NonceConflict(rpc_audit)) => {
+            lease.ensure_current()?;
+            persist_nonce_conflict_pause("rebroadcast_evm_operation", &rpc_audit)?;
             return Ok(Some(EvmAdvance::Stopped(
                 SettlementStopReason::NonceConflict,
-            )))
+            )));
         }
         Err(_) => return Ok(None),
     };
@@ -706,10 +740,12 @@ async fn broadcast_pending_evm_replacement(
     lease.renew_before_external_call()?;
     let evidence = match evm_rpc::broadcast(config, &raw).await {
         Ok(evm_rpc::BroadcastOutcome::Submitted(evidence)) => evidence,
-        Ok(evm_rpc::BroadcastOutcome::NonceConflict(_)) => {
+        Ok(evm_rpc::BroadcastOutcome::NonceConflict(rpc_audit)) => {
+            lease.ensure_current()?;
+            persist_nonce_conflict_pause("broadcast_evm_replacement", &rpc_audit)?;
             return Ok(Some(EvmAdvance::Stopped(
                 SettlementStopReason::NonceConflict,
-            )))
+            )));
         }
         Err(_) => return Ok(None),
     };
@@ -791,6 +827,71 @@ fn ledger_stop(outcome: &LedgerCallOutcome) -> SettlementStopReason {
     }
 }
 
+fn persist_nonce_conflict_pause(
+    operation: &str,
+    rpc_audit: &evm_rpc::RpcAuditEvidence,
+) -> Result<(), SettlementActionError> {
+    let decision = evm_rpc::nonce_conflict_decision(
+        operation,
+        rpc_audit
+            .transaction_hash
+            .ok_or(SettlementActionError::StorageFailure)?,
+    );
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .pause_deposits_with_rpc_audit(
+                ic_cdk::api::canister_self(),
+                ic_cdk::api::time(),
+                vec![
+                    crate::rpc_audit_event_kind(rpc_audit),
+                    crate::rpc_decision_event_kind(&decision),
+                ],
+            )
+            .map_err(|_| SettlementActionError::StorageFailure)
+    })
+}
+
+fn select_submitted_transaction_hash(
+    operation_id: EvmOperationId,
+    expected_current_hash: [u8; 32],
+    observed_hash: [u8; 32],
+) -> Result<bridge_core::EvmOperationRecord, SettlementActionError> {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let mut operation = store
+            .evm_operation(operation_id.get())
+            .map_err(|_| SettlementActionError::StorageFailure)?
+            .ok_or(SettlementActionError::NotFound)?;
+        if operation.state
+            != (EvmOperationState::Submitted {
+                transaction_hash: expected_current_hash,
+            })
+        {
+            return Err(SettlementActionError::Busy);
+        }
+        if observed_hash != expected_current_hash {
+            operation.state = EvmOperationState::Submitted {
+                transaction_hash: observed_hash,
+            };
+            let envelope = store
+                .evm_envelope(operation_id.get())
+                .map_err(|_| SettlementActionError::StorageFailure)?
+                .ok_or(SettlementActionError::StorageFailure)?;
+            store
+                .promote_submitted_evm_replacement_with_rpc_audit(
+                    &operation,
+                    &envelope,
+                    ic_cdk::api::canister_self(),
+                    ic_cdk::api::time(),
+                    Vec::new(),
+                )
+                .map_err(|_| SettlementActionError::StorageFailure)?;
+        }
+        Ok(operation)
+    })
+}
+
 fn assign_evm_nonce_for(
     operation_id: bridge_core::EvmOperationId,
 ) -> Result<bool, SettlementActionError> {
@@ -853,10 +954,10 @@ async fn advance_evm_operation(
             match ensure_nonce_initialized_inner(config, Some(lease)).await {
                 Ok(()) => {}
                 Err(NonceInitializationError::Observation) => {
-                    return Ok(EvmAdvance::Stopped(SettlementStopReason::NonceUnavailable))
+                    return Ok(EvmAdvance::Stopped(SettlementStopReason::NonceUnavailable));
                 }
                 Err(NonceInitializationError::Storage) => {
-                    return Err(SettlementActionError::StorageFailure)
+                    return Err(SettlementActionError::StorageFailure);
                 }
             }
             if !assign_evm_nonce_for(operation_id)? {
@@ -891,7 +992,7 @@ async fn advance_evm_operation(
                         Err(_) => {
                             return Ok(EvmAdvance::Stopped(
                                 SettlementStopReason::SigningUnavailable,
-                            ))
+                            ));
                         }
                     }
                 }
@@ -903,25 +1004,7 @@ async fn advance_evm_operation(
             };
             lease.ensure_current()?;
             if let evm_rpc::BroadcastOutcome::NonceConflict(rpc_audit) = &broadcast {
-                let decision = evm_rpc::nonce_conflict_decision(
-                    "broadcast_evm_operation",
-                    rpc_audit
-                        .transaction_hash
-                        .ok_or(SettlementActionError::StorageFailure)?,
-                );
-                STORE.with(|store| {
-                    store
-                        .borrow_mut()
-                        .pause_deposits_with_rpc_audit(
-                            ic_cdk::api::canister_self(),
-                            ic_cdk::api::time(),
-                            vec![
-                                crate::rpc_audit_event_kind(rpc_audit),
-                                crate::rpc_decision_event_kind(&decision),
-                            ],
-                        )
-                        .map_err(|_| SettlementActionError::StorageFailure)
-                })?;
+                persist_nonce_conflict_pause("broadcast_evm_operation", rpc_audit)?;
                 return Ok(EvmAdvance::Stopped(SettlementStopReason::NonceConflict));
             }
             let rpc_audit = match &broadcast {
@@ -967,26 +1050,83 @@ async fn advance_evm_operation(
         }
         EvmOperationState::Submitted { transaction_hash } => {
             lease.renew_before_external_call()?;
-            let outcome = match evm_rpc::confirmed_receipt_outcome(config, transaction_hash).await {
-                Ok(outcome) => outcome,
-                Err(evm_rpc::ObservationError::Inconsistent) => {
-                    let decision = evm_rpc::quorum_loss_decision(
-                        "confirm_evm_operation",
-                        Some(transaction_hash),
-                    );
-                    STORE
-                        .with(|store| {
-                            store.borrow_mut().append_audit_events_atomically(
-                                ic_cdk::api::canister_self(),
-                                vec![crate::rpc_decision_event_kind(&decision)],
-                            )
-                        })
-                        .map_err(|_| SettlementActionError::StorageFailure)?;
-                    return Ok(EvmAdvance::Stopped(SettlementStopReason::RpcInconsistent));
-                }
-                Err(error) => return Ok(EvmAdvance::Stopped(map_observation_stop(error))),
-            };
+            let mut outcome =
+                match evm_rpc::confirmed_receipt_outcome(config, transaction_hash).await {
+                    Ok(outcome) => outcome,
+                    Err(evm_rpc::ObservationError::Inconsistent) => {
+                        let decision = evm_rpc::quorum_loss_decision(
+                            "confirm_evm_operation",
+                            Some(transaction_hash),
+                        );
+                        STORE
+                            .with(|store| {
+                                store.borrow_mut().append_audit_events_atomically(
+                                    ic_cdk::api::canister_self(),
+                                    vec![crate::rpc_decision_event_kind(&decision)],
+                                )
+                            })
+                            .map_err(|_| SettlementActionError::StorageFailure)?;
+                        return Ok(EvmAdvance::Stopped(SettlementStopReason::RpcInconsistent));
+                    }
+                    Err(error) => return Ok(EvmAdvance::Stopped(map_observation_stop(error))),
+                };
             lease.ensure_current()?;
+            let mut observed_transaction_hash = transaction_hash;
+            if matches!(outcome, evm_rpc::ConfirmedReceiptOutcome::Missing) {
+                let prior_transactions = STORE.with(|store| {
+                    store
+                        .borrow()
+                        .evm_envelope(operation_id.get())
+                        .map_err(|_| SettlementActionError::StorageFailure)?
+                        .ok_or(SettlementActionError::StorageFailure)
+                        .map(|envelope| envelope.prior_signed_transactions)
+                })?;
+                let mut pending_receipt_block = None;
+                for raw in prior_transactions.iter().rev() {
+                    let prior_hash = signer::transaction_hash(raw);
+                    lease.renew_before_external_call()?;
+                    let prior_outcome = match evm_rpc::confirmed_receipt_outcome(config, prior_hash)
+                        .await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(evm_rpc::ObservationError::Inconsistent) => {
+                            let decision = evm_rpc::quorum_loss_decision(
+                                "confirm_prior_evm_operation",
+                                Some(prior_hash),
+                            );
+                            STORE
+                                .with(|store| {
+                                    store.borrow_mut().append_audit_events_atomically(
+                                        ic_cdk::api::canister_self(),
+                                        vec![crate::rpc_decision_event_kind(&decision)],
+                                    )
+                                })
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            return Ok(EvmAdvance::Stopped(SettlementStopReason::RpcInconsistent));
+                        }
+                        Err(error) => return Ok(EvmAdvance::Stopped(map_observation_stop(error))),
+                    };
+                    lease.ensure_current()?;
+                    match prior_outcome {
+                        evm_rpc::ConfirmedReceiptOutcome::Missing => {}
+                        evm_rpc::ConfirmedReceiptOutcome::Pending {
+                            receipt_block_number,
+                        } => pending_receipt_block = Some(receipt_block_number),
+                        terminal => {
+                            observed_transaction_hash = prior_hash;
+                            outcome = terminal;
+                            break;
+                        }
+                    }
+                }
+                if matches!(outcome, evm_rpc::ConfirmedReceiptOutcome::Missing) {
+                    if let Some(receipt_block_number) = pending_receipt_block {
+                        outcome = evm_rpc::ConfirmedReceiptOutcome::Pending {
+                            receipt_block_number,
+                        };
+                    }
+                }
+            }
             match outcome {
                 evm_rpc::ConfirmedReceiptOutcome::Missing => {
                     if let Some(outcome) = maintain_missing_evm_transaction(
@@ -1001,11 +1141,21 @@ async fn advance_evm_operation(
                     }
                     Ok(EvmAdvance::Waiting(transaction_hash))
                 }
+                evm_rpc::ConfirmedReceiptOutcome::Pending { .. } => {
+                    Ok(EvmAdvance::Waiting(transaction_hash))
+                }
                 evm_rpc::ConfirmedReceiptOutcome::Succeeded {
                     receipt_block_number,
                     finalized_head_block_number,
                     rpc_audit,
                 } => {
+                    let visible_hash =
+                        visible_confirmation_hash(transaction_hash, observed_transaction_hash);
+                    let terminal_operation = select_submitted_transaction_hash(
+                        operation_id,
+                        transaction_hash,
+                        visible_hash,
+                    )?;
                     match confirmation_evidence(
                         lease.expected_receipt_block_number(),
                         lease.expected_finalized_block_number(),
@@ -1018,20 +1168,16 @@ async fn advance_evm_operation(
                             ));
                         }
                         ConfirmationEvidence::WaitForFinalized => {
-                            return Ok(EvmAdvance::Waiting(transaction_hash));
+                            return Ok(EvmAdvance::Waiting(visible_hash));
                         }
                         ConfirmationEvidence::Verified => {}
                     }
                     STORE.with(|store| {
                         let mut store = store.borrow_mut();
-                        let current = store
-                            .evm_operation(operation_id.get())
-                            .map_err(|_| SettlementActionError::StorageFailure)?
-                            .ok_or(SettlementActionError::NotFound)?;
                         confirm_evm_member(
                             &mut store,
-                            current,
-                            transaction_hash,
+                            terminal_operation,
+                            visible_hash,
                             receipt_block_number,
                             finalized_head_block_number,
                             vec![
@@ -1039,7 +1185,7 @@ async fn advance_evm_operation(
                                 crate::rpc_decision_event_kind(
                                     &evm_rpc::quorum_continued_decision(
                                         "confirm_evm_operation",
-                                        Some(transaction_hash),
+                                        Some(visible_hash),
                                         false,
                                     ),
                                 ),
@@ -1054,6 +1200,13 @@ async fn advance_evm_operation(
                     finalized_head_block_number,
                     rpc_audit,
                 } => {
+                    let visible_hash =
+                        visible_confirmation_hash(transaction_hash, observed_transaction_hash);
+                    let terminal_operation = select_submitted_transaction_hash(
+                        operation_id,
+                        transaction_hash,
+                        visible_hash,
+                    )?;
                     match confirmation_evidence(
                         lease.expected_receipt_block_number(),
                         lease.expected_finalized_block_number(),
@@ -1066,20 +1219,20 @@ async fn advance_evm_operation(
                             ));
                         }
                         ConfirmationEvidence::WaitForFinalized => {
-                            return Ok(EvmAdvance::Waiting(transaction_hash));
+                            return Ok(EvmAdvance::Waiting(visible_hash));
                         }
                         ConfirmationEvidence::Verified => {}
                     }
                     mark_evm_reverted(
-                        operation,
-                        transaction_hash,
+                        terminal_operation,
+                        visible_hash,
                         receipt_block_number,
                         finalized_head_block_number,
                         vec![
                             crate::rpc_audit_event_kind(&rpc_audit),
                             crate::rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
                                 "confirm_evm_operation",
-                                Some(transaction_hash),
+                                Some(visible_hash),
                                 false,
                             )),
                         ],
@@ -1109,13 +1262,16 @@ async fn advance_hold(
             LedgerOperation::PullDeposit => {
                 ledger::pull(config.ledger_canister_id, &hold.transfer).await
             }
+            LedgerOperation::RefundDeposit => {
+                ledger::refund(config.ledger_canister_id, &hold.transfer).await
+            }
             LedgerOperation::ReleaseWithdrawal => {
                 ledger::release(config.ledger_canister_id, &hold.transfer).await
             }
             LedgerOperation::FeePayout => {
                 return Ok(HoldAdvance::Stopped(
                     SettlementStopReason::LedgerUnavailable,
-                ))
+                ));
             }
         };
         lease.ensure_current()?;
@@ -1125,12 +1281,20 @@ async fn advance_hold(
         STORE.with(|store| {
             let mut store = store.borrow_mut();
             match hold.request {
-                RequestReference::Deposit(id) => advance_deposit_hold(
+                RequestReference::DepositFunding(id) => advance_deposit_hold(
                     &mut store,
-                    config,
                     id,
                     hold.id,
-                    DepositHoldResolution::Succeeded {
+                    DepositHoldResolution::FundingSucceeded {
+                        ledger_block_index: block_index,
+                    },
+                    None,
+                ),
+                RequestReference::DepositRefund(id) => advance_deposit_hold(
+                    &mut store,
+                    id,
+                    hold.id,
+                    DepositHoldResolution::RefundSucceeded {
                         ledger_block_index: block_index,
                     },
                     None,
@@ -1184,20 +1348,202 @@ async fn advance_hold(
             Ok(HoldAdvance::Progress)
         }
         ledger::ReconciliationOutcome::Succeeded { block_index } => {
-            resolve_reconciliation_success(config, target, block_index);
-            Ok(HoldAdvance::Continue)
+            match bridge_core::hold_resolution_decision(true, false) {
+                bridge_core::HoldResolutionDecision::ResolveSucceeded => {
+                    resolve_reconciliation_success(config, target, block_index);
+                    Ok(HoldAdvance::Continue)
+                }
+                _ => Ok(HoldAdvance::Progress),
+            }
         }
         ledger::ReconciliationOutcome::Absent {
             ledger_watermark,
             index_watermark,
         } => {
-            if index_watermark < ledger_watermark {
-                return Ok(HoldAdvance::Progress);
+            let complete_absence = index_watermark >= ledger_watermark;
+            match bridge_core::hold_resolution_decision(false, complete_absence) {
+                bridge_core::HoldResolutionDecision::ResolveAbsent => {
+                    resolve_reconciliation_absence(config, target, hold.transfer, index_watermark);
+                    Ok(HoldAdvance::Continue)
+                }
+                _ => Ok(HoldAdvance::Progress),
             }
-            resolve_reconciliation_absence(config, target, hold.transfer, index_watermark);
-            Ok(HoldAdvance::Continue)
         }
     }
+}
+
+enum EscrowPreparation {
+    Quote {
+        quote: DepositQuote,
+        admission: Box<crate::storage::DepositReserveAdmission>,
+    },
+    Refund(DepositRefundReason),
+    Stopped(SettlementStopReason),
+}
+
+fn start_deposit_refund(
+    deposit_id: [u8; 32],
+    reason: DepositRefundReason,
+) -> Result<(), SettlementActionError> {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let mut deposit = store
+            .deposit(deposit_id)
+            .map_err(|_| SettlementActionError::StorageFailure)?
+            .ok_or(SettlementActionError::NotFound)?;
+        let fee = ledger::KINIC_LEDGER_FEE;
+        let amount = bridge_core::deposit_refund_amount(deposit.gross_amount.get(), fee.get())
+            .map(Amount::new)
+            .ok_or(SettlementActionError::StorageFailure)?;
+        let identity = LedgerTransferIdentity {
+            operation: LedgerOperation::RefundDeposit,
+            created_at_time_ns: ic_cdk::api::time(),
+            memo: deposit_refund_retry_memo(deposit_id, 0),
+            amount,
+            fee,
+            from: deposit.transfer.to.clone(),
+            to: deposit.transfer.from.clone(),
+            spender: None,
+        };
+        deposit
+            .apply(DepositEvent::StartRefund {
+                reason,
+                attempt: Box::new(TransferAttempt {
+                    attempt_no: 0,
+                    identity,
+                }),
+            })
+            .map_err(|_| SettlementActionError::StorageFailure)?;
+        store
+            .put_deposit(&deposit)
+            .map_err(|_| SettlementActionError::StorageFailure)
+    })
+}
+
+async fn prepare_escrowed_deposit(
+    config: &crate::config::BridgeInitArgs,
+    deposit: &bridge_core::DepositRecord,
+) -> Result<EscrowPreparation, SettlementActionError> {
+    let (snapshot, snapshot_generation) =
+        match crate::api::base_mint_snapshot(config, ic_cdk::api::time()).await {
+            Ok(snapshot) => snapshot,
+            Err(crate::api::DepositError::DepositsPaused) => {
+                return Ok(EscrowPreparation::Refund(DepositRefundReason::BasePaused));
+            }
+            Err(crate::api::DepositError::BaseObservationUnavailable) => {
+                return Ok(EscrowPreparation::Stopped(
+                    SettlementStopReason::RpcUnavailable,
+                ));
+            }
+            Err(crate::api::DepositError::StorageFailure) => {
+                return Err(SettlementActionError::StorageFailure);
+            }
+            Err(_) => {
+                return Ok(EscrowPreparation::Stopped(
+                    SettlementStopReason::InvalidBaseResponse,
+                ));
+            }
+        };
+    let net_amount = match snapshot.quote(deposit.gross_amount, deposit.max_service_fee) {
+        Ok(amount) => amount,
+        Err(
+            bridge_core::CoreError::ServiceFeeAboveMaximum
+            | bridge_core::CoreError::ServiceFeeAboveUserMaximum
+            | bridge_core::CoreError::InvalidAmount
+            | bridge_core::CoreError::ArithmeticUnderflow,
+        ) => {
+            return Ok(EscrowPreparation::Refund(
+                DepositRefundReason::ServiceFeeRejected,
+            ));
+        }
+        Err(bridge_core::CoreError::PerDepositLimitExceeded) => {
+            return Ok(EscrowPreparation::Refund(
+                DepositRefundReason::PerDepositLimitExceeded,
+            ));
+        }
+        Err(bridge_core::CoreError::MintWindowLimitExceeded) => {
+            return Ok(EscrowPreparation::Refund(
+                DepositRefundReason::MintWindowLimitExceeded,
+            ));
+        }
+        Err(_) => return Err(SettlementActionError::StorageFailure),
+    };
+    match ensure_nonce_initialized(config).await {
+        Ok(()) => {}
+        Err(NonceInitializationError::Observation) => {
+            return Ok(EscrowPreparation::Stopped(
+                SettlementStopReason::NonceUnavailable,
+            ));
+        }
+        Err(NonceInitializationError::Storage) => {
+            return Err(SettlementActionError::StorageFailure);
+        }
+    }
+    let signer_address = match crate::api::cached_signer_address(config).await {
+        Ok(address) => address,
+        Err(_) => {
+            return Ok(EscrowPreparation::Stopped(
+                SettlementStopReason::BridgeSignerMismatch,
+            ));
+        }
+    };
+    let (expected_token, finalized_observation) = STORE.with(|store| {
+        let store = store.borrow();
+        let progress = store
+            .external_progress()
+            .map_err(|_| SettlementActionError::StorageFailure)?;
+        Ok::<_, SettlementActionError>((
+            store
+                .deposit_reserve_token()
+                .map_err(|_| SettlementActionError::StorageFailure)?,
+            progress.finalized_observation,
+        ))
+    })?;
+    let Some(finalized_observation) = finalized_observation else {
+        return Ok(EscrowPreparation::Stopped(
+            SettlementStopReason::RpcUnavailable,
+        ));
+    };
+    let finalized_eth = evm_rpc::signer_eth_balance_at(
+        config,
+        signer_address,
+        evm_rpc::FinalizedObservation {
+            chain_id: finalized_observation.chain_id,
+            block_number: finalized_observation.block_number,
+            block_hash: finalized_observation.block_hash,
+            observed_at_ns: finalized_observation.observed_at_ns,
+        },
+    )
+    .await;
+    let Ok(finalized_eth) = finalized_eth else {
+        return Ok(EscrowPreparation::Stopped(
+            SettlementStopReason::RpcUnavailable,
+        ));
+    };
+    let safe_eth = evm_rpc::signer_eth_balance(config, signer_address).await;
+    let Ok(safe_eth) = safe_eth else {
+        return Ok(EscrowPreparation::Stopped(
+            SettlementStopReason::RpcUnavailable,
+        ));
+    };
+    let admission = crate::storage::DepositReserveAdmission {
+        audit_caller: ic_cdk::api::canister_self(),
+        expected_token,
+        observed_at_ns: ic_cdk::api::time(),
+        eth_balance_wei: finalized_eth.min(safe_eth),
+        cycles_balance: ic_cdk::api::canister_liquid_cycle_balance(),
+        reserve_policy: config.reserve_policy(),
+        mint_snapshot: snapshot,
+        snapshot_generation,
+    };
+    let quote = DepositQuote {
+        service_fee: snapshot.service_fee,
+        net_amount,
+    };
+    Ok(EscrowPreparation::Quote {
+        quote,
+        admission: Box::new(admission),
+    })
 }
 
 pub(crate) async fn advance_deposit(
@@ -1221,23 +1567,33 @@ pub(crate) async fn advance_deposit(
         })?;
         let state = SettlementState::Deposit(DepositPhase::from(&deposit.state));
         match deposit.state {
-            bridge_core::DepositState::PullPending => {
+            bridge_core::DepositState::FundingPending => {
+                let callback_token = crate::storage::SettlementCallbackToken::for_deposit(
+                    lease.job(),
+                    &deposit.transfer,
+                )
+                .map_err(|_| SettlementActionError::StorageFailure)?;
                 lease.renew_before_external_call()?;
                 let outcome = ledger::pull(config.ledger_canister_id, &deposit.transfer).await;
                 lease.ensure_current()?;
                 match outcome {
                     LedgerCallOutcome::Succeeded { block_index }
                     | LedgerCallOutcome::Duplicate { block_index } => {
-                        let recipient = STORE.with(|store| {
-                            store
-                                .borrow()
-                                .deposit_intent(deposit_id)
+                        STORE.with(|store| {
+                            let mut store = store.borrow_mut();
+                            let mut current = store
+                                .deposit(deposit_id)
                                 .map_err(|_| SettlementActionError::StorageFailure)?
-                                .map(|intent| intent.base_recipient)
-                                .ok_or(SettlementActionError::StorageFailure)
+                                .ok_or(SettlementActionError::NotFound)?;
+                            current
+                                .apply(DepositEvent::FundingSucceeded {
+                                    ledger_block_index: block_index,
+                                })
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            store
+                                .put_deposit_funding_callback(&current, &callback_token)
+                                .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
-                        crate::api::prepare_mint(deposit_id, block_index, recipient, &config)
-                            .map_err(|_| SettlementActionError::StorageFailure)?;
                     }
                     LedgerCallOutcome::Ambiguous => {
                         STORE.with(|store| {
@@ -1250,19 +1606,25 @@ pub(crate) async fn advance_deposit(
                                 .map_err(|_| SettlementActionError::StorageFailure)?
                                 .ok_or(SettlementActionError::NotFound)?;
                             current
-                                .apply(DepositEvent::PullAmbiguous { hold_id })
+                                .apply(DepositEvent::FundingAmbiguous { hold_id })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
                             let hold = ReconciliationHoldRecord::open(
                                 hold_id,
-                                RequestReference::Deposit(current.id),
+                                RequestReference::DepositFunding(current.id),
                                 current.transfer.clone(),
                             );
                             store
-                                .commit_deposit_hold_bundle(&current, &hold)
+                                .commit_deposit_funding_hold_bundle(
+                                    &current,
+                                    &hold,
+                                    &callback_token,
+                                )
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                         return Ok(SettlementActionResult::Stopped {
-                            state: SettlementState::Deposit(DepositPhase::ReconciliationHold),
+                            state: SettlementState::Deposit(
+                                DepositPhase::FundingReconciliationHold,
+                            ),
                             reason: SettlementStopReason::LedgerAmbiguous,
                         });
                     }
@@ -1272,6 +1634,7 @@ pub(crate) async fn advance_deposit(
                                 &mut store.borrow_mut(),
                                 deposit_id,
                                 code,
+                                &callback_token,
                             )
                             .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
@@ -1283,11 +1646,11 @@ pub(crate) async fn advance_deposit(
                         return Ok(SettlementActionResult::Stopped {
                             state,
                             reason: ledger_stop(&other),
-                        })
+                        });
                     }
                 }
             }
-            bridge_core::DepositState::Escrowed { ledger_block_index } => {
+            bridge_core::DepositState::EscrowedUnquoted { .. } => {
                 let recipient = STORE.with(|store| {
                     store
                         .borrow()
@@ -1296,8 +1659,53 @@ pub(crate) async fn advance_deposit(
                         .map(|intent| intent.base_recipient)
                         .ok_or(SettlementActionError::StorageFailure)
                 })?;
-                crate::api::prepare_mint(deposit_id, ledger_block_index, recipient, &config)
-                    .map_err(|_| SettlementActionError::StorageFailure)?;
+                lease.renew_before_external_call()?;
+                let prepared = prepare_escrowed_deposit(&config, &deposit).await?;
+                lease.ensure_current()?;
+                match prepared {
+                    EscrowPreparation::Quote { quote, admission } => {
+                        let result = STORE.with(|store| {
+                            crate::api::commit_deposit_quote(
+                                &mut store.borrow_mut(),
+                                deposit_id,
+                                recipient,
+                                &config,
+                                quote,
+                                *admission,
+                            )
+                        });
+                        match result {
+                            Ok(()) => {}
+                            Err(crate::api::DepositError::ReserveUnavailable) => {
+                                start_deposit_refund(
+                                    deposit_id,
+                                    DepositRefundReason::ReserveInsufficient,
+                                )?;
+                            }
+                            Err(crate::api::DepositError::Rejected(message))
+                                if message == "MintWindowLimitExceeded" =>
+                            {
+                                start_deposit_refund(
+                                    deposit_id,
+                                    DepositRefundReason::MintWindowLimitExceeded,
+                                )?;
+                            }
+                            Err(crate::api::DepositError::BaseObservationUnavailable) => {
+                                return Ok(SettlementActionResult::Stopped {
+                                    state,
+                                    reason: SettlementStopReason::RpcUnavailable,
+                                });
+                            }
+                            Err(_) => return Err(SettlementActionError::StorageFailure),
+                        }
+                    }
+                    EscrowPreparation::Refund(reason) => {
+                        start_deposit_refund(deposit_id, reason)?;
+                    }
+                    EscrowPreparation::Stopped(reason) => {
+                        return Ok(SettlementActionResult::Stopped { state, reason });
+                    }
+                }
             }
             bridge_core::DepositState::MintPending { operation_id, .. } => {
                 return match advance_evm_operation(&config, operation_id, lease).await? {
@@ -1317,7 +1725,8 @@ pub(crate) async fn advance_deposit(
                     }
                 };
             }
-            bridge_core::DepositState::ReconciliationHold { hold_id } => {
+            bridge_core::DepositState::FundingReconciliationHold { hold_id }
+            | bridge_core::DepositState::RefundReconciliationHold { hold_id, .. } => {
                 let hold = STORE.with(|store| {
                     store
                         .borrow()
@@ -1328,15 +1737,164 @@ pub(crate) async fn advance_deposit(
                 match advance_hold(&config, hold, lease).await? {
                     HoldAdvance::Continue => continue,
                     HoldAdvance::Progress => {
-                        return Ok(SettlementActionResult::ReconciliationProgress { state })
+                        return Ok(SettlementActionResult::ReconciliationProgress { state });
                     }
                     HoldAdvance::Stopped(reason) => {
-                        return Ok(SettlementActionResult::Stopped { state, reason })
+                        return Ok(SettlementActionResult::Stopped { state, reason });
                     }
                 }
             }
+            bridge_core::DepositState::RefundPending { attempt, .. } => {
+                lease.renew_before_external_call()?;
+                let outcome = ledger::refund(config.ledger_canister_id, &attempt.identity).await;
+                lease.ensure_current()?;
+                match outcome {
+                    LedgerCallOutcome::Succeeded { block_index }
+                    | LedgerCallOutcome::Duplicate { block_index } => {
+                        STORE.with(|store| {
+                            let mut store = store.borrow_mut();
+                            let mut current = store
+                                .deposit(deposit_id)
+                                .map_err(|_| SettlementActionError::StorageFailure)?
+                                .ok_or(SettlementActionError::NotFound)?;
+                            current
+                                .apply(DepositEvent::RefundSucceeded {
+                                    ledger_block_index: block_index,
+                                })
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            store
+                                .put_deposit(&current)
+                                .map_err(|_| SettlementActionError::StorageFailure)
+                        })?;
+                    }
+                    LedgerCallOutcome::Ambiguous => {
+                        STORE.with(|store| {
+                            let mut store = store.borrow_mut();
+                            let hold_id = store
+                                .next_hold_id()
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            let mut current = store
+                                .deposit(deposit_id)
+                                .map_err(|_| SettlementActionError::StorageFailure)?
+                                .ok_or(SettlementActionError::NotFound)?;
+                            current
+                                .apply(DepositEvent::RefundAmbiguous { hold_id })
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            let hold = ReconciliationHoldRecord::open(
+                                hold_id,
+                                RequestReference::DepositRefund(current.id),
+                                attempt.identity.clone(),
+                            );
+                            store
+                                .commit_deposit_hold_bundle(&current, &hold)
+                                .map_err(|_| SettlementActionError::StorageFailure)
+                        })?;
+                        return Ok(SettlementActionResult::Stopped {
+                            state: SettlementState::Deposit(DepositPhase::RefundReconciliationHold),
+                            reason: SettlementStopReason::LedgerAmbiguous,
+                        });
+                    }
+                    LedgerCallOutcome::DefinitiveFailure {
+                        code: bridge_core::LedgerFailure::BadFee { expected_fee },
+                    } => {
+                        let retry = expected_fee < deposit.gross_amount
+                            && attempt.attempt_no < bridge_core::MAX_AUTOMATIC_REFUND_FEE_RETRIES;
+                        let next_identity = retry.then(|| {
+                            let next_attempt_no = attempt.attempt_no.saturating_add(1);
+                            LedgerTransferIdentity {
+                                operation: LedgerOperation::RefundDeposit,
+                                created_at_time_ns: ic_cdk::api::time()
+                                    .max(attempt.identity.created_at_time_ns.saturating_add(1)),
+                                memo: deposit_refund_retry_memo(deposit_id, next_attempt_no),
+                                amount: deposit
+                                    .gross_amount
+                                    .checked_sub(expected_fee)
+                                    .expect("fee checked below gross"),
+                                fee: expected_fee,
+                                from: attempt.identity.from.clone(),
+                                to: attempt.identity.to.clone(),
+                                spender: None,
+                            }
+                        });
+                        STORE.with(|store| {
+                            let mut store = store.borrow_mut();
+                            let mut current = store
+                                .deposit(deposit_id)
+                                .map_err(|_| SettlementActionError::StorageFailure)?
+                                .ok_or(SettlementActionError::NotFound)?;
+                            if !matches!(
+                                &current.state,
+                                bridge_core::DepositState::RefundPending {
+                                    attempt: current_attempt,
+                                    ..
+                                } if current_attempt == &attempt
+                            ) {
+                                return Err(SettlementActionError::Busy);
+                            }
+                            current
+                                .apply(DepositEvent::RefundBadFee {
+                                    expected_fee,
+                                    next_identity: next_identity.clone().map(Box::new),
+                                })
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            let now_ns = ic_cdk::api::time();
+                            current.last_settlement_stop_reason =
+                                (!retry).then(|| "LedgerRejected(\"BadFee\")".to_string());
+                            store
+                                .put_deposit_refund_retry_bundle(
+                                    &current,
+                                    ic_cdk::api::canister_self(),
+                                    crate::storage::AuditEventKind::DepositRefundRetried {
+                                        deposit_id: deposit_id.to_vec(),
+                                        previous_attempt_no: attempt.attempt_no,
+                                        previous_fee: attempt.identity.fee.get(),
+                                        next_attempt_no: retry
+                                            .then_some(attempt.attempt_no.saturating_add(1)),
+                                        next_fee: expected_fee.get(),
+                                        compensated: false,
+                                    },
+                                    lease.job(),
+                                    if retry {
+                                        crate::storage::RefundJobOutcome::RetryAt(now_ns)
+                                    } else {
+                                        crate::storage::RefundJobOutcome::Stop
+                                    },
+                                    now_ns,
+                                )
+                                .map_err(|_| SettlementActionError::StorageFailure)
+                        })?;
+                        return if retry {
+                            Ok(SettlementActionResult::ReconciliationProgress {
+                                state: SettlementState::Deposit(DepositPhase::RefundPending),
+                            })
+                        } else {
+                            Ok(SettlementActionResult::Stopped {
+                                state: SettlementState::Deposit(
+                                    DepositPhase::RefundRecoveryRequired,
+                                ),
+                                reason: SettlementStopReason::LedgerRejected("BadFee".into()),
+                            })
+                        };
+                    }
+                    other => {
+                        return Ok(SettlementActionResult::Stopped {
+                            state,
+                            reason: ledger_stop(&other),
+                        });
+                    }
+                }
+            }
+            bridge_core::DepositState::RefundRecoveryRequired { .. } => {
+                return Ok(SettlementActionResult::Stopped {
+                    state: SettlementState::Deposit(DepositPhase::RefundRecoveryRequired),
+                    reason: SettlementStopReason::LedgerRejected(
+                        "RefundRecoveryRequired".to_owned(),
+                    ),
+                });
+            }
             bridge_core::DepositState::Minted { .. }
             | bridge_core::DepositState::MintReverted { .. }
+            | bridge_core::DepositState::Refunded { .. }
             | bridge_core::DepositState::Cancelled { .. } => {
                 return Ok(SettlementActionResult::Complete { state });
             }
@@ -1366,6 +1924,20 @@ pub(crate) async fn advance_withdrawal(
         let state = SettlementState::Withdrawal(WithdrawalPhase::from(&withdrawal.state));
         match withdrawal.state {
             WithdrawalState::ReleasePending { attempt, .. } => {
+                let live_ledger_fee = ledger::KINIC_LEDGER_FEE;
+                if !prepared_release_fee_matches_configured(
+                    attempt.identity.fee.get(),
+                    live_ledger_fee.get(),
+                ) {
+                    return Ok(SettlementActionResult::Stopped {
+                        state,
+                        reason: SettlementStopReason::LedgerRejected(format!(
+                            "ledger fee changed after release preparation (prepared {}, live {}); drain pending withdrawals before the managed fee update",
+                            attempt.identity.fee.get(),
+                            live_ledger_fee.get(),
+                        )),
+                    });
+                }
                 lease.renew_before_external_call()?;
                 let outcome = ledger::release(config.ledger_canister_id, &attempt.identity).await;
                 lease.ensure_current()?;
@@ -1419,7 +1991,7 @@ pub(crate) async fn advance_withdrawal(
                         return Ok(SettlementActionResult::Stopped {
                             state,
                             reason: ledger_stop(&other),
-                        })
+                        });
                     }
                 }
             }
@@ -1434,26 +2006,16 @@ pub(crate) async fn advance_withdrawal(
                 match advance_hold(&config, hold, lease).await? {
                     HoldAdvance::Continue => continue,
                     HoldAdvance::Progress => {
-                        return Ok(SettlementActionResult::ReconciliationProgress { state })
+                        return Ok(SettlementActionResult::ReconciliationProgress { state });
                     }
                     HoldAdvance::Stopped(reason) => {
-                        return Ok(SettlementActionResult::Stopped { state, reason })
+                        return Ok(SettlementActionResult::Stopped { state, reason });
                     }
                 }
             }
             WithdrawalState::Paid { .. } => return Ok(SettlementActionResult::Complete { state }),
             WithdrawalState::Observed => {
-                lease.renew_before_external_call()?;
-                let ledger_fee = match ledger::ledger_fee(config.ledger_canister_id).await {
-                    Ok(fee) => fee,
-                    Err(_) => {
-                        return Ok(SettlementActionResult::Stopped {
-                            state,
-                            reason: SettlementStopReason::LedgerUnavailable,
-                        })
-                    }
-                };
-                lease.ensure_current()?;
+                let ledger_fee = ledger::KINIC_LEDGER_FEE;
                 if ledger_fee.get() > withdrawal.charged_service_fee.get() {
                     STORE.with(|store| {
                         let mut store = store.borrow_mut();
@@ -1566,6 +2128,7 @@ pub(crate) async fn advance_withdrawal(
 
 pub(crate) async fn advance_fee_payout(
     payout_id: u64,
+    lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<FeePayoutActionResult, SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -1589,7 +2152,9 @@ pub(crate) async fn advance_fee_payout(
             state: payout.state,
         }),
         crate::admin::FeePayoutState::Pending => {
+            lease.renew_before_external_call()?;
             let outcome = ledger::release(config.ledger_canister_id, &payout.transfer).await;
+            lease.ensure_current()?;
             match outcome {
                 LedgerCallOutcome::Succeeded { block_index }
                 | LedgerCallOutcome::Duplicate { block_index } => {
@@ -1637,7 +2202,9 @@ pub(crate) async fn advance_fee_payout(
             if ic_cdk::api::time().saturating_sub(payout.transfer.created_at_time_ns)
                 <= LEDGER_DEDUP_NS
             {
+                lease.renew_before_external_call()?;
                 let outcome = ledger::release(config.ledger_canister_id, &payout.transfer).await;
+                lease.ensure_current()?;
                 if let Some(block_index) = outcome.confirmed_block() {
                     STORE.with(|store| {
                         store
@@ -1647,6 +2214,18 @@ pub(crate) async fn advance_fee_payout(
                     })?;
                     return Ok(FeePayoutActionResult::Complete {
                         state: crate::admin::FeePayoutState::Succeeded { block_index },
+                    });
+                }
+                if let LedgerCallOutcome::DefinitiveFailure { code } = &outcome {
+                    STORE.with(|store| {
+                        store
+                            .borrow_mut()
+                            .complete_fee_payout_failure(payout_id)
+                            .map_err(|_| SettlementActionError::StorageFailure)
+                    })?;
+                    return Ok(FeePayoutActionResult::Stopped {
+                        state: crate::admin::FeePayoutState::Failed,
+                        reason: SettlementStopReason::LedgerRejected(format!("{code:?}")),
                     });
                 }
                 return Ok(FeePayoutActionResult::Stopped {
@@ -1671,6 +2250,7 @@ pub(crate) async fn advance_fee_payout(
                 Ok(progress)
             })?;
             let reconciliation_input = progress.clone();
+            lease.renew_before_external_call()?;
             match ledger::reconcile_step(
                 config.ledger_canister_id,
                 config.index_canister_id,
@@ -1679,6 +2259,7 @@ pub(crate) async fn advance_fee_payout(
             .await
             {
                 ledger::ReconciliationOutcome::Progress(progress) => {
+                    lease.ensure_current()?;
                     STORE.with(|store| {
                         store
                             .borrow_mut()
@@ -1690,6 +2271,7 @@ pub(crate) async fn advance_fee_payout(
                     })
                 }
                 ledger::ReconciliationOutcome::Succeeded { block_index } => {
+                    lease.ensure_current()?;
                     resolve_reconciliation_success(&config, target, block_index);
                     Ok(FeePayoutActionResult::Complete {
                         state: crate::admin::FeePayoutState::Succeeded { block_index },
@@ -1699,6 +2281,7 @@ pub(crate) async fn advance_fee_payout(
                     ledger_watermark,
                     index_watermark,
                 } => {
+                    lease.ensure_current()?;
                     if index_watermark < ledger_watermark {
                         return Ok(FeePayoutActionResult::ReconciliationProgress {
                             state: crate::admin::FeePayoutState::ReconciliationHold,
@@ -1722,6 +2305,13 @@ pub(crate) async fn advance_fee_payout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_release_requires_the_configured_ledger_fee() {
+        assert!(prepared_release_fee_matches_configured(10_000, 10_000));
+        assert!(!prepared_release_fee_matches_configured(10_000, 20_000));
+        assert!(!prepared_release_fee_matches_configured(20_000, 10_000));
+    }
     use bridge_core::{EvmCallIntent, EvmOperationId, EvmOperationRecord};
 
     #[test]
@@ -1742,6 +2332,21 @@ mod tests {
             confirmation_evidence(Some(10), Some(12), 11, 12),
             ConfirmationEvidence::ReceiptMismatch
         );
+        assert_eq!(
+            confirmation_evidence(None, None, 10, 12),
+            ConfirmationEvidence::WaitForFinalized
+        );
+    }
+
+    #[test]
+    fn finalized_prior_replacement_hash_becomes_the_wallet_visible_hash() {
+        let current = [1; 32];
+        let finalized_prior = [2; 32];
+        assert_eq!(
+            visible_confirmation_hash(current, finalized_prior),
+            finalized_prior
+        );
+        assert_eq!(visible_confirmation_hash(current, current), current);
     }
 
     #[test]

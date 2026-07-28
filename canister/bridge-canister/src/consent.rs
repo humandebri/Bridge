@@ -79,6 +79,7 @@ pub fn consent_message(
     caller: Principal,
     canister: Principal,
     request: Icrc21ConsentMessageRequest,
+    current_ledger_fee: Option<u128>,
 ) -> Icrc21ConsentMessageResponse {
     if request.method == "continue_deposit" || request.method == "continue_withdrawal" {
         return settlement_consent(caller, canister, request);
@@ -121,6 +122,15 @@ pub fn consent_message(
     let minimum = validated
         .gross_amount
         .saturating_sub(validated.max_service_fee);
+    let Some(ledger_fee) = current_ledger_fee else {
+        return unavailable("current ledger fee is unavailable");
+    };
+    let Some(total_debit) = validated.gross_amount.checked_add(ledger_fee) else {
+        return unavailable("deposit total debit exceeds u128");
+    };
+    let Some(refund_amount) = validated.gross_amount.checked_sub(ledger_fee) else {
+        return unavailable("deposit amount does not cover the fixed refund fee");
+    };
     let subaccount = if validated.from_subaccount == [0; 32] {
         "default (32 zero bytes)".to_string()
     } else {
@@ -132,11 +142,14 @@ pub fn consent_message(
             utc_offset_minutes: request.user_preferences.metadata.utc_offset_minutes,
         },
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross amount: `{gross}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the amount using an existing ICRC-2 allowance. Execution still depends on the current ledger fee, reserve, finalized Base state, and bridge limits.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
+            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross bridge amount: `{gross}` KINIC\n\nLedger transfer fee: `{ledger_fee}` KINIC\n\nTotal wallet debit: `{total_debit}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the displayed total using an existing ICRC-2 allowance. Execution still depends on reserve, finalized Base state, and bridge limits. If post-pull validation rejects the deposit, `{refund_amount}` KINIC (gross minus the fixed ledger fee) is returned to this same IC account and `{ledger_fee}` KINIC is paid from escrow as the refund fee.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
             owner_sequence = validated.owner_sequence,
             gross = format_e8s(validated.gross_amount),
+            ledger_fee = format_e8s(ledger_fee),
+            total_debit = format_e8s(total_debit),
             fee = format_e8s(validated.max_service_fee),
             minimum = format_e8s(minimum),
+            refund_amount = format_e8s(refund_amount),
             recipient = hex(&validated.base_recipient),
         )),
     })
@@ -244,10 +257,22 @@ fn fee_payout_consent(
         Ok(id) => id,
         Err(error) => return unavailable(format!("fee payout ID decode failed: {error}")),
     };
+    let payout = match STORE.with(|store| store.borrow().fee_payout(payout_id)) {
+        Ok(Some(payout)) => payout,
+        Ok(None) => return unavailable("fee payout does not exist"),
+        Err(error) => return unavailable(format!("fee payout read failed: {error}")),
+    };
+    let subaccount = if payout.recipient.subaccount.is_empty() {
+        "default".to_owned()
+    } else {
+        format!("0x{}", hex(&payout.recipient.subaccount))
+    };
     Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
         metadata: request.user_preferences.metadata,
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Continue fee payout\n\nAdministrator: `{caller}`\n\nPayout ID: `{payout_id}`\n\nBridge canister: `{canister}`\n\nThis call performs one explicit payout or reconciliation step and does not schedule an automatic retry."
+            "# Continue fee payout\n\nAdministrator: `{caller}`\n\nPayout ID: `{payout_id}`\n\nAmount: `{amount}` KINIC\n\nRecipient: `{recipient}`\n\nRecipient subaccount: `{subaccount}`\n\nBridge canister: `{canister}`\n\nThis call performs one explicit payout or reconciliation step and does not schedule an automatic retry.",
+            amount = format_e8s(payout.amount),
+            recipient = payout.recipient.owner,
         )),
     })
 }
@@ -359,7 +384,7 @@ mod tests {
             .user_preferences,
         };
         assert!(matches!(
-            consent_message(caller, caller, malformed),
+            consent_message(caller, caller, malformed, Some(10_000)),
             Icrc21ConsentMessageResponse::Err(Icrc21Error::ConsentMessageUnavailable(_))
         ));
 
@@ -372,7 +397,7 @@ mod tests {
         });
         unsupported_request.method = "get_bridge_status".into();
         assert!(matches!(
-            consent_message(caller, caller, unsupported_request),
+            consent_message(caller, caller, unsupported_request, Some(10_000)),
             Icrc21ConsentMessageResponse::Err(Icrc21Error::UnsupportedCanisterCall(_))
         ));
 
@@ -392,7 +417,7 @@ mod tests {
             .user_preferences,
         };
         assert!(matches!(
-            consent_message(caller, caller, withdrawal_request),
+            consent_message(caller, caller, withdrawal_request, Some(10_000)),
             Icrc21ConsentMessageResponse::Err(Icrc21Error::ConsentMessageUnavailable(_))
         ));
     }

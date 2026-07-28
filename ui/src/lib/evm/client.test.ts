@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest"
 import { deploymentProfile } from "@/config/profile"
-import { basePublicClient, createBasePublicClient, createProfileChain, profileChain } from "./client"
+import { basePublicClient, createBasePublicClient, createProfileChain, profileChain, wagmiConfig } from "./client"
 
 describe("Base clients", () => {
   it("uses the deployment profile for the default client", () => {
     expect(profileChain.id).toBe(deploymentProfile.chainId)
     expect(basePublicClient.chain?.id).toBe(deploymentProfile.chainId)
+  })
+
+  it("offers the Coinbase Wallet connector", () => {
+    expect(wagmiConfig.connectors.some((connector) => connector.id === "coinbaseWalletSDK")).toBe(true)
   })
 
   it("creates an isolated chain and client for an arbitrary profile", () => {

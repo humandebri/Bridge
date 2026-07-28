@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { fetchInBatches, scanWithdrawalLogs, WITHDRAWAL_LOG_CHUNK_SIZE, WITHDRAWAL_SCAN_CHUNKS_PER_STEP } from "./withdrawal-history"
+import { fetchInBatches, fetchUniqueBlockTimestamps, scanWithdrawalLogs, WITHDRAWAL_LOG_CHUNK_SIZE, WITHDRAWAL_SCAN_CHUNKS_PER_STEP } from "./withdrawal-history"
 
 interface TestLog {
   blockNumber: bigint
@@ -15,6 +15,15 @@ const blockHash = (block: bigint): Promise<`0x${string}`> => {
 }
 
 describe("withdrawal log scanning", () => {
+  it("fetches a shared block timestamp only once", async () => {
+    const fetchTimestamp = vi.fn((blockNumber: bigint) => Promise.resolve(blockNumber * 10n))
+
+    const timestamps = await fetchUniqueBlockTimestamps([5n, 5n, 6n], fetchTimestamp)
+
+    expect(fetchTimestamp).toHaveBeenCalledTimes(2)
+    expect(timestamps).toEqual(new Map([[5n, 50n], [6n, 60n]]))
+  })
+
   it("loads more than 20 canister views in ordered batches", async () => {
     const fetchBatch = vi.fn((batch: number[]) => Promise.resolve(batch.map((value) => `view-${value}`)))
 

@@ -11,11 +11,20 @@ import {MintAccounting} from "./libraries/MintAccounting.sol";
 interface ITimelockCandidate {
     function getMinDelay() external view returns (uint256);
     function hasRole(bytes32 role, address account) external view returns (bool);
+    function roleMember(bytes32 role) external view returns (address);
+    function pendingOperationCount() external view returns (uint256);
 }
 
 /// @notice Phase 1E Base implementation whose concrete ABI is checked against the frozen interface snapshot.
 contract Bridge is IBridge {
     uint256 private constant MINIMUM_TIMELOCK_DELAY = 72 hours;
+    uint256 private constant MAXIMUM_TIMELOCK_DELAY = 30 days;
+    uint64 private constant MINIMUM_MINT_WINDOW_DURATION = 1 hours;
+    uint64 private constant MAXIMUM_MINT_WINDOW_DURATION = 30 days;
+    bytes32 private constant PROPOSER_ROLE = keccak256("PROPOSER_ROLE");
+    bytes32 private constant CANCELLER_ROLE = keccak256("CANCELLER_ROLE");
+    bytes32 private constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
+    bytes32 private constant WITHDRAWAL_TRANSACTION_SLOT = keccak256("kinic.bridge.withdrawal.transaction");
     bytes32 public immutable override approvedTimelockRuntimeCodeHash;
     IBSNS public immutable override bsns;
     uint256 public immutable override MAX_SERVICE_FEE;
@@ -102,6 +111,19 @@ contract Bridge is IBridge {
         ) {
             revert IBridge.InvalidAmount(0);
         }
+        if (!BridgeAdministration.valuesFitU128(initialPerDepositLimit, initialMintWindowLimit, maxServiceFee)) {
+            revert IBridge.ValueExceedsU128(initialPerDepositLimit > type(uint128).max
+                    ? initialPerDepositLimit
+                    : initialMintWindowLimit > type(uint128).max ? initialMintWindowLimit : maxServiceFee);
+        }
+        if (
+            initialMintWindowDuration < MINIMUM_MINT_WINDOW_DURATION
+                || initialMintWindowDuration > MAXIMUM_MINT_WINDOW_DURATION
+        ) {
+            revert IBridge.InvalidMintWindowDuration(
+                initialMintWindowDuration, MINIMUM_MINT_WINDOW_DURATION, MAXIMUM_MINT_WINDOW_DURATION
+            );
+        }
         if (!BridgeAdministration.serviceFeeIsValid(initialServiceFee, maxServiceFee)) {
             revert IBridge.InvalidServiceFee(initialServiceFee, maxServiceFee);
         }
@@ -141,6 +163,12 @@ contract Bridge is IBridge {
         whenWithdrawalsActive
         returns (uint256 withdrawalId)
     {
+        if (!BridgeAdministration.valueFitsU128(amount)) {
+            revert IBridge.ValueExceedsU128(amount);
+        }
+        if (!BridgeAdministration.valueFitsU128(maxServiceFee)) {
+            revert IBridge.ValueExceedsU128(maxServiceFee);
+        }
         if (amount == 0) {
             revert IBridge.InvalidAmount(amount);
         }
@@ -154,6 +182,8 @@ contract Bridge is IBridge {
         if (owner.length == 0 || owner.length > 29 || (owner.length == 1 && owner[0] == bytes1(0x04))) {
             revert IBridge.InvalidPrincipal(owner);
         }
+
+        _claimWithdrawalTransaction();
 
         withdrawalId = nextWithdrawalId;
         nextWithdrawalId = withdrawalId + 1;
@@ -318,14 +348,56 @@ contract Bridge is IBridge {
         if (delay < MINIMUM_TIMELOCK_DELAY) {
             revert IBridge.TimelockCandidateDelayTooShort(candidate, delay, MINIMUM_TIMELOCK_DELAY);
         }
+        if (!BridgeAdministration.timelockDelayIsValid(delay, MINIMUM_TIMELOCK_DELAY, MAXIMUM_TIMELOCK_DELAY)) {
+            revert IBridge.TimelockCandidateDelayTooLong(candidate, delay, MAXIMUM_TIMELOCK_DELAY);
+        }
         if (!selfAdmin) {
             revert IBridge.TimelockCandidateMissingSelfAdmin(candidate);
+        }
+        _validateTimelockRole(candidate, bytes32(0), candidate);
+        _validateTimelockRole(candidate, PROPOSER_ROLE, address(0));
+        _validateTimelockRole(candidate, CANCELLER_ROLE, address(0));
+        _validateTimelockRole(candidate, EXECUTOR_ROLE, address(0));
+        uint256 pending;
+        try ITimelockCandidate(candidate).pendingOperationCount() returns (uint256 candidatePending) {
+            pending = candidatePending;
+        } catch {
+            revert IBridge.TimelockCandidateIntrospectionFailed(candidate);
+        }
+        if (!BridgeAdministration.timelockHasNoPendingOperations(pending)) {
+            revert IBridge.TimelockCandidateHasPendingOperations(candidate, pending);
+        }
+    }
+
+    function _validateTimelockRole(address candidate, bytes32 role, address requiredMember) private view {
+        address member;
+        try ITimelockCandidate(candidate).roleMember(role) returns (address candidateMember) {
+            member = candidateMember;
+        } catch {
+            revert IBridge.TimelockCandidateIntrospectionFailed(candidate);
+        }
+        bool memberHasRole = ITimelockCandidate(candidate).hasRole(role, member);
+        bool roleIsOpen = role != bytes32(0) && ITimelockCandidate(candidate).hasRole(role, address(0));
+        if (!BridgeAdministration.timelockRoleIsClosed(member, requiredMember, memberHasRole, roleIsOpen)) {
+            revert IBridge.TimelockCandidateInvalidRoleMember(candidate, role, member);
         }
     }
 
     function _validateAndMarkDeposit(IBridge.DepositMintRequest calldata request) private returns (uint256 mintAmount) {
         if (request.recipient == address(0)) {
             revert IBridge.ZeroAddress();
+        }
+        if (request.recipient == address(this) || request.recipient == address(bsns)) {
+            revert IBridge.InvalidMintRecipient(request.recipient);
+        }
+        if (!BridgeAdministration.valueFitsU128(request.grossAmount)) {
+            revert IBridge.ValueExceedsU128(request.grossAmount);
+        }
+        if (!BridgeAdministration.valueFitsU128(request.maxServiceFee)) {
+            revert IBridge.ValueExceedsU128(request.maxServiceFee);
+        }
+        if (!BridgeAdministration.valueFitsU128(request.chargedServiceFee)) {
+            revert IBridge.ValueExceedsU128(request.chargedServiceFee);
         }
         if (_processedDeposits[request.depositId]) {
             revert IBridge.DepositAlreadyProcessed(request.depositId);
@@ -346,6 +418,20 @@ contract Bridge is IBridge {
         }
         // Mark during batch validation so duplicate IDs fail; a later revert rolls the mark back.
         _processedDeposits[request.depositId] = true;
+    }
+
+    function _claimWithdrawalTransaction() private {
+        bytes32 slot = WITHDRAWAL_TRANSACTION_SLOT;
+        uint256 claimed;
+        assembly ("memory-safe") {
+            claimed := tload(slot)
+        }
+        if (!BridgeAdministration.withdrawalClaimAllowed(claimed != 0)) {
+            revert IBridge.MultipleWithdrawalsInTransaction();
+        }
+        assembly ("memory-safe") {
+            tstore(slot, 1)
+        }
     }
 
     function _consumeMintWindow(uint256 requested) private view returns (uint256 nextConsumed) {

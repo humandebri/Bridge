@@ -10,6 +10,14 @@ KINICトークンをICPとBaseの間で移動し、両チェーンにまたが�
 ICPでSNSトークンをロックし、Service Feeを引いた量のbSNSをBaseでmintする1件の要求。
 _Avoid_: Bridge transaction, transfer
 
+**Escrowed Unquoted**:
+DepositのLedger pullは確定したが、Finalized Base状態に対するquoteとmint予約をまだ確定していない状態。RPC一時障害や観測不一致ではこの状態を維持し、0値quoteを保存しない。
+_Avoid_: Zero quote, failed deposit, reserved mint
+
+**Deposit Refund**:
+Ledger pull後のfreshなBase検証でpause、fee、limit、reserveの拒否が確定したDepositについて、元のIC accountへgross amountから固定Ledger feeを引いた額を返す補償transfer。Service Feeは確定せず、返金額とLedger feeの合計をgross amountに固定する。
+_Avoid_: Service Fee refund, Base refund, arbitrary payout
+
 **Withdrawal**:
 Baseでbridged tokenをburnし、ICPでSNSトークンをreleaseする1件の要求。Base refundは提供しない。
 _Avoid_: Return transfer, redeem transaction
@@ -51,9 +59,21 @@ _Avoid_: Treasury owner, escrow owner
 単一のBridge資源残高のうち、既存Withdrawal Settlementの完了を優先するため論理的に予約した部分。
 _Avoid_: Settlement wallet, separate treasury
 
+**Asset Safety**:
+Bridgeが曖昧な外部結果を成功扱いせず、二重mint・二重release・裏付けを超えるfee支出を防ぐ性質。形式証明とテストは明示されたモデルおよび外部仮定の範囲だけを保証する。
+_Avoid_: Guaranteed recovery, guaranteed availability
+
+**Settlement Liveness**:
+受理済みのDepositまたはCommitted Withdrawalが最終状態へ進める性質。RPC、Ledger、threshold signing、cycles、wallet同意、運用補充に依存し、本Bridgeはeventual completionを保証しない。
+_Avoid_: Asset Safety, automatic recovery
+
 **Reconciliation Hold**:
 外部transferの成否を確定できず、二重処理を避けるため補償操作を禁止した状態。時間経過だけでは解除しない。
 _Avoid_: Timed out, failed, retryable
+
+**Refund Reconciliation Hold**:
+Deposit RefundのLedger結果を確定できず、二重返金を避けるため同一refund identityと証拠探索を保持する状態。成功証拠でRefundedへ進み、完全な不存在証明後だけ経済payloadを維持した新attemptを作る。
+_Avoid_: Refund retry, timed-out refund, manual refund
 
 **Deposit Cancellation**:
 DepositのICP pullが完全な履歴scanにより存在しないと証明された後、そのDeposit IDを再利用不能にする終端結果。token移動やService Fee確定を伴わない。

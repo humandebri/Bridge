@@ -2,8 +2,8 @@
 
 > 本文中の旧polling間隔と優先度schedulerは歴史的設計である。現在はADR 0019のstable settlement executor、ADR 0020のwallet確認付きフロント通知、障害時だけのrate limit付き手動Retryを正本とする。
 
-本計画は `docs/adr/` のADRと `CONTEXT.md` の用語定義に基づく。
-用語は CONTEXT.md の定義に従い、本文では再定義しない。
+本計画は `docs/adr/` のADRと `docs/glossary.md` の用語定義に基づく。
+用語は `docs/glossary.md` の定義に従い、本文では再定義しない。
 
 SNS GovernanceをIC/Base双方の最終trust rootとする。Base操作はBridge Canisterが別derivation pathから導出するGovernance Operatorから送信し、人間のEVM管理鍵を置かない。
 Bridge はKINICトークン専用にデプロイする（ADR 0010）。複数SNS tokenを扱う分岐は導入しない。
@@ -12,8 +12,8 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v16、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
-Plan 005は本番パラメータの外部計測と単一emergency pause演習待ちであり、Plan 006はSNS handover・Canister操作型Base管理・production preflightを実装中である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、IC mainnet test CanisterとBase Sepoliaの外部実行は明示承認待ちである。
+Bridge canisterはstable schema v22、外部連携、Settlement Reserve、stable settlement executor、Deposit用wallet確認付きフロント通知、運用管理、Verus証明まで実装済みである。
+Plan 005は本番パラメータの外部計測と単一emergency pause演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、Gate A/Gate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、IC mainnet test CanisterとBase Sepoliaの外部実行は明示承認待ちである。
 
 ## 全体構成
 
@@ -72,7 +72,7 @@ Phase 1Eで検証を閉じ、ABIを凍結済みである。
 - Per-Deposit Limit を各 Deposit に適用する。
 - Mint Throughput Limit を fixed window（初期値 1 時間）の新規 deposit mint 総量に適用する。window 境界バーストの 2 倍係数は上限値の導出（`docs/parameters.md`）で織り込む。
 - 両制限とwindow長はdeploy時のimmutable値とし、raw unitで定義する。decimalsの表示変換を判定に使わない。
-- WithdrawalのBase再mint経路を持たない。
+- Withdrawal IDからburnを取り消すBase refund/remint経路を持たない。Bridge Signerの通常Deposit mint権限は別のtrust assumptionとする。
 - 各DepositにPer-Deposit Limitを適用し、同じfixed window内のmintを共有Mint Throughput Limitへ累積する。
 
 ### 1-4. Withdrawal 状態機械（ADR 0018）
@@ -122,7 +122,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003およびADR 0017から0020で外部連携、運用状態、settlement executor、フロント通知型confirmationを追加し、現行stable schemaはv16である。
+後続のPlan 002と003およびADR 0017から0020で外部連携、運用状態、settlement executor、フロント通知型confirmationを追加し、現行stable schemaはv22である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -130,13 +130,17 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
 - 本番未デプロイ中はlegacy schemaを維持せず、現行stable schemaの再オープンとupgrade保持、未知versionのfail-closedを検証する。
+- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v22・record wire v18とする。
+- Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
+- Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
 
 ### 2-2. Deposit フロー（ADR 0001、0004、0005）
 
-1. 受付時に、対応する Base mint の保守的最大費用を予約できるか検査する。予約できなければ ICP ledger から pull する前に受付を拒否する。
-2. ICRC-2 で SNS トークンを escrow へ pull する。利用者指定の `max_service_fee` を検査する。
-3. Base mint 量は、ロック量から Service Fee を引いた量とする。
-4. mint 成功時にのみ Service Fee を fee reserve へ確定する。
+1. 受付時はlocal pause、入力、`gross_amount > 10_000`を検査し、正式Depositと分離したbounded funding attemptへ固定transfer identityとquota reservationを保存する。
+2. 同じupdate callでICRC-2 pullを実行し、成功または`Duplicate`だけを正式Depositへ昇格する。確定的失敗はattemptとreservationを削除し、曖昧・callback消失は同じidentityでreconciliationする。
+3. freshな観測でquoteとmint予約を原子的に確定する。観測不能・不一致・stale observationでは返金せず再観測する。
+4. Base pause、fee拒否、上限超過、reserve不足では、元accountへ`gross_amount - 10_000`を返し、固定Ledger fee 10,000をescrowから負担する。曖昧結果はRefund Reconciliation Holdへ移す。
+5. mint成功時にのみService Feeをfee reserveへ確定し、refundではService Feeを計上しない。
 
 ### 2-3. Withdrawal フロー（ADR 0004、0011、0018）
 
@@ -165,15 +169,16 @@ PicJSでDeposit、Withdrawal、Holdのupgrade保持、stuck receiptを検証す�
 - Pending nonceはPending、現在ETH残高はSafeを維持し、reserveにはSafe残高とFinalized残高の小さい方を使う。
 - Withdrawalの受付観測は`eth_getLogs`で発見し、Finalized headの状態読みで確定する。読み取りは3 provider中2の合意を要求する。Canister送信transactionの確認起動はADR 0020に従う。
 
-### 3-2. Settlement Reserve と scheduler（ADR 0005）
+### 3-2. Settlement Reserve と stable executor（ADR 0005、0019）
 
 - ETH と cycles の一部を Settlement Reserve として会計上予約する。
 - 必要量は固定 floor に加え、未完了 Settlement の保守的最大費用を含めて算出する。
-- schedulerのEVM jobはDeposit mintだけを扱い、Withdrawal jobはICRC Ledger送金と照合だけを扱う。
+- stable executorのjobは型付きkindごとのclaim policyを持ち、Deposit mintとWithdrawalのICRC Ledger送金・照合を混同しない。
+- active leaseは最大1件、generationは単調増加とし、stale callback、confirmation jobの通常claim、進行中scheduled jobのgeneric manual claimを拒否する。
 - Settlement Reserve を満たせないとき、新規 Deposit の受付を停止する。
 - gas 価格、EVM RPC 費用、management canister call 費用の上限評価を外部仮定として文書化し、監査対象にする。
 
-Settlement Reserve、nonce割当前のSettlement優先scheduler、新規Deposit pause、Fee Recipient、fee payout、stable監査ログはPlan 003で実装済みである。
+Settlement Reserve、stable executor、新規Deposit pause、Fee Recipient、fee payout、stable監査ログはPlan 003およびADR 0019の構成で実装済みである。
 本番の数値と鍵保管方式はPlan 005と006で確定する。
 
 ### 3-3. Reconciliation Hold（ADR 0006）
@@ -201,10 +206,12 @@ Plan 003で管理権限と監査ログを実装済みである。
 Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みである。
 証明はWasmごとに再実行し、過去版の証明を新しいupgradeへ流用しない（ADR 0008）。
 
-- 各 Deposit が Per-Deposit Limit を超えないこと。mint 流量の消費量が保存されること。WithdrawalからBase再mintできないこと（ADR 0018）。
-- 1件のWithdrawalがBase `Committed`からCanister `Paid`へ進み、`Paid`後に再送・減額・送金先変更されないこと（ADR 0018）。
-- Service Fee の上限制約、二重計上防止、成功前の fee 確定禁止、recipient 変更時の reserve 保存、fee reserve を超える送金の禁止（ADR 0004）。
-- Deposit 受付が Settlement Reserve を侵食しないこと。Settlement task が Deposit task より優先されること（ADR 0005）。
+- 各DepositのquoteがService Fee上限、正のnet額、Per-Deposit Limit、Mint Throughput Limitを満たし、quote確定時だけmint予約へ移ること。Withdrawal専用のBase refund/remint経路がなく、処理済みDeposit IDをreplayできないこと（ADR 0018、0021）。
+- canonical観測とLedger成功を前提に、1件のWithdrawalがBase `Committed`からCanister `Paid`へ進み、`Paid`後に再送・減額・送金先変更されないこと（ADR 0018）。外部サービスのlivenessは主張しない。
+- Service Feeの上限制約、二重計上防止、成功前のfee確定禁止、未完了payoutがない場合のrecipient変更によるreserve保存、fee reserveを超える送金の禁止（ADR 0004）。
+- Deposit受付がcandidateを含むSettlement Reserveを満たし、candidateからreservedへの移行で必要資源量を減らさないこと（ADR 0005）。
+- stable settlement executorのactive leaseがCanister全体で最大1件であり、generationが単調増加し、stale callback、confirmation jobの通常claim、scheduled/leased jobの手動迂回を拒否すること（ADR 0019、0020）。
+- release対象claimは`Claims.lean`、有限幅semanticsは`Implementation.lean`、implementation対応は`Refinement.lean`、統合traceは`Protocol.lean`へ分離し、claim台帳、vector section、production consumer、外部仮定をCIで完全一致させる。release driverは自己申告attestationを受理せず、不可逆操作直前にclean sourceからproof gateと二重artifact buildを再実行する。
 - Reconciliation Hold から新規 transfer または補償状態へ直接遷移しないこと（ADR 0006）。
 
 証明範囲は資産の 1:1 裏付けと上記の性質に限定し、cross-chain governance を含めない（ADR 0002）。
@@ -215,8 +222,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 - upgrade 前後で未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold が再開できることを、実データ相当の state で検証する。
 - handover を実行し、controller 一覧が SNS Root だけであることを確認する。開発者 identity、fallback identity、NNS Root を残さない。
 - handover 後の upgrade proposal に添付する成果物（Wasm hash、source revision、Verus 結果、テスト結果、stable schema 互換性）の生成を CI で自動化する。
-- 採用時点のx402 SDKとBase上のfacilitatorを使い、EIP-3009によるbSNSのverifyとsettleをtestnetで確認する。
-  x402 resource serverとfacilitatorの運用は本Bridgeの責務に含めない（ADR 0015）。
+- EIP-3009はbSNSの任意連携機能とし、x402 resource serverやfacilitatorとの互換性をBridgeの配置・activation条件に含めない（ADR 0015）。
 - UI 側の要件として、Deposit 前に bSNS では投票と投票報酬を得られないことを明示する（ADR 0002）。UI 実装が別リポジトリの場合は要件として引き渡す。
 
 **完了条件**：handover checklist がすべて満たされ、SNS proposal による upgrade が一度実際に成功する。
@@ -225,7 +231,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 
 Plan 005の完了には、SepoliaでのDeposit mint gas 100回とsettlement cycles 100回、Base mainnetの30日fee分布、承認済み日次settlement上限、単一pause principalの実request/audit証跡、固定limitの承認、監視pause/cancel演習が必要である。cycles floorは基礎日次消費と100回計測最大値を用いる30日負荷モデルへ2倍の安全係数を掛けて導出する。
 これらの証跡が揃うまでmainnet candidateを`validated`にしない。
-Plan 006ではSNS Rootへのcontroller handover、upgrade実証、x402 testnet、production preflightを完了する。
+Plan 006のrepository実装は完了している。完了判定には、SNS Rootへの実controller handover、実upgrade proposal、認証済みGate A/Gate B、schedule/execute activation receiptをmainnet evidenceとして取得する必要がある。
 
 ## Phase 間の依存とマイルストーン
 
