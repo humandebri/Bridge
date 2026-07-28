@@ -10,7 +10,7 @@
 
 KINIC SNS Governance `74ncn-fqaaa-aaaaq-aaasa-cai`をIC/Base双方の管理trust rootとする。人間が長期保有する管理資格情報は単一のIC emergency pause principalだけとし、finance principal、release approver、人間のBase Admin/Runtime/Cancellerを置かない。
 
-Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operatorを導出する。Mint SignerはDeposit mint専用、Governance OperatorはBase pause、Service Fee、Timelock schedule/cancel/execute専用とし、nonce、transaction record、reconciliationを共有しない。Base管理APIはclosed enumのみを受け付け、任意target、calldata、raw transaction、nonceを入力させない。
+Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operatorを導出する。Mint SignerはEIP-712 Deposit Mint Authorization署名専用で、Base transactionを送信せずETHも保持しない。Governance OperatorはBase pause、Service Fee、Timelock schedule/cancel/execute専用とし、nonce、transaction record、reconciliationを署名レーンと共有しない。Base管理APIはclosed enumのみを受け付け、任意target、calldata、raw transaction、nonceを入力させない。
 
 ## 固定stage
 
@@ -21,8 +21,8 @@ Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operato
 5. 一時deployerでTimelockとBridgeをpause状態で配置する。constructorは導出済みMint Signer、Governance Operator、Timelockだけをroleへ設定し、deployerへroleを残さない。
 6. この端末のproduction preflightでcanonical receipt、runtime hash、role集合、deployer roleゼロ、pause状態を検証する。
 7. controllerをKINIC SNS Root `7jkta-eyaaa-aaaaq-aaarq-cai`一件へhandoverし、SNS proposalによる同一Wasm upgradeを実証する。
-8. fresh Gate B後、SNS proposalから引数なしの`schedule_activation`を呼ぶ。Canisterがlive preflightを行い、Governance Operatorで固定された72時間Timelock operationをscheduleする。
-9. 72時間後に別のfresh Gate Bを作り、別SNS proposalから引数なしの`execute_activation`を呼ぶ。Canisterがlive preflightを再実行して記録済みoperationだけをexecuteする。
+8. fresh Gate B後、SNS proposalから引数なしの`schedule_activation`を呼ぶ。Canisterがlive preflightを行い、Governance Operatorで固定された24時間Timelock operationをscheduleする。
+9. 24時間後に別のfresh Gate Bを作り、別SNS proposalから引数なしの`execute_activation`を呼ぶ。Canisterがlive preflightを再実行して記録済みoperationだけをexecuteする。
 10. Base両flowのcanonical Finalized成功後だけIC Depositを自動resumeする。失敗、曖昧結果、driftではpauseを維持する。
 
 ## Evidence契約

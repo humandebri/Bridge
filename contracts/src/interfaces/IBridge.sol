@@ -11,12 +11,14 @@ interface IBridge {
         Committed
     }
 
-    struct DepositMintRequest {
+    struct MintAuthorization {
         bytes32 depositId;
         address recipient;
         uint256 grossAmount;
         uint256 maxServiceFee;
         uint256 chargedServiceFee;
+        uint256 deadline;
+        uint256 authorizationEpoch;
     }
 
     struct Withdrawal {
@@ -34,6 +36,7 @@ interface IBridge {
         uint256 blockNumber;
         uint256 blockTimestamp;
         address bridgeSigner;
+        uint256 mintAuthorizationEpoch;
         uint256 serviceFee;
         uint256 maxServiceFee;
         uint256 perDepositLimit;
@@ -48,6 +51,7 @@ interface IBridge {
     event DepositMinted(
         bytes32 indexed depositId,
         address indexed recipient,
+        bytes32 indexed authorizationDigest,
         uint256 grossAmount,
         uint256 serviceFee,
         uint256 mintedAmount
@@ -68,6 +72,7 @@ interface IBridge {
     event WithdrawalsPaused(address indexed caller);
     event WithdrawalsUnpaused(address indexed caller);
     event BridgeSignerChanged(address indexed previousSigner, address indexed newSigner);
+    event MintAuthorizationEpochChanged(address indexed caller, uint256 previousEpoch, uint256 newEpoch);
     event RuntimeAdministratorChanged(address indexed previousAdministrator, address indexed newAdministrator);
     event BaseAdminTimelockChanged(address indexed previousTimelock, address indexed newTimelock);
 
@@ -83,11 +88,13 @@ interface IBridge {
     error DepositMintLimitExceeded(uint256 mintAmount, uint256 limit);
     error MintWindowLimitExceeded(uint256 requestedAmount, uint256 availableAmount);
     error DepositMintsArePaused();
+    error MintAuthorizationExpired(uint256 currentTimestamp, uint256 deadline);
+    error MintAuthorizationEpochMismatch(uint256 suppliedEpoch, uint256 currentEpoch);
+    error InvalidMintAuthorizationSignature();
     error WithdrawalsArePaused();
     error MultipleWithdrawalsInTransaction();
     error InvalidMintRecipient(address recipient);
     error TokenTransferFailed();
-    error UnauthorizedBridgeSigner(address caller);
     error UnauthorizedRuntimeAdministrator(address caller);
     error UnauthorizedBaseAdmin(address caller);
     error TimelockCandidateHasNoCode(address candidate);
@@ -99,7 +106,7 @@ interface IBridge {
     error TimelockCandidateInvalidRoleMember(address candidate, bytes32 role, address member);
     error TimelockCandidateHasPendingOperations(address candidate, uint256 pendingOperationCount);
 
-    function mintDeposit(DepositMintRequest calldata request) external;
+    function mintDepositWithAuthorization(MintAuthorization calldata authorization, bytes calldata signature) external;
 
     function createWithdrawal(uint256 amount, uint256 maxServiceFee, bytes calldata owner, bytes32 subaccount)
         external
@@ -110,6 +117,8 @@ interface IBridge {
     function bsns() external view returns (IBSNS);
 
     function bridgeSigner() external view returns (address);
+
+    function mintAuthorizationEpoch() external view returns (uint256);
 
     function runtimeAdministrator() external view returns (address);
 

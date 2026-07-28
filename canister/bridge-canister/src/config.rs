@@ -32,9 +32,9 @@ pub struct BridgeInitArgs {
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
     pub settlement_rate_limit_per_record: u16,
-    pub evm_fee: EvmFeePolicy,
-    pub evm_liveness: EvmLivenessPolicy,
-    pub eth_floor_wei: u128,
+    pub governance_evm_fee: EvmFeePolicy,
+    pub governance_evm_liveness: EvmLivenessPolicy,
+    pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
     pub governance_principal: Principal,
@@ -82,9 +82,9 @@ pub(crate) struct ImmutableBridgeConfig {
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
     pub settlement_rate_limit_per_record: u16,
-    pub evm_fee: EvmFeePolicy,
-    pub evm_liveness: EvmLivenessPolicy,
-    pub eth_floor_wei: u128,
+    pub governance_evm_fee: EvmFeePolicy,
+    pub governance_evm_liveness: EvmLivenessPolicy,
+    pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
 }
@@ -109,9 +109,9 @@ impl ImmutableBridgeConfig {
             settlement_rate_limit_global: value.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: value.settlement_rate_limit_per_principal,
             settlement_rate_limit_per_record: value.settlement_rate_limit_per_record,
-            evm_fee: value.evm_fee,
-            evm_liveness: value.evm_liveness,
-            eth_floor_wei: value.eth_floor_wei,
+            governance_evm_fee: value.governance_evm_fee,
+            governance_evm_liveness: value.governance_evm_liveness,
+            governance_eth_floor_wei: value.governance_eth_floor_wei,
             cycles_floor: value.cycles_floor,
             settlement_cycle_ceiling: value.settlement_cycle_ceiling,
         }
@@ -141,9 +141,9 @@ impl ImmutableBridgeConfig {
             settlement_rate_limit_global: self.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
             settlement_rate_limit_per_record: self.settlement_rate_limit_per_record,
-            evm_fee: self.evm_fee,
-            evm_liveness: self.evm_liveness,
-            eth_floor_wei: self.eth_floor_wei,
+            governance_evm_fee: self.governance_evm_fee,
+            governance_evm_liveness: self.governance_evm_liveness,
+            governance_eth_floor_wei: self.governance_eth_floor_wei,
             cycles_floor: self.cycles_floor,
             settlement_cycle_ceiling: self.settlement_cycle_ceiling,
             governance_principal,
@@ -233,7 +233,7 @@ impl BridgeInitArgs {
         {
             return Err("settlement rate limit must satisfy 60 <= window <= 3600 and 1 <= per-record <= per-principal <= global <= 100");
         }
-        let fee = self.evm_fee;
+        let fee = self.governance_evm_fee;
         if fee.gas_limit_ceiling == 0
             || fee.max_fee_per_gas_ceiling == 0
             || fee.max_priority_fee_per_gas_ceiling > fee.max_fee_per_gas_ceiling
@@ -245,7 +245,7 @@ impl BridgeInitArgs {
         {
             return Err("EVM fee policy is outside the supported safety bounds");
         }
-        let policy = self.evm_liveness;
+        let policy = self.governance_evm_liveness;
         let replacement_checks = policy
             .replacement_after_seconds
             .div_ceil(policy.check_interval_seconds.max(1));
@@ -273,7 +273,7 @@ impl BridgeInitArgs {
 
     pub const fn reserve_policy(&self) -> bridge_core::ReservePolicy {
         bridge_core::ReservePolicy {
-            eth_floor_wei: self.eth_floor_wei,
+            governance_eth_floor_wei: self.governance_eth_floor_wei,
             cycles_floor: self.cycles_floor,
             settlement_cycle_ceiling: self.settlement_cycle_ceiling,
         }
@@ -312,30 +312,6 @@ pub(crate) fn next_replacement_fees(
     )
     .min(next_max_fee);
     Some((next_max_fee, next_priority_fee))
-}
-
-pub(crate) fn reachable_replacement_fees(
-    initial_max_fee: u128,
-    initial_priority_fee: u128,
-    fee_policy: EvmFeePolicy,
-    liveness: EvmLivenessPolicy,
-) -> (u128, u128) {
-    let mut max_fee = initial_max_fee;
-    let mut priority_fee = initial_priority_fee;
-    for _ in 0..liveness.max_replacements {
-        let Some((next_max_fee, next_priority_fee)) = next_replacement_fees(
-            max_fee,
-            priority_fee,
-            fee_policy.max_fee_per_gas_ceiling,
-            fee_policy.max_priority_fee_per_gas_ceiling,
-            liveness,
-        ) else {
-            break;
-        };
-        max_fee = next_max_fee;
-        priority_fee = next_priority_fee;
-    }
-    (max_fee, priority_fee)
 }
 
 fn bump_fee(current: u128, ceiling: u128, bump_bps: u16) -> u128 {
@@ -444,8 +420,8 @@ mod tests {
     #[test]
     fn rejects_priority_fee_above_max_fee() {
         let mut args = valid_args();
-        args.evm_fee.max_priority_fee_per_gas_ceiling =
-            args.evm_fee.max_fee_per_gas_ceiling + 1;
+        args.governance_evm_fee.max_priority_fee_per_gas_ceiling =
+            args.governance_evm_fee.max_fee_per_gas_ceiling + 1;
         assert!(args.validate().is_err());
     }
 
@@ -453,32 +429,14 @@ mod tests {
     fn fee_policy_rejects_invalid_safety_bounds() {
         let mut args = valid_args();
         assert_eq!(args.validate(), Ok(()));
-        args.evm_fee.quote_validity_seconds = 0;
+        args.governance_evm_fee.quote_validity_seconds = 0;
         assert!(args.validate().is_err());
         args = valid_args();
-        args.evm_fee.gas_limit_multiplier_bps = 9_999;
+        args.governance_evm_fee.gas_limit_multiplier_bps = 9_999;
         assert!(args.validate().is_err());
         args = valid_args();
-        args.evm_fee.l1_fee_per_transaction_ceiling_wei = 0;
+        args.governance_evm_fee.l1_fee_per_transaction_ceiling_wei = 0;
         assert!(args.validate().is_err());
-    }
-
-    #[test]
-    fn replacement_reachable_cap_uses_three_twelve_point_five_percent_bumps() {
-        let policy = EvmLivenessPolicy {
-            max_replacements: 3,
-            fee_bump_bps: 1_250,
-            ..EvmLivenessPolicy::default()
-        };
-        let fee = EvmFeePolicy {
-            max_fee_per_gas_ceiling: 40_000_000_000,
-            max_priority_fee_per_gas_ceiling: 40_000_000_000,
-            ..valid_args().evm_fee
-        };
-        assert_eq!(
-            reachable_replacement_fees(10_000_000_000, 1_000_000_000, fee, policy).0,
-            14_238_281_250
-        );
     }
 
     #[test]
@@ -539,7 +497,7 @@ mod tests {
             settlement_rate_limit_global: 60,
             settlement_rate_limit_per_principal: 6,
             settlement_rate_limit_per_record: 3,
-            evm_fee: EvmFeePolicy {
+            governance_evm_fee: EvmFeePolicy {
                 gas_limit_ceiling: 500_000,
                 max_fee_per_gas_ceiling: 200_000_000_000,
                 max_priority_fee_per_gas_ceiling: 10_000_000_000,
@@ -549,8 +507,8 @@ mod tests {
                 base_fee_multiplier_bps: 60_000,
                 l1_fee_multiplier_bps: 15_000,
             },
-            evm_liveness: EvmLivenessPolicy::default(),
-            eth_floor_wei: 1,
+            governance_evm_liveness: EvmLivenessPolicy::default(),
+            governance_eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
             governance_principal: principal,

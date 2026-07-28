@@ -93,36 +93,12 @@ macro_rules! replay_body {
     };
 }
 
-macro_rules! monotone_body {
-    ($old:expr, $new:expr) => {
-        $new >= $old
-    };
-}
-
 macro_rules! refresh_owner_matches_body {
     ($current:expr, $claimant:expr) => {
         match $current {
             Some(owner) => owner == $claimant,
             None => false,
         }
-    };
-}
-
-macro_rules! reserve_token_matches_body {
-    (
-        $expected_withdrawals:expr,
-        $expected_amount:expr,
-        $expected_operations:expr,
-        $expected_generation:expr,
-        $current_withdrawals:expr,
-        $current_amount:expr,
-        $current_operations:expr,
-        $current_generation:expr
-    ) => {
-        $expected_withdrawals == $current_withdrawals
-            && $expected_amount == $current_amount
-            && $expected_operations == $current_operations
-            && $expected_generation == $current_generation
     };
 }
 
@@ -218,12 +194,6 @@ macro_rules! restored_pending_blocked_body {
 macro_rules! withdrawal_liability_indexed_body {
     ($state:expr, $observed:expr, $release_pending:expr, $reconciliation_hold:expr) => {
         $state == $observed || $state == $release_pending || $state == $reconciliation_hold
-    };
-}
-
-macro_rules! evm_operation_indexed_body {
-    ($state:expr, $queued:expr, $prepared:expr, $submitted:expr) => {
-        $state == $queued || $state == $prepared || $state == $submitted
     };
 }
 
@@ -329,10 +299,8 @@ macro_rules! hold_resolution_decision_body {
 }
 
 macro_rules! manual_claim_allowed_body {
-    ($confirmation:expr, $scheduled:expr, $active:expr, $stopped:expr, $overdue:expr, $expired:expr) => {
-        !$confirmation
-            && (!$active || $expired)
-            && (!$scheduled || $stopped || $overdue || $expired)
+    ($scheduled:expr, $active:expr, $stopped:expr, $overdue:expr, $expired:expr) => {
+        (!$active || $expired) && (!$scheduled || $stopped || $overdue || $expired)
     };
 }
 
@@ -531,7 +499,7 @@ macro_rules! authorized_body {
 }
 
 macro_rules! deposit_step_body {
-    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr, $six:expr, $seven:expr, $eight:expr, $nine:expr) => {{
+    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr, $six:expr, $seven:expr, $eight:expr, $nine:expr, $ten:expr) => {{
         if $state == $zero && $event == $zero {
             $one
         } else if $state == $zero && $event == $one {
@@ -542,16 +510,20 @@ macro_rules! deposit_step_body {
             $two
         } else if $state == $one && $event == $four {
             $six
-        } else if $state == $six && $event == $five {
-            $eight
-        } else if $state == $six && $event == $six {
-            $seven
-        } else if $state == $two && $event == $seven {
+        } else if $state == $two && $event == $five {
             $three
-        } else if $state == $two && $event == $eight {
+        } else if $state == $two && $event == $six {
             $four
-        } else if $state == $four && $event == $nine {
-            $two
+        } else if $state == $three && $event == $six {
+            $four
+        } else if $state == $four && $event == $seven {
+            $ten
+        } else if $state == $four && $event == $eight {
+            $six
+        } else if $state == $six && $event == $nine {
+            $eight
+        } else if $state == $six && $event == $ten {
+            $seven
         } else {
             $state
         }
@@ -623,11 +595,6 @@ pub const fn replay_matches(same_payload: bool) -> bool {
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub const fn monotone(old_rank: u8, new_rank: u8) -> bool {
-    monotone_body!(old_rank, new_rank)
-}
-
-#[cfg(not(verus_keep_ghost))]
 pub const fn refresh_owner_matches(current: Option<u64>, claimant: u64) -> bool {
     refresh_owner_matches_body!(current, claimant)
 }
@@ -635,30 +602,6 @@ pub const fn refresh_owner_matches(current: Option<u64>, claimant: u64) -> bool 
 #[cfg(not(verus_keep_ghost))]
 pub const fn refresh_generation_next(current: u64) -> Option<u64> {
     next_attempt_body!(current, u64::MAX, 1u64)
-}
-
-#[cfg(not(verus_keep_ghost))]
-#[allow(clippy::too_many_arguments)]
-pub const fn reserve_token_matches(
-    expected_withdrawals: u64,
-    expected_amount: u128,
-    expected_operations: u64,
-    expected_generation: u64,
-    current_withdrawals: u64,
-    current_amount: u128,
-    current_operations: u64,
-    current_generation: u64,
-) -> bool {
-    reserve_token_matches_body!(
-        expected_withdrawals,
-        expected_amount,
-        expected_operations,
-        expected_generation,
-        current_withdrawals,
-        current_amount,
-        current_operations,
-        current_generation
-    )
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -760,11 +703,6 @@ pub const fn withdrawal_liability_indexed(state: u8) -> bool {
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub const fn evm_operation_indexed(state: u8) -> bool {
-    evm_operation_indexed_body!(state, 0u8, 1u8, 2u8)
-}
-
-#[cfg(not(verus_keep_ghost))]
 pub const fn reconciliation_hold_indexed(state: u8) -> bool {
     reconciliation_hold_indexed_body!(state, 0u8)
 }
@@ -830,16 +768,6 @@ verus! {
             None
         }
     }
-}
-
-#[cfg(not(verus_keep_ghost))]
-pub const fn nonce_next(current: u64) -> Option<u64> {
-    next_attempt_body!(current, u64::MAX, 1u64)
-}
-
-#[cfg(not(verus_keep_ghost))]
-pub const fn can_assign_nonce(nonce_initialized: bool, has_prepared: bool) -> bool {
-    nonce_initialized && !has_prepared
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1035,14 +963,13 @@ verus! {
 
 #[cfg(not(verus_keep_ghost))]
 pub const fn manual_claim_allowed(
-    confirmation: bool,
     scheduled: bool,
     active: bool,
     stopped: bool,
     overdue: bool,
     expired: bool,
 ) -> bool {
-    manual_claim_allowed_body!(confirmation, scheduled, active, stopped, overdue, expired)
+    manual_claim_allowed_body!(scheduled, active, stopped, overdue, expired)
 }
 
 verus! {
@@ -1118,7 +1045,6 @@ verus! {
 
 verus! {
     pub fn manual_claim_decision(
-        confirmation: bool,
         scheduled: bool,
         active: bool,
         stopped: bool,
@@ -1128,18 +1054,15 @@ verus! {
         ensures
             match result {
                 ManualClaimDecision::Allow =>
-                    !confirmation
-                        && (!active || expired)
+                    (!active || expired)
                         && (!scheduled || stopped || overdue || expired),
                 ManualClaimDecision::AutomaticProgressPending =>
-                    confirmation
-                        || !(!active || expired)
+                    !(!active || expired)
                         || !(!scheduled || stopped || overdue || expired),
             },
     {
         manual_claim_decision_body!(
             manual_claim_allowed_body!(
-                confirmation,
                 scheduled,
                 active,
                 stopped,
@@ -1181,7 +1104,7 @@ pub const fn audit_next(current: u64) -> Option<u64> {
 /// Compact phase transition used by the rich Deposit state machine.
 #[cfg(not(verus_keep_ghost))]
 pub const fn deposit_phase_step(state: u8, event: u8) -> u8 {
-    deposit_step_body!(state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8)
+    deposit_step_body!(state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1231,10 +1154,6 @@ verus! {
     }
 
 
-    pub open spec fn monotone_spec(old_rank: int, new_rank: int) -> bool {
-        monotone_body!(old_rank, new_rank)
-    }
-
     pub open spec fn refresh_owner_matches_spec(current: Option<int>, claimant: int) -> bool {
         refresh_owner_matches_body!(current, claimant)
     }
@@ -1243,28 +1162,6 @@ verus! {
         let max: int = 18446744073709551615;
         let one: int = 1;
         next_attempt_body!(current, max, one)
-    }
-
-    pub open spec fn reserve_token_matches_spec(
-        expected_withdrawals: int,
-        expected_amount: int,
-        expected_operations: int,
-        expected_generation: int,
-        current_withdrawals: int,
-        current_amount: int,
-        current_operations: int,
-        current_generation: int,
-    ) -> bool {
-        reserve_token_matches_body!(
-            expected_withdrawals,
-            expected_amount,
-            expected_operations,
-            expected_generation,
-            current_withdrawals,
-            current_amount,
-            current_operations,
-            current_generation
-        )
     }
 
     pub open spec fn lease_generation_next_spec(current: int) -> Option<int> {
@@ -1359,13 +1256,6 @@ verus! {
         withdrawal_liability_indexed_body!(state, observed, release_pending, reconciliation_hold)
     }
 
-    pub open spec fn evm_operation_indexed_spec(state: int) -> bool {
-        let queued: int = 0;
-        let prepared: int = 1;
-        let submitted: int = 2;
-        evm_operation_indexed_body!(state, queued, prepared, submitted)
-    }
-
     pub open spec fn reconciliation_hold_indexed_spec(state: int) -> bool {
         let open: int = 0;
         reconciliation_hold_indexed_body!(state, open)
@@ -1381,16 +1271,6 @@ verus! {
     pub open spec fn mint_admission_total_spec(consumed: int, reserved: int, candidate: int) -> Option<int> {
         let max: int = 340282366920938463463374607431768211455;
         mint_admission_total_body!(consumed, reserved, candidate, max)
-    }
-
-    pub open spec fn nonce_next_spec(current: int) -> Option<int> {
-        let max: int = 18446744073709551615;
-        let one: int = 1;
-        next_attempt_body!(current, max, one)
-    }
-
-    pub open spec fn can_assign_nonce_spec(nonce_initialized: bool, has_prepared: bool) -> bool {
-        nonce_initialized && !has_prepared
     }
 
     pub open spec fn payout_allowed_spec(reserve: int, pending: int, amount: int, fee: int) -> bool {
@@ -1432,15 +1312,13 @@ verus! {
     }
 
     pub open spec fn manual_claim_allowed_spec(
-        confirmation: bool,
         scheduled: bool,
         active: bool,
         stopped: bool,
         overdue: bool,
         expired: bool,
     ) -> bool {
-        manual_claim_allowed_body!(
-            confirmation, scheduled, active, stopped, overdue, expired)
+        manual_claim_allowed_body!(scheduled, active, stopped, overdue, expired)
     }
 
     pub open spec fn deposit_refund_amount_spec(gross: int, ledger_fee: int) -> Option<int> {
@@ -1471,8 +1349,8 @@ verus! {
     pub open spec fn deposit_phase_step_spec(state: int, event: int) -> int {
         let zero: int = 0; let one: int = 1; let two: int = 2; let three: int = 3;
         let four: int = 4; let five: int = 5; let six: int = 6; let seven: int = 7;
-        let eight: int = 8; let nine: int = 9;
-        deposit_step_body!(state, event, zero, one, two, three, four, five, six, seven, eight, nine)
+        let eight: int = 8; let nine: int = 9; let ten: int = 10;
+        deposit_step_body!(state, event, zero, one, two, three, four, five, six, seven, eight, nine, ten)
     }
 
     pub open spec fn deposit_phase_allows_spec(state: int, event: int) -> bool {
@@ -1490,10 +1368,6 @@ verus! {
             || (state == 1 && event == 1)
     }
 
-    pub open spec fn reverted_phase_recovery_spec(event: int) -> bool {
-        deposit_phase_step_spec(4, event) != 4 <==> event == 9
-    }
-
     pub open spec fn deposit_phase_run_spec(state: int, events: Seq<int>) -> int
         decreases events.len()
     {
@@ -1509,7 +1383,7 @@ verus! {
     }
 
     pub open spec fn deposit_fee_delta_spec(state: int, event: int, fee: int) -> int {
-        if state == 2 && event == 7 { fee } else { 0 }
+        if state == 4 && event == 7 { fee } else { 0 }
     }
 
     pub open spec fn withdrawal_fee_delta_spec(state: int, event: int, fee: int) -> int {

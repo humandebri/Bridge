@@ -303,14 +303,12 @@ deriving DecidableEq
 inductive JobKind where
   | deposit
   | withdrawal
-  | confirmation
 deriving DecidableEq
 
 inductive JobStatus where
   | scheduled
   | leased
   | stopped
-  | awaitingConfirmation
 deriving DecidableEq
 
 structure JobTrace where
@@ -319,9 +317,6 @@ structure JobTrace where
   overdue : Bool
   expired : Bool
 deriving DecidableEq
-
-def JobTrace.confirmation (job : JobTrace) : Bool :=
-  job.kind == .confirmation || job.status == .awaitingConfirmation
 
 def JobTrace.scheduled (job : JobTrace) : Bool :=
   job.status == .scheduled
@@ -333,18 +328,15 @@ def JobTrace.stopped (job : JobTrace) : Bool :=
   job.status == .stopped
 
 def manualClaimAllowedFor (job : JobTrace) : Bool :=
-  manualClaimAllowed job.confirmation job.scheduled job.active
-    job.stopped job.overdue job.expired
+  manualClaimAllowed job.scheduled job.active job.stopped job.overdue job.expired
 
-theorem manual_claim_cannot_select_confirmation_or_active_scheduled_job
+theorem manual_claim_cannot_select_active_or_fresh_scheduled_job
     (job : JobTrace)
-    (blocked : job.confirmation = true ∨
-      (job.active = true ∧ job.expired = false) ∨
+    (blocked : (job.active = true ∧ job.expired = false) ∨
       (job.scheduled = true ∧ job.stopped = false ∧
         job.overdue = false ∧ job.expired = false)) :
     manualClaimAllowedFor job = false := by
-  rcases blocked with confirmation | active | scheduled
-  · simp [manualClaimAllowedFor, manualClaimAllowed, confirmation]
+  rcases blocked with active | scheduled
   · simp [manualClaimAllowedFor, manualClaimAllowed, active.1, active.2]
   · simp [manualClaimAllowedFor, manualClaimAllowed, scheduled.1, scheduled.2.1,
       scheduled.2.2.1, scheduled.2.2.2]

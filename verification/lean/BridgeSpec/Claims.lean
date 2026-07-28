@@ -113,11 +113,11 @@ theorem lease_claim
   simpa [leaseOutcomeCurrent] using accepted
 
 theorem manual_claim_claim :
-    (∀ scheduled active stopped overdue expired,
-      manualClaimAllowed true scheduled active stopped overdue expired = false) ∧
-    manualClaimAllowed false true true false false false = false := by
+    (∀ scheduled stopped overdue,
+      manualClaimAllowed scheduled true stopped overdue false = false) ∧
+    manualClaimAllowed true false false false false = false := by
   constructor
-  · intro scheduled active stopped overdue expired
+  · intro scheduled stopped overdue
     simp [manualClaimAllowed]
   · rfl
 

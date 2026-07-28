@@ -68,7 +68,7 @@ event AuthorizationCanceled(address indexed authorizer, bytes32 indexed nonce);
 
 | Role | 即時操作 | 禁止操作 |
 |---|---|---|
-| Bridge Signer | Deposit mint | pause、limit・fee変更、role rotation、Withdrawal操作 |
+| Bridge Signer | EIP-712 Mint Authorizationへの署名 | Base transaction送信、pause、limit・fee変更、role rotation、Withdrawal操作 |
 | Runtime Administrator | Deposit/Withdrawal pause、上限内Service Fee変更 | unpause、limit変更、role rotation、mint |
 | Base Admin Timelock | unpause、3権限addressのrotation | limit変更、直接mint、Withdrawal操作 |
 
@@ -76,17 +76,40 @@ event AuthorizationCanceled(address indexed authorizer, bytes32 indexed nonce);
 rotationでもzero addressと3権限addressの重複を拒否し、初期deploy後の権限分離を維持する。
 
 Base Admin TimelockにはOpenZeppelin 5.6.1の`TimelockController`を使用する。
-Bridgeより先にdeployし、minimum delayを72時間、Canister由来Governance Operatorをproposer、executor、canceller、追加adminをzero addressとして初期化する。人間のEVM管理walletにはroleを付与しない。
+Bridgeより先にdeployし、minimum delayを24時間、Canister由来Governance Operatorをproposer、executor、canceller、追加adminをzero addressとして初期化する。人間のEVM管理walletにはroleを付与しない。
 Timelock自身が唯一のadminである。構築後のTimelock role集合は凍結し、`grantRole`、`revokeRole`、`renounceRole`を自己callを含めて拒否する。role変更が必要な場合は、新しい承認済みrole集合で同一runtimeのTimelockを配置し、BridgeのTimelock rotationを行う。
-Bridgeはrotation候補のcode、72時間以上のdelay、Timelock自身のadmin保持を検証する。role分離はdeployment profileとdeploy preflightで確認する。
+Bridgeはrotation候補のcode、24時間以上のdelay、Timelock自身のadmin保持を検証する。role分離はdeployment profileとdeploy preflightで確認する。
 
 ## Deposit mint
 
-`DepositMintRequest`は`depositId`、Base recipient、ICPでlockした`grossAmount`、利用者指定の`maxServiceFee`、受付時に固定した`chargedServiceFee`を保持する。Contractは`chargedServiceFee <= maxServiceFee`かつ`chargedServiceFee <= MAX_SERVICE_FEE`を検証し、実mint量`grossAmount - chargedServiceFee`へPer-Deposit LimitとMint Throughput Limitを適用する。受付後のglobal `serviceFee`変更は既存Depositのmint量とevent値へ影響しない。
+Canisterは次のEIP-712 payloadへthreshold ECDSA署名する。domainは`name = "KINIC Bridge"`、`version = "1"`、実行chain ID、Bridge contract addressへ束縛する。
+
+```solidity
+struct MintAuthorization {
+    bytes32 depositId;
+    address recipient;
+    uint256 grossAmount;
+    uint256 maxServiceFee;
+    uint256 chargedServiceFee;
+    uint256 deadline;
+    uint256 authorizationEpoch;
+}
+
+function mintDepositWithAuthorization(
+    MintAuthorization calldata authorization,
+    bytes calldata signature
+) external;
+```
+
+callerは制限しない。callerはgasだけを支払い、mint先は署名済み`recipient`から変更できない。Contractは`block.timestamp <= deadline`、`authorizationEpoch == mintAuthorizationEpoch`、EIP-712署名の復元addressが現在の`bridgeSigner`であることを検証する。OpenZeppelin `ECDSA.tryRecover`を使うため、不正長、不正`v`、high-s署名を拒否する。
+
+`chargedServiceFee <= maxServiceFee`かつ`chargedServiceFee <= MAX_SERVICE_FEE`を検証し、実mint量`grossAmount - chargedServiceFee`へPer-Deposit LimitとMint Throughput Limitを適用する。受付後のglobal `serviceFee`変更は既存Authorizationのmint量とevent値へ影響しない。成功時は`DepositMinted`へEIP-712 digestをindexed fieldとして記録する。
 
 各Depositは1件ずつmintする。zero recipient、不正amount、fee保護違反、Per-Deposit Limit違反、共有Mint Throughput Limit違反をrevertする。成功後の`depositId`は再利用できず、複数回のmintは同じfixed windowのthroughputへ累積する。
 
 fixed windowはBridge deploy時刻から開始する。`block.timestamp >= mintWindowStartedAt + mintWindowDuration`となった後、最初に成功したmintの時刻を次windowの起点にし、消費量をresetする。失敗したmintは起点も消費量も変更しない。window境界直前と直後には最大2 window分をmintできるため、上限値は`docs/parameters.md`の2倍係数を前提に導出する。
+
+`mintAuthorizationEpoch`は1から始まる。Deposit mintがactiveからpausedへ変わるとき、またはBridge Signerが実際に別addressへrotationするときだけ1増加し、未期限Authorizationを一括失効する。repeated pause、同じsignerへのrotation、unpauseでは増加しない。
 
 ## Withdrawal
 
@@ -117,6 +140,6 @@ role rotation成立後は旧addressの権限を即時失効する。
 
 ## Phase境界
 
-Phase 1DではService Fee変更、pause、固定limit、role rotationと72時間Timelock統合までを実装し、Phase 1Eではconcrete ABI、stateful invariant、SMT証明義務、coverage summaryを閉じる。
+Phase 1DではService Fee変更、pause、固定limit、role rotationと24時間Timelock統合までを実装し、Phase 1Eではconcrete ABI、stateful invariant、SMT証明義務、coverage summaryを閉じる。
 Baseにはfee reserveとFee Recipientを持たせない。
 Phase 1E完了時点でconcrete Bridge・BSNS ABIをsnapshotとfixtureにより凍結する。現段階のcontractは本番資産を受け付けない。

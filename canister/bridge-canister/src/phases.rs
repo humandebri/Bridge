@@ -4,9 +4,10 @@ use candid::{CandidType, Deserialize};
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DepositPhase {
     EscrowedUnquoted,
-    MintPending,
+    AuthorizationPending,
+    AuthorizationAvailable,
+    ExpiryReconciliation,
     Minted,
-    MintReverted,
     FundingReconciliationHold,
     RefundPending,
     RefundReconciliationHold,
@@ -21,9 +22,10 @@ impl From<&DepositState> for DepositPhase {
                 unreachable!("funding attempts are not public deposit records")
             }
             DepositState::EscrowedUnquoted { .. } => Self::EscrowedUnquoted,
-            DepositState::MintPending { .. } => Self::MintPending,
+            DepositState::AuthorizationPending { .. } => Self::AuthorizationPending,
+            DepositState::AuthorizationAvailable { .. } => Self::AuthorizationAvailable,
+            DepositState::ExpiryReconciliation { .. } => Self::ExpiryReconciliation,
             DepositState::Minted { .. } => Self::Minted,
-            DepositState::MintReverted { .. } => Self::MintReverted,
             DepositState::FundingReconciliationHold { .. } => Self::FundingReconciliationHold,
             DepositState::RefundPending { .. } => Self::RefundPending,
             DepositState::RefundReconciliationHold { .. } => Self::RefundReconciliationHold,

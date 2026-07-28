@@ -257,6 +257,15 @@ type Mint = record {
   created_at_time : opt nat64;
   amount : nat;
 };
+type MintLogFixture = record {
+  minted_amount : nat;
+  transaction_hash : blob;
+  deposit_id : blob;
+  charged_service_fee : nat;
+  recipient : blob;
+  authorization_digest : blob;
+  gross_amount : nat;
+};
 type MultiRpcResult = variant {
   Consistent : Result;
   Inconsistent : vec record { RpcService; Result };
@@ -498,6 +507,7 @@ service : (InitArgs) -> {
   receipt_call_count : () -> (nat64) query;
   set_archive_prefix_length : (nat64) -> ();
   set_block_mode : (BlockMode) -> ();
+  set_block_timestamp : (nat64) -> ();
   set_bridge_runtime_code : (blob) -> ();
   set_bridge_signer : (blob) -> (Result_10);
   set_bridge_signer_for_canister : (principal, text) -> (Result_10);
@@ -513,10 +523,13 @@ service : (InitArgs) -> {
   set_ledger_fee_available : (bool) -> ();
   set_ledger_mode : (LedgerMode) -> ();
   set_max_service_fee : (nat) -> ();
+  set_mint_authorization_epoch : (nat64) -> ();
+  set_mint_log : (opt MintLogFixture) -> ();
   set_mint_window : (nat, nat, nat64, nat64, nat64) -> ();
   set_next_evm_nonce : (nat64) -> ();
   set_observed_transaction : (blob, blob, blob, nat64) -> (Result_10);
   set_per_deposit_limit : (nat) -> ();
+  set_processed_deposit : (bool) -> ();
   set_receipt_mode : (ReceiptMode) -> ();
   set_refund_ledger_mode : (opt LedgerMode) -> ();
   set_safe_block : (nat64, blob) -> (Result_10);

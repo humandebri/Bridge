@@ -2,6 +2,37 @@
 export const bridgeAbi = [
   {
     "anonymous": false,
+    "inputs": [],
+    "name": "EIP712DomainChanged",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "caller",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "previousEpoch",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newEpoch",
+        "type": "uint256"
+      }
+    ],
+    "name": "MintAuthorizationEpochChanged",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
     "inputs": [
       {
         "indexed": true,
@@ -150,6 +181,12 @@ export const bridgeAbi = [
         "type": "address"
       },
       {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "authorizationDigest",
+        "type": "bytes32"
+      },
+      {
         "indexed": false,
         "internalType": "uint256",
         "name": "grossAmount",
@@ -229,6 +266,16 @@ export const bridgeAbi = [
   {
     "inputs": [],
     "name": "DepositMintsArePaused",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidMintAuthorizationSignature",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidShortString",
     "type": "error"
   },
   {
@@ -331,6 +378,11 @@ export const bridgeAbi = [
           },
           {
             "internalType": "uint256",
+            "name": "mintAuthorizationEpoch",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
             "name": "serviceFee",
             "type": "uint256"
           },
@@ -404,6 +456,62 @@ export const bridgeAbi = [
         "internalType": "bool",
         "name": "",
         "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "eip712Domain",
+    "outputs": [
+      {
+        "internalType": "bytes1",
+        "name": "fields",
+        "type": "bytes1"
+      },
+      {
+        "internalType": "string",
+        "name": "name",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "version",
+        "type": "string"
+      },
+      {
+        "internalType": "uint256",
+        "name": "chainId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "verifyingContract",
+        "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "salt",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256[]",
+        "name": "extensions",
+        "type": "uint256[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "mintAuthorizationEpoch",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
       }
     ],
     "stateMutability": "view",
@@ -582,14 +690,29 @@ export const bridgeAbi = [
             "internalType": "uint256",
             "name": "chargedServiceFee",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "deadline",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "authorizationEpoch",
+            "type": "uint256"
           }
         ],
-        "internalType": "struct IBridge.DepositMintRequest",
-        "name": "request",
+        "internalType": "struct IBridge.MintAuthorization",
+        "name": "authorization",
         "type": "tuple"
+      },
+      {
+        "internalType": "bytes",
+        "name": "signature",
+        "type": "bytes"
       }
     ],
-    "name": "mintDeposit",
+    "name": "mintDepositWithAuthorization",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -603,17 +726,6 @@ export const bridgeAbi = [
       }
     ],
     "name": "UnauthorizedBaseAdmin",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "caller",
-        "type": "address"
-      }
-    ],
-    "name": "UnauthorizedBridgeSigner",
     "type": "error"
   },
   {
@@ -855,6 +967,17 @@ export const bridgeAbi = [
     "inputs": [
       {
         "internalType": "string",
+        "name": "str",
+        "type": "string"
+      }
+    ],
+    "name": "StringTooLong",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "string",
         "name": "tokenName",
         "type": "string"
       },
@@ -966,6 +1089,22 @@ export const bridgeAbi = [
     "inputs": [
       {
         "internalType": "uint256",
+        "name": "currentTimestamp",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "deadline",
+        "type": "uint256"
+      }
+    ],
+    "name": "MintAuthorizationExpired",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
         "name": "mintAmount",
         "type": "uint256"
       },
@@ -1037,6 +1176,22 @@ export const bridgeAbi = [
       }
     ],
     "name": "ServiceFeeExceedsUserMaximum",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "suppliedEpoch",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "currentEpoch",
+        "type": "uint256"
+      }
+    ],
+    "name": "MintAuthorizationEpochMismatch",
     "type": "error"
   },
   {

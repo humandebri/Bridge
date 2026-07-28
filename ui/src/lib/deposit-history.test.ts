@@ -15,7 +15,7 @@ describe("deposit history pagination", () => {
 
   it("replaces a cached deposit with its refreshed state", () => {
     const pending = deposit(5)
-    pending.state = { MintPending: null }
+    pending.state = { AuthorizationPending: null }
     const cached = mergeDepositHistoryPage(undefined, [pending], { nextCursor: null, oldestAvailableCursor: 1n, historyTruncated: false }, "refresh")
     const minted = deposit(5)
 
@@ -49,7 +49,7 @@ function deposit(sequence: number): DepositView {
     base_recipient: new Uint8Array(20),
     state: { Minted: null },
     last_settlement_stop_reason: [],
-    base_confirmation: [],
+    mint_authorization: [],
     automatic_progress: [],
   }
 }

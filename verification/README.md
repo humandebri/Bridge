@@ -14,20 +14,20 @@ Withdrawalの検証対象は、Base上の不可逆な`Committed` burnとCanister
 
 - Foundryはfee driftのburn前revert、固定quote、atomic burn、処理済みDeposit IDのreplay拒否を検査し、ABI snapshotはWithdrawal専用のrefund/remint selectorが存在しないことを検査する。
 - settlement、deposit admission、reservation、fee recipient rotation、fee payout、hold resolution、lease outcome、manual claimのtyped decisionはCargoとVerusが同じ実行関数本体を使用し、Verusが結果variant、全delta fieldと境界拒否を直接検査する。manifest上の`shared`義務はCargo式とVerus specで式macroを共有するpredicate proofであり、実行関数全体のproofとは呼ばない。
-- `bridge-core/src/kernel.rs`はさらにsnapshot refresh owner、reserve observation token、settlement lease generation、canonical probe block一致、Withdrawal・EVM・reconciliation holdの派生index分類をproductionと共有し、Verusで各predicateを検査する。
+- `bridge-core/src/kernel.rs`はさらにsnapshot refresh owner、reserve observation token、settlement lease generation、canonical probe block一致、Withdrawal・reconciliation holdの派生index分類をproductionと共有し、Verusで各predicateを検査する。
 - LeanはBase supply減少とCanister債務発生、固定宛先への支払、1:1 backingに加え、frontendのFinalized成功・revert・retry判断とserialized queue更新を正式な抽象モデルとして定義する。
 - Rust/integrationはcanonical Finalized照合、Ledger成功・Duplicate・BadFee・曖昧結果、純額Fee reserve、追加EVM transaction不在を検査する。
 
 Solidity SMTはproduction共有predicateの性質であり、完全なdeployed contract proofではない。
 frontend LeanモデルはTypeScript実装そのものの証明ではなく、生成vectorと純粋な判断関数との対応をテストで検査する。
-Bridge Signerは通常のDeposit mint権限を持つため、Withdrawal専用remint経路の不在は、侵害されたSignerが別の未処理Deposit IDをmintできないことを意味しない。
+Bridge SignerはEIP-712 Mint Authorizationへ署名する。侵害されたSignerは未処理Deposit IDへの有効なAuthorizationを作成できるため、epoch invalidation、pause、固定limit、mint windowが被害速度の境界となる。
 EIP-1898 `requireCanonical`の正しさ、EVM rollbackとEIP-1153 transient storage lifetime、ABI decoder、Web Locks、browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityとSQL row selectionは外部仮定である。形式証明の対象は、decode後のblock一致、enumから派生indexへの分類、成功したbrowser storage更新後のqueue状態までである。
 Verus/Rust/LLVM、Lean kernel、Solidity SMTChecker、Wasm compilerはtrusted computing baseであり、source-level proofをWasm binary verificationとは呼ばない。
 Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
 
 Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_step_preserves_safe`が受理された各生遷移について安全性を直接証明し、有限trace定理はそのlemmaから帰納する。canonical・Ledger certificateは対象identityを含むが、その履歴やRPC情報の真正性は外部仮定である。
 
-本番未デプロイのためschema v24再オープンとwire v20を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
+本番未デプロイのためschema v25再オープンとwire v21を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
 
 ## Release proof gate
 

@@ -1,25 +1,7 @@
 use super::{
-    BaseMintSnapshot, DepositAdmissionControl, DepositCallerQuota, DepositFundingReservation,
-    DepositReserveToken, FinalizedObservationRecord, Principal, StorageError,
+    DepositAdmissionControl, DepositCallerQuota, DepositFundingReservation, Principal, StorageError,
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DepositReserveAdmission {
-    pub audit_caller: Principal,
-    pub expected_token: DepositReserveToken,
-    pub observed_at_ns: u64,
-    pub eth_balance_wei: u128,
-    pub cycles_balance: u128,
-    pub reserve_policy: bridge_core::ReservePolicy,
-    pub mint_snapshot: BaseMintSnapshot,
-    pub snapshot_generation: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DepositRecoveryAdmission {
-    pub reserve: DepositReserveAdmission,
-    pub finalized_observation: FinalizedObservationRecord,
-}
+use bridge_core::ReservePolicy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepositQuotaAdmission {
@@ -27,6 +9,12 @@ pub struct DepositQuotaAdmission {
     pub window_seconds: u64,
     pub global_limit: u16,
     pub per_principal_limit: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DepositCycleAdmission {
+    pub cycles_balance: u128,
+    pub reserve_policy: ReservePolicy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

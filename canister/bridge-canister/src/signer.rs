@@ -1,5 +1,5 @@
 use crate::{config::BridgeInitArgs, STORE};
-use bridge_core::EvmTransactionEnvelope;
+use bridge_core::GovernanceTransactionEnvelope;
 use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use ic_cdk::call::Call;
 use ic_cdk_management_canister::{
@@ -80,22 +80,33 @@ where
         })
 }
 
-pub async fn sign(
-    envelope: &EvmTransactionEnvelope,
-    config: &BridgeInitArgs,
-) -> Result<Vec<u8>, SignerError> {
-    sign_for_role(envelope, config, SignerRole::Mint).await
-}
-
 pub async fn sign_governance(
-    envelope: &EvmTransactionEnvelope,
+    envelope: &GovernanceTransactionEnvelope,
     config: &BridgeInitArgs,
 ) -> Result<Vec<u8>, SignerError> {
     sign_for_role(envelope, config, SignerRole::Governance).await
 }
 
+pub async fn sign_mint_authorization_digest(
+    digest: [u8; 32],
+    config: &BridgeInitArgs,
+) -> Result<Vec<u8>, SignerError> {
+    let key_id = EcdsaKeyId {
+        curve: EcdsaCurve::Secp256k1,
+        name: config.ecdsa_key_name.clone(),
+    };
+    let public_key = signer_public_key(config, &key_id, SignerRole::Mint).await?;
+    let sign_args = SignWithEcdsaArgs {
+        message_hash: digest.to_vec(),
+        derivation_path: derivation_path(config, SignerRole::Mint).to_vec(),
+        key_id,
+    };
+    let raw_signature = threshold_signature(&sign_args).await?;
+    canonical_ethereum_signature(digest, &public_key, &raw_signature)
+}
+
 async fn sign_for_role(
-    envelope: &EvmTransactionEnvelope,
+    envelope: &GovernanceTransactionEnvelope,
     config: &BridgeInitArgs,
     role: SignerRole,
 ) -> Result<Vec<u8>, SignerError> {
@@ -243,8 +254,44 @@ fn recoverable_signature(
     Err(SignerError::RecoveryFailed)
 }
 
+fn canonical_ethereum_signature(
+    signing_hash: [u8; 32],
+    public_key: &[u8],
+    raw_signature: &[u8],
+) -> Result<Vec<u8>, SignerError> {
+    let expected =
+        VerifyingKey::from_sec1_bytes(public_key).map_err(|_| SignerError::InvalidPublicKey)?;
+    let (signature, recovery) = recoverable_signature(signing_hash, &expected, raw_signature)?;
+    let mut encoded = Vec::with_capacity(65);
+    encoded.extend_from_slice(&signature.to_bytes());
+    encoded.push(if recovery.is_y_odd() { 28 } else { 27 });
+    Ok(encoded)
+}
+
+pub fn recover_ethereum_address(
+    signing_hash: [u8; 32],
+    signature: &[u8],
+) -> Result<[u8; 20], SignerError> {
+    if signature.len() != 65 {
+        return Err(SignerError::InvalidSignature);
+    }
+    let (compact, recovery_byte) = signature.split_at(64);
+    let signature = Signature::from_slice(compact).map_err(|_| SignerError::InvalidSignature)?;
+    if signature.normalize_s().is_some() {
+        return Err(SignerError::InvalidSignature);
+    }
+    let recovery = match recovery_byte[0] {
+        27 => RecoveryId::new(false, false),
+        28 => RecoveryId::new(true, false),
+        _ => return Err(SignerError::InvalidSignature),
+    };
+    let recovered = VerifyingKey::recover_from_prehash(&signing_hash, &signature, recovery)
+        .map_err(|_| SignerError::RecoveryFailed)?;
+    Ok(ethereum_address_from_key(&recovered))
+}
+
 fn assemble_signed(
-    envelope: &EvmTransactionEnvelope,
+    envelope: &GovernanceTransactionEnvelope,
     signing_hash: [u8; 32],
     public_key: &[u8],
     raw_signature: &[u8],
@@ -275,7 +322,7 @@ fn assemble_signed(
     Ok(transaction)
 }
 
-fn unsigned_transaction(envelope: &EvmTransactionEnvelope) -> Vec<u8> {
+fn unsigned_transaction(envelope: &GovernanceTransactionEnvelope) -> Vec<u8> {
     let payload = rlp_list(&[
         rlp_u64(envelope.chain_id),
         rlp_u64(envelope.nonce),
@@ -290,10 +337,6 @@ fn unsigned_transaction(envelope: &EvmTransactionEnvelope) -> Vec<u8> {
     let mut transaction = vec![0x02];
     transaction.extend(payload);
     transaction
-}
-
-pub fn transaction_hash(raw: &[u8]) -> [u8; 32] {
-    keccak(raw)
 }
 
 fn keccak(bytes: &[u8]) -> [u8; 32] {
@@ -357,12 +400,12 @@ mod tests {
     fn threshold_signing_uses_the_fixed_sixty_second_bound() {
         assert_eq!(SIGNING_CALL_TIMEOUT_SECONDS, 60);
     }
-    use bridge_core::EvmOperationId;
+    use bridge_core::GovernanceOperationId;
 
     #[test]
     fn unsigned_eip1559_encoding_is_stable_and_hashable() {
-        let envelope = EvmTransactionEnvelope {
-            operation_id: EvmOperationId::new(1),
+        let envelope = GovernanceTransactionEnvelope {
+            operation_id: GovernanceOperationId::new(1),
             payload_hash: [2; 32],
             nonce: 0,
             chain_id: 8453,
@@ -373,7 +416,6 @@ mod tests {
             max_priority_fee_per_gas: 1,
             initial_max_fee_per_gas: 20,
             initial_max_priority_fee_per_gas: 1,
-            fee_quote: None,
             replacement_generation: 0,
             prior_signed_transactions: vec![],
             first_broadcast_at_ns: 0,
@@ -383,7 +425,7 @@ mod tests {
         };
         let encoded = unsigned_transaction(&envelope);
         assert_eq!(encoded[0], 2);
-        assert_ne!(transaction_hash(&encoded), [0; 32]);
+        assert_ne!(keccak(&encoded), [0; 32]);
         assert_eq!(unsigned_transaction(&envelope), encoded);
     }
 }

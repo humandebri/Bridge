@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
 import type { DepositPhase, DepositReceipt, NotifyWithdrawalReceipt, SettlementActionResult } from "@/generated/bridge.did"
-import type { ApprovalCall, ConfirmationCall, DepositCall, IcAccount, IcWalletAdapter, IcWalletProvider } from "@/lib/ic/wallet"
+import type { ApprovalCall, DepositCall, IcAccount, IcWalletAdapter, IcWalletProvider } from "@/lib/ic/wallet"
 
 const CONTROL = "http://127.0.0.1:43119"
 
@@ -49,14 +49,8 @@ class HarnessWalletAdapter implements IcWalletAdapter {
       throw new Error("Harness returned an invalid notification receipt")
     })
   }
-  confirmDeposit(call: ConfirmationCall) { return request<SettlementActionResult>("/ic/confirm-deposit", confirmationBody(call)) }
-  confirmWithdrawal(call: ConfirmationCall) { return request<SettlementActionResult>("/ic/confirm-withdrawal", confirmationBody(call)) }
   continueDeposit(depositId: Uint8Array) { return request<SettlementActionResult>("/ic/continue-deposit", { id: hex(depositId) }) }
   continueWithdrawal(withdrawalId: Uint8Array) { return request<SettlementActionResult>("/ic/continue-withdrawal", { id: hex(withdrawalId) }) }
-}
-
-function confirmationBody(call: ConfirmationCall) {
-  return { settlementId: hex(call.settlementId), transactionHash: hex(call.transactionHash), receiptBlockNumber: call.receiptBlockNumber.toString(), observedFinalizedBlockNumber: call.observedFinalizedBlockNumber.toString() }
 }
 
 export function IcWalletProviderRoot({ children }: { children: ReactNode }) {

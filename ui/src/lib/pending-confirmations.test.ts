@@ -10,8 +10,7 @@ import {
 } from "./pending-confirmations"
 
 const entry = {
-  kind: "deposit" as const,
-  settlementId: `0x${"11".repeat(32)}` as const,
+  kind: "withdrawal" as const,
   transactionHash: `0x${"22".repeat(32)}` as const,
   owner: "aaaaa-aa",
 }
@@ -31,9 +30,9 @@ describe("pending finalized confirmations", () => {
     await setPendingConfirmationBlocked(entry, true)
     expect(readPendingConfirmations()[0]?.blocked).toBe(true)
 
-    await savePendingConfirmation({ ...entry, transactionHash: `0x${"33".repeat(32)}`, blocked: false })
+    await savePendingConfirmation({ ...entry, owner: "updated-owner", blocked: false })
     expect(readPendingConfirmations()).toHaveLength(1)
-    expect(readPendingConfirmations()[0]).toMatchObject({ transactionHash: `0x${"33".repeat(32)}`, blocked: false })
+    expect(readPendingConfirmations()[0]).toMatchObject({ owner: "updated-owner", blocked: false })
 
     await removePendingConfirmation(entry)
     expect(readPendingConfirmations()).toEqual([])
@@ -46,31 +45,34 @@ describe("pending finalized confirmations", () => {
   })
 
   it("fails closed for malformed storage", () => {
-    const key = `kinic.bridge.pending-confirmations.v4:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
+    const key = `kinic.bridge.pending-confirmations.v5:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
     window.localStorage.setItem(key, JSON.stringify([{ ...entry, ...scope, blocked: false, transactionHash: "0x12" }]))
     expect(readPendingConfirmations()).toEqual([])
   })
 
-  it("persists withdrawals and ignores entries from another deployment", async () => {
-    const withdrawal = { kind: "withdrawal" as const, transactionHash: entry.transactionHash, owner: entry.owner }
-    await savePendingConfirmation(withdrawal)
-    expect(readPendingConfirmations()).toEqual([{ ...withdrawal, ...scope, blocked: false }])
+  it("ignores withdrawals from another deployment", async () => {
+    await savePendingConfirmation(entry)
+    expect(readPendingConfirmations()).toEqual([{ ...entry, ...scope, blocked: false }])
 
-    const key = `kinic.bridge.pending-confirmations.v4:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
-    window.localStorage.setItem(key, JSON.stringify({ version: 4, entries: [{
-      ...withdrawal,
+    const key = `kinic.bridge.pending-confirmations.v5:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
+    window.localStorage.setItem(key, JSON.stringify({ version: 5, entries: [{
+      ...entry,
       ...scope,
       chainId: scope.chainId + 1,
       blocked: false,
     }] }))
     expect(readPendingConfirmations()).toEqual([])
-    await savePendingConfirmation(withdrawal)
+    await savePendingConfirmation(entry)
     const stored = JSON.parse(window.localStorage.getItem(key) ?? "null") as { entries: unknown[] }
     expect(stored.entries).toHaveLength(1)
   })
 
-  it("does not migrate the obsolete v1 queue", () => {
+  it("does not migrate obsolete queue versions", () => {
     window.localStorage.setItem("kinic.bridge.pending-confirmations.v1", JSON.stringify([{ ...entry, blocked: false }]))
+    window.localStorage.setItem(
+      `kinic.bridge.pending-confirmations.v4:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`,
+      JSON.stringify({ version: 4, entries: [{ ...entry, ...scope, blocked: false }] }),
+    )
     expect(readPendingConfirmations()).toEqual([])
   })
 
@@ -85,7 +87,6 @@ describe("pending finalized confirmations", () => {
     const second = {
       ...entry,
       ...scope,
-      settlementId: `0x${"44".repeat(32)}` as const,
       transactionHash: `0x${"55".repeat(32)}` as const,
       blocked: false,
     }

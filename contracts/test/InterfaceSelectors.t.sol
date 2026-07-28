@@ -46,7 +46,7 @@ contract BridgeConstructorFixture {
 }
 
 contract InterfaceTupleFixture {
-    function deposit(IBridge.DepositMintRequest calldata) external pure {}
+    function deposit(IBridge.MintAuthorization calldata, bytes calldata) external pure {}
 
     function withdrawal(IBridge.Withdrawal calldata) external pure {}
 }
@@ -85,13 +85,17 @@ contract InterfaceSelectorsTest {
     }
 
     function testBridgeOperationSelectors() public pure {
-        _assertSelector(IBridge.mintDeposit.selector, "mintDeposit((bytes32,address,uint256,uint256,uint256))");
+        _assertSelector(
+            IBridge.mintDepositWithAuthorization.selector,
+            "mintDepositWithAuthorization((bytes32,address,uint256,uint256,uint256,uint256,uint256),bytes)"
+        );
         _assertSelector(IBridge.createWithdrawal.selector, "createWithdrawal(uint256,uint256,bytes,bytes32)");
     }
 
     function testBridgeViewSelectors() public pure {
         _assertSelector(IBridge.bsns.selector, "bsns()");
         _assertSelector(IBridge.bridgeSigner.selector, "bridgeSigner()");
+        _assertSelector(IBridge.mintAuthorizationEpoch.selector, "mintAuthorizationEpoch()");
         _assertSelector(IBridge.runtimeAdministrator.selector, "runtimeAdministrator()");
         _assertSelector(IBridge.baseAdminTimelock.selector, "baseAdminTimelock()");
         _assertSelector(IBridge.serviceFee.selector, "serviceFee()");
@@ -107,6 +111,7 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.approvedTimelockRuntimeCodeHash.selector, "approvedTimelockRuntimeCodeHash()");
         _assertSelector(IBridge.isDepositProcessed.selector, "isDepositProcessed(bytes32)");
         _assertSelector(IBridge.getWithdrawal.selector, "getWithdrawal(uint256)");
+        _assertSelector(IBridge.bridgeSnapshot.selector, "bridgeSnapshot()");
     }
 
     function testBridgeAdministrationSelectors() public pure {
@@ -142,7 +147,11 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.WithdrawalsArePaused.selector, "WithdrawalsArePaused()");
         _assertSelector(IBridge.MultipleWithdrawalsInTransaction.selector, "MultipleWithdrawalsInTransaction()");
         _assertSelector(IBridge.InvalidMintRecipient.selector, "InvalidMintRecipient(address)");
-        _assertSelector(IBridge.UnauthorizedBridgeSigner.selector, "UnauthorizedBridgeSigner(address)");
+        _assertSelector(IBridge.MintAuthorizationExpired.selector, "MintAuthorizationExpired(uint256,uint256)");
+        _assertSelector(
+            IBridge.MintAuthorizationEpochMismatch.selector, "MintAuthorizationEpochMismatch(uint256,uint256)"
+        );
+        _assertSelector(IBridge.InvalidMintAuthorizationSignature.selector, "InvalidMintAuthorizationSignature()");
         _assertSelector(IBridge.UnauthorizedRuntimeAdministrator.selector, "UnauthorizedRuntimeAdministrator(address)");
         _assertSelector(IBridge.UnauthorizedBaseAdmin.selector, "UnauthorizedBaseAdmin(address)");
         _assertSelector(IBridge.TimelockCandidateHasNoCode.selector, "TimelockCandidateHasNoCode(address)");
@@ -183,7 +192,7 @@ contract InterfaceSelectorsTest {
     function testEventTopics() public pure {
         _assertTopic(IBSNS.AuthorizationUsed.selector, "AuthorizationUsed(address,bytes32)");
         _assertTopic(IBSNS.AuthorizationCanceled.selector, "AuthorizationCanceled(address,bytes32)");
-        _assertTopic(IBridge.DepositMinted.selector, "DepositMinted(bytes32,address,uint256,uint256,uint256)");
+        _assertTopic(IBridge.DepositMinted.selector, "DepositMinted(bytes32,address,bytes32,uint256,uint256,uint256)");
         _assertTopic(
             IBridge.WithdrawalCommitted.selector,
             "WithdrawalCommitted(uint256,address,uint256,uint256,uint256,uint256,bytes,bytes32)"
@@ -194,6 +203,9 @@ contract InterfaceSelectorsTest {
         _assertTopic(IBridge.WithdrawalsPaused.selector, "WithdrawalsPaused(address)");
         _assertTopic(IBridge.WithdrawalsUnpaused.selector, "WithdrawalsUnpaused(address)");
         _assertTopic(IBridge.BridgeSignerChanged.selector, "BridgeSignerChanged(address,address)");
+        _assertTopic(
+            IBridge.MintAuthorizationEpochChanged.selector, "MintAuthorizationEpochChanged(address,uint256,uint256)"
+        );
         _assertTopic(IBridge.RuntimeAdministratorChanged.selector, "RuntimeAdministratorChanged(address,address)");
         _assertTopic(IBridge.BaseAdminTimelockChanged.selector, "BaseAdminTimelockChanged(address,address)");
     }
@@ -215,10 +227,21 @@ contract InterfaceSelectorsTest {
         );
     }
 
+    function testMintAuthorizationTypeHash() public pure {
+        assert(
+            keccak256(
+                "MintAuthorization(bytes32 depositId,address recipient,uint256 grossAmount,uint256 maxServiceFee,uint256 chargedServiceFee,uint256 deadline,uint256 authorizationEpoch)"
+            ) == 0x723ba61f726f90e47fb478699fab5ca598f7b0a19ec8016f9886579f6ccec1ad
+        );
+    }
+
     function testEnumOrdinalsAndStructOrder() public pure {
         assert(uint8(IBridge.WithdrawalStatus.None) == 0);
         assert(uint8(IBridge.WithdrawalStatus.Committed) == 1);
-        _assertSelector(InterfaceTupleFixture.deposit.selector, "deposit((bytes32,address,uint256,uint256,uint256))");
+        _assertSelector(
+            InterfaceTupleFixture.deposit.selector,
+            "deposit((bytes32,address,uint256,uint256,uint256,uint256,uint256),bytes)"
+        );
         _assertSelector(
             InterfaceTupleFixture.withdrawal.selector,
             "withdrawal((address,uint256,uint256,uint256,uint256,bytes,bytes32,uint8))"

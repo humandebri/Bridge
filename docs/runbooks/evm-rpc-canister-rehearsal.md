@@ -103,7 +103,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-fault \
 injectorは`schema_version`、`run_reference`、`applied_provider_indices`、`restored_provider_indices`、`result: "completed"`に加え、故障区間中に取得した`decision_sequence`、`decision_timestamp_ns`、完全な`canister_decision`をJSONで返す。recorderはdecisionのcanonical digestを保存し、validatorはscenarioのdecisionと一致し、そのtimestampが故障適用から復旧までの区間内にある場合だけ受理する。review済みindexと不一致、復旧未確認、別時点のdecision、失敗exit、任意引数付きinjectorは拒否する。
 
 scenario evidenceの`artifacts`へartifactの相対path、ファイル全体のSHA-256、`details`各fieldをraw stdoutへ結ぶJSON pointerを記載する。
-全detail fieldがraw artifactから再導出できなければ`verify`は失敗する。ID、Ledger block、transaction、canonical hash、quorum、nonce結果はscenarioごとにBridge/Base/Ledger/auditの複数artifactへcross-bindingする必要があり、一種類の自己申告だけでは完了しない。
+全detail fieldがraw artifactから再導出できなければ`verify`は失敗する。ID、Authorization digest、Ledger block、wallet transaction、canonical hash、quorum、期限切れ証拠はscenarioごとにBridge/Base/Ledger/auditの複数artifactへcross-bindingする必要があり、一種類の自己申告だけでは完了しない。
 `request_sha256`はartifact順の`[tool, argv..., transport]`配列、`response_sha256`は同順のraw stdout配列を空白なしJSONへしたSHA-256として算出する。任意hashは受理しない。
 
 観測結果、artifact binding、秘密除去済みrequest/responseのdigestをtemplateへ入れ、次で記録する。
@@ -115,8 +115,8 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 
 `external_calls_performed=true`と`through_evm_rpc_canister=true`だけでは証跡にならない。
 quorum成功scenarioは`get_audit_events`の`EvmRpcObservation`から、EVM RPC Canister ID、Candid call method、Canister内部request digest、quorum response digest、Finalized block number/hash、transaction hashを`canister_audit`へ束縛する。
-call methodはscenarioに応じたproduction実値`multi_request`、`eth_sendRawTransaction`、`eth_sendRawTransaction+multi_request`、`eth_getTransactionReceipt+multi_request`だけを許可する。receiptのcanonicalityは、2-of-3で一致したreceipt hashへ`bridgeSnapshot()`をEIP-1898 `requireCanonical=true`で実行し、snapshotのblock numberとreceipt heightを一致させる。`nonce_conflict`もbroadcast decision auditを必須とし、単なるstop reason自己申告では完了しない。
-`single_provider_failure`、`quorum_loss`、`nonce_conflict`は`EvmRpcDecision`も`canister_decision`へ束縛し、設定provider数、必要threshold、停止理由、Ledger呼出し有無、Bridge継続、Deposit pause、自動再署名有無を再導出する。threshold APIは採用前のprovider別全responseを返さないため、3/3一致と2/3一致の区別はfault injection artifactへ委ね、Canister auditは設定値`3`、必要threshold`2`、実際の継続・停止判断を証明する。
+call methodはscenarioに応じたproduction実値`multi_request`または`eth_getTransactionReceipt+multi_request`だけを許可する。CanisterはMint transactionをbroadcastしない。receiptのcanonicalityは、2-of-3で一致したreceipt hashへ`bridgeSnapshot()`をEIP-1898 `requireCanonical=true`で実行し、snapshotのblock numberとreceipt heightを一致させる。
+`single_provider_failure`と`quorum_loss`は`EvmRpcDecision`も`canister_decision`へ束縛し、設定provider数、必要threshold、停止理由、Ledger呼出し有無、Bridge継続を再導出する。`processed_event_mismatch`はprocessed storage、exact event不在、Deposit pause、refund未開始を同じFinalized観測へ束縛する。threshold APIは採用前のprovider別全responseを返さないため、3/3一致と2/3一致の区別はfault injection artifactへ委ね、Canister auditは設定値`3`、必要threshold`2`、実際の継続・停止判断を証明する。
 `preflight`ではさらに固定`icp canister status <id> -n ic --public --json` captureのmodule hashをreview済みWasm SHA-256へ束縛する。
 予定値、手入力digest、dry-runを証跡として記録してはならない。
 
@@ -135,7 +135,7 @@ AWAITING_PREFLIGHT
 
 asset flowとして次の4件を実行し、各transactionをFinalized headまで待つ。
 
-1. `deposit_mint`: Deposit ID、Ledger block、mint transaction、Finalized block/hash
+1. `authorization_mint`: Deposit ID、Ledger block、Authorization digest、Base walletのmint transaction、exact event、Finalized block/hash
 2. `withdrawal_release`: user `approve`、user `createWithdrawal`のFinalized block/hash、固定quote、ICRC transfer block、追加Base transactionがないこと
 3. `ledger_fee_guard`: 観測Ledger feeがcharged Service Feeを超えたときtransfer前に停止し、Base Withdrawalをpauseする。cancel、refund、別transfer identityを作らない
 4. `canonical_receipt`: receipt block number/hash、receipt hashへのEIP-1898 `bridgeSnapshot()` probe、Finalized head
@@ -144,8 +144,8 @@ failure scenarioとして次の4件をtest-only設定で実行する。
 
 1. `single_provider_failure`: 実取引経路の`request_deposit`でconfigured provider 3、required threshold 2、1 provider故障注入のraw参照、threshold成立、Bridge処理継続
 2. `quorum_loss`: required threshold 2、2 provider以上の故障注入、threshold不成立、`RpcInconsistent`または`RpcUnavailable`、Ledger call前fail-closed
-3. `nonce_known`: `NonceTooLow`後、local transaction hashが2-provider合意で存在し`Submitted`
-4. `nonce_conflict`: local transaction hash不在、`NonceConflict`、自動再署名なし、Deposit pause
+3. `authorization_expiry`: Finalized timestampがdeadlineを超え、depositが未処理であるcanonical証拠を保存した後だけLedger refundへ進む
+4. `processed_event_mismatch`: processedがtrueなのにexact Authorization eventを証明できない場合、refundせず新規Depositをpauseする
 
 failure用endpointへの一時差替えはtest Bridge Canisterだけで行い、通常3 endpointを使う正常系証跡と混在させない。
 一時設定、操作時刻、元設定への復旧を別の運用ログへ残す。
@@ -160,7 +160,7 @@ templateの`details`文字列を実objectへ置換し、次のように一件ず
 
 ```sh
 python3 scripts/evm-rpc-rehearsal/rehearsal.py \
-  record /secure/work/rpc-e2e.json deposit_mint /secure/work/deposit-mint.json
+  record /secure/work/rpc-e2e.json authorization_mint /secure/work/authorization-mint.json
 python3 scripts/evm-rpc-rehearsal/rehearsal.py \
   verify /secure/work/rpc-e2e.json
 ```
@@ -171,9 +171,9 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 - 全10 scenarioが公式EVM RPC Canister、Base Sepolia、同じrehearsal ID、同じBridge Canisterへbindingされている。
 - rehearsalのsource revision/tree、Bridge Canister Wasm、Bridge runtime bytecodeがrelease bundleと一致する。
 - quorum成功scenarioの`canister_audit`がraw `get_audit_events` artifactから再導出され、preflight module hashがreleaseのBridge Wasmと一致する。
-- signer triple、receipt hash、EIP-1898 canonical probe、confirmationが一致する。
+- signer triple、Authorization digest、receipt hash、EIP-1898 canonical probe、exact eventが一致する。
 - quorum lossはLedger call前に停止する。
-- unknown nonce conflictは自動再署名せずDepositをpauseする。
+- 期限切れ未処理Depositだけがrefundされ、processed/event不一致はrefundせずDepositをpauseする。
 - Base BridgeとCanisterは演習終了時もpause状態に戻す。資産受付開始はこの演習とは別の明示承認とする。
 - `rpc-e2e.json`のSHA-256をrelease evidence bundleへ登録し、参照する`artifacts/`も同じbundleへ含める。artifactにはcredentialを含まないraw command stdoutだけを保存し、生authorization、credential URL、秘密は含めない。
 

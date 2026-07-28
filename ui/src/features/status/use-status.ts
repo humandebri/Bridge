@@ -98,20 +98,19 @@ export function useConfirmedBaseStatus() {
     queryFn: async () => {
       const client = basePublicClient
       const address = deploymentProfile.bridgeAddress as `0x${string}`
-      const signer = deploymentProfile.expected_bridge_signer as `0x${string}`
       const finalized = await client.getBlock({ blockTag: "finalized" })
       if (finalized.number === null || finalized.hash === null) throw new Error("Finalized Base block number or hash is unavailable")
       const timestampBlocker = finalizedHeadTimestampBlocker(finalized.timestamp)
       if (timestampBlocker) throw new Error(timestampBlocker)
-      const [snapshot, finalizedSignerBalance, safeSignerBalance] = await Promise.all([
-        client.readContract({ address, abi: bridgeAbi, functionName: "bridgeSnapshot", blockHash: finalized.hash, requireCanonical: true }),
-        client.getBalance({ address: signer, blockTag: "finalized" }),
-        client.getBalance({ address: signer, blockTag: "safe" }),
-      ])
+      const snapshot = await client.readContract({
+        address,
+        abi: bridgeAbi,
+        functionName: "bridgeSnapshot",
+        blockHash: finalized.hash,
+        requireCanonical: true,
+      })
       return {
         ...bridgeSnapshotView(snapshot),
-        finalizedSignerBalance,
-        safeSignerBalance,
         observedBlock: finalized.number,
         observedBlockHash: finalized.hash,
         observedTimestamp: snapshot.blockTimestamp,

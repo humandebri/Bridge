@@ -90,7 +90,7 @@ function_id=matches[0]
 
 def blob_literal(raw): return 'blob "'+''.join(f'\\{byte:02x}' for byte in raw)+'"'
 title='Schedule KINIC Bridge activation' if phase=='schedule' else 'Execute KINIC Bridge activation'
-summary=('Schedule the reviewed 72-hour Timelock activation while all asset flows remain paused.'
+summary=('Schedule the reviewed 24-hour Timelock activation while all asset flows remain paused.'
  if phase=='schedule' else 'Execute the reviewed activation and begin production asset acceptance.')
 argument=(f'(record {{ subaccount = {blob_literal(bytes.fromhex(subaccount))}; command = opt variant {{ '
  f'MakeProposal = record {{ url = ""; title = "{title}"; summary = "{summary}"; action = opt variant {{ '

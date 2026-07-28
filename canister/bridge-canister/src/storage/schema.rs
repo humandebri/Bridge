@@ -1,7 +1,7 @@
 use ic_sqlite_vfs::MemoryId;
 
-pub const SCHEMA_VERSION: u16 = 24;
-pub(super) const WIRE_VERSION: u8 = 20;
+pub const SCHEMA_VERSION: u16 = 25;
+pub(super) const WIRE_VERSION: u8 = 21;
 
 pub const RETIRED_STABLE_STRUCTURE_MEMORY_IDS: core::ops::RangeInclusive<u8> = 0..=32;
 pub const SQLITE_MEMORY_ID: MemoryId = MemoryId::new(120);
@@ -10,15 +10,11 @@ pub(super) const VALIDATION_TABLES: &[&str] = &[
     "deposits",
     "deposit_funding_attempts",
     "withdrawals",
-    "evm_operations",
     "reconciliation_holds",
-    "evm_execution_payloads",
     "reconciliation_scans",
     "audit_events",
     "fee_payouts",
     "deposit_owner_index",
-    "operation_owner_index",
-    "evm_state_index",
     "pull_pending_deposit_index",
     "release_pending_withdrawal_index",
     "open_hold_index",

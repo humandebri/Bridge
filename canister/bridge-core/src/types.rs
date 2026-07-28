@@ -78,7 +78,7 @@ macro_rules! numeric_id {
     };
 }
 
-numeric_id!(EvmOperationId);
+numeric_id!(GovernanceOperationId);
 numeric_id!(HoldId);
 
 #[cfg_attr(

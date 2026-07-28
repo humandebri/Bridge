@@ -90,8 +90,8 @@ def leaseImpl (active : Bool) (current outcome : U64) : Bool :=
   leaseOutcomeCurrent active current.val outcome.val
 
 def manualClaimImpl
-    (confirmation scheduled active stopped overdue expired : Bool) : Bool :=
-  manualClaimAllowed confirmation scheduled active stopped overdue expired
+    (scheduled active stopped overdue expired : Bool) : Bool :=
+  manualClaimAllowed scheduled active stopped overdue expired
 
 def notificationAdmissionImpl
     (callerCount hashCount callerLimit hashLimit : U64) : Bool :=

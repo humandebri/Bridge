@@ -162,9 +162,9 @@ theorem lease_refinement
   rfl
 
 theorem manual_claim_refinement
-    (confirmation scheduled active stopped overdue expired : Bool) :
-    manualClaimImpl confirmation scheduled active stopped overdue expired =
-      manualClaimAllowed confirmation scheduled active stopped overdue expired := by
+    (scheduled active stopped overdue expired : Bool) :
+    manualClaimImpl scheduled active stopped overdue expired =
+      manualClaimAllowed scheduled active stopped overdue expired := by
   rfl
 
 theorem notification_admission_refinement

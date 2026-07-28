@@ -4,6 +4,8 @@ status: accepted
 
 # Settlement実行をstable SQLite job queueへ集約する
 
+> **一部superseded:** Deposit Mintのraw transaction、confirmation job、専用confirmation APIに関する記述はADR 0023で置換済みであり、以下は採用時の履歴である。stable job queue、lease fencing、Ledger transfer identity、Withdrawal/Governance transaction処理は引き続き有効である。
+
 ADR 0017のscheduler内部設計をsupersedeする。
 ADR 0020はEVM confirmation jobの起動方法だけを変更し、ADR 0018のFinalized保証とユーザー実行Withdrawalは維持する。
 

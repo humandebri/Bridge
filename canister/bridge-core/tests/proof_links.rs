@@ -88,7 +88,7 @@ fn phase5_production_links_typecheck() {
         "manual_claim_exclusion",
         "canister/bridge-core/src/kernel.rs#manual_claim_decision",
         manual_claim_decision,
-        fn(bool, bool, bool, bool, bool, bool) -> bridge_core::ManualClaimDecision
+        fn(bool, bool, bool, bool, bool) -> bridge_core::ManualClaimDecision
     );
     production_link!(
         "notification_quota_isolation",

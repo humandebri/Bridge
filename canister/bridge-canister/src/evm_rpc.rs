@@ -1,6 +1,6 @@
 use crate::config::BridgeInitArgs;
 use async_trait::async_trait;
-use bridge_core::{Amount, BaseMintSnapshot, EvmFeeQuote, FinalizedObservationRecord};
+use bridge_core::{Amount, BaseMintSnapshot, FinalizedObservationRecord};
 use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use evm_rpc_client::{CandidResponseConverter, EvmRpcClient, NoRetry};
 use evm_rpc_types::{
@@ -54,7 +54,6 @@ pub struct RpcAuditEvidence {
 pub enum RpcDecisionKind {
     QuorumContinued,
     QuorumLoss,
-    NonceConflict,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,24 +107,6 @@ pub fn quorum_loss_decision(
     }
 }
 
-pub fn nonce_conflict_decision(
-    operation: impl Into<String>,
-    transaction_hash: [u8; 32],
-) -> RpcDecisionEvidence {
-    RpcDecisionEvidence {
-        kind: RpcDecisionKind::NonceConflict,
-        operation: operation.into(),
-        configured_provider_count: 3,
-        required_threshold: 2,
-        stop_reason: Some("NonceConflict".to_owned()),
-        ledger_call_performed: false,
-        bridge_operation_continued: false,
-        deposits_paused: true,
-        automatically_resigned: false,
-        transaction_hash: Some(transaction_hash),
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletedFinalizedObservation {
     pub finalized: FinalizedObservation,
@@ -163,6 +144,7 @@ pub struct ObservedWithdrawal {
 pub struct BridgeSnapshot {
     pub mint: BaseMintSnapshot,
     pub bridge_signer: [u8; 20],
+    pub mint_authorization_epoch: u64,
     pub deposits_paused: bool,
     pub withdrawals_paused: bool,
 }
@@ -226,11 +208,6 @@ const BLOCK_RESPONSE_BYTES: u64 = 16 * 1024;
 const RECEIPT_RESPONSE_BYTES: u64 = 32 * 1024;
 const SEND_RESPONSE_BYTES: u64 = 2 * 1024;
 const EVM_RPC_TIMEOUT_SECONDS: u32 = 30;
-const GAS_PRICE_ORACLE: [u8; 20] = [
-    0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x0f,
-];
-const MAX_SIGNED_TRANSACTION_OVERHEAD_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BoundedRuntime;
@@ -349,211 +326,6 @@ fn parse_u128(value: &str) -> Result<u128, ObservationError> {
     u128::from_str_radix(significant, 16).map_err(|_| ObservationError::InvalidResponse)
 }
 
-fn nat256_u128(value: Nat256) -> Result<u128, ObservationError> {
-    let bytes = value.into_be_bytes();
-    if bytes[..16].iter().any(|byte| *byte != 0) {
-        return Err(ObservationError::Overflow);
-    }
-    Ok(u128::from_be_bytes(
-        bytes[16..]
-            .try_into()
-            .map_err(|_| ObservationError::InvalidResponse)?,
-    ))
-}
-
-fn ceil_bps(value: u128, basis_points: u32) -> Result<u128, ObservationError> {
-    value
-        .checked_mul(u128::from(basis_points))
-        .and_then(|scaled| scaled.checked_add(9_999))
-        .map(|scaled| scaled / 10_000)
-        .ok_or(ObservationError::Overflow)
-}
-
-async fn consistent_hex_request(
-    args: &BridgeInitArgs,
-    request: serde_json::Value,
-) -> Result<u128, ObservationError> {
-    match client(args)
-        .multi_request(request)
-        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(value)) => parse_u128(&value),
-        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-    }
-}
-
-fn canonical_block_parameter(block_hash: &[u8; 32]) -> serde_json::Value {
-    json!({
-        "blockHash": format!("0x{}", hex(block_hash)),
-        "requireCanonical": true,
-    })
-}
-
-async fn safe_block(args: &BridgeInitArgs) -> Result<Block, ObservationError> {
-    match client(args)
-        .get_block_by_number(BlockTag::Safe)
-        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(block)) => Ok(block),
-        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-    }
-}
-
-async fn gas_price_oracle_fee(
-    args: &BridgeInitArgs,
-    signature: &str,
-    argument: &[u8],
-    block_hash: [u8; 32],
-) -> Result<u128, ObservationError> {
-    let mut calldata = selector(signature).to_vec();
-    calldata.extend_from_slice(argument);
-    consistent_hex_request(
-        args,
-        json!({
-            "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-            "params": [{
-                "to": format!("0x{}", hex(&GAS_PRICE_ORACLE)),
-                "data": format!("0x{}", hex(&calldata)),
-            }, canonical_block_parameter(&block_hash)],
-        }),
-    )
-    .await
-}
-
-pub async fn mint_fee_quote(
-    args: &BridgeInitArgs,
-    signer: [u8; 20],
-    calldata: &[u8],
-) -> Result<EvmFeeQuote, ObservationError> {
-    ensure_chain_id(args).await?;
-    let block = safe_block(args).await?;
-    let safe_block_number = u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?;
-    let safe_block_hash = *block.hash.as_array();
-    let base_fee_per_gas = nat256_u128(
-        block
-            .base_fee_per_gas
-            .ok_or(ObservationError::InvalidResponse)?,
-    )?;
-    let max_priority_fee_per_gas = consistent_hex_request(
-        args,
-        json!({"jsonrpc": "2.0", "id": 1, "method": "eth_maxPriorityFeePerGas", "params": []}),
-    )
-    .await?;
-    if max_priority_fee_per_gas > args.evm_fee.max_priority_fee_per_gas_ceiling {
-        return Err(ObservationError::BaseStateMismatch);
-    }
-    let gas_estimate = consistent_hex_request(
-        args,
-        json!({
-            "jsonrpc": "2.0", "id": 1, "method": "eth_estimateGas",
-            "params": [{
-                "from": format!("0x{}", hex(&signer)),
-                "to": format!("0x{}", hex(&args.bridge_contract)),
-                "data": format!("0x{}", hex(calldata)),
-            }, canonical_block_parameter(&safe_block_hash)],
-        }),
-    )
-    .await?;
-    let gas_limit = ceil_bps(gas_estimate, args.evm_fee.gas_limit_multiplier_bps)?;
-    if gas_limit > args.evm_fee.gas_limit_ceiling {
-        return Err(ObservationError::BaseStateMismatch);
-    }
-    let initial_max_fee_per_gas = ceil_bps(base_fee_per_gas, args.evm_fee.base_fee_multiplier_bps)?
-        .checked_add(max_priority_fee_per_gas)
-        .ok_or(ObservationError::Overflow)?;
-    if initial_max_fee_per_gas > args.evm_fee.max_fee_per_gas_ceiling {
-        return Err(ObservationError::BaseStateMismatch);
-    }
-    let (reachable_max_fee_per_gas, _) = crate::config::reachable_replacement_fees(
-        initial_max_fee_per_gas,
-        max_priority_fee_per_gas,
-        args.evm_fee,
-        args.evm_liveness,
-    );
-    let max_serialized_size = calldata
-        .len()
-        .checked_add(MAX_SIGNED_TRANSACTION_OVERHEAD_BYTES)
-        .ok_or(ObservationError::Overflow)?;
-    let mut size_word = [0u8; 32];
-    size_word[16..].copy_from_slice(
-        &u128::try_from(max_serialized_size)
-            .map_err(|_| ObservationError::Overflow)?
-            .to_be_bytes(),
-    );
-    let observed_l1_fee_upper_bound_wei = gas_price_oracle_fee(
-        args,
-        "getL1FeeUpperBound(uint256)",
-        &size_word,
-        safe_block_hash,
-    )
-    .await?;
-    let reserved_l1_fee_wei =
-        ceil_bps(observed_l1_fee_upper_bound_wei, args.evm_fee.l1_fee_multiplier_bps)?;
-    if reserved_l1_fee_wei > args.evm_fee.l1_fee_per_transaction_ceiling_wei {
-        return Err(ObservationError::BaseStateMismatch);
-    }
-    let reserved_eth_wei = gas_limit
-        .checked_mul(reachable_max_fee_per_gas)
-        .and_then(|fee| fee.checked_add(reserved_l1_fee_wei))
-        .ok_or(ObservationError::Overflow)?;
-    let observed_at_ns = ic_cdk::api::time();
-    let valid_until_ns = observed_at_ns
-        .checked_add(
-            args.evm_fee
-                .quote_validity_seconds
-                .checked_mul(1_000_000_000)
-                .ok_or(ObservationError::Overflow)?,
-        )
-        .ok_or(ObservationError::Overflow)?;
-    let quote = EvmFeeQuote {
-        safe_block_number,
-        safe_block_hash,
-        observed_at_ns,
-        valid_until_ns,
-        base_fee_per_gas,
-        max_priority_fee_per_gas,
-        gas_estimate,
-        gas_limit,
-        initial_max_fee_per_gas,
-        reachable_max_fee_per_gas,
-        observed_l1_fee_upper_bound_wei,
-        reserved_l1_fee_wei,
-        reserved_eth_wei,
-    };
-    quote
-        .validate()
-        .map_err(|_| ObservationError::InvalidResponse)?;
-    Ok(quote)
-}
-
-pub async fn signed_transaction_l1_fee(
-    args: &BridgeInitArgs,
-    raw: &[u8],
-    block_hash: [u8; 32],
-) -> Result<u128, ObservationError> {
-    let head_offset = ((raw.len() + 31) / 32)
-        .checked_mul(32)
-        .ok_or(ObservationError::Overflow)?;
-    let padded_len = ((raw.len() + 31) / 32)
-        .checked_mul(32)
-        .ok_or(ObservationError::Overflow)?;
-    let mut encoded = vec![0u8; 64 + padded_len];
-    encoded[31] = 32;
-    let raw_len = u128::try_from(raw.len()).map_err(|_| ObservationError::Overflow)?;
-    encoded[48..64].copy_from_slice(&raw_len.to_be_bytes());
-    encoded[64..64 + raw.len()].copy_from_slice(raw);
-    debug_assert_eq!(head_offset, padded_len);
-    gas_price_oracle_fee(args, "getL1Fee(bytes)", &encoded, block_hash).await
-}
-
 async fn eth_call_at_observation(
     args: &BridgeInitArgs,
     calldata: &[u8],
@@ -625,6 +397,128 @@ pub async fn recovery_observation(
         bridge_identity,
         state,
         rpc_audit,
+    })
+}
+
+pub async fn exact_mint_evidence(
+    args: &BridgeInitArgs,
+    authorization: &bridge_core::MintAuthorizationRecord,
+    finalized_head_block_number: u64,
+) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
+    let mut event_topic = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(b"DepositMinted(bytes32,address,bytes32,uint256,uint256,uint256)");
+    hasher.finalize(&mut event_topic);
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_getLogs",
+        "params": [{
+            "address": format!("0x{}", hex(&args.bridge_contract)),
+            "fromBlock": format!("0x{:x}", authorization.origin.finalized_block_number),
+            "toBlock": format!("0x{finalized_head_block_number:x}"),
+            "topics": [
+                format!("0x{}", hex(&event_topic)),
+                format!("0x{}", hex(&authorization.authorization.deposit_id))
+            ]
+        }]
+    });
+    let rpc_request_digest = Sha256::digest(
+        serde_json::to_vec(&request).map_err(|_| ObservationError::InvalidResponse)?,
+    )
+    .into();
+    let value = match client(args)
+        .multi_request(request)
+        .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
+        .try_send()
+        .await
+        .map_err(|_| ObservationError::Rpc)?
+    {
+        MultiRpcResult::Consistent(Ok(value)) => value,
+        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
+    };
+    let rpc_response_digest = Sha256::digest(value.as_bytes()).into();
+    let logs: Vec<evm_rpc_types::LogEntry> =
+        serde_json::from_str(&value).map_err(|_| ObservationError::InvalidResponse)?;
+    if logs.len() != 1 {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let log = &logs[0];
+    let bridge = Hex20::from_str(&format!("0x{}", hex(&args.bridge_contract)))
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    if log.removed
+        || log.address != bridge
+        || log.topics.len() != 4
+        || log.topics[0].as_array() != &event_topic
+        || log.topics[1].as_array() != &authorization.authorization.deposit_id
+        || log.topics[2].as_array()[..12].iter().any(|byte| *byte != 0)
+        || log.topics[2].as_array()[12..] != authorization.authorization.recipient
+        || log.topics[3].as_array() != &authorization.digest
+    {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let data = log.data.as_ref();
+    if data.len() != 3 * ABI_WORD_BYTES
+        || word_u128(&data[..ABI_WORD_BYTES])? != authorization.authorization.gross_amount.get()
+        || word_u128(&data[ABI_WORD_BYTES..2 * ABI_WORD_BYTES])?
+            != authorization.authorization.charged_service_fee.get()
+        || word_u128(&data[2 * ABI_WORD_BYTES..])?
+            != authorization
+                .authorization
+                .gross_amount
+                .get()
+                .checked_sub(authorization.authorization.charged_service_fee.get())
+                .ok_or(ObservationError::Overflow)?
+    {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let transaction_hash = log
+        .transaction_hash
+        .as_ref()
+        .map(|hash| *hash.as_array())
+        .ok_or(ObservationError::InvalidResponse)?;
+    let (receipt, finalized_observation, receipt_observation) =
+        match canonical_finalized_receipt(args, transaction_hash).await? {
+            CanonicalFinalizedReceiptOutcome::Confirmed {
+                receipt,
+                finalized_observation,
+                receipt_observation,
+            } => (receipt, finalized_observation, receipt_observation),
+            CanonicalFinalizedReceiptOutcome::Missing
+            | CanonicalFinalizedReceiptOutcome::Pending { .. } => {
+                return Err(ObservationError::InvalidResponse);
+            }
+        };
+    if receipt.status != Some(Nat256::from(1u64))
+        || receipt.to.as_ref() != Some(&bridge)
+        || receipt
+            .logs
+            .iter()
+            .filter(|candidate| {
+                !candidate.removed
+                    && candidate.address == log.address
+                    && candidate.topics == log.topics
+                    && candidate.data == log.data
+                    && candidate.block_number == log.block_number
+                    && candidate.block_hash == log.block_hash
+                    && candidate.transaction_hash == log.transaction_hash
+            })
+            .count()
+            != 1
+    {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    Ok(bridge_core::MintFinalizationEvidence {
+        authorization_digest: authorization.digest,
+        chain_id: finalized_observation.chain_id,
+        transaction_hash,
+        receipt_block_number: receipt_observation.block_number,
+        receipt_block_hash: receipt_observation.block_hash,
+        finalized_block_number: finalized_observation.block_number,
+        finalized_block_hash: finalized_observation.block_hash,
+        rpc_request_digest,
+        rpc_response_digest,
     })
 }
 
@@ -878,7 +772,7 @@ fn decode_bridge_snapshot(value: &str) -> Result<BridgeSnapshot, ObservationErro
             .strip_prefix("0x")
             .ok_or(ObservationError::InvalidResponse)?,
     )?;
-    if bytes.len() != 12 * ABI_WORD_BYTES {
+    if bytes.len() != 13 * ABI_WORD_BYTES {
         return Err(ObservationError::InvalidResponse);
     }
     let word = |index: usize| -> Result<&[u8], ObservationError> {
@@ -903,21 +797,23 @@ fn decode_bridge_snapshot(value: &str) -> Result<BridgeSnapshot, ObservationErro
                 .map_err(|_| ObservationError::Overflow)?,
             confirmed_block_timestamp: u64::try_from(word_u128(word(1)?)?)
                 .map_err(|_| ObservationError::Overflow)?,
-            service_fee: Amount::new(word_u128(word(3)?)?),
-            max_service_fee: Amount::new(word_u128(word(4)?)?),
-            per_deposit_limit: Amount::new(word_u128(word(5)?)?),
-            mint_window_limit: Amount::new(word_u128(word(6)?)?),
-            mint_window_duration: u64::try_from(word_u128(word(7)?)?)
+            service_fee: Amount::new(word_u128(word(4)?)?),
+            max_service_fee: Amount::new(word_u128(word(5)?)?),
+            per_deposit_limit: Amount::new(word_u128(word(6)?)?),
+            mint_window_limit: Amount::new(word_u128(word(7)?)?),
+            mint_window_duration: u64::try_from(word_u128(word(8)?)?)
                 .map_err(|_| ObservationError::Overflow)?,
-            mint_window_started_at: u64::try_from(word_u128(word(8)?)?)
+            mint_window_started_at: u64::try_from(word_u128(word(9)?)?)
                 .map_err(|_| ObservationError::Overflow)?,
-            minted_in_window: Amount::new(word_u128(word(9)?)?),
+            minted_in_window: Amount::new(word_u128(word(10)?)?),
         },
         bridge_signer: address_word[12..]
             .try_into()
             .map_err(|_| ObservationError::InvalidResponse)?,
-        deposits_paused: boolean(10)?,
-        withdrawals_paused: boolean(11)?,
+        mint_authorization_epoch: u64::try_from(word_u128(word(3)?)?)
+            .map_err(|_| ObservationError::Overflow)?,
+        deposits_paused: boolean(11)?,
+        withdrawals_paused: boolean(12)?,
     })
 }
 
@@ -1696,7 +1592,7 @@ mod tests {
             block_hash: [0xabu8; 32],
             observed_at_ns: 7,
         };
-        let mut words = vec![[0u8; ABI_WORD_BYTES]; 12];
+        let mut words = vec![[0u8; ABI_WORD_BYTES]; 13];
         words[0][ABI_WORD_BYTES - 8..].copy_from_slice(&42u64.to_be_bytes());
         let response = format!(
             "0x{}",
@@ -1791,6 +1687,7 @@ mod tests {
                 minted_in_window: Amount::new(8),
             },
             bridge_signer: [0xbb; 20],
+            mint_authorization_epoch: 1,
             deposits_paused: false,
             withdrawals_paused: false,
         };
@@ -1848,6 +1745,7 @@ mod tests {
                 minted_in_window: Amount::new(8),
             },
             bridge_signer: [0xbb; 20],
+            mint_authorization_epoch: 1,
             deposits_paused: false,
             withdrawals_paused: false,
         };
@@ -1896,13 +1794,6 @@ mod tests {
         assert_eq!(loss.stop_reason.as_deref(), Some("RpcInconsistent"));
         assert!(!loss.ledger_call_performed);
         assert!(!loss.bridge_operation_continued);
-
-        let conflict = nonce_conflict_decision("broadcast", [2; 32]);
-        assert_eq!(conflict.configured_provider_count, 3);
-        assert_eq!(conflict.required_threshold, 2);
-        assert_eq!(conflict.stop_reason.as_deref(), Some("NonceConflict"));
-        assert!(conflict.deposits_paused);
-        assert!(!conflict.automatically_resigned);
     }
 
     fn test_init_args() -> BridgeInitArgs {
@@ -1928,7 +1819,7 @@ mod tests {
             settlement_rate_limit_global: 3,
             settlement_rate_limit_per_principal: 2,
             settlement_rate_limit_per_record: 1,
-            evm_fee: crate::config::EvmFeePolicy {
+            governance_evm_fee: crate::config::EvmFeePolicy {
                 gas_limit_ceiling: 1,
                 max_fee_per_gas_ceiling: 2,
                 max_priority_fee_per_gas_ceiling: 1,
@@ -1938,8 +1829,8 @@ mod tests {
                 base_fee_multiplier_bps: 60_000,
                 l1_fee_multiplier_bps: 15_000,
             },
-            evm_liveness: crate::config::EvmLivenessPolicy::default(),
-            eth_floor_wei: 1,
+            governance_evm_liveness: crate::config::EvmLivenessPolicy::default(),
+            governance_eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
             governance_principal: Principal::from_slice(&[1]),

@@ -22,7 +22,7 @@ const runtimeDir = path.join(uiRoot, ".e2e-runtime")
 const rpcUrl = "http://127.0.0.1:8545"
 const controlPort = 43119
 const uiPort = 4174
-const ACTIVATION_DELAY_SECONDS = 72 * 60 * 60
+const ACTIVATION_DELAY_SECONDS = 24 * 60 * 60
 const ACTIVATION_TIME_ADVANCES = 3
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 const testIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(7))
@@ -157,9 +157,7 @@ async function setup() {
     "key_1",
     [new TextEncoder().encode("governance-operator")],
   ))
-  await rpc("anvil_setBalance", [signer, "0x8ac7230489e80000"])
   await rpc("anvil_setBalance", [governanceOperator, "0x8ac7230489e80000"])
-  if (BigInt(await rpc("eth_getBalance", [signer, "latest"])) === 0n) throw new Error("Failed to fund the PocketIC Bridge signer")
   if (BigInt(await rpc("eth_getBalance", [governanceOperator, "latest"])) === 0n) throw new Error("Failed to fund the PocketIC governance operator")
 
   const timelockAddress = deployTimelock(governanceOperator)
@@ -197,7 +195,7 @@ async function setup() {
       settlement_rate_limit_global: 60,
       settlement_rate_limit_per_principal: 6,
       settlement_rate_limit_per_record: 3,
-      evm_fee: {
+      governance_evm_fee: {
         gas_limit_ceiling: 500_000n,
         max_fee_per_gas_ceiling: 200_000_000_000n,
         max_priority_fee_per_gas_ceiling: 10_000_000_000n,
@@ -207,14 +205,14 @@ async function setup() {
         base_fee_multiplier_bps: 60_000,
         l1_fee_multiplier_bps: 15_000,
       },
-      evm_liveness: {
+      governance_evm_liveness: {
         check_interval_seconds: 60n,
         rebroadcast_after_seconds: 300n,
         replacement_after_seconds: 1_800n,
         max_replacements: 3,
         fee_bump_bps: 1_250,
       },
-      eth_floor_wei: 1n,
+      governance_eth_floor_wei: 1n,
       cycles_floor: 1n,
       settlement_cycle_ceiling: 1n,
       governance_principal: testOwner,
@@ -242,7 +240,6 @@ async function setup() {
     sendAsTimelock(bridgeAddress, "rotateBridgeSigner(address)", confirmedSigner)
     signer = confirmedSigner
   }
-  await rpc("anvil_setBalance", [signer, "0x8ac7230489e80000"])
   await rpc("anvil_mine", ["0x40"])
   const initialSafe = await publicClient.getBlock({ blockTag: "safe" })
   if (initialSafe.number === null) throw new Error("Anvil initial safe head is unavailable")
@@ -284,10 +281,6 @@ async function setup() {
 
   let relayedBroadcasts = 0
   let notifyCalls = 0
-  let confirmDepositCalls = 0
-  let completedConfirmDepositCalls = 0
-  let holdNextConfirmDeposit = false
-  let releaseHeldConfirmDeposit
   let failNextNotification = false
   let failNextDepositResponse = false
   let connectedAccount = testOwner.toText()
@@ -304,16 +297,19 @@ async function setup() {
     const [safeResult, finalizedResult] = await Promise.all([
       mock.actor.set_safe_block(safe.number, hexToBytes(safe.hash)),
       mock.actor.set_finalized_block(finalized.number, hexToBytes(finalized.hash)),
+      mock.actor.set_block_timestamp(finalized.timestamp),
     ])
     if ("Err" in safeResult) throw new Error(safeResult.Err)
     if ("Err" in finalizedResult) throw new Error(finalizedResult.Err)
-    const [depositPaused, withdrawalPaused] = await Promise.all([
-      publicClient.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "depositMintsPaused" }),
-      publicClient.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "withdrawalsPaused" }),
-    ])
+    const snapshot = await publicClient.readContract({
+      address: bridgeAddress,
+      abi: bridgeAbi,
+      functionName: "bridgeSnapshot",
+    })
     await Promise.all([
-      mock.actor.set_deposit_mints_paused(depositPaused),
-      mock.actor.set_withdrawals_paused(withdrawalPaused),
+      mock.actor.set_deposit_mints_paused(snapshot.depositMintsPaused),
+      mock.actor.set_withdrawals_paused(snapshot.withdrawalsPaused),
+      mock.actor.set_mint_authorization_epoch(snapshot.mintAuthorizationEpoch),
     ])
   }
   await syncObservedHeads()
@@ -324,10 +320,8 @@ async function setup() {
       const raw = bytesHex(broadcasts[relayedBroadcasts])
       const expectedHash = keccak256(raw)
       const rawSigner = await recoverTransactionAddress({ serializedTransaction: raw })
-      if (rawSigner.toLowerCase() !== signer.toLowerCase() && rawSigner.toLowerCase() !== governanceOperator.toLowerCase()) {
-        sendAsTimelock(bridgeAddress, "rotateBridgeSigner(address)", rawSigner)
-        await rpc("anvil_setBalance", [rawSigner, "0x8ac7230489e80000"])
-        signer = rawSigner
+      if (rawSigner.toLowerCase() !== governanceOperator.toLowerCase()) {
+        throw new Error(`Canister broadcast used non-Governance signer ${rawSigner}`)
       }
       try {
         const submittedHash = await rpc("eth_sendRawTransaction", [raw])
@@ -535,36 +529,6 @@ async function setup() {
         if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id) } })
         return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id) } })
       }
-      if (request.url === "/ic/confirm-deposit") {
-        confirmDepositCalls += 1
-        if (holdNextConfirmDeposit) {
-          holdNextConfirmDeposit = false
-          await new Promise((resolve) => { releaseHeldConfirmDeposit = resolve })
-          releaseHeldConfirmDeposit = undefined
-        }
-        const transactionHash = body.transactionHash
-        const [receipt, transaction] = await Promise.all([
-          publicClient.getTransactionReceipt({ hash: transactionHash }),
-          publicClient.getTransaction({ hash: transactionHash }),
-        ])
-        const observed = await mock.actor.set_observed_transaction(
-          hexToBytes(transactionHash),
-          hexToBytes(bridgeAddress),
-          hexToBytes(transaction.from),
-          Number(receipt.blockNumber),
-        )
-        if ("Err" in observed) throw new Error(observed.Err)
-        await syncObservedHeads()
-        const result = await bridge.actor.confirm_deposit({
-          settlement_id: hexToBytes(body.settlementId),
-          transaction_hash: hexToBytes(transactionHash),
-          receipt_block_number: BigInt(body.receiptBlockNumber),
-          observed_finalized_block_number: BigInt(body.observedFinalizedBlockNumber),
-        })
-        if ("Err" in result) throw new Error(`deposit confirmation rejected: ${json(result.Err)}`)
-        completedConfirmDepositCalls += 1
-        return send(response, 200, settlementJson(result.Ok))
-      }
       if (request.url === "/ic/continue-deposit") {
         const result = await bridge.actor.continue_deposit(hexToBytes(body.id))
         if ("Err" in result) throw new Error(`deposit continuation rejected: ${json(result.Err)}`)
@@ -581,29 +545,6 @@ async function setup() {
       }
       if (request.url === "/test/fail-next-deposit-response") {
         failNextDepositResponse = true
-        return send(response, 200, null)
-      }
-      if (request.url === "/test/hold-next-confirm-deposit") {
-        holdNextConfirmDeposit = true
-        return send(response, 200, null)
-      }
-      if (request.url === "/test/pending-deposit") {
-        const depositId = knownDeposits[0]
-        if (!depositId) throw new Error("no known deposit is available")
-        const [record] = await bridge.actor.get_deposit(depositId)
-        const submitted = record?.base_confirmation[0]?.Submitted
-        if (!submitted) throw new Error("known deposit has no submitted Base transaction")
-        return send(response, 200, {
-          bridgeAddress,
-          bridgeCanisterId: bridge.canisterId.toText(),
-          chainId: 31_337,
-          owner: testOwner.toText(),
-          settlementId: bytesHex(depositId),
-          transactionHash: bytesHex(submitted.transaction_hash),
-        })
-      }
-      if (request.url === "/test/release-confirm-deposit") {
-        releaseHeldConfirmDeposit?.()
         return send(response, 200, null)
       }
       if (request.url === "/test/settle") {
@@ -625,24 +566,6 @@ async function setup() {
           await startProgressLoop(pic)
         }
         return send(response, 200, null)
-      }
-      if (request.url === "/test/advance-confirmation") {
-        await relayPendingBroadcasts()
-        await syncObservedHeads()
-        await stopProgressLoop()
-        try {
-          await pic.advanceTime(Number(body.minutes ?? 20) * 60_000)
-          await pic.tick(100)
-          await relayPendingBroadcasts()
-          await syncObservedHeads()
-          // Let the prior cached observation expire so the next UI readiness
-          // refresh must consume the newly synchronized finalized head.
-          await pic.advanceTime(31_000)
-          await pic.tick(5)
-        } finally {
-          await startProgressLoop(pic)
-        }
-        return send(response, 200, { time: await pic.getTime() })
       }
       if (request.url === "/test/upgrade") {
         await stopProgressLoop()
@@ -691,8 +614,6 @@ async function setup() {
         return send(response, 200, {
           broadcasts: relayedBroadcasts,
           notifyCalls,
-          confirmDepositCalls,
-          completedConfirmDepositCalls,
           knownDepositCount: knownDeposits.length,
           depositSequences,
           nextDepositSequence: nextDepositSequence.toString(),
@@ -849,7 +770,7 @@ function deployTimelock(governanceOperator) {
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast",
     "src/BridgeTimelockController.sol:BridgeTimelockController", "--constructor-args",
-    "259200", `[${governanceOperator}]`, `[${governanceOperator}]`, `[${governanceOperator}]`,
+    "86400", `[${governanceOperator}]`, `[${governanceOperator}]`, `[${governanceOperator}]`,
   ], { encoding: "utf8" })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Timelock deployment:\n${output}`)

@@ -7,7 +7,6 @@ type AdminError = variant {
   Busy;
   InsufficientFeeReserve;
   Unauthorized;
-  UnresolvedEvmRevert;
   InvalidArgument : text;
   StorageFailure;
 };
@@ -18,30 +17,7 @@ type AuditEvent = record {
   sequence : nat64;
 };
 type AuditEventKind = variant {
-  MintRevertRecoveryStarted : record {
-    result : text;
-    finalized_block_number : nat64;
-    kind : AuditedEvmOperationKind;
-    target_id : blob;
-    finalized_block_hash : blob;
-    reverted_operation_id : nat64;
-    replacement_operation_id : nat64;
-  };
   PausePrincipalRotated;
-  EvmTransactionReplaced : record {
-    transaction_hash : blob;
-    max_priority_fee_per_gas : nat;
-    generation : nat8;
-    operation_id : nat64;
-    max_fee_per_gas : nat;
-    previous_transaction_hash : blob;
-  };
-  EvmOperationReverted : record {
-    transaction_hash : blob;
-    finalized_head_block_number : nat64;
-    kind : AuditedEvmOperationKind;
-    operation_id : nat64;
-  };
   DepositsPauseRepeated;
   EvmRpcObservation : record {
     finalized_block_number : nat64;
@@ -70,40 +46,12 @@ type AuditEventKind = variant {
     previous_sha256 : blob;
     current_sha256 : blob;
   };
-  EvmTransactionRebroadcasted : record {
-    transaction_hash : blob;
-    attempt : nat8;
-    operation_id : nat64;
-  };
   DepositsResumed;
   FeePayoutRequested : record { amount : nat };
-  MintRevertRecoveryCompleted : record {
-    result : text;
-    finalized_block_number : nat64;
-    kind : AuditedEvmOperationKind;
-    target_id : blob;
-    finalized_block_hash : blob;
-    reverted_operation_id : nat64;
-    replacement_operation_id : nat64;
-  };
   ReserveGateChanged : record { sufficient : bool };
   WithdrawalFeeGuardTripped : record {
     charged_service_fee : nat;
     ledger_fee : nat;
-  };
-  EvmFeeQuoteObserved : record {
-    reserved_l1_fee_wei : nat;
-    observed_l1_fee_upper_bound_wei : nat;
-    base_fee_per_gas : nat;
-    max_priority_fee_per_gas : nat;
-    observed_at_ns : nat64;
-    gas_estimate : nat;
-    initial_max_fee_per_gas : nat;
-    safe_block_hash : blob;
-    reserved_eth_wei : nat;
-    reachable_max_fee_per_gas : nat;
-    gas_limit : nat;
-    safe_block_number : nat64;
   };
 };
 type AuditEventPage = record {
@@ -114,29 +62,11 @@ type AuditEventPage = record {
   pruned_count : nat64;
   pruned_through_sequence : opt nat64;
 };
-type AuditedEvmOperationKind = variant { MintDeposit };
-type AutomaticProgressPhase = variant { Confirmation; Settlement };
 type AutomaticProgressState = variant {
   Scheduled : record { next_run_at_ns : nat64 };
   Running : record { lease_until_ns : nat64 };
 };
-type AutomaticProgressView = record {
-  state : AutomaticProgressState;
-  phase : AutomaticProgressPhase;
-};
-type BaseConfirmationView = variant {
-  Reverted : record {
-    transaction_hash : blob;
-    finalized_head_block_number : nat64;
-    receipt_block_number : nat64;
-  };
-  Confirmed : record {
-    transaction_hash : blob;
-    finalized_head_block_number : nat64;
-    receipt_block_number : nat64;
-  };
-  Submitted : record { transaction_hash : blob };
-};
+type AutomaticProgressView = record { state : AutomaticProgressState };
 type BaseGovernanceAction = variant {
   PauseDepositMints;
   SetServiceFee : record { value : nat };
@@ -163,21 +93,21 @@ type BridgeInitArgs = record {
   settlement_rate_limit_per_principal : nat16;
   settlement_cycle_ceiling : nat;
   settlement_rate_limit_per_record : nat16;
+  governance_evm_fee : EvmFeePolicy;
   deposit_rate_limit_window_seconds : nat64;
   ecdsa_key_name : text;
   base_chain_id : nat64;
   bridge_contract : blob;
   fee_recipient : FeeRecipientConfig;
   settlement_rate_limit_window_seconds : nat64;
-  evm_liveness : EvmLivenessPolicy;
   ecdsa_derivation_path : vec blob;
   evm_rpc_canister_id : principal;
   deposit_rate_limit_per_principal : nat16;
+  governance_evm_liveness : EvmLivenessPolicy;
   governance_ecdsa_derivation_path : vec blob;
-  eth_floor_wei : nat;
+  governance_eth_floor_wei : nat;
   custom_evm_rpc_urls : vec text;
   deposit_rate_limit_global : nat16;
-  evm_fee : EvmFeePolicy;
   pause_principal : principal;
   governance_principal : principal;
   index_canister_id : principal;
@@ -188,7 +118,9 @@ type BridgeInitArgs = record {
 type BridgeStatus = record {
   unpaid_withdrawal_count : nat64;
   withdrawal_fee_guard_ledger_fee : opt nat;
+  mint_authorization_ttl_seconds : nat64;
   base_chain_id_matches_config : bool;
+  mint_authorization_epoch : nat64;
   unpaid_withdrawal_amount_out : nat;
   last_reserve_observation_ns : nat64;
   reserve : ReserveStatus;
@@ -213,12 +145,6 @@ type ChecksumRefreshStatus = record {
   db_size : nat64;
   complete : bool;
   checksum : nat64;
-};
-type ConfirmEvmArgs = record {
-  settlement_id : blob;
-  transaction_hash : blob;
-  observed_finalized_block_number : nat64;
-  receipt_block_number : nat64;
 };
 type DepositArgs = record {
   base_recipient : blob;
@@ -248,15 +174,16 @@ type DepositIdPage = record {
   deposit_ids : vec blob;
 };
 type DepositPhase = variant {
-  MintPending;
   Refunded;
   FundingReconciliationHold;
-  MintReverted;
   EscrowedUnquoted;
+  ExpiryReconciliation;
+  AuthorizationAvailable;
   RefundReconciliationHold;
   RefundPending;
   Minted;
   Cancelled;
+  AuthorizationPending;
 };
 type DepositQuoteView = record { net_amount : nat; service_fee : nat };
 type DepositReceipt = record {
@@ -265,10 +192,10 @@ type DepositReceipt = record {
   owner_sequence : nat64;
 };
 type DepositRefundReasonView = variant {
-  ReserveInsufficient;
   ServiceFeeRejected;
   MintWindowLimitExceeded;
   BasePaused;
+  AuthorizationExpired;
   PerDepositLimitExceeded;
 };
 type DepositRefundView = record {
@@ -288,8 +215,8 @@ type DepositView = record {
   created_at_ns : nat64;
   state : DepositPhase;
   owner_sequence : nat64;
+  mint_authorization : opt MintAuthorizationView;
   automatic_progress : opt AutomaticProgressView;
-  base_confirmation : opt BaseConfirmationView;
   gross_amount : nat;
   refund : opt DepositRefundView;
 };
@@ -309,21 +236,6 @@ type EvmFeePolicy = record {
   gas_limit_multiplier_bps : nat32;
   base_fee_multiplier_bps : nat32;
   max_fee_per_gas_ceiling : nat;
-};
-type EvmFeeQuoteStatus = record {
-  reserved_l1_fee_wei : nat;
-  observed_l1_fee_upper_bound_wei : nat;
-  base_fee_per_gas : nat;
-  max_priority_fee_per_gas : nat;
-  valid_until_ns : nat64;
-  observed_at_ns : nat64;
-  gas_estimate : nat;
-  initial_max_fee_per_gas : nat;
-  safe_block_hash : blob;
-  reserved_eth_wei : nat;
-  reachable_max_fee_per_gas : nat;
-  gas_limit : nat;
-  safe_block_number : nat64;
 };
 type EvmLivenessPolicy = record {
   rebroadcast_after_seconds : nat64;
@@ -394,6 +306,25 @@ type ListDepositIdsArgs = record {
   before_cursor : opt nat64;
 };
 type ListDepositIdsError = variant { InvalidLimit };
+type MintAuthorizationView = record {
+  finalized_block_number : nat64;
+  signature : opt blob;
+  deposit_id : blob;
+  domain_name : text;
+  charged_service_fee : nat;
+  recipient : blob;
+  domain_version : text;
+  authorization_epoch : nat64;
+  max_service_fee : nat;
+  deadline : nat64;
+  signature_dispatch_attempt : nat32;
+  chain_id : nat64;
+  finalized_block_hash : blob;
+  finalized_block_timestamp : nat64;
+  verifying_contract : blob;
+  digest : blob;
+  gross_amount : nat;
+};
 type NotifyWithdrawalArgs = record { transaction_hash : blob };
 type NotifyWithdrawalError = variant {
   LedgerFeeExceedsServiceFee : record {
@@ -430,18 +361,20 @@ type PublicConfig = record {
   settlement_rate_limit_per_principal : nat16;
   settlement_cycle_ceiling : nat;
   settlement_rate_limit_per_record : nat16;
+  mint_authorization_ttl_seconds : nat64;
+  governance_evm_fee : EvmFeePolicy;
+  mint_authorization_epoch : nat64;
   deposit_rate_limit_window_seconds : nat64;
   base_chain_id : nat64;
   bridge_contract : blob;
   fee_recipient : FeeRecipientConfig;
   settlement_rate_limit_window_seconds : nat64;
-  evm_liveness : EvmLivenessPolicy;
   evm_rpc_canister_id : principal;
   deposit_rate_limit_per_principal : nat16;
+  governance_evm_liveness : EvmLivenessPolicy;
   schema_version : nat16;
-  eth_floor_wei : nat;
+  governance_eth_floor_wei : nat;
   deposit_rate_limit_global : nat16;
-  evm_fee : EvmFeePolicy;
   pause_principal : principal;
   governance_principal : principal;
   ledger_fee : nat;
@@ -459,46 +392,14 @@ type PublicConfigInitializationError = variant {
   StorageFailure;
   DerivationUnavailable;
 };
-type RecoverMintRevertArgs = record {
-  deposit_id : blob;
-  reverted_operation_id : nat64;
-};
-type RecoverMintRevertError = variant {
-  InvalidId;
-  Busy;
-  RpcUnavailable;
-  OperationMismatch;
-  MintWindowUnavailable;
-  NotFound;
-  ReserveUnavailable;
-  RpcInconsistent;
-  Unauthorized;
-  NotReverted;
-  StorageFailure;
-  BaseStateMismatch;
-  BridgeSignerMismatch;
-  AnonymousCaller;
-};
-type RecoverMintRevertReceipt = variant {
-  Enqueued : record {
-    finalized_block_number : nat64;
-    state : SettlementState;
-    finalized_block_hash : blob;
-    replacement_operation_id : nat64;
-  };
-  AlreadyStarted : record { replacement_operation_id : nat64 };
-};
 type ReserveStatus = record {
   cycles_balance : nat;
   required_eth_wei : nat;
-  last_fee_quote : opt EvmFeeQuoteStatus;
   eth_surplus_wei : nat;
   cycles_surplus : nat;
-  reserved_deposit_eth_wei : nat;
   sufficient : bool;
   eth_balance_wei : nat;
-  eth_floor_wei : nat;
-  candidate_mint_eth_wei : nat;
+  governance_eth_floor_wei : nat;
   required_cycles : nat;
 };
 type Result = variant {
@@ -515,16 +416,12 @@ type Result_10 = variant {
 };
 type Result_11 = variant { Ok; Err : AdminError };
 type Result_12 = variant {
-  Ok : RecoverMintRevertReceipt;
-  Err : RecoverMintRevertError;
-};
-type Result_13 = variant {
   Ok : ChecksumRefreshStatus;
   Err : StorageMaintenanceError;
 };
-type Result_14 = variant { Ok : DepositReceipt; Err : DepositError };
-type Result_15 = variant { Ok : FeePayoutReceipt; Err : AdminError };
-type Result_16 = variant { Ok : text; Err : StorageMaintenanceError };
+type Result_13 = variant { Ok : DepositReceipt; Err : DepositError };
+type Result_14 = variant { Ok : FeePayoutReceipt; Err : AdminError };
+type Result_15 = variant { Ok : text; Err : StorageMaintenanceError };
 type Result_2 = variant {
   Ok : StorageValidationStatus;
   Err : StorageMaintenanceError;
@@ -551,11 +448,8 @@ type SettlementActionError = variant {
   InvalidId;
   Busy;
   WrongState;
-  InvalidConfirmationObservation;
   NotFound;
   Unauthorized;
-  TransactionMismatch;
-  ConfirmationRequired;
   RateLimited : record { retry_after_seconds : nat64 };
   StorageFailure;
   AnonymousCaller;
@@ -564,11 +458,7 @@ type SettlementActionResult = variant {
   Stopped : record { state : SettlementState; reason : SettlementStopReason };
   Complete : record { state : SettlementState };
   ReconciliationProgress : record { state : SettlementState };
-  Submitted : record { transaction_hash : blob; state : SettlementState };
-  WaitingForConfirmation : record {
-    transaction_hash : blob;
-    state : SettlementState;
-  };
+  Deferred : record { state : SettlementState; next_run_at_ns : nat64 };
 };
 type SettlementSchedulerHealth = variant { Healthy; Degraded; Faulted };
 type SettlementSchedulerStatus = record {
@@ -589,34 +479,24 @@ type SettlementStopReason = variant {
   LedgerFeeExceedsServiceFee;
   LedgerRejected : text;
   RpcUnavailable;
-  TransactionNotConfirmed;
   RpcInconsistent;
   LedgerAmbiguous;
   LedgerUnavailable;
-  NonceConflict;
-  NonceUnavailable;
-  TransactionReverted;
-  NonceBlocked;
   BaseStateMismatch;
-  TransactionNotFound;
   BridgeSignerMismatch;
   SigningUnavailable;
   InvalidBaseResponse;
 };
 type StatusCounts = record {
-  pending_evm_operations : nat64;
-  reserved_deposit_mint_eth_wei : nat;
   retained_audit_events : nat64;
   reconciliation_holds : nat64;
   retained_deposit_index_entries : nat64;
   pending_ledger_operations : nat64;
-  active_evm_payloads : nat64;
   withdrawals : nat64;
   deposits : nat64;
   reserved_deposit_mint_operations : nat64;
   reserved_deposit_mint_amount : nat;
   pruned_audit_events : nat64;
-  unresolved_evm_reverts : nat64;
 };
 type StorageMaintenanceError = variant {
   StateChanged;
@@ -648,7 +528,6 @@ type WithdrawalView = record {
   amount : nat;
 };
 service : (BridgeInitArgs) -> {
-  confirm_deposit : (ConfirmEvmArgs) -> (Result);
   continue_deposit : (blob) -> (Result);
   continue_fee_payout : (nat64) -> (Result_1);
   continue_storage_validation : (nat16) -> (Result_2);
@@ -672,15 +551,14 @@ service : (BridgeInitArgs) -> {
   list_deposit_ids : (ListDepositIdsArgs) -> (Result_9) query;
   notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_10);
   pause_new_deposits : () -> (Result_11);
-  recover_mint_revert : (RecoverMintRevertArgs) -> (Result_12);
-  refresh_storage_checksum : (nat64) -> (Result_13);
-  request_deposit : (DepositArgs) -> (Result_14);
-  request_fee_payout : (nat) -> (Result_15);
+  refresh_storage_checksum : (nat64) -> (Result_12);
+  request_deposit : (DepositArgs) -> (Result_13);
+  request_fee_payout : (nat) -> (Result_14);
   resume_new_deposits : () -> (Result_11);
   rotate_fee_recipient : (FeeRecipientConfig) -> (Result_11);
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_11);
   schedule_activation : () -> (Result_4);
   start_storage_validation : () -> (Result_2);
-  storage_integrity_check : () -> (Result_16) query;
+  storage_integrity_check : () -> (Result_15) query;
   submit_base_governance_action : (BaseGovernanceAction) -> (Result_4);
 }

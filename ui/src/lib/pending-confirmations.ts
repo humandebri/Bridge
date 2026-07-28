@@ -1,8 +1,6 @@
 import { deploymentProfile } from "@/config/profile"
 import { withBrowserLock } from "@/lib/browser-lock"
 
-export type PendingConfirmationKind = "deposit" | "withdrawal"
-
 interface PendingConfirmationBase {
   transactionHash: `0x${string}`
   owner: string
@@ -12,28 +10,20 @@ interface PendingConfirmationBase {
   bridgeAddress: string
 }
 
-export interface PendingDepositConfirmation extends PendingConfirmationBase {
-  kind: "deposit"
-  settlementId: `0x${string}`
-}
-
 export interface PendingWithdrawalConfirmation extends PendingConfirmationBase {
   kind: "withdrawal"
 }
 
-export type PendingConfirmation = PendingDepositConfirmation | PendingWithdrawalConfirmation
+export type PendingConfirmation = PendingWithdrawalConfirmation
 export type PendingConfirmationInput =
-  | (Omit<PendingDepositConfirmation, "blocked" | "bridgeCanisterId" | "chainId" | "bridgeAddress"> & { blocked?: boolean })
-  | (Omit<PendingWithdrawalConfirmation, "blocked" | "bridgeCanisterId" | "chainId" | "bridgeAddress"> & { blocked?: boolean })
+  Omit<PendingWithdrawalConfirmation, "blocked" | "bridgeCanisterId" | "chainId" | "bridgeAddress"> & { blocked?: boolean }
 
-const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v4"
+const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v5"
 let sessionQueue: PendingConfirmation[] | undefined
 export const PENDING_CONFIRMATIONS_CHANGED = "kinic-pending-confirmations-changed"
 
 export function pendingConfirmationKey(value: PendingConfirmation | PendingConfirmationInput): string {
-  return value.kind === "deposit"
-    ? `deposit:${value.settlementId.toLowerCase()}`
-    : `withdrawal:${value.transactionHash.toLowerCase()}`
+  return `withdrawal:${value.transactionHash.toLowerCase()}`
 }
 
 export function readPendingConfirmations(): PendingConfirmation[] {
@@ -96,7 +86,7 @@ async function update(change: (values: PendingConfirmation[]) => PendingConfirma
     const values = change(readPendingConfirmations())
     sessionQueue = values
     try {
-      window.localStorage.setItem(key, JSON.stringify({ version: 4, entries: values }))
+      window.localStorage.setItem(key, JSON.stringify({ version: 5, entries: values }))
       sessionQueue = undefined
     } finally {
       window.dispatchEvent(new Event(PENDING_CONFIRMATIONS_CHANGED))
@@ -118,17 +108,13 @@ function isPendingConfirmation(value: unknown): value is PendingConfirmation {
     && typeof item.bridgeCanisterId === "string"
     && typeof item.chainId === "number"
     && typeof item.bridgeAddress === "string"
-  if (!common) return false
-  if (item.kind === "withdrawal") return true
-  return item.kind === "deposit"
-    && typeof item.settlementId === "string"
-    && /^0x[0-9a-fA-F]{64}$/.test(item.settlementId)
+  return common && item.kind === "withdrawal"
 }
 
-function isStoredQueue(value: unknown): value is { version: 4; entries: unknown[] } {
+function isStoredQueue(value: unknown): value is { version: 5; entries: unknown[] } {
   if (typeof value !== "object" || value === null) return false
   const queue = value as Record<string, unknown>
-  return queue.version === 4 && Array.isArray(queue.entries)
+  return queue.version === 5 && Array.isArray(queue.entries)
 }
 
 export function upsertPendingConfirmation(

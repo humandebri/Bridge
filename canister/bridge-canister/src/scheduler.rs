@@ -3,7 +3,7 @@ use crate::storage::DepositFundingAttemptState;
 #[cfg(target_arch = "wasm32")]
 use crate::storage::SettlementJobClaim;
 use crate::{
-    storage::{ConfirmationSchedulerHealth, SettlementJob, SettlementJobKind},
+    storage::{SettlementJob, SettlementJobKind, SettlementSchedulerHealth},
     tasks::{self, SettlementActionError, SettlementActionResult},
     ActionKey, InFlightGuard, STORE,
 };
@@ -43,10 +43,7 @@ fn transient_stop(reason: &tasks::SettlementStopReason) -> bool {
         tasks::SettlementStopReason::LedgerUnavailable
             | tasks::SettlementStopReason::LedgerAmbiguous
             | tasks::SettlementStopReason::RpcUnavailable
-            | tasks::SettlementStopReason::TransactionNotConfirmed
             | tasks::SettlementStopReason::SigningUnavailable
-            | tasks::SettlementStopReason::NonceUnavailable
-            | tasks::SettlementStopReason::NonceBlocked
     )
 }
 
@@ -70,7 +67,7 @@ fn transient_retry_at(checks: u8) -> u64 {
             .config()
             .ok()
             .flatten()
-            .map(|config| config.evm_liveness.check_interval_seconds)
+            .map(|config| config.governance_evm_liveness.check_interval_seconds)
             .unwrap_or(60)
     });
     ic_cdk::api::time().saturating_add(transient_retry_delay_ns(base_seconds, checks))
@@ -78,35 +75,11 @@ fn transient_retry_at(checks: u8) -> u64 {
 
 pub(crate) struct SettlementLease {
     pub job: SettlementJob,
-    expected_receipt_block_number: Option<u64>,
-    expected_finalized_block_number: Option<u64>,
 }
 
 impl SettlementLease {
     pub(crate) fn new(job: SettlementJob) -> Self {
-        Self {
-            job,
-            expected_receipt_block_number: None,
-            expected_finalized_block_number: None,
-        }
-    }
-
-    pub(crate) fn with_expected_confirmation(
-        mut self,
-        receipt_block_number: u64,
-        finalized_block_number: u64,
-    ) -> Self {
-        self.expected_receipt_block_number = Some(receipt_block_number);
-        self.expected_finalized_block_number = Some(finalized_block_number);
-        self
-    }
-
-    pub(crate) fn expected_receipt_block_number(&self) -> Option<u64> {
-        self.expected_receipt_block_number
-    }
-
-    pub(crate) fn expected_finalized_block_number(&self) -> Option<u64> {
-        self.expected_finalized_block_number
+        Self { job }
     }
 
     pub(crate) fn job(&self) -> &SettlementJob {
@@ -449,7 +422,7 @@ async fn dispatch_due() -> Option<u64> {
 pub(crate) async fn run_claimed(
     job: SettlementJob,
 ) -> Result<SettlementActionResult, SettlementActionError> {
-    run_claimed_inner(job, None).await
+    run_claimed_inner(job).await
 }
 
 pub(crate) async fn run_claimed_fee_payout(
@@ -464,7 +437,7 @@ pub(crate) async fn run_claimed_fee_payout(
         finish(
             &lease.job,
             Some(now.saturating_add(BUSY_RETRY_NS)),
-            lease.job.confirmation_checks,
+            lease.job.attempts,
             None,
             None,
         )?;
@@ -474,12 +447,12 @@ pub(crate) async fn run_claimed_fee_payout(
     let result = tasks::advance_fee_payout(payout_id, &mut lease).await;
     let outcome = match &result {
         Ok(result) if terminal_fee_payout_result(result) => {
-            finish(&lease.job, None, lease.job.confirmation_checks, None, None)
+            finish(&lease.job, None, lease.job.attempts, None, None)
         }
         Ok(tasks::FeePayoutActionResult::Complete { .. }) => finish(
             &lease.job,
             None,
-            lease.job.confirmation_checks,
+            lease.job.attempts,
             Some((
                 "InvalidFeePayoutCompletion",
                 "nonterminal fee payout returned Complete".into(),
@@ -488,16 +461,16 @@ pub(crate) async fn run_claimed_fee_payout(
         ),
         Ok(tasks::FeePayoutActionResult::ReconciliationProgress { .. }) => finish(
             &lease.job,
-            Some(transient_retry_at(lease.job.confirmation_checks)),
-            lease.job.confirmation_checks.saturating_add(1),
+            Some(transient_retry_at(lease.job.attempts)),
+            lease.job.attempts.saturating_add(1),
             None,
             None,
         ),
         Ok(tasks::FeePayoutActionResult::Stopped { reason, .. }) if transient_stop(reason) => {
             finish(
                 &lease.job,
-                Some(transient_retry_at(lease.job.confirmation_checks)),
-                lease.job.confirmation_checks.saturating_add(1),
+                Some(transient_retry_at(lease.job.attempts)),
+                lease.job.attempts.saturating_add(1),
                 None,
                 None,
             )
@@ -505,21 +478,21 @@ pub(crate) async fn run_claimed_fee_payout(
         Ok(tasks::FeePayoutActionResult::Stopped { reason, .. }) => finish(
             &lease.job,
             None,
-            lease.job.confirmation_checks,
+            lease.job.attempts,
             Some(("SettlementStopped", format!("{reason:?}"))),
             None,
         ),
         Err(SettlementActionError::Busy) => finish(
             &lease.job,
             Some(now.saturating_add(BUSY_RETRY_NS)),
-            lease.job.confirmation_checks,
+            lease.job.attempts,
             None,
             None,
         ),
         Err(error) => finish(
             &lease.job,
             None,
-            lease.job.confirmation_checks,
+            lease.job.attempts,
             Some(("SettlementActionError", format!("{error:?}"))),
             None,
         ),
@@ -531,31 +504,11 @@ pub(crate) async fn run_claimed_fee_payout(
     result
 }
 
-pub(crate) async fn run_claimed_confirmation(
-    job: SettlementJob,
-    expected_receipt_block_number: u64,
-    expected_finalized_block_number: u64,
-) -> Result<SettlementActionResult, SettlementActionError> {
-    run_claimed_inner(
-        job,
-        Some((
-            expected_receipt_block_number,
-            expected_finalized_block_number,
-        )),
-    )
-    .await
-}
-
 async fn run_claimed_inner(
     job: SettlementJob,
-    expected_confirmation: Option<(u64, u64)>,
 ) -> Result<SettlementActionResult, SettlementActionError> {
     let now = ic_cdk::api::time();
-    let wallet_confirmation = expected_confirmation.is_some();
     let mut lease = SettlementLease::new(job);
-    if let Some((receipt_block_number, finalized_block_number)) = expected_confirmation {
-        lease = lease.with_expected_confirmation(receipt_block_number, finalized_block_number);
-    }
     // Keep a durable recovery wakeup armed before the first await. If this runner
     // traps, the leased SQLite job can still be reclaimed after its deadline.
     arm();
@@ -568,7 +521,7 @@ async fn run_claimed_inner(
         finish(
             &lease.job,
             Some(now.saturating_add(BUSY_RETRY_NS)),
-            lease.job.confirmation_checks,
+            lease.job.attempts,
             None,
             None,
         )?;
@@ -586,88 +539,48 @@ async fn run_claimed_inner(
     };
     let record_stop_reason = result.as_ref().ok().and_then(tasks::stop_reason_text);
     let outcome = match &result {
-        Ok(SettlementActionResult::WaitingForConfirmation { .. }) if wallet_confirmation => STORE
-            .with(|store| {
-                store
-                    .borrow_mut()
-                    .park_awaiting_confirmation(&lease.job, ic_cdk::api::time())
-            })
-            .map_err(|_| SettlementActionError::StorageFailure),
-        Ok(SettlementActionResult::WaitingForConfirmation { .. }) => finish(
-            &lease.job,
-            Some(
-                ic_cdk::api::time().saturating_add(
-                    STORE
-                        .with(|store| {
-                            store
-                                .borrow()
-                                .config()
-                                .ok()
-                                .flatten()
-                                .map(|config| config.evm_liveness.check_interval_seconds)
-                                .unwrap_or(60)
-                        })
-                        .saturating_mul(1_000_000_000),
-                ),
-            ),
-            lease.job.confirmation_checks.saturating_add(1),
-            None,
-            None,
-        ),
-        Ok(SettlementActionResult::Stopped { reason, .. })
-            if wallet_confirmation && transient_stop(reason) =>
-        {
-            finish(
-                &lease.job,
-                None,
-                lease.job.confirmation_checks.saturating_add(1),
-                Some(("ManualConfirmationStopped", format!("{reason:?}"))),
-                record_stop_reason.clone(),
-            )
-        }
         Ok(SettlementActionResult::Stopped { reason, .. }) if transient_stop(reason) => finish(
             &lease.job,
-            Some(transient_retry_at(lease.job.confirmation_checks)),
-            lease.job.confirmation_checks.saturating_add(1),
+            Some(transient_retry_at(lease.job.attempts)),
+            lease.job.attempts.saturating_add(1),
             None,
             record_stop_reason.clone(),
         ),
         Ok(SettlementActionResult::Stopped { reason, .. }) => finish(
             &lease.job,
             None,
-            lease.job.confirmation_checks,
+            lease.job.attempts,
             Some(("SettlementStopped", format!("{reason:?}"))),
             record_stop_reason.clone(),
         ),
         Ok(SettlementActionResult::ReconciliationProgress { .. }) => finish(
             &lease.job,
-            Some(transient_retry_at(lease.job.confirmation_checks)),
-            lease.job.confirmation_checks.saturating_add(1),
+            Some(transient_retry_at(lease.job.attempts)),
+            lease.job.attempts.saturating_add(1),
             None,
             None,
         ),
-        Ok(SettlementActionResult::Submitted { .. }) => STORE
-            .with(|store| {
-                store
-                    .borrow_mut()
-                    .set_settlement_stop_reason_fenced(&lease.job, None)
-            })
-            .map(|_| ())
-            .map_err(|_| SettlementActionError::StorageFailure),
+        Ok(SettlementActionResult::Deferred { next_run_at_ns, .. }) => finish(
+            &lease.job,
+            Some(*next_run_at_ns),
+            lease.job.attempts,
+            None,
+            None,
+        ),
         Ok(SettlementActionResult::Complete { .. }) => {
-            finish(&lease.job, None, lease.job.confirmation_checks, None, None)
+            finish(&lease.job, None, lease.job.attempts, None, None)
         }
         Err(SettlementActionError::Busy) => finish(
             &lease.job,
             Some(ic_cdk::api::time().saturating_add(BUSY_RETRY_NS)),
-            lease.job.confirmation_checks,
+            lease.job.attempts,
             None,
             None,
         ),
         Err(error) => finish(
             &lease.job,
             None,
-            lease.job.confirmation_checks,
+            lease.job.attempts,
             Some(("SettlementActionError", format!("{error:?}"))),
             Some(format!("{error:?}")),
         ),
@@ -704,29 +617,21 @@ fn finish(
 }
 
 fn mark_healthy() {
-    let health = ConfirmationSchedulerHealth {
+    let health = SettlementSchedulerHealth {
         healthy: true,
         last_run_ns: ic_cdk::api::time(),
         last_error: None,
     };
-    let _ = STORE.with(|store| {
-        store
-            .borrow_mut()
-            .set_confirmation_scheduler_health(&health)
-    });
+    let _ = STORE.with(|store| store.borrow_mut().set_settlement_scheduler_health(&health));
 }
 
 fn mark_fault(message: &str) {
-    let health = ConfirmationSchedulerHealth {
+    let health = SettlementSchedulerHealth {
         healthy: false,
         last_run_ns: ic_cdk::api::time(),
         last_error: Some(message.into()),
     };
-    let _ = STORE.with(|store| {
-        store
-            .borrow_mut()
-            .set_confirmation_scheduler_health(&health)
-    });
+    let _ = STORE.with(|store| store.borrow_mut().set_settlement_scheduler_health(&health));
     ic_cdk::println!("settlement scheduler fault: {message}");
 }
 
@@ -747,7 +652,9 @@ mod tests {
     #[test]
     fn only_recoverable_stop_reasons_are_rescheduled() {
         assert!(transient_stop(&tasks::SettlementStopReason::RpcUnavailable));
-        assert!(transient_stop(&tasks::SettlementStopReason::NonceBlocked));
+        assert!(transient_stop(
+            &tasks::SettlementStopReason::SigningUnavailable
+        ));
         assert!(!transient_stop(
             &tasks::SettlementStopReason::LedgerFeeExceedsServiceFee
         ));

@@ -51,6 +51,17 @@ pub struct WithdrawalFixture {
     pub amount_out: u128,
 }
 
+#[derive(CandidType, Deserialize, Serialize, Clone, Debug)]
+pub struct MintLogFixture {
+    pub deposit_id: Vec<u8>,
+    pub recipient: Vec<u8>,
+    pub authorization_digest: Vec<u8>,
+    pub gross_amount: u128,
+    pub charged_service_fee: u128,
+    pub minted_amount: u128,
+    pub transaction_hash: Vec<u8>,
+}
+
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReceiptMode {
     Confirmed,
@@ -184,6 +195,7 @@ struct StableMockState {
     archive_prefix_length: u64,
     index_synced_blocks: Option<u128>,
     processed_deposit: bool,
+    mint_log: Option<MintLogFixture>,
     last_tx_hash: [u8; 32],
     observed_contract: [u8; 20],
     observed_requester: [u8; 20],
@@ -217,6 +229,7 @@ struct StableMockState {
     pinned_eth_call_block_numbers: Vec<u64>,
     receipt_call_count: u64,
     bridge_signer: [u8; 20],
+    mint_authorization_epoch: u64,
     deposit_mints_paused: bool,
     withdrawals_paused: bool,
 }
@@ -233,6 +246,7 @@ thread_local! {
     static ARCHIVE_PREFIX_LENGTH: RefCell<u64> = const { RefCell::new(0) };
     static INDEX_SYNCED_BLOCKS: RefCell<Option<u128>> = const { RefCell::new(None) };
     static PROCESSED_DEPOSIT: RefCell<bool> = const { RefCell::new(false) };
+    static MINT_LOG: RefCell<Option<MintLogFixture>> = const { RefCell::new(None) };
     static LAST_TX_HASH: RefCell<[u8; 32]> = const { RefCell::new([9; 32]) };
     static OBSERVED_CONTRACT: RefCell<[u8; 20]> = const { RefCell::new([1; 20]) };
     static OBSERVED_REQUESTER: RefCell<[u8; 20]> = const { RefCell::new([0x22; 20]) };
@@ -266,6 +280,7 @@ thread_local! {
     static PINNED_ETH_CALL_BLOCK_NUMBERS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static RECEIPT_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
     static BRIDGE_SIGNER: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
+    static MINT_AUTHORIZATION_EPOCH: RefCell<u64> = const { RefCell::new(1) };
     static DEPOSIT_MINTS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
     static WITHDRAWALS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
 }
@@ -320,6 +335,26 @@ fn set_withdrawal_status(status: u8) {
 #[ic_cdk::update]
 fn set_receipt_mode(mode: ReceiptMode) {
     RECEIPT_MODE.with(|current| *current.borrow_mut() = mode);
+}
+
+#[ic_cdk::update]
+fn set_processed_deposit(processed: bool) {
+    PROCESSED_DEPOSIT.with(|current| *current.borrow_mut() = processed);
+}
+
+#[ic_cdk::update]
+fn set_mint_log(value: Option<MintLogFixture>) {
+    MINT_LOG.with(|current| *current.borrow_mut() = value);
+}
+
+#[ic_cdk::update]
+fn set_mint_authorization_epoch(epoch: u64) {
+    MINT_AUTHORIZATION_EPOCH.with(|current| *current.borrow_mut() = epoch);
+}
+
+#[ic_cdk::update]
+fn set_block_timestamp(timestamp: u64) {
+    BLOCK_TIMESTAMP.with(|current| *current.borrow_mut() = timestamp);
 }
 
 #[ic_cdk::update]
@@ -529,6 +564,7 @@ fn pre_upgrade() {
         archive_prefix_length: ARCHIVE_PREFIX_LENGTH.with(|v| *v.borrow()),
         index_synced_blocks: INDEX_SYNCED_BLOCKS.with(|v| *v.borrow()),
         processed_deposit: PROCESSED_DEPOSIT.with(|v| *v.borrow()),
+        mint_log: MINT_LOG.with(|v| v.borrow().clone()),
         last_tx_hash: LAST_TX_HASH.with(|v| *v.borrow()),
         observed_contract: OBSERVED_CONTRACT.with(|v| *v.borrow()),
         observed_requester: OBSERVED_REQUESTER.with(|v| *v.borrow()),
@@ -563,6 +599,7 @@ fn pre_upgrade() {
         pinned_eth_call_block_numbers: PINNED_ETH_CALL_BLOCK_NUMBERS.with(|v| v.borrow().clone()),
         receipt_call_count: RECEIPT_CALL_COUNT.with(|v| *v.borrow()),
         bridge_signer: BRIDGE_SIGNER.with(|v| *v.borrow()),
+        mint_authorization_epoch: MINT_AUTHORIZATION_EPOCH.with(|v| *v.borrow()),
         deposit_mints_paused: DEPOSIT_MINTS_PAUSED.with(|v| *v.borrow()),
         withdrawals_paused: WITHDRAWALS_PAUSED.with(|v| *v.borrow()),
     };
@@ -582,6 +619,7 @@ fn post_upgrade() {
     ARCHIVE_PREFIX_LENGTH.with(|v| *v.borrow_mut() = state.archive_prefix_length);
     INDEX_SYNCED_BLOCKS.with(|v| *v.borrow_mut() = state.index_synced_blocks);
     PROCESSED_DEPOSIT.with(|v| *v.borrow_mut() = state.processed_deposit);
+    MINT_LOG.with(|v| *v.borrow_mut() = state.mint_log);
     LAST_TX_HASH.with(|v| *v.borrow_mut() = state.last_tx_hash);
     OBSERVED_CONTRACT.with(|v| *v.borrow_mut() = state.observed_contract);
     OBSERVED_REQUESTER.with(|v| *v.borrow_mut() = state.observed_requester);
@@ -616,6 +654,7 @@ fn post_upgrade() {
     PINNED_ETH_CALL_BLOCK_NUMBERS.with(|v| *v.borrow_mut() = state.pinned_eth_call_block_numbers);
     RECEIPT_CALL_COUNT.with(|v| *v.borrow_mut() = state.receipt_call_count);
     BRIDGE_SIGNER.with(|v| *v.borrow_mut() = state.bridge_signer);
+    MINT_AUTHORIZATION_EPOCH.with(|v| *v.borrow_mut() = state.mint_authorization_epoch);
     DEPOSIT_MINTS_PAUSED.with(|v| *v.borrow_mut() = state.deposit_mints_paused);
     WITHDRAWALS_PAUSED.with(|v| *v.borrow_mut() = state.withdrawals_paused);
 }
@@ -838,6 +877,12 @@ fn multi_request(
     }
     if request.contains("eth_estimateGas") {
         return MultiRpcResult::Consistent(Ok("0x186a0".into()));
+    }
+    if request.contains("eth_getLogs") {
+        let logs: Vec<evm_rpc_types::LogEntry> =
+            MINT_LOG.with(|value| value.borrow().as_ref().map(mint_log).into_iter().collect());
+        let response = serde_json::to_string(&logs).expect("valid Mint log response");
+        return MultiRpcResult::Consistent(Ok(response));
     }
     if request.contains("eth_call") {
         ETH_CALL_COUNT.with(|value| {
@@ -1080,14 +1125,20 @@ fn eth_get_logs(
     _config: Option<evm_rpc_types::GetLogsRpcConfig>,
     _args: GetLogsArgs,
 ) -> MultiRpcResult<Vec<evm_rpc_types::LogEntry>> {
-    let logs = WITHDRAWAL.with(|value| {
-        value
-            .borrow()
-            .as_ref()
-            .map(|fixture| withdrawal_log(fixture, LAST_TX_HASH.with(|hash| *hash.borrow())))
-            .into_iter()
-            .collect()
-    });
+    let logs: Vec<evm_rpc_types::LogEntry> =
+        MINT_LOG.with(|value| value.borrow().as_ref().map(mint_log).into_iter().collect());
+    let logs = if logs.is_empty() {
+        WITHDRAWAL.with(|value| {
+            value
+                .borrow()
+                .as_ref()
+                .map(|fixture| withdrawal_log(fixture, LAST_TX_HASH.with(|hash| *hash.borrow())))
+                .into_iter()
+                .collect()
+        })
+    } else {
+        logs
+    };
     MultiRpcResult::Consistent(Ok(logs))
 }
 
@@ -1105,7 +1156,7 @@ fn eip1898_block_number(request: &str) -> Option<u64> {
 }
 
 fn bridge_snapshot_response(block_number: Option<u64>) -> String {
-    const WORDS: usize = 12;
+    const WORDS: usize = 13;
     const WORD: usize = 32;
     let mut bytes = vec![0; WORDS * WORD];
     let values = [
@@ -1114,25 +1165,29 @@ fn bridge_snapshot_response(block_number: Option<u64>) -> String {
             u128::from(block_number.unwrap_or_else(|| next_block_number(&FALLBACK_BLOCK_SEQUENCE))),
         ),
         (1, u128::from(BLOCK_TIMESTAMP.with(|value| *value.borrow()))),
-        (3, SERVICE_FEE.with(|value| *value.borrow())),
-        (4, MAX_SERVICE_FEE.with(|value| *value.borrow())),
-        (5, PER_DEPOSIT_LIMIT.with(|value| *value.borrow())),
-        (6, MINT_WINDOW_LIMIT.with(|value| *value.borrow())),
         (
-            7,
+            3,
+            u128::from(MINT_AUTHORIZATION_EPOCH.with(|value| *value.borrow())),
+        ),
+        (4, SERVICE_FEE.with(|value| *value.borrow())),
+        (5, MAX_SERVICE_FEE.with(|value| *value.borrow())),
+        (6, PER_DEPOSIT_LIMIT.with(|value| *value.borrow())),
+        (7, MINT_WINDOW_LIMIT.with(|value| *value.borrow())),
+        (
+            8,
             u128::from(MINT_WINDOW_DURATION.with(|value| *value.borrow())),
         ),
         (
-            8,
+            9,
             u128::from(MINT_WINDOW_STARTED_AT.with(|value| *value.borrow())),
         ),
-        (9, MINTED_IN_WINDOW.with(|value| *value.borrow())),
+        (10, MINTED_IN_WINDOW.with(|value| *value.borrow())),
         (
-            10,
+            11,
             u128::from(DEPOSIT_MINTS_PAUSED.with(|value| *value.borrow())),
         ),
         (
-            11,
+            12,
             u128::from(WITHDRAWALS_PAUSED.with(|value| *value.borrow())),
         ),
     ];
@@ -1242,6 +1297,39 @@ fn withdrawal_log(
         "data":format!("0x{}", bytes_hex(&data)), "blockNumber":block_number, "transactionHash":format!("0x{}", bytes_hex(&transaction_hash)),
         "transactionIndex":0, "blockHash":format!("0x{}", bytes_hex(&block_hash(block_number))), "logIndex":0, "removed":false
     })).expect("valid withdrawal log")
+}
+
+fn mint_log(value: &MintLogFixture) -> evm_rpc_types::LogEntry {
+    let deposit_id = padded32(&value.deposit_id);
+    let authorization_digest = padded32(&value.authorization_digest);
+    let transaction_hash = padded32(&value.transaction_hash);
+    let mut recipient = [0; 32];
+    let recipient_len = value.recipient.len().min(20);
+    recipient[32 - recipient_len..]
+        .copy_from_slice(&value.recipient[value.recipient.len() - recipient_len..]);
+    let event_topic = keccak(b"DepositMinted(bytes32,address,bytes32,uint256,uint256,uint256)");
+    let mut data = vec![0u8; 3 * 32];
+    put_word(&mut data[..32], value.gross_amount);
+    put_word(&mut data[32..64], value.charged_service_fee);
+    put_word(&mut data[64..96], value.minted_amount);
+    let block_number = OBSERVED_BLOCK_NUMBER.with(|value| *value.borrow());
+    serde_json::from_value(serde_json::json!({
+        "address":format!("0x{}", bytes_hex(&OBSERVED_CONTRACT.with(|value| *value.borrow()))),
+        "topics":[
+            format!("0x{}", bytes_hex(&event_topic)),
+            format!("0x{}", bytes_hex(&deposit_id)),
+            format!("0x{}", bytes_hex(&recipient)),
+            format!("0x{}", bytes_hex(&authorization_digest))
+        ],
+        "data":format!("0x{}", bytes_hex(&data)),
+        "blockNumber":block_number,
+        "transactionHash":format!("0x{}", bytes_hex(&transaction_hash)),
+        "transactionIndex":0,
+        "blockHash":format!("0x{}", bytes_hex(&block_hash(block_number))),
+        "logIndex":0,
+        "removed":false
+    }))
+    .expect("valid mint log")
 }
 
 fn hex32(value: [u8; 32]) -> Hex32 {
@@ -1363,13 +1451,24 @@ fn next_block_number(sequence: &'static std::thread::LocalKey<RefCell<Vec<u64>>>
 }
 
 fn mock_receipt(hash: [u8; 32], reverted: bool, canonical: bool) -> TransactionReceipt {
-    let logs = WITHDRAWAL.with(|value| {
+    let logs = MINT_LOG.with(|value| {
         value
             .borrow()
             .as_ref()
-            .map(|fixture| vec![withdrawal_log(fixture, hash)])
+            .map(|fixture| vec![mint_log(fixture)])
             .unwrap_or_default()
     });
+    let logs = if logs.is_empty() {
+        WITHDRAWAL.with(|value| {
+            value
+                .borrow()
+                .as_ref()
+                .map(|fixture| vec![withdrawal_log(fixture, hash)])
+                .unwrap_or_default()
+        })
+    } else {
+        logs
+    };
     let block_number = OBSERVED_BLOCK_NUMBER.with(|value| *value.borrow());
     let block_hash = if canonical {
         block_hash(block_number)

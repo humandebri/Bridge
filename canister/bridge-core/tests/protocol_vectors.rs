@@ -171,7 +171,6 @@ struct LeaseCase {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ManualClaimCase {
-    confirmation: bool,
     scheduled: bool,
     active: bool,
     stopped: bool,
@@ -542,7 +541,6 @@ fn protocol_manual_claim_cases_matches_production() {
     for case in vectors().manual_claim_cases {
         assert_eq!(
             manual_claim_allowed(
-                case.confirmation,
                 case.scheduled,
                 case.active,
                 case.stopped,

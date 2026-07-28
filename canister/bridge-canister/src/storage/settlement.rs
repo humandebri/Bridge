@@ -15,14 +15,6 @@ pub struct SettlementQuotaLimits {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfirmationSchedule {
-    pub operation_id: u64,
-    pub submitted_at_ns: u64,
-    pub next_check_at_ns: u64,
-    pub checks_completed: u8,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SettlementJobKind {
     Deposit,
     Withdrawal,

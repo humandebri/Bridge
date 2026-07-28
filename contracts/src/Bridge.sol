@@ -7,6 +7,8 @@ import {IBSNS} from "./interfaces/IBSNS.sol";
 import {IBridge} from "./interfaces/IBridge.sol";
 import {BridgeAdministration} from "./libraries/BridgeAdministration.sol";
 import {MintAccounting} from "./libraries/MintAccounting.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 interface ITimelockCandidate {
     function getMinDelay() external view returns (uint256);
@@ -16,8 +18,8 @@ interface ITimelockCandidate {
 }
 
 /// @notice Phase 1E Base implementation whose concrete ABI is checked against the frozen interface snapshot.
-contract Bridge is IBridge {
-    uint256 private constant MINIMUM_TIMELOCK_DELAY = 72 hours;
+contract Bridge is IBridge, EIP712 {
+    uint256 private constant MINIMUM_TIMELOCK_DELAY = 24 hours;
     uint256 private constant MAXIMUM_TIMELOCK_DELAY = 30 days;
     uint64 private constant MINIMUM_MINT_WINDOW_DURATION = 1 hours;
     uint64 private constant MAXIMUM_MINT_WINDOW_DURATION = 30 days;
@@ -25,11 +27,15 @@ contract Bridge is IBridge {
     bytes32 private constant CANCELLER_ROLE = keccak256("CANCELLER_ROLE");
     bytes32 private constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
     bytes32 private constant WITHDRAWAL_TRANSACTION_SLOT = keccak256("kinic.bridge.withdrawal.transaction");
+    bytes32 private constant MINT_AUTHORIZATION_TYPEHASH = keccak256(
+        "MintAuthorization(bytes32 depositId,address recipient,uint256 grossAmount,uint256 maxServiceFee,uint256 chargedServiceFee,uint256 deadline,uint256 authorizationEpoch)"
+    );
     bytes32 public immutable override approvedTimelockRuntimeCodeHash;
     IBSNS public immutable override bsns;
     uint256 public immutable override MAX_SERVICE_FEE;
 
     address public override bridgeSigner;
+    uint256 public override mintAuthorizationEpoch = 1;
     address public override runtimeAdministrator;
     address public override baseAdminTimelock;
     uint256 public override serviceFee;
@@ -44,13 +50,6 @@ contract Bridge is IBridge {
 
     mapping(bytes32 depositId => bool processed) private _processedDeposits;
     mapping(uint256 withdrawalId => IBridge.Withdrawal withdrawal) private _withdrawals;
-
-    modifier onlyBridgeSigner() {
-        if (msg.sender != bridgeSigner) {
-            revert IBridge.UnauthorizedBridgeSigner(msg.sender);
-        }
-        _;
-    }
 
     modifier onlyRuntimeAdministrator() {
         if (msg.sender != runtimeAdministrator) {
@@ -93,7 +92,7 @@ contract Bridge is IBridge {
         uint64 initialMintWindowDuration,
         uint256 maxServiceFee,
         uint256 initialServiceFee
-    ) {
+    ) EIP712("KINIC Bridge", "1") {
         if (!BridgeAdministration.rolesAreNonzero(
                 initialBridgeSigner, initialRuntimeAdministrator, initialBaseAdminTimelock
             )) {
@@ -142,18 +141,35 @@ contract Bridge is IBridge {
         bsns = new BSNS(tokenName, tokenSymbol, tokenDecimals, address(this));
     }
 
-    function mintDeposit(IBridge.DepositMintRequest calldata request)
+    function mintDepositWithAuthorization(IBridge.MintAuthorization calldata authorization, bytes calldata signature)
         external
         override
-        onlyBridgeSigner
         whenDepositMintsActive
     {
+        // The signed authorization is deliberately valid at the exact deadline.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp > authorization.deadline) {
+            revert IBridge.MintAuthorizationExpired(block.timestamp, authorization.deadline);
+        }
+        if (authorization.authorizationEpoch != mintAuthorizationEpoch) {
+            revert IBridge.MintAuthorizationEpochMismatch(authorization.authorizationEpoch, mintAuthorizationEpoch);
+        }
+        bytes32 digest = _mintAuthorizationDigest(authorization);
+        (address recovered, ECDSA.RecoverError error,) = ECDSA.tryRecoverCalldata(digest, signature);
+        if (error != ECDSA.RecoverError.NoError || recovered != bridgeSigner) {
+            revert IBridge.InvalidMintAuthorizationSignature();
+        }
         _rollMintWindowIfExpired();
-        uint256 mintAmount = _validateAndMarkDeposit(request);
+        uint256 mintAmount = _validateAndMarkDeposit(authorization);
         mintedInWindow = _consumeMintWindow(mintAmount);
-        bsns.bridgeMint(request.recipient, mintAmount);
+        bsns.bridgeMint(authorization.recipient, mintAmount);
         emit IBridge.DepositMinted(
-            request.depositId, request.recipient, request.grossAmount, request.chargedServiceFee, mintAmount
+            authorization.depositId,
+            authorization.recipient,
+            digest,
+            authorization.grossAmount,
+            authorization.chargedServiceFee,
+            mintAmount
         );
     }
 
@@ -211,6 +227,7 @@ contract Bridge is IBridge {
             blockNumber: block.number,
             blockTimestamp: block.timestamp,
             bridgeSigner: bridgeSigner,
+            mintAuthorizationEpoch: mintAuthorizationEpoch,
             serviceFee: serviceFee,
             maxServiceFee: MAX_SERVICE_FEE,
             perDepositLimit: perDepositLimit,
@@ -228,6 +245,7 @@ contract Bridge is IBridge {
             return;
         }
         depositMintsPaused = true;
+        _incrementMintAuthorizationEpoch();
         emit IBridge.DepositMintsPaused(msg.sender);
     }
 
@@ -274,6 +292,7 @@ contract Bridge is IBridge {
         }
         _validateRoleSet(newSigner, runtimeAdministrator, baseAdminTimelock);
         bridgeSigner = newSigner;
+        _incrementMintAuthorizationEpoch();
         emit IBridge.BridgeSignerChanged(previousSigner, newSigner);
     }
 
@@ -383,7 +402,7 @@ contract Bridge is IBridge {
         }
     }
 
-    function _validateAndMarkDeposit(IBridge.DepositMintRequest calldata request) private returns (uint256 mintAmount) {
+    function _validateAndMarkDeposit(IBridge.MintAuthorization calldata request) private returns (uint256 mintAmount) {
         if (request.recipient == address(0)) {
             revert IBridge.ZeroAddress();
         }
@@ -418,6 +437,30 @@ contract Bridge is IBridge {
         }
         // Mark during batch validation so duplicate IDs fail; a later revert rolls the mark back.
         _processedDeposits[request.depositId] = true;
+    }
+
+    function _mintAuthorizationDigest(IBridge.MintAuthorization calldata authorization) private view returns (bytes32) {
+        return _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    MINT_AUTHORIZATION_TYPEHASH,
+                    authorization.depositId,
+                    authorization.recipient,
+                    authorization.grossAmount,
+                    authorization.maxServiceFee,
+                    authorization.chargedServiceFee,
+                    authorization.deadline,
+                    authorization.authorizationEpoch
+                )
+            )
+        );
+    }
+
+    function _incrementMintAuthorizationEpoch() private {
+        uint256 previousEpoch = mintAuthorizationEpoch;
+        uint256 nextEpoch = previousEpoch + 1;
+        mintAuthorizationEpoch = nextEpoch;
+        emit IBridge.MintAuthorizationEpochChanged(msg.sender, previousEpoch, nextEpoch);
     }
 
     function _claimWithdrawalTransaction() private {

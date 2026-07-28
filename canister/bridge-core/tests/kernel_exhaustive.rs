@@ -1,15 +1,15 @@
 use bridge_core::{
-    administrator_authorized, audit_next, can_assign_nonce, checked_counter_transition,
-    checked_requirement, counter_delta, deposit_admission_decision, deposit_phase_allows,
-    deposit_phase_step, evidence_matches, fee_delta_once, fee_recipient_rotation_allowed,
+    administrator_authorized, audit_next, checked_counter_transition, checked_requirement,
+    counter_delta, deposit_admission_decision, deposit_phase_allows, deposit_phase_step,
+    evidence_matches, fee_delta_once, fee_recipient_rotation_allowed,
     fee_recipient_rotation_decision, hold_resolution_decision, lease_generation_next,
     lease_outcome_is_current, manual_claim_decision, mint_admission_total, next_attempt,
-    nonce_next, nonce_too_low_is_submitted, outbound_settlement, payout_allowed, payout_debit,
+    nonce_too_low_is_submitted, outbound_settlement, payout_allowed, payout_debit,
     refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
-    reservation_decision, reserve_admission_preserves_requirement, reserve_token_matches,
-    resources_sufficient, scan_complete, service_fee_change_allowed, settlement_decision,
-    withdrawal_phase_allows, withdrawal_phase_step, FeeRecipientRotationDecision,
-    HoldResolutionDecision, ManualClaimDecision,
+    reservation_decision, reserve_admission_preserves_requirement, resources_sufficient,
+    scan_complete, service_fee_change_allowed, settlement_decision, withdrawal_phase_allows,
+    withdrawal_phase_step, FeeRecipientRotationDecision, HoldResolutionDecision,
+    ManualClaimDecision,
 };
 
 #[test]
@@ -114,15 +114,15 @@ fn typed_decisions_preserve_every_shared_guard() {
         HoldResolutionDecision::ResolveAbsent
     );
     assert_eq!(
-        manual_claim_decision(false, false, false, false, false, false),
+        manual_claim_decision(false, false, false, false, false),
         ManualClaimDecision::Allow
     );
     assert_eq!(
-        manual_claim_decision(true, false, false, true, true, true),
-        ManualClaimDecision::AutomaticProgressPending
+        manual_claim_decision(false, false, true, true, true),
+        ManualClaimDecision::Allow
     );
     assert_eq!(
-        manual_claim_decision(false, true, true, false, true, false),
+        manual_claim_decision(true, true, false, true, false),
         ManualClaimDecision::AutomaticProgressPending,
         "an overdue job must not bypass a still-active lease"
     );
@@ -157,12 +157,7 @@ fn mint_admission_includes_existing_reservations_and_checks_overflow() {
 }
 
 #[test]
-fn nonce_and_audit_boundaries_are_deterministic() {
-    assert!(!can_assign_nonce(false, false));
-    assert!(!can_assign_nonce(true, true));
-    assert!(can_assign_nonce(true, false));
-    assert_eq!(nonce_next(0), Some(1));
-    assert_eq!(nonce_next(u64::MAX), None);
+fn audit_boundaries_are_deterministic() {
     assert_eq!(audit_next(0), Some(1));
     assert_eq!(audit_next(u64::MAX), None);
 }
@@ -176,12 +171,6 @@ fn refresh_reserve_and_lease_tokens_fail_closed() {
     assert_eq!(refresh_generation_next(u64::MAX), None);
     assert_eq!(lease_generation_next(0), Some(1));
     assert_eq!(lease_generation_next(u64::MAX), None);
-
-    assert!(reserve_token_matches(1, 2, 3, 4, 1, 2, 3, 4));
-    assert!(!reserve_token_matches(9, 2, 3, 4, 1, 2, 3, 4));
-    assert!(!reserve_token_matches(1, 9, 3, 4, 1, 2, 3, 4));
-    assert!(!reserve_token_matches(1, 2, 9, 4, 1, 2, 3, 4));
-    assert!(!reserve_token_matches(1, 2, 3, 9, 1, 2, 3, 4));
 }
 
 #[test]
@@ -284,14 +273,16 @@ fn compact_phase_kernels_match_the_legal_transition_graphs() {
         (0, 2, 9),
         (1, 3, 2),
         (1, 4, 6),
-        (6, 5, 8),
-        (6, 6, 7),
-        (2, 7, 3),
-        (2, 8, 4),
-        (4, 9, 2),
+        (2, 5, 3),
+        (2, 6, 4),
+        (3, 6, 4),
+        (4, 7, 10),
+        (4, 8, 6),
+        (6, 9, 8),
+        (6, 10, 7),
     ];
-    for state in 0..=9 {
-        for event in 0..=9 {
+    for state in 0..=10 {
+        for event in 0..=10 {
             let expected = deposit_edges
                 .iter()
                 .find(|(from, input, _)| *from == state && *input == event)

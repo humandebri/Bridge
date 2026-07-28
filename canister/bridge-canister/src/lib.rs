@@ -18,11 +18,10 @@ mod api;
 mod base_governance;
 pub mod config;
 mod consent;
-mod evm_calls;
 mod evm_rpc;
 mod ledger;
+mod mint_authorization;
 mod phases;
-mod recovery;
 mod scheduler;
 mod signer;
 pub mod storage;
@@ -37,14 +36,10 @@ use storage::{
 pub struct StatusCounts {
     pub deposits: u64,
     pub withdrawals: u64,
-    pub pending_evm_operations: u64,
     pub reconciliation_holds: u64,
     pub pending_ledger_operations: u64,
     pub reserved_deposit_mint_amount: u128,
     pub reserved_deposit_mint_operations: u64,
-    pub reserved_deposit_mint_eth_wei: u128,
-    pub unresolved_evm_reverts: u64,
-    pub active_evm_payloads: u64,
     pub retained_audit_events: u64,
     pub pruned_audit_events: u64,
     pub retained_deposit_index_entries: u64,
@@ -54,6 +49,8 @@ pub struct StatusCounts {
 pub struct BridgeStatus {
     pub base_chain_id_matches_config: bool,
     pub schema_version: u16,
+    pub mint_authorization_ttl_seconds: u64,
+    pub mint_authorization_epoch: u64,
     pub counts: StatusCounts,
     pub last_finalized_base_block: u64,
     pub last_reserve_observation_ns: u64,
@@ -99,51 +96,11 @@ pub struct ReserveStatus {
     pub eth_balance_wei: u128,
     pub cycles_balance: u128,
     pub required_eth_wei: u128,
-    pub eth_floor_wei: u128,
-    pub reserved_deposit_eth_wei: u128,
-    pub candidate_mint_eth_wei: u128,
+    pub governance_eth_floor_wei: u128,
     pub required_cycles: u128,
     pub eth_surplus_wei: u128,
     pub cycles_surplus: u128,
     pub sufficient: bool,
-    pub last_fee_quote: Option<EvmFeeQuoteStatus>,
-}
-
-#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EvmFeeQuoteStatus {
-    pub safe_block_number: u64,
-    pub safe_block_hash: [u8; 32],
-    pub observed_at_ns: u64,
-    pub valid_until_ns: u64,
-    pub base_fee_per_gas: u128,
-    pub max_priority_fee_per_gas: u128,
-    pub gas_estimate: u128,
-    pub gas_limit: u128,
-    pub initial_max_fee_per_gas: u128,
-    pub reachable_max_fee_per_gas: u128,
-    pub observed_l1_fee_upper_bound_wei: u128,
-    pub reserved_l1_fee_wei: u128,
-    pub reserved_eth_wei: u128,
-}
-
-impl From<bridge_core::EvmFeeQuote> for EvmFeeQuoteStatus {
-    fn from(quote: bridge_core::EvmFeeQuote) -> Self {
-        Self {
-            safe_block_number: quote.safe_block_number,
-            safe_block_hash: quote.safe_block_hash,
-            observed_at_ns: quote.observed_at_ns,
-            valid_until_ns: quote.valid_until_ns,
-            base_fee_per_gas: quote.base_fee_per_gas,
-            max_priority_fee_per_gas: quote.max_priority_fee_per_gas,
-            gas_estimate: quote.gas_estimate,
-            gas_limit: quote.gas_limit,
-            initial_max_fee_per_gas: quote.initial_max_fee_per_gas,
-            reachable_max_fee_per_gas: quote.reachable_max_fee_per_gas,
-            observed_l1_fee_upper_bound_wei: quote.observed_l1_fee_upper_bound_wei,
-            reserved_l1_fee_wei: quote.reserved_l1_fee_wei,
-            reserved_eth_wei: quote.reserved_eth_wei,
-        }
-    }
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -155,6 +112,8 @@ pub struct PublicConfig {
     pub ledger_fee: u128,
     pub index_canister_id: candid::Principal,
     pub schema_version: u16,
+    pub mint_authorization_ttl_seconds: u64,
+    pub mint_authorization_epoch: u64,
     pub expected_bridge_signer: Vec<u8>,
     pub governance_operator: Vec<u8>,
     pub evm_rpc_canister_id: candid::Principal,
@@ -166,9 +125,9 @@ pub struct PublicConfig {
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
     pub settlement_rate_limit_per_record: u16,
-    pub evm_fee: config::EvmFeePolicy,
-    pub evm_liveness: config::EvmLivenessPolicy,
-    pub eth_floor_wei: u128,
+    pub governance_evm_fee: config::EvmFeePolicy,
+    pub governance_evm_liveness: config::EvmLivenessPolicy,
+    pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
     pub governance_principal: candid::Principal,
@@ -528,25 +487,6 @@ fn has_external_call_cycle_budget(current: u128, floor: u128, call_ceiling: u128
     current > floor.saturating_add(call_ceiling)
 }
 
-#[ic_cdk::update]
-async fn recover_mint_revert(
-    args: recovery::RecoverMintRevertArgs,
-) -> Result<recovery::RecoverMintRevertReceipt, recovery::RecoverMintRevertError> {
-    let target = recovery::validate_target(&args.deposit_id)?;
-    let key = match &target {
-        recovery::ValidatedTarget::Deposit(id) => ActionKey::Deposit(*id),
-    };
-    let Some(guard) = InFlightGuard::acquire(key) else {
-        return Err(recovery::RecoverMintRevertError::Busy);
-    };
-    let receipt = recovery::recover(ic_cdk::api::msg_caller(), args).await?;
-    if matches!(receipt, recovery::RecoverMintRevertReceipt::Enqueued { .. }) {
-        drop(guard);
-        scheduler::arm();
-    }
-    Ok(receipt)
-}
-
 fn can_advance_deposit(
     caller: candid::Principal,
     id: [u8; 32],
@@ -589,144 +529,6 @@ fn can_advance_withdrawal(
     admin::can_advance_settlement(caller).map_err(|_| tasks::SettlementActionError::StorageFailure)
 }
 
-fn current_operation_id(
-    kind: storage::SettlementJobKind,
-    id: [u8; 32],
-) -> Result<bridge_core::EvmOperationId, tasks::SettlementActionError> {
-    STORE.with(|store| {
-        let store = store.borrow();
-        match kind {
-            storage::SettlementJobKind::Deposit => store
-                .deposit(id)
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-                .and_then(|record| match record.state {
-                    bridge_core::DepositState::MintPending { operation_id, .. } => {
-                        Some(operation_id)
-                    }
-                    _ => None,
-                }),
-            storage::SettlementJobKind::Withdrawal => None,
-            storage::SettlementJobKind::FeePayout => None,
-        }
-        .ok_or(tasks::SettlementActionError::WrongState)
-    })
-}
-
-fn submitted_transaction(
-    kind: storage::SettlementJobKind,
-    id: [u8; 32],
-) -> Result<(bridge_core::EvmOperationId, [u8; 32]), tasks::SettlementActionError> {
-    let operation_id = current_operation_id(kind, id)?;
-    let operation = STORE.with(|store| {
-        store
-            .borrow()
-            .evm_operation(operation_id.get())
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-            .ok_or(tasks::SettlementActionError::NotFound)
-    })?;
-    match operation.state {
-        bridge_core::EvmOperationState::Submitted { transaction_hash } => {
-            Ok((operation_id, transaction_hash))
-        }
-        _ => Err(tasks::SettlementActionError::WrongState),
-    }
-}
-
-async fn confirm_evm(
-    kind: storage::SettlementJobKind,
-    args: api::ConfirmEvmArgs,
-) -> Result<tasks::SettlementActionResult, tasks::SettlementActionError> {
-    let id: [u8; 32] = args
-        .settlement_id
-        .as_slice()
-        .try_into()
-        .map_err(|_| tasks::SettlementActionError::InvalidId)?;
-    let transaction_hash: [u8; 32] = args
-        .transaction_hash
-        .as_slice()
-        .try_into()
-        .map_err(|_| tasks::SettlementActionError::TransactionMismatch)?;
-    if args.observed_finalized_block_number < args.receipt_block_number {
-        return Err(tasks::SettlementActionError::InvalidConfirmationObservation);
-    }
-    let caller = ic_cdk::api::msg_caller();
-    let authorized = match kind {
-        storage::SettlementJobKind::Deposit => can_advance_deposit(caller, id)?,
-        storage::SettlementJobKind::Withdrawal => can_advance_withdrawal(caller, id)?,
-        storage::SettlementJobKind::FeePayout => false,
-    };
-    if !authorized {
-        return Err(tasks::SettlementActionError::Unauthorized);
-    }
-    let (operation_id, stored_hash) = submitted_transaction(kind, id)?;
-    if stored_hash != transaction_hash {
-        let known = STORE.with(|store| {
-            store
-                .borrow()
-                .evm_envelope(operation_id.get())
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-                .map(|envelope| {
-                    envelope
-                        .prior_signed_transactions
-                        .iter()
-                        .chain(envelope.signed_transaction.iter())
-                        .any(|raw| signer::transaction_hash(raw) == transaction_hash)
-                })
-                .ok_or(tasks::SettlementActionError::StorageFailure)
-        })?;
-        if !known {
-            return Err(tasks::SettlementActionError::TransactionMismatch);
-        }
-    }
-    let job = STORE.with(|store| {
-        store
-            .borrow()
-            .settlement_job(kind, id)
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-            .ok_or(tasks::SettlementActionError::WrongState)
-    })?;
-    if job.phase != storage::SettlementJobPhase::Confirmation
-        || job.operation_id != Some(operation_id.get())
-        || !matches!(
-            job.status,
-            storage::SettlementJobStatus::Scheduled
-                | storage::SettlementJobStatus::AwaitingConfirmation
-                | storage::SettlementJobStatus::Stopped
-        )
-    {
-        return Err(tasks::SettlementActionError::WrongState);
-    }
-    let job = claim_confirmation_job(kind, id, caller)?;
-    if stored_hash != transaction_hash {
-        STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            let mut operation = store
-                .evm_operation(operation_id.get())
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-                .ok_or(tasks::SettlementActionError::NotFound)?;
-            operation.state = bridge_core::EvmOperationState::Submitted { transaction_hash };
-            store
-                .put_evm_operation(&operation)
-                .map_err(|_| tasks::SettlementActionError::StorageFailure)
-        })?;
-    }
-    let result = scheduler::run_claimed_confirmation(
-        job,
-        args.receipt_block_number,
-        args.observed_finalized_block_number,
-    )
-    .await?;
-    scheduler::arm();
-    Ok(result)
-}
-
-#[ic_cdk::update]
-async fn confirm_deposit(
-    args: api::ConfirmEvmArgs,
-) -> Result<tasks::SettlementActionResult, tasks::SettlementActionError> {
-    confirm_evm(storage::SettlementJobKind::Deposit, args).await
-}
-
 #[ic_cdk::update]
 async fn continue_deposit(
     deposit_id: Vec<u8>,
@@ -739,30 +541,31 @@ async fn continue_deposit(
     if !can_advance_deposit(caller, id)? {
         return Err(tasks::SettlementActionError::Unauthorized);
     }
-    match submitted_transaction(storage::SettlementJobKind::Deposit, id) {
-        Ok(_) => return Err(tasks::SettlementActionError::ConfirmationRequired),
-        Err(tasks::SettlementActionError::WrongState) => {}
-        Err(error) => return Err(error),
-    }
     let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
         return Err(tasks::SettlementActionError::Busy);
     };
-    let terminal_state = STORE.with(|store| {
+    let (terminal_state, expiry_reconciliation_allowed) = STORE.with(|store| {
         store
             .borrow()
             .deposit(id)
             .map_err(|_| tasks::SettlementActionError::StorageFailure)?
             .map(|record| {
                 let terminal = matches!(
-                    record.state,
+                    &record.state,
                     bridge_core::DepositState::Minted { .. }
-                        | bridge_core::DepositState::MintReverted { .. }
                         | bridge_core::DepositState::Refunded { .. }
                         | bridge_core::DepositState::Cancelled { .. }
                 );
-                terminal.then(|| {
-                    phases::SettlementState::Deposit(phases::DepositPhase::from(&record.state))
-                })
+                (
+                    terminal.then(|| {
+                        phases::SettlementState::Deposit(phases::DepositPhase::from(&record.state))
+                    }),
+                    matches!(
+                        &record.state,
+                        bridge_core::DepositState::AuthorizationAvailable { .. }
+                            | bridge_core::DepositState::ExpiryReconciliation { .. }
+                    ),
+                )
             })
             .ok_or(tasks::SettlementActionError::NotFound)
     })?;
@@ -770,7 +573,12 @@ async fn continue_deposit(
         return Ok(tasks::SettlementActionResult::Complete { state });
     }
     drop(guard);
-    let job = claim_manual_job(storage::SettlementJobKind::Deposit, id, caller)?;
+    let job = claim_job(
+        storage::SettlementJobKind::Deposit,
+        id,
+        caller,
+        expiry_reconciliation_allowed,
+    )?;
     let result = scheduler::run_claimed(job).await?;
     scheduler::arm();
     Ok(result)
@@ -824,14 +632,6 @@ fn claim_manual_job(
     claim_job(kind, id, caller, false)
 }
 
-fn claim_confirmation_job(
-    kind: storage::SettlementJobKind,
-    id: [u8; 32],
-    caller: candid::Principal,
-) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
-    claim_job(kind, id, caller, true)
-}
-
 fn manual_claim_result(
     claim: storage::ManualSettlementClaim,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
@@ -848,7 +648,7 @@ fn claim_job(
     kind: storage::SettlementJobKind,
     id: [u8; 32],
     caller: candid::Principal,
-    explicit_confirmation: bool,
+    allow_deposit_expiry_early: bool,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -858,35 +658,31 @@ fn claim_job(
             .ok_or(tasks::SettlementActionError::StorageFailure)
     })?;
     STORE.with(|store| {
-        let claim = if explicit_confirmation {
-            store.borrow_mut().claim_confirmation_settlement_job(
-                kind,
+        let now_ns = ic_cdk::api::time();
+        let limits = storage::SettlementQuotaLimits {
+            window_seconds: config.settlement_rate_limit_window_seconds,
+            global: config.settlement_rate_limit_global,
+            per_principal: config.settlement_rate_limit_per_principal,
+            per_record: config.settlement_rate_limit_per_record,
+        };
+        let claim = if allow_deposit_expiry_early {
+            store.borrow_mut().claim_deposit_expiry_reconciliation_job(
                 id,
                 caller,
-                ic_cdk::api::time(),
-                ic_cdk::api::time().saturating_add(120_000_000_000),
+                now_ns,
+                now_ns.saturating_add(120_000_000_000),
                 300_000_000_000,
-                storage::SettlementQuotaLimits {
-                    window_seconds: config.settlement_rate_limit_window_seconds,
-                    global: config.settlement_rate_limit_global,
-                    per_principal: config.settlement_rate_limit_per_principal,
-                    per_record: config.settlement_rate_limit_per_record,
-                },
+                limits,
             )
         } else {
             store.borrow_mut().claim_manual_settlement_job(
                 kind,
                 id,
                 caller,
-                ic_cdk::api::time(),
-                ic_cdk::api::time().saturating_add(120_000_000_000),
+                now_ns,
+                now_ns.saturating_add(120_000_000_000),
                 300_000_000_000,
-                storage::SettlementQuotaLimits {
-                    window_seconds: config.settlement_rate_limit_window_seconds,
-                    global: config.settlement_rate_limit_global,
-                    per_principal: config.settlement_rate_limit_per_principal,
-                    per_record: config.settlement_rate_limit_per_record,
-                },
+                limits,
             )
         };
         claim
@@ -965,9 +761,10 @@ fn get_bridge_status() -> BridgeStatus {
                     store.nonterminal_withdrawal_count(),
                 ),
                 counts.reserved_deposit_mint_operations,
-                0,
-                counts.reserved_deposit_mint_eth_wei,
-                0,
+                storage_or_trap(
+                    "deposit funding reservation count read",
+                    store.deposit_funding_reservation_count(),
+                ),
                 progress.last_eth_balance_wei,
                 ic_cdk::api::canister_liquid_cycle_balance(),
             )
@@ -978,7 +775,7 @@ fn get_bridge_status() -> BridgeStatus {
         let finalized_observation = progress.finalized_observation;
         let scheduler_diagnostics = storage_or_trap(
             "settlement scheduler diagnostics read",
-            store.confirmation_scheduler_health(),
+            store.settlement_scheduler_health(),
         );
         let now_ns = ic_cdk::api::time();
         let scheduler_summary = storage_or_trap(
@@ -999,17 +796,18 @@ fn get_bridge_status() -> BridgeStatus {
             base_chain_id_matches_config: finalized_observation
                 .is_some_and(|observation| observation.chain_id == config.base_chain_id),
             schema_version: store.schema_version(),
+            mint_authorization_ttl_seconds: bridge_core::MINT_AUTHORIZATION_TTL_SECONDS,
+            mint_authorization_epoch: storage_or_trap(
+                "mint authorization epoch read",
+                store.current_mint_authorization_epoch(),
+            ),
             counts: StatusCounts {
                 deposits: counts.deposits,
                 withdrawals: counts.withdrawals,
-                pending_evm_operations: counts.pending_evm_operations,
                 reconciliation_holds: counts.reconciliation_holds,
                 pending_ledger_operations: counts.pending_ledger_operations,
                 reserved_deposit_mint_amount: counts.reserved_deposit_mint_amount,
                 reserved_deposit_mint_operations: counts.reserved_deposit_mint_operations,
-                reserved_deposit_mint_eth_wei: counts.reserved_deposit_mint_eth_wei,
-                unresolved_evm_reverts: counts.unresolved_evm_reverts,
-                active_evm_payloads: counts.active_evm_payloads,
                 retained_audit_events: counts.retained_audit_events,
                 pruned_audit_events: counts.pruned_audit_events,
                 retained_deposit_index_entries: counts.retained_deposit_index_entries,
@@ -1035,14 +833,11 @@ fn get_bridge_status() -> BridgeStatus {
                 eth_balance_wei: reserve.eth_balance_wei,
                 cycles_balance: reserve.cycles_balance,
                 required_eth_wei: reserve.required_eth_wei,
-                eth_floor_wei: config.eth_floor_wei,
-                reserved_deposit_eth_wei: reserve.reserved_mint_eth_wei,
-                candidate_mint_eth_wei: reserve.candidate_mint_eth_wei,
+                governance_eth_floor_wei: config.governance_eth_floor_wei,
                 required_cycles: reserve.required_cycles,
                 eth_surplus_wei: reserve.eth_surplus_wei,
                 cycles_surplus: reserve.cycles_surplus,
                 sufficient: reserve.sufficient,
-                last_fee_quote: progress.last_fee_quote.map(Into::into),
             },
             deposits_paused: admin.deposits_paused,
             withdrawal_fee_guard_active: admin.withdrawal_fee_guard.is_some(),
@@ -1116,13 +911,6 @@ fn refresh_storage_checksum(
 fn seed_storage_test_data(start: u64, count: u16) -> Result<u16, StorageMaintenanceError> {
     require_controller()?;
     STORE.with(|store| store.borrow_mut().seed_storage_test_data(start, count))
-}
-
-#[cfg(feature = "test-deployment")]
-#[ic_cdk::query]
-fn first_prepared_evm_test_id() -> Result<Option<u64>, StorageMaintenanceError> {
-    require_controller()?;
-    STORE.with(|store| store.borrow().first_prepared_evm_test_id())
 }
 
 #[ic_cdk::update]
@@ -1216,6 +1004,11 @@ fn get_public_config() -> PublicConfig {
             ledger_fee: ledger::KINIC_LEDGER_FEE.get(),
             index_canister_id: config.index_canister_id,
             schema_version: store.schema_version(),
+            mint_authorization_ttl_seconds: bridge_core::MINT_AUTHORIZATION_TTL_SECONDS,
+            mint_authorization_epoch: storage_or_trap(
+                "mint authorization epoch read",
+                store.current_mint_authorization_epoch(),
+            ),
             expected_bridge_signer: Vec::from(expected_bridge_signer),
             governance_operator: Vec::from(governance_operator),
             evm_rpc_canister_id: config.evm_rpc_canister_id,
@@ -1227,9 +1020,9 @@ fn get_public_config() -> PublicConfig {
             settlement_rate_limit_global: config.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: config.settlement_rate_limit_per_principal,
             settlement_rate_limit_per_record: config.settlement_rate_limit_per_record,
-            evm_fee: config.evm_fee,
-            evm_liveness: config.evm_liveness,
-            eth_floor_wei: config.eth_floor_wei,
+            governance_evm_fee: config.governance_evm_fee,
+            governance_evm_liveness: config.governance_evm_liveness,
+            governance_eth_floor_wei: config.governance_eth_floor_wei,
             cycles_floor: config.cycles_floor,
             settlement_cycle_ceiling: config.settlement_cycle_ceiling,
             governance_principal: admin.governance_principal,

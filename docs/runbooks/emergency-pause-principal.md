@@ -7,4 +7,4 @@
 3. `monitor-drill.json`へprincipal、実request ID、audit sequence、audit digest、5/15/60時刻を記録する。秘密、seed、device backupは記録しない。
 4. rotationはKINIC SNS Governanceの固定generic functionだけから実行する。旧principalはrotation完了後に権限を持たない。
 
-Mint SignerとGovernance OperatorはBridge Canisterが別derivation pathから導出する。ETH補充は送金だけを許可し、送金元へcontract roleを付与しない。
+Mint SignerとGovernance OperatorはBridge Canisterが別derivation pathから導出する。Mint SignerはEIP-712署名だけを行いETHを必要としない。ETH補充はGovernance Operatorへの送金だけを許可し、送金元へcontract roleを付与しない。

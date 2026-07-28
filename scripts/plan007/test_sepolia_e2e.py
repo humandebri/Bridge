@@ -38,7 +38,7 @@ class SepoliaE2ETests(unittest.TestCase):
         self.local.write_text(
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "source_commit": SOURCE,
                     "bridge_wasm_sha256": H64,
                     "bridge_runtime_hash": TX,
@@ -47,7 +47,7 @@ class SepoliaE2ETests(unittest.TestCase):
                         "full_local_ci": "passed",
                         "real_frontend_e2e": "passed",
                         "canister_activation": "passed",
-                        "timelock_72h": "passed",
+                        "timelock_24h": "passed",
                         "state_upgrade": "passed",
                     },
                 }
@@ -102,7 +102,7 @@ class SepoliaE2ETests(unittest.TestCase):
             return {"install_mode": "reinstall", "module_sha256": H64, "cycles_balance": 1, "controller_principals": ["aaaaa-aa"]}
         if stage == "initialize":
             return {
-                "schema_version": 24,
+                "schema_version": 25,
                 "chain_id": 84532,
                 "ledger_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
                 "index_canister_id": "qhbym-qaaaa-aaaaa-aaafq-cai",
@@ -135,7 +135,7 @@ class SepoliaE2ETests(unittest.TestCase):
             }
         if stage == "activation_execute":
             return {
-                "delay_seconds": 259_200,
+                "delay_seconds": 86_400,
                 "execute_transaction_hash": TX,
                 "finalized_block_number": 2,
                 "finalized_block_hash": TX_B,

@@ -1,8 +1,10 @@
 use crate::{admin, evm_rpc, signer, storage, STORE};
-use bridge_core::{EvmOperationId, EvmTransactionEnvelope};
+use bridge_core::{GovernanceOperationId, GovernanceTransactionEnvelope};
 use candid::{CandidType, Deserialize, Nat, Principal};
 use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
+
+const ACTIVATION_TIMELOCK_DELAY_SECONDS: u128 = 24 * 60 * 60;
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum BaseGovernanceAction {
@@ -177,20 +179,21 @@ pub async fn submit(
     }
     let (kind, target, calldata) = encode_action(action, id)?;
     let payload_hash: [u8; 32] = Sha256::digest(&calldata).into();
-    let envelope = EvmTransactionEnvelope {
-        operation_id: EvmOperationId::new(id),
+    let envelope = GovernanceTransactionEnvelope {
+        operation_id: GovernanceOperationId::new(id),
         payload_hash,
         nonce,
         chain_id: config.base_chain_id,
         contract: target,
         calldata,
-        gas_limit: config.evm_fee.gas_limit_ceiling,
-        max_fee_per_gas: config.evm_fee.max_fee_per_gas_ceiling,
-        max_priority_fee_per_gas: config.evm_fee.max_priority_fee_per_gas_ceiling,
+        gas_limit: config.governance_evm_fee.gas_limit_ceiling,
+        max_fee_per_gas: config.governance_evm_fee.max_fee_per_gas_ceiling,
+        max_priority_fee_per_gas: config.governance_evm_fee.max_priority_fee_per_gas_ceiling,
         signed_transaction: None,
-        initial_max_fee_per_gas: config.evm_fee.max_fee_per_gas_ceiling,
-        initial_max_priority_fee_per_gas: config.evm_fee.max_priority_fee_per_gas_ceiling,
-        fee_quote: None,
+        initial_max_fee_per_gas: config.governance_evm_fee.max_fee_per_gas_ceiling,
+        initial_max_priority_fee_per_gas: config
+            .governance_evm_fee
+            .max_priority_fee_per_gas_ceiling,
         replacement_generation: 0,
         prior_signed_transactions: Vec::new(),
         first_broadcast_at_ns: 0,
@@ -216,19 +219,23 @@ async fn activation_preflight(
     config: &crate::config::BridgeInitArgs,
     caller: Principal,
 ) -> Result<(), BaseGovernanceError> {
-    let expected_signer = crate::api::cached_signer_address(config)
+    let expected_bridge_signer = crate::api::cached_signer_address(config)
+        .await
+        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let governance_operator = crate::api::cached_governance_operator_address(config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     let observed = evm_rpc::bridge_snapshot(config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let finalized_eth = evm_rpc::signer_eth_balance_at(config, expected_signer, observed.finalized)
+    let finalized_eth =
+        evm_rpc::signer_eth_balance_at(config, governance_operator, observed.finalized)
+            .await
+            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let safe_eth = evm_rpc::signer_eth_balance(config, governance_operator)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let safe_eth = evm_rpc::signer_eth_balance(config, expected_signer)
-        .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    if observed.snapshot.bridge_signer != expected_signer
+    if observed.snapshot.bridge_signer != expected_bridge_signer
         || !observed.snapshot.deposits_paused
         || !observed.snapshot.withdrawals_paused
     {
@@ -253,8 +260,6 @@ async fn activation_preflight(
             .snapshot(
                 nonterminal_withdrawals,
                 counters.reserved_deposit_mint_operations,
-                0,
-                counters.reserved_deposit_mint_eth_wei,
                 0,
                 observed_eth,
                 ic_cdk::api::canister_liquid_cycle_balance(),
@@ -587,11 +592,57 @@ async fn continue_pending(
                 });
             }
             Ok(evm_rpc::ConfirmedReceiptOutcome::Missing)
-            | Ok(evm_rpc::ConfirmedReceiptOutcome::Pending { .. })
-            | Err(_) => {
+            | Ok(evm_rpc::ConfirmedReceiptOutcome::Pending { .. }) => {
+                let now = ic_cdk::api::time();
+                if !replacement_due(
+                    transaction.envelope.last_broadcast_at_ns,
+                    now,
+                    config.governance_evm_liveness.replacement_after_seconds,
+                ) || transaction.envelope.replacement_generation
+                    >= config.governance_evm_liveness.max_replacements
+                {
+                    return Err(BaseGovernanceError::BroadcastAmbiguous {
+                        operation_id: transaction.id,
+                    });
+                }
+                let Some((max_fee_per_gas, max_priority_fee_per_gas)) =
+                    crate::config::next_replacement_fees(
+                        transaction.envelope.max_fee_per_gas,
+                        transaction.envelope.max_priority_fee_per_gas,
+                        config.governance_evm_fee.max_fee_per_gas_ceiling,
+                        config.governance_evm_fee.max_priority_fee_per_gas_ceiling,
+                        config.governance_evm_liveness,
+                    )
+                else {
+                    return Err(BaseGovernanceError::BroadcastAmbiguous {
+                        operation_id: transaction.id,
+                    });
+                };
+                require_current_transaction_authorization(caller, &transaction.kind)?;
+                let previous = transaction
+                    .envelope
+                    .signed_transaction
+                    .take()
+                    .ok_or(BaseGovernanceError::StorageFailure)?;
+                transaction
+                    .envelope
+                    .prior_signed_transactions
+                    .push(previous);
+                transaction.envelope.max_fee_per_gas = max_fee_per_gas;
+                transaction.envelope.max_priority_fee_per_gas = max_priority_fee_per_gas;
+                transaction.envelope.replacement_generation = transaction
+                    .envelope
+                    .replacement_generation
+                    .checked_add(1)
+                    .ok_or(BaseGovernanceError::StorageFailure)?;
+                transaction.envelope.rebroadcast_count = 0;
+                transaction.state = storage::GovernanceTransactionState::Prepared;
+                persist(&transaction)?;
+            }
+            Err(_) => {
                 return Err(BaseGovernanceError::BroadcastAmbiguous {
                     operation_id: transaction.id,
-                });
+                })
             }
         }
     }
@@ -625,7 +676,7 @@ async fn continue_pending(
         && !rebroadcast_due(
             transaction.envelope.last_broadcast_at_ns,
             now,
-            config.evm_liveness.rebroadcast_after_seconds,
+            config.governance_evm_liveness.rebroadcast_after_seconds,
         )
     {
         return Err(BaseGovernanceError::BroadcastAmbiguous {
@@ -753,6 +804,12 @@ fn nonce_conflict_recovery(
 fn rebroadcast_due(last_broadcast_at_ns: u64, now_ns: u64, after_seconds: u64) -> bool {
     last_broadcast_at_ns == 0
         || now_ns.saturating_sub(last_broadcast_at_ns)
+            >= after_seconds.saturating_mul(1_000_000_000)
+}
+
+fn replacement_due(last_broadcast_at_ns: u64, now_ns: u64, after_seconds: u64) -> bool {
+    last_broadcast_at_ns != 0
+        && now_ns.saturating_sub(last_broadcast_at_ns)
             >= after_seconds.saturating_mul(1_000_000_000)
 }
 
@@ -937,7 +994,7 @@ fn activation_arguments(bridge: [u8; 20], salt: [u8; 32], include_delay: bool) -
     encoded.extend_from_slice(&[0; 32]);
     encoded.extend_from_slice(&salt);
     if include_delay {
-        encoded.extend_from_slice(&word_u128(72 * 60 * 60));
+        encoded.extend_from_slice(&word_u128(ACTIVATION_TIMELOCK_DELAY_SECONDS));
     }
     encoded.extend_from_slice(&targets);
     encoded.extend_from_slice(&values);
@@ -992,8 +1049,9 @@ fn keccak(value: &[u8]) -> [u8; 32] {
 mod tests {
     use super::{
         action_matches_pending, activation_operation_id, activation_salt, authorized_action,
-        execute_activation_calldata, nonce_conflict_recovery, rebroadcast_due, selector,
-        should_resume_activation, word_u128, GovernanceAction, NonceConflictRecovery,
+        execute_activation_calldata, nonce_conflict_recovery, rebroadcast_due, replacement_due,
+        schedule_activation_calldata, selector, should_resume_activation, word_u128,
+        GovernanceAction, NonceConflictRecovery, ACTIVATION_TIMELOCK_DELAY_SECONDS,
     };
     use crate::storage::GovernanceTransactionKind;
 
@@ -1097,6 +1155,15 @@ mod tests {
     }
 
     #[test]
+    fn governance_replacement_requires_a_previous_broadcast_and_full_interval() {
+        let second = 1_000_000_000;
+        assert!(!replacement_due(0, 600 * second, 600));
+        assert!(!replacement_due(10 * second, 609 * second, 600));
+        assert!(replacement_due(10 * second, 610 * second, 600));
+        assert!(!replacement_due(10 * second, 9 * second, 600));
+    }
+
+    #[test]
     fn activation_resume_is_suppressed_while_emergency_actions_remain() {
         assert!(should_resume_activation(true, false));
         assert!(!should_resume_activation(true, true));
@@ -1118,6 +1185,10 @@ mod tests {
         assert_eq!(
             &execute_activation_calldata(bridge, salt)[..4],
             &[0xe3, 0x83, 0x35, 0xe5]
+        );
+        assert_eq!(
+            &schedule_activation_calldata(bridge, salt)[164..196],
+            &word_u128(ACTIVATION_TIMELOCK_DELAY_SECONDS)
         );
     }
 }

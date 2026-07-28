@@ -176,8 +176,8 @@ def leaseOutcomeCurrent (active : Bool) (currentGeneration outcomeGeneration : N
   active && currentGeneration = outcomeGeneration
 
 def manualClaimAllowed
-    (confirmation scheduled active stopped overdue expired : Bool) : Bool :=
-  !confirmation && (!active || expired) && (!scheduled || stopped || overdue || expired)
+    (scheduled active stopped overdue expired : Bool) : Bool :=
+  (!active || expired) && (!scheduled || stopped || overdue || expired)
 
 structure NotificationIsolationState where
   notificationCount : Nat

@@ -1,0 +1,19 @@
+[profile.default]
+src = "."
+out = "out"
+cache_path = "cache"
+libs = ["../../contracts/lib"]
+remappings = ["bridge-src/=../../contracts/src/"]
+solc = "0.8.36"
+evm_version = "prague"
+optimizer = false
+via_ir = false
+deny = "warnings"
+
+[profile.default.model_checker]
+engine = "chc"
+solvers = ["z3"]
+targets = ["assert"]
+invariants = ["contract"]
+show_unproved = true
+timeout = 30000

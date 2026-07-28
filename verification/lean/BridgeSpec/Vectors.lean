@@ -131,13 +131,12 @@ def leaseCase (active : Bool) (current outcome : Nat) : String :=
     field "accepted" (boolJson (leaseOutcomeCurrent active current outcome)) ++ "}"
 
 def manualClaimCase
-    (confirmation scheduled active stopped overdue expired : Bool) : String :=
-  "{" ++ field "confirmation" (boolJson confirmation) ++ "," ++
-    field "scheduled" (boolJson scheduled) ++ "," ++ field "active" (boolJson active) ++ "," ++
+    (scheduled active stopped overdue expired : Bool) : String :=
+  "{" ++ field "scheduled" (boolJson scheduled) ++ "," ++ field "active" (boolJson active) ++ "," ++
     field "stopped" (boolJson stopped) ++ "," ++ field "overdue" (boolJson overdue) ++ "," ++
     field "expired" (boolJson expired) ++ "," ++
     field "allowed"
-      (boolJson (manualClaimAllowed confirmation scheduled active stopped overdue expired)) ++ "}"
+      (boolJson (manualClaimAllowed scheduled active stopped overdue expired)) ++ "}"
 
 def notificationAdmissionCase
     (callerCount hashCount callerLimit hashLimit : Nat) : String :=
@@ -247,13 +246,12 @@ def document : String :=
   let holds := [holdCase false false, holdCase true false, holdCase false true, holdCase true true]
   let leases := [leaseCase true 7 7, leaseCase true 7 6, leaseCase false 7 7]
   let manualClaims := [
-    manualClaimCase true false false false false false,
-    manualClaimCase false true true false false false,
-    manualClaimCase false true true false true false,
-    manualClaimCase false true false false true false,
-    manualClaimCase false false true false false true,
-    manualClaimCase false false false true false false,
-    manualClaimCase false false false false false false]
+    manualClaimCase true true false false false,
+    manualClaimCase true true false true false,
+    manualClaimCase true false false true false,
+    manualClaimCase false true false false true,
+    manualClaimCase false false true false false,
+    manualClaimCase false false false false false]
   let notificationAdmissions := [
     notificationAdmissionCase 0 0 6 3,
     notificationAdmissionCase 5 2 6 3,

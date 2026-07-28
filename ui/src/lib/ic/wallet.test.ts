@@ -22,6 +22,15 @@ describe("OISY deposit reply decoding", () => {
     expect(() => decodeDepositReply(reply)).toThrow("42")
   })
 
+  it("explains a cycles reserve rejection without treating funding as accepted", () => {
+    const reply = new Uint8Array(IDL.encode(
+      [resultType("request_deposit")],
+      [{ Err: { ReserveUnavailable: null } }],
+    ))
+
+    expect(() => decodeDepositReply(reply)).toThrow("cycles reserve is temporarily insufficient")
+  })
+
   it("decodes typed funding rejection and retry guidance", () => {
     const rejected = new Uint8Array(IDL.encode(
       [resultType("request_deposit")],

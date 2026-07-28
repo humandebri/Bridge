@@ -1,4 +1,4 @@
-use crate::{Amount, CoreError, DepositId, EvmOperationId, HoldId, LedgerTransferIdentity};
+use crate::{Amount, CoreError, DepositId, GovernanceOperationId, HoldId, LedgerTransferIdentity};
 
 #[cfg_attr(
     feature = "storage-serde",
@@ -48,56 +48,9 @@ impl LedgerCallOutcome {
     feature = "storage-serde",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EvmFeeQuote {
-    pub safe_block_number: u64,
-    pub safe_block_hash: [u8; 32],
-    pub observed_at_ns: u64,
-    pub valid_until_ns: u64,
-    pub base_fee_per_gas: u128,
-    pub max_priority_fee_per_gas: u128,
-    pub gas_estimate: u128,
-    pub gas_limit: u128,
-    pub initial_max_fee_per_gas: u128,
-    pub reachable_max_fee_per_gas: u128,
-    pub observed_l1_fee_upper_bound_wei: u128,
-    pub reserved_l1_fee_wei: u128,
-    pub reserved_eth_wei: u128,
-}
-
-impl EvmFeeQuote {
-    pub fn validate(self) -> Result<(), CoreError> {
-        if self.safe_block_hash.iter().all(|byte| *byte == 0)
-            || self.valid_until_ns <= self.observed_at_ns
-            || self.base_fee_per_gas == 0
-            || self.gas_estimate == 0
-            || self.gas_limit < self.gas_estimate
-            || self.initial_max_fee_per_gas == 0
-            || self.reachable_max_fee_per_gas < self.initial_max_fee_per_gas
-            || self.observed_l1_fee_upper_bound_wei == 0
-            || self.reserved_l1_fee_wei < self.observed_l1_fee_upper_bound_wei
-        {
-            return Err(CoreError::InvalidAmount);
-        }
-        let expected = self
-            .gas_limit
-            .checked_mul(self.reachable_max_fee_per_gas)
-            .and_then(|value| value.checked_add(self.reserved_l1_fee_wei))
-            .ok_or(CoreError::ArithmeticOverflow)?;
-        if expected != self.reserved_eth_wei {
-            return Err(CoreError::InvalidAmount);
-        }
-        Ok(())
-    }
-}
-
-#[cfg_attr(
-    feature = "storage-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvmTransactionEnvelope {
-    pub operation_id: EvmOperationId,
+pub struct GovernanceTransactionEnvelope {
+    pub operation_id: GovernanceOperationId,
     pub payload_hash: [u8; 32],
     pub nonce: u64,
     pub chain_id: u64,
@@ -109,7 +62,6 @@ pub struct EvmTransactionEnvelope {
     pub signed_transaction: Option<Vec<u8>>,
     pub initial_max_fee_per_gas: u128,
     pub initial_max_priority_fee_per_gas: u128,
-    pub fee_quote: Option<EvmFeeQuote>,
     pub replacement_generation: u8,
     pub prior_signed_transactions: Vec<Vec<u8>>,
     pub first_broadcast_at_ns: u64,
@@ -122,8 +74,8 @@ pub struct EvmTransactionEnvelope {
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvmCallIntent {
-    pub operation_id: EvmOperationId,
+pub struct GovernanceCallIntent {
+    pub operation_id: GovernanceOperationId,
     pub payload_hash: [u8; 32],
     pub chain_id: u64,
     pub contract: [u8; 20],
@@ -131,12 +83,11 @@ pub struct EvmCallIntent {
     pub gas_limit: u128,
     pub max_fee_per_gas: u128,
     pub max_priority_fee_per_gas: u128,
-    pub fee_quote: Option<EvmFeeQuote>,
 }
 
-impl EvmCallIntent {
-    pub fn assign_nonce(self, nonce: u64) -> EvmTransactionEnvelope {
-        EvmTransactionEnvelope {
+impl GovernanceCallIntent {
+    pub fn assign_nonce(self, nonce: u64) -> GovernanceTransactionEnvelope {
+        GovernanceTransactionEnvelope {
             operation_id: self.operation_id,
             payload_hash: self.payload_hash,
             nonce,
@@ -149,7 +100,6 @@ impl EvmCallIntent {
             signed_transaction: None,
             initial_max_fee_per_gas: self.max_fee_per_gas,
             initial_max_priority_fee_per_gas: self.max_priority_fee_per_gas,
-            fee_quote: self.fee_quote,
             replacement_generation: 0,
             prior_signed_transactions: Vec::new(),
             first_broadcast_at_ns: 0,
@@ -159,7 +109,7 @@ impl EvmCallIntent {
     }
 }
 
-impl EvmTransactionEnvelope {
+impl GovernanceTransactionEnvelope {
     pub fn validate(
         &self,
         expected_chain_id: u64,
@@ -168,19 +118,8 @@ impl EvmTransactionEnvelope {
         if self.chain_id != expected_chain_id || self.contract != expected_contract {
             return Err(CoreError::PayloadConflict);
         }
-        if self.calldata.len() < 4
-            || self.gas_limit == 0
-            || self.max_fee_per_gas == 0
-        {
+        if self.calldata.len() < 4 || self.gas_limit == 0 || self.max_fee_per_gas == 0 {
             return Err(CoreError::InvalidAmount);
-        }
-        if let Some(fee_quote) = self.fee_quote {
-            fee_quote.validate()?;
-            if self.gas_limit != fee_quote.gas_limit
-                || self.initial_max_fee_per_gas != fee_quote.initial_max_fee_per_gas
-            {
-                return Err(CoreError::InvalidAmount);
-            }
         }
         Ok(())
     }
@@ -206,17 +145,13 @@ pub struct FinalizedObservationRecord {
 )]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExternalProgress {
-    pub nonce_initialized: bool,
-    pub next_evm_nonce: u64,
     pub last_finalized_base_block: u64,
-    pub last_finalized_mint_block: u64,
     pub last_eth_balance_wei: u128,
     pub reserve_sufficient: bool,
     pub reserve_observation_generation: u64,
     pub last_reserve_observation_ns: u64,
     pub last_finalized_observation_ns: u64,
     pub finalized_observation: Option<FinalizedObservationRecord>,
-    pub last_fee_quote: Option<EvmFeeQuote>,
 }
 
 impl ExternalProgress {

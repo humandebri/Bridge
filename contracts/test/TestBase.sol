@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
+import {Bridge} from "../src/Bridge.sol";
+import {IBridge} from "../src/interfaces/IBridge.sol";
+
 interface Vm {
     struct Log {
         bytes32[] topics;
@@ -36,6 +39,11 @@ interface Vm {
 
 abstract contract TestBase {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+    bytes32 internal constant MINT_AUTHORIZATION_TYPEHASH = keccak256(
+        "MintAuthorization(bytes32 depositId,address recipient,uint256 grossAmount,uint256 maxServiceFee,uint256 chargedServiceFee,uint256 deadline,uint256 authorizationEpoch)"
+    );
+    bytes32 internal constant MINT_EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
     function _sameString(string memory left, string memory right) internal pure returns (bool) {
         return keccak256(bytes(left)) == keccak256(bytes(right));
@@ -50,11 +58,53 @@ abstract contract TestBase {
         executors[0] = operator;
         return vm.deployCode(
             "BridgeTimelockController.sol:BridgeTimelockController",
-            abi.encode(72 hours, proposers, cancellers, executors)
+            abi.encode(24 hours, proposers, cancellers, executors)
         );
     }
 
     function _timelockCodeHash(address timelock) internal view returns (bytes32) {
         return timelock.codehash;
+    }
+
+    function _mintAuthorizationDigest(address bridge, IBridge.MintAuthorization memory authorization)
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 domainSeparator = keccak256(
+            abi.encode(MINT_EIP712_DOMAIN_TYPEHASH, keccak256("KINIC Bridge"), keccak256("1"), block.chainid, bridge)
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                MINT_AUTHORIZATION_TYPEHASH,
+                authorization.depositId,
+                authorization.recipient,
+                authorization.grossAmount,
+                authorization.maxServiceFee,
+                authorization.chargedServiceFee,
+                authorization.deadline,
+                authorization.authorizationEpoch
+            )
+        );
+        return keccak256(abi.encodePacked(hex"1901", domainSeparator, structHash));
+    }
+
+    function _signMintAuthorization(uint256 signerKey, Bridge bridge, IBridge.MintAuthorization memory authorization)
+        internal
+        returns (bytes memory)
+    {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, _mintAuthorizationDigest(address(bridge), authorization));
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _submitMintAuthorization(
+        uint256 signerKey,
+        Bridge bridge,
+        IBridge.MintAuthorization memory authorization,
+        address caller
+    ) internal {
+        bytes memory signature = _signMintAuthorization(signerKey, bridge, authorization);
+        vm.prank(caller);
+        bridge.mintDepositWithAuthorization(authorization, signature);
     }
 }

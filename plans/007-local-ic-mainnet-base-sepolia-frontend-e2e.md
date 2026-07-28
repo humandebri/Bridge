@@ -34,7 +34,7 @@ gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実
 
 - pause install後にCanister由来Mint SignerとGovernance Operatorを導出する。
 - deployer roleを残さずTimelock、Bridge、bSNSを配置する。
-- Canisterの引数なし`schedule_activation()`、早期execute revert、Anvilだけの72時間経過、`execute_activation()`を確認する。
+- Canisterの引数なし`schedule_activation()`、早期execute revert、Anvilだけの24時間経過、`execute_activation()`を確認する。
 - Deposit、Base mint、Finalized wallet confirmation、Withdrawal、Ledger release、reload、duplicate、二重タブleaseを確認する。
 - 同一Wasm upgradeで未完了state、nonce queue、pause、rate limitを保持する。
 - raw EVM transactionのhash、RPC返却hash、採掘receiptを一致させる。
@@ -51,10 +51,10 @@ gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実
 2. `sepolia-staging`のBridgeだけを作成または再利用してcyclesを補充する。既存`testicrc`のCanister IDとmetadataを確認し、専用Ledger/Indexは作成しない。
 3. Bridgeをpause状態でinstallし、Mint SignerとGovernance Operatorを取得する。
 4. test minting accountからTEST KINICを配布する。minting accountへBridge権限は与えない。
-5. 一時deployerでBase Sepoliaへ72時間Timelock、Bridge、bSNSを配置する。人間EOA roleがゼロであることを確認する。
+5. 一時deployerでBase Sepoliaへ24時間Timelock、Bridge、bSNSを配置する。人間EOA roleがゼロであることを確認する。
 6. test Bridgeからactivationをscheduleする。
-7. 72時間待機中に、完成した`frontend-profile.json`から静的assetをbuildし、`ui`で`pnpm run deploy:test`を実行してCloudflare Worker `kinic-bridge-ui-test`へ公開する。
-8. 72時間後にtest Bridgeからexecuteし、canonical Finalized receipt後のIC Deposit resumeを確認する。
+7. 24時間待機中に、完成した`frontend-profile.json`から静的assetをbuildし、`ui`で`pnpm run deploy:test`を実行してCloudflare Worker `kinic-bridge-ui-test`へ公開する。
+8. 24時間後にtest Bridgeからexecuteし、canonical Finalized receipt後のIC Deposit resumeを確認する。
 9. OISY、Plug、Base walletで実Deposit/Withdrawal、reload、account/chain変更、pause、upgradeを行い、`sepolia-e2e.json`を作る。
 10. IC DepositとBase両flowをpauseし、pending Timelock operationがない状態で終了する。
 

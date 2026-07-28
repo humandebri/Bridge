@@ -373,6 +373,15 @@ export const idlFactory = ({ IDL }) => {
     'Succeed' : IDL.Null,
     'InsufficientFunds' : IDL.Record({ 'balance' : IDL.Nat }),
   });
+  const MintLogFixture = IDL.Record({
+    'minted_amount' : IDL.Nat,
+    'transaction_hash' : IDL.Vec(IDL.Nat8),
+    'deposit_id' : IDL.Vec(IDL.Nat8),
+    'charged_service_fee' : IDL.Nat,
+    'recipient' : IDL.Vec(IDL.Nat8),
+    'authorization_digest' : IDL.Vec(IDL.Nat8),
+    'gross_amount' : IDL.Nat,
+  });
   const ReceiptMode = IDL.Variant({
     'Missing' : IDL.Null,
     'Orphaned' : IDL.Null,
@@ -465,6 +474,7 @@ export const idlFactory = ({ IDL }) => {
     'receipt_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
     'set_archive_prefix_length' : IDL.Func([IDL.Nat64], [], []),
     'set_block_mode' : IDL.Func([BlockMode], [], []),
+    'set_block_timestamp' : IDL.Func([IDL.Nat64], [], []),
     'set_bridge_runtime_code' : IDL.Func([IDL.Vec(IDL.Nat8)], [], []),
     'set_bridge_signer' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_10], []),
     'set_bridge_signer_for_canister' : IDL.Func(
@@ -488,6 +498,8 @@ export const idlFactory = ({ IDL }) => {
     'set_ledger_fee_available' : IDL.Func([IDL.Bool], [], []),
     'set_ledger_mode' : IDL.Func([LedgerMode], [], []),
     'set_max_service_fee' : IDL.Func([IDL.Nat], [], []),
+    'set_mint_authorization_epoch' : IDL.Func([IDL.Nat64], [], []),
+    'set_mint_log' : IDL.Func([IDL.Opt(MintLogFixture)], [], []),
     'set_mint_window' : IDL.Func(
         [IDL.Nat, IDL.Nat, IDL.Nat64, IDL.Nat64, IDL.Nat64],
         [],
@@ -500,6 +512,7 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'set_per_deposit_limit' : IDL.Func([IDL.Nat], [], []),
+    'set_processed_deposit' : IDL.Func([IDL.Bool], [], []),
     'set_receipt_mode' : IDL.Func([ReceiptMode], [], []),
     'set_refund_ledger_mode' : IDL.Func([IDL.Opt(LedgerMode)], [], []),
     'set_safe_block' : IDL.Func(

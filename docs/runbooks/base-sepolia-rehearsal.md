@@ -92,7 +92,7 @@ Bridgeはconstructor内でbSNSを生成する。
 
 ## 72時間後の再開
 
-manifestの`timelock_operation.ready_timestamp`以降に`resume`を実行する。
+EIP-712対応Bridgeで新規生成したmanifestの`timelock_operation.ready_timestamp`以降に`resume`を実行する。旧ABIのmanifestは再利用しない。
 `resume`はschedule済みpayloadを変更せずexecuteし、unpauseを確認した後、両方向を再びpauseしてService Feeを初期値へ戻す。
 
 ```sh
@@ -105,7 +105,7 @@ scripts/base-sepolia-experiment/experiment.sh verify
 
 ## manifestの扱い
 
-`deployments/base-sepolia-contract-experiment.json`は実行中state machineの作業用manifestである。
+`deployments/base-sepolia-contract-experiment.json`は実行開始時に新規生成されるstate machineの作業用manifestである。
 スクリプトがaddress、nonce、transaction hash、receipt block、confirmation、runtime bytecode hash、check結果を更新する。
 
 日付別の公開記録は`deployments/base-sepolia/YYYY-MM-DD/manifest.json`へ保存する。
