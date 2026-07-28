@@ -2,11 +2,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { useAccount, useChainId, useWriteContract } from "wagmi"
+import { hexToBytes } from "viem"
 import type { DepositView } from "@/generated/bridge.did"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { deploymentProfile } from "@/config/profile"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { useRuntimeValidation } from "@/features/status/use-status"
+import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
+import { withBrowserLock } from "@/lib/browser-lock"
 import { refetchRuntimeWriteReady } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 import {
@@ -31,15 +43,20 @@ export function MintAuthorizationAction({
   const { address } = useAccount()
   const chainId = useChainId()
   const write = useWriteContract()
+  const ic = useIcWallet()
   const queryClient = useQueryClient()
   const runtime = useRuntimeValidation(chainId, { enabled: true, gcTime: Infinity, staleTime: Infinity })
   const authorization = record.mint_authorization[0]
   const depositId = authorization ? contractAuthorization(authorization).depositId : undefined
+  const authorizationAvailable = "AuthorizationAvailable" in record.state
+  const expiryReconciliation = "ExpiryReconciliation" in record.state
+  const notificationEligible = authorizationAvailable || expiryReconciliation
   const [pending, setPending] = useState(() => depositId ? readPendingMint(depositId) : undefined)
   const [receiptConfirmed, setReceiptConfirmed] = useState(false)
+  const [retryDialogOpen, setRetryDialogOpen] = useState(false)
   const baseClock = useQuery({
     queryKey: ["mint-authorization-base-clock", deploymentProfile.chainId, deploymentProfile.bridgeAddress],
-    enabled: Boolean(authorization && "AuthorizationAvailable" in record.state),
+    enabled: Boolean(authorization && authorizationAvailable),
     queryFn: async () => (await basePublicClient.getBlock({ blockTag: "latest" })).timestamp,
     refetchInterval: 5_000,
     refetchIntervalInBackground: false,
@@ -47,7 +64,7 @@ export function MintAuthorizationAction({
   })
 
   useEffect(() => {
-    if (!depositId || !pending || receiptConfirmed || !("AuthorizationAvailable" in record.state)) return
+    if (!depositId || !pending || receiptConfirmed || !notificationEligible) return
     let active = true
     const checkReceipt = async () => {
       try {
@@ -68,12 +85,12 @@ export function MintAuthorizationAction({
       active = false
       window.clearInterval(timer)
     }
-  }, [depositId, pending, receiptConfirmed, record.state])
+  }, [depositId, notificationEligible, pending, receiptConfirmed])
 
   useEffect(() => {
-    if (!depositId || !pending || "AuthorizationAvailable" in record.state) return
+    if (!depositId || !pending || notificationEligible) return
     void removePendingMint(depositId).then(() => setPending(undefined))
-  }, [depositId, pending, record.state])
+  }, [depositId, notificationEligible, pending])
 
   const mint = useMutation({
     mutationFn: async () => {
@@ -100,17 +117,55 @@ export function MintAuthorizationAction({
       return { hash, recipient: validated.recipient }
     },
     onSuccess: async ({ hash }) => {
-      toast.success(`Base Mint済み (${hash.slice(0, 12)}…)。Canisterの期限後reconciliationを待っています。`)
+      toast.success(`Base Mint済み (${hash.slice(0, 12)}…)。IC walletで確定してください。`)
       await queryClient.invalidateQueries({ queryKey: ["deposit-history"] })
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "Base mint could not be submitted")
     },
   })
+  const notify = useMutation({
+    mutationFn: async () => {
+      if (!depositId || !pending || !ic.adapter || !ic.account) throw new Error("Connect the deposit owner IC wallet")
+      return withBrowserLock(
+        `kinic-wallet-prompt:ic:${ic.account.owner}`,
+        () => ic.adapter!.notifyDepositMint(hexToBytes(depositId), hexToBytes(pending)),
+      )
+    },
+    onSuccess: async () => {
+      if (depositId) await removePendingMint(depositId)
+      setPending(undefined)
+      toast.success("Base MintをCanisterで確定しました。")
+      await queryClient.invalidateQueries({ queryKey: ["deposit-history"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Mint confirmation failed")
+    },
+  })
+  const verifyRetry = useMutation({
+    mutationFn: async () => {
+      if (chainId !== deploymentProfile.chainId) throw new Error("Switch the gas-paying wallet to Base")
+      await refetchRuntimeWriteReady(() => runtime.refetch())
+      return validateMintAuthorization(record)
+    },
+    onSuccess: () => setRetryDialogOpen(true),
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Pending mint could not be verified")
+    },
+  })
 
-  if (!authorization || !("AuthorizationAvailable" in record.state)) return null
+  const releasePendingForRetry = async () => {
+    if (!depositId) return
+    await removePendingMint(depositId)
+    setPending(undefined)
+    setReceiptConfirmed(false)
+    setRetryDialogOpen(false)
+  }
+
+  if (!authorization || !notificationEligible) return null
   const baseTimestamp = baseClock.data
-  const expired = baseTimestamp !== undefined && baseTimestamp > authorization.deadline
+  const expired = expiryReconciliation
+    || (baseTimestamp !== undefined && baseTimestamp > authorization.deadline)
   const remaining = baseTimestamp === undefined
     ? undefined
     : authorization.deadline > baseTimestamp
@@ -124,9 +179,13 @@ export function MintAuthorizationAction({
       <p className="font-bold text-black">Mint Authorization ready</p>
       <p className="mt-1 text-[var(--muted)]">Mint先 {recipient.slice(0, 10)}… · 残り {remaining === undefined ? "Base時刻確認中" : formatRemaining(remaining)}</p>
       {payerDiffers && <p className="mt-1 text-[#335f9d]">接続walletはgasだけを支払い、Mint先は署名済みrecipientです。</p>}
-      {pending && <p className="mt-1 text-[#335f9d]">送信済み {pending.slice(0, 12)}… — {receiptConfirmed ? "Base Mint済み。Canister reconciliation待ちです。" : "Base receiptを確認中です。"}</p>}
+      {pending && <p className="mt-1 text-[#335f9d]">送信済み {pending.slice(0, 12)}… — {receiptConfirmed ? "Base Mint済み。Canister確定が必要です。" : "Base receiptを確認中です。"}</p>}
     </>}
-    {expired
+    {receiptConfirmed && pending
+      ? <Button size={compact ? "sm" : "lg"} className={compact ? "" : "mt-3 w-full"} disabled={!ic.adapter || notify.isPending} onClick={() => notify.mutate()}>
+          {notify.isPending ? "Confirming…" : "Confirm mint on IC"}
+        </Button>
+      : expired
       ? <div className="space-y-2">
           <p className="text-xs font-bold text-[#8a4b08]">期限切れ。Base Finalized上の未Mint証拠を確認できた場合だけ返金します。この操作は強制返金ではありません。</p>
           {onExpiredReconcile && <Button size="sm" variant="ghost" disabled={reconciling} onClick={onExpiredReconcile}>
@@ -134,8 +193,31 @@ export function MintAuthorizationAction({
           </Button>}
         </div>
       : <Button size={compact ? "sm" : "lg"} className={compact ? "" : "mt-3 w-full"} disabled={!address || baseTimestamp === undefined || baseClock.isError || baseClock.isStale || Boolean(pending) || mint.isPending || write.isPending} onClick={() => mint.mutate()}>
-          {pending ? "Base transaction pending" : mint.isPending ? "Minting…" : "Mint on Base"}
-        </Button>}
+            {pending ? "Base transaction pending" : mint.isPending ? "Minting…" : "Mint on Base"}
+          </Button>}
+    {pending && !receiptConfirmed && <Button
+      size="sm"
+      variant="ghost"
+      disabled={verifyRetry.isPending}
+      onClick={() => verifyRetry.mutate()}
+    >
+      {verifyRetry.isPending ? "状態を確認中…" : "状態を確認して再試行"}
+    </Button>}
+    <Dialog open={retryDialogOpen} onOpenChange={setRetryDialogOpen}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>保存済みtransactionを解除しますか？</DialogTitle>
+          <DialogDescription>
+            現在のMint AuthorizationはBase上で有効です。ただし元transactionが後から採掘されると、
+            再送分はrevertし、追加のgasを失う可能性があります。
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose>
+          <Button onClick={() => void releasePendingForRetry()}>解除して再試行</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 }
 

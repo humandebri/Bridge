@@ -39,20 +39,6 @@ theorem paid_withdrawal_is_terminal
     pay w transfer = none := by
   simp [pay, paid]
 
-theorem deposit_mint_preserves_backing
-    {s next : EconomicState} {grossAmount serviceFee : Nat}
-    (backed : Backed s) (minted : mintDeposit s grossAmount serviceFee = some next) :
-    Backed next := by
-  unfold mintDeposit at minted
-  split at minted
-  next feeBound =>
-    simp only [Option.some.injEq] at minted
-    subst next
-    unfold Backed at backed ⊢
-    simp only
-    omega
-  next => simp at minted
-
 theorem observe_burn_preserves_backing
     {s : EconomicState} {amount : Nat}
     (backed : Backed s) (available : amount ≤ s.baseSupply) :

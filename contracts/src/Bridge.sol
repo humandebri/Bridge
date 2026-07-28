@@ -6,7 +6,7 @@ import {BSNS} from "./BSNS.sol";
 import {IBSNS} from "./interfaces/IBSNS.sol";
 import {IBridge} from "./interfaces/IBridge.sol";
 import {BridgeAdministration} from "./libraries/BridgeAdministration.sol";
-import {MintAccounting} from "./libraries/MintAccounting.sol";
+import {MintAuthorizationPolicy} from "./libraries/MintAuthorizationPolicy.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
@@ -144,32 +144,52 @@ contract Bridge is IBridge, EIP712 {
     function mintDepositWithAuthorization(IBridge.MintAuthorization calldata authorization, bytes calldata signature)
         external
         override
-        whenDepositMintsActive
     {
-        // The signed authorization is deliberately valid at the exact deadline.
-        // forge-lint: disable-next-line(block-timestamp)
-        if (block.timestamp > authorization.deadline) {
-            revert IBridge.MintAuthorizationExpired(block.timestamp, authorization.deadline);
-        }
-        if (authorization.authorizationEpoch != mintAuthorizationEpoch) {
-            revert IBridge.MintAuthorizationEpochMismatch(authorization.authorizationEpoch, mintAuthorizationEpoch);
-        }
         bytes32 digest = _mintAuthorizationDigest(authorization);
         (address recovered, ECDSA.RecoverError error,) = ECDSA.tryRecoverCalldata(digest, signature);
         if (error != ECDSA.RecoverError.NoError || recovered != bridgeSigner) {
             revert IBridge.InvalidMintAuthorizationSignature();
         }
-        _rollMintWindowIfExpired();
-        uint256 mintAmount = _validateAndMarkDeposit(authorization);
-        mintedInWindow = _consumeMintWindow(mintAmount);
-        bsns.bridgeMint(authorization.recipient, mintAmount);
+
+        (
+            MintAuthorizationPolicy.RejectReason reason,
+            MintAuthorizationPolicy.MintEffects memory effects,
+            uint256 windowAvailable
+        ) = MintAuthorizationPolicy.evaluateMint(
+            MintAuthorizationPolicy.MintTransitionInput({
+                timestamp: block.timestamp,
+                deadline: authorization.deadline,
+                authorizationEpoch: authorization.authorizationEpoch,
+                currentEpoch: mintAuthorizationEpoch,
+                recipient: authorization.recipient,
+                bridge: address(this),
+                token: address(bsns),
+                grossAmount: authorization.grossAmount,
+                maximumFee: authorization.maxServiceFee,
+                chargedFee: authorization.chargedServiceFee,
+                protocolMaximumFee: MAX_SERVICE_FEE,
+                perDepositLimit: perDepositLimit,
+                consumedInWindow: mintedInWindow,
+                windowLimit: mintWindowLimit,
+                windowStartedAt: mintWindowStartedAt,
+                windowDuration: mintWindowDuration,
+                paused: depositMintsPaused,
+                processed: _processedDeposits[authorization.depositId]
+            })
+        );
+        _revertRejectedMint(reason, authorization, windowAvailable);
+
+        _processedDeposits[authorization.depositId] = effects.processedAfter;
+        mintWindowStartedAt = effects.windowStartedAtAfter;
+        mintedInWindow = effects.windowConsumedAfter;
+        bsns.bridgeMint(authorization.recipient, effects.supplyIncrease);
         emit IBridge.DepositMinted(
             authorization.depositId,
             authorization.recipient,
             digest,
-            authorization.grossAmount,
-            authorization.chargedServiceFee,
-            mintAmount
+            effects.eventGrossAmount,
+            effects.eventServiceFee,
+            effects.eventMintedAmount
         );
     }
 
@@ -244,8 +264,9 @@ contract Bridge is IBridge, EIP712 {
         if (depositMintsPaused) {
             return;
         }
+        (, uint256 nextEpoch) = MintAuthorizationPolicy.adminEpochTransition(mintAuthorizationEpoch, true);
         depositMintsPaused = true;
-        _incrementMintAuthorizationEpoch();
+        _setMintAuthorizationEpoch(nextEpoch);
         emit IBridge.DepositMintsPaused(msg.sender);
     }
 
@@ -287,12 +308,14 @@ contract Bridge is IBridge, EIP712 {
 
     function rotateBridgeSigner(address newSigner) external override onlyBaseAdminTimelock {
         address previousSigner = bridgeSigner;
-        if (newSigner == previousSigner) {
+        (bool changed, uint256 nextEpoch) =
+            MintAuthorizationPolicy.signerRotationEpoch(mintAuthorizationEpoch, previousSigner, newSigner);
+        if (!changed) {
             return;
         }
         _validateRoleSet(newSigner, runtimeAdministrator, baseAdminTimelock);
         bridgeSigner = newSigner;
-        _incrementMintAuthorizationEpoch();
+        _setMintAuthorizationEpoch(nextEpoch);
         emit IBridge.BridgeSignerChanged(previousSigner, newSigner);
     }
 
@@ -402,43 +425,6 @@ contract Bridge is IBridge, EIP712 {
         }
     }
 
-    function _validateAndMarkDeposit(IBridge.MintAuthorization calldata request) private returns (uint256 mintAmount) {
-        if (request.recipient == address(0)) {
-            revert IBridge.ZeroAddress();
-        }
-        if (request.recipient == address(this) || request.recipient == address(bsns)) {
-            revert IBridge.InvalidMintRecipient(request.recipient);
-        }
-        if (!BridgeAdministration.valueFitsU128(request.grossAmount)) {
-            revert IBridge.ValueExceedsU128(request.grossAmount);
-        }
-        if (!BridgeAdministration.valueFitsU128(request.maxServiceFee)) {
-            revert IBridge.ValueExceedsU128(request.maxServiceFee);
-        }
-        if (!BridgeAdministration.valueFitsU128(request.chargedServiceFee)) {
-            revert IBridge.ValueExceedsU128(request.chargedServiceFee);
-        }
-        if (_processedDeposits[request.depositId]) {
-            revert IBridge.DepositAlreadyProcessed(request.depositId);
-        }
-        if (request.chargedServiceFee > MAX_SERVICE_FEE) {
-            revert IBridge.InvalidServiceFee(request.chargedServiceFee, MAX_SERVICE_FEE);
-        }
-        if (request.chargedServiceFee > request.maxServiceFee) {
-            revert IBridge.ServiceFeeExceedsUserMaximum(request.chargedServiceFee, request.maxServiceFee);
-        }
-
-        if (request.grossAmount <= request.chargedServiceFee) {
-            revert IBridge.InvalidAmount(request.grossAmount);
-        }
-        mintAmount = MintAccounting.netAmount(request.grossAmount, request.chargedServiceFee);
-        if (mintAmount > perDepositLimit) {
-            revert IBridge.DepositMintLimitExceeded(mintAmount, perDepositLimit);
-        }
-        // Mark during batch validation so duplicate IDs fail; a later revert rolls the mark back.
-        _processedDeposits[request.depositId] = true;
-    }
-
     function _mintAuthorizationDigest(IBridge.MintAuthorization calldata authorization) private view returns (bytes32) {
         return _hashTypedDataV4(
             keccak256(
@@ -456,11 +442,66 @@ contract Bridge is IBridge, EIP712 {
         );
     }
 
-    function _incrementMintAuthorizationEpoch() private {
+    function _setMintAuthorizationEpoch(uint256 nextEpoch) private {
         uint256 previousEpoch = mintAuthorizationEpoch;
-        uint256 nextEpoch = previousEpoch + 1;
         mintAuthorizationEpoch = nextEpoch;
         emit IBridge.MintAuthorizationEpochChanged(msg.sender, previousEpoch, nextEpoch);
+    }
+
+    function _revertRejectedMint(
+        MintAuthorizationPolicy.RejectReason reason,
+        IBridge.MintAuthorization calldata authorization,
+        uint256 windowAvailable
+    ) private view {
+        if (reason == MintAuthorizationPolicy.RejectReason.None) {
+            return;
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.Paused) revert IBridge.DepositMintsArePaused();
+        if (reason == MintAuthorizationPolicy.RejectReason.Expired) {
+            revert IBridge.MintAuthorizationExpired(block.timestamp, authorization.deadline);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.EpochMismatch) {
+            revert IBridge.MintAuthorizationEpochMismatch(authorization.authorizationEpoch, mintAuthorizationEpoch);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.ZeroRecipient) revert IBridge.ZeroAddress();
+        if (reason == MintAuthorizationPolicy.RejectReason.InvalidRecipient) {
+            revert IBridge.InvalidMintRecipient(authorization.recipient);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.GrossExceedsU128) {
+            revert IBridge.ValueExceedsU128(authorization.grossAmount);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.MaximumFeeExceedsU128) {
+            revert IBridge.ValueExceedsU128(authorization.maxServiceFee);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.ChargedFeeExceedsU128) {
+            revert IBridge.ValueExceedsU128(authorization.chargedServiceFee);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.Processed) {
+            revert IBridge.DepositAlreadyProcessed(authorization.depositId);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.ProtocolFeeExceeded) {
+            revert IBridge.InvalidServiceFee(authorization.chargedServiceFee, MAX_SERVICE_FEE);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.UserFeeExceeded) {
+            revert IBridge.ServiceFeeExceedsUserMaximum(authorization.chargedServiceFee, authorization.maxServiceFee);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.InvalidAmount) {
+            revert IBridge.InvalidAmount(authorization.grossAmount);
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.PerDepositLimitExceeded) {
+            revert IBridge.DepositMintLimitExceeded(
+                authorization.grossAmount - authorization.chargedServiceFee, perDepositLimit
+            );
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.WindowLimitExceeded) {
+            revert IBridge.MintWindowLimitExceeded(
+                authorization.grossAmount - authorization.chargedServiceFee, windowAvailable
+            );
+        }
+        if (reason == MintAuthorizationPolicy.RejectReason.TimestampExceedsU64) {
+            revert IBridge.BlockTimestampExceedsU64(block.timestamp);
+        }
+        revert IBridge.ValueExceedsU128(block.timestamp);
     }
 
     function _claimWithdrawalTransaction() private {
@@ -474,24 +515,6 @@ contract Bridge is IBridge, EIP712 {
         }
         assembly ("memory-safe") {
             tstore(slot, 1)
-        }
-    }
-
-    function _consumeMintWindow(uint256 requested) private view returns (uint256 nextConsumed) {
-        (bool accepted, uint256 candidate, uint256 available) =
-            MintAccounting.tryConsumeWindow(mintedInWindow, requested, mintWindowLimit);
-        if (!accepted) {
-            revert IBridge.MintWindowLimitExceeded(requested, available);
-        }
-        return candidate;
-    }
-
-    function _rollMintWindowIfExpired() private {
-        // Fixed windows intentionally use Base block time as their on-chain clock.
-        // forge-lint: disable-next-line(block-timestamp)
-        if (block.timestamp >= uint256(mintWindowStartedAt) + uint256(mintWindowDuration)) {
-            mintWindowStartedAt = uint64(block.timestamp);
-            mintedInWindow = 0;
         }
     }
 }

@@ -4,7 +4,7 @@ Leanを抽象protocol specificationの正本とし、生成vectorでproduction c
 vectorに列挙されない入力や副作用を含む実装全体のsemantic refinementは主張しない。
 
 Evidenceはclaimごとに、抽象Lean proof、有限幅Lean refinement、Verus evidence、production transaction test、外部仮定を独立に読む。Verus manifestの`executable`はproduction実行関数を直接呼ぶproof、`shared`はCargo式とspecが式macroを共有するpredicate proof、`model`はproduction symbolを持たないモデルproofであり、三者を同じ強度として扱わない。
-release対象の閉じたclaim集合、trace theorem、Verus obligation、production symbol、transaction selector、仮定IDは`phase5-claims.tsv`を正本とし、表の説明だけでは完了判定しない。
+release対象の閉じたclaim集合、trace theorem、Verus obligation、production symbol、transaction selector、仮定IDは`claims.tsv`を正本とし、表の説明だけでは完了判定しない。statusはproof gateが証拠の最弱要素から算出する。
 外部仮定の依存claim、検査可能なfault test、運用監視、破壊時のfail-closed動作は`assumptions.tsv`を正本とする。
 
 | Claim | Production implementation | Evidence | External assumption |

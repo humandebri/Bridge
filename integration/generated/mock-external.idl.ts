@@ -409,6 +409,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Vec(IDL.Vec(IDL.Nat8))],
         ['query'],
       ),
+    'deposit_processed_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
     'derive_chain_key_address' : IDL.Func(
         [IDL.Principal, IDL.Text, IDL.Vec(IDL.Vec(IDL.Nat8))],
         [IDL.Vec(IDL.Nat8)],
@@ -473,6 +474,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'probe_chain_key' : IDL.Func([IDL.Text], [Result_9], []),
     'receipt_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
+    'receipt_mint_log_index' : IDL.Func([], [IDL.Opt(IDL.Nat64)], ['query']),
     'set_archive_prefix_length' : IDL.Func([IDL.Nat64], [], []),
     'set_block_mode' : IDL.Func([BlockMode], [], []),
     'set_block_timestamp' : IDL.Func([IDL.Nat64], [], []),
@@ -514,6 +516,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'set_per_deposit_limit' : IDL.Func([IDL.Nat], [], []),
     'set_processed_deposit' : IDL.Func([IDL.Bool], [], []),
+    'set_receipt_mint_log_index' : IDL.Func([IDL.Opt(IDL.Nat64)], [], []),
     'set_receipt_mode' : IDL.Func([ReceiptMode], [], []),
     'set_refund_ledger_mode' : IDL.Func([IDL.Opt(LedgerMode)], [], []),
     'set_safe_block' : IDL.Func(

@@ -4,7 +4,9 @@ Lean projectはcross-chain protocolの正式な抽象仕様である。
 状態遷移、不変条件、frontendの判断、pending queueの更新を`verification/lean/BridgeSpec`へ集約し、Lakeで定理を検査する。
 Lean executableが生成する`verification/generated/protocol-vectors.json`をRust、Solidity、TypeScriptのconsumerで読み、実装の代表的な境界値を同じ期待値と照合する。
 release対象claimは`Claims.lean`、有限幅semanticsは`Implementation.lean`、抽象モデルとの対応は`Refinement.lean`、統合状態traceとcertificateは`Protocol.lean`へ分離する。
-`verification/phase5-claims.tsv`はclaim、抽象定理、bounded refinement、trace定理、Verus義務、vector section、production symbol、transaction test、外部仮定に加え、abstract=`proved`、bounded=`proved`、trace=`proved`、Verus=`proved | executable-proved`、production=`refinement-tested`、external=`assumed`を列ごとに固定する。checkerがmanifestの実際の証拠種別から期待値を算出し、全列が一致した行だけを`complete`として受理する。`complete`は「production全体が証明済み」という意味ではなく、その行に登録したsource-level evidenceがすべてgateを通ったことだけを表す。
+`verification/claims.tsv`はprotocolとMint Authorizationのclaim、Lean定理、Verus義務、SMT scalar義務、production symbol、transaction test、vector section、外部仮定を一つの型付きmanifestで管理する。証拠statusはmanifestへ手入力せず、`scripts/check_claim_manifest.py`が最弱要素から算出して`verification/output/claim-report.json`へ出力する。外部仮定を含むclaimは必ず`partial`となる。
+
+変更されたMint Authorization経路の安全claimは同manifest内でAuthorization binding、expiry refund、exact mint finalization、epoch invalidation、reservation lifecycle、fee一回性、deposit backing、manual claim exclusionへ分割する。暗号known-answerは`verification/known-answer-manifest.tsv`で別管理し、Lean生成policy証拠へ昇格させない。
 CIはこれらの全Lean theorem、Verus manifest、claim台帳、全vector section、全consumerを完全一致検査し、production linkはcompilerで型検査する。
 refinement manifestはsection、抽象定義、有限幅implementation定義、対応定理、runner、consumer source、test selectorの7列で構成し、同じsectionに複数consumerを登録できる。
 CIは許可済みのRust、Foundry、Vitest runnerだけを使用し、各selectorが正確に1件成功したことを機械可読な結果から確認する。
@@ -27,7 +29,7 @@ Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal paus
 
 Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_step_preserves_safe`が受理された各生遷移について安全性を直接証明し、有限trace定理はそのlemmaから帰納する。canonical・Ledger certificateは対象identityを含むが、その履歴やRPC情報の真正性は外部仮定である。
 
-本番未デプロイのためschema v25再オープンとwire v21を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
+本番未デプロイのためschema v27再オープンとwire v23を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
 
 ## Release proof gate
 

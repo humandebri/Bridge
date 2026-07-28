@@ -473,6 +473,7 @@ type WithdrawalFixture = record {
 service : (InitArgs) -> {
   bridge_signer : () -> (blob) query;
   broadcast_transactions : () -> (vec blob) query;
+  deposit_processed_call_count : () -> (nat64) query;
   derive_chain_key_address : (principal, text, vec blob) -> (blob);
   eth_call_count : () -> (nat64) query;
   eth_getBlockByNumber : (RpcServices, opt RpcConfig, BlockTag) -> (
@@ -505,6 +506,7 @@ service : (InitArgs) -> {
   pinned_eth_call_block_numbers : () -> (vec nat64) query;
   probe_chain_key : (text) -> (Result_9);
   receipt_call_count : () -> (nat64) query;
+  receipt_mint_log_index : () -> (opt nat64) query;
   set_archive_prefix_length : (nat64) -> ();
   set_block_mode : (BlockMode) -> ();
   set_block_timestamp : (nat64) -> ();
@@ -530,6 +532,7 @@ service : (InitArgs) -> {
   set_observed_transaction : (blob, blob, blob, nat64) -> (Result_10);
   set_per_deposit_limit : (nat) -> ();
   set_processed_deposit : (bool) -> ();
+  set_receipt_mint_log_index : (opt nat64) -> ();
   set_receipt_mode : (ReceiptMode) -> ();
   set_refund_ledger_mode : (opt LedgerMode) -> ();
   set_safe_block : (nat64, blob) -> (Result_10);

@@ -437,7 +437,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       <div className="mt-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-sm"><Quote label="Current bridge fee" value={fee !== undefined ? `${formatTokenAmount(fee)} ${sendToken.symbol}` : "—"} /><Quote label="Estimated receive" value={receive !== undefined ? `${formatTokenAmount(receive)} ${receiveToken.symbol}` : "—"} /></div>
       {direction === "deposit" && <div className="mt-3 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm leading-5 text-[#8a4b08]"><strong className="text-black">{ledgerData?.mintAuthorizationTtlSeconds !== undefined ? `Ledger pull後${formatMintAuthorizationTtl(ledgerData.mintAuthorizationTtlSeconds)}、` : "Ledger pull後、公開された期限まで、"}Mint許可は取消不能です。</strong><p className="mt-1">MintにはBase walletとBase ETHが必要です。未使用時の返金は期限後のFinalized確認を待ちます。</p></div>}
       {direction === "deposit" && activeDepositRecord.data && (
-        "AuthorizationAvailable" in activeDepositRecord.data.state
+        ("AuthorizationAvailable" in activeDepositRecord.data.state
+          || "ExpiryReconciliation" in activeDepositRecord.data.state)
           ? <MintAuthorizationAction record={activeDepositRecord.data} />
           : <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm">
               <p className="font-bold text-black">{depositPhaseLabel(activeDepositRecord.data)}</p>

@@ -466,7 +466,7 @@ fn start_deposit_refund(
             to: deposit.transfer.from.clone(),
             spender: None,
         };
-        deposit
+        let result = deposit
             .apply(DepositEvent::StartRefund {
                 reason,
                 attempt: Box::new(TransferAttempt {
@@ -477,7 +477,7 @@ fn start_deposit_refund(
             })
             .map_err(|_| SettlementActionError::StorageFailure)?;
         store
-            .put_deposit(&deposit)
+            .put_deposit_transition(&deposit, result)
             .map_err(|_| SettlementActionError::StorageFailure)
     })
 }
@@ -597,6 +597,7 @@ pub(crate) async fn advance_deposit(
             .map_err(|_| SettlementActionError::StorageFailure)?
             .ok_or(SettlementActionError::StorageFailure)
     })?;
+    let mut expiry_observation = None;
     loop {
         let deposit = STORE.with(|store| {
             store
@@ -625,13 +626,17 @@ pub(crate) async fn advance_deposit(
                                 .deposit(deposit_id)
                                 .map_err(|_| SettlementActionError::StorageFailure)?
                                 .ok_or(SettlementActionError::NotFound)?;
-                            current
+                            let result = current
                                 .apply(DepositEvent::FundingSucceeded {
                                     ledger_block_index: block_index,
                                 })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
                             store
-                                .put_deposit_funding_callback(&current, &callback_token)
+                                .put_deposit_transition_funding_callback(
+                                    &current,
+                                    &callback_token,
+                                    result,
+                                )
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                     }
@@ -645,9 +650,14 @@ pub(crate) async fn advance_deposit(
                                 .deposit(deposit_id)
                                 .map_err(|_| SettlementActionError::StorageFailure)?
                                 .ok_or(SettlementActionError::NotFound)?;
-                            current
+                            let result = current
                                 .apply(DepositEvent::FundingAmbiguous { hold_id })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
+                            if result.deposit_effects
+                                != Some(bridge_core::DepositAccountingEffects::ZERO)
+                            {
+                                return Err(SettlementActionError::StorageFailure);
+                            }
                             let hold = ReconciliationHoldRecord::open(
                                 hold_id,
                                 RequestReference::DepositFunding(current.id),
@@ -743,17 +753,18 @@ pub(crate) async fn advance_deposit(
                     lease.ensure_current()?;
                     if let Ok(observation) = observation {
                         if observation.snapshot.mint.confirmed_block_timestamp > pending_deadline {
+                            expiry_observation = Some(observation);
                             STORE.with(|store| {
                                 let mut store = store.borrow_mut();
                                 let mut current = store
                                     .deposit(deposit_id)
                                     .map_err(|_| SettlementActionError::StorageFailure)?
                                     .ok_or(SettlementActionError::NotFound)?;
-                                current
+                                let result = current
                                     .apply(DepositEvent::BeginExpiryReconciliation)
                                     .map_err(|_| SettlementActionError::StorageFailure)?;
                                 store
-                                    .put_deposit(&current)
+                                    .put_deposit_transition(&current, result)
                                     .map_err(|_| SettlementActionError::StorageFailure)
                             })?;
                             continue;
@@ -810,11 +821,11 @@ pub(crate) async fn advance_deposit(
                         .deposit(deposit_id)
                         .map_err(|_| SettlementActionError::StorageFailure)?
                         .ok_or(SettlementActionError::NotFound)?;
-                    current
+                    let result = current
                         .apply(DepositEvent::AuthorizationSigned { signature })
                         .map_err(|_| SettlementActionError::StorageFailure)?;
                     store
-                        .put_deposit(&current)
+                        .put_deposit_transition(&current, result)
                         .map_err(|_| SettlementActionError::StorageFailure)
                 })?;
                 return Ok(SettlementActionResult::Deferred {
@@ -857,17 +868,18 @@ pub(crate) async fn advance_deposit(
                         next_run_at_ns: ic_cdk::api::time().saturating_add(60_000_000_000),
                     });
                 }
+                expiry_observation = Some(observation);
                 STORE.with(|store| {
                     let mut store = store.borrow_mut();
                     let mut current = store
                         .deposit(deposit_id)
                         .map_err(|_| SettlementActionError::StorageFailure)?
                         .ok_or(SettlementActionError::NotFound)?;
-                    current
+                    let result = current
                         .apply(DepositEvent::BeginExpiryReconciliation)
                         .map_err(|_| SettlementActionError::StorageFailure)?;
                     store
-                        .put_deposit(&current)
+                        .put_deposit_transition(&current, result)
                         .map_err(|_| SettlementActionError::StorageFailure)
                 })?;
             }
@@ -876,28 +888,33 @@ pub(crate) async fn advance_deposit(
                     .mint_authorization
                     .as_ref()
                     .ok_or(SettlementActionError::StorageFailure)?;
-                lease.renew_before_external_call()?;
-                let observation = match evm_rpc::recovery_observation(
-                    &config,
-                    evm_rpc::RecoveryTarget::Deposit(deposit_id),
-                )
-                .await
-                {
-                    Ok(observation) => observation,
-                    Err(evm_rpc::ObservationError::Inconsistent) => {
-                        return Ok(SettlementActionResult::Stopped {
-                            state,
-                            reason: SettlementStopReason::RpcInconsistent,
-                        });
-                    }
-                    Err(_) => {
-                        return Ok(SettlementActionResult::Stopped {
-                            state,
-                            reason: SettlementStopReason::RpcUnavailable,
-                        });
-                    }
+                let observation = if let Some(observation) = expiry_observation.take() {
+                    observation
+                } else {
+                    lease.renew_before_external_call()?;
+                    let observation = match evm_rpc::recovery_observation(
+                        &config,
+                        evm_rpc::RecoveryTarget::Deposit(deposit_id),
+                    )
+                    .await
+                    {
+                        Ok(observation) => observation,
+                        Err(evm_rpc::ObservationError::Inconsistent) => {
+                            return Ok(SettlementActionResult::Stopped {
+                                state,
+                                reason: SettlementStopReason::RpcInconsistent,
+                            });
+                        }
+                        Err(_) => {
+                            return Ok(SettlementActionResult::Stopped {
+                                state,
+                                reason: SettlementStopReason::RpcUnavailable,
+                            });
+                        }
+                    };
+                    lease.ensure_current()?;
+                    observation
                 };
-                lease.ensure_current()?;
                 if observation.snapshot.mint.confirmed_block_timestamp
                     <= authorization.authorization.deadline
                 {
@@ -912,8 +929,11 @@ pub(crate) async fn advance_deposit(
                             deposit_id,
                             DepositRefundReason::AuthorizationExpired,
                             Some(bridge_core::MintExpiryEvidence {
+                                deposit_id: authorization.authorization.deposit_id,
                                 authorization_digest: authorization.digest,
                                 chain_id: observation.finalized.chain_id,
+                                verifying_contract: authorization.domain.verifying_contract,
+                                deposit_processed: false,
                                 finalized_block_number: observation.finalized.block_number,
                                 finalized_block_hash: observation.finalized.block_hash,
                                 finalized_block_timestamp: observation
@@ -956,13 +976,13 @@ pub(crate) async fn advance_deposit(
                                 .deposit(deposit_id)
                                 .map_err(|_| SettlementActionError::StorageFailure)?
                                 .ok_or(SettlementActionError::NotFound)?;
-                            current
+                            let result = current
                                 .apply(DepositEvent::MintReconciled {
                                     evidence: Box::new(evidence),
                                 })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
                             store
-                                .put_deposit(&current)
+                                .put_deposit_transition(&current, result)
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                     }
@@ -1000,13 +1020,13 @@ pub(crate) async fn advance_deposit(
                                 .deposit(deposit_id)
                                 .map_err(|_| SettlementActionError::StorageFailure)?
                                 .ok_or(SettlementActionError::NotFound)?;
-                            current
+                            let result = current
                                 .apply(DepositEvent::RefundSucceeded {
                                     ledger_block_index: block_index,
                                 })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
                             store
-                                .put_deposit(&current)
+                                .put_deposit_transition(&current, result)
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
                     }
@@ -1020,9 +1040,14 @@ pub(crate) async fn advance_deposit(
                                 .deposit(deposit_id)
                                 .map_err(|_| SettlementActionError::StorageFailure)?
                                 .ok_or(SettlementActionError::NotFound)?;
-                            current
+                            let result = current
                                 .apply(DepositEvent::RefundAmbiguous { hold_id })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
+                            if result.deposit_effects
+                                != Some(bridge_core::DepositAccountingEffects::ZERO)
+                            {
+                                return Err(SettlementActionError::StorageFailure);
+                            }
                             let hold = ReconciliationHoldRecord::open(
                                 hold_id,
                                 RequestReference::DepositRefund(current.id),

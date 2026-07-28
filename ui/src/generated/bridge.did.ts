@@ -83,19 +83,27 @@ export type BaseGovernanceAction = { 'PauseDepositMints' : null } |
   { 'SetServiceFee' : { 'value' : bigint } } |
   { 'PauseWithdrawals' : null } |
   { 'CancelPendingTimelock' : null };
+export interface BaseGovernanceConfirmation {
+  'transaction_hash' : Uint8Array | number[],
+  'operation_id' : bigint,
+  'receipt_block_number' : bigint,
+  'succeeded' : boolean,
+}
 export type BaseGovernanceError = { 'Busy' : { 'operation_id' : bigint } } |
-  { 'BroadcastAmbiguous' : { 'operation_id' : bigint } } |
+  { 'TransactionNotFinalized' : { 'operation_id' : bigint } } |
   { 'Unauthorized' : null } |
   { 'InvalidArgument' : null } |
-  { 'NonceConflict' : { 'operation_id' : bigint } } |
+  { 'TransactionReverted' : { 'operation_id' : bigint } } |
   { 'StorageFailure' : null } |
   { 'ObservationUnavailable' : null } |
+  { 'ReplacementLimitReached' : { 'operation_id' : bigint } } |
   { 'SigningUnavailable' : null };
-export interface BaseGovernanceReceipt {
-  'transaction_hash' : [] | [Uint8Array | number[]],
-  'operation_id' : bigint,
-  'nonce' : bigint,
-}
+export type BaseGovernanceOperationKind = { 'PauseDepositMints' : null } |
+  { 'CancelTimelock' : { 'operation_id' : Uint8Array | number[] } } |
+  { 'SetServiceFee' : { 'value' : bigint } } |
+  { 'PauseWithdrawals' : null } |
+  { 'ScheduleActivation' : ActivationOperationView } |
+  { 'ExecuteActivation' : ActivationOperationView };
 export interface BridgeInitArgs {
   'settlement_rate_limit_global' : number,
   'settlement_rate_limit_per_principal' : number,
@@ -111,7 +119,6 @@ export interface BridgeInitArgs {
   'ecdsa_derivation_path' : Array<Uint8Array | number[]>,
   'evm_rpc_canister_id' : Principal,
   'deposit_rate_limit_per_principal' : number,
-  'governance_evm_liveness' : EvmLivenessPolicy,
   'governance_ecdsa_derivation_path' : Array<Uint8Array | number[]>,
   'governance_eth_floor_wei' : bigint,
   'custom_evm_rpc_urls' : Array<string>,
@@ -120,6 +127,8 @@ export interface BridgeInitArgs {
   'governance_principal' : Principal,
   'index_canister_id' : Principal,
   'ledger_canister_id' : Principal,
+  'settlement_retry_interval_seconds' : bigint,
+  'governance_replacement' : GovernanceReplacementPolicy,
   'timelock_contract' : Uint8Array | number[],
   'cycles_floor' : bigint,
 }
@@ -153,6 +162,10 @@ export interface ChecksumRefreshStatus {
   'db_size' : bigint,
   'complete' : boolean,
   'checksum' : bigint,
+}
+export interface ConfirmBaseGovernanceTransactionArgs {
+  'transaction_hash' : Uint8Array | number[],
+  'operation_id' : bigint,
 }
 export interface DepositArgs {
   'base_recipient' : Uint8Array | number[],
@@ -227,10 +240,10 @@ export interface DepositView {
 }
 export interface EmergencyPauseReceipt {
   'local_pause_audit_sequence' : bigint,
-  'base_governance' : BaseGovernanceReceipt,
   'caller' : Principal,
   'local_pause_audit_sha256' : Uint8Array | number[],
   'local_deposits_paused' : boolean,
+  'base_actions_queued' : boolean,
 }
 export interface EvmFeePolicy {
   'l1_fee_per_transaction_ceiling_wei' : bigint,
@@ -241,13 +254,6 @@ export interface EvmFeePolicy {
   'gas_limit_multiplier_bps' : number,
   'base_fee_multiplier_bps' : number,
   'max_fee_per_gas_ceiling' : bigint,
-}
-export interface EvmLivenessPolicy {
-  'rebroadcast_after_seconds' : bigint,
-  'fee_bump_bps' : number,
-  'replacement_after_seconds' : bigint,
-  'check_interval_seconds' : bigint,
-  'max_replacements' : number,
 }
 export type FeePayoutActionResult = {
     'Stopped' : { 'state' : FeePayoutState, 'reason' : SettlementStopReason }
@@ -274,6 +280,10 @@ export type FundingFailure = {
   { 'BadFee' : { 'expected_fee' : bigint } } |
   { 'InsufficientFunds' : { 'balance' : bigint } };
 export type GetWithdrawalsError = { 'TooManyIds' : null };
+export interface GovernanceReplacementPolicy {
+  'fee_bump_bps' : number,
+  'max_replacements' : number,
+}
 export interface Icrc10SupportedStandard { 'url' : string, 'name' : string }
 export interface Icrc21ConsentInfo {
   'metadata' : Icrc21ConsentMessageMetadata,
@@ -331,6 +341,32 @@ export interface MintAuthorizationView {
   'digest' : Uint8Array | number[],
   'gross_amount' : bigint,
 }
+export interface NotifyDepositMintArgs {
+  'transaction_hash' : Uint8Array | number[],
+  'deposit_id' : Uint8Array | number[],
+}
+export type NotifyDepositMintError = { 'Busy' : null } |
+  { 'RpcUnavailable' : null } |
+  { 'InvalidDepositId' : null } |
+  { 'TransactionNotConfirmed' : null } |
+  { 'NotFound' : null } |
+  { 'InsufficientCycles' : null } |
+  { 'OwnerMismatch' : null } |
+  { 'RpcInconsistent' : null } |
+  { 'InvalidTransactionHash' : null } |
+  { 'TransactionReverted' : null } |
+  { 'StorageFailure' : null } |
+  { 'InvalidState' : null } |
+  { 'AnonymousCaller' : null } |
+  { 'InvalidBaseResponse' : null };
+export type NotifyDepositMintReceipt = { 'Duplicate' : NotifyDepositMintArgs } |
+  {
+    'Minted' : {
+      'transaction_hash' : Uint8Array | number[],
+      'deposit_id' : Uint8Array | number[],
+      'finalized_head_block_number' : bigint,
+    }
+  };
 export interface NotifyWithdrawalArgs {
   'transaction_hash' : Uint8Array | number[],
 }
@@ -365,6 +401,12 @@ export type NotifyWithdrawalReceipt = {
       'withdrawal_id' : Uint8Array | number[],
     }
   };
+export interface PrepareBaseGovernanceReplacementArgs {
+  'max_priority_fee_per_gas' : bigint,
+  'operation_id' : bigint,
+  'max_fee_per_gas' : bigint,
+  'expected_transaction_hash' : Uint8Array | number[],
+}
 export interface PublicConfig {
   'settlement_rate_limit_global' : number,
   'expected_bridge_signer' : Uint8Array | number[],
@@ -381,7 +423,6 @@ export interface PublicConfig {
   'settlement_rate_limit_window_seconds' : bigint,
   'evm_rpc_canister_id' : Principal,
   'deposit_rate_limit_per_principal' : number,
-  'governance_evm_liveness' : EvmLivenessPolicy,
   'schema_version' : number,
   'governance_eth_floor_wei' : bigint,
   'deposit_rate_limit_global' : number,
@@ -390,6 +431,8 @@ export interface PublicConfig {
   'ledger_fee' : bigint,
   'index_canister_id' : Principal,
   'ledger_canister_id' : Principal,
+  'settlement_retry_interval_seconds' : bigint,
+  'governance_replacement' : GovernanceReplacementPolicy,
   'governance_operator' : Uint8Array | number[],
   'timelock_contract' : Uint8Array | number[],
   'cycles_floor' : bigint,
@@ -410,38 +453,44 @@ export interface ReserveStatus {
   'governance_eth_floor_wei' : bigint,
   'required_cycles' : bigint,
 }
-export type Result = { 'Ok' : SettlementActionResult } |
+export type Result = { 'Ok' : BaseGovernanceConfirmation } |
+  { 'Err' : BaseGovernanceError };
+export type Result_1 = { 'Ok' : SettlementActionResult } |
   { 'Err' : SettlementActionError };
-export type Result_1 = { 'Ok' : FeePayoutActionResult } |
-  { 'Err' : SettlementActionError };
-export type Result_10 = { 'Ok' : NotifyWithdrawalReceipt } |
-  { 'Err' : NotifyWithdrawalError };
-export type Result_11 = { 'Ok' : null } |
-  { 'Err' : AdminError };
-export type Result_12 = { 'Ok' : ChecksumRefreshStatus } |
-  { 'Err' : StorageMaintenanceError };
-export type Result_13 = { 'Ok' : DepositReceipt } |
-  { 'Err' : DepositError };
-export type Result_14 = { 'Ok' : FeePayoutReceipt } |
-  { 'Err' : AdminError };
-export type Result_15 = { 'Ok' : string } |
-  { 'Err' : StorageMaintenanceError };
-export type Result_2 = { 'Ok' : StorageValidationStatus } |
-  { 'Err' : StorageMaintenanceError };
-export type Result_3 = { 'Ok' : EmergencyPauseReceipt } |
-  { 'Err' : BaseGovernanceError };
-export type Result_4 = { 'Ok' : BaseGovernanceReceipt } |
-  { 'Err' : BaseGovernanceError };
-export type Result_5 = { 'Ok' : ActivationStatus } |
-  { 'Err' : BaseGovernanceError };
-export type Result_6 = { 'Ok' : AuditEventPage } |
-  { 'Err' : AdminError };
-export type Result_7 = { 'Ok' : Array<[] | [WithdrawalView]> } |
-  { 'Err' : GetWithdrawalsError };
-export type Result_8 = { 'Ok' : null } |
+export type Result_10 = { 'Ok' : null } |
   { 'Err' : PublicConfigInitializationError };
-export type Result_9 = { 'Ok' : DepositIdPage } |
+export type Result_11 = { 'Ok' : DepositIdPage } |
   { 'Err' : ListDepositIdsError };
+export type Result_12 = { 'Ok' : NotifyDepositMintReceipt } |
+  { 'Err' : NotifyDepositMintError };
+export type Result_13 = { 'Ok' : NotifyWithdrawalReceipt } |
+  { 'Err' : NotifyWithdrawalError };
+export type Result_14 = { 'Ok' : null } |
+  { 'Err' : AdminError };
+export type Result_15 = { 'Ok' : ChecksumRefreshStatus } |
+  { 'Err' : StorageMaintenanceError };
+export type Result_16 = { 'Ok' : DepositReceipt } |
+  { 'Err' : DepositError };
+export type Result_17 = { 'Ok' : FeePayoutReceipt } |
+  { 'Err' : AdminError };
+export type Result_18 = { 'Ok' : string } |
+  { 'Err' : StorageMaintenanceError };
+export type Result_2 = { 'Ok' : FeePayoutActionResult } |
+  { 'Err' : SettlementActionError };
+export type Result_3 = { 'Ok' : StorageValidationStatus } |
+  { 'Err' : StorageMaintenanceError };
+export type Result_4 = { 'Ok' : EmergencyPauseReceipt } |
+  { 'Err' : BaseGovernanceError };
+export type Result_5 = { 'Ok' : SignedBaseGovernanceTransaction } |
+  { 'Err' : BaseGovernanceError };
+export type Result_6 = { 'Ok' : ActivationStatus } |
+  { 'Err' : BaseGovernanceError };
+export type Result_7 = { 'Ok' : AuditEventPage } |
+  { 'Err' : AdminError };
+export type Result_8 = { 'Ok' : [] | [SignedBaseGovernanceTransaction] } |
+  { 'Err' : BaseGovernanceError };
+export type Result_9 = { 'Ok' : Array<[] | [WithdrawalView]> } |
+  { 'Err' : GetWithdrawalsError };
 export interface RotatePausePrincipalArgs { 'pause_principal' : Principal }
 export type SettlementActionError = {
     'AutomaticProgressPending' : { 'next_run_at_ns' : [] | [bigint] }
@@ -485,6 +534,22 @@ export type SettlementStopReason = { 'LedgerFeeExceedsServiceFee' : null } |
   { 'BridgeSignerMismatch' : null } |
   { 'SigningUnavailable' : null } |
   { 'InvalidBaseResponse' : null };
+export interface SignedBaseGovernanceTransaction {
+  'transaction_hash' : Uint8Array | number[],
+  'raw_transaction' : Uint8Array | number[],
+  'max_priority_fee_per_gas' : bigint,
+  'kind' : BaseGovernanceOperationKind,
+  'generation' : number,
+  'signed_at_ns' : bigint,
+  'operation_id' : bigint,
+  'max_fee_per_gas' : bigint,
+  'sender' : Uint8Array | number[],
+  'calldata' : Uint8Array | number[],
+  'target' : Uint8Array | number[],
+  'chain_id' : bigint,
+  'nonce' : bigint,
+  'gas_limit' : bigint,
+}
 export interface StatusCounts {
   'retained_audit_events' : bigint,
   'reconciliation_holds' : bigint,
@@ -522,14 +587,18 @@ export interface WithdrawalView {
   'amount' : bigint,
 }
 export interface _SERVICE {
-  'continue_deposit' : ActorMethod<[Uint8Array | number[]], Result>,
-  'continue_fee_payout' : ActorMethod<[bigint], Result_1>,
-  'continue_storage_validation' : ActorMethod<[number], Result_2>,
-  'continue_withdrawal' : ActorMethod<[Uint8Array | number[]], Result>,
-  'emergency_pause' : ActorMethod<[], Result_3>,
-  'execute_activation' : ActorMethod<[], Result_4>,
-  'get_activation_status' : ActorMethod<[], Result_5>,
-  'get_audit_events' : ActorMethod<[bigint, number], Result_6>,
+  'confirm_base_governance_transaction' : ActorMethod<
+    [ConfirmBaseGovernanceTransactionArgs],
+    Result
+  >,
+  'continue_deposit' : ActorMethod<[Uint8Array | number[]], Result_1>,
+  'continue_fee_payout' : ActorMethod<[bigint], Result_2>,
+  'continue_storage_validation' : ActorMethod<[number], Result_3>,
+  'continue_withdrawal' : ActorMethod<[Uint8Array | number[]], Result_1>,
+  'emergency_pause' : ActorMethod<[], Result_4>,
+  'execute_activation' : ActorMethod<[], Result_5>,
+  'get_activation_status' : ActorMethod<[], Result_6>,
+  'get_audit_events' : ActorMethod<[bigint, number], Result_7>,
   'get_bridge_status' : ActorMethod<[], BridgeStatus>,
   'get_deposit' : ActorMethod<[Uint8Array | number[]], [] | [DepositView]>,
   'get_deposit_by_owner_sequence' : ActorMethod<
@@ -537,12 +606,13 @@ export interface _SERVICE {
     [] | [DepositView]
   >,
   'get_next_deposit_sequence' : ActorMethod<[Principal], bigint>,
+  'get_pending_base_governance_transaction' : ActorMethod<[], Result_8>,
   'get_public_config' : ActorMethod<[], PublicConfig>,
   'get_withdrawal' : ActorMethod<
     [Uint8Array | number[]],
     [] | [WithdrawalView]
   >,
-  'get_withdrawals' : ActorMethod<[Array<Uint8Array | number[]>], Result_7>,
+  'get_withdrawals' : ActorMethod<[Array<Uint8Array | number[]>], Result_9>,
   'icrc10_supported_standards' : ActorMethod<
     [],
     Array<Icrc10SupportedStandard>
@@ -551,23 +621,29 @@ export interface _SERVICE {
     [Icrc21ConsentMessageRequest],
     Icrc21ConsentMessageResponse
   >,
-  'initialize_public_config' : ActorMethod<[], Result_8>,
-  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_9>,
-  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_10>,
-  'pause_new_deposits' : ActorMethod<[], Result_11>,
-  'refresh_storage_checksum' : ActorMethod<[bigint], Result_12>,
-  'request_deposit' : ActorMethod<[DepositArgs], Result_13>,
-  'request_fee_payout' : ActorMethod<[bigint], Result_14>,
-  'resume_new_deposits' : ActorMethod<[], Result_11>,
-  'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_11>,
-  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_11>,
-  'schedule_activation' : ActorMethod<[], Result_4>,
-  'start_storage_validation' : ActorMethod<[], Result_2>,
-  'storage_integrity_check' : ActorMethod<[], Result_15>,
-  'submit_base_governance_action' : ActorMethod<
+  'initialize_public_config' : ActorMethod<[], Result_10>,
+  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_11>,
+  'notify_deposit_mint' : ActorMethod<[NotifyDepositMintArgs], Result_12>,
+  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_13>,
+  'pause_new_deposits' : ActorMethod<[], Result_14>,
+  'prepare_base_governance_action' : ActorMethod<
     [BaseGovernanceAction],
-    Result_4
+    Result_5
   >,
+  'prepare_base_governance_replacement' : ActorMethod<
+    [PrepareBaseGovernanceReplacementArgs],
+    Result_5
+  >,
+  'prepare_next_emergency_base_action' : ActorMethod<[], Result_5>,
+  'refresh_storage_checksum' : ActorMethod<[bigint], Result_15>,
+  'request_deposit' : ActorMethod<[DepositArgs], Result_16>,
+  'request_fee_payout' : ActorMethod<[bigint], Result_17>,
+  'resume_new_deposits' : ActorMethod<[], Result_14>,
+  'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_14>,
+  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_14>,
+  'schedule_activation' : ActorMethod<[], Result_5>,
+  'start_storage_validation' : ActorMethod<[], Result_3>,
+  'storage_integrity_check' : ActorMethod<[], Result_18>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
 export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];

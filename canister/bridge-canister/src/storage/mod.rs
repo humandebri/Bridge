@@ -229,7 +229,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 25, 21);
+INSERT INTO bridge_metadata VALUES (1, 27, 23);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -273,6 +273,10 @@ CREATE TABLE settlement_job_status_counts (
     status INTEGER PRIMARY KEY CHECK (status IN (0, 1, 2)),
     count INTEGER NOT NULL CHECK (count >= 0)
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE settlement_job_kind_counts (
+    settlement_kind INTEGER PRIMARY KEY CHECK (settlement_kind IN (0, 1, 2)),
+    count INTEGER NOT NULL CHECK (count >= 0)
+) STRICT, WITHOUT ROWID;
 CREATE TABLE settlement_jobs (
     settlement_kind INTEGER NOT NULL CHECK (settlement_kind IN (0, 1, 2)),
     settlement_id BLOB NOT NULL CHECK (length(settlement_id) = 32),
@@ -297,16 +301,30 @@ ON settlement_jobs(status, lease_until_ns, settlement_kind, settlement_id);
 
 CREATE TRIGGER settlement_jobs_count_insert AFTER INSERT ON settlement_jobs BEGIN
     UPDATE settlement_job_status_counts SET count = count + 1 WHERE status = NEW.status;
+    SELECT CASE WHEN changes() != 1 THEN RAISE(ABORT, 'missing settlement status count') END;
+    UPDATE settlement_job_kind_counts SET count = count + 1
+     WHERE settlement_kind = NEW.settlement_kind;
+    SELECT CASE WHEN changes() != 1 THEN RAISE(ABORT, 'missing settlement kind count') END;
 END;
 CREATE TRIGGER settlement_jobs_count_delete AFTER DELETE ON settlement_jobs BEGIN
     UPDATE settlement_job_status_counts SET count = count - 1 WHERE status = OLD.status;
+    SELECT CASE WHEN changes() != 1 THEN RAISE(ABORT, 'missing settlement status count') END;
+    UPDATE settlement_job_kind_counts SET count = count - 1
+     WHERE settlement_kind = OLD.settlement_kind;
+    SELECT CASE WHEN changes() != 1 THEN RAISE(ABORT, 'missing settlement kind count') END;
 END;
 CREATE TRIGGER settlement_jobs_count_status AFTER UPDATE OF status ON settlement_jobs
 WHEN OLD.status != NEW.status BEGIN
     UPDATE settlement_job_status_counts SET count = count - 1 WHERE status = OLD.status;
+    SELECT CASE WHEN changes() != 1 THEN RAISE(ABORT, 'missing old settlement status count') END;
     UPDATE settlement_job_status_counts SET count = count + 1 WHERE status = NEW.status;
+    SELECT CASE WHEN changes() != 1 THEN RAISE(ABORT, 'missing new settlement status count') END;
 END;
 INSERT INTO settlement_job_status_counts(status, count) VALUES
+ (0, 0),
+ (1, 0),
+ (2, 0);
+INSERT INTO settlement_job_kind_counts(settlement_kind, count) VALUES
  (0, 0),
  (1, 0),
  (2, 0);
@@ -1028,6 +1046,7 @@ pub struct DepositAdmissionControl {
     pub next_governance_nonce: u64,
     pub next_governance_operation_id: u64,
     pub pending_governance_transaction: Option<GovernanceTransaction>,
+    pub last_completed_governance_transaction: Option<GovernanceTransaction>,
     pub pending_timelock_operation: Option<PendingTimelockOperation>,
     pub emergency_pause_deposit_required: bool,
     pub emergency_pause_withdrawal_required: bool,
@@ -1068,15 +1087,10 @@ pub struct PendingTimelockOperation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GovernanceTransactionState {
     Prepared,
-    Signed,
-    Broadcasting {
+    SignedAwaitingRelay {
         transaction_hash: [u8; 32],
-    },
-    Submitted {
-        transaction_hash: [u8; 32],
-    },
-    NonceConflict {
-        transaction_hash: [u8; 32],
+        generation: u8,
+        signed_at_ns: u64,
     },
     Confirmed {
         transaction_hash: [u8; 32],
@@ -1402,6 +1416,7 @@ struct StorageValidationProgress {
     reserved_deposit_mint_amount: u128,
     reserved_deposit_mint_operations: u64,
     settlement_job_status_counts: [u64; 4],
+    settlement_job_kind_counts: [u64; 3],
 }
 
 enum ValidationChunkOutcome {
@@ -1902,6 +1917,14 @@ fn validate_storage_row(
             *count = count
                 .checked_add(1)
                 .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+            let kind = usize::from(key[0]);
+            let count = progress
+                .settlement_job_kind_counts
+                .get_mut(kind)
+                .ok_or_else(|| DbError::Constraint("invalid settlement job kind".into()))?;
+            *count = count
+                .checked_add(1)
+                .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
         }
         _ => {
             return Err(DbError::Constraint(format!(
@@ -2025,8 +2048,15 @@ impl StableStore {
         decode::<AuditRetentionState>(&self.audit_retention.get()?)?;
         decode::<SettlementAdmissionControl>(&self.settlement_admission.get()?)?;
         decode::<SettlementSchedulerHealth>(&self.settlement_scheduler_health.get()?)?;
-        let (revision, liability_amount, validation) = self.handle.query(|connection| {
-            connection.query_one(
+        let (
+            revision,
+            liability_amount,
+            validation,
+            status_counts,
+            kind_counts,
+            actual_kind_counts,
+        ) = self.handle.query(|connection| {
+            let singleton = connection.query_one(
                 "SELECT storage_revision, withdrawal_liability_amount, storage_validation
                  FROM singleton_state WHERE id = 1",
                 params![],
@@ -2037,10 +2067,58 @@ impl StableStore {
                         row.get::<Option<Vec<u8>>>(2)?,
                     ))
                 },
-            )
+            )?;
+            let status_counts = connection.query_all(
+                "SELECT status, count FROM settlement_job_status_counts ORDER BY status",
+                params![],
+                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+            )?;
+            let kind_counts = connection.query_all(
+                "SELECT settlement_kind, count FROM settlement_job_kind_counts
+                     ORDER BY settlement_kind",
+                params![],
+                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+            )?;
+            let actual_kind_counts = connection.query_all(
+                "SELECT settlement_kind, COUNT(*) FROM settlement_jobs
+                     GROUP BY settlement_kind ORDER BY settlement_kind",
+                params![],
+                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+            )?;
+            Ok((
+                singleton.0,
+                singleton.1,
+                singleton.2,
+                status_counts,
+                kind_counts,
+                actual_kind_counts,
+            ))
         })?;
         u64::from_sql_bytes(revision).map_err(|_| StorageError::DecodeFailed)?;
         u128::from_sql_bytes(liability_amount).map_err(|_| StorageError::DecodeFailed)?;
+        let valid_count_rows = |rows: &[(i64, i64)]| {
+            rows.len() == 3
+                && rows
+                    .iter()
+                    .enumerate()
+                    .all(|(index, (key, count))| *key == index as i64 && *count >= 0)
+        };
+        let mut actual = [0i64; 3];
+        for (kind, count) in actual_kind_counts {
+            let kind = usize::try_from(kind).map_err(|_| StorageError::DecodeFailed)?;
+            *actual.get_mut(kind).ok_or(StorageError::DecodeFailed)? = count;
+        }
+        if !valid_count_rows(&status_counts)
+            || !valid_count_rows(&kind_counts)
+            || kind_counts
+                .iter()
+                .enumerate()
+                .any(|(kind, (_, count))| *count != actual[kind])
+            || status_counts.iter().map(|(_, count)| *count).sum::<i64>()
+                != kind_counts.iter().map(|(_, count)| *count).sum::<i64>()
+        {
+            return Err(StorageError::DecodeFailed);
+        }
         if let Some(validation) = validation {
             decode_with_context::<StorageValidationProgress>(
                 validation,
@@ -2073,6 +2151,7 @@ impl StableStore {
                     reserved_deposit_mint_amount: 0,
                     reserved_deposit_mint_operations: 0,
                     settlement_job_status_counts: [0; 4],
+                    settlement_job_kind_counts: [0; 3],
                 };
                 connection.execute(
                     "UPDATE singleton_state SET storage_validation = ?1 WHERE id = 1",
@@ -2219,6 +2298,28 @@ impl StableStore {
                         if recorded_counts != progress.settlement_job_status_counts {
                             return Err(DbError::Constraint(
                                 "settlement job status count mismatch".into(),
+                            ));
+                        }
+                        let recorded = connection.query_all(
+                            "SELECT settlement_kind, count FROM settlement_job_kind_counts
+                             ORDER BY settlement_kind",
+                            params![],
+                            |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+                        )?;
+                        let mut recorded_counts = [0u64; 3];
+                        for (kind, count) in recorded {
+                            let kind = usize::try_from(kind).map_err(|_| {
+                                DbError::Constraint("invalid settlement job kind".into())
+                            })?;
+                            *recorded_counts.get_mut(kind).ok_or_else(|| {
+                                DbError::Constraint("invalid settlement job kind".into())
+                            })? = u64::try_from(count).map_err(|_| {
+                                DbError::Constraint("invalid settlement job count".into())
+                            })?;
+                        }
+                        if recorded_counts != progress.settlement_job_kind_counts {
+                            return Err(DbError::Constraint(
+                                "settlement job kind count mismatch".into(),
                             ));
                         }
                     } else {
@@ -2424,7 +2525,6 @@ impl StableStore {
             "withdrawal_liability_index",
             "withdrawal_notification_index",
             "withdrawal_stop_reason_counts",
-            "settlement_jobs",
         ];
         self.handle.query(|connection| {
             for table in COUNTED_TABLES {
@@ -2442,6 +2542,37 @@ impl StableStore {
             }
             Ok(())
         })?;
+
+        let (actual_job_kinds, recorded_job_kinds) = self.handle.query(|connection| {
+            let actual = connection.query_all(
+                "SELECT settlement_kind, COUNT(*) FROM settlement_jobs
+                 GROUP BY settlement_kind ORDER BY settlement_kind",
+                params![],
+                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+            )?;
+            let recorded = connection.query_all(
+                "SELECT settlement_kind, count FROM settlement_job_kind_counts
+                 ORDER BY settlement_kind",
+                params![],
+                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+            )?;
+            Ok((actual, recorded))
+        })?;
+        let mut expected = [0u64; 3];
+        for (kind, count) in actual_job_kinds {
+            let kind = usize::try_from(kind).map_err(|_| StorageError::DecodeFailed)?;
+            *expected.get_mut(kind).ok_or(StorageError::DecodeFailed)? =
+                u64::try_from(count).map_err(|_| StorageError::DecodeFailed)?;
+        }
+        let mut recorded = [0u64; 3];
+        for (kind, count) in recorded_job_kinds {
+            let kind = usize::try_from(kind).map_err(|_| StorageError::DecodeFailed)?;
+            *recorded.get_mut(kind).ok_or(StorageError::DecodeFailed)? =
+                u64::try_from(count).map_err(|_| StorageError::DecodeFailed)?;
+        }
+        if recorded != expected {
+            return Err(StorageError::DatabaseFailure);
+        }
 
         let deposits = self.handle.query(|connection| {
             connection.query_all("SELECT key, value FROM deposits", params![], |row| {
@@ -3810,6 +3941,14 @@ impl StableStore {
         ))
     }
 
+    pub fn last_completed_governance_transaction(
+        &self,
+    ) -> Result<Option<GovernanceTransaction>, StorageError> {
+        Ok(self
+            .deposit_admission()?
+            .last_completed_governance_transaction)
+    }
+
     pub fn pending_timelock_operation(
         &self,
     ) -> Result<Option<PendingTimelockOperation>, StorageError> {
@@ -3931,7 +4070,7 @@ impl StableStore {
         self.set_deposit_admission(&admission)
     }
 
-    pub fn abort_unbroadcast_governance_transaction_for_emergency(
+    pub fn abort_prepared_governance_transaction_for_emergency(
         &mut self,
         transaction: &GovernanceTransaction,
     ) -> Result<(), StorageError> {
@@ -3943,10 +4082,7 @@ impl StableStore {
             return Err(StorageError::DecodeFailed);
         }
         if admission.pending_governance_transaction.as_ref() != Some(transaction)
-            || !matches!(
-                transaction.state,
-                GovernanceTransactionState::Prepared | GovernanceTransactionState::Signed
-            )
+            || !matches!(transaction.state, GovernanceTransactionState::Prepared)
             || !matches!(
                 transaction.kind,
                 GovernanceTransactionKind::SetServiceFee { .. }
@@ -3974,6 +4110,7 @@ impl StableStore {
             admission.emergency_cancel_required = false;
         }
         admission.next_governance_nonce = transaction.envelope.nonce;
+        admission.last_completed_governance_transaction = Some(transaction.clone());
         admission.pending_governance_transaction = None;
         self.set_deposit_admission(&admission)
     }
@@ -4030,6 +4167,7 @@ impl StableStore {
             }
             _ => {}
         }
+        admission.last_completed_governance_transaction = Some(transaction.clone());
         admission.pending_governance_transaction = None;
         match transaction.kind {
             GovernanceTransactionKind::PauseDepositMints if confirmed => {
@@ -4070,45 +4208,6 @@ impl StableStore {
             | GovernanceTransactionKind::ExecuteActivation { .. }
             | GovernanceTransactionKind::CancelTimelock { .. } => {}
         }
-        self.set_deposit_admission(&admission)
-    }
-
-    pub fn resolve_governance_nonce_conflict(
-        &mut self,
-        transaction: &GovernanceTransaction,
-        observed_nonce: u64,
-    ) -> Result<(), StorageError> {
-        let mut admission = self.deposit_admission()?;
-        let pending = admission
-            .pending_governance_transaction
-            .as_ref()
-            .ok_or(StorageError::DecodeFailed)?;
-        if pending.id != transaction.id
-            || pending.kind != transaction.kind
-            || pending.envelope != transaction.envelope
-            || !matches!(
-                transaction.state,
-                GovernanceTransactionState::NonceConflict { .. }
-                    | GovernanceTransactionState::Broadcasting { .. }
-            )
-            || observed_nonce <= transaction.envelope.nonce
-            || observed_nonce < admission.next_governance_nonce
-        {
-            return Err(StorageError::DecodeFailed);
-        }
-        if let GovernanceTransactionKind::ScheduleActivation { operation_id, salt } =
-            transaction.kind
-        {
-            if admission.pending_timelock_operation
-                != Some(PendingTimelockOperation { operation_id, salt })
-            {
-                return Err(StorageError::DecodeFailed);
-            }
-            admission.pending_timelock_operation = None;
-            admission.emergency_cancel_required = false;
-        }
-        admission.next_governance_nonce = observed_nonce;
-        admission.pending_governance_transaction = None;
         self.set_deposit_admission(&admission)
     }
 
@@ -5022,7 +5121,15 @@ impl StableStore {
     }
 
     pub fn put_deposit(&mut self, value: &DepositRecord) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, None)
+        self.put_deposit_with_audit(value, None, None, None)
+    }
+
+    pub fn put_deposit_transition(
+        &mut self,
+        value: &DepositRecord,
+        result: ApplyResult,
+    ) -> Result<(), StorageError> {
+        self.put_deposit_with_audit(value, None, None, Some(result))
     }
 
     pub fn put_deposit_and_audit(
@@ -5031,7 +5138,7 @@ impl StableStore {
         caller: Principal,
         kind: AuditEventKind,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, Some((caller, kind)), None)
+        self.put_deposit_with_audit(value, Some((caller, kind)), None, None)
     }
 
     pub fn put_deposit_funding_callback(
@@ -5039,7 +5146,16 @@ impl StableStore {
         value: &DepositRecord,
         token: &SettlementCallbackToken,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, Some(token))
+        self.put_deposit_with_audit(value, None, Some(token), None)
+    }
+
+    pub fn put_deposit_transition_funding_callback(
+        &mut self,
+        value: &DepositRecord,
+        token: &SettlementCallbackToken,
+        result: ApplyResult,
+    ) -> Result<(), StorageError> {
+        self.put_deposit_with_audit(value, None, Some(token), Some(result))
     }
 
     fn put_deposit_with_audit(
@@ -5047,6 +5163,7 @@ impl StableStore {
         value: &DepositRecord,
         audit_kind: Option<(Principal, AuditEventKind)>,
         callback_token: Option<&SettlementCallbackToken>,
+        transition_result: Option<ApplyResult>,
     ) -> Result<(), StorageError> {
         let previous_stored = self.stored_deposit(value.id.bytes())?;
         let previous = previous_stored.as_ref().map(|stored| stored.record.clone());
@@ -5089,7 +5206,8 @@ impl StableStore {
             previous.as_ref(),
             value,
         )?;
-        let fee_delta = match (previous.as_ref().map(|record| &record.state), &value.state) {
+        let derived_fee_delta = match (previous.as_ref().map(|record| &record.state), &value.state)
+        {
             (Some(previous_state), bridge_core::DepositState::Minted { .. })
                 if !matches!(previous_state, bridge_core::DepositState::Minted { .. }) =>
             {
@@ -5099,6 +5217,74 @@ impl StableStore {
                     .service_fee
             }
             _ => Amount::ZERO,
+        };
+        let fee_delta = if let Some(result) = transition_result {
+            let effects =
+                result
+                    .deposit_effects
+                    .ok_or(StorageError::Core(CoreError::InvalidTransition {
+                        entity: "deposit",
+                        event: "missing_transition_effects",
+                    }))?;
+            let previous_reserved = previous
+                .as_ref()
+                .map(DepositRecord::reserved_mint_amount)
+                .transpose()
+                .map_err(StorageError::Core)?
+                .unwrap_or(Amount::ZERO);
+            let next_reserved = value.reserved_mint_amount().map_err(StorageError::Core)?;
+            let expected_add = if previous_reserved == Amount::ZERO {
+                next_reserved
+            } else {
+                Amount::ZERO
+            };
+            let expected_release = if next_reserved == Amount::ZERO {
+                previous_reserved
+            } else {
+                Amount::ZERO
+            };
+            let mint_completed = matches!(value.state, bridge_core::DepositState::Minted { .. })
+                && !previous.as_ref().is_some_and(|record| {
+                    matches!(record.state, bridge_core::DepositState::Minted { .. })
+                });
+            let refund_completed =
+                matches!(value.state, bridge_core::DepositState::Refunded { .. })
+                    && !previous.as_ref().is_some_and(|record| {
+                        matches!(record.state, bridge_core::DepositState::Refunded { .. })
+                    });
+            let expected_net = value.quote.map_or(Amount::ZERO, |quote| quote.net_amount);
+            let expected_terminal_debit = if mint_completed || refund_completed {
+                value.gross_amount
+            } else {
+                Amount::ZERO
+            };
+            if result.outcome != bridge_core::ApplyOutcome::Applied
+                || effects.reservation_after != next_reserved
+                || effects.reservation_add != expected_add
+                || effects.reservation_release != expected_release
+                || effects.fee_credit != derived_fee_delta
+                || effects.pending_liability_debit != expected_terminal_debit
+                || effects.escrow_debit
+                    != if refund_completed {
+                        value.gross_amount
+                    } else {
+                        Amount::ZERO
+                    }
+                || effects.mint_supply_increase
+                    != if mint_completed {
+                        expected_net
+                    } else {
+                        Amount::ZERO
+                    }
+            {
+                return Err(StorageError::Core(CoreError::InvalidTransition {
+                    entity: "deposit",
+                    event: "storage_effect_mismatch",
+                }));
+            }
+            effects.fee_credit
+        } else {
+            derived_fee_delta
         };
         let previous_accounting = self.accounting()?;
         let mut accounting = previous_accounting;
@@ -5292,10 +5478,9 @@ impl StableStore {
         reserve_deposit_funding_quota(&mut admission, owner, attempt.intent.deposit_id, quota)?;
         let active_funding_reservations = u64::try_from(admission.funding_reservations.len())
             .map_err(|_| StorageError::CounterOverflow)?;
-        let counters = self.counters()?;
         let required_cycles = cycles.reserve_policy.required_cycles(
             self.nonterminal_withdrawal_count()?,
-            counters.reserved_deposit_mint_operations,
+            self.nonterminal_deposit_count()?,
             active_funding_reservations,
         )?;
         if cycles.cycles_balance < required_cycles {
@@ -5353,6 +5538,20 @@ impl StableStore {
     pub fn deposit_funding_reservation_count(&self) -> Result<u64, StorageError> {
         u64::try_from(self.deposit_admission()?.funding_reservations.len())
             .map_err(|_| StorageError::CounterOverflow)
+    }
+
+    fn settlement_job_kind_count(&self, kind: SettlementJobKind) -> Result<u64, StorageError> {
+        let count = self.handle.query(|connection| {
+            connection.query_scalar::<i64>(
+                "SELECT count FROM settlement_job_kind_counts WHERE settlement_kind = ?1",
+                params![kind.sql()],
+            )
+        })?;
+        u64::try_from(count).map_err(|_| StorageError::DecodeFailed)
+    }
+
+    pub fn nonterminal_deposit_count(&self) -> Result<u64, StorageError> {
+        self.settlement_job_kind_count(SettlementJobKind::Deposit)
     }
 
     pub fn update_deposit_funding_attempt(
@@ -7325,6 +7524,7 @@ mod tests {
             settlement_rate_limit_global: 60,
             settlement_rate_limit_per_principal: 6,
             settlement_rate_limit_per_record: 3,
+            settlement_retry_interval_seconds: 60,
             governance_evm_fee: crate::config::EvmFeePolicy {
                 gas_limit_ceiling: 500_000,
                 max_fee_per_gas_ceiling: 10,
@@ -7335,7 +7535,7 @@ mod tests {
                 base_fee_multiplier_bps: 60_000,
                 l1_fee_multiplier_bps: 15_000,
             },
-            governance_evm_liveness: crate::config::EvmLivenessPolicy::default(),
+            governance_replacement: crate::config::GovernanceReplacementPolicy::default(),
             governance_eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
@@ -7559,8 +7759,10 @@ mod tests {
             store.governance_lane().expect("operator lane"),
             (true, 8, 1, Some(transaction.clone()))
         );
-        transaction.state = GovernanceTransactionState::Broadcasting {
+        transaction.state = GovernanceTransactionState::SignedAwaitingRelay {
             transaction_hash: [0x71; 32],
+            generation: 0,
+            signed_at_ns: 1,
         };
         store
             .update_governance_transaction(transaction.clone())
@@ -7672,7 +7874,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn reverted_schedule_releases_activation_and_nonce_conflict_resyncs_monotonically() {
+    fn reverted_schedule_releases_activation_and_records_completion() {
         let mut store =
             StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
         store
@@ -7702,34 +7904,18 @@ mod tests {
                 .expect("pending activation"),
             None
         );
-
-        let mut conflict = GovernanceTransaction {
-            id: 1,
-            kind: GovernanceTransactionKind::PauseWithdrawals,
-            envelope: governance_intent(GovernanceOperationId::new(1), [6; 32]).assign_nonce(5),
-            state: GovernanceTransactionState::Prepared,
-        };
-        store
-            .prepare_governance_transaction(conflict.clone())
-            .expect("prepare conflicting transaction");
-        conflict.state = GovernanceTransactionState::NonceConflict {
-            transaction_hash: [4; 32],
-        };
-        store
-            .update_governance_transaction(conflict.clone())
-            .expect("persist conflict");
-        assert!(store
-            .resolve_governance_nonce_conflict(&conflict, 5)
-            .is_err());
-        store
-            .resolve_governance_nonce_conflict(&conflict, 8)
-            .expect("resync advanced nonce");
-        assert_eq!(store.governance_lane().expect("lane"), (true, 8, 2, None));
+        assert_eq!(
+            store
+                .last_completed_governance_transaction()
+                .expect("completed transaction")
+                .map(|transaction| transaction.id),
+            Some(0)
+        );
     }
 
     #[test]
     #[serial]
-    fn emergency_aborts_only_unbroadcast_dangerous_transactions_and_reuses_the_nonce() {
+    fn emergency_aborts_only_prepared_dangerous_transactions_and_reuses_the_nonce() {
         let mut store =
             StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
         store.initialize_governance_nonce(4).expect("nonce");
@@ -7748,8 +7934,8 @@ mod tests {
             .enqueue_emergency_base_actions()
             .expect("enqueue emergency");
         store
-            .abort_unbroadcast_governance_transaction_for_emergency(&schedule)
-            .expect("abort unbroadcast schedule");
+            .abort_prepared_governance_transaction_for_emergency(&schedule)
+            .expect("abort prepared schedule");
 
         assert_eq!(store.governance_lane().expect("lane"), (true, 4, 1, None));
         assert_eq!(store.pending_timelock_operation().expect("timelock"), None);
@@ -7760,36 +7946,42 @@ mod tests {
             Some(GovernanceTransactionKind::PauseDepositMints)
         );
 
-        let broadcasting = GovernanceTransaction {
+        let mut awaiting_relay = GovernanceTransaction {
             id: 1,
             kind: GovernanceTransactionKind::SetServiceFee { value: 7 },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x44; 32]).assign_nonce(4),
-            state: GovernanceTransactionState::Broadcasting {
+            state: GovernanceTransactionState::SignedAwaitingRelay {
                 transaction_hash: [0x45; 32],
+                generation: 0,
+                signed_at_ns: 1,
             },
         };
         store
-            .prepare_governance_transaction(broadcasting.clone())
+            .prepare_governance_transaction(awaiting_relay.clone())
             .expect("prepare fee transaction");
         store
-            .update_governance_transaction(broadcasting.clone())
-            .expect("record broadcasting");
+            .update_governance_transaction(awaiting_relay.clone())
+            .expect("record signed transaction");
         assert!(store
-            .abort_unbroadcast_governance_transaction_for_emergency(&broadcasting)
+            .abort_prepared_governance_transaction_for_emergency(&awaiting_relay)
             .is_err());
         assert_eq!(
             store.governance_lane().expect("lane").3,
-            Some(broadcasting.clone())
+            Some(awaiting_relay.clone())
         );
+        awaiting_relay.state = GovernanceTransactionState::Reverted {
+            transaction_hash: [0x45; 32],
+            receipt_block_number: 6,
+        };
         store
-            .resolve_governance_nonce_conflict(&broadcasting, 6)
-            .expect("resync broadcasting transaction after nonce advancement");
-        assert_eq!(store.governance_lane().expect("lane"), (true, 6, 2, None));
+            .complete_governance_transaction(awaiting_relay)
+            .expect("complete relayed transaction");
+        assert_eq!(store.governance_lane().expect("lane"), (true, 5, 2, None));
     }
 
     #[test]
     #[serial]
-    fn emergency_abort_of_signed_execute_retains_the_scheduled_timelock() {
+    fn emergency_cannot_abort_signed_execute_and_retains_the_scheduled_timelock() {
         let mut store =
             StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
         store.initialize_governance_nonce(10).expect("nonce");
@@ -7821,18 +8013,25 @@ mod tests {
         store
             .prepare_governance_transaction(execute.clone())
             .expect("prepare execute");
-        execute.state = GovernanceTransactionState::Signed;
+        execute.state = GovernanceTransactionState::SignedAwaitingRelay {
+            transaction_hash: [0x56; 32],
+            generation: 0,
+            signed_at_ns: 1,
+        };
         store
             .update_governance_transaction(execute.clone())
             .expect("record signed execute");
         store
             .enqueue_emergency_base_actions()
             .expect("enqueue emergency");
-        store
-            .abort_unbroadcast_governance_transaction_for_emergency(&execute)
-            .expect("abort execute");
+        assert!(store
+            .abort_prepared_governance_transaction_for_emergency(&execute)
+            .is_err());
 
-        assert_eq!(store.governance_lane().expect("lane"), (true, 11, 2, None));
+        assert_eq!(
+            store.governance_lane().expect("lane"),
+            (true, 12, 2, Some(execute))
+        );
         assert_eq!(
             store.pending_timelock_operation().expect("timelock"),
             Some(PendingTimelockOperation { operation_id, salt })
@@ -8671,13 +8870,43 @@ mod tests {
             signature_dispatched: false,
             signature: None,
         };
-        record
+        let result = record
             .apply(DepositEvent::CommitAuthorization {
                 quote,
                 authorization: Box::new(authorization.clone()),
             })
             .expect("commit exact authorization");
-        store.put_deposit(&record).expect("persist authorization");
+        let mut mismatched = result;
+        mismatched
+            .deposit_effects
+            .as_mut()
+            .expect("deposit effects")
+            .reservation_add = Amount::ZERO;
+        assert!(matches!(
+            store.put_deposit_transition(&record, mismatched),
+            Err(StorageError::Core(CoreError::InvalidTransition {
+                event: "storage_effect_mismatch",
+                ..
+            }))
+        ));
+        assert!(matches!(
+            store
+                .deposit(record.id.bytes())
+                .expect("read after rejected effects")
+                .expect("deposit")
+                .state,
+            DepositState::EscrowedUnquoted { .. }
+        ));
+        assert_eq!(
+            store
+                .counters()
+                .expect("counters after rejected effects")
+                .reserved_deposit_mint_operations,
+            0
+        );
+        store
+            .put_deposit_transition(&record, result)
+            .expect("persist authorization effects");
         assert_eq!(
             store
                 .counters()
@@ -8723,7 +8952,7 @@ mod tests {
         };
         let domain = MintAuthorizationDomain::bridge(8453, [1; 20]);
         let digest = crate::mint_authorization::digest(&domain, authorization);
-        record
+        let commit_result = record
             .apply(DepositEvent::CommitAuthorization {
                 quote,
                 authorization: Box::new(MintAuthorizationRecord {
@@ -8741,19 +8970,22 @@ mod tests {
                 }),
             })
             .expect("commit authorization");
+        store
+            .put_deposit_transition(&record, commit_result)
+            .expect("persist reservation addition");
         record
             .mint_authorization
             .as_mut()
             .expect("authorization")
             .dispatch_signature()
             .expect("dispatch");
-        record
+        let signature_result = record
             .apply(DepositEvent::AuthorizationSigned {
                 signature: vec![1; 65],
             })
             .expect("install signature");
         store
-            .put_deposit(&record)
+            .put_deposit_transition(&record, signature_result)
             .expect("persist active authorization");
         assert_eq!(
             store
@@ -8763,15 +8995,26 @@ mod tests {
             1
         );
 
-        record
+        let expiry_result = record
             .apply(DepositEvent::BeginExpiryReconciliation)
             .expect("begin expiry");
-        record
+        store
+            .put_deposit_transition(&record, expiry_result)
+            .expect("persist expiry reconciliation");
+        let mint_result = record
             .apply(DepositEvent::MintReconciled {
                 evidence: Box::new(bridge_core::MintFinalizationEvidence {
+                    deposit_id: record.id.bytes(),
+                    recipient: authorization.recipient,
                     authorization_digest: digest,
                     chain_id: 8453,
+                    verifying_contract: [1; 20],
+                    gross_amount: authorization.gross_amount,
+                    charged_service_fee: authorization.charged_service_fee,
+                    minted_amount: quote.net_amount,
                     transaction_hash: [8; 32],
+                    log_index: 0,
+                    receipt_succeeded: true,
                     receipt_block_number: 7,
                     receipt_block_hash: [9; 32],
                     finalized_block_number: 8,
@@ -8782,7 +9025,7 @@ mod tests {
             })
             .expect("reconcile exact Mint");
         store
-            .put_deposit(&record)
+            .put_deposit_transition(&record, mint_result)
             .expect("persist terminal mint state");
         assert_eq!(
             store
@@ -9311,8 +9554,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 25);
-        assert_eq!(WIRE_VERSION, 21);
+        assert_eq!(SCHEMA_VERSION, 27);
+        assert_eq!(WIRE_VERSION, 23);
     }
 
     #[test]
@@ -9413,7 +9656,7 @@ mod tests {
             .0
             .update(|connection| {
                 connection.execute(
-                    "UPDATE bridge_metadata SET record_wire_version = 17 WHERE id = 1",
+                    "UPDATE bridge_metadata SET record_wire_version = 21 WHERE id = 1",
                     params![],
                 )
             })
@@ -9422,7 +9665,7 @@ mod tests {
 
         assert!(matches!(
             StableStore::reopen_after_upgrade(memory),
-            Err(StorageError::UnsupportedWireVersion(17))
+            Err(StorageError::UnsupportedWireVersion(21))
         ));
     }
 
@@ -9514,8 +9757,12 @@ mod tests {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
         initialize_unpaused_admin(&mut store);
         let owner = Principal::self_authenticating([66; 32]);
-        let (attempt, _, _) =
-            funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        let (attempt, record, intent) = funding_attempt(
+            owner,
+            DepositFundingAttemptState::Dispatched {
+                dispatched_at_ns: 1,
+            },
+        );
         let quota = DepositQuotaAdmission {
             now_ns: 1,
             window_seconds: 60,
@@ -9548,7 +9795,9 @@ mod tests {
             None
         );
         assert_eq!(
-            store.deposit_admission().expect("admission after rejection"),
+            store
+                .deposit_admission()
+                .expect("admission after rejection"),
             admission_before
         );
         assert_eq!(
@@ -9565,6 +9814,42 @@ mod tests {
                 .expect("exact cycles boundary"),
             DepositAdmissionOutcome::Inserted
         );
+        store
+            .admit_deposit(owner, &intent, &record, Some(quota), Some((&attempt, None)))
+            .expect("promote accepted funding");
+        assert_eq!(store.deposit_funding_reservation_count(), Ok(0));
+        assert_eq!(store.nonterminal_deposit_count(), Ok(1));
+
+        let second_owner = Principal::self_authenticating([69; 32]);
+        let (mut second, _, _) =
+            funding_attempt(second_owner, DepositFundingAttemptState::Prepared);
+        second.intent.deposit_id = [69; 32];
+        assert_eq!(
+            store.prepare_deposit_funding_attempt(
+                second_owner,
+                &second,
+                quota,
+                DepositCycleAdmission {
+                    cycles_balance: 119,
+                    reserve_policy,
+                },
+            ),
+            Err(StorageError::ReserveUnavailable)
+        );
+        assert_eq!(
+            store
+                .prepare_deposit_funding_attempt(
+                    second_owner,
+                    &second,
+                    quota,
+                    DepositCycleAdmission {
+                        cycles_balance: 120,
+                        reserve_policy,
+                    },
+                )
+                .expect("formal deposit plus candidate boundary"),
+            DepositAdmissionOutcome::Inserted
+        );
     }
 
     #[test]
@@ -9574,8 +9859,7 @@ mod tests {
         initialize_unpaused_admin(&mut store);
         let first_owner = Principal::self_authenticating([67; 32]);
         let second_owner = Principal::self_authenticating([68; 32]);
-        let (first, _, _) =
-            funding_attempt(first_owner, DepositFundingAttemptState::Prepared);
+        let (first, _, _) = funding_attempt(first_owner, DepositFundingAttemptState::Prepared);
         let (mut second, _, _) =
             funding_attempt(second_owner, DepositFundingAttemptState::Prepared);
         second.intent.deposit_id = [68; 32];
@@ -9636,12 +9920,7 @@ mod tests {
         };
         assert_eq!(
             store
-                .prepare_deposit_funding_attempt(
-                    owner,
-                    &attempt,
-                    quota,
-                    ample_cycle_admission(),
-                )
+                .prepare_deposit_funding_attempt(owner, &attempt, quota, ample_cycle_admission(),)
                 .expect("reserve attempt"),
             DepositAdmissionOutcome::Inserted
         );
@@ -9774,6 +10053,15 @@ mod tests {
         store
             .prepare_deposit_funding_attempt(owner, &attempt, quota, ample_cycle_admission())
             .expect("reserve attempt");
+        assert_eq!(store.deposit_funding_reservation_count(), Ok(1));
+        assert_eq!(store.nonterminal_deposit_count(), Ok(0));
+        assert_eq!(
+            store
+                .counters()
+                .expect("funding counters")
+                .reserved_deposit_mint_operations,
+            0
+        );
         assert_eq!(
             store
                 .admit_deposit(owner, &intent, &record, Some(quota), Some((&attempt, None)),)
@@ -9807,6 +10095,15 @@ mod tests {
         assert_eq!(admission.global_count, 1);
         assert_eq!(admission.caller_counts[0].count, 1);
         assert!(admission.funding_reservations.is_empty());
+        assert_eq!(store.deposit_funding_reservation_count(), Ok(0));
+        assert_eq!(store.nonterminal_deposit_count(), Ok(1));
+        assert_eq!(
+            store
+                .counters()
+                .expect("promoted counters")
+                .reserved_deposit_mint_operations,
+            0
+        );
 
         assert_eq!(
             store
@@ -11606,6 +11903,101 @@ mod tests {
 
     #[test]
     #[serial]
+    fn settlement_job_kind_counts_follow_commits_rollbacks_deletes_and_reopen() {
+        let memory = VectorMemory::default();
+        let store = StableStore::init(memory.clone()).expect("initialize");
+        for (kind, id) in [
+            (SettlementJobKind::Deposit, [1; 32]),
+            (SettlementJobKind::Withdrawal, [2; 32]),
+            (SettlementJobKind::FeePayout, [3; 32]),
+        ] {
+            store
+                .handle
+                .update(|connection| enqueue_settlement_job(connection, kind, id, 1))
+                .expect("insert settlement job");
+            assert_eq!(store.settlement_job_kind_count(kind), Ok(1));
+        }
+
+        let rolled_back: Result<(), DbError> = store.handle.update(|connection| {
+            enqueue_settlement_job(connection, SettlementJobKind::Deposit, [4; 32], 1)?;
+            Err(DbError::Constraint("force rollback".into()))
+        });
+        assert!(rolled_back.is_err());
+        assert_eq!(
+            store.settlement_job_kind_count(SettlementJobKind::Deposit),
+            Ok(1)
+        );
+
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "DELETE FROM settlement_jobs
+                     WHERE settlement_kind = ?1 AND settlement_id = ?2",
+                    params![SettlementJobKind::Withdrawal.sql(), [2; 32].to_sql_bytes()],
+                )
+            })
+            .expect("delete terminal settlement job");
+        assert_eq!(
+            store.settlement_job_kind_count(SettlementJobKind::Withdrawal),
+            Ok(0)
+        );
+        drop(store);
+
+        let reopened = StableStore::reopen(memory).expect("reopen");
+        assert_eq!(
+            reopened.settlement_job_kind_count(SettlementJobKind::Deposit),
+            Ok(1)
+        );
+        assert_eq!(
+            reopened.settlement_job_kind_count(SettlementJobKind::Withdrawal),
+            Ok(0)
+        );
+        assert_eq!(
+            reopened.settlement_job_kind_count(SettlementJobKind::FeePayout),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn reopen_rejects_missing_or_mismatched_settlement_job_kind_counts() {
+        for corruption in ["missing", "mismatched"] {
+            let memory = VectorMemory::default();
+            let store = StableStore::init(memory.clone()).expect("initialize");
+            store
+                .handle
+                .update(|connection| {
+                    enqueue_settlement_job(connection, SettlementJobKind::Deposit, [1; 32], 1)
+                })
+                .expect("insert settlement job");
+            store
+                .handle
+                .update(|connection| match corruption {
+                    "missing" => connection.execute(
+                        "DELETE FROM settlement_job_kind_counts
+                         WHERE settlement_kind = ?1",
+                        params![SettlementJobKind::Deposit.sql()],
+                    ),
+                    "mismatched" => connection.execute(
+                        "UPDATE settlement_job_kind_counts SET count = CASE settlement_kind
+                           WHEN 0 THEN 0 WHEN 1 THEN 1 ELSE count END",
+                        params![],
+                    ),
+                    _ => unreachable!(),
+                })
+                .expect("corrupt kind count");
+            drop(store);
+
+            assert!(
+                StableStore::reopen(memory).is_err(),
+                "{corruption} kind count must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
     fn lookup_queries_use_primary_key_indexes() {
         let memory = VectorMemory::default();
         let store = StableStore::init(memory).expect("initialize query plan fixture");
@@ -11639,6 +12031,25 @@ mod tests {
                 "query must not scan the full table: {details:?}"
             );
         }
+        let details = store
+            .handle
+            .query(|connection| {
+                connection.query_all(
+                    "EXPLAIN QUERY PLAN
+                     SELECT count FROM settlement_job_kind_counts
+                     WHERE settlement_kind = ?1",
+                    params![SettlementJobKind::Deposit.sql()],
+                    |row| row.get::<String>(3),
+                )
+            })
+            .expect("explain kind count lookup");
+        assert!(
+            details.iter().any(|detail| {
+                let detail = detail.to_ascii_uppercase();
+                detail.contains("PRIMARY KEY") || detail.contains("INDEX")
+            }),
+            "kind count lookup must use its primary key: {details:?}"
+        );
     }
 
     #[test]

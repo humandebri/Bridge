@@ -5,6 +5,7 @@ pragma solidity 0.8.36;
 import {Bridge} from "../src/Bridge.sol";
 import {IBSNS} from "../src/interfaces/IBSNS.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
+import {MintAuthorizationPolicy} from "../src/libraries/MintAuthorizationPolicy.sol";
 import {TestBase} from "./TestBase.sol";
 
 contract ProtocolVectorsTest is TestBase {
@@ -79,6 +80,52 @@ contract ProtocolVectorsTest is TestBase {
             assert(withdrawal.chargedServiceFee == serviceFee);
             assert(withdrawal.amountOut == expectedAmountOut);
             assert(withdrawal.status == IBridge.WithdrawalStatus.Committed);
+        }
+    }
+
+    function test_mint_transition_matches_lean_deposit_admission_cases() public view {
+        string memory json = vm.readFile(VECTORS);
+        uint256 count = vm.parseJsonUint(json, ".deposit_admission_count");
+        assert(count > 0);
+
+        for (uint256 index = 0; index < count; ++index) {
+            string memory base = string.concat(".deposit_admission_cases[", vm.toString(index), "]");
+            uint256 serviceFee = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".service_fee")));
+            uint256 maximumFee = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".maximum_service_fee")));
+            uint256 grossAmount = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".gross")));
+            uint256 perDepositLimit = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".per_deposit_limit")));
+            uint256 consumed = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".minted_in_window")));
+            uint256 windowLimit = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".mint_window_limit")));
+            bool expectedAccepted = vm.parseJsonBool(json, string.concat(base, ".accepted"));
+            MintAuthorizationPolicy.MintTransitionInput memory input = MintAuthorizationPolicy.MintTransitionInput({
+                timestamp: 0,
+                deadline: 0,
+                authorizationEpoch: 1,
+                currentEpoch: 1,
+                recipient: USER,
+                bridge: address(2),
+                token: address(3),
+                grossAmount: grossAmount,
+                maximumFee: maximumFee,
+                chargedFee: serviceFee,
+                protocolMaximumFee: maximumFee,
+                perDepositLimit: perDepositLimit,
+                consumedInWindow: consumed,
+                windowLimit: windowLimit,
+                windowStartedAt: 0,
+                windowDuration: 1,
+                paused: false,
+                processed: false
+            });
+            (MintAuthorizationPolicy.RejectReason reason, MintAuthorizationPolicy.MintEffects memory effects,) =
+                MintAuthorizationPolicy.evaluateMint(input);
+            assert((reason == MintAuthorizationPolicy.RejectReason.None) == expectedAccepted);
+            if (expectedAccepted) {
+                uint256 expectedNet = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".net")));
+                assert(effects.mintAmount == expectedNet);
+                assert(effects.supplyIncrease == expectedNet);
+                assert(effects.eventMintedAmount == expectedNet);
+            }
         }
     }
 

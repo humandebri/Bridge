@@ -183,12 +183,7 @@ impl DepositRecord {
     }
 
     pub const fn reserves_mint_resources(&self) -> bool {
-        matches!(
-            self.state,
-            DepositState::AuthorizationPending { .. }
-                | DepositState::AuthorizationAvailable { .. }
-                | DepositState::ExpiryReconciliation { .. }
-        )
+        crate::deposit_reservation_active(self.state.code())
     }
 
     pub fn reserved_mint_amount(&self) -> Result<Amount, CoreError> {
@@ -207,9 +202,34 @@ impl DepositRecord {
         use DepositEvent as Event;
         use DepositState as State;
 
-        if self.is_idempotent(&event) {
-            return Ok(ApplyResult::idempotent());
-        }
+        let (guard, guard_error) = self.transition_guard(&event);
+        let transition_quote = match (&event, self.quote) {
+            (Event::CommitAuthorization { quote, .. }, _) => Some(*quote),
+            (_, quote) => quote,
+        };
+        let net_amount = transition_quote.map_or(0, |quote| quote.net_amount.get());
+        let service_fee = transition_quote.map_or(0, |quote| quote.service_fee.get());
+        let reserved_amount = self.reserved_mint_amount()?.get();
+        let transition = crate::deposit_transition_decision(crate::DepositTransitionInput {
+            state: self.state.code(),
+            event: event.code(),
+            guard,
+            same_payload: self.is_idempotent(&event),
+            gross_amount: self.gross_amount.get(),
+            net_amount,
+            service_fee,
+            reserved_amount,
+        });
+        let expected_effects = match transition {
+            crate::DepositTransitionDecision::Idempotent => return Ok(ApplyResult::idempotent()),
+            crate::DepositTransitionDecision::Reject => {
+                return Err(guard_error.unwrap_or(CoreError::InvalidTransition {
+                    entity: "deposit",
+                    event: event.name(),
+                }))
+            }
+            crate::DepositTransitionDecision::Apply(effects) => effects,
+        };
 
         let (
             next_state,
@@ -253,20 +273,16 @@ impl DepositRecord {
                     quote,
                     authorization,
                 },
-            ) => {
-                quote.validate(self.gross_amount)?;
-                self.validate_authorization(&authorization, quote)?;
-                (
-                    State::AuthorizationPending {
-                        ledger_block_index: *ledger_block_index,
-                    },
-                    Some(quote),
-                    Some(*authorization),
-                    None,
-                    None,
-                    Amount::ZERO,
-                )
-            }
+            ) => (
+                State::AuthorizationPending {
+                    ledger_block_index: *ledger_block_index,
+                },
+                Some(quote),
+                Some(*authorization),
+                None,
+                None,
+                Amount::ZERO,
+            ),
             (
                 State::AuthorizationPending { ledger_block_index },
                 Event::AuthorizationSigned { signature },
@@ -278,9 +294,7 @@ impl DepositRecord {
                             entity: "deposit",
                             event: "missing_authorization",
                         })?;
-                if !authorization.install_signature(signature) {
-                    return Err(CoreError::ConflictingReplay);
-                }
+                authorization.signature = Some(signature);
                 (
                     State::AuthorizationAvailable {
                         ledger_block_index: *ledger_block_index,
@@ -307,10 +321,10 @@ impl DepositRecord {
                 Amount::ZERO,
             ),
             (
-                State::ExpiryReconciliation { ledger_block_index },
+                State::AuthorizationAvailable { ledger_block_index }
+                | State::ExpiryReconciliation { ledger_block_index },
                 Event::MintReconciled { evidence },
             ) => {
-                self.validate_finalization_evidence(&evidence)?;
                 let service_fee = self.quote.ok_or(CoreError::InvalidAmount)?.service_fee;
                 (
                     State::Minted {
@@ -330,38 +344,17 @@ impl DepositRecord {
                     attempt,
                     expiry_evidence,
                 },
-            ) => {
-                self.validate_refund_attempt(&attempt)?;
-                match (&self.state, reason, expiry_evidence.as_deref()) {
-                    (
-                        State::ExpiryReconciliation { .. },
-                        DepositRefundReason::AuthorizationExpired,
-                        Some(evidence),
-                    ) => self.validate_expiry_evidence(evidence)?,
-                    (
-                        State::EscrowedUnquoted { .. },
-                        DepositRefundReason::AuthorizationExpired,
-                        _,
-                    )
-                    | (State::ExpiryReconciliation { .. }, _, _)
-                    | (State::EscrowedUnquoted { .. }, _, Some(_)) => {
-                        return Err(CoreError::RefundIneligible)
-                    }
-                    (State::EscrowedUnquoted { .. }, _, None) => {}
-                    _ => return Err(CoreError::RefundIneligible),
-                }
-                (
-                    State::RefundPending {
-                        reason,
-                        attempt: *attempt,
-                    },
-                    self.quote,
-                    self.mint_authorization.clone(),
-                    self.mint_finalization_evidence.clone(),
-                    expiry_evidence.map(|evidence| *evidence),
-                    Amount::ZERO,
-                )
-            }
+            ) => (
+                State::RefundPending {
+                    reason,
+                    attempt: *attempt,
+                },
+                self.quote,
+                self.mint_authorization.clone(),
+                self.mint_finalization_evidence.clone(),
+                expiry_evidence.map(|evidence| *evidence),
+                Amount::ZERO,
+            ),
             (
                 State::RefundPending { reason, attempt },
                 Event::RefundSucceeded { ledger_block_index },
@@ -397,104 +390,226 @@ impl DepositRecord {
                 });
             }
         };
+        let next_state_code = next_state.code();
+        let next_reservation_active = crate::deposit_reservation_active(next_state_code);
+        if next_state_code != expected_effects.next_state
+            || next_reservation_active != expected_effects.reservation_active
+            || (self.reserves_mint_resources() && !next_reservation_active)
+                != expected_effects.release_reservation
+            || next_quote.map_or(0, |quote| {
+                if next_reservation_active {
+                    quote.net_amount.get()
+                } else {
+                    0
+                }
+            }) != expected_effects.reservation_after
+            || (if !self.reserves_mint_resources() && next_reservation_active {
+                next_quote.map_or(0, |quote| quote.net_amount.get())
+            } else {
+                0
+            }) != expected_effects.reservation_add
+            || fee_delta.get() != expected_effects.fee_credit
+        {
+            return Err(CoreError::InvalidTransition {
+                entity: "deposit",
+                event: "transition_effect_mismatch",
+            });
+        }
         self.state = next_state;
         self.quote = next_quote;
         self.mint_authorization = next_authorization;
         self.mint_finalization_evidence = next_finalization_evidence;
         self.mint_expiry_evidence = next_expiry_evidence;
-        Ok(ApplyResult::applied(fee_delta))
+        Ok(ApplyResult::applied_deposit(
+            crate::DepositAccountingEffects {
+                reservation_after: Amount::new(expected_effects.reservation_after),
+                reservation_add: Amount::new(expected_effects.reservation_add),
+                reservation_release: Amount::new(expected_effects.reservation_release),
+                fee_credit: Amount::new(expected_effects.fee_credit),
+                pending_liability_debit: Amount::new(expected_effects.pending_liability_debit),
+                escrow_debit: Amount::new(expected_effects.escrow_debit),
+                mint_supply_increase: Amount::new(expected_effects.mint_supply_increase),
+            },
+        ))
     }
 
-    fn validate_authorization(
+    fn transition_guard(
         &self,
-        record: &MintAuthorizationRecord,
-        quote: DepositQuote,
-    ) -> Result<(), CoreError> {
-        let authorization = record.authorization;
-        if authorization.deposit_id != self.id.bytes()
-            || authorization.gross_amount != self.gross_amount
-            || authorization.max_service_fee != self.max_service_fee
-            || authorization.charged_service_fee != quote.service_fee
-            || record.signature.is_some()
-            || record.signature_dispatched
-            || record.signature_dispatch_attempt != 0
-            || record.domain.name != crate::MINT_AUTHORIZATION_DOMAIN_NAME
-            || record.domain.version != crate::MINT_AUTHORIZATION_DOMAIN_VERSION
-            || record.domain.chain_id == 0
-            || record.domain.verifying_contract == [0; 20]
-            || record.digest == [0; 32]
-            || record.origin.finalized_block_hash == [0; 32]
-            || authorization.recipient == [0; 20]
-            || authorization.authorization_epoch == 0
-            || authorization.deadline
-                != record
+        event: &DepositEvent,
+    ) -> (crate::DepositEventGuard, Option<CoreError>) {
+        use crate::DepositEventGuard as Guard;
+        use DepositEvent as Event;
+        use DepositState as State;
+
+        match event {
+            Event::FundingSucceeded { .. }
+            | Event::FundingAmbiguous { .. }
+            | Event::FundingFailed { .. } => (Guard::Funding, None),
+            Event::CommitAuthorization {
+                quote,
+                authorization: record,
+            } => {
+                let quote_result = quote.validate(self.gross_amount);
+                let authorization = record.authorization;
+                let fixed_fields_match = authorization.deposit_id == self.id.bytes()
+                    && authorization.recipient != [0; 20]
+                    && authorization.gross_amount == self.gross_amount
+                    && authorization.max_service_fee == self.max_service_fee
+                    && authorization.charged_service_fee == quote.service_fee
+                    && record.domain.chain_id != 0
+                    && record.domain.verifying_contract != [0; 20]
+                    && record.digest != [0; 32]
+                    && record.origin.finalized_block_hash != [0; 32]
+                    && authorization.authorization_epoch != 0;
+                let canonical_domain_strings = record.domain.name
+                    == crate::MINT_AUTHORIZATION_DOMAIN_NAME
+                    && record.domain.version == crate::MINT_AUTHORIZATION_DOMAIN_VERSION;
+                let deadline_valid = record
                     .origin
                     .finalized_block_timestamp
                     .checked_add(crate::MINT_AUTHORIZATION_TTL_SECONDS)
-                    .ok_or(CoreError::ArithmeticOverflow)?
-        {
-            return Err(CoreError::ConflictingReplay);
+                    == Some(authorization.deadline);
+                let pristine = record.signature.is_none()
+                    && !record.signature_dispatched
+                    && record.signature_dispatch_attempt == 0;
+                let guard = Guard::CommitAuthorization {
+                    quote_valid: quote_result.is_ok(),
+                    fixed_fields_match,
+                    canonical_domain_strings,
+                    deadline_valid,
+                    pristine,
+                };
+                (
+                    guard,
+                    (!guard.accepts()).then_some(if let Err(error) = quote_result {
+                        error
+                    } else if !deadline_valid
+                        && record
+                            .origin
+                            .finalized_block_timestamp
+                            .checked_add(crate::MINT_AUTHORIZATION_TTL_SECONDS)
+                            .is_none()
+                    {
+                        CoreError::ArithmeticOverflow
+                    } else {
+                        CoreError::ConflictingReplay
+                    }),
+                )
+            }
+            Event::AuthorizationSigned { signature } => {
+                let authorization = self.mint_authorization.as_ref();
+                let guard = Guard::InstallSignature {
+                    dispatched: authorization.is_some_and(|record| record.signature_dispatched),
+                    signature_absent: authorization
+                        .is_some_and(|record| record.signature.is_none()),
+                    signature_length_valid: signature.len() == 65,
+                };
+                (
+                    guard,
+                    (!guard.accepts()).then_some(CoreError::ConflictingReplay),
+                )
+            }
+            Event::BeginExpiryReconciliation => (Guard::BeginExpiry, None),
+            Event::MintReconciled { evidence } => {
+                let authorization = self.mint_authorization.as_ref();
+                let expected_net = authorization.and_then(|record| {
+                    record
+                        .authorization
+                        .gross_amount
+                        .checked_sub(record.authorization.charged_service_fee)
+                        .ok()
+                });
+                let fixed_fields_match = authorization.is_some_and(|authorization| {
+                    evidence.authorization_digest == authorization.digest
+                        && evidence.deposit_id == authorization.authorization.deposit_id
+                        && evidence.recipient == authorization.authorization.recipient
+                        && evidence.chain_id == authorization.domain.chain_id
+                        && evidence.verifying_contract == authorization.domain.verifying_contract
+                        && evidence.gross_amount == authorization.authorization.gross_amount
+                        && evidence.charged_service_fee
+                            == authorization.authorization.charged_service_fee
+                        && Some(evidence.minted_amount) == expected_net
+                });
+                let origin_inclusion = authorization.is_some_and(|authorization| {
+                    evidence.receipt_block_number >= authorization.origin.finalized_block_number
+                });
+                let audit_complete = evidence.transaction_hash != [0; 32]
+                    && evidence.receipt_block_hash != [0; 32]
+                    && evidence.finalized_block_hash != [0; 32]
+                    && evidence.rpc_request_digest != [0; 32]
+                    && evidence.rpc_response_digest != [0; 32];
+                let guard = Guard::MintFinalization {
+                    fixed_fields_match: fixed_fields_match && origin_inclusion,
+                    receipt_succeeded: evidence.receipt_succeeded,
+                    receipt_block: evidence.receipt_block_number,
+                    finalized_block: evidence.finalized_block_number,
+                    audit_complete,
+                };
+                (
+                    guard,
+                    (!guard.accepts()).then_some(CoreError::ConflictingReplay),
+                )
+            }
+            Event::StartRefund {
+                reason,
+                attempt,
+                expiry_evidence,
+            } => {
+                let identity = &attempt.identity;
+                let attempt_matches = attempt.attempt_no == 0
+                    && identity.operation == LedgerOperation::RefundDeposit
+                    && identity.spender.is_none()
+                    && identity.from == self.transfer.to
+                    && identity.to == self.transfer.from
+                    && identity
+                        .amount
+                        .checked_add(identity.fee)
+                        .is_ok_and(|amount| amount == self.gross_amount);
+                let policy_matches = match (&self.state, reason, expiry_evidence.as_deref()) {
+                    (
+                        State::ExpiryReconciliation { .. },
+                        DepositRefundReason::AuthorizationExpired,
+                        Some(evidence),
+                    ) => self.expiry_evidence_matches(evidence),
+                    (State::EscrowedUnquoted { .. }, reason, None) => {
+                        *reason != DepositRefundReason::AuthorizationExpired
+                    }
+                    _ => false,
+                };
+                let guard = Guard::StartRefund {
+                    attempt_matches,
+                    policy_matches,
+                };
+                (
+                    guard,
+                    (!guard.accepts()).then_some(CoreError::RefundIneligible),
+                )
+            }
+            Event::RefundSucceeded { .. } | Event::RefundAmbiguous { .. } => {
+                (Guard::RefundResult, None)
+            }
         }
-        Ok(())
     }
 
-    fn validate_refund_attempt(&self, attempt: &TransferAttempt) -> Result<(), CoreError> {
-        let identity = &attempt.identity;
-        if attempt.attempt_no != 0
-            || identity.operation != LedgerOperation::RefundDeposit
-            || identity.spender.is_some()
-            || identity.from != self.transfer.to
-            || identity.to != self.transfer.from
-            || identity.amount.checked_add(identity.fee)? != self.gross_amount
-        {
-            return Err(CoreError::RefundIneligible);
-        }
-        Ok(())
-    }
-
-    fn validate_expiry_evidence(&self, evidence: &MintExpiryEvidence) -> Result<(), CoreError> {
-        let authorization = self
-            .mint_authorization
-            .as_ref()
-            .ok_or(CoreError::RefundIneligible)?;
-        if evidence.authorization_digest != authorization.digest
-            || evidence.chain_id != authorization.domain.chain_id
-            || evidence.finalized_block_number < authorization.origin.finalized_block_number
-            || evidence.finalized_block_hash == [0; 32]
-            || evidence.runtime_sha256 == [0; 32]
-            || evidence.rpc_request_digest == [0; 32]
-            || evidence.rpc_response_digest == [0; 32]
-            || evidence.finalized_block_timestamp <= authorization.authorization.deadline
-        {
-            return Err(CoreError::RefundIneligible);
-        }
-        Ok(())
-    }
-
-    fn validate_finalization_evidence(
-        &self,
-        evidence: &MintFinalizationEvidence,
-    ) -> Result<(), CoreError> {
-        let authorization =
-            self.mint_authorization
-                .as_ref()
-                .ok_or(CoreError::InvalidTransition {
-                    entity: "deposit",
-                    event: "missing_authorization",
-                })?;
-        if evidence.authorization_digest != authorization.digest
-            || evidence.chain_id != authorization.domain.chain_id
-            || evidence.transaction_hash == [0; 32]
-            || evidence.receipt_block_number < authorization.origin.finalized_block_number
-            || evidence.receipt_block_number > evidence.finalized_block_number
-            || evidence.receipt_block_hash == [0; 32]
-            || evidence.finalized_block_hash == [0; 32]
-            || evidence.rpc_request_digest == [0; 32]
-            || evidence.rpc_response_digest == [0; 32]
-        {
-            return Err(CoreError::ConflictingReplay);
-        }
-        Ok(())
+    fn expiry_evidence_matches(&self, evidence: &MintExpiryEvidence) -> bool {
+        let Some(authorization) = self.mint_authorization.as_ref() else {
+            return false;
+        };
+        let binding_matches = evidence.authorization_digest == authorization.digest
+            && evidence.deposit_id == authorization.authorization.deposit_id
+            && evidence.chain_id == authorization.domain.chain_id
+            && evidence.verifying_contract == authorization.domain.verifying_contract
+            && evidence.finalized_block_number >= authorization.origin.finalized_block_number
+            && evidence.finalized_block_hash != [0; 32]
+            && evidence.runtime_sha256 != [0; 32]
+            && evidence.rpc_request_digest != [0; 32]
+            && evidence.rpc_response_digest != [0; 32];
+        crate::expiry_refund_allowed(
+            binding_matches,
+            evidence.deposit_processed,
+            evidence.finalized_block_timestamp,
+            authorization.authorization.deadline,
+        )
     }
 
     fn is_idempotent(&self, event: &DepositEvent) -> bool {
@@ -577,6 +692,21 @@ impl DepositRecord {
 }
 
 impl DepositEvent {
+    const fn code(&self) -> u8 {
+        match self {
+            Self::FundingSucceeded { .. } => 0,
+            Self::FundingAmbiguous { .. } => 1,
+            Self::FundingFailed { .. } => 2,
+            Self::CommitAuthorization { .. } => 3,
+            Self::StartRefund { .. } => 4,
+            Self::AuthorizationSigned { .. } => 5,
+            Self::BeginExpiryReconciliation => 6,
+            Self::MintReconciled { .. } => 7,
+            Self::RefundSucceeded { .. } => 9,
+            Self::RefundAmbiguous { .. } => 10,
+        }
+    }
+
     const fn name(&self) -> &'static str {
         match self {
             Self::FundingSucceeded { .. } => "funding_succeeded",
@@ -589,6 +719,24 @@ impl DepositEvent {
             Self::StartRefund { .. } => "start_refund",
             Self::RefundSucceeded { .. } => "refund_succeeded",
             Self::RefundAmbiguous { .. } => "refund_ambiguous",
+        }
+    }
+}
+
+impl DepositState {
+    const fn code(&self) -> u8 {
+        match self {
+            Self::FundingPending => 0,
+            Self::EscrowedUnquoted { .. } => 1,
+            Self::AuthorizationPending { .. } => 2,
+            Self::AuthorizationAvailable { .. } => 3,
+            Self::ExpiryReconciliation { .. } => 4,
+            Self::FundingReconciliationHold { .. } => 5,
+            Self::RefundPending { .. } => 6,
+            Self::RefundReconciliationHold { .. } => 7,
+            Self::Refunded { .. } => 8,
+            Self::Cancelled { .. } => 9,
+            Self::Minted { .. } => 10,
         }
     }
 }

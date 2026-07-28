@@ -30,7 +30,7 @@ describe("Phase 3 PocketIC saga", () => {
   let pic: PocketIc | undefined;
   let serverUrl = "";
 
-  async function setup(activate = true, governanceRebroadcastAfterSeconds = 300n) {
+  async function setup(activate = true) {
     const mockBytes = readFileSync(mockWasm);
     const subnet = await pic!.getFiduciarySubnet();
     if (subnet === undefined) throw new Error("Fiduciary subnet was not created");
@@ -48,8 +48,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const governanceCheckIntervalSeconds = governanceRebroadcastAfterSeconds < 60n ? 30n : 60n;
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_evm_liveness: { check_interval_seconds: governanceCheckIntervalSeconds, rebroadcast_after_seconds: governanceRebroadcastAfterSeconds, replacement_after_seconds: 1_800n, max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(bridgeWasm), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
@@ -289,48 +288,183 @@ describe("Phase 3 PocketIC saga", () => {
     bridge.actor.setPrincipal(Principal.anonymous());
     expect(await continueDeposit(bridge, deposit.Ok.deposit_id)).toEqual({ Err: { AnonymousCaller: null } });
     bridge.actor.setPrincipal(owner);
+    const callsBeforeExpiry = await (evm.actor as any).eth_call_count();
+    const processedCallsBeforeExpiry = await (evm.actor as any).deposit_processed_call_count();
     await evm.actor.set_block_timestamp(authorization.deadline + 1n);
     expect(await continueDeposit(bridge, deposit.Ok.deposit_id)).toHaveProperty("Ok.Complete");
+    expect(await (evm.actor as any).eth_call_count()).toBeLessThanOrEqual(callsBeforeExpiry + 2n);
+    expect(await (evm.actor as any).deposit_processed_call_count()).toBe(processedCallsBeforeExpiry + 1n);
     stored = await bridge.actor.get_deposit(deposit.Ok.deposit_id);
     expect(phaseName(stored[0].state)).toBe("Refunded");
   });
 
-  it("reauthorizes governance rebroadcasts after RPC awaits and preserves the signed transaction across upgrade", async () => {
-    const { bridge, evm, runtimePrincipal } = await setup(true, 30n);
-    const oldPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(34));
-    const currentPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(35));
+  it("preserves externally relayed governance signatures across upgrade and only replaces explicitly", async () => {
+    const { bridge, evm, init, runtimePrincipal } = await setup();
     const pauseAction = { PauseDepositMints: null };
 
-    await (evm.actor as any).set_broadcast_inconsistent_after_accepts(1);
-    bridge.actor.setPrincipal(oldPausePrincipal);
-    expect(await (bridge.actor as any).submit_base_governance_action(pauseAction)).toHaveProperty("Err.BroadcastAmbiguous");
-    const initialBroadcasts: Uint8Array[] = await (evm.actor as any).broadcast_transactions();
-    expect(initialBroadcasts).toHaveLength(1);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const prepared: any = await (bridge.actor as any).prepare_base_governance_action(pauseAction);
+    expect(prepared).toHaveProperty("Ok.raw_transaction");
+    expect(await (evm.actor as any).broadcast_transactions()).toHaveLength(0);
 
     await pic!.upgradeCanister({
       canisterId: bridge.canisterId,
       wasm: readFileSync(bridgeWasm),
       arg: IDL.encode([], []),
     });
-    await pic!.advanceTime(30_001);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const pending: any = await (bridge.actor as any).get_pending_base_governance_transaction();
+    expect(Buffer.from(pending.Ok[0].raw_transaction)).toEqual(Buffer.from(prepared.Ok.raw_transaction));
+    const bumped = (value: bigint) => (value * 11_250n + 9_999n) / 10_000n;
+    const replacement: any = await (bridge.actor as any).prepare_base_governance_replacement({
+      operation_id: prepared.Ok.operation_id,
+      expected_transaction_hash: prepared.Ok.transaction_hash,
+      max_fee_per_gas: bumped(prepared.Ok.max_fee_per_gas),
+      max_priority_fee_per_gas: bumped(prepared.Ok.max_priority_fee_per_gas),
+    });
+    expect(replacement.Ok.generation).toBe(1);
+    expect(Buffer.from(replacement.Ok.transaction_hash)).not.toEqual(Buffer.from(prepared.Ok.transaction_hash));
+    expect(await (evm.actor as any).broadcast_transactions()).toHaveLength(0);
+    let current = replacement.Ok;
+    for (const generation of [2, 3]) {
+      const next: any = await (bridge.actor as any).prepare_base_governance_replacement({
+        operation_id: current.operation_id,
+        expected_transaction_hash: current.transaction_hash,
+        max_fee_per_gas: bumped(current.max_fee_per_gas),
+        max_priority_fee_per_gas: bumped(current.max_priority_fee_per_gas),
+      });
+      expect(next.Ok.generation).toBe(generation);
+      current = next.Ok;
+    }
+    expect(await (bridge.actor as any).prepare_base_governance_replacement({
+      operation_id: current.operation_id,
+      expected_transaction_hash: current.transaction_hash,
+      max_fee_per_gas: current.max_fee_per_gas,
+      max_priority_fee_per_gas: current.max_priority_fee_per_gas,
+    })).toHaveProperty("Err.ReplacementLimitReached");
 
-    await (evm.actor as any).set_chain_id_mode({ Inconsistent: null });
-    const oldPauseActor = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
-    oldPauseActor.setPrincipal(oldPausePrincipal);
-    const retryAsOldPause = await oldPauseActor.submit_base_governance_action(pauseAction);
-    const governanceActor = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
-    governanceActor.setPrincipal(runtimePrincipal);
-    const rotatePause = await governanceActor.rotate_pause_principal({ pause_principal: currentPausePrincipal });
-    const [oldPauseResult, rotationResult] = await Promise.all([retryAsOldPause(), rotatePause()]);
-    expect(rotationResult).toHaveProperty("Ok");
-    expect(oldPauseResult).toEqual({ Err: { Unauthorized: null } });
-    expect(await (evm.actor as any).broadcast_transactions()).toHaveLength(1);
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: prepared.Ok.operation_id,
+      transaction_hash: new Uint8Array(32).fill(0xff),
+    })).toHaveProperty("Err.InvalidArgument");
+    await (evm.actor as any).set_receipt_mode({ Missing: null });
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: prepared.Ok.operation_id,
+      transaction_hash: prepared.Ok.transaction_hash,
+    })).toHaveProperty("Err.TransactionNotFinalized");
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+    const oldGenerationConfirmed: any = await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: prepared.Ok.operation_id,
+      transaction_hash: prepared.Ok.transaction_hash,
+    });
+    expect(oldGenerationConfirmed).toHaveProperty("Ok.succeeded", true);
+    expect(await (bridge.actor as any).prepare_base_governance_replacement({
+      operation_id: prepared.Ok.operation_id,
+      expected_transaction_hash: current.transaction_hash,
+      max_fee_per_gas: bumped(current.max_fee_per_gas),
+      max_priority_fee_per_gas: bumped(current.max_priority_fee_per_gas),
+    })).toHaveProperty("Err.InvalidArgument");
 
-    bridge.actor.setPrincipal(currentPausePrincipal);
-    expect(await (bridge.actor as any).submit_base_governance_action(pauseAction)).toHaveProperty("Err.BroadcastAmbiguous");
-    const rebroadcasts: Uint8Array[] = await (evm.actor as any).broadcast_transactions();
-    expect(rebroadcasts).toHaveLength(2);
-    expect(Buffer.from(rebroadcasts[1])).toEqual(Buffer.from(rebroadcasts[0]));
+    const latestPrepared: any = await (bridge.actor as any).prepare_base_governance_action({ PauseWithdrawals: null });
+    const latestReplacement: any = await (bridge.actor as any).prepare_base_governance_replacement({
+      operation_id: latestPrepared.Ok.operation_id,
+      expected_transaction_hash: latestPrepared.Ok.transaction_hash,
+      max_fee_per_gas: bumped(latestPrepared.Ok.max_fee_per_gas),
+      max_priority_fee_per_gas: bumped(latestPrepared.Ok.max_priority_fee_per_gas),
+    });
+    const latestConfirmed: any = await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: latestReplacement.Ok.operation_id,
+      transaction_hash: latestReplacement.Ok.transaction_hash,
+    });
+    expect(latestConfirmed).toHaveProperty("Ok.succeeded", true);
+
+    const revertedPrepared: any = await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null });
+    await (evm.actor as any).set_receipt_mode({ Reverted: null });
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: revertedPrepared.Ok.operation_id,
+      transaction_hash: revertedPrepared.Ok.transaction_hash,
+    })).toHaveProperty("Err.TransactionReverted");
+    expect((await (bridge.actor as any).get_pending_base_governance_transaction()).Ok).toEqual([]);
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+
+    bridge.actor.setPrincipal(init.pause_principal);
+    expect((await (bridge.actor as any).get_pending_base_governance_transaction()).Ok).toEqual([]);
+  });
+
+  it("lets the pause principal relay only pause and recorded timelock cancellation", async () => {
+    const { bridge, evm, init, runtimePrincipal } = await setup(false);
+    const pausePrincipal = init.pause_principal;
+    const thirdParty = Principal.selfAuthenticating(new Uint8Array(32).fill(99));
+    await (evm.actor as any).set_deposit_mints_paused(true);
+    await (evm.actor as any).set_withdrawals_paused(true);
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const schedule: any = await (bridge.actor as any).schedule_activation();
+    expect(schedule).toHaveProperty("Ok.kind.ScheduleActivation");
+    const bumped = (value: bigint) => (value * 11_250n + 9_999n) / 10_000n;
+    bridge.actor.setPrincipal(pausePrincipal);
+    expect(await (bridge.actor as any).get_pending_base_governance_transaction())
+      .toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).prepare_base_governance_replacement({
+      operation_id: schedule.Ok.operation_id,
+      expected_transaction_hash: schedule.Ok.transaction_hash,
+      max_fee_per_gas: bumped(schedule.Ok.max_fee_per_gas),
+      max_priority_fee_per_gas: bumped(schedule.Ok.max_priority_fee_per_gas),
+    })).toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: schedule.Ok.operation_id,
+      transaction_hash: schedule.Ok.transaction_hash,
+    })).toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).prepare_next_emergency_base_action())
+      .toEqual({ Err: { Unauthorized: null } });
+
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: schedule.Ok.operation_id,
+      transaction_hash: schedule.Ok.transaction_hash,
+    })).toHaveProperty("Ok.succeeded", true);
+
+    bridge.actor.setPrincipal(pausePrincipal);
+    expect(await (bridge.actor as any).prepare_base_governance_action({
+      SetServiceFee: { value: 1n },
+    })).toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).schedule_activation()).toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).execute_activation()).toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).emergency_pause()).toHaveProperty("Ok.base_actions_queued", true);
+
+    const expectedKinds = ["PauseDepositMints", "PauseWithdrawals", "CancelTimelock"];
+    for (const [index, expectedKind] of expectedKinds.entries()) {
+      const prepared: any = await (bridge.actor as any).prepare_next_emergency_base_action();
+      expect(prepared).toHaveProperty(`Ok.kind.${expectedKind}`);
+      expect(await (bridge.actor as any).get_pending_base_governance_transaction())
+        .toHaveProperty(`Ok.0.kind.${expectedKind}`);
+      let transaction = prepared.Ok;
+      if (index === 0) {
+        const replacement: any = await (bridge.actor as any).prepare_base_governance_replacement({
+          operation_id: transaction.operation_id,
+          expected_transaction_hash: transaction.transaction_hash,
+          max_fee_per_gas: bumped(transaction.max_fee_per_gas),
+          max_priority_fee_per_gas: bumped(transaction.max_priority_fee_per_gas),
+        });
+        expect(replacement).toHaveProperty("Ok.generation", 1);
+        transaction = replacement.Ok;
+      }
+      expect(await (bridge.actor as any).confirm_base_governance_transaction({
+        operation_id: transaction.operation_id,
+        transaction_hash: transaction.transaction_hash,
+      })).toHaveProperty("Ok.succeeded", true);
+    }
+    expect(await (bridge.actor as any).prepare_next_emergency_base_action())
+      .toEqual({ Err: { InvalidArgument: null } });
+
+    bridge.actor.setPrincipal(thirdParty);
+    expect(await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null }))
+      .toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).get_pending_base_governance_transaction())
+      .toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).prepare_next_emergency_base_action())
+      .toEqual({ Err: { Unauthorized: null } });
   });
 
   it("serializes concurrent Continue calls with automatic progress for the same record", async () => {
@@ -392,7 +526,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(25);
+    expect(config.schema_version).toBe(27);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(10_000n);
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
@@ -1058,6 +1192,47 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(2);
   });
 
+  it("finalizes a wallet-submitted deposit mint immediately from its exact finalized transaction", async () => {
+    const { evm, bridge, runtimePrincipal } = await setup();
+    const result: any = await requestDefaultDeposit(bridge);
+    const authorization = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
+    const transactionHash = new Uint8Array(32).fill(0x52);
+    await evm.actor.set_observed_transaction(
+      transactionHash,
+      authorization.verifying_contract,
+      new Uint8Array(20).fill(0x77),
+      authorization.finalized_block_number,
+    );
+    await evm.actor.set_mint_log([{
+      deposit_id: authorization.deposit_id,
+      recipient: authorization.recipient,
+      authorization_digest: authorization.digest,
+      gross_amount: authorization.gross_amount,
+      charged_service_fee: authorization.charged_service_fee,
+      minted_amount: authorization.gross_amount - authorization.charged_service_fee,
+      transaction_hash: transactionHash,
+    }]);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    await (evm.actor as any).set_receipt_mint_log_index([1n]);
+    expect(await (evm.actor as any).receipt_mint_log_index()).toEqual([1n]);
+    expect(await (bridge.actor as any).notify_deposit_mint({
+      deposit_id: result.Ok.deposit_id,
+      transaction_hash: transactionHash,
+    })).toHaveProperty("Err.InvalidBaseResponse");
+    expect(phaseName((await bridge.actor.get_deposit(result.Ok.deposit_id))[0].state)).toBe("AuthorizationAvailable");
+    await (evm.actor as any).set_receipt_mint_log_index([]);
+    const notified: any = await (bridge.actor as any).notify_deposit_mint({
+      deposit_id: result.Ok.deposit_id,
+      transaction_hash: transactionHash,
+    });
+    expect(notified).toHaveProperty("Ok.Minted");
+    expect(phaseName((await bridge.actor.get_deposit(result.Ok.deposit_id))[0].state)).toBe("Minted");
+    expect(await (bridge.actor as any).notify_deposit_mint({
+      deposit_id: result.Ok.deposit_id,
+      transaction_hash: transactionHash,
+    })).toHaveProperty("Ok.Duplicate");
+  });
+
   it("fails closed and pauses new deposits when processed is true but exact Mint evidence is missing", async () => {
     const { evm, bridge } = await setup();
     const result: any = await requestDefaultDeposit(bridge);
@@ -1065,11 +1240,22 @@ describe("Phase 3 PocketIC saga", () => {
     await evm.actor.set_processed_deposit(true);
     await evm.actor.set_mint_log([]);
     await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    const processedCallsBeforeExpiry = await (evm.actor as any).deposit_processed_call_count();
     expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Stopped.reason.BaseStateMismatch");
+    expect(await (evm.actor as any).deposit_processed_call_count()).toBe(processedCallsBeforeExpiry + 1n);
     const stored: any = await bridge.actor.get_deposit(result.Ok.deposit_id);
     expect(phaseName(stored[0].state)).toBe("ExpiryReconciliation");
     expect(stored[0].refund).toEqual([]);
     expect((await bridge.actor.get_bridge_status()).deposits_paused).toBe(true);
+
+    const processedCallsBeforeUpgradeRetry = await (evm.actor as any).deposit_processed_call_count();
+    await pic!.upgradeCanister({
+      canisterId: bridge.canisterId,
+      wasm: readFileSync(bridgeWasm),
+      arg: IDL.encode([], []),
+    });
+    expect(await continueDeposit(bridge, result.Ok.deposit_id)).toHaveProperty("Ok.Stopped.reason.BaseStateMismatch");
+    expect(await (evm.actor as any).deposit_processed_call_count()).toBe(processedCallsBeforeUpgradeRetry + 1n);
   });
 
   it("does not refund when finalized Base RPC observations disagree", async () => {
@@ -1372,7 +1558,7 @@ describe("Phase 3 PocketIC saga", () => {
       expect(seeded.Ok).toBe(100);
     }
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(25);
+    expect(before.schema_version).toBe(27);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.retained_audit_events).toBe(10_000n);
     expect(before.settlement_scheduler.scheduled).toBe(10_000n);
@@ -1391,7 +1577,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(25);
+    expect(after.schema_version).toBe(27);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(10_000n);
     expect(await (bridge.actor as any).get_withdrawal(firstId)).toHaveLength(1);

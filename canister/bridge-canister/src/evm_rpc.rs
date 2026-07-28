@@ -4,8 +4,8 @@ use bridge_core::{Amount, BaseMintSnapshot, FinalizedObservationRecord};
 use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use evm_rpc_client::{CandidResponseConverter, EvmRpcClient, NoRetry};
 use evm_rpc_types::{
-    Block, BlockTag, ConsensusStrategy, GetTransactionCountArgs, Hex, Hex20, Hex32, MultiRpcResult,
-    Nat256, RpcApi, RpcError, RpcServices, SendRawTransactionStatus, TransactionReceipt,
+    Block, BlockTag, ConsensusStrategy, GetTransactionCountArgs, Hex20, Hex32, MultiRpcResult,
+    Nat256, RpcApi, RpcError, RpcServices, TransactionReceipt,
 };
 use ic_canister_runtime::{IcError, Runtime};
 use ic_cdk::call::Call;
@@ -23,6 +23,8 @@ pub enum ObservationError {
     Overflow,
     BaseStateMismatch,
     ChainIdMismatch,
+    TransactionPending,
+    TransactionReverted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,7 +208,6 @@ const SMALL_RESPONSE_BYTES: u64 = 4 * 1024;
 // larger than the fixed-size header fields.
 const BLOCK_RESPONSE_BYTES: u64 = 16 * 1024;
 const RECEIPT_RESPONSE_BYTES: u64 = 32 * 1024;
-const SEND_RESPONSE_BYTES: u64 = 2 * 1024;
 const EVM_RPC_TIMEOUT_SECONDS: u32 = 30;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -405,6 +406,30 @@ pub async fn exact_mint_evidence(
     authorization: &bridge_core::MintAuthorizationRecord,
     finalized_head_block_number: u64,
 ) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
+    exact_mint_evidence_inner(args, authorization, finalized_head_block_number, None).await
+}
+
+pub async fn notified_mint_evidence(
+    args: &BridgeInitArgs,
+    authorization: &bridge_core::MintAuthorizationRecord,
+    finalized_head_block_number: u64,
+    transaction_hash: [u8; 32],
+) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
+    exact_mint_evidence_inner(
+        args,
+        authorization,
+        finalized_head_block_number,
+        Some(transaction_hash),
+    )
+    .await
+}
+
+async fn exact_mint_evidence_inner(
+    args: &BridgeInitArgs,
+    authorization: &bridge_core::MintAuthorizationRecord,
+    finalized_head_block_number: u64,
+    expected_transaction_hash: Option<[u8; 32]>,
+) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
     let mut event_topic = [0u8; 32];
     let mut hasher = Keccak::v256();
     hasher.update(b"DepositMinted(bytes32,address,bytes32,uint256,uint256,uint256)");
@@ -478,6 +503,14 @@ pub async fn exact_mint_evidence(
         .as_ref()
         .map(|hash| *hash.as_array())
         .ok_or(ObservationError::InvalidResponse)?;
+    if expected_transaction_hash.is_some_and(|expected| expected != transaction_hash) {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let log_index = log
+        .log_index
+        .clone()
+        .ok_or(ObservationError::InvalidResponse)
+        .and_then(|value| u64::try_from(value).map_err(|_| ObservationError::Overflow))?;
     let (receipt, finalized_observation, receipt_observation) =
         match canonical_finalized_receipt(args, transaction_hash).await? {
             CanonicalFinalizedReceiptOutcome::Confirmed {
@@ -487,32 +520,39 @@ pub async fn exact_mint_evidence(
             } => (receipt, finalized_observation, receipt_observation),
             CanonicalFinalizedReceiptOutcome::Missing
             | CanonicalFinalizedReceiptOutcome::Pending { .. } => {
-                return Err(ObservationError::InvalidResponse);
+                return Err(ObservationError::TransactionPending);
             }
         };
+    if receipt.status == Some(Nat256::from(0u64)) {
+        return Err(ObservationError::TransactionReverted);
+    }
     if receipt.status != Some(Nat256::from(1u64))
         || receipt.to.as_ref() != Some(&bridge)
         || receipt
             .logs
             .iter()
-            .filter(|candidate| {
-                !candidate.removed
-                    && candidate.address == log.address
-                    && candidate.topics == log.topics
-                    && candidate.data == log.data
-                    && candidate.block_number == log.block_number
-                    && candidate.block_hash == log.block_hash
-                    && candidate.transaction_hash == log.transaction_hash
-            })
+            .filter(|candidate| exact_receipt_log_matches(candidate, log))
             .count()
             != 1
     {
         return Err(ObservationError::BaseStateMismatch);
     }
     Ok(bridge_core::MintFinalizationEvidence {
+        deposit_id: authorization.authorization.deposit_id,
+        recipient: authorization.authorization.recipient,
         authorization_digest: authorization.digest,
         chain_id: finalized_observation.chain_id,
+        verifying_contract: authorization.domain.verifying_contract,
+        gross_amount: authorization.authorization.gross_amount,
+        charged_service_fee: authorization.authorization.charged_service_fee,
+        minted_amount: authorization
+            .authorization
+            .gross_amount
+            .checked_sub(authorization.authorization.charged_service_fee)
+            .map_err(|_| ObservationError::Overflow)?,
         transaction_hash,
+        log_index,
+        receipt_succeeded: true,
         receipt_block_number: receipt_observation.block_number,
         receipt_block_hash: receipt_observation.block_hash,
         finalized_block_number: finalized_observation.block_number,
@@ -520,6 +560,20 @@ pub async fn exact_mint_evidence(
         rpc_request_digest,
         rpc_response_digest,
     })
+}
+
+fn exact_receipt_log_matches(
+    candidate: &evm_rpc_types::LogEntry,
+    observed: &evm_rpc_types::LogEntry,
+) -> bool {
+    !candidate.removed
+        && candidate.address == observed.address
+        && candidate.topics == observed.topics
+        && candidate.data == observed.data
+        && candidate.block_number == observed.block_number
+        && candidate.block_hash == observed.block_hash
+        && candidate.transaction_hash == observed.transaction_hash
+        && candidate.log_index == observed.log_index
 }
 
 async fn observe_bridge_at(
@@ -834,7 +888,7 @@ async fn observed_chain_id(args: &BridgeInitArgs) -> Result<u64, ObservationErro
     u64::try_from(chain_id).map_err(|_| ObservationError::Overflow)
 }
 
-async fn finalized_observation(
+pub async fn finalized_observation(
     args: &BridgeInitArgs,
 ) -> Result<FinalizedObservation, ObservationError> {
     let chain_id = ensure_chain_id(args).await?;
@@ -1059,138 +1113,12 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, ObservationError> {
         .collect()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BroadcastOutcome {
-    Submitted(RpcAuditEvidence),
-    NonceConflict(RpcAuditEvidence),
-}
-
-pub async fn transaction_known(
-    args: &BridgeInitArgs,
-    transaction_hash: [u8; 32],
-) -> Result<bool, ObservationError> {
-    ensure_chain_id(args).await?;
-    let request = json!({
-        "jsonrpc": "2.0", "id": 1, "method": "eth_getTransactionByHash",
-        "params": [format!("0x{}", hex(&transaction_hash))],
-    });
-    match client(args)
-        .multi_request(request)
-        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(value)) => {
-            transaction_response_matches_hash(&value, transaction_hash)
-        }
-        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-    }
-}
-
-fn transaction_response_matches_hash(
-    response: &str,
-    transaction_hash: [u8; 32],
-) -> Result<bool, ObservationError> {
-    let value = serde_json::from_str::<serde_json::Value>(response)
-        .map_err(|_| ObservationError::InvalidResponse)?;
-    if value.is_null() {
-        return Ok(false);
-    }
-    let hash = value
-        .get("hash")
-        .and_then(|hash| hash.as_str())
-        .ok_or(ObservationError::InvalidResponse)?;
-    if !hash.eq_ignore_ascii_case(&format!("0x{}", hex(&transaction_hash))) {
-        return Err(ObservationError::InvalidResponse);
-    }
-    Ok(true)
-}
-
 pub(crate) fn signed_transaction_hash(raw: &[u8]) -> [u8; 32] {
     let mut transaction_hash = [0u8; 32];
     let mut hasher = Keccak::v256();
     hasher.update(raw);
     hasher.finalize(&mut transaction_hash);
     transaction_hash
-}
-
-pub async fn broadcast(
-    args: &BridgeInitArgs,
-    raw: &[u8],
-) -> Result<BroadcastOutcome, ObservationError> {
-    let transaction_hash = signed_transaction_hash(raw);
-    let raw =
-        Hex::from_str(&format!("0x{}", hex(raw))).map_err(|_| ObservationError::InvalidResponse)?;
-    let broadcast_result = client(args)
-        .send_raw_transaction(raw)
-        .with_response_size_estimate(SEND_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|error| {
-            ic_cdk::println!("EVM RPC broadcast transport error: {error:?}");
-            ObservationError::Rpc
-        })?;
-    let finalized = finalized_observation(args).await?;
-    match broadcast_result {
-        MultiRpcResult::Consistent(Ok(status))
-            if send_status_tracks_local_hash(&status, transaction_hash) =>
-        {
-            let local_hash_derived = matches!(status, SendRawTransactionStatus::Ok(None));
-            Ok(BroadcastOutcome::Submitted(transaction_rpc_audit_evidence(
-                args,
-                "eth_sendRawTransaction",
-                finalized,
-                transaction_hash,
-                json!({
-                    "result": "submitted",
-                    "local_hash_matched": !local_hash_derived,
-                    "local_hash_derived": local_hash_derived,
-                }),
-            )))
-        }
-        MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::Ok(Some(_)))) => Ok(
-            BroadcastOutcome::NonceConflict(transaction_rpc_audit_evidence(
-                args,
-                "eth_sendRawTransaction",
-                finalized,
-                transaction_hash,
-                json!({"result": "returned_hash_mismatch"}),
-            )),
-        ),
-        MultiRpcResult::Consistent(Ok(SendRawTransactionStatus::NonceTooLow)) => {
-            let known = transaction_known(args, transaction_hash).await?;
-            if bridge_core::nonce_too_low_is_submitted(true, known) {
-                Ok(BroadcastOutcome::Submitted(transaction_rpc_audit_evidence(
-                    args,
-                    "eth_sendRawTransaction+multi_request",
-                    finalized,
-                    transaction_hash,
-                    json!({"result": "nonce_too_low", "local_transaction_found": true}),
-                )))
-            } else {
-                Ok(BroadcastOutcome::NonceConflict(
-                    transaction_rpc_audit_evidence(
-                        args,
-                        "eth_sendRawTransaction+multi_request",
-                        finalized,
-                        transaction_hash,
-                        json!({"result": "nonce_too_low", "local_transaction_found": false}),
-                    ),
-                ))
-            }
-        }
-        MultiRpcResult::Consistent(Ok(_)) | MultiRpcResult::Consistent(Err(_)) => {
-            Err(ObservationError::Rpc)
-        }
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-    }
-}
-
-fn send_status_tracks_local_hash(status: &SendRawTransactionStatus, local: [u8; 32]) -> bool {
-    matches!(status, SendRawTransactionStatus::Ok(None))
-        || matches!(status, SendRawTransactionStatus::Ok(Some(returned)) if returned.as_array() == &local)
 }
 
 pub async fn notified_withdrawal_outcome(
@@ -1667,6 +1595,30 @@ mod tests {
     }
 
     #[test]
+    fn receipt_log_binding_includes_log_index() {
+        let value = json!({
+            "address": format!("0x{}", "11".repeat(20)),
+            "topics": [format!("0x{}", "22".repeat(32))],
+            "data": "0x",
+            "blockNumber": 42,
+            "transactionHash": format!("0x{}", "33".repeat(32)),
+            "transactionIndex": 0,
+            "blockHash": format!("0x{}", "44".repeat(32)),
+            "logIndex": 1,
+            "removed": false
+        });
+        let observed: evm_rpc_types::LogEntry =
+            serde_json::from_value(value.clone()).expect("valid observed log");
+        let mut different_index = value;
+        different_index["logIndex"] = json!(2);
+        let different_index: evm_rpc_types::LogEntry =
+            serde_json::from_value(different_index).expect("valid receipt log");
+
+        assert!(exact_receipt_log_matches(&observed, &observed));
+        assert!(!exact_receipt_log_matches(&different_index, &observed));
+    }
+
+    #[test]
     fn completed_observation_cache_cannot_publish_torn_fields() {
         let finalized = FinalizedObservation {
             chain_id: 8453,
@@ -1819,6 +1771,7 @@ mod tests {
             settlement_rate_limit_global: 3,
             settlement_rate_limit_per_principal: 2,
             settlement_rate_limit_per_record: 1,
+            settlement_retry_interval_seconds: 60,
             governance_evm_fee: crate::config::EvmFeePolicy {
                 gas_limit_ceiling: 1,
                 max_fee_per_gas_ceiling: 2,
@@ -1829,7 +1782,7 @@ mod tests {
                 base_fee_multiplier_bps: 60_000,
                 l1_fee_multiplier_bps: 15_000,
             },
-            governance_evm_liveness: crate::config::EvmLivenessPolicy::default(),
+            governance_replacement: crate::config::GovernanceReplacementPolicy::default(),
             governance_eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
@@ -1840,40 +1793,5 @@ mod tests {
                 subaccount: vec![],
             },
         }
-    }
-
-    #[test]
-    fn broadcast_accepts_only_the_locally_derived_hash() {
-        let local = [0x11; 32];
-        let matching = SendRawTransactionStatus::Ok(Some(
-            Hex32::from_str(&format!("0x{}", "11".repeat(32))).expect("hash"),
-        ));
-        let different = SendRawTransactionStatus::Ok(Some(
-            Hex32::from_str(&format!("0x{}", "22".repeat(32))).expect("hash"),
-        ));
-        assert!(send_status_tracks_local_hash(&matching, local));
-        assert!(!send_status_tracks_local_hash(&different, local));
-        assert!(send_status_tracks_local_hash(
-            &SendRawTransactionStatus::Ok(None),
-            local
-        ));
-    }
-
-    #[test]
-    fn transaction_presence_requires_null_or_the_exact_local_hash() {
-        let local = [0x11; 32];
-        assert!(!transaction_response_matches_hash("null", local).expect("missing"));
-        assert!(transaction_response_matches_hash(
-            &format!(r#"{{"hash":"0x{}"}}"#, "11".repeat(32)),
-            local,
-        )
-        .expect("matching transaction"));
-        assert!(transaction_response_matches_hash(
-            &format!(r#"{{"hash":"0x{}"}}"#, "22".repeat(32)),
-            local,
-        )
-        .is_err());
-        assert!(transaction_response_matches_hash("{}", local).is_err());
-        assert!(transaction_response_matches_hash("not-json", local).is_err());
     }
 }

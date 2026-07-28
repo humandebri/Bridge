@@ -6,7 +6,7 @@ import { base64ToUint8Array, uint8ArrayToBase64 } from "@dfinity/utils"
 import type { ApproveParams } from "@icp-sdk/canisters/ledger/icrc"
 import { AnonymousIdentity, Cbor, Certificate, HttpAgent, lookupResultToBuffer, requestIdOf } from "@icp-sdk/core/agent"
 import { Principal } from "@icp-sdk/core/principal"
-import type { _SERVICE, DepositReceipt, NotifyWithdrawalError, NotifyWithdrawalReceipt, SettlementActionError, SettlementActionResult } from "@/generated/bridge.did"
+import type { _SERVICE, DepositReceipt, NotifyDepositMintReceipt, NotifyWithdrawalError, NotifyWithdrawalReceipt, SettlementActionError, SettlementActionResult } from "@/generated/bridge.did"
 import { idlFactory } from "@/generated/bridge.idl"
 import { isDepositPhase, isSettlementActionResult } from "@/lib/settlement-phase"
 
@@ -14,7 +14,7 @@ const CALL_TIMEOUT_MS = 120_000
 const OISY_SIGNER_URL = "https://oisy.com/sign"
 const BRIDGE_SERVICE = idlFactory({ IDL: LegacyIDL }) as IDL.ServiceClass
 
-type BridgeWalletMethod = "request_deposit" | "notify_withdrawal" | "continue_deposit" | "continue_withdrawal"
+type BridgeWalletMethod = "request_deposit" | "notify_deposit_mint" | "notify_withdrawal" | "continue_deposit" | "continue_withdrawal"
 
 export type IcWalletProvider = "oisy" | "plug"
 export interface IcAccount { owner: string; subaccount?: Uint8Array }
@@ -59,6 +59,7 @@ export interface IcWalletAdapter {
   disconnect(): Promise<void>
   approve(call: ApprovalCall): Promise<bigint>
   requestDeposit(call: DepositCall): Promise<DepositReceipt>
+  notifyDepositMint(depositId: Uint8Array, transactionHash: Uint8Array): Promise<NotifyDepositMintReceipt>
   notifyWithdrawal(transactionHash: Uint8Array): Promise<NotifyWithdrawalReceipt>
   continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult>
   continueWithdrawal(withdrawalId: Uint8Array): Promise<SettlementActionResult>
@@ -170,6 +171,13 @@ export class OisyAdapter implements IcWalletAdapter {
 
   async notifyWithdrawal(transactionHash: Uint8Array): Promise<NotifyWithdrawalReceipt> {
     return unwrapNotifyWithdrawalResult(await this.bridgeCall("notify_withdrawal", () => [{ transaction_hash: transactionHash }]))
+  }
+
+  async notifyDepositMint(depositId: Uint8Array, transactionHash: Uint8Array): Promise<NotifyDepositMintReceipt> {
+    return unwrapNotifyDepositMintResult(await this.bridgeCall("notify_deposit_mint", () => [{
+      deposit_id: depositId,
+      transaction_hash: transactionHash,
+    }]))
   }
 
   async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
@@ -294,6 +302,12 @@ export class PlugAdapter implements IcWalletAdapter {
     const actor = await this.bridgeActor()
     const result = await actor.notify_withdrawal({ transaction_hash: transactionHash })
     return unwrapNotifyWithdrawalResult(result)
+  }
+
+  async notifyDepositMint(depositId: Uint8Array, transactionHash: Uint8Array): Promise<NotifyDepositMintReceipt> {
+    const actor = await this.bridgeActor()
+    const result = await actor.notify_deposit_mint({ deposit_id: depositId, transaction_hash: transactionHash })
+    return unwrapNotifyDepositMintResult(result)
   }
 
   async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
@@ -443,6 +457,18 @@ function depositErrorMessage(error: unknown): string {
 
 export function decodeNotifyWithdrawalReply(reply: Uint8Array): NotifyWithdrawalReceipt {
   return unwrapNotifyWithdrawalResult(decodeBridgeReply("notify_withdrawal", reply))
+}
+
+function unwrapNotifyDepositMintResult(result: unknown): NotifyDepositMintReceipt {
+  if (!isObject(result)) throw new Error("Wallet reply has an invalid mint notification result")
+  if ("Err" in result) throw new Error(`Mint confirmation failed: ${stringify(Reflect.get(result, "Err"))}`)
+  const receipt: unknown = Reflect.get(result, "Ok")
+  if (!isObject(receipt)) throw new Error("Wallet reply has an invalid mint notification receipt")
+  const key = Object.keys(receipt)[0]
+  if (Object.keys(receipt).length !== 1 || (key !== "Minted" && key !== "Duplicate")) {
+    throw new Error("Wallet reply has an invalid mint notification receipt")
+  }
+  return receipt as NotifyDepositMintReceipt
 }
 
 function unwrapNotifyWithdrawalResult(result: unknown): NotifyWithdrawalReceipt {

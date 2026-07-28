@@ -10,7 +10,7 @@
 
 KINIC SNS Governance `74ncn-fqaaa-aaaaq-aaasa-cai`をIC/Base双方の管理trust rootとする。人間が長期保有する管理資格情報は単一のIC emergency pause principalだけとし、finance principal、release approver、人間のBase Admin/Runtime/Cancellerを置かない。
 
-Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operatorを導出する。Mint SignerはEIP-712 Deposit Mint Authorization署名専用で、Base transactionを送信せずETHも保持しない。Governance OperatorはBase pause、Service Fee、Timelock schedule/cancel/execute専用とし、nonce、transaction record、reconciliationを署名レーンと共有しない。Base管理APIはclosed enumのみを受け付け、任意target、calldata、raw transaction、nonceを入力させない。
+Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operatorを導出する。Mint SignerはEIP-712 Deposit Mint Authorization署名専用で、Base transactionを送信せずETHも保持しない。Governance OperatorはBase pause、Service Fee、Timelock schedule/cancel/executeの署名専用とし、外部relayerが送信・確定通知を担う。nonceとtransaction recordはMint署名レーンと共有しない。Base管理APIはclosed enumのみを受け付け、任意target、calldata、raw transaction、nonceを入力させない。
 
 ## 固定stage
 

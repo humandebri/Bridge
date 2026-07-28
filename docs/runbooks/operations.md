@@ -22,7 +22,7 @@ KINIC mainnet Ledgerのfeeは`100000` rawであり、stagingとの差は意図�
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv25、record wireはv21を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
+stable schemaはv27、record wireはv23を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
 
 ## 保持制限と監査
 
@@ -30,7 +30,7 @@ stable schemaはv25、record wireはv21を唯一の現行形式とする。未�
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v25またはwire v21以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
+schema v27またはwire v23以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。Ledger feeとService Feeをreview済みprofileへ同期した後、対象ownerまたは運用principalがHistoryから`continue_withdrawal`を実行する。Canisterが最新Ledger feeを再取得し、charged Service Fee以下であることを確認した場合だけ、同じrecordからreleaseを開始してguardを解除する。
 本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。
@@ -65,10 +65,42 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 監視SLOは同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。単一emergency pause principalの実request IDとaudit event、両transaction/callの確定時刻をevidenceへ入れる。SLO未達、証跡欠落、公式EVM RPC Canister IDまたはchainの不一致、Canisterによるpending Timelock cancel不能はいずれもproduction承認blockerである。EVM RPC Canister配下providerの運営主体・基盤・可用性は外部仮定として扱う。
 
 - 承認済みpause principal identityから`pause_new_deposits`を実行する。未期限Mint AuthorizationはBase側の`pauseDepositMints`によるepoch増加で失効するが、返金は元deadline後のFinalized未処理証拠まで待つ。各Authorizationのdeadlineと停止理由を監視する。
-- Base側の異常では単一emergency pause principalがCanisterの`emergency_pause`を呼び、Canister由来Governance OperatorがDeposit/Withdrawal pauseと記録済みTimelock cancelを送信する。unpauseはSNS proposalからCanisterを経由してTimelockで実行し、limitは変更しない。
-- 緊急pauseと競合した未送信のfee・schedule・execute操作は破棄され、未使用nonceだけが再利用される。RPC送信開始済みの操作は`Broadcasting`として保持し、同じhashの存在またはpending nonce前進をquorumで確認できるまで再送・破棄しない。既送信executeが成功しても緊急actionが残る間はICをresumeせず、Base pauseを優先する。
+- Base側の異常では単一emergency pause principalがCanisterの`emergency_pause`を呼ぶ。この呼出しの成功条件はIC側pauseとBase action queueの永続化までであり、Baseへの送信完了ではない。同じpause principal identityを使う外部CLIで`drain-emergency`を実行し、Deposit/Withdrawal pauseと記録済みTimelock cancelを順に署名・送信・確定する。
+- 緊急pauseと競合した、まだ署名成果物を発行していないfee・schedule・execute操作だけを破棄して未使用nonceを再利用できる。`SignedAwaitingRelay`は外部送信済みの可能性があるため破棄しない。既送信executeが成功しても緊急actionが残る間はICをresumeせず、Base pauseを優先する。
 - 再開ごとの`schedule_activation`はCanisterの単調増加operation IDから新しいTimelock saltを導出する。過去に完了したactivationを再利用せず、保存されたoperation IDとsaltの組だけを`execute_activation`またはcancelへ渡す。
-- Governance Operatorのnonce競合時は、Canisterが自分のtransaction hashをquorum RPCで再確認する。hashが存在すればconfirmationへ戻り、存在せずpending nonceだけが前進していれば競合操作を失敗終了してnonceを前進させる。hashまたはnonceの証拠が一致しない間は新しい署名を作らず停止する。
+- Governance Operatorのnonce競合時にCanisterは自動回復しない。CLIは発行済みhashを確認し、exact raw transactionの再送または既知transaction応答だけを冪等成功として扱う。別hashによるnonce消費が疑われる場合は停止して監査し、stable nonceを手作業で変更しない。
+
+## Governance relayer
+
+CanisterはBase governance transactionをbroadcastせず、governance timerも持たない。Service Fee、activation schedule/executeにはGovernance principal identityを使う。Base pause、記録済みTimelock cancel、`drain-emergency`にはGovernanceまたはpause principal identityを使える。
+
+```bash
+export BRIDGE_CANISTER_ID='...'
+export IC_IDENTITY_PEM='/secure/path/governance.pem'
+export BASE_RPC_URL='https://...'
+
+npm run governance-relayer -- status
+npm run governance-relayer -- prepare --action pause-deposits
+npm run governance-relayer -- run
+```
+
+`run`はpending署名成果物の取得、raw transactionのhash・chain・sender・nonce・target・calldata・gas・fee検証、broadcast、Finalized待機、Canister確定通知を行う。broadcast直後に停止した場合は`status`で同じoperationを確認して`run --operation-id <id>`を再実行する。同じraw transactionの再送とRPCの`already known`は冪等成功だが、`nonce too low`は成功扱いにしない。
+
+threshold signingの一時障害でoperationが`Prepared`に残ると、`status`は`SigningUnavailable`を返す。通常操作は同じ`prepare --action ...`、activationは同じCanister API、緊急操作は`drain-emergency`を再実行する。再試行は保存済みnonce、target、calldata、feeを変更せず、署名済み成果物がある場合は再署名しない。
+
+詰まり時のreplacementは自動生成しない。現在のhashと新しいfeeを人間が確認し、次を明示実行する。Canisterは同一operation・nonce・target・calldata・gasを維持し、直前generation比12.5%以上、設定ceiling内、最大3回だけ再署名する。CLIは独自署名やfee変更を行わない。
+
+```bash
+npm run governance-relayer -- replace \
+  --operation-id <id> \
+  --max-fee <wei> \
+  --priority-fee <wei>
+npm run governance-relayer -- run --operation-id <id>
+```
+
+`IC_IDENTITY_PEM`はCanisterの認可APIだけに使用し、通常操作ではGovernance identity、緊急pause/cancelではpause identityを指定できる。EVM秘密鍵は用意しない。gasはthreshold Governance Operator EOAが負担する。RPC URL/API keyやPEM内容をログ・shell history・incident evidenceへ記録しない。
+
+stagingをこのschemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認し、旧schema Canisterはreinstallする。rollbackでは最初にrelayerを停止し、対応するWasmとstable snapshotをセットで復元する。旧Wasmだけを現在のstable stateへ適用しない。
 
 本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
 
@@ -88,18 +120,20 @@ proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`
 Mint Authorizationは作成元Finalized timestampから固定2時間（7,200秒）の期限を持つ。Canister timerはIC時刻でおおよそ期限後に起床するが、返金判定はBase Finalized timestampだけを使う。owner、Governance、pause principalは`continue_deposit`で期限照合を手動起動できるが、`Finalized timestamp > deadline`と`isDepositProcessed == false`のcanonical証拠を迂回できない。期限前、等値、RPC不一致では返金しない。
 
 `settlement_scheduler.health = Degraded`の場合はstopped、5分以上overdueのschedule、expired leaseを特定する。active leaseがある間の次回起床はlease期限であり、別のoverdue jobへ即時timerを再armしない。`Faulted`の場合は`last_internal_error`と`last_dispatcher_run_at_ns`を記録し、新規DepositをpauseしてSQLiteを手作業で変更せず、同じWasmをupgradeしてstable job tableからtimerを再armする。改善しなければ障害Wasmとして調査する。
+一時障害の基準retry間隔は公開設定`settlement_retry_interval_seconds`であり、Governance transactionの監視設定とは独立している。
 
 RPC障害では複数providerの応答一致とcanonical Finalized headを回復させてから停止recordを再実行する。expired leaseでは保存済みAuthorization digestまたはLedger transfer identityが変わっていないことを確認する。Mint用raw transactionやnonceは存在しない。
 
 Base burnが未通知なら、Historyの`Check and notify`でCanisterのFinalized receipt検証と通知を一回だけ実行する。
 Withdrawal transaction hashはactive deploymentに束縛したpending confirmationとしてbrowser localStorageへ保存する。recovery cursorは保存しない。回復はWithdrawal Historyの明示的な`Refresh`と必要な回数の`Scan older`でFinalized Base eventを取得し、event行の`Check and notify`から同じhashを通知する。
+Deposit mint transaction hashもactive deploymentに束縛して保存する。wallet receipt成功後はHistoryの`Confirm mint on IC`からowner identityで`notify_deposit_mint`を再実行できる。Canisterはexact Finalized receipt・event・Authorizationを毎回検証し、成功済みの同一hashは冪等に返す。通知不能でも期限後reconciliationはfallbackとして残る。
 Depositの不明応答はbrowser storageへ保存しない。`Refresh`でowner sequenceとHistoryを読み、受付済みrecordがあればそれをContinueし、未受付なら同じ次sequenceで再度明示送信する。
 
 所有者が操作できない場合、Governanceまたはpause administratorは停止原因の解消を確認する。stopped、expired、または非終端なのにjobがないrecordには`continue_deposit`または`continue_withdrawal`を一度実行する。別recordのactive lease中は`Busy`、quota超過は`RateLimited`を返す。
 fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行する。
 
-- Governance nonceを確保したoperation: 対象Governance actionを再実行する。nonceやstable counterを手作業で変更しない。Depositとは別レーンである。
-- Mint Authorization: signatureが未完成なら同一digestを再署名する。`AuthorizationAvailable`ならBase walletで期限内に送信するか、期限後の自動照合を待つ。deadlineを変えた再発行は行わない。
+- Governance nonceを確保したoperation: `governance-relayer status`で署名成果物を取得し、同じrawを送信・確定する。必要時だけ明示的replacementを要求する。nonceやstable counterを手作業で変更しない。
+- Mint Authorization: signatureが未完成なら同一digestを再署名する。`AuthorizationAvailable`ならBase walletで期限内に送信し、成功receiptを直ちに通知する。通知できなくても期限後の自動照合はfallbackとして残し、deadlineを変えた再発行は行わない。
 - Withdrawal Ledger hold: `continue_withdrawal`で同一Withdrawal ID・IC Account・固定amountOutを維持する。dedup期間内は同一transfer identityを一度だけ再送し、期間後は一回につきreconciliationを1 stepだけ進める。完全な不在証拠なしに別identityを作らない。送金先変更、任意送金、Base refundは行わない。
 - Deposit funding hold: pullの成功証拠または完全な不存在証明まで補償を行わない。成功時は`EscrowedUnquoted`、不存在時は`Cancelled`へ進める。
 - Deposit refund hold: 元account、attemptに保存した`gross - ledger_fee`、feeを照合する。成功証拠で`Refunded`へ進め、曖昧結果は完全な不存在証明後だけattempt番号、created-at time、memoを更新する。確定的な`BadFee`は固定fee設定の不一致として停止し、返金payloadを変更しない。Ledger feeを変更せず、Canister設定とLedger設定の不一致を解消してから同じrecordを再実行する。

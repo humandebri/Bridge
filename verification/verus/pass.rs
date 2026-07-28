@@ -400,13 +400,6 @@ proof fn mint_admission_overflow_is_rejected()
         340282366920938463463374607431768211455int, 1, 0) == None::<int>
 {}
 
-proof fn nonce_too_low_requires_provider_agreement_and_local_hash(
-    provider_agreement: bool, local_hash_found: bool,
-)
-    ensures kernel::nonce_too_low_is_submitted_spec(provider_agreement, local_hash_found)
-        <==> provider_agreement && local_hash_found
-{}
-
 proof fn payout_includes_fee_and_cannot_exceed_reserve(reserve: int, pending: int, amount: int, fee: int)
     requires 0 <= pending <= reserve, 0 <= amount, 0 <= fee,
         amount + fee <= 340282366920938463463374607431768211455int
@@ -565,16 +558,79 @@ proof fn audit_overflow_is_rejected()
     ensures kernel::audit_next_spec(0xffff_ffff_ffff_ffffint) == None::<int>
 {}
 
-proof fn deposit_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
+proof fn deposit_terminal_phase_rejects_every_event(state: int, event: int)
     requires state == 8 || state == 9 || state == 10
-    ensures kernel::deposit_phase_run_spec(state, events) == state
-    decreases events.len()
-{
-    if events.len() > 0 {
-        assert(kernel::deposit_phase_step_spec(state, events[0]) == state);
-        deposit_terminal_phase_absorbs_any_sequence(state, events.drop_first());
-    }
-}
+    ensures kernel::deposit_transition_spec(state, event) == None::<int>
+{}
+
+proof fn authorization_commit_requires_every_binding(
+    identity: bool, amounts: bool, domain: bool, origin: bool, pristine: bool, deadline: bool,
+)
+    ensures kernel::authorization_commit_allowed_spec(
+        identity, amounts, domain, origin, pristine, deadline)
+        <==> identity && amounts && domain && origin && pristine && deadline
+{}
+
+proof fn expiry_refund_requires_unprocessed_strict_expiry(
+    binding: bool, processed: bool, timestamp: int, deadline: int,
+)
+    ensures kernel::expiry_refund_allowed_spec(binding, processed, timestamp, deadline)
+        <==> binding && !processed && timestamp > deadline
+{}
+
+proof fn mint_finalization_requires_exact_finalized_success(
+    binding: bool, succeeded: bool, receipt_block: int, finalized_block: int,
+)
+    ensures kernel::mint_finalization_allowed_spec(
+        binding, succeeded, receipt_block, finalized_block)
+        <==> binding && succeeded && receipt_block <= finalized_block
+{}
+
+proof fn signature_install_requires_dispatch_absence_and_exact_length(
+    dispatched: bool, absent: bool, length: bool,
+)
+    ensures kernel::signature_install_allowed_spec(dispatched, absent, length)
+        <==> dispatched && absent && length
+{}
+
+proof fn refund_start_requires_attempt_and_policy(attempt: bool, policy: bool)
+    ensures kernel::refund_start_allowed_spec(attempt, policy)
+        <==> attempt && policy
+{}
+
+proof fn reservation_exists_only_for_authorization_progress(state: int)
+    ensures kernel::deposit_reservation_active_spec(state)
+        <==> state == 2 || state == 3 || state == 4
+{}
+
+proof fn deposit_fee_is_charged_only_on_mint_transition(state: int, event: int)
+    ensures kernel::deposit_charge_service_fee_spec(state, event)
+        <==> (state == 3 || state == 4) && event == 7
+{}
+
+proof fn deposit_reservation_is_released_only_at_mint_or_refund(state: int, event: int)
+    ensures kernel::deposit_releases_reservation_spec(state, event)
+        <==> ((state == 3 || state == 4) && event == 7) || (state == 4 && event == 4)
+{}
+
+proof fn deposit_numeric_effects_match_every_economic_transition(
+    gross: int, net: int, fee: int, reserved: int,
+)
+    requires 0 <= gross, 0 <= net, 0 <= fee, 0 <= reserved
+    ensures
+        kernel::deposit_numeric_effects_spec(1, 3, gross, net, fee, 0)
+            == (net, net, 0int, 0int, 0int, 0int, 0int),
+        kernel::deposit_numeric_effects_spec(3, 7, gross, net, fee, reserved)
+            == (0int, 0int, reserved, fee, gross, 0int, net),
+        kernel::deposit_numeric_effects_spec(4, 7, gross, net, fee, reserved)
+            == (0int, 0int, reserved, fee, gross, 0int, net),
+        kernel::deposit_numeric_effects_spec(4, 4, gross, net, fee, reserved)
+            == (0int, 0int, reserved, 0int, 0int, 0int, 0int),
+        kernel::deposit_numeric_effects_spec(6, 9, gross, net, fee, 0)
+            == (0int, 0int, 0int, 0int, gross, gross, 0int),
+        kernel::deposit_numeric_effects_spec(2, 6, gross, net, fee, reserved)
+            == (reserved, 0int, 0int, 0int, 0int, 0int, 0int)
+{}
 
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
     requires state == 2
@@ -587,30 +643,16 @@ proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<
     }
 }
 
-proof fn deposit_phase_allowance_matches_a_state_change(state: int, event: int)
-    ensures kernel::deposit_phase_allows_spec(state, event)
-        <==> kernel::deposit_phase_step_spec(state, event) != state
-{}
-
 proof fn withdrawal_phase_allowance_matches_a_transition(state: int, event: int)
     ensures kernel::withdrawal_phase_allows_spec(state, event)
         <==> kernel::withdrawal_phase_step_spec(state, event) != state
             || (state == 1 && event == 1)
 {}
 
-proof fn deposit_fee_delta_occurs_only_on_mint(state: int, event: int, fee: int)
-    ensures kernel::deposit_fee_delta_spec(state, event, fee)
-        == if state == 4 && event == 7 { fee } else { 0 }
-{}
-
 proof fn deposit_refund_debits_exactly_gross(gross: int, ledger_fee: int)
     requires 0 <= ledger_fee < gross
     ensures kernel::deposit_refund_amount_spec(gross, ledger_fee) == Some(gross - ledger_fee),
         (gross - ledger_fee) + ledger_fee == gross
-{}
-
-proof fn refund_hold_cannot_reopen_through_a_deposit_event(event: int)
-    ensures kernel::deposit_phase_step_spec(7, event) == 7
 {}
 
 proof fn refund_retry_requires_matching_evidence(request: bool, hold: bool, transfer: bool, open_or_retry: bool)
@@ -621,18 +663,6 @@ proof fn withdrawal_fee_delta_occurs_only_on_release(state: int, event: int, fee
     ensures kernel::withdrawal_fee_delta_spec(state, event, fee)
         == if state == 1 && event == 2 { fee } else { 0 }
 {}
-
-proof fn deposit_post_mint_never_charges(state: int, events: Seq<int>, fee: int)
-    requires state == 8 || state == 9 || state == 10, 0 <= fee
-    ensures kernel::deposit_fee_total_spec(state, events, fee) == 0
-    decreases events.len()
-{
-    if events.len() > 0 {
-        assert(kernel::deposit_fee_delta_spec(state, events[0], fee) == 0);
-        assert(kernel::deposit_phase_step_spec(state, events[0]) == state);
-        deposit_post_mint_never_charges(state, events.drop_first(), fee);
-    }
-}
 
 proof fn withdrawal_post_transfer_never_charges(state: int, events: Seq<int>, fee: int)
     requires state == 2,
@@ -645,23 +675,6 @@ proof fn withdrawal_post_transfer_never_charges(state: int, events: Seq<int>, fe
         assert(kernel::withdrawal_fee_delta_spec(state, events[0], fee) == 0);
         assert(next == 2);
         withdrawal_post_transfer_never_charges(next, events.drop_first(), fee);
-    }
-}
-
-proof fn deposit_fee_is_charged_at_most_once(state: int, events: Seq<int>, fee: int)
-    requires 0 <= state <= 10, 0 <= fee
-    ensures 0 <= kernel::deposit_fee_total_spec(state, events, fee) <= fee
-    decreases events.len()
-{
-    if events.len() > 0 {
-        let event = events[0];
-        let next = kernel::deposit_phase_step_spec(state, event);
-        if state == 4 && event == 7 {
-            deposit_post_mint_never_charges(10, events.drop_first(), fee);
-        } else {
-            assert(0 <= next <= 10);
-            deposit_fee_is_charged_at_most_once(next, events.drop_first(), fee);
-        }
     }
 }
 

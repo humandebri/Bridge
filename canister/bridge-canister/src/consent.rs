@@ -90,6 +90,9 @@ pub fn consent_message(
     if request.method == "notify_withdrawal" {
         return withdrawal_consent(caller, canister, request);
     }
+    if request.method == "notify_deposit_mint" {
+        return deposit_mint_consent(caller, canister, request);
+    }
     if request.method != "request_deposit" {
         return unsupported(format!("unsupported canister call: {}", request.method));
     }
@@ -243,6 +246,40 @@ fn withdrawal_consent(
             transaction_hash = hex(&transaction_hash),
             base_chain_id = config.base_chain_id,
             bridge_contract = hex(&config.bridge_contract),
+        )),
+    })
+}
+
+fn deposit_mint_consent(
+    caller: Principal,
+    canister: Principal,
+    request: Icrc21ConsentMessageRequest,
+) -> Icrc21ConsentMessageResponse {
+    if caller == Principal::anonymous() {
+        return unavailable("anonymous caller is not allowed");
+    }
+    let args = match Decode!(&request.arg, api::NotifyDepositMintArgs) {
+        Ok(args) => args,
+        Err(error) => {
+            return unavailable(format!(
+                "notify_deposit_mint argument decode failed: {error}"
+            ));
+        }
+    };
+    let deposit_id: [u8; 32] = match args.deposit_id.as_slice().try_into() {
+        Ok(id) => id,
+        Err(_) => return unavailable("deposit_id must be 32 bytes"),
+    };
+    let transaction_hash: [u8; 32] = match args.transaction_hash.as_slice().try_into() {
+        Ok(hash) => hash,
+        Err(_) => return unavailable("transaction_hash must be 32 bytes"),
+    };
+    Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
+        metadata: request.user_preferences.metadata,
+        consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
+            "# Confirm Base mint\n\nCaller: `{caller}`\n\nDeposit ID: `0x{deposit_id}`\n\nBase transaction: `0x{transaction_hash}`\n\nBridge canister: `{canister}`\n\nThe canister will verify the exact finalized Base receipt before marking this deposit minted.",
+            deposit_id = hex(&deposit_id),
+            transaction_hash = hex(&transaction_hash),
         )),
     })
 }

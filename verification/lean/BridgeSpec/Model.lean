@@ -49,16 +49,6 @@ deriving DecidableEq
 def Backed (s : EconomicState) : Prop :=
   s.escrow = s.baseSupply + s.feeReserve + s.unpaidLiability
 
-def mintDeposit (s : EconomicState) (grossAmount serviceFee : Nat) : Option EconomicState :=
-  if serviceFee ≤ grossAmount then
-    some {
-      escrow := s.escrow + grossAmount
-      baseSupply := s.baseSupply + (grossAmount - serviceFee)
-      feeReserve := s.feeReserve + serviceFee
-      unpaidLiability := s.unpaidLiability
-    }
-  else none
-
 def observeBurn (s : EconomicState) (amount : Nat) : EconomicState :=
   { s with baseSupply := s.baseSupply - amount
            unpaidLiability := s.unpaidLiability + amount }

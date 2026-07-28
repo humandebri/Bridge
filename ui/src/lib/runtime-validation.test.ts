@@ -107,7 +107,7 @@ beforeEach(() => {
     bridge_contract: Array.from({ length: 20 }, () => 0x11),
     ledger_canister_id: Principal.fromText(configuredLedgerId),
     index_canister_id: Principal.fromText(configuredIndexId),
-    schema_version: 25,
+    schema_version: 27,
     expected_bridge_signer: new Uint8Array(20).fill(0x33),
     evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
     rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),

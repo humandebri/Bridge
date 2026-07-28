@@ -4,12 +4,12 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-stable schema v25、record wire version v21だけを受理する。本番未デプロイのためmigration、dual-read、fallbackは持たず、旧・未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否する。
-upgrade検証はcurrent schema v25の再オープンだけを成功経路とし、それ以前のschemaを変換しない。
+stable schema v27、record wire version v23だけを受理する。本番未デプロイのためmigration、dual-read、fallbackは持たず、旧・未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否する。
+upgrade検証はcurrent schema v27の再オープンだけを成功経路とし、それ以前のschemaを変換しない。
 
 `settlement_jobs`が自動・手動進行の正本である。recordとjobは同じSQLite transactionで更新し、外部`await`前に署名dispatchやLedger transfer identityを永続化する。timerは目覚ましにすぎず、lease generationとDB上の状態だけが実行権を決める。
 
-Mint用Base transaction laneは存在しない。nonce、raw transaction、broadcast、rebroadcast、replacement、receipt confirmationはGovernance Operatorのtransaction laneだけに限定する。
+Mint用Base transaction laneは存在しない。Governance laneはnonce、署名済みgeneration、raw transactionとhashだけを永続化する。Canisterはbroadcast、receipt監視、rebroadcast、自動replacementを行わず、外部relayerが送信後に指定hashのFinalized結果をCanisterへ通知する。
 
 ## Deposit（ICP → Base）
 
@@ -33,6 +33,7 @@ AuthorizationPending
   └─ 署名不能のままFinalized期限超過     → ExpiryReconciliation
 
 AuthorizationAvailable
+  ├─ notify_deposit_mint + exact Finalized証拠 → Minted
   └─ 期限到達後 → ExpiryReconciliation
                     ├─ exact Mint証拠   → Minted
                     ├─ Finalized未処理証拠 → RefundPending → Refunded
@@ -78,6 +79,8 @@ UIはtransaction hashをlocalStorageへ保存し、Finalized eventを検出し�
 | `continue_deposit` | owner、Governance、pause principal | 署名・期限照合・返金の停止後再開 |
 | `notify_withdrawal` | Withdrawal owner、Governance、pause principal | Finalized Withdrawalの通知 |
 | `continue_withdrawal` | owner、Governance、pause principal | Ledger release・照合の再開 |
+| Base governance prepare/status/replace/confirm | Governance、またはpause/cancelに限りpause principal | 外部relayer向け署名成果物とFinalized確定 |
+| `prepare_next_emergency_base_action` | Governance、pause principal | emergency queueのpause/cancelを順に署名 |
 | `get_deposit` / `get_deposit_by_owner_sequence` | 公開query | Authorization、deadline、signature、状態を照会 |
 | `get_bridge_status` | 公開query | Finalized観測、epoch、Governance reserve、schedulerを照会 |
 

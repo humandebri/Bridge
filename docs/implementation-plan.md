@@ -1,18 +1,18 @@
 # KINIC–Base Bridge 実装計画
 
-> 本文中の旧polling間隔と優先度schedulerは歴史的設計である。現在はADR 0019のstable settlement executor、ADR 0023のwallet送信型Mint Authorization、障害時だけのrate limit付き手動Retryを正本とする。ADR 0020のDeposit confirmation flowは廃止済みである。
+> 本文中の旧polling間隔と優先度schedulerは歴史的設計である。現在はADR 0019のstable settlement executor、ADR 0023のwallet送信型Mint Authorization、障害時だけのrate limit付き手動Retryを正本とする。
 
 本計画は `docs/adr/` のADRと `docs/glossary.md` の用語定義に基づく。
 用語は `docs/glossary.md` の定義に従い、本文では再定義しない。
 
-SNS GovernanceをIC/Base双方の最終trust rootとする。Base操作はBridge Canisterが別derivation pathから導出するGovernance Operatorから送信し、人間のEVM管理鍵を置かない。
+SNS GovernanceをIC/Base双方の最終trust rootとする。Base操作はBridge Canisterが別derivation pathから導出するGovernance Operatorで署名し、外部relayerが送信する。人間のEVM管理鍵は置かない。
 Bridge はKINICトークン専用にデプロイする（ADR 0010）。複数SNS tokenを扱う分岐は導入しない。
 Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaatq-cai`に固定する。Archive canisterはLedgerから動的に発見する。
 
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v25、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
+Bridge canisterはstable schema v27、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
 Plan 005は本番パラメータの外部計測と単一emergency pause演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、Gate A/Gate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、IC mainnet test CanisterとBase Sepoliaの外部実行は明示承認待ちである。
 
 ## 全体構成
@@ -122,7 +122,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003およびADR 0017から0023で外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorizationを追加し、現行stable schemaはv25である。
+後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorizationを追加し、現行stable schemaはv27である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -130,7 +130,7 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
 - 本番未デプロイ中はlegacy schemaを維持せず、現行stable schemaの再オープンとupgrade保持、未知versionのfail-closedを検証する。
-- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v25・record wire v21とする。
+- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v27・record wire v23とする。
 - Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
 - Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
 
@@ -159,13 +159,13 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 
 ## Phase 3: 外部連携
 
-Phase 3のICRC adapter、Base Finalized監視、EIP-712 Mint Authorization、Governance専用threshold ECDSA transaction lane、Reconciliation Hold履歴照合、公開Deposit APIは実装済みである。
+Phase 3のICRC adapter、Base Finalized監視、EIP-712 Mint Authorization、Governance専用threshold ECDSA署名lane、外部Governance relayer、Reconciliation Hold履歴照合、公開Deposit APIは実装済みである。
 PicJSでDeposit、Withdrawal、Holdのupgrade保持、stuck receiptを検証する。
 
 ### 3-1. EVM 連携（ADR 0005、0011）
 
 - Deposit Mintはthreshold ECDSAでEIP-712 Authorizationへ署名し、Base walletがtransactionを送信する。Mint用nonce、raw transaction、gas reserveは持たない。
-- Canister発transaction、nonce、ETH floor、rebroadcast、replacementはGovernance Operator laneだけに限定する。
+- Governance Operator laneではCanisterがnonceと署名済みgenerationを保持し、外部relayerがbroadcast、Finalized待機、確定通知を行う。Canisterのrebroadcast、receipt timer、自動replacementは持たず、明示要求されたreplacementだけを同一nonceで最大3回再署名する。
 - Withdrawalの受付観測は`eth_getLogs`で発見し、Finalized headの状態読みで確定する。読み取りは3 provider中2の合意を要求する。
 
 ### 3-2. Settlement Reserve と stable executor（ADR 0005、0019）

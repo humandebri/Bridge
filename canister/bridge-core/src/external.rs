@@ -49,6 +49,20 @@ impl LedgerCallOutcome {
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedGovernanceTransaction {
+    pub raw_transaction: Vec<u8>,
+    pub transaction_hash: [u8; 32],
+    pub max_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
+    pub generation: u8,
+    pub signed_at_ns: u64,
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GovernanceTransactionEnvelope {
     pub operation_id: GovernanceOperationId,
     pub payload_hash: [u8; 32],
@@ -59,14 +73,7 @@ pub struct GovernanceTransactionEnvelope {
     pub gas_limit: u128,
     pub max_fee_per_gas: u128,
     pub max_priority_fee_per_gas: u128,
-    pub signed_transaction: Option<Vec<u8>>,
-    pub initial_max_fee_per_gas: u128,
-    pub initial_max_priority_fee_per_gas: u128,
-    pub replacement_generation: u8,
-    pub prior_signed_transactions: Vec<Vec<u8>>,
-    pub first_broadcast_at_ns: u64,
-    pub last_broadcast_at_ns: u64,
-    pub rebroadcast_count: u8,
+    pub signed_transactions: Vec<SignedGovernanceTransaction>,
 }
 
 #[cfg_attr(
@@ -97,14 +104,7 @@ impl GovernanceCallIntent {
             gas_limit: self.gas_limit,
             max_fee_per_gas: self.max_fee_per_gas,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
-            signed_transaction: None,
-            initial_max_fee_per_gas: self.max_fee_per_gas,
-            initial_max_priority_fee_per_gas: self.max_priority_fee_per_gas,
-            replacement_generation: 0,
-            prior_signed_transactions: Vec::new(),
-            first_broadcast_at_ns: 0,
-            last_broadcast_at_ns: 0,
-            rebroadcast_count: 0,
+            signed_transactions: Vec::new(),
         }
     }
 }

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
-import type { DepositPhase, DepositReceipt, NotifyWithdrawalReceipt, SettlementActionResult } from "@/generated/bridge.did"
+import type { DepositPhase, DepositReceipt, NotifyDepositMintReceipt, NotifyWithdrawalReceipt, SettlementActionResult } from "@/generated/bridge.did"
 import type { ApprovalCall, DepositCall, IcAccount, IcWalletAdapter, IcWalletProvider } from "@/lib/ic/wallet"
 
 const CONTROL = "http://127.0.0.1:43119"
@@ -39,6 +39,27 @@ class HarnessWalletAdapter implements IcWalletAdapter {
     }, (value) => {
       const receipt = value as { deposit_id: string; owner_sequence: string; state: DepositPhase }
       return { deposit_id: bytes(receipt.deposit_id), owner_sequence: BigInt(receipt.owner_sequence), state: receipt.state }
+    })
+  }
+  notifyDepositMint(depositId: Uint8Array, transactionHash: Uint8Array) {
+    return request<NotifyDepositMintReceipt>("/ic/notify-deposit-mint", {
+      depositId: hex(depositId),
+      transactionHash: hex(transactionHash),
+    }, (value) => {
+      const receipt = value as {
+        Minted?: { deposit_id: string; transaction_hash: string; finalized_head_block_number: string }
+        Duplicate?: { deposit_id: string; transaction_hash: string }
+      }
+      if (receipt.Minted) return { Minted: {
+        deposit_id: bytes(receipt.Minted.deposit_id),
+        transaction_hash: bytes(receipt.Minted.transaction_hash),
+        finalized_head_block_number: BigInt(receipt.Minted.finalized_head_block_number),
+      } }
+      if (receipt.Duplicate) return { Duplicate: {
+        deposit_id: bytes(receipt.Duplicate.deposit_id),
+        transaction_hash: bytes(receipt.Duplicate.transaction_hash),
+      } }
+      throw new Error("Harness returned an invalid mint notification receipt")
     })
   }
   notifyWithdrawal(transactionHash: Uint8Array) {

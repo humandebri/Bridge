@@ -234,6 +234,153 @@ pub enum NotifyWithdrawalError {
     InsufficientCycles,
 }
 
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct NotifyDepositMintArgs {
+    pub deposit_id: Vec<u8>,
+    pub transaction_hash: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum NotifyDepositMintReceipt {
+    Minted {
+        deposit_id: Vec<u8>,
+        transaction_hash: Vec<u8>,
+        finalized_head_block_number: u64,
+    },
+    Duplicate {
+        deposit_id: Vec<u8>,
+        transaction_hash: Vec<u8>,
+    },
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum NotifyDepositMintError {
+    AnonymousCaller,
+    InvalidDepositId,
+    InvalidTransactionHash,
+    NotFound,
+    OwnerMismatch,
+    InvalidState,
+    TransactionNotConfirmed,
+    TransactionReverted,
+    RpcUnavailable,
+    RpcInconsistent,
+    InvalidBaseResponse,
+    StorageFailure,
+    Busy,
+    InsufficientCycles,
+}
+
+pub async fn notify_deposit_mint(
+    caller: Principal,
+    args: NotifyDepositMintArgs,
+) -> Result<NotifyDepositMintReceipt, NotifyDepositMintError> {
+    if caller == Principal::anonymous() {
+        return Err(NotifyDepositMintError::AnonymousCaller);
+    }
+    let deposit_id: [u8; 32] = args
+        .deposit_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| NotifyDepositMintError::InvalidDepositId)?;
+    let transaction_hash: [u8; 32] = args
+        .transaction_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| NotifyDepositMintError::InvalidTransactionHash)?;
+    let (authorization, duplicate) = STORE.with(|store| {
+        let store = store.borrow();
+        let intent = store
+            .deposit_intent(deposit_id)
+            .map_err(|_| NotifyDepositMintError::StorageFailure)?
+            .ok_or(NotifyDepositMintError::NotFound)?;
+        if intent.caller != caller.as_slice() {
+            return Err(NotifyDepositMintError::OwnerMismatch);
+        }
+        let deposit = store
+            .deposit(deposit_id)
+            .map_err(|_| NotifyDepositMintError::StorageFailure)?
+            .ok_or(NotifyDepositMintError::NotFound)?;
+        if let bridge_core::DepositState::Minted { .. } = deposit.state {
+            let duplicate = deposit
+                .mint_finalization_evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.transaction_hash == transaction_hash);
+            return Ok((deposit.mint_authorization, duplicate));
+        }
+        if !matches!(
+            deposit.state,
+            bridge_core::DepositState::AuthorizationAvailable { .. }
+                | bridge_core::DepositState::ExpiryReconciliation { .. }
+        ) {
+            return Err(NotifyDepositMintError::InvalidState);
+        }
+        Ok((deposit.mint_authorization, false))
+    })?;
+    if duplicate {
+        return Ok(NotifyDepositMintReceipt::Duplicate {
+            deposit_id: deposit_id.to_vec(),
+            transaction_hash: transaction_hash.to_vec(),
+        });
+    }
+    let authorization = authorization.ok_or(NotifyDepositMintError::InvalidState)?;
+    let config = STORE
+        .with(|store| store.borrow().config())
+        .map_err(|_| NotifyDepositMintError::StorageFailure)?
+        .ok_or(NotifyDepositMintError::StorageFailure)?;
+    let finalized = evm_rpc::finalized_observation(&config)
+        .await
+        .map_err(map_deposit_mint_observation_error)?;
+    let evidence = evm_rpc::notified_mint_evidence(
+        &config,
+        &authorization,
+        finalized.block_number,
+        transaction_hash,
+    )
+    .await
+    .map_err(map_deposit_mint_observation_error)?;
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let mut current = store
+            .deposit(deposit_id)
+            .map_err(|_| NotifyDepositMintError::StorageFailure)?
+            .ok_or(NotifyDepositMintError::NotFound)?;
+        if current.mint_authorization.as_ref() != Some(&authorization) {
+            return Err(NotifyDepositMintError::InvalidState);
+        }
+        current
+            .apply(bridge_core::DepositEvent::MintReconciled {
+                evidence: Box::new(evidence),
+            })
+            .map_err(|_| NotifyDepositMintError::InvalidState)?;
+        store
+            .put_deposit(&current)
+            .map_err(|_| NotifyDepositMintError::StorageFailure)
+    })?;
+    Ok(NotifyDepositMintReceipt::Minted {
+        deposit_id: deposit_id.to_vec(),
+        transaction_hash: transaction_hash.to_vec(),
+        finalized_head_block_number: finalized.block_number,
+    })
+}
+
+fn map_deposit_mint_observation_error(error: evm_rpc::ObservationError) -> NotifyDepositMintError {
+    match error {
+        evm_rpc::ObservationError::Rpc => NotifyDepositMintError::RpcUnavailable,
+        evm_rpc::ObservationError::Inconsistent => NotifyDepositMintError::RpcInconsistent,
+        evm_rpc::ObservationError::TransactionPending => {
+            NotifyDepositMintError::TransactionNotConfirmed
+        }
+        evm_rpc::ObservationError::TransactionReverted => {
+            NotifyDepositMintError::TransactionReverted
+        }
+        evm_rpc::ObservationError::BaseStateMismatch
+        | evm_rpc::ObservationError::ChainIdMismatch
+        | evm_rpc::ObservationError::InvalidResponse
+        | evm_rpc::ObservationError::Overflow => NotifyDepositMintError::InvalidBaseResponse,
+    }
+}
+
 pub async fn notify_withdrawal(
     caller: Principal,
     args: NotifyWithdrawalArgs,
@@ -353,6 +500,12 @@ fn map_withdrawal_observation_error(error: evm_rpc::ObservationError) -> NotifyW
         evm_rpc::ObservationError::ChainIdMismatch => NotifyWithdrawalError::BaseStateMismatch,
         evm_rpc::ObservationError::InvalidResponse | evm_rpc::ObservationError::Overflow => {
             NotifyWithdrawalError::InvalidBaseResponse
+        }
+        evm_rpc::ObservationError::TransactionPending => {
+            NotifyWithdrawalError::TransactionNotConfirmed
+        }
+        evm_rpc::ObservationError::TransactionReverted => {
+            NotifyWithdrawalError::TransactionReverted
         }
     }
 }
@@ -799,11 +952,14 @@ pub(crate) fn promote_funding_success(
         transfer: attempt.transfer.clone(),
     })
     .map_err(|error| DepositError::Rejected(format!("{error:?}")))?;
-    record
+    let result = record
         .apply(DepositEvent::FundingSucceeded {
             ledger_block_index: block_index,
         })
         .map_err(|_| DepositError::StorageFailure)?;
+    if result.deposit_effects != Some(bridge_core::DepositAccountingEffects::ZERO) {
+        return Err(DepositError::StorageFailure);
+    }
     STORE.with(|store| {
         store
             .borrow_mut()
@@ -840,9 +996,12 @@ pub(crate) fn promote_funding_ambiguous(
         transfer: attempt.transfer.clone(),
     })
     .map_err(|error| DepositError::Rejected(format!("{error:?}")))?;
-    record
+    let result = record
         .apply(DepositEvent::FundingAmbiguous { hold_id })
         .map_err(|_| DepositError::StorageFailure)?;
+    if result.deposit_effects != Some(bridge_core::DepositAccountingEffects::ZERO) {
+        return Err(DepositError::StorageFailure);
+    }
     let hold = bridge_core::ReconciliationHoldRecord::open(
         hold_id,
         bridge_core::RequestReference::DepositFunding(record.id),
@@ -1165,11 +1324,11 @@ pub(crate) fn cancel_deposit_in_store(
         .deposit(deposit_id)
         .map_err(|_| DepositError::StorageFailure)?
         .ok_or(DepositError::StorageFailure)?;
-    deposit
+    let result = deposit
         .apply(DepositEvent::FundingFailed { code })
         .map_err(|error| DepositError::Rejected(format!("{error:?}")))?;
     store
-        .put_deposit_funding_callback(&deposit, callback_token)
+        .put_deposit_transition_funding_callback(&deposit, callback_token, result)
         .map_err(|_| DepositError::StorageFailure)
 }
 
@@ -1393,14 +1552,14 @@ pub(crate) fn commit_deposit_authorization(
         .deposit(deposit_id)
         .map_err(|_| DepositError::StorageFailure)?
         .ok_or(DepositError::StorageFailure)?;
-    deposit
+    let result = deposit
         .apply(DepositEvent::CommitAuthorization {
             quote,
             authorization: Box::new(authorization),
         })
         .map_err(|e| DepositError::Rejected(format!("{e:?}")))?;
     store
-        .put_deposit(&deposit)
+        .put_deposit_transition(&deposit, result)
         .map_err(|_| DepositError::StorageFailure)?;
     Ok(())
 }

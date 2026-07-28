@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 25;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 27;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -74,7 +74,7 @@ struct Profile {
     monitoring: Monitoring,
     parameters: Parameters,
     rate_limits: RateLimits,
-    governance_evm_liveness: EvmLivenessPolicy,
+    governance_replacement: GovernanceReplacementPolicy,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -181,14 +181,12 @@ struct RateLimits {
     settlement_global: u16,
     settlement_per_principal: u16,
     settlement_per_record: u16,
+    settlement_retry_interval_seconds: u64,
 }
 
 #[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct EvmLivenessPolicy {
-    check_interval_seconds: u64,
-    rebroadcast_after_seconds: u64,
-    replacement_after_seconds: u64,
+struct GovernanceReplacementPolicy {
     max_replacements: u8,
     fee_bump_bps: u16,
 }
@@ -361,8 +359,9 @@ struct LivePublicConfig {
     settlement_rate_limit_global: u16,
     settlement_rate_limit_per_principal: u16,
     settlement_rate_limit_per_record: u16,
+    settlement_retry_interval_seconds: u64,
     governance_evm_fee: EvmFeePolicy,
-    governance_evm_liveness: EvmLivenessPolicy,
+    governance_replacement: GovernanceReplacementPolicy,
     #[serde(with = "u128_string")]
     governance_eth_floor_wei: u128,
     #[serde(with = "u128_string")]
@@ -1163,17 +1162,15 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         || r.settlement_per_record == 0
         || r.settlement_per_record > r.settlement_per_principal
         || r.settlement_per_principal > r.settlement_global
+        || !(1..=900).contains(&r.settlement_retry_interval_seconds)
     {
         return Err("unsafe rate-limit configuration".into());
     }
-    let l = profile.governance_evm_liveness;
-    if !(30..=300).contains(&l.check_interval_seconds)
-        || l.rebroadcast_after_seconds < l.check_interval_seconds
-        || l.replacement_after_seconds < l.rebroadcast_after_seconds
-        || !(1..=8).contains(&l.max_replacements)
-        || !(1_000..=5_000).contains(&l.fee_bump_bps)
+    let replacement = profile.governance_replacement;
+    if !(1..=8).contains(&replacement.max_replacements)
+        || !(1_000..=5_000).contains(&replacement.fee_bump_bps)
     {
-        return Err("unsafe EVM liveness policy".into());
+        return Err("unsafe governance replacement policy".into());
     }
     let p = &profile.parameters;
     let _ = p
@@ -1340,6 +1337,7 @@ fn render_release_inputs(
         "settlement_rate_limit_global": profile.rate_limits.settlement_global,
         "settlement_rate_limit_per_principal": profile.rate_limits.settlement_per_principal,
         "settlement_rate_limit_per_record": profile.rate_limits.settlement_per_record,
+        "settlement_retry_interval_seconds": profile.rate_limits.settlement_retry_interval_seconds,
         "governance_evm_fee": {
             "gas_limit_ceiling": profile.parameters.gas_limit_ceiling.to_string(),
             "max_fee_per_gas_ceiling": profile.parameters.max_fee_per_gas_ceiling.to_string(),
@@ -1350,7 +1348,7 @@ fn render_release_inputs(
             "base_fee_multiplier_bps": profile.parameters.base_fee_multiplier_bps,
             "l1_fee_multiplier_bps": profile.parameters.l1_fee_multiplier_bps,
         },
-        "governance_evm_liveness": profile.governance_evm_liveness,
+        "governance_replacement": profile.governance_replacement,
         "governance_eth_floor_wei": profile.parameters.governance_eth_floor_wei.to_string(),
         "cycles_floor": profile.parameters.cycles_floor.to_string(),
         "settlement_cycle_ceiling": profile.parameters.settlement_cycle_ceiling.to_string(),
@@ -1965,8 +1963,9 @@ fn validate_live_public_config(
         || observed.settlement_rate_limit_global != r.settlement_global
         || observed.settlement_rate_limit_per_principal != r.settlement_per_principal
         || observed.settlement_rate_limit_per_record != r.settlement_per_record
+        || observed.settlement_retry_interval_seconds != r.settlement_retry_interval_seconds
         || observed.governance_evm_fee != p.governance_evm_fee()
-        || observed.governance_evm_liveness != profile.governance_evm_liveness
+        || observed.governance_replacement != profile.governance_replacement
         || observed.governance_eth_floor_wei != p.governance_eth_floor_wei
         || observed.cycles_floor != p.cycles_floor
         || observed.settlement_cycle_ceiling != p.settlement_cycle_ceiling
@@ -2950,11 +2949,9 @@ mod tests {
                 settlement_global: 60,
                 settlement_per_principal: 6,
                 settlement_per_record: 3,
+                settlement_retry_interval_seconds: 60,
             },
-            governance_evm_liveness: EvmLivenessPolicy {
-                check_interval_seconds: 60,
-                rebroadcast_after_seconds: 300,
-                replacement_after_seconds: 1_800,
+            governance_replacement: GovernanceReplacementPolicy {
                 max_replacements: 3,
                 fee_bump_bps: 1_250,
             },
@@ -2988,8 +2985,11 @@ mod tests {
             settlement_rate_limit_global: profile.rate_limits.settlement_global,
             settlement_rate_limit_per_principal: profile.rate_limits.settlement_per_principal,
             settlement_rate_limit_per_record: profile.rate_limits.settlement_per_record,
+            settlement_retry_interval_seconds: profile
+                .rate_limits
+                .settlement_retry_interval_seconds,
             governance_evm_fee: profile.parameters.governance_evm_fee(),
-            governance_evm_liveness: profile.governance_evm_liveness,
+            governance_replacement: profile.governance_replacement,
             governance_eth_floor_wei: profile.parameters.governance_eth_floor_wei,
             cycles_floor: profile.parameters.cycles_floor,
             settlement_cycle_ceiling: profile.parameters.settlement_cycle_ceiling,
@@ -3157,12 +3157,7 @@ mod tests {
         let canister: Value = read_json(&first.join("canister-init.json")).unwrap();
         assert_eq!(canister["evm_rpc_canister_id"], OFFICIAL_EVM_RPC_CANISTER);
         assert_eq!(canister["custom_evm_rpc_urls"], serde_json::json!([]));
-        assert_eq!(
-            canister["governance_evm_liveness"]["replacement_after_seconds"],
-            valid_profile()
-                .governance_evm_liveness
-                .replacement_after_seconds
-        );
+        assert_eq!(canister["governance_replacement"]["max_replacements"], 3);
         let expected_init_keys = [
             "ledger_canister_id",
             "index_canister_id",
@@ -3181,8 +3176,9 @@ mod tests {
             "settlement_rate_limit_global",
             "settlement_rate_limit_per_principal",
             "settlement_rate_limit_per_record",
+            "settlement_retry_interval_seconds",
             "governance_evm_fee",
-            "governance_evm_liveness",
+            "governance_replacement",
             "governance_eth_floor_wei",
             "cycles_floor",
             "settlement_cycle_ceiling",

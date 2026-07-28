@@ -60,17 +60,19 @@ fn terminal_fee_payout_result(result: &tasks::FeePayoutActionResult) -> bool {
     )
 }
 
-fn transient_retry_at(checks: u8) -> u64 {
-    let base_seconds = STORE.with(|store| {
+fn transient_retry_at(base_seconds: u64, checks: u8) -> u64 {
+    ic_cdk::api::time().saturating_add(transient_retry_delay_ns(base_seconds, checks))
+}
+
+fn settlement_retry_interval_seconds() -> Result<u64, SettlementActionError> {
+    STORE.with(|store| {
         store
             .borrow()
             .config()
-            .ok()
-            .flatten()
-            .map(|config| config.governance_evm_liveness.check_interval_seconds)
-            .unwrap_or(60)
-    });
-    ic_cdk::api::time().saturating_add(transient_retry_delay_ns(base_seconds, checks))
+            .map_err(|_| SettlementActionError::StorageFailure)?
+            .map(|config| config.settlement_retry_interval_seconds)
+            .ok_or(SettlementActionError::StorageFailure)
+    })
 }
 
 pub(crate) struct SettlementLease {
@@ -113,7 +115,6 @@ impl SettlementLease {
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static SETTLEMENT_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
-    static BASE_GOVERNANCE_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
     static FUNDING_RECOVERY_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -305,50 +306,6 @@ mod funding_recovery_tests {
     }
 }
 
-pub fn arm_base_governance(caller: candid::Principal) {
-    #[cfg(target_arch = "wasm32")]
-    BASE_GOVERNANCE_TIMER.with(|slot| {
-        if slot.borrow().is_some() {
-            return;
-        }
-        let has_work = STORE.with(|store| {
-            let store = store.borrow();
-            store
-                .governance_lane()
-                .map(|(_, _, _, pending)| pending.is_some())
-                .and_then(|pending| {
-                    store
-                        .next_emergency_base_action()
-                        .map(|next| pending || next.is_some())
-                })
-                .unwrap_or(true)
-        });
-        if !has_work {
-            return;
-        }
-        let timer = ic_cdk_timers::set_timer(Duration::from_secs(60), async move {
-            BASE_GOVERNANCE_TIMER.with(|slot| {
-                slot.borrow_mut().take();
-            });
-            arm_base_governance(caller);
-            let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
-                return;
-            };
-            let effective_caller = STORE.with(|store| {
-                store
-                    .borrow()
-                    .admin_state()
-                    .map(|state| state.governance_principal)
-                    .unwrap_or(caller)
-            });
-            let _ = crate::base_governance::process_emergency(effective_caller).await;
-        });
-        *slot.borrow_mut() = Some(timer);
-    });
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = caller;
-}
-
 pub fn arm() {
     #[cfg(target_arch = "wasm32")]
     {
@@ -429,6 +386,7 @@ pub(crate) async fn run_claimed_fee_payout(
     job: SettlementJob,
 ) -> Result<tasks::FeePayoutActionResult, SettlementActionError> {
     let now = ic_cdk::api::time();
+    let retry_interval_seconds = settlement_retry_interval_seconds()?;
     let payout_id = crate::storage::fee_payout_id_from_job(job.settlement_id)
         .map_err(|_| SettlementActionError::InvalidId)?;
     let mut lease = SettlementLease::new(job);
@@ -461,7 +419,10 @@ pub(crate) async fn run_claimed_fee_payout(
         ),
         Ok(tasks::FeePayoutActionResult::ReconciliationProgress { .. }) => finish(
             &lease.job,
-            Some(transient_retry_at(lease.job.attempts)),
+            Some(transient_retry_at(
+                retry_interval_seconds,
+                lease.job.attempts,
+            )),
             lease.job.attempts.saturating_add(1),
             None,
             None,
@@ -469,7 +430,10 @@ pub(crate) async fn run_claimed_fee_payout(
         Ok(tasks::FeePayoutActionResult::Stopped { reason, .. }) if transient_stop(reason) => {
             finish(
                 &lease.job,
-                Some(transient_retry_at(lease.job.attempts)),
+                Some(transient_retry_at(
+                    retry_interval_seconds,
+                    lease.job.attempts,
+                )),
                 lease.job.attempts.saturating_add(1),
                 None,
                 None,
@@ -508,6 +472,7 @@ async fn run_claimed_inner(
     job: SettlementJob,
 ) -> Result<SettlementActionResult, SettlementActionError> {
     let now = ic_cdk::api::time();
+    let retry_interval_seconds = settlement_retry_interval_seconds()?;
     let mut lease = SettlementLease::new(job);
     // Keep a durable recovery wakeup armed before the first await. If this runner
     // traps, the leased SQLite job can still be reclaimed after its deadline.
@@ -541,7 +506,10 @@ async fn run_claimed_inner(
     let outcome = match &result {
         Ok(SettlementActionResult::Stopped { reason, .. }) if transient_stop(reason) => finish(
             &lease.job,
-            Some(transient_retry_at(lease.job.attempts)),
+            Some(transient_retry_at(
+                retry_interval_seconds,
+                lease.job.attempts,
+            )),
             lease.job.attempts.saturating_add(1),
             None,
             record_stop_reason.clone(),
@@ -555,7 +523,10 @@ async fn run_claimed_inner(
         ),
         Ok(SettlementActionResult::ReconciliationProgress { .. }) => finish(
             &lease.job,
-            Some(transient_retry_at(lease.job.attempts)),
+            Some(transient_retry_at(
+                retry_interval_seconds,
+                lease.job.attempts,
+            )),
             lease.job.attempts.saturating_add(1),
             None,
             None,

@@ -32,8 +32,9 @@ pub struct BridgeInitArgs {
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
     pub settlement_rate_limit_per_record: u16,
+    pub settlement_retry_interval_seconds: u64,
     pub governance_evm_fee: EvmFeePolicy,
-    pub governance_evm_liveness: EvmLivenessPolicy,
+    pub governance_replacement: GovernanceReplacementPolicy,
     pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
@@ -43,10 +44,7 @@ pub struct BridgeInitArgs {
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EvmLivenessPolicy {
-    pub check_interval_seconds: u64,
-    pub rebroadcast_after_seconds: u64,
-    pub replacement_after_seconds: u64,
+pub struct GovernanceReplacementPolicy {
     pub max_replacements: u8,
     pub fee_bump_bps: u16,
 }
@@ -82,8 +80,9 @@ pub(crate) struct ImmutableBridgeConfig {
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
     pub settlement_rate_limit_per_record: u16,
+    pub settlement_retry_interval_seconds: u64,
     pub governance_evm_fee: EvmFeePolicy,
-    pub governance_evm_liveness: EvmLivenessPolicy,
+    pub governance_replacement: GovernanceReplacementPolicy,
     pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
@@ -109,8 +108,9 @@ impl ImmutableBridgeConfig {
             settlement_rate_limit_global: value.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: value.settlement_rate_limit_per_principal,
             settlement_rate_limit_per_record: value.settlement_rate_limit_per_record,
+            settlement_retry_interval_seconds: value.settlement_retry_interval_seconds,
             governance_evm_fee: value.governance_evm_fee,
-            governance_evm_liveness: value.governance_evm_liveness,
+            governance_replacement: value.governance_replacement,
             governance_eth_floor_wei: value.governance_eth_floor_wei,
             cycles_floor: value.cycles_floor,
             settlement_cycle_ceiling: value.settlement_cycle_ceiling,
@@ -141,8 +141,9 @@ impl ImmutableBridgeConfig {
             settlement_rate_limit_global: self.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
             settlement_rate_limit_per_record: self.settlement_rate_limit_per_record,
+            settlement_retry_interval_seconds: self.settlement_retry_interval_seconds,
             governance_evm_fee: self.governance_evm_fee,
-            governance_evm_liveness: self.governance_evm_liveness,
+            governance_replacement: self.governance_replacement,
             governance_eth_floor_wei: self.governance_eth_floor_wei,
             cycles_floor: self.cycles_floor,
             settlement_cycle_ceiling: self.settlement_cycle_ceiling,
@@ -153,12 +154,9 @@ impl ImmutableBridgeConfig {
     }
 }
 
-impl Default for EvmLivenessPolicy {
+impl Default for GovernanceReplacementPolicy {
     fn default() -> Self {
         Self {
-            check_interval_seconds: 60,
-            rebroadcast_after_seconds: 300,
-            replacement_after_seconds: 1_800,
             max_replacements: 3,
             fee_bump_bps: 1_250,
         }
@@ -230,8 +228,9 @@ impl BridgeInitArgs {
             || self.settlement_rate_limit_per_record > self.settlement_rate_limit_per_principal
             || self.settlement_rate_limit_per_principal > self.settlement_rate_limit_global
             || self.settlement_rate_limit_global > 100
+            || !(1..=900).contains(&self.settlement_retry_interval_seconds)
         {
-            return Err("settlement rate limit must satisfy 60 <= window <= 3600 and 1 <= per-record <= per-principal <= global <= 100");
+            return Err("settlement policy must satisfy 60 <= rate window <= 3600, 1 <= per-record <= per-principal <= global <= 100, and 1 <= retry interval <= 900");
         }
         let fee = self.governance_evm_fee;
         if fee.gas_limit_ceiling == 0
@@ -245,18 +244,11 @@ impl BridgeInitArgs {
         {
             return Err("EVM fee policy is outside the supported safety bounds");
         }
-        let policy = self.governance_evm_liveness;
-        let replacement_checks = policy
-            .replacement_after_seconds
-            .div_ceil(policy.check_interval_seconds.max(1));
-        if !(30..=300).contains(&policy.check_interval_seconds)
-            || policy.rebroadcast_after_seconds < policy.check_interval_seconds
-            || policy.replacement_after_seconds < policy.rebroadcast_after_seconds
-            || !(1..=8).contains(&policy.max_replacements)
+        let policy = self.governance_replacement;
+        if !(1..=8).contains(&policy.max_replacements)
             || !(1_000..=5_000).contains(&policy.fee_bump_bps)
-            || replacement_checks.saturating_mul(u64::from(policy.max_replacements) + 1) > 255
         {
-            return Err("EVM liveness policy is outside the supported safety bounds");
+            return Err("governance replacement policy is outside the supported safety bounds");
         }
         if self.governance_principal == Principal::anonymous()
             || self.pause_principal == Principal::anonymous()
@@ -292,36 +284,6 @@ impl BridgeInitArgs {
             .try_into()
             .expect("validated Timelock contract")
     }
-}
-
-pub(crate) fn next_replacement_fees(
-    current_max_fee: u128,
-    current_priority_fee: u128,
-    max_fee_ceiling: u128,
-    priority_fee_ceiling: u128,
-    policy: EvmLivenessPolicy,
-) -> Option<(u128, u128)> {
-    let next_max_fee = bump_fee(current_max_fee, max_fee_ceiling, policy.fee_bump_bps);
-    if next_max_fee <= current_max_fee {
-        return None;
-    }
-    let next_priority_fee = bump_fee(
-        current_priority_fee,
-        priority_fee_ceiling,
-        policy.fee_bump_bps,
-    )
-    .min(next_max_fee);
-    Some((next_max_fee, next_priority_fee))
-}
-
-fn bump_fee(current: u128, ceiling: u128, bump_bps: u16) -> u128 {
-    current
-        .saturating_mul(10_000u128.saturating_add(u128::from(bump_bps)))
-        .saturating_add(9_999)
-        .checked_div(10_000)
-        .unwrap_or(ceiling)
-        .max(current.saturating_add(1))
-        .min(ceiling)
 }
 
 pub fn kinic_ledger_canister_id() -> Principal {
@@ -456,6 +418,12 @@ mod tests {
         args = valid_args();
         args.settlement_rate_limit_global = 101;
         assert!(args.validate().is_err());
+        args = valid_args();
+        args.settlement_retry_interval_seconds = 0;
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.settlement_retry_interval_seconds = 901;
+        assert!(args.validate().is_err());
     }
 
     #[test]
@@ -497,6 +465,7 @@ mod tests {
             settlement_rate_limit_global: 60,
             settlement_rate_limit_per_principal: 6,
             settlement_rate_limit_per_record: 3,
+            settlement_retry_interval_seconds: 60,
             governance_evm_fee: EvmFeePolicy {
                 gas_limit_ceiling: 500_000,
                 max_fee_per_gas_ceiling: 200_000_000_000,
@@ -507,7 +476,7 @@ mod tests {
                 base_fee_multiplier_bps: 60_000,
                 l1_fee_multiplier_bps: 15_000,
             },
-            governance_evm_liveness: EvmLivenessPolicy::default(),
+            governance_replacement: GovernanceReplacementPolicy::default(),
             governance_eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,

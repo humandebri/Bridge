@@ -71,8 +71,11 @@ pub struct MintAuthorizationOrigin {
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MintExpiryEvidence {
+    pub deposit_id: [u8; 32],
     pub authorization_digest: [u8; 32],
     pub chain_id: u64,
+    pub verifying_contract: [u8; 20],
+    pub deposit_processed: bool,
     pub finalized_block_number: u64,
     pub finalized_block_hash: [u8; 32],
     pub finalized_block_timestamp: u64,
@@ -91,9 +94,17 @@ pub struct MintExpiryEvidence {
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MintFinalizationEvidence {
+    pub deposit_id: [u8; 32],
+    pub recipient: [u8; 20],
     pub authorization_digest: [u8; 32],
     pub chain_id: u64,
+    pub verifying_contract: [u8; 20],
+    pub gross_amount: Amount,
+    pub charged_service_fee: Amount,
+    pub minted_amount: Amount,
     pub transaction_hash: [u8; 32],
+    pub log_index: u64,
+    pub receipt_succeeded: bool,
     pub receipt_block_number: u64,
     pub receipt_block_hash: [u8; 32],
     pub finalized_block_number: u64,

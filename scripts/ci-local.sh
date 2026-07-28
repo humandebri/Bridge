@@ -437,17 +437,58 @@ run_lean_failure_fixtures() {
   done < <(rg --files "$ROOT/verification/lean/fail" -g '*.lean' | sort)
 }
 
-run_proofs() {
+run_lean_proofs() {
   verify_lean_no_proof_escape "$ROOT/verification/lean"
   (cd "$ROOT/verification/lean" && lake build)
-  run_lean_failure_fixtures
+}
+
+run_policy_vector_consumers() {
   python3 "$ROOT/scripts/test_protocol_vectors.py"
   python3 "$ROOT/scripts/protocol_vectors.py" --check
-  python3 "$ROOT/scripts/test_refinement_manifest.py"
+}
+
+run_refinement_gate() {
   python3 "$ROOT/scripts/test_reproducible_artifacts.py"
-  python3 "$ROOT/scripts/check_refinement_manifest.py"
-  run_smt
-  run_verus
+  python3 "$ROOT/scripts/check_claim_manifest.py"
+}
+
+run_proof_stage() {
+  local stage="$1"
+  shift
+  local status
+  set +e
+  "$@"
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    printf '%s\tpass\n' "$stage" >>"$PROOF_STAGE_RECEIPT"
+  else
+    printf '%s\tfail\n' "$stage" >>"$PROOF_STAGE_RECEIPT"
+  fi
+  python3 "$ROOT/scripts/write_proof_receipt.py" \
+    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
+  return "$status"
+}
+
+run_proofs() {
+  PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
+  PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
+  : >"$PROOF_STAGE_RECEIPT"
+  python3 "$ROOT/scripts/write_proof_receipt.py" \
+    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
+  python3 "$ROOT/scripts/check_failure_manifests.py"
+  run_proof_stage lean run_lean_proofs
+  run_proof_stage lean-negative run_lean_failure_fixtures
+  run_proof_stage policy-vector-consumers run_policy_vector_consumers
+  run_proof_stage refinement-gate run_refinement_gate
+  run_proof_stage known-answer-consumers \
+    python3 "$ROOT/scripts/check_known_answer_manifest.py"
+  run_proof_stage smt-and-negative run_smt
+  run_proof_stage verus-and-negative run_verus
+  python3 -c \
+    'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["complete"] is True' \
+    "$PROOF_RECEIPT"
+  echo "proof_receipt=$PROOF_RECEIPT" >&2
 }
 
 require_ui_dependencies() {
@@ -742,6 +783,7 @@ run_smoke() {
     settlement_rate_limit_global = 60 : nat16;
     settlement_rate_limit_per_principal = 6 : nat16;
     settlement_rate_limit_per_record = 3 : nat16;
+    settlement_retry_interval_seconds = 60 : nat64;
     governance_evm_fee = record {
       gas_limit_ceiling = 500_000 : nat;
       max_fee_per_gas_ceiling = 200_000_000_000 : nat;
@@ -752,10 +794,7 @@ run_smoke() {
       base_fee_multiplier_bps = 60_000 : nat32;
       l1_fee_multiplier_bps = 15_000 : nat32;
     };
-    governance_evm_liveness = record {
-      check_interval_seconds = 60 : nat64;
-      rebroadcast_after_seconds = 300 : nat64;
-      replacement_after_seconds = 1_800 : nat64;
+    governance_replacement = record {
       max_replacements = 3 : nat8;
       fee_bump_bps = 1_250 : nat16;
     };

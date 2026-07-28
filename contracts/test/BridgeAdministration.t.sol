@@ -115,6 +115,19 @@ contract BridgeAdministrationTest is TestBase {
         assert(freshBridge.withdrawalsPaused());
     }
 
+    function testMintRejectsBlockTimestampThatCannotBeStoredInWindowState() public {
+        IBridge.MintAuthorization memory authorization =
+            _authorization(keccak256("timestamp-overflow"), USER, 11, SERVICE_FEE);
+        authorization.deadline = type(uint256).max;
+        vm.warp(uint256(type(uint64).max) + 1);
+        bytes memory signature = _signMintAuthorization(BRIDGE_SIGNER_KEY, bridge, authorization);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IBridge.BlockTimestampExceedsU64.selector, block.timestamp)
+        );
+        bridge.mintDepositWithAuthorization(authorization, signature);
+    }
+
     function testAdministrationFunctionsRejectEveryWrongAuthority() public {
         _assertRuntimeFunctionsRejected(BRIDGE_SIGNER);
         _assertRuntimeFunctionsRejected(BASE_ADMIN_TIMELOCK);
@@ -242,7 +255,7 @@ contract BridgeAdministrationTest is TestBase {
         vm.prank(BASE_ADMIN_TIMELOCK);
         bridge.rotateBridgeSigner(NEW_BRIDGE_SIGNER);
         assert(bridge.mintAuthorizationEpoch() == 2);
-        vm.expectRevert(abi.encodeWithSelector(IBridge.MintAuthorizationEpochMismatch.selector, 1, 2));
+        vm.expectRevert(IBridge.InvalidMintAuthorizationSignature.selector);
         _submitMintAuthorization(BRIDGE_SIGNER_KEY, bridge, oldAuthorization, address(this));
         _mintAuthorized(keccak256("new-signer"), USER, 11, SERVICE_FEE, NEW_BRIDGE_SIGNER_KEY);
 

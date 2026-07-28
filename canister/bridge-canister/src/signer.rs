@@ -414,14 +414,7 @@ mod tests {
             gas_limit: 100_000,
             max_fee_per_gas: 20,
             max_priority_fee_per_gas: 1,
-            initial_max_fee_per_gas: 20,
-            initial_max_priority_fee_per_gas: 1,
-            replacement_generation: 0,
-            prior_signed_transactions: vec![],
-            first_broadcast_at_ns: 0,
-            last_broadcast_at_ns: 0,
-            rebroadcast_count: 0,
-            signed_transaction: None,
+            signed_transactions: vec![],
         };
         let encoded = unsigned_transaction(&envelope);
         assert_eq!(encoded[0], 2);

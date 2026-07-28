@@ -138,6 +138,7 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.InvalidPrincipal.selector, "InvalidPrincipal(bytes)");
         _assertSelector(IBridge.InvalidServiceFee.selector, "InvalidServiceFee(uint256,uint256)");
         _assertSelector(IBridge.ValueExceedsU128.selector, "ValueExceedsU128(uint256)");
+        _assertSelector(IBridge.BlockTimestampExceedsU64.selector, "BlockTimestampExceedsU64(uint256)");
         _assertSelector(IBridge.InvalidMintWindowDuration.selector, "InvalidMintWindowDuration(uint64,uint64,uint64)");
         _assertSelector(IBridge.ServiceFeeExceedsUserMaximum.selector, "ServiceFeeExceedsUserMaximum(uint256,uint256)");
         _assertSelector(IBridge.DepositAlreadyProcessed.selector, "DepositAlreadyProcessed(bytes32)");

@@ -82,6 +82,7 @@ interface IBridge {
     error InvalidPrincipal(bytes owner);
     error InvalidServiceFee(uint256 serviceFee, uint256 maximumServiceFee);
     error ValueExceedsU128(uint256 value);
+    error BlockTimestampExceedsU64(uint256 timestamp);
     error InvalidMintWindowDuration(uint64 suppliedDuration, uint64 minimumDuration, uint64 maximumDuration);
     error ServiceFeeExceedsUserMaximum(uint256 serviceFee, uint256 userMaximum);
     error DepositAlreadyProcessed(bytes32 depositId);

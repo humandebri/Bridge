@@ -125,8 +125,9 @@ pub struct PublicConfig {
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
     pub settlement_rate_limit_per_record: u16,
+    pub settlement_retry_interval_seconds: u64,
     pub governance_evm_fee: config::EvmFeePolicy,
-    pub governance_evm_liveness: config::EvmLivenessPolicy,
+    pub governance_replacement: config::GovernanceReplacementPolicy,
     pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
@@ -362,7 +363,6 @@ fn init(args: config::BridgeInitArgs) {
     install_store(store);
     scheduler::arm();
     scheduler::arm_funding_recovery();
-    scheduler::arm_base_governance(Principal::anonymous());
 }
 
 #[ic_cdk::post_upgrade]
@@ -373,7 +373,6 @@ fn post_upgrade() {
     ensure_supported_schema();
     scheduler::arm();
     scheduler::arm_funding_recovery();
-    scheduler::arm_base_governance(Principal::anonymous());
 }
 
 #[ic_cdk::update]
@@ -437,6 +436,36 @@ fn get_withdrawals(
     ids: Vec<Vec<u8>>,
 ) -> Result<Vec<Option<api::WithdrawalView>>, api::GetWithdrawalsError> {
     api::get_withdrawals(ids)
+}
+
+#[ic_cdk::update]
+async fn notify_deposit_mint(
+    args: api::NotifyDepositMintArgs,
+) -> Result<api::NotifyDepositMintReceipt, api::NotifyDepositMintError> {
+    let caller = ic_cdk::api::msg_caller();
+    let deposit_id: [u8; 32] = args
+        .deposit_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| api::NotifyDepositMintError::InvalidDepositId)?;
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| api::NotifyDepositMintError::StorageFailure)?
+            .ok_or(api::NotifyDepositMintError::StorageFailure)
+    })?;
+    if !has_external_call_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.cycles_floor,
+        config.settlement_cycle_ceiling,
+    ) {
+        return Err(api::NotifyDepositMintError::InsufficientCycles);
+    }
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::Deposit(deposit_id)) else {
+        return Err(api::NotifyDepositMintError::Busy);
+    };
+    api::notify_deposit_mint(caller, args).await
 }
 
 #[ic_cdk::update]
@@ -760,7 +789,10 @@ fn get_bridge_status() -> BridgeStatus {
                     "nonterminal withdrawal count read",
                     store.nonterminal_withdrawal_count(),
                 ),
-                counts.reserved_deposit_mint_operations,
+                storage_or_trap(
+                    "nonterminal deposit count read",
+                    store.nonterminal_deposit_count(),
+                ),
                 storage_or_trap(
                     "deposit funding reservation count read",
                     store.deposit_funding_reservation_count(),
@@ -1020,8 +1052,9 @@ fn get_public_config() -> PublicConfig {
             settlement_rate_limit_global: config.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: config.settlement_rate_limit_per_principal,
             settlement_rate_limit_per_record: config.settlement_rate_limit_per_record,
+            settlement_retry_interval_seconds: config.settlement_retry_interval_seconds,
             governance_evm_fee: config.governance_evm_fee,
-            governance_evm_liveness: config.governance_evm_liveness,
+            governance_replacement: config.governance_replacement,
             governance_eth_floor_wei: config.governance_eth_floor_wei,
             cycles_floor: config.cycles_floor,
             settlement_cycle_ceiling: config.settlement_cycle_ceiling,
@@ -1033,25 +1066,63 @@ fn get_public_config() -> PublicConfig {
 }
 
 #[ic_cdk::update]
-async fn submit_base_governance_action(
+async fn prepare_base_governance_action(
     action: base_governance::BaseGovernanceAction,
-) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
+) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
+{
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     let caller = ic_cdk::api::msg_caller();
-    let result = base_governance::submit(caller, action.into()).await;
-    scheduler::arm_base_governance(caller);
-    result
+    base_governance::prepare(caller, action.into()).await
 }
 
 #[ic_cdk::update]
-async fn emergency_pause(
+fn emergency_pause(
 ) -> Result<base_governance::EmergencyPauseReceipt, base_governance::BaseGovernanceError> {
     let Some(_guard) = InFlightGuard::acquire(ActionKey::EmergencyPause) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
-    base_governance::emergency_pause(ic_cdk::api::msg_caller()).await
+    base_governance::emergency_pause(ic_cdk::api::msg_caller())
+}
+
+#[ic_cdk::query]
+fn get_pending_base_governance_transaction() -> Result<
+    Option<base_governance::SignedBaseGovernanceTransaction>,
+    base_governance::BaseGovernanceError,
+> {
+    base_governance::get_pending(ic_cdk::api::msg_caller())
+}
+
+#[ic_cdk::update]
+async fn confirm_base_governance_transaction(
+    args: base_governance::ConfirmBaseGovernanceTransactionArgs,
+) -> Result<base_governance::BaseGovernanceConfirmation, base_governance::BaseGovernanceError> {
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
+    };
+    base_governance::confirm(ic_cdk::api::msg_caller(), args).await
+}
+
+#[ic_cdk::update]
+async fn prepare_base_governance_replacement(
+    args: base_governance::PrepareBaseGovernanceReplacementArgs,
+) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
+{
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
+    };
+    base_governance::prepare_replacement(ic_cdk::api::msg_caller(), args).await
+}
+
+#[ic_cdk::update]
+async fn prepare_next_emergency_base_action(
+) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
+{
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
+    };
+    base_governance::prepare_next_emergency(ic_cdk::api::msg_caller()).await
 }
 
 #[ic_cdk::query]
@@ -1062,31 +1133,28 @@ fn get_activation_status(
 
 #[ic_cdk::update]
 async fn schedule_activation(
-) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
+) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
+{
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     let caller = ic_cdk::api::msg_caller();
-    let result = base_governance::submit(
+    base_governance::prepare(
         caller,
         base_governance::GovernanceAction::ScheduleActivation,
     )
-    .await;
-    scheduler::arm_base_governance(caller);
-    result
+    .await
 }
 
 #[ic_cdk::update]
 async fn execute_activation(
-) -> Result<base_governance::BaseGovernanceReceipt, base_governance::BaseGovernanceError> {
+) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
+{
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     let caller = ic_cdk::api::msg_caller();
-    let result =
-        base_governance::submit(caller, base_governance::GovernanceAction::ExecuteActivation).await;
-    scheduler::arm_base_governance(caller);
-    result
+    base_governance::prepare(caller, base_governance::GovernanceAction::ExecuteActivation).await
 }
 
 #[ic_cdk::query]

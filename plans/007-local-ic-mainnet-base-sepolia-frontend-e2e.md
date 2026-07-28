@@ -35,7 +35,7 @@ gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実
 - pause install後にCanister由来Mint SignerとGovernance Operatorを導出する。
 - deployer roleを残さずTimelock、Bridge、bSNSを配置する。
 - Canisterの引数なし`schedule_activation()`、早期execute revert、Anvilだけの24時間経過、`execute_activation()`を確認する。
-- Deposit、Base mint、Finalized wallet confirmation、Withdrawal、Ledger release、reload、duplicate、二重タブleaseを確認する。
+- Deposit、EIP-712 AuthorizationによるBase mint、期限後のFinalized照合、Withdrawal、Ledger release、reload、duplicate、二重タブleaseを確認する。
 - 同一Wasm upgradeで未完了state、nonce queue、pause、rate limitを保持する。
 - raw EVM transactionのhash、RPC返却hash、採掘receiptを一致させる。
 

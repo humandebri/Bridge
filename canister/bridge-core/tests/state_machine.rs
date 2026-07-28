@@ -117,8 +117,11 @@ fn authorization_record(deposit: &DepositRecord) -> MintAuthorizationRecord {
 
 fn expiry_evidence(timestamp: u64) -> MintExpiryEvidence {
     MintExpiryEvidence {
+        deposit_id: [1; 32],
         authorization_digest: [5; 32],
         chain_id: 8453,
+        verifying_contract: [4; 20],
+        deposit_processed: false,
         finalized_block_number: 8,
         finalized_block_hash: [7; 32],
         finalized_block_timestamp: timestamp,
@@ -132,9 +135,17 @@ fn expiry_evidence(timestamp: u64) -> MintExpiryEvidence {
 
 fn finalization_evidence() -> MintFinalizationEvidence {
     MintFinalizationEvidence {
+        deposit_id: [1; 32],
+        recipient: [3; 20],
         authorization_digest: [5; 32],
         chain_id: 8453,
+        verifying_contract: [4; 20],
+        gross_amount: Amount::new(110),
+        charged_service_fee: Amount::new(10),
+        minted_amount: Amount::new(100),
         transaction_hash: [7; 32],
+        log_index: 0,
+        receipt_succeeded: true,
         receipt_block_number: 8,
         receipt_block_hash: [8; 32],
         finalized_block_number: 9,
@@ -169,10 +180,6 @@ fn minted_state_requires_and_persists_exact_canonical_evidence() {
             signature: vec![12; 65],
         })
         .expect("signed");
-    deposit
-        .apply(DepositEvent::BeginExpiryReconciliation)
-        .expect("reconciliation");
-
     let mut invalid = finalization_evidence();
     invalid.rpc_response_digest = [0; 32];
     let snapshot = deposit.clone();
