@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { deploymentProfile } from "@/config/profile"
 import {
+  readPendingMint,
   readPendingConfirmations,
+  removePendingMint,
   removePendingConfirmation,
   restorePendingConfirmation,
+  savePendingMint,
   savePendingConfirmation,
   setPendingConfirmationBlocked,
   upsertPendingConfirmation,
@@ -22,6 +25,31 @@ const scope = {
 
 describe("pending finalized confirmations", () => {
   beforeEach(() => window.localStorage.clear())
+
+  it("persists and removes a deployment-scoped pending mint transaction", async () => {
+    const depositId = `0x${"11".repeat(32)}` as const
+    const transactionHash = `0x${"22".repeat(32)}` as const
+
+    await savePendingMint(depositId, transactionHash)
+    expect(readPendingMint(depositId)).toBe(transactionHash)
+
+    await removePendingMint(depositId)
+    expect(readPendingMint(depositId)).toBeUndefined()
+  })
+
+  it("retains a session recovery hash when durable storage is unavailable", async () => {
+    const depositId = `0x${"33".repeat(32)}` as const
+    const transactionHash = `0x${"44".repeat(32)}` as const
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable")
+    })
+
+    await expect(savePendingMint(depositId, transactionHash)).resolves.toBeUndefined()
+    expect(readPendingMint(depositId)).toBe(transactionHash)
+
+    setItem.mockRestore()
+    await removePendingMint(depositId)
+  })
 
   it("persists, updates, blocks, and removes a settlement", async () => {
     await savePendingConfirmation(entry)

@@ -23,11 +23,13 @@ import { refetchRuntimeWriteReady } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 import {
   contractAuthorization,
+  validateMintAuthorization,
+} from "@/lib/mint-authorization"
+import {
   readPendingMint,
   removePendingMint,
   savePendingMint,
-  validateMintAuthorization,
-} from "@/lib/mint-authorization"
+} from "@/lib/pending-confirmations"
 
 export function MintAuthorizationAction({
   record,

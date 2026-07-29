@@ -75,13 +75,18 @@ library MintAuthorizationPolicy {
         if (input.maximumFee > type(uint128).max) return (RejectReason.MaximumFeeExceedsU128, effects, 0);
         if (input.chargedFee > type(uint128).max) return (RejectReason.ChargedFeeExceedsU128, effects, 0);
         if (!depositAvailable(input.processed)) return (RejectReason.Processed, effects, 0);
-        if (input.chargedFee > input.protocolMaximumFee) {
-            return (RejectReason.ProtocolFeeExceeded, effects, 0);
+        if (!feeWithinBounds(input.chargedFee, input.maximumFee, input.protocolMaximumFee)) {
+            if (input.chargedFee > input.protocolMaximumFee) {
+                return (RejectReason.ProtocolFeeExceeded, effects, 0);
+            }
+            return (RejectReason.UserFeeExceeded, effects, 0);
         }
-        if (input.chargedFee > input.maximumFee) return (RejectReason.UserFeeExceeded, effects, 0);
-        if (input.grossAmount <= input.chargedFee) return (RejectReason.InvalidAmount, effects, 0);
-        uint256 mintAmount = input.grossAmount - input.chargedFee;
-        if (mintAmount > input.perDepositLimit) {
+        (bool amountAccepted, uint256 mintAmount) =
+            mintAmountWithinLimit(input.grossAmount, input.chargedFee, input.perDepositLimit);
+        if (input.grossAmount <= input.chargedFee) {
+            return (RejectReason.InvalidAmount, effects, 0);
+        }
+        if (!amountAccepted) {
             return (RejectReason.PerDepositLimitExceeded, effects, 0);
         }
 
@@ -108,6 +113,24 @@ library MintAuthorizationPolicy {
             effects.eventMintedAmount
         ) = mintEffectAmounts(input.grossAmount, input.chargedFee);
         return (RejectReason.None, effects, available);
+    }
+
+    function feeWithinBounds(uint256 chargedFee, uint256 userMaximum, uint256 protocolMaximum)
+        internal
+        pure
+        returns (bool)
+    {
+        return chargedFee <= userMaximum && chargedFee <= protocolMaximum;
+    }
+
+    function mintAmountWithinLimit(uint256 grossAmount, uint256 chargedFee, uint256 perDepositLimit)
+        internal
+        pure
+        returns (bool accepted, uint256 mintAmount)
+    {
+        if (grossAmount <= chargedFee) return (false, 0);
+        mintAmount = grossAmount - chargedFee;
+        return (mintAmount <= perDepositLimit, mintAmount);
     }
 
     function deadlineAccepts(uint256 timestamp, uint256 deadline) internal pure returns (bool) {

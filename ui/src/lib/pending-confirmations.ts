@@ -1,5 +1,6 @@
 import { deploymentProfile } from "@/config/profile"
 import { withBrowserLock } from "@/lib/browser-lock"
+import type { Hex } from "viem"
 
 interface PendingConfirmationBase {
   transactionHash: `0x${string}`
@@ -21,6 +22,57 @@ export type PendingConfirmationInput =
 const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v5"
 let sessionQueue: PendingConfirmation[] | undefined
 export const PENDING_CONFIRMATIONS_CHANGED = "kinic-pending-confirmations-changed"
+
+function pendingMintKey(depositId: Hex): string {
+  return [
+    "kinic.bridge.pending-mint.v1",
+    deploymentProfile.chainId,
+    String(deploymentProfile.bridgeAddress).toLowerCase(),
+    deploymentProfile.bridgeCanisterId ?? "",
+    depositId.toLowerCase(),
+  ].join(":")
+}
+
+const sessionPendingMints = new Map<string, Hex>()
+const removedSessionPendingMints = new Set<string>()
+
+export async function savePendingMint(depositId: Hex, transactionHash: Hex): Promise<void> {
+  const key = pendingMintKey(depositId)
+  removedSessionPendingMints.delete(key)
+  sessionPendingMints.set(key, transactionHash)
+  await withBrowserLock(`kinic-storage:${key}`, () => {
+    try {
+      window.localStorage.setItem(key, transactionHash)
+      sessionPendingMints.delete(key)
+    } catch { /* The session copy still preserves recovery after a successful wallet broadcast. */ }
+  })
+}
+
+export function readPendingMint(depositId: Hex): Hex | undefined {
+  if (typeof window === "undefined") return undefined
+  const key = pendingMintKey(depositId)
+  if (removedSessionPendingMints.has(key)) return undefined
+  const sessionValue = sessionPendingMints.get(key)
+  if (sessionValue) return sessionValue
+  try {
+    const value = window.localStorage.getItem(key)
+    return value && /^0x[0-9a-fA-F]{64}$/.test(value) ? value as Hex : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export async function removePendingMint(depositId: Hex): Promise<void> {
+  const key = pendingMintKey(depositId)
+  sessionPendingMints.delete(key)
+  removedSessionPendingMints.add(key)
+  await withBrowserLock(`kinic-storage:${key}`, () => {
+    try {
+      window.localStorage.removeItem(key)
+      removedSessionPendingMints.delete(key)
+    } catch { /* The session tombstone prevents a reverted transaction from reappearing. */ }
+  })
+}
 
 export function pendingConfirmationKey(value: PendingConfirmation | PendingConfirmationInput): string {
   return `withdrawal:${value.transactionHash.toLowerCase()}`

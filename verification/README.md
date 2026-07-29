@@ -5,6 +5,7 @@ Lean projectはcross-chain protocolの正式な抽象仕様である。
 Lean executableが生成する`verification/generated/protocol-vectors.json`をRust、Solidity、TypeScriptのconsumerで読み、実装の代表的な境界値を同じ期待値と照合する。
 release対象claimは`Claims.lean`、有限幅semanticsは`Implementation.lean`、抽象モデルとの対応は`Refinement.lean`、統合状態traceとcertificateは`Protocol.lean`へ分離する。
 `verification/claims.tsv`はprotocolとMint Authorizationのclaim、Lean定理、Verus義務、SMT scalar義務、production symbol、transaction test、vector section、外部仮定を一つの型付きmanifestで管理する。証拠statusはmanifestへ手入力せず、`scripts/check_claim_manifest.py`が最弱要素から算出して`verification/output/claim-report.json`へ出力する。外部仮定を含むclaimは必ず`partial`となる。
+`verification/proof-impact.tsv`は安全関連production sourceをclaimと必須proof stageへ対応付ける。watched root内のRustまたはSolidity sourceが未登録、claimのproduction sourceにownerがない、またはproof receiptのsource fingerprintが現在のsource・proof資材と異なる場合、`scripts/check_proof_impact.py`はfail closedにする。定理がそのまま適用できる変更に無意味なproof file差分は要求せず、現在のsourceに対する全stageの再実行を要求する。
 
 変更されたMint Authorization経路の安全claimは同manifest内でAuthorization binding、expiry refund、exact mint finalization、epoch invalidation、reservation lifecycle、fee一回性、deposit backing、manual claim exclusionへ分割する。暗号known-answerは`verification/known-answer-manifest.tsv`で別管理し、Lean生成policy証拠へ昇格させない。
 CIはこれらの全Lean theorem、Verus manifest、claim台帳、全vector section、全consumerを完全一致検査し、production linkはcompilerで型検査する。

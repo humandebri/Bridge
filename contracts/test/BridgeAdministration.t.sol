@@ -122,9 +122,7 @@ contract BridgeAdministrationTest is TestBase {
         vm.warp(uint256(type(uint64).max) + 1);
         bytes memory signature = _signMintAuthorization(BRIDGE_SIGNER_KEY, bridge, authorization);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(IBridge.BlockTimestampExceedsU64.selector, block.timestamp)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IBridge.BlockTimestampExceedsU64.selector, block.timestamp));
         bridge.mintDepositWithAuthorization(authorization, signature);
     }
 

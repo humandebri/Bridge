@@ -8,7 +8,6 @@ import {
 import type { DepositView, MintAuthorizationView } from "@/generated/bridge.did"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { deploymentProfile } from "@/config/profile"
-import { withBrowserLock } from "@/lib/browser-lock"
 import { basePublicClient } from "@/lib/evm/client"
 
 export const mintAuthorizationTypes = {
@@ -158,55 +157,4 @@ export async function validateMintAuthorization(record: DepositView): Promise<Va
     signer: recovered,
     latestBlockTimestamp: latestBlock.timestamp,
   }
-}
-
-function pendingKey(depositId: Hex): string {
-  return [
-    "kinic.bridge.pending-mint.v1",
-    deploymentProfile.chainId,
-    String(deploymentProfile.bridgeAddress).toLowerCase(),
-    deploymentProfile.bridgeCanisterId ?? "",
-    depositId.toLowerCase(),
-  ].join(":")
-}
-
-const sessionPendingMints = new Map<string, Hex>()
-const removedSessionPendingMints = new Set<string>()
-
-export async function savePendingMint(depositId: Hex, transactionHash: Hex): Promise<void> {
-  const key = pendingKey(depositId)
-  removedSessionPendingMints.delete(key)
-  sessionPendingMints.set(key, transactionHash)
-  await withBrowserLock(`kinic-storage:${key}`, () => {
-    try {
-      window.localStorage.setItem(key, transactionHash)
-      sessionPendingMints.delete(key)
-    } catch { /* The session copy still preserves recovery after a successful wallet broadcast. */ }
-  })
-}
-
-export function readPendingMint(depositId: Hex): Hex | undefined {
-  if (typeof window === "undefined") return undefined
-  const key = pendingKey(depositId)
-  if (removedSessionPendingMints.has(key)) return undefined
-  const sessionValue = sessionPendingMints.get(key)
-  if (sessionValue) return sessionValue
-  try {
-    const value = window.localStorage.getItem(key)
-    return value && /^0x[0-9a-fA-F]{64}$/.test(value) ? value as Hex : undefined
-  } catch {
-    return undefined
-  }
-}
-
-export async function removePendingMint(depositId: Hex): Promise<void> {
-  const key = pendingKey(depositId)
-  sessionPendingMints.delete(key)
-  removedSessionPendingMints.add(key)
-  await withBrowserLock(`kinic-storage:${key}`, () => {
-    try {
-      window.localStorage.removeItem(key)
-      removedSessionPendingMints.delete(key)
-    } catch { /* The session tombstone prevents a reverted transaction from reappearing. */ }
-  })
 }

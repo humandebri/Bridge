@@ -7,15 +7,9 @@ import json
 import sys
 from pathlib import Path
 
-REQUIRED = (
-    "lean",
-    "lean-negative",
-    "policy-vector-consumers",
-    "refinement-gate",
-    "known-answer-consumers",
-    "smt-and-negative",
-    "verus-and-negative",
-)
+from check_proof_impact import REQUIRED_STAGES, source_fingerprint
+
+REQUIRED = REQUIRED_STAGES
 ROOT = Path(__file__).resolve().parents[1]
 CLAIM_REPORT = ROOT / "verification" / "output" / "claim-report.json"
 
@@ -46,9 +40,10 @@ def main() -> int:
     receipt_path.write_text(
         json.dumps(
             {
-                "schema": 2,
+                "schema": 3,
                 "required_stages": list(REQUIRED),
                 "stages": [{"id": stage, "status": stages[stage]} for stage in stages],
+                "source_fingerprint": source_fingerprint(),
                 "claims": claims,
                 "claim_summary": {
                     status: sum(claim.get("status") == status for claim in claims)

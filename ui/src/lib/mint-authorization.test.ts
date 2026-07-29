@@ -1,17 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { hashTypedData, recoverAddress } from "viem"
 import vector from "../../../verification/generated/mint-authorization-vector.json"
 import {
   formatMintAuthorizationTtl,
   mintAuthorizationTypes,
-  readPendingMint,
-  removePendingMint,
-  savePendingMint,
 } from "./mint-authorization"
 
 describe("mint authorization protocol vector", () => {
-  beforeEach(() => window.localStorage.clear())
-
   it("matches the shared digest and recovered signer", async () => {
     const digest = hashTypedData({
       domain: {
@@ -45,28 +40,4 @@ describe("mint authorization protocol vector", () => {
     expect(formatMintAuthorizationTtl(5_400n)).toBe("90分")
   })
 
-  it("persists and removes a deployment-scoped pending mint transaction", async () => {
-    const depositId = `0x${"11".repeat(32)}` as const
-    const transactionHash = `0x${"22".repeat(32)}` as const
-
-    await savePendingMint(depositId, transactionHash)
-    expect(readPendingMint(depositId)).toBe(transactionHash)
-
-    await removePendingMint(depositId)
-    expect(readPendingMint(depositId)).toBeUndefined()
-  })
-
-  it("retains a session recovery hash when durable storage is unavailable", async () => {
-    const depositId = `0x${"33".repeat(32)}` as const
-    const transactionHash = `0x${"44".repeat(32)}` as const
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("storage unavailable")
-    })
-
-    await expect(savePendingMint(depositId, transactionHash)).resolves.toBeUndefined()
-    expect(readPendingMint(depositId)).toBe(transactionHash)
-
-    setItem.mockRestore()
-    await removePendingMint(depositId)
-  })
 })

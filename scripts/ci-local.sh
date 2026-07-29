@@ -118,6 +118,7 @@ run_versions() {
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   python3 "$ROOT/scripts/test_live_fee_guard.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
+  python3 "$ROOT/scripts/test_proof_impact.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
   "$ROOT/scripts/test_ci_guards.sh"
@@ -154,8 +155,6 @@ run_no_automatic_execution_guards() {
     --glob '!pending-confirmations.test.ts' \
     --glob '!deposit-intents.ts' \
     --glob '!deposit-intents.test.ts' \
-    --glob '!mint-authorization.ts' \
-    --glob '!mint-authorization.test.ts' \
     --glob '!browser-lock.ts' \
     --glob '!browser-lock.test.ts' \
     --glob '!settlement-confirmation-coordinator.tsx' \
@@ -449,7 +448,9 @@ run_policy_vector_consumers() {
 
 run_refinement_gate() {
   python3 "$ROOT/scripts/test_reproducible_artifacts.py"
-  python3 "$ROOT/scripts/check_claim_manifest.py"
+  python3 "$ROOT/scripts/test_refinement_manifest.py"
+  python3 "$ROOT/scripts/check_refinement_manifest.py"
+  python3 "$ROOT/scripts/check_proof_impact.py"
 }
 
 run_proof_stage() {
@@ -488,6 +489,7 @@ run_proofs() {
   python3 -c \
     'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["complete"] is True' \
     "$PROOF_RECEIPT"
+  python3 "$ROOT/scripts/check_proof_impact.py" --receipt "$PROOF_RECEIPT"
   echo "proof_receipt=$PROOF_RECEIPT" >&2
 }
 

@@ -44,10 +44,13 @@ vi.mock("@/lib/evm/client", () => ({
 
 vi.mock("@/lib/mint-authorization", () => ({
   contractAuthorization: () => ({ depositId: `0x${"11".repeat(32)}` }),
+  validateMintAuthorization: mocks.validateMintAuthorization,
+}))
+
+vi.mock("@/lib/pending-confirmations", () => ({
   readPendingMint: mocks.readPendingMint,
   removePendingMint: mocks.removePendingMint,
   savePendingMint: vi.fn(),
-  validateMintAuthorization: mocks.validateMintAuthorization,
 }))
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))

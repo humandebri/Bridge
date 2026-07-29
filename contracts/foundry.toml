@@ -32,6 +32,12 @@ depth = 100
 fail_on_revert = true
 
 [profile.smt]
+# The trusted driver invokes this profile from the contracts project. Scope all
+# source roots to the dedicated fixtures so skipped tests/scripts cannot pull
+# deployable via-IR contracts into the non-via-IR SMT compilation unit.
+src = "../verification/smt/pass"
+test = "../verification/smt/pass"
+script = "../verification/smt/pass"
 optimizer = false
 via_ir = false
 deny = "warnings"

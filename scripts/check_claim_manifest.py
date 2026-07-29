@@ -11,6 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
 REPORT = ROOT / "verification" / "output" / "claim-report.json"
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+REQUIRED_SCALAR_CALLS = (
+    "deadlineAccepts(",
+    "epochMatches(",
+    "depositAvailable(",
+    "feeWithinBounds(",
+    "mintAmountWithinLimit(",
+    "windowExpired(",
+    "MintAccounting.tryConsumeWindow(",
+    "mintEffectAmounts(",
+)
 
 
 def items(value: str) -> list[str]:
@@ -31,25 +41,37 @@ def checked_link(value: str) -> tuple[Path, str]:
     return path, symbol
 
 
+def solidity_function_body(source: str, name: str) -> str:
+    marker = f"function {name}("
+    start = source.find(marker)
+    if start < 0:
+        raise ValueError(f"missing Solidity function: {name}")
+    brace = source.find("{", start)
+    semicolon = source.find(";", start)
+    if brace < 0 or (semicolon >= 0 and semicolon < brace):
+        raise ValueError(f"Solidity function has no body: {name}")
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace : index + 1]
+    raise ValueError(f"Solidity function body is not balanced: {name}")
+
+
+def missing_scalar_calls(function_body: str) -> list[str]:
+    return [call for call in REQUIRED_SCALAR_CALLS if call not in function_body]
+
+
 def check_solidity_wrapper_refinement() -> None:
     policy = (
         ROOT / "contracts" / "src" / "libraries" / "MintAuthorizationPolicy.sol"
     ).read_text(encoding="utf-8")
     bridge = (ROOT / "contracts" / "src" / "Bridge.sol").read_text(encoding="utf-8")
-    evaluate = policy[
-        policy.index("function evaluateMint") : policy.index(
-            "function deadlineAccepts"
-        )
-    ]
-    required_scalar_calls = (
-        "deadlineAccepts(",
-        "epochMatches(",
-        "depositAvailable(",
-        "windowExpired(",
-        "MintAccounting.tryConsumeWindow(",
-        "mintEffectAmounts(",
-    )
-    missing = [call for call in required_scalar_calls if call not in evaluate]
+    evaluate = solidity_function_body(policy, "evaluateMint")
+    missing = missing_scalar_calls(evaluate)
     if missing:
         raise ValueError(f"Mint struct wrapper bypasses scalar kernels: {missing}")
     mint_wrapper = bridge[
