@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { createPrivateKey } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { pathToFileURL } from "node:url"
 import { Actor, HttpAgent } from "@icp-sdk/core/agent"
+import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
 import {
   createPublicClient,
@@ -161,7 +163,7 @@ function rpcClient(): RelayerRpc {
 async function bridgeActor(): Promise<_SERVICE> {
   const pemPath = requiredEnv("IC_IDENTITY_PEM")
   const pem = await readFile(pemPath, "utf8")
-  const identity = Secp256k1KeyIdentity.fromPem(pem)
+  const identity = identityFromPem(pem)
   const host = process.env.IC_HOST || "https://icp-api.io"
   const agent = HttpAgent.createSync({ identity, host })
   if (agent.isLocal()) await agent.fetchRootKey()
@@ -169,6 +171,20 @@ async function bridgeActor(): Promise<_SERVICE> {
     agent,
     canisterId: requiredEnv("BRIDGE_CANISTER_ID"),
   })
+}
+
+export function identityFromPem(pem: string): Ed25519KeyIdentity | Secp256k1KeyIdentity {
+  const key = createPrivateKey(pem)
+  const jwk = key.export({ format: "jwk" })
+  if (!jwk.d) throw new Error("Identity PEM does not contain a private key")
+  const secretKey = new Uint8Array(Buffer.from(jwk.d, "base64url"))
+  if (key.asymmetricKeyType === "ed25519" && jwk.crv === "Ed25519") {
+    return Ed25519KeyIdentity.fromSecretKey(secretKey)
+  }
+  if (key.asymmetricKeyType === "ec" && jwk.crv === "secp256k1") {
+    return Secp256k1KeyIdentity.fromSecretKey(secretKey)
+  }
+  throw new Error(`Unsupported identity PEM key type: ${jwk.crv ?? key.asymmetricKeyType}`)
 }
 
 async function pendingArtifact(
