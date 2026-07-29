@@ -18,9 +18,8 @@ contract ScaffoldTest {
         operators[0] = address(0x33);
         address[] memory cancellers = new address[](1);
         cancellers[0] = address(0x44);
-        BridgeTimelockController timelock = new BridgeTimelockController(
-            DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, operators, cancellers, operators
-        );
+        BridgeTimelockController timelock =
+            new BridgeTimelockController(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, operators, cancellers, operators);
         Bridge bridge = new Bridge(
             "kinic",
             "KINIC",

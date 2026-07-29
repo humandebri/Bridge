@@ -345,13 +345,11 @@ contract BridgeAdministrationTest is TestBase {
         vm.expectRevert(abi.encodeWithSelector(IBridge.TimelockCandidateHasNoCode.selector, OUTSIDER));
         bridge.rotateBaseAdminTimelock(OUTSIDER);
 
-        address shortDelay =
-            address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY - 1, true));
+        address shortDelay = address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY - 1, true));
         vm.expectPartialRevert(IBridge.TimelockCandidateCodeHashMismatch.selector);
         bridge.rotateBaseAdminTimelock(shortDelay);
 
-        address missingSelfAdmin =
-            address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, false));
+        address missingSelfAdmin = address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, false));
         vm.expectPartialRevert(IBridge.TimelockCandidateCodeHashMismatch.selector);
         bridge.rotateBaseAdminTimelock(missingSelfAdmin);
         vm.stopPrank();
@@ -359,12 +357,9 @@ contract BridgeAdministrationTest is TestBase {
     }
 
     function testTimelockRotationChecksDelayAndSelfAdminAfterCodeHash() public {
-        address valid =
-            address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, true));
-        address shortDelay =
-            address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY - 1, true));
-        address missingSelfAdmin =
-            address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, false));
+        address valid = address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, true));
+        address shortDelay = address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY - 1, true));
+        address missingSelfAdmin = address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, false));
         Bridge fixtureBridge = new Bridge(
             "kinic",
             "KINIC",
