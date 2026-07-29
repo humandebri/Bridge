@@ -48,6 +48,8 @@ export const deploymentProfileSchema = z.object({
 
 function assertEmbeddedTestUiProfile(profile: {
   environment: string
+  environmentMode: "short-delay-test-only" | null
+  activationTimelockDelaySeconds: number | null
   chainId: number
   bridgeCanisterId: string | null
   ledgerCanisterId: string | null
