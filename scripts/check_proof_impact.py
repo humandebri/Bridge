@@ -20,6 +20,29 @@ REQUIRED_STAGES = (
     "smt-and-negative",
     "verus-and-negative",
 )
+RECEIPT_SCHEMA = 3
+FINGERPRINT_SOURCE_ROOTS = (
+    ("canister", frozenset({".did", ".rs", ".toml"})),
+    ("contracts", frozenset({".sol", ".toml"})),
+    ("scripts", frozenset({"", ".mjs", ".py", ".sh"})),
+    ("ui/src", frozenset({".ts", ".tsx"})),
+)
+FINGERPRINT_CONFIG_FILES = (
+    ".gitmodules",
+    "Cargo.lock",
+    "Cargo.toml",
+    "package.json",
+    "pnpm-lock.yaml",
+    "rust-toolchain.toml",
+    "ui/package.json",
+    "ui/tsconfig.app.json",
+    "ui/tsconfig.json",
+    "ui/tsconfig.node.json",
+    "ui/vite.config.ts",
+    "ui/vitest.config.ts",
+)
+
+
 @dataclass(frozen=True)
 class WatchedRoot:
     identifier: str
@@ -228,8 +251,16 @@ def fingerprint_inputs(
         and verification / "output" not in path.parents
         and ".lake" not in path.parts
     )
-    paths.update((repo_root / "scripts").glob("*.py"))
-    paths.add(repo_root / "scripts" / "ci-local.sh")
+    for relative_root, suffixes in FINGERPRINT_SOURCE_ROOTS:
+        source_root = repo_root / relative_root
+        if not source_root.is_dir():
+            raise ValueError(f"missing proof fingerprint root: {relative_root}")
+        paths.update(
+            path
+            for path in source_root.rglob("*")
+            if path.is_file() and path.suffix in suffixes
+        )
+    paths.update(repo_root / relative for relative in FINGERPRINT_CONFIG_FILES)
     missing = [path for path in paths if not path.is_file()]
     if missing:
         raise ValueError(
@@ -241,9 +272,11 @@ def fingerprint_inputs(
     return tuple(sorted(paths))
 
 
-def source_fingerprint(repo_root: Path = ROOT) -> dict[str, object]:
+def source_fingerprint(
+    repo_root: Path = ROOT, manifest: ImpactManifest | None = None
+) -> dict[str, object]:
     digest = hashlib.sha256()
-    inputs = fingerprint_inputs(repo_root)
+    inputs = fingerprint_inputs(repo_root, manifest)
     for path in inputs:
         relative = path.relative_to(repo_root).as_posix().encode()
         content = path.read_bytes()
@@ -258,14 +291,49 @@ def source_fingerprint(repo_root: Path = ROOT) -> dict[str, object]:
     }
 
 
-def check_receipt(receipt_path: Path, repo_root: Path = ROOT) -> None:
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    if receipt.get("source_fingerprint") != source_fingerprint(repo_root):
-        raise ValueError("proof receipt source fingerprint is stale")
+def validate_receipt_contents(receipt: object) -> None:
+    if (
+        not isinstance(receipt, dict)
+        or type(receipt.get("schema")) is not int
+        or receipt["schema"] != RECEIPT_SCHEMA
+    ):
+        raise ValueError(f"proof receipt must use schema {RECEIPT_SCHEMA}")
     if receipt.get("required_stages") != list(REQUIRED_STAGES):
         raise ValueError("proof receipt required stages do not match the impact policy")
-    if receipt.get("complete") is not True:
-        raise ValueError("proof receipt is incomplete")
+
+    stages = receipt.get("stages")
+    if not isinstance(stages, list) or not all(
+        isinstance(stage, dict)
+        and isinstance(stage.get("id"), str)
+        and isinstance(stage.get("status"), str)
+        for stage in stages
+    ):
+        raise ValueError("proof receipt stages must be typed records")
+    stage_ids = [stage["id"] for stage in stages]
+    if stage_ids != list(REQUIRED_STAGES):
+        raise ValueError(
+            "proof receipt stages must contain every required stage exactly once in order"
+        )
+    if any(stage["status"] != "pass" for stage in stages):
+        raise ValueError("proof receipt contains a non-passing stage")
+
+    claims = receipt.get("claims")
+    if not isinstance(claims, list) or not claims:
+        raise ValueError("proof receipt claims must be a non-empty list")
+    derived_complete = (
+        stage_ids == list(REQUIRED_STAGES)
+        and all(stage["status"] == "pass" for stage in stages)
+        and bool(claims)
+    )
+    if receipt.get("complete") is not derived_complete or not derived_complete:
+        raise ValueError("proof receipt completion flag does not match its contents")
+
+
+def check_receipt(receipt_path: Path, repo_root: Path = ROOT) -> None:
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    validate_receipt_contents(receipt)
+    if receipt.get("source_fingerprint") != source_fingerprint(repo_root):
+        raise ValueError("proof receipt source fingerprint is stale")
 
 
 def main() -> int:

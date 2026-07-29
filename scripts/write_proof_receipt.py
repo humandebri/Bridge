@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from check_proof_impact import REQUIRED_STAGES, source_fingerprint
+from check_proof_impact import RECEIPT_SCHEMA, REQUIRED_STAGES, source_fingerprint
 
 REQUIRED = REQUIRED_STAGES
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +40,7 @@ def main() -> int:
     receipt_path.write_text(
         json.dumps(
             {
-                "schema": 3,
+                "schema": RECEIPT_SCHEMA,
                 "required_stages": list(REQUIRED),
                 "stages": [{"id": stage, "status": stages[stage]} for stage in stages],
                 "source_fingerprint": source_fingerprint(),
