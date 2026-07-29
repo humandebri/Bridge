@@ -16,6 +16,8 @@ target/
 # Foundry build and deployment artifacts
 contracts/cache/
 contracts/out/
+contracts/out-staging/
+contracts/cache-staging/
 contracts/broadcast/
 contracts/.forge-snapshots/
 
