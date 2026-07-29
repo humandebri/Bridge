@@ -20,12 +20,15 @@ if (profile.environment !== "sepolia-staging" || profile.testOnly !== true || pr
 if (profile.evmRpcCanisterId !== "7hfb6-caaaa-aaaar-qadga-cai") {
   throw new Error("Asset build requires the official EVM RPC Canister")
 }
+if (profile.environmentMode !== "short-delay-test-only" || profile.activationTimelockDelaySeconds !== 300) {
+  throw new Error("Asset build requires the five-minute test-only Timelock policy")
+}
 for (const key of ["bridgeCanisterId", "ledgerCanisterId", "indexCanisterId"]) {
   if (typeof profile[key] !== "string" || profile[key].startsWith("REPLACE_") || productionIds.has(profile[key])) {
     throw new Error(`Asset build rejects missing or production ${key}`)
   }
 }
-for (const key of ["bridgeAddress", "bsnsAddress", "expected_bridge_signer"]) {
+for (const key of ["bridgeAddress", "bsnsAddress", "timelockAddress", "expected_bridge_signer"]) {
   if (!/^0x[0-9a-fA-F]{40}$/.test(profile[key] ?? "")) throw new Error(`Asset build requires ${key}`)
 }
 for (const key of ["bridgeRuntimeHash", "bsnsRuntimeHash", "rpcProviderUrlsSha256"]) {

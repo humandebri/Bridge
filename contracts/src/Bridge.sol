@@ -7,6 +7,7 @@ import {IBSNS} from "./interfaces/IBSNS.sol";
 import {IBridge} from "./interfaces/IBridge.sol";
 import {BridgeAdministration} from "./libraries/BridgeAdministration.sol";
 import {MintAuthorizationPolicy} from "./libraries/MintAuthorizationPolicy.sol";
+import {DeploymentPolicy} from "bridge-deployment-policy/DeploymentPolicy.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
@@ -19,7 +20,7 @@ interface ITimelockCandidate {
 
 /// @notice Phase 1E Base implementation whose concrete ABI is checked against the frozen interface snapshot.
 contract Bridge is IBridge, EIP712 {
-    uint256 private constant MINIMUM_TIMELOCK_DELAY = 24 hours;
+    uint256 private constant MINIMUM_TIMELOCK_DELAY = DeploymentPolicy.MINIMUM_TIMELOCK_DELAY;
     uint256 private constant MAXIMUM_TIMELOCK_DELAY = 30 days;
     uint64 private constant MINIMUM_MINT_WINDOW_DURATION = 1 hours;
     uint64 private constant MAXIMUM_MINT_WINDOW_DURATION = 30 days;

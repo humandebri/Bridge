@@ -2,11 +2,12 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { LOCAL_E2E_SCHEMA_VERSION, validateUpgradeEvidence } from "./generate-local-e2e.mjs"
+import { LOCAL_E2E_SCHEMA_VERSION, STAGING_ACTIVATION_DELAY_SECONDS, validateUpgradeEvidence } from "./generate-local-e2e.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const schema = JSON.parse(await readFile(path.join(root, "deployments/sepolia-staging/local-e2e.schema.json"), "utf8"))
 assert.equal(schema.properties.schema_version.const, LOCAL_E2E_SCHEMA_VERSION)
+assert.equal(schema.properties.activation_timelock_delay_seconds.const, STAGING_ACTIVATION_DELAY_SECONDS)
 assert(schema.required.includes("state_upgrade"))
 assert.equal(schema.properties.state_upgrade.$ref, "#/$defs/stateUpgrade")
 assert.deepEqual(schema.$defs.stateUpgrade.required, ["verified", "before", "after"])

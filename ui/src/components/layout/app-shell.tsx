@@ -17,6 +17,9 @@ export function AppShell() {
   return <WalletDialogProvider><RiskAcknowledgementDialog /><SettlementConfirmationCoordinator /><div className="flex min-h-screen flex-col">
     {deploymentProfile.testOnly ? <div role="status" aria-label="Test deployment" className="border-b border-amber-300 bg-amber-100 px-4 py-2 text-center text-xs font-bold tracking-[.08em] text-amber-950">
       IC MAINNET × BASE SEPOLIA TEST — TEST ASSETS ONLY
+      {deploymentProfile.environmentMode === "short-delay-test-only"
+        ? " — 5-MINUTE TIMELOCK"
+        : null}
     </div> : null}
     <header className="relative z-20 mx-auto flex w-full max-w-[1155px] items-center gap-3 px-4 py-5 md:px-6 md:py-7">
       <Link to="/" search={{ direction: "deposit" }} className="group flex shrink-0 items-center gap-3 rounded-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:ring-offset-2" aria-label="KINIC Bridge home">

@@ -18,6 +18,8 @@ describe("test UI deployment safety", () => {
   const staging = {
     environment: "sepolia-staging",
     testOnly: true,
+    environmentMode: "short-delay-test-only",
+    activationTimelockDelaySeconds: 300,
     chainId: 84532,
     bridgeCanisterId: "aaaaa-aa",
     ledgerCanisterId: "2vxsx-fae",

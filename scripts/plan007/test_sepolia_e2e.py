@@ -38,7 +38,9 @@ class SepoliaE2ETests(unittest.TestCase):
         self.local.write_text(
             json.dumps(
                 {
-                    "schema_version": 3,
+                    "schema_version": 5,
+                    "environment_mode": "short-delay-test-only",
+                    "activation_timelock_delay_seconds": 300,
                     "source_commit": SOURCE,
                     "bridge_wasm_sha256": H64,
                     "bridge_runtime_hash": TX,
@@ -47,7 +49,7 @@ class SepoliaE2ETests(unittest.TestCase):
                         "full_local_ci": "passed",
                         "real_frontend_e2e": "passed",
                         "canister_activation": "passed",
-                        "timelock_24h": "passed",
+                        "timelock_delay_enforced": "passed",
                         "state_upgrade": "passed",
                     },
                 }
@@ -59,6 +61,8 @@ class SepoliaE2ETests(unittest.TestCase):
                 {
                     "environment": "sepolia-staging",
                     "testOnly": True,
+                    "environmentMode": "short-delay-test-only",
+                    "activationTimelockDelaySeconds": 300,
                     "chainId": 84532,
                     "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
                     "bridgeCanisterId": "aaaaa-aa",
@@ -135,7 +139,7 @@ class SepoliaE2ETests(unittest.TestCase):
             }
         if stage == "activation_execute":
             return {
-                "delay_seconds": 86_400,
+                "delay_seconds": 300,
                 "execute_transaction_hash": TX,
                 "finalized_block_number": 2,
                 "finalized_block_hash": TX_B,
@@ -152,6 +156,20 @@ class SepoliaE2ETests(unittest.TestCase):
                 "profile_sha256": profile_hash,
                 "test_banner_visible": True,
                 "runtime_verification_fresh": True,
+            }
+        if stage == "smoke_e2e":
+            return {
+                "ic_wallet": "OISY",
+                "evm_wallet": "MetaMask",
+                "deposit_id": TX,
+                "deposit_transaction_hash": TX_B,
+                "withdrawal_id": 1,
+                "withdrawal_transaction_hash": TX,
+                "reload_state_matched": True,
+                "base_deposits_paused": False,
+                "base_withdrawals_paused": False,
+                "canister_deposits_paused": False,
+                "pending_timelock_operations": 0,
             }
         if stage == "wallet_e2e":
             flow = {
@@ -211,7 +229,7 @@ class SepoliaE2ETests(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "stage": stage,
                     "observed_at": "2026-07-24T00:00:00Z",
                     "source_commit": SOURCE,
@@ -228,7 +246,7 @@ class SepoliaE2ETests(unittest.TestCase):
             sepolia_e2e.record(self.manifest, self.evidence(stage))
         manifest = sepolia_e2e.load_object(self.manifest)
         sepolia_e2e.validate_manifest(manifest, self.manifest, require_complete=True, verify_files=True)
-        self.assertEqual(manifest["state"], "COMPLETE")
+        self.assertEqual(manifest["state"], "SHORT_DELAY_COMPLETE")
         self.assertTrue(manifest["complete"])
 
     def test_out_of_order_stage_is_rejected(self) -> None:

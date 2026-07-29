@@ -13,19 +13,22 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 KIND = "kinic-bridge-sepolia-staging-e2e"
 CHAIN_ID = 84532
+ENVIRONMENT_MODE = "short-delay-test-only"
+ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
 CURRENT_STABLE_SCHEMA = 27
 STAGES = (
     "preflight",
+    "contracts",
     "install",
     "initialize",
-    "contracts",
     "activation_schedule",
     "activation_execute",
     "frontend_publish",
+    "smoke_e2e",
     "wallet_e2e",
     "rpc_rehearsal",
     "final_pause",
@@ -290,8 +293,8 @@ def validate_activation_execute(details: dict[str, Any]) -> None:
         },
         context,
     )
-    if require_nat(details, "delay_seconds", context) < 86400:
-        fail("activation execute did not observe the full 24-hour delay")
+    if require_nat(details, "delay_seconds", context) != ACTIVATION_TIMELOCK_DELAY_SECONDS:
+        fail("activation execute did not observe the exact five-minute staging delay")
     require_pattern(details, "execute_transaction_hash", EVM_HASH, context)
     require_nat(details, "finalized_block_number", context)
     require_pattern(details, "finalized_block_hash", EVM_HASH, context)
@@ -311,6 +314,38 @@ def validate_frontend(details: dict[str, Any], binding: dict[str, Any]) -> None:
         fail("published frontend profile differs from the reviewed profile")
     require_bool(details, "test_banner_visible", True, context)
     require_bool(details, "runtime_verification_fresh", True, context)
+
+
+def validate_smoke_e2e(details: dict[str, Any]) -> None:
+    context = "smoke_e2e.details"
+    exact_keys(
+        details,
+        {
+            "ic_wallet",
+            "evm_wallet",
+            "deposit_id",
+            "deposit_transaction_hash",
+            "withdrawal_id",
+            "withdrawal_transaction_hash",
+            "reload_state_matched",
+            "base_deposits_paused",
+            "base_withdrawals_paused",
+            "canister_deposits_paused",
+            "pending_timelock_operations",
+        },
+        context,
+    )
+    if details["ic_wallet"] != "OISY" or details["evm_wallet"] != "MetaMask":
+        fail("short-delay smoke must use the reviewed OISY and MetaMask wallet pair")
+    require_pattern(details, "deposit_id", EVM_HASH, context)
+    require_pattern(details, "deposit_transaction_hash", EVM_HASH, context)
+    require_nat(details, "withdrawal_id", context)
+    require_pattern(details, "withdrawal_transaction_hash", EVM_HASH, context)
+    require_bool(details, "reload_state_matched", True, context)
+    for field in ("base_deposits_paused", "base_withdrawals_paused", "canister_deposits_paused"):
+        require_bool(details, field, False, context)
+    if require_nat(details, "pending_timelock_operations", context) != 0:
+        fail("short-delay smoke left a pending Timelock operation")
 
 
 def validate_wallet_flow(flow: Any, expected_wallet: str, context: str) -> None:
@@ -441,6 +476,7 @@ VALIDATORS = {
     "activation_schedule": validate_activation_schedule,
     "activation_execute": validate_activation_execute,
     "frontend_publish": validate_frontend,
+    "smoke_e2e": validate_smoke_e2e,
     "wallet_e2e": validate_wallet_e2e,
     "rpc_rehearsal": validate_rpc,
     "final_pause": validate_final_pause,
@@ -460,6 +496,8 @@ def validate_binding(binding: Any) -> dict[str, Any]:
         "bridge_canister_id",
         "ledger_canister_id",
         "index_canister_id",
+        "environment_mode",
+        "activation_timelock_delay_seconds",
     }
     exact_keys(binding, expected, "binding")
     require_pattern(binding, "source_commit", GIT_COMMIT, "binding")
@@ -469,6 +507,10 @@ def validate_binding(binding: Any) -> dict[str, Any]:
         require_pattern(binding, field, EVM_HASH, "binding")
     for field in ("bridge_canister_id", "ledger_canister_id", "index_canister_id"):
         require_pattern(binding, field, PRINCIPAL, "binding")
+    if binding["environment_mode"] != ENVIRONMENT_MODE:
+        fail("binding is not the short-delay test-only environment")
+    if require_nat(binding, "activation_timelock_delay_seconds", "binding") != ACTIVATION_TIMELOCK_DELAY_SECONDS:
+        fail("binding has the wrong staging activation delay")
     return binding
 
 
@@ -513,7 +555,7 @@ def validate_manifest(manifest: dict[str, Any], path: Path, *, require_complete:
             fail("manifest cannot skip an earlier stage")
         validate_stage(stage, evidence, path, binding, verify_files)
         completed.append(stage)
-    expected_state = "COMPLETE" if len(completed) == len(STAGES) else f"AWAITING_{STAGES[len(completed)].upper()}"
+    expected_state = manifest_state(completed)
     expected_complete = len(completed) == len(STAGES)
     if manifest["state"] != expected_state or manifest["complete"] is not expected_complete:
         fail("manifest state does not match its recorded stages")
@@ -521,18 +563,30 @@ def validate_manifest(manifest: dict[str, Any], path: Path, *, require_complete:
         fail(f"staging E2E is incomplete: {manifest['state']}")
 
 
+def manifest_state(completed: list[str]) -> str:
+    if len(completed) == len(STAGES):
+        return "SHORT_DELAY_COMPLETE"
+    if completed and completed[-1] == "smoke_e2e":
+        return "SHORT_DELAY_ACTIVE_SMOKE_PASSED"
+    return f"AWAITING_{STAGES[len(completed)].upper()}"
+
+
 def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo_root: Path | None = None) -> None:
     if output.exists():
         fail(f"refusing to overwrite existing manifest: {output}")
     local = load_object(local_evidence_path)
     profile = load_object(profile_path)
-    required_tests = {"full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_24h", "state_upgrade"}
-    if local.get("schema_version") != 3 or set(local.get("tests", {})) != required_tests or any(local["tests"][name] != "passed" for name in required_tests):
-        fail("local promotion evidence is not a complete schema v3 pass")
+    required_tests = {"full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_delay_enforced", "state_upgrade"}
+    if local.get("schema_version") != 5 or set(local.get("tests", {})) != required_tests or any(local["tests"][name] != "passed" for name in required_tests):
+        fail("local promotion evidence is not a complete schema v5 pass")
+    if local.get("environment_mode") != ENVIRONMENT_MODE or local.get("activation_timelock_delay_seconds") != ACTIVATION_TIMELOCK_DELAY_SECONDS:
+        fail("local promotion evidence is not bound to the five-minute staging policy")
     if profile.get("environment") != "sepolia-staging" or profile.get("testOnly") is not True or profile.get("chainId") != CHAIN_ID:
         fail("frontend profile is not the Base Sepolia test-only profile")
     if profile.get("evmRpcCanisterId") != EVM_RPC_CANISTER_ID:
         fail("frontend profile does not use the official EVM RPC Canister")
+    if profile.get("environmentMode") != ENVIRONMENT_MODE or profile.get("activationTimelockDelaySeconds") != ACTIVATION_TIMELOCK_DELAY_SECONDS:
+        fail("frontend profile is not bound to the five-minute staging policy")
     if repo_root is not None:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -572,6 +626,8 @@ def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo
         "bridge_canister_id": profile.get("bridgeCanisterId"),
         "ledger_canister_id": profile.get("ledgerCanisterId"),
         "index_canister_id": profile.get("indexCanisterId"),
+        "environment_mode": local.get("environment_mode"),
+        "activation_timelock_delay_seconds": local.get("activation_timelock_delay_seconds"),
     }
     validate_binding(binding)
     timestamp = now()
@@ -603,7 +659,8 @@ def record(manifest_path: Path, evidence_path: Path) -> None:
     manifest["updated_at"] = now()
     next_stage = next((name for name in STAGES if manifest["stages"][name] is None), None)
     manifest["complete"] = next_stage is None
-    manifest["state"] = "COMPLETE" if next_stage is None else f"AWAITING_{next_stage.upper()}"
+    completed = [stage for stage in STAGES if manifest["stages"][stage] is not None]
+    manifest["state"] = manifest_state(completed)
     write_object(manifest_path, manifest)
 
 

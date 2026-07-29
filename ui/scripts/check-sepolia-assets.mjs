@@ -14,8 +14,11 @@ const [rawProfile, builtDigest] = await Promise.all([
 const profile = JSON.parse(rawProfile)
 const expected = createHash("sha256").update(JSON.stringify(profile)).digest("hex")
 if (builtDigest.trim() !== expected) throw new Error("Test deploy rejected: dist was not built from the current completed Sepolia profile")
-for (const key of ["bridgeCanisterId", "ledgerCanisterId", "indexCanisterId", "bridgeAddress", "bsnsAddress", "expected_bridge_signer", "bridgeRuntimeHash", "bsnsRuntimeHash", "rpcProviderUrlsSha256", "deploymentBlock"]) {
+for (const key of ["environmentMode", "activationTimelockDelaySeconds", "bridgeCanisterId", "ledgerCanisterId", "indexCanisterId", "bridgeAddress", "bsnsAddress", "timelockAddress", "expected_bridge_signer", "bridgeRuntimeHash", "bsnsRuntimeHash", "rpcProviderUrlsSha256", "deploymentBlock"]) {
   if (profile[key] === null || profile[key] === undefined || profile[key] === "" || String(profile[key]).startsWith("REPLACE_")) {
     throw new Error(`Test deploy rejected incomplete profile field: ${key}`)
   }
+}
+if (profile.environmentMode !== "short-delay-test-only" || profile.activationTimelockDelaySeconds !== 300) {
+  throw new Error("Test deploy rejected non-staging Timelock policy")
 }

@@ -20,12 +20,14 @@ function fixture() {
   mkdirSync(inputs); mkdirSync(bundle); mkdirSync(bin)
   const gate = "a".repeat(64)
   const profile = JSON.stringify({
-    environment: "mainnet-candidate", label: "Base", testOnly: false, gateBManifestSha256: gate,
+    environment: "mainnet-candidate", label: "Base", testOnly: false,
+    environmentMode: null, activationTimelockDelaySeconds: null, gateBManifestSha256: gate,
     profileFileSha256: "1".repeat(64), profileCanonicalSha256: "2".repeat(64),
     icHost: "https://icp-api.io", baseRpcUrl: "https://rpc.example", chainId: 8453,
     bridgeCanisterId: "aaaaa-aa", ledgerCanisterId: "aaaaa-aa", indexCanisterId: "aaaaa-aa",
     icToken: { name: "KINIC", symbol: "KINIC", decimals: 8 }, baseToken: { symbol: "KINIC", decimals: 8 },
     bridgeAddress: `0x${"11".repeat(20)}`, bsnsAddress: `0x${"22".repeat(20)}`,
+    timelockAddress: `0x${"77".repeat(20)}`,
     expected_bridge_signer: `0x${"33".repeat(20)}`, evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
     rpcProviderUrlsSha256: `0x${"44".repeat(32)}`, deploymentBlock: "1",
     bridgeRuntimeHash: `0x${"55".repeat(32)}`, bsnsRuntimeHash: `0x${"66".repeat(32)}`,

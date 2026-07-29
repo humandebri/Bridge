@@ -8,6 +8,14 @@ import { profileCompleteness, type DeploymentProfile } from "@/config/profile"
 import { runtimeBytecodeSha256 } from "@/lib/runtime-bytecode-hash"
 import { createBasePublicClient } from "@/lib/evm/client"
 
+const timelockDelayAbi = [{
+  type: "function",
+  name: "getMinDelay",
+  stateMutability: "view",
+  inputs: [],
+  outputs: [{ name: "", type: "uint256" }],
+}] as const
+
 export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number }
 
 export const RUNTIME_VALIDATION_TTL_MS = 60_000
@@ -89,6 +97,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
 
   const bridgeAddress = profile.bridgeAddress as Address
   const bsnsAddress = profile.bsnsAddress as Address
+  const timelockAddress = profile.timelockAddress as Address
   const client = createBasePublicClient(profile)
   const [bridge, ledger] = await Promise.all([
     createBridgeActor(profile.icHost, profile.bridgeCanisterId as string),
@@ -111,13 +120,14 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
 
   const finalizedHash = localFinalized.hash
-  const [bridgeCode, bsnsCode, bridgeSnapshot, linkedBsns, bsnsSymbol, bsnsDecimals] = await Promise.all([
+  const [bridgeCode, bsnsCode, bridgeSnapshot, linkedBsns, bsnsSymbol, bsnsDecimals, timelockDelay] = await Promise.all([
     client.getCode({ address: bridgeAddress, blockHash: finalizedHash, requireCanonical: true }),
     client.getCode({ address: bsnsAddress, blockHash: finalizedHash, requireCanonical: true }),
     client.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "bridgeSnapshot", blockHash: finalizedHash, requireCanonical: true }),
     client.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "bsns", blockHash: finalizedHash, requireCanonical: true }),
     client.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "symbol", blockHash: finalizedHash, requireCanonical: true }),
     client.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "decimals", blockHash: finalizedHash, requireCanonical: true }),
+    client.readContract({ address: timelockAddress, abi: timelockDelayAbi, functionName: "getMinDelay", blockHash: finalizedHash, requireCanonical: true }),
   ])
   if (!bridgeCode || runtimeBytecodeSha256(bridgeCode) !== profile.bridgeRuntimeHash) blockers.push("Bridge runtime bytecode does not match the reviewed profile")
   if (!bsnsCode || runtimeBytecodeSha256(bsnsCode) !== profile.bsnsRuntimeHash) blockers.push("bSNS runtime bytecode does not match the reviewed profile")
@@ -125,11 +135,16 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (bsnsSymbol !== profile.baseToken.symbol || Number(bsnsDecimals) !== profile.baseToken.decimals) {
     blockers.push(`Base token metadata is not ${profile.baseToken.symbol}/${profile.baseToken.decimals}`)
   }
+  if (timelockDelay !== BigInt(profile.activationTimelockDelaySeconds as number)) {
+    blockers.push("Timelock delay differs from the reviewed profile")
+  }
 
   blockers.push(...bridgeSignerBlockers(profile.expected_bridge_signer as Address, bridgeSnapshot.bridgeSigner, config.expected_bridge_signer))
   if (config.base_chain_id !== BigInt(profile.chainId)) blockers.push("Canister Base chain ID differs from the profile")
   const configuredBridge = `0x${Array.from(config.bridge_contract, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
   if (configuredBridge.toLowerCase() !== bridgeAddress.toLowerCase()) blockers.push("Canister Bridge contract differs from the profile")
+  const configuredTimelock = `0x${Array.from(config.timelock_contract, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
+  if (configuredTimelock.toLowerCase() !== timelockAddress.toLowerCase()) blockers.push("Canister Timelock contract differs from the profile")
   if (config.ledger_canister_id.toText() !== profile.ledgerCanisterId) blockers.push("Canister ledger differs from the profile")
   if (config.index_canister_id.toText() !== profile.indexCanisterId) blockers.push("Canister index differs from the profile")
   if (config.evm_rpc_canister_id.toText() !== profile.evmRpcCanisterId) blockers.push("Canister EVM RPC ID differs from the profile")

@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 
 import {Bridge} from "../src/Bridge.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
+import {DeploymentPolicy} from "bridge-deployment-policy/DeploymentPolicy.sol";
 
 interface Vm {
     struct Log {
@@ -58,7 +59,7 @@ abstract contract TestBase {
         executors[0] = operator;
         return vm.deployCode(
             "BridgeTimelockController.sol:BridgeTimelockController",
-            abi.encode(24 hours, proposers, cancellers, executors)
+            abi.encode(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, proposers, cancellers, executors)
         );
     }
 

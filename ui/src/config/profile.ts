@@ -12,6 +12,8 @@ export const deploymentProfileSchema = z.object({
   environment: z.string().min(1),
   label: z.string().min(1),
   testOnly: z.boolean(),
+  environmentMode: z.enum(["short-delay-test-only"]).nullable(),
+  activationTimelockDelaySeconds: z.number().int().positive().nullable(),
   gateBManifestSha256: sha256.nullable(),
   profileFileSha256: sha256.nullable(),
   profileCanonicalSha256: sha256.nullable(),
@@ -25,6 +27,7 @@ export const deploymentProfileSchema = z.object({
   baseToken: tokenMetadata,
   bridgeAddress: address.nullable(),
   bsnsAddress: address.nullable(),
+  timelockAddress: address.nullable(),
   expected_bridge_signer: address.nullable(),
   evmRpcCanisterId: z.string().min(1).nullable(),
   rpcProviderUrlsSha256: hash.nullable(),
@@ -62,6 +65,10 @@ function assertEmbeddedTestUiProfile(profile: {
   if (profile.environment === "sepolia-staging" && (profile.chainId !== 84532 || profile.evmRpcCanisterId !== "7hfb6-caaaa-aaaar-qadga-cai")) {
     throw new Error("Sepolia staging requires Base Sepolia and the official EVM RPC Canister")
   }
+  if (profile.environment === "sepolia-staging"
+    && (profile.environmentMode !== "short-delay-test-only" || profile.activationTimelockDelaySeconds !== 300)) {
+    throw new Error("Sepolia staging requires the reviewed five-minute test-only Timelock policy")
+  }
 }
 
 export type DeploymentProfile = z.infer<typeof deploymentProfileSchema>
@@ -72,6 +79,8 @@ const preflightProfile = {
   environment: "base-sepolia-preflight",
   label: "Base Sepolia preflight",
   testOnly: true,
+  environmentMode: null,
+  activationTimelockDelaySeconds: null,
   gateBManifestSha256: null,
   profileFileSha256: null,
   profileCanonicalSha256: null,
@@ -85,6 +94,7 @@ const preflightProfile = {
   baseToken: { symbol: "KINIC", decimals: 8 },
   bridgeAddress: null,
   bsnsAddress: null,
+  timelockAddress: null,
   expected_bridge_signer: null,
   evmRpcCanisterId: null,
   rpcProviderUrlsSha256: null,
@@ -112,6 +122,7 @@ export function profileCompleteness(profile: DeploymentProfile): string[] {
   if (!profile.indexCanisterId) missing.push("IC token index ID is missing")
   if (!profile.bridgeAddress) missing.push("Bridge contract address is missing")
   if (!profile.bsnsAddress) missing.push("bSNS contract address is missing")
+  if (!profile.timelockAddress) missing.push("Timelock contract address is missing")
   if (!profile.expected_bridge_signer) missing.push("Expected Bridge signer is missing")
   if (!profile.evmRpcCanisterId) missing.push("EVM RPC Canister ID is missing")
   if (!profile.rpcProviderUrlsSha256) missing.push("RPC provider URL digest is missing")

@@ -1,6 +1,8 @@
 export interface UiDeploymentMode {
   environment?: string
   testOnly?: boolean
+  environmentMode?: string | null
+  activationTimelockDelaySeconds?: number | null
   chainId?: number
   bridgeCanisterId?: string | null
   ledgerCanisterId?: string | null
@@ -31,6 +33,9 @@ export function assertTestUiProfile(profile: UiDeploymentMode): void {
     if (profile.chainId !== BASE_SEPOLIA_CHAIN_ID) throw new Error("Sepolia staging requires Base Sepolia chain ID 84532")
     if (profile.evmRpcCanisterId !== OFFICIAL_EVM_RPC_CANISTER_ID) {
       throw new Error("Sepolia staging requires the official EVM RPC Canister")
+    }
+    if (profile.environmentMode !== "short-delay-test-only" || profile.activationTimelockDelaySeconds !== 300) {
+      throw new Error("Sepolia staging requires the five-minute test-only Timelock policy")
     }
   }
 }

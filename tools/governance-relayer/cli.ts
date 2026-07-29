@@ -102,6 +102,14 @@ async function main(): Promise<void> {
       process.stdout.write(`${JSON.stringify(jsonValue(confirmation))}\n`)
       return
     }
+    case "schedule-activation": {
+      await runActivation(actor, rpcClient(), "schedule")
+      return
+    }
+    case "execute-activation": {
+      await runActivation(actor, rpcClient(), "execute")
+      return
+    }
     case "drain-emergency": {
       const rpc = rpcClient()
       for (;;) {
@@ -123,6 +131,25 @@ async function main(): Promise<void> {
     default:
       throw new Error(`Unknown command: ${command}`)
   }
+}
+
+async function runActivation(
+  actor: _SERVICE,
+  rpc: RelayerRpc,
+  phase: "schedule" | "execute",
+): Promise<void> {
+  const result = phase === "schedule"
+    ? await actor.schedule_activation()
+    : await actor.execute_activation()
+  const artifact = unwrap(result)
+  await validateArtifact(artifact)
+  await relay(rpc, artifact)
+  await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
+  const confirmation = unwrap(await actor.confirm_base_governance_transaction({
+    operation_id: artifact.operation_id,
+    transaction_hash: artifact.transaction_hash,
+  }))
+  process.stdout.write(`${JSON.stringify(jsonValue(confirmation))}\n`)
 }
 
 function rpcClient(): RelayerRpc {
@@ -320,6 +347,8 @@ Commands:
   relay [--operation-id N]
   confirm [--operation-id N] [--hash 0x...]
   run [--operation-id N | --action ...]
+  schedule-activation
+  execute-activation
   replace --operation-id N --max-fee N --priority-fee N
   drain-emergency
 

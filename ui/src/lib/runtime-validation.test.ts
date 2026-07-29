@@ -36,6 +36,7 @@ vi.mock("@/lib/ic/ledger", () => ({ createLedgerActor: mocks.createLedgerActor }
 
 const bridgeAddress = `0x${"11".repeat(20)}` as const
 const bsnsAddress = `0x${"22".repeat(20)}` as const
+const timelockAddress = `0x${"55".repeat(20)}` as const
 const bridgeHash = `0x${"aa".repeat(32)}` as const
 const bsnsHash = `0x${"bb".repeat(32)}` as const
 const expectedSigner = `0x${"33".repeat(20)}` as const
@@ -45,6 +46,8 @@ const indexId = "qzre3-3iaaa-aaaai-aqmsa-cai"
 
 const profile: DeploymentProfile = {
   environment: "test",
+  environmentMode: "short-delay-test-only",
+  activationTimelockDelaySeconds: 300,
   label: "Test",
   testOnly: true,
   gateBManifestSha256: null,
@@ -60,6 +63,7 @@ const profile: DeploymentProfile = {
   baseToken: { symbol: "KINIC", decimals: 8 },
   bridgeAddress,
   bsnsAddress,
+  timelockAddress,
   expected_bridge_signer: expectedSigner,
   evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
   rpcProviderUrlsSha256: `0x${"cc".repeat(32)}`,
@@ -93,6 +97,7 @@ beforeEach(() => {
     if (functionName === "bsns") return Promise.resolve(bsnsAddress)
     if (functionName === "symbol") return Promise.resolve(baseMetadata.symbol)
     if (functionName === "decimals") return Promise.resolve(baseMetadata.decimals)
+    if (functionName === "getMinDelay") return Promise.resolve(300n)
     throw new Error(`Unexpected contract call ${functionName}`)
   })
   mocks.createPublicClient.mockReturnValue({
@@ -105,6 +110,7 @@ beforeEach(() => {
   mocks.getPublicConfig.mockImplementation(() => Promise.resolve({
     base_chain_id: BigInt(profile.chainId),
     bridge_contract: Array.from({ length: 20 }, () => 0x11),
+    timelock_contract: Array.from({ length: 20 }, () => 0x55),
     ledger_canister_id: Principal.fromText(configuredLedgerId),
     index_canister_id: Principal.fromText(configuredIndexId),
     schema_version: 27,
@@ -224,6 +230,32 @@ describe("validateRuntime token bindings", () => {
     expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({ blockHash: finalizedHash, requireCanonical: true }))
   })
 
+  it("blocks a Timelock delay or Canister Timelock binding mismatch", async () => {
+    readContractMock.mockImplementation(({ functionName }: { functionName: string }) => {
+      if (functionName === "bridgeSnapshot") return Promise.resolve({ bridgeSigner: contractSigner })
+      if (functionName === "bsns") return Promise.resolve(bsnsAddress)
+      if (functionName === "symbol") return Promise.resolve(baseMetadata.symbol)
+      if (functionName === "decimals") return Promise.resolve(baseMetadata.decimals)
+      if (functionName === "getMinDelay") return Promise.resolve(301n)
+      throw new Error(`Unexpected contract call ${functionName}`)
+    })
+    mocks.getPublicConfig.mockResolvedValueOnce({
+      base_chain_id: BigInt(profile.chainId),
+      bridge_contract: new Uint8Array(20).fill(0x11),
+      timelock_contract: new Uint8Array(20).fill(0x66),
+      ledger_canister_id: Principal.fromText(ledgerId),
+      index_canister_id: Principal.fromText(indexId),
+      schema_version: 27,
+      expected_bridge_signer: new Uint8Array(20).fill(0x33),
+      evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
+      rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
+    })
+
+    const result = await validateRuntime(profile, profile.chainId)
+    expect(result.blockers).toContain("Timelock delay differs from the reviewed profile")
+    expect(result.blockers).toContain("Canister Timelock contract differs from the profile")
+  })
+
   it("pins code and configuration reads to the browser RPC finalized hash", async () => {
     const result = await validateRuntime(profile, profile.chainId)
     expect(result).toMatchObject({ ready: true, blockers: [] })
@@ -235,6 +267,7 @@ describe("validateRuntime token bindings", () => {
     mocks.createBridgeActor.mockResolvedValue({
       get_public_config: vi.fn().mockResolvedValue({
         base_chain_id: BigInt(profile.chainId), bridge_contract: new Uint8Array(20).fill(0x11),
+        timelock_contract: new Uint8Array(20).fill(0x55),
         ledger_canister_id: Principal.fromText(ledgerId), index_canister_id: Principal.fromText(indexId),
         schema_version: 18, expected_bridge_signer: new Uint8Array(20).fill(0x33),
         evm_rpc_canister_id: Principal.managementCanister(), rpc_provider_urls_sha256: new Uint8Array(32).fill(0xdd),

@@ -114,7 +114,7 @@ DEPLOYED_TIMELOCK="${DEPLOYED_TIMELOCK:-$EXPECTED_TIMELOCK}"
 if [[ -z "$TIMELOCK_TX" ]]; then
   precheck_create "$EXPECTED_TIMELOCK"
   ARGS=(); while IFS= read -r x; do ARGS+=("$x"); done < <(python3 -c 'import json,sys; emit=lambda x: print("["+",".join(x)+"]" if isinstance(x,list) else x); [emit(x) for x in json.load(open(sys.argv[1]))["timelock"]]' "$CONSTRUCTOR_ARGS_FILE")
-  TIMELOCK_JSON="$(forge create --root "$SOURCE_ROOT/contracts" src/BridgeTimelockController.sol:BridgeTimelockController --broadcast --rpc-url "$RPC" --chain "$CHAIN" --ledger --from "$BRIDGE_DEPLOYER_ADDRESS" "${FORGE_CAPS[@]}" --json --constructor-args "${ARGS[@]}")"
+  TIMELOCK_JSON="$(FOUNDRY_PROFILE=default forge create --root "$SOURCE_ROOT/contracts" src/BridgeTimelockController.sol:BridgeTimelockController --broadcast --rpc-url "$RPC" --chain "$CHAIN" --ledger --from "$BRIDGE_DEPLOYER_ADDRESS" "${FORGE_CAPS[@]}" --json --constructor-args "${ARGS[@]}")"
   DEPLOYED_TIMELOCK="$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["deployedTo"])' <<<"$TIMELOCK_JSON")"
   TIMELOCK_TX="$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["transactionHash"])' <<<"$TIMELOCK_JSON")"
   TIMELOCK_RECEIPT="$(cast receipt "$TIMELOCK_TX" --rpc-url "$RPC" --json)"
@@ -137,7 +137,7 @@ DEPLOYED_BRIDGE="$(checkpoint_value bridge address 2>/dev/null || true)"
 DEPLOYED_BRIDGE="${DEPLOYED_BRIDGE:-$BRIDGE}"
 if [[ -z "$BRIDGE_TX" ]]; then
   precheck_create "$BRIDGE"
-  BRIDGE_JSON="$(forge create --root "$SOURCE_ROOT/contracts" src/Bridge.sol:Bridge --broadcast --rpc-url "$RPC" --chain "$CHAIN" --ledger --from "$BRIDGE_DEPLOYER_ADDRESS" "${FORGE_CAPS[@]}" --json --constructor-args "${ARGS[@]}")"
+  BRIDGE_JSON="$(FOUNDRY_PROFILE=default forge create --root "$SOURCE_ROOT/contracts" src/Bridge.sol:Bridge --broadcast --rpc-url "$RPC" --chain "$CHAIN" --ledger --from "$BRIDGE_DEPLOYER_ADDRESS" "${FORGE_CAPS[@]}" --json --constructor-args "${ARGS[@]}")"
   DEPLOYED_BRIDGE="$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["deployedTo"])' <<<"$BRIDGE_JSON")"
   BRIDGE_TX="$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["transactionHash"])' <<<"$BRIDGE_JSON")"
   BRIDGE_RECEIPT="$(cast receipt "$BRIDGE_TX" --rpc-url "$RPC" --json)"

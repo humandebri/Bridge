@@ -5,7 +5,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
-export const LOCAL_E2E_SCHEMA_VERSION = 4
+export const LOCAL_E2E_SCHEMA_VERSION = 5
+export const STAGING_ACTIVATION_DELAY_SECONDS = 300
 
 export function validateUpgradeEvidence(upgrade) {
   if (!upgrade || upgrade.verified !== true) throw new Error("real E2E did not prove same-Wasm state preservation")
@@ -44,11 +45,13 @@ export async function generateLocalEvidence(root = defaultRoot) {
   if (status.trim()) throw new Error("promotion evidence requires a clean working tree")
   const facts = JSON.parse(await readFile(factsPath, "utf8"))
   const upgrade = validateUpgradeEvidence(facts.state_upgrade)
-  if (facts.activation?.delay_seconds !== 86400 || facts.activation?.early_execute_reverted !== true) {
-    throw new Error("real E2E did not prove the 24-hour activation delay")
+  if (facts.activation?.delay_seconds !== STAGING_ACTIVATION_DELAY_SECONDS || facts.activation?.early_execute_reverted !== true) {
+    throw new Error("real E2E did not prove the five-minute staging activation delay")
   }
   const evidence = {
     schema_version: LOCAL_E2E_SCHEMA_VERSION,
+    environment_mode: "short-delay-test-only",
+    activation_timelock_delay_seconds: STAGING_ACTIVATION_DELAY_SECONDS,
     created_at: new Date().toISOString(),
     source_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
     bridge_wasm_sha256: await digest(root, "target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm"),
@@ -65,7 +68,7 @@ export async function generateLocalEvidence(root = defaultRoot) {
       full_local_ci: "passed",
       real_frontend_e2e: "passed",
       canister_activation: "passed",
-      timelock_24h: "passed",
+      timelock_delay_enforced: "passed",
       state_upgrade: "passed",
     },
   }

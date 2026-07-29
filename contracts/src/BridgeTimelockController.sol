@@ -3,9 +3,10 @@
 pragma solidity 0.8.36;
 
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
+import {DeploymentPolicy} from "bridge-deployment-policy/DeploymentPolicy.sol";
 
 contract BridgeTimelockController is TimelockController {
-    uint256 public constant MINIMUM_DELAY = 24 hours;
+    uint256 public constant MINIMUM_DELAY = DeploymentPolicy.MINIMUM_TIMELOCK_DELAY;
     uint256 public constant MAXIMUM_DELAY = 30 days;
 
     error EmptyRoleMembers(bytes32 role);

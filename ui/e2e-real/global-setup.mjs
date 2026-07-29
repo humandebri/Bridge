@@ -22,8 +22,9 @@ const runtimeDir = path.join(uiRoot, ".e2e-runtime")
 const rpcUrl = "http://127.0.0.1:8545"
 const controlPort = 43119
 const uiPort = 4174
-const ACTIVATION_DELAY_SECONDS = 24 * 60 * 60
+const ACTIVATION_DELAY_SECONDS = 5 * 60
 const ACTIVATION_TIME_ADVANCES = 3
+const stagingForgeEnv = { ...process.env, FOUNDRY_PROFILE: "staging" }
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 const testIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(7))
 const testOwner = testIdentity.getPrincipal()
@@ -49,7 +50,10 @@ export default async function globalSetup() {
 async function setup() {
   await mkdir(runtimeDir, { recursive: true })
   buildWasm()
-  execFileSync("forge", ["build", "--root", path.join(root, "contracts")], { stdio: "inherit" })
+  execFileSync("forge", ["build", "--root", path.join(root, "contracts")], {
+    stdio: "inherit",
+    env: stagingForgeEnv,
+  })
 
   if (await isTcpPortOpen("127.0.0.1", 8545)) {
     throw new Error("TCP port 8545 is already in use; real E2E never reuses an existing endpoint")
@@ -758,8 +762,11 @@ function deployTimelock(governanceOperator) {
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast",
     "src/BridgeTimelockController.sol:BridgeTimelockController", "--constructor-args",
-    "86400", `[${governanceOperator}]`, `[${governanceOperator}]`, `[${governanceOperator}]`,
-  ], { encoding: "utf8" })
+    String(ACTIVATION_DELAY_SECONDS),
+    `[${governanceOperator}]`,
+    `[${governanceOperator}]`,
+    `[${governanceOperator}]`,
+  ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Timelock deployment:\n${output}`)
   return match[1]
@@ -774,7 +781,7 @@ function deployBridge(signer, governanceOperator, timelockAddress) {
     "--from", deployer, "--unlocked", "--broadcast", "src/Bridge.sol:Bridge", "--constructor-args",
     "Bridged KINIC", "KINIC", "8", signer, governanceOperator, timelockAddress, timelockCodeHash,
     "1000000000000", "10000000000000", "3600", "100000000", "1000000",
-  ], { encoding: "utf8" })
+  ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Bridge deployment:\n${output}`)
   assertFrozenCanisterRoles(match[1], timelockAddress, governanceOperator)

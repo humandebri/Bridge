@@ -4,21 +4,23 @@
   "additionalProperties": false,
   "required": ["schema_version", "kind", "state", "created_at", "updated_at", "binding", "stages", "complete"],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "kind": { "const": "kinic-bridge-sepolia-staging-e2e" },
     "state": {
       "enum": [
         "AWAITING_PREFLIGHT",
+        "AWAITING_CONTRACTS",
         "AWAITING_INSTALL",
         "AWAITING_INITIALIZE",
-        "AWAITING_CONTRACTS",
         "AWAITING_ACTIVATION_SCHEDULE",
         "AWAITING_ACTIVATION_EXECUTE",
         "AWAITING_FRONTEND_PUBLISH",
+        "AWAITING_SMOKE_E2E",
+        "SHORT_DELAY_ACTIVE_SMOKE_PASSED",
         "AWAITING_WALLET_E2E",
         "AWAITING_RPC_REHEARSAL",
         "AWAITING_FINAL_PAUSE",
-        "COMPLETE"
+        "SHORT_DELAY_COMPLETE"
       ]
     },
     "created_at": { "type": "string", "format": "date-time" },
@@ -36,6 +38,8 @@
         "bridge_canister_id",
         "ledger_canister_id",
         "index_canister_id"
+        ,"environment_mode"
+        ,"activation_timelock_delay_seconds"
       ],
       "properties": {
         "source_commit": { "$ref": "#/$defs/gitCommit" },
@@ -47,6 +51,8 @@
         "bridge_canister_id": { "$ref": "#/$defs/principal" },
         "ledger_canister_id": { "$ref": "#/$defs/principal" },
         "index_canister_id": { "$ref": "#/$defs/principal" }
+        ,"environment_mode": { "const": "short-delay-test-only" }
+        ,"activation_timelock_delay_seconds": { "const": 300 }
       }
     },
     "stages": {
@@ -60,6 +66,7 @@
         "activation_schedule",
         "activation_execute",
         "frontend_publish",
+        "smoke_e2e",
         "wallet_e2e",
         "rpc_rehearsal",
         "final_pause"
@@ -72,6 +79,7 @@
         "activation_schedule": { "$ref": "#/$defs/stage" },
         "activation_execute": { "$ref": "#/$defs/stage" },
         "frontend_publish": { "$ref": "#/$defs/stage" },
+        "smoke_e2e": { "$ref": "#/$defs/stage" },
         "wallet_e2e": { "$ref": "#/$defs/stage" },
         "rpc_rehearsal": { "$ref": "#/$defs/stage" },
         "final_pause": { "$ref": "#/$defs/stage" }
@@ -102,7 +110,7 @@
           "additionalProperties": false,
           "required": ["schema_version", "stage", "observed_at", "source_commit", "artifacts", "details"],
           "properties": {
-            "schema_version": { "const": 1 },
+            "schema_version": { "const": 2 },
             "stage": {
               "enum": [
                 "preflight",
@@ -112,6 +120,7 @@
                 "activation_schedule",
                 "activation_execute",
                 "frontend_publish",
+                "smoke_e2e",
                 "wallet_e2e",
                 "rpc_rehearsal",
                 "final_pause"

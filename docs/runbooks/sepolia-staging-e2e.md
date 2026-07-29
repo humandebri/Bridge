@@ -3,6 +3,8 @@
 このrunbookはPlan 007の外部stageを、同一source commitへ束縛された再開可能な証跡として実行する。
 production Canister、KINIC Ledger、Base Mainnet、SNSを対象にしてはならない。
 
+Base Sepolia stagingだけは`short-delay-test-only` policyによりactivation delayを300秒とする。production artifactの24時間制約は変更せず、短縮版artifactと証跡をproduction rehearsalへ使用しない。
+
 ## Test Ledgerのfee
 
 このstagingはKINICではなく、共有test tokenのTICRC1を使用する。
@@ -35,12 +37,13 @@ stageは次の順序に固定され、途中を飛ばせない。
 
 ```text
 preflight
+  -> contracts
   -> install
   -> initialize
-  -> contracts
   -> activation_schedule
   -> activation_execute
   -> frontend_publish
+  -> smoke_e2e
   -> wallet_e2e
   -> rpc_rehearsal
   -> final_pause

@@ -6,7 +6,10 @@ use candid::{CandidType, Deserialize, Nat, Principal};
 use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
 
+#[cfg(not(feature = "test-deployment"))]
 const ACTIVATION_TIMELOCK_DELAY_SECONDS: u128 = 24 * 60 * 60;
+#[cfg(feature = "test-deployment")]
+const ACTIVATION_TIMELOCK_DELAY_SECONDS: u128 = 5 * 60;
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum BaseGovernanceAction {
@@ -1199,7 +1202,10 @@ mod tests {
             &execute_activation_calldata(bridge, salt)[..4],
             selector("executeBatch(address[],uint256[],bytes[],bytes32,bytes32)")
         );
+        #[cfg(not(feature = "test-deployment"))]
         assert_eq!(ACTIVATION_TIMELOCK_DELAY_SECONDS, 86_400);
+        #[cfg(feature = "test-deployment")]
+        assert_eq!(ACTIVATION_TIMELOCK_DELAY_SECONDS, 300);
         assert_ne!(activation_operation_id(bridge, salt), [0; 32]);
         assert_eq!(word_u128(42)[31], 42);
     }
