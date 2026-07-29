@@ -170,17 +170,20 @@ def manualClaimAllowed
   (!active || expired) && (!scheduled || stopped || overdue || expired)
 
 structure NotificationIsolationState where
-  notificationCount : Nat
+  persistentGlobalCount : Nat
+  callerWindowCount : Nat
   settlementAdmission : Nat
   settlementJobs : Nat
 deriving DecidableEq
 
 def processNotification (state : NotificationIsolationState) : NotificationIsolationState :=
-  { state with notificationCount := state.notificationCount + 1 }
+  { state with
+      persistentGlobalCount := state.persistentGlobalCount + 1
+      callerWindowCount := state.callerWindowCount + 1 }
 
 def notificationAdmissionAllowed
-    (callerCount hashCount callerLimit hashLimit : Nat) : Bool :=
-  callerCount < callerLimit && hashCount < hashLimit
+    (globalCount callerCount globalLimit callerLimit : Nat) : Bool :=
+  globalCount < globalLimit && callerCount < callerLimit
 
 inductive LeaseLaneClaimDecision where
   | allow
@@ -216,5 +219,18 @@ def decideFundingAttempt : FundingOutcomeKind → FundingAttemptDecision
   | .ambiguous => .promoteAmbiguous
   | .definitiveFailure => .release
   | .retryableFailure => .retain
+
+inductive FundingReconciliationDecision where
+  | wait
+  | restartFresh
+  | release
+deriving DecidableEq
+
+def decideFundingReconciliation
+    (completeAbsence finalScan dedupExpired : Bool) : FundingReconciliationDecision :=
+  if completeAbsence = false then .wait
+  else if finalScan = false then .restartFresh
+  else if dedupExpired then .release
+  else .wait
 
 end BridgeSpec

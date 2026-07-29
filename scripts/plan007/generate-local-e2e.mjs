@@ -29,7 +29,7 @@ export function validateUpgradeEvidence(upgrade) {
     throw new Error("upgrade evidence omitted the pending Timelock operation identity")
   }
   if (state.storage_integrity !== "ok") throw new Error("upgrade evidence did not pass storage_integrity_check")
-  for (const field of ["deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]) {
+  for (const field of ["deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "notification_rate_limit_window_seconds", "notification_rate_limit_global", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]) {
     if (!(field in state.public_config)) throw new Error(`upgrade evidence omitted rate-limit configuration ${field}`)
   }
   if (!state.deposits.some((record) => record && record.deposit_id && "owner_sequence" in record && record.mint_authorization?.length === 1)) {

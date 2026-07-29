@@ -104,11 +104,13 @@ type BridgeInitArgs = record {
   settlement_cycle_ceiling : nat;
   settlement_rate_limit_per_record : nat16;
   governance_evm_fee : EvmFeePolicy;
+  notification_rate_limit_global : nat16;
   deposit_rate_limit_window_seconds : nat64;
   ecdsa_key_name : text;
   base_chain_id : nat64;
   bridge_contract : blob;
   fee_recipient : FeeRecipientConfig;
+  notification_rate_limit_window_seconds : nat64;
   settlement_rate_limit_window_seconds : nat64;
   ecdsa_derivation_path : vec blob;
   evm_rpc_canister_id : principal;
@@ -376,7 +378,6 @@ type NotifyWithdrawalError = variant {
   TransactionNotConfirmed;
   InsufficientCycles;
   WithdrawalConflict;
-  OwnerMismatch;
   RpcInconsistent;
   RateLimited;
   InvalidTransactionHash;
@@ -410,10 +411,12 @@ type PublicConfig = record {
   mint_authorization_ttl_seconds : nat64;
   governance_evm_fee : EvmFeePolicy;
   mint_authorization_epoch : nat64;
+  notification_rate_limit_global : nat16;
   deposit_rate_limit_window_seconds : nat64;
   base_chain_id : nat64;
   bridge_contract : blob;
   fee_recipient : FeeRecipientConfig;
+  notification_rate_limit_window_seconds : nat64;
   settlement_rate_limit_window_seconds : nat64;
   evm_rpc_canister_id : principal;
   deposit_rate_limit_per_principal : nat16;

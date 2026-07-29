@@ -3,14 +3,15 @@ use bridge_core::{
     checked_requirement, counter_delta, deposit_admission_decision, deposit_reservation_active,
     deposit_transition, deposit_transition_decision, evidence_matches, expiry_refund_allowed,
     fee_delta_once, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
-    hold_resolution_decision, lease_generation_next, lease_outcome_is_current,
-    manual_claim_decision, mint_admission_total, mint_finalization_allowed, next_attempt,
-    outbound_settlement, payout_allowed, payout_debit, refresh_generation_next,
-    refresh_owner_matches, release_transfer_matches, replay_matches, reservation_decision,
-    reserve_admission_preserves_requirement, resources_sufficient, scan_complete,
-    service_fee_change_allowed, settlement_decision, withdrawal_phase_allows,
+    funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
+    lease_outcome_is_current, manual_claim_decision, mint_admission_total,
+    mint_finalization_allowed, next_attempt, outbound_settlement, payout_allowed, payout_debit,
+    refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
+    reservation_decision, reserve_admission_preserves_requirement, resources_sufficient,
+    scan_complete, service_fee_change_allowed, settlement_decision, withdrawal_phase_allows,
     withdrawal_phase_step, DepositEventGuard, DepositTransitionDecision, DepositTransitionInput,
-    FeeRecipientRotationDecision, HoldResolutionDecision, ManualClaimDecision,
+    FeeRecipientRotationDecision, FundingReconciliationDecision, HoldResolutionDecision,
+    ManualClaimDecision,
 };
 
 #[test]
@@ -114,6 +115,25 @@ fn typed_decisions_preserve_every_shared_guard() {
         hold_resolution_decision(false, true),
         HoldResolutionDecision::ResolveAbsent
     );
+    for complete_absence in [false, true] {
+        for final_scan in [false, true] {
+            for dedup_expired in [false, true] {
+                let expected = if !complete_absence {
+                    FundingReconciliationDecision::Wait
+                } else if !final_scan {
+                    FundingReconciliationDecision::RestartFresh
+                } else if dedup_expired {
+                    FundingReconciliationDecision::Release
+                } else {
+                    FundingReconciliationDecision::Wait
+                };
+                assert_eq!(
+                    funding_reconciliation_decision(complete_absence, final_scan, dedup_expired,),
+                    expected
+                );
+            }
+        }
+    }
     assert_eq!(
         manual_claim_decision(false, false, false, false, false),
         ManualClaimDecision::Allow

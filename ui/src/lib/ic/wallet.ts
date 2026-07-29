@@ -557,7 +557,6 @@ export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): stri
     TransactionReverted: "The Base withdrawal transaction reverted.",
     BaseStateMismatch: "The finalized Bridge withdrawal state does not match its creation event.",
     BridgeSignerMismatch: "The finalized Bridge signer does not match the configured canister signer.",
-    OwnerMismatch: "The connected IC wallet does not own this withdrawal.",
     WithdrawalConflict: "A different withdrawal payload already uses this withdrawal ID.",
     InvalidTransactionHash: "The withdrawal transaction hash is invalid.",
     StorageFailure: "The Bridge could not save the withdrawal.",
@@ -575,7 +574,7 @@ function notifyWithdrawalErrorCode(error: unknown): NotifyWithdrawalErrorCode | 
   const code = Object.keys(error)[0]
   if (code && [
     "LedgerFeeExceedsServiceFee", "Busy", "RpcUnavailable", "TransactionNotConfirmed",
-    "WithdrawalConflict", "OwnerMismatch", "RpcInconsistent", "InvalidTransactionHash",
+    "WithdrawalConflict", "RpcInconsistent", "InvalidTransactionHash",
     "TransactionReverted", "StorageFailure", "BaseStateMismatch",
     "TransactionNotFound", "BridgeSignerMismatch", "AnonymousCaller", "InvalidBaseResponse",
     "RateLimited", "InsufficientCycles",

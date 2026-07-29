@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 27;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 28;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -177,6 +177,8 @@ struct RateLimits {
     deposit_window_seconds: u64,
     deposit_global: u16,
     deposit_per_principal: u16,
+    notification_window_seconds: u64,
+    notification_global: u16,
     settlement_window_seconds: u64,
     settlement_global: u16,
     settlement_per_principal: u16,
@@ -355,6 +357,8 @@ struct LivePublicConfig {
     deposit_rate_limit_window_seconds: u64,
     deposit_rate_limit_global: u16,
     deposit_rate_limit_per_principal: u16,
+    notification_rate_limit_window_seconds: u64,
+    notification_rate_limit_global: u16,
     settlement_rate_limit_window_seconds: u64,
     settlement_rate_limit_global: u16,
     settlement_rate_limit_per_principal: u16,
@@ -1158,6 +1162,8 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         || r.deposit_per_principal == 0
         || r.deposit_per_principal > r.deposit_global
         || r.deposit_global > 100
+        || !(60..=3_600).contains(&r.notification_window_seconds)
+        || !(1..=100).contains(&r.notification_global)
         || !(60..=3_600).contains(&r.settlement_window_seconds)
         || r.settlement_per_record == 0
         || r.settlement_per_record > r.settlement_per_principal
@@ -1333,6 +1339,8 @@ fn render_release_inputs(
         "deposit_rate_limit_window_seconds": profile.rate_limits.deposit_window_seconds,
         "deposit_rate_limit_global": profile.rate_limits.deposit_global,
         "deposit_rate_limit_per_principal": profile.rate_limits.deposit_per_principal,
+        "notification_rate_limit_window_seconds": profile.rate_limits.notification_window_seconds,
+        "notification_rate_limit_global": profile.rate_limits.notification_global,
         "settlement_rate_limit_window_seconds": profile.rate_limits.settlement_window_seconds,
         "settlement_rate_limit_global": profile.rate_limits.settlement_global,
         "settlement_rate_limit_per_principal": profile.rate_limits.settlement_per_principal,
@@ -1959,6 +1967,8 @@ fn validate_live_public_config(
         || observed.deposit_rate_limit_window_seconds != r.deposit_window_seconds
         || observed.deposit_rate_limit_global != r.deposit_global
         || observed.deposit_rate_limit_per_principal != r.deposit_per_principal
+        || observed.notification_rate_limit_window_seconds != r.notification_window_seconds
+        || observed.notification_rate_limit_global != r.notification_global
         || observed.settlement_rate_limit_window_seconds != r.settlement_window_seconds
         || observed.settlement_rate_limit_global != r.settlement_global
         || observed.settlement_rate_limit_per_principal != r.settlement_per_principal
@@ -2945,6 +2955,8 @@ mod tests {
                 deposit_window_seconds: 60,
                 deposit_global: 30,
                 deposit_per_principal: 3,
+                notification_window_seconds: 600,
+                notification_global: 60,
                 settlement_window_seconds: 600,
                 settlement_global: 60,
                 settlement_per_principal: 6,
@@ -2981,6 +2993,8 @@ mod tests {
             deposit_rate_limit_window_seconds: profile.rate_limits.deposit_window_seconds,
             deposit_rate_limit_global: profile.rate_limits.deposit_global,
             deposit_rate_limit_per_principal: profile.rate_limits.deposit_per_principal,
+            notification_rate_limit_window_seconds: profile.rate_limits.notification_window_seconds,
+            notification_rate_limit_global: profile.rate_limits.notification_global,
             settlement_rate_limit_window_seconds: profile.rate_limits.settlement_window_seconds,
             settlement_rate_limit_global: profile.rate_limits.settlement_global,
             settlement_rate_limit_per_principal: profile.rate_limits.settlement_per_principal,
@@ -3105,6 +3119,25 @@ mod tests {
     }
 
     #[test]
+    fn profile_rejects_notification_rate_limits_outside_canister_bounds() {
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_window_seconds = 59;
+        assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_window_seconds = 3_601;
+        assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_global = 0;
+        assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_global = 101;
+        assert!(validate_profile(&profile, true).is_err());
+    }
+
+    #[test]
     fn canonical_json_sorts_utf16_keys_and_rejects_floats() {
         let value = serde_json::json!({"z": 1, "a": {"b": true, "a": "x"}});
         let mut out = Vec::new();
@@ -3172,6 +3205,8 @@ mod tests {
             "deposit_rate_limit_window_seconds",
             "deposit_rate_limit_global",
             "deposit_rate_limit_per_principal",
+            "notification_rate_limit_window_seconds",
+            "notification_rate_limit_global",
             "settlement_rate_limit_window_seconds",
             "settlement_rate_limit_global",
             "settlement_rate_limit_per_principal",
@@ -3665,6 +3700,16 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         fs::write(
             root.join("signer-snapshot.json"),
             serde_json::to_vec(&base_drift).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_live_inputs(&bundle).is_err());
+        let mut notification_limit_drift: Value =
+            serde_json::from_slice(&valid_snapshot_bytes).unwrap();
+        notification_limit_drift["public_config"]["notification_rate_limit_global"] =
+            Value::from(59);
+        fs::write(
+            root.join("signer-snapshot.json"),
+            serde_json::to_vec(&notification_limit_drift).unwrap(),
         )
         .unwrap();
         assert!(verify_live_inputs(&bundle).is_err());

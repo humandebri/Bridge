@@ -229,7 +229,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 27, 23);
+INSERT INTO bridge_metadata VALUES (1, 28, 24);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -239,6 +239,7 @@ CREATE TABLE singleton_state (
     config BLOB NOT NULL,
     admin_state BLOB NOT NULL,
     deposit_admission BLOB NOT NULL,
+    notification_admission BLOB NOT NULL,
     audit_retention BLOB NOT NULL,
     settlement_admission BLOB NOT NULL,
     settlement_scheduler_health BLOB NOT NULL,
@@ -726,6 +727,7 @@ enum SingletonColumn {
     Config,
     AdminState,
     DepositAdmission,
+    NotificationAdmission,
     AuditRetention,
     SettlementAdmission,
     SettlementSchedulerHealth,
@@ -740,6 +742,7 @@ impl SingletonColumn {
             Self::Config => "config",
             Self::AdminState => "admin_state",
             Self::DepositAdmission => "deposit_admission",
+            Self::NotificationAdmission => "notification_admission",
             Self::AuditRetention => "audit_retention",
             Self::SettlementAdmission => "settlement_admission",
             Self::SettlementSchedulerHealth => "settlement_scheduler_health",
@@ -1118,6 +1121,12 @@ struct SettlementAdmissionControl {
     record_counts: Vec<SettlementRecordQuota>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct NotificationAdmissionControl {
+    window_id: u64,
+    global_count: u16,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SettlementCallerQuota {
     caller: Principal,
@@ -1454,6 +1463,7 @@ pub enum DepositFundingAttemptState {
     Reconciling {
         progress: Box<ReconciliationScanProgress>,
         next_check_at_ns: u64,
+        final_absence_scan: bool,
     },
 }
 
@@ -1591,6 +1601,7 @@ fn initialize_singleton_state(
     let config = encode(&config.map(ImmutableBridgeConfig::from_init))?.to_sql_bytes();
     let admin = encode(&admin)?.to_sql_bytes();
     let deposit_admission = encode(&DepositAdmissionControl::default())?.to_sql_bytes();
+    let notification_admission = encode(&NotificationAdmissionControl::default())?.to_sql_bytes();
     let audit_retention = encode(&AuditRetentionState::default())?.to_sql_bytes();
     let settlement_admission = encode(&SettlementAdmissionControl::default())?.to_sql_bytes();
     let settlement_scheduler_health = encode(&SettlementSchedulerHealth::default())?.to_sql_bytes();
@@ -1598,10 +1609,10 @@ fn initialize_singleton_state(
         connection.execute(
             "INSERT INTO singleton_state(
                 id, accounting, counters, external_progress, config, admin_state,
-                deposit_admission, audit_retention,
+                deposit_admission, notification_admission, audit_retention,
                 settlement_admission, settlement_scheduler_health, storage_revision,
                 withdrawal_liability_amount, storage_validation
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)",
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)",
             params![
                 accounting,
                 counters,
@@ -1609,6 +1620,7 @@ fn initialize_singleton_state(
                 config,
                 admin,
                 deposit_admission,
+                notification_admission,
                 audit_retention,
                 settlement_admission,
                 settlement_scheduler_health,
@@ -1642,6 +1654,7 @@ pub struct StableStore {
     fee_payouts: SqlMap<u64, StableBlob>,
     deposit_owner_index: SqlMap<StableBlob, [u8; 32]>,
     deposit_admission: SqlCell<StableBlob>,
+    notification_admission: SqlCell<StableBlob>,
     pull_pending_deposit_index: SqlMap<[u8; 32], u8>,
     release_pending_withdrawal_index: SqlMap<[u8; 32], u8>,
     withdrawal_notification_index: SqlMap<[u8; 32], [u8; 32]>,
@@ -2003,6 +2016,7 @@ impl StableStore {
             fee_payouts: SqlMap::new(handle, "fee_payouts"),
             deposit_owner_index: SqlMap::new(handle, "deposit_owner_index"),
             deposit_admission: SqlCell::load(handle, SingletonColumn::DepositAdmission)?,
+            notification_admission: SqlCell::load(handle, SingletonColumn::NotificationAdmission)?,
             pull_pending_deposit_index: SqlMap::new(handle, "pull_pending_deposit_index"),
             release_pending_withdrawal_index: SqlMap::new(
                 handle,
@@ -2045,6 +2059,7 @@ impl StableStore {
         self.config()?;
         decode::<Option<AdminState>>(&self.admin_state.get()?)?;
         self.deposit_admission()?;
+        decode::<NotificationAdmissionControl>(&self.notification_admission.get()?)?;
         decode::<AuditRetentionState>(&self.audit_retention.get()?)?;
         decode::<SettlementAdmissionControl>(&self.settlement_admission.get()?)?;
         decode::<SettlementSchedulerHealth>(&self.settlement_scheduler_health.get()?)?;
@@ -2743,6 +2758,56 @@ impl StableStore {
 
     fn deposit_admission(&self) -> Result<DepositAdmissionControl, StorageError> {
         decode(&self.deposit_admission.get()?)
+    }
+
+    pub fn consume_notification_quota(
+        &mut self,
+        now_ns: u64,
+        window_seconds: u64,
+        global_limit: u16,
+        caller_count: u16,
+        caller_limit: u16,
+    ) -> Result<bool, StorageError> {
+        let window_ns = window_seconds.saturating_mul(1_000_000_000);
+        if window_ns == 0 || global_limit == 0 || caller_limit == 0 {
+            return Err(StorageError::DecodeFailed);
+        }
+        let previous_blob = self.notification_admission.get()?;
+        let mut admission: NotificationAdmissionControl = decode(&previous_blob)?;
+        let window_id = now_ns / window_ns;
+        if admission.window_id != window_id {
+            admission = NotificationAdmissionControl {
+                window_id,
+                global_count: 0,
+            };
+        }
+        if !bridge_core::notification_admission_allowed(
+            admission.global_count,
+            caller_count,
+            global_limit,
+            caller_limit,
+        ) {
+            return Ok(false);
+        }
+        admission.global_count = admission
+            .global_count
+            .checked_add(1)
+            .ok_or(StorageError::CounterOverflow)?;
+        let next_blob = encode(&admission)?;
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_blob.as_slice(),
+                "stale notification admission",
+            )?;
+            connection.execute(
+                "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
+                params![next_blob.to_sql_bytes()],
+            )
+        })?;
+        Ok(true)
     }
 
     pub fn current_mint_authorization_epoch(&self) -> Result<u64, StorageError> {
@@ -7520,6 +7585,8 @@ mod tests {
             deposit_rate_limit_window_seconds: 60,
             deposit_rate_limit_global: 30,
             deposit_rate_limit_per_principal: 3,
+            notification_rate_limit_window_seconds: 600,
+            notification_rate_limit_global: 60,
             settlement_rate_limit_window_seconds: 600,
             settlement_rate_limit_global: 60,
             settlement_rate_limit_per_principal: 6,
@@ -9554,8 +9621,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 27);
-        assert_eq!(WIRE_VERSION, 23);
+        assert_eq!(SCHEMA_VERSION, 28);
+        assert_eq!(WIRE_VERSION, 24);
     }
 
     #[test]
@@ -9974,7 +10041,7 @@ mod tests {
             .expect("reserve prepared attempt");
         drop(store);
 
-        let mut reopened = StableStore::reopen(memory).expect("reopen");
+        let mut reopened = StableStore::reopen(memory.clone()).expect("reopen");
         assert_eq!(
             reopened
                 .deposit_funding_attempt(attempt.intent.deposit_id)
@@ -10015,13 +10082,48 @@ mod tests {
             Some(dispatched.clone())
         );
 
-        let mut retryable = dispatched.clone();
+        let mut reconciling = dispatched.clone();
+        reconciling.state = DepositFundingAttemptState::Reconciling {
+            progress: Box::new(ReconciliationScanProgress::new(
+                ReconciliationTarget::FundingAttempt(DepositId::new(reconciling.intent.deposit_id)),
+                reconciling.transfer.clone(),
+            )),
+            next_check_at_ns: 650,
+            final_absence_scan: true,
+        };
+        reconciling.updated_at_ns = 600;
+        reopened
+            .update_deposit_funding_attempt(&dispatched, &reconciling)
+            .expect("mark final reconciliation scan");
+        drop(reopened);
+
+        let mut reopened = StableStore::reopen(memory).expect("reopen reconciliation marker");
+        assert_eq!(
+            reopened
+                .deposit_funding_attempt(reconciling.intent.deposit_id)
+                .expect("persisted reconciliation attempt"),
+            Some(reconciling.clone())
+        );
+        assert_eq!(
+            reopened
+                .next_deposit_funding_attempt_for_recovery(649)
+                .expect("before reconciliation deadline"),
+            None
+        );
+        assert_eq!(
+            reopened
+                .next_deposit_funding_attempt_for_recovery(650)
+                .expect("at reconciliation deadline"),
+            Some(reconciling.clone())
+        );
+
+        let mut retryable = reconciling.clone();
         retryable.state = DepositFundingAttemptState::Retryable {
             retry_after_ns: 700,
         };
         retryable.updated_at_ns = 700;
         reopened
-            .update_deposit_funding_attempt(&dispatched, &retryable)
+            .update_deposit_funding_attempt(&reconciling, &retryable)
             .expect("mark retryable");
         assert_eq!(retryable.transfer, attempt.transfer);
         assert_eq!(
@@ -10197,6 +10299,7 @@ mod tests {
                 attempt.transfer.clone(),
             )),
             next_check_at_ns: 2,
+            final_absence_scan: false,
         };
         let hold_id = HoldId::new(0);
         record = DepositRecord::accept(DepositRequest {

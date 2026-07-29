@@ -104,6 +104,16 @@ pub open spec fn funding_attempt_decision_view(
     }
 }
 
+pub open spec fn funding_reconciliation_decision_view(
+    result: kernel::FundingReconciliationDecision,
+) -> int {
+    match result {
+        kernel::FundingReconciliationDecision::Wait => 0,
+        kernel::FundingReconciliationDecision::RestartFresh => 1,
+        kernel::FundingReconciliationDecision::Release => 2,
+    }
+}
+
 proof fn incomplete_scan_cannot_prove_absence(next: int, tip: int, watermark: int)
     requires next <= tip || watermark < tip
     ensures !kernel::scan_complete_spec(next, tip, watermark, true, false)
@@ -496,16 +506,16 @@ fn manual_claim_decision_matches_shared_guard(
         scheduled, active, stopped, overdue, expired)
 }
 
-fn notification_admission_checks_caller_and_hash_windows(
-    caller_count: u8,
-    hash_count: u8,
-    caller_limit: u8,
-    hash_limit: u8,
+fn notification_admission_checks_global_and_caller_windows(
+    global_count: u16,
+    caller_count: u16,
+    global_limit: u16,
+    caller_limit: u16,
 ) -> (result: bool)
-    ensures result <==> caller_count < caller_limit && hash_count < hash_limit,
+    ensures result <==> global_count < global_limit && caller_count < caller_limit,
 {
     kernel::notification_admission_allowed(
-        caller_count, hash_count, caller_limit, hash_limit)
+        global_count, caller_count, global_limit, caller_limit)
 }
 
 fn lease_lane_claim_is_record_and_lane_scoped(
@@ -537,6 +547,22 @@ fn funding_outcome_classifies_reservation_action(
                 && outcome_kind != 2 && outcome_kind != 3,
 {
     kernel::funding_attempt_decision(outcome_kind)
+}
+
+fn funding_reconciliation_requires_fresh_expired_absence(
+    complete_absence: bool,
+    final_scan: bool,
+    dedup_expired: bool,
+) -> (result: kernel::FundingReconciliationDecision)
+    ensures
+        funding_reconciliation_decision_view(result) == 0
+            <==> !complete_absence || (final_scan && !dedup_expired),
+        funding_reconciliation_decision_view(result) == 1
+            <==> complete_absence && !final_scan,
+        funding_reconciliation_decision_view(result) == 2
+            <==> complete_absence && final_scan && dedup_expired,
+{
+    kernel::funding_reconciliation_decision(complete_absence, final_scan, dedup_expired)
 }
 
 proof fn role_action_matrix(action: int, pause: bool, governance: bool)

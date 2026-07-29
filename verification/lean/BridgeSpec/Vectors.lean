@@ -139,12 +139,12 @@ def manualClaimCase
       (boolJson (manualClaimAllowed scheduled active stopped overdue expired)) ++ "}"
 
 def notificationAdmissionCase
-    (callerCount hashCount callerLimit hashLimit : Nat) : String :=
-  "{" ++ natField "caller_count" callerCount ++ "," ++
-    natField "hash_count" hashCount ++ "," ++ natField "caller_limit" callerLimit ++ "," ++
-    natField "hash_limit" hashLimit ++ "," ++
+    (globalCount callerCount globalLimit callerLimit : Nat) : String :=
+  "{" ++ natField "global_count" globalCount ++ "," ++
+    natField "caller_count" callerCount ++ "," ++ natField "global_limit" globalLimit ++ "," ++
+    natField "caller_limit" callerLimit ++ "," ++
     field "allowed"
-      (boolJson (notificationAdmissionAllowed callerCount hashCount callerLimit hashLimit)) ++ "}"
+      (boolJson (notificationAdmissionAllowed globalCount callerCount globalLimit callerLimit)) ++ "}"
 
 def leaseLaneDecisionName : LeaseLaneClaimDecision → String
   | .allow => "allow"
@@ -169,6 +169,20 @@ def fundingDecisionName : FundingAttemptDecision → String
 def fundingAttemptCase (outcomeKind : Nat) (outcome : FundingOutcomeKind) : String :=
   "{" ++ natField "outcome_kind" outcomeKind ++ "," ++
     stringField "decision" (fundingDecisionName (decideFundingAttempt outcome)) ++ "}"
+
+def fundingReconciliationDecisionName : FundingReconciliationDecision → String
+  | .wait => "wait"
+  | .restartFresh => "restart-fresh"
+  | .release => "release"
+
+def fundingReconciliationCase
+    (completeAbsence finalScan dedupExpired : Bool) : String :=
+  "{" ++ field "complete_absence" (boolJson completeAbsence) ++ "," ++
+    field "final_scan" (boolJson finalScan) ++ "," ++
+    field "dedup_expired" (boolJson dedupExpired) ++ "," ++
+    stringField "decision"
+      (fundingReconciliationDecisionName
+        (decideFundingReconciliation completeAbsence finalScan dedupExpired)) ++ "}"
 
 def decisionName : WithdrawalFinalizationDecision → String
   | .retry => "retry"
@@ -253,10 +267,10 @@ def document : String :=
     manualClaimCase false false true false false,
     manualClaimCase false false false false false]
   let notificationAdmissions := [
-    notificationAdmissionCase 0 0 6 3,
-    notificationAdmissionCase 5 2 6 3,
-    notificationAdmissionCase 6 0 6 3,
-    notificationAdmissionCase 0 3 6 3]
+    notificationAdmissionCase 0 0 48 6,
+    notificationAdmissionCase 47 5 48 6,
+    notificationAdmissionCase 48 0 48 6,
+    notificationAdmissionCase 0 6 48 6]
   let leaseLanes := [
     leaseLaneCase false false 0 4,
     leaseLaneCase false false 4 4,
@@ -268,6 +282,15 @@ def document : String :=
     fundingAttemptCase 2 .ambiguous,
     fundingAttemptCase 3 .definitiveFailure,
     fundingAttemptCase 4 .retryableFailure]
+  let fundingReconciliations := [
+    fundingReconciliationCase false false false,
+    fundingReconciliationCase false false true,
+    fundingReconciliationCase false true false,
+    fundingReconciliationCase false true true,
+    fundingReconciliationCase true false false,
+    fundingReconciliationCase true false true,
+    fundingReconciliationCase true true false,
+    fundingReconciliationCase true true true]
   let finalizations := [finalizationCase true 10 none, finalizationCase false 10 none,
     finalizationCase true 10 (some 9), finalizationCase false 10 (some 9),
     finalizationCase true 10 (some 10), finalizationCase false 10 (some 10)]
@@ -287,6 +310,7 @@ def document : String :=
     jsonSection "notification_admission" notificationAdmissions ++ "," ++
     jsonSection "lease_lane" leaseLanes ++ "," ++
     jsonSection "funding_attempt" fundingAttempts ++ "," ++
+    jsonSection "funding_reconciliation" fundingReconciliations ++ "," ++
     jsonSection "finalization" finalizations ++ "," ++ jsonSection "queue" queues ++ "," ++
     jsonSection "canonical_probe" probes ++ "}\n"
 

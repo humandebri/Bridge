@@ -701,7 +701,9 @@ theorem manual_claim_cannot_select_active_or_fresh_scheduled_job
 
 theorem notification_quota_isolation (state : NotificationIsolationState) :
     let next := processNotification state
-    next.settlementAdmission = state.settlementAdmission ∧
+    next.persistentGlobalCount = state.persistentGlobalCount + 1 ∧
+      next.callerWindowCount = state.callerWindowCount + 1 ∧
+      next.settlementAdmission = state.settlementAdmission ∧
       next.settlementJobs = state.settlementJobs := by
   simp [processNotification]
 
@@ -751,6 +753,17 @@ theorem funding_attempt_lifecycle :
       duplicated.formalArtifacts = 1 ∧ duplicated.promotions = 1 ∧
       ambiguous.formalArtifacts = 1 ∧ ambiguous.promotions = 1 ∧
       (applyFundingDecision succeeded (decideFundingAttempt .duplicate)) = succeeded := by
+  decide
+
+theorem funding_reconciliation_requires_fresh_expired_absence :
+    decideFundingReconciliation false false false = .wait ∧
+      decideFundingReconciliation false false true = .wait ∧
+      decideFundingReconciliation false true false = .wait ∧
+      decideFundingReconciliation false true true = .wait ∧
+      decideFundingReconciliation true false false = .restartFresh ∧
+      decideFundingReconciliation true false true = .restartFresh ∧
+      decideFundingReconciliation true true false = .wait ∧
+      decideFundingReconciliation true true true = .release := by
   decide
 
 structure ExecutorWitness where

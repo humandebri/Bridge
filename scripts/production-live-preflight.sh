@@ -427,6 +427,8 @@ public_config={
  'evm_rpc_canister_id':str(one('evm_rpc_canister_id')),'rpc_provider_urls_sha256':actual_rpc_digest,
  'deposit_rate_limit_window_seconds':num(one('deposit_rate_limit_window_seconds')),
  'deposit_rate_limit_global':num(one('deposit_rate_limit_global')),'deposit_rate_limit_per_principal':num(one('deposit_rate_limit_per_principal')),
+ 'notification_rate_limit_window_seconds':num(one('notification_rate_limit_window_seconds')),
+ 'notification_rate_limit_global':num(one('notification_rate_limit_global')),
  'settlement_rate_limit_window_seconds':num(one('settlement_rate_limit_window_seconds')),
  'settlement_rate_limit_global':num(one('settlement_rate_limit_global')),'settlement_rate_limit_per_principal':num(one('settlement_rate_limit_per_principal')),
  'settlement_rate_limit_per_record':num(one('settlement_rate_limit_per_record')),

@@ -121,6 +121,8 @@ pub struct PublicConfig {
     pub deposit_rate_limit_window_seconds: u64,
     pub deposit_rate_limit_global: u16,
     pub deposit_rate_limit_per_principal: u16,
+    pub notification_rate_limit_window_seconds: u64,
+    pub notification_rate_limit_global: u16,
     pub settlement_rate_limit_window_seconds: u64,
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
@@ -151,8 +153,6 @@ thread_local! {
     static NOTIFICATION_CALLERS: RefCell<BTreeMap<Principal, u8>> = const { RefCell::new(BTreeMap::new()) };
     static NOTIFICATIONS_IN_FLIGHT: RefCell<u8> = const { RefCell::new(0) };
     static NOTIFICATION_CALLER_ADMISSION: RefCell<BTreeMap<Principal, NotificationAdmissionBucket>> =
-        const { RefCell::new(BTreeMap::new()) };
-    static NOTIFICATION_HASH_ADMISSION: RefCell<BTreeMap<[u8; 32], NotificationAdmissionBucket>> =
         const { RefCell::new(BTreeMap::new()) };
 }
 
@@ -215,42 +215,25 @@ struct NotificationAdmissionBucket {
 struct NotificationAdmissionGuard;
 
 impl NotificationAdmissionGuard {
-    const WINDOW_NS: u64 = 600 * 1_000_000_000;
-    const PER_CALLER_LIMIT: u8 = 6;
-    const PER_HASH_LIMIT: u8 = 3;
+    const PER_CALLER_LIMIT: u16 = 6;
     const MAX_CALLER_BUCKETS: usize = 4_096;
-    const MAX_HASH_BUCKETS: usize = 8_192;
 
-    fn acquire(caller: Principal, transaction_hash: [u8; 32], now_ns: u64) -> bool {
-        let window_id = now_ns / Self::WINDOW_NS;
+    fn caller_count(caller: Principal, now_ns: u64, window_seconds: u64) -> u16 {
+        let window_id = now_ns / window_seconds.saturating_mul(1_000_000_000);
+        NOTIFICATION_CALLER_ADMISSION
+            .with(|callers| u16::from(bucket_count(&callers.borrow(), &caller, window_id)))
+    }
+
+    fn record(caller: Principal, now_ns: u64, window_seconds: u64) {
+        let window_id = now_ns / window_seconds.saturating_mul(1_000_000_000);
         NOTIFICATION_CALLER_ADMISSION.with(|callers| {
-            NOTIFICATION_HASH_ADMISSION.with(|hashes| {
-                let mut callers = callers.borrow_mut();
-                let mut hashes = hashes.borrow_mut();
-                if !bridge_core::notification_admission_allowed(
-                    bucket_count(&callers, &caller, window_id),
-                    bucket_count(&hashes, &transaction_hash, window_id),
-                    Self::PER_CALLER_LIMIT,
-                    Self::PER_HASH_LIMIT,
-                ) {
-                    return false;
-                }
-                record_notification_bucket(
-                    &mut callers,
-                    caller,
-                    window_id,
-                    now_ns,
-                    Self::MAX_CALLER_BUCKETS,
-                );
-                record_notification_bucket(
-                    &mut hashes,
-                    transaction_hash,
-                    window_id,
-                    now_ns,
-                    Self::MAX_HASH_BUCKETS,
-                );
-                true
-            })
+            record_notification_bucket(
+                &mut callers.borrow_mut(),
+                caller,
+                window_id,
+                now_ns,
+                Self::MAX_CALLER_BUCKETS,
+            );
         })
     }
 }
@@ -474,7 +457,7 @@ async fn notify_withdrawal(
 ) -> Result<api::NotifyWithdrawalReceipt, api::NotifyWithdrawalError> {
     let caller = ic_cdk::api::msg_caller();
     let transaction_hash = api::notification_action_hash(caller, &args)?;
-    if let Some(receipt) = api::existing_notified_withdrawal_by_hash(caller, transaction_hash)? {
+    if let Some(receipt) = api::existing_notified_withdrawal_by_hash(transaction_hash)? {
         return Ok(receipt);
     }
     let config = STORE.with(|store| {
@@ -499,9 +482,31 @@ async fn notify_withdrawal(
     else {
         return Err(api::NotifyWithdrawalError::Busy);
     };
-    if !NotificationAdmissionGuard::acquire(caller, transaction_hash, ic_cdk::api::time()) {
+    let now_ns = ic_cdk::api::time();
+    let caller_count = NotificationAdmissionGuard::caller_count(
+        caller,
+        now_ns,
+        config.notification_rate_limit_window_seconds,
+    );
+    let admitted = STORE
+        .with(|store| {
+            store.borrow_mut().consume_notification_quota(
+                now_ns,
+                config.notification_rate_limit_window_seconds,
+                config.notification_rate_limit_global,
+                caller_count,
+                NotificationAdmissionGuard::PER_CALLER_LIMIT,
+            )
+        })
+        .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?;
+    if !admitted {
         return Err(api::NotifyWithdrawalError::RateLimited);
     }
+    NotificationAdmissionGuard::record(
+        caller,
+        now_ns,
+        config.notification_rate_limit_window_seconds,
+    );
     let receipt = api::notify_withdrawal(caller, args).await?;
     match &receipt {
         api::NotifyWithdrawalReceipt::Ingested { .. } => {}
@@ -1048,6 +1053,8 @@ fn get_public_config() -> PublicConfig {
             deposit_rate_limit_window_seconds: config.deposit_rate_limit_window_seconds,
             deposit_rate_limit_global: config.deposit_rate_limit_global,
             deposit_rate_limit_per_principal: config.deposit_rate_limit_per_principal,
+            notification_rate_limit_window_seconds: config.notification_rate_limit_window_seconds,
+            notification_rate_limit_global: config.notification_rate_limit_global,
             settlement_rate_limit_window_seconds: config.settlement_rate_limit_window_seconds,
             settlement_rate_limit_global: config.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: config.settlement_rate_limit_per_principal,
@@ -1263,8 +1270,8 @@ pub fn generated_candid_interface() -> String {
 mod candid_tests {
     use super::{
         has_external_call_cycle_budget, storage::StorageError, storage_or_trap, ActionKey,
-        InFlightGuard, NotificationAdmissionGuard, NOTIFICATION_CALLER_ADMISSION,
-        NOTIFICATION_HASH_ADMISSION,
+        DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
+        NOTIFICATION_CALLER_ADMISSION,
     };
 
     #[cfg(not(feature = "test-deployment"))]
@@ -1323,24 +1330,44 @@ mod candid_tests {
 
     #[test]
     #[serial_test::serial]
-    fn notification_admission_is_scoped_to_caller_and_hash_windows() {
+    fn notification_admission_persists_global_budget_and_keeps_caller_isolation() {
         NOTIFICATION_CALLER_ADMISSION.with(|buckets| buckets.borrow_mut().clear());
-        NOTIFICATION_HASH_ADMISSION.with(|buckets| buckets.borrow_mut().clear());
         let caller = candid::Principal::from_slice(&[1]);
-        for index in 0..NotificationAdmissionGuard::PER_CALLER_LIMIT {
-            assert!(NotificationAdmissionGuard::acquire(caller, [index; 32], 0,));
+        let memory = DefaultMemoryImpl::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        for _ in 0..NotificationAdmissionGuard::PER_CALLER_LIMIT {
+            let count = NotificationAdmissionGuard::caller_count(caller, 0, 600);
+            assert!(store
+                .consume_notification_quota(0, 600, 60, count, 6)
+                .expect("consume notification quota"));
+            NotificationAdmissionGuard::record(caller, 0, 600);
         }
-        assert!(!NotificationAdmissionGuard::acquire(caller, [99; 32], 0));
-        assert!(NotificationAdmissionGuard::acquire(
-            caller,
-            [99; 32],
-            NotificationAdmissionGuard::WINDOW_NS,
-        ));
+        assert!(!store
+            .consume_notification_quota(
+                0,
+                600,
+                60,
+                NotificationAdmissionGuard::caller_count(caller, 0, 600),
+                6,
+            )
+            .expect("enforce caller quota"));
+        drop(store);
+        let mut reopened = StableStore::reopen(memory).expect("reopen");
+        assert!(reopened
+            .consume_notification_quota(0, 600, 7, 0, 6)
+            .expect("persisted global budget"));
+        assert!(!reopened
+            .consume_notification_quota(0, 600, 7, 0, 6)
+            .expect("enforce persisted global budget"));
+        assert!(reopened
+            .consume_notification_quota(600 * 1_000_000_000, 600, 7, 0, 6)
+            .expect("reset notification window"));
 
-        let other = candid::Principal::from_slice(&[2]);
-        for _ in 0..NotificationAdmissionGuard::PER_HASH_LIMIT {
-            assert!(NotificationAdmissionGuard::acquire(other, [7; 32], 0));
-        }
-        assert!(!NotificationAdmissionGuard::acquire(other, [7; 32], 0));
+        let hash = [9; 32];
+        let guard = InFlightGuard::acquire(ActionKey::Notification(hash))
+            .expect("first hash notification acquires");
+        assert!(InFlightGuard::acquire(ActionKey::Notification(hash)).is_none());
+        drop(guard);
+        assert!(InFlightGuard::acquire(ActionKey::Notification(hash)).is_some());
     }
 }

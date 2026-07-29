@@ -48,7 +48,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(bridgeWasm), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
@@ -526,9 +526,11 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(27);
+    expect(config.schema_version).toBe(28);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(10_000n);
+    expect(config.notification_rate_limit_window_seconds).toBe(600n);
+    expect(config.notification_rate_limit_global).toBe(60);
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
     expect(config.rpc_provider_urls_sha256).toHaveLength(32);
 
@@ -1013,13 +1015,27 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).get_withdrawal(id)).toEqual([]);
   });
 
-  it("rejects non-confirmed and wrong-owner notifications and ingests one concurrent replay", async () => {
+  it("allows a non-owner relayer while keeping the Ledger recipient bound to the event", async () => {
+    const { ledger, evm, bridge } = await setup();
+    const id = new Uint8Array(32).fill(86);
+    const owner = Principal.selfAuthenticating(new Uint8Array(32).fill(8));
+    const relayer = Principal.selfAuthenticating(new Uint8Array(32).fill(9));
+    const subaccount = new Uint8Array(32).fill(0x4a);
+    await (evm.actor as any).set_withdrawal([{ id, owner: owner.toUint8Array(), subaccount, amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
+    bridge.actor.setPrincipal(relayer);
+    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Ok.Ingested");
+    expect(await (bridge.actor as any).get_withdrawal(id)).toHaveLength(1);
+    bridge.actor.setPrincipal(owner);
+    expect(await continueWithdrawal(bridge, id)).toHaveProperty("Ok.Complete");
+    const transfer = (await (ledger.actor as any).ledger_transactions()).at(-1)?.transfer?.[0];
+    expect(transfer.to.owner.toText()).toBe(owner.toText());
+    expect(Array.from(transfer.to.subaccount[0])).toEqual(Array.from(subaccount));
+    expect(transfer.to.owner.toText()).not.toBe(relayer.toText());
+  });
+
+  it("rejects non-confirmed notifications and ingests one concurrent replay", async () => {
     const { evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(86);
-    await (evm.actor as any).set_withdrawal([{ id, owner: Principal.selfAuthenticating(new Uint8Array(32).fill(8)).toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
-    bridge.actor.setPrincipal(Principal.selfAuthenticating(new Uint8Array(32).fill(9)));
-    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.OwnerMismatch");
-    bridge.actor.setPrincipal(runtimePrincipal);
     await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
     await (evm.actor as any).set_observed_transaction(new Uint8Array(32).fill(9), new Uint8Array(20).fill(1), new Uint8Array(20).fill(0x22), 101n);
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.TransactionNotConfirmed");
@@ -1055,17 +1071,19 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (evm.actor as any).receipt_call_count()).toBe(callsAfterIngest);
   });
 
-  it("persistently rate limits repeated unknown notification hashes before further RPC", async () => {
-    const { evm, bridge, runtimePrincipal } = await setup();
-    const id = new Uint8Array(32).fill(88);
-    await (evm.actor as any).set_observed_transaction(new Uint8Array(32).fill(9), new Uint8Array(20).fill(1), new Uint8Array(20).fill(0x22), 101n);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
+  it("rate limits a caller after six distinct unknown hashes before further RPC", async () => {
+    const { evm, bridge } = await setup();
     const callsBefore = await (evm.actor as any).receipt_call_count();
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.TransactionNotConfirmed");
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      expect(await (bridge.actor as any).notify_withdrawal({
+        transaction_hash: new Uint8Array(32).fill(0xa0 + attempt),
+      })).toHaveProperty("Err.InvalidBaseResponse");
     }
-    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Err.RateLimited");
-    expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 3n);
+    expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 6n);
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(0xa6),
+    })).toHaveProperty("Err.RateLimited");
+    expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 6n);
   });
 
   it("uses the fixed fee without querying Ledger fee availability", async () => {
@@ -1270,32 +1288,44 @@ describe("Phase 3 PocketIC saga", () => {
     expect(stored[0].refund).toEqual([]);
   });
 
-  it("keeps invalid notification traffic isolated from valid withdrawal ingestion", async () => {
-    const { evm, bridge, runtimePrincipal } = await setup();
-    for (let index = 0; index < 61; index += 1) {
+  it("persists the global notification budget across upgrade and blocks RPC after sixty calls", async () => {
+    const { evm, bridge } = await setup();
+    const callsBefore = await (evm.actor as any).receipt_call_count();
+    for (let index = 0; index < 60; index += 1) {
       bridge.actor.setPrincipal(
         Principal.selfAuthenticating(new Uint8Array(32).fill(Math.floor(index / 6) + 200)),
       );
       const rejected: any = await (bridge.actor as any).notify_withdrawal({
         transaction_hash: new Uint8Array(32).fill(index + 100),
       });
-      expect(rejected).toHaveProperty("Err");
-      expect(rejected.Err).not.toHaveProperty("RateLimited");
+      expect(rejected).toHaveProperty("Err.InvalidBaseResponse");
     }
+    expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 60n);
 
-    bridge.actor.setPrincipal(runtimePrincipal);
-    const id = new Uint8Array(32).fill(0x91);
-    await (evm.actor as any).set_withdrawal([{
-      id,
-      owner: runtimePrincipal.toUint8Array(),
-      subaccount: new Uint8Array(32),
-      amount: 100_000n,
-      max_service_fee: 10_000n,
-      charged_service_fee: 10_000n,
-      amount_out: 90_000n,
-    }]);
-    expect(await notifyFixtureWithdrawal(bridge)).toHaveProperty("Ok.Ingested");
-    expect(await (bridge.actor as any).get_withdrawal(id)).toHaveLength(1);
+    bridge.actor.setPrincipal(Principal.selfAuthenticating(new Uint8Array(32).fill(250)));
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(0xf0),
+    })).toHaveProperty("Err.RateLimited");
+    expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 60n);
+
+    await pic!.upgradeCanister({
+      canisterId: bridge.canisterId,
+      wasm: readFileSync(bridgeWasm),
+      arg: IDL.encode([], []),
+    });
+    bridge.actor.setPrincipal(Principal.selfAuthenticating(new Uint8Array(32).fill(251)));
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(0xf1),
+    })).toHaveProperty("Err.RateLimited");
+    expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 60n);
+
+    await pic!.advanceTime(10 * 60_000 + 1);
+    await pic!.tick(5);
+    bridge.actor.setPrincipal(Principal.selfAuthenticating(new Uint8Array(32).fill(252)));
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(0xf2),
+    })).toHaveProperty("Err.InvalidBaseResponse");
+    expect(await (evm.actor as any).receipt_call_count()).toBe(callsBefore + 61n);
   });
 
   it("keeps retryable funding outside the public settlement quota", async () => {
@@ -1558,7 +1588,7 @@ describe("Phase 3 PocketIC saga", () => {
       expect(seeded.Ok).toBe(100);
     }
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(27);
+    expect(before.schema_version).toBe(28);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.retained_audit_events).toBe(10_000n);
     expect(before.settlement_scheduler.scheduled).toBe(10_000n);
@@ -1577,7 +1607,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(27);
+    expect(after.schema_version).toBe(28);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(10_000n);
     expect(await (bridge.actor as any).get_withdrawal(firstId)).toHaveLength(1);

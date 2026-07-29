@@ -22,10 +22,31 @@ const MAX_AUTOMATIC_SETTLEMENTS: u64 = 4;
 const FUNDING_RECOVERY_INTERVAL_SECONDS: u64 = 30;
 #[cfg(any(target_arch = "wasm32", test))]
 const LEDGER_DEDUP_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+#[cfg(any(target_arch = "wasm32", test))]
+const LEDGER_DEDUP_EXPIRY_MARGIN_NS: u64 = 60 * 1_000_000_000;
 
 #[cfg(any(target_arch = "wasm32", test))]
-fn funding_absence_releasable(created_at_time_ns: u64, now_ns: u64) -> bool {
-    now_ns.saturating_sub(created_at_time_ns) >= LEDGER_DEDUP_NS
+fn funding_dedup_expired(created_at_time_ns: u64, now_ns: u64) -> bool {
+    now_ns > funding_dedup_expiry_boundary_ns(created_at_time_ns)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn funding_dedup_expiry_boundary_ns(created_at_time_ns: u64) -> u64 {
+    created_at_time_ns
+        .saturating_add(LEDGER_DEDUP_NS)
+        .saturating_add(LEDGER_DEDUP_EXPIRY_MARGIN_NS)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn funding_final_scan_at_ns(created_at_time_ns: u64) -> u64 {
+    funding_dedup_expiry_boundary_ns(created_at_time_ns).saturating_add(1)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn fresh_funding_reconciliation_progress(
+    progress: &bridge_core::ReconciliationScanProgress,
+) -> bridge_core::ReconciliationScanProgress {
+    bridge_core::ReconciliationScanProgress::new(progress.target.clone(), progress.transfer.clone())
 }
 
 fn transient_retry_delay_ns(base_seconds: u64, attempts: u8) -> u64 {
@@ -184,6 +205,7 @@ async fn recover_one_funding_attempt() {
                     attempt.transfer.clone(),
                 )),
                 next_check_at_ns: now,
+                final_absence_scan: false,
             };
             next.updated_at_ns = now;
             if STORE
@@ -204,7 +226,12 @@ async fn recover_one_funding_attempt() {
             return
         }
     };
-    let DepositFundingAttemptState::Reconciling { progress, .. } = &current.state else {
+    let DepositFundingAttemptState::Reconciling {
+        progress,
+        final_absence_scan,
+        ..
+    } = &current.state
+    else {
         return;
     };
     let config = STORE.with(|store| store.borrow().config()).ok().flatten();
@@ -225,6 +252,7 @@ async fn recover_one_funding_attempt() {
                 progress,
                 next_check_at_ns: ic_cdk::api::time()
                     .saturating_add(FUNDING_RECOVERY_INTERVAL_SECONDS * 1_000_000_000),
+                final_absence_scan: *final_absence_scan,
             };
             next.updated_at_ns = ic_cdk::api::time();
             if STORE
@@ -247,40 +275,52 @@ async fn recover_one_funding_attempt() {
         }
         crate::ledger::ReconciliationOutcome::Absent { .. } => {
             let now = ic_cdk::api::time();
-            if funding_absence_releasable(current.transfer.created_at_time_ns, now) {
-                if STORE
-                    .with(|store| {
-                        store
-                            .borrow_mut()
-                            .remove_deposit_funding_attempt(owner, &current)
-                    })
-                    .is_err()
-                {
-                    mark_fault("failed to release absent funding attempt");
+            let dedup_expired = funding_dedup_expired(current.transfer.created_at_time_ns, now);
+            match bridge_core::funding_reconciliation_decision(
+                true,
+                *final_absence_scan,
+                dedup_expired,
+            ) {
+                bridge_core::FundingReconciliationDecision::Wait => {
+                    mark_fault("complete funding absence was not classified");
                 }
-            } else {
-                let mut next = current.clone();
-                let DepositFundingAttemptState::Reconciling { progress, .. } = &current.state
-                else {
-                    return;
-                };
-                next.state = DepositFundingAttemptState::Reconciling {
-                    progress: progress.clone(),
-                    next_check_at_ns: current
-                        .transfer
-                        .created_at_time_ns
-                        .saturating_add(LEDGER_DEDUP_NS),
-                };
-                next.updated_at_ns = now;
-                if STORE
-                    .with(|store| {
-                        store
-                            .borrow_mut()
-                            .update_deposit_funding_attempt(&current, &next)
-                    })
-                    .is_err()
-                {
-                    mark_fault("failed to defer funding absence resolution");
+                bridge_core::FundingReconciliationDecision::RestartFresh => {
+                    let mut next = current.clone();
+                    let DepositFundingAttemptState::Reconciling { progress, .. } = &current.state
+                    else {
+                        return;
+                    };
+                    next.state = DepositFundingAttemptState::Reconciling {
+                        progress: Box::new(fresh_funding_reconciliation_progress(progress)),
+                        next_check_at_ns: funding_final_scan_at_ns(
+                            current.transfer.created_at_time_ns,
+                        )
+                        .max(now),
+                        final_absence_scan: true,
+                    };
+                    next.updated_at_ns = now;
+                    if STORE
+                        .with(|store| {
+                            store
+                                .borrow_mut()
+                                .update_deposit_funding_attempt(&current, &next)
+                        })
+                        .is_err()
+                    {
+                        mark_fault("failed to restart funding absence reconciliation");
+                    }
+                }
+                bridge_core::FundingReconciliationDecision::Release => {
+                    if STORE
+                        .with(|store| {
+                            store
+                                .borrow_mut()
+                                .remove_deposit_funding_attempt(owner, &current)
+                        })
+                        .is_err()
+                    {
+                        mark_fault("failed to release absent funding attempt");
+                    }
                 }
             }
         }
@@ -289,20 +329,60 @@ async fn recover_one_funding_attempt() {
 
 #[cfg(test)]
 mod funding_recovery_tests {
-    use super::{funding_absence_releasable, LEDGER_DEDUP_NS};
+    use super::{
+        fresh_funding_reconciliation_progress, funding_dedup_expired,
+        funding_dedup_expiry_boundary_ns, funding_final_scan_at_ns, LEDGER_DEDUP_EXPIRY_MARGIN_NS,
+        LEDGER_DEDUP_NS,
+    };
+    use bridge_core::{
+        Account, Amount, DepositId, LedgerOperation, LedgerTransferIdentity,
+        ReconciliationScanPhase, ReconciliationScanProgress, ReconciliationTarget,
+    };
 
     #[test]
-    fn absence_only_releases_after_the_full_dedup_window() {
+    fn early_absence_restarts_the_same_transfer_from_a_fresh_ledger_cursor() {
+        let transfer = LedgerTransferIdentity {
+            operation: LedgerOperation::PullDeposit,
+            created_at_time_ns: 17,
+            memo: [3; 32],
+            amount: Amount::new(100),
+            fee: Amount::new(1),
+            from: Account::new(vec![1], [2; 32]).expect("from account"),
+            to: Account::new(vec![3], [4; 32]).expect("to account"),
+            spender: Some(Account::new(vec![3], [0; 32]).expect("spender account")),
+        };
+        let target = ReconciliationTarget::FundingAttempt(DepositId::new([5; 32]));
+        let mut stale = ReconciliationScanProgress::new(target.clone(), transfer.clone());
+        stale.phase = ReconciliationScanPhase::Index {
+            ledger_watermark: 100,
+            index_watermark: Some(100),
+            next_start: Some(1),
+        };
+
+        let fresh = fresh_funding_reconciliation_progress(&stale);
+
+        assert_eq!(fresh.target, target);
+        assert_eq!(fresh.transfer, transfer);
+        assert!(matches!(
+            fresh.phase,
+            ReconciliationScanPhase::Ledger {
+                next_block: 0,
+                ledger_tip: None,
+                pending_page: None,
+            }
+        ));
+        assert_eq!(LEDGER_DEDUP_NS, 24 * 60 * 60 * 1_000_000_000);
+    }
+
+    #[test]
+    fn dedup_expiry_is_strict_and_the_final_scan_starts_after_the_boundary() {
         let created_at = 17;
-        assert!(!funding_absence_releasable(
-            created_at,
-            created_at + LEDGER_DEDUP_NS - 1
-        ));
-        assert!(funding_absence_releasable(
-            created_at,
-            created_at + LEDGER_DEDUP_NS
-        ));
-        assert!(!funding_absence_releasable(created_at, created_at - 1));
+        let boundary = created_at + LEDGER_DEDUP_NS + LEDGER_DEDUP_EXPIRY_MARGIN_NS;
+        assert!(!funding_dedup_expired(created_at, boundary - 1));
+        assert!(!funding_dedup_expired(created_at, boundary));
+        assert!(funding_dedup_expired(created_at, boundary + 1));
+        assert_eq!(funding_dedup_expiry_boundary_ns(created_at), boundary);
+        assert_eq!(funding_final_scan_at_ns(created_at), boundary + 1);
     }
 }
 

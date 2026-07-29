@@ -1767,6 +1767,8 @@ mod tests {
             deposit_rate_limit_window_seconds: 60,
             deposit_rate_limit_global: 2,
             deposit_rate_limit_per_principal: 1,
+            notification_rate_limit_window_seconds: 600,
+            notification_rate_limit_global: 60,
             settlement_rate_limit_window_seconds: 60,
             settlement_rate_limit_global: 3,
             settlement_rate_limit_per_principal: 2,

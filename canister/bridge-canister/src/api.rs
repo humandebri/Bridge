@@ -220,7 +220,6 @@ pub enum NotifyWithdrawalError {
     TransactionNotFound,
     TransactionNotConfirmed,
     TransactionReverted,
-    OwnerMismatch,
     LedgerFeeExceedsServiceFee {
         ledger_fee: Nat,
         charged_service_fee: Nat,
@@ -440,13 +439,6 @@ pub async fn notify_withdrawal(
                 finalized_head_block_number,
             ),
         };
-    let owner = Principal::try_from_slice(&observed.owner)
-        .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
-    let administrator = crate::admin::can_advance_settlement(caller)
-        .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-    if !notification_caller_allowed(caller, owner, administrator) {
-        return Err(NotifyWithdrawalError::OwnerMismatch);
-    }
     let expected_signer = cached_signer_address(&config)
         .await
         .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
@@ -473,10 +465,6 @@ pub async fn notify_withdrawal(
         ],
     )?;
     Ok(receipt)
-}
-
-fn notification_caller_allowed(caller: Principal, owner: Principal, administrator: bool) -> bool {
-    caller == owner || administrator
 }
 
 pub(crate) fn notification_action_hash(
@@ -553,7 +541,6 @@ fn notification_commit_error(error: crate::storage::StorageError) -> NotifyWithd
 }
 
 pub(crate) fn existing_notified_withdrawal_by_hash(
-    caller: Principal,
     transaction_hash: [u8; 32],
 ) -> Result<Option<NotifyWithdrawalReceipt>, NotifyWithdrawalError> {
     let found = STORE.with(|store| {
@@ -564,27 +551,15 @@ pub(crate) fn existing_notified_withdrawal_by_hash(
         else {
             return Ok(None);
         };
-        let withdrawal = store
+        store
             .withdrawal(withdrawal_id)
             .map_err(|_| NotifyWithdrawalError::StorageFailure)?
             .ok_or(NotifyWithdrawalError::StorageFailure)?;
-        let admin = store
-            .admin_state()
-            .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-        Ok(Some((withdrawal_id, withdrawal.owner, admin)))
+        Ok(Some(withdrawal_id))
     })?;
-    let Some((withdrawal_id, owner, admin)) = found else {
+    let Some(withdrawal_id) = found else {
         return Ok(None);
     };
-    let administrator = caller == admin.governance_principal || caller == admin.pause_principal;
-    if !notification_caller_allowed(
-        caller,
-        Principal::try_from_slice(&owner)
-            .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?,
-        administrator,
-    ) {
-        return Err(NotifyWithdrawalError::OwnerMismatch);
-    }
     Ok(Some(NotifyWithdrawalReceipt::Duplicate {
         withdrawal_id: withdrawal_id.to_vec(),
     }))
@@ -1817,14 +1792,5 @@ mod tests {
         .expect("valid deposit");
 
         assert_eq!(deposit_created_at_ns(&record), 123_456);
-    }
-
-    #[test]
-    fn withdrawal_notification_allows_only_the_ic_owner_or_an_administrator() {
-        let owner = Principal::self_authenticating([3; 32]);
-        let third_party = Principal::self_authenticating([4; 32]);
-        assert!(notification_caller_allowed(owner, owner, false));
-        assert!(notification_caller_allowed(third_party, owner, true));
-        assert!(!notification_caller_allowed(third_party, owner, false));
     }
 }

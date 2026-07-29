@@ -1,11 +1,12 @@
 use bridge_core::{
     canonical_probe_matches, committed_quote_matches, fee_recipient_rotation_allowed,
-    funding_attempt_decision, hold_retry_allowed, lease_lane_claim_decision,
-    lease_outcome_is_current, manual_claim_allowed, notification_admission_allowed,
-    outbound_settlement, payout_allowed, payout_debit, release_transfer_matches,
-    reserve_admission_preserves_requirement, restored_pending_blocked, service_fee_change_allowed,
-    withdrawal_finalization_decision, Amount, BaseMintSnapshot, FundingAttemptDecision,
-    LeaseLaneClaimDecision, WithdrawalFinalizationDecision,
+    funding_attempt_decision, funding_reconciliation_decision, hold_retry_allowed,
+    lease_lane_claim_decision, lease_outcome_is_current, manual_claim_allowed,
+    notification_admission_allowed, outbound_settlement, payout_allowed, payout_debit,
+    release_transfer_matches, reserve_admission_preserves_requirement, restored_pending_blocked,
+    service_fee_change_allowed, withdrawal_finalization_decision, Amount, BaseMintSnapshot,
+    FundingAttemptDecision, FundingReconciliationDecision, LeaseLaneClaimDecision,
+    WithdrawalFinalizationDecision,
 };
 use serde::Deserialize;
 
@@ -41,6 +42,8 @@ struct ProtocolVectors {
     lease_lane_count: usize,
     funding_attempt_cases: Vec<FundingAttemptCase>,
     funding_attempt_count: usize,
+    funding_reconciliation_cases: Vec<FundingReconciliationCase>,
+    funding_reconciliation_count: usize,
     finalization_cases: Vec<FinalizationCase>,
     finalization_count: usize,
     queue_cases: Vec<QueueCase>,
@@ -182,10 +185,10 @@ struct ManualClaimCase {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NotificationAdmissionCase {
+    global_count: String,
     caller_count: String,
-    hash_count: String,
+    global_limit: String,
     caller_limit: String,
-    hash_limit: String,
     allowed: bool,
 }
 
@@ -203,6 +206,15 @@ struct LeaseLaneCase {
 #[serde(deny_unknown_fields)]
 struct FundingAttemptCase {
     outcome_kind: String,
+    decision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FundingReconciliationCase {
+    complete_absence: bool,
+    final_scan: bool,
+    dedup_expired: bool,
     decision: String,
 }
 
@@ -262,6 +274,10 @@ fn vectors() -> ProtocolVectors {
         vectors.funding_attempt_count,
         vectors.funding_attempt_cases.len()
     );
+    assert_eq!(
+        vectors.funding_reconciliation_count,
+        vectors.funding_reconciliation_cases.len()
+    );
     assert_eq!(vectors.finalization_count, vectors.finalization_cases.len());
     assert_eq!(vectors.queue_count, vectors.queue_cases.len());
     assert_eq!(
@@ -282,6 +298,7 @@ fn vectors() -> ProtocolVectors {
     assert!(vectors.notification_admission_count > 0);
     assert!(vectors.lease_lane_count > 0);
     assert!(vectors.funding_attempt_count > 0);
+    assert!(vectors.funding_reconciliation_count > 0);
     assert!(vectors.finalization_count > 0);
     assert!(vectors.queue_count > 0);
     assert!(vectors.canonical_probe_count > 0);
@@ -557,18 +574,18 @@ fn protocol_notification_admission_cases_matches_production() {
     for case in vectors().notification_admission_cases {
         assert_eq!(
             notification_admission_allowed(
+                block(&case.global_count)
+                    .try_into()
+                    .expect("global count fits u16"),
                 block(&case.caller_count)
                     .try_into()
-                    .expect("caller count fits u8"),
-                block(&case.hash_count)
+                    .expect("caller count fits u16"),
+                block(&case.global_limit)
                     .try_into()
-                    .expect("hash count fits u8"),
+                    .expect("global limit fits u16"),
                 block(&case.caller_limit)
                     .try_into()
-                    .expect("caller limit fits u8"),
-                block(&case.hash_limit)
-                    .try_into()
-                    .expect("hash limit fits u8"),
+                    .expect("caller limit fits u16"),
             ),
             case.allowed
         );
@@ -608,6 +625,24 @@ fn protocol_funding_attempt_cases_matches_production() {
             "release" => FundingAttemptDecision::Release,
             "retain" => FundingAttemptDecision::Retain,
             value => panic!("unknown funding attempt decision: {value}"),
+        };
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn protocol_funding_reconciliation_cases_matches_production() {
+    for case in vectors().funding_reconciliation_cases {
+        let actual = funding_reconciliation_decision(
+            case.complete_absence,
+            case.final_scan,
+            case.dedup_expired,
+        );
+        let expected = match case.decision.as_str() {
+            "wait" => FundingReconciliationDecision::Wait,
+            "restart-fresh" => FundingReconciliationDecision::RestartFresh,
+            "release" => FundingReconciliationDecision::Release,
+            value => panic!("unknown funding reconciliation decision: {value}"),
         };
         assert_eq!(actual, expected);
     }

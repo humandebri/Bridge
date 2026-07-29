@@ -309,8 +309,8 @@ macro_rules! manual_claim_decision_body {
 }
 
 macro_rules! notification_admission_body {
-    ($caller_count:expr, $hash_count:expr, $caller_limit:expr, $hash_limit:expr) => {
-        $caller_count < $caller_limit && $hash_count < $hash_limit
+    ($global_count:expr, $caller_count:expr, $global_limit:expr, $caller_limit:expr) => {
+        $global_count < $global_limit && $caller_count < $caller_limit
     };
 }
 
@@ -352,6 +352,27 @@ macro_rules! funding_attempt_decision_body {
     };
 }
 
+macro_rules! funding_reconciliation_decision_body {
+    (
+        $complete_absence:expr,
+        $final_scan:expr,
+        $dedup_expired:expr,
+        $wait:expr,
+        $restart_fresh:expr,
+        $release:expr
+    ) => {
+        if !$complete_absence {
+            $wait
+        } else if !$final_scan {
+            $restart_fresh
+        } else if $dedup_expired {
+            $release
+        } else {
+            $wait
+        }
+    };
+}
+
 verus! {
     #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
     pub enum FeeRecipientRotationDecision {
@@ -387,6 +408,13 @@ verus! {
         PromoteAmbiguous,
         Release,
         Retain,
+    }
+
+    #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
+    pub enum FundingReconciliationDecision {
+        Wait,
+        RestartFresh,
+        Release,
     }
 }
 
@@ -1060,15 +1088,15 @@ pub const fn manual_claim_allowed(
 
 verus! {
     pub fn notification_admission_allowed(
-        caller_count: u8,
-        hash_count: u8,
-        caller_limit: u8,
-        hash_limit: u8,
+        global_count: u16,
+        caller_count: u16,
+        global_limit: u16,
+        caller_limit: u16,
     ) -> (result: bool)
         ensures
-            result == (caller_count < caller_limit && hash_count < hash_limit),
+            result == (global_count < global_limit && caller_count < caller_limit),
     {
-        notification_admission_body!(caller_count, hash_count, caller_limit, hash_limit)
+        notification_admission_body!(global_count, caller_count, global_limit, caller_limit)
     }
 }
 
@@ -1125,6 +1153,33 @@ verus! {
             FundingAttemptDecision::PromoteAmbiguous,
             FundingAttemptDecision::Release,
             FundingAttemptDecision::Retain
+        )
+    }
+}
+
+verus! {
+    pub fn funding_reconciliation_decision(
+        complete_absence: bool,
+        final_scan: bool,
+        dedup_expired: bool,
+    ) -> (result: FundingReconciliationDecision)
+        ensures
+            match result {
+                FundingReconciliationDecision::Wait =>
+                    !complete_absence || (final_scan && !dedup_expired),
+                FundingReconciliationDecision::RestartFresh =>
+                    complete_absence && !final_scan,
+                FundingReconciliationDecision::Release =>
+                    complete_absence && final_scan && dedup_expired,
+            },
+    {
+        funding_reconciliation_decision_body!(
+            complete_absence,
+            final_scan,
+            dedup_expired,
+            FundingReconciliationDecision::Wait,
+            FundingReconciliationDecision::RestartFresh,
+            FundingReconciliationDecision::Release
         )
     }
 }

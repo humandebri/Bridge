@@ -122,10 +122,10 @@ theorem manual_claim_claim :
   · rfl
 
 theorem notification_admission_claim
-    {callerCount hashCount callerLimit hashLimit : Nat}
+    {globalCount callerCount globalLimit callerLimit : Nat}
     (accepted :
-      notificationAdmissionAllowed callerCount hashCount callerLimit hashLimit = true) :
-    callerCount < callerLimit ∧ hashCount < hashLimit := by
+      notificationAdmissionAllowed globalCount callerCount globalLimit callerLimit = true) :
+    globalCount < globalLimit ∧ callerCount < callerLimit := by
   simpa [notificationAdmissionAllowed, Bool.and_eq_true] using accepted
 
 theorem lease_lane_claim
@@ -144,6 +144,17 @@ theorem funding_attempt_claim :
       decideFundingAttempt .duplicate = .promoteSuccess ∧
       decideFundingAttempt .ambiguous = .promoteAmbiguous ∧
       decideFundingAttempt .retryableFailure = .retain := by
+  decide
+
+theorem funding_reconciliation_claim :
+    decideFundingReconciliation false false false = .wait ∧
+      decideFundingReconciliation false false true = .wait ∧
+      decideFundingReconciliation false true false = .wait ∧
+      decideFundingReconciliation false true true = .wait ∧
+      decideFundingReconciliation true false false = .restartFresh ∧
+      decideFundingReconciliation true false true = .restartFresh ∧
+      decideFundingReconciliation true true false = .wait ∧
+      decideFundingReconciliation true true true = .release := by
   decide
 
 end BridgeSpec.Claims

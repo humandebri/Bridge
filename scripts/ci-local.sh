@@ -781,6 +781,8 @@ run_smoke() {
     deposit_rate_limit_window_seconds = 60 : nat64;
     deposit_rate_limit_global = 30 : nat16;
     deposit_rate_limit_per_principal = 3 : nat16;
+    notification_rate_limit_window_seconds = 600 : nat64;
+    notification_rate_limit_global = 60 : nat16;
     settlement_rate_limit_window_seconds = 600 : nat64;
     settlement_rate_limit_global = 60 : nat16;
     settlement_rate_limit_per_principal = 6 : nat16;

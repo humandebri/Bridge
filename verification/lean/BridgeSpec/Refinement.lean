@@ -168,9 +168,9 @@ theorem manual_claim_refinement
   rfl
 
 theorem notification_admission_refinement
-    (callerCount hashCount callerLimit hashLimit : U64) :
-    notificationAdmissionImpl callerCount hashCount callerLimit hashLimit =
-      notificationAdmissionAllowed callerCount.val hashCount.val callerLimit.val hashLimit.val := by
+    (globalCount callerCount globalLimit callerLimit : U16) :
+    notificationAdmissionImpl globalCount callerCount globalLimit callerLimit =
+      notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val := by
   rfl
 
 theorem lease_lane_refinement
@@ -181,6 +181,12 @@ theorem lease_lane_refinement
 
 theorem funding_attempt_refinement (outcome : FundingOutcomeKind) :
     fundingAttemptImpl outcome = decideFundingAttempt outcome := by
+  rfl
+
+theorem funding_reconciliation_refinement
+    (completeAbsence finalScan dedupExpired : Bool) :
+    fundingReconciliationImpl completeAbsence finalScan dedupExpired =
+      decideFundingReconciliation completeAbsence finalScan dedupExpired := by
   rfl
 
 end BridgeSpec.Refinement

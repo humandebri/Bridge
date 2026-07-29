@@ -4,8 +4,8 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-stable schema v27、record wire version v23だけを受理する。本番未デプロイのためmigration、dual-read、fallbackは持たず、旧・未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否する。
-upgrade検証はcurrent schema v27の再オープンだけを成功経路とし、それ以前のschemaを変換しない。
+stable schema v28、record wire version v24だけを受理する。本番未デプロイのためmigration、dual-read、fallbackは持たず、旧・未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否する。
+upgrade検証はcurrent schema v28の再オープンだけを成功経路とし、それ以前のschemaを変換しない。
 
 `settlement_jobs`が自動・手動進行の正本である。recordとjobは同じSQLite transactionで更新し、外部`await`前に署名dispatchやLedger transfer identityを永続化する。timerは目覚ましにすぎず、lease generationとDB上の状態だけが実行権を決める。
 

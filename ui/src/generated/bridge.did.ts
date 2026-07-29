@@ -110,11 +110,13 @@ export interface BridgeInitArgs {
   'settlement_cycle_ceiling' : bigint,
   'settlement_rate_limit_per_record' : number,
   'governance_evm_fee' : EvmFeePolicy,
+  'notification_rate_limit_global' : number,
   'deposit_rate_limit_window_seconds' : bigint,
   'ecdsa_key_name' : string,
   'base_chain_id' : bigint,
   'bridge_contract' : Uint8Array | number[],
   'fee_recipient' : FeeRecipientConfig,
+  'notification_rate_limit_window_seconds' : bigint,
   'settlement_rate_limit_window_seconds' : bigint,
   'ecdsa_derivation_path' : Array<Uint8Array | number[]>,
   'evm_rpc_canister_id' : Principal,
@@ -381,7 +383,6 @@ export type NotifyWithdrawalError = {
   { 'TransactionNotConfirmed' : null } |
   { 'InsufficientCycles' : null } |
   { 'WithdrawalConflict' : null } |
-  { 'OwnerMismatch' : null } |
   { 'RpcInconsistent' : null } |
   { 'RateLimited' : null } |
   { 'InvalidTransactionHash' : null } |
@@ -416,10 +417,12 @@ export interface PublicConfig {
   'mint_authorization_ttl_seconds' : bigint,
   'governance_evm_fee' : EvmFeePolicy,
   'mint_authorization_epoch' : bigint,
+  'notification_rate_limit_global' : number,
   'deposit_rate_limit_window_seconds' : bigint,
   'base_chain_id' : bigint,
   'bridge_contract' : Uint8Array | number[],
   'fee_recipient' : FeeRecipientConfig,
+  'notification_rate_limit_window_seconds' : bigint,
   'settlement_rate_limit_window_seconds' : bigint,
   'evm_rpc_canister_id' : Principal,
   'deposit_rate_limit_per_principal' : number,

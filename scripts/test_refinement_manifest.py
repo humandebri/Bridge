@@ -22,7 +22,7 @@ class UnifiedClaimManifestTests(unittest.TestCase):
 
             payload = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(payload["schema"], 1)
-            self.assertEqual(len(payload["claims"]), 24)
+        self.assertEqual(len(payload["claims"]), 25)
 
     def test_source_link_cannot_escape_the_repository(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

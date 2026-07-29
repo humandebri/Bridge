@@ -195,6 +195,8 @@ async function setup() {
       deposit_rate_limit_window_seconds: 60n,
       deposit_rate_limit_global: 30,
       deposit_rate_limit_per_principal: 3,
+      notification_rate_limit_window_seconds: 600n,
+      notification_rate_limit_global: 60,
       settlement_rate_limit_window_seconds: 600n,
       settlement_rate_limit_global: 60,
       settlement_rate_limit_per_principal: 6,

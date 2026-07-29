@@ -1,9 +1,10 @@
 use bridge_core::{
     canonical_probe_matches, committed_quote_matches, deposit_admission_decision,
-    fee_recipient_rotation_decision, funding_attempt_decision, hold_resolution_decision,
-    lease_lane_claim_decision, lease_outcome_decision, manual_claim_decision,
-    notification_admission_allowed, payout_decision, release_transfer_matches,
-    reservation_decision, service_fee_change_allowed, settlement_decision,
+    fee_recipient_rotation_decision, funding_attempt_decision, funding_reconciliation_decision,
+    hold_resolution_decision, lease_lane_claim_decision, lease_outcome_decision,
+    manual_claim_decision, notification_admission_allowed, payout_decision,
+    release_transfer_matches, reservation_decision, service_fee_change_allowed,
+    settlement_decision,
 };
 
 macro_rules! production_link {
@@ -94,7 +95,7 @@ fn phase5_production_links_typecheck() {
         "notification_quota_isolation",
         "canister/bridge-core/src/kernel.rs#notification_admission_allowed",
         notification_admission_allowed,
-        fn(u8, u8, u8, u8) -> bool
+        fn(u16, u16, u16, u16) -> bool
     );
     production_link!(
         "lease_lane_isolation",
@@ -107,6 +108,12 @@ fn phase5_production_links_typecheck() {
         "canister/bridge-core/src/kernel.rs#funding_attempt_decision",
         funding_attempt_decision,
         fn(u8) -> bridge_core::FundingAttemptDecision
+    );
+    production_link!(
+        "funding_attempt_lifecycle",
+        "canister/bridge-core/src/kernel.rs#funding_reconciliation_decision",
+        funding_reconciliation_decision,
+        fn(bool, bool, bool) -> bridge_core::FundingReconciliationDecision
     );
     production_link!(
         "canonical_probe",

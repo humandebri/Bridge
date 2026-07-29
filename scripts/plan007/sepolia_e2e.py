@@ -19,7 +19,7 @@ CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 27
+CURRENT_STABLE_SCHEMA = 28
 STAGES = (
     "preflight",
     "contracts",
