@@ -35,6 +35,8 @@ describe("Lean protocol conformance vectors", () => {
       "finalization_count",
       "funding_attempt_cases",
       "funding_attempt_count",
+      "funding_reconciliation_cases",
+      "funding_reconciliation_count",
       "hold_cases",
       "hold_count",
       "lease_cases",
@@ -73,6 +75,7 @@ describe("Lean protocol conformance vectors", () => {
     expect(vectors.notification_admission_cases).toHaveLength(vectors.notification_admission_count)
     expect(vectors.lease_lane_cases).toHaveLength(vectors.lease_lane_count)
     expect(vectors.funding_attempt_cases).toHaveLength(vectors.funding_attempt_count)
+    expect(vectors.funding_reconciliation_cases).toHaveLength(vectors.funding_reconciliation_count)
     expect(vectors.finalization_cases).toHaveLength(vectors.finalization_count)
     expect(vectors.queue_cases).toHaveLength(vectors.queue_count)
     expect(vectors.canonical_probe_cases).toHaveLength(vectors.canonical_probe_count)
@@ -90,6 +93,7 @@ describe("Lean protocol conformance vectors", () => {
     expect(vectors.notification_admission_count).toBeGreaterThan(0)
     expect(vectors.lease_lane_count).toBeGreaterThan(0)
     expect(vectors.funding_attempt_count).toBeGreaterThan(0)
+    expect(vectors.funding_reconciliation_count).toBeGreaterThan(0)
     expect(vectors.finalization_count).toBeGreaterThan(0)
     expect(vectors.queue_count).toBeGreaterThan(0)
     expect(vectors.canonical_probe_count).toBeGreaterThan(0)

@@ -1385,6 +1385,8 @@ fn render_release_inputs(
         "environment": profile.environment,
         "label": if profile.test_assets_only { "Base Sepolia" } else { "Base" },
         "testOnly": profile.test_assets_only,
+        "environmentMode": null,
+        "activationTimelockDelaySeconds": profile.timelock.minimum_delay_seconds,
         "gateBManifestSha256": gate_b_manifest_sha256,
         "profileFileSha256": profile_file_sha256,
         "profileCanonicalSha256": profile_canonical_sha256,
@@ -1398,6 +1400,7 @@ fn render_release_inputs(
         "baseToken": { "symbol": "KINIC", "decimals": profile.decimals },
         "bridgeAddress": profile.bridge_contract,
         "bsnsAddress": profile.bsns_contract,
+        "timelockAddress": profile.timelock.address,
         "expected_bridge_signer": profile.expected_bridge_signer,
         "evmRpcCanisterId": profile.evm_rpc_canister_id,
         "rpcProviderUrlsSha256": format!("0x{rpc_provider_urls_sha256}"),
@@ -3238,6 +3241,12 @@ mod tests {
             valid_profile().timelock.runtime_code_hash
         );
         let ui: Value = read_json(&first.join("ui-runtime-profile.json")).unwrap();
+        assert_eq!(ui["environmentMode"], Value::Null);
+        assert_eq!(
+            ui["activationTimelockDelaySeconds"],
+            valid_profile().timelock.minimum_delay_seconds
+        );
+        assert_eq!(ui["timelockAddress"], valid_profile().timelock.address);
         assert_eq!(ui["evmRpcCanisterId"], OFFICIAL_EVM_RPC_CANISTER);
         assert_eq!(
             ui["rpcProviderUrlsSha256"],

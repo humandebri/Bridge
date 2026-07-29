@@ -94,6 +94,10 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   const blockers = profileCompleteness(profile)
   if (connectedChainId !== undefined && connectedChainId !== profile.chainId) blockers.push(`Wallet is on chain ${connectedChainId}; expected ${profile.chainId}`)
   if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
+  const expectedTimelockDelaySeconds = profile.activationTimelockDelaySeconds
+  if (expectedTimelockDelaySeconds === null) {
+    return { ready: false, blockers: ["Timelock delay is missing"], checkedAt: Date.now() }
+  }
 
   const bridgeAddress = profile.bridgeAddress as Address
   const bsnsAddress = profile.bsnsAddress as Address
@@ -135,7 +139,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (bsnsSymbol !== profile.baseToken.symbol || Number(bsnsDecimals) !== profile.baseToken.decimals) {
     blockers.push(`Base token metadata is not ${profile.baseToken.symbol}/${profile.baseToken.decimals}`)
   }
-  if (timelockDelay !== BigInt(profile.activationTimelockDelaySeconds as number)) {
+  if (timelockDelay !== BigInt(expectedTimelockDelaySeconds)) {
     blockers.push("Timelock delay differs from the reviewed profile")
   }
 

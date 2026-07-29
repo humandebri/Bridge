@@ -13,7 +13,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
-function fixture() {
+function fixture(profileOverrides = {}) {
   const inputs = join(root, "inputs")
   const bundle = join(root, "bundle")
   const bin = join(root, "bin")
@@ -21,7 +21,7 @@ function fixture() {
   const gate = "a".repeat(64)
   const profile = JSON.stringify({
     environment: "mainnet-candidate", label: "Base", testOnly: false,
-    environmentMode: null, activationTimelockDelaySeconds: null, gateBManifestSha256: gate,
+    environmentMode: null, activationTimelockDelaySeconds: 86_400, gateBManifestSha256: gate,
     profileFileSha256: "1".repeat(64), profileCanonicalSha256: "2".repeat(64),
     icHost: "https://icp-api.io", baseRpcUrl: "https://rpc.example", chainId: 8453,
     bridgeCanisterId: "aaaaa-aa", ledgerCanisterId: "aaaaa-aa", indexCanisterId: "aaaaa-aa",
@@ -31,6 +31,7 @@ function fixture() {
     expected_bridge_signer: `0x${"33".repeat(20)}`, evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
     rpcProviderUrlsSha256: `0x${"44".repeat(32)}`, deploymentBlock: "1",
     bridgeRuntimeHash: `0x${"55".repeat(32)}`, bsnsRuntimeHash: `0x${"66".repeat(32)}`,
+    ...profileOverrides,
   }) + "\n"
   for (const name of ["canister-init.json", "contract-constructor-args.json"]) writeFileSync(join(inputs, name), "{}\n")
   writeFileSync(join(inputs, "ui-runtime-profile.json"), profile)
@@ -96,5 +97,22 @@ describe("production UI Gate B binding", () => {
       VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
     })
     expect(result.status, result.stderr).toBe(0)
+  })
+
+  it.each([
+    [{ activationTimelockDelaySeconds: null }, "at least 24 hours"],
+    [{ activationTimelockDelaySeconds: 300 }, "at least 24 hours"],
+    [{ environmentMode: "short-delay-test-only" }, "environment modes"],
+  ])("rejects an unsafe production Timelock profile", (overrides, message) => {
+    const f = fixture(overrides)
+    const result = run({
+      PATH: `${f.bin}:${process.env.PATH}`, FAKE_INPUTS: f.inputs,
+      BRIDGE_RELEASE_BUNDLE: f.bundle, BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
+      BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
+      VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
+      VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain(message)
   })
 })

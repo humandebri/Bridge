@@ -125,6 +125,7 @@ export function profileCompleteness(profile: DeploymentProfile): string[] {
   if (!profile.bridgeAddress) missing.push("Bridge contract address is missing")
   if (!profile.bsnsAddress) missing.push("bSNS contract address is missing")
   if (!profile.timelockAddress) missing.push("Timelock contract address is missing")
+  if (profile.activationTimelockDelaySeconds === null) missing.push("Timelock delay is missing")
   if (!profile.expected_bridge_signer) missing.push("Expected Bridge signer is missing")
   if (!profile.evmRpcCanisterId) missing.push("EVM RPC Canister ID is missing")
   if (!profile.rpcProviderUrlsSha256) missing.push("RPC provider URL digest is missing")

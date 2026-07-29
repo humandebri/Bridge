@@ -78,6 +78,7 @@ let configuredIndexId = indexId
 let baseMetadata = { symbol: "KINIC", decimals: 8 }
 let indexLedgerId = ledgerId
 let contractSigner = expectedSigner
+let timelockDelay = 300n
 const getBlockMock = vi.fn()
 const getCodeMock = vi.fn()
 const readContractMock = vi.fn()
@@ -90,6 +91,7 @@ beforeEach(() => {
   baseMetadata = { symbol: "KINIC", decimals: 8 }
   indexLedgerId = ledgerId
   contractSigner = expectedSigner
+  timelockDelay = 300n
   getBlockMock.mockResolvedValue({ number: 12n, hash: finalizedHash, timestamp: BigInt(Math.floor(Date.now() / 1_000)) })
   getCodeMock.mockImplementation(({ address }: { address: string }) => Promise.resolve(address === bridgeAddress ? "0x01" : "0x02"))
   readContractMock.mockImplementation(({ functionName }: { functionName: string }) => {
@@ -97,7 +99,7 @@ beforeEach(() => {
     if (functionName === "bsns") return Promise.resolve(bsnsAddress)
     if (functionName === "symbol") return Promise.resolve(baseMetadata.symbol)
     if (functionName === "decimals") return Promise.resolve(baseMetadata.decimals)
-    if (functionName === "getMinDelay") return Promise.resolve(300n)
+    if (functionName === "getMinDelay") return Promise.resolve(timelockDelay)
     throw new Error(`Unexpected contract call ${functionName}`)
   })
   mocks.createPublicClient.mockReturnValue({
@@ -228,6 +230,38 @@ describe("validateRuntime token bindings", () => {
     expect(mocks.sha256).toHaveBeenCalledWith("0x02")
     expect(getCodeMock).toHaveBeenCalledWith(expect.objectContaining({ blockHash: finalizedHash, requireCanonical: true }))
     expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({ blockHash: finalizedHash, requireCanonical: true }))
+  })
+
+  it("accepts the Gate B production Timelock delay", async () => {
+    timelockDelay = 86_400n
+    const productionProfile: DeploymentProfile = {
+      ...profile,
+      environment: "mainnet-candidate",
+      label: "Base",
+      testOnly: false,
+      environmentMode: null,
+      activationTimelockDelaySeconds: 86_400,
+      gateBManifestSha256: "d".repeat(64),
+    }
+
+    await expect(validateRuntime(productionProfile, productionProfile.chainId)).resolves.toMatchObject({
+      ready: true,
+      blockers: [],
+    })
+  })
+
+  it("returns a blocker instead of converting a missing Timelock delay", async () => {
+    const missingDelay: DeploymentProfile = {
+      ...profile,
+      activationTimelockDelaySeconds: null,
+    }
+
+    const result = await validateRuntime(missingDelay, missingDelay.chainId)
+
+    expect(result.ready).toBe(false)
+    expect(result.blockers).toContain("Timelock delay is missing")
+    expect(mocks.createBridgeActor).not.toHaveBeenCalled()
+    expect(mocks.createLedgerActor).not.toHaveBeenCalled()
   })
 
   it("blocks a Timelock delay or Canister Timelock binding mismatch", async () => {
