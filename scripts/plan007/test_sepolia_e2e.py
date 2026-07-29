@@ -38,13 +38,13 @@ class SepoliaE2ETests(unittest.TestCase):
         self.local.write_text(
             json.dumps(
                 {
-                    "schema_version": 5,
+                    "schema_version": 6,
                     "environment_mode": "short-delay-test-only",
                     "activation_timelock_delay_seconds": 300,
                     "source_commit": SOURCE,
                     "bridge_wasm_sha256": H64,
-                    "bridge_runtime_hash": TX,
-                    "bsns_runtime_hash": TX_B,
+                    "bridge_runtime_template_sha256": TX,
+                    "bsns_runtime_template_sha256": TX_B,
                     "tests": {
                         "full_local_ci": "passed",
                         "real_frontend_e2e": "passed",
@@ -121,8 +121,8 @@ class SepoliaE2ETests(unittest.TestCase):
                 "bridge_address": ADDRESS,
                 "bsns_address": ADDRESS_B,
                 "timelock_address": ADDRESS_C,
-                "bridge_runtime_hash": TX,
-                "bsns_runtime_hash": TX_B,
+                "bridge_runtime_template_sha256": TX,
+                "bsns_runtime_template_sha256": TX_B,
                 "deployment_block": 1,
                 "deployment_transaction_hashes": [TX],
                 "mint_signer": ADDRESS,
@@ -229,7 +229,7 @@ class SepoliaE2ETests(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "stage": stage,
                     "observed_at": "2026-07-24T00:00:00Z",
                     "source_commit": SOURCE,

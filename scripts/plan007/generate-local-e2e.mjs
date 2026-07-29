@@ -3,9 +3,10 @@ import { execFileSync } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { runtimeTemplateSha256FromFile } from "./runtime-template-hash.mjs"
 
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
-export const LOCAL_E2E_SCHEMA_VERSION = 5
+export const LOCAL_E2E_SCHEMA_VERSION = 6
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
 
 export function validateUpgradeEvidence(upgrade) {
@@ -55,8 +56,12 @@ export async function generateLocalEvidence(root = defaultRoot) {
     created_at: new Date().toISOString(),
     source_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
     bridge_wasm_sha256: await digest(root, "target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm"),
-    bridge_runtime_hash: facts.bridge_runtime_hash.toLowerCase(),
-    bsns_runtime_hash: facts.bsns_runtime_hash.toLowerCase(),
+    bridge_runtime_template_sha256: await runtimeTemplateSha256FromFile(
+      path.join(root, "contracts/out-staging/Bridge.sol/Bridge.json"),
+    ),
+    bsns_runtime_template_sha256: await runtimeTemplateSha256FromFile(
+      path.join(root, "contracts/out-staging/BSNS.sol/BSNS.json"),
+    ),
     candid_sha256: await digest(root, "canister/bridge-canister/bridge.did"),
     bridge_abi_sha256: await digest(root, "contracts/abi/Bridge.json"),
     bsns_abi_sha256: await digest(root, "contracts/abi/BSNS.json"),

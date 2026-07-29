@@ -9,7 +9,7 @@ import { IDL } from "@dfinity/candid"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Principal } from "@dfinity/principal"
 import { PocketIc, PocketIcServer, SubnetStateType } from "@dfinity/pic"
-import { createPublicClient, decodeEventLog, hexToBytes, http, keccak256, numberToHex, recoverTransactionAddress, sha256 } from "viem"
+import { createPublicClient, decodeEventLog, hexToBytes, http, keccak256, numberToHex, recoverTransactionAddress } from "viem"
 import { publicKeyToAddress } from "viem/accounts"
 import { idlFactory as bridgeIdl, init as bridgeInitFactory } from "./generated/bridge.idl.mjs"
 import { idlFactory as mockIdl, init as mockInitFactory } from "./generated/mock-external.idl.mjs"
@@ -434,8 +434,6 @@ async function setup() {
     recovery_execute_transaction: bytesHex(recoveryExecuteSubmitted.Ok.transaction_hash),
   }
   await writeLocalFacts({
-    bridge_runtime_hash: sha256(bridgeCode),
-    bsns_runtime_hash: sha256(bsnsCode),
     mint_signer: signer,
     governance_operator: governanceOperator,
     timelock: timelockAddress,

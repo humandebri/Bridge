@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 KIND = "kinic-bridge-sepolia-staging-e2e"
 CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
@@ -246,8 +246,8 @@ def validate_contracts(details: dict[str, Any], binding: dict[str, Any]) -> None
             "bridge_address",
             "bsns_address",
             "timelock_address",
-            "bridge_runtime_hash",
-            "bsns_runtime_hash",
+            "bridge_runtime_template_sha256",
+            "bsns_runtime_template_sha256",
             "deployment_block",
             "deployment_transaction_hashes",
             "mint_signer",
@@ -258,8 +258,11 @@ def validate_contracts(details: dict[str, Any], binding: dict[str, Any]) -> None
     )
     for field in ("bridge_address", "bsns_address", "timelock_address", "mint_signer", "governance_operator"):
         require_pattern(details, field, EVM_ADDRESS, context)
-    if details["bridge_runtime_hash"] != binding["bridge_runtime_hash"] or details["bsns_runtime_hash"] != binding["bsns_runtime_hash"]:
-        fail("staging contract runtime hash differs from local promotion evidence")
+    if (
+        details["bridge_runtime_template_sha256"] != binding["bridge_runtime_template_sha256"]
+        or details["bsns_runtime_template_sha256"] != binding["bsns_runtime_template_sha256"]
+    ):
+        fail("staging contract runtime template differs from local promotion evidence")
     require_nat(details, "deployment_block", context)
     transactions = details["deployment_transaction_hashes"]
     if not isinstance(transactions, list) or not transactions or any(not isinstance(item, str) or not EVM_HASH.fullmatch(item) for item in transactions):
@@ -490,8 +493,8 @@ def validate_binding(binding: Any) -> dict[str, Any]:
         "source_commit",
         "local_e2e_sha256",
         "bridge_wasm_sha256",
-        "bridge_runtime_hash",
-        "bsns_runtime_hash",
+        "bridge_runtime_template_sha256",
+        "bsns_runtime_template_sha256",
         "frontend_profile_sha256",
         "bridge_canister_id",
         "ledger_canister_id",
@@ -503,7 +506,7 @@ def validate_binding(binding: Any) -> dict[str, Any]:
     require_pattern(binding, "source_commit", GIT_COMMIT, "binding")
     for field in ("local_e2e_sha256", "bridge_wasm_sha256", "frontend_profile_sha256"):
         require_pattern(binding, field, SHA256, "binding")
-    for field in ("bridge_runtime_hash", "bsns_runtime_hash"):
+    for field in ("bridge_runtime_template_sha256", "bsns_runtime_template_sha256"):
         require_pattern(binding, field, EVM_HASH, "binding")
     for field in ("bridge_canister_id", "ledger_canister_id", "index_canister_id"):
         require_pattern(binding, field, PRINCIPAL, "binding")
@@ -577,8 +580,8 @@ def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo
     local = load_object(local_evidence_path)
     profile = load_object(profile_path)
     required_tests = {"full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_delay_enforced", "state_upgrade"}
-    if local.get("schema_version") != 5 or set(local.get("tests", {})) != required_tests or any(local["tests"][name] != "passed" for name in required_tests):
-        fail("local promotion evidence is not a complete schema v5 pass")
+    if local.get("schema_version") != 6 or set(local.get("tests", {})) != required_tests or any(local["tests"][name] != "passed" for name in required_tests):
+        fail("local promotion evidence is not a complete schema v6 pass")
     if local.get("environment_mode") != ENVIRONMENT_MODE or local.get("activation_timelock_delay_seconds") != ACTIVATION_TIMELOCK_DELAY_SECONDS:
         fail("local promotion evidence is not bound to the five-minute staging policy")
     if profile.get("environment") != "sepolia-staging" or profile.get("testOnly") is not True or profile.get("chainId") != CHAIN_ID:
@@ -620,8 +623,8 @@ def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo
         "source_commit": local.get("source_commit"),
         "local_e2e_sha256": digest(local_evidence_path),
         "bridge_wasm_sha256": local.get("bridge_wasm_sha256"),
-        "bridge_runtime_hash": local.get("bridge_runtime_hash"),
-        "bsns_runtime_hash": local.get("bsns_runtime_hash"),
+        "bridge_runtime_template_sha256": local.get("bridge_runtime_template_sha256"),
+        "bsns_runtime_template_sha256": local.get("bsns_runtime_template_sha256"),
         "frontend_profile_sha256": digest(profile_path),
         "bridge_canister_id": profile.get("bridgeCanisterId"),
         "ledger_canister_id": profile.get("ledgerCanisterId"),

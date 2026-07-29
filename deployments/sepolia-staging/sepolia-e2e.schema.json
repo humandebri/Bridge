@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "kind", "state", "created_at", "updated_at", "binding", "stages", "complete"],
   "properties": {
-    "schema_version": { "const": 2 },
+    "schema_version": { "const": 3 },
     "kind": { "const": "kinic-bridge-sepolia-staging-e2e" },
     "state": {
       "enum": [
@@ -32,8 +32,8 @@
         "source_commit",
         "local_e2e_sha256",
         "bridge_wasm_sha256",
-        "bridge_runtime_hash",
-        "bsns_runtime_hash",
+        "bridge_runtime_template_sha256",
+        "bsns_runtime_template_sha256",
         "frontend_profile_sha256",
         "bridge_canister_id",
         "ledger_canister_id",
@@ -45,8 +45,8 @@
         "source_commit": { "$ref": "#/$defs/gitCommit" },
         "local_e2e_sha256": { "$ref": "#/$defs/sha256" },
         "bridge_wasm_sha256": { "$ref": "#/$defs/sha256" },
-        "bridge_runtime_hash": { "$ref": "#/$defs/evmHash" },
-        "bsns_runtime_hash": { "$ref": "#/$defs/evmHash" },
+        "bridge_runtime_template_sha256": { "$ref": "#/$defs/evmHash" },
+        "bsns_runtime_template_sha256": { "$ref": "#/$defs/evmHash" },
         "frontend_profile_sha256": { "$ref": "#/$defs/sha256" },
         "bridge_canister_id": { "$ref": "#/$defs/principal" },
         "ledger_canister_id": { "$ref": "#/$defs/principal" },
@@ -110,7 +110,7 @@
           "additionalProperties": false,
           "required": ["schema_version", "stage", "observed_at", "source_commit", "artifacts", "details"],
           "properties": {
-            "schema_version": { "const": 2 },
+            "schema_version": { "const": 3 },
             "stage": {
               "enum": [
                 "preflight",

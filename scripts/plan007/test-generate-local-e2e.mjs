@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { LOCAL_E2E_SCHEMA_VERSION, STAGING_ACTIVATION_DELAY_SECONDS, validateUpgradeEvidence } from "./generate-local-e2e.mjs"
+import { runtimeTemplateSha256 } from "./runtime-template-hash.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const schema = JSON.parse(await readFile(path.join(root, "deployments/sepolia-staging/local-e2e.schema.json"), "utf8"))
@@ -11,6 +12,23 @@ assert.equal(schema.properties.activation_timelock_delay_seconds.const, STAGING_
 assert(schema.required.includes("state_upgrade"))
 assert.equal(schema.properties.state_upgrade.$ref, "#/$defs/stateUpgrade")
 assert.deepEqual(schema.$defs.stateUpgrade.required, ["verified", "before", "after"])
+assert(schema.required.includes("bridge_runtime_template_sha256"))
+assert(schema.required.includes("bsns_runtime_template_sha256"))
+
+const artifact = {
+  deployedBytecode: {
+    object: "0x600000006001",
+    immutableReferences: { "1": [{ start: 1, length: 3 }] },
+  },
+}
+const expectedTemplateHash = runtimeTemplateSha256(artifact)
+assert.equal(runtimeTemplateSha256(artifact, "0x60abcdef6001"), expectedTemplateHash)
+assert.throws(() => runtimeTemplateSha256(artifact, "0x61abcdef6001"), /outside immutable references/)
+assert.throws(() => runtimeTemplateSha256(artifact, "0x60abcdef60"), /length/)
+assert.throws(
+  () => runtimeTemplateSha256({ deployedBytecode: { object: "0x6000", immutableReferences: {} } }, "0x6100"),
+  /outside immutable references/,
+)
 
 const state = {
   owner_sequence: "2",
