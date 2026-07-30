@@ -172,6 +172,15 @@ def startExpiredRefund
         some { state with phase := .refundPending, reservedMint := 0 }
       else none
 
+def requestExpiredRefund
+    (authenticated : Bool) (ownerMatch : Option Bool)
+    (state : DepositState) (origin : AuthorizationOrigin)
+    (evidence : ExpiryEvidence) : Option DepositState :=
+  if decideRefundRequestIdentity authenticated ownerMatch =
+      RefundRequestIdentityDecision.allow then
+    startExpiredRefund state origin evidence
+  else none
+
 structure MintEvidence where
   depositId : Nat
   recipient : Nat
@@ -329,6 +338,29 @@ theorem refund_request_cannot_bypass_finalized_evidence
         evidence.authorizationDigest = authorization.digest ∧
         evidence.finalizedTimestamp > authorization.deadline :=
   accepted_expiry_refund_requires_finalized_unprocessed_expiry accepted
+
+theorem accepted_refund_request_requires_authenticated_owner_and_finalized_absence
+    {authenticated : Bool} {ownerMatch : Option Bool}
+    {state next : DepositState} {origin : AuthorizationOrigin}
+    {evidence : ExpiryEvidence}
+    (accepted :
+      requestExpiredRefund authenticated ownerMatch state origin evidence = some next) :
+    authenticated = true ∧ ownerMatch = some true ∧
+      evidence.depositProcessed = false ∧
+      ∃ authorization, state.authorization = some authorization ∧
+        evidence.depositId = authorization.depositId ∧
+        evidence.authorizationDigest = authorization.digest ∧
+        evidence.finalizedTimestamp > authorization.deadline := by
+  unfold requestExpiredRefund at accepted
+  split at accepted
+  next identityAllowed =>
+    have identity : authenticated = true ∧ ownerMatch = some true := by
+      cases authenticated <;> cases ownerMatch <;>
+        simp [decideRefundRequestIdentity] at identityAllowed ⊢
+      next value => cases value <;> simp_all
+    exact ⟨identity.1, identity.2,
+      accepted_expiry_refund_requires_finalized_unprocessed_expiry accepted⟩
+  next => simp at accepted
 
 theorem accepted_mint_requires_exact_finalized_success
     {state next : DepositState} {evidence : MintEvidence}

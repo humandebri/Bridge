@@ -260,8 +260,8 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
   });
 
-  it("allows an owner to manually start safe expiry reconciliation but never refunds at the deadline boundary", async () => {
-    const { bridge, evm } = await setup();
+  async function owner_refund_requires_matching_authenticated_caller() {
+    const { bridge, evm, ledger } = await setup();
     const owner = Principal.selfAuthenticating(new Uint8Array(32).fill(31));
     const thirdParty = Principal.selfAuthenticating(new Uint8Array(32).fill(32));
 
@@ -275,10 +275,16 @@ describe("Phase 3 PocketIC saga", () => {
     expect(phaseName(stored[0].state)).toBe("AuthorizationAvailable");
     expect(stored[0].refund).toEqual([]);
 
+    const callsBeforeRejectedIdentities = await (evm.actor as any).eth_call_count();
+    const processedBeforeRejectedIdentities = await (evm.actor as any).deposit_processed_call_count();
+    const ledgerBeforeRejectedIdentities = await (ledger.actor as any).ledger_transfer_calls();
     bridge.actor.setPrincipal(thirdParty);
     expect(await (bridge.actor as any).request_deposit_refund(deposit.Ok.deposit_id)).toEqual({ Err: { OwnerMismatch: null } });
     bridge.actor.setPrincipal(Principal.anonymous());
     expect(await (bridge.actor as any).request_deposit_refund(deposit.Ok.deposit_id)).toEqual({ Err: { AnonymousCaller: null } });
+    expect(await (evm.actor as any).eth_call_count()).toBe(callsBeforeRejectedIdentities);
+    expect(await (evm.actor as any).deposit_processed_call_count()).toBe(processedBeforeRejectedIdentities);
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(ledgerBeforeRejectedIdentities);
     bridge.actor.setPrincipal(owner);
     const callsBeforeExpiry = await (evm.actor as any).eth_call_count();
     const processedCallsBeforeExpiry = await (evm.actor as any).deposit_processed_call_count();
@@ -288,7 +294,12 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (evm.actor as any).deposit_processed_call_count()).toBe(processedCallsBeforeExpiry + 1n);
     stored = await bridge.actor.get_deposit(deposit.Ok.deposit_id);
     expect(phaseName(stored[0].state)).toBe("Refunded");
-  });
+  }
+
+  it(
+    "allows an owner to manually start safe expiry reconciliation but never refunds at the deadline boundary",
+    owner_refund_requires_matching_authenticated_caller,
+  );
 
   it("serializes concurrent owner refund claims and never sends two refunds", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();

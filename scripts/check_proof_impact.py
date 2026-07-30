@@ -16,14 +16,16 @@ REQUIRED_STAGES = (
     "lean-negative",
     "policy-vector-consumers",
     "refinement-gate",
+    "claim-transaction-tests",
     "known-answer-consumers",
     "smt-and-negative",
     "verus-and-negative",
 )
-RECEIPT_SCHEMA = 3
+RECEIPT_SCHEMA = 4
 FINGERPRINT_SOURCE_ROOTS = (
     ("canister", frozenset({".did", ".rs", ".toml"})),
     ("contracts", frozenset({".sol", ".toml"})),
+    ("integration", frozenset({".ts"})),
     ("scripts", frozenset({"", ".mjs", ".py", ".sh"})),
     ("ui/src", frozenset({".ts", ".tsx"})),
 )

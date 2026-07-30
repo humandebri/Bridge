@@ -3,9 +3,10 @@ use bridge_core::{
     funding_attempt_decision, funding_reconciliation_decision, hold_retry_allowed,
     lease_lane_claim_decision, lease_outcome_is_current, manual_claim_allowed,
     notification_admission_allowed, outbound_settlement, payout_allowed, payout_debit,
-    release_transfer_matches, reserve_admission_preserves_requirement, restored_pending_blocked,
-    service_fee_change_allowed, withdrawal_finalization_decision, Amount, BaseMintSnapshot,
-    FundingAttemptDecision, FundingReconciliationDecision, LeaseLaneClaimDecision,
+    refund_request_identity_decision, release_transfer_matches,
+    reserve_admission_preserves_requirement, restored_pending_blocked, service_fee_change_allowed,
+    withdrawal_finalization_decision, Amount, BaseMintSnapshot, FundingAttemptDecision,
+    FundingReconciliationDecision, LeaseLaneClaimDecision, RefundRequestIdentityDecision,
     WithdrawalFinalizationDecision,
 };
 use serde::Deserialize;
@@ -36,6 +37,8 @@ struct ProtocolVectors {
     lease_count: usize,
     manual_claim_cases: Vec<ManualClaimCase>,
     manual_claim_count: usize,
+    refund_request_identity_cases: Vec<RefundRequestIdentityCase>,
+    refund_request_identity_count: usize,
     notification_admission_cases: Vec<NotificationAdmissionCase>,
     notification_admission_count: usize,
     lease_lane_cases: Vec<LeaseLaneCase>,
@@ -184,6 +187,14 @@ struct ManualClaimCase {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RefundRequestIdentityCase {
+    authenticated: bool,
+    owner_match: Option<bool>,
+    decision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NotificationAdmissionCase {
     global_count: String,
     caller_count: String,
@@ -249,8 +260,8 @@ fn vectors() -> ProtocolVectors {
     let vectors: ProtocolVectors = serde_json::from_str(include_str!(
         "../../../verification/generated/protocol-vectors.json"
     ))
-    .expect("Lean protocol vectors must match schema v2");
-    assert_eq!(vectors.schema_version, 2);
+    .expect("Lean protocol vectors must match schema v3");
+    assert_eq!(vectors.schema_version, 3);
     assert_eq!(vectors.quote_count, vectors.quote_cases.len());
     assert_eq!(vectors.settlement_count, vectors.settlement_cases.len());
     assert_eq!(vectors.payment_count, vectors.payment_cases.len());
@@ -265,6 +276,10 @@ fn vectors() -> ProtocolVectors {
     assert_eq!(vectors.hold_count, vectors.hold_cases.len());
     assert_eq!(vectors.lease_count, vectors.lease_cases.len());
     assert_eq!(vectors.manual_claim_count, vectors.manual_claim_cases.len());
+    assert_eq!(
+        vectors.refund_request_identity_count,
+        vectors.refund_request_identity_cases.len()
+    );
     assert_eq!(
         vectors.notification_admission_count,
         vectors.notification_admission_cases.len()
@@ -295,6 +310,7 @@ fn vectors() -> ProtocolVectors {
     assert!(vectors.hold_count > 0);
     assert!(vectors.lease_count > 0);
     assert!(vectors.manual_claim_count > 0);
+    assert!(vectors.refund_request_identity_count > 0);
     assert!(vectors.notification_admission_count > 0);
     assert!(vectors.lease_lane_count > 0);
     assert!(vectors.funding_attempt_count > 0);
@@ -589,6 +605,21 @@ fn protocol_notification_admission_cases_matches_production() {
             ),
             case.allowed
         );
+    }
+}
+
+#[test]
+fn protocol_refund_request_identity_cases_matches_production() {
+    for case in vectors().refund_request_identity_cases {
+        let actual = refund_request_identity_decision(case.authenticated, case.owner_match);
+        let expected = match case.decision.as_str() {
+            "allow" => RefundRequestIdentityDecision::Allow,
+            "owner-lookup-required" => RefundRequestIdentityDecision::OwnerLookupRequired,
+            "anonymous-caller" => RefundRequestIdentityDecision::AnonymousCaller,
+            "owner-mismatch" => RefundRequestIdentityDecision::OwnerMismatch,
+            value => panic!("unknown refund request identity decision: {value}"),
+        };
+        assert_eq!(actual, expected);
     }
 }
 

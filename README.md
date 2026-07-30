@@ -119,7 +119,7 @@ bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をreq
 `contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
 `proofs`はLeanをcross-chain protocolの正式な抽象仕様としてビルドし、`sorry`・`admit`を拒否する。
 Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、各vector sectionについてmanifestにない仕様・定理・consumerのdriftを拒否する。
-manifestに登録したconsumerは許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。
+manifestに登録したconsumerはsectionとproduction symbolへの構造的な結合を検査してから許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。
 この照合は列挙した境界値に対する限定的なconformanceであり、各言語実装全体の完全なsemantic refinementではない。
 productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。
 `ui`はABI/Candid drift、typecheck、lint、unit test、build、desktop/mobile Playwrightを実行する。`real`は実Ledger suiteとAnvilを使うPlaywright統合テストを実行し、`all`にも含まれるが短時間用の`checks`には含まれない。

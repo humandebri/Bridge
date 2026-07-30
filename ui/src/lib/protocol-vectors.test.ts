@@ -21,7 +21,7 @@ function withdrawal(byte: string, blocked: boolean, owner: string): PendingConfi
 
 describe("Lean protocol conformance vectors", () => {
   it("accepts exactly the current nonempty vector schema", () => {
-    expect(vectors.schema_version).toBe(2)
+    expect(vectors.schema_version).toBe(3)
     expect(Object.keys(vectors).sort()).toEqual([
       "canonical_probe_cases",
       "canonical_probe_count",
@@ -53,6 +53,8 @@ describe("Lean protocol conformance vectors", () => {
       "queue_count",
       "quote_cases",
       "quote_count",
+      "refund_request_identity_cases",
+      "refund_request_identity_count",
       "reservation_cases",
       "reservation_count",
       "schema_version",
@@ -72,6 +74,7 @@ describe("Lean protocol conformance vectors", () => {
     expect(vectors.hold_cases).toHaveLength(vectors.hold_count)
     expect(vectors.lease_cases).toHaveLength(vectors.lease_count)
     expect(vectors.manual_claim_cases).toHaveLength(vectors.manual_claim_count)
+    expect(vectors.refund_request_identity_cases).toHaveLength(vectors.refund_request_identity_count)
     expect(vectors.notification_admission_cases).toHaveLength(vectors.notification_admission_count)
     expect(vectors.lease_lane_cases).toHaveLength(vectors.lease_lane_count)
     expect(vectors.funding_attempt_cases).toHaveLength(vectors.funding_attempt_count)
@@ -90,6 +93,7 @@ describe("Lean protocol conformance vectors", () => {
     expect(vectors.hold_count).toBeGreaterThan(0)
     expect(vectors.lease_count).toBeGreaterThan(0)
     expect(vectors.manual_claim_count).toBeGreaterThan(0)
+    expect(vectors.refund_request_identity_count).toBeGreaterThan(0)
     expect(vectors.notification_admission_count).toBeGreaterThan(0)
     expect(vectors.lease_lane_count).toBeGreaterThan(0)
     expect(vectors.funding_attempt_count).toBeGreaterThan(0)

@@ -430,8 +430,18 @@ async fn request_deposit_refund(
     use api::RequestDepositRefundError as Error;
 
     let caller = ic_cdk::api::msg_caller();
-    if caller == candid::Principal::anonymous() {
-        return Err(Error::AnonymousCaller);
+    match bridge_core::refund_request_identity_decision(
+        caller != candid::Principal::anonymous(),
+        None,
+    ) {
+        bridge_core::RefundRequestIdentityDecision::OwnerLookupRequired => {}
+        bridge_core::RefundRequestIdentityDecision::AnonymousCaller => {
+            return Err(Error::AnonymousCaller);
+        }
+        bridge_core::RefundRequestIdentityDecision::Allow
+        | bridge_core::RefundRequestIdentityDecision::OwnerMismatch => {
+            return Err(Error::StorageFailure);
+        }
     }
     let id: [u8; 32] = deposit_id
         .as_slice()
@@ -445,8 +455,15 @@ async fn request_deposit_refund(
             .map(|intent| intent.caller == caller.as_slice())
             .ok_or(Error::NotFound)
     })?;
-    if !owned {
-        return Err(Error::OwnerMismatch);
+    match bridge_core::refund_request_identity_decision(true, Some(owned)) {
+        bridge_core::RefundRequestIdentityDecision::Allow => {}
+        bridge_core::RefundRequestIdentityDecision::OwnerMismatch => {
+            return Err(Error::OwnerMismatch);
+        }
+        bridge_core::RefundRequestIdentityDecision::OwnerLookupRequired
+        | bridge_core::RefundRequestIdentityDecision::AnonymousCaller => {
+            return Err(Error::StorageFailure);
+        }
     }
     let config = STORE.with(|store| {
         store
@@ -1489,6 +1506,28 @@ mod candid_tests {
         assert!(!has_external_call_cycle_budget(150, 100, 50));
         assert!(has_external_call_cycle_budget(151, 100, 50));
         assert!(!has_external_call_cycle_budget(u128::MAX, u128::MAX, 1));
+    }
+
+    #[test]
+    fn refund_request_identity_decision_preserves_endpoint_error_order() {
+        use bridge_core::RefundRequestIdentityDecision as Decision;
+
+        assert_eq!(
+            bridge_core::refund_request_identity_decision(false, None),
+            Decision::AnonymousCaller
+        );
+        assert_eq!(
+            bridge_core::refund_request_identity_decision(true, None),
+            Decision::OwnerLookupRequired
+        );
+        assert_eq!(
+            bridge_core::refund_request_identity_decision(true, Some(false)),
+            Decision::OwnerMismatch
+        );
+        assert_eq!(
+            bridge_core::refund_request_identity_decision(true, Some(true)),
+            Decision::Allow
+        );
     }
 
     #[test]

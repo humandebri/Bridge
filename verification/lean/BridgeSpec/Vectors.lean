@@ -138,6 +138,23 @@ def manualClaimCase
     field "allowed"
       (boolJson (manualClaimAllowed scheduled active stopped overdue expired)) ++ "}"
 
+def refundRequestIdentityDecisionName : RefundRequestIdentityDecision → String
+  | .allow => "allow"
+  | .ownerLookupRequired => "owner-lookup-required"
+  | .anonymousCaller => "anonymous-caller"
+  | .ownerMismatch => "owner-mismatch"
+
+def refundRequestIdentityCase
+    (authenticated : Bool) (ownerMatch : Option Bool) : String :=
+  let ownerMatchJson := match ownerMatch with
+    | none => "null"
+    | some value => boolJson value
+  "{" ++ field "authenticated" (boolJson authenticated) ++ "," ++
+    field "owner_match" ownerMatchJson ++ "," ++
+    stringField "decision"
+      (refundRequestIdentityDecisionName
+        (decideRefundRequestIdentity authenticated ownerMatch)) ++ "}"
+
 def notificationAdmissionCase
     (globalCount callerCount globalLimit callerLimit : Nat) : String :=
   "{" ++ natField "global_count" globalCount ++ "," ++
@@ -266,6 +283,12 @@ def document : String :=
     manualClaimCase false true false false true,
     manualClaimCase false false true false false,
     manualClaimCase false false false false false]
+  let refundRequestIdentities := [
+    refundRequestIdentityCase false none,
+    refundRequestIdentityCase false (some true),
+    refundRequestIdentityCase true none,
+    refundRequestIdentityCase true (some false),
+    refundRequestIdentityCase true (some true)]
   let notificationAdmissions := [
     notificationAdmissionCase 0 0 48 6,
     notificationAdmissionCase 47 5 48 6,
@@ -298,7 +321,7 @@ def document : String :=
     queueCase (some true) false true]
   let probes := [canonicalProbeCase 0 0, canonicalProbeCase 42 42,
     canonicalProbeCase 42 43, canonicalProbeCase 18446744073709551615 18446744073709551615]
-  "{" ++ field "schema_version" "2" ++ "," ++
+  "{" ++ field "schema_version" "3" ++ "," ++
     jsonSection "quote" quotes ++ "," ++ jsonSection "settlement" settlements ++ "," ++
     jsonSection "payment" payments ++ "," ++ jsonSection "deposit_admission" deposits ++ "," ++
     jsonSection "reservation" reservations ++ "," ++
@@ -307,6 +330,7 @@ def document : String :=
     jsonSection "fee_payout" feePayouts ++ "," ++
     jsonSection "hold" holds ++ "," ++ jsonSection "lease" leases ++ "," ++
     jsonSection "manual_claim" manualClaims ++ "," ++
+    jsonSection "refund_request_identity" refundRequestIdentities ++ "," ++
     jsonSection "notification_admission" notificationAdmissions ++ "," ++
     jsonSection "lease_lane" leaseLanes ++ "," ++
     jsonSection "funding_attempt" fundingAttempts ++ "," ++

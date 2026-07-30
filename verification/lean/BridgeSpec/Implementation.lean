@@ -99,6 +99,11 @@ def manualClaimImpl
     (scheduled active stopped overdue expired : Bool) : Bool :=
   manualClaimAllowed scheduled active stopped overdue expired
 
+def refundRequestIdentityImpl
+    (authenticated : Bool) (ownerMatch : Option Bool) :
+    RefundRequestIdentityDecision :=
+  decideRefundRequestIdentity authenticated ownerMatch
+
 def notificationAdmissionImpl
     (globalCount callerCount globalLimit callerLimit : U16) : Bool :=
   notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val

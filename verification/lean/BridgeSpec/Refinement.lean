@@ -167,6 +167,12 @@ theorem manual_claim_refinement
       manualClaimAllowed scheduled active stopped overdue expired := by
   rfl
 
+theorem refund_request_identity_refinement
+    (authenticated : Bool) (ownerMatch : Option Bool) :
+    refundRequestIdentityImpl authenticated ownerMatch =
+      decideRefundRequestIdentity authenticated ownerMatch := by
+  rfl
+
 theorem notification_admission_refinement
     (globalCount callerCount globalLimit callerLimit : U16) :
     notificationAdmissionImpl globalCount callerCount globalLimit callerLimit =

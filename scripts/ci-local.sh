@@ -449,6 +449,7 @@ run_policy_vector_consumers() {
 run_refinement_gate() {
   python3 "$ROOT/scripts/test_reproducible_artifacts.py"
   python3 "$ROOT/scripts/test_refinement_manifest.py"
+  python3 "$ROOT/scripts/test_claim_test_manifest.py"
   python3 "$ROOT/scripts/check_refinement_manifest.py"
   python3 "$ROOT/scripts/check_proof_impact.py"
 }
@@ -482,6 +483,8 @@ run_proofs() {
   run_proof_stage lean-negative run_lean_failure_fixtures
   run_proof_stage policy-vector-consumers run_policy_vector_consumers
   run_proof_stage refinement-gate run_refinement_gate
+  run_proof_stage claim-transaction-tests \
+    python3 "$ROOT/scripts/check_claim_test_manifest.py"
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt

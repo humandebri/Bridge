@@ -298,6 +298,27 @@ macro_rules! manual_claim_decision_body {
     };
 }
 
+macro_rules! refund_request_identity_decision_body {
+    (
+        $authenticated:expr,
+        $owner_match:expr,
+        $allow:expr,
+        $lookup:expr,
+        $anonymous:expr,
+        $mismatch:expr
+    ) => {
+        if !$authenticated {
+            $anonymous
+        } else {
+            match $owner_match {
+                None => $lookup,
+                Some(true) => $allow,
+                Some(false) => $mismatch,
+            }
+        }
+    };
+}
+
 macro_rules! notification_admission_body {
     ($global_count:expr, $caller_count:expr, $global_limit:expr, $caller_limit:expr) => {
         $global_count < $global_limit && $caller_count < $caller_limit
@@ -383,6 +404,14 @@ verus! {
     pub enum ManualClaimDecision {
         Allow,
         AutomaticProgressPending,
+    }
+
+    #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
+    pub enum RefundRequestIdentityDecision {
+        Allow,
+        OwnerLookupRequired,
+        AnonymousCaller,
+        OwnerMismatch,
     }
 
     #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
@@ -1074,6 +1103,34 @@ pub const fn manual_claim_allowed(
     expired: bool,
 ) -> bool {
     manual_claim_allowed_body!(scheduled, active, stopped, overdue, expired)
+}
+
+verus! {
+    pub fn refund_request_identity_decision(
+        authenticated: bool,
+        owner_match: Option<bool>,
+    ) -> (result: RefundRequestIdentityDecision)
+        ensures
+            match result {
+                RefundRequestIdentityDecision::Allow =>
+                    authenticated && owner_match == Some(true),
+                RefundRequestIdentityDecision::OwnerLookupRequired =>
+                    authenticated && owner_match == None::<bool>,
+                RefundRequestIdentityDecision::AnonymousCaller =>
+                    !authenticated,
+                RefundRequestIdentityDecision::OwnerMismatch =>
+                    authenticated && owner_match == Some(false),
+            },
+    {
+        refund_request_identity_decision_body!(
+            authenticated,
+            owner_match,
+            RefundRequestIdentityDecision::Allow,
+            RefundRequestIdentityDecision::OwnerLookupRequired,
+            RefundRequestIdentityDecision::AnonymousCaller,
+            RefundRequestIdentityDecision::OwnerMismatch
+        )
+    }
 }
 
 verus! {

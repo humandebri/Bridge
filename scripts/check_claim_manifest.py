@@ -113,12 +113,28 @@ def main() -> int:
         if registration in verus_rows.setdefault(proof, []):
             raise ValueError(f"duplicate Verus proof registration: {proof}/{kernel}")
         verus_rows[proof].append(registration)
-    assumptions = {
-        line.split("\t", 1)[0]
-        for line in (ROOT / "verification" / "assumptions.tsv")
+    assumption_dependencies: dict[str, set[str]] = {}
+    for number, line in enumerate(
+        (ROOT / "verification" / "assumptions.tsv")
         .read_text(encoding="utf-8")
-        .splitlines()
-        if line
+        .splitlines(),
+        1,
+    ):
+        fields = line.split("\t")
+        if len(fields) != 6 or not all(fields):
+            raise ValueError(f"invalid external assumption row {number}")
+        assumption, _, dependent_claims, validation_links, _, _ = fields
+        if assumption in assumption_dependencies:
+            raise ValueError(f"duplicate external assumption: {assumption}")
+        dependencies = set(dependent_claims.split(";"))
+        if not dependencies:
+            raise ValueError(f"external assumption has no dependent claim: {assumption}")
+        for link in validation_links.split(";"):
+            checked_link(link)
+        assumption_dependencies[assumption] = dependencies
+    assumptions = set(assumption_dependencies)
+    actual_assumption_dependencies = {
+        assumption: set() for assumption in assumption_dependencies
     }
     vector_sections = {
         line.split("\t", 1)[0]
@@ -181,6 +197,8 @@ def main() -> int:
             raise ValueError(
                 f"unknown assumption for {claim_id}: {sorted(unknown_assumptions)}"
             )
+        for assumption in items(assumption_ids):
+            actual_assumption_dependencies[assumption].add(claim_id)
         if vectors != "-" and vectors not in vector_sections:
             raise ValueError(f"unknown refinement vector section for {claim_id}: {vectors}")
 
@@ -239,6 +257,13 @@ def main() -> int:
         raise ValueError(
             f"unregistered Verus obligations in unified claims: {sorted(missing_verus)}"
         )
+    for assumption, declared in assumption_dependencies.items():
+        actual = actual_assumption_dependencies[assumption]
+        if declared != actual:
+            raise ValueError(
+                f"external assumption dependency mismatch for {assumption}: "
+                f"declared={sorted(declared)} actual={sorted(actual)}"
+            )
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text(
         json.dumps({"schema": 1, "claims": results}, indent=2) + "\n",

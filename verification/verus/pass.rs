@@ -83,6 +83,17 @@ pub open spec fn manual_claim_decision_view(result: kernel::ManualClaimDecision)
     }
 }
 
+pub open spec fn refund_request_identity_decision_view(
+    result: kernel::RefundRequestIdentityDecision,
+) -> int {
+    match result {
+        kernel::RefundRequestIdentityDecision::Allow => 0,
+        kernel::RefundRequestIdentityDecision::OwnerLookupRequired => 1,
+        kernel::RefundRequestIdentityDecision::AnonymousCaller => 2,
+        kernel::RefundRequestIdentityDecision::OwnerMismatch => 3,
+    }
+}
+
 pub open spec fn lease_lane_claim_decision_view(
     result: kernel::LeaseLaneClaimDecision,
 ) -> int {
@@ -496,6 +507,23 @@ fn manual_claim_decision_matches_shared_guard(
 {
     kernel::manual_claim_decision(
         scheduled, active, stopped, overdue, expired)
+}
+
+fn refund_request_requires_authenticated_owner(
+    authenticated: bool,
+    owner_match: Option<bool>,
+) -> (result: kernel::RefundRequestIdentityDecision)
+    ensures
+        refund_request_identity_decision_view(result) == 0
+            <==> authenticated && owner_match == Some(true),
+        refund_request_identity_decision_view(result) == 1
+            <==> authenticated && owner_match == None::<bool>,
+        refund_request_identity_decision_view(result) == 2
+            <==> !authenticated,
+        refund_request_identity_decision_view(result) == 3
+            <==> authenticated && owner_match == Some(false),
+{
+    kernel::refund_request_identity_decision(authenticated, owner_match)
 }
 
 fn notification_admission_checks_global_and_caller_windows(

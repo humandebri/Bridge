@@ -149,6 +149,7 @@ class ProofImpactTests(unittest.TestCase):
         }
         for relative in (
             "contracts/test/ProtocolVectors.t.sol",
+            "integration/phase3.spec.ts",
             "ui/src/lib/mint-authorization.ts",
             "ui/src/lib/mint-authorization.test.ts",
             "scripts/check_tool_versions.sh",

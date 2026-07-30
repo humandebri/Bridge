@@ -169,6 +169,23 @@ def manualClaimAllowed
     (scheduled active stopped overdue expired : Bool) : Bool :=
   (!active || expired) && (!scheduled || stopped || overdue || expired)
 
+inductive RefundRequestIdentityDecision where
+  | allow
+  | ownerLookupRequired
+  | anonymousCaller
+  | ownerMismatch
+deriving DecidableEq
+
+def decideRefundRequestIdentity
+    (authenticated : Bool) (ownerMatch : Option Bool) :
+    RefundRequestIdentityDecision :=
+  if !authenticated then .anonymousCaller
+  else
+    match ownerMatch with
+    | none => .ownerLookupRequired
+    | some true => .allow
+    | some false => .ownerMismatch
+
 structure NotificationIsolationState where
   persistentGlobalCount : Nat
   callerWindowCount : Nat
