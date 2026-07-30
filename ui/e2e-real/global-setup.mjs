@@ -483,22 +483,11 @@ async function setup() {
         }
         return send(response, 200, { deposit_id: bytesHex(result.Ok.deposit_id), owner_sequence: result.Ok.owner_sequence.toString(), state: result.Ok.state })
       }
-      if (request.url === "/ic/notify-deposit-mint") {
+      if (request.url === "/ic/request-deposit-refund") {
         await syncObservedHeads()
-        const result = await bridge.actor.notify_deposit_mint({
-          deposit_id: hexToBytes(body.depositId),
-          transaction_hash: hexToBytes(body.transactionHash),
-        })
-        if ("Err" in result) throw new Error(`mint notification rejected: ${json(result.Err)}`)
-        if ("Minted" in result.Ok) return send(response, 200, { Minted: {
-          deposit_id: bytesHex(result.Ok.Minted.deposit_id),
-          transaction_hash: bytesHex(result.Ok.Minted.transaction_hash),
-          finalized_head_block_number: result.Ok.Minted.finalized_head_block_number.toString(),
-        } })
-        return send(response, 200, { Duplicate: {
-          deposit_id: bytesHex(result.Ok.Duplicate.deposit_id),
-          transaction_hash: bytesHex(result.Ok.Duplicate.transaction_hash),
-        } })
+        const result = await bridge.actor.request_deposit_refund(hexToBytes(body.id))
+        if ("Err" in result) throw new Error(`refund claim rejected: ${json(result.Err)}`)
+        return send(response, 200, result.Ok)
       }
       if (request.url === "/ic/notify") {
         notifyCalls += 1
@@ -524,11 +513,6 @@ async function setup() {
         if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id) } })
         return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id) } })
       }
-      if (request.url === "/ic/continue-deposit") {
-        const result = await bridge.actor.continue_deposit(hexToBytes(body.id))
-        if ("Err" in result) throw new Error(`deposit continuation rejected: ${json(result.Err)}`)
-        return send(response, 200, settlementJson(result.Ok))
-      }
       if (request.url === "/ic/continue-withdrawal") {
         const result = await bridge.actor.continue_withdrawal(hexToBytes(body.id))
         if ("Err" in result) throw new Error(`withdrawal continuation rejected: ${json(result.Err)}`)
@@ -544,7 +528,8 @@ async function setup() {
       }
       if (request.url === "/test/settle") {
         for (let round = 0; round < 10; round += 1) {
-          for (const id of knownDeposits) await bridge.actor.continue_deposit(id)
+          await pic.advanceTime(60_001)
+          await pic.tick(30)
           for (const id of knownWithdrawals) await bridge.actor.continue_withdrawal(id)
         }
         return send(response, 200, null)

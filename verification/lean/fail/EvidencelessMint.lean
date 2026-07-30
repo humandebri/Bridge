@@ -3,7 +3,7 @@ import BridgeSpec.DepositAuthorization
 open BridgeSpec.MintAuthorization
 
 def state : DepositState := {
-  phase := .expiryReconciliation, authorization := none, escrow := 11,
+  phase := .refundAvailable, authorization := none, escrow := 11,
   baseSupply := 0, feeReserve := 0, pendingDepositLiability := 11,
   reservedMint := 10, feeCounted := false
 }

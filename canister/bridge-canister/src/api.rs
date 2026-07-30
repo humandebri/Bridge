@@ -69,6 +69,7 @@ pub enum DepositError {
     StorageFailure,
     DepositsPaused,
     ReserveUnavailable,
+    ReservationMaintenance { retry_after_seconds: u64 },
     RateLimited { retry_after_seconds: u64 },
     SequenceMismatch { expected: u64 },
     DepositConflict,
@@ -85,6 +86,7 @@ pub struct DepositView {
     pub gross_amount: Nat,
     pub quote: Option<DepositQuoteView>,
     pub refund: Option<DepositRefundView>,
+    pub available_refund_amount: Option<Nat>,
     pub max_service_fee: Nat,
     pub base_recipient: Vec<u8>,
     pub from_subaccount: Option<Vec<u8>>,
@@ -92,6 +94,21 @@ pub struct DepositView {
     pub last_settlement_stop_reason: Option<String>,
     pub mint_authorization: Option<MintAuthorizationView>,
     pub automatic_progress: Option<AutomaticProgressView>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum RequestDepositRefundError {
+    AnonymousCaller,
+    InvalidDepositId,
+    NotFound,
+    OwnerMismatch,
+    NotClaimable,
+    FinalityUnavailable,
+    RpcInconsistent,
+    BaseStateMismatch,
+    StorageFailure,
+    Busy,
+    InsufficientCycles,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -145,10 +162,18 @@ impl From<DepositRefundReason> for DepositRefundReasonView {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct DepositRefundView {
     pub reason: DepositRefundReasonView,
+    pub status: DepositRefundStatusView,
     pub amount: Nat,
     pub ledger_fee: Nat,
     pub attempt_no: u64,
     pub block_index: Option<Nat>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepositRefundStatusView {
+    Sending,
+    ReconciliationRequired,
+    Completed,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -231,153 +256,6 @@ pub enum NotifyWithdrawalError {
     Busy,
     RateLimited,
     InsufficientCycles,
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct NotifyDepositMintArgs {
-    pub deposit_id: Vec<u8>,
-    pub transaction_hash: Vec<u8>,
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum NotifyDepositMintReceipt {
-    Minted {
-        deposit_id: Vec<u8>,
-        transaction_hash: Vec<u8>,
-        finalized_head_block_number: u64,
-    },
-    Duplicate {
-        deposit_id: Vec<u8>,
-        transaction_hash: Vec<u8>,
-    },
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum NotifyDepositMintError {
-    AnonymousCaller,
-    InvalidDepositId,
-    InvalidTransactionHash,
-    NotFound,
-    OwnerMismatch,
-    InvalidState,
-    TransactionNotConfirmed,
-    TransactionReverted,
-    RpcUnavailable,
-    RpcInconsistent,
-    InvalidBaseResponse,
-    StorageFailure,
-    Busy,
-    InsufficientCycles,
-}
-
-pub async fn notify_deposit_mint(
-    caller: Principal,
-    args: NotifyDepositMintArgs,
-) -> Result<NotifyDepositMintReceipt, NotifyDepositMintError> {
-    if caller == Principal::anonymous() {
-        return Err(NotifyDepositMintError::AnonymousCaller);
-    }
-    let deposit_id: [u8; 32] = args
-        .deposit_id
-        .as_slice()
-        .try_into()
-        .map_err(|_| NotifyDepositMintError::InvalidDepositId)?;
-    let transaction_hash: [u8; 32] = args
-        .transaction_hash
-        .as_slice()
-        .try_into()
-        .map_err(|_| NotifyDepositMintError::InvalidTransactionHash)?;
-    let (authorization, duplicate) = STORE.with(|store| {
-        let store = store.borrow();
-        let intent = store
-            .deposit_intent(deposit_id)
-            .map_err(|_| NotifyDepositMintError::StorageFailure)?
-            .ok_or(NotifyDepositMintError::NotFound)?;
-        if intent.caller != caller.as_slice() {
-            return Err(NotifyDepositMintError::OwnerMismatch);
-        }
-        let deposit = store
-            .deposit(deposit_id)
-            .map_err(|_| NotifyDepositMintError::StorageFailure)?
-            .ok_or(NotifyDepositMintError::NotFound)?;
-        if let bridge_core::DepositState::Minted { .. } = deposit.state {
-            let duplicate = deposit
-                .mint_finalization_evidence
-                .as_ref()
-                .is_some_and(|evidence| evidence.transaction_hash == transaction_hash);
-            return Ok((deposit.mint_authorization, duplicate));
-        }
-        if !matches!(
-            deposit.state,
-            bridge_core::DepositState::AuthorizationAvailable { .. }
-                | bridge_core::DepositState::ExpiryReconciliation { .. }
-        ) {
-            return Err(NotifyDepositMintError::InvalidState);
-        }
-        Ok((deposit.mint_authorization, false))
-    })?;
-    if duplicate {
-        return Ok(NotifyDepositMintReceipt::Duplicate {
-            deposit_id: deposit_id.to_vec(),
-            transaction_hash: transaction_hash.to_vec(),
-        });
-    }
-    let authorization = authorization.ok_or(NotifyDepositMintError::InvalidState)?;
-    let config = STORE
-        .with(|store| store.borrow().config())
-        .map_err(|_| NotifyDepositMintError::StorageFailure)?
-        .ok_or(NotifyDepositMintError::StorageFailure)?;
-    let finalized = evm_rpc::finalized_observation(&config)
-        .await
-        .map_err(map_deposit_mint_observation_error)?;
-    let evidence = evm_rpc::notified_mint_evidence(
-        &config,
-        &authorization,
-        finalized.block_number,
-        transaction_hash,
-    )
-    .await
-    .map_err(map_deposit_mint_observation_error)?;
-    STORE.with(|store| {
-        let mut store = store.borrow_mut();
-        let mut current = store
-            .deposit(deposit_id)
-            .map_err(|_| NotifyDepositMintError::StorageFailure)?
-            .ok_or(NotifyDepositMintError::NotFound)?;
-        if current.mint_authorization.as_ref() != Some(&authorization) {
-            return Err(NotifyDepositMintError::InvalidState);
-        }
-        current
-            .apply(bridge_core::DepositEvent::MintReconciled {
-                evidence: Box::new(evidence),
-            })
-            .map_err(|_| NotifyDepositMintError::InvalidState)?;
-        store
-            .put_deposit(&current)
-            .map_err(|_| NotifyDepositMintError::StorageFailure)
-    })?;
-    Ok(NotifyDepositMintReceipt::Minted {
-        deposit_id: deposit_id.to_vec(),
-        transaction_hash: transaction_hash.to_vec(),
-        finalized_head_block_number: finalized.block_number,
-    })
-}
-
-fn map_deposit_mint_observation_error(error: evm_rpc::ObservationError) -> NotifyDepositMintError {
-    match error {
-        evm_rpc::ObservationError::Rpc => NotifyDepositMintError::RpcUnavailable,
-        evm_rpc::ObservationError::Inconsistent => NotifyDepositMintError::RpcInconsistent,
-        evm_rpc::ObservationError::TransactionPending => {
-            NotifyDepositMintError::TransactionNotConfirmed
-        }
-        evm_rpc::ObservationError::TransactionReverted => {
-            NotifyDepositMintError::TransactionReverted
-        }
-        evm_rpc::ObservationError::BaseStateMismatch
-        | evm_rpc::ObservationError::ChainIdMismatch
-        | evm_rpc::ObservationError::InvalidResponse
-        | evm_rpc::ObservationError::Overflow => NotifyDepositMintError::InvalidBaseResponse,
-    }
 }
 
 pub async fn notify_withdrawal(
@@ -1369,6 +1247,20 @@ pub(crate) async fn base_mint_snapshot(
             .cached_base_mint_snapshot(now_ns, BASE_SNAPSHOT_TTL_NS, minimum_finalized_block)
             .map_err(|_| DepositError::StorageFailure)
     })? {
+        let backlog = STORE.with(|store| {
+            store
+                .borrow_mut()
+                .release_expired_deposit_reservations(
+                    snapshot.snapshot.confirmed_block_timestamp,
+                    256,
+                )
+                .map_err(|_| DepositError::StorageFailure)
+        })?;
+        if backlog {
+            return Err(DepositError::ReservationMaintenance {
+                retry_after_seconds: 1,
+            });
+        }
         return validate_base_deposit_snapshot(
             snapshot.snapshot,
             snapshot.bridge_signer,
@@ -1454,6 +1346,17 @@ pub(crate) async fn base_mint_snapshot(
             Err(_) => Err(DepositError::StorageFailure),
         }
     })?;
+    let backlog = STORE.with(|store| {
+        store
+            .borrow_mut()
+            .release_expired_deposit_reservations(snapshot.mint.confirmed_block_timestamp, 256)
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
+    if backlog {
+        return Err(DepositError::ReservationMaintenance {
+            retry_after_seconds: 1,
+        });
+    }
     validate_base_deposit_snapshot(
         snapshot.mint,
         snapshot.bridge_signer,
@@ -1586,6 +1489,7 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
                 net_amount: Nat::from(quote.net_amount.get()),
             }),
             refund: deposit_refund_view(&record),
+            available_refund_amount: available_refund_amount(&record).map(Nat::from),
             max_service_fee: Nat::from(record.max_service_fee.get()),
             base_recipient: intent.base_recipient.to_vec(),
             from_subaccount: (intent.from_subaccount != [0; 32])
@@ -1599,6 +1503,26 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
             automatic_progress: automatic_progress(job),
         })
     })
+}
+
+fn available_refund_amount(record: &DepositRecord) -> Option<u128> {
+    if !matches!(record.state, DepositState::RefundAvailable { .. }) {
+        return None;
+    }
+    let service_fee = if record
+        .mint_authorization
+        .as_ref()
+        .is_some_and(|authorization| authorization.signature.is_some())
+    {
+        record.quote?.service_fee.get()
+    } else {
+        0
+    };
+    bridge_core::deposit_refund_amount(
+        record.gross_amount.get(),
+        service_fee,
+        crate::ledger::KINIC_LEDGER_FEE.get(),
+    )
 }
 
 fn mint_authorization_view(record: &bridge_core::MintAuthorizationRecord) -> MintAuthorizationView {
@@ -1629,21 +1553,34 @@ fn deposit_created_at_ns(record: &DepositRecord) -> u64 {
 }
 
 fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
-    let (reason, attempt, block_index) = match &record.state {
-        DepositState::RefundPending { reason, attempt } => (*reason, attempt, None),
+    let (reason, status, attempt, block_index) = match &record.state {
+        DepositState::RefundPending { reason, attempt } => {
+            (*reason, DepositRefundStatusView::Sending, attempt, None)
+        }
         DepositState::RefundReconciliationHold {
             reason, attempt, ..
-        } => (*reason, attempt, None),
+        } => (
+            *reason,
+            DepositRefundStatusView::ReconciliationRequired,
+            attempt,
+            None,
+        ),
         DepositState::Refunded {
             reason,
             attempt,
             ledger_block_index,
             ..
-        } => (*reason, attempt, Some(Nat::from(*ledger_block_index))),
+        } => (
+            *reason,
+            DepositRefundStatusView::Completed,
+            attempt,
+            Some(Nat::from(*ledger_block_index)),
+        ),
         _ => return None,
     };
     Some(DepositRefundView {
         reason: reason.into(),
+        status,
         amount: Nat::from(attempt.identity.amount.get()),
         ledger_fee: Nat::from(attempt.identity.fee.get()),
         attempt_no: attempt.attempt_no,

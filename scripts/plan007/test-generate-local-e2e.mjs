@@ -2,7 +2,12 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { LOCAL_E2E_SCHEMA_VERSION, STAGING_ACTIVATION_DELAY_SECONDS, validateUpgradeEvidence } from "./generate-local-e2e.mjs"
+import {
+  CURRENT_STABLE_SCHEMA_VERSION,
+  LOCAL_E2E_SCHEMA_VERSION,
+  STAGING_ACTIVATION_DELAY_SECONDS,
+  validateUpgradeEvidence,
+} from "./generate-local-e2e.mjs"
 import { runtimeTemplateSha256 } from "./runtime-template-hash.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
@@ -33,7 +38,7 @@ assert.throws(
 const state = {
   owner_sequence: "2",
   status: {
-    schema_version: "28",
+    schema_version: String(CURRENT_STABLE_SCHEMA_VERSION),
     counts: { pending_ledger_operations: "1", reserved_deposit_mint_operations: "1" },
     settlement_scheduler: { scheduled: "1", leased: "0" },
   },
@@ -61,6 +66,7 @@ assert.equal(validateUpgradeEvidence(structuredClone(complete)).verified, true)
 
 for (const mutate of [
   (value) => { value.verified = false },
+  (value) => { value.before.status.schema_version = "28"; value.after.status.schema_version = "28" },
   (value) => { value.after.owner_sequence = "3" },
   (value) => { value.before.deposits = []; value.after.deposits = [] },
   (value) => { value.before.deposits[0].mint_authorization = []; value.after.deposits[0].mint_authorization = [] },

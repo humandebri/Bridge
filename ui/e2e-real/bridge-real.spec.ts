@@ -74,8 +74,6 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
 
   await postControl(request, "/test/settle", {})
   await refreshBridgeData(page)
-  await expect(page.getByRole("button", { name: "Mint on Base" })).toBeVisible()
-  await page.getByRole("button", { name: "Mint on Base" }).click()
   await expect.poll(async () => BigInt((await controlState(request)).bsnsBalance)).toBe(199_000_000n)
 
   await page.getByLabel("You send").fill("1.00000000")
@@ -93,8 +91,6 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
 
   await postControl(request, "/test/settle", {})
   await refreshBridgeData(page)
-  await expect(page.getByRole("button", { name: "Mint on Base" })).toBeVisible()
-  await page.getByRole("button", { name: "Mint on Base" }).click()
   await expect.poll(async () => BigInt((await controlState(request)).bsnsBalance)).toBe(298_000_000n)
   const upgrade = (await postControl(request, "/test/upgrade", {})) as { before: unknown; after: unknown }
   expect(upgrade.after).toEqual(upgrade.before)
@@ -108,11 +104,13 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   expect(BigInt(initial.ledgerBalance) - BigInt(afterDeposit.ledgerBalance)).toBe(300_040_000n)
   expect(BigInt(afterDeposit.indexBlocksSynced)).toBeGreaterThanOrEqual(BigInt(initial.indexBlocksSynced) + 4n)
   await openHistory(page)
-  const depositState = await refreshHistoryUntil(page, /^(Ready to mint|Complete)$/)
-  if (depositState === "Ready to mint") {
-    await expect(page.getByText(/Base transaction pending|Base Mint済み|Canister reconciliation|Mint Authorization/).first()).toBeVisible()
-    await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0)
-  }
+  await expect(page.getByText("Minted on Base (finalized)").first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByRole("button", { name: "Confirm mint on IC" })).toHaveCount(0)
+  await page.reload()
+  await page.getByRole("button", { name: "Connect IC wallet", exact: true }).click()
+  await page.getByRole("button", { name: "Plug" }).click()
+  await page.getByRole("button", { name: "Close confirmation" }).click()
+  await expect(page.getByText("Minted on Base (finalized)").first()).toBeVisible({ timeout: 30_000 })
 
   const beforeWithdrawal = await controlState(request)
   await page.getByRole("link", { name: "KINIC Bridge home" }).click()
@@ -182,20 +180,6 @@ async function refreshBridgeData(page: Page): Promise<void> {
   await refresh.click()
   await expect(bridge.getByRole("button", { name: "Refreshing…", exact: true })).toBeVisible()
   await expect(refresh).toBeEnabled({ timeout: 90_000 })
-}
-
-async function refreshHistoryUntil(page: Page, state: RegExp): Promise<string> {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.getByRole("button", { name: "Refresh", exact: true }).click()
-    const badge = page.getByText(state, { exact: true }).first()
-    try {
-      await badge.waitFor({ state: "visible", timeout: 5_000 })
-      return await badge.innerText()
-    } catch {
-      // A concurrent reconciliation can invalidate the same history query.
-    }
-  }
-  throw new Error(`History did not show ${state}`)
 }
 
 async function postControl(request: APIRequestContext, path: string, data: unknown): Promise<unknown> {

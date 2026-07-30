@@ -45,6 +45,15 @@ describe("OISY deposit reply decoding", () => {
     expect(() => decodeDepositReply(rejected)).toThrow("current 7")
     expect(() => decodeDepositReply(unavailable)).toThrow("Retry the same deposit in 30 seconds")
   })
+
+  it("explains reservation maintenance with a same-deposit retry delay", () => {
+    const reply = new Uint8Array(IDL.encode(
+      [resultType("request_deposit")],
+      [{ Err: { ReservationMaintenance: { retry_after_seconds: 17n } } }],
+    ))
+
+    expect(() => decodeDepositReply(reply)).toThrow("Retry the same deposit in 17 seconds")
+  })
 })
 
 describe("OISY popup lifecycle", () => {

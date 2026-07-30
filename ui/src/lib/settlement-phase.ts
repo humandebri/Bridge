@@ -1,6 +1,6 @@
 import type { DepositPhase, SettlementActionResult, SettlementState, WithdrawalPhase } from "@/generated/bridge.did"
 
-const depositNames = ["EscrowedUnquoted", "AuthorizationPending", "AuthorizationAvailable", "ExpiryReconciliation", "Minted", "FundingReconciliationHold", "RefundPending", "RefundReconciliationHold", "Refunded", "Cancelled"] as const
+const depositNames = ["EscrowedUnquoted", "AuthorizationPending", "AuthorizationAvailable", "RefundAvailable", "Minted", "FundingReconciliationHold", "RefundProcessing", "Refunded", "Cancelled"] as const
 const withdrawalNames = ["Observed", "ReleasePending", "Paid", "ReconciliationHold"] as const
 
 function variantName(value: unknown, allowed: readonly string[]): string | undefined {
@@ -26,11 +26,10 @@ export function depositPhaseName(phase: DepositPhase): string {
     EscrowedUnquoted: "Checking Base",
     AuthorizationPending: "Signing authorization",
     AuthorizationAvailable: "Ready to mint",
-    ExpiryReconciliation: "Checking finalized Base",
+    RefundAvailable: "Refund available",
     Minted: "Complete",
     FundingReconciliationHold: "Funding needs review",
-    RefundPending: "Refunding",
-    RefundReconciliationHold: "Refund needs review",
+    RefundProcessing: "Refund processing",
     Refunded: "Refunded",
     Cancelled: "Cancelled",
   }
@@ -67,7 +66,7 @@ export function isWithdrawalTerminal(phase: WithdrawalPhase): boolean {
 export function depositPhaseTone(phase: DepositPhase): "good" | "warn" | "neutral" {
   const name = variantName(phase, depositNames)
   if (name === "Minted" || name === "Refunded") return "good"
-  if (name === "FundingReconciliationHold" || name === "RefundReconciliationHold") return "warn"
+  if (name === "FundingReconciliationHold" || name === "RefundProcessing") return "warn"
   return isDepositTerminal(phase) ? "warn" : "neutral"
 }
 
@@ -75,17 +74,17 @@ export function depositReconciliationMessage(
   phase: DepositPhase,
   stopReason?: string,
 ): string | undefined {
-  if (!("ExpiryReconciliation" in phase)) {
+  if (!("RefundAvailable" in phase) && !("RefundProcessing" in phase)) {
     return stopReason ? "Processing stopped — retry from History" : undefined
   }
-  if (!stopReason) return "Confirming the finalized Base state"
+  if (!stopReason) return undefined
   if (["RpcUnavailable", "RpcInconsistent", "InvalidBaseResponse"].includes(stopReason)) {
-    return "Base RPC confirmation stopped — retry is safe"
+    return "Base RPC confirmation stopped — requesting again is safe"
   }
   if (["BaseStateMismatch", "BridgeSignerMismatch"].includes(stopReason)) {
     return "Mint evidence requires audit — refund is blocked"
   }
-  return "Finalized Base confirmation stopped — retry from History"
+  return "Finalized Base confirmation stopped — request again from History"
 }
 
 export function withdrawalPhaseTone(phase: WithdrawalPhase): "good" | "warn" | "neutral" {

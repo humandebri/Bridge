@@ -12,4 +12,4 @@ retryable failureは同じidentityを120秒だけ保持する。callback消失�
 
 Deposit pauseは新しいfunding reservationの作成を拒否する。reservation作成後にpauseへ遷移しても、不可逆なLedger pullの成功または結果不明は正式Depositへ昇格し、ユーザー資金を公開recordなしで滞留させない。
 
-公開状態に`FundingPending`は存在しない。確定失敗は`FundingRejected`、一時失敗は`FundingUnavailable`として返す。本番未投入のためschema v28、wire v24へ直接置換し、旧schema migrationは提供しない。
+公開状態に`FundingPending`は存在しない。確定失敗は`FundingRejected`、一時失敗は`FundingUnavailable`として返す。本番未投入のためschema v29、wire v25へ直接置換し、旧schema migrationは提供しない。

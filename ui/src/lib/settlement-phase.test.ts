@@ -7,7 +7,7 @@ describe("settlement phase helpers", () => {
     expect(depositPhaseTone({ Minted: null })).toBe("good")
     expect(depositPhaseName({ EscrowedUnquoted: null })).toBe("Checking Base")
     expect(depositPhaseName({ Refunded: null })).toBe("Refunded")
-    expect(depositPhaseTone({ RefundReconciliationHold: null })).toBe("warn")
+    expect(depositPhaseTone({ RefundProcessing: null })).toBe("warn")
     expect(isDepositTerminal({ Refunded: null })).toBe(true)
     expect(isDepositTerminal({ Cancelled: null })).toBe(true)
     expect(withdrawalPhaseName({ ReleasePending: null })).toBe("Processing")
@@ -29,9 +29,9 @@ describe("settlement phase helpers", () => {
   })
 
   it("distinguishes finalized confirmation, RPC stops, and audit stops", () => {
-    const phase = { ExpiryReconciliation: null } as const
-    expect(depositReconciliationMessage(phase)).toBe("Confirming the finalized Base state")
-    expect(depositReconciliationMessage(phase, "RpcUnavailable")).toBe("Base RPC confirmation stopped — retry is safe")
+    const phase = { RefundAvailable: null } as const
+    expect(depositReconciliationMessage(phase)).toBeUndefined()
+    expect(depositReconciliationMessage(phase, "RpcUnavailable")).toBe("Base RPC confirmation stopped — requesting again is safe")
     expect(depositReconciliationMessage(phase, "BaseStateMismatch")).toBe("Mint evidence requires audit — refund is blocked")
   })
 })

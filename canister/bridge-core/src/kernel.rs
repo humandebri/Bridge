@@ -118,16 +118,6 @@ macro_rules! resources_sufficient_body {
     };
 }
 
-macro_rules! fee_delta_once_body {
-    ($was_transferred:expr, $is_transferred:expr, $fee:expr, $zero:expr) => {
-        if !$was_transferred && $is_transferred {
-            $fee
-        } else {
-            $zero
-        }
-    };
-}
-
 macro_rules! release_transfer_matches_body {
     ($transfer_amount:expr, $transfer_fee:expr, $amount_out:expr, $ledger_fee:expr) => {
         $transfer_amount == $amount_out && $transfer_fee == $ledger_fee
@@ -501,11 +491,11 @@ verus! {
 }
 
 macro_rules! deposit_refund_body {
-    ($gross:expr, $ledger_fee:expr) => {{
-        if $gross <= $ledger_fee {
+    ($gross:expr, $service_fee:expr, $ledger_fee:expr) => {{
+        if $gross <= $service_fee || $gross - $service_fee <= $ledger_fee {
             None
         } else {
-            Some($gross - $ledger_fee)
+            Some($gross - $service_fee - $ledger_fee)
         }
     }};
 }
@@ -521,7 +511,7 @@ macro_rules! authorized_body {
 }
 
 macro_rules! deposit_transition_body {
-    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr, $six:expr, $seven:expr, $eight:expr, $nine:expr, $ten:expr) => {{
+    ($state:expr, $event:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr, $six:expr, $seven:expr, $eight:expr, $nine:expr, $ten:expr, $eleven:expr) => {{
         if $state == $zero && $event == $zero {
             Some($one)
         } else if $state == $zero && $event == $one {
@@ -531,22 +521,20 @@ macro_rules! deposit_transition_body {
         } else if $state == $one && $event == $three {
             Some($two)
         } else if $state == $one && $event == $four {
-            Some($six)
+            Some($four)
+        } else if $state == $two && $event == $four {
+            Some($four)
         } else if $state == $two && $event == $five {
             Some($three)
-        } else if $state == $two && $event == $six {
+        } else if $state == $three && $event == $four {
             Some($four)
-        } else if $state == $three && $event == $six {
-            Some($four)
-        } else if $state == $three && $event == $seven {
+        } else if $state == $four && $event == $six {
             Some($ten)
         } else if $state == $four && $event == $seven {
-            Some($ten)
-        } else if $state == $four && $event == $four {
             Some($six)
-        } else if $state == $six && $event == $nine {
+        } else if $state == $six && $event == $eight {
             Some($eight)
-        } else if $state == $six && $event == $ten {
+        } else if $state == $six && $event == $nine {
             Some($seven)
         } else {
             None
@@ -585,14 +573,14 @@ macro_rules! refund_start_allowed_body {
 }
 
 macro_rules! deposit_reservation_active_body {
-    ($state:expr, $authorization_pending:expr, $authorization_available:expr, $expiry:expr) => {
-        $state == $authorization_pending || $state == $authorization_available || $state == $expiry
+    ($state:expr, $authorization_pending:expr, $authorization_available:expr) => {
+        $state == $authorization_pending || $state == $authorization_available
     };
 }
 
 macro_rules! deposit_charge_fee_body {
-    ($state:expr, $event:expr, $authorization_available:expr, $expiry:expr, $mint:expr) => {
-        ($state == $authorization_available || $state == $expiry) && $event == $mint
+    ($state:expr, $event:expr, $authorization_pending:expr, $signed:expr) => {
+        $state == $authorization_pending && $event == $signed
     };
 }
 
@@ -600,19 +588,21 @@ macro_rules! deposit_numeric_effects_body {
     (
         $state:expr, $event:expr, $gross:expr, $net:expr, $fee:expr, $reserved:expr,
         $amount_zero:expr, $zero:expr, $one:expr, $two:expr, $three:expr, $four:expr, $five:expr,
-        $six:expr, $seven:expr, $eight:expr, $nine:expr, $ten:expr
+        $six:expr, $seven:expr, $eight:expr, $nine:expr, $ten:expr, $eleven:expr
     ) => {{
         let next = deposit_transition_body!(
             $state, $event, $zero, $one, $two, $three, $four, $five, $six, $seven, $eight, $nine,
-            $ten
+            $ten, $eleven
         );
-        let was_reserved = deposit_reservation_active_body!($state, $two, $three, $four);
+        let was_reserved = deposit_reservation_active_body!($state, $two, $three);
         let after_reserved = match next {
-            Some(next_state) => deposit_reservation_active_body!(next_state, $two, $three, $four),
+            Some(next_state) => deposit_reservation_active_body!(next_state, $two, $three),
             None => false,
         };
-        let mint_completed = deposit_charge_fee_body!($state, $event, $three, $four, $seven);
-        let refund_completed = $state == $six && $event == $nine;
+        let authorization_signed = deposit_charge_fee_body!($state, $event, $two, $five);
+        let mint_completed = $state == $four && $event == $six;
+        let refund_completed = $state == $six && $event == $eight;
+        let terminal_liability = if $net == $amount_zero { $gross } else { $net };
         (
             if after_reserved {
                 if was_reserved {
@@ -633,14 +623,20 @@ macro_rules! deposit_numeric_effects_body {
             } else {
                 $amount_zero
             },
-            if mint_completed { $fee } else { $amount_zero },
-            if mint_completed || refund_completed {
-                $gross
+            if authorization_signed {
+                $fee
+            } else {
+                $amount_zero
+            },
+            if authorization_signed {
+                $fee
+            } else if mint_completed || refund_completed {
+                terminal_liability
             } else {
                 $amount_zero
             },
             if refund_completed {
-                $gross
+                terminal_liability
             } else {
                 $amount_zero
             },
@@ -741,12 +737,6 @@ pub const fn resources_sufficient(
     required_cycles: u128,
 ) -> bool {
     resources_sufficient_body!(eth, required_eth, cycles, required_cycles)
-}
-
-#[cfg(not(verus_keep_ghost))]
-#[cfg(not(verus_keep_ghost))]
-pub const fn fee_delta_once(was_transferred: bool, is_transferred: bool, fee: u128) -> u128 {
-    fee_delta_once_body!(was_transferred, is_transferred, fee, 0u128)
 }
 
 /// Binds the ICRC transfer identity to the exact release settlement persisted for this attempt.
@@ -1217,8 +1207,12 @@ verus! {
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub const fn deposit_refund_amount(gross: u128, ledger_fee: u128) -> Option<u128> {
-    deposit_refund_body!(gross, ledger_fee)
+pub const fn deposit_refund_amount(
+    gross: u128,
+    service_fee: u128,
+    ledger_fee: u128,
+) -> Option<u128> {
+    deposit_refund_body!(gross, service_fee, ledger_fee)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1244,7 +1238,9 @@ pub const fn audit_next(current: u64) -> Option<u64> {
 
 #[cfg(not(verus_keep_ghost))]
 pub const fn deposit_transition(state: u8, event: u8) -> Option<u8> {
-    deposit_transition_body!(state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8)
+    deposit_transition_body!(
+        state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8
+    )
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1316,12 +1312,12 @@ pub const fn refund_start_allowed(attempt_matches: bool, policy_matches: bool) -
 
 #[cfg(not(verus_keep_ghost))]
 pub const fn deposit_reservation_active(state: u8) -> bool {
-    deposit_reservation_active_body!(state, 2u8, 3u8, 4u8)
+    deposit_reservation_active_body!(state, 2u8, 3u8)
 }
 
 #[cfg(not(verus_keep_ghost))]
 pub const fn deposit_charge_service_fee(state: u8, event: u8) -> bool {
-    deposit_charge_fee_body!(state, event, 3u8, 4u8, 7u8)
+    deposit_charge_fee_body!(state, event, 2u8, 5u8)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1359,7 +1355,8 @@ pub const fn deposit_numeric_effects(
         7u8,
         8u8,
         9u8,
-        10u8
+        10u8,
+        11u8
     )
 }
 
@@ -1379,7 +1376,9 @@ pub enum DepositEventGuard {
         signature_absent: bool,
         signature_length_valid: bool,
     },
-    BeginExpiry,
+    MarkRefundAvailable {
+        policy_allowed: bool,
+    },
     MintFinalization {
         fixed_fields_match: bool,
         receipt_succeeded: bool,
@@ -1400,17 +1399,18 @@ impl DepositEventGuard {
         match self {
             Self::Funding => event <= 2,
             Self::CommitAuthorization { .. } => event == 3,
-            Self::StartRefund { .. } => event == 4,
+            Self::StartRefund { .. } => event == 7,
             Self::InstallSignature { .. } => event == 5,
-            Self::BeginExpiry => event == 6,
-            Self::MintFinalization { .. } => event == 7,
-            Self::RefundResult => event == 9 || event == 10,
+            Self::MarkRefundAvailable { .. } => event == 4,
+            Self::MintFinalization { .. } => event == 6,
+            Self::RefundResult => event == 8 || event == 9,
         }
     }
 
     pub const fn accepts(self) -> bool {
         match self {
-            Self::Funding | Self::BeginExpiry | Self::RefundResult => true,
+            Self::Funding | Self::RefundResult => true,
+            Self::MarkRefundAvailable { policy_allowed } => policy_allowed,
             Self::CommitAuthorization {
                 quote_valid,
                 fixed_fields_match,
@@ -1605,11 +1605,6 @@ verus! {
         resources_sufficient_body!(eth, required_eth, cycles, required_cycles)
     }
 
-    pub open spec fn fee_delta_once_spec(was_transferred: bool, is_transferred: bool, fee: int) -> int {
-        let zero: int = 0;
-        fee_delta_once_body!(was_transferred, is_transferred, fee, zero)
-    }
-
     pub open spec fn release_transfer_matches_spec(
         transfer_amount: int,
         transfer_fee: int,
@@ -1738,8 +1733,10 @@ verus! {
         manual_claim_allowed_body!(scheduled, active, stopped, overdue, expired)
     }
 
-    pub open spec fn deposit_refund_amount_spec(gross: int, ledger_fee: int) -> Option<int> {
-        deposit_refund_body!(gross, ledger_fee)
+    pub open spec fn deposit_refund_amount_spec(
+        gross: int, service_fee: int, ledger_fee: int,
+    ) -> Option<int> {
+        deposit_refund_body!(gross, service_fee, ledger_fee)
     }
 
     pub open spec fn payout_debit_spec(confirmed_first_time: bool, amount: int, fee: int) -> Option<int> {
@@ -1766,9 +1763,9 @@ verus! {
     pub open spec fn deposit_transition_spec(state: int, event: int) -> Option<int> {
         let zero: int = 0; let one: int = 1; let two: int = 2; let three: int = 3;
         let four: int = 4; let five: int = 5; let six: int = 6; let seven: int = 7;
-        let eight: int = 8; let nine: int = 9; let ten: int = 10;
+        let eight: int = 8; let nine: int = 9; let ten: int = 10; let eleven: int = 11;
         deposit_transition_body!(
-            state, event, zero, one, two, three, four, five, six, seven, eight, nine, ten)
+            state, event, zero, one, two, three, four, five, six, seven, eight, nine, ten, eleven)
     }
 
     pub open spec fn authorization_commit_allowed_spec(
@@ -1803,16 +1800,13 @@ verus! {
     pub open spec fn deposit_reservation_active_spec(state: int) -> bool {
         let authorization_pending: int = 2;
         let authorization_available: int = 3;
-        let expiry: int = 4;
-        deposit_reservation_active_body!(
-            state, authorization_pending, authorization_available, expiry)
+        deposit_reservation_active_body!(state, authorization_pending, authorization_available)
     }
 
     pub open spec fn deposit_charge_service_fee_spec(state: int, event: int) -> bool {
-        let authorization_available: int = 3;
-        let expiry: int = 4;
-        let mint: int = 7;
-        deposit_charge_fee_body!(state, event, authorization_available, expiry, mint)
+        let authorization_pending: int = 2;
+        let signed: int = 5;
+        deposit_charge_fee_body!(state, event, authorization_pending, signed)
     }
 
     pub open spec fn deposit_releases_reservation_spec(state: int, event: int) -> bool {
@@ -1834,10 +1828,10 @@ verus! {
     ) -> (int, int, int, int, int, int, int) {
         let zero: int = 0; let one: int = 1; let two: int = 2; let three: int = 3;
         let four: int = 4; let five: int = 5; let six: int = 6; let seven: int = 7;
-        let eight: int = 8; let nine: int = 9; let ten: int = 10;
+        let eight: int = 8; let nine: int = 9; let ten: int = 10; let eleven: int = 11;
         deposit_numeric_effects_body!(
             state, event, gross_amount, net_amount, service_fee, reserved_amount,
-            zero, zero, one, two, three, four, five, six, seven, eight, nine, ten)
+            zero, zero, one, two, three, four, five, six, seven, eight, nine, ten, eleven)
     }
 
     pub open spec fn withdrawal_phase_step_spec(state: int, event: int) -> int {

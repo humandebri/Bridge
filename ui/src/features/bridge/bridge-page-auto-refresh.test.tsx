@@ -1,6 +1,6 @@
 import { StrictMode, useState, type ReactNode } from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { BridgePage } from "./bridge-page"
 
@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   bsnsBalance: vi.fn(),
   readDepositIntent: vi.fn(),
   runtimeWriteReadiness: vi.fn(),
+  runtimeRefetch: vi.fn(),
 }))
 
 vi.mock("wagmi", () => ({
@@ -30,7 +31,7 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("@/features/wallet/ic-wallet-provider", () => ({ useIcWallet: mocks.useIcWallet }))
 vi.mock("@/features/wallet/wallet-controls", () => ({ useWalletDialog: () => ({ openFor: vi.fn() }) }))
 vi.mock("@/features/status/use-status", () => ({
-  useRuntimeValidation: () => ({ data: { ready: true, blockers: [], checkedAt: Date.now() }, isFetching: false, refetch: vi.fn() }),
+  useRuntimeValidation: () => ({ data: { ready: true, blockers: [], checkedAt: Date.now() }, isFetching: false, refetch: mocks.runtimeRefetch }),
   useRuntimeHeartbeat: (_chainId: number | undefined, validation: unknown) => ({ data: validation, isFetching: false, refetch: vi.fn() }),
   useRuntimeWriteReadiness: mocks.runtimeWriteReadiness,
   useCurrentBaseQuote: () => ({
@@ -78,6 +79,19 @@ vi.mock("@/lib/deposit-intents", () => ({
   saveDepositIntent: vi.fn(),
 }))
 
+vi.mock("@/lib/browser-lock", () => ({
+  withBrowserLock: (_name: string, action: () => unknown) => action(),
+}))
+
+vi.mock("@/lib/wallet-snapshot", () => ({
+  currentInjectedWallet: vi.fn().mockResolvedValue({
+    address: "0x0000000000000000000000000000000000000002",
+    chainId: 84_532,
+  }),
+  requireWalletSnapshot: vi.fn(),
+  sameIcAccount: vi.fn().mockReturnValue(true),
+}))
+
 function Wrapper({ children }: { children: ReactNode }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
   return <StrictMode><QueryClientProvider client={client}>{children}</QueryClientProvider></StrictMode>
@@ -103,6 +117,9 @@ describe("BridgePage automatic wallet refresh", () => {
     mocks.bsnsBalance.mockReset().mockResolvedValue(1_000_000_000n)
     mocks.readDepositIntent.mockReset().mockReturnValue(undefined)
     mocks.runtimeWriteReadiness.mockReset().mockReturnValue({ ready: true, reason: undefined })
+    mocks.runtimeRefetch.mockReset().mockResolvedValue({
+      data: { ready: true, blockers: [], checkedAt: Date.now() },
+    })
   })
 
   it("loads IC balance, allowance, and sequence when an IC wallet appears later", async () => {
@@ -151,5 +168,47 @@ describe("BridgePage automatic wallet refresh", () => {
 
     await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalledOnce())
     expect(screen.getByText("Balance 10 TICRC1")).toBeInTheDocument()
+  })
+
+  it("shows recovery controls only after an in-flight deposit stops without a receipt", async () => {
+    const requestDeposit = vi.fn(() => new Promise(() => undefined))
+    const account = { owner: "aaaaa-aa" }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "plug",
+      adapter: {
+        prepare: vi.fn().mockResolvedValue(vi.fn()),
+        getAccount: vi.fn().mockResolvedValue(account),
+        requestDeposit,
+      },
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    mocks.readDepositIntent.mockReturnValue({
+      account,
+      recipient: "0x0000000000000000000000000000000000000002",
+      call: {
+        ownerSequence: 3n,
+        baseRecipient: new Uint8Array(20).fill(2),
+        grossAmount: 200_000_000n,
+        maxServiceFee: 50_000_000n,
+      },
+      state: "submitted",
+    })
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    expect(await screen.findByText("Deposit status unavailable")).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Retry same deposit" }))
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and open wallet" }))
+
+    await waitFor(() => expect(requestDeposit).toHaveBeenCalledOnce())
+    expect(screen.queryByText("Deposit status unavailable")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Deposit in progress…" })).toBeDisabled()
   })
 })

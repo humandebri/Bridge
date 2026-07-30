@@ -229,7 +229,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 28, 24);
+INSERT INTO bridge_metadata VALUES (1, 29, 25);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -260,6 +260,10 @@ CREATE TABLE reconciliation_scans (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT
 CREATE TABLE audit_events (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE fee_payouts (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE deposit_owner_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE deposit_authorization_deadline_index (
+    key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 40),
+    value BLOB NOT NULL CHECK (length(value) = 32)
+) STRICT, WITHOUT ROWID;
 CREATE TABLE pull_pending_deposit_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE release_pending_withdrawal_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE open_hold_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
@@ -339,6 +343,7 @@ INSERT INTO table_counts(name, count) VALUES
  ('audit_events', X'0000000000000000'),
  ('fee_payouts', X'0000000000000000'),
  ('deposit_owner_index', X'0000000000000000'),
+ ('deposit_authorization_deadline_index', X'0000000000000000'),
  ('pull_pending_deposit_index', X'0000000000000000'),
  ('release_pending_withdrawal_index', X'0000000000000000'),
  ('open_hold_index', X'0000000000000000'),
@@ -386,6 +391,16 @@ fn deposit_sequence_from_index_key(key: &StableBlob) -> Result<u64, StorageError
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or(StorageError::DecodeFailed)?;
     Ok(u64::MAX - u64::from_be_bytes(reverse_bytes))
+}
+
+fn deposit_authorization_deadline_index_key(
+    deadline: u64,
+    deposit_id: [u8; 32],
+) -> Result<StableBlob, StorageError> {
+    let mut bytes = Vec::with_capacity(40);
+    bytes.extend_from_slice(&deadline.to_be_bytes());
+    bytes.extend_from_slice(&deposit_id);
+    StableBlob::new(bytes)
 }
 
 fn reconciliation_scan_key(target: &ReconciliationTarget) -> [u8; 9] {
@@ -1653,6 +1668,7 @@ pub struct StableStore {
     audit_events: SqlMap<u64, StableBlob>,
     fee_payouts: SqlMap<u64, StableBlob>,
     deposit_owner_index: SqlMap<StableBlob, [u8; 32]>,
+    deposit_authorization_deadline_index: SqlMap<StableBlob, [u8; 32]>,
     deposit_admission: SqlCell<StableBlob>,
     notification_admission: SqlCell<StableBlob>,
     pull_pending_deposit_index: SqlMap<[u8; 32], u8>,
@@ -1838,6 +1854,29 @@ fn validate_storage_row(
                 return Err(DbError::Constraint("orphan deposit owner index".into()));
             }
         }
+        "deposit_authorization_deadline_index" => {
+            expect_row_shape(key, value, 40, 32, "invalid deposit deadline index")?;
+            if &key[8..] != value {
+                return Err(DbError::Constraint(
+                    "deposit deadline index id mismatch".into(),
+                ));
+            }
+            let stored = connection
+                .query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM deposits WHERE key = ?1",
+                    params![value],
+                )?
+                .ok_or_else(|| DbError::Constraint("orphan deposit deadline index".into()))?;
+            let stored: StoredDeposit =
+                decode_with_context(stored, "invalid deadline-indexed deposit")?;
+            let deadline = deposit_authorization_deadline(&stored.record)
+                .ok_or_else(|| DbError::Constraint("stale deposit deadline index".into()))?;
+            if key[..8] != deadline.to_be_bytes() {
+                return Err(DbError::Constraint(
+                    "deposit deadline index key mismatch".into(),
+                ));
+            }
+        }
         "pull_pending_deposit_index" | "release_pending_withdrawal_index" => {
             let (primary, context) = if table == "pull_pending_deposit_index" {
                 ("deposits", "orphan deposit pending index")
@@ -1960,6 +1999,42 @@ impl Drop for StableStore {
 }
 
 impl StableStore {
+    pub fn release_expired_deposit_reservations(
+        &mut self,
+        finalized_timestamp: u64,
+        limit: usize,
+    ) -> Result<bool, StorageError> {
+        if finalized_timestamp == 0 || limit == 0 {
+            return Ok(false);
+        }
+        let end = deposit_authorization_deadline_index_key(finalized_timestamp - 1, [u8::MAX; 32])?;
+        let entries =
+            self.deposit_authorization_deadline_index
+                .range_limited(..=end.clone(), limit, false);
+        for entry in entries {
+            let deposit_id = entry.value();
+            let mut deposit = self
+                .deposit(deposit_id)?
+                .ok_or(StorageError::RecordNotFound)?;
+            let event = match deposit.state {
+                bridge_core::DepositState::AuthorizationPending { .. }
+                | bridge_core::DepositState::AuthorizationAvailable { .. } => {
+                    bridge_core::DepositEvent::MarkRefundAvailable {
+                        reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                        finalized_timestamp: Some(finalized_timestamp),
+                    }
+                }
+                _ => return Err(StorageError::Core(CoreError::ConflictingReplay)),
+            };
+            let result = deposit.apply(event).map_err(StorageError::Core)?;
+            self.put_deposit_transition(&deposit, result)?;
+        }
+        Ok(self
+            .deposit_authorization_deadline_index
+            .first_in_range(..=end)
+            .is_some())
+    }
+
     pub fn deposit_reserve_token(&self) -> Result<DepositReserveToken, StorageError> {
         let counters = self.counters()?;
         let progress = self.external_progress()?;
@@ -2015,6 +2090,10 @@ impl StableStore {
             audit_events: SqlMap::new(handle, "audit_events"),
             fee_payouts: SqlMap::new(handle, "fee_payouts"),
             deposit_owner_index: SqlMap::new(handle, "deposit_owner_index"),
+            deposit_authorization_deadline_index: SqlMap::new(
+                handle,
+                "deposit_authorization_deadline_index",
+            ),
             deposit_admission: SqlCell::load(handle, SingletonColumn::DepositAdmission)?,
             notification_admission: SqlCell::load(handle, SingletonColumn::NotificationAdmission)?,
             pull_pending_deposit_index: SqlMap::new(handle, "pull_pending_deposit_index"),
@@ -2932,30 +3011,6 @@ impl StableStore {
             overdue_after_ns,
             Some(limits),
             SettlementLeaseLane::PublicManual,
-            false,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn claim_deposit_expiry_reconciliation_job(
-        &mut self,
-        settlement_id: [u8; 32],
-        caller: Principal,
-        now_ns: u64,
-        lease_until_ns: u64,
-        overdue_after_ns: u64,
-        limits: SettlementQuotaLimits,
-    ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
-        self.claim_settlement_job_with_mode(
-            SettlementJobKind::Deposit,
-            settlement_id,
-            caller,
-            now_ns,
-            lease_until_ns,
-            overdue_after_ns,
-            Some(limits),
-            SettlementLeaseLane::PublicManual,
-            true,
         )
     }
 
@@ -2978,7 +3033,6 @@ impl StableStore {
             overdue_after_ns,
             None,
             SettlementLeaseLane::GovernanceRecovery,
-            false,
         )
     }
 
@@ -2993,7 +3047,6 @@ impl StableStore {
         overdue_after_ns: u64,
         limits: Option<SettlementQuotaLimits>,
         lane: SettlementLeaseLane,
-        allow_scheduled_early: bool,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
         let admission_blob = self
             .settlement_admission
@@ -3057,13 +3110,12 @@ impl StableStore {
                             });
                         let expired =
                             *status == 1 && lease_until.is_some_and(|deadline| deadline <= now_ns);
-                        let allowed = (allow_scheduled_early && scheduled)
-                            || matches!(
-                                bridge_core::manual_claim_decision(
-                                    scheduled, active, stopped, overdue, expired,
-                                ),
-                                bridge_core::ManualClaimDecision::Allow
-                            );
+                        let allowed = matches!(
+                            bridge_core::manual_claim_decision(
+                                scheduled, active, stopped, overdue, expired,
+                            ),
+                            bridge_core::ManualClaimDecision::Allow
+                        );
                         if !allowed {
                             return Ok(ManualClaimTransaction::AutomaticProgressPending(next));
                         }
@@ -5273,8 +5325,11 @@ impl StableStore {
         )?;
         let derived_fee_delta = match (previous.as_ref().map(|record| &record.state), &value.state)
         {
-            (Some(previous_state), bridge_core::DepositState::Minted { .. })
-                if !matches!(previous_state, bridge_core::DepositState::Minted { .. }) =>
+            (Some(previous_state), bridge_core::DepositState::AuthorizationAvailable { .. })
+                if !matches!(
+                    previous_state,
+                    bridge_core::DepositState::AuthorizationAvailable { .. }
+                ) =>
             {
                 value
                     .quote
@@ -5318,8 +5373,22 @@ impl StableStore {
                         matches!(record.state, bridge_core::DepositState::Refunded { .. })
                     });
             let expected_net = value.quote.map_or(Amount::ZERO, |quote| quote.net_amount);
+            let charged_service_fee = if value
+                .mint_authorization
+                .as_ref()
+                .is_some_and(|authorization| authorization.signature.is_some())
+            {
+                value.quote.map_or(Amount::ZERO, |quote| quote.service_fee)
+            } else {
+                Amount::ZERO
+            };
             let expected_terminal_debit = if mint_completed || refund_completed {
-                value.gross_amount
+                value
+                    .gross_amount
+                    .checked_sub(charged_service_fee)
+                    .map_err(StorageError::Core)?
+            } else if derived_fee_delta != Amount::ZERO {
+                derived_fee_delta
             } else {
                 Amount::ZERO
             };
@@ -5331,7 +5400,7 @@ impl StableStore {
                 || effects.pending_liability_debit != expected_terminal_debit
                 || effects.escrow_debit
                     != if refund_completed {
-                        value.gross_amount
+                        expected_terminal_debit
                     } else {
                         Amount::ZERO
                     }
@@ -5368,6 +5437,14 @@ impl StableStore {
         let previous_accounting_blob = encode(&previous_accounting)?;
         record_write_storage_failpoint(RecordWriteFailpoint::Encode)?;
         let key = value.id.bytes().to_sql_bytes();
+        let previous_deadline_key = previous
+            .as_ref()
+            .and_then(deposit_authorization_deadline)
+            .map(|deadline| deposit_authorization_deadline_index_key(deadline, value.id.bytes()))
+            .transpose()?;
+        let next_deadline_key = deposit_authorization_deadline(value)
+            .map(|deadline| deposit_authorization_deadline_index_key(deadline, value.id.bytes()))
+            .transpose()?;
         let previous_blob = previous_stored.as_ref().map(encode).transpose()?;
         self.handle.update(|connection| {
             if let Some(token) = callback_token {
@@ -5404,6 +5481,13 @@ impl StableStore {
             if previous.as_ref().is_some_and(is_pending_deposit_ledger) {
                 remove_table_entry(connection, "pull_pending_deposit_index", key.clone())?;
             }
+            if let Some(previous_deadline_key) = &previous_deadline_key {
+                remove_table_entry(
+                    connection,
+                    "deposit_authorization_deadline_index",
+                    previous_deadline_key.as_slice().to_vec(),
+                )?;
+            }
             record_write_db_failpoint(RecordWriteFailpoint::RemoveIndex)?;
             if is_pending_deposit_ledger(value) {
                 upsert_table_entry(
@@ -5411,6 +5495,14 @@ impl StableStore {
                     "pull_pending_deposit_index",
                     key.clone(),
                     0u8.to_sql_bytes(),
+                )?;
+            }
+            if let Some(next_deadline_key) = &next_deadline_key {
+                upsert_table_entry(
+                    connection,
+                    "deposit_authorization_deadline_index",
+                    next_deadline_key.as_slice().to_vec(),
+                    value.id.bytes().to_sql_bytes(),
                 )?;
             }
             record_write_db_failpoint(RecordWriteFailpoint::AddIndex)?;
@@ -5927,17 +6019,6 @@ impl StableStore {
                     "open_hold_index",
                     hold.id.get().to_sql_bytes(),
                     0u8.to_sql_bytes(),
-                )?;
-                connection.execute(
-                    "UPDATE settlement_jobs SET status = 2, next_run_at_ns = NULL,
-                     lease_until_ns = NULL, lease_lane = 0,
-                     last_error_code = 'LedgerAmbiguous',
-                     last_error_detail = 'deposit funding requires reconciliation'
-                     WHERE settlement_kind = ?1 AND settlement_id = ?2",
-                    params![
-                        SettlementJobKind::Deposit.sql(),
-                        record.id.bytes().to_sql_bytes()
-                    ],
                 )?;
             }
             if promotion_attempt.is_some() {
@@ -7262,6 +7343,21 @@ fn is_deposit_mint_reserved(value: &DepositRecord) -> bool {
     value.reserves_mint_resources()
 }
 
+fn deposit_authorization_deadline(value: &DepositRecord) -> Option<u64> {
+    matches!(
+        value.state,
+        bridge_core::DepositState::AuthorizationPending { .. }
+            | bridge_core::DepositState::AuthorizationAvailable { .. }
+    )
+    .then(|| {
+        value
+            .mint_authorization
+            .as_ref()
+            .map(|authorization| authorization.authorization.deadline)
+    })
+    .flatten()
+}
+
 fn adjust_reserved_mint_amount(
     current: u128,
     previous: Option<&DepositRecord>,
@@ -8349,13 +8445,13 @@ mod tests {
         let mut store = StableStore::init(memory).expect("initialize stable store");
         let owner = Principal::self_authenticating([3; 32]);
         let record = deposit_for(owner);
-        let intent = intent(record.id.bytes(), owner);
+        let deposit_intent = intent(record.id.bytes(), owner);
         store
-            .admit_deposit(owner, &intent, &record, None, None)
+            .admit_deposit(owner, &deposit_intent, &record, None, None)
             .expect("first admission");
         assert_eq!(
             store
-                .admit_deposit(owner, &intent, &record, None, None)
+                .admit_deposit(owner, &deposit_intent, &record, None, None)
                 .expect("idempotent admission"),
             DepositAdmissionOutcome::Existing
         );
@@ -8994,14 +9090,14 @@ mod tests {
 
     #[test]
     #[serial]
-    fn mint_authorization_reservation_releases_only_at_terminal_state() {
+    fn authorization_signature_charges_fee_once_and_local_expiry_releases_reservation() {
         let mut store =
             StableStore::init_configured(VectorMemory::default(), &config()).expect("initialize");
         let owner = Principal::self_authenticating([36; 32]);
         let mut record = deposit_for(owner);
-        let intent = intent(record.id.bytes(), owner);
+        let deposit_intent = intent(record.id.bytes(), owner);
         store
-            .admit_deposit(owner, &intent, &record, None, None)
+            .admit_deposit(owner, &deposit_intent, &record, None, None)
             .expect("admit");
         let quote = DepositQuote {
             service_fee: Amount::new(10),
@@ -9009,7 +9105,7 @@ mod tests {
         };
         let authorization = MintAuthorization {
             deposit_id: record.id.bytes(),
-            recipient: intent.base_recipient,
+            recipient: deposit_intent.base_recipient,
             gross_amount: record.gross_amount,
             max_service_fee: record.max_service_fee,
             charged_service_fee: quote.service_fee,
@@ -9024,7 +9120,7 @@ mod tests {
                 quote,
                 authorization: Box::new(MintAuthorizationRecord {
                     authorization,
-                    domain,
+                    domain: domain.clone(),
                     digest,
                     origin: MintAuthorizationOrigin {
                         finalized_block_number: 7,
@@ -9054,20 +9150,111 @@ mod tests {
         store
             .put_deposit_transition(&record, signature_result)
             .expect("persist active authorization");
+
+        let second_owner = Principal::self_authenticating([37; 32]);
+        let mut second = deposit_for(second_owner);
+        second.id = DepositId::new([37; 32]);
+        let second_intent = intent(second.id.bytes(), second_owner);
+        store
+            .admit_deposit(second_owner, &second_intent, &second, None, None)
+            .expect("admit second deposit");
+        let second_authorization = MintAuthorization {
+            deposit_id: second.id.bytes(),
+            recipient: second_intent.base_recipient,
+            ..authorization
+        };
+        let second_digest = crate::mint_authorization::digest(&domain, second_authorization);
+        let second_commit = second
+            .apply(DepositEvent::CommitAuthorization {
+                quote,
+                authorization: Box::new(MintAuthorizationRecord {
+                    authorization: second_authorization,
+                    domain,
+                    digest: second_digest,
+                    origin: MintAuthorizationOrigin {
+                        finalized_block_number: 7,
+                        finalized_block_hash: [7; 32],
+                        finalized_block_timestamp: 100,
+                    },
+                    signature_dispatch_attempt: 0,
+                    signature_dispatched: false,
+                    signature: None,
+                }),
+            })
+            .expect("commit second authorization");
+        store
+            .put_deposit_transition(&second, second_commit)
+            .expect("persist second reservation");
         assert_eq!(
             store
                 .counters()
                 .expect("active counters")
                 .reserved_deposit_mint_operations,
+            2
+        );
+        assert_eq!(
+            store
+                .accounting()
+                .expect("fee charged at authorization")
+                .fee_reserve,
+            quote.service_fee
+        );
+        assert!(!store
+            .release_expired_deposit_reservations(authorization.deadline, 1)
+            .expect("deadline equality is not expired"));
+        assert_eq!(
+            store
+                .counters()
+                .expect("reservation retained at equality")
+                .reserved_deposit_mint_operations,
+            2
+        );
+        assert!(store
+            .release_expired_deposit_reservations(authorization.deadline + 1, 1)
+            .expect("bounded sweep reports remaining backlog"));
+        assert_eq!(
+            store
+                .counters()
+                .expect("one conservative reservation remains")
+                .reserved_deposit_mint_operations,
             1
         );
-
-        let expiry_result = record
-            .apply(DepositEvent::BeginExpiryReconciliation)
-            .expect("begin expiry");
-        store
-            .put_deposit_transition(&record, expiry_result)
-            .expect("persist expiry reconciliation");
+        assert!(!store
+            .release_expired_deposit_reservations(authorization.deadline + 1, 1)
+            .expect("second sweep clears backlog"));
+        record = store
+            .deposit(record.id.bytes())
+            .expect("read expired deposit")
+            .expect("expired deposit");
+        assert!(matches!(
+            record.state,
+            DepositState::RefundAvailable {
+                reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                ..
+            }
+        ));
+        assert_eq!(
+            store
+                .counters()
+                .expect("reservation released locally")
+                .reserved_deposit_mint_operations,
+            0
+        );
+        assert!(matches!(
+            store
+                .deposit(second.id.bytes())
+                .expect("read second expired deposit")
+                .expect("second expired deposit")
+                .state,
+            DepositState::RefundAvailable {
+                reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                ..
+            }
+        ));
+        assert_eq!(
+            store.accounting().expect("fee remains charged").fee_reserve,
+            quote.service_fee
+        );
         let mint_result = record
             .apply(DepositEvent::MintReconciled {
                 evidence: Box::new(bridge_core::MintFinalizationEvidence {
@@ -9621,8 +9808,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 28);
-        assert_eq!(WIRE_VERSION, 24);
+        assert_eq!(SCHEMA_VERSION, 29);
+        assert_eq!(WIRE_VERSION, 25);
     }
 
     #[test]
@@ -10283,7 +10470,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn funding_ambiguous_promotes_once_with_open_hold() {
+    fn funding_ambiguous_promotes_once_with_open_hold_and_internal_recovery_job() {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
         initialize_unpaused_admin(&mut store);
         let owner = Principal::self_authenticating([63; 32]);
@@ -10345,7 +10532,8 @@ mod tests {
             .settlement_job(SettlementJobKind::Deposit, record.id.bytes())
             .expect("job")
             .expect("present");
-        assert_eq!(job.status, SettlementJobStatus::Stopped);
+        assert_eq!(job.status, SettlementJobStatus::Scheduled);
+        assert_eq!(job.next_run_at_ns, Some(quota.now_ns));
         assert_eq!(store.next_deposit_sequence(owner).expect("sequence"), 1);
         assert_eq!(
             store.deposit_admission().expect("admission").global_count,
@@ -10556,42 +10744,6 @@ mod tests {
         assert_eq!(stopped.status, SettlementJobStatus::Stopped);
         assert_eq!(stopped.last_error_code.as_deref(), Some("RpcInconsistent"));
         assert_eq!(stopped.updated_at_ns, 20);
-    }
-
-    #[test]
-    #[serial]
-    fn explicit_expiry_reconciliation_can_claim_a_scheduled_deposit_job_early() {
-        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
-        let caller = Principal::self_authenticating([54; 32]);
-        let record = deposit();
-        store.put_deposit(&record).expect("deposit");
-        store
-            .handle
-            .update(|connection| {
-                enqueue_settlement_job(
-                    connection,
-                    SettlementJobKind::Deposit,
-                    record.id.bytes(),
-                    1_000,
-                )
-            })
-            .expect("scheduled job");
-        let claim = store
-            .claim_deposit_expiry_reconciliation_job(
-                record.id.bytes(),
-                caller,
-                0,
-                120,
-                300,
-                SettlementQuotaLimits {
-                    window_seconds: 60,
-                    global: 1,
-                    per_principal: 1,
-                    per_record: 1,
-                },
-            )
-            .expect("explicit expiry claim");
-        assert!(matches!(claim, ManualSettlementClaim::Claimed(_)));
     }
 
     #[test]

@@ -19,7 +19,7 @@ CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 28
+CURRENT_STABLE_SCHEMA = 29
 STAGES = (
     "preflight",
     "contracts",
@@ -582,6 +582,23 @@ def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo
     required_tests = {"full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_delay_enforced", "state_upgrade"}
     if local.get("schema_version") != 6 or set(local.get("tests", {})) != required_tests or any(local["tests"][name] != "passed" for name in required_tests):
         fail("local promotion evidence is not a complete schema v6 pass")
+    upgrade = local.get("state_upgrade")
+    if not isinstance(upgrade, dict) or upgrade.get("verified") is not True:
+        fail("local promotion evidence has no verified same-Wasm upgrade")
+    before = upgrade.get("before")
+    after = upgrade.get("after")
+    for label, state in (("before", before), ("after", after)):
+        if not isinstance(state, dict) or not isinstance(state.get("status"), dict):
+            fail(f"local promotion evidence state_upgrade.{label} has no status")
+        try:
+            schema_version = int(state["status"].get("schema_version"))
+        except (TypeError, ValueError):
+            fail(f"local promotion evidence state_upgrade.{label} has no stable schema")
+        if schema_version != CURRENT_STABLE_SCHEMA:
+            fail(
+                "local promotion evidence "
+                f"state_upgrade.{label} must use stable schema v{CURRENT_STABLE_SCHEMA}"
+            )
     if local.get("environment_mode") != ENVIRONMENT_MODE or local.get("activation_timelock_delay_seconds") != ACTIVATION_TIMELOCK_DELAY_SECONDS:
         fail("local promotion evidence is not bound to the five-minute staging policy")
     if profile.get("environment") != "sepolia-staging" or profile.get("testOnly") is not True or profile.get("chainId") != CHAIN_ID:

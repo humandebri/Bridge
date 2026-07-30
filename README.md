@@ -15,9 +15,9 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | Production | 未デプロイ | Plan 001〜007と本番運用条件の完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、Mint Authorization、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v28・record wire v24の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+`bridge-canister`はstable schema v29・record wire v25の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 ICP→BaseではCanisterはFinalized Base timestampから固定期限のEIP-712 Mint Authorizationへ署名するだけで、Base transactionを生成・送信しない。任意のBase walletが`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。
-期限後、CanisterはBase Finalized timestampと`isDepositProcessed`を同じcanonical block hashへ束縛して照合する。未処理なら失効証拠を保存してLedger refundへ進み、処理済みならexact `DepositMinted` eventとcanonical receiptの証拠を保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では返金せずfail closedする。
+期限後、既存のBase Finalized snapshotを使うdeadline順の上限付きローカル走査でmint予約だけを解放する。Depositごとのtimerや個別Base照合、自動返金は行わない。ownerが`request_deposit_refund`を明示実行した場合だけ、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を照合し、未処理なら固定net額をLedger refund、処理済みならexact `DepositMinted` eventとcanonical receiptを保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では資金を動かさない。
 Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
 Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの24時間Timelockへ接続している。
 
@@ -147,7 +147,7 @@ release対象claim、抽象・有限幅・trace定理、Verus/SMT義務、produc
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 28、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 29、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
 5. 24時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。

@@ -28,14 +28,6 @@ fn deposit_refund_memo(deposit_id: [u8; 32], attempt_no: u64) -> [u8; 32] {
     digest.finalize().into()
 }
 
-fn authorization_wake_at_ns(now_ns: u64, deadline: u64) -> u64 {
-    let now_seconds = now_ns / 1_000_000_000;
-    let wait_seconds = deadline
-        .saturating_sub(now_seconds)
-        .clamp(1, bridge_core::MINT_AUTHORIZATION_TTL_SECONDS);
-    now_ns.saturating_add(wait_seconds.saturating_mul(1_000_000_000))
-}
-
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum SettlementStopReason {
     LedgerUnavailable,
@@ -437,11 +429,11 @@ enum EscrowPreparation {
         quote: DepositQuote,
         authorization: Box<bridge_core::MintAuthorizationRecord>,
     },
-    Refund(DepositRefundReason),
+    RefundAvailable(DepositRefundReason),
     Stopped(SettlementStopReason),
 }
 
-fn start_deposit_refund(
+pub(crate) fn start_deposit_refund(
     deposit_id: [u8; 32],
     reason: DepositRefundReason,
     expiry_evidence: Option<bridge_core::MintExpiryEvidence>,
@@ -453,9 +445,24 @@ fn start_deposit_refund(
             .map_err(|_| SettlementActionError::StorageFailure)?
             .ok_or(SettlementActionError::NotFound)?;
         let fee = ledger::KINIC_LEDGER_FEE;
-        let amount = bridge_core::deposit_refund_amount(deposit.gross_amount.get(), fee.get())
-            .map(Amount::new)
-            .ok_or(SettlementActionError::StorageFailure)?;
+        let charged_service_fee = if deposit
+            .mint_authorization
+            .as_ref()
+            .is_some_and(|authorization| authorization.signature.is_some())
+        {
+            deposit
+                .quote
+                .map_or(Amount::ZERO, |quote| quote.service_fee)
+        } else {
+            Amount::ZERO
+        };
+        let amount = bridge_core::deposit_refund_amount(
+            deposit.gross_amount.get(),
+            charged_service_fee.get(),
+            fee.get(),
+        )
+        .map(Amount::new)
+        .ok_or(SettlementActionError::StorageFailure)?;
         let identity = LedgerTransferIdentity {
             operation: LedgerOperation::RefundDeposit,
             created_at_time_ns: ic_cdk::api::time(),
@@ -501,7 +508,9 @@ async fn prepare_escrowed_deposit(
     };
     let snapshot = observation.snapshot.mint;
     if observation.snapshot.deposits_paused {
-        return Ok(EscrowPreparation::Refund(DepositRefundReason::BasePaused));
+        return Ok(EscrowPreparation::RefundAvailable(
+            DepositRefundReason::BasePaused,
+        ));
     }
     let expected_signer = crate::api::cached_signer_address(config)
         .await
@@ -519,17 +528,17 @@ async fn prepare_escrowed_deposit(
             | bridge_core::CoreError::InvalidAmount
             | bridge_core::CoreError::ArithmeticUnderflow,
         ) => {
-            return Ok(EscrowPreparation::Refund(
+            return Ok(EscrowPreparation::RefundAvailable(
                 DepositRefundReason::ServiceFeeRejected,
             ));
         }
         Err(bridge_core::CoreError::PerDepositLimitExceeded) => {
-            return Ok(EscrowPreparation::Refund(
+            return Ok(EscrowPreparation::RefundAvailable(
                 DepositRefundReason::PerDepositLimitExceeded,
             ));
         }
         Err(bridge_core::CoreError::MintWindowLimitExceeded) => {
-            return Ok(EscrowPreparation::Refund(
+            return Ok(EscrowPreparation::RefundAvailable(
                 DepositRefundReason::MintWindowLimitExceeded,
             ));
         }
@@ -597,7 +606,6 @@ pub(crate) async fn advance_deposit(
             .map_err(|_| SettlementActionError::StorageFailure)?
             .ok_or(SettlementActionError::StorageFailure)
     })?;
-    let mut expiry_observation = None;
     loop {
         let deposit = STORE.with(|store| {
             store
@@ -728,8 +736,26 @@ pub(crate) async fn advance_deposit(
                             Err(_) => return Err(SettlementActionError::StorageFailure),
                         }
                     }
-                    EscrowPreparation::Refund(reason) => {
-                        start_deposit_refund(deposit_id, reason, None)?;
+                    EscrowPreparation::RefundAvailable(reason) => {
+                        STORE.with(|store| {
+                            let mut store = store.borrow_mut();
+                            let mut current = store
+                                .deposit(deposit_id)
+                                .map_err(|_| SettlementActionError::StorageFailure)?
+                                .ok_or(SettlementActionError::NotFound)?;
+                            let result = current
+                                .apply(DepositEvent::MarkRefundAvailable {
+                                    reason,
+                                    finalized_timestamp: None,
+                                })
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            store
+                                .put_deposit_transition(&current, result)
+                                .map_err(|_| SettlementActionError::StorageFailure)
+                        })?;
+                        return Ok(SettlementActionResult::Complete {
+                            state: SettlementState::Deposit(DepositPhase::RefundAvailable),
+                        });
                     }
                     EscrowPreparation::Stopped(reason) => {
                         return Ok(SettlementActionResult::Stopped { state, reason });
@@ -737,41 +763,7 @@ pub(crate) async fn advance_deposit(
                 }
             }
             bridge_core::DepositState::AuthorizationPending { .. } => {
-                let pending_deadline = deposit
-                    .mint_authorization
-                    .as_ref()
-                    .ok_or(SettlementActionError::StorageFailure)?
-                    .authorization
-                    .deadline;
-                if ic_cdk::api::time() / 1_000_000_000 > pending_deadline {
-                    lease.renew_before_external_call()?;
-                    let observation = evm_rpc::recovery_observation(
-                        &config,
-                        evm_rpc::RecoveryTarget::Deposit(deposit_id),
-                    )
-                    .await;
-                    lease.ensure_current()?;
-                    if let Ok(observation) = observation {
-                        if observation.snapshot.mint.confirmed_block_timestamp > pending_deadline {
-                            expiry_observation = Some(observation);
-                            STORE.with(|store| {
-                                let mut store = store.borrow_mut();
-                                let mut current = store
-                                    .deposit(deposit_id)
-                                    .map_err(|_| SettlementActionError::StorageFailure)?
-                                    .ok_or(SettlementActionError::NotFound)?;
-                                let result = current
-                                    .apply(DepositEvent::BeginExpiryReconciliation)
-                                    .map_err(|_| SettlementActionError::StorageFailure)?;
-                                store
-                                    .put_deposit_transition(&current, result)
-                                    .map_err(|_| SettlementActionError::StorageFailure)
-                            })?;
-                            continue;
-                        }
-                    }
-                }
-                let (digest, deadline) = STORE.with(|store| {
+                let digest = STORE.with(|store| {
                     let mut store = store.borrow_mut();
                     let mut current = store
                         .deposit(deposit_id)
@@ -785,11 +777,10 @@ pub(crate) async fn advance_deposit(
                         .dispatch_signature()
                         .ok_or(SettlementActionError::StorageFailure)?;
                     let digest = authorization.digest;
-                    let deadline = authorization.authorization.deadline;
                     store
                         .put_deposit(&current)
                         .map_err(|_| SettlementActionError::StorageFailure)?;
-                    Ok::<_, SettlementActionError>((digest, deadline))
+                    Ok::<_, SettlementActionError>(digest)
                 })?;
                 lease.renew_before_external_call()?;
                 let expected_signer = crate::api::cached_signer_address(&config)
@@ -828,168 +819,17 @@ pub(crate) async fn advance_deposit(
                         .put_deposit_transition(&current, result)
                         .map_err(|_| SettlementActionError::StorageFailure)
                 })?;
-                return Ok(SettlementActionResult::Deferred {
+                return Ok(SettlementActionResult::Complete {
                     state: SettlementState::Deposit(DepositPhase::AuthorizationAvailable),
-                    next_run_at_ns: authorization_wake_at_ns(ic_cdk::api::time(), deadline),
                 });
             }
             bridge_core::DepositState::AuthorizationAvailable { .. } => {
-                let authorization = deposit
-                    .mint_authorization
-                    .as_ref()
-                    .ok_or(SettlementActionError::StorageFailure)?;
-                lease.renew_before_external_call()?;
-                let observation = match evm_rpc::recovery_observation(
-                    &config,
-                    evm_rpc::RecoveryTarget::Deposit(deposit_id),
-                )
-                .await
-                {
-                    Ok(observation) => observation,
-                    Err(evm_rpc::ObservationError::Inconsistent) => {
-                        return Ok(SettlementActionResult::Stopped {
-                            state,
-                            reason: SettlementStopReason::RpcInconsistent,
-                        });
-                    }
-                    Err(_) => {
-                        return Ok(SettlementActionResult::Stopped {
-                            state,
-                            reason: SettlementStopReason::RpcUnavailable,
-                        });
-                    }
-                };
-                lease.ensure_current()?;
-                if observation.snapshot.mint.confirmed_block_timestamp
-                    <= authorization.authorization.deadline
-                {
-                    return Ok(SettlementActionResult::Deferred {
-                        state,
-                        next_run_at_ns: ic_cdk::api::time().saturating_add(60_000_000_000),
-                    });
-                }
-                expiry_observation = Some(observation);
-                STORE.with(|store| {
-                    let mut store = store.borrow_mut();
-                    let mut current = store
-                        .deposit(deposit_id)
-                        .map_err(|_| SettlementActionError::StorageFailure)?
-                        .ok_or(SettlementActionError::NotFound)?;
-                    let result = current
-                        .apply(DepositEvent::BeginExpiryReconciliation)
-                        .map_err(|_| SettlementActionError::StorageFailure)?;
-                    store
-                        .put_deposit_transition(&current, result)
-                        .map_err(|_| SettlementActionError::StorageFailure)
-                })?;
+                return Ok(SettlementActionResult::Complete { state });
             }
-            bridge_core::DepositState::ExpiryReconciliation { .. } => {
-                let authorization = deposit
-                    .mint_authorization
-                    .as_ref()
-                    .ok_or(SettlementActionError::StorageFailure)?;
-                let observation = if let Some(observation) = expiry_observation.take() {
-                    observation
-                } else {
-                    lease.renew_before_external_call()?;
-                    let observation = match evm_rpc::recovery_observation(
-                        &config,
-                        evm_rpc::RecoveryTarget::Deposit(deposit_id),
-                    )
-                    .await
-                    {
-                        Ok(observation) => observation,
-                        Err(evm_rpc::ObservationError::Inconsistent) => {
-                            return Ok(SettlementActionResult::Stopped {
-                                state,
-                                reason: SettlementStopReason::RpcInconsistent,
-                            });
-                        }
-                        Err(_) => {
-                            return Ok(SettlementActionResult::Stopped {
-                                state,
-                                reason: SettlementStopReason::RpcUnavailable,
-                            });
-                        }
-                    };
-                    lease.ensure_current()?;
-                    observation
-                };
-                if observation.snapshot.mint.confirmed_block_timestamp
-                    <= authorization.authorization.deadline
-                {
-                    return Ok(SettlementActionResult::Deferred {
-                        state,
-                        next_run_at_ns: ic_cdk::api::time().saturating_add(60_000_000_000),
-                    });
-                }
-                match observation.state {
-                    evm_rpc::RecoveryBaseState::DepositProcessed(false) => {
-                        start_deposit_refund(
-                            deposit_id,
-                            DepositRefundReason::AuthorizationExpired,
-                            Some(bridge_core::MintExpiryEvidence {
-                                deposit_id: authorization.authorization.deposit_id,
-                                authorization_digest: authorization.digest,
-                                chain_id: observation.finalized.chain_id,
-                                verifying_contract: authorization.domain.verifying_contract,
-                                deposit_processed: false,
-                                finalized_block_number: observation.finalized.block_number,
-                                finalized_block_hash: observation.finalized.block_hash,
-                                finalized_block_timestamp: observation
-                                    .snapshot
-                                    .mint
-                                    .confirmed_block_timestamp,
-                                bridge_signer: observation.bridge_identity.signer,
-                                mint_authorization_epoch: observation
-                                    .snapshot
-                                    .mint_authorization_epoch,
-                                runtime_sha256: observation.bridge_identity.runtime_sha256,
-                                rpc_request_digest: observation.rpc_audit.request_digest,
-                                rpc_response_digest: observation.rpc_audit.quorum_response_digest,
-                            }),
-                        )?;
-                    }
-                    evm_rpc::RecoveryBaseState::DepositProcessed(true) => {
-                        lease.renew_before_external_call()?;
-                        let evidence = match evm_rpc::exact_mint_evidence(
-                            &config,
-                            authorization,
-                            observation.finalized.block_number,
-                        )
-                        .await
-                        {
-                            Ok(evidence) => evidence,
-                            Err(_) => {
-                                crate::api::pause_deposits_for_safety()
-                                    .map_err(|_| SettlementActionError::StorageFailure)?;
-                                return Ok(SettlementActionResult::Stopped {
-                                    state,
-                                    reason: SettlementStopReason::BaseStateMismatch,
-                                });
-                            }
-                        };
-                        lease.ensure_current()?;
-                        STORE.with(|store| {
-                            let mut store = store.borrow_mut();
-                            let mut current = store
-                                .deposit(deposit_id)
-                                .map_err(|_| SettlementActionError::StorageFailure)?
-                                .ok_or(SettlementActionError::NotFound)?;
-                            let result = current
-                                .apply(DepositEvent::MintReconciled {
-                                    evidence: Box::new(evidence),
-                                })
-                                .map_err(|_| SettlementActionError::StorageFailure)?;
-                            store
-                                .put_deposit_transition(&current, result)
-                                .map_err(|_| SettlementActionError::StorageFailure)
-                        })?;
-                    }
-                }
+            bridge_core::DepositState::RefundAvailable { .. } => {
+                return Ok(SettlementActionResult::Complete { state });
             }
-            bridge_core::DepositState::FundingReconciliationHold { hold_id }
-            | bridge_core::DepositState::RefundReconciliationHold { hold_id, .. } => {
+            bridge_core::DepositState::FundingReconciliationHold { hold_id } => {
                 let hold = STORE.with(|store| {
                     store
                         .borrow()
@@ -1004,6 +844,21 @@ pub(crate) async fn advance_deposit(
                     }
                     HoldAdvance::Stopped(reason) => {
                         return Ok(SettlementActionResult::Stopped { state, reason });
+                    }
+                }
+            }
+            bridge_core::DepositState::RefundReconciliationHold { hold_id, .. } => {
+                let hold = STORE.with(|store| {
+                    store
+                        .borrow()
+                        .reconciliation_hold(hold_id.get())
+                        .map_err(|_| SettlementActionError::StorageFailure)?
+                        .ok_or(SettlementActionError::NotFound)
+                })?;
+                match advance_hold(&config, hold, lease).await? {
+                    HoldAdvance::Continue => continue,
+                    HoldAdvance::Progress | HoldAdvance::Stopped(_) => {
+                        return Ok(SettlementActionResult::Complete { state });
                     }
                 }
             }
@@ -1057,15 +912,15 @@ pub(crate) async fn advance_deposit(
                                 .commit_deposit_hold_bundle(&current, &hold)
                                 .map_err(|_| SettlementActionError::StorageFailure)
                         })?;
-                        return Ok(SettlementActionResult::Stopped {
-                            state: SettlementState::Deposit(DepositPhase::RefundReconciliationHold),
-                            reason: SettlementStopReason::LedgerAmbiguous,
+                        return Ok(SettlementActionResult::Complete {
+                            state: SettlementState::Deposit(DepositPhase::RefundProcessing),
                         });
                     }
-                    other => {
+                    LedgerCallOutcome::DefinitiveFailure { code }
+                    | LedgerCallOutcome::RetryableFailure { code } => {
                         return Ok(SettlementActionResult::Stopped {
                             state,
-                            reason: ledger_stop(&other),
+                            reason: SettlementStopReason::LedgerRejected(format!("{code:?}")),
                         });
                     }
                 }
@@ -1488,21 +1343,5 @@ mod tests {
         assert!(prepared_release_fee_matches_configured(10_000, 10_000));
         assert!(!prepared_release_fee_matches_configured(10_000, 20_000));
         assert!(!prepared_release_fee_matches_configured(20_000, 10_000));
-    }
-
-    #[test]
-    fn authorization_wake_uses_ic_time_only_for_liveness() {
-        assert_eq!(
-            authorization_wake_at_ns(1_000_000_000_000, 1_600),
-            1_600_000_000_000
-        );
-        assert_eq!(
-            authorization_wake_at_ns(2_000_000_000_000, 1_900),
-            2_001_000_000_000
-        );
-        assert_eq!(
-            authorization_wake_at_ns(1_000_000_000_000, 10_000),
-            1_000_000_000_000 + bridge_core::MINT_AUTHORIZATION_TTL_SECONDS * 1_000_000_000
-        );
     }
 }

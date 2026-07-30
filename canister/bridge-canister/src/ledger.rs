@@ -638,6 +638,7 @@ mod tests {
         assert_eq!(
             bridge_core::deposit_refund_amount(
                 KINIC_LEDGER_FEE.get().saturating_add(1),
+                0,
                 KINIC_LEDGER_FEE.get(),
             ),
             Some(1)

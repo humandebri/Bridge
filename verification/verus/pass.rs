@@ -222,14 +222,6 @@ proof fn candidate_reservation_increases_both_requirements(
     vstd::arithmetic::mul::lemma_mul_inequality(current, current + 1, unit);
 }
 
-proof fn fee_is_counted_exactly_on_first_transfer(fee: int)
-    requires 0 <= fee
-    ensures
-        kernel::fee_delta_once_spec(false, true, fee) == fee,
-        kernel::fee_delta_once_spec(true, true, fee) == 0,
-        kernel::fee_delta_once_spec(false, false, fee) == 0
-{}
-
 proof fn release_transfer_requires_exact_amount_and_fee(
     transfer_amount: int, transfer_fee: int, amount_out: int, ledger_fee: int,
 )
@@ -626,36 +618,38 @@ proof fn refund_start_requires_attempt_and_policy(attempt: bool, policy: bool)
 
 proof fn reservation_exists_only_for_authorization_progress(state: int)
     ensures kernel::deposit_reservation_active_spec(state)
-        <==> state == 2 || state == 3 || state == 4
+        <==> state == 2 || state == 3
 {}
 
-proof fn deposit_fee_is_charged_only_on_mint_transition(state: int, event: int)
+proof fn deposit_fee_is_charged_only_on_authorization_signature(state: int, event: int)
     ensures kernel::deposit_charge_service_fee_spec(state, event)
-        <==> (state == 3 || state == 4) && event == 7
+        <==> state == 2 && event == 5
 {}
 
-proof fn deposit_reservation_is_released_only_at_mint_or_refund(state: int, event: int)
+proof fn deposit_reservation_is_released_at_local_expiry(state: int, event: int)
     ensures kernel::deposit_releases_reservation_spec(state, event)
-        <==> ((state == 3 || state == 4) && event == 7) || (state == 4 && event == 4)
+        <==> (state == 2 && event == 4) || (state == 3 && event == 4)
 {}
 
 proof fn deposit_numeric_effects_match_every_economic_transition(
     gross: int, net: int, fee: int, reserved: int,
 )
-    requires 0 <= gross, 0 <= net, 0 <= fee, 0 <= reserved
+    requires 0 <= gross, 0 < net, 0 <= fee, 0 <= reserved
     ensures
         kernel::deposit_numeric_effects_spec(1, 3, gross, net, fee, 0)
             == (net, net, 0int, 0int, 0int, 0int, 0int),
-        kernel::deposit_numeric_effects_spec(3, 7, gross, net, fee, reserved)
-            == (0int, 0int, reserved, fee, gross, 0int, net),
-        kernel::deposit_numeric_effects_spec(4, 7, gross, net, fee, reserved)
-            == (0int, 0int, reserved, fee, gross, 0int, net),
-        kernel::deposit_numeric_effects_spec(4, 4, gross, net, fee, reserved)
+        kernel::deposit_numeric_effects_spec(2, 5, gross, net, fee, reserved)
+            == (reserved, 0int, 0int, fee, fee, 0int, 0int),
+        kernel::deposit_numeric_effects_spec(3, 4, gross, net, fee, reserved)
             == (0int, 0int, reserved, 0int, 0int, 0int, 0int),
-        kernel::deposit_numeric_effects_spec(6, 9, gross, net, fee, 0)
+        kernel::deposit_numeric_effects_spec(4, 6, gross, net, fee, 0)
+            == (0int, 0int, 0int, 0int, net, 0int, net),
+        kernel::deposit_numeric_effects_spec(6, 8, gross, 0, fee, 0)
             == (0int, 0int, 0int, 0int, gross, gross, 0int),
-        kernel::deposit_numeric_effects_spec(2, 6, gross, net, fee, reserved)
-            == (reserved, 0int, 0int, 0int, 0int, 0int, 0int)
+        kernel::deposit_numeric_effects_spec(6, 8, gross, net, fee, 0)
+            == (0int, 0int, 0int, 0int, net, net, 0int),
+        kernel::deposit_numeric_effects_spec(2, 4, gross, net, fee, reserved)
+            == (0int, 0int, reserved, 0int, 0int, 0int, 0int)
 {}
 
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
@@ -675,10 +669,14 @@ proof fn withdrawal_phase_allowance_matches_a_transition(state: int, event: int)
             || (state == 1 && event == 1)
 {}
 
-proof fn deposit_refund_debits_exactly_gross(gross: int, ledger_fee: int)
-    requires 0 <= ledger_fee < gross
-    ensures kernel::deposit_refund_amount_spec(gross, ledger_fee) == Some(gross - ledger_fee),
-        (gross - ledger_fee) + ledger_fee == gross
+proof fn deposit_refund_deducts_charged_fee_and_ledger_fee(
+    gross: int, service_fee: int, ledger_fee: int,
+)
+    requires 0 <= service_fee, 0 <= ledger_fee, service_fee + ledger_fee < gross
+    ensures
+        kernel::deposit_refund_amount_spec(gross, service_fee, ledger_fee)
+            == Some(gross - service_fee - ledger_fee),
+        (gross - service_fee - ledger_fee) + service_fee + ledger_fee == gross
 {}
 
 proof fn refund_retry_requires_matching_evidence(request: bool, hold: bool, transfer: bool, open_or_retry: bool)

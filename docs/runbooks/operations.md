@@ -22,7 +22,7 @@ KINIC mainnet Ledgerのfeeは`100000` rawであり、stagingとの差は意図�
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv28、record wireはv24を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
+stable schemaはv29、record wireはv25を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
 
 ## 保持制限と監査
 
@@ -30,7 +30,7 @@ stable schemaはv28、record wireはv24を唯一の現行形式とする。未�
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v28またはwire v24以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
+schema v29またはwire v25以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。Ledger feeとService Feeをreview済みprofileへ同期した後、対象ownerまたは運用principalがHistoryから`continue_withdrawal`を実行する。Canisterが最新Ledger feeを再取得し、charged Service Fee以下であることを確認した場合だけ、同じrecordからreleaseを開始してguardを解除する。
 本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。
@@ -112,13 +112,13 @@ proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`
 - Holdの強制解除、nonce操作、任意transaction送信は行わない。
 ## Mint証拠不一致
 
-期限後に`isDepositProcessed(depositId) == true`なのに、`DepositMinted` eventがない、複数ある、Authorization digest・recipient・amount・feeが異なる、またはcanonical成功receiptへ束縛できない場合、Canisterは対象Depositを`ExpiryReconciliation`で停止し、新規Depositをlocal pauseする。返金や別Authorization発行へfallbackしない。
+ownerのRefund請求で`isDepositProcessed(depositId) == true`なのに、`DepositMinted` eventがない、複数ある、Authorization digest・recipient・amount・feeが異なる、またはcanonical成功receiptへ束縛できない場合、Canisterは資金を動かさずfail closedにする。返金や別Authorization発行へfallbackしない。
 
-監査ではDeposit ID、Authorization digest、作成元block、観測Finalized head、runtime hash、signer、epoch、RPC providerの不一致内容を保存する。独立RPCでcontract storage、logs、receipt、canonical block hashを確認し、原因解消後にGovernanceまたはpause principalから`continue_deposit`を一度実行する。record、counter、証拠を手作業で変更しない。
+監査ではDeposit ID、Authorization digest、作成元block、観測Finalized head、runtime hash、signer、epoch、RPC providerの不一致内容を保存する。独立RPCでcontract storage、logs、receipt、canonical block hashを確認し、原因解消後にDeposit ownerから`request_deposit_refund`を再実行する。record、counter、証拠を手作業で変更しない。
 
 ## Stable Settlement executorと手動復旧
 
-Mint Authorizationは作成元Finalized timestampから固定2時間（7,200秒）の期限を持つ。Canister timerはIC時刻でおおよそ期限後に起床するが、返金判定はBase Finalized timestampだけを使う。owner、Governance、pause principalは`continue_deposit`で期限照合を手動起動できるが、`Finalized timestamp > deadline`と`isDepositProcessed == false`のcanonical証拠を迂回できない。期限前、等値、RPC不一致では返金しない。
+Mint Authorizationは作成元Finalized timestampから固定2時間（7,200秒）の期限を持つ。新規Depositなどが取得したFinalized snapshotでdeadline順indexを上限付きに走査し、`Finalized timestamp > deadline`の予約だけを個別RPCなしで解放する。Depositごとのtimer、自動Base照合、自動Ledger返金はない。ownerが`request_deposit_refund`を実行した場合だけ、認可発行済みDepositの`isDepositProcessed == false`をcanonical blockで確認して返金する。期限前、等値、RPC不一致では資金を動かさない。
 
 `settlement_scheduler.health = Degraded`の場合はstopped、5分以上overdueのschedule、expired leaseを特定する。active leaseがある間の次回起床はlease期限であり、別のoverdue jobへ即時timerを再armしない。`Faulted`の場合は`last_internal_error`と`last_dispatcher_run_at_ns`を記録し、新規DepositをpauseしてSQLiteを手作業で変更せず、同じWasmをupgradeしてstable job tableからtimerを再armする。改善しなければ障害Wasmとして調査する。
 一時障害の基準retry間隔は公開設定`settlement_retry_interval_seconds`であり、Governance transactionの監視設定とは独立している。
@@ -127,17 +127,17 @@ RPC障害では複数providerの応答一致とcanonical Finalized headを回復
 
 Base burnが未通知なら、Historyの`Check and notify`でCanisterのFinalized receipt検証と通知を一回だけ実行する。
 Withdrawal transaction hashはactive deploymentに束縛したpending confirmationとしてbrowser localStorageへ保存する。recovery cursorは保存しない。回復はWithdrawal Historyの明示的な`Refresh`と必要な回数の`Scan older`でFinalized Base eventを取得し、event行の`Check and notify`から同じhashを通知する。
-Deposit mint transaction hashもactive deploymentに束縛して保存する。wallet receipt成功後はHistoryの`Confirm mint on IC`からowner identityで`notify_deposit_mint`を再実行できる。Canisterはexact Finalized receipt・event・Authorizationを毎回検証し、成功済みの同一hashは冪等に返す。通知不能でも期限後reconciliationはfallbackとして残る。
-Depositの不明応答はbrowser storageへ保存しない。`Refresh`でowner sequenceとHistoryを読み、受付済みrecordがあればそれをContinueし、未受付なら同じ次sequenceで再度明示送信する。
+Deposit mint transaction hashはactive deploymentに束縛して保存する。HistoryはFinalized `DepositMinted` logとCanister DepositをIDで統合し、exact Authorization fieldが一致する成功を復元する。成功後のIC wallet署名やCanister通知はない。
+Depositの不明応答はbrowser storageへ保存しない。`Refresh`でowner sequenceとHistoryを読み、受付済みrecordがあれば状態を表示し、未受付なら同じ次sequenceで再度明示送信する。
 
-所有者が操作できない場合、Governanceまたはpause administratorは停止原因の解消を確認する。stopped、expired、または非終端なのにjobがないrecordには`continue_deposit`または`continue_withdrawal`を一度実行する。別recordのactive lease中は`Busy`、quota超過は`RateLimited`を返す。
+Deposit refundはownerだけが請求でき、Governanceやpause administratorは代行しない。Withdrawalのstoppedまたは非終端なのにjobがないrecordには、停止原因の解消後に`continue_withdrawal`を一度実行する。別recordのactive lease中は`Busy`、quota超過は`RateLimited`を返す。
 fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行する。
 
 - Governance nonceを確保したoperation: `governance-relayer status`で署名成果物を取得し、同じrawを送信・確定する。必要時だけ明示的replacementを要求する。nonceやstable counterを手作業で変更しない。
-- Mint Authorization: signatureが未完成なら同一digestを再署名する。`AuthorizationAvailable`ならBase walletで期限内に送信し、成功receiptを直ちに通知する。通知できなくても期限後の自動照合はfallbackとして残し、deadlineを変えた再発行は行わない。
+- Mint Authorization: signatureが未完成なら同一digestを再署名する。`AuthorizationAvailable`ならBase walletで期限内に送信し、成功receipt/eventはUIが追跡する。deadlineを変えた再発行は行わない。
 - Withdrawal Ledger hold: `continue_withdrawal`で同一Withdrawal ID・IC Account・固定amountOutを維持する。dedup期間内は同一transfer identityを一度だけ再送し、期間後は一回につきreconciliationを1 stepだけ進める。完全な不在証拠なしに別identityを作らない。送金先変更、任意送金、Base refundは行わない。
 - Deposit funding hold: pullの成功証拠または完全な不存在証明まで補償を行わない。成功時は`EscrowedUnquoted`、不存在時は`Cancelled`へ進める。
-- Deposit refund hold: 元account、attemptに保存した`gross - ledger_fee`、feeを照合する。成功証拠で`Refunded`へ進め、曖昧結果は完全な不存在証明後だけattempt番号、created-at time、memoを更新する。確定的な`BadFee`は固定fee設定の不一致として停止し、返金payloadを変更しない。Ledger feeを変更せず、Canister設定とLedger設定の不一致を解消してから同じrecordを再実行する。
+- Deposit refund hold: 元account、attemptに保存した金額と固定Ledger feeを照合する。認可発行前は`gross - ledger_fee`、発行後は`gross - charged_service_fee - ledger_fee`で、初回pull fee・確定service fee・refund feeは返さない。成功証拠で`Refunded`へ進め、曖昧結果はownerの再請求でのみ照合する。完全な不存在証明後だけattempt番号、created-at time、memoを更新する。確定的な`BadFee`は固定fee設定の不一致として停止し、返金payloadを変更しない。
 - 停止理由: Historyまたは`get_deposit`/`get_withdrawal`の`last_settlement_stop_reason`を記録し、外部障害を解消してからContinueする。
 
 手動Retryの既定quotaは10分windowあたりglobal 60、caller 6、record 3である。profile値を変更する場合は`1 <= per_record <= per_principal <= global`とwindow 60〜3600秒を維持する。

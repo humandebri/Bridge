@@ -75,12 +75,22 @@ fn refund_identity(
     created_at_time_ns: u64,
     memo: [u8; 32],
 ) -> LedgerTransferIdentity {
+    let charged_service_fee = if deposit
+        .mint_authorization
+        .as_ref()
+        .is_some_and(|authorization| authorization.signature.is_some())
+    {
+        10
+    } else {
+        0
+    };
     LedgerTransferIdentity {
         operation: LedgerOperation::RefundDeposit,
         created_at_time_ns,
         memo,
         amount: Amount::new(
-            deposit_refund_amount(deposit.gross_amount.get(), 10).expect("valid refund"),
+            deposit_refund_amount(deposit.gross_amount.get(), charged_service_fee, 10)
+                .expect("valid refund"),
         ),
         fee: Amount::new(10),
         from: deposit.transfer.to.clone(),
@@ -180,6 +190,14 @@ fn minted_state_requires_and_persists_exact_canonical_evidence() {
             signature: vec![12; 65],
         })
         .expect("signed");
+    deposit
+        .apply(DepositEvent::MarkRefundAvailable {
+            reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+            finalized_timestamp: Some(
+                MintAuthorization::deadline_from_finalized_timestamp(1).expect("deadline") + 1,
+            ),
+        })
+        .expect("release reservation");
     let mut invalid = finalization_evidence();
     invalid.rpc_response_digest = [0; 32];
     let snapshot = deposit.clone();
@@ -232,9 +250,19 @@ fn expired_authorization_refund_requires_persisted_finalized_unprocessed_evidenc
             signature: vec![12; 65],
         })
         .expect("signed");
+    let deadline = MintAuthorization::deadline_from_finalized_timestamp(1).expect("valid deadline");
+    assert!(deposit
+        .apply(DepositEvent::MarkRefundAvailable {
+            reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+            finalized_timestamp: Some(deadline),
+        })
+        .is_err());
     deposit
-        .apply(DepositEvent::BeginExpiryReconciliation)
-        .expect("expiry reconciliation");
+        .apply(DepositEvent::MarkRefundAvailable {
+            reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+            finalized_timestamp: Some(deadline + 1),
+        })
+        .expect("outcome unreconciled");
 
     let refund = TransferAttempt {
         attempt_no: 0,
@@ -308,7 +336,12 @@ fn expired_pending_authorization_does_not_require_a_late_signature_to_refund() {
         .is_none());
 
     deposit
-        .apply(DepositEvent::BeginExpiryReconciliation)
+        .apply(DepositEvent::MarkRefundAvailable {
+            reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+            finalized_timestamp: Some(
+                MintAuthorization::deadline_from_finalized_timestamp(1).expect("deadline") + 1,
+            ),
+        })
         .expect("expired pending authorization");
     deposit
         .apply(DepositEvent::StartRefund {
@@ -317,11 +350,7 @@ fn expired_pending_authorization_does_not_require_a_late_signature_to_refund() {
                 attempt_no: 0,
                 identity: refund_identity(&deposit, 100, [14; 32]),
             }),
-            expiry_evidence: Some(Box::new(expiry_evidence(
-                MintAuthorization::deadline_from_finalized_timestamp(1)
-                    .and_then(|deadline| deadline.checked_add(1))
-                    .expect("valid post-deadline timestamp"),
-            ))),
+            expiry_evidence: None,
         })
         .expect("evidence-bound refund without signature");
     assert!(matches!(
@@ -351,8 +380,9 @@ fn amount_and_quote_boundaries_are_checked() {
         base_snapshot(10).quote(Amount::new(9), Amount::new(10)),
         Err(CoreError::ArithmeticUnderflow)
     );
-    assert_eq!(deposit_refund_amount(10_000, 10_000), None);
-    assert_eq!(deposit_refund_amount(10_001, 10_000), Some(1));
+    assert_eq!(deposit_refund_amount(10_000, 0, 10_000), None);
+    assert_eq!(deposit_refund_amount(10_001, 0, 10_000), Some(1));
+    assert_eq!(deposit_refund_amount(20_001, 10_000, 10_000), Some(1));
 
     let mut above_user = base_snapshot(10);
     above_user.service_fee = Amount::new(11);

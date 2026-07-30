@@ -28,6 +28,13 @@ import {
 import { formatTokenAmount } from "@/lib/amounts"
 import { withBrowserLock } from "@/lib/browser-lock"
 import { depositIdsForRefresh, mergeDepositHistoryPage, type DepositHistoryData } from "@/lib/deposit-history"
+import {
+  depositMintFinalizationStatus,
+  scanDepositMintLogs,
+  type DepositMintFinalizationStatus,
+  type DepositMintLogScan,
+  type ExpectedDepositMint,
+} from "@/lib/deposit-mint-finalization"
 import { basePublicClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import type { IcWalletAdapter } from "@/lib/ic/wallet"
@@ -91,6 +98,57 @@ function HistoryPage() {
     queryKey: depositQueryKey,
     enabled: Boolean(ic.account),
     queryFn: () => readDepositHistory("refresh", queryClient.getQueryData<DepositHistoryData>(depositQueryKey)),
+  })
+  const depositMintQueryKey = [
+    "deposit-mint-events",
+    deploymentProfile.chainId,
+    deploymentProfile.bridgeAddress,
+    ...(deposits.data?.items.flatMap((record) => {
+      const authorization = record.mint_authorization[0]
+      return authorization ? [`${bytesHex(record.deposit_id)}:${authorization.finalized_block_number}:${bytesHex(authorization.digest)}`] : []
+    }) ?? []),
+  ] as const
+  const depositMintScan = useQuery({
+    queryKey: depositMintQueryKey,
+    enabled: Boolean(deposits.data?.items.some((record) => record.mint_authorization.length > 0)),
+    queryFn: async () => {
+      const records = (deposits.data?.items ?? []).filter((record) => record.mint_authorization.length > 0)
+      const authorizationBlocks = records.map((record) => {
+        const authorization = record.mint_authorization[0]
+        if (!authorization) throw new Error("Mint authorization disappeared during finalized event scan")
+        return authorization.finalized_block_number
+      })
+      if (!authorizationBlocks.length) throw new Error("No Mint Authorization is available to scan")
+      const finalized = await basePublicClient.getBlock({ blockTag: "finalized" })
+      if (finalized.number === null || finalized.hash === null) throw new Error("finalized Base block is unavailable")
+      const deploymentBlock = authorizationBlocks.reduce((minimum, block) => block < minimum ? block : minimum)
+      let previous = queryClient.getQueryData<DepositMintLogScan>(depositMintQueryKey)
+      if (previous) {
+        const checkpoint = await basePublicClient.getBlock({ blockNumber: previous.lastFinalizedBlock })
+        if (finalized.number < previous.lastFinalizedBlock || checkpoint.hash !== previous.lastFinalizedBlockHash) previous = undefined
+      }
+      return scanDepositMintLogs({
+        deploymentBlock,
+        finalizedBlock: finalized.number,
+        finalizedBlockHash: finalized.hash,
+        previous,
+        fetchLogs: (fromBlock, toBlock) => basePublicClient.getContractEvents({
+          address: deploymentProfile.bridgeAddress as `0x${string}`,
+          abi: bridgeAbi,
+          eventName: "DepositMinted",
+          args: { depositId: records.map((record) => bytesHex(record.deposit_id)) },
+          fromBlock,
+          toBlock,
+          strict: true,
+        }),
+        fetchBlockHash: async (blockNumber) => {
+          const block = await basePublicClient.getBlock({ blockNumber })
+          if (block.hash === null) throw new Error("finalized Base checkpoint hash is unavailable")
+          return block.hash
+        },
+      })
+    },
+    staleTime: 15_000,
   })
 
   const withdrawalQueryKey = ["withdraw-history", deploymentProfile.chainId, deploymentProfile.bridgeAddress, address] as const
@@ -177,11 +235,12 @@ function HistoryPage() {
     const timer = window.setInterval(() => {
       void Promise.all([
         ic.account ? deposits.refetch() : Promise.resolve(),
+        deposits.data?.items.length ? depositMintScan.refetch() : Promise.resolve(),
         address ? withdrawals.refetch() : Promise.resolve(),
       ])
     }, 60_000)
     return () => window.clearInterval(timer)
-  }, [address, deposits, ic.account, pageVisible, withdrawals])
+  }, [address, depositMintScan, deposits, ic.account, pageVisible, withdrawals])
 
   const scanOlderWithdrawals = async () => {
     if (!withdrawals.data || withdrawals.data.olderCursor === null) return
@@ -227,7 +286,7 @@ function HistoryPage() {
       setRetryingHash(undefined)
     }
   }
-  const continueDeposit = async (record: DepositView) => {
+  const requestDepositRefund = async (record: DepositView) => {
     const key = bytesHex(record.deposit_id)
     let closeWalletSession: (() => Promise<void>) | undefined
     try {
@@ -235,11 +294,13 @@ function HistoryPage() {
       if (!ic.adapter) throw new Error("Connect the deposit owner IC wallet")
       closeWalletSession = await ic.adapter.prepare()
       await refetchRuntimeWriteReady(() => runtime.refetch())
-      const result = await withBrowserLock(`kinic-wallet-prompt:ic:${ic.account?.owner ?? "unknown"}`, () => ic.adapter!.continueDeposit(Uint8Array.from(record.deposit_id)))
-      toastSettlement(result)
+      const result = await withBrowserLock(`kinic-wallet-prompt:ic:${ic.account?.owner ?? "unknown"}`, () => ic.adapter!.requestDepositRefund(Uint8Array.from(record.deposit_id)))
+      if ("Refunded" in result.state) toast.success("Refund completed.")
+      else if ("Minted" in result.state) toast.success("This deposit was already minted on Base.")
+      else toast.info("Refund claim recorded. Run the claim again to continue reconciliation.")
       await deposits.refetch()
     } catch {
-      toast.error("This transfer could not be retried. Try again later.")
+      toast.error("The refund could not be claimed. Review the wallet message and try again later.")
     } finally {
       await closeWalletSession?.()
       setActioningId(undefined)
@@ -267,10 +328,11 @@ function HistoryPage() {
     void Promise.all([
       runtime.refetch(),
       ic.account ? deposits.refetch() : Promise.resolve(),
+      deposits.data?.items.length ? depositMintScan.refetch() : Promise.resolve(),
       address ? withdrawals.refetch() : Promise.resolve(),
     ])
   }
-  const refreshing = runtime.isFetching || (Boolean(ic.account) && deposits.isFetching) || (Boolean(address) && withdrawals.isFetching)
+  const refreshing = runtime.isFetching || (Boolean(ic.account) && (deposits.isFetching || depositMintScan.isFetching)) || (Boolean(address) && withdrawals.isFetching)
   const loadingInitial = Boolean(ic.account && !deposits.data && deposits.isFetching) || Boolean(address && !withdrawals.data && withdrawals.isFetching)
   const loadingOlder = loadingOlderDeposits || loadingOlderWithdrawals
   const writesEnabled = runtimeReadiness.ready && !runtime.isFetching
@@ -300,6 +362,9 @@ function HistoryPage() {
     {(deposits.isError || withdrawals.isError) && <Alert className="mb-5" tone="warning">
       Some activity is unavailable. The visible order may be incomplete. Choose Refresh to try again.
     </Alert>}
+    {depositMintScan.isError && <Alert className="mb-5" tone="warning">
+      Finalized Base mint history is unavailable. New Base mint submissions are paused; refund claims remain available.
+    </Alert>}
 
     <div className="mb-5 inline-flex rounded-2xl bg-[var(--panel)] p-1" role="group" aria-label="Filter activity">
       <FilterButton active={filter === "all"} onClick={() => setFilter("all")}>All</FilterButton>
@@ -319,9 +384,11 @@ function HistoryPage() {
               actioningId={actioningId}
               retryingHash={retryingHash}
               historyTruncated={Boolean(deposits.data?.historyTruncated)}
+              depositMintScan={depositMintScan.data}
+              depositMintQueryState={depositMintScan.isError ? "unavailable" : depositMintScan.isFetching ? "checking" : "ready"}
               hasOlder={olderSources.length > 0}
               loadingOlder={loadingOlder}
-              onContinueDeposit={continueDeposit}
+              onRequestDepositRefund={requestDepositRefund}
               onCheckAndNotify={checkAndNotify}
               onContinueWithdrawal={continueWithdrawal}
               onLoadOlder={loadOlderActivity}
@@ -345,9 +412,11 @@ function ActivityList({
   actioningId,
   retryingHash,
   historyTruncated,
+  depositMintScan,
+  depositMintQueryState,
   hasOlder,
   loadingOlder,
-  onContinueDeposit,
+  onRequestDepositRefund,
   onCheckAndNotify,
   onContinueWithdrawal,
   onLoadOlder,
@@ -358,9 +427,11 @@ function ActivityList({
   actioningId?: string
   retryingHash?: string
   historyTruncated: boolean
+  depositMintScan?: DepositMintLogScan
+  depositMintQueryState: "ready" | "checking" | "unavailable"
   hasOlder: boolean
   loadingOlder: boolean
-  onContinueDeposit: (record: DepositView) => Promise<void>
+  onRequestDepositRefund: (record: DepositView) => Promise<void>
   onCheckAndNotify: (item: WithdrawalHistoryItem) => Promise<void>
   onContinueWithdrawal: (item: WithdrawalHistoryItem) => Promise<void>
   onLoadOlder: () => Promise<void>
@@ -378,17 +449,18 @@ function ActivityList({
       <span>Direction</span><span>Amount</span><span>Status</span><span>Time</span><span>Action</span>
     </div>
     {items.map((item) => item.direction === "to-base"
-      ? <DepositActivityRow key={item.key} item={item} writesEnabled={writesEnabled} actioningId={actioningId} onContinue={onContinueDeposit} />
+      ? <DepositActivityRow key={item.key} item={item} mintFinalization={depositMintStatus(item.deposit, depositMintScan, depositMintQueryState)} writesEnabled={writesEnabled} actioningId={actioningId} onRequestRefund={onRequestDepositRefund} />
       : <WithdrawalActivityRow key={item.key} item={item} writesEnabled={writesEnabled} actioningId={actioningId} retryingHash={retryingHash} onCheckAndNotify={onCheckAndNotify} onContinue={onContinueWithdrawal} />)}
     {hasOlder && <LoadOlder loading={loadingOlder} onClick={onLoadOlder} />}
   </div>
 }
 
-function DepositActivityRow({ item, writesEnabled, actioningId, onContinue }: {
+function DepositActivityRow({ item, mintFinalization, writesEnabled, actioningId, onRequestRefund }: {
   item: Extract<ActivityItem, { direction: "to-base" }>
+  mintFinalization: DepositMintFinalizationStatus
   writesEnabled: boolean
   actioningId?: string
-  onContinue: (record: DepositView) => Promise<void>
+  onRequestRefund: (record: DepositView) => Promise<void>
 }) {
   const record = item.deposit
   const key = bytesHex(record.deposit_id)
@@ -396,7 +468,14 @@ function DepositActivityRow({ item, writesEnabled, actioningId, onContinue }: {
   const progress = automaticProgressInfo(record.automatic_progress)
   const refund = record.refund[0]
   const quote = record.quote[0]
+  const availableRefund = record.available_refund_amount[0]
   const reconciliationMessage = depositReconciliationMessage(record.state, record.last_settlement_stop_reason[0])
+  const mintedOnBase = mintFinalization === "minted"
+  const mintBlockedReason = mintFinalization === "unavailable"
+    ? "Finalized Base mint history is unavailable. Refresh before minting."
+    : mintFinalization === "checking"
+      ? "Checking finalized Base mint history before minting."
+      : undefined
   const amountText = refund
     ? `${formatTokenAmount(refund.amount)} KINIC returned to IC`
     : quote
@@ -404,10 +483,18 @@ function DepositActivityRow({ item, writesEnabled, actioningId, onContinue }: {
       : `${formatTokenAmount(record.gross_amount)} KINIC awaiting quote`
   return <article className="grid gap-4 rounded-2xl bg-white p-4 md:grid-cols-[minmax(7rem,0.8fr)_minmax(12rem,1.8fr)_minmax(8rem,1fr)_minmax(7rem,0.9fr)_10.5rem] md:items-center">
     <div><MobileLabel>Direction</MobileLabel><Badge tone="info">IC → Base</Badge><p className="mt-1 truncate text-xs text-[var(--muted)]">Deposit {key.slice(0, 10)}…</p></div>
-    <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{amountText}</p>{refund && <p className="mt-1 text-xs text-[var(--muted)]">Refund ledger fee: {formatTokenAmount(refund.ledger_fee)} KINIC</p>}</div>
-    <div><MobileLabel>Status</MobileLabel><Badge tone={depositPhaseTone(record.state)}>{depositPhaseName(record.state)}</Badge>{progress && <AutomaticProgress progress={progress} />}{reconciliationMessage && <p className={`mt-1 text-xs font-bold ${record.last_settlement_stop_reason[0] ? "text-[#b42318]" : "text-[var(--muted)]"}`}>{reconciliationMessage}</p>}</div>
+    <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{amountText}</p>{availableRefund !== undefined && <p className="mt-1 text-xs text-[var(--muted)]">Available after non-refundable fees: {formatTokenAmount(availableRefund)} KINIC</p>}{refund && <p className="mt-1 text-xs text-[var(--muted)]">Non-refundable refund Ledger fee: {formatTokenAmount(refund.ledger_fee)} KINIC</p>}</div>
+    <div><MobileLabel>Status</MobileLabel><Badge tone={mintedOnBase ? "good" : depositPhaseTone(record.state)}>{mintedOnBase ? "Minted on Base (finalized)" : depositPhaseName(record.state)}</Badge>{!mintedOnBase && progress && <AutomaticProgress progress={progress} />}{!mintedOnBase && refund && "ReconciliationRequired" in refund.status && <p className="mt-1 text-xs font-bold text-[#b42318]">Ledger result is uncertain — requesting again checks the same transfer.</p>}{!mintedOnBase && reconciliationMessage && <p className={`mt-1 text-xs font-bold ${record.last_settlement_stop_reason[0] ? "text-[#b42318]" : "text-[var(--muted)]"}`}>{reconciliationMessage}</p>}</div>
     <div><MobileLabel>Time</MobileLabel><ActivityTime valueNs={item.createdAtNs} /></div>
-    <div className="md:text-right"><MobileLabel>Action</MobileLabel>{"AuthorizationAvailable" in record.state || "ExpiryReconciliation" in record.state ? <MintAuthorizationAction record={record} compact onExpiredReconcile={writesEnabled ? () => void onContinue(record) : undefined} reconciling={actioningId === key} /> : !terminal && (!progress || progress.retryAllowed) ? <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry"}</Button> : <span className="text-sm text-[var(--muted)]">—</span>}</div>
+    <div className="md:text-right"><MobileLabel>Action</MobileLabel>{mintedOnBase
+      ? <span className="text-sm text-[var(--muted)]">—</span>
+      : "AuthorizationAvailable" in record.state
+        ? <MintAuthorizationAction record={record} compact mintBlockedReason={mintBlockedReason} onRequestRefund={writesEnabled ? () => void onRequestRefund(record) : undefined} claimingRefund={actioningId === key} />
+      : "RefundAvailable" in record.state || ("RefundProcessing" in record.state && Boolean(record.last_settlement_stop_reason[0] || (refund && "ReconciliationRequired" in refund.status)))
+        ? <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onRequestRefund(record)}>{actioningId === key ? "Requesting…" : "Request refund"}</Button>
+        : "RefundProcessing" in record.state
+          ? <span className="text-sm text-[var(--muted)]">Refunding…</span>
+        : terminal ? <span className="text-sm text-[var(--muted)]">—</span> : <span className="text-sm text-[var(--muted)]">Automatic processing</span>}</div>
   </article>
 }
 
@@ -506,6 +593,30 @@ function oldestDepositTimestamp(records?: DepositView[]): bigint | undefined {
 
 function feeGuardBlocked(record?: WithdrawalView): boolean {
   return record?.last_settlement_stop_reason[0] === "LedgerFeeExceedsServiceFee"
+}
+
+function depositMintStatus(
+  record: DepositView,
+  scan: DepositMintLogScan | undefined,
+  queryState: "ready" | "checking" | "unavailable",
+): DepositMintFinalizationStatus {
+  const authorization = record.mint_authorization[0]
+  const quote = record.quote[0]
+  if (!authorization || !quote) return "absent"
+  const expected: ExpectedDepositMint = {
+    depositId: bytesHex(record.deposit_id),
+    recipient: bytesHex(authorization.recipient),
+    authorizationDigest: bytesHex(authorization.digest),
+    grossAmount: record.gross_amount,
+    serviceFee: quote.service_fee,
+    mintedAmount: quote.net_amount,
+  }
+  return depositMintFinalizationStatus({
+    expected,
+    authorizationBlock: authorization.finalized_block_number,
+    scan,
+    queryState,
+  })
 }
 
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` {

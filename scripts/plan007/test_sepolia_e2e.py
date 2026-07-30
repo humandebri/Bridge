@@ -45,6 +45,11 @@ class SepoliaE2ETests(unittest.TestCase):
                     "bridge_wasm_sha256": H64,
                     "bridge_runtime_template_sha256": TX,
                     "bsns_runtime_template_sha256": TX_B,
+                    "state_upgrade": {
+                        "verified": True,
+                        "before": {"status": {"schema_version": 29}},
+                        "after": {"status": {"schema_version": 29}},
+                    },
                     "tests": {
                         "full_local_ci": "passed",
                         "real_frontend_e2e": "passed",
@@ -106,7 +111,7 @@ class SepoliaE2ETests(unittest.TestCase):
             return {"install_mode": "reinstall", "module_sha256": H64, "cycles_balance": 1, "controller_principals": ["aaaaa-aa"]}
         if stage == "initialize":
             return {
-                "schema_version": 28,
+                "schema_version": 29,
                 "chain_id": 84532,
                 "ledger_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
                 "index_canister_id": "qhbym-qaaaa-aaaaa-aaafq-cai",
@@ -258,6 +263,15 @@ class SepoliaE2ETests(unittest.TestCase):
         details["same_wasm_upgrade"]["after_state_sha256"] = H64_B
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "did not preserve canonical state"):
             sepolia_e2e.validate_wallet_e2e(details)
+
+    def test_obsolete_local_upgrade_schema_is_rejected(self) -> None:
+        self.manifest.unlink()
+        local = json.loads(self.local.read_text(encoding="utf-8"))
+        local["state_upgrade"]["before"]["status"]["schema_version"] = 28
+        local["state_upgrade"]["after"]["status"]["schema_version"] = 28
+        self.local.write_text(json.dumps(local), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must use stable schema v29"):
+            sepolia_e2e.initialize(self.manifest, self.local, self.profile)
 
     def test_artifact_hash_drift_is_rejected(self) -> None:
         evidence = self.evidence("preflight")

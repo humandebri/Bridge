@@ -55,7 +55,7 @@ inductive DepositPhase where
   | escrowedUnquoted
   | authorizationPending
   | authorizationAvailable
-  | expiryReconciliation
+  | refundAvailable
   | fundingReconciliationHold
   | refundPending
   | refundReconciliationHold
@@ -100,14 +100,32 @@ def commitAuthorization
   else none
 
 def installSignature (state : DepositState) : Option DepositState :=
-  if state.phase = .authorizationPending then
-    some { state with phase := .authorizationAvailable }
-  else none
+  match state.authorization with
+  | none => none
+  | some authorization =>
+      if state.phase = .authorizationPending ∧
+          state.feeCounted = false ∧
+          authorization.chargedServiceFee ≤ state.pendingDepositLiability then
+        some { state with
+          phase := .authorizationAvailable
+          feeReserve := state.feeReserve + authorization.chargedServiceFee
+          pendingDepositLiability :=
+            state.pendingDepositLiability - authorization.chargedServiceFee
+          feeCounted := true }
+      else none
 
-def beginExpiryReconciliation (state : DepositState) : Option DepositState :=
-  if state.phase = .authorizationPending ∨ state.phase = .authorizationAvailable then
-    some { state with phase := .expiryReconciliation }
-  else none
+def releaseExpiredReservation
+    (state : DepositState) (finalizedTimestamp : Nat) : Option DepositState :=
+  match state.authorization with
+  | none => none
+  | some authorization =>
+      if finalizedTimestamp > authorization.deadline then
+        if state.phase = .authorizationPending then
+          some { state with phase := .refundAvailable, reservedMint := 0 }
+        else if state.phase = .authorizationAvailable then
+          some { state with phase := .refundAvailable, reservedMint := 0 }
+        else none
+      else none
 
 structure ExpiryEvidence where
   depositId : Nat
@@ -149,7 +167,8 @@ def startExpiredRefund
   match state.authorization with
   | none => none
   | some authorization =>
-      if state.phase = .expiryReconciliation ∧ evidence.valid authorization origin then
+      if state.phase = .refundAvailable ∧ evidence.valid authorization origin ∧
+          state.feeCounted = true then
         some { state with phase := .refundPending, reservedMint := 0 }
       else none
 
@@ -203,31 +222,32 @@ def completeMint (state : DepositState) (evidence : MintEvidence) : Option Depos
   match state.authorization with
   | none => none
   | some authorization =>
-      if state.phase = .expiryReconciliation ∧ evidence.valid authorization ∧
+      if state.phase = .refundAvailable ∧ evidence.valid authorization ∧
           authorization.grossAmount ≤ state.pendingDepositLiability ∧
-          state.feeCounted = false then
+          state.feeCounted = true then
         some { state with
           phase := .minted
           baseSupply := state.baseSupply + authorization.netAmount
-          feeReserve := state.feeReserve + authorization.chargedServiceFee
           pendingDepositLiability :=
-            state.pendingDepositLiability - authorization.grossAmount
+            state.pendingDepositLiability - authorization.netAmount
           reservedMint := 0
-          feeCounted := true }
+        }
       else none
 
 def completeRefund (state : DepositState) : Option DepositState :=
   match state.authorization with
   | none => none
   | some authorization =>
+      let liability :=
+        if state.feeCounted then authorization.netAmount else authorization.grossAmount
       if state.phase = .refundPending ∧
-          authorization.grossAmount ≤ state.pendingDepositLiability ∧
-          authorization.grossAmount ≤ state.escrow then
+          liability ≤ state.pendingDepositLiability ∧
+          liability ≤ state.escrow then
         some { state with
           phase := .refunded
-          escrow := state.escrow - authorization.grossAmount
+          escrow := state.escrow - liability
           pendingDepositLiability :=
-            state.pendingDepositLiability - authorization.grossAmount
+            state.pendingDepositLiability - liability
           reservedMint := 0 }
       else none
 
@@ -293,11 +313,22 @@ theorem accepted_expiry_refund_requires_finalized_unprocessed_expiry
       simp only [auth] at accepted
       split at accepted
       next valid =>
-        rcases valid with ⟨_, exactEvidence⟩
+        rcases valid with ⟨_, exactEvidence, _⟩
         rcases exactEvidence with
           ⟨depositId, digest, _, _, unprocessed, _, _, _, _, _, expired⟩
         exact ⟨unprocessed, authorization, rfl, depositId, digest, expired⟩
       next => simp at accepted
+
+theorem refund_request_cannot_bypass_finalized_evidence
+    {state next : DepositState} {origin : AuthorizationOrigin}
+    {evidence : ExpiryEvidence}
+    (accepted : startExpiredRefund state origin evidence = some next) :
+    evidence.depositProcessed = false ∧
+      ∃ authorization, state.authorization = some authorization ∧
+        evidence.depositId = authorization.depositId ∧
+        evidence.authorizationDigest = authorization.digest ∧
+        evidence.finalizedTimestamp > authorization.deadline :=
+  accepted_expiry_refund_requires_finalized_unprocessed_expiry accepted
 
 theorem accepted_mint_requires_exact_finalized_success
     {state next : DepositState} {evidence : MintEvidence}
@@ -335,7 +366,7 @@ theorem mint_preserves_backing
       simp only [auth] at accepted
       split at accepted
       next valid =>
-        rcases valid with ⟨_, exactEvidence, liabilityBound, _⟩
+        rcases valid with ⟨_, exactEvidence, liabilityBound, feeCounted⟩
         simp only [Option.some.injEq] at accepted
         subst next
         have amount :
@@ -345,16 +376,16 @@ theorem mint_preserves_backing
         simp only [Backed] at backed ⊢
         constructor
         · omega
-        · simp
+        · simp [feeCounted]
       next => simp at accepted
 
-theorem accepted_mint_counts_exact_service_fee
-    {state next : DepositState} {evidence : MintEvidence}
-    (accepted : completeMint state evidence = some next) :
+theorem authorization_signature_counts_exact_service_fee_once
+    {state next : DepositState}
+    (accepted : installSignature state = some next) :
     ∃ authorization, state.authorization = some authorization ∧
       next.feeReserve = state.feeReserve + authorization.chargedServiceFee ∧
       next.feeCounted = true := by
-  unfold completeMint at accepted
+  unfold installSignature at accepted
   cases auth : state.authorization with
   | none => simp [auth] at accepted
   | some authorization =>
@@ -366,25 +397,65 @@ theorem accepted_mint_counts_exact_service_fee
         exact ⟨authorization, rfl, rfl, rfl⟩
       next => simp at accepted
 
-theorem refund_preserves_backing_and_never_counts_fee
+theorem refund_preserves_backing_and_keeps_charged_fee
     {state next : DepositState}
-    (backed : Backed state) (feeNotCounted : state.feeCounted = false)
+    (backed : Backed state)
     (accepted : completeRefund state = some next) :
     Backed next ∧ next.phase = .refunded ∧ next.reservedMint = 0 ∧
-      next.feeCounted = false := by
+      next.feeCounted = state.feeCounted ∧ next.feeReserve = state.feeReserve := by
   unfold completeRefund at accepted
   cases auth : state.authorization with
   | none => simp [auth] at accepted
   | some authorization =>
       simp only [auth] at accepted
       split at accepted
-      next valid =>
-        simp only [Option.some.injEq] at accepted
-        subst next
-        simp only [Backed] at backed ⊢
-        constructor
-        · omega
-        · simp [feeNotCounted]
+      next =>
+        split at accepted
+        next =>
+          simp only [Option.some.injEq] at accepted
+          subst next
+          simp only [Backed] at backed ⊢
+          constructor
+          · omega
+          · simp
+        next => simp at accepted
+      next =>
+        split at accepted
+        next =>
+          simp only [Option.some.injEq] at accepted
+          subst next
+          simp only [Backed] at backed ⊢
+          constructor
+          · omega
+          · simp
+        next => simp at accepted
+
+theorem local_strict_expiry_releases_authorization_reservation
+    {state next : DepositState} {finalizedTimestamp : Nat}
+    (accepted : releaseExpiredReservation state finalizedTimestamp = some next) :
+    next.reservedMint = 0 ∧
+      ∃ authorization, state.authorization = some authorization ∧
+        finalizedTimestamp > authorization.deadline ∧
+        next.phase = .refundAvailable := by
+  unfold releaseExpiredReservation at accepted
+  cases auth : state.authorization with
+  | none => simp [auth] at accepted
+  | some authorization =>
+      simp only [auth] at accepted
+      split at accepted
+      next expired =>
+        split at accepted
+        next =>
+          simp only [Option.some.injEq] at accepted
+          subst next
+          exact ⟨rfl, authorization, rfl, expired, rfl⟩
+        next =>
+          split at accepted
+          next =>
+            simp only [Option.some.injEq] at accepted
+            subst next
+            exact ⟨rfl, authorization, rfl, expired, rfl⟩
+          next => simp at accepted
       next => simp at accepted
 
 theorem minted_and_refunded_are_disjoint :
@@ -392,9 +463,11 @@ theorem minted_and_refunded_are_disjoint :
 
 theorem terminal_phases_are_absorbing_for_authorization_progress
     {state : DepositState} (terminalState : terminal state.phase = true) :
-    installSignature state = none ∧ beginExpiryReconciliation state = none := by
+    installSignature state = none ∧
+      releaseExpiredReservation state (maxU64 + 1) = none := by
   cases phaseEq : state.phase <;>
-    simp [terminal, phaseEq, installSignature, beginExpiryReconciliation] at terminalState ⊢
+    simp [terminal, phaseEq, installSignature, releaseExpiredReservation] at terminalState ⊢
+  all_goals cases state.authorization <;> simp_all
 
 def manualClaim
     (state : DepositState) (now nextLeaseGeneration : Nat) : Option DepositState :=

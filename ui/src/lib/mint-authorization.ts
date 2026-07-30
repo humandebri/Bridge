@@ -41,12 +41,6 @@ export interface ValidatedMintAuthorization {
   latestBlockTimestamp: bigint
 }
 
-export function formatMintAuthorizationTtl(seconds: bigint): string {
-  if (seconds > 0n && seconds % 3_600n === 0n) return `${seconds / 3_600n}時間`
-  if (seconds > 0n && seconds % 60n === 0n) return `${seconds / 60n}分`
-  return `${seconds}秒`
-}
-
 function fixedHex(bytes: Uint8Array | number[], length: number, label: string): Hex {
   if (bytes.length !== length) throw new Error(`${label} has an invalid length`)
   return bytesToHex(Uint8Array.from(bytes))

@@ -409,21 +409,6 @@ pub async fn exact_mint_evidence(
     exact_mint_evidence_inner(args, authorization, finalized_head_block_number, None).await
 }
 
-pub async fn notified_mint_evidence(
-    args: &BridgeInitArgs,
-    authorization: &bridge_core::MintAuthorizationRecord,
-    finalized_head_block_number: u64,
-    transaction_hash: [u8; 32],
-) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
-    exact_mint_evidence_inner(
-        args,
-        authorization,
-        finalized_head_block_number,
-        Some(transaction_hash),
-    )
-    .await
-}
-
 async fn exact_mint_evidence_inner(
     args: &BridgeInitArgs,
     authorization: &bridge_core::MintAuthorizationRecord,

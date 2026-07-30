@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowDownUp, ArrowRight, LockKeyhole, RefreshCcw } from "lucide-react"
+import { ArrowDownUp, ArrowRight, LoaderCircle, LockKeyhole, RefreshCcw } from "lucide-react"
 import { Principal } from "@dfinity/principal"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
@@ -33,7 +33,6 @@ import { createWithdrawalAfterRevalidation } from "@/lib/withdrawal-submit"
 import { savePendingConfirmation } from "@/lib/pending-confirmations"
 import { readDepositIntent, removeDepositIntent, saveDepositIntent } from "@/lib/deposit-intents"
 import { withBrowserLock } from "@/lib/browser-lock"
-import { formatMintAuthorizationTtl } from "@/lib/mint-authorization"
 
 export type BridgeDirection = "deposit" | "withdraw"
 type BridgeNetwork = "ic" | "base"
@@ -211,7 +210,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         queryClient.invalidateQueries({ queryKey: ["runtime-validation"] }),
         queryClient.invalidateQueries({ queryKey: ["deposit-history"] }),
       ])
-      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. Mint Authorizationを生成しています。`)
+      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. Mint Authorization is being generated.`)
     },
     onError: (error) => {
       toast.error(error instanceof Error ? `${error.message}. Retry the same deposit or check whether it was accepted.` : "Deposit response is unresolved")
@@ -405,6 +404,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     : [!address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || !ledgerData || ownerSequenceData === undefined) && "Balance or fee information is unavailable", !depositParsed.ok && (depositParsed.reason ?? "Enter an amount")].filter(Boolean) as string[]
   const withdrawalBlockers = [!address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || bsnsBalanceData === undefined) && "Fee and balance data is unavailable", !withdrawParsed.ok && (withdrawParsed.reason ?? "Enter an amount"), withdrawParsed.ok && baseData && withdrawParsed.value <= baseData.serviceFee && "Amount must exceed the service fee"].filter(Boolean) as string[]
   const blockers = direction === "deposit" ? depositBlockers : withdrawalBlockers
+  const awaitingDepositAuthorization = direction === "deposit"
+    && Boolean(activeDeposit)
+    && (!activeDepositRecord.data || isDepositAuthorizationPending(activeDepositRecord.data.state))
+  const depositActionPending = direction === "deposit" && (deposit.isPending || awaitingDepositAuthorization)
   const amountError = !unresolvedDeposit && (direction === "deposit" ? (!depositParsed.ok ? depositParsed.reason : undefined) : (!withdrawParsed.ok ? withdrawParsed.reason : undefined))
   const amount = direction === "deposit" ? (unresolvedDeposit ? formatTokenAmount(unresolvedDeposit.call.grossAmount) : depositAmount) : withdrawAmount
   const balance = direction === "deposit" ? ledgerData?.balance : bsnsBalanceData
@@ -435,20 +438,23 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         <div className="mt-1 flex items-center gap-3"><Input id="bridge-amount" disabled={Boolean(unresolvedDeposit)} aria-invalid={Boolean(amountError)} aria-describedby="bridge-amount-feedback" className="font-numeric h-14 border-0 px-0 text-3xl font-semibold focus:ring-0" inputMode="decimal" placeholder="0.00000000" value={amount} onChange={(event) => { if (direction === "deposit") setDepositAmount(event.target.value); else setWithdrawAmount(event.target.value) }} /><span className="rounded-xl bg-[var(--panel)] px-3 py-2 text-sm font-bold">{sendToken.symbol}</span></div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-sm"><Quote label="Current bridge fee" value={fee !== undefined ? `${formatTokenAmount(fee)} ${sendToken.symbol}` : "—"} /><Quote label="Estimated receive" value={receive !== undefined ? `${formatTokenAmount(receive)} ${receiveToken.symbol}` : "—"} /></div>
-      {direction === "deposit" && <div className="mt-3 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm leading-5 text-[#8a4b08]"><strong className="text-black">{ledgerData?.mintAuthorizationTtlSeconds !== undefined ? `Ledger pull後${formatMintAuthorizationTtl(ledgerData.mintAuthorizationTtlSeconds)}、` : "Ledger pull後、公開された期限まで、"}Mint許可は取消不能です。</strong><p className="mt-1">MintにはBase walletとBase ETHが必要です。未使用時の返金は期限後のFinalized確認を待ちます。</p></div>}
       {direction === "deposit" && activeDepositRecord.data && (
-        ("AuthorizationAvailable" in activeDepositRecord.data.state
-          || "ExpiryReconciliation" in activeDepositRecord.data.state)
-          ? <MintAuthorizationAction record={activeDepositRecord.data} />
+        ("AuthorizationAvailable" in activeDepositRecord.data.state)
+          ? <MintAuthorizationAction record={activeDepositRecord.data} autoPromptOwner={activeDeposit?.owner} />
           : <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm">
               <p className="font-bold text-black">{depositPhaseLabel(activeDepositRecord.data)}</p>
-              <p className="mt-1 text-[var(--muted)]">この画面でAuthorization生成を待っています。Historyからも復旧できます。</p>
+              <p className="mt-1 text-[var(--muted)]">Wait here for the authorization, or recover it later from History.</p>
             </div>
       )}
       {direction === "withdraw" && <div className="mt-3 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm leading-5 text-[#8a4b08]"><strong className="text-black">Base refund is not available after burn.</strong><p className="mt-1">If delivery is interrupted, the bridge retries the same fixed amount to this same IC account.</p></div>}
-      {unresolvedDeposit && <div className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]"><p className="font-bold text-black">Deposit status unavailable</p><p className="mt-1 leading-5">Check whether the deposit was accepted before starting another one.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="ghost" disabled={checkingDeposit || deposit.isPending} onClick={() => void checkUnresolvedDeposit()}>{checkingDeposit ? "Checking…" : "Check status"}</Button><Link to="/history" className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-bold underline underline-offset-4">Open History</Link></div></div>}
+      {unresolvedDeposit && !deposit.isPending && <div className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]"><p className="font-bold text-black">Deposit status unavailable</p><p className="mt-1 leading-5">Check whether the deposit was accepted before starting another one.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="ghost" disabled={checkingDeposit} onClick={() => void checkUnresolvedDeposit()}>{checkingDeposit ? "Checking…" : "Check status"}</Button><Link to="/history" className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-bold underline underline-offset-4">Open History</Link></div></div>}
       {runtimeReason && <div className="mt-4 flex items-center justify-between gap-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] px-4 py-3 text-sm text-[#d5691b]"><span>{runtimeReason}</span><Link to="/status" className="font-bold underline underline-offset-4">View status</Link></div>}
-      <Button className="mt-3 h-14 w-full" size="lg" disabled={blockers.length > 0 || deposit.isPending || write.isPending || submittingWithdrawal} onClick={() => setConfirming(true)}>{direction === "deposit" ? (unresolvedDeposit ? "Retry same deposit" : "Bridge to Base") : "Bridge to IC"}<ArrowRight className="size-4" /></Button>
+      <Button className="mt-3 h-14 w-full" size="lg" aria-busy={depositActionPending} disabled={blockers.length > 0 || depositActionPending || write.isPending || submittingWithdrawal} onClick={() => setConfirming(true)}>
+        {direction === "deposit" ? (depositActionPending ? "Deposit in progress…" : unresolvedDeposit ? "Retry same deposit" : "Bridge to Base") : "Bridge to IC"}
+        {depositActionPending
+          ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+          : <ArrowRight className="size-4" aria-hidden="true" />}
+      </Button>
       <p id="bridge-amount-feedback" className="mt-3 min-h-4 text-center text-xs text-[var(--muted)]" aria-live="polite">{blockers.length > 0 ? `Next: ${blockers[0]}` : "Ready to review"}</p>
     </section>
     <BridgeConfirmationDialog direction={direction} open={confirming} setOpen={setConfirming} source={source.wallet} destination={destination.wallet} amount={amount} receive={receive} sendSymbol={sendToken.symbol} receiveSymbol={receiveToken.symbol} pending={deposit.isPending || write.isPending || submittingWithdrawal} onConfirm={() => { setConfirming(false); if (direction === "deposit") void submitDeposit(); else void submitWithdrawal() }} />
@@ -469,16 +475,20 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, source, des
     if (!value) setBurnAcknowledged(false)
     setOpen(value)
   }
-  return <Dialog open={open} onOpenChange={close}><DialogContent><DialogHeader><DialogTitle>{direction === "deposit" ? "Confirm bridge to Base" : "Confirm bridge to IC"}</DialogTitle><DialogDescription>Review both wallets and the amount before opening the wallet prompt.</DialogDescription></DialogHeader><div className="mt-5 space-y-4 rounded-2xl bg-[var(--panel)] p-4"><ConfirmRow label="Source" value={source} /><ConfirmRow label="Destination" value={destination} /><ConfirmRow label="Send / receive" value={`${amount || "—"} ${sendSymbol} / ${receive !== undefined ? formatTokenAmount(receive) : "—"} ${receiveSymbol}`} /></div>{direction === "deposit" && <p className="mt-4 text-sm leading-5 text-[#8a4b08]">Base conditions are checked again after the Ledger pull. A rejected settlement can incur both pull and refund Ledger fees.</p>}{direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5"><Checkbox aria-label="Acknowledge irreversible burn" checked={burnAcknowledged} onCheckedChange={(checked) => setBurnAcknowledged(checked === true)} /><span>I understand that confirming burns the Base tokens and no Base refund is available.</span></label>}<DialogFooter><DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose><Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>Confirm and open wallet</Button></DialogFooter></DialogContent></Dialog>
+  return <Dialog open={open} onOpenChange={close}><DialogContent><DialogHeader><DialogTitle>{direction === "deposit" ? "Confirm bridge to Base" : "Confirm bridge to IC"}</DialogTitle><DialogDescription>Review both wallets and the amount before opening the wallet prompt.</DialogDescription></DialogHeader><div className="mt-5 space-y-4 rounded-2xl bg-[var(--panel)] p-4"><ConfirmRow label="Source" value={source} /><ConfirmRow label="Destination" value={destination} /><ConfirmRow label="Send / receive" value={`${amount || "—"} ${sendSymbol} / ${receive !== undefined ? formatTokenAmount(receive) : "—"} ${receiveSymbol}`} /></div>{direction === "deposit" && <p className="mt-4 text-sm leading-5 text-[#8a4b08]">The initial pull Ledger fee is never refunded. Once a Mint Authorization is issued, its service fee is also final. A later refund must be claimed manually and pays another fixed Ledger fee.</p>}{direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5"><Checkbox aria-label="Acknowledge irreversible burn" checked={burnAcknowledged} onCheckedChange={(checked) => setBurnAcknowledged(checked === true)} /><span>I understand that confirming burns the Base tokens and no Base refund is available.</span></label>}<DialogFooter><DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose><Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>Confirm and open wallet</Button></DialogFooter></DialogContent></Dialog>
 }
 
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` { return `0x${Array.from(bytes, (value) => Number(value).toString(16).padStart(2, "0")).join("")}` }
 function bytesToHex(bytes: Uint8Array): `0x${string}` { return `0x${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}` }
 function depositPhaseLabel(record: { state: Record<string, unknown> }): string {
-  if ("AuthorizationPending" in record.state) return "Mint Authorizationを署名中…"
-  if ("ExpiryReconciliation" in record.state) return "Base Finalized状態を照合中…"
-  if ("Minted" in record.state) return "Base Mint確定"
-  if ("RefundPending" in record.state || "RefundReconciliationHold" in record.state) return "IC返金を処理中…"
-  if ("Refunded" in record.state) return "ICへ返金済み"
-  return "Ledger escrowを処理中…"
+  if ("AuthorizationPending" in record.state) return "Signing Mint Authorization…"
+  if ("RefundAvailable" in record.state) return "Refund available from History"
+  if ("Minted" in record.state) return "Base mint finalized"
+  if ("RefundProcessing" in record.state) return "Processing IC refund…"
+  if ("Refunded" in record.state) return "Refunded to IC"
+  return "Processing Ledger escrow…"
+}
+
+export function isDepositAuthorizationPending(state: Record<string, unknown>): boolean {
+  return "EscrowedUnquoted" in state || "AuthorizationPending" in state
 }

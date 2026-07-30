@@ -8,6 +8,7 @@ import { runtimeTemplateSha256FromFile } from "./runtime-template-hash.mjs"
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 export const LOCAL_E2E_SCHEMA_VERSION = 6
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
+export const CURRENT_STABLE_SCHEMA_VERSION = 29
 
 export function validateUpgradeEvidence(upgrade) {
   if (!upgrade || upgrade.verified !== true) throw new Error("real E2E did not prove same-Wasm state preservation")
@@ -16,7 +17,9 @@ export function validateUpgradeEvidence(upgrade) {
   }
   const state = upgrade.after
   const schemaVersion = Number(state.status?.schema_version)
-  if (!Number.isInteger(schemaVersion) || schemaVersion <= 0) throw new Error("upgrade evidence has no current stable schema version")
+  if (schemaVersion !== CURRENT_STABLE_SCHEMA_VERSION) {
+    throw new Error(`upgrade evidence must use current stable schema v${CURRENT_STABLE_SCHEMA_VERSION}`)
+  }
   if (!Array.isArray(state.deposits) || state.deposits.length === 0) {
     throw new Error("upgrade evidence did not reopen every individual Deposit record")
   }

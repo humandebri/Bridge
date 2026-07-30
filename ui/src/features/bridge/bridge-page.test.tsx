@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
-import { BridgeConfirmationDialog, type BridgeDirection } from "./bridge-page"
+import { BridgeConfirmationDialog, isDepositAuthorizationPending, type BridgeDirection } from "./bridge-page"
 
 function Harness({ direction, onConfirm = vi.fn() }: { direction: BridgeDirection; onConfirm?: () => void }) {
   const sendSymbol = direction === "deposit" ? "TICRC1" : "KINIC"
@@ -12,7 +12,7 @@ describe("BridgeConfirmationDialog", () => {
   it("lets a deposit continue after reviewing its wallets and amount", () => {
     render(<Harness direction="deposit" />)
     expect(screen.getByText("10 TICRC1 / 0.00000009 KINIC")).toBeVisible()
-    expect(screen.getByText(/Base conditions are checked again/)).toBeVisible()
+    expect(screen.getByText(/initial pull Ledger fee is never refunded/)).toBeVisible()
     const confirm = screen.getByRole("button", { name: "Confirm and open wallet" })
     expect(confirm).toBeEnabled()
   })
@@ -25,5 +25,13 @@ describe("BridgeConfirmationDialog", () => {
     expect(confirm).toBeDisabled()
     fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge irreversible burn" }))
     expect(confirm).toBeEnabled()
+  })
+})
+
+describe("isDepositAuthorizationPending", () => {
+  it("keeps the deposit action pending until its Mint Authorization is available", () => {
+    expect(isDepositAuthorizationPending({ EscrowedUnquoted: null })).toBe(true)
+    expect(isDepositAuthorizationPending({ AuthorizationPending: null })).toBe(true)
+    expect(isDepositAuthorizationPending({ AuthorizationAvailable: null })).toBe(false)
   })
 })

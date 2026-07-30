@@ -389,6 +389,286 @@ fn get_deposit(id: Vec<u8>) -> Option<api::DepositView> {
     api::get_deposit(id)
 }
 
+fn map_deposit_refund_observation_error(
+    operation: &'static str,
+    error: evm_rpc::ObservationError,
+) -> api::RequestDepositRefundError {
+    use api::RequestDepositRefundError as Error;
+
+    match error {
+        evm_rpc::ObservationError::Inconsistent => {
+            let decision = evm_rpc::quorum_loss_decision(operation, None);
+            if STORE
+                .with(|store| {
+                    store.borrow_mut().append_audit_events_atomically(
+                        ic_cdk::api::canister_self(),
+                        vec![rpc_decision_event_kind(&decision)],
+                    )
+                })
+                .is_err()
+            {
+                Error::StorageFailure
+            } else {
+                Error::RpcInconsistent
+            }
+        }
+        evm_rpc::ObservationError::Rpc | evm_rpc::ObservationError::TransactionPending => {
+            Error::FinalityUnavailable
+        }
+        evm_rpc::ObservationError::BaseStateMismatch
+        | evm_rpc::ObservationError::ChainIdMismatch
+        | evm_rpc::ObservationError::InvalidResponse
+        | evm_rpc::ObservationError::Overflow
+        | evm_rpc::ObservationError::TransactionReverted => Error::BaseStateMismatch,
+    }
+}
+
+#[ic_cdk::update]
+async fn request_deposit_refund(
+    deposit_id: Vec<u8>,
+) -> Result<api::DepositView, api::RequestDepositRefundError> {
+    use api::RequestDepositRefundError as Error;
+
+    let caller = ic_cdk::api::msg_caller();
+    if caller == candid::Principal::anonymous() {
+        return Err(Error::AnonymousCaller);
+    }
+    let id: [u8; 32] = deposit_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::InvalidDepositId)?;
+    let owned = STORE.with(|store| {
+        store
+            .borrow()
+            .deposit_intent(id)
+            .map_err(|_| Error::StorageFailure)?
+            .map(|intent| intent.caller == caller.as_slice())
+            .ok_or(Error::NotFound)
+    })?;
+    if !owned {
+        return Err(Error::OwnerMismatch);
+    }
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| Error::StorageFailure)?
+            .ok_or(Error::StorageFailure)
+    })?;
+    if !has_external_call_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.cycles_floor,
+        config.settlement_cycle_ceiling,
+    ) {
+        return Err(Error::InsufficientCycles);
+    }
+    let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
+        return Err(Error::Busy);
+    };
+
+    let state = STORE.with(|store| {
+        store
+            .borrow()
+            .deposit(id)
+            .map_err(|_| Error::StorageFailure)?
+            .map(|record| record.state)
+            .ok_or(Error::NotFound)
+    })?;
+    match state {
+        bridge_core::DepositState::Minted { .. } | bridge_core::DepositState::Refunded { .. } => {
+            return api::get_deposit(id.to_vec()).ok_or(Error::StorageFailure);
+        }
+        bridge_core::DepositState::AuthorizationPending { .. } => {
+            let deadline = STORE.with(|store| {
+                store
+                    .borrow()
+                    .deposit(id)
+                    .map_err(|_| Error::StorageFailure)?
+                    .and_then(|record| record.mint_authorization)
+                    .map(|authorization| authorization.authorization.deadline)
+                    .ok_or(Error::StorageFailure)
+            })?;
+            let (snapshot, _) = api::base_mint_snapshot(&config, ic_cdk::api::time())
+                .await
+                .map_err(|error| match error {
+                    api::DepositError::BaseObservationUnavailable => Error::FinalityUnavailable,
+                    _ => Error::StorageFailure,
+                })?;
+            if snapshot.confirmed_block_timestamp <= deadline {
+                return Err(Error::NotClaimable);
+            }
+            STORE.with(|store| {
+                let mut store = store.borrow_mut();
+                let mut deposit = store
+                    .deposit(id)
+                    .map_err(|_| Error::StorageFailure)?
+                    .ok_or(Error::NotFound)?;
+                if matches!(
+                    deposit.state,
+                    bridge_core::DepositState::AuthorizationPending { .. }
+                ) {
+                    let result = deposit
+                        .apply(bridge_core::DepositEvent::MarkRefundAvailable {
+                            reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                            finalized_timestamp: Some(snapshot.confirmed_block_timestamp),
+                        })
+                        .map_err(|_| Error::StorageFailure)?;
+                    store
+                        .put_deposit_transition(&deposit, result)
+                        .map_err(|_| Error::StorageFailure)?;
+                }
+                Ok::<_, Error>(())
+            })?;
+            tasks::start_deposit_refund(
+                id,
+                bridge_core::DepositRefundReason::AuthorizationExpired,
+                None,
+            )
+            .map_err(|_| Error::StorageFailure)?;
+        }
+        bridge_core::DepositState::AuthorizationAvailable { .. }
+        | bridge_core::DepositState::RefundAvailable { .. } => {
+            let (authorization, refund_reason) = STORE.with(|store| {
+                let record = store
+                    .borrow()
+                    .deposit(id)
+                    .map_err(|_| Error::StorageFailure)?
+                    .ok_or(Error::NotFound)?;
+                let reason = match record.state {
+                    bridge_core::DepositState::RefundAvailable { reason, .. } => Some(reason),
+                    _ => None,
+                };
+                Ok::<_, Error>((record.mint_authorization, reason))
+            })?;
+            if !authorization
+                .as_ref()
+                .is_some_and(|authorization| authorization.signature.is_some())
+            {
+                let reason = refund_reason.ok_or(Error::StorageFailure)?;
+                tasks::start_deposit_refund(id, reason, None).map_err(|_| Error::StorageFailure)?;
+            } else {
+                let authorization = authorization.ok_or(Error::StorageFailure)?;
+                let observation =
+                    evm_rpc::recovery_observation(&config, evm_rpc::RecoveryTarget::Deposit(id))
+                        .await
+                        .map_err(|error| {
+                            map_deposit_refund_observation_error(
+                                "request_deposit_refund_recovery",
+                                error,
+                            )
+                        })?;
+                if observation.snapshot.mint.confirmed_block_timestamp
+                    <= authorization.authorization.deadline
+                {
+                    return Err(Error::NotClaimable);
+                }
+                STORE.with(|store| {
+                    let mut store = store.borrow_mut();
+                    let mut deposit = store
+                        .deposit(id)
+                        .map_err(|_| Error::StorageFailure)?
+                        .ok_or(Error::NotFound)?;
+                    if matches!(
+                        deposit.state,
+                        bridge_core::DepositState::AuthorizationAvailable { .. }
+                    ) {
+                        let result = deposit
+                            .apply(bridge_core::DepositEvent::MarkRefundAvailable {
+                                reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                                finalized_timestamp: Some(
+                                    observation.snapshot.mint.confirmed_block_timestamp,
+                                ),
+                            })
+                            .map_err(|_| Error::StorageFailure)?;
+                        store
+                            .put_deposit_transition(&deposit, result)
+                            .map_err(|_| Error::StorageFailure)?;
+                    }
+                    Ok::<_, Error>(())
+                })?;
+                match observation.state {
+                    evm_rpc::RecoveryBaseState::DepositProcessed(false) => {
+                        tasks::start_deposit_refund(
+                            id,
+                            bridge_core::DepositRefundReason::AuthorizationExpired,
+                            Some(bridge_core::MintExpiryEvidence {
+                                deposit_id: authorization.authorization.deposit_id,
+                                authorization_digest: authorization.digest,
+                                chain_id: observation.finalized.chain_id,
+                                verifying_contract: authorization.domain.verifying_contract,
+                                deposit_processed: false,
+                                finalized_block_number: observation.finalized.block_number,
+                                finalized_block_hash: observation.finalized.block_hash,
+                                finalized_block_timestamp: observation
+                                    .snapshot
+                                    .mint
+                                    .confirmed_block_timestamp,
+                                bridge_signer: observation.bridge_identity.signer,
+                                mint_authorization_epoch: observation
+                                    .snapshot
+                                    .mint_authorization_epoch,
+                                runtime_sha256: observation.bridge_identity.runtime_sha256,
+                                rpc_request_digest: observation.rpc_audit.request_digest,
+                                rpc_response_digest: observation.rpc_audit.quorum_response_digest,
+                            }),
+                        )
+                        .map_err(|_| Error::StorageFailure)?;
+                    }
+                    evm_rpc::RecoveryBaseState::DepositProcessed(true) => {
+                        let evidence = evm_rpc::exact_mint_evidence(
+                            &config,
+                            &authorization,
+                            observation.finalized.block_number,
+                        )
+                        .await
+                        .map_err(|error| {
+                            map_deposit_refund_observation_error(
+                                "request_deposit_refund_exact_mint",
+                                error,
+                            )
+                        })?;
+                        STORE.with(|store| {
+                            let mut store = store.borrow_mut();
+                            let mut deposit = store
+                                .deposit(id)
+                                .map_err(|_| Error::StorageFailure)?
+                                .ok_or(Error::NotFound)?;
+                            let result = deposit
+                                .apply(bridge_core::DepositEvent::MintReconciled {
+                                    evidence: Box::new(evidence),
+                                })
+                                .map_err(|_| Error::BaseStateMismatch)?;
+                            store
+                                .put_deposit_transition(&deposit, result)
+                                .map_err(|_| Error::StorageFailure)
+                        })?;
+                        return api::get_deposit(id.to_vec()).ok_or(Error::StorageFailure);
+                    }
+                }
+            }
+        }
+        bridge_core::DepositState::RefundPending { .. }
+        | bridge_core::DepositState::RefundReconciliationHold { .. } => {}
+        _ => return Err(Error::NotClaimable),
+    }
+    drop(guard);
+
+    let job =
+        claim_job(storage::SettlementJobKind::Deposit, id, caller).map_err(
+            |error| match error {
+                tasks::SettlementActionError::Busy => Error::Busy,
+                _ => Error::StorageFailure,
+            },
+        )?;
+    scheduler::run_claimed(job)
+        .await
+        .map_err(|error| match error {
+            tasks::SettlementActionError::Busy => Error::Busy,
+            _ => Error::StorageFailure,
+        })?;
+    api::get_deposit(id.to_vec()).ok_or(Error::StorageFailure)
+}
+
 #[ic_cdk::query]
 fn get_deposit_by_owner_sequence(
     owner: candid::Principal,
@@ -419,36 +699,6 @@ fn get_withdrawals(
     ids: Vec<Vec<u8>>,
 ) -> Result<Vec<Option<api::WithdrawalView>>, api::GetWithdrawalsError> {
     api::get_withdrawals(ids)
-}
-
-#[ic_cdk::update]
-async fn notify_deposit_mint(
-    args: api::NotifyDepositMintArgs,
-) -> Result<api::NotifyDepositMintReceipt, api::NotifyDepositMintError> {
-    let caller = ic_cdk::api::msg_caller();
-    let deposit_id: [u8; 32] = args
-        .deposit_id
-        .as_slice()
-        .try_into()
-        .map_err(|_| api::NotifyDepositMintError::InvalidDepositId)?;
-    let config = STORE.with(|store| {
-        store
-            .borrow()
-            .config()
-            .map_err(|_| api::NotifyDepositMintError::StorageFailure)?
-            .ok_or(api::NotifyDepositMintError::StorageFailure)
-    })?;
-    if !has_external_call_cycle_budget(
-        ic_cdk::api::canister_liquid_cycle_balance(),
-        config.cycles_floor,
-        config.settlement_cycle_ceiling,
-    ) {
-        return Err(api::NotifyDepositMintError::InsufficientCycles);
-    }
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::Deposit(deposit_id)) else {
-        return Err(api::NotifyDepositMintError::Busy);
-    };
-    api::notify_deposit_mint(caller, args).await
 }
 
 #[ic_cdk::update]
@@ -521,27 +771,6 @@ fn has_external_call_cycle_budget(current: u128, floor: u128, call_ceiling: u128
     current > floor.saturating_add(call_ceiling)
 }
 
-fn can_advance_deposit(
-    caller: candid::Principal,
-    id: [u8; 32],
-) -> Result<bool, tasks::SettlementActionError> {
-    if caller == candid::Principal::anonymous() {
-        return Err(tasks::SettlementActionError::AnonymousCaller);
-    }
-    let owned = STORE.with(|store| {
-        store
-            .borrow()
-            .deposit_intent(id)
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-            .map(|intent| intent.caller == caller.as_slice())
-            .ok_or(tasks::SettlementActionError::NotFound)
-    })?;
-    if owned {
-        return Ok(true);
-    }
-    admin::can_advance_settlement(caller).map_err(|_| tasks::SettlementActionError::StorageFailure)
-}
-
 fn can_advance_withdrawal(
     caller: candid::Principal,
     id: [u8; 32],
@@ -561,61 +790,6 @@ fn can_advance_withdrawal(
         return Ok(true);
     }
     admin::can_advance_settlement(caller).map_err(|_| tasks::SettlementActionError::StorageFailure)
-}
-
-#[ic_cdk::update]
-async fn continue_deposit(
-    deposit_id: Vec<u8>,
-) -> Result<tasks::SettlementActionResult, tasks::SettlementActionError> {
-    let id = deposit_id
-        .as_slice()
-        .try_into()
-        .map_err(|_| tasks::SettlementActionError::InvalidId)?;
-    let caller = ic_cdk::api::msg_caller();
-    if !can_advance_deposit(caller, id)? {
-        return Err(tasks::SettlementActionError::Unauthorized);
-    }
-    let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
-        return Err(tasks::SettlementActionError::Busy);
-    };
-    let (terminal_state, expiry_reconciliation_allowed) = STORE.with(|store| {
-        store
-            .borrow()
-            .deposit(id)
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-            .map(|record| {
-                let terminal = matches!(
-                    &record.state,
-                    bridge_core::DepositState::Minted { .. }
-                        | bridge_core::DepositState::Refunded { .. }
-                        | bridge_core::DepositState::Cancelled { .. }
-                );
-                (
-                    terminal.then(|| {
-                        phases::SettlementState::Deposit(phases::DepositPhase::from(&record.state))
-                    }),
-                    matches!(
-                        &record.state,
-                        bridge_core::DepositState::AuthorizationAvailable { .. }
-                            | bridge_core::DepositState::ExpiryReconciliation { .. }
-                    ),
-                )
-            })
-            .ok_or(tasks::SettlementActionError::NotFound)
-    })?;
-    if let Some(state) = terminal_state {
-        return Ok(tasks::SettlementActionResult::Complete { state });
-    }
-    drop(guard);
-    let job = claim_job(
-        storage::SettlementJobKind::Deposit,
-        id,
-        caller,
-        expiry_reconciliation_allowed,
-    )?;
-    let result = scheduler::run_claimed(job).await?;
-    scheduler::arm();
-    Ok(result)
 }
 
 #[ic_cdk::update]
@@ -663,7 +837,7 @@ fn claim_manual_job(
     id: [u8; 32],
     caller: candid::Principal,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
-    claim_job(kind, id, caller, false)
+    claim_job(kind, id, caller)
 }
 
 fn manual_claim_result(
@@ -682,7 +856,6 @@ fn claim_job(
     kind: storage::SettlementJobKind,
     id: [u8; 32],
     caller: candid::Principal,
-    allow_deposit_expiry_early: bool,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -699,26 +872,15 @@ fn claim_job(
             per_principal: config.settlement_rate_limit_per_principal,
             per_record: config.settlement_rate_limit_per_record,
         };
-        let claim = if allow_deposit_expiry_early {
-            store.borrow_mut().claim_deposit_expiry_reconciliation_job(
-                id,
-                caller,
-                now_ns,
-                now_ns.saturating_add(120_000_000_000),
-                300_000_000_000,
-                limits,
-            )
-        } else {
-            store.borrow_mut().claim_manual_settlement_job(
-                kind,
-                id,
-                caller,
-                now_ns,
-                now_ns.saturating_add(120_000_000_000),
-                300_000_000_000,
-                limits,
-            )
-        };
+        let claim = store.borrow_mut().claim_manual_settlement_job(
+            kind,
+            id,
+            caller,
+            now_ns,
+            now_ns.saturating_add(120_000_000_000),
+            300_000_000_000,
+            limits,
+        );
         claim
             .map_err(|error| match error {
                 storage::SettlementAdmissionError::RateLimited {
@@ -1173,11 +1335,12 @@ fn icrc10_supported_standards() -> Vec<consent::Icrc10SupportedStandard> {
 fn icrc21_canister_call_consent_message(
     request: consent::Icrc21ConsentMessageRequest,
 ) -> consent::Icrc21ConsentMessageResponse {
-    let ledger_fee = if request.method == "request_deposit" {
-        Some(ledger::KINIC_LEDGER_FEE.get())
-    } else {
-        None
-    };
+    let ledger_fee =
+        if request.method == "request_deposit" || request.method == "request_deposit_refund" {
+            Some(ledger::KINIC_LEDGER_FEE.get())
+        } else {
+            None
+        };
     consent::consent_message(
         ic_cdk::api::msg_caller(),
         ic_cdk::api::canister_self(),

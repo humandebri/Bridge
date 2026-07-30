@@ -4,8 +4,8 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-stable schema v28、record wire version v24だけを受理する。本番未デプロイのためmigration、dual-read、fallbackは持たず、旧・未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否する。
-upgrade検証はcurrent schema v28の再オープンだけを成功経路とし、それ以前のschemaを変換しない。
+stable schema v29、record wire version v25だけを受理する。本番未デプロイのためmigration、dual-read、fallbackは持たず、旧・未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否する。
+upgrade検証はcurrent schema v29の再オープンだけを成功経路とし、それ以前のschemaを変換しない。
 
 `settlement_jobs`が自動・手動進行の正本である。recordとjobは同じSQLite transactionで更新し、外部`await`前に署名dispatchやLedger transfer identityを永続化する。timerは目覚ましにすぎず、lease generationとDB上の状態だけが実行権を決める。
 
@@ -30,30 +30,39 @@ EscrowedUnquoted
 
 AuthorizationPending
   ├─ 同一digestへのthreshold ECDSA署名 → AuthorizationAvailable
-  └─ 署名不能のままFinalized期限超過     → ExpiryReconciliation
+  └─ 認可発行前の確定失敗               → RefundAvailable
 
 AuthorizationAvailable
-  ├─ notify_deposit_mint + exact Finalized証拠 → Minted
-  └─ 期限到達後 → ExpiryReconciliation
-                    ├─ exact Mint証拠   → Minted
-                    ├─ Finalized未処理証拠 → RefundPending → Refunded
-                    └─ 不一致・証拠欠落 → 停止（返金しない）
+  └─ Finalized timestampがdeadline超過
+       → RefundAvailable（予約解放、Base未照合）
+
+RefundAvailable
+  └─ owner claim（Base outcallなし） → RefundPending → Refunded
+
+RefundAvailable
+  └─ owner claim
+       ├─ exact Mint証拠        → Minted
+       ├─ Finalized未処理証拠  → RefundPending → Refunded
+       └─ 不一致・証拠欠落     → fail closed（資金移動なし）
+
+RefundPending
+  └─ Ledger結果不明 → RefundReconciliationHold
+                         └─ owner再請求で同一transferを照合
 ```
 
 1. `EscrowedUnquoted → AuthorizationPending`では、Finalized Base snapshot、quote、全Authorization field、EIP-712 domain、digest、作成元Finalized block number/hash/timestamp、mint capacity予約、jobを一つのSQLite transactionで保存する。
 2. deadlineは作成元Finalized Base timestampへ固定TTL 2時間（7,200秒）をchecked-addして一度だけ決める。IC時刻、ブラウザ時刻、再試行時刻から作らない。
-3. threshold ECDSAの`await`前にdispatch済みフラグとattempt番号を保存する。timeout、callback消失、upgrade後も同一digestだけを再署名し、deadlineやpayloadを変更しない。65-byte署名はlow-s `r || s || v`へ正規化し、復元addressが期待するMint Signerと一致した場合だけ公開する。
+3. threshold ECDSAの`await`前にdispatch済みフラグとattempt番号を保存する。timeout、callback消失、upgrade後も同一digestだけを再署名し、deadlineやpayloadを変更しない。65-byte署名はlow-s `r || s || v`へ正規化し、復元addressが期待するMint Signerと一致した場合だけ、同じtransactionでservice feeを一度だけfee reserveへ計上して公開する。
 4. `AuthorizationAvailable`では任意Base walletが署名済みpayloadをcontractへ送り、そのwalletがgasを支払う。Canisterは期間中のtransactionやreceiptを追跡しない。
-5. jobはおおよそのIC時刻で起床できるが、安全判定にはBase Finalized timestampだけを使う。`finalized_timestamp <= deadline`なら60秒後へ延期する。`timestamp == deadline`はContractでMint可能なため返金不可である。
-6. 期限後は同じFinalized block hashへruntime identity、signer、epoch、timestamp、`isDepositProcessed(depositId)`をEIP-1898で束縛する。RPC不一致、Finalized停止、runtime不一致では返金せず再試行する。
-7. `processed == false`なら、Authorization digest、chain、Finalized block、timestamp、runtime、RPC request/response digestを失効証拠として保存した同じtransactionで`RefundPending`へ進む。その後だけLedger refundを実行する。
-8. `processed == true`なら、作成元blockから観測Finalized headまでの`DepositMinted`を取得し、件数1、contract、digest、recipient、amount、fee、canonical成功receiptを検証する。transaction/receipt block/Finalized head/RPC digestをMint証拠として保存した同じtransactionで`Minted`へ進む。
-9. processedなのにeventがない、複数ある、内容が異なる場合は新規Depositをlocal pauseし、対象Depositを停止する。返金へfallbackしない。
-10. pause、epoch変更、signer rotationは未期限AuthorizationをContract上で失効させるが、早期返金の根拠にはしない。元のdeadlineとFinalized未処理証拠を必ず通す。
+5. 新規Depositなどで既に取得したBase Finalized snapshotを使い、deadline順indexをcall単位の上限までローカル走査する。`finalized_timestamp > deadline`だけを期限切れとし、等値では予約を保持する。`AuthorizationPending`は`RefundAvailable`、`AuthorizationAvailable`は`RefundAvailable`へ進め、個別`isDepositProcessed`照合は行わない。
+6. backlogが残る場合は未処理予約を保守的に過大計上する。新規受付上限を正確に判定できなければretry可能エラーにし、過少計上しない。新規Depositがなければ予約枠も消費されないため、期限処理timerは設けない。
+7. ownerが`request_deposit_refund`を呼んだ場合だけRefundを進める。認可発行前の`RefundAvailable`はBase outcallなしで`gross - refund ledger fee`を送る。最初のICRC-2 pull feeはWallet負担のまま戻さない。
+8. 認可発行済みの`RefundAvailable`では、同じcanonical Finalized block hashへruntime identity、signer、epoch、strict deadline、`isDepositProcessed(depositId)`をEIP-1898で束縛する。`processed == false`だけを`gross - charged service fee - refund ledger fee`で返金する。service fee、初回pull fee、refund feeは返さない。
+9. `processed == true`なら、作成元blockから観測Finalized headまでの`DepositMinted`を取得し、件数1、contract、digest、recipient、amount、fee、canonical成功receiptを検証して`Minted`へ進む。event欠落・複数・内容不一致、RPC不一致、Finalized停止、runtime不一致では資金を動かさない。
+10. Ledger結果不明は同一transfer identityを`RefundReconciliationHold`に保持する。timer retryは行わず、ownerの再請求で照合を1 step進める。Duplicateは同一送金の成功として扱い、完全な不存在証拠なしに別identityを発行しない。
+11. pause、epoch変更、signer rotationは未期限AuthorizationをContract上で失効させるが、早期返金の根拠にはしない。元のdeadlineとFinalized未処理証拠を必ず通す。
 
-`continue_deposit`はowner、Governance、pause principalが停止jobを再開するAPIである。署名が失敗した`AuthorizationPending`も、Base Finalized timestampがdeadlineを超えていれば署名を待たず`ExpiryReconciliation`へ進める。`AuthorizationAvailable`または`ExpiryReconciliation`を含め、手動起動でも上記Finalized条件を迂回できない。
-
-未処理Authorizationはterminal状態までmint window liabilityとして予約する。Deposit admissionはMint Signer ETH、gas price、nonceへ依存しない。cycles floorとsettlement cycle ceilingは署名、RPC、Ledger処理のため維持する。
+未処理Authorizationはdeadline超過を観測するまでmint window liabilityとして予約する。Deposit admissionはMint Signer ETH、gas price、nonceへ依存しない。cycles floorとsettlement cycle ceilingは署名、明示Refund時のRPC・Ledger処理のため維持する。
 
 ## Withdrawal（Base → ICP）
 
@@ -76,7 +85,7 @@ UIはtransaction hashをlocalStorageへ保存し、Finalized eventを検出し�
 | API | 呼び出し元 | 役割 |
 |---|---|---|
 | `request_deposit` | Deposit owner | Ledger pullとAuthorization作成開始 |
-| `continue_deposit` | owner、Governance、pause principal | 署名・期限照合・返金の停止後再開 |
+| `request_deposit_refund` | Deposit owner | claimable amount確認、必要なFinalized照合、Ledger refundまたはhold再照合 |
 | `notify_withdrawal` | Withdrawal owner、Governance、pause principal | Finalized Withdrawalの通知 |
 | `continue_withdrawal` | owner、Governance、pause principal | Ledger release・照合の再開 |
 | Base governance prepare/status/replace/confirm | Governance、またはpause/cancelに限りpause principal | 外部relayer向け署名成果物とFinalized確定 |
