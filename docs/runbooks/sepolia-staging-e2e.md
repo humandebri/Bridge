@@ -65,6 +65,13 @@ scripts/plan007/staging-e2e-driver.sh check-reinstall-instance \
   > /secure/work/reinstall-instance-check.json
 ```
 
+checkerへ渡した `live-public-config.json` と、その標準出力
+`reinstall-instance-check.json` を変更せずmanifestディレクトリ配下へコピーする。
+preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-config` と
+`reinstall-instance-check` を付け、コピー後のSHA-256を記録する。manifest validatorは
+両artifactを再読し、live設定から比較を再計算してchecker出力および`details`と照合する。
+別のlive取得結果、手編集したchecker出力、manifest外のpathは使用しない。
+
 ```sh
 scripts/plan007/staging-e2e-driver.sh record /secure/work/preflight-evidence.json
 scripts/plan007/staging-e2e-driver.sh status

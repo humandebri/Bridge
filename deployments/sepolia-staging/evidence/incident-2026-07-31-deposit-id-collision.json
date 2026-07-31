@@ -37,7 +37,16 @@
     "recovery": "intentionally_not_recovered",
     "funds_moved": false,
     "planned_record_disposition": "discarded_by_reinstall",
-    "record_discarded": false
+    "record_discarded": true,
+    "discarded_at": "2026-07-31T04:55:07Z"
+  },
+  "replacement_instance": {
+    "stable_schema_version": 30,
+    "deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+    "module_hash": "0x824497d795237aa82c17081ae6be5360c32b699db6823be1a237f56e6081cfc4",
+    "owner_sequence": "0",
+    "derived_deposit_id": "0x90982ce552da00f2396ea8ba3f4682a9c9ef11cc6b839739650202e8b35372bb",
+    "base_processed": false
   },
   "complete": false
 }

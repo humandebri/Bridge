@@ -136,7 +136,41 @@
               "items": { "$ref": "#/$defs/artifact" }
             },
             "details": { "type": "object" }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "stage": { "const": "preflight" } },
+                "required": ["stage"]
+              },
+              "then": {
+                "properties": {
+                  "artifacts": {
+                    "allOf": [
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-public-config" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      },
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "reinstall-instance-check" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
         }
       ]
     }

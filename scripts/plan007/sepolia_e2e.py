@@ -20,6 +20,8 @@ ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
 CURRENT_STABLE_SCHEMA = 30
+LIVE_PUBLIC_CONFIG_ARTIFACT_KIND = "live-public-config"
+REINSTALL_INSTANCE_CHECK_ARTIFACT_KIND = "reinstall-instance-check"
 STAGES = (
     "preflight",
     "contracts",
@@ -110,6 +112,26 @@ def require_deployment_instance_id(value: dict[str, Any], name: str, context: st
     return result
 
 
+def deployment_instance_hex(value: Any, context: str) -> str:
+    if isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]{64}", value):
+        normalized = value.lower()
+        if int(normalized[2:], 16) != 0:
+            return normalized
+    if (
+        isinstance(value, list)
+        and len(value) == 32
+        and any(byte != 0 for byte in value)
+        and all(
+            isinstance(byte, int)
+            and not isinstance(byte, bool)
+            and 0 <= byte <= 255
+            for byte in value
+        )
+    ):
+        return "0x" + bytes(value).hex()
+    fail(f"{context} must be a nonzero 32-byte deployment instance ID")
+
+
 def require_nat(value: dict[str, Any], name: str, context: str) -> int:
     result = value.get(name)
     if isinstance(result, str) and result.isdigit():
@@ -154,7 +176,89 @@ def validate_artifacts(artifacts: Any, manifest_path: Path, context: str, verify
                 fail(f"{item_context}.sha256 does not match {relative}")
 
 
-def validate_preflight(details: dict[str, Any], binding: dict[str, Any]) -> None:
+def required_json_artifact(
+    artifacts: Any,
+    manifest_path: Path,
+    kind: str,
+    context: str,
+) -> dict[str, Any]:
+    matches = [
+        artifact
+        for artifact in artifacts
+        if isinstance(artifact, dict) and artifact.get("kind") == kind
+    ]
+    if len(matches) != 1:
+        fail(f"{context}.artifacts must contain exactly one {kind} artifact")
+    artifact = matches[0]
+    relative = Path(require_string(artifact, "path", f"{context}.{kind}"))
+    target = manifest_path.parent / relative
+    if not target.is_file():
+        fail(f"{context}.{kind} artifact does not exist: {relative}")
+    if digest(target) != artifact["sha256"]:
+        fail(f"{context}.{kind} artifact sha256 does not match {relative}")
+    return load_object(target)
+
+
+def reinstall_instance_check(
+    next_deployment_instance_id: Any,
+    live_public_config: dict[str, Any],
+) -> dict[str, Any]:
+    next_id = deployment_instance_hex(
+        next_deployment_instance_id,
+        "binding deployment_instance_id",
+    )
+    schema_version = require_nat(
+        live_public_config,
+        "schema_version",
+        "live PublicConfig",
+    )
+    if schema_version == 29:
+        if live_public_config.get("deployment_instance_id") is not None:
+            fail("v29 live PublicConfig must not contain a deployment instance ID")
+        previous = None
+    elif schema_version == CURRENT_STABLE_SCHEMA:
+        previous = deployment_instance_hex(
+            live_public_config.get("deployment_instance_id"),
+            "live PublicConfig deployment_instance_id",
+        )
+        if previous == next_id:
+            fail("staging reinstall rejected reuse of the live deployment instance ID")
+    else:
+        fail("staging reinstall only accepts live stable schema v29 or v30")
+    return {
+        "live_schema_version": schema_version,
+        "previous_deployment_instance_id": previous,
+        "next": next_id,
+    }
+
+
+def normalized_reinstall_check(value: dict[str, Any]) -> dict[str, Any]:
+    context = "reinstall instance check"
+    exact_keys(
+        value,
+        {"live_schema_version", "previous_deployment_instance_id", "next"},
+        context,
+    )
+    schema_version = require_nat(value, "live_schema_version", context)
+    previous_value = value["previous_deployment_instance_id"]
+    previous = (
+        None
+        if previous_value is None
+        else deployment_instance_hex(previous_value, f"{context} previous_deployment_instance_id")
+    )
+    return {
+        "live_schema_version": schema_version,
+        "previous_deployment_instance_id": previous,
+        "next": deployment_instance_hex(value["next"], f"{context} next"),
+    }
+
+
+def validate_preflight(
+    details: dict[str, Any],
+    binding: dict[str, Any],
+    artifacts: Any,
+    manifest_path: Path,
+) -> None:
     context = "preflight.details"
     exact_keys(
         details,
@@ -198,21 +302,35 @@ def validate_preflight(details: dict[str, Any], binding: dict[str, Any]) -> None
     urls = details["configured_rpc_url_sha256"]
     if not isinstance(urls, list) or len(urls) != 3 or len(set(urls)) != 3 or any(not isinstance(item, str) or not SHA256.fullmatch(item) for item in urls):
         fail("preflight must bind three distinct credential-free RPC URL digests")
-    live_schema_version = require_nat(details, "live_schema_version", context)
-    previous = details["previous_deployment_instance_id"]
-    if live_schema_version == 29:
-        if previous is not None:
-            fail("v29 preflight must not invent a deployment instance ID")
-    elif live_schema_version == CURRENT_STABLE_SCHEMA:
-        if previous is None:
-            fail("v30 reinstall requires the live deployment instance ID")
-        previous_id = require_deployment_instance_id(
-            details, "previous_deployment_instance_id", context
-        )
-        if previous_id.lower() == binding["deployment_instance_id"].lower():
-            fail("staging reinstall rejected reuse of the live deployment instance ID")
-    else:
-        fail("preflight live schema must be v29 or v30")
+    live_public_config = required_json_artifact(
+        artifacts,
+        manifest_path,
+        LIVE_PUBLIC_CONFIG_ARTIFACT_KIND,
+        "preflight",
+    )
+    recorded_check = required_json_artifact(
+        artifacts,
+        manifest_path,
+        REINSTALL_INSTANCE_CHECK_ARTIFACT_KIND,
+        "preflight",
+    )
+    expected_check = reinstall_instance_check(
+        binding["deployment_instance_id"],
+        live_public_config,
+    )
+    if normalized_reinstall_check(recorded_check) != expected_check:
+        fail("reinstall instance check does not match the live PublicConfig and reviewed binding")
+    summary_check = normalized_reinstall_check(
+        {
+            "live_schema_version": details["live_schema_version"],
+            "previous_deployment_instance_id": details[
+                "previous_deployment_instance_id"
+            ],
+            "next": binding["deployment_instance_id"],
+        }
+    )
+    if summary_check != expected_check:
+        fail("preflight summary does not match the verified reinstall instance check")
 
 
 def validate_install(details: dict[str, Any], binding: dict[str, Any]) -> None:
@@ -560,7 +678,9 @@ def validate_stage(stage: str, evidence: Any, manifest_path: Path, binding: dict
     if not isinstance(details, dict):
         fail(f"{stage}.details must be an object")
     validator = VALIDATORS[stage]
-    if stage in {"preflight", "install", "initialize", "contracts", "frontend_publish"}:
+    if stage == "preflight":
+        validator(details, binding, evidence["artifacts"], manifest_path)
+    elif stage in {"install", "initialize", "contracts", "frontend_publish"}:
         validator(details, binding)
     else:
         validator(details)

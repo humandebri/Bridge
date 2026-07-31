@@ -88,7 +88,48 @@ class SepoliaE2ETests(unittest.TestCase):
         path = self.root / "artifacts" / f"{stage}.json"
         path.parent.mkdir(exist_ok=True)
         path.write_text("{}\n", encoding="utf-8")
-        return [{"path": f"artifacts/{stage}.json", "sha256": sepolia_e2e.digest(path), "kind": "raw"}]
+        artifacts = [
+            {
+                "path": f"artifacts/{stage}.json",
+                "sha256": sepolia_e2e.digest(path),
+                "kind": "raw",
+            }
+        ]
+        if stage == "preflight":
+            artifacts.extend(self.reinstall_artifacts())
+        return artifacts
+
+    def reinstall_artifacts(
+        self,
+        live: dict[str, object] | None = None,
+        check: dict[str, object] | None = None,
+    ) -> list[dict[str, str]]:
+        if live is None:
+            live = {"schema_version": 29}
+        if check is None:
+            check = {
+                "live_schema_version": 29,
+                "previous_deployment_instance_id": None,
+                "next": TX_B,
+            }
+        artifacts = self.root / "artifacts"
+        artifacts.mkdir(exist_ok=True)
+        live_path = artifacts / "live-public-config.json"
+        check_path = artifacts / "reinstall-instance-check.json"
+        live_path.write_text(json.dumps(live) + "\n", encoding="utf-8")
+        check_path.write_text(json.dumps(check) + "\n", encoding="utf-8")
+        return [
+            {
+                "path": "artifacts/live-public-config.json",
+                "sha256": sepolia_e2e.digest(live_path),
+                "kind": sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND,
+            },
+            {
+                "path": "artifacts/reinstall-instance-check.json",
+                "sha256": sepolia_e2e.digest(check_path),
+                "kind": sepolia_e2e.REINSTALL_INSTANCE_CHECK_ARTIFACT_KIND,
+            },
+        ]
 
     def details(self, stage: str) -> dict[str, object]:
         if stage == "preflight":
@@ -268,21 +309,195 @@ class SepoliaE2ETests(unittest.TestCase):
         self.assertEqual(manifest["binding"]["deployment_instance_id"], TX_B)
 
     def test_v29_preflight_allows_missing_previous_instance(self) -> None:
-        sepolia_e2e.validate_preflight(self.details("preflight"), {
-            **json.loads(self.manifest.read_text(encoding="utf-8"))["binding"],
-        })
+        sepolia_e2e.validate_preflight(
+            self.details("preflight"),
+            json.loads(self.manifest.read_text(encoding="utf-8"))["binding"],
+            self.artifact("preflight"),
+            self.manifest,
+        )
 
     def test_v30_preflight_requires_a_distinct_previous_instance(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
         details["live_schema_version"] = 30
         details["previous_deployment_instance_id"] = TX
-        sepolia_e2e.validate_preflight(details, binding)
-        for previous in (None, TX_B, f"0x{'0' * 64}"):
-            invalid = dict(details)
-            invalid["previous_deployment_instance_id"] = previous
+        artifacts = self.reinstall_artifacts(
+            {"schema_version": 30, "deployment_instance_id": [17] * 32},
+            {
+                "live_schema_version": 30,
+                "previous_deployment_instance_id": TX,
+                "next": TX_B,
+            },
+        )
+        sepolia_e2e.validate_preflight(details, binding, artifacts, self.manifest)
+        for live in (
+            {"schema_version": 30},
+            {"schema_version": 30, "deployment_instance_id": TX_B},
+            {"schema_version": 30, "deployment_instance_id": f"0x{'0' * 64}"},
+            {"schema_version": 30, "deployment_instance_id": "0x11"},
+            {"schema_version": 30, "deployment_instance_id": [17] * 31},
+            {"schema_version": 28, "deployment_instance_id": TX},
+        ):
+            invalid_artifacts = self.reinstall_artifacts(live)
             with self.assertRaises(sepolia_e2e.EvidenceError):
-                sepolia_e2e.validate_preflight(invalid, binding)
+                sepolia_e2e.validate_preflight(
+                    details,
+                    binding,
+                    invalid_artifacts,
+                    self.manifest,
+                )
+
+    def test_preflight_requires_unique_reinstall_artifacts(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        artifacts = self.artifact("preflight")
+        required_kinds = (
+            sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND,
+            sepolia_e2e.REINSTALL_INSTANCE_CHECK_ARTIFACT_KIND,
+        )
+        for kind in required_kinds:
+            missing = [artifact for artifact in artifacts if artifact["kind"] != kind]
+            with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exactly one"):
+                sepolia_e2e.validate_preflight(
+                    self.details("preflight"),
+                    binding,
+                    missing,
+                    self.manifest,
+                )
+            duplicate = artifacts + [
+                next(artifact.copy() for artifact in artifacts if artifact["kind"] == kind)
+            ]
+            with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exactly one"):
+                sepolia_e2e.validate_preflight(
+                    self.details("preflight"),
+                    binding,
+                    duplicate,
+                    self.manifest,
+                )
+
+    def test_preflight_rejects_artifact_and_summary_drift(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        details = self.details("preflight")
+        artifacts = self.reinstall_artifacts(
+            {"schema_version": 29},
+            {
+                "live_schema_version": 29,
+                "previous_deployment_instance_id": None,
+                "next": TX,
+            },
+        )
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not match"):
+            sepolia_e2e.validate_preflight(
+                details,
+                binding,
+                artifacts,
+                self.manifest,
+            )
+
+        artifacts = self.reinstall_artifacts(
+            {"schema_version": 29},
+            {
+                "live_schema_version": 29,
+                "previous_deployment_instance_id": None,
+                "next": TX_B,
+                "unexpected": True,
+            },
+        )
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "fields differ"):
+            sepolia_e2e.validate_preflight(
+                details,
+                binding,
+                artifacts,
+                self.manifest,
+            )
+
+        artifacts = self.reinstall_artifacts()
+        with self.assertRaisesRegex(
+            sepolia_e2e.EvidenceError,
+            "summary does not match",
+        ):
+            sepolia_e2e.validate_preflight(
+                {**details, "live_schema_version": 30},
+                binding,
+                artifacts,
+                self.manifest,
+            )
+
+        artifacts = self.reinstall_artifacts(
+            {"schema_version": 30, "deployment_instance_id": TX},
+            {
+                "live_schema_version": 29,
+                "previous_deployment_instance_id": None,
+                "next": TX_B,
+            },
+        )
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not match"):
+            sepolia_e2e.validate_preflight(
+                details,
+                binding,
+                artifacts,
+                self.manifest,
+            )
+
+    def test_preflight_rejects_required_artifact_hash_and_json_drift(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        artifacts = self.artifact("preflight")
+        live_path = self.root / "artifacts/live-public-config.json"
+        live_path.write_text('{"schema_version":30}\n', encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "sha256 does not match"):
+            sepolia_e2e.validate_preflight(
+                self.details("preflight"),
+                binding,
+                artifacts,
+                self.manifest,
+            )
+        artifacts = self.artifact("preflight")
+        live_path.write_text("{\n", encoding="utf-8")
+        live_artifact = next(
+            artifact
+            for artifact in artifacts
+            if artifact["kind"] == sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND
+        )
+        live_artifact["sha256"] = sepolia_e2e.digest(live_path)
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "cannot read JSON object"):
+            sepolia_e2e.validate_preflight(
+                self.details("preflight"),
+                binding,
+                artifacts,
+                self.manifest,
+            )
+
+    def test_node_checker_output_is_accepted_by_manifest_validation(self) -> None:
+        live = {"schema_version": 30, "deployment_instance_id": [17] * 32}
+        live_path = self.root / "node-live-public-config.json"
+        live_path.write_text(json.dumps(live), encoding="utf-8")
+        output = subprocess.run(
+            [
+                "node",
+                str(MODULE_PATH.with_name("check-reinstall-instance.mjs")),
+                str(self.profile),
+                str(live_path),
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        check = json.loads(output)
+        details = self.details("preflight")
+        details["live_schema_version"] = 30
+        details["previous_deployment_instance_id"] = TX
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        sepolia_e2e.validate_preflight(
+            details,
+            binding,
+            self.reinstall_artifacts(live, check),
+            self.manifest,
+        )
+
+    def test_later_record_revalidates_preflight_artifacts(self) -> None:
+        sepolia_e2e.record(self.manifest, self.evidence("preflight"))
+        (self.root / "artifacts/live-public-config.json").unlink()
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not exist"):
+            sepolia_e2e.record(self.manifest, self.evidence("contracts"))
 
     def test_initialize_rejects_profile_instance_mismatch(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
