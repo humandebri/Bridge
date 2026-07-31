@@ -846,7 +846,13 @@ function serialize(value) {
 
 function account(owner) { return { owner, subaccount: [] } }
 function bytesHex(bytes) { return `0x${Buffer.from(bytes).toString("hex")}` }
-function json(value) { return JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item) }
+function json(value) {
+  return JSON.stringify(value, (_key, item) => {
+    if (typeof item === "bigint") return item.toString()
+    if (item instanceof Uint8Array) return Array.from(item)
+    return item
+  })
+}
 function settlementJson(value) {
   if ("Submitted" in value) return { Submitted: { ...value.Submitted, transaction_hash: Array.from(value.Submitted.transaction_hash) } }
   if ("WaitingForConfirmation" in value) return { WaitingForConfirmation: { ...value.WaitingForConfirmation, transaction_hash: Array.from(value.WaitingForConfirmation.transaction_hash) } }
