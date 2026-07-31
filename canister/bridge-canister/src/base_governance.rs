@@ -423,7 +423,7 @@ pub async fn confirm(
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     require_transaction_authorization(caller, &transaction.kind)?;
-    let (receipt_block_number, succeeded) = match outcome {
+    let (receipt_block_number, succeeded, finalized_observation) = match outcome {
         evm_rpc::ConfirmedReceiptOutcome::Missing
         | evm_rpc::ConfirmedReceiptOutcome::Pending { .. } => {
             return Err(BaseGovernanceError::TransactionNotFinalized {
@@ -432,12 +432,14 @@ pub async fn confirm(
         }
         evm_rpc::ConfirmedReceiptOutcome::Succeeded {
             receipt_block_number,
+            finalized_observation,
             ..
-        } => (receipt_block_number, true),
+        } => (receipt_block_number, true, finalized_observation),
         evm_rpc::ConfirmedReceiptOutcome::Reverted {
             receipt_block_number,
+            finalized_observation,
             ..
-        } => (receipt_block_number, false),
+        } => (receipt_block_number, false, finalized_observation),
     };
     let activates = succeeded
         && matches!(
@@ -445,11 +447,14 @@ pub async fn confirm(
             storage::GovernanceTransactionKind::ExecuteActivation { .. }
         );
     if activates {
-        let observed = evm_rpc::bridge_snapshot(&config)
+        let observed = evm_rpc::bridge_snapshot_at(&config, finalized_observation)
             .await
             .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
         require_transaction_authorization(caller, &transaction.kind)?;
-        if observed.snapshot.deposits_paused || observed.snapshot.withdrawals_paused {
+        if !activation_postcondition_matches(
+            observed.snapshot.deposits_paused,
+            observed.snapshot.withdrawals_paused,
+        ) {
             return Err(BaseGovernanceError::ObservationUnavailable);
         }
     }
@@ -660,17 +665,22 @@ async fn activation_preflight(
     let observed = evm_rpc::bridge_snapshot(config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let finalized_eth =
-        evm_rpc::signer_eth_balance_at(config, governance_operator, observed.finalized)
-            .await
-            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let safe_eth = evm_rpc::signer_eth_balance(config, governance_operator)
-        .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    if observed.snapshot.bridge_signer != expected_bridge_signer
-        || !observed.snapshot.deposits_paused
-        || !observed.snapshot.withdrawals_paused
-    {
+    let (finalized_eth, safe_eth) = futures::join!(
+        evm_rpc::signer_eth_balance_at(config, governance_operator, observed.finalized),
+        evm_rpc::signer_eth_balance_on_attested_chain(
+            config,
+            governance_operator,
+            observed.finalized
+        )
+    );
+    let finalized_eth = finalized_eth.map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let safe_eth = safe_eth.map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    if !activation_base_preflight_matches(
+        observed.snapshot.bridge_signer,
+        expected_bridge_signer,
+        observed.snapshot.deposits_paused,
+        observed.snapshot.withdrawals_paused,
+    ) {
         return Err(BaseGovernanceError::ObservationUnavailable);
     }
     let observed_eth = finalized_eth.min(safe_eth);
@@ -704,6 +714,19 @@ async fn activation_preflight(
             .record_reserve_observation(observed_eth, observed_at_ns, caller)
             .map_err(|_| BaseGovernanceError::StorageFailure)
     })
+}
+
+fn activation_base_preflight_matches(
+    observed_signer: [u8; 20],
+    expected_signer: [u8; 20],
+    deposits_paused: bool,
+    withdrawals_paused: bool,
+) -> bool {
+    observed_signer == expected_signer && deposits_paused && withdrawals_paused
+}
+
+fn activation_postcondition_matches(deposits_paused: bool, withdrawals_paused: bool) -> bool {
+    !deposits_paused && !withdrawals_paused
 }
 
 fn governance_lane(
@@ -1169,7 +1192,8 @@ fn keccak(value: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::{
-        action_authorized, activation_operation_id, activation_salt, execute_activation_calldata,
+        action_authorized, activation_base_preflight_matches, activation_operation_id,
+        activation_postcondition_matches, activation_salt, execute_activation_calldata,
         initial_fee, minimum_fee_bump, pending_signature_action, schedule_activation_calldata,
         selector, transaction_authorized, word_u128, GovernanceAction, PendingSignatureAction,
         ACTIVATION_TIMELOCK_DELAY_SECONDS,
@@ -1208,6 +1232,25 @@ mod tests {
         assert_eq!(ACTIVATION_TIMELOCK_DELAY_SECONDS, 300);
         assert_ne!(activation_operation_id(bridge, salt), [0; 32]);
         assert_eq!(word_u128(42)[31], 42);
+    }
+
+    #[test]
+    fn activation_preflight_and_postcondition_fail_closed() {
+        assert!(activation_base_preflight_matches(
+            [7; 20], [7; 20], true, true
+        ));
+        assert!(!activation_base_preflight_matches(
+            [8; 20], [7; 20], true, true
+        ));
+        assert!(!activation_base_preflight_matches(
+            [7; 20], [7; 20], false, true
+        ));
+        assert!(!activation_base_preflight_matches(
+            [7; 20], [7; 20], true, false
+        ));
+        assert!(activation_postcondition_matches(false, false));
+        assert!(!activation_postcondition_matches(true, false));
+        assert!(!activation_postcondition_matches(false, true));
     }
 
     #[test]

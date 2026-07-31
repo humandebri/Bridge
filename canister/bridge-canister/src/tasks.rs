@@ -493,21 +493,28 @@ async fn prepare_escrowed_deposit(
     config: &crate::config::BridgeInitArgs,
     deposit: &bridge_core::DepositRecord,
 ) -> Result<EscrowPreparation, SettlementActionError> {
-    let observation = match evm_rpc::bridge_snapshot(config).await {
-        Ok(observation) => observation,
-        Err(evm_rpc::ObservationError::Inconsistent) => {
-            return Ok(EscrowPreparation::Stopped(
-                SettlementStopReason::RpcInconsistent,
-            ));
-        }
-        Err(_) => {
-            return Ok(EscrowPreparation::Stopped(
-                SettlementStopReason::RpcUnavailable,
-            ));
-        }
+    let cached = crate::api::cached_authorization_observation(config, deposit.id.bytes())
+        .map_err(|_| SettlementActionError::StorageFailure)?;
+    let (finalized, observed_snapshot) = if let Some(observation) = cached {
+        (observation.finalized, observation.snapshot)
+    } else {
+        let observation = match evm_rpc::bridge_snapshot(config).await {
+            Ok(observation) => observation,
+            Err(evm_rpc::ObservationError::Inconsistent) => {
+                return Ok(EscrowPreparation::Stopped(
+                    SettlementStopReason::RpcInconsistent,
+                ));
+            }
+            Err(_) => {
+                return Ok(EscrowPreparation::Stopped(
+                    SettlementStopReason::RpcUnavailable,
+                ));
+            }
+        };
+        (observation.finalized, observation.snapshot)
     };
-    let snapshot = observation.snapshot.mint;
-    if observation.snapshot.deposits_paused {
+    let snapshot = observed_snapshot.mint;
+    if observed_snapshot.deposits_paused {
         return Ok(EscrowPreparation::RefundAvailable(
             DepositRefundReason::BasePaused,
         ));
@@ -515,7 +522,7 @@ async fn prepare_escrowed_deposit(
     let expected_signer = crate::api::cached_signer_address(config)
         .await
         .map_err(|_| SettlementActionError::StorageFailure)?;
-    if observation.snapshot.bridge_signer != expected_signer {
+    if observed_snapshot.bridge_signer != expected_signer {
         return Ok(EscrowPreparation::Stopped(
             SettlementStopReason::BridgeSignerMismatch,
         ));
@@ -566,7 +573,7 @@ async fn prepare_escrowed_deposit(
         max_service_fee: deposit.max_service_fee,
         charged_service_fee: quote.service_fee,
         deadline,
-        authorization_epoch: observation.snapshot.mint_authorization_epoch,
+        authorization_epoch: observed_snapshot.mint_authorization_epoch,
     };
     let domain = bridge_core::MintAuthorizationDomain::bridge(
         config.base_chain_id,
@@ -581,8 +588,8 @@ async fn prepare_escrowed_deposit(
         authorization,
         domain,
         origin: bridge_core::MintAuthorizationOrigin {
-            finalized_block_number: observation.finalized.block_number,
-            finalized_block_hash: observation.finalized.block_hash,
+            finalized_block_number: finalized.block_number,
+            finalized_block_hash: finalized.block_hash,
             finalized_block_timestamp: snapshot.confirmed_block_timestamp,
         },
         signature_dispatch_attempt: 0,

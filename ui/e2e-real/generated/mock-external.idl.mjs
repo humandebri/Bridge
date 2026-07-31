@@ -408,6 +408,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Vec(IDL.Vec(IDL.Nat8))],
         ['query'],
       ),
+    'chain_id_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
     'deposit_processed_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
     'derive_chain_key_address' : IDL.Func(
         [IDL.Principal, IDL.Text, IDL.Vec(IDL.Vec(IDL.Nat8))],

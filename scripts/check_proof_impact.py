@@ -16,7 +16,6 @@ REQUIRED_STAGES = (
     "lean-negative",
     "policy-vector-consumers",
     "refinement-gate",
-    "claim-transaction-tests",
     "known-answer-consumers",
     "smt-and-negative",
     "verus-and-negative",

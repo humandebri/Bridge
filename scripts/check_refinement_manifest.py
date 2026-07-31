@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+import check_claim_test_manifest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 VECTORS = ROOT / "verification" / "generated" / "protocol-vectors.json"
@@ -311,6 +313,7 @@ def main() -> int:
             f"refinement consumer passed: {consumer.section} "
             f"{consumer.runner} {consumer.selector}"
         )
+    check_claim_test_manifest.main()
     return 0
 
 

@@ -225,6 +225,7 @@ struct StableMockState {
     finalized_block_sequence: Vec<u64>,
     finalized_block_hash_override: Option<(u64, [u8; 32])>,
     fallback_block_sequence: Vec<u64>,
+    chain_id_call_count: u64,
     eth_call_count: u64,
     deposit_processed_call_count: u64,
     pinned_eth_call_block_numbers: Vec<u64>,
@@ -278,6 +279,7 @@ thread_local! {
     static FINALIZED_BLOCK_SEQUENCE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static FINALIZED_BLOCK_HASH_OVERRIDE: RefCell<Option<(u64, [u8; 32])>> = const { RefCell::new(None) };
     static FALLBACK_BLOCK_SEQUENCE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    static CHAIN_ID_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
     static ETH_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
     static DEPOSIT_PROCESSED_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
     static PINNED_ETH_CALL_BLOCK_NUMBERS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
@@ -542,6 +544,11 @@ fn ledger_transfer_calls() -> u64 {
 }
 
 #[ic_cdk::query]
+fn chain_id_call_count() -> u64 {
+    CHAIN_ID_CALL_COUNT.with(|value| *value.borrow())
+}
+
+#[ic_cdk::query]
 fn eth_call_count() -> u64 {
     ETH_CALL_COUNT.with(|value| *value.borrow())
 }
@@ -614,6 +621,7 @@ fn pre_upgrade() {
         finalized_block_sequence: FINALIZED_BLOCK_SEQUENCE.with(|v| v.borrow().clone()),
         finalized_block_hash_override: FINALIZED_BLOCK_HASH_OVERRIDE.with(|v| *v.borrow()),
         fallback_block_sequence: FALLBACK_BLOCK_SEQUENCE.with(|v| v.borrow().clone()),
+        chain_id_call_count: CHAIN_ID_CALL_COUNT.with(|v| *v.borrow()),
         eth_call_count: ETH_CALL_COUNT.with(|v| *v.borrow()),
         deposit_processed_call_count: DEPOSIT_PROCESSED_CALL_COUNT.with(|v| *v.borrow()),
         pinned_eth_call_block_numbers: PINNED_ETH_CALL_BLOCK_NUMBERS.with(|v| v.borrow().clone()),
@@ -671,6 +679,7 @@ fn post_upgrade() {
     FINALIZED_BLOCK_SEQUENCE.with(|v| *v.borrow_mut() = state.finalized_block_sequence);
     FINALIZED_BLOCK_HASH_OVERRIDE.with(|v| *v.borrow_mut() = state.finalized_block_hash_override);
     FALLBACK_BLOCK_SEQUENCE.with(|v| *v.borrow_mut() = state.fallback_block_sequence);
+    CHAIN_ID_CALL_COUNT.with(|v| *v.borrow_mut() = state.chain_id_call_count);
     ETH_CALL_COUNT.with(|v| *v.borrow_mut() = state.eth_call_count);
     DEPOSIT_PROCESSED_CALL_COUNT.with(|v| *v.borrow_mut() = state.deposit_processed_call_count);
     PINNED_ETH_CALL_BLOCK_NUMBERS.with(|v| *v.borrow_mut() = state.pinned_eth_call_block_numbers);
@@ -884,6 +893,10 @@ fn multi_request(
     request: String,
 ) -> MultiRpcResult<String> {
     if request.contains("eth_chainId") {
+        CHAIN_ID_CALL_COUNT.with(|value| {
+            let next = value.borrow().saturating_add(1);
+            *value.borrow_mut() = next;
+        });
         return match CHAIN_ID_MODE.with(|mode| *mode.borrow()) {
             ChainIdMode::Configured => MultiRpcResult::Consistent(Ok(
                 CONFIGURED_CHAIN_ID.with(|chain_id| format!("0x{:x}", *chain_id.borrow()))

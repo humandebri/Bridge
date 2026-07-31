@@ -6,6 +6,7 @@ import {
   DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP,
   depositMintEventMatches,
   depositMintFinalizationStatus,
+  exactMintReceiptFinalization,
   receiptContainsExactDepositMint,
   scanDepositMintLogs,
   type DepositMintLogScan,
@@ -92,6 +93,46 @@ describe("receiptContainsExactDepositMint", () => {
   it("does not accept a successful receipt without DepositMinted", () => {
     expect(receiptContainsExactDepositMint(expected, [], bridgeAddress)).toBe(false)
   })
+
+  function accepts_only_an_exact_canonical_finalized_mint_receipt() {
+    const blockHash = `0x${"aa".repeat(32)}` as const
+    const receipt = {
+      status: "success" as const,
+      blockNumber: 99n,
+      blockHash,
+      logs: [{ address: bridgeAddress, topics, data }],
+    }
+    const input = {
+      expected,
+      expectedBridgeAddress: bridgeAddress,
+      receipt,
+      finalizedBlockNumber: 100n,
+      canonicalReceiptBlockHash: blockHash,
+    }
+
+    expect(exactMintReceiptFinalization(input)).toBe("finalized")
+    expect(exactMintReceiptFinalization({
+      ...input,
+      finalizedBlockNumber: 98n,
+    })).toBe("pending")
+    expect(exactMintReceiptFinalization({
+      ...input,
+      canonicalReceiptBlockHash: `0x${"bb".repeat(32)}`,
+    })).toBe("pending")
+    expect(exactMintReceiptFinalization({
+      ...input,
+      receipt: { ...receipt, logs: [] },
+    })).toBe("conflict")
+    expect(exactMintReceiptFinalization({
+      ...input,
+      receipt: { ...receipt, status: "reverted" },
+    })).toBe("reverted")
+  }
+
+  it(
+    "accepts only an exact canonical finalized mint receipt",
+    accepts_only_an_exact_canonical_finalized_mint_receipt,
+  )
 })
 
 describe("depositMintFinalizationStatus", () => {

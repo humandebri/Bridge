@@ -5,12 +5,106 @@ import { BridgeConfirmationDialog, isDepositAuthorizationPending, type BridgeDir
 function Harness({ direction, onConfirm = vi.fn() }: { direction: BridgeDirection; onConfirm?: () => void }) {
   const sendSymbol = direction === "deposit" ? "TICRC1" : "KINIC"
   const receiveSymbol = direction === "deposit" ? "KINIC" : "TICRC1"
-  return <BridgeConfirmationDialog direction={direction} open setOpen={() => undefined} source="source-wallet" destination="destination-wallet" amount="10" receive={9n} sendSymbol={sendSymbol} receiveSymbol={receiveSymbol} pending={false} onConfirm={onConfirm} />
+  return <BridgeConfirmationDialog
+    direction={direction}
+    open
+    setOpen={() => undefined}
+    preflight={{
+      runId: 1,
+      direction,
+      phase: "ready",
+      checks: [
+        { id: "wallets", label: "Wallets connected", status: "passed" },
+        { id: "runtime", label: "Bridge configuration verified", status: "passed" },
+        { id: "financials", label: "Balance and fees checked", status: "passed" },
+        { id: "availability", label: "Transfer availability checked", status: "passed" },
+      ],
+    }}
+    source="source-wallet"
+    destination="destination-wallet"
+    amount="10"
+    receive={9n}
+    sendSymbol={sendSymbol}
+    receiveSymbol={receiveSymbol}
+    pending={false}
+    onRetry={vi.fn()}
+    onConfirm={onConfirm}
+  />
 }
 
 describe("BridgeConfirmationDialog", () => {
+  it("shows live preflight progress before exposing transaction confirmation", () => {
+    render(<BridgeConfirmationDialog
+      direction="deposit"
+      open
+      setOpen={() => undefined}
+      preflight={{
+        runId: 1,
+        direction: "deposit",
+        phase: "checking",
+        checks: [
+          { id: "wallets", label: "Wallets connected", status: "passed" },
+          { id: "runtime", label: "Bridge configuration verified", status: "checking" },
+          { id: "financials", label: "Balance and fees checked", status: "waiting" },
+          { id: "availability", label: "Transfer availability checked", status: "waiting" },
+        ],
+      }}
+      source="source-wallet"
+      destination="destination-wallet"
+      amount="10"
+      receive={9n}
+      sendSymbol="TICRC1"
+      receiveSymbol="KINIC"
+      pending={false}
+      onRetry={vi.fn()}
+      onConfirm={vi.fn()}
+    />)
+
+    expect(screen.getByText("Checking current bridge conditions. No transaction has been sent.")).toBeVisible()
+    expect(screen.getByRole("list", { name: "Preflight checks" })).toBeVisible()
+    expect(screen.queryByText("10 TICRC1 / 0.00000009 KINIC")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Confirm and open wallet" })).not.toBeInTheDocument()
+  })
+
+  it("keeps a failed check visible and offers a retry", () => {
+    const onRetry = vi.fn()
+    render(<BridgeConfirmationDialog
+      direction="withdraw"
+      open
+      setOpen={() => undefined}
+      preflight={{
+        runId: 1,
+        direction: "withdraw",
+        phase: "failed",
+        checks: [
+          { id: "wallets", label: "Wallets connected", status: "passed" },
+          { id: "runtime", label: "Bridge configuration verified", status: "failed", error: "Bridge signer differs from the reviewed profile" },
+          { id: "financials", label: "Balance and fees checked", status: "waiting" },
+          { id: "availability", label: "Transfer availability checked", status: "waiting" },
+        ],
+      }}
+      source="source-wallet"
+      destination="destination-wallet"
+      amount="10"
+      receive={9n}
+      sendSymbol="KINIC"
+      receiveSymbol="TICRC1"
+      pending={false}
+      onRetry={onRetry}
+      onConfirm={vi.fn()}
+    />)
+
+    expect(screen.getByText("One check needs attention. No transaction has been sent.")).toBeVisible()
+    expect(screen.getByText("Bridge signer differs from the reviewed profile")).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+    expect(onRetry).toHaveBeenCalledOnce()
+    expect(screen.getByRole("button", { name: "Close" })).toBeVisible()
+  })
+
   it("lets a deposit continue after reviewing its wallets and amount", () => {
     render(<Harness direction="deposit" />)
+    expect(screen.getByRole("heading", { name: "Review bridge to Base" })).toBeVisible()
+    expect(screen.getByText("All checks passed. Review the transfer before opening your wallet.")).toBeVisible()
     expect(screen.getByText("10 TICRC1 / 0.00000009 KINIC")).toBeVisible()
     expect(screen.queryByText(/initial pull Ledger fee is never refunded/)).not.toBeInTheDocument()
     const confirm = screen.getByRole("button", { name: "Confirm and open wallet" })
@@ -20,7 +114,7 @@ describe("BridgeConfirmationDialog", () => {
   it("requires an irreversible burn acknowledgement for a withdrawal", () => {
     render(<Harness direction="withdraw" />)
     expect(screen.getByText("10 KINIC / 0.00000009 TICRC1")).toBeVisible()
-    expect(screen.getByRole("heading", { name: "Confirm bridge to IC" })).toBeVisible()
+    expect(screen.getByRole("heading", { name: "Review bridge to IC" })).toBeVisible()
     const confirm = screen.getByRole("button", { name: "Confirm and open wallet" })
     expect(confirm).toBeDisabled()
     fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge irreversible burn" }))

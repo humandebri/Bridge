@@ -1,5 +1,6 @@
 import { Principal } from "@dfinity/principal"
 import { deploymentProfile } from "@/config/profile"
+import { browserLocalStorage } from "@/lib/browser-lock"
 import type { IcAccount, IcWalletProvider } from "@/lib/ic/wallet"
 
 const STORAGE_VERSION = 1
@@ -27,7 +28,7 @@ export function icHistoryOwnerStorageKey(): string {
 
 export function loadIcHistoryOwner(storage?: Pick<Storage, "getItem">): IcHistoryOwner | undefined {
   try {
-    const target = storage ?? window.localStorage
+    const target = storage ?? browserLocalStorage()
     const raw = target.getItem(icHistoryOwnerStorageKey())
     if (raw === null) return undefined
     const value: unknown = JSON.parse(raw)
@@ -51,7 +52,7 @@ export function saveIcHistoryOwner(
   storage?: Pick<Storage, "setItem">,
 ): void {
   try {
-    const target = storage ?? window.localStorage
+    const target = storage ?? browserLocalStorage()
     const value: StoredIcHistoryOwner = {
       version: STORAGE_VERSION,
       owner: Principal.fromText(owner.account.owner).toText(),
@@ -66,7 +67,7 @@ export function saveIcHistoryOwner(
 
 export function clearIcHistoryOwner(storage?: Pick<Storage, "removeItem">): void {
   try {
-    const target = storage ?? window.localStorage
+    const target = storage ?? browserLocalStorage()
     target.removeItem(icHistoryOwnerStorageKey())
   } catch {
     // A storage failure must not prevent the active wallet session from disconnecting.

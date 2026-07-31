@@ -155,7 +155,6 @@ run_no_automatic_execution_guards() {
     --glob '!pending-confirmations.test.ts' \
     --glob '!deposit-intents.ts' \
     --glob '!deposit-intents.test.ts' \
-    --glob '!ic-history-owner.ts' \
     --glob '!browser-lock.ts' \
     --glob '!browser-lock.test.ts' \
     --glob '!settlement-confirmation-coordinator.tsx' \
@@ -443,15 +442,15 @@ run_lean_proofs() {
 }
 
 run_policy_vector_consumers() {
-  python3 "$ROOT/scripts/test_protocol_vectors.py"
+  python3 "$ROOT/scripts/test_protocol_vectors.py" || return
   python3 "$ROOT/scripts/protocol_vectors.py" --check
 }
 
 run_refinement_gate() {
-  python3 "$ROOT/scripts/test_reproducible_artifacts.py"
-  python3 "$ROOT/scripts/test_refinement_manifest.py"
-  python3 "$ROOT/scripts/test_claim_test_manifest.py"
-  python3 "$ROOT/scripts/check_refinement_manifest.py"
+  python3 "$ROOT/scripts/test_reproducible_artifacts.py" || return
+  python3 "$ROOT/scripts/test_refinement_manifest.py" || return
+  python3 "$ROOT/scripts/test_claim_test_manifest.py" || return
+  python3 "$ROOT/scripts/check_refinement_manifest.py" || return
   python3 "$ROOT/scripts/check_proof_impact.py"
 }
 
@@ -460,7 +459,10 @@ run_proof_stage() {
   shift
   local status
   set +e
-  "$@"
+  (
+    set -e
+    "$@"
+  )
   status=$?
   set -e
   if [[ "$status" -eq 0 ]]; then
@@ -477,6 +479,8 @@ run_proofs() {
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
+  python3 "$ROOT/scripts/check_claim_manifest.py"
+  python3 "$ROOT/scripts/test_write_proof_receipt.py"
   python3 "$ROOT/scripts/write_proof_receipt.py" \
     "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
   python3 "$ROOT/scripts/check_failure_manifests.py"
@@ -484,8 +488,6 @@ run_proofs() {
   run_proof_stage lean-negative run_lean_failure_fixtures
   run_proof_stage policy-vector-consumers run_policy_vector_consumers
   run_proof_stage refinement-gate run_refinement_gate
-  run_proof_stage claim-transaction-tests \
-    python3 "$ROOT/scripts/check_claim_test_manifest.py"
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt
@@ -778,6 +780,7 @@ run_smoke() {
     custom_evm_rpc_urls = vec {};
     base_chain_id = 8_453 : nat64;
     bridge_contract = blob \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\";
+    expected_bridge_runtime_sha256 = blob \"\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\";
     timelock_contract = blob \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\";
     deployment_instance_id = blob \"\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\";
     ecdsa_key_name = \"dfx_test_key\";

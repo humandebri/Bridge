@@ -65,21 +65,28 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByRole("button", { name: "Retry same deposit" })).toBeVisible()
   await page.getByRole("button", { name: "Retry same deposit" }).click()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
-  await expect(page.getByText(/Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready/).first()).toBeVisible()
+  await expect(page.getByText(/Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready|Your tokens were minted on Base/).first()).toBeVisible()
   await expect(page.getByText("Deposit status unavailable", { exact: true })).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "Bridge to Base" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Bridge to Base" })).toHaveCount(0)
+  await expect(page.getByLabel("You send")).toBeDisabled()
+  await expect(page.getByRole("button", { name: "Reverse bridge direction" })).toBeDisabled()
   const afterRecovery = await controlState(request)
   expect(afterRecovery).toMatchObject({ knownDepositCount: 1, depositSequences: ["0", "0"], nextDepositSequence: "1" })
   expect(BigInt(initial.ledgerBalance) - BigInt(afterRecovery.ledgerBalance)).toBe(200_020_000n)
 
   await postControl(request, "/test/settle", {})
+  await expect(page.getByRole("heading", { name: "Bridge complete" })).toBeVisible()
+  await expect(page.getByLabel("You send")).toHaveValue("")
+  await expect(page.getByText("1.99 KINIC", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Close", exact: true }).click()
   await refreshBridgeData(page)
   await expect.poll(async () => BigInt((await controlState(request)).bsnsBalance)).toBe(199_000_000n)
+  await expect(page.getByRole("button", { name: "Bridge to Base" })).toBeDisabled()
 
   await page.getByLabel("You send").fill("1.00000000")
   await page.getByRole("button", { name: "Bridge to Base" }).click()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
-  await expect(page.getByText(/Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready/).first()).toBeVisible()
+  await expect(page.getByText(/Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready|Your tokens were minted on Base/).first()).toBeVisible()
   await expect.poll(async () => {
     const state = await controlState(request)
     return {
@@ -90,6 +97,8 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   }).toEqual({ knownDepositCount: 2, depositSequences: ["0", "0", "1"], nextDepositSequence: "2" })
 
   await postControl(request, "/test/settle", {})
+  await expect(page.getByRole("heading", { name: "Bridge complete" })).toBeVisible()
+  await page.getByRole("button", { name: "Close", exact: true }).click()
   await refreshBridgeData(page)
   await expect.poll(async () => BigInt((await controlState(request)).bsnsBalance)).toBe(298_000_000n)
   const upgrade = (await postControl(request, "/test/upgrade", {})) as { before: unknown; after: unknown }

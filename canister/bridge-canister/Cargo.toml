@@ -24,6 +24,7 @@ ic-cdk-timers.workspace = true
 icrc-ledger-types.workspace = true
 evm_rpc_client.workspace = true
 evm_rpc_types.workspace = true
+futures.workspace = true
 ic-canister-runtime.workspace = true
 ic-cdk-management-canister.workspace = true
 k256.workspace = true

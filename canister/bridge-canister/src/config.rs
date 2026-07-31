@@ -21,6 +21,7 @@ pub struct BridgeInitArgs {
     pub custom_evm_rpc_urls: Vec<String>,
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
+    pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
     pub deployment_instance_id: Vec<u8>,
     pub ecdsa_key_name: String,
@@ -72,6 +73,7 @@ pub(crate) struct ImmutableBridgeConfig {
     pub custom_evm_rpc_urls: Vec<String>,
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
+    pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
     pub deployment_instance_id: Vec<u8>,
     pub ecdsa_key_name: String,
@@ -103,6 +105,7 @@ impl ImmutableBridgeConfig {
             custom_evm_rpc_urls: value.custom_evm_rpc_urls.clone(),
             base_chain_id: value.base_chain_id,
             bridge_contract: value.bridge_contract.clone(),
+            expected_bridge_runtime_sha256: value.expected_bridge_runtime_sha256.clone(),
             timelock_contract: value.timelock_contract.clone(),
             deployment_instance_id: value.deployment_instance_id.clone(),
             ecdsa_key_name: value.ecdsa_key_name.clone(),
@@ -139,6 +142,7 @@ impl ImmutableBridgeConfig {
             custom_evm_rpc_urls: self.custom_evm_rpc_urls,
             base_chain_id: self.base_chain_id,
             bridge_contract: self.bridge_contract,
+            expected_bridge_runtime_sha256: self.expected_bridge_runtime_sha256,
             timelock_contract: self.timelock_contract,
             deployment_instance_id: self.deployment_instance_id,
             ecdsa_key_name: self.ecdsa_key_name,
@@ -178,6 +182,7 @@ impl Default for GovernanceReplacementPolicy {
 impl BridgeInitArgs {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.bridge_contract.len() != 20
+            || self.expected_bridge_runtime_sha256.len() != 32
             || self.timelock_contract.len() != 20
             || self.deployment_instance_id.len() != 32
         {
@@ -186,6 +191,10 @@ impl BridgeInitArgs {
         if self.bridge_contract.iter().all(|byte| *byte == 0)
             || self.timelock_contract.iter().all(|byte| *byte == 0)
             || self.deployment_instance_id.iter().all(|byte| *byte == 0)
+            || self
+                .expected_bridge_runtime_sha256
+                .iter()
+                .all(|byte| *byte == 0)
             || self.bridge_contract == self.timelock_contract
         {
             return Err("bridge, Timelock, and deployment instance ID must be nonzero, with distinct contracts");
@@ -476,6 +485,12 @@ mod tests {
         args = valid_args();
         args.timelock_contract = args.bridge_contract.clone();
         assert!(args.validate().is_err());
+        args = valid_args();
+        args.expected_bridge_runtime_sha256 = vec![0; 32];
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.expected_bridge_runtime_sha256 = vec![4; 31];
+        assert!(args.validate().is_err());
     }
 
     #[test]
@@ -493,6 +508,7 @@ mod tests {
             custom_evm_rpc_urls: vec![],
             base_chain_id: BASE_MAINNET_CHAIN_ID,
             bridge_contract: vec![1; 20],
+            expected_bridge_runtime_sha256: vec![4; 32],
             timelock_contract: vec![2; 20],
             deployment_instance_id: vec![3; 32],
             ecdsa_key_name: "key_1".into(),

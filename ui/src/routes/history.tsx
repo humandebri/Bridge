@@ -450,8 +450,8 @@ function ActivityList({
   return <div className="space-y-3">
     {unavailable.length > 0 && <HistoryUnavailable sourceStates={sourceStates} onRefresh={onRefresh} compact />}
     {historyTruncated && <p className="rounded-xl bg-[#fff3e4] px-3 py-2 text-xs font-medium text-[#8a4b08]">Some older IC → Base activity is no longer available.</p>}
-    <div className="hidden grid-cols-[minmax(7rem,0.8fr)_minmax(12rem,1.8fr)_minmax(8rem,1fr)_minmax(7rem,0.9fr)_10.5rem] gap-4 px-4 pb-1 text-xs font-bold uppercase tracking-[0.08em] text-[var(--muted)] md:grid">
-      <span>Direction</span><span>Amount</span><span>Status</span><span>Time</span><span>Action</span>
+    <div className="hidden grid-cols-[minmax(6.5rem,0.7fr)_minmax(7rem,0.8fr)_minmax(10.5rem,1.6fr)_minmax(8rem,1fr)_minmax(6.5rem,0.8fr)_10rem] gap-4 px-4 pb-1 text-xs font-bold uppercase tracking-[0.08em] text-[var(--muted)] lg:grid">
+      <span>Direction</span><span>Tx ID</span><span>Amount</span><span>Status</span><span>Time</span><span>Action</span>
     </div>
     {items.map((item) => item.direction === "to-base"
       ? <DepositActivityRow key={item.key} item={item} mintFinalization={depositMintStatus(item.deposit, depositMintScan, depositMintQueryState)} mintTransactionHash={depositMintTransactionHash(item.deposit, depositMintScan)} writesEnabled={writesEnabled} actioningId={actioningId} onRequestRefund={onRequestDepositRefund} />
@@ -532,14 +532,15 @@ function DepositActivityRow({ item, mintFinalization, mintTransactionHash, write
     : quote
       ? `${formatTokenAmount(quote.net_amount)} KINIC on Base`
       : `${formatTokenAmount(record.gross_amount)} KINIC awaiting quote`
-  return <article className="grid gap-4 rounded-2xl bg-white p-4 md:grid-cols-[minmax(7rem,0.8fr)_minmax(12rem,1.8fr)_minmax(8rem,1fr)_minmax(7rem,0.9fr)_10.5rem] md:items-center">
-    <div><MobileLabel>Direction</MobileLabel><Badge tone="info">IC → Base</Badge>{transactionHash
+  return <article className="grid gap-4 rounded-2xl bg-white p-4 lg:grid-cols-[minmax(6.5rem,0.7fr)_minmax(7rem,0.8fr)_minmax(10.5rem,1.6fr)_minmax(8rem,1fr)_minmax(6.5rem,0.8fr)_10rem] lg:items-center">
+    <div><MobileLabel>Direction</MobileLabel><Badge tone="info">IC → Base</Badge></div>
+    <div><MobileLabel>Tx ID</MobileLabel>{transactionHash
       ? <BaseTransactionLink transactionHash={transactionHash} />
       : <p className="mt-1 text-xs text-[var(--muted)]">Base transaction not submitted</p>}</div>
     <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{amountText}</p>{availableRefund !== undefined && <p className="mt-1 text-xs text-[var(--muted)]">Available after non-refundable fees: {formatTokenAmount(availableRefund)} KINIC</p>}{refund && <p className="mt-1 text-xs text-[var(--muted)]">Non-refundable refund Ledger fee: {formatTokenAmount(refund.ledger_fee)} KINIC</p>}</div>
     <div><MobileLabel>Status</MobileLabel><Badge tone={mintedOnBase ? "good" : depositPhaseTone(record.state)}>{mintedOnBase ? "Minted on Base (finalized)" : depositPhaseName(record.state)}</Badge>{!mintedOnBase && progress && <AutomaticProgress progress={progress} />}{!mintedOnBase && refund && "ReconciliationRequired" in refund.status && <p className="mt-1 text-xs font-bold text-[#b42318]">Ledger result is uncertain — requesting again checks the same transfer.</p>}{!mintedOnBase && reconciliationMessage && <p className={`mt-1 text-xs font-bold ${record.last_settlement_stop_reason[0] ? "text-[#b42318]" : "text-[var(--muted)]"}`}>{reconciliationMessage}</p>}</div>
     <div><MobileLabel>Time</MobileLabel><ActivityTime valueNs={item.createdAtNs} /></div>
-    <div className="md:text-right"><MobileLabel>Action</MobileLabel>{mintedOnBase
+    <div className="lg:text-right"><MobileLabel>Action</MobileLabel>{mintedOnBase
       ? <span className="text-sm text-[var(--muted)]">—</span>
       : "AuthorizationAvailable" in record.state
         ? <MintAuthorizationAction record={record} compact mintBlockedReason={mintBlockedReason} onRequestRefund={writesEnabled ? () => void onRequestRefund(record) : undefined} claimingRefund={actioningId === key} />
@@ -565,12 +566,13 @@ function WithdrawalActivityRow({ item, writesEnabled, actioningId, retryingHash,
   const progress = record.canister ? automaticProgressInfo(record.canister.automatic_progress) : undefined
   const needsAttention = Boolean(record.canister?.last_settlement_stop_reason[0]) || record.canister?.state !== undefined && "ReconciliationHold" in record.canister.state
   const label = !record.canister ? "Committed" : needsAttention ? "Needs attention" : withdrawalPhaseName(record.canister.state)
-  return <article className="grid gap-4 rounded-2xl bg-white p-4 md:grid-cols-[minmax(7rem,0.8fr)_minmax(12rem,1.8fr)_minmax(8rem,1fr)_minmax(7rem,0.9fr)_10.5rem] md:items-center">
-    <div><MobileLabel>Direction</MobileLabel><Badge tone="info">Base → IC</Badge><BaseTransactionLink transactionHash={record.hash} /></div>
+  return <article className="grid gap-4 rounded-2xl bg-white p-4 lg:grid-cols-[minmax(6.5rem,0.7fr)_minmax(7rem,0.8fr)_minmax(10.5rem,1.6fr)_minmax(8rem,1fr)_minmax(6.5rem,0.8fr)_10rem] lg:items-center">
+    <div><MobileLabel>Direction</MobileLabel><Badge tone="info">Base → IC</Badge></div>
+    <div><MobileLabel>Tx ID</MobileLabel><BaseTransactionLink transactionHash={record.hash} /></div>
     <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{record.amountOut === undefined ? "Amount unavailable" : `${formatTokenAmount(record.amountOut)} KINIC to IC`}</p></div>
     <div><MobileLabel>Status</MobileLabel><Badge tone={needsAttention ? "warn" : record.canister ? withdrawalPhaseTone(record.canister.state) : "neutral"}>{label}</Badge>{progress && <AutomaticProgress progress={progress} />}{needsAttention && <p className="mt-1 text-xs font-bold text-[#b42318]">Needs attention</p>}</div>
     <div><MobileLabel>Time</MobileLabel><ActivityTime valueNs={item.createdAtNs} /></div>
-    <div className="md:text-right"><MobileLabel>Action</MobileLabel>{!record.canister ? <Button size="sm" variant="ghost" disabled={!writesEnabled || retryingHash === record.hash} onClick={() => void onCheckAndNotify(record)}>{retryingHash === record.hash ? "Checking…" : "Check status"}</Button> : !terminal && (!progress || progress.retryAllowed) ? <Button size="sm" variant="ghost" disabled={(!writesEnabled && !feeGuardBlocked(record.canister)) || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry"}</Button> : <span className="text-sm text-[var(--muted)]">—</span>}</div>
+    <div className="lg:text-right"><MobileLabel>Action</MobileLabel>{!record.canister ? <Button size="sm" variant="ghost" disabled={!writesEnabled || retryingHash === record.hash} onClick={() => void onCheckAndNotify(record)}>{retryingHash === record.hash ? "Checking…" : "Check status"}</Button> : !terminal && (!progress || progress.retryAllowed) ? <Button size="sm" variant="ghost" disabled={(!writesEnabled && !feeGuardBlocked(record.canister)) || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry"}</Button> : <span className="text-sm text-[var(--muted)]">—</span>}</div>
   </article>
 }
 
@@ -590,7 +592,7 @@ function BaseTransactionLink({ transactionHash }: { transactionHash: `0x${string
 }
 
 function MobileLabel({ children }: { children: React.ReactNode }) {
-  return <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--muted)] md:hidden">{children}</span>
+  return <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--muted)] lg:hidden">{children}</span>
 }
 
 function LoadOlder({ loading, onClick }: { loading: boolean; onClick: () => Promise<void> }) {

@@ -126,6 +126,7 @@ type BridgeInitArgs = record {
   ledger_canister_id : principal;
   settlement_retry_interval_seconds : nat64;
   governance_replacement : GovernanceReplacementPolicy;
+  expected_bridge_runtime_sha256 : blob;
   timelock_contract : blob;
   cycles_floor : nat;
 };
@@ -133,12 +134,10 @@ type BridgeStatus = record {
   unpaid_withdrawal_count : nat64;
   withdrawal_fee_guard_ledger_fee : opt nat;
   mint_authorization_ttl_seconds : nat64;
-  base_chain_id_matches_config : bool;
   mint_authorization_epoch : nat64;
   unpaid_withdrawal_amount_out : nat;
   last_reserve_observation_ns : nat64;
   reserve : ReserveStatus;
-  observed_base_chain_id : opt nat64;
   withdrawal_stop_reasons : vec text;
   deposits_paused : bool;
   schema_version : nat16;
@@ -413,6 +412,7 @@ type PublicConfig = record {
   settlement_retry_interval_seconds : nat64;
   governance_replacement : GovernanceReplacementPolicy;
   governance_operator : blob;
+  expected_bridge_runtime_sha256 : blob;
   timelock_contract : blob;
   cycles_floor : nat;
   rpc_provider_urls_sha256 : blob;

@@ -47,9 +47,9 @@ if values(value,'Err') or len(values(value,'Ok')) != 1:
 PY
 PUBLIC_CONFIG="$(icp canister call bridge-canister get_public_config '()' -e production --query --json)"
 STATUS="$(icp canister call bridge-canister get_bridge_status '()' -e production --json)"
-python3 - "$EXPECTED_SIGNER" "$GOVERNANCE_OPERATOR" "$PUBLIC_CONFIG" "$STATUS" <<'PY'
+python3 - "$EXPECTED_SIGNER" "$GOVERNANCE_OPERATOR" "$EXPECTED_BRIDGE_RUNTIME" "$PUBLIC_CONFIG" "$STATUS" <<'PY'
 import json,sys
-expected_signer,expected_operator,public_raw,status_raw=sys.argv[1:]
+expected_signer,expected_operator,expected_runtime,public_raw,status_raw=sys.argv[1:]
 def values(value,key):
  out=[]
  if isinstance(value,dict):
@@ -63,8 +63,10 @@ def address(value):
  return '0x'+bytes(value).hex() if isinstance(value,list) else str(value).lower()
 public=json.loads(public_raw); status=json.loads(status_raw)
 signers=values(public,'expected_bridge_signer'); operators=values(public,'governance_operator')
+runtime_hashes=values(public,'expected_bridge_runtime_sha256')
 if len(signers)!=1 or address(signers[0])!=expected_signer.lower(): raise SystemExit('production Canister Mint Signer differs from profile')
 if len(operators)!=1 or address(operators[0])!=expected_operator.lower(): raise SystemExit('production Canister Governance Operator differs from profile')
+if len(runtime_hashes)!=1 or bytes(runtime_hashes[0]).hex()!=expected_runtime.lower().removeprefix('0x'): raise SystemExit('production Canister expected Bridge runtime differs from profile')
 if values(status,'deposits_paused') != [True]: raise SystemExit('production Canister must remain paused before Base deployment')
 PY
 

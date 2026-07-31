@@ -18,9 +18,69 @@ const timelockDelayAbi = [{
 
 export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number }
 
+export interface DeploymentAttestation extends RuntimeValidation {
+  profileFingerprint: string
+}
+
+export interface BridgeSnapshotObservation {
+  serviceFee: bigint
+  maxServiceFee: bigint
+  perDepositLimit: bigint
+  minted: bigint
+  limit: bigint
+  startedAt: bigint
+  duration: bigint
+  depositsPaused: boolean
+  withdrawalsPaused: boolean
+  bridgeSigner: Address
+  mintAuthorizationEpoch: bigint
+  blockTimestamp: bigint
+}
+
+export interface FinalizedRuntimeObservation extends RuntimeValidation {
+  profileFingerprint?: string
+  chainId?: number
+  finalizedBlock?: bigint
+  finalizedBlockHash?: `0x${string}`
+  finalizedBlockTimestamp?: bigint
+  snapshot?: BridgeSnapshotObservation
+}
+
 export const RUNTIME_VALIDATION_TTL_MS = 60_000
 export const FINALIZED_HEAD_MAX_AGE_MS = 45 * 60_000
 export const FINALIZED_HEAD_FUTURE_SKEW_MS = 60_000
+
+export function runtimeProfileFingerprint(profile: DeploymentProfile): string {
+  return [
+    profile.environment,
+    profile.label,
+    profile.testOnly,
+    profile.environmentMode,
+    profile.activationTimelockDelaySeconds,
+    profile.icHost,
+    profile.baseRpcUrl,
+    ...(profile.baseHistoryRpcUrls ?? []),
+    profile.chainId,
+    profile.bridgeCanisterId,
+    profile.ledgerCanisterId,
+    profile.indexCanisterId,
+    profile.evmRpcCanisterId,
+    profile.bridgeAddress,
+    profile.bsnsAddress,
+    profile.timelockAddress,
+    profile.expected_bridge_signer,
+    profile.deploymentInstanceId,
+    profile.deploymentBlock,
+    profile.bridgeRuntimeHash,
+    profile.bsnsRuntimeHash,
+    profile.rpcProviderUrlsSha256,
+    profile.icToken.name,
+    profile.icToken.symbol,
+    profile.icToken.decimals,
+    profile.baseToken.symbol,
+    profile.baseToken.decimals,
+  ].join(":").toLowerCase()
+}
 
 export function finalizedHeadTimestampBlocker(timestamp?: bigint, now = Date.now()): string | undefined {
   if (timestamp === undefined || timestamp <= 0n || !Number.isSafeInteger(now) || now < 0) {
@@ -51,16 +111,19 @@ export function requireRuntimeWriteReady(validation?: RuntimeValidation, now = D
   if (blocker) throw new Error(blocker)
 }
 
-export async function refetchRuntimeWriteReady(refetch: () => Promise<{ data?: RuntimeValidation }>): Promise<RuntimeValidation & { ready: true }> {
+export async function refetchRuntimeWriteReady<T extends RuntimeValidation>(
+  refetch: () => Promise<{ data?: T }>,
+): Promise<T & { ready: true }> {
   const result = await refetch()
   requireRuntimeWriteReady(result.data)
   return result.data
 }
 
-export async function validateRuntimeHeartbeat(profile: DeploymentProfile, connectedChainId?: number): Promise<RuntimeValidation> {
+export async function validateRuntimeHeartbeat(profile: DeploymentProfile, connectedChainId?: number): Promise<FinalizedRuntimeObservation> {
+  const profileFingerprint = runtimeProfileFingerprint(profile)
   const blockers = profileCompleteness(profile)
   if (connectedChainId !== undefined && connectedChainId !== profile.chainId) blockers.push(`Wallet is on chain ${connectedChainId}; expected ${profile.chainId}`)
-  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
+  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now(), profileFingerprint }
 
   const bridgeAddress = profile.bridgeAddress as Address
   const client = createBasePublicClient(profile)
@@ -75,7 +138,7 @@ export async function validateRuntimeHeartbeat(profile: DeploymentProfile, conne
   if (localFinalized.number === null || localFinalized.hash === null) blockers.push("Finalized Base block number or hash is unavailable")
   const timestampBlocker = finalizedHeadTimestampBlocker(localFinalized.timestamp)
   if (timestampBlocker) blockers.push(timestampBlocker)
-  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
+  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now(), profileFingerprint }
 
   const bridgeSnapshot = await client.readContract({
     address: bridgeAddress,
@@ -87,16 +150,57 @@ export async function validateRuntimeHeartbeat(profile: DeploymentProfile, conne
   if (bridgeSnapshot.bridgeSigner.toLowerCase() !== profile.expected_bridge_signer?.toLowerCase()) {
     blockers.push("Bridge signer differs from the reviewed profile")
   }
-  return { ready: blockers.length === 0, blockers, checkedAt: Date.now() }
+  return {
+    ready: blockers.length === 0,
+    blockers,
+    checkedAt: Date.now(),
+    profileFingerprint,
+    chainId: localChainId,
+    finalizedBlock: localFinalized.number,
+    finalizedBlockHash: localFinalized.hash,
+    finalizedBlockTimestamp: localFinalized.timestamp,
+    snapshot: bridgeSnapshotView(bridgeSnapshot),
+  }
 }
 
-export async function validateRuntime(profile: DeploymentProfile, connectedChainId?: number): Promise<RuntimeValidation> {
+function bridgeSnapshotView(snapshot: {
+  serviceFee: bigint
+  maxServiceFee: bigint
+  perDepositLimit: bigint
+  mintedInWindow: bigint
+  mintWindowLimit: bigint
+  mintWindowStartedAt: bigint
+  mintWindowDuration: bigint
+  depositMintsPaused: boolean
+  withdrawalsPaused: boolean
+  bridgeSigner: Address
+  mintAuthorizationEpoch: bigint
+  blockTimestamp: bigint
+}): BridgeSnapshotObservation {
+  return {
+    serviceFee: snapshot.serviceFee,
+    maxServiceFee: snapshot.maxServiceFee,
+    perDepositLimit: snapshot.perDepositLimit,
+    minted: snapshot.mintedInWindow,
+    limit: snapshot.mintWindowLimit,
+    startedAt: snapshot.mintWindowStartedAt,
+    duration: snapshot.mintWindowDuration,
+    depositsPaused: snapshot.depositMintsPaused,
+    withdrawalsPaused: snapshot.withdrawalsPaused,
+    bridgeSigner: snapshot.bridgeSigner,
+    mintAuthorizationEpoch: snapshot.mintAuthorizationEpoch,
+    blockTimestamp: snapshot.blockTimestamp,
+  }
+}
+
+export async function validateRuntime(profile: DeploymentProfile, connectedChainId?: number): Promise<DeploymentAttestation> {
+  const profileFingerprint = runtimeProfileFingerprint(profile)
   const blockers = profileCompleteness(profile)
   if (connectedChainId !== undefined && connectedChainId !== profile.chainId) blockers.push(`Wallet is on chain ${connectedChainId}; expected ${profile.chainId}`)
-  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
+  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now(), profileFingerprint }
   const expectedTimelockDelaySeconds = profile.activationTimelockDelaySeconds
   if (expectedTimelockDelaySeconds === null) {
-    return { ready: false, blockers: ["Timelock delay is missing"], checkedAt: Date.now() }
+    return { ready: false, blockers: ["Timelock delay is missing"], checkedAt: Date.now(), profileFingerprint }
   }
 
   const bridgeAddress = profile.bridgeAddress as Address
@@ -121,13 +225,14 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (localFinalized.number === null || localFinalized.hash === null) blockers.push("Finalized Base block number or hash is unavailable")
   const timestampBlocker = finalizedHeadTimestampBlocker(localFinalized.timestamp)
   if (timestampBlocker) blockers.push(timestampBlocker)
-  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now() }
+  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now(), profileFingerprint }
 
   const finalizedHash = localFinalized.hash
-  const [bridgeCode, bsnsCode, bridgeSnapshot, linkedBsns, bsnsSymbol, bsnsDecimals, timelockDelay] = await Promise.all([
+  const [bridgeCode, bsnsCode, bridgeSnapshot, contractDomain, linkedBsns, bsnsSymbol, bsnsDecimals, timelockDelay] = await Promise.all([
     client.getCode({ address: bridgeAddress, blockHash: finalizedHash, requireCanonical: true }),
     client.getCode({ address: bsnsAddress, blockHash: finalizedHash, requireCanonical: true }),
     client.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "bridgeSnapshot", blockHash: finalizedHash, requireCanonical: true }),
+    client.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "eip712Domain", blockHash: finalizedHash, requireCanonical: true }),
     client.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "bsns", blockHash: finalizedHash, requireCanonical: true }),
     client.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "symbol", blockHash: finalizedHash, requireCanonical: true }),
     client.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "decimals", blockHash: finalizedHash, requireCanonical: true }),
@@ -142,11 +247,22 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (timelockDelay !== BigInt(expectedTimelockDelaySeconds)) {
     blockers.push("Timelock delay differs from the reviewed profile")
   }
+  const [, domainName, domainVersion, domainChainId, domainContract] = contractDomain
+  if (domainName !== "KINIC Bridge"
+    || domainVersion !== "1"
+    || domainChainId !== BigInt(profile.chainId)
+    || domainContract.toLowerCase() !== bridgeAddress.toLowerCase()) {
+    blockers.push("Bridge EIP-712 domain differs from the reviewed profile")
+  }
 
   blockers.push(...bridgeSignerBlockers(profile.expected_bridge_signer as Address, bridgeSnapshot.bridgeSigner, config.expected_bridge_signer))
   if (config.base_chain_id !== BigInt(profile.chainId)) blockers.push("Canister Base chain ID differs from the profile")
   const configuredBridge = `0x${Array.from(config.bridge_contract, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
   if (configuredBridge.toLowerCase() !== bridgeAddress.toLowerCase()) blockers.push("Canister Bridge contract differs from the profile")
+  const configuredBridgeRuntime = bytesHex(config.expected_bridge_runtime_sha256, 32)
+  if (configuredBridgeRuntime?.toLowerCase() !== profile.bridgeRuntimeHash?.toLowerCase()) {
+    blockers.push("Canister expected Bridge runtime differs from the profile")
+  }
   const configuredTimelock = `0x${Array.from(config.timelock_contract, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
   if (configuredTimelock.toLowerCase() !== timelockAddress.toLowerCase()) blockers.push("Canister Timelock contract differs from the profile")
   const configuredDeploymentInstance = `0x${Array.from(config.deployment_instance_id, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
@@ -167,7 +283,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (ledgerName !== profile.icToken.name || ledgerSymbol !== profile.icToken.symbol || ledgerDecimals !== profile.icToken.decimals) {
     blockers.push(`IC token metadata is not ${profile.icToken.name}/${profile.icToken.symbol}/${profile.icToken.decimals}`)
   }
-  return { ready: blockers.length === 0, blockers, checkedAt: Date.now() }
+  return { ready: blockers.length === 0, blockers, checkedAt: Date.now(), profileFingerprint }
 }
 
 export function bytesHex(bytes: Uint8Array | number[], expectedLength: number): `0x${string}` | undefined {

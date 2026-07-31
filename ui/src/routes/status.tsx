@@ -5,7 +5,7 @@ import { useChainId } from "wagmi"
 import { formatEther } from "viem"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { useBridgeStatus, useConfirmedBaseStatus, useRuntimeValidation } from "@/features/status/use-status"
+import { useBridgeStatus, useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
 import { formatTokenAmount } from "@/lib/amounts"
 import { bridgeAvailability, displayCyclesSufficient, STATUS_FRESHNESS_MS, statusDataIsFresh } from "@/lib/bridge-availability"
 
@@ -14,10 +14,17 @@ export const Route = createFileRoute("/status")({ component: StatusPage })
 function StatusPage() {
   const chainId = useChainId()
   const validation = useRuntimeValidation(chainId)
-  const base = useConfirmedBaseStatus()
+  const base = useRuntimeHeartbeat(chainId, validation.data)
   const canister = useBridgeStatus()
   const runtime = validation.data
-  const baseData = base.data
+  const baseData = base.data?.snapshot && base.data.finalizedBlock !== undefined && base.data.finalizedBlockHash
+    ? {
+        ...base.data.snapshot,
+        observedBlock: base.data.finalizedBlock,
+        observedBlockHash: base.data.finalizedBlockHash,
+        observedTimestamp: base.data.snapshot.blockTimestamp,
+      }
+    : undefined
   const canisterData = canister.data
   const [now, setNow] = useState(0)
   const { refetch: refetchValidation } = validation
@@ -25,8 +32,17 @@ function StatusPage() {
   const { refetch: refetchCanister } = canister
 
   const refresh = useCallback(() => {
-    void Promise.all([refetchValidation(), refetchBase(), refetchCanister()])
-  }, [refetchBase, refetchCanister, refetchValidation])
+    void (async () => {
+      if (validation.data?.ready !== true) {
+        const checked = await refetchValidation()
+        if (checked.data?.ready !== true) {
+          await refetchCanister()
+          return
+        }
+      }
+      await Promise.all([refetchBase(), refetchCanister()])
+    })()
+  }, [refetchBase, refetchCanister, refetchValidation, validation.data?.ready])
 
   useEffect(() => { refresh() }, [refresh])
 

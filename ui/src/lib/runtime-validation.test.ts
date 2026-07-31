@@ -96,7 +96,21 @@ beforeEach(() => {
   getBlockMock.mockResolvedValue({ number: 12n, hash: finalizedHash, timestamp: BigInt(Math.floor(Date.now() / 1_000)) })
   getCodeMock.mockImplementation(({ address }: { address: string }) => Promise.resolve(address === bridgeAddress ? "0x01" : "0x02"))
   readContractMock.mockImplementation(({ functionName }: { functionName: string }) => {
-    if (functionName === "bridgeSnapshot") return Promise.resolve({ bridgeSigner: contractSigner })
+    if (functionName === "bridgeSnapshot") return Promise.resolve({
+      bridgeSigner: contractSigner,
+      serviceFee: 1n,
+      maxServiceFee: 1n,
+      perDepositLimit: 10n,
+      mintedInWindow: 0n,
+      mintWindowLimit: 10n,
+      mintWindowStartedAt: 0n,
+      mintWindowDuration: 60n,
+      depositMintsPaused: false,
+      withdrawalsPaused: false,
+      mintAuthorizationEpoch: 1n,
+      blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
+    })
+    if (functionName === "eip712Domain") return Promise.resolve([0n, "KINIC Bridge", "1", BigInt(profile.chainId), bridgeAddress, "0x", []])
     if (functionName === "bsns") return Promise.resolve(bsnsAddress)
     if (functionName === "symbol") return Promise.resolve(baseMetadata.symbol)
     if (functionName === "decimals") return Promise.resolve(baseMetadata.decimals)
@@ -113,6 +127,7 @@ beforeEach(() => {
   mocks.getPublicConfig.mockImplementation(() => Promise.resolve({
     base_chain_id: BigInt(profile.chainId),
     bridge_contract: Array.from({ length: 20 }, () => 0x11),
+    expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
     timelock_contract: Array.from({ length: 20 }, () => 0x55),
     deployment_instance_id: Array.from({ length: 32 }, () => 0x99),
     ledger_canister_id: Principal.fromText(configuredLedgerId),
@@ -269,6 +284,7 @@ describe("validateRuntime token bindings", () => {
   it("blocks a Timelock delay or Canister Timelock binding mismatch", async () => {
     readContractMock.mockImplementation(({ functionName }: { functionName: string }) => {
       if (functionName === "bridgeSnapshot") return Promise.resolve({ bridgeSigner: contractSigner })
+      if (functionName === "eip712Domain") return Promise.resolve([0n, "KINIC Bridge", "1", BigInt(profile.chainId), bridgeAddress, "0x", []])
       if (functionName === "bsns") return Promise.resolve(bsnsAddress)
       if (functionName === "symbol") return Promise.resolve(baseMetadata.symbol)
       if (functionName === "decimals") return Promise.resolve(baseMetadata.decimals)
@@ -278,6 +294,7 @@ describe("validateRuntime token bindings", () => {
     mocks.getPublicConfig.mockResolvedValueOnce({
       base_chain_id: BigInt(profile.chainId),
       bridge_contract: new Uint8Array(20).fill(0x11),
+      expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
       timelock_contract: new Uint8Array(20).fill(0x66),
       deployment_instance_id: new Uint8Array(32).fill(0x99),
       ledger_canister_id: Principal.fromText(ledgerId),
@@ -300,10 +317,29 @@ describe("validateRuntime token bindings", () => {
     expect(getBlockMock).toHaveBeenCalledOnce()
   })
 
+  it("fails closed when the Canister runtime attestation differs from the profile", async () => {
+    mocks.getPublicConfig.mockResolvedValueOnce({
+      base_chain_id: BigInt(profile.chainId),
+      bridge_contract: new Uint8Array(20).fill(0x11),
+      expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xdd),
+      timelock_contract: new Uint8Array(20).fill(0x55),
+      deployment_instance_id: new Uint8Array(32).fill(0x99),
+      ledger_canister_id: Principal.fromText(ledgerId),
+      index_canister_id: Principal.fromText(indexId),
+      schema_version: 30,
+      expected_bridge_signer: new Uint8Array(20).fill(0x33),
+      evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
+      rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
+    })
+    const result = await validateRuntime(profile, profile.chainId)
+    expect(result.blockers).toContain("Canister expected Bridge runtime differs from the profile")
+  })
+
   it("blocks obsolete schema and mismatched Canister EVM RPC bindings", async () => {
     mocks.createBridgeActor.mockResolvedValue({
       get_public_config: vi.fn().mockResolvedValue({
         base_chain_id: BigInt(profile.chainId), bridge_contract: new Uint8Array(20).fill(0x11),
+        expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
         timelock_contract: new Uint8Array(20).fill(0x55),
         deployment_instance_id: new Uint8Array(32).fill(0x99),
         ledger_canister_id: Principal.fromText(ledgerId), index_canister_id: Principal.fromText(indexId),

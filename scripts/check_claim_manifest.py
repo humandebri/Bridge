@@ -94,7 +94,7 @@ def check_solidity_wrapper_refinement() -> None:
         raise ValueError(f"Bridge mint wrapper does not apply one exact transition: {missing}")
 
 
-def main() -> int:
+def build_claim_report() -> dict[str, object]:
     check_solidity_wrapper_refinement()
     lean_source = "\n".join(
         path.read_text(encoding="utf-8")
@@ -264,11 +264,19 @@ def main() -> int:
                 f"external assumption dependency mismatch for {assumption}: "
                 f"declared={sorted(declared)} actual={sorted(actual)}"
             )
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(
-        json.dumps({"schema": 1, "claims": results}, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    return {"schema": 1, "claims": results}
+
+
+def write_claim_report(report: dict[str, object], path: Path = REPORT) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    report = build_claim_report()
+    write_claim_report(report)
+    results = report["claims"]
+    assert isinstance(results, list)
     print(f"unified claim manifest passed ({len(results)} claims)")
     return 0
 

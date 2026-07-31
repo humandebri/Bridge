@@ -47,7 +47,6 @@ pub struct StatusCounts {
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeStatus {
-    pub base_chain_id_matches_config: bool,
     pub schema_version: u16,
     pub mint_authorization_ttl_seconds: u64,
     pub mint_authorization_epoch: u64,
@@ -56,7 +55,6 @@ pub struct BridgeStatus {
     pub last_reserve_observation_ns: u64,
     pub last_finalized_observation_ns: u64,
     pub last_finalized_base_block_hash: Vec<u8>,
-    pub observed_base_chain_id: Option<u64>,
     pub observed_bridge_signer: Vec<u8>,
     pub observed_bridge_runtime_sha256: Vec<u8>,
     pub reserve: ReserveStatus,
@@ -107,6 +105,7 @@ pub struct ReserveStatus {
 pub struct PublicConfig {
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
+    pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
     pub deployment_instance_id: Vec<u8>,
     pub ledger_canister_id: candid::Principal,
@@ -646,7 +645,7 @@ async fn request_deposit_refund(
                         let evidence = evm_rpc::exact_mint_evidence(
                             &config,
                             &authorization,
-                            observation.finalized.block_number,
+                            observation.finalized,
                         )
                         .await
                         .map_err(map_deposit_refund_exact_mint_error)?;
@@ -1015,8 +1014,6 @@ fn get_bridge_status() -> BridgeStatus {
             SettlementSchedulerHealth::Healthy
         };
         BridgeStatus {
-            base_chain_id_matches_config: finalized_observation
-                .is_some_and(|observation| observation.chain_id == config.base_chain_id),
             schema_version: store.schema_version(),
             mint_authorization_ttl_seconds: bridge_core::MINT_AUTHORIZATION_TTL_SECONDS,
             mint_authorization_epoch: storage_or_trap(
@@ -1044,7 +1041,6 @@ fn get_bridge_status() -> BridgeStatus {
             last_finalized_base_block_hash: finalized_observation
                 .map(|observation| observation.block_hash.to_vec())
                 .unwrap_or_default(),
-            observed_base_chain_id: finalized_observation.map(|observation| observation.chain_id),
             observed_bridge_signer: finalized_observation
                 .map(|observation| observation.bridge_signer.to_vec())
                 .unwrap_or_default(),
@@ -1221,6 +1217,7 @@ fn get_public_config() -> PublicConfig {
         PublicConfig {
             base_chain_id: config.base_chain_id,
             bridge_contract: config.bridge_contract,
+            expected_bridge_runtime_sha256: config.expected_bridge_runtime_sha256,
             timelock_contract: config.timelock_contract,
             deployment_instance_id: config.deployment_instance_id,
             ledger_canister_id: config.ledger_canister_id,

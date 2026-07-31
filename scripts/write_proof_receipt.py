@@ -7,11 +7,24 @@ import json
 import sys
 from pathlib import Path
 
+from check_claim_manifest import build_claim_report
 from check_proof_impact import RECEIPT_SCHEMA, REQUIRED_STAGES, source_fingerprint
 
 REQUIRED = REQUIRED_STAGES
-ROOT = Path(__file__).resolve().parents[1]
-CLAIM_REPORT = ROOT / "verification" / "output" / "claim-report.json"
+
+
+def current_claim_evidence() -> tuple[list[dict[str, object]], dict[str, object]]:
+    fingerprint_before = source_fingerprint()
+    report = build_claim_report()
+    fingerprint_after = source_fingerprint()
+    if fingerprint_before != fingerprint_after:
+        raise ValueError("proof inputs changed while computing claim evidence")
+    claims = report.get("claims")
+    if report.get("schema") != 1 or not isinstance(claims, list) or not claims:
+        raise ValueError("claim evidence must contain a non-empty schema-1 claim list")
+    if not all(isinstance(claim, dict) for claim in claims):
+        raise ValueError("claim evidence contains a malformed claim")
+    return claims, fingerprint_after
 
 
 def main() -> int:
@@ -25,12 +38,7 @@ def main() -> int:
             if stage not in REQUIRED or status not in {"pass", "fail"} or stage in stages:
                 raise ValueError(f"invalid proof receipt stage: {line}")
             stages[stage] = status
-    claim_report = (
-        json.loads(CLAIM_REPORT.read_text(encoding="utf-8"))
-        if CLAIM_REPORT.is_file()
-        else {"schema": 1, "claims": []}
-    )
-    claims = claim_report.get("claims", [])
+    claims, fingerprint = current_claim_evidence()
     complete = (
         tuple(stages) == REQUIRED
         and all(status == "pass" for status in stages.values())
@@ -43,7 +51,7 @@ def main() -> int:
                 "schema": RECEIPT_SCHEMA,
                 "required_stages": list(REQUIRED),
                 "stages": [{"id": stage, "status": stages[stage]} for stage in stages],
-                "source_fingerprint": source_fingerprint(),
+                "source_fingerprint": fingerprint,
                 "claims": claims,
                 "claim_summary": {
                     status: sum(claim.get("status") == status for claim in claims)

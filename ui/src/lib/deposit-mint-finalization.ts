@@ -36,6 +36,7 @@ export interface DepositMintLogScan {
   logs: FinalizedDepositMintLog[]
 }
 export type DepositMintFinalizationStatus = "checking" | "minted" | "absent" | "unavailable"
+export type MintReceiptFinalization = "pending" | "finalized" | "conflict" | "reverted"
 
 export function depositMintEventMatches(
   expected: ExpectedDepositMint,
@@ -77,6 +78,37 @@ export function receiptContainsExactDepositMint(
       return false
     }
   })
+}
+
+export function exactMintReceiptFinalization({
+  expected,
+  expectedBridgeAddress,
+  receipt,
+  finalizedBlockNumber,
+  canonicalReceiptBlockHash,
+}: {
+  expected: ExpectedDepositMint
+  expectedBridgeAddress: Hex
+  receipt: {
+    status: "success" | "reverted"
+    blockNumber: bigint | null
+    blockHash: Hex | null
+    logs: readonly { address: Hex; data: Hex; topics: readonly Hex[] }[]
+  }
+  finalizedBlockNumber: bigint
+  canonicalReceiptBlockHash?: Hex | null
+}): MintReceiptFinalization {
+  if (receipt.blockNumber === null
+    || receipt.blockHash === null
+    || receipt.blockNumber > finalizedBlockNumber
+    || !canonicalReceiptBlockHash
+    || canonicalReceiptBlockHash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
+    return "pending"
+  }
+  if (receipt.status === "reverted") return "reverted"
+  return receiptContainsExactDepositMint(expected, receipt.logs, expectedBridgeAddress)
+    ? "finalized"
+    : "conflict"
 }
 
 export function depositMintFinalizationStatus({

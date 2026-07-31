@@ -1043,6 +1043,7 @@ pub struct DepositFundingReservation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedBaseMintSnapshot {
     pub generation: u64,
+    pub deposit_id: Option<[u8; 32]>,
     pub observed_at_ns: u64,
     pub snapshot: BaseMintSnapshot,
     pub bridge_signer: [u8; 20],
@@ -3830,6 +3831,7 @@ impl StableStore {
         }
         admission.base_snapshot = Some(CachedBaseMintSnapshot {
             generation: owner,
+            deposit_id: None,
             observed_at_ns,
             snapshot,
             bridge_signer,
@@ -3861,6 +3863,7 @@ impl StableStore {
             mint_authorization_epoch,
             deposits_paused,
             None,
+            None,
             caller,
             audit_kinds,
         )
@@ -3875,6 +3878,7 @@ impl StableStore {
         bridge_signer: [u8; 20],
         mint_authorization_epoch: u64,
         deposits_paused: bool,
+        deposit_id: Option<[u8; 32]>,
         finalized_observation: Option<FinalizedObservationRecord>,
         caller: Principal,
         audit_kinds: Vec<AuditEventKind>,
@@ -3891,6 +3895,7 @@ impl StableStore {
         }
         admission.base_snapshot = Some(CachedBaseMintSnapshot {
             generation: owner,
+            deposit_id,
             observed_at_ns,
             snapshot,
             bridge_signer,
@@ -3934,6 +3939,16 @@ impl StableStore {
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
         })?;
         Ok(())
+    }
+
+    pub fn cached_deposit_authorization_snapshot(
+        &self,
+        deposit_id: [u8; 32],
+    ) -> Result<Option<CachedBaseMintSnapshot>, StorageError> {
+        Ok(self
+            .deposit_admission()?
+            .base_snapshot
+            .filter(|cached| cached.deposit_id == Some(deposit_id)))
     }
 
     pub fn fail_base_snapshot_refresh(&mut self, owner: u64) -> Result<(), StorageError> {
@@ -7675,6 +7690,7 @@ mod tests {
             custom_evm_rpc_urls: vec![],
             base_chain_id: 8453,
             bridge_contract: vec![1; 20],
+            expected_bridge_runtime_sha256: vec![4; 32],
             timelock_contract: vec![2; 20],
             deployment_instance_id: vec![3; 32],
             ecdsa_key_name: "test_key".into(),
@@ -8594,11 +8610,20 @@ mod tests {
                     current.bridge_signer,
                     1,
                     false,
+                    Some([42; 32]),
                     Some(current),
                     caller,
                     vec![rpc_audit_kind(90)],
                 )
                 .expect("persist current observation");
+            assert!(store
+                .cached_deposit_authorization_snapshot([42; 32])
+                .expect("read deposit-bound snapshot")
+                .is_some());
+            assert!(store
+                .cached_deposit_authorization_snapshot([43; 32])
+                .expect("reject a different deposit binding")
+                .is_none());
             let rejected_owner = store
                 .begin_base_snapshot_refresh(1_050, 1_000, 1)
                 .expect("begin rejected refresh")
@@ -8613,6 +8638,7 @@ mod tests {
                     candidate.bridge_signer,
                     1,
                     false,
+                    None,
                     Some(candidate),
                     caller,
                     vec![rpc_audit_kind(91)],

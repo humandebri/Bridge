@@ -69,7 +69,7 @@ test("bridge defaults to IC to Base and reports incomplete configuration", async
   await capture(page, testInfo, "bridge-deposit")
 })
 
-test("direction switch is URL-backed and exposes withdrawal protection", async ({ page }, testInfo) => {
+test("direction switch is URL-backed and updates bridge endpoints", async ({ page }, testInfo) => {
   await page.goto("/?direction=deposit")
   await expect(page.locator(".kinic-rail")).not.toHaveClass(/is-withdraw/)
   await page.getByRole("button", { name: "Reverse bridge direction" }).click()
@@ -79,7 +79,6 @@ test("direction switch is URL-backed and exposes withdrawal protection", async (
   await expect(page.getByRole("button", { name: "To Internet Computer Connect IC wallet", exact: true }).locator('[data-network-logo="ic"]')).toBeVisible()
   await expect(page.getByRole("button", { name: "Bridge to IC" })).toBeDisabled()
   await expect(page.getByText("Estimated receive", { exact: true })).toBeVisible()
-  await expect(page.getByText("Base refund is not available after burn.", { exact: true })).toBeVisible()
   await capture(page, testInfo, "bridge-withdraw")
 })
 
