@@ -9,6 +9,7 @@ import {StdInvariant} from "./StdInvariant.sol";
 import {TestBase} from "./TestBase.sol";
 
 contract BridgeInvariantHandler is TestBase {
+    uint256 internal constant BRIDGE_SIGNER_KEY = 0xA11CE;
     address internal constant RUNTIME_ADMINISTRATOR = address(0x22);
     address internal BASE_ADMIN_TIMELOCK;
 
@@ -18,14 +19,18 @@ contract BridgeInvariantHandler is TestBase {
     uint256 public committedAmount;
     uint256 public depositNonce = 100;
     uint256 public withdrawalCount;
+    uint256 public lastObservedEpoch = 1;
+    uint256 private currentSignerKey = BRIDGE_SIGNER_KEY;
+    bool public epochDecreased;
 
     constructor() {
+        address bridgeSigner = vm.addr(BRIDGE_SIGNER_KEY);
         BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
         _bridge = new Bridge(
             "kinic",
             "KINIC",
             8,
-            address(this),
+            bridgeSigner,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
             _timelockCodeHash(BASE_ADMIN_TIMELOCK),
@@ -55,16 +60,86 @@ contract BridgeInvariantHandler is TestBase {
         return address(_token);
     }
 
-    function mintDeposit(uint256 seed) external {
+    function submitAuthorization(uint256 seed) external {
         uint256 fee = _bridge.serviceFee();
         uint256 grossAmount = fee + 1 + (seed % 300);
         bytes32 depositId = keccak256(abi.encode("handler-deposit", depositNonce++));
-        IBridge.DepositMintRequest memory request =
-            IBridge.DepositMintRequest(depositId, address(this), grossAmount, fee, fee);
-        (bool succeeded,) = address(_bridge).call(abi.encodeCall(IBridge.mintDeposit, (request)));
+        IBridge.MintAuthorization memory authorization = _authorization(depositId, address(this), grossAmount, fee);
+        bytes memory signature = _signMintAuthorization(currentSignerKey, _bridge, authorization);
+        (bool succeeded,) =
+            address(_bridge).call(abi.encodeCall(IBridge.mintDepositWithAuthorization, (authorization, signature)));
         if (succeeded) {
             cumulativeDepositMinted += grossAmount - fee;
         }
+    }
+
+    function submitExpiredAuthorization(uint256 seed) external {
+        uint256 fee = _bridge.serviceFee();
+        IBridge.MintAuthorization memory authorization =
+            _authorization(keccak256(abi.encode("expired", seed)), address(this), fee + 1, fee);
+        authorization.deadline = 0;
+        bytes memory signature = _signMintAuthorization(currentSignerKey, _bridge, authorization);
+        (bool succeeded,) =
+            address(_bridge).call(abi.encodeCall(IBridge.mintDepositWithAuthorization, (authorization, signature)));
+        require(!succeeded, "expired authorization accepted");
+    }
+
+    function replayProcessedDeposit() external {
+        uint256 fee = _bridge.serviceFee();
+        IBridge.MintAuthorization memory authorization =
+            _authorization(keccak256("invariant-0"), address(this), 1_010, fee);
+        bytes memory signature = _signMintAuthorization(currentSignerKey, _bridge, authorization);
+        (bool succeeded,) =
+            address(_bridge).call(abi.encodeCall(IBridge.mintDepositWithAuthorization, (authorization, signature)));
+        require(!succeeded, "processed deposit replayed");
+    }
+
+    function submitMutatedAuthorization(uint256 seed) external {
+        uint256 fee = _bridge.serviceFee();
+        IBridge.MintAuthorization memory authorization =
+            _authorization(keccak256(abi.encode("mutated", seed)), address(this), fee + 1, fee);
+        bytes memory signature = _signMintAuthorization(currentSignerKey, _bridge, authorization);
+        authorization.recipient = address(0xBEEF);
+        (bool succeeded,) =
+            address(_bridge).call(abi.encodeCall(IBridge.mintDepositWithAuthorization, (authorization, signature)));
+        require(!succeeded, "mutated authorization accepted");
+    }
+
+    function pauseAndUnpauseDeposits() external {
+        vm.prank(RUNTIME_ADMINISTRATOR);
+        _bridge.pauseDepositMints();
+        uint256 currentEpoch = _bridge.mintAuthorizationEpoch();
+        if (currentEpoch < lastObservedEpoch) {
+            epochDecreased = true;
+        }
+        lastObservedEpoch = currentEpoch;
+        vm.prank(BASE_ADMIN_TIMELOCK);
+        _bridge.unpauseDepositMints();
+    }
+
+    function rotateSigner(uint256 seed) external {
+        IBridge.MintAuthorization memory oldAuthorization =
+            _authorization(keccak256(abi.encode("old-epoch", seed)), address(this), 11, 10);
+        bytes memory oldSignature = _signMintAuthorization(currentSignerKey, _bridge, oldAuthorization);
+        uint256 nextKey = seed % (type(uint96).max - 1) + 1;
+        address nextSigner = vm.addr(nextKey);
+        if (
+            nextSigner == address(0) || nextSigner == RUNTIME_ADMINISTRATOR || nextSigner == BASE_ADMIN_TIMELOCK
+                || nextSigner == _bridge.bridgeSigner()
+        ) {
+            return;
+        }
+        vm.prank(BASE_ADMIN_TIMELOCK);
+        _bridge.rotateBridgeSigner(nextSigner);
+        currentSignerKey = nextKey;
+        uint256 currentEpoch = _bridge.mintAuthorizationEpoch();
+        if (currentEpoch <= lastObservedEpoch) {
+            epochDecreased = true;
+        }
+        lastObservedEpoch = currentEpoch;
+        (bool succeeded,) = address(_bridge)
+            .call(abi.encodeCall(IBridge.mintDepositWithAuthorization, (oldAuthorization, oldSignature)));
+        require(!succeeded, "old epoch authorization accepted");
     }
 
     function createWithdrawal(uint256 seed) external {
@@ -97,7 +172,24 @@ contract BridgeInvariantHandler is TestBase {
     }
 
     function _initialMint(bytes32 depositId, address recipient) private {
-        _bridge.mintDeposit(IBridge.DepositMintRequest(depositId, recipient, 1_010, 10, 10));
+        IBridge.MintAuthorization memory authorization = _authorization(depositId, recipient, 1_010, 10);
+        _submitMintAuthorization(BRIDGE_SIGNER_KEY, _bridge, authorization, address(this));
+    }
+
+    function _authorization(bytes32 depositId, address recipient, uint256 grossAmount, uint256 fee)
+        private
+        view
+        returns (IBridge.MintAuthorization memory)
+    {
+        return IBridge.MintAuthorization({
+            depositId: depositId,
+            recipient: recipient,
+            grossAmount: grossAmount,
+            maxServiceFee: fee,
+            chargedServiceFee: fee,
+            deadline: block.timestamp + 30 minutes,
+            authorizationEpoch: _bridge.mintAuthorizationEpoch()
+        });
     }
 }
 
@@ -138,5 +230,7 @@ contract BridgeInvariantTest is TestBase, StdInvariant {
         assert(signer != administrator && signer != timelock && administrator != timelock);
         assert(bridge.serviceFee() <= bridge.MAX_SERVICE_FEE());
         assert(bridge.nextWithdrawalId() == handler.withdrawalCount() + 1);
+        assert(!handler.epochDecreased());
+        assert(bridge.mintAuthorizationEpoch() >= handler.lastObservedEpoch());
     }
 }

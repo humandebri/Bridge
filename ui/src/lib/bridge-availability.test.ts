@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest"
-import { bridgeAvailability, displayReserveSufficient, STATUS_FRESHNESS_MS, statusDataIsFresh } from "./bridge-availability"
+import { bridgeAvailability, displayCyclesSufficient, STATUS_FRESHNESS_MS, statusDataIsFresh } from "./bridge-availability"
 
 describe("bridgeAvailability", () => {
-  it("marks deposits unavailable when the canister reserve is insufficient", () => {
+  it("marks both asset directions unavailable when the cycles floor is insufficient", () => {
     expect(bridgeAvailability({
       runtimeReady: true,
       baseStatus: { depositsPaused: false, withdrawalsPaused: false },
       icDepositsPaused: false,
-      reserveSufficient: false,
-    })).toEqual({ available: true, toBase: "Unavailable", toIc: "Available" })
+      cyclesSufficient: false,
+    })).toEqual({ available: false, toBase: "Unavailable", toIc: "Unavailable" })
   })
 
   it("keeps withdrawal availability independent from the deposit reserve", () => {
@@ -16,7 +16,7 @@ describe("bridgeAvailability", () => {
       runtimeReady: true,
       baseStatus: { depositsPaused: false, withdrawalsPaused: true },
       icDepositsPaused: false,
-      reserveSufficient: true,
+      cyclesSufficient: true,
     })).toEqual({ available: true, toBase: "Available", toIc: "Paused" })
   })
 
@@ -25,7 +25,7 @@ describe("bridgeAvailability", () => {
       runtimeReady: true,
       baseStatus: { depositsPaused: true, withdrawalsPaused: true },
       icDepositsPaused: false,
-      reserveSufficient: true,
+      cyclesSufficient: true,
     })).toEqual({ available: false, toBase: "Paused", toIc: "Paused" })
   })
 
@@ -42,7 +42,7 @@ describe("bridgeAvailability", () => {
       runtimeReady: true,
       baseStatus: { depositsPaused: false, withdrawalsPaused: false },
       icDepositsPaused: true,
-      reserveSufficient: true,
+      cyclesSufficient: true,
     })).toEqual({ available: true, toBase: "Paused", toIc: "Available" })
   })
 
@@ -53,10 +53,9 @@ describe("bridgeAvailability", () => {
     expect(statusDataIsFresh({ runtimeCheckedAt: now, baseUpdatedAt: now, canisterUpdatedAt: undefined, now })).toBe(false)
   })
 
-  it("uses the smaller confirmed ETH balance and the IC cycles floor", () => {
-    const reserve = { finalizedSignerBalance: 20n, safeSignerBalance: 10n, requiredEthWei: 10n, cyclesBalance: 30n, requiredCycles: 30n }
-    expect(displayReserveSufficient(reserve)).toBe(true)
-    expect(displayReserveSufficient({ ...reserve, requiredEthWei: 11n })).toBe(false)
-    expect(displayReserveSufficient({ ...reserve, requiredCycles: 31n })).toBe(false)
+  it("uses only the IC cycles floor for asset-transfer availability", () => {
+    const reserve = { cyclesBalance: 30n, requiredCycles: 30n }
+    expect(displayCyclesSufficient(reserve)).toBe(true)
+    expect(displayCyclesSufficient({ ...reserve, requiredCycles: 31n })).toBe(false)
   })
 })

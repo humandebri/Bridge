@@ -12,7 +12,8 @@ The default RPC is `https://base-sepolia-rpc.publicnode.com` and every stage
 rejects any chain other than `84532`. The public manifest is written to
 `deployments/base-sepolia-contract-experiment.json`. It contains addresses,
 transaction identities, receipt/confirmation evidence, constructor values, and
-source hashes, but no key material or RPC credentials.
+source hashes, but no key material or RPC credentials. A manifest from the
+obsolete canister-sent Mint ABI must not be reused; start from `preflight`.
 
 Wallets are encrypted Foundry keystores. Their passwords live in macOS
 Keychain and are copied to mode-600 temporary files only for the lifetime of a

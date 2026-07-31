@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "domain": {
+    "name": "KINIC Bridge",
+    "version": "1",
+    "chain_id": "8453",
+    "verifying_contract": "0x1111111111111111111111111111111111111111"
+  },
+  "authorization": {
+    "deposit_id": "0x2222222222222222222222222222222222222222222222222222222222222222",
+    "recipient": "0x3333333333333333333333333333333333333333",
+    "gross_amount": "1100",
+    "max_service_fee": "100",
+    "charged_service_fee": "10",
+    "deadline": "1800000000",
+    "authorization_epoch": "7"
+  },
+  "type_hash": "0x723ba61fd40b14357843d43ba81e6a2151401b5a335d8248457e340e8ccec1ad",
+  "domain_separator": "0x3462ec2b77203bae52fc6361fe549d08138a02459a8ea0353399f2f8e6c2d364",
+  "digest": "0x9bbe1de9ee66a63bf944f3e6c84a3ce9762cf2bba8e779ee3ed261b5981a0540",
+  "signer": "0xe05fcc23807536bee418f142d19fa0d21bb0cff7",
+  "signature": "0x783ac659fd8cd9a4b93b448b1929c6f32f4eca066a9a8463b4f409e60318bce11663260c69094af030f65d839bd29ad6353bf163c7dcf526809a9b27188bbfd01c"
+}

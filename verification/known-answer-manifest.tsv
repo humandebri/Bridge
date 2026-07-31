@@ -1,0 +1,3 @@
+eip712_mint_authorization	rust	canister/bridge-canister/src/mint_authorization.rs	shared_protocol_vector_matches_digest_signature_and_signer
+eip712_mint_authorization	foundry	contracts/test/ProtocolVectors.t.sol	test_mint_authorization_shared_vector
+eip712_mint_authorization	vitest	ui/src/lib/mint-authorization.test.ts	matches the shared digest and recovered signer

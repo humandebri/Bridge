@@ -1,8 +1,9 @@
 use bridge_core::{
     canonical_probe_matches, committed_quote_matches, deposit_admission_decision,
-    fee_recipient_rotation_decision, hold_resolution_decision, lease_outcome_decision,
-    manual_claim_decision, payout_decision, release_transfer_matches, reservation_decision,
-    service_fee_change_allowed, settlement_decision,
+    fee_recipient_rotation_decision, funding_attempt_decision, hold_resolution_decision,
+    lease_lane_claim_decision, lease_outcome_decision, manual_claim_decision,
+    notification_admission_allowed, payout_decision, release_transfer_matches,
+    reservation_decision, service_fee_change_allowed, settlement_decision,
 };
 
 macro_rules! production_link {
@@ -87,7 +88,25 @@ fn phase5_production_links_typecheck() {
         "manual_claim_exclusion",
         "canister/bridge-core/src/kernel.rs#manual_claim_decision",
         manual_claim_decision,
-        fn(bool, bool, bool, bool, bool, bool) -> bridge_core::ManualClaimDecision
+        fn(bool, bool, bool, bool, bool) -> bridge_core::ManualClaimDecision
+    );
+    production_link!(
+        "notification_quota_isolation",
+        "canister/bridge-core/src/kernel.rs#notification_admission_allowed",
+        notification_admission_allowed,
+        fn(u8, u8, u8, u8) -> bool
+    );
+    production_link!(
+        "lease_lane_isolation",
+        "canister/bridge-core/src/kernel.rs#lease_lane_claim_decision",
+        lease_lane_claim_decision,
+        fn(bool, bool, u64, u64) -> bridge_core::LeaseLaneClaimDecision
+    );
+    production_link!(
+        "funding_attempt_lifecycle",
+        "canister/bridge-core/src/kernel.rs#funding_attempt_decision",
+        funding_attempt_decision,
+        fn(u8) -> bridge_core::FundingAttemptDecision
     );
     production_link!(
         "canonical_probe",

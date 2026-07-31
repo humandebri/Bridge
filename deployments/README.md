@@ -37,7 +37,7 @@ cargo run -p bridge-profile -- verify-activation schedule evidence/release-id \
   evidence/activation/schedule-submission.json - evidence/activation/schedule-receipt.json
 ```
 
-72時間後の`execute`はfresh Gate Bを要求し、`--prior-schedule-receipt`と`UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE`を必須とする。release wrapperはproposal提出前に`verify-schedule-receipt-live`を実行し、receipt内部digest、認証済みSNS/Canister状態、canonical Finalized Base Timelock pending状態が一致しなければ停止する。execute proposalの後も、`verify-activation execute ... schedule-receipt.json execute-receipt.json`が成功するまで資産受付開始を完了扱いにしない。
+24時間後の`execute`はfresh Gate Bを要求し、`--prior-schedule-receipt`と`UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE`を必須とする。release wrapperはproposal提出前に`verify-schedule-receipt-live`を実行し、receipt内部digest、認証済みSNS/Canister状態、canonical Finalized Base Timelock pending状態が一致しなければ停止する。execute proposalの後も、`verify-activation execute ... schedule-receipt.json execute-receipt.json`が成功するまで資産受付開始を完了扱いにしない。
 
 bundle欠落、test profile、source/profile drift、Gate失敗では後続コマンドを起動しない。Gate Aのdeployコマンドにunpauseまたはresume操作を混在させることも拒否する。
 Gate A profileの`deployment_block`は未配置を示す`0`に固定する。deploy後、wrapperは実receipt blockを入れた`<receipt>.post-deploy-profile.json`を生成し、そのSHA-256をGate A receiptへ固定する。Gate Bはこのpost-deploy profileだけを使う別のlive manifestとし、`parent_gate_a_manifest_sha256`がreceiptのGate A hashと一致し、source/code binding、post-deploy profile hash、実deployment blockが一致しなければならない。さらにGate B profileの`deployment_block`だけを0へ戻したcanonical hashがreceiptのGate A profile hashと一致する必要があり、他fieldの変更は拒否される。Gate B bundle確定前に固定`production-live-preflight.sh capture BUNDLE OUTPUT`でfresh snapshotを生成する。activation直前の`verify`は同じheight/hashとlive stateを再照合し、確定済みbundle自体は変更しない。
@@ -76,9 +76,9 @@ deploy前に対象IDとcontrollerを再確認し、必要なcyclesを補充す�
 [`scripts/base-sepolia-experiment/`](../scripts/base-sepolia-experiment/)は、固定limit版Bridgeと72時間Timelockの実transaction検証を段階実行する。
 再開手順と秘密情報の扱いは[`docs/runbooks/base-sepolia-rehearsal.md`](../docs/runbooks/base-sepolia-rehearsal.md)に記録する。
 
-作業中の公開manifestは[`base-sepolia-contract-experiment.json`](base-sepolia-contract-experiment.json)であり、スクリプトがstate、transaction、confirmationを更新する。
+作業中の公開manifestは`base-sepolia-contract-experiment.json`へスクリプトが新規生成する。旧Canister発Mint ABIで作成された作業用manifestは再利用せず、EIP-712対応Bridgeの再deploy演習から作り直す。
 各回の公開スナップショットは`deployments/base-sepolia/YYYY-MM-DD/manifest.json`へ保存し、未実行項目を推測値で埋めない。
-2026年7月13日の記録は[`base-sepolia/2026-07-13/manifest.json`](base-sepolia/2026-07-13/manifest.json)を参照する。
+2026年7月13日の記録は[`base-sepolia/2026-07-13/manifest.json`](base-sepolia/2026-07-13/manifest.json)を参照する。この記録は旧Canister発Mint ABIの履歴証跡であり、現行deploy、preflight、release evidenceには使用しない。
 
 実験用deployerがBase Admin walletとRuntime Administratorを兼任するため、本番role分離の証跡としては使用しない。
 private key、seed、keystore password、credential付きRPC URLは保存しない。

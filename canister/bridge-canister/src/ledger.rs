@@ -118,15 +118,6 @@ pub async fn refund(ledger: Principal, identity: &LedgerTransferIdentity) -> Led
     transfer(ledger, identity).await
 }
 
-pub async fn current_fee(ledger: Principal) -> Result<Amount, ()> {
-    let response = ledger_call(ledger, "icrc1_fee")
-        .with_arg(())
-        .await
-        .map_err(|_| ())?;
-    let fee: Nat = response.candid().map_err(|_| ())?;
-    amount(&fee).ok_or(())
-}
-
 async fn transfer(ledger: Principal, identity: &LedgerTransferIdentity) -> LedgerCallOutcome {
     let args = TransferArg {
         from_subaccount: Some(identity.from.subaccount()),

@@ -65,50 +65,23 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByRole("button", { name: "Retry same deposit" })).toBeVisible()
   await page.getByRole("button", { name: "Retry same deposit" }).click()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
-  await expect(page.getByText(/Deposit 0x[0-9a-f]+… is scheduled/i)).toBeVisible()
+  await expect(page.getByText(/Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready/).first()).toBeVisible()
   await expect(page.getByText("Deposit status unavailable", { exact: true })).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Bridge to Base" })).toBeVisible()
   const afterRecovery = await controlState(request)
   expect(afterRecovery).toMatchObject({ knownDepositCount: 1, depositSequences: ["0", "0"], nextDepositSequence: "1" })
   expect(BigInt(initial.ledgerBalance) - BigInt(afterRecovery.ledgerBalance)).toBe(200_020_000n)
 
-  await page.evaluate(() => {
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" })
-  })
-  const secondPage = await page.context().newPage()
-  await installAnvilWallet(secondPage)
-  await secondPage.goto("/")
-  await secondPage.getByRole("button", { name: "Connect IC wallet", exact: true }).click()
-  await secondPage.getByRole("button", { name: "Plug" }).click()
-  await secondPage.getByRole("button", { name: "Close confirmation" }).click()
-  await expect.poll(async () => page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("kinic.bridge.confirmation-lease.v2:")))).toBe(false)
-  const beforeTwoTabConfirmation = await controlState(request)
-  await postControl(request, "/test/hold-next-confirm-deposit", {})
   await postControl(request, "/test/settle", {})
-  const pendingDeposit = await postControl(request, "/test/pending-deposit", {}) as PendingDepositFixture
-  await secondPage.bringToFront()
-  await secondPage.evaluate((pending) => {
-    const key = `kinic.bridge.pending-confirmations.v4:${pending.chainId}:${pending.bridgeAddress.toLowerCase()}:${pending.bridgeCanisterId}`
-    window.localStorage.setItem(key, JSON.stringify({ version: 4, entries: [{ ...pending, bridgeAddress: pending.bridgeAddress.toLowerCase(), blocked: false, kind: "deposit" }] }))
-    window.dispatchEvent(new Event("kinic-pending-confirmations-changed"))
-  }, pendingDeposit)
-  await expect.poll(async () => (await controlState(request)).confirmDepositCalls).toBe(beforeTwoTabConfirmation.confirmDepositCalls + 1)
-  await secondPage.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" }))
-  await page.evaluate(() => Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }))
-  await page.bringToFront()
-  await page.evaluate(() => window.dispatchEvent(new Event("kinic-pending-confirmations-changed")))
-  await page.waitForTimeout(300)
-  expect((await controlState(request)).confirmDepositCalls).toBe(beforeTwoTabConfirmation.confirmDepositCalls + 1)
-  await postControl(request, "/test/release-confirm-deposit", {})
-  await expect.poll(async () => (await controlState(request)).completedConfirmDepositCalls).toBe(beforeTwoTabConfirmation.completedConfirmDepositCalls + 1)
-  await page.waitForTimeout(300)
-  expect((await controlState(request)).confirmDepositCalls).toBe(beforeTwoTabConfirmation.confirmDepositCalls + 1)
-  await secondPage.close()
+  await refreshBridgeData(page)
+  await expect(page.getByRole("button", { name: "Mint on Base" })).toBeVisible()
+  await page.getByRole("button", { name: "Mint on Base" }).click()
+  await expect.poll(async () => BigInt((await controlState(request)).bsnsBalance)).toBe(199_000_000n)
 
   await page.getByLabel("You send").fill("1.00000000")
   await page.getByRole("button", { name: "Bridge to Base" }).click()
   await page.getByRole("button", { name: "Confirm and open wallet" }).click()
-  await expect(page.getByText(/Deposit 0x[0-9a-f]+… is scheduled/i)).toBeVisible()
+  await expect(page.getByText(/Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready/).first()).toBeVisible()
   await expect.poll(async () => {
     const state = await controlState(request)
     return {
@@ -119,6 +92,10 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   }).toEqual({ knownDepositCount: 2, depositSequences: ["0", "0", "1"], nextDepositSequence: "2" })
 
   await postControl(request, "/test/settle", {})
+  await refreshBridgeData(page)
+  await expect(page.getByRole("button", { name: "Mint on Base" })).toBeVisible()
+  await page.getByRole("button", { name: "Mint on Base" }).click()
+  await expect.poll(async () => BigInt((await controlState(request)).bsnsBalance)).toBe(298_000_000n)
   const upgrade = (await postControl(request, "/test/upgrade", {})) as { before: unknown; after: unknown }
   expect(upgrade.after).toEqual(upgrade.before)
   await postControl(request, "/test/relay", {})
@@ -131,13 +108,10 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   expect(BigInt(initial.ledgerBalance) - BigInt(afterDeposit.ledgerBalance)).toBe(300_040_000n)
   expect(BigInt(afterDeposit.indexBlocksSynced)).toBeGreaterThanOrEqual(BigInt(initial.indexBlocksSynced) + 4n)
   await openHistory(page)
-  const depositState = await refreshHistoryUntil(page, /^(Processing|Complete)$/)
-  if (depositState === "Processing") {
-    await expect(page.getByText("Waiting for wallet-confirmed finalized verification", { exact: true }).first()).toBeVisible()
+  const depositState = await refreshHistoryUntil(page, /^(Ready to mint|Complete)$/)
+  if (depositState === "Ready to mint") {
+    await expect(page.getByText(/Base transaction pending|Base Mint済み|Canister reconciliation|Mint Authorization/).first()).toBeVisible()
     await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0)
-    // Cross the two-minute boundary with one minute of margin for PocketIC timer rounding.
-    const firstAdvance = await postControl(request, "/test/advance-confirmation", { minutes: 3 }) as { time: number }
-    await page.clock.setFixedTime(firstAdvance.time)
   }
 
   const beforeWithdrawal = await controlState(request)
@@ -218,7 +192,7 @@ async function refreshHistoryUntil(page: Page, state: RegExp): Promise<string> {
       await badge.waitFor({ state: "visible", timeout: 5_000 })
       return await badge.innerText()
     } catch {
-      // A concurrent automatic confirmation can invalidate the same history query.
+      // A concurrent reconciliation can invalidate the same history query.
     }
   }
   throw new Error(`History did not show ${state}`)
@@ -230,15 +204,6 @@ async function postControl(request: APIRequestContext, path: string, data: unkno
   return response.json()
 }
 
-interface PendingDepositFixture {
-  bridgeAddress: string
-  bridgeCanisterId: string
-  chainId: number
-  owner: string
-  settlementId: string
-  transactionHash: string
-}
-
 interface ControlState {
   bsnsBalance: string
   bsnsAllowance: string
@@ -248,8 +213,6 @@ interface ControlState {
   indexLedgerId: string
   indexBlocksSynced: string
   notifyCalls: number
-  confirmDepositCalls: number
-  completedConfirmDepositCalls: number
   knownDepositCount: number
   depositSequences: string[]
   nextDepositSequence: string

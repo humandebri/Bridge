@@ -45,7 +45,6 @@ class ChangedAreaTests(unittest.TestCase):
 
     def test_shared_runtime_ui_changes_run_real(self) -> None:
         for path in (
-            "ui/src/lib/pending-confirmations.ts",
             "ui/src/lib/deposit-intents.ts",
             "ui/src/lib/deposit-history.ts",
             "ui/src/lib/withdrawal-notification.ts",
@@ -58,6 +57,14 @@ class ChangedAreaTests(unittest.TestCase):
 
     def test_proof_change_runs_proofs_only(self) -> None:
         self.assert_areas(["verification/lean/Bridge.lean"], "proofs")
+
+    def test_proof_owned_ui_adapter_runs_proofs_and_runtime_checks(self) -> None:
+        self.assert_areas(
+            ["ui/src/lib/pending-confirmations.ts"],
+            "proofs",
+            "ui",
+            "real",
+        )
 
     def test_ci_infrastructure_runs_every_area(self) -> None:
         self.assert_areas([".github/workflows/ci.yml"], *ci_changed_areas.AREAS)

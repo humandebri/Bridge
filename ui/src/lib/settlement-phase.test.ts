@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { depositPhaseName, depositPhaseTone, isDepositPhase, isDepositTerminal, isSettlementActionResult, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName } from "./settlement-phase"
+import { depositPhaseName, depositPhaseTone, depositReconciliationMessage, isDepositPhase, isDepositTerminal, isSettlementActionResult, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName } from "./settlement-phase"
 
 describe("settlement phase helpers", () => {
   it("preserves public display names and terminal tones", () => {
     expect(depositPhaseName({ Minted: null })).toBe("Complete")
     expect(depositPhaseTone({ Minted: null })).toBe("good")
-    expect(depositPhaseName({ FundingPending: null })).toBe("Scheduled")
+    expect(depositPhaseName({ EscrowedUnquoted: null })).toBe("Checking Base")
     expect(depositPhaseName({ Refunded: null })).toBe("Refunded")
     expect(depositPhaseTone({ RefundReconciliationHold: null })).toBe("warn")
-    expect(depositPhaseTone({ RefundRecoveryRequired: null })).toBe("warn")
     expect(isDepositTerminal({ Refunded: null })).toBe(true)
     expect(isDepositTerminal({ Cancelled: null })).toBe(true)
     expect(withdrawalPhaseName({ ReleasePending: null })).toBe("Processing")
@@ -26,7 +25,13 @@ describe("settlement phase helpers", () => {
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { LedgerFeeExceedsServiceFee: null } } })).toBe(true)
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { RpcUnavailable: null } } })).toBe(true)
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { LedgerRejected: null } } })).toBe(false)
-    expect(isSettlementActionResult({ Submitted: { state: { Deposit: { MintPending: null } }, transaction_hash: new Uint8Array(31) } })).toBe(false)
-    expect(isSettlementActionResult({ WaitingForConfirmation: { state: { Deposit: { MintPending: null } }, transaction_hash: new Uint8Array(32) } })).toBe(true)
+    expect(isSettlementActionResult({ Submitted: { state: { Deposit: { AuthorizationPending: null } }, transaction_hash: new Uint8Array(32) } })).toBe(false)
+  })
+
+  it("distinguishes finalized confirmation, RPC stops, and audit stops", () => {
+    const phase = { ExpiryReconciliation: null } as const
+    expect(depositReconciliationMessage(phase)).toBe("Confirming the finalized Base state")
+    expect(depositReconciliationMessage(phase, "RpcUnavailable")).toBe("Base RPC confirmation stopped — retry is safe")
+    expect(depositReconciliationMessage(phase, "BaseStateMismatch")).toBe("Mint evidence requires audit — refund is blocked")
   })
 })

@@ -84,17 +84,14 @@ pub fn consent_message(
     if request.method == "continue_deposit" || request.method == "continue_withdrawal" {
         return settlement_consent(caller, canister, request);
     }
-    if request.method == "confirm_deposit" {
-        return confirmation_consent(caller, canister, request);
-    }
     if request.method == "continue_fee_payout" {
         return fee_payout_consent(caller, canister, request);
     }
     if request.method == "notify_withdrawal" {
         return withdrawal_consent(caller, canister, request);
     }
-    if request.method == "recover_mint_revert" {
-        return recovery_consent(caller, canister, request);
+    if request.method == "notify_deposit_mint" {
+        return deposit_mint_consent(caller, canister, request);
     }
     if request.method != "request_deposit" {
         return unsupported(format!("unsupported canister call: {}", request.method));
@@ -142,7 +139,7 @@ pub fn consent_message(
             utc_offset_minutes: request.user_preferences.metadata.utc_offset_minutes,
         },
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross bridge amount: `{gross}` KINIC\n\nLedger transfer fee: `{ledger_fee}` KINIC\n\nTotal wallet debit: `{total_debit}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the displayed total using an existing ICRC-2 allowance. Execution still depends on reserve, finalized Base state, and bridge limits. If post-pull validation rejects the deposit, `{refund_amount}` KINIC (gross minus the fixed ledger fee) is returned to this same IC account and `{ledger_fee}` KINIC is paid from escrow as the refund fee.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
+            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross bridge amount: `{gross}` KINIC\n\nLedger transfer fee: `{ledger_fee}` KINIC\n\nTotal wallet debit: `{total_debit}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the displayed total using an existing ICRC-2 allowance. After the pull, a Base Mint Authorization remains irrevocable for {authorization_minutes} minutes. You need a Base wallet and Base ETH to submit it. If it is unused, the IC refund starts only after the Base Finalized timestamp has passed the deadline and the deposit is proven unprocessed. The refund is `{refund_amount}` KINIC (gross minus the fixed Ledger fee); `{ledger_fee}` KINIC is paid from escrow as the refund fee.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
             owner_sequence = validated.owner_sequence,
             gross = format_e8s(validated.gross_amount),
             ledger_fee = format_e8s(ledger_fee),
@@ -151,73 +148,7 @@ pub fn consent_message(
             minimum = format_e8s(minimum),
             refund_amount = format_e8s(refund_amount),
             recipient = hex(&validated.base_recipient),
-        )),
-    })
-}
-
-fn confirmation_consent(
-    caller: Principal,
-    canister: Principal,
-    request: Icrc21ConsentMessageRequest,
-) -> Icrc21ConsentMessageResponse {
-    if caller == Principal::anonymous() {
-        return unavailable("anonymous caller is not allowed");
-    }
-    let args = match Decode!(&request.arg, api::ConfirmEvmArgs) {
-        Ok(args) => args,
-        Err(error) => return unavailable(format!("confirmation argument decode failed: {error}")),
-    };
-    if args.settlement_id.len() != 32 || args.transaction_hash.len() != 32 {
-        return unavailable("settlement_id and transaction_hash must be 32 bytes");
-    }
-    if args.observed_finalized_block_number < args.receipt_block_number {
-        return unavailable("observed finalized block cannot precede the receipt block");
-    }
-    let config = match STORE.with(|store| store.borrow().config()) {
-        Ok(Some(config)) => config,
-        Ok(None) => return unavailable("bridge configuration is unavailable"),
-        Err(error) => return unavailable(format!("bridge configuration read failed: {error}")),
-    };
-    Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
-        metadata: request.user_preferences.metadata,
-        consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Confirm a finalized Base transaction\n\nIC wallet: `{caller}`\n\nAction: `{method}`\n\nSettlement ID: `0x{settlement_id}`\n\nBase transaction: `0x{transaction_hash}`\n\nReceipt block: `{receipt_block}`\n\nObserved finalized block: `{finalized_block}`\n\nBase chain ID: `{chain_id}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister independently verifies the canonical receipt and finalized head before changing settlement state.",
-            method = request.method,
-            settlement_id = hex(&args.settlement_id),
-            transaction_hash = hex(&args.transaction_hash),
-            receipt_block = args.receipt_block_number,
-            finalized_block = args.observed_finalized_block_number,
-            chain_id = config.base_chain_id,
-        )),
-    })
-}
-
-fn recovery_consent(
-    caller: Principal,
-    canister: Principal,
-    request: Icrc21ConsentMessageRequest,
-) -> Icrc21ConsentMessageResponse {
-    if caller == Principal::anonymous() {
-        return unavailable("anonymous caller is not allowed");
-    }
-    let args = match Decode!(&request.arg, crate::recovery::RecoverMintRevertArgs) {
-        Ok(args) => args,
-        Err(error) => {
-            return unavailable(format!(
-                "recover_mint_revert argument decode failed: {error}"
-            ));
-        }
-    };
-    let id = args.deposit_id;
-    if id.len() != 32 {
-        return unavailable("recovery Deposit ID must be 32 bytes");
-    }
-    Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
-        metadata: request.user_preferences.metadata,
-        consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Recover a reverted Base mint\n\nGovernance principal: `{caller}`\n\nDeposit: `0x{id}`\n\nReverted operation ID: `{operation_id}`\n\nBridge canister: `{canister}`\n\nThe canister will re-observe the Bridge signer, runtime, mint limits, reserve, and deposit state at one 2-of-3 quorum finalized block, then create a new operation ID, nonce, and threshold signature. The reverted raw transaction is never reused.",
-            id = hex(&id),
-            operation_id = args.reverted_operation_id,
+            authorization_minutes = bridge_core::MINT_AUTHORIZATION_TTL_SECONDS / 60,
         )),
     })
 }
@@ -315,6 +246,40 @@ fn withdrawal_consent(
             transaction_hash = hex(&transaction_hash),
             base_chain_id = config.base_chain_id,
             bridge_contract = hex(&config.bridge_contract),
+        )),
+    })
+}
+
+fn deposit_mint_consent(
+    caller: Principal,
+    canister: Principal,
+    request: Icrc21ConsentMessageRequest,
+) -> Icrc21ConsentMessageResponse {
+    if caller == Principal::anonymous() {
+        return unavailable("anonymous caller is not allowed");
+    }
+    let args = match Decode!(&request.arg, api::NotifyDepositMintArgs) {
+        Ok(args) => args,
+        Err(error) => {
+            return unavailable(format!(
+                "notify_deposit_mint argument decode failed: {error}"
+            ));
+        }
+    };
+    let deposit_id: [u8; 32] = match args.deposit_id.as_slice().try_into() {
+        Ok(id) => id,
+        Err(_) => return unavailable("deposit_id must be 32 bytes"),
+    };
+    let transaction_hash: [u8; 32] = match args.transaction_hash.as_slice().try_into() {
+        Ok(hash) => hash,
+        Err(_) => return unavailable("transaction_hash must be 32 bytes"),
+    };
+    Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
+        metadata: request.user_preferences.metadata,
+        consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
+            "# Confirm Base mint\n\nCaller: `{caller}`\n\nDeposit ID: `0x{deposit_id}`\n\nBase transaction: `0x{transaction_hash}`\n\nBridge canister: `{canister}`\n\nThe canister will verify the exact finalized Base receipt before marking this deposit minted.",
+            deposit_id = hex(&deposit_id),
+            transaction_hash = hex(&transaction_hash),
         )),
     })
 }

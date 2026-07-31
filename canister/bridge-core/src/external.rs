@@ -1,4 +1,4 @@
-use crate::{Amount, CoreError, EvmOperationId, HoldId, LedgerTransferIdentity};
+use crate::{Amount, CoreError, DepositId, GovernanceOperationId, HoldId, LedgerTransferIdentity};
 
 #[cfg_attr(
     feature = "storage-serde",
@@ -49,8 +49,22 @@ impl LedgerCallOutcome {
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvmTransactionEnvelope {
-    pub operation_id: EvmOperationId,
+pub struct SignedGovernanceTransaction {
+    pub raw_transaction: Vec<u8>,
+    pub transaction_hash: [u8; 32],
+    pub max_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
+    pub generation: u8,
+    pub signed_at_ns: u64,
+}
+
+#[cfg_attr(
+    feature = "storage-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GovernanceTransactionEnvelope {
+    pub operation_id: GovernanceOperationId,
     pub payload_hash: [u8; 32],
     pub nonce: u64,
     pub chain_id: u64,
@@ -59,14 +73,7 @@ pub struct EvmTransactionEnvelope {
     pub gas_limit: u128,
     pub max_fee_per_gas: u128,
     pub max_priority_fee_per_gas: u128,
-    pub signed_transaction: Option<Vec<u8>>,
-    pub initial_max_fee_per_gas: u128,
-    pub initial_max_priority_fee_per_gas: u128,
-    pub replacement_generation: u8,
-    pub prior_signed_transactions: Vec<Vec<u8>>,
-    pub first_broadcast_at_ns: u64,
-    pub last_broadcast_at_ns: u64,
-    pub rebroadcast_count: u8,
+    pub signed_transactions: Vec<SignedGovernanceTransaction>,
 }
 
 #[cfg_attr(
@@ -74,8 +81,8 @@ pub struct EvmTransactionEnvelope {
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvmCallIntent {
-    pub operation_id: EvmOperationId,
+pub struct GovernanceCallIntent {
+    pub operation_id: GovernanceOperationId,
     pub payload_hash: [u8; 32],
     pub chain_id: u64,
     pub contract: [u8; 20],
@@ -85,9 +92,9 @@ pub struct EvmCallIntent {
     pub max_priority_fee_per_gas: u128,
 }
 
-impl EvmCallIntent {
-    pub fn assign_nonce(self, nonce: u64) -> EvmTransactionEnvelope {
-        EvmTransactionEnvelope {
+impl GovernanceCallIntent {
+    pub fn assign_nonce(self, nonce: u64) -> GovernanceTransactionEnvelope {
+        GovernanceTransactionEnvelope {
             operation_id: self.operation_id,
             payload_hash: self.payload_hash,
             nonce,
@@ -97,19 +104,12 @@ impl EvmCallIntent {
             gas_limit: self.gas_limit,
             max_fee_per_gas: self.max_fee_per_gas,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
-            signed_transaction: None,
-            initial_max_fee_per_gas: self.max_fee_per_gas,
-            initial_max_priority_fee_per_gas: self.max_priority_fee_per_gas,
-            replacement_generation: 0,
-            prior_signed_transactions: Vec::new(),
-            first_broadcast_at_ns: 0,
-            last_broadcast_at_ns: 0,
-            rebroadcast_count: 0,
+            signed_transactions: Vec::new(),
         }
     }
 }
 
-impl EvmTransactionEnvelope {
+impl GovernanceTransactionEnvelope {
     pub fn validate(
         &self,
         expected_chain_id: u64,
@@ -145,10 +145,7 @@ pub struct FinalizedObservationRecord {
 )]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExternalProgress {
-    pub nonce_initialized: bool,
-    pub next_evm_nonce: u64,
     pub last_finalized_base_block: u64,
-    pub last_finalized_mint_block: u64,
     pub last_eth_balance_wei: u128,
     pub reserve_sufficient: bool,
     pub reserve_observation_generation: u64,
@@ -316,6 +313,7 @@ mod finalized_observation_tests {
 pub enum ReconciliationTarget {
     Hold(HoldId),
     FeePayout(u64),
+    FundingAttempt(DepositId),
 }
 
 #[cfg_attr(

@@ -10,19 +10,23 @@ export function bridgeAvailability(input: {
   runtimeReady: boolean
   baseStatus?: { depositsPaused: boolean; withdrawalsPaused: boolean }
   icDepositsPaused?: boolean
-  reserveSufficient?: boolean
+  cyclesSufficient?: boolean
 }): BridgeAvailability {
-  const { baseStatus, icDepositsPaused, reserveSufficient } = input
-  if (!input.runtimeReady || baseStatus === undefined || icDepositsPaused === undefined || reserveSufficient === undefined) {
+  const { baseStatus, icDepositsPaused, cyclesSufficient } = input
+  if (!input.runtimeReady || baseStatus === undefined || icDepositsPaused === undefined || cyclesSufficient === undefined) {
     return { available: false, toBase: "Unavailable", toIc: "Unavailable" }
   }
 
   const toBase = baseStatus.depositsPaused || icDepositsPaused
     ? "Paused"
-    : reserveSufficient
+    : cyclesSufficient
       ? "Available"
       : "Unavailable"
-  const toIc = baseStatus.withdrawalsPaused ? "Paused" : "Available"
+  const toIc = baseStatus.withdrawalsPaused
+    ? "Paused"
+    : cyclesSufficient
+      ? "Available"
+      : "Unavailable"
   return { available: toBase === "Available" || toIc === "Available", toBase, toIc }
 }
 
@@ -40,15 +44,9 @@ export function statusDataIsFresh(input: {
   )
 }
 
-export function displayReserveSufficient(input: {
-  finalizedSignerBalance: bigint
-  safeSignerBalance: bigint
-  requiredEthWei: bigint
+export function displayCyclesSufficient(input: {
   cyclesBalance: bigint
   requiredCycles: bigint
 }): boolean {
-  const confirmedEthBalance = input.finalizedSignerBalance < input.safeSignerBalance
-    ? input.finalizedSignerBalance
-    : input.safeSignerBalance
-  return confirmedEthBalance >= input.requiredEthWei && input.cyclesBalance >= input.requiredCycles
+  return input.cyclesBalance >= input.requiredCycles
 }

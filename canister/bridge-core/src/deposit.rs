@@ -1,9 +1,8 @@
 use crate::{
-    Amount, ApplyResult, CoreError, DepositId, EvmOperationId, HoldId, LedgerFailure,
-    LedgerOperation, LedgerTransferIdentity, TransferAttempt,
+    Amount, ApplyResult, CoreError, DepositId, HoldId, LedgerFailure, LedgerOperation,
+    LedgerTransferIdentity, MintAuthorizationRecord, MintExpiryEvidence, MintFinalizationEvidence,
+    TransferAttempt,
 };
-
-pub const MAX_AUTOMATIC_REFUND_FEE_RETRIES: u64 = 3;
 
 #[cfg_attr(
     feature = "storage-serde",
@@ -49,7 +48,7 @@ pub enum DepositRefundReason {
     ServiceFeeRejected,
     PerDepositLimitExceeded,
     MintWindowLimitExceeded,
-    ReserveInsufficient,
+    AuthorizationExpired,
 }
 
 #[cfg_attr(
@@ -62,17 +61,17 @@ pub enum DepositState {
     EscrowedUnquoted {
         ledger_block_index: u128,
     },
-    MintPending {
+    AuthorizationPending {
         ledger_block_index: u128,
-        operation_id: EvmOperationId,
+    },
+    AuthorizationAvailable {
+        ledger_block_index: u128,
+    },
+    ExpiryReconciliation {
+        ledger_block_index: u128,
     },
     Minted {
         ledger_block_index: u128,
-        operation_id: EvmOperationId,
-    },
-    MintReverted {
-        ledger_block_index: u128,
-        operation_id: EvmOperationId,
     },
     FundingReconciliationHold {
         hold_id: HoldId,
@@ -85,11 +84,6 @@ pub enum DepositState {
         reason: DepositRefundReason,
         hold_id: HoldId,
         attempt: TransferAttempt,
-    },
-    RefundRecoveryRequired {
-        reason: DepositRefundReason,
-        attempt: TransferAttempt,
-        expected_fee: Amount,
     },
     Refunded {
         reason: DepositRefundReason,
@@ -115,36 +109,27 @@ pub enum DepositEvent {
     FundingFailed {
         code: LedgerFailure,
     },
-    CommitQuote {
+    CommitAuthorization {
         quote: DepositQuote,
-        operation_id: EvmOperationId,
+        authorization: Box<MintAuthorizationRecord>,
+    },
+    AuthorizationSigned {
+        signature: Vec<u8>,
+    },
+    BeginExpiryReconciliation,
+    MintReconciled {
+        evidence: Box<MintFinalizationEvidence>,
     },
     StartRefund {
         reason: DepositRefundReason,
         attempt: Box<TransferAttempt>,
+        expiry_evidence: Option<Box<MintExpiryEvidence>>,
     },
     RefundSucceeded {
         ledger_block_index: u128,
     },
     RefundAmbiguous {
         hold_id: HoldId,
-    },
-    RefundBadFee {
-        expected_fee: Amount,
-        next_identity: Option<Box<LedgerTransferIdentity>>,
-    },
-    ResumeRefund {
-        identity: Box<LedgerTransferIdentity>,
-    },
-    MintConfirmed {
-        operation_id: EvmOperationId,
-    },
-    MintReverted {
-        operation_id: EvmOperationId,
-    },
-    RetryMint {
-        reverted_operation_id: EvmOperationId,
-        replacement_operation_id: EvmOperationId,
     },
 }
 
@@ -159,6 +144,9 @@ pub struct DepositRecord {
     pub gross_amount: Amount,
     pub max_service_fee: Amount,
     pub quote: Option<DepositQuote>,
+    pub mint_authorization: Option<MintAuthorizationRecord>,
+    pub mint_finalization_evidence: Option<MintFinalizationEvidence>,
+    pub mint_expiry_evidence: Option<MintExpiryEvidence>,
     pub transfer: LedgerTransferIdentity,
     pub state: DepositState,
     pub last_settlement_stop_reason: Option<String>,
@@ -178,6 +166,9 @@ impl DepositRecord {
             gross_amount: request.gross_amount,
             max_service_fee: request.user_max_service_fee,
             quote: None,
+            mint_authorization: None,
+            mint_finalization_evidence: None,
+            mint_expiry_evidence: None,
             transfer: request.transfer,
             state: DepositState::FundingPending,
             last_settlement_stop_reason: None,
@@ -192,7 +183,7 @@ impl DepositRecord {
     }
 
     pub const fn reserves_mint_resources(&self) -> bool {
-        matches!(self.state, DepositState::MintPending { .. })
+        crate::deposit_reservation_active(self.state.code())
     }
 
     pub fn reserved_mint_amount(&self) -> Result<Amount, CoreError> {
@@ -211,24 +202,56 @@ impl DepositRecord {
         use DepositEvent as Event;
         use DepositState as State;
 
-        if self.is_idempotent(&event) {
-            return Ok(ApplyResult::idempotent());
-        }
-        if !crate::deposit_phase_allows(self.state.phase(), event.phase()) {
-            return Err(CoreError::InvalidTransition {
-                entity: "deposit",
-                event: event.name(),
-            });
-        }
+        let (guard, guard_error) = self.transition_guard(&event);
+        let transition_quote = match (&event, self.quote) {
+            (Event::CommitAuthorization { quote, .. }, _) => Some(*quote),
+            (_, quote) => quote,
+        };
+        let net_amount = transition_quote.map_or(0, |quote| quote.net_amount.get());
+        let service_fee = transition_quote.map_or(0, |quote| quote.service_fee.get());
+        let reserved_amount = self.reserved_mint_amount()?.get();
+        let transition = crate::deposit_transition_decision(crate::DepositTransitionInput {
+            state: self.state.code(),
+            event: event.code(),
+            guard,
+            same_payload: self.is_idempotent(&event),
+            gross_amount: self.gross_amount.get(),
+            net_amount,
+            service_fee,
+            reserved_amount,
+        });
+        let expected_effects = match transition {
+            crate::DepositTransitionDecision::Idempotent => return Ok(ApplyResult::idempotent()),
+            crate::DepositTransitionDecision::Reject => {
+                return Err(guard_error.unwrap_or(CoreError::InvalidTransition {
+                    entity: "deposit",
+                    event: event.name(),
+                }))
+            }
+            crate::DepositTransitionDecision::Apply(effects) => effects,
+        };
 
-        let (next, next_quote, fee_delta) = match (&self.state, event) {
+        let (
+            next_state,
+            next_quote,
+            next_authorization,
+            next_finalization_evidence,
+            next_expiry_evidence,
+            fee_delta,
+        ) = match (&self.state, event) {
             (State::FundingPending, Event::FundingSucceeded { ledger_block_index }) => (
                 State::EscrowedUnquoted { ledger_block_index },
+                None,
+                None,
+                None,
                 None,
                 Amount::ZERO,
             ),
             (State::FundingPending, Event::FundingAmbiguous { hold_id }) => (
                 State::FundingReconciliationHold { hold_id },
+                None,
+                None,
+                None,
                 None,
                 Amount::ZERO,
             ),
@@ -239,36 +262,99 @@ impl DepositRecord {
                     ledger_failure: Some(code),
                 },
                 None,
+                None,
+                None,
+                None,
                 Amount::ZERO,
             ),
             (
                 State::EscrowedUnquoted { ledger_block_index },
-                Event::CommitQuote {
+                Event::CommitAuthorization {
                     quote,
-                    operation_id,
+                    authorization,
                 },
+            ) => (
+                State::AuthorizationPending {
+                    ledger_block_index: *ledger_block_index,
+                },
+                Some(quote),
+                Some(*authorization),
+                None,
+                None,
+                Amount::ZERO,
+            ),
+            (
+                State::AuthorizationPending { ledger_block_index },
+                Event::AuthorizationSigned { signature },
             ) => {
-                quote.validate(self.gross_amount)?;
+                let mut authorization =
+                    self.mint_authorization
+                        .clone()
+                        .ok_or(CoreError::InvalidTransition {
+                            entity: "deposit",
+                            event: "missing_authorization",
+                        })?;
+                authorization.signature = Some(signature);
                 (
-                    State::MintPending {
+                    State::AuthorizationAvailable {
                         ledger_block_index: *ledger_block_index,
-                        operation_id,
                     },
-                    Some(quote),
+                    self.quote,
+                    Some(authorization),
+                    self.mint_finalization_evidence.clone(),
+                    self.mint_expiry_evidence.clone(),
                     Amount::ZERO,
                 )
             }
-            (State::EscrowedUnquoted { .. }, Event::StartRefund { reason, attempt }) => {
-                self.validate_refund_attempt(&attempt)?;
+            (
+                State::AuthorizationPending { ledger_block_index }
+                | State::AuthorizationAvailable { ledger_block_index },
+                Event::BeginExpiryReconciliation,
+            ) => (
+                State::ExpiryReconciliation {
+                    ledger_block_index: *ledger_block_index,
+                },
+                self.quote,
+                self.mint_authorization.clone(),
+                self.mint_finalization_evidence.clone(),
+                self.mint_expiry_evidence.clone(),
+                Amount::ZERO,
+            ),
+            (
+                State::AuthorizationAvailable { ledger_block_index }
+                | State::ExpiryReconciliation { ledger_block_index },
+                Event::MintReconciled { evidence },
+            ) => {
+                let service_fee = self.quote.ok_or(CoreError::InvalidAmount)?.service_fee;
                 (
-                    State::RefundPending {
-                        reason,
-                        attempt: *attempt,
+                    State::Minted {
+                        ledger_block_index: *ledger_block_index,
                     },
+                    self.quote,
+                    self.mint_authorization.clone(),
+                    Some(*evidence),
                     None,
-                    Amount::ZERO,
+                    Amount::new(crate::fee_delta_once(false, true, service_fee.get())),
                 )
             }
+            (
+                State::EscrowedUnquoted { .. } | State::ExpiryReconciliation { .. },
+                Event::StartRefund {
+                    reason,
+                    attempt,
+                    expiry_evidence,
+                },
+            ) => (
+                State::RefundPending {
+                    reason,
+                    attempt: *attempt,
+                },
+                self.quote,
+                self.mint_authorization.clone(),
+                self.mint_finalization_evidence.clone(),
+                expiry_evidence.map(|evidence| *evidence),
+                Amount::ZERO,
+            ),
             (
                 State::RefundPending { reason, attempt },
                 Event::RefundSucceeded { ledger_block_index },
@@ -279,7 +365,10 @@ impl DepositRecord {
                     ledger_block_index,
                     source_hold: None,
                 },
-                None,
+                self.quote,
+                self.mint_authorization.clone(),
+                self.mint_finalization_evidence.clone(),
+                self.mint_expiry_evidence.clone(),
                 Amount::ZERO,
             ),
             (State::RefundPending { reason, attempt }, Event::RefundAmbiguous { hold_id }) => (
@@ -288,127 +377,12 @@ impl DepositRecord {
                     hold_id,
                     attempt: attempt.clone(),
                 },
-                None,
-                Amount::ZERO,
-            ),
-            (
-                State::RefundPending { reason, attempt },
-                Event::RefundBadFee {
-                    expected_fee,
-                    next_identity,
-                },
-            ) => {
-                if let Some(next_identity) = next_identity {
-                    if attempt.attempt_no >= MAX_AUTOMATIC_REFUND_FEE_RETRIES {
-                        return Err(CoreError::RefundIneligible);
-                    }
-                    let next_attempt = attempt.retry_after_bad_fee(*next_identity, expected_fee)?;
-                    if next_attempt.identity.amount.checked_add(expected_fee)? != self.gross_amount
-                    {
-                        return Err(CoreError::RefundIneligible);
-                    }
-                    (
-                        State::RefundPending {
-                            reason: *reason,
-                            attempt: next_attempt,
-                        },
-                        None,
-                        Amount::ZERO,
-                    )
-                } else {
-                    (
-                        State::RefundRecoveryRequired {
-                            reason: *reason,
-                            attempt: attempt.clone(),
-                            expected_fee,
-                        },
-                        None,
-                        Amount::ZERO,
-                    )
-                }
-            }
-            (
-                State::RefundRecoveryRequired {
-                    reason,
-                    attempt,
-                    expected_fee: _,
-                },
-                Event::ResumeRefund { identity },
-            ) => {
-                let fee = identity.fee;
-                let next = attempt.retry_after_bad_fee(*identity, fee)?;
-                let normal_refund =
-                    next.identity.amount.checked_add(next.identity.fee)? == self.gross_amount;
-                let compensated_refund = next.identity.amount == self.gross_amount;
-                if !normal_refund && !compensated_refund {
-                    return Err(CoreError::RefundIneligible);
-                }
-                (
-                    State::RefundPending {
-                        reason: *reason,
-                        attempt: next,
-                    },
-                    None,
-                    Amount::ZERO,
-                )
-            }
-            (
-                State::MintPending {
-                    ledger_block_index,
-                    operation_id: current,
-                },
-                Event::MintConfirmed { operation_id },
-            ) if *current == operation_id => {
-                let service_fee = self.quote.ok_or(CoreError::InvalidAmount)?.service_fee;
-                (
-                    State::Minted {
-                        ledger_block_index: *ledger_block_index,
-                        operation_id,
-                    },
-                    self.quote,
-                    Amount::new(crate::fee_delta_once(false, true, service_fee.get())),
-                )
-            }
-            (State::MintPending { .. }, Event::MintConfirmed { .. }) => {
-                return Err(CoreError::ConflictingReplay);
-            }
-            (
-                State::MintPending {
-                    ledger_block_index,
-                    operation_id: current,
-                },
-                Event::MintReverted { operation_id },
-            ) if *current == operation_id => (
-                State::MintReverted {
-                    ledger_block_index: *ledger_block_index,
-                    operation_id,
-                },
                 self.quote,
+                self.mint_authorization.clone(),
+                self.mint_finalization_evidence.clone(),
+                self.mint_expiry_evidence.clone(),
                 Amount::ZERO,
             ),
-            (State::MintPending { .. }, Event::MintReverted { .. }) => {
-                return Err(CoreError::ConflictingReplay);
-            }
-            (
-                State::MintReverted {
-                    ledger_block_index,
-                    operation_id: current,
-                },
-                Event::RetryMint {
-                    reverted_operation_id,
-                    replacement_operation_id,
-                },
-            ) if *current == reverted_operation_id => (
-                State::MintPending {
-                    ledger_block_index: *ledger_block_index,
-                    operation_id: replacement_operation_id,
-                },
-                self.quote,
-                Amount::ZERO,
-            ),
-            (State::MintReverted { .. }, Event::RetryMint { .. }) => {
-                return Err(CoreError::ConflictingReplay);
-            }
             (_, other) => {
                 return Err(CoreError::InvalidTransition {
                     entity: "deposit",
@@ -416,23 +390,226 @@ impl DepositRecord {
                 });
             }
         };
-        self.state = next;
+        let next_state_code = next_state.code();
+        let next_reservation_active = crate::deposit_reservation_active(next_state_code);
+        if next_state_code != expected_effects.next_state
+            || next_reservation_active != expected_effects.reservation_active
+            || (self.reserves_mint_resources() && !next_reservation_active)
+                != expected_effects.release_reservation
+            || next_quote.map_or(0, |quote| {
+                if next_reservation_active {
+                    quote.net_amount.get()
+                } else {
+                    0
+                }
+            }) != expected_effects.reservation_after
+            || (if !self.reserves_mint_resources() && next_reservation_active {
+                next_quote.map_or(0, |quote| quote.net_amount.get())
+            } else {
+                0
+            }) != expected_effects.reservation_add
+            || fee_delta.get() != expected_effects.fee_credit
+        {
+            return Err(CoreError::InvalidTransition {
+                entity: "deposit",
+                event: "transition_effect_mismatch",
+            });
+        }
+        self.state = next_state;
         self.quote = next_quote;
-        Ok(ApplyResult::applied(fee_delta))
+        self.mint_authorization = next_authorization;
+        self.mint_finalization_evidence = next_finalization_evidence;
+        self.mint_expiry_evidence = next_expiry_evidence;
+        Ok(ApplyResult::applied_deposit(
+            crate::DepositAccountingEffects {
+                reservation_after: Amount::new(expected_effects.reservation_after),
+                reservation_add: Amount::new(expected_effects.reservation_add),
+                reservation_release: Amount::new(expected_effects.reservation_release),
+                fee_credit: Amount::new(expected_effects.fee_credit),
+                pending_liability_debit: Amount::new(expected_effects.pending_liability_debit),
+                escrow_debit: Amount::new(expected_effects.escrow_debit),
+                mint_supply_increase: Amount::new(expected_effects.mint_supply_increase),
+            },
+        ))
     }
 
-    fn validate_refund_attempt(&self, attempt: &TransferAttempt) -> Result<(), CoreError> {
-        let identity = &attempt.identity;
-        if attempt.attempt_no != 0
-            || identity.operation != LedgerOperation::RefundDeposit
-            || identity.spender.is_some()
-            || identity.from != self.transfer.to
-            || identity.to != self.transfer.from
-            || identity.amount.checked_add(identity.fee)? != self.gross_amount
-        {
-            return Err(CoreError::RefundIneligible);
+    fn transition_guard(
+        &self,
+        event: &DepositEvent,
+    ) -> (crate::DepositEventGuard, Option<CoreError>) {
+        use crate::DepositEventGuard as Guard;
+        use DepositEvent as Event;
+        use DepositState as State;
+
+        match event {
+            Event::FundingSucceeded { .. }
+            | Event::FundingAmbiguous { .. }
+            | Event::FundingFailed { .. } => (Guard::Funding, None),
+            Event::CommitAuthorization {
+                quote,
+                authorization: record,
+            } => {
+                let quote_result = quote.validate(self.gross_amount);
+                let authorization = record.authorization;
+                let fixed_fields_match = authorization.deposit_id == self.id.bytes()
+                    && authorization.recipient != [0; 20]
+                    && authorization.gross_amount == self.gross_amount
+                    && authorization.max_service_fee == self.max_service_fee
+                    && authorization.charged_service_fee == quote.service_fee
+                    && record.domain.chain_id != 0
+                    && record.domain.verifying_contract != [0; 20]
+                    && record.digest != [0; 32]
+                    && record.origin.finalized_block_hash != [0; 32]
+                    && authorization.authorization_epoch != 0;
+                let canonical_domain_strings = record.domain.name
+                    == crate::MINT_AUTHORIZATION_DOMAIN_NAME
+                    && record.domain.version == crate::MINT_AUTHORIZATION_DOMAIN_VERSION;
+                let deadline_valid = record
+                    .origin
+                    .finalized_block_timestamp
+                    .checked_add(crate::MINT_AUTHORIZATION_TTL_SECONDS)
+                    == Some(authorization.deadline);
+                let pristine = record.signature.is_none()
+                    && !record.signature_dispatched
+                    && record.signature_dispatch_attempt == 0;
+                let guard = Guard::CommitAuthorization {
+                    quote_valid: quote_result.is_ok(),
+                    fixed_fields_match,
+                    canonical_domain_strings,
+                    deadline_valid,
+                    pristine,
+                };
+                (
+                    guard,
+                    (!guard.accepts()).then_some(if let Err(error) = quote_result {
+                        error
+                    } else if !deadline_valid
+                        && record
+                            .origin
+                            .finalized_block_timestamp
+                            .checked_add(crate::MINT_AUTHORIZATION_TTL_SECONDS)
+                            .is_none()
+                    {
+                        CoreError::ArithmeticOverflow
+                    } else {
+                        CoreError::ConflictingReplay
+                    }),
+                )
+            }
+            Event::AuthorizationSigned { signature } => {
+                let authorization = self.mint_authorization.as_ref();
+                let guard = Guard::InstallSignature {
+                    dispatched: authorization.is_some_and(|record| record.signature_dispatched),
+                    signature_absent: authorization
+                        .is_some_and(|record| record.signature.is_none()),
+                    signature_length_valid: signature.len() == 65,
+                };
+                (
+                    guard,
+                    (!guard.accepts()).then_some(CoreError::ConflictingReplay),
+                )
+            }
+            Event::BeginExpiryReconciliation => (Guard::BeginExpiry, None),
+            Event::MintReconciled { evidence } => {
+                let authorization = self.mint_authorization.as_ref();
+                let expected_net = authorization.and_then(|record| {
+                    record
+                        .authorization
+                        .gross_amount
+                        .checked_sub(record.authorization.charged_service_fee)
+                        .ok()
+                });
+                let fixed_fields_match = authorization.is_some_and(|authorization| {
+                    evidence.authorization_digest == authorization.digest
+                        && evidence.deposit_id == authorization.authorization.deposit_id
+                        && evidence.recipient == authorization.authorization.recipient
+                        && evidence.chain_id == authorization.domain.chain_id
+                        && evidence.verifying_contract == authorization.domain.verifying_contract
+                        && evidence.gross_amount == authorization.authorization.gross_amount
+                        && evidence.charged_service_fee
+                            == authorization.authorization.charged_service_fee
+                        && Some(evidence.minted_amount) == expected_net
+                });
+                let origin_inclusion = authorization.is_some_and(|authorization| {
+                    evidence.receipt_block_number >= authorization.origin.finalized_block_number
+                });
+                let audit_complete = evidence.transaction_hash != [0; 32]
+                    && evidence.receipt_block_hash != [0; 32]
+                    && evidence.finalized_block_hash != [0; 32]
+                    && evidence.rpc_request_digest != [0; 32]
+                    && evidence.rpc_response_digest != [0; 32];
+                let guard = Guard::MintFinalization {
+                    fixed_fields_match: fixed_fields_match && origin_inclusion,
+                    receipt_succeeded: evidence.receipt_succeeded,
+                    receipt_block: evidence.receipt_block_number,
+                    finalized_block: evidence.finalized_block_number,
+                    audit_complete,
+                };
+                (
+                    guard,
+                    (!guard.accepts()).then_some(CoreError::ConflictingReplay),
+                )
+            }
+            Event::StartRefund {
+                reason,
+                attempt,
+                expiry_evidence,
+            } => {
+                let identity = &attempt.identity;
+                let attempt_matches = attempt.attempt_no == 0
+                    && identity.operation == LedgerOperation::RefundDeposit
+                    && identity.spender.is_none()
+                    && identity.from == self.transfer.to
+                    && identity.to == self.transfer.from
+                    && identity
+                        .amount
+                        .checked_add(identity.fee)
+                        .is_ok_and(|amount| amount == self.gross_amount);
+                let policy_matches = match (&self.state, reason, expiry_evidence.as_deref()) {
+                    (
+                        State::ExpiryReconciliation { .. },
+                        DepositRefundReason::AuthorizationExpired,
+                        Some(evidence),
+                    ) => self.expiry_evidence_matches(evidence),
+                    (State::EscrowedUnquoted { .. }, reason, None) => {
+                        *reason != DepositRefundReason::AuthorizationExpired
+                    }
+                    _ => false,
+                };
+                let guard = Guard::StartRefund {
+                    attempt_matches,
+                    policy_matches,
+                };
+                (
+                    guard,
+                    (!guard.accepts()).then_some(CoreError::RefundIneligible),
+                )
+            }
+            Event::RefundSucceeded { .. } | Event::RefundAmbiguous { .. } => {
+                (Guard::RefundResult, None)
+            }
         }
-        Ok(())
+    }
+
+    fn expiry_evidence_matches(&self, evidence: &MintExpiryEvidence) -> bool {
+        let Some(authorization) = self.mint_authorization.as_ref() else {
+            return false;
+        };
+        let binding_matches = evidence.authorization_digest == authorization.digest
+            && evidence.deposit_id == authorization.authorization.deposit_id
+            && evidence.chain_id == authorization.domain.chain_id
+            && evidence.verifying_contract == authorization.domain.verifying_contract
+            && evidence.finalized_block_number >= authorization.origin.finalized_block_number
+            && evidence.finalized_block_hash != [0; 32]
+            && evidence.runtime_sha256 != [0; 32]
+            && evidence.rpc_request_digest != [0; 32]
+            && evidence.rpc_response_digest != [0; 32];
+        crate::expiry_refund_allowed(
+            binding_matches,
+            evidence.deposit_processed,
+            evidence.finalized_block_timestamp,
+            authorization.authorization.deadline,
+        )
     }
 
     fn is_idempotent(&self, event: &DepositEvent) -> bool {
@@ -458,22 +635,43 @@ impl DepositRecord {
                 Event::FundingFailed { code },
             ) => current == code,
             (
-                State::MintPending {
-                    operation_id: current,
-                    ..
-                },
-                Event::CommitQuote {
+                State::AuthorizationPending { .. }
+                | State::AuthorizationAvailable { .. }
+                | State::ExpiryReconciliation { .. }
+                | State::Minted { .. },
+                Event::CommitAuthorization {
                     quote,
-                    operation_id,
+                    authorization,
                 },
-            ) => *current == *operation_id && self.quote == Some(*quote),
+            ) => {
+                self.quote == Some(*quote)
+                    && self.mint_authorization.as_ref() == Some(authorization)
+            }
+            (State::AuthorizationAvailable { .. }, Event::AuthorizationSigned { signature }) => {
+                self.mint_authorization
+                    .as_ref()
+                    .and_then(|record| record.signature.as_ref())
+                    == Some(signature)
+            }
+            (State::ExpiryReconciliation { .. }, Event::BeginExpiryReconciliation) => true,
+            (State::Minted { .. }, Event::MintReconciled { evidence }) => {
+                self.mint_finalization_evidence.as_ref() == Some(evidence)
+            }
             (
                 State::RefundPending {
                     reason: current_reason,
                     attempt: current_attempt,
                 },
-                Event::StartRefund { reason, attempt },
-            ) => current_reason == reason && current_attempt == attempt.as_ref(),
+                Event::StartRefund {
+                    reason,
+                    attempt,
+                    expiry_evidence,
+                },
+            ) => {
+                current_reason == reason
+                    && current_attempt == attempt.as_ref()
+                    && self.mint_expiry_evidence.as_ref() == expiry_evidence.as_deref()
+            }
             (
                 State::Refunded {
                     ledger_block_index: current,
@@ -488,89 +686,24 @@ impl DepositRecord {
                 },
                 Event::RefundAmbiguous { hold_id },
             ) => *current == *hold_id,
-            (
-                State::RefundPending { attempt, .. },
-                Event::RefundBadFee {
-                    expected_fee,
-                    next_identity: Some(next),
-                },
-            ) => attempt.identity == **next && attempt.identity.fee == *expected_fee,
-            (
-                State::RefundRecoveryRequired {
-                    attempt,
-                    expected_fee: current,
-                    ..
-                },
-                Event::RefundBadFee {
-                    expected_fee,
-                    next_identity: None,
-                },
-            ) => current == expected_fee && attempt.identity.fee != *expected_fee,
-            (State::RefundPending { attempt, .. }, Event::ResumeRefund { identity }) => {
-                attempt.identity == **identity
-            }
-            (
-                State::Minted {
-                    operation_id: current,
-                    ..
-                },
-                Event::MintConfirmed { operation_id },
-            ) => *current == *operation_id,
-            (
-                State::MintReverted {
-                    operation_id: current,
-                    ..
-                },
-                Event::MintReverted { operation_id },
-            ) => *current == *operation_id,
-            (
-                State::MintPending {
-                    operation_id: current,
-                    ..
-                },
-                Event::RetryMint {
-                    replacement_operation_id,
-                    ..
-                },
-            ) => current == replacement_operation_id,
             _ => false,
         }
     }
 }
 
-impl DepositState {
-    const fn phase(&self) -> u8 {
-        match self {
-            Self::FundingPending => 0,
-            Self::EscrowedUnquoted { .. } => 1,
-            Self::MintPending { .. } => 2,
-            Self::Minted { .. } => 3,
-            Self::MintReverted { .. } => 4,
-            Self::FundingReconciliationHold { .. } => 5,
-            Self::RefundPending { .. } => 6,
-            Self::RefundReconciliationHold { .. } => 7,
-            Self::RefundRecoveryRequired { .. } => 8,
-            Self::Refunded { .. } => 9,
-            Self::Cancelled { .. } => 10,
-        }
-    }
-}
-
 impl DepositEvent {
-    const fn phase(&self) -> u8 {
+    const fn code(&self) -> u8 {
         match self {
             Self::FundingSucceeded { .. } => 0,
             Self::FundingAmbiguous { .. } => 1,
             Self::FundingFailed { .. } => 2,
-            Self::CommitQuote { .. } => 3,
+            Self::CommitAuthorization { .. } => 3,
             Self::StartRefund { .. } => 4,
-            Self::RefundSucceeded { .. } => 5,
-            Self::RefundAmbiguous { .. } => 6,
-            Self::RefundBadFee { .. } => 7,
-            Self::ResumeRefund { .. } => 8,
-            Self::MintConfirmed { .. } => 9,
-            Self::MintReverted { .. } => 10,
-            Self::RetryMint { .. } => 11,
+            Self::AuthorizationSigned { .. } => 5,
+            Self::BeginExpiryReconciliation => 6,
+            Self::MintReconciled { .. } => 7,
+            Self::RefundSucceeded { .. } => 9,
+            Self::RefundAmbiguous { .. } => 10,
         }
     }
 
@@ -579,15 +712,31 @@ impl DepositEvent {
             Self::FundingSucceeded { .. } => "funding_succeeded",
             Self::FundingAmbiguous { .. } => "funding_ambiguous",
             Self::FundingFailed { .. } => "funding_failed",
-            Self::CommitQuote { .. } => "commit_quote",
+            Self::CommitAuthorization { .. } => "commit_authorization",
+            Self::AuthorizationSigned { .. } => "authorization_signed",
+            Self::BeginExpiryReconciliation => "begin_expiry_reconciliation",
+            Self::MintReconciled { .. } => "mint_reconciled",
             Self::StartRefund { .. } => "start_refund",
             Self::RefundSucceeded { .. } => "refund_succeeded",
             Self::RefundAmbiguous { .. } => "refund_ambiguous",
-            Self::RefundBadFee { .. } => "refund_bad_fee",
-            Self::ResumeRefund { .. } => "resume_refund",
-            Self::MintConfirmed { .. } => "mint_confirmed",
-            Self::MintReverted { .. } => "mint_reverted",
-            Self::RetryMint { .. } => "retry_mint",
+        }
+    }
+}
+
+impl DepositState {
+    const fn code(&self) -> u8 {
+        match self {
+            Self::FundingPending => 0,
+            Self::EscrowedUnquoted { .. } => 1,
+            Self::AuthorizationPending { .. } => 2,
+            Self::AuthorizationAvailable { .. } => 3,
+            Self::ExpiryReconciliation { .. } => 4,
+            Self::FundingReconciliationHold { .. } => 5,
+            Self::RefundPending { .. } => 6,
+            Self::RefundReconciliationHold { .. } => 7,
+            Self::Refunded { .. } => 8,
+            Self::Cancelled { .. } => 9,
+            Self::Minted { .. } => 10,
         }
     }
 }

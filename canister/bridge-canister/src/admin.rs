@@ -84,7 +84,6 @@ pub enum AdminError {
     InvalidArgument(String),
     StorageFailure,
     InsufficientFeeReserve,
-    UnresolvedEvmRevert,
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
@@ -147,16 +146,6 @@ pub fn pause_with_audit(caller: Principal) -> Result<crate::storage::AuditEvent,
 }
 
 pub fn resume(caller: Principal) -> Result<(), AdminError> {
-    let unresolved = STORE.with(|store| {
-        store
-            .borrow()
-            .counters()
-            .map(|counters| counters.unresolved_evm_reverts != 0)
-            .map_err(|_| AdminError::StorageFailure)
-    })?;
-    if unresolved {
-        return Err(AdminError::UnresolvedEvmRevert);
-    }
     mutate(caller, |state| {
         if !authorized(state, caller, ACTION_RESUME) {
             return Err(AdminError::Unauthorized);

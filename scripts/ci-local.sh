@@ -118,6 +118,7 @@ run_versions() {
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   python3 "$ROOT/scripts/test_live_fee_guard.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
+  python3 "$ROOT/scripts/test_proof_impact.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
   "$ROOT/scripts/test_ci_guards.sh"
@@ -160,7 +161,7 @@ run_no_automatic_execution_guards() {
     --glob '!settlement-confirmation-coordinator.test.tsx' \
     --glob '!risk-acknowledgement.tsx' \
     --glob '!risk-acknowledgement.test.tsx'; then
-    echo "browser storage is used outside the confirmation recovery queue" >&2
+    echo "browser storage is used outside the reviewed recovery modules" >&2
     return 1
   fi
   if rg -n '\b(getTransactionReceipt|waitForTransactionReceipt)\b' "$ROOT/ui/src/routes/history.tsx"; then
@@ -239,29 +240,39 @@ run_contracts() {
 
 build_smt_failure_fixture() {
   local fixture="$1"
+  local candidate
+  local -a skip_args=()
 
-  FOUNDRY_PROFILE=smt forge build \
-    --root "$CONTRACTS" \
-    --contracts "$fixture" \
-    --skip test \
-    --skip script \
+  while IFS= read -r candidate; do
+    skip_args+=(--skip "$(basename "$candidate")")
+  done < <(rg --files "$ROOT/verification/smt/pass" -g '*.sol' | sort)
+
+  while IFS= read -r candidate; do
+    if [[ "$candidate" != "$fixture" ]]; then
+      skip_args+=(--skip "$(basename "$candidate")")
+    fi
+  done < <(rg --files "$ROOT/verification/smt/fail" -g '*.sol' | sort)
+
+  forge build \
+    --root "$ROOT/verification/smt" \
+    "${skip_args[@]}" \
     --force
 }
 
 run_smt() {
   local -a failure_fixtures=()
+  local -a pass_skip_args=()
   local failure_fixture
-
-  FOUNDRY_PROFILE=smt forge build \
-    --root "$CONTRACTS" \
-    --contracts "$ROOT/verification/smt/pass" \
-    --skip test \
-    --skip script \
-    --force
 
   while IFS= read -r failure_fixture; do
     failure_fixtures+=("$failure_fixture")
+    pass_skip_args+=(--skip "$(basename "$failure_fixture")")
   done < <(rg --files "$ROOT/verification/smt/fail" -g '*.sol' | sort)
+
+  forge build \
+    --root "$ROOT/verification/smt" \
+    "${pass_skip_args[@]}" \
+    --force
 
   verify_smt_failure_fixtures \
     "$TMP_ROOT/smt-failures" \
@@ -425,17 +436,61 @@ run_lean_failure_fixtures() {
   done < <(rg --files "$ROOT/verification/lean/fail" -g '*.lean' | sort)
 }
 
-run_proofs() {
+run_lean_proofs() {
   verify_lean_no_proof_escape "$ROOT/verification/lean"
   (cd "$ROOT/verification/lean" && lake build)
-  run_lean_failure_fixtures
+}
+
+run_policy_vector_consumers() {
   python3 "$ROOT/scripts/test_protocol_vectors.py"
   python3 "$ROOT/scripts/protocol_vectors.py" --check
-  python3 "$ROOT/scripts/test_refinement_manifest.py"
+}
+
+run_refinement_gate() {
   python3 "$ROOT/scripts/test_reproducible_artifacts.py"
+  python3 "$ROOT/scripts/test_refinement_manifest.py"
   python3 "$ROOT/scripts/check_refinement_manifest.py"
-  run_smt
-  run_verus
+  python3 "$ROOT/scripts/check_proof_impact.py"
+}
+
+run_proof_stage() {
+  local stage="$1"
+  shift
+  local status
+  set +e
+  "$@"
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    printf '%s\tpass\n' "$stage" >>"$PROOF_STAGE_RECEIPT"
+  else
+    printf '%s\tfail\n' "$stage" >>"$PROOF_STAGE_RECEIPT"
+  fi
+  python3 "$ROOT/scripts/write_proof_receipt.py" \
+    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
+  return "$status"
+}
+
+run_proofs() {
+  PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
+  PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
+  : >"$PROOF_STAGE_RECEIPT"
+  python3 "$ROOT/scripts/write_proof_receipt.py" \
+    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
+  python3 "$ROOT/scripts/check_failure_manifests.py"
+  run_proof_stage lean run_lean_proofs
+  run_proof_stage lean-negative run_lean_failure_fixtures
+  run_proof_stage policy-vector-consumers run_policy_vector_consumers
+  run_proof_stage refinement-gate run_refinement_gate
+  run_proof_stage known-answer-consumers \
+    python3 "$ROOT/scripts/check_known_answer_manifest.py"
+  run_proof_stage smt-and-negative run_smt
+  run_proof_stage verus-and-negative run_verus
+  python3 -c \
+    'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["complete"] is True' \
+    "$PROOF_RECEIPT"
+  python3 "$ROOT/scripts/check_proof_impact.py" --receipt "$PROOF_RECEIPT"
+  echo "proof_receipt=$PROOF_RECEIPT" >&2
 }
 
 require_ui_dependencies() {
@@ -705,7 +760,7 @@ run_smoke() {
   local readonly release_amount_out="49000000"
   local readonly principal_owner="0x010203"
   local readonly default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
-  local readonly timelock_delay_seconds="259200"
+  local readonly timelock_delay_seconds="86400"
   local readonly zero_address="0x0000000000000000000000000000000000000000"
   local readonly zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -730,18 +785,22 @@ run_smoke() {
     settlement_rate_limit_global = 60 : nat16;
     settlement_rate_limit_per_principal = 6 : nat16;
     settlement_rate_limit_per_record = 3 : nat16;
-    transaction_gas_limit = 500_000 : nat;
-    max_fee_per_gas = 10 : nat;
-    max_priority_fee_per_gas = 1 : nat;
-    evm_liveness = record {
-      check_interval_seconds = 60 : nat64;
-      rebroadcast_after_seconds = 300 : nat64;
-      replacement_after_seconds = 1_800 : nat64;
+    settlement_retry_interval_seconds = 60 : nat64;
+    governance_evm_fee = record {
+      gas_limit_ceiling = 500_000 : nat;
+      max_fee_per_gas_ceiling = 200_000_000_000 : nat;
+      max_priority_fee_per_gas_ceiling = 10_000_000_000 : nat;
+      l1_fee_per_transaction_ceiling_wei = 10_000_000_000_000_000 : nat;
+      quote_validity_seconds = 90 : nat64;
+      gas_limit_multiplier_bps = 13_000 : nat32;
+      base_fee_multiplier_bps = 60_000 : nat32;
+      l1_fee_multiplier_bps = 15_000 : nat32;
+    };
+    governance_replacement = record {
       max_replacements = 3 : nat8;
       fee_bump_bps = 1_250 : nat16;
-      fee_ceiling_multiplier_bps = 40_000 : nat32;
     };
-    eth_floor_wei = 1 : nat;
+    governance_eth_floor_wei = 1 : nat;
     cycles_floor = 1 : nat;
     settlement_cycle_ceiling = 1 : nat;
     governance_principal = principal \"$smoke_principal\";
@@ -808,7 +867,6 @@ expected = {
     "schema_version": (sys.argv[1], "nat16"),
     "deposits": ("0", "nat64"),
     "withdrawals": ("0", "nat64"),
-    "pending_evm_operations": ("0", "nat64"),
     "reconciliation_holds": ("0", "nat64"),
 }
 for field, (value, candid_type) in expected.items():
@@ -841,7 +899,6 @@ stable_fields = {
     "schema_version": (sys.argv[3], "nat16"),
     "deposits": ("0", "nat64"),
     "withdrawals": ("0", "nat64"),
-    "pending_evm_operations": ("0", "nat64"),
     "reconciliation_holds": ("0", "nat64"),
     "deposits_paused": ("true", "bool"),
 }
@@ -991,7 +1048,7 @@ for field, (value, candid_type) in stable_fields.items():
     "$(cast call "$bridge_address" "withdrawalsPaused()(bool)" --rpc-url http://127.0.0.1:8545)" \
     "true"
   # Local smoke activation uses Anvil impersonation only to reach the asset-flow checks without
-  # waiting 72 hours. The same run separately verifies that the real admin wallet needs Timelock.
+  # waiting 24 hours. The same run separately verifies that the real admin wallet needs Timelock.
   cast rpc anvil_impersonateAccount "$base_admin_timelock" --rpc-url http://127.0.0.1:8545 >/dev/null
   cast rpc anvil_setBalance "$base_admin_timelock" 0x56BC75E2D63100000 --rpc-url http://127.0.0.1:8545 >/dev/null
   cast send "$bridge_address" "unpauseDepositMints()" \
@@ -1000,12 +1057,64 @@ for field, (value, candid_type) in stable_fields.items():
     --rpc-url http://127.0.0.1:8545 --from "$base_admin_timelock" --unlocked >/dev/null
   cast rpc anvil_stopImpersonatingAccount "$base_admin_timelock" --rpc-url http://127.0.0.1:8545 >/dev/null
 
+  local authorization_epoch deadline typed_data signature
+  authorization_epoch="$(
+    cast call "$bridge_address" "mintAuthorizationEpoch()(uint256)" \
+      --rpc-url http://127.0.0.1:8545
+  )"
+  deadline="$(( $(cast block latest --rpc-url http://127.0.0.1:8545 --field timestamp) + 7200 ))"
+  typed_data="$(
+    jq -cn \
+      --arg deposit_id "$deposit_id" \
+      --arg recipient "$recipient" \
+      --arg bridge "$bridge_address" \
+      --argjson gross_amount "$gross_amount" \
+      --argjson max_service_fee "$service_fee" \
+      --argjson charged_service_fee "$service_fee" \
+      --argjson deadline "$deadline" \
+      --argjson authorization_epoch "$authorization_epoch" \
+      '{
+        types: {
+          EIP712Domain: [
+            {name:"name",type:"string"},
+            {name:"version",type:"string"},
+            {name:"chainId",type:"uint256"},
+            {name:"verifyingContract",type:"address"}
+          ],
+          MintAuthorization: [
+            {name:"depositId",type:"bytes32"},
+            {name:"recipient",type:"address"},
+            {name:"grossAmount",type:"uint256"},
+            {name:"maxServiceFee",type:"uint256"},
+            {name:"chargedServiceFee",type:"uint256"},
+            {name:"deadline",type:"uint256"},
+            {name:"authorizationEpoch",type:"uint256"}
+          ]
+        },
+        primaryType:"MintAuthorization",
+        domain:{name:"KINIC Bridge",version:"1",chainId:31337,verifyingContract:$bridge},
+        message:{
+          depositId:$deposit_id,
+          recipient:$recipient,
+          grossAmount:$gross_amount,
+          maxServiceFee:$max_service_fee,
+          chargedServiceFee:$charged_service_fee,
+          deadline:$deadline,
+          authorizationEpoch:$authorization_epoch
+        }
+      }'
+  )"
+  signature="$(
+    cast rpc eth_signTypedData_v4 "$bridge_signer" "$typed_data" \
+      --rpc-url http://127.0.0.1:8545 | tr -d '"'
+  )"
   cast send \
     "$bridge_address" \
-    "mintDeposit((bytes32,address,uint256,uint256,uint256))" \
-    "($deposit_id,$recipient,$gross_amount,$service_fee,$service_fee)" \
+    "mintDepositWithAuthorization((bytes32,address,uint256,uint256,uint256,uint256,uint256),bytes)" \
+    "($deposit_id,$recipient,$gross_amount,$service_fee,$service_fee,$deadline,$authorization_epoch)" \
+    "$signature" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$bridge_signer" \
+    --from "$recipient" \
     --unlocked >/dev/null
   read -r recipient_balance _ <<<"$(
     cast call "$bsns_address" "balanceOf(address)(uint256)" "$recipient" --rpc-url http://127.0.0.1:8545
@@ -1137,7 +1246,7 @@ for field, (value, candid_type) in stable_fields.items():
     --rpc-url http://127.0.0.1:8545 \
     --from "$runtime_administrator" \
     --unlocked >/dev/null 2>&1; then
-    echo "Base Admin operation executed before the 72-hour delay" >&2
+    echo "Base Admin operation executed before the 24-hour delay" >&2
     return 1
   fi
   cast rpc evm_increaseTime "$timelock_delay_seconds" --rpc-url http://127.0.0.1:8545 >/dev/null

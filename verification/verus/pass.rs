@@ -83,6 +83,27 @@ pub open spec fn manual_claim_decision_view(result: kernel::ManualClaimDecision)
     }
 }
 
+pub open spec fn lease_lane_claim_decision_view(
+    result: kernel::LeaseLaneClaimDecision,
+) -> int {
+    match result {
+        kernel::LeaseLaneClaimDecision::Allow => 0,
+        kernel::LeaseLaneClaimDecision::AutomaticProgressPending => 1,
+        kernel::LeaseLaneClaimDecision::Busy => 2,
+    }
+}
+
+pub open spec fn funding_attempt_decision_view(
+    result: kernel::FundingAttemptDecision,
+) -> int {
+    match result {
+        kernel::FundingAttemptDecision::PromoteSuccess => 0,
+        kernel::FundingAttemptDecision::PromoteAmbiguous => 1,
+        kernel::FundingAttemptDecision::Release => 2,
+        kernel::FundingAttemptDecision::Retain => 3,
+    }
+}
+
 proof fn incomplete_scan_cannot_prove_absence(next: int, tip: int, watermark: int)
     requires next <= tip || watermark < tip
     ensures !kernel::scan_complete_spec(next, tip, watermark, true, false)
@@ -131,11 +152,6 @@ proof fn conflicting_payload_is_rejected()
     ensures !kernel::replay_matches_spec(false)
 {}
 
-proof fn evm_rank_never_decreases(old: int, new: int)
-    requires 0 <= old <= new <= 3
-    ensures kernel::monotone_spec(old, new)
-{}
-
 proof fn only_current_refresh_owner_can_finish(current: int, claimant: int)
     ensures
         kernel::refresh_owner_matches_spec(Some(current), claimant) <==> current == claimant,
@@ -148,31 +164,6 @@ proof fn refresh_generation_is_strictly_monotone(current: int)
         kernel::refresh_generation_next_spec(current) == Some(current + 1),
         current + 1 > current,
         kernel::refresh_generation_next_spec(0xffff_ffff_ffff_ffffint) == None::<int>,
-{}
-
-proof fn reserve_token_rejects_any_drift(
-    expected_withdrawals: int,
-    expected_amount: int,
-    expected_operations: int,
-    expected_generation: int,
-    current_withdrawals: int,
-    current_amount: int,
-    current_operations: int,
-    current_generation: int,
-)
-    ensures kernel::reserve_token_matches_spec(
-        expected_withdrawals,
-        expected_amount,
-        expected_operations,
-        expected_generation,
-        current_withdrawals,
-        current_amount,
-        current_operations,
-        current_generation,
-    ) <==> expected_withdrawals == current_withdrawals
-        && expected_amount == current_amount
-        && expected_operations == current_operations
-        && expected_generation == current_generation
 {}
 
 proof fn lease_generation_is_strictly_monotone(current: int)
@@ -391,11 +382,6 @@ proof fn withdrawal_liability_index_matches_nonterminal_phases(state: int)
         <==> state == 0 || state == 1 || state == 3
 {}
 
-proof fn evm_operation_index_matches_pending_phases(state: int)
-    ensures kernel::evm_operation_indexed_spec(state)
-        <==> state == 0 || state == 1 || state == 2
-{}
-
 proof fn reconciliation_hold_index_matches_open_phase(state: int)
     ensures kernel::reconciliation_hold_indexed_spec(state) <==> state == 0
 {}
@@ -412,29 +398,6 @@ proof fn mint_admission_counts_consumed_reserved_and_candidate(
 proof fn mint_admission_overflow_is_rejected()
     ensures kernel::mint_admission_total_spec(
         340282366920938463463374607431768211455int, 1, 0) == None::<int>
-{}
-
-proof fn prepared_blocks_nonce_assignment()
-    ensures
-        !kernel::can_assign_nonce_spec(false, false),
-        !kernel::can_assign_nonce_spec(true, true),
-        kernel::can_assign_nonce_spec(true, false)
-{}
-
-proof fn nonce_is_strictly_monotone(current: int)
-    requires 0 <= current < 0xffff_ffff_ffff_ffffint
-    ensures kernel::nonce_next_spec(current) == Some(current + 1), current + 1 > current
-{}
-
-proof fn nonce_overflow_is_rejected()
-    ensures kernel::nonce_next_spec(0xffff_ffff_ffff_ffffint) == None::<int>
-{}
-
-proof fn nonce_too_low_requires_provider_agreement_and_local_hash(
-    provider_agreement: bool, local_hash_found: bool,
-)
-    ensures kernel::nonce_too_low_is_submitted_spec(provider_agreement, local_hash_found)
-        <==> provider_agreement && local_hash_found
 {}
 
 proof fn payout_includes_fee_and_cannot_exceed_reserve(reserve: int, pending: int, amount: int, fee: int)
@@ -505,8 +468,7 @@ fn hold_resolution_decision_classifies_evidence(
     kernel::hold_resolution_decision(success, absence)
 }
 
-proof fn manual_claim_cannot_bypass_confirmation_or_active_schedule(
-    confirmation: bool,
+proof fn manual_claim_cannot_bypass_active_schedule(
     scheduled: bool,
     active: bool,
     stopped: bool,
@@ -514,14 +476,12 @@ proof fn manual_claim_cannot_bypass_confirmation_or_active_schedule(
     expired: bool,
 )
     ensures kernel::manual_claim_allowed_spec(
-        confirmation, scheduled, active, stopped, overdue, expired)
-        <==> !confirmation
-            && (!active || expired)
+        scheduled, active, stopped, overdue, expired)
+        <==> (!active || expired)
             && (!scheduled || stopped || overdue || expired)
 {}
 
 fn manual_claim_decision_matches_shared_guard(
-    confirmation: bool,
     scheduled: bool,
     active: bool,
     stopped: bool,
@@ -530,10 +490,53 @@ fn manual_claim_decision_matches_shared_guard(
 ) -> (result: kernel::ManualClaimDecision)
     ensures manual_claim_decision_view(result) == 0
         <==> kernel::manual_claim_allowed_spec(
-            confirmation, scheduled, active, stopped, overdue, expired),
+            scheduled, active, stopped, overdue, expired),
 {
     kernel::manual_claim_decision(
-        confirmation, scheduled, active, stopped, overdue, expired)
+        scheduled, active, stopped, overdue, expired)
+}
+
+fn notification_admission_checks_caller_and_hash_windows(
+    caller_count: u8,
+    hash_count: u8,
+    caller_limit: u8,
+    hash_limit: u8,
+) -> (result: bool)
+    ensures result <==> caller_count < caller_limit && hash_count < hash_limit,
+{
+    kernel::notification_admission_allowed(
+        caller_count, hash_count, caller_limit, hash_limit)
+}
+
+fn lease_lane_claim_is_record_and_lane_scoped(
+    target_active: bool,
+    target_automatic: bool,
+    active_in_lane: u64,
+    capacity: u64,
+) -> (result: kernel::LeaseLaneClaimDecision)
+    ensures
+        lease_lane_claim_decision_view(result) == 0
+            <==> !target_active && active_in_lane < capacity,
+        lease_lane_claim_decision_view(result) == 1
+            <==> target_active && target_automatic,
+{
+    kernel::lease_lane_claim_decision(
+        target_active, target_automatic, active_in_lane, capacity)
+}
+
+fn funding_outcome_classifies_reservation_action(
+    outcome_kind: u8,
+) -> (result: kernel::FundingAttemptDecision)
+    ensures
+        funding_attempt_decision_view(result) == 0
+            <==> outcome_kind == 0 || outcome_kind == 1,
+        funding_attempt_decision_view(result) == 1 <==> outcome_kind == 2,
+        funding_attempt_decision_view(result) == 2 <==> outcome_kind == 3,
+        funding_attempt_decision_view(result) == 3
+            <==> outcome_kind != 0 && outcome_kind != 1
+                && outcome_kind != 2 && outcome_kind != 3,
+{
+    kernel::funding_attempt_decision(outcome_kind)
 }
 
 proof fn role_action_matrix(action: int, pause: bool, governance: bool)
@@ -555,16 +558,79 @@ proof fn audit_overflow_is_rejected()
     ensures kernel::audit_next_spec(0xffff_ffff_ffff_ffffint) == None::<int>
 {}
 
-proof fn deposit_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
-    requires state == 3 || state == 9 || state == 10
-    ensures kernel::deposit_phase_run_spec(state, events) == state
-    decreases events.len()
-{
-    if events.len() > 0 {
-        assert(kernel::deposit_phase_step_spec(state, events[0]) == state);
-        deposit_terminal_phase_absorbs_any_sequence(state, events.drop_first());
-    }
-}
+proof fn deposit_terminal_phase_rejects_every_event(state: int, event: int)
+    requires state == 8 || state == 9 || state == 10
+    ensures kernel::deposit_transition_spec(state, event) == None::<int>
+{}
+
+proof fn authorization_commit_requires_every_binding(
+    identity: bool, amounts: bool, domain: bool, origin: bool, pristine: bool, deadline: bool,
+)
+    ensures kernel::authorization_commit_allowed_spec(
+        identity, amounts, domain, origin, pristine, deadline)
+        <==> identity && amounts && domain && origin && pristine && deadline
+{}
+
+proof fn expiry_refund_requires_unprocessed_strict_expiry(
+    binding: bool, processed: bool, timestamp: int, deadline: int,
+)
+    ensures kernel::expiry_refund_allowed_spec(binding, processed, timestamp, deadline)
+        <==> binding && !processed && timestamp > deadline
+{}
+
+proof fn mint_finalization_requires_exact_finalized_success(
+    binding: bool, succeeded: bool, receipt_block: int, finalized_block: int,
+)
+    ensures kernel::mint_finalization_allowed_spec(
+        binding, succeeded, receipt_block, finalized_block)
+        <==> binding && succeeded && receipt_block <= finalized_block
+{}
+
+proof fn signature_install_requires_dispatch_absence_and_exact_length(
+    dispatched: bool, absent: bool, length: bool,
+)
+    ensures kernel::signature_install_allowed_spec(dispatched, absent, length)
+        <==> dispatched && absent && length
+{}
+
+proof fn refund_start_requires_attempt_and_policy(attempt: bool, policy: bool)
+    ensures kernel::refund_start_allowed_spec(attempt, policy)
+        <==> attempt && policy
+{}
+
+proof fn reservation_exists_only_for_authorization_progress(state: int)
+    ensures kernel::deposit_reservation_active_spec(state)
+        <==> state == 2 || state == 3 || state == 4
+{}
+
+proof fn deposit_fee_is_charged_only_on_mint_transition(state: int, event: int)
+    ensures kernel::deposit_charge_service_fee_spec(state, event)
+        <==> (state == 3 || state == 4) && event == 7
+{}
+
+proof fn deposit_reservation_is_released_only_at_mint_or_refund(state: int, event: int)
+    ensures kernel::deposit_releases_reservation_spec(state, event)
+        <==> ((state == 3 || state == 4) && event == 7) || (state == 4 && event == 4)
+{}
+
+proof fn deposit_numeric_effects_match_every_economic_transition(
+    gross: int, net: int, fee: int, reserved: int,
+)
+    requires 0 <= gross, 0 <= net, 0 <= fee, 0 <= reserved
+    ensures
+        kernel::deposit_numeric_effects_spec(1, 3, gross, net, fee, 0)
+            == (net, net, 0int, 0int, 0int, 0int, 0int),
+        kernel::deposit_numeric_effects_spec(3, 7, gross, net, fee, reserved)
+            == (0int, 0int, reserved, fee, gross, 0int, net),
+        kernel::deposit_numeric_effects_spec(4, 7, gross, net, fee, reserved)
+            == (0int, 0int, reserved, fee, gross, 0int, net),
+        kernel::deposit_numeric_effects_spec(4, 4, gross, net, fee, reserved)
+            == (0int, 0int, reserved, 0int, 0int, 0int, 0int),
+        kernel::deposit_numeric_effects_spec(6, 9, gross, net, fee, 0)
+            == (0int, 0int, 0int, 0int, gross, gross, 0int),
+        kernel::deposit_numeric_effects_spec(2, 6, gross, net, fee, reserved)
+            == (reserved, 0int, 0int, 0int, 0int, 0int, 0int)
+{}
 
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
     requires state == 2
@@ -577,34 +643,16 @@ proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<
     }
 }
 
-proof fn deposit_phase_allowance_matches_a_state_change(state: int, event: int)
-    ensures kernel::deposit_phase_allows_spec(state, event)
-        <==> kernel::deposit_phase_step_spec(state, event) != state
-{}
-
 proof fn withdrawal_phase_allowance_matches_a_transition(state: int, event: int)
     ensures kernel::withdrawal_phase_allows_spec(state, event)
         <==> kernel::withdrawal_phase_step_spec(state, event) != state
             || (state == 1 && event == 1)
 {}
 
-proof fn reverted_phases_only_reopen_through_recovery_events(event: int)
-    ensures kernel::reverted_phase_recovery_spec(event)
-{}
-
-proof fn deposit_fee_delta_occurs_only_on_mint(state: int, event: int, fee: int)
-    ensures kernel::deposit_fee_delta_spec(state, event, fee)
-        == if state == 2 && event == 9 { fee } else { 0 }
-{}
-
 proof fn deposit_refund_debits_exactly_gross(gross: int, ledger_fee: int)
     requires 0 <= ledger_fee < gross
     ensures kernel::deposit_refund_amount_spec(gross, ledger_fee) == Some(gross - ledger_fee),
         (gross - ledger_fee) + ledger_fee == gross
-{}
-
-proof fn refund_hold_cannot_reopen_through_a_deposit_event(event: int)
-    ensures kernel::deposit_phase_step_spec(7, event) == 7
 {}
 
 proof fn refund_retry_requires_matching_evidence(request: bool, hold: bool, transfer: bool, open_or_retry: bool)
@@ -615,18 +663,6 @@ proof fn withdrawal_fee_delta_occurs_only_on_release(state: int, event: int, fee
     ensures kernel::withdrawal_fee_delta_spec(state, event, fee)
         == if state == 1 && event == 2 { fee } else { 0 }
 {}
-
-proof fn deposit_post_mint_never_charges(state: int, events: Seq<int>, fee: int)
-    requires state == 3 || state == 9 || state == 10, 0 <= fee
-    ensures kernel::deposit_fee_total_spec(state, events, fee) == 0
-    decreases events.len()
-{
-    if events.len() > 0 {
-        assert(kernel::deposit_fee_delta_spec(state, events[0], fee) == 0);
-        assert(kernel::deposit_phase_step_spec(state, events[0]) == state);
-        deposit_post_mint_never_charges(state, events.drop_first(), fee);
-    }
-}
 
 proof fn withdrawal_post_transfer_never_charges(state: int, events: Seq<int>, fee: int)
     requires state == 2,
@@ -639,23 +675,6 @@ proof fn withdrawal_post_transfer_never_charges(state: int, events: Seq<int>, fe
         assert(kernel::withdrawal_fee_delta_spec(state, events[0], fee) == 0);
         assert(next == 2);
         withdrawal_post_transfer_never_charges(next, events.drop_first(), fee);
-    }
-}
-
-proof fn deposit_fee_is_charged_at_most_once(state: int, events: Seq<int>, fee: int)
-    requires 0 <= state <= 10, 0 <= fee
-    ensures 0 <= kernel::deposit_fee_total_spec(state, events, fee) <= fee
-    decreases events.len()
-{
-    if events.len() > 0 {
-        let event = events[0];
-        let next = kernel::deposit_phase_step_spec(state, event);
-        if state == 2 && event == 9 {
-            deposit_post_mint_never_charges(3, events.drop_first(), fee);
-        } else {
-            assert(0 <= next <= 10);
-            deposit_fee_is_charged_at_most_once(next, events.drop_first(), fee);
-        }
     }
 }
 

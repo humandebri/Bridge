@@ -2,11 +2,12 @@ import { createFileRoute } from "@tanstack/react-router"
 import { RefreshCcw } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useChainId } from "wagmi"
+import { formatEther } from "viem"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useBridgeStatus, useConfirmedBaseStatus, useRuntimeValidation } from "@/features/status/use-status"
 import { formatTokenAmount } from "@/lib/amounts"
-import { bridgeAvailability, displayReserveSufficient, STATUS_FRESHNESS_MS, statusDataIsFresh } from "@/lib/bridge-availability"
+import { bridgeAvailability, displayCyclesSufficient, STATUS_FRESHNESS_MS, statusDataIsFresh } from "@/lib/bridge-availability"
 
 export const Route = createFileRoute("/status")({ component: StatusPage })
 
@@ -50,11 +51,8 @@ function StatusPage() {
     canisterUpdatedAt: canister.dataUpdatedAt,
     now,
   }) && !base.isError && !canister.isError
-  const reserveSufficient = baseData && canisterData
-    ? displayReserveSufficient({
-        finalizedSignerBalance: baseData.finalizedSignerBalance,
-        safeSignerBalance: baseData.safeSignerBalance,
-        requiredEthWei: canisterData.reserve.required_eth_wei,
+  const cyclesSufficient = canisterData
+    ? displayCyclesSufficient({
         cyclesBalance: canisterData.reserve.cycles_balance,
         requiredCycles: canisterData.reserve.required_cycles,
       })
@@ -63,7 +61,7 @@ function StatusPage() {
     runtimeReady: runtime?.ready === true && observationsFresh,
     baseStatus: baseData,
     icDepositsPaused: canisterData?.deposits_paused,
-    reserveSufficient,
+    cyclesSufficient,
   })
   const remaining = baseData ? (baseData.limit > baseData.minted ? baseData.limit - baseData.minted : 0n) : undefined
   const refreshing = validation.isFetching || base.isFetching || canister.isFetching
@@ -119,6 +117,15 @@ function StatusPage() {
       <Stat label="Withdrawals" value={canisterData?.counts.withdrawals.toString() ?? "—"} />
       <Stat label="Unpaid withdrawals" value={canisterData?.unpaid_withdrawal_count.toString() ?? "—"} />
       <Stat label="Unpaid amount" value={canisterData ? `${formatTokenAmount(canisterData.unpaid_withdrawal_amount_out)} KINIC` : "—"} />
+    </section>
+    <section className="mt-5 rounded-[20px] bg-[var(--panel)] p-6">
+      <h2 className="text-xl font-bold">Governance gas lane</h2>
+      <p className="mt-1 text-sm text-[var(--muted)]">Mint gas is paid by the submitting Base wallet. Canister ETH is reserved only for governance operations.</p>
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <Metric label="Governance floor" value={canisterData ? `${formatEther(canisterData.reserve.governance_eth_floor_wei)} ETH` : "—"} />
+        <Metric label="Total required" value={canisterData ? `${formatEther(canisterData.reserve.required_eth_wei)} ETH` : "—"} />
+        <Metric label="Observed balance" value={canisterData ? `${formatEther(canisterData.reserve.eth_balance_wei)} ETH` : "—"} />
+      </div>
     </section>
     <section className="mt-5 rounded-[20px] bg-[var(--panel)] p-6">
       <h2 className="text-xl font-bold">Withdrawal operations</h2>

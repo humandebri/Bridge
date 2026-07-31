@@ -145,13 +145,17 @@ pub fn resolve_deposit_hold(
                 DepositState::EscrowedUnquoted {
                     ledger_block_index: current,
                 }
-                | DepositState::MintPending {
+                | DepositState::AuthorizationPending {
                     ledger_block_index: current,
-                    ..
+                }
+                | DepositState::AuthorizationAvailable {
+                    ledger_block_index: current,
+                }
+                | DepositState::ExpiryReconciliation {
+                    ledger_block_index: current,
                 }
                 | DepositState::Minted {
                     ledger_block_index: current,
-                    ..
                 } if current == ledger_block_index => ApplyOutcome::Idempotent,
                 _ => return Err(CoreError::HoldMismatch),
             };

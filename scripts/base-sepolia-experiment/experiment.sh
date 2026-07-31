@@ -534,15 +534,61 @@ flow() {
   [[ "$(manifest_get '.parameters.initial_service_fee')" == "$DEFAULT_INITIAL_SERVICE_FEE" ]] \
     || die "flow requires initial service fee=$DEFAULT_INITIAL_SERVICE_FEE"
   local signer bridge bsns deposit_id owner subaccount tx withdrawal1 status1
+  local authorization_epoch deadline typed_data signature
   signer="$(manifest_get '.wallets.bridge_signer')"
   bridge="$(manifest_get '.contracts.bridge.address')"
   bsns="$(manifest_get '.contracts.bsns.address')"
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
   check_wallet "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$signer"
   deposit_id="$(cast keccak 'base-sepolia-contract-experiment-deposit-1')"
-  send_success mint_deposit "$signer" "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$bridge" \
-    'mintDeposit((bytes32,address,uint256,uint256,uint256))' \
-    "($deposit_id,$DEPLOYER,150000000,1000000000,50000000)" >/dev/null
+  authorization_epoch="$(cast call "$bridge" 'mintAuthorizationEpoch()(uint256)' --rpc-url "$RPC_URL")"
+  deadline="$(( $(hex_to_dec "$(jq -r '.timestamp' <<<"$(cast block latest --rpc-url "$RPC_URL" --json)")") + 3600 ))"
+  typed_data="$(
+    jq -cn \
+      --arg deposit_id "$deposit_id" \
+      --arg recipient "$DEPLOYER" \
+      --arg bridge "$bridge" \
+      --argjson deadline "$deadline" \
+      --argjson authorization_epoch "$authorization_epoch" \
+      '{
+        types: {
+          EIP712Domain: [
+            {name:"name",type:"string"},
+            {name:"version",type:"string"},
+            {name:"chainId",type:"uint256"},
+            {name:"verifyingContract",type:"address"}
+          ],
+          MintAuthorization: [
+            {name:"depositId",type:"bytes32"},
+            {name:"recipient",type:"address"},
+            {name:"grossAmount",type:"uint256"},
+            {name:"maxServiceFee",type:"uint256"},
+            {name:"chargedServiceFee",type:"uint256"},
+            {name:"deadline",type:"uint256"},
+            {name:"authorizationEpoch",type:"uint256"}
+          ]
+        },
+        primaryType:"MintAuthorization",
+        domain:{name:"KINIC Bridge",version:"1",chainId:84532,verifyingContract:$bridge},
+        message:{
+          depositId:$deposit_id,
+          recipient:$recipient,
+          grossAmount:150000000,
+          maxServiceFee:1000000000,
+          chargedServiceFee:50000000,
+          deadline:$deadline,
+          authorizationEpoch:$authorization_epoch
+        }
+      }'
+  )"
+  signature="$(
+    cast wallet sign "$typed_data" --data \
+      --keystore "$SIGNER_KEYSTORE" --password-file "$SIGNER_PASSWORD_FILE"
+  )"
+  send_success authorization_mint "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
+    'mintDepositWithAuthorization((bytes32,address,uint256,uint256,uint256,uint256,uint256),bytes)' \
+    "($deposit_id,$DEPLOYER,150000000,1000000000,50000000,$deadline,$authorization_epoch)" \
+    "$signature" >/dev/null
   if ! jq -e '.transactions.create_withdrawal_1.hash' "$MANIFEST" >/dev/null; then
     assert_call_eq 100000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
   fi
@@ -565,7 +611,7 @@ flow() {
     'pauseDepositMints()' >/dev/null
   send_success pause_withdrawals "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$bridge" \
     'pauseWithdrawals()' >/dev/null
-  wait_transactions_confirmed mint_deposit approve_withdrawal_1 create_withdrawal_1 \
+  wait_transactions_confirmed authorization_mint approve_withdrawal_1 create_withdrawal_1 \
     set_service_fee_1_kinic restore_service_fee_half_kinic pause_deposits pause_withdrawals
   assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
   assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'

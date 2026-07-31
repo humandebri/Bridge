@@ -17,7 +17,7 @@ SCHEMA_VERSION = 1
 KIND = "kinic-bridge-sepolia-staging-e2e"
 CHAIN_ID = 84532
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 22
+CURRENT_STABLE_SCHEMA = 27
 STAGES = (
     "preflight",
     "install",
@@ -32,14 +32,14 @@ STAGES = (
 )
 RPC_SCENARIOS = {
     "preflight",
-    "deposit_mint",
+    "authorization_mint",
     "withdrawal_release",
     "ledger_fee_guard",
     "canonical_receipt",
     "single_provider_failure",
     "quorum_loss",
-    "nonce_known",
-    "nonce_conflict",
+    "authorization_expiry",
+    "processed_event_mismatch",
     "final_pause",
 }
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -290,8 +290,8 @@ def validate_activation_execute(details: dict[str, Any]) -> None:
         },
         context,
     )
-    if require_nat(details, "delay_seconds", context) < 259200:
-        fail("activation execute did not observe the full 72-hour delay")
+    if require_nat(details, "delay_seconds", context) < 86400:
+        fail("activation execute did not observe the full 24-hour delay")
     require_pattern(details, "execute_transaction_hash", EVM_HASH, context)
     require_nat(details, "finalized_block_number", context)
     require_pattern(details, "finalized_block_hash", EVM_HASH, context)
@@ -526,9 +526,9 @@ def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo
         fail(f"refusing to overwrite existing manifest: {output}")
     local = load_object(local_evidence_path)
     profile = load_object(profile_path)
-    required_tests = {"full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_72h", "state_upgrade"}
-    if local.get("schema_version") != 2 or set(local.get("tests", {})) != required_tests or any(local["tests"][name] != "passed" for name in required_tests):
-        fail("local promotion evidence is not a complete schema v2 pass")
+    required_tests = {"full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_24h", "state_upgrade"}
+    if local.get("schema_version") != 3 or set(local.get("tests", {})) != required_tests or any(local["tests"][name] != "passed" for name in required_tests):
+        fail("local promotion evidence is not a complete schema v3 pass")
     if profile.get("environment") != "sepolia-staging" or profile.get("testOnly") is not True or profile.get("chainId") != CHAIN_ID:
         fail("frontend profile is not the Base Sepolia test-only profile")
     if profile.get("evmRpcCanisterId") != EVM_RPC_CANISTER_ID:

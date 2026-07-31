@@ -86,7 +86,7 @@ function deposit(sequence: number, createdAtNs: bigint): DepositView {
     base_recipient: new Uint8Array(20),
     state: { Minted: null },
     last_settlement_stop_reason: [],
-    base_confirmation: [],
+    mint_authorization: [],
     automatic_progress: [],
   }
 }

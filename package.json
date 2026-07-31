@@ -7,16 +7,20 @@
     "pnpm": "11.0.8"
   },
   "scripts": {
+    "governance-relayer": "node --no-warnings --experimental-strip-types tools/governance-relayer/cli.ts",
+    "governance-relayer:typecheck": "tsc --noEmit --target ES2023 --module ESNext --moduleResolution Bundler --allowImportingTsExtensions --skipLibCheck tools/governance-relayer/cli.ts",
     "test:e2e": "TMPDIR=${TMPDIR:-/tmp} jest --config integration/jest.config.js --runInBand"
   },
   "devDependencies": {
     "@dfinity/agent": "^3.4.3",
     "@dfinity/pic": "0.22.0",
+    "@icp-sdk/core": "^4.2.3",
     "@swc/core": "^1.15.18",
     "@swc/jest": "^0.2.39",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.10.1",
     "jest": "^30.2.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "viem": "^2.55.1"
   }
 }

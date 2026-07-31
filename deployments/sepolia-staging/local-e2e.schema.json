@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "created_at", "source_commit", "bridge_wasm_sha256", "bridge_runtime_hash", "bsns_runtime_hash", "candid_sha256", "bridge_abi_sha256", "bsns_abi_sha256", "ledger_release", "ledger_wasm_sha256", "index_wasm_sha256", "state_upgrade", "tests"],
   "properties": {
-    "schema_version": { "const": 2 },
+    "schema_version": { "const": 4 },
     "created_at": { "type": "string", "format": "date-time" },
     "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "bridge_wasm_sha256": { "$ref": "#/$defs/sha256" },
@@ -20,12 +20,12 @@
     "tests": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_72h", "state_upgrade"],
+      "required": ["full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_24h", "state_upgrade"],
       "properties": {
         "full_local_ci": { "const": "passed" },
         "real_frontend_e2e": { "const": "passed" },
         "canister_activation": { "const": "passed" },
-        "timelock_72h": { "const": "passed" },
+        "timelock_24h": { "const": "passed" },
         "state_upgrade": { "const": "passed" }
       }
     }
@@ -55,14 +55,14 @@
             "schema_version": { "type": ["string", "integer"] },
             "counts": {
               "type": "object",
-              "required": ["pending_evm_operations", "pending_ledger_operations"]
+              "required": ["pending_ledger_operations", "reserved_deposit_mint_operations"]
             },
             "settlement_scheduler": { "type": "object" }
           }
         },
         "public_config": {
           "type": "object",
-          "required": ["deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record"]
+          "required": ["deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]
         },
         "deposits": { "type": "array", "minItems": 1 },
         "withdrawals": { "type": "array" },

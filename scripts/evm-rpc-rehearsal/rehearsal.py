@@ -25,38 +25,38 @@ OFFICIAL_EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
 BASE_SEPOLIA_CHAIN_ID = 84532
 SCENARIOS = (
     "preflight",
-    "deposit_mint",
+    "authorization_mint",
     "withdrawal_release",
     "ledger_fee_guard",
     "canonical_receipt",
     "single_provider_failure",
     "quorum_loss",
-    "nonce_known",
-    "nonce_conflict",
+    "authorization_expiry",
+    "processed_event_mismatch",
     "final_pause",
 )
 REQUIRED_ARTIFACTS = {
     "preflight": {"bridge", "base", "audit", "module"},
-    "deposit_mint": {"bridge", "base", "ledger", "audit"},
+    "authorization_mint": {"bridge", "base", "ledger", "audit"},
     "withdrawal_release": {"bridge", "base", "ledger", "audit"},
     "ledger_fee_guard": {"bridge", "base", "ledger", "audit"},
     "canonical_receipt": {"bridge", "base", "audit"},
     "single_provider_failure": {"bridge", "audit", "fault"},
     "quorum_loss": {"bridge", "audit", "fault"},
-    "nonce_known": {"bridge", "audit"},
-    "nonce_conflict": {"bridge", "audit"},
+    "authorization_expiry": {"bridge", "base", "ledger", "audit"},
+    "processed_event_mismatch": {"bridge", "base", "audit"},
     "final_pause": {"bridge", "base", "audit"},
 }
 CROSS_ARTIFACT_BINDINGS = {
     "preflight": {"observed_bridge_contract": {"bridge", "base"}, "observed_chain_id": {"bridge", "base"}, "base_bridge_signer": {"base"}, "canister_chain_key_signer": {"bridge"}, "bridge_canister_module_sha256": {"module"}},
-    "deposit_mint": {"deposit_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "mint_transaction_hash": {"bridge", "base"}, "safe_block_hash": {"bridge", "base"}},
+    "authorization_mint": {"deposit_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "authorization_digest": {"bridge", "base", "audit"}, "mint_transaction_hash": {"bridge", "base"}, "safe_block_hash": {"bridge", "base"}},
     "withdrawal_release": {"withdrawal_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "request_transaction_hash": {"bridge", "base"}, "finalized_block_hash": {"bridge", "base"}},
     "ledger_fee_guard": {"withdrawal_id": {"bridge", "base", "audit"}, "observed_ledger_fee": {"bridge", "ledger"}, "stop_reason": {"bridge", "audit"}, "ledger_call_performed": {"bridge", "audit"}, "withdrawals_paused": {"base", "audit"}, "finalized_block_hash": {"bridge", "base"}},
     "canonical_receipt": {"transaction_hash": {"bridge", "base"}, "receipt_block_hash": {"bridge", "base"}, "canonical_block_hash": {"bridge", "base"}, "finalized_head_block_number": {"bridge", "base"}},
     "single_provider_failure": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "bridge_operation_continued": {"bridge", "audit"}},
     "quorum_loss": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "stop_reason": {"bridge", "audit"}, "ledger_call_performed": {"bridge", "audit"}},
-    "nonce_known": {"local_transaction_hash": {"bridge", "audit"}, "provider_agreement": {"bridge", "audit"}, "resulting_state": {"bridge", "audit"}},
-    "nonce_conflict": {"resulting_stop_reason": {"bridge", "audit"}, "deposits_paused": {"bridge", "audit"}, "automatically_resigned": {"bridge", "audit"}},
+    "authorization_expiry": {"deposit_id": {"bridge", "base", "audit"}, "authorization_digest": {"bridge", "base", "audit"}, "finalized_block_hash": {"bridge", "base"}, "refund_ledger_block_index": {"bridge", "ledger"}},
+    "processed_event_mismatch": {"deposit_id": {"bridge", "base", "audit"}, "authorization_digest": {"bridge", "base", "audit"}, "stop_reason": {"bridge", "audit"}, "deposits_paused": {"bridge", "audit"}},
     "final_pause": {"base_deposits_paused": {"base", "audit"}, "base_withdrawals_paused": {"base", "audit"}, "canister_deposits_paused": {"bridge", "audit"}, "safe_block_hash": {"base", "audit"}},
 }
 HEX_32 = re.compile(r"^0x[0-9a-fA-F]{64}$")
@@ -65,16 +65,16 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PRINCIPAL = re.compile(r"^[a-z0-9-]{5,63}$")
 REHEARSAL_ID = re.compile(r"^[a-z0-9][a-z0-9-]{7,63}$")
 RPC_AUDIT_SCENARIOS = frozenset(SCENARIOS) - {"quorum_loss"}
-RPC_DECISION_SCENARIOS = frozenset({"single_provider_failure", "quorum_loss", "nonce_conflict"})
+RPC_DECISION_SCENARIOS = frozenset({"single_provider_failure", "quorum_loss"})
 RPC_AUDIT_METHODS = {
     "preflight": {"multi_request"},
-    "deposit_mint": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request", "eth_getTransactionReceipt+multi_request"},
+    "authorization_mint": {"multi_request", "eth_getTransactionReceipt+multi_request"},
     "withdrawal_release": {"multi_request"},
     "ledger_fee_guard": {"multi_request"},
     "canonical_receipt": {"multi_request", "eth_getTransactionReceipt+multi_request"},
     "single_provider_failure": {"multi_request"},
-    "nonce_known": {"eth_sendRawTransaction+multi_request"},
-    "nonce_conflict": {"eth_sendRawTransaction", "eth_sendRawTransaction+multi_request"},
+    "authorization_expiry": {"multi_request"},
+    "processed_event_mismatch": {"multi_request", "eth_getTransactionReceipt+multi_request"},
     "final_pause": {"multi_request"},
 }
 
@@ -430,13 +430,6 @@ def validate_common(
         fail(f"{expected_scenario}.details must be an object")
     validate_canister_audit(evidence["canister_audit"], binding, expected_scenario, evidence["details"])
     validate_canister_decision(evidence["canister_decision"], expected_scenario, evidence["details"])
-    if expected_scenario == "nonce_conflict" and (
-        evidence["canister_audit"] is None
-        or evidence["canister_decision"] is None
-        or evidence["canister_decision"]["transaction_hash"]
-        != evidence["canister_audit"]["transaction_hash"]
-    ):
-        fail("nonce conflict audit and decision must bind the same local transaction hash")
     artifacts = evidence["artifacts"]
     if not isinstance(artifacts, list) or not artifacts:
         fail(f"{expected_scenario}.artifacts must be a non-empty array")
@@ -611,9 +604,6 @@ def validate_canister_decision(value: Any, scenario: str, details: dict[str, Any
     elif scenario == "quorum_loss":
         if value["kind"] != "QuorumLoss" or value["operation"] != "notify_withdrawal" or value["stop_reason"] != details["stop_reason"] or value["ledger_call_performed"] is not False or value["bridge_operation_continued"] is not False:
             fail("quorum loss decision is not fail closed before Ledger")
-    elif scenario == "nonce_conflict":
-        if value["kind"] != "NonceConflict" or value["operation"] != "broadcast_evm_operation" or value["stop_reason"] != "NonceConflict" or value["deposits_paused"] is not True or value["automatically_resigned"] is not False or not isinstance(value["transaction_hash"], str) or not HEX_32.fullmatch(value["transaction_hash"]):
-            fail("nonce conflict decision does not pause without re-signing")
 
 
 def json_pointer(value: Any, pointer: str) -> Any:
@@ -690,7 +680,10 @@ def reject_secret_material(value: Any, context: str = "raw artifact") -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
             lowered = str(key).lower().replace("_", "-")
-            if any(marker in lowered for marker in ("private-key", "password", "authorization", "api-key", "secret", "seed")):
+            if (
+                any(marker in lowered for marker in ("private-key", "password", "api-key", "secret", "seed"))
+                or lowered in {"authorization", "authorization-header", "proxy-authorization"}
+            ):
                 fail(f"{context} contains a secret-like field")
             reject_secret_material(nested, context)
     elif isinstance(value, list):
@@ -1056,13 +1049,14 @@ def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, 
             fail("configured RPC URL digests do not match the rehearsal config")
         return
 
-    if scenario == "deposit_mint":
+    if scenario == "authorization_mint":
         exact_keys(
             details,
-            {"deposit_id", "ledger_block_index", "mint_transaction_hash", "safe_block_number", "safe_block_hash"},
-            "deposit_mint.details",
+            {"deposit_id", "ledger_block_index", "authorization_digest", "mint_transaction_hash", "safe_block_number", "safe_block_hash"},
+            "authorization_mint.details",
         )
         require_hex(details, "deposit_id", HEX_32)
+        require_hex(details, "authorization_digest", HEX_32)
         require_hex(details, "mint_transaction_hash", HEX_32)
         require_hex(details, "safe_block_hash", HEX_32)
         require_nat(details, "ledger_block_index")
@@ -1150,17 +1144,46 @@ def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, 
             fail("quorum loss must fail closed before a Ledger call")
         return
 
-    if scenario == "nonce_known":
-        exact_keys(details, {"nonce_too_low_observed", "local_transaction_hash", "provider_agreement", "resulting_state"}, "nonce_known.details")
-        require_hex(details, "local_transaction_hash", HEX_32)
-        if details["nonce_too_low_observed"] is not True or details["provider_agreement"] != 2 or details["resulting_state"] != "Submitted":
-            fail("known nonce scenario must recover only a provider-agreed local transaction")
+    if scenario == "authorization_expiry":
+        exact_keys(
+            details,
+            {
+                "deposit_id", "authorization_digest", "deadline",
+                "finalized_block_timestamp", "finalized_block_hash",
+                "deposit_processed", "refund_ledger_block_index",
+            },
+            "authorization_expiry.details",
+        )
+        require_hex(details, "deposit_id", HEX_32)
+        require_hex(details, "authorization_digest", HEX_32)
+        require_hex(details, "finalized_block_hash", HEX_32)
+        deadline = require_nat(details, "deadline", positive=True)
+        finalized_timestamp = require_nat(details, "finalized_block_timestamp", positive=True)
+        require_nat(details, "refund_ledger_block_index")
+        if finalized_timestamp <= deadline or details["deposit_processed"] is not False:
+            fail("authorization expiry refund requires finalized time after deadline and an unprocessed deposit")
         return
 
-    if scenario == "nonce_conflict":
-        exact_keys(details, {"nonce_too_low_observed", "local_transaction_hash", "resulting_stop_reason", "deposits_paused", "automatically_resigned"}, "nonce_conflict.details")
-        if details != {"nonce_too_low_observed": True, "local_transaction_hash": None, "resulting_stop_reason": "NonceConflict", "deposits_paused": True, "automatically_resigned": False}:
-            fail("unknown nonce conflict must pause deposits without re-signing")
+    if scenario == "processed_event_mismatch":
+        exact_keys(
+            details,
+            {
+                "deposit_id", "authorization_digest", "deposit_processed",
+                "exact_event_found", "stop_reason", "deposits_paused",
+                "refund_started",
+            },
+            "processed_event_mismatch.details",
+        )
+        require_hex(details, "deposit_id", HEX_32)
+        require_hex(details, "authorization_digest", HEX_32)
+        if (
+            details["deposit_processed"] is not True
+            or details["exact_event_found"] is not False
+            or details["stop_reason"] != "ProcessedEventMismatch"
+            or details["deposits_paused"] is not True
+            or details["refund_started"] is not False
+        ):
+            fail("processed event mismatch must fail closed, pause deposits, and retain escrow")
         return
 
     if scenario == "final_pause":
@@ -1186,8 +1209,13 @@ def derive_state(scenarios: dict[str, Any]) -> tuple[str, bool]:
     completed = {name for name, evidence in scenarios.items() if evidence is not None}
     if "preflight" not in completed:
         return "AWAITING_PREFLIGHT", False
-    flow = {"deposit_mint", "withdrawal_release", "ledger_fee_guard", "canonical_receipt"}
-    faults = {"single_provider_failure", "quorum_loss", "nonce_known", "nonce_conflict"}
+    flow = {"authorization_mint", "withdrawal_release", "ledger_fee_guard", "canonical_receipt"}
+    faults = {
+        "single_provider_failure",
+        "quorum_loss",
+        "authorization_expiry",
+        "processed_event_mismatch",
+    }
     if not flow.issubset(completed):
         return "READY_FOR_ASSET_FLOWS", False
     if not faults.issubset(completed):

@@ -10,11 +10,11 @@ import { Alert } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { deploymentProfile } from "@/config/profile"
-import { confirmPendingDepositFromUserAction } from "@/features/bridge/settlement-confirmation-coordinator"
+import { MintAuthorizationAction } from "@/features/bridge/mint-authorization-action"
 import { useRuntimeValidation, useRuntimeWriteReadiness } from "@/features/status/use-status"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
-import type { AutomaticProgressView, BaseConfirmationView, DepositView, SettlementActionResult, WithdrawalView } from "@/generated/bridge.did"
+import type { AutomaticProgressView, DepositView, SettlementActionResult, WithdrawalView } from "@/generated/bridge.did"
 import {
   activityAutoRefreshEnabled,
   mergeActivityItems,
@@ -31,9 +31,9 @@ import { depositIdsForRefresh, mergeDepositHistoryPage, type DepositHistoryData 
 import { basePublicClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import type { IcWalletAdapter } from "@/lib/ic/wallet"
-import { removePendingConfirmation, restorePendingConfirmation } from "@/lib/pending-confirmations"
+import { removePendingConfirmation } from "@/lib/pending-confirmations"
 import { refetchRuntimeWriteReady } from "@/lib/runtime-validation"
-import { depositPhaseName, depositPhaseTone, isDepositTerminal, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName, withdrawalPhaseTone } from "@/lib/settlement-phase"
+import { depositPhaseName, depositPhaseTone, depositReconciliationMessage, isDepositTerminal, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName, withdrawalPhaseTone } from "@/lib/settlement-phase"
 import { fetchInBatches, fetchUniqueBlockTimestamps, scanWithdrawalLogs, type FinalizedEventLog, type WithdrawalLogScan } from "@/lib/withdrawal-history"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
 
@@ -168,13 +168,6 @@ function HistoryPage() {
   const visibleItems = useMemo(() => visibleActivityItems(allItems, filter, boundaries), [allItems, boundaries, filter])
   const olderSources = useMemo(() => olderActivitySources(filter, boundaries), [boundaries, filter])
   useEffect(() => {
-    if (!ic.account) return
-    for (const record of deposits.data?.items ?? []) {
-      const submitted = submittedTransaction(record.base_confirmation)
-      if (submitted) void restorePendingConfirmation({ kind: "deposit", settlementId: bytesHex(record.deposit_id), transactionHash: bytesHex(submitted.transaction_hash), owner: ic.account.owner })
-    }
-  }, [deposits.data, ic.account])
-  useEffect(() => {
     const onVisibilityChange = () => setPageVisible(document.visibilityState === "visible")
     document.addEventListener("visibilitychange", onVisibilityChange)
     return () => document.removeEventListener("visibilitychange", onVisibilityChange)
@@ -270,30 +263,6 @@ function HistoryPage() {
       setActioningId(undefined)
     }
   }
-  const confirmDeposit = async (record: DepositView) => {
-    const submitted = submittedTransaction(record.base_confirmation)
-    if (!submitted || !ic.account) return
-    const key = bytesHex(record.deposit_id)
-    try {
-      setActioningId(key)
-      if (!ic.adapter) throw new Error("Connect the deposit owner IC wallet")
-      toast.info("Checking Base finalization now. Review the IC wallet request if the transaction is finalized.")
-      const outcome = await confirmPendingDepositFromUserAction(
-        { kind: "deposit", settlementId: key, transactionHash: bytesHex(submitted.transaction_hash), owner: ic.account.owner, blocked: false },
-        ic.adapter,
-        async () => { await refetchRuntimeWriteReady(() => runtime.refetch()) },
-      )
-      if (!outcome) toast.info("This confirmation is already being checked. Try again shortly.")
-      else if (outcome.status === "retry") toast.info("The transaction is not finalized yet or confirmation is temporarily unavailable. Try again later.")
-      await deposits.refetch()
-    } catch (error) {
-      await deposits.refetch()
-      toast.error(error instanceof Error ? error.message : "Deposit confirmation failed")
-    } finally {
-      setActioningId(undefined)
-    }
-  }
-
   const refresh = () => {
     void Promise.all([
       runtime.refetch(),
@@ -352,7 +321,6 @@ function HistoryPage() {
               historyTruncated={Boolean(deposits.data?.historyTruncated)}
               hasOlder={olderSources.length > 0}
               loadingOlder={loadingOlder}
-              onConfirmDeposit={confirmDeposit}
               onContinueDeposit={continueDeposit}
               onCheckAndNotify={checkAndNotify}
               onContinueWithdrawal={continueWithdrawal}
@@ -379,7 +347,6 @@ function ActivityList({
   historyTruncated,
   hasOlder,
   loadingOlder,
-  onConfirmDeposit,
   onContinueDeposit,
   onCheckAndNotify,
   onContinueWithdrawal,
@@ -393,7 +360,6 @@ function ActivityList({
   historyTruncated: boolean
   hasOlder: boolean
   loadingOlder: boolean
-  onConfirmDeposit: (record: DepositView) => Promise<void>
   onContinueDeposit: (record: DepositView) => Promise<void>
   onCheckAndNotify: (item: WithdrawalHistoryItem) => Promise<void>
   onContinueWithdrawal: (item: WithdrawalHistoryItem) => Promise<void>
@@ -412,26 +378,25 @@ function ActivityList({
       <span>Direction</span><span>Amount</span><span>Status</span><span>Time</span><span>Action</span>
     </div>
     {items.map((item) => item.direction === "to-base"
-      ? <DepositActivityRow key={item.key} item={item} writesEnabled={writesEnabled} actioningId={actioningId} onConfirm={onConfirmDeposit} onContinue={onContinueDeposit} />
+      ? <DepositActivityRow key={item.key} item={item} writesEnabled={writesEnabled} actioningId={actioningId} onContinue={onContinueDeposit} />
       : <WithdrawalActivityRow key={item.key} item={item} writesEnabled={writesEnabled} actioningId={actioningId} retryingHash={retryingHash} onCheckAndNotify={onCheckAndNotify} onContinue={onContinueWithdrawal} />)}
     {hasOlder && <LoadOlder loading={loadingOlder} onClick={onLoadOlder} />}
   </div>
 }
 
-function DepositActivityRow({ item, writesEnabled, actioningId, onConfirm, onContinue }: {
+function DepositActivityRow({ item, writesEnabled, actioningId, onContinue }: {
   item: Extract<ActivityItem, { direction: "to-base" }>
   writesEnabled: boolean
   actioningId?: string
-  onConfirm: (record: DepositView) => Promise<void>
   onContinue: (record: DepositView) => Promise<void>
 }) {
   const record = item.deposit
   const key = bytesHex(record.deposit_id)
   const terminal = isDepositTerminal(record.state)
   const progress = automaticProgressInfo(record.automatic_progress)
-  const submitted = submittedTransaction(record.base_confirmation)
   const refund = record.refund[0]
   const quote = record.quote[0]
+  const reconciliationMessage = depositReconciliationMessage(record.state, record.last_settlement_stop_reason[0])
   const amountText = refund
     ? `${formatTokenAmount(refund.amount)} KINIC returned to IC`
     : quote
@@ -440,9 +405,9 @@ function DepositActivityRow({ item, writesEnabled, actioningId, onConfirm, onCon
   return <article className="grid gap-4 rounded-2xl bg-white p-4 md:grid-cols-[minmax(7rem,0.8fr)_minmax(12rem,1.8fr)_minmax(8rem,1fr)_minmax(7rem,0.9fr)_10.5rem] md:items-center">
     <div><MobileLabel>Direction</MobileLabel><Badge tone="info">IC → Base</Badge><p className="mt-1 truncate text-xs text-[var(--muted)]">Deposit {key.slice(0, 10)}…</p></div>
     <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{amountText}</p>{refund && <p className="mt-1 text-xs text-[var(--muted)]">Refund ledger fee: {formatTokenAmount(refund.ledger_fee)} KINIC</p>}</div>
-    <div><MobileLabel>Status</MobileLabel><Badge tone={depositPhaseTone(record.state)}>{depositPhaseName(record.state)}</Badge>{submitted && <p className="mt-1 text-xs font-medium text-[var(--pink)]">Waiting for wallet-confirmed finalized verification</p>}{progress && <AutomaticProgress progress={progress} />}{record.last_settlement_stop_reason[0] && <p className="mt-1 text-xs font-bold text-[#b42318]">Needs attention</p>}</div>
+    <div><MobileLabel>Status</MobileLabel><Badge tone={depositPhaseTone(record.state)}>{depositPhaseName(record.state)}</Badge>{progress && <AutomaticProgress progress={progress} />}{reconciliationMessage && <p className={`mt-1 text-xs font-bold ${record.last_settlement_stop_reason[0] ? "text-[#b42318]" : "text-[var(--muted)]"}`}>{reconciliationMessage}</p>}</div>
     <div><MobileLabel>Time</MobileLabel><ActivityTime valueNs={item.createdAtNs} /></div>
-    <div className="md:text-right"><MobileLabel>Action</MobileLabel>{submitted ? <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onConfirm(record)}>{actioningId === key ? "Checking…" : "Confirm finalized tx"}</Button> : !terminal && (!progress || progress.retryAllowed) ? <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry"}</Button> : <span className="text-sm text-[var(--muted)]">—</span>}</div>
+    <div className="md:text-right"><MobileLabel>Action</MobileLabel>{"AuthorizationAvailable" in record.state || "ExpiryReconciliation" in record.state ? <MintAuthorizationAction record={record} compact onExpiredReconcile={writesEnabled ? () => void onContinue(record) : undefined} reconciling={actioningId === key} /> : !terminal && (!progress || progress.retryAllowed) ? <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry"}</Button> : <span className="text-sm text-[var(--muted)]">—</span>}</div>
   </article>
 }
 
@@ -500,13 +465,12 @@ type AutomaticProgressInfo = { label: string; deadlineNs: bigint; running: boole
 export function automaticProgressInfo(value: [] | [AutomaticProgressView], nowNs = BigInt(Date.now()) * 1_000_000n): AutomaticProgressInfo | undefined {
   const progress = value[0]
   if (!progress) return undefined
-  const confirmation = "Confirmation" in progress.phase
   if ("Scheduled" in progress.state) {
     const deadlineNs = progress.state.Scheduled.next_run_at_ns
-    return { label: confirmation ? "Waiting for confirmation" : "Completing automatically", deadlineNs, running: false, retryAllowed: nowNs >= deadlineNs + 300_000_000_000n }
+    return { label: "Completing automatically", deadlineNs, running: false, retryAllowed: nowNs >= deadlineNs + 300_000_000_000n }
   }
   const deadlineNs = progress.state.Running.lease_until_ns
-  return { label: confirmation ? "Verifying confirmation" : "Completing automatically", deadlineNs, running: true, retryAllowed: nowNs >= deadlineNs }
+  return { label: "Completing automatically", deadlineNs, running: true, retryAllowed: nowNs >= deadlineNs }
 }
 
 function AutomaticProgress({ progress }: { progress: AutomaticProgressInfo }) {
@@ -518,12 +482,12 @@ function toastSettlement(result: SettlementActionResult) {
     toast.error("This transfer needs attention. Try again from History.")
     return
   }
-  if ("WaitingForConfirmation" in result || "Submitted" in result) {
-    toast.info("Submitted. Check History after finalization if it has not completed.")
-    return
-  }
   if ("ReconciliationProgress" in result) {
     toast.info("Status updated. Processing will continue automatically.")
+    return
+  }
+  if ("Deferred" in result) {
+    toast.info("Status updated. Processing will resume automatically.")
     return
   }
   toast.success(`Transfer ${settlementStateName(result.Complete.state).toLowerCase()}.`)
@@ -546,9 +510,4 @@ function feeGuardBlocked(record?: WithdrawalView): boolean {
 
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` {
   return `0x${Array.from(bytes, (value) => Number(value).toString(16).padStart(2, "0")).join("")}`
-}
-
-function submittedTransaction(value: [] | [BaseConfirmationView]) {
-  const confirmation = value[0]
-  return confirmation && "Submitted" in confirmation ? confirmation.Submitted : undefined
 }

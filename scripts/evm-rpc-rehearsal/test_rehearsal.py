@@ -83,16 +83,14 @@ def evidence(scenario, details):
                     "fault_injection_reference": "/run_reference",
                 })
     audit_methods = {
-        "deposit_mint": "eth_getTransactionReceipt+multi_request",
+        "authorization_mint": "eth_getTransactionReceipt+multi_request",
         "withdrawal_release": "multi_request",
         "ledger_fee_guard": "multi_request",
         "canonical_receipt": "eth_getTransactionReceipt+multi_request",
-        "nonce_known": "eth_sendRawTransaction+multi_request",
-        "nonce_conflict": "eth_sendRawTransaction+multi_request",
+        "authorization_expiry": "multi_request",
+        "processed_event_mismatch": "multi_request",
     }
     audit_transaction_hash = next((value for key, value in reversed(list(details.items())) if "transaction_hash" in key and isinstance(value, str)), None)
-    if scenario == "nonce_conflict":
-        audit_transaction_hash = H32_A
     decisions = {
         "single_provider_failure": {
             "kind": "QuorumContinued", "operation": "request_deposit",
@@ -107,13 +105,6 @@ def evidence(scenario, details):
             "stop_reason": "RpcInconsistent", "ledger_call_performed": False,
             "bridge_operation_continued": False, "deposits_paused": False,
             "automatically_resigned": False, "transaction_hash": None,
-        },
-        "nonce_conflict": {
-            "kind": "NonceConflict", "operation": "broadcast_evm_operation",
-            "configured_provider_count": 3, "required_threshold": 2,
-            "stop_reason": "NonceConflict", "ledger_call_performed": False,
-            "bridge_operation_continued": False, "deposits_paused": True,
-            "automatically_resigned": False, "transaction_hash": H32_A,
         },
     }
     return {
@@ -170,9 +161,9 @@ def all_evidence(binding):
                 "bridge_canister_module_sha256": SHA_A,
             },
         ),
-        "deposit_mint": evidence(
-            "deposit_mint",
-            {"deposit_id": H32_A, "ledger_block_index": 1, "mint_transaction_hash": H32_B, "safe_block_number": 10, "safe_block_hash": H32_C},
+        "authorization_mint": evidence(
+            "authorization_mint",
+            {"deposit_id": H32_A, "ledger_block_index": 1, "authorization_digest": H32_D, "mint_transaction_hash": H32_B, "safe_block_number": 10, "safe_block_hash": H32_C},
         ),
         "withdrawal_release": evidence(
             "withdrawal_release",
@@ -194,13 +185,13 @@ def all_evidence(binding):
             "quorum_loss",
             {"configured_provider_count": 3, "required_provider_threshold": 2, "injected_provider_failures": 2, "fault_injection_reference": "fault-two-providers", "threshold_satisfied": False, "fail_closed": True, "stop_reason": "RpcInconsistent", "ledger_call_performed": False},
         ),
-        "nonce_known": evidence(
-            "nonce_known",
-            {"nonce_too_low_observed": True, "local_transaction_hash": H32_A, "provider_agreement": 2, "resulting_state": "Submitted"},
+        "authorization_expiry": evidence(
+            "authorization_expiry",
+            {"deposit_id": H32_A, "authorization_digest": H32_B, "deadline": 100, "finalized_block_timestamp": 101, "finalized_block_hash": H32_C, "deposit_processed": False, "refund_ledger_block_index": 3},
         ),
-        "nonce_conflict": evidence(
-            "nonce_conflict",
-            {"nonce_too_low_observed": True, "local_transaction_hash": None, "resulting_stop_reason": "NonceConflict", "deposits_paused": True, "automatically_resigned": False},
+        "processed_event_mismatch": evidence(
+            "processed_event_mismatch",
+            {"deposit_id": H32_A, "authorization_digest": H32_B, "deposit_processed": True, "exact_event_found": False, "stop_reason": "ProcessedEventMismatch", "deposits_paused": True, "refund_started": False},
         ),
         "final_pause": evidence(
             "final_pause",
@@ -318,20 +309,20 @@ class RehearsalTests(unittest.TestCase):
         with self.assertRaises(rehearsal.InvalidEvidence):
             rehearsal.validate_details("preflight", item["details"], binding)
 
-        item = all_evidence(binding)["deposit_mint"]
-        item["canister_audit"]["call_method"] = "multi_request"
+        item = all_evidence(binding)["authorization_mint"]
+        item["canister_audit"]["call_method"] = "obsolete_method"
         with self.assertRaises(rehearsal.InvalidEvidence):
-            rehearsal.validate_common(item, binding, "deposit_mint")
+            rehearsal.validate_common(item, binding, "authorization_mint")
 
-        item = all_evidence(binding)["nonce_conflict"]
+        item = all_evidence(binding)["processed_event_mismatch"]
         item["canister_audit"] = None
         with self.assertRaises(rehearsal.InvalidEvidence):
-            rehearsal.validate_common(item, binding, "nonce_conflict")
+            rehearsal.validate_common(item, binding, "processed_event_mismatch")
 
-        item = all_evidence(binding)["nonce_conflict"]
-        item["canister_decision"]["transaction_hash"] = H32_B
+        item = all_evidence(binding)["processed_event_mismatch"]
+        item["canister_decision"] = {}
         with self.assertRaises(rehearsal.InvalidEvidence):
-            rehearsal.validate_common(item, binding, "nonce_conflict")
+            rehearsal.validate_common(item, binding, "processed_event_mismatch")
 
         item = all_evidence(binding)["single_provider_failure"]
         item["canister_decision"]["operation"] = "unrelated"
@@ -343,7 +334,7 @@ class RehearsalTests(unittest.TestCase):
         value = manifest(binding)
         items = all_evidence(binding)
         with self.assertRaises(rehearsal.InvalidEvidence):
-            rehearsal.record(value, items["deposit_mint"], "deposit_mint")
+            rehearsal.record(value, items["authorization_mint"], "authorization_mint")
         rehearsal.record(value, items["preflight"], "preflight")
         bad = items["canonical_receipt"]
         bad["details"]["canonical_block_hash"] = H32_C

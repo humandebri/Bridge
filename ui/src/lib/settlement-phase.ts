@@ -1,6 +1,6 @@
 import type { DepositPhase, SettlementActionResult, SettlementState, WithdrawalPhase } from "@/generated/bridge.did"
 
-const depositNames = ["FundingPending", "EscrowedUnquoted", "MintPending", "Minted", "MintReverted", "FundingReconciliationHold", "RefundPending", "RefundReconciliationHold", "RefundRecoveryRequired", "Refunded", "Cancelled"] as const
+const depositNames = ["EscrowedUnquoted", "AuthorizationPending", "AuthorizationAvailable", "ExpiryReconciliation", "Minted", "FundingReconciliationHold", "RefundPending", "RefundReconciliationHold", "Refunded", "Cancelled"] as const
 const withdrawalNames = ["Observed", "ReleasePending", "Paid", "ReconciliationHold"] as const
 
 function variantName(value: unknown, allowed: readonly string[]): string | undefined {
@@ -23,15 +23,14 @@ export function depositPhaseName(phase: DepositPhase): string {
   const name = variantName(phase, depositNames)
   if (!name) throw new Error("Invalid deposit phase")
   const labels: Record<(typeof depositNames)[number], string> = {
-    FundingPending: "Scheduled",
     EscrowedUnquoted: "Checking Base",
-    MintPending: "Processing",
+    AuthorizationPending: "Signing authorization",
+    AuthorizationAvailable: "Ready to mint",
+    ExpiryReconciliation: "Checking finalized Base",
     Minted: "Complete",
-    MintReverted: "Needs attention",
     FundingReconciliationHold: "Funding needs review",
     RefundPending: "Refunding",
     RefundReconciliationHold: "Refund needs review",
-    RefundRecoveryRequired: "Refund recovery required",
     Refunded: "Refunded",
     Cancelled: "Cancelled",
   }
@@ -57,7 +56,7 @@ export function settlementStateName(state: SettlementState): string {
 
 export function isDepositTerminal(phase: DepositPhase): boolean {
   const name = variantName(phase, depositNames)
-  return name === "Minted" || name === "MintReverted" || name === "Refunded" || name === "Cancelled"
+  return name === "Minted" || name === "Refunded" || name === "Cancelled"
 }
 
 export function isWithdrawalTerminal(phase: WithdrawalPhase): boolean {
@@ -68,8 +67,25 @@ export function isWithdrawalTerminal(phase: WithdrawalPhase): boolean {
 export function depositPhaseTone(phase: DepositPhase): "good" | "warn" | "neutral" {
   const name = variantName(phase, depositNames)
   if (name === "Minted" || name === "Refunded") return "good"
-  if (name === "FundingReconciliationHold" || name === "RefundReconciliationHold" || name === "RefundRecoveryRequired") return "warn"
+  if (name === "FundingReconciliationHold" || name === "RefundReconciliationHold") return "warn"
   return isDepositTerminal(phase) ? "warn" : "neutral"
+}
+
+export function depositReconciliationMessage(
+  phase: DepositPhase,
+  stopReason?: string,
+): string | undefined {
+  if (!("ExpiryReconciliation" in phase)) {
+    return stopReason ? "Processing stopped — retry from History" : undefined
+  }
+  if (!stopReason) return "Confirming the finalized Base state"
+  if (["RpcUnavailable", "RpcInconsistent", "InvalidBaseResponse"].includes(stopReason)) {
+    return "Base RPC confirmation stopped — retry is safe"
+  }
+  if (["BaseStateMismatch", "BridgeSignerMismatch"].includes(stopReason)) {
+    return "Mint evidence requires audit — refund is blocked"
+  }
+  return "Finalized Base confirmation stopped — retry from History"
 }
 
 export function withdrawalPhaseTone(phase: WithdrawalPhase): "good" | "warn" | "neutral" {
@@ -93,11 +109,6 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   return keys.length === expected.length && expected.every((key) => keys.includes(key))
 }
 
-function isTransactionHash(value: unknown): boolean {
-  if (!(value instanceof Uint8Array) && !Array.isArray(value)) return false
-  return value.length === 32 && Array.from(value).every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
-}
-
 function isSettlementStopReason(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false
   const keys = Object.keys(value)
@@ -107,9 +118,8 @@ function isSettlementStopReason(value: unknown): boolean {
   const payload: unknown = Reflect.get(value, key)
   if (key === "LedgerRejected") return typeof payload === "string"
   return [
-    "LedgerFeeExceedsServiceFee", "RpcUnavailable", "TransactionNotConfirmed",
-    "RpcInconsistent", "LedgerAmbiguous", "LedgerUnavailable", "NonceConflict", "NonceUnavailable",
-    "TransactionReverted", "NonceBlocked", "BaseStateMismatch", "TransactionNotFound",
+    "LedgerFeeExceedsServiceFee", "RpcUnavailable",
+    "RpcInconsistent", "LedgerAmbiguous", "LedgerUnavailable", "BaseStateMismatch",
     "BridgeSignerMismatch", "SigningUnavailable", "InvalidBaseResponse",
   ].includes(key) && payload === null
 }
@@ -125,9 +135,7 @@ export function isSettlementActionResult(value: unknown): value is SettlementAct
   const record = payload as Record<string, unknown>
   if (!isSettlementState(record.state)) return false
   if (key === "Complete" || key === "ReconciliationProgress") return hasExactKeys(record, ["state"])
+  if (key === "Deferred") return hasExactKeys(record, ["state", "next_run_at_ns"]) && typeof record.next_run_at_ns === "bigint"
   if (key === "Stopped") return hasExactKeys(record, ["state", "reason"]) && isSettlementStopReason(record.reason)
-  if (key === "Submitted" || key === "WaitingForConfirmation") {
-    return hasExactKeys(record, ["state", "transaction_hash"]) && isTransactionHash(record.transaction_hash)
-  }
   return false
 }

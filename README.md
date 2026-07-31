@@ -14,13 +14,12 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | Plan 007 | Local完了 / External待ち | IC mainnet test Canister、Base Sepolia、test frontend |
 | Production | 未デプロイ | Plan 001〜007と本番運用条件の完了まで資産受付禁止 |
 
-`bridge-core`はDeposit、Withdrawal、EVM操作、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v22の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
-EVM transactionのbroadcast後は確認待ちとして保存し、フロントがpublic Base RPCでreceiptとFinalized headを観測する。
-Finalized到達後、認証済みIC walletがtransaction hash、receipt block、観測Finalized blockを`confirm_deposit`へ送ると、Canisterが証拠と保存済みtransactionを照合してからEVM RPC outcallで再検証する。Withdrawalは追加EVM transactionを生成しない。
-フロントが動作していない間はEVM confirmation待ちを維持し、Canister timerによるconfirmation fallbackは行わない。confirmation後のLedger settlementはstable jobとCanister timerで自動進行する。
-RPC、署名、nonce、Ledgerなどの障害は自動再試行せず、rate limitされた手動Retryへ移す。
-Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの72時間Timelockへ接続している。
+`bridge-core`はDeposit、Withdrawal、Mint Authorization、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
+`bridge-canister`はstable schema v27・record wire v23の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+ICP→BaseではCanisterはFinalized Base timestampから固定期限のEIP-712 Mint Authorizationへ署名するだけで、Base transactionを生成・送信しない。任意のBase walletが`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。
+期限後、CanisterはBase Finalized timestampと`isDepositProcessed`を同じcanonical block hashへ束縛して照合する。未処理なら失効証拠を保存してLedger refundへ進み、処理済みならexact `DepositMinted` eventとcanonical receiptの証拠を保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では返金せずfail closedする。
+Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
+Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの24時間Timelockへ接続している。
 
 Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed`化を原子的に実行する。Canisterは同じcanonical Finalized block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証してから、固定IC AccountへICP送金する。Base refundとrelease acknowledgementはなく、障害時は同じ債務をLedger側で再試行・照合する。Finalized headまたはcanonical hashが2-of-3で収束しない場合はfail closedとし、Safeへfallbackしない。
 
@@ -140,7 +139,7 @@ python3 scripts/protocol_vectors.py --update
 python3 scripts/protocol_vectors.py --check
 ```
 
-release対象claim、抽象・有限幅・trace定理、Verus義務、production link、transaction test、外部仮定は[verification/phase5-claims.tsv](verification/phase5-claims.tsv)で管理し、vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。不可逆なproduction操作の直前にはproof gateに続いてWasmとcontract runtimeをclean sourceから二回buildし、release manifestとのhash完全一致を要求する。
+release対象claim、抽象・有限幅・trace定理、Verus/SMT義務、production link、transaction test、外部仮定は[verification/claims.tsv](verification/claims.tsv)で統一管理し、証拠statusはgateが算出する。vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。不可逆なproduction操作の直前にはproof gateに続いてWasmとcontract runtimeをclean sourceから二回buildし、release manifestとのhash完全一致を要求する。
 
 ## ローカルdeploy
 
@@ -148,12 +147,12 @@ release対象claim、抽象・有限幅・trace定理、Verus義務、production
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 22、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 27、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
-5. 72時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
+5. 24時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
 7. Bridge Signerからsmoke用Depositをmintし、ユーザーの`createWithdrawal`によるatomic burnと`Committed`固定quoteを確認する。Withdrawal用の追加Base transactionと再mint selectorが存在しないことも確認する。
-8. Canister由来Governance OperatorのService Fee変更とpause、外部EOAからの直接unpause拒否、72時間前のTimelock execute拒否、経過後のCanister実行によるunpauseを確認する。
+8. Canister由来Governance OperatorのService Fee変更とpause、外部EOAからの直接unpause拒否、24時間前のTimelock execute拒否、経過後のCanister実行によるunpauseを確認する。
 9. Withdrawalのburn後の残高・supply、mint window、Withdrawal連番を確認する。
 10. 本スクリプトが起動したprocessだけを終了し、一時変更した`icp.yaml`を復元する。
 

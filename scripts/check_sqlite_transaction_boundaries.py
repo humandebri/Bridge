@@ -12,9 +12,7 @@ CALLER_SOURCES = (
     ROOT / "canister/bridge-canister/src/tasks.rs",
     ROOT / "canister/bridge-canister/src/admin.rs",
 )
-FORBIDDEN_EVM_SEQUENCE_WRITES = (
-    ".put_evm_call_intent(",
-    ".allocate_evm_operation_id()",
+FORBIDDEN_SEQUENCE_WRITES = (
     ".allocate_hold_id()",
     ".put_open_reconciliation_hold(",
 )
@@ -50,33 +48,15 @@ def main() -> int:
         offset = start + len(START)
     for caller_source in CALLER_SOURCES:
         caller = caller_source.read_text(encoding="utf-8")
-        for token in FORBIDDEN_EVM_SEQUENCE_WRITES:
+        for token in FORBIDDEN_SEQUENCE_WRITES:
             if token in caller:
                 line = caller.count("\n", 0, caller.index(token)) + 1
                 print(
-                    f"{caller_source}:{line}: EVM operation creation must use an atomic candidate bundle ({token})",
+                    f"{caller_source}:{line}: reconciliation hold creation must use an atomic transition bundle ({token})",
                     file=sys.stderr,
                 )
                 return 1
     tasks = CALLER_SOURCES[1].read_text(encoding="utf-8")
-    for function_name in ("confirm_evm_member", "mark_evm_reverted"):
-        start = tasks.index(f"fn {function_name}(")
-        body = closure(tasks, start)
-        if "commit_evm_terminal_bundle" not in body:
-            print(
-                f"{CALLER_SOURCES[1]}: {function_name} must use commit_evm_terminal_bundle",
-                file=sys.stderr,
-            )
-            return 1
-        for token in (".put_evm_operation(", ".put_deposit(", ".put_withdrawal(",
-                      ".set_accounting(", ".set_admin_state(", ".append_audit_event(",
-                      ".set_external_progress("):
-            if token in body:
-                print(
-                    f"{CALLER_SOURCES[1]}: forbidden sequential terminal write {token} in {function_name}",
-                    file=sys.stderr,
-                )
-                return 1
     for required in ("commit_deposit_hold_bundle(", "commit_withdrawal_hold_bundle("):
         if required not in tasks:
             print(f"{CALLER_SOURCES[1]}: ambiguous Ledger holds must use {required}", file=sys.stderr)
@@ -155,7 +135,7 @@ def main() -> int:
             print(f"{SOURCE}: {function_name} must use the atomic resolved-hold bundle", file=sys.stderr)
             return 1
     for required in (
-        "commit_deposit_mint_bundle_and_scan",
+        "commit_deposit_funding_hold_bundle",
         "resolve_deposit_hold_and_scan",
         "resolve_withdrawal_hold_and_scan",
     ):

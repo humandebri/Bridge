@@ -17,6 +17,7 @@ import { deploymentProfile } from "@/config/profile"
 import { useCurrentBaseQuote, useRuntimeHeartbeat, useRuntimeValidation, useRuntimeWriteReadiness } from "@/features/status/use-status"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { useWalletDialog } from "@/features/wallet/wallet-controls"
+import { MintAuthorizationAction } from "@/features/bridge/mint-authorization-action"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { estimatedAmountOut, formatTokenAmount, parseTokenAmount, requiredDepositBalance } from "@/lib/amounts"
@@ -32,6 +33,7 @@ import { createWithdrawalAfterRevalidation } from "@/lib/withdrawal-submit"
 import { savePendingConfirmation } from "@/lib/pending-confirmations"
 import { readDepositIntent, removeDepositIntent, saveDepositIntent } from "@/lib/deposit-intents"
 import { withBrowserLock } from "@/lib/browser-lock"
+import { formatMintAuthorizationTtl } from "@/lib/mint-authorization"
 
 export type BridgeDirection = "deposit" | "withdraw"
 type BridgeNetwork = "ic" | "base"
@@ -62,6 +64,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const [unresolvedDeposit, setUnresolvedDeposit] = useState<UnresolvedDepositAttempt>()
   const [resolvedIntentOwner, setResolvedIntentOwner] = useState<string>()
   const [checkingDeposit, setCheckingDeposit] = useState(false)
+  const [activeDeposit, setActiveDeposit] = useState<{ owner: string; sequence: bigint }>()
   const [submittingWithdrawal, setSubmittingWithdrawal] = useState(false)
   const queryClient = useQueryClient()
   const { address, isConnected } = useAccount()
@@ -102,6 +105,21 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       return actor.get_next_deposit_sequence(Principal.fromText(ic.account!.owner))
     },
   })
+  const activeDepositRecord = useQuery({
+    queryKey: ["active-deposit", activeDeposit?.owner, activeDeposit?.sequence.toString()],
+    enabled: direction === "deposit" && Boolean(activeDeposit),
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
+    queryFn: async () => {
+      const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
+      const result = await actor.get_deposit_by_owner_sequence(
+        Principal.fromText(activeDeposit!.owner),
+        activeDeposit!.sequence,
+      )
+      if (!result[0]) throw new Error("Canonical deposit is not available yet")
+      return result[0]
+    },
+  })
   const ledger = useQuery({
     queryKey: ["deposit-ledger", ic.account?.owner, bytesHex(ic.account?.subaccount ?? new Uint8Array())],
     enabled: direction === "deposit" && Boolean(ic.account),
@@ -116,7 +134,15 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         ledgerActor.icrc2_allowance({ account, spender }),
         bridgeActor.get_public_config(),
       ])
-      return { balance, fee: publicConfig.ledger_fee, allowance: allowance.allowance }
+      return {
+        balance,
+        fee: publicConfig.ledger_fee,
+        allowance: allowance.allowance,
+        mintAuthorizationTtlSeconds:
+          typeof publicConfig.mint_authorization_ttl_seconds === "bigint"
+            ? publicConfig.mint_authorization_ttl_seconds
+            : undefined,
+      }
     },
   })
   const bsnsBalance = useQuery({
@@ -176,16 +202,16 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     },
     onSuccess: async (receipt, attempt) => {
       queryClient.setQueryData(["deposit-owner-sequence", attempt.account.owner], receipt.owner_sequence + 1n)
+      setActiveDeposit({ owner: attempt.account.owner, sequence: receipt.owner_sequence })
       try { await removeDepositIntent(attempt.account) } catch { /* The canonical receipt is the recovery source. */ }
       setUnresolvedDeposit(undefined)
-      setDepositAmount("")
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["deposit-ledger"] }),
         queryClient.invalidateQueries({ queryKey: ["base-quote"] }),
         queryClient.invalidateQueries({ queryKey: ["runtime-validation"] }),
         queryClient.invalidateQueries({ queryKey: ["deposit-history"] }),
       ])
-      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… is scheduled. Follow its canonical status in History.`)
+      toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. Mint Authorizationを生成しています。`)
     },
     onError: (error) => {
       toast.error(error instanceof Error ? `${error.message}. Retry the same deposit or check whether it was accepted.` : "Deposit response is unresolved")
@@ -278,15 +304,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
           || bytesHex(record[0].from_subaccount[0] ?? new Uint8Array(32)) !== bytesHex(unresolvedDeposit.account.subaccount ?? new Uint8Array(32))) {
           throw new Error("Canonical deposit does not match the saved intent")
         }
-        const confirmation = record[0].base_confirmation[0]
-        if (confirmation && "Submitted" in confirmation) {
-          await savePendingConfirmation({
-            kind: "deposit",
-            settlementId: bytesHex(record[0].deposit_id),
-            transactionHash: bytesHex(confirmation.Submitted.transaction_hash),
-            owner: unresolvedDeposit.account.owner,
-          })
-        }
+        setActiveDeposit({ owner: unresolvedDeposit.account.owner, sequence: unresolvedDeposit.call.ownerSequence })
         queryClient.setQueryData(["deposit-owner-sequence", unresolvedDeposit.account.owner], nextSequence)
         await removeDepositIntent(unresolvedDeposit.account)
         setUnresolvedDeposit(undefined)
@@ -417,7 +435,16 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         <div className="mt-1 flex items-center gap-3"><Input id="bridge-amount" disabled={Boolean(unresolvedDeposit)} aria-invalid={Boolean(amountError)} aria-describedby="bridge-amount-feedback" className="font-numeric h-14 border-0 px-0 text-3xl font-semibold focus:ring-0" inputMode="decimal" placeholder="0.00000000" value={amount} onChange={(event) => { if (direction === "deposit") setDepositAmount(event.target.value); else setWithdrawAmount(event.target.value) }} /><span className="rounded-xl bg-[var(--panel)] px-3 py-2 text-sm font-bold">{sendToken.symbol}</span></div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-sm"><Quote label="Current bridge fee" value={fee !== undefined ? `${formatTokenAmount(fee)} ${sendToken.symbol}` : "—"} /><Quote label="Estimated receive" value={receive !== undefined ? `${formatTokenAmount(receive)} ${receiveToken.symbol}` : "—"} /></div>
-      {direction === "deposit" && <div className="mt-3 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm leading-5 text-[#8a4b08]"><strong className="text-black">Deposit limits are checked again after the Ledger pull.</strong><p className="mt-1">If fees, limits, or reserves change meanwhile, the bridge refunds the deposit and both the pull and refund Ledger fees may apply.</p></div>}
+      {direction === "deposit" && <div className="mt-3 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm leading-5 text-[#8a4b08]"><strong className="text-black">{ledgerData?.mintAuthorizationTtlSeconds !== undefined ? `Ledger pull後${formatMintAuthorizationTtl(ledgerData.mintAuthorizationTtlSeconds)}、` : "Ledger pull後、公開された期限まで、"}Mint許可は取消不能です。</strong><p className="mt-1">MintにはBase walletとBase ETHが必要です。未使用時の返金は期限後のFinalized確認を待ちます。</p></div>}
+      {direction === "deposit" && activeDepositRecord.data && (
+        ("AuthorizationAvailable" in activeDepositRecord.data.state
+          || "ExpiryReconciliation" in activeDepositRecord.data.state)
+          ? <MintAuthorizationAction record={activeDepositRecord.data} />
+          : <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm">
+              <p className="font-bold text-black">{depositPhaseLabel(activeDepositRecord.data)}</p>
+              <p className="mt-1 text-[var(--muted)]">この画面でAuthorization生成を待っています。Historyからも復旧できます。</p>
+            </div>
+      )}
       {direction === "withdraw" && <div className="mt-3 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm leading-5 text-[#8a4b08]"><strong className="text-black">Base refund is not available after burn.</strong><p className="mt-1">If delivery is interrupted, the bridge retries the same fixed amount to this same IC account.</p></div>}
       {unresolvedDeposit && <div className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]"><p className="font-bold text-black">Deposit status unavailable</p><p className="mt-1 leading-5">Check whether the deposit was accepted before starting another one.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="ghost" disabled={checkingDeposit || deposit.isPending} onClick={() => void checkUnresolvedDeposit()}>{checkingDeposit ? "Checking…" : "Check status"}</Button><Link to="/history" className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-bold underline underline-offset-4">Open History</Link></div></div>}
       {runtimeReason && <div className="mt-4 flex items-center justify-between gap-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] px-4 py-3 text-sm text-[#d5691b]"><span>{runtimeReason}</span><Link to="/status" className="font-bold underline underline-offset-4">View status</Link></div>}
@@ -447,3 +474,11 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, source, des
 
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` { return `0x${Array.from(bytes, (value) => Number(value).toString(16).padStart(2, "0")).join("")}` }
 function bytesToHex(bytes: Uint8Array): `0x${string}` { return `0x${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}` }
+function depositPhaseLabel(record: { state: Record<string, unknown> }): string {
+  if ("AuthorizationPending" in record.state) return "Mint Authorizationを署名中…"
+  if ("ExpiryReconciliation" in record.state) return "Base Finalized状態を照合中…"
+  if ("Minted" in record.state) return "Base Mint確定"
+  if ("RefundPending" in record.state || "RefundReconciliationHold" in record.state) return "IC返金を処理中…"
+  if ("Refunded" in record.state) return "ICへ返金済み"
+  return "Ledger escrowを処理中…"
+}

@@ -16,7 +16,8 @@ contract WithdrawalBatcher {
 }
 
 contract BridgeWithdrawalTest is TestBase {
-    address private constant BRIDGE_SIGNER = address(0x11);
+    uint256 private constant BRIDGE_SIGNER_KEY = 0xA11CE;
+    address private BRIDGE_SIGNER;
     address private constant RUNTIME_ADMINISTRATOR = address(0x22);
     address private BASE_ADMIN_TIMELOCK;
     address private constant USER = address(0x44);
@@ -39,6 +40,7 @@ contract BridgeWithdrawalTest is TestBase {
     IBSNS private token;
 
     function setUp() public {
+        BRIDGE_SIGNER = vm.addr(BRIDGE_SIGNER_KEY);
         BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
         bridge = new Bridge(
             "kinic",
@@ -59,10 +61,7 @@ contract BridgeWithdrawalTest is TestBase {
         bridge.unpauseDepositMints();
         vm.prank(BASE_ADMIN_TIMELOCK);
         bridge.unpauseWithdrawals();
-        vm.prank(BRIDGE_SIGNER);
-        bridge.mintDeposit(
-            IBridge.DepositMintRequest(keccak256("withdrawal-funding"), USER, 1_010, SERVICE_FEE, SERVICE_FEE)
-        );
+        _mint(keccak256("withdrawal-funding"), USER, 1_010);
     }
 
     function testCreateWithdrawalBurnsAndCommitsDeterministicPayout() public {
@@ -156,22 +155,18 @@ contract BridgeWithdrawalTest is TestBase {
         assert(bridge.getWithdrawal(first).status == IBridge.WithdrawalStatus.Committed);
         assert(token.totalSupply() == 600);
 
-        vm.prank(BRIDGE_SIGNER);
+        IBridge.MintAuthorization memory replay = _authorization(keccak256("withdrawal-funding"), USER, 710);
+        bytes memory replaySignature = _signMintAuthorization(BRIDGE_SIGNER_KEY, bridge, replay);
         vm.expectRevert(
             abi.encodeWithSelector(IBridge.DepositAlreadyProcessed.selector, keccak256("withdrawal-funding"))
         );
-        bridge.mintDeposit(
-            IBridge.DepositMintRequest(keccak256("withdrawal-funding"), USER, 710, SERVICE_FEE, SERVICE_FEE)
-        );
+        bridge.mintDepositWithAuthorization(replay, replaySignature);
         assert(token.totalSupply() == 600);
     }
 
     function testMultipleWithdrawalsInOneTransactionRevertAtomically() public {
         WithdrawalBatcher batcher = new WithdrawalBatcher();
-        vm.prank(BRIDGE_SIGNER);
-        bridge.mintDeposit(
-            IBridge.DepositMintRequest(keccak256("batcher-funding"), address(batcher), 710, SERVICE_FEE, SERVICE_FEE)
-        );
+        _mint(keccak256("batcher-funding"), address(batcher), 710);
 
         vm.expectRevert(IBridge.MultipleWithdrawalsInTransaction.selector);
         batcher.createTwice(bridge, token);
@@ -202,5 +197,26 @@ contract BridgeWithdrawalTest is TestBase {
         token.approve(address(bridge), amount);
         vm.prank(USER);
         return bridge.createWithdrawal(amount, maxServiceFee, owner, subaccount);
+    }
+
+    function _mint(bytes32 depositId, address recipient, uint256 grossAmount) private {
+        IBridge.MintAuthorization memory authorization = _authorization(depositId, recipient, grossAmount);
+        _submitMintAuthorization(BRIDGE_SIGNER_KEY, bridge, authorization, address(this));
+    }
+
+    function _authorization(bytes32 depositId, address recipient, uint256 grossAmount)
+        private
+        view
+        returns (IBridge.MintAuthorization memory)
+    {
+        return IBridge.MintAuthorization({
+            depositId: depositId,
+            recipient: recipient,
+            grossAmount: grossAmount,
+            maxServiceFee: SERVICE_FEE,
+            chargedServiceFee: SERVICE_FEE,
+            deadline: block.timestamp + 30 minutes,
+            authorizationEpoch: bridge.mintAuthorizationEpoch()
+        });
     }
 }

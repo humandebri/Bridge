@@ -113,12 +113,37 @@ theorem lease_claim
   simpa [leaseOutcomeCurrent] using accepted
 
 theorem manual_claim_claim :
-    (∀ scheduled active stopped overdue expired,
-      manualClaimAllowed true scheduled active stopped overdue expired = false) ∧
-    manualClaimAllowed false true true false false false = false := by
+    (∀ scheduled stopped overdue,
+      manualClaimAllowed scheduled true stopped overdue false = false) ∧
+    manualClaimAllowed true false false false false = false := by
   constructor
-  · intro scheduled active stopped overdue expired
+  · intro scheduled stopped overdue
     simp [manualClaimAllowed]
   · rfl
+
+theorem notification_admission_claim
+    {callerCount hashCount callerLimit hashLimit : Nat}
+    (accepted :
+      notificationAdmissionAllowed callerCount hashCount callerLimit hashLimit = true) :
+    callerCount < callerLimit ∧ hashCount < hashLimit := by
+  simpa [notificationAdmissionAllowed, Bool.and_eq_true] using accepted
+
+theorem lease_lane_claim
+    {targetActive targetAutomatic : Bool} {activeInLane capacity : Nat}
+    (allowed :
+      decideLeaseLaneClaim targetActive targetAutomatic activeInLane capacity = .allow) :
+    targetActive = false ∧ activeInLane < capacity := by
+  cases targetActive with
+  | false => simpa [decideLeaseLaneClaim] using allowed
+  | true =>
+      cases targetAutomatic <;> simp [decideLeaseLaneClaim] at allowed
+
+theorem funding_attempt_claim :
+    decideFundingAttempt .definitiveFailure = .release ∧
+      decideFundingAttempt .success = .promoteSuccess ∧
+      decideFundingAttempt .duplicate = .promoteSuccess ∧
+      decideFundingAttempt .ambiguous = .promoteAmbiguous ∧
+      decideFundingAttempt .retryableFailure = .retain := by
+  decide
 
 end BridgeSpec.Claims

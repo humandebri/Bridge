@@ -78,7 +78,7 @@ macro_rules! numeric_id {
     };
 }
 
-numeric_id!(EvmOperationId);
+numeric_id!(GovernanceOperationId);
 numeric_id!(HoldId);
 
 #[cfg_attr(
@@ -245,9 +245,33 @@ pub enum ApplyOutcome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DepositAccountingEffects {
+    pub reservation_after: Amount,
+    pub reservation_add: Amount,
+    pub reservation_release: Amount,
+    pub fee_credit: Amount,
+    pub pending_liability_debit: Amount,
+    pub escrow_debit: Amount,
+    pub mint_supply_increase: Amount,
+}
+
+impl DepositAccountingEffects {
+    pub const ZERO: Self = Self {
+        reservation_after: Amount::ZERO,
+        reservation_add: Amount::ZERO,
+        reservation_release: Amount::ZERO,
+        fee_credit: Amount::ZERO,
+        pending_liability_debit: Amount::ZERO,
+        escrow_debit: Amount::ZERO,
+        mint_supply_increase: Amount::ZERO,
+    };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ApplyResult {
     pub outcome: ApplyOutcome,
     pub fee_delta: Amount,
+    pub deposit_effects: Option<DepositAccountingEffects>,
 }
 
 impl ApplyResult {
@@ -255,6 +279,15 @@ impl ApplyResult {
         Self {
             outcome: ApplyOutcome::Applied,
             fee_delta,
+            deposit_effects: None,
+        }
+    }
+
+    pub const fn applied_deposit(effects: DepositAccountingEffects) -> Self {
+        Self {
+            outcome: ApplyOutcome::Applied,
+            fee_delta: effects.fee_credit,
+            deposit_effects: Some(effects),
         }
     }
 
@@ -262,6 +295,7 @@ impl ApplyResult {
         Self {
             outcome: ApplyOutcome::Idempotent,
             fee_delta: Amount::ZERO,
+            deposit_effects: None,
         }
     }
 }

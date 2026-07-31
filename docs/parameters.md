@@ -67,7 +67,7 @@ service_fee初期値 = 0.5 KINIC
 
 ## timelock 遅延（Base Admin）
 
-- 初期値: 72 時間（ADR 0009）
+- 初期値: 24 時間（ADR 0016）
 - 短縮は timelock 自身を経由する。
 
 ## 外部仮定の監査リスト
@@ -75,8 +75,9 @@ service_fee初期値 = 0.5 KINIC
 以下は Bridge 内部で保証できず、値の妥当性を運用監査で維持する（ADR 0005、0011）。
 
 - gas 価格の上限評価
-- Base governance laneのCanister管理EVM transactionは60秒間隔で確認し、5分Missingで同一rawを再送する。30分未確定ごとに同一nonceのfee-bump replacementを最大3回作成し、各generationは12.5%増、初期feeの4倍をhard ceilingとする。設定された全generationで`max_fee_per_gas`が厳密に増えないpolicyは初期化時に拒否し、実行時に増額不能を検出した場合はreplacementを保存せず同一rawの再送へ戻る。reserve admissionはこの4倍上限を先に確保する。wallet confirmationを待つDeposit transactionにはこのtimer fallbackを適用しない。
+- Base governance transactionはCanisterが署名し、外部relayerが送信・Finalized待機・確定通知を行う。自動再送・自動replacementは行わない。運用者が明示要求した場合だけ同一nonce・payloadで最大3回、直前generationから12.5%以上fee bumpし、設定済みceilingを超えないtransactionをCanisterが再署名する。`governance_eth_floor_wei`はGovernance操作のgas使用量・fee実測とreserve window内の想定Governance transaction数だけから導出する。
 - EVM RPC 費用と management canister call 費用の上限評価
+- Settlementの一時障害retryはGovernance timerと共有せず、`settlement_retry_interval_seconds`（初期値60秒）を基準に指数backoffし、最大15分とする。
 - 公式EVM RPC Canisterと設定されたquorumがcanonical Finalized chainを正しく返すこと
 - 監視が5分以内検知、15分以内担当確認、60分以内のBase/IC双方pauseを実証できること
 

@@ -15,7 +15,7 @@ contract BridgeTimelockTest is TestBase {
     address private constant BASE_ADMIN_WALLET = address(0x33);
     address private constant OUTSIDER = address(0x44);
     address private constant CANCELLER = address(0x55);
-    uint256 private constant TIMELOCK_DELAY = 72 hours;
+    uint256 private constant TIMELOCK_DELAY = 24 hours;
 
     Bridge private bridge;
     BridgeTimelockController private timelock;
@@ -190,14 +190,16 @@ contract BridgeTimelockTest is TestBase {
             abi.encodeWithSelector(TimelockController.TimelockUnauthorizedCaller.selector, BASE_ADMIN_WALLET)
         );
         vm.prank(BASE_ADMIN_WALLET);
-        timelock.updateDelay(24 hours);
-        bytes memory delayData = abi.encodeCall(TimelockController.updateDelay, (24 hours));
+        timelock.updateDelay(TIMELOCK_DELAY - 1);
+        bytes memory delayData = abi.encodeCall(TimelockController.updateDelay, (TIMELOCK_DELAY - 1));
         bytes32 delaySalt = keccak256("delay");
         vm.prank(BASE_ADMIN_WALLET);
         timelock.schedule(address(timelock), 0, delayData, bytes32(0), delaySalt, TIMELOCK_DELAY);
         _advanceTime(TIMELOCK_DELAY);
         vm.expectRevert(
-            abi.encodeWithSelector(BridgeTimelockController.MinimumDelayTooShort.selector, 24 hours, TIMELOCK_DELAY)
+            abi.encodeWithSelector(
+                BridgeTimelockController.MinimumDelayTooShort.selector, TIMELOCK_DELAY - 1, TIMELOCK_DELAY
+            )
         );
         vm.prank(BASE_ADMIN_WALLET);
         timelock.execute(address(timelock), 0, delayData, bytes32(0), delaySalt);

@@ -22,6 +22,7 @@ pub(super) fn increment_table_count(
     )
 }
 
+#[cfg(test)]
 pub(super) fn read_table_count(
     connection: &UpdateConnection<'_>,
     table: &str,

@@ -6,3 +6,16 @@
 - Prefer replacing pre-deployment formats directly and updating all callers, tests, fixtures, and documentation in the same change. Do not add legacy migrations, compatibility shims, dual-read paths, or fallbacks unless the user explicitly requests them.
 - Unknown or obsolete stable schema versions must fail closed. Test upgrades and stable-memory reopen behavior only for the current schema unless an earlier schema has actually been deployed.
 - Revisit and explicitly tighten this policy when the first production deployment is approved.
+
+## Logic changes and proof impact
+
+- Treat production state transitions, admission and rejection conditions, authorization, deadlines, epochs, replay protection, accounting deltas, scheduler or lease decisions, storage commit effects, and Solidity policy or kernel code as safety-related logic.
+- Before changing safety-related logic, identify the affected claim IDs and their abstract theorem, production kernel, proof obligation, negative fixture, refinement or adapter test, transaction test, vector consumer, and external assumptions.
+- Use `verification/proof-impact.tsv` as the source-to-claim and source-to-stage ownership manifest. Use `verification/claims.tsv` as the typed evidence ledger.
+- Keep safety decisions in production-shared kernels. Do not treat model-only proofs, prose, symbol-name checks, or an unrelated passing test as production implementation proof.
+- Register every new safety-related source file, kernel, state, event, reject reason, fixture, and vector consumer in the applicable manifest in the same change. Watched source roots fail closed when a source is unregistered.
+- A logic change does not require a cosmetic proof-file edit when the existing theorem still applies. It does require rerunning all impacted proof stages against the current source and preserving the implementation refinement link.
+- Keep claims that depend on external assumptions or unsupported prover boundaries at `partial`. Record the reason instead of weakening or bypassing the proof gate.
+- A safety-related logic change is not complete until `python3 scripts/check_proof_impact.py`, `python3 scripts/check_claim_manifest.py`, `scripts/ci-local.sh proofs`, and the applicable unit, negative, refinement, and transaction tests pass.
+- The proof receipt must contain a source fingerprint matching the current checkout. Missing stages, stale fingerprints, unregistered safety sources, unregistered fixtures, model-only implementation claims, and production kernels without claim ownership must fail closed.
+- In the final report for a safety-related change, list the affected claims, executed proof stages, and remaining external assumptions.

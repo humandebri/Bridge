@@ -108,5 +108,5 @@ Bridge canisterのthreshold ECDSAで管理され、BaseのDeposit mintだけを�
 _Avoid_: Base Admin, Runtime Administrator, owner
 
 **Base Admin Timelock**:
-Governance Operatorだけをproposer/executor/cancellerに持ち、自己adminと72時間minimum delayを維持するOpenZeppelin Timelock。人間walletへroleを付与しない。
+Governance Operatorだけをproposer/executor/cancellerに持ち、自己adminと24時間minimum delayを維持するOpenZeppelin Timelock。人間walletへroleを付与しない。
 _Avoid_: human wallet, external DEFAULT_ADMIN_ROLE holder

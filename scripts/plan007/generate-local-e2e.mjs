@@ -5,7 +5,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
-export const LOCAL_E2E_SCHEMA_VERSION = 2
+export const LOCAL_E2E_SCHEMA_VERSION = 4
 
 export function validateUpgradeEvidence(upgrade) {
   if (!upgrade || upgrade.verified !== true) throw new Error("real E2E did not prove same-Wasm state preservation")
@@ -20,19 +20,19 @@ export function validateUpgradeEvidence(upgrade) {
   }
   if (!Array.isArray(state.withdrawals)) throw new Error("upgrade evidence did not account for individual Withdrawal records")
   if (typeof state.owner_sequence !== "string" || !/^\d+$/.test(state.owner_sequence)) throw new Error("upgrade evidence has no owner sequence")
-  if (typeof state.status?.counts?.pending_evm_operations !== "string" || typeof state.status?.counts?.pending_ledger_operations !== "string") {
-    throw new Error("upgrade evidence has no pending-operation identities")
+  if (typeof state.status?.counts?.pending_ledger_operations !== "string" || typeof state.status?.counts?.reserved_deposit_mint_operations !== "string") {
+    throw new Error("upgrade evidence has no Ledger-operation or Mint Authorization liability identities")
   }
   if (!state.status?.settlement_scheduler || !state.public_config || !state.audit_events) throw new Error("upgrade evidence omitted scheduler, configuration, or audit state")
   if (!state.activation_status || !("pending_timelock_operation" in state.activation_status)) {
     throw new Error("upgrade evidence omitted the pending Timelock operation identity")
   }
   if (state.storage_integrity !== "ok") throw new Error("upgrade evidence did not pass storage_integrity_check")
-  for (const field of ["deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record"]) {
+  for (const field of ["deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]) {
     if (!(field in state.public_config)) throw new Error(`upgrade evidence omitted rate-limit configuration ${field}`)
   }
-  if (!state.deposits.some((record) => record && record.deposit_id && "owner_sequence" in record && record.base_confirmation?.length === 1)) {
-    throw new Error("upgrade evidence did not preserve a Deposit identity and Base confirmation")
+  if (!state.deposits.some((record) => record && record.deposit_id && "owner_sequence" in record && record.mint_authorization?.length === 1)) {
+    throw new Error("upgrade evidence did not preserve a Deposit identity and Mint Authorization")
   }
   return upgrade
 }
@@ -44,8 +44,8 @@ export async function generateLocalEvidence(root = defaultRoot) {
   if (status.trim()) throw new Error("promotion evidence requires a clean working tree")
   const facts = JSON.parse(await readFile(factsPath, "utf8"))
   const upgrade = validateUpgradeEvidence(facts.state_upgrade)
-  if (facts.activation?.delay_seconds !== 259200 || facts.activation?.early_execute_reverted !== true) {
-    throw new Error("real E2E did not prove the 72-hour activation delay")
+  if (facts.activation?.delay_seconds !== 86400 || facts.activation?.early_execute_reverted !== true) {
+    throw new Error("real E2E did not prove the 24-hour activation delay")
   }
   const evidence = {
     schema_version: LOCAL_E2E_SCHEMA_VERSION,
@@ -65,7 +65,7 @@ export async function generateLocalEvidence(root = defaultRoot) {
       full_local_ci: "passed",
       real_frontend_e2e: "passed",
       canister_activation: "passed",
-      timelock_72h: "passed",
+      timelock_24h: "passed",
       state_upgrade: "passed",
     },
   }

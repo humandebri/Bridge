@@ -6,11 +6,9 @@ use crate::CoreError;
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReservePolicy {
-    pub eth_floor_wei: u128,
+    pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
-    pub transaction_gas_limit: u128,
-    pub max_fee_per_gas: u128,
 }
 
 #[cfg_attr(
@@ -33,6 +31,20 @@ pub struct ReserveSnapshot {
 }
 
 impl ReservePolicy {
+    pub fn required_cycles(
+        self,
+        nonterminal_withdrawals: u64,
+        reserved_deposits: u64,
+        candidate_deposits: u64,
+    ) -> Result<u128, CoreError> {
+        let count = u128::from(nonterminal_withdrawals)
+            .checked_add(u128::from(reserved_deposits))
+            .and_then(|value| value.checked_add(u128::from(candidate_deposits)))
+            .ok_or(CoreError::ArithmeticOverflow)?;
+        crate::checked_requirement(self.cycles_floor, self.settlement_cycle_ceiling, count)
+            .ok_or(CoreError::ArithmeticOverflow)
+    }
+
     pub fn snapshot(
         self,
         nonterminal_withdrawals: u64,
@@ -45,15 +57,12 @@ impl ReservePolicy {
             .checked_add(u128::from(reserved_deposits))
             .and_then(|value| value.checked_add(u128::from(candidate_deposits)))
             .ok_or(CoreError::ArithmeticOverflow)?;
-        let per_settlement_eth =
-            crate::checked_requirement(0, self.transaction_gas_limit, self.max_fee_per_gas)
-                .ok_or(CoreError::ArithmeticOverflow)?;
-        let required_eth_wei =
-            crate::checked_requirement(self.eth_floor_wei, per_settlement_eth, count)
-                .ok_or(CoreError::ArithmeticOverflow)?;
-        let required_cycles =
-            crate::checked_requirement(self.cycles_floor, self.settlement_cycle_ceiling, count)
-                .ok_or(CoreError::ArithmeticOverflow)?;
+        let required_eth_wei = self.governance_eth_floor_wei;
+        let required_cycles = self.required_cycles(
+            nonterminal_withdrawals,
+            reserved_deposits,
+            candidate_deposits,
+        )?;
         Ok(ReserveSnapshot {
             nonterminal_withdrawals,
             reserved_deposits,
