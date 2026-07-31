@@ -120,13 +120,26 @@ pub struct CompletedFinalizedObservation {
 pub fn stable_observation(
     observation: &CompletedFinalizedObservation,
 ) -> FinalizedObservationRecord {
+    stable_observation_parts(&observation.finalized, &observation.bridge_identity)
+}
+
+pub fn stable_recovery_observation(
+    observation: &RecoveryObservation,
+) -> FinalizedObservationRecord {
+    stable_observation_parts(&observation.finalized, &observation.bridge_identity)
+}
+
+fn stable_observation_parts(
+    finalized: &FinalizedObservation,
+    bridge_identity: &ObservedBridgeIdentity,
+) -> FinalizedObservationRecord {
     FinalizedObservationRecord {
-        chain_id: observation.finalized.chain_id,
-        block_number: observation.finalized.block_number,
-        block_hash: observation.finalized.block_hash,
-        observed_at_ns: observation.finalized.observed_at_ns,
-        bridge_signer: observation.bridge_identity.signer,
-        runtime_sha256: observation.bridge_identity.runtime_sha256,
+        chain_id: finalized.chain_id,
+        block_number: finalized.block_number,
+        block_hash: finalized.block_hash,
+        observed_at_ns: finalized.observed_at_ns,
+        bridge_signer: bridge_identity.signer,
+        runtime_sha256: bridge_identity.runtime_sha256,
     }
 }
 
@@ -1740,6 +1753,7 @@ mod tests {
             evm_rpc_canister_id: Principal::from_slice(&[5]),
             bridge_contract: vec![0x42; 20],
             timelock_contract: vec![0x43; 20],
+            deployment_instance_id: vec![0x44; 32],
             base_chain_id: 8453,
             custom_evm_rpc_urls: vec![
                 "https://rpc-1.example".to_owned(),

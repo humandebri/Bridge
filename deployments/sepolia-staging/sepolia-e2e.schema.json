@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "kind", "state", "created_at", "updated_at", "binding", "stages", "complete"],
   "properties": {
-    "schema_version": { "const": 3 },
+    "schema_version": { "const": 4 },
     "kind": { "const": "kinic-bridge-sepolia-staging-e2e" },
     "state": {
       "enum": [
@@ -40,6 +40,7 @@
         "index_canister_id"
         ,"environment_mode"
         ,"activation_timelock_delay_seconds"
+        ,"deployment_instance_id"
       ],
       "properties": {
         "source_commit": { "$ref": "#/$defs/gitCommit" },
@@ -53,6 +54,7 @@
         "index_canister_id": { "$ref": "#/$defs/principal" }
         ,"environment_mode": { "const": "short-delay-test-only" }
         ,"activation_timelock_delay_seconds": { "const": 300 }
+        ,"deployment_instance_id": { "$ref": "#/$defs/evmHash" }
       }
     },
     "stages": {
@@ -110,7 +112,7 @@
           "additionalProperties": false,
           "required": ["schema_version", "stage", "observed_at", "source_commit", "artifacts", "details"],
           "properties": {
-            "schema_version": { "const": 3 },
+            "schema_version": { "const": 4 },
             "stage": {
               "enum": [
                 "preflight",

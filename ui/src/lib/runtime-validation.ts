@@ -149,6 +149,8 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (configuredBridge.toLowerCase() !== bridgeAddress.toLowerCase()) blockers.push("Canister Bridge contract differs from the profile")
   const configuredTimelock = `0x${Array.from(config.timelock_contract, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
   if (configuredTimelock.toLowerCase() !== timelockAddress.toLowerCase()) blockers.push("Canister Timelock contract differs from the profile")
+  const configuredDeploymentInstance = `0x${Array.from(config.deployment_instance_id, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
+  if (configuredDeploymentInstance.toLowerCase() !== profile.deploymentInstanceId?.toLowerCase()) blockers.push("Canister deployment instance differs from the profile")
   if (config.ledger_canister_id.toText() !== profile.ledgerCanisterId) blockers.push("Canister ledger differs from the profile")
   if (config.index_canister_id.toText() !== profile.indexCanisterId) blockers.push("Canister index differs from the profile")
   if (config.evm_rpc_canister_id.toText() !== profile.evmRpcCanisterId) blockers.push("Canister EVM RPC ID differs from the profile")
@@ -161,7 +163,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   } catch {
     blockers.push("Index ledger binding is unavailable")
   }
-  if (config.schema_version !== 29) blockers.push(`Unsupported canister schema ${config.schema_version}`)
+  if (config.schema_version !== 30) blockers.push(`Unsupported canister schema ${config.schema_version}`)
   if (ledgerName !== profile.icToken.name || ledgerSymbol !== profile.icToken.symbol || ledgerDecimals !== profile.icToken.decimals) {
     blockers.push(`IC token metadata is not ${profile.icToken.name}/${profile.icToken.symbol}/${profile.icToken.decimals}`)
   }

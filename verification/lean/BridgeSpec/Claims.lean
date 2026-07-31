@@ -66,6 +66,11 @@ theorem deposit_admission_claim
     omega
   next => simp at accepted
 
+theorem deposit_identity_preflight_claim (processed : Bool) :
+    (decideDepositIdentity processed = .allow ↔ processed = false) ∧
+      (decideDepositIdentity processed = .conflict ↔ processed = true) := by
+  cases processed <;> simp [decideDepositIdentity]
+
 theorem reservation_claim (reserved candidate : Nat) :
     let next := commitMintReservation reserved candidate
     next.1 + next.2 = reserved + candidate := by

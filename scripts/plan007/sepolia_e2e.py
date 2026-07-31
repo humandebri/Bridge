@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 KIND = "kinic-bridge-sepolia-staging-e2e"
 CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 29
+CURRENT_STABLE_SCHEMA = 30
 STAGES = (
     "preflight",
     "contracts",
@@ -103,6 +103,13 @@ def require_pattern(value: dict[str, Any], name: str, pattern: re.Pattern[str], 
     return result
 
 
+def require_deployment_instance_id(value: dict[str, Any], name: str, context: str) -> str:
+    result = require_pattern(value, name, EVM_HASH, context)
+    if int(result[2:], 16) == 0:
+        fail(f"{context}.{name} must be nonzero")
+    return result
+
+
 def require_nat(value: dict[str, Any], name: str, context: str) -> int:
     result = value.get(name)
     if isinstance(result, str) and result.isdigit():
@@ -167,6 +174,8 @@ def validate_preflight(details: dict[str, Any], binding: dict[str, Any]) -> None
             "base_withdrawals_paused",
             "canister_deposits_paused",
             "configured_rpc_url_sha256",
+            "live_schema_version",
+            "previous_deployment_instance_id",
         },
         context,
     )
@@ -189,6 +198,21 @@ def validate_preflight(details: dict[str, Any], binding: dict[str, Any]) -> None
     urls = details["configured_rpc_url_sha256"]
     if not isinstance(urls, list) or len(urls) != 3 or len(set(urls)) != 3 or any(not isinstance(item, str) or not SHA256.fullmatch(item) for item in urls):
         fail("preflight must bind three distinct credential-free RPC URL digests")
+    live_schema_version = require_nat(details, "live_schema_version", context)
+    previous = details["previous_deployment_instance_id"]
+    if live_schema_version == 29:
+        if previous is not None:
+            fail("v29 preflight must not invent a deployment instance ID")
+    elif live_schema_version == CURRENT_STABLE_SCHEMA:
+        if previous is None:
+            fail("v30 reinstall requires the live deployment instance ID")
+        previous_id = require_deployment_instance_id(
+            details, "previous_deployment_instance_id", context
+        )
+        if previous_id.lower() == binding["deployment_instance_id"].lower():
+            fail("staging reinstall rejected reuse of the live deployment instance ID")
+    else:
+        fail("preflight live schema must be v29 or v30")
 
 
 def validate_install(details: dict[str, Any], binding: dict[str, Any]) -> None:
@@ -211,6 +235,7 @@ def validate_initialize(details: dict[str, Any], binding: dict[str, Any]) -> Non
         details,
         {
             "schema_version",
+            "deployment_instance_id",
             "chain_id",
             "ledger_canister_id",
             "index_canister_id",
@@ -224,6 +249,8 @@ def validate_initialize(details: dict[str, Any], binding: dict[str, Any]) -> Non
     )
     if require_nat(details, "schema_version", context) != CURRENT_STABLE_SCHEMA:
         fail(f"staging must initialize current stable schema v{CURRENT_STABLE_SCHEMA}")
+    if require_deployment_instance_id(details, "deployment_instance_id", context) != binding["deployment_instance_id"]:
+        fail("initialized deployment instance ID differs from the reviewed binding")
     if details["chain_id"] != CHAIN_ID:
         fail("initialized Bridge has the wrong chain ID")
     for field in ("ledger_canister_id", "index_canister_id"):
@@ -501,6 +528,7 @@ def validate_binding(binding: Any) -> dict[str, Any]:
         "index_canister_id",
         "environment_mode",
         "activation_timelock_delay_seconds",
+        "deployment_instance_id",
     }
     exact_keys(binding, expected, "binding")
     require_pattern(binding, "source_commit", GIT_COMMIT, "binding")
@@ -508,6 +536,7 @@ def validate_binding(binding: Any) -> dict[str, Any]:
         require_pattern(binding, field, SHA256, "binding")
     for field in ("bridge_runtime_template_sha256", "bsns_runtime_template_sha256"):
         require_pattern(binding, field, EVM_HASH, "binding")
+    require_deployment_instance_id(binding, "deployment_instance_id", "binding")
     for field in ("bridge_canister_id", "ledger_canister_id", "index_canister_id"):
         require_pattern(binding, field, PRINCIPAL, "binding")
     if binding["environment_mode"] != ENVIRONMENT_MODE:
@@ -580,8 +609,8 @@ def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo
     local = load_object(local_evidence_path)
     profile = load_object(profile_path)
     required_tests = {"full_local_ci", "real_frontend_e2e", "canister_activation", "timelock_delay_enforced", "state_upgrade"}
-    if local.get("schema_version") != 6 or set(local.get("tests", {})) != required_tests or any(local["tests"][name] != "passed" for name in required_tests):
-        fail("local promotion evidence is not a complete schema v6 pass")
+    if local.get("schema_version") != 7 or set(local.get("tests", {})) != required_tests or any(local["tests"][name] != "passed" for name in required_tests):
+        fail("local promotion evidence is not a complete schema v7 pass")
     upgrade = local.get("state_upgrade")
     if not isinstance(upgrade, dict) or upgrade.get("verified") is not True:
         fail("local promotion evidence has no verified same-Wasm upgrade")
@@ -648,6 +677,7 @@ def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo
         "index_canister_id": profile.get("indexCanisterId"),
         "environment_mode": local.get("environment_mode"),
         "activation_timelock_delay_seconds": local.get("activation_timelock_delay_seconds"),
+        "deployment_instance_id": profile.get("deploymentInstanceId"),
     }
     validate_binding(binding)
     timestamp = now()

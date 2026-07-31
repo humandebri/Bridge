@@ -2,6 +2,7 @@ import { z } from "zod"
 
 const address = z.custom<`0x${string}`>((value) => typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value))
 const hash = z.custom<`0x${string}`>((value) => typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value))
+  .refine((value) => !/^0x0+$/.test(value), "hash must be nonzero")
 const sha256 = z.string().regex(/^[0-9a-fA-F]{64}$/).refine((value) => !/^0+$/.test(value), "hash must be nonzero")
 const tokenMetadata = z.object({
   symbol: z.string().min(1),
@@ -19,8 +20,10 @@ export const deploymentProfileSchema = z.object({
   profileCanonicalSha256: sha256.nullable(),
   icHost: z.url(),
   baseRpcUrl: z.url(),
+  baseHistoryRpcUrls: z.array(z.url()).min(1).optional(),
   chainId: z.number().int().positive(),
   bridgeCanisterId: z.string().min(1).nullable(),
+  deploymentInstanceId: hash.nullable(),
   ledgerCanisterId: z.string().min(1).nullable(),
   indexCanisterId: z.string().min(1).nullable(),
   icToken: tokenMetadata.extend({ name: z.string().min(1) }),
@@ -50,8 +53,10 @@ function assertEmbeddedTestUiProfile(profile: {
   environment: string
   environmentMode: "short-delay-test-only" | null
   activationTimelockDelaySeconds: number | null
+  baseHistoryRpcUrls?: string[]
   chainId: number
   bridgeCanisterId: string | null
+  deploymentInstanceId: `0x${string}` | null
   ledgerCanisterId: string | null
   indexCanisterId: string | null
   evmRpcCanisterId: string | null
@@ -66,6 +71,12 @@ function assertEmbeddedTestUiProfile(profile: {
   }
   if (profile.environment === "sepolia-staging" && (profile.chainId !== 84532 || profile.evmRpcCanisterId !== "7hfb6-caaaa-aaaar-qadga-cai")) {
     throw new Error("Sepolia staging requires Base Sepolia and the official EVM RPC Canister")
+  }
+  if (profile.environment === "sepolia-staging" && !profile.baseHistoryRpcUrls?.length) {
+    throw new Error("Sepolia staging requires reviewed Base history RPC URLs")
+  }
+  if (profile.environment === "sepolia-staging" && !profile.deploymentInstanceId) {
+    throw new Error("Sepolia staging requires a deployment instance ID")
   }
   if (profile.environment === "sepolia-staging"
     && (profile.environmentMode !== "short-delay-test-only" || profile.activationTimelockDelaySeconds !== 300)) {
@@ -88,8 +99,13 @@ const preflightProfile = {
   profileCanonicalSha256: null,
   icHost: "https://icp-api.io",
   baseRpcUrl: "https://base-sepolia-rpc.publicnode.com",
+  baseHistoryRpcUrls: [
+    "https://base-sepolia.gateway.tenderly.co",
+    "https://sepolia.base.org",
+  ],
   chainId: 84532,
   bridgeCanisterId: null,
+  deploymentInstanceId: null,
   ledgerCanisterId: null,
   indexCanisterId: null,
   icToken: { name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 },
@@ -118,6 +134,7 @@ export const deploymentProfile: DeploymentProfile = deploymentProfileSchema.pars
 export function profileCompleteness(profile: DeploymentProfile): string[] {
   const missing: string[] = []
   if (!profile.bridgeCanisterId) missing.push("Bridge canister ID is missing")
+  if (!profile.deploymentInstanceId) missing.push("Deployment instance ID is missing")
   if (!profile.profileFileSha256) missing.push("Profile file SHA-256 is missing")
   if (!profile.profileCanonicalSha256) missing.push("Canonical profile SHA-256 is missing")
   if (!profile.ledgerCanisterId) missing.push("IC token ledger ID is missing")

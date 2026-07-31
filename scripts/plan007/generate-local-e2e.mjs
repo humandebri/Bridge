@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url"
 import { runtimeTemplateSha256FromFile } from "./runtime-template-hash.mjs"
 
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
-export const LOCAL_E2E_SCHEMA_VERSION = 6
+export const LOCAL_E2E_SCHEMA_VERSION = 7
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
-export const CURRENT_STABLE_SCHEMA_VERSION = 29
+export const CURRENT_STABLE_SCHEMA_VERSION = 30
 
 export function validateUpgradeEvidence(upgrade) {
   if (!upgrade || upgrade.verified !== true) throw new Error("real E2E did not prove same-Wasm state preservation")
@@ -29,11 +29,15 @@ export function validateUpgradeEvidence(upgrade) {
     throw new Error("upgrade evidence has no Ledger-operation or Mint Authorization liability identities")
   }
   if (!state.status?.settlement_scheduler || !state.public_config || !state.audit_events) throw new Error("upgrade evidence omitted scheduler, configuration, or audit state")
+  const deploymentInstanceId = bytesHex(state.public_config.deployment_instance_id)
+  if (!/^0x[0-9a-f]{64}$/.test(deploymentInstanceId) || /^0x0+$/.test(deploymentInstanceId)) {
+    throw new Error("upgrade evidence omitted a nonzero 32-byte deployment instance ID")
+  }
   if (!state.activation_status || !("pending_timelock_operation" in state.activation_status)) {
     throw new Error("upgrade evidence omitted the pending Timelock operation identity")
   }
   if (state.storage_integrity !== "ok") throw new Error("upgrade evidence did not pass storage_integrity_check")
-  for (const field of ["deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "notification_rate_limit_window_seconds", "notification_rate_limit_global", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]) {
+  for (const field of ["deployment_instance_id", "deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "notification_rate_limit_window_seconds", "notification_rate_limit_global", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]) {
     if (!(field in state.public_config)) throw new Error(`upgrade evidence omitted rate-limit configuration ${field}`)
   }
   if (!state.deposits.some((record) => record && record.deposit_id && "owner_sequence" in record && record.mint_authorization?.length === 1)) {
@@ -56,6 +60,7 @@ export async function generateLocalEvidence(root = defaultRoot) {
     schema_version: LOCAL_E2E_SCHEMA_VERSION,
     environment_mode: "short-delay-test-only",
     activation_timelock_delay_seconds: STAGING_ACTIVATION_DELAY_SECONDS,
+    deployment_instance_id: bytesHex(upgrade.after.public_config.deployment_instance_id),
     created_at: new Date().toISOString(),
     source_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
     bridge_wasm_sha256: await digest(root, "target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm"),
@@ -87,6 +92,13 @@ export async function generateLocalEvidence(root = defaultRoot) {
 
 async function digest(root, relative) {
   return createHash("sha256").update(await readFile(path.join(root, relative))).digest("hex")
+}
+
+function bytesHex(value) {
+  if (!Array.isArray(value) || value.length !== 32 || value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
+    return ""
+  }
+  return `0x${value.map((byte) => byte.toString(16).padStart(2, "0")).join("")}`
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

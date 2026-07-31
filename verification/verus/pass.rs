@@ -30,6 +30,15 @@ pub open spec fn deposit_admission_decision_view(
     }
 }
 
+pub open spec fn deposit_identity_decision_view(
+    result: kernel::DepositIdentityDecision,
+) -> int {
+    match result {
+        kernel::DepositIdentityDecision::Allow => 0,
+        kernel::DepositIdentityDecision::Conflict => 1,
+    }
+}
+
 pub open spec fn reservation_decision_view(
     result: Option<kernel::ReservationDecision>,
 ) -> Option<(int, int)> {
@@ -308,6 +317,15 @@ fn deposit_admission_decision_checks_every_bound(
         == consumed as int + reserved as int + (gross as int - fee as int));
     kernel::deposit_admission_decision(
         gross, fee, maximum_fee, per_deposit, consumed, reserved, window_limit)
+}
+
+fn deposit_identity_decision_is_fail_closed(
+    processed: bool,
+) -> (result: kernel::DepositIdentityDecision)
+    ensures
+        deposit_identity_decision_view(result) == if processed { 1int } else { 0int },
+{
+    kernel::deposit_identity_decision(processed)
 }
 
 fn reservation_decision_preserves_candidate_requirement(

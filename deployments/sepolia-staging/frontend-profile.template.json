@@ -9,8 +9,13 @@
   "profileCanonicalSha256": "REPLACE_WITH_SHA256",
   "icHost": "https://icp-api.io",
   "baseRpcUrl": "https://base-sepolia-rpc.publicnode.com",
+  "baseHistoryRpcUrls": [
+    "https://base-sepolia.gateway.tenderly.co",
+    "https://sepolia.base.org"
+  ],
   "chainId": 84532,
   "bridgeCanisterId": "REPLACE_WITH_TEST_BRIDGE_CANISTER_ID",
+  "deploymentInstanceId": "REPLACE_WITH_0X_32_BYTE_DEPLOYMENT_INSTANCE_ID",
   "ledgerCanisterId": "REPLACE_WITH_TEST_LEDGER_CANISTER_ID",
   "indexCanisterId": "REPLACE_WITH_TEST_INDEX_CANISTER_ID",
   "icToken": { "name": "TEST KINIC", "symbol": "TEST KINIC", "decimals": 8 },

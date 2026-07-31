@@ -46,8 +46,15 @@ case "$MODE" in
     export PATH="$ROOT/scripts/plan007:$PATH"
     python3 "$RPC_RECORDER" capture-fault "$2" "$3" "$4" "$5" "$6" -- evm-rpc-fault-injector
     ;;
+  check-reinstall-instance)
+    [[ "$#" -eq 2 ]] || {
+      echo "usage: $0 check-reinstall-instance <live-public-config.json>" >&2
+      exit 2
+    }
+    node "$ROOT/scripts/plan007/check-reinstall-instance.mjs" "$PROFILE" "$2"
+    ;;
   *)
-    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault}" >&2
+    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault|check-reinstall-instance}" >&2
     exit 2
     ;;
 esac

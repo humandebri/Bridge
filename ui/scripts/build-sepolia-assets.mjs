@@ -36,6 +36,9 @@ for (const key of ["bridgeRuntimeHash", "bsnsRuntimeHash", "rpcProviderUrlsSha25
     throw new Error(`Asset build requires nonzero ${key}`)
   }
 }
+if (!/^0x[0-9a-fA-F]{64}$/.test(profile.deploymentInstanceId ?? "") || /^0x0+$/.test(profile.deploymentInstanceId)) {
+  throw new Error("Asset build requires a nonzero deploymentInstanceId")
+}
 if (!/^\d+$/.test(String(profile.deploymentBlock)) || BigInt(profile.deploymentBlock) <= 0n) {
   throw new Error("Asset build requires a positive deploymentBlock")
 }

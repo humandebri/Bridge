@@ -131,9 +131,11 @@ export async function validateMintAuthorization(record: DepositView): Promise<Va
   ])
 
   const [, contractName, contractVersion, contractChainId, verifyingContract] = contractDomain
+  if (processed) {
+    throw new Error("Deposit identity conflict: this Deposit ID is already processed on Base")
+  }
   if (snapshot.depositMintsPaused
     || snapshot.mintAuthorizationEpoch !== authorization.authorizationEpoch
-    || processed
     || contractName !== domain.name
     || contractVersion !== domain.version
     || contractChainId !== domain.chainId

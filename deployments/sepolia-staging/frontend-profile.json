@@ -9,8 +9,13 @@
   "profileCanonicalSha256": "9645c43caa6d9d026d1d5348f33c0ebf86c207e7babcdc18c6d40ca9ae4a5f8f",
   "icHost": "https://icp-api.io",
   "baseRpcUrl": "https://base-sepolia-rpc.publicnode.com",
+  "baseHistoryRpcUrls": [
+    "https://base-sepolia.gateway.tenderly.co",
+    "https://sepolia.base.org"
+  ],
   "chainId": 84532,
   "bridgeCanisterId": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "deploymentInstanceId": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
   "ledgerCanisterId": "3jkp5-oyaaa-aaaaj-azwqa-cai",
   "indexCanisterId": "qzre3-3iaaa-aaaai-aqmsa-cai",
   "icToken": {

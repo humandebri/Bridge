@@ -778,6 +778,7 @@ run_smoke() {
     base_chain_id = 8_453 : nat64;
     bridge_contract = blob \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\";
     timelock_contract = blob \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\";
+    deployment_instance_id = blob \"\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\";
     ecdsa_key_name = \"dfx_test_key\";
     ecdsa_derivation_path = vec {};
     governance_ecdsa_derivation_path = vec { blob \"governance-operator\" };

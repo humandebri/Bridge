@@ -34,7 +34,7 @@ describe("withdrawal log scanning", () => {
   })
 
   it("keeps the older cursor when a bounded scan finds 20 events", async () => {
-    const fetchLogs = vi.fn((fromBlock: bigint, toBlock: bigint) => Promise.resolve(fromBlock === 45_002n
+    const fetchLogs = vi.fn((fromBlock: bigint, toBlock: bigint) => Promise.resolve(fromBlock === 48_002n
       ? Array.from({ length: 20 }, (_, index) => log(index + 1, toBlock - BigInt(index)))
       : []))
 
@@ -43,7 +43,7 @@ describe("withdrawal log scanning", () => {
     expect(fetchLogs).toHaveBeenCalledTimes(WITHDRAWAL_SCAN_CHUNKS_PER_STEP)
     expect(result.logs).toHaveLength(20)
     expect(result.lastFinalizedBlock).toBe(50_001n)
-    expect(result.olderCursor).toBe(30_001n)
+    expect(result.olderCursor).toBe(50_001n - WITHDRAWAL_LOG_CHUNK_SIZE * BigInt(WITHDRAWAL_SCAN_CHUNKS_PER_STEP))
   })
 
   it("uses only newly confirmed ranges on refresh and deduplicates events", async () => {
@@ -64,7 +64,7 @@ describe("withdrawal log scanning", () => {
     expect(result.logs.map((entry) => entry.id)).toEqual([2, 1])
   })
 
-  it("splits a large incremental range into 5,000-block RPC requests", async () => {
+  it("keeps every incremental RPC request within 2,000 blocks", async () => {
     const fetchLogs = vi.fn(() => Promise.resolve([] as TestLog[]))
 
     await scanWithdrawalLogs({
@@ -77,8 +77,8 @@ describe("withdrawal log scanning", () => {
     })
 
     expect(fetchLogs.mock.calls).toEqual([
-      [2n, 5_001n],
-      [5_002n, 10_001n],
+      [2n, 2_001n],
+      [2_002n, 4_001n],
     ])
   })
 
@@ -176,6 +176,6 @@ describe("withdrawal log scanning", () => {
 
     expect(fetchLogs).toHaveBeenCalledTimes(WITHDRAWAL_SCAN_CHUNKS_PER_STEP)
     expect(result.logs).toHaveLength(21)
-    expect(result.olderCursor).toBe(10_001n)
+    expect(result.olderCursor).toBe(previous.olderCursor - WITHDRAWAL_LOG_CHUNK_SIZE * BigInt(WITHDRAWAL_SCAN_CHUNKS_PER_STEP))
   })
 })

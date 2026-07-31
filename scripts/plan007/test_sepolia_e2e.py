@@ -38,17 +38,18 @@ class SepoliaE2ETests(unittest.TestCase):
         self.local.write_text(
             json.dumps(
                 {
-                    "schema_version": 6,
+                    "schema_version": 7,
                     "environment_mode": "short-delay-test-only",
                     "activation_timelock_delay_seconds": 300,
+                    "deployment_instance_id": TX,
                     "source_commit": SOURCE,
                     "bridge_wasm_sha256": H64,
                     "bridge_runtime_template_sha256": TX,
                     "bsns_runtime_template_sha256": TX_B,
                     "state_upgrade": {
                         "verified": True,
-                        "before": {"status": {"schema_version": 29}},
-                        "after": {"status": {"schema_version": 29}},
+                        "before": {"status": {"schema_version": 30}},
+                        "after": {"status": {"schema_version": 30}},
                     },
                     "tests": {
                         "full_local_ci": "passed",
@@ -71,6 +72,7 @@ class SepoliaE2ETests(unittest.TestCase):
                     "chainId": 84532,
                     "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
                     "bridgeCanisterId": "aaaaa-aa",
+                    "deploymentInstanceId": TX_B,
                     "ledgerCanisterId": "ryjl3-tyaaa-aaaaa-aaaba-cai",
                     "indexCanisterId": "qhbym-qaaaa-aaaaa-aaafq-cai",
                 }
@@ -106,12 +108,15 @@ class SepoliaE2ETests(unittest.TestCase):
                 "base_withdrawals_paused": True,
                 "canister_deposits_paused": True,
                 "configured_rpc_url_sha256": [H64, H64_B, H64_C],
+                "live_schema_version": 29,
+                "previous_deployment_instance_id": None,
             }
         if stage == "install":
             return {"install_mode": "reinstall", "module_sha256": H64, "cycles_balance": 1, "controller_principals": ["aaaaa-aa"]}
         if stage == "initialize":
             return {
-                "schema_version": 29,
+                "schema_version": 30,
+                "deployment_instance_id": TX_B,
                 "chain_id": 84532,
                 "ledger_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
                 "index_canister_id": "qhbym-qaaaa-aaaaa-aaafq-cai",
@@ -234,7 +239,7 @@ class SepoliaE2ETests(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
-                    "schema_version": 3,
+                    "schema_version": 4,
                     "stage": stage,
                     "observed_at": "2026-07-24T00:00:00Z",
                     "source_commit": SOURCE,
@@ -258,6 +263,34 @@ class SepoliaE2ETests(unittest.TestCase):
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "expected stage preflight"):
             sepolia_e2e.record(self.manifest, self.evidence("install"))
 
+    def test_binding_uses_profile_instance_instead_of_local_evidence(self) -> None:
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["binding"]["deployment_instance_id"], TX_B)
+
+    def test_v29_preflight_allows_missing_previous_instance(self) -> None:
+        sepolia_e2e.validate_preflight(self.details("preflight"), {
+            **json.loads(self.manifest.read_text(encoding="utf-8"))["binding"],
+        })
+
+    def test_v30_preflight_requires_a_distinct_previous_instance(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        details = self.details("preflight")
+        details["live_schema_version"] = 30
+        details["previous_deployment_instance_id"] = TX
+        sepolia_e2e.validate_preflight(details, binding)
+        for previous in (None, TX_B, f"0x{'0' * 64}"):
+            invalid = dict(details)
+            invalid["previous_deployment_instance_id"] = previous
+            with self.assertRaises(sepolia_e2e.EvidenceError):
+                sepolia_e2e.validate_preflight(invalid, binding)
+
+    def test_initialize_rejects_profile_instance_mismatch(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        details = self.details("initialize")
+        details["deployment_instance_id"] = TX
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "differs"):
+            sepolia_e2e.validate_initialize(details, binding)
+
     def test_upgrade_hash_drift_is_rejected(self) -> None:
         details = self.details("wallet_e2e")
         details["same_wasm_upgrade"]["after_state_sha256"] = H64_B
@@ -270,7 +303,7 @@ class SepoliaE2ETests(unittest.TestCase):
         local["state_upgrade"]["before"]["status"]["schema_version"] = 28
         local["state_upgrade"]["after"]["status"]["schema_version"] = 28
         self.local.write_text(json.dumps(local), encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must use stable schema v29"):
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must use stable schema v30"):
             sepolia_e2e.initialize(self.manifest, self.local, self.profile)
 
     def test_artifact_hash_drift_is_rejected(self) -> None:

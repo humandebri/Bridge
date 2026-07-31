@@ -1,13 +1,13 @@
 use bridge_core::{
-    canonical_probe_matches, committed_quote_matches, fee_recipient_rotation_allowed,
-    funding_attempt_decision, funding_reconciliation_decision, hold_retry_allowed,
-    lease_lane_claim_decision, lease_outcome_is_current, manual_claim_allowed,
+    canonical_probe_matches, committed_quote_matches, deposit_identity_decision,
+    fee_recipient_rotation_allowed, funding_attempt_decision, funding_reconciliation_decision,
+    hold_retry_allowed, lease_lane_claim_decision, lease_outcome_is_current, manual_claim_allowed,
     notification_admission_allowed, outbound_settlement, payout_allowed, payout_debit,
     refund_request_identity_decision, release_transfer_matches,
     reserve_admission_preserves_requirement, restored_pending_blocked, service_fee_change_allowed,
-    withdrawal_finalization_decision, Amount, BaseMintSnapshot, FundingAttemptDecision,
-    FundingReconciliationDecision, LeaseLaneClaimDecision, RefundRequestIdentityDecision,
-    WithdrawalFinalizationDecision,
+    withdrawal_finalization_decision, Amount, BaseMintSnapshot, DepositIdentityDecision,
+    FundingAttemptDecision, FundingReconciliationDecision, LeaseLaneClaimDecision,
+    RefundRequestIdentityDecision, WithdrawalFinalizationDecision,
 };
 use serde::Deserialize;
 
@@ -23,6 +23,8 @@ struct ProtocolVectors {
     payment_count: usize,
     deposit_admission_cases: Vec<DepositAdmissionCase>,
     deposit_admission_count: usize,
+    deposit_identity_cases: Vec<DepositIdentityCase>,
+    deposit_identity_count: usize,
     reservation_cases: Vec<ReservationCase>,
     reservation_count: usize,
     service_fee_cases: Vec<ServiceFeeCase>,
@@ -109,6 +111,13 @@ struct DepositAdmissionCase {
     mint_window_limit: String,
     accepted: bool,
     net: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DepositIdentityCase {
+    processed: bool,
+    decision: String,
 }
 
 #[derive(Deserialize)]
@@ -269,6 +278,10 @@ fn vectors() -> ProtocolVectors {
         vectors.deposit_admission_count,
         vectors.deposit_admission_cases.len()
     );
+    assert_eq!(
+        vectors.deposit_identity_count,
+        vectors.deposit_identity_cases.len()
+    );
     assert_eq!(vectors.reservation_count, vectors.reservation_cases.len());
     assert_eq!(vectors.service_fee_count, vectors.service_fee_cases.len());
     assert_eq!(vectors.fee_rotation_count, vectors.fee_rotation_cases.len());
@@ -303,6 +316,7 @@ fn vectors() -> ProtocolVectors {
     assert!(vectors.settlement_count > 0);
     assert!(vectors.payment_count > 0);
     assert!(vectors.deposit_admission_count > 0);
+    assert!(vectors.deposit_identity_count > 0);
     assert!(vectors.reservation_count > 0);
     assert!(vectors.service_fee_count > 0);
     assert!(vectors.fee_rotation_count > 0);
@@ -472,6 +486,17 @@ fn protocol_deposit_admission_cases_matches_production() {
             .map(|value| value.get());
         assert_eq!(actual.is_some(), case.accepted);
         assert_eq!(actual, case.net.as_deref().map(amount));
+    }
+}
+
+#[test]
+fn protocol_deposit_identity_cases_matches_production() {
+    for case in vectors().deposit_identity_cases {
+        let actual = match deposit_identity_decision(case.processed) {
+            DepositIdentityDecision::Allow => "Allow",
+            DepositIdentityDecision::Conflict => "Conflict",
+        };
+        assert_eq!(actual, case.decision);
     }
 }
 

@@ -22,6 +22,7 @@ pub struct BridgeInitArgs {
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
     pub timelock_contract: Vec<u8>,
+    pub deployment_instance_id: Vec<u8>,
     pub ecdsa_key_name: String,
     pub ecdsa_derivation_path: Vec<Vec<u8>>,
     pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
@@ -72,6 +73,7 @@ pub(crate) struct ImmutableBridgeConfig {
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
     pub timelock_contract: Vec<u8>,
+    pub deployment_instance_id: Vec<u8>,
     pub ecdsa_key_name: String,
     pub ecdsa_derivation_path: Vec<Vec<u8>>,
     pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
@@ -102,6 +104,7 @@ impl ImmutableBridgeConfig {
             base_chain_id: value.base_chain_id,
             bridge_contract: value.bridge_contract.clone(),
             timelock_contract: value.timelock_contract.clone(),
+            deployment_instance_id: value.deployment_instance_id.clone(),
             ecdsa_key_name: value.ecdsa_key_name.clone(),
             ecdsa_derivation_path: value.ecdsa_derivation_path.clone(),
             governance_ecdsa_derivation_path: value.governance_ecdsa_derivation_path.clone(),
@@ -137,6 +140,7 @@ impl ImmutableBridgeConfig {
             base_chain_id: self.base_chain_id,
             bridge_contract: self.bridge_contract,
             timelock_contract: self.timelock_contract,
+            deployment_instance_id: self.deployment_instance_id,
             ecdsa_key_name: self.ecdsa_key_name,
             ecdsa_derivation_path: self.ecdsa_derivation_path,
             governance_ecdsa_derivation_path: self.governance_ecdsa_derivation_path,
@@ -173,14 +177,18 @@ impl Default for GovernanceReplacementPolicy {
 
 impl BridgeInitArgs {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.bridge_contract.len() != 20 || self.timelock_contract.len() != 20 {
-            return Err("bridge and Timelock contracts must be 20 bytes");
+        if self.bridge_contract.len() != 20
+            || self.timelock_contract.len() != 20
+            || self.deployment_instance_id.len() != 32
+        {
+            return Err("bridge and Timelock contracts must be 20 bytes and deployment instance ID must be 32 bytes");
         }
         if self.bridge_contract.iter().all(|byte| *byte == 0)
             || self.timelock_contract.iter().all(|byte| *byte == 0)
+            || self.deployment_instance_id.iter().all(|byte| *byte == 0)
             || self.bridge_contract == self.timelock_contract
         {
-            return Err("bridge and Timelock contracts must be nonzero and distinct");
+            return Err("bridge, Timelock, and deployment instance ID must be nonzero, with distinct contracts");
         }
         if self.base_chain_id == 0
             || self.ecdsa_key_name.is_empty()
@@ -486,6 +494,7 @@ mod tests {
             base_chain_id: BASE_MAINNET_CHAIN_ID,
             bridge_contract: vec![1; 20],
             timelock_contract: vec![2; 20],
+            deployment_instance_id: vec![3; 32],
             ecdsa_key_name: "key_1".into(),
             ecdsa_derivation_path: vec![],
             governance_ecdsa_derivation_path: vec![b"governance-operator".to_vec()],

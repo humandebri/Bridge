@@ -1,4 +1,4 @@
-export const WITHDRAWAL_LOG_CHUNK_SIZE = 5_000n
+export const WITHDRAWAL_LOG_CHUNK_SIZE = 2_000n
 export const WITHDRAWAL_SCAN_CHUNKS_PER_STEP = 4
 
 export interface FinalizedEventLog {

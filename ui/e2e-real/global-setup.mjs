@@ -189,6 +189,7 @@ async function setup() {
       base_chain_id: 31_337n,
       bridge_contract: hexToBytes(bridgeAddress),
       timelock_contract: hexToBytes(timelockAddress),
+      deployment_instance_id: new Uint8Array(32).fill(3),
       ecdsa_key_name: "key_1",
       ecdsa_derivation_path: [],
       governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")],
@@ -273,6 +274,7 @@ async function setup() {
     ledgerId: ledgerId.toText(),
     indexId: indexId.toText(),
     bridgeId: bridge.canisterId.toText(),
+    deploymentInstanceId: bytesHex(publicConfig.deployment_instance_id),
     evmRpcCanisterId: publicConfig.evm_rpc_canister_id.toText(),
     rpcProviderUrlsSha256: bytesHex(publicConfig.rpc_provider_urls_sha256),
     bridgeAddress,
@@ -806,6 +808,7 @@ export interface DeploymentProfile {
   environment: string; label: string; testOnly: boolean;
   environmentMode: "short-delay-test-only" | null; activationTimelockDelaySeconds: number | null;
   icHost: string; baseRpcUrl: string; chainId: number; bridgeCanisterId: string | null; ledgerCanisterId: string | null; indexCanisterId: string | null;
+  deploymentInstanceId: \`0x\${string}\` | null;
   evmRpcCanisterId: string | null; rpcProviderUrlsSha256: \`0x\${string}\` | null;
   icToken: { name: string; symbol: string; decimals: number }; baseToken: { symbol: string; decimals: number };
   bridgeAddress: \`0x\${string}\` | null; bsnsAddress: \`0x\${string}\` | null; timelockAddress: \`0x\${string}\` | null; expected_bridge_signer: \`0x\${string}\` | null; deploymentBlock: bigint | null;
@@ -815,7 +818,7 @@ export const deploymentProfile: DeploymentProfile = ${serialize({
     environment: "local-real-e2e", label: "Local Anvil + PocketIC", testOnly: true,
     environmentMode: "short-delay-test-only", activationTimelockDelaySeconds: ACTIVATION_DELAY_SECONDS,
     icHost: `http://127.0.0.1:${values.gatewayPort}`,
-    baseRpcUrl: rpcUrl, chainId: 31337, bridgeCanisterId: values.bridgeId, ledgerCanisterId: values.ledgerId, indexCanisterId: values.indexId,
+    baseRpcUrl: rpcUrl, chainId: 31337, bridgeCanisterId: values.bridgeId, deploymentInstanceId: values.deploymentInstanceId, ledgerCanisterId: values.ledgerId, indexCanisterId: values.indexId,
     evmRpcCanisterId: values.evmRpcCanisterId, rpcProviderUrlsSha256: values.rpcProviderUrlsSha256,
     icToken: { name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 }, baseToken: { symbol: "KINIC", decimals: 8 },
     bridgeAddress: values.bridgeAddress, bsnsAddress: values.bsnsAddress, timelockAddress: values.timelockAddress, expected_bridge_signer: values.expected_bridge_signer, deploymentBlock: values.deploymentBlock,
@@ -823,7 +826,7 @@ export const deploymentProfile: DeploymentProfile = ${serialize({
   })}
 export function profileCompleteness(profile: DeploymentProfile): string[] {
   const blockers: string[] = []
-  if (!profile.bridgeCanisterId || !profile.ledgerCanisterId || !profile.indexCanisterId || !profile.evmRpcCanisterId || !profile.rpcProviderUrlsSha256 || !profile.bridgeAddress || !profile.bsnsAddress || !profile.timelockAddress || !profile.expected_bridge_signer || profile.deploymentBlock === null || !profile.bridgeRuntimeHash || !profile.bsnsRuntimeHash) blockers.push("Deployment profile is incomplete")
+  if (!profile.bridgeCanisterId || !profile.deploymentInstanceId || !profile.ledgerCanisterId || !profile.indexCanisterId || !profile.evmRpcCanisterId || !profile.rpcProviderUrlsSha256 || !profile.bridgeAddress || !profile.bsnsAddress || !profile.timelockAddress || !profile.expected_bridge_signer || profile.deploymentBlock === null || !profile.bridgeRuntimeHash || !profile.bsnsRuntimeHash) blockers.push("Deployment profile is incomplete")
   return blockers
 }
 `

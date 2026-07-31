@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 29;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 30;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -58,6 +58,7 @@ struct Profile {
     base_rpc_url: String,
     bridge_contract: String,
     bsns_contract: String,
+    deployment_instance_id: String,
     deployment_block: u64,
     expected_bridge_signer: String,
     bridge_canister_wasm_sha256: String,
@@ -347,6 +348,7 @@ struct LivePublicConfig {
     base_chain_id: u64,
     bridge_contract: String,
     timelock_contract: String,
+    deployment_instance_id: String,
     ledger_canister_id: String,
     index_canister_id: String,
     schema_version: u16,
@@ -1041,11 +1043,12 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     if profile.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER {
         return Err("profile must bind the official EVM RPC canister ID".into());
     }
-    if !valid_sha256(&profile.bridge_canister_wasm_sha256)
+    if !valid_hash32(&profile.deployment_instance_id)
+        || !valid_sha256(&profile.bridge_canister_wasm_sha256)
         || !valid_sha256(&profile.bridge_runtime_bytecode_sha256)
         || !valid_sha256(&profile.bsns_runtime_bytecode_sha256)
     {
-        return Err("profile must bind Bridge Wasm and runtime bytecode hashes".into());
+        return Err("profile must bind a deployment instance ID and Bridge artifact hashes".into());
     }
     if profile.environment == "mainnet-candidate"
         && (profile.test_assets_only
@@ -1333,6 +1336,7 @@ fn render_release_inputs(
         "base_chain_id": profile.chain_id,
         "bridge_contract_hex": contract_hex,
         "timelock_contract_hex": profile.timelock.address.trim_start_matches("0x"),
+        "deployment_instance_id_hex": profile.deployment_instance_id.trim_start_matches("0x"),
         "ecdsa_key_name": profile.ecdsa_key_name,
         "ecdsa_derivation_path_utf8": profile.ecdsa_derivation_path,
         "governance_ecdsa_derivation_path_utf8": profile.governance_ecdsa_derivation_path,
@@ -1394,6 +1398,7 @@ fn render_release_inputs(
         "baseRpcUrl": profile.base_rpc_url,
         "chainId": profile.chain_id,
         "bridgeCanisterId": profile.bridge_canister_id,
+        "deploymentInstanceId": profile.deployment_instance_id,
         "ledgerCanisterId": profile.ledger_canister_id,
         "indexCanisterId": profile.index_canister_id,
         "icToken": { "name": "KINIC", "symbol": "KINIC", "decimals": profile.decimals },
@@ -1954,6 +1959,9 @@ fn validate_live_public_config(
         || !observed
             .timelock_contract
             .eq_ignore_ascii_case(&profile.timelock.address)
+        || !observed
+            .deployment_instance_id
+            .eq_ignore_ascii_case(&profile.deployment_instance_id)
         || observed.ledger_canister_id != profile.ledger_canister_id
         || observed.index_canister_id != profile.index_canister_id
         || observed.schema_version != profile.canister_schema_version
@@ -2898,6 +2906,7 @@ mod tests {
             base_rpc_url: "https://prod-one.example/base-mainnet".into(),
             bridge_contract: address(1),
             bsns_contract: address(8),
+            deployment_instance_id: format!("0x{}", "11".repeat(32)),
             deployment_block: 1,
             expected_bridge_signer: address(2),
             bridge_canister_wasm_sha256: "3".repeat(64),
@@ -2986,6 +2995,7 @@ mod tests {
             base_chain_id: profile.chain_id,
             bridge_contract: profile.bridge_contract.clone(),
             timelock_contract: profile.timelock.address.clone(),
+            deployment_instance_id: profile.deployment_instance_id.clone(),
             ledger_canister_id: profile.ledger_canister_id.clone(),
             index_canister_id: profile.index_canister_id.clone(),
             schema_version: profile.canister_schema_version,
@@ -3202,6 +3212,7 @@ mod tests {
             "base_chain_id",
             "bridge_contract_hex",
             "timelock_contract_hex",
+            "deployment_instance_id_hex",
             "ecdsa_key_name",
             "ecdsa_derivation_path_utf8",
             "governance_ecdsa_derivation_path_utf8",

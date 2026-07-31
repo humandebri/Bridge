@@ -1,6 +1,8 @@
 import type { FinalizedEventLog } from "./withdrawal-history"
+import { decodeEventLog, type Hex } from "viem"
+import { bridgeAbi } from "@/generated/abi/bridge.generated"
 
-export const DEPOSIT_MINT_LOG_CHUNK_SIZE = 5_000n
+export const DEPOSIT_MINT_LOG_CHUNK_SIZE = 2_000n
 export const DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP = 4
 
 export interface ExpectedDepositMint {
@@ -45,6 +47,36 @@ export function depositMintEventMatches(
     && observed.grossAmount === expected.grossAmount
     && observed.serviceFee === expected.serviceFee
     && observed.mintedAmount === expected.mintedAmount
+}
+
+export function receiptContainsExactDepositMint(
+  expected: ExpectedDepositMint,
+  logs: readonly { address: Hex; data: Hex; topics: readonly Hex[] }[],
+  expectedBridgeAddress: Hex,
+): boolean {
+  return logs.some((log) => {
+    if (log.address.toLowerCase() !== expectedBridgeAddress.toLowerCase()) return false
+    try {
+      const decoded = decodeEventLog({
+        abi: bridgeAbi,
+        eventName: "DepositMinted",
+        data: log.data,
+        topics: log.topics as [signature: Hex, ...args: Hex[]],
+        strict: true,
+      })
+      const args = decoded.args
+      return depositMintEventMatches(expected, {
+        depositId: args.depositId,
+        recipient: args.recipient,
+        authorizationDigest: args.authorizationDigest,
+        grossAmount: args.grossAmount,
+        serviceFee: args.serviceFee,
+        mintedAmount: args.mintedAmount,
+      })
+    } catch {
+      return false
+    }
+  })
 }
 
 export function depositMintFinalizationStatus({

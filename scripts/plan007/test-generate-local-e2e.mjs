@@ -19,6 +19,7 @@ assert.equal(schema.properties.state_upgrade.$ref, "#/$defs/stateUpgrade")
 assert.deepEqual(schema.$defs.stateUpgrade.required, ["verified", "before", "after"])
 assert(schema.required.includes("bridge_runtime_template_sha256"))
 assert(schema.required.includes("bsns_runtime_template_sha256"))
+assert(schema.required.includes("deployment_instance_id"))
 
 const artifact = {
   deployedBytecode: {
@@ -43,6 +44,7 @@ const state = {
     settlement_scheduler: { scheduled: "1", leased: "0" },
   },
   public_config: {
+    deployment_instance_id: Array(32).fill(9),
     deposit_rate_limit_window_seconds: "60",
     deposit_rate_limit_global: 30,
     deposit_rate_limit_per_principal: 3,
@@ -72,6 +74,7 @@ for (const mutate of [
   (value) => { value.before.deposits[0].mint_authorization = []; value.after.deposits[0].mint_authorization = [] },
   (value) => { delete value.before.status.settlement_scheduler; delete value.after.status.settlement_scheduler },
   (value) => { delete value.before.public_config.notification_rate_limit_global; delete value.after.public_config.notification_rate_limit_global },
+  (value) => { value.before.public_config.deployment_instance_id = Array(32).fill(0); value.after.public_config.deployment_instance_id = Array(32).fill(0) },
   (value) => { delete value.before.public_config.settlement_rate_limit_per_record; delete value.after.public_config.settlement_rate_limit_per_record },
   (value) => { delete value.before.public_config.settlement_retry_interval_seconds; delete value.after.public_config.settlement_retry_interval_seconds },
   (value) => { value.before.status.counts.reserved_deposit_mint_operations = 1; value.after.status.counts.reserved_deposit_mint_operations = 1 },

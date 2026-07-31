@@ -121,6 +121,7 @@ export interface BridgeInitArgs {
   'ecdsa_derivation_path' : Array<Uint8Array | number[]>,
   'evm_rpc_canister_id' : Principal,
   'deposit_rate_limit_per_principal' : number,
+  'deployment_instance_id' : Uint8Array | number[],
   'governance_ecdsa_derivation_path' : Array<Uint8Array | number[]>,
   'governance_eth_floor_wei' : bigint,
   'custom_evm_rpc_urls' : Array<string>,
@@ -183,6 +184,7 @@ export type DepositError = { 'Busy' : null } |
   { 'ReserveUnavailable' : null } |
   { 'DepositsPaused' : null } |
   { 'Rejected' : string } |
+  { 'DepositIdentityConflict' : null } |
   { 'RateLimited' : { 'retry_after_seconds' : bigint } } |
   { 'InvalidRequest' : string } |
   { 'DepositConflict' : null } |
@@ -405,6 +407,7 @@ export interface PublicConfig {
   'settlement_rate_limit_window_seconds' : bigint,
   'evm_rpc_canister_id' : Principal,
   'deposit_rate_limit_per_principal' : number,
+  'deployment_instance_id' : Uint8Array | number[],
   'schema_version' : number,
   'governance_eth_floor_wei' : bigint,
   'deposit_rate_limit_global' : number,
@@ -431,6 +434,7 @@ export type RequestDepositRefundError = { 'NotClaimable' : null } |
   { 'NotFound' : null } |
   { 'InsufficientCycles' : null } |
   { 'OwnerMismatch' : null } |
+  { 'DepositIdentityConflict' : null } |
   { 'RpcInconsistent' : null } |
   { 'StorageFailure' : null } |
   { 'BaseStateMismatch' : null } |

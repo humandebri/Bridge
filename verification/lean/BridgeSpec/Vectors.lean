@@ -81,6 +81,14 @@ def depositAdmissionCase
     natField "mint_window_limit" windowLimit ++ "," ++
     field "accepted" (boolJson result.isSome) ++ "," ++ field "net" net ++ "}"
 
+def depositIdentityDecisionName : DepositIdentityDecision → String
+  | .allow => "Allow"
+  | .conflict => "Conflict"
+
+def depositIdentityCase (processed : Bool) : String :=
+  "{" ++ field "processed" (boolJson processed) ++ "," ++
+    field "decision" (quoted (depositIdentityDecisionName (decideDepositIdentity processed))) ++ "}"
+
 def reservationCase
     (beforeReserved beforeCandidate afterReserved afterCandidate : Nat) : String :=
   let committed := commitMintReservation beforeReserved beforeCandidate
@@ -261,6 +269,9 @@ def document : String :=
     depositAdmissionCase 10 10 100 89 0 100,
     depositAdmissionCase 10 10 100 90 11 100,
     depositAdmissionCase 0 0 max max 0 max]
+  let depositIdentities := [
+    depositIdentityCase false,
+    depositIdentityCase true]
   let reservations := [
     reservationCase 7 1 8 0,
     reservationCase 7 1 7 0,
@@ -324,6 +335,7 @@ def document : String :=
   "{" ++ field "schema_version" "3" ++ "," ++
     jsonSection "quote" quotes ++ "," ++ jsonSection "settlement" settlements ++ "," ++
     jsonSection "payment" payments ++ "," ++ jsonSection "deposit_admission" deposits ++ "," ++
+    jsonSection "deposit_identity" depositIdentities ++ "," ++
     jsonSection "reservation" reservations ++ "," ++
     jsonSection "service_fee" serviceFees ++ "," ++
     jsonSection "fee_rotation" feeRotations ++ "," ++

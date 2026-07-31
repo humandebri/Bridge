@@ -75,6 +75,9 @@ def depositAdmissionImpl (admission : DepositAdmission) : Option Nat :=
     admitDeposit admission
   else none
 
+def depositIdentityImpl (processed : Bool) : DepositIdentityDecision :=
+  if processed then .conflict else .allow
+
 def reservationImpl (reserved candidate : U128) : Option (Nat × Nat) :=
   (checkedAdd128 reserved.val candidate.val).map (fun total => (total, 0))
 

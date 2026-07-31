@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest"
+import { encodeAbiParameters, encodeEventTopics } from "viem"
+import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import {
+  DEPOSIT_MINT_LOG_CHUNK_SIZE,
+  DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP,
   depositMintEventMatches,
   depositMintFinalizationStatus,
+  receiptContainsExactDepositMint,
   scanDepositMintLogs,
   type DepositMintLogScan,
   type ExpectedDepositMint,
@@ -28,6 +33,65 @@ function accepts_only_the_exact_finalized_DepositMinted_payload() {
 
 describe("depositMintEventMatches", () => {
   it("accepts only the exact finalized DepositMinted payload", accepts_only_the_exact_finalized_DepositMinted_payload)
+})
+
+describe("receiptContainsExactDepositMint", () => {
+  const bridgeAddress = `0x${"77".repeat(20)}` as const
+  const topics = encodeEventTopics({
+    abi: bridgeAbi,
+    eventName: "DepositMinted",
+    args: {
+      depositId: expected.depositId,
+      recipient: expected.recipient,
+      authorizationDigest: expected.authorizationDigest,
+    },
+  }) as readonly `0x${string}`[]
+  const data = encodeAbiParameters(
+    [
+      { type: "uint256", name: "grossAmount" },
+      { type: "uint256", name: "serviceFee" },
+      { type: "uint256", name: "mintedAmount" },
+    ],
+    [expected.grossAmount, expected.serviceFee, expected.mintedAmount],
+  )
+
+  function accepts_only_an_exact_receipt_event_from_configured_bridge() {
+    expect(receiptContainsExactDepositMint(expected, [{
+      address: bridgeAddress,
+      topics,
+      data,
+    }], bridgeAddress)).toBe(true)
+
+    expect(receiptContainsExactDepositMint({
+      ...expected,
+      authorizationDigest: `0x${"44".repeat(32)}`,
+    }, [{
+      address: bridgeAddress,
+      topics,
+      data,
+    }], bridgeAddress)).toBe(false)
+
+    expect(receiptContainsExactDepositMint({
+      ...expected,
+      mintedAmount: expected.mintedAmount + 1n,
+    }, [{
+      address: bridgeAddress,
+      topics,
+      data,
+    }], bridgeAddress)).toBe(false)
+
+    expect(receiptContainsExactDepositMint(expected, [{
+      address: bridgeAddress,
+      topics,
+      data,
+    }], `0x${"88".repeat(20)}`)).toBe(false)
+  }
+
+  it("accepts only an exact event emitted by the configured bridge", accepts_only_an_exact_receipt_event_from_configured_bridge)
+
+  it("does not accept a successful receipt without DepositMinted", () => {
+    expect(receiptContainsExactDepositMint(expected, [], bridgeAddress)).toBe(false)
+  })
 })
 
 describe("depositMintFinalizationStatus", () => {
@@ -112,11 +176,12 @@ describe("scanDepositMintLogs", () => {
 
     expect(ranges).toEqual([
       [30_001n, 31_000n],
-      [5_001n, 10_000n],
-      [1n, 5_000n],
+      [8_001n, 10_000n],
+      [6_001n, 8_000n],
+      [4_001n, 6_000n],
     ])
     expect(result.lastFinalizedBlock).toBe(31_000n)
-    expect(result.olderCursor).toBeNull()
+    expect(result.olderCursor).toBe(4_000n)
   })
 
   it("keeps absence in checking state while a large finalized gap is catching up", async () => {
@@ -136,7 +201,7 @@ describe("scanDepositMintLogs", () => {
       fetchBlockHash: (): Promise<`0x${string}`> =>
         Promise.resolve<`0x${string}`>(`0x${"cc".repeat(32)}`),
     })
-    expect(result.lastFinalizedBlock).toBe(50_000n)
+    expect(result.lastFinalizedBlock).toBe(30_000n + DEPOSIT_MINT_LOG_CHUNK_SIZE * BigInt(DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP))
     expect(depositMintFinalizationStatus({
       expected,
       authorizationBlock: 1n,

@@ -53,6 +53,18 @@ preflight
 各stageは、操作後に取得したraw artifact、artifact SHA-256、source commit、観測値だけをstage evidenceへ記録する。
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
+`reinstall` の前には、live `public_config` をJSONへ保存し、次のgateを必ず通す。
+v29からv30への初回reinstallだけは旧instance IDなしを許可する。v30以降はprofileの新IDが
+live IDと異なることを要求し、欠落、ゼロ値、同一ID、未知schemaをfail closedにする。
+出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、
+manifest検証でも同じ比較を行う。
+
+```sh
+scripts/plan007/staging-e2e-driver.sh check-reinstall-instance \
+  /secure/work/live-public-config.json \
+  > /secure/work/reinstall-instance-check.json
+```
+
 ```sh
 scripts/plan007/staging-e2e-driver.sh record /secure/work/preflight-evidence.json
 scripts/plan007/staging-e2e-driver.sh status

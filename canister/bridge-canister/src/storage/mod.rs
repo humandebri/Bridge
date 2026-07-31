@@ -229,7 +229,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 29, 25);
+INSERT INTO bridge_metadata VALUES (1, 30, 26);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1537,6 +1537,7 @@ pub enum StorageError {
     DepositRateLimited { retry_after_seconds: u64 },
     RecordNotFound,
     DatabaseFailure,
+    StaleSnapshotRefresh,
     ReserveUnavailable,
     StaleReserveObservation,
     QuoteSnapshotMismatch,
@@ -3825,7 +3826,7 @@ impl StableStore {
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
         if !bridge_core::refresh_owner_matches(admission.refresh_owner, owner) {
-            return Err(StorageError::DatabaseFailure);
+            return Err(StorageError::StaleSnapshotRefresh);
         }
         admission.base_snapshot = Some(CachedBaseMintSnapshot {
             generation: owner,
@@ -3880,7 +3881,7 @@ impl StableStore {
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
         if !bridge_core::refresh_owner_matches(admission.refresh_owner, owner) {
-            return Err(StorageError::DatabaseFailure);
+            return Err(StorageError::StaleSnapshotRefresh);
         }
         let previous_admission = self.deposit_admission.get()?;
         let mut progress = self.external_progress()?;
@@ -7675,6 +7676,7 @@ mod tests {
             base_chain_id: 8453,
             bridge_contract: vec![1; 20],
             timelock_contract: vec![2; 20],
+            deployment_instance_id: vec![3; 32],
             ecdsa_key_name: "test_key".into(),
             ecdsa_derivation_path: vec![],
             governance_ecdsa_derivation_path: vec![b"governance-operator".to_vec()],
@@ -9808,8 +9810,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 29);
-        assert_eq!(WIRE_VERSION, 25);
+        assert_eq!(SCHEMA_VERSION, 30);
+        assert_eq!(WIRE_VERSION, 26);
     }
 
     #[test]

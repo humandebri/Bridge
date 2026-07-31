@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   waitForTransactionReceipt: vi.fn(),
   savePendingMint: vi.fn(),
   useAccount: vi.fn(),
+  receiptContainsExactDepositMint: vi.fn(),
 }))
 
 vi.mock("wagmi", () => ({
@@ -43,8 +44,20 @@ vi.mock("@/lib/evm/client", () => ({
 }))
 
 vi.mock("@/lib/mint-authorization", () => ({
-  contractAuthorization: () => ({ depositId: `0x${"11".repeat(32)}` }),
+  contractAuthorization: () => ({
+    depositId: `0x${"11".repeat(32)}`,
+    recipient: "0x0303030303030303030303030303030303030303",
+    grossAmount: 500_000_000n,
+    maxServiceFee: 50_000_000n,
+    chargedServiceFee: 50_000_000n,
+    deadline: 2_000n,
+    authorizationEpoch: 1n,
+  }),
   validateMintAuthorization: mocks.validateMintAuthorization,
+}))
+
+vi.mock("@/lib/deposit-mint-finalization", () => ({
+  receiptContainsExactDepositMint: mocks.receiptContainsExactDepositMint,
 }))
 
 vi.mock("@/lib/pending-confirmations", () => ({
@@ -60,6 +73,16 @@ vi.mock("@/lib/browser-lock", () => ({
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
 const pendingHash = `0x${"22".repeat(32)}`
+const originalBridgeAddress = deploymentProfile.bridgeAddress
+const pendingExpectation = {
+  depositId: `0x${"11".repeat(32)}`,
+  authorizationDigest: `0x${"11".repeat(32)}`,
+  recipient: "0x0303030303030303030303030303030303030303",
+  grossAmount: "500000000",
+  chargedServiceFee: "50000000",
+  mintedAmount: "450000000",
+}
+const pendingMint = { ...pendingExpectation, transactionHash: pendingHash }
 const record = {
   state: { AuthorizationAvailable: null },
   mint_authorization: [{
@@ -75,22 +98,28 @@ function Wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("MintAuthorizationAction pending retry", () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    deploymentProfile.bridgeAddress = originalBridgeAddress
+    cleanup()
+  })
 
   beforeEach(() => {
+    deploymentProfile.bridgeAddress = "0x1111111111111111111111111111111111111111"
     mocks.getBlock.mockReset().mockResolvedValue({ timestamp: 1_000n })
     mocks.getTransactionReceipt.mockReset().mockRejectedValue(new Error("not found"))
-    mocks.readPendingMint.mockReset().mockReturnValue(pendingHash)
+    mocks.readPendingMint.mockReset().mockReturnValue(pendingMint)
     mocks.removePendingMint.mockReset().mockResolvedValue(undefined)
     mocks.validateMintAuthorization.mockReset().mockResolvedValue({
       authorization: { depositId: `0x${"11".repeat(32)}` },
+      digest: `0x${"11".repeat(32)}`,
       signature: "0xsigned",
       recipient: "0x0303030303030303030303030303030303030303",
     })
     mocks.runtimeRefetch.mockReset()
     mocks.refetchRuntimeWriteReady.mockReset().mockResolvedValue(undefined)
     mocks.writeContractAsync.mockReset().mockResolvedValue(pendingHash)
-    mocks.waitForTransactionReceipt.mockReset().mockResolvedValue({ status: "success" })
+    mocks.waitForTransactionReceipt.mockReset().mockResolvedValue({ status: "success", logs: [] })
+    mocks.receiptContainsExactDepositMint.mockReset().mockReturnValue(true)
     mocks.savePendingMint.mockReset().mockResolvedValue(undefined)
     mocks.useAccount.mockReset().mockReturnValue({
       address: "0x0000000000000000000000000000000000000001",
@@ -116,6 +145,16 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(screen.queryByText("Clear the saved transaction?")).not.toBeInTheDocument()
   })
 
+  it("does not treat a successful receipt without the exact mint event as current", async () => {
+    mocks.getTransactionReceipt.mockResolvedValue({ status: "success", logs: [] })
+    mocks.receiptContainsExactDepositMint.mockReturnValue(false)
+    render(<MintAuthorizationAction record={record} />, { wrapper: Wrapper })
+
+    expect(await screen.findByText("Deposit identity conflict. Do not submit another transaction.")).toBeInTheDocument()
+    expect(screen.queryByText("Minted on Base")).not.toBeInTheDocument()
+    expect(mocks.removePendingMint).not.toHaveBeenCalled()
+  })
+
   it("clears the hash only after successful revalidation and explicit confirmation", async () => {
     render(<MintAuthorizationAction record={record} />, { wrapper: Wrapper })
     fireEvent.click(await screen.findByText("Check status and retry"))
@@ -130,7 +169,7 @@ describe("MintAuthorizationAction pending retry", () => {
 
     fireEvent.click(screen.getByText("Check status and retry"))
     fireEvent.click(await screen.findByText("Clear and retry"))
-    await waitFor(() => expect(mocks.removePendingMint).toHaveBeenCalledWith(`0x${"11".repeat(32)}`))
+    await waitFor(() => expect(mocks.removePendingMint).toHaveBeenCalledWith(pendingExpectation))
     await waitFor(() => expect(screen.getByText("Mint on Base")).toBeEnabled())
   })
 

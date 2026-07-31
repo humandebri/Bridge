@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { useAccount, useChainId, useWriteContract } from "wagmi"
 import { toHex } from "viem"
@@ -24,10 +24,12 @@ import {
   contractAuthorization,
   validateMintAuthorization,
 } from "@/lib/mint-authorization"
+import { receiptContainsExactDepositMint, type ExpectedDepositMint } from "@/lib/deposit-mint-finalization"
 import {
   readPendingMint,
   removePendingMint,
   savePendingMint,
+  type PendingMintExpectation,
 } from "@/lib/pending-confirmations"
 
 const attemptedAutoMintPrompts = new Set<string>()
@@ -53,10 +55,27 @@ export function MintAuthorizationAction({
   const queryClient = useQueryClient()
   const runtime = useRuntimeValidation(chainId, { enabled: true, gcTime: Infinity, staleTime: Infinity })
   const authorization = record.mint_authorization[0]
-  const depositId = authorization ? contractAuthorization(authorization).depositId : undefined
+  const contract = useMemo(
+    () => authorization ? contractAuthorization(authorization) : undefined,
+    [authorization],
+  )
+  const pendingExpectation: PendingMintExpectation | undefined = useMemo(
+    () => authorization && contract
+      ? {
+        depositId: contract.depositId,
+        authorizationDigest: toHex(Uint8Array.from(authorization.digest)),
+        recipient: contract.recipient,
+        grossAmount: contract.grossAmount.toString(),
+        chargedServiceFee: contract.chargedServiceFee.toString(),
+        mintedAmount: (contract.grossAmount - contract.chargedServiceFee).toString(),
+      }
+      : undefined,
+    [authorization, contract],
+  )
   const authorizationAvailable = "AuthorizationAvailable" in record.state
-  const [pending, setPending] = useState(() => depositId ? readPendingMint(depositId) : undefined)
+  const [pending, setPending] = useState(() => pendingExpectation ? readPendingMint(pendingExpectation) : undefined)
   const [receiptConfirmed, setReceiptConfirmed] = useState(false)
+  const [identityConflict, setIdentityConflict] = useState(false)
   const [retryDialogOpen, setRetryDialogOpen] = useState(false)
   const autoPromptKey = autoPromptOwner && authorization
     ? `${autoPromptOwner}:${toHex(Uint8Array.from(authorization.digest))}`
@@ -71,16 +90,18 @@ export function MintAuthorizationAction({
   })
 
   useEffect(() => {
-    if (!depositId || !pending || receiptConfirmed || !authorizationAvailable) return
+    if (!pendingExpectation || !pending || receiptConfirmed || identityConflict || !authorizationAvailable) return
     let active = true
     const checkReceipt = async () => {
       try {
-        const receipt = await basePublicClient.getTransactionReceipt({ hash: pending })
+        const receipt = await basePublicClient.getTransactionReceipt({ hash: pending.transactionHash })
         if (active) {
-          if (receipt.status === "success") {
+          if (receipt.status === "success" && receiptMatchesCurrentAuthorization(receipt.logs, pendingExpectation)) {
             setReceiptConfirmed(true)
+          } else if (receipt.status === "success") {
+            setIdentityConflict(true)
           } else {
-            await removePendingMint(depositId)
+            await removePendingMint(pendingExpectation)
             setPending(undefined)
           }
         }
@@ -92,12 +113,12 @@ export function MintAuthorizationAction({
       active = false
       window.clearInterval(timer)
     }
-  }, [authorizationAvailable, depositId, pending, receiptConfirmed])
+  }, [authorizationAvailable, identityConflict, pending, pendingExpectation, receiptConfirmed])
 
   useEffect(() => {
-    if (!depositId || !pending || authorizationAvailable) return
-    void removePendingMint(depositId).then(() => setPending(undefined))
-  }, [authorizationAvailable, depositId, pending])
+    if (!pendingExpectation || !pending || authorizationAvailable) return
+    void removePendingMint(pendingExpectation).then(() => setPending(undefined))
+  }, [authorizationAvailable, pending, pendingExpectation])
 
   const mint = useMutation({
     mutationFn: async () => {
@@ -115,13 +136,22 @@ export function MintAuthorizationAction({
           args: [validated.authorization, validated.signature],
         }),
       )
-      await savePendingMint(validated.authorization.depositId, hash)
-      setPending(hash)
+      const expected = pendingExpectation
+      if (!expected || validated.digest.toLowerCase() !== expected.authorizationDigest.toLowerCase()) {
+        throw new Error("Mint authorization changed before transaction persistence")
+      }
+      const pendingMint = { ...expected, transactionHash: hash }
+      await savePendingMint(pendingMint)
+      setPending(pendingMint)
       const receipt = await basePublicClient.waitForTransactionReceipt({ hash })
       if (receipt.status !== "success") {
-        await removePendingMint(validated.authorization.depositId)
+        await removePendingMint(expected)
         setPending(undefined)
         throw new Error("Base mint transaction reverted")
+      }
+      if (!receiptMatchesCurrentAuthorization(receipt.logs, expected)) {
+        setIdentityConflict(true)
+        throw new Error("Base receipt does not contain the exact current DepositMinted event")
       }
       setReceiptConfirmed(true)
       return { hash, recipient: validated.recipient }
@@ -147,8 +177,8 @@ export function MintAuthorizationAction({
   })
 
   const releasePendingForRetry = async () => {
-    if (!depositId) return
-    await removePendingMint(depositId)
+    if (!pendingExpectation) return
+    await removePendingMint(pendingExpectation)
     setPending(undefined)
     setReceiptConfirmed(false)
     setRetryDialogOpen(false)
@@ -174,12 +204,13 @@ export function MintAuthorizationAction({
       || baseClock.isStale
       || expired
       || mintBlockedReason
+      || identityConflict
       || pending
       || mint.isPending
       || write.isPending) return
     attemptedAutoMintPrompts.add(autoPromptKey)
     mint.mutate()
-  }, [address, authorizationAvailable, autoPromptKey, baseClock.isError, baseClock.isStale, baseTimestamp, chainId, expired, mint, mintBlockedReason, pending, recipient, write.isPending])
+  }, [address, authorizationAvailable, autoPromptKey, baseClock.isError, baseClock.isStale, baseTimestamp, chainId, expired, identityConflict, mint, mintBlockedReason, pending, recipient, write.isPending])
 
   if (!authorization || !authorizationAvailable) return null
   const remaining = baseTimestamp === undefined
@@ -194,9 +225,11 @@ export function MintAuthorizationAction({
       <p className="font-bold text-black">Mint Authorization ready</p>
       <p className="mt-1 text-[var(--muted)]">Mint recipient {recipient.slice(0, 10)}… · Time remaining {remaining === undefined ? "Checking Base time" : formatRemaining(remaining)}</p>
       {payerDiffers && <p className="mt-1 text-[#335f9d]">The connected wallet pays gas only; the signed authorization fixes the mint recipient.</p>}
-      {pending && <p className="mt-1 text-[#335f9d]">Submitted {pending.slice(0, 12)}… — {receiptConfirmed ? "Base mint confirmed." : "Checking Base receipt."}</p>}
+      {pending && <p className="mt-1 text-[#335f9d]">Submitted {pending.transactionHash.slice(0, 12)}… — {receiptConfirmed ? "Base mint confirmed." : identityConflict ? "Transaction does not match this authorization." : "Checking Base receipt."}</p>}
     </>}
-    {receiptConfirmed && pending
+    {identityConflict
+      ? <p className="font-bold text-[#b42318]">Deposit identity conflict. Do not submit another transaction.</p>
+      : receiptConfirmed && pending
       ? <p className="font-bold text-[#176b3a]">Minted on Base</p>
       : expired
       ? <div className="space-y-2">
@@ -207,14 +240,14 @@ export function MintAuthorizationAction({
         </div>
       : <div className="space-y-1">
           {mintBlockedReason && <p className="text-xs font-bold text-[#8a4b08]">{mintBlockedReason}</p>}
-          <Button size={compact ? "sm" : "lg"} className={compact ? "" : "mt-3 w-full"} disabled={Boolean(mintBlockedReason) || !address || baseTimestamp === undefined || baseClock.isError || baseClock.isStale || Boolean(pending) || mint.isPending || write.isPending} onClick={() => {
+          <Button size={compact ? "sm" : "lg"} className={compact ? "" : "mt-3 w-full"} disabled={Boolean(mintBlockedReason) || identityConflict || !address || baseTimestamp === undefined || baseClock.isError || baseClock.isStale || Boolean(pending) || mint.isPending || write.isPending} onClick={() => {
             if (autoPromptKey) attemptedAutoMintPrompts.add(autoPromptKey)
             mint.mutate()
           }}>
               {pending ? "Base transaction pending" : mint.isPending ? "Minting…" : "Mint on Base"}
             </Button>
         </div>}
-    {pending && !receiptConfirmed && <Button
+    {pending && !receiptConfirmed && !identityConflict && <Button
       size="sm"
       variant="ghost"
       disabled={verifyRetry.isPending}
@@ -238,6 +271,26 @@ export function MintAuthorizationAction({
       </DialogContent>
     </Dialog>
   </div>
+}
+
+function receiptMatchesCurrentAuthorization(
+  logs: readonly { address: `0x${string}`; data: `0x${string}`; topics: readonly `0x${string}`[] }[],
+  expected: PendingMintExpectation,
+): boolean {
+  if (!deploymentProfile.bridgeAddress) return false
+  const mint: ExpectedDepositMint = {
+    depositId: expected.depositId,
+    recipient: expected.recipient,
+    authorizationDigest: expected.authorizationDigest,
+    grossAmount: BigInt(expected.grossAmount),
+    serviceFee: BigInt(expected.chargedServiceFee),
+    mintedAmount: BigInt(expected.mintedAmount),
+  }
+  return receiptContainsExactDepositMint(
+    mint,
+    logs,
+    deploymentProfile.bridgeAddress,
+  )
 }
 
 function formatRemaining(seconds: bigint): string {

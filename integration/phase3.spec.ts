@@ -48,7 +48,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(bridgeWasm), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
@@ -505,7 +505,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(29);
+    expect(config.schema_version).toBe(30);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(10_000n);
     expect(config.notification_rate_limit_window_seconds).toBe(600n);
@@ -624,6 +624,20 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
   });
 
+  async function processed_candidate_is_rejected_before_ledger_pull() {
+    const { ledger, evm, bridge } = await setup();
+    await (evm.actor as any).set_processed_deposit(true);
+    const callsBefore = await (ledger.actor as any).ledger_transfer_calls();
+
+    expect(await requestDefaultDeposit(bridge)).toEqual({
+      Err: { DepositIdentityConflict: null },
+    });
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(callsBefore);
+    expect(await (ledger.actor as any).ledger_transactions()).toHaveLength(0);
+  }
+
+  it("rejects a processed candidate Deposit ID before the Ledger pull", processed_candidate_is_rejected_before_ledger_pull);
+
   it("does not make Deposit admission or Mint Authorization depend on the Mint Signer ETH balance", async () => {
     const { ledger, evm, bridge } = await setup();
     await (evm.actor as any).set_eth_balance(0n);
@@ -738,7 +752,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(2);
   });
 
-  it("reuses a finalized Base Mint snapshot within the admission TTL", async () => {
+  it("uses one fresh Finalized observation for every Deposit candidate", async () => {
     const { evm, bridge } = await setup();
     const before = await (evm.actor as any).eth_call_count();
     const first: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
@@ -749,7 +763,7 @@ describe("Phase 3 PocketIC saga", () => {
     const second: any = await (bridge.actor as any).request_deposit({ owner_sequence: 1n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 20_000n, max_service_fee: 10n });
     const afterSecond = await (evm.actor as any).eth_call_count();
     expect(afterQuote).toBeGreaterThan(afterFirst);
-    expect(afterSecond).toBe(afterQuote + 1n);
+    expect(afterSecond - afterQuote).toBe(afterFirst - before);
     expect(second).toHaveProperty("Ok.state.EscrowedUnquoted");
   });
 
@@ -1299,6 +1313,39 @@ describe("Phase 3 PocketIC saga", () => {
     )).toBe(true);
   });
 
+  async function processed_id_with_another_digest_cannot_move_refund_funds() {
+    const { ledger, evm, bridge } = await setup();
+    const result: any = await requestDefaultDeposit(bridge);
+    const authorization = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
+    const transactionHash = new Uint8Array(32).fill(0x54);
+    await evm.actor.set_observed_transaction(
+      transactionHash,
+      authorization.verifying_contract,
+      new Uint8Array(20).fill(0x77),
+      authorization.finalized_block_number,
+    );
+    await evm.actor.set_mint_log([{
+      deposit_id: authorization.deposit_id,
+      recipient: authorization.recipient,
+      authorization_digest: new Uint8Array(32).fill(0xff),
+      gross_amount: authorization.gross_amount,
+      charged_service_fee: authorization.charged_service_fee,
+      minted_amount: authorization.gross_amount - authorization.charged_service_fee,
+      transaction_hash: transactionHash,
+    }]);
+    await evm.actor.set_processed_deposit(true);
+    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+
+    expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id))
+      .toEqual({ Err: { DepositIdentityConflict: null } });
+    expect(await (ledger.actor as any).ledger_transactions()).toHaveLength(1);
+    const stored: any = await bridge.actor.get_deposit(result.Ok.deposit_id);
+    expect(phaseName(stored[0].state)).toBe("RefundAvailable");
+    expect(stored[0].refund).toEqual([]);
+  }
+
+  it("keeps funds fixed when a processed Deposit ID has only another authorization digest", processed_id_with_another_digest_cannot_move_refund_funds);
+
   it("does not refund when finalized Base RPC observations disagree", async () => {
     const { evm, bridge } = await setup();
     const result: any = await requestDefaultDeposit(bridge);
@@ -1608,7 +1655,7 @@ describe("Phase 3 PocketIC saga", () => {
       expect(seeded.Ok).toBe(100);
     }
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(29);
+    expect(before.schema_version).toBe(30);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.retained_audit_events).toBe(10_000n);
     expect(before.settlement_scheduler.scheduled).toBe(10_000n);
@@ -1627,7 +1674,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(29);
+    expect(after.schema_version).toBe(30);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(10_000n);
     expect(await (bridge.actor as any).get_withdrawal(firstId)).toHaveLength(1);

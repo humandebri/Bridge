@@ -1,7 +1,7 @@
 use ic_sqlite_vfs::MemoryId;
 
-pub const SCHEMA_VERSION: u16 = 29;
-pub(super) const WIRE_VERSION: u8 = 25;
+pub const SCHEMA_VERSION: u16 = 30;
+pub(super) const WIRE_VERSION: u8 = 26;
 
 pub const RETIRED_STABLE_STRUCTURE_MEMORY_IDS: core::ops::RangeInclusive<u8> = 0..=32;
 pub const SQLITE_MEMORY_ID: MemoryId = MemoryId::new(120);

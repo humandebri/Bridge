@@ -108,6 +108,7 @@ pub struct PublicConfig {
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
     pub timelock_contract: Vec<u8>,
+    pub deployment_instance_id: Vec<u8>,
     pub ledger_canister_id: candid::Principal,
     pub ledger_fee: u128,
     pub index_canister_id: candid::Principal,
@@ -423,6 +424,16 @@ fn map_deposit_refund_observation_error(
     }
 }
 
+fn map_deposit_refund_exact_mint_error(
+    error: evm_rpc::ObservationError,
+) -> api::RequestDepositRefundError {
+    if matches!(error, evm_rpc::ObservationError::BaseStateMismatch) {
+        api::RequestDepositRefundError::DepositIdentityConflict
+    } else {
+        map_deposit_refund_observation_error("request_deposit_refund_exact_mint", error)
+    }
+}
+
 #[ic_cdk::update]
 async fn request_deposit_refund(
     deposit_id: Vec<u8>,
@@ -638,12 +649,7 @@ async fn request_deposit_refund(
                             observation.finalized.block_number,
                         )
                         .await
-                        .map_err(|error| {
-                            map_deposit_refund_observation_error(
-                                "request_deposit_refund_exact_mint",
-                                error,
-                            )
-                        })?;
+                        .map_err(map_deposit_refund_exact_mint_error)?;
                         STORE.with(|store| {
                             let mut store = store.borrow_mut();
                             let mut deposit = store
@@ -1216,6 +1222,7 @@ fn get_public_config() -> PublicConfig {
             base_chain_id: config.base_chain_id,
             bridge_contract: config.bridge_contract,
             timelock_contract: config.timelock_contract,
+            deployment_instance_id: config.deployment_instance_id,
             ledger_canister_id: config.ledger_canister_id,
             ledger_fee: ledger::KINIC_LEDGER_FEE.get(),
             index_canister_id: config.index_canister_id,
@@ -1527,6 +1534,16 @@ mod candid_tests {
         assert_eq!(
             bridge_core::refund_request_identity_decision(true, Some(true)),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn exact_mint_digest_mismatch_is_a_typed_identity_conflict() {
+        assert_eq!(
+            super::map_deposit_refund_exact_mint_error(
+                super::evm_rpc::ObservationError::BaseStateMismatch,
+            ),
+            super::api::RequestDepositRefundError::DepositIdentityConflict
         );
     }
 

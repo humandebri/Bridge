@@ -16,7 +16,7 @@ CIは許可済みのRust、Foundry、Vitest runnerだけを使用し、各consum
 Withdrawalの検証対象は、Base上の不可逆な`Committed` burnとCanister上の未決済債務である。Base refund、release acknowledgement、Withdrawal用EVM operationはモデルに存在しない。
 
 - Foundryはfee driftのburn前revert、固定quote、atomic burn、処理済みDeposit IDのreplay拒否を検査し、ABI snapshotはWithdrawal専用のrefund/remint selectorが存在しないことを検査する。
-- settlement、deposit admission、reservation、fee recipient rotation、fee payout、hold resolution、lease outcome、manual claimのtyped decisionはCargoとVerusが同じ実行関数本体を使用し、Verusが結果variant、全delta fieldと境界拒否を直接検査する。manifest上の`shared`義務はCargo式とVerus specで式macroを共有するpredicate proofであり、実行関数全体のproofとは呼ばない。
+- settlement、deposit admission、deposit identity preflight、reservation、fee recipient rotation、fee payout、hold resolution、lease outcome、manual claimのtyped decisionはCargoとVerusが同じ実行関数本体を使用し、Verusが結果variant、全delta fieldと境界拒否を直接検査する。manifest上の`shared`義務はCargo式とVerus specで式macroを共有するpredicate proofであり、実行関数全体のproofとは呼ばない。
 - `bridge-core/src/kernel.rs`はさらにsnapshot refresh owner、reserve observation token、settlement lease generation、canonical probe block一致、Withdrawal・reconciliation holdの派生index分類をproductionと共有し、Verusで各predicateを検査する。
 - LeanはBase supply減少とCanister債務発生、固定宛先への支払、1:1 backingに加え、frontendのFinalized成功・revert・retry判断とserialized queue更新を正式な抽象モデルとして定義する。
 - Rust/integrationはcanonical Finalized照合、Ledger成功・Duplicate・BadFee・曖昧結果、純額Fee reserve、追加EVM transaction不在を検査する。
@@ -30,7 +30,7 @@ Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal paus
 
 Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_step_preserves_safe`が受理された各生遷移について安全性を直接証明し、有限trace定理はそのlemmaから帰納する。canonical・Ledger certificateは対象identityを含むが、その履歴やRPC情報の真正性は外部仮定である。
 
-本番未デプロイのためschema v29再オープンとwire v25を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
+本番未デプロイのためschema v30再オープンとwire v26を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
 
 ## Release proof gate
 

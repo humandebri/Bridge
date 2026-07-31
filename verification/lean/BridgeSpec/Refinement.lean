@@ -126,6 +126,10 @@ theorem deposit_admission_refinement
     depositAdmissionImpl admission = admitDeposit admission := by
   simp [depositAdmissionImpl, bounded]
 
+theorem deposit_identity_preflight_refinement (processed : Bool) :
+    depositIdentityImpl processed = decideDepositIdentity processed := by
+  cases processed <;> rfl
+
 theorem reservation_refinement
     (reserved candidate : U128) (bounded : reserved.val + candidate.val ≤ maxU128) :
     reservationImpl reserved candidate =

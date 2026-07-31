@@ -136,6 +136,14 @@ def admitDeposit (a : DepositAdmission) : Option Nat :=
     some (a.grossAmount - a.serviceFee)
   else none
 
+inductive DepositIdentityDecision where
+  | allow
+  | conflict
+deriving DecidableEq
+
+def decideDepositIdentity (processed : Bool) : DepositIdentityDecision :=
+  if processed then .conflict else .allow
+
 def commitMintReservation (reserved candidate : Nat) : Nat × Nat :=
   (reserved + candidate, 0)
 

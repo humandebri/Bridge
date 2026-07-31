@@ -495,6 +495,12 @@ verus! {
     }
 
     #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
+    pub enum DepositIdentityDecision {
+        Allow,
+        Conflict,
+    }
+
+    #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
     pub struct ReservationDecision {
         pub reserved: u128,
         pub candidate: u128,
@@ -848,6 +854,23 @@ pub const fn reconciliation_hold_indexed(state: u8) -> bool {
 #[cfg(not(verus_keep_ghost))]
 pub const fn mint_admission_total(consumed: u128, reserved: u128, candidate: u128) -> Option<u128> {
     mint_admission_total_body!(consumed, reserved, candidate, u128::MAX)
+}
+
+verus! {
+    pub fn deposit_identity_decision(processed: bool) -> (result: DepositIdentityDecision)
+        ensures
+            result == if processed {
+                DepositIdentityDecision::Conflict
+            } else {
+                DepositIdentityDecision::Allow
+            },
+    {
+        if processed {
+            DepositIdentityDecision::Conflict
+        } else {
+            DepositIdentityDecision::Allow
+        }
+    }
 }
 
 verus! {

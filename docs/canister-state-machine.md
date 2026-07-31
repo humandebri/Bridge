@@ -4,8 +4,8 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-stable schema v29、record wire version v25だけを受理する。本番未デプロイのためmigration、dual-read、fallbackは持たず、旧・未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否する。
-upgrade検証はcurrent schema v29の再オープンだけを成功経路とし、それ以前のschemaを変換しない。
+stable schema v30、record wire version v26だけを受理する。本番未デプロイのためmigration、dual-read、fallbackは持たず、旧・未知schema、旧wire version、decode不能なDBはfail closedで起動を拒否する。
+upgrade検証はcurrent schema v30の再オープンだけを成功経路とし、それ以前のschemaを変換しない。
 
 `settlement_jobs`が自動・手動進行の正本である。recordとjobは同じSQLite transactionで更新し、外部`await`前に署名dispatchやLedger transfer identityを永続化する。timerは目覚ましにすぎず、lease generationとDB上の状態だけが実行権を決める。
 
@@ -13,7 +13,7 @@ Mint用Base transaction laneは存在しない。Governance laneはnonce、署�
 
 ## Deposit（ICP → Base）
 
-Deposit IDはdomain-separated hashの`(caller, owner_sequence)`で決まり、同じsequenceの異なるpayloadは`DepositConflict`になる。受付時は正式Depositとは別のfunding attempt、固定transfer identity、quota reservationだけを保存し、同じupdate callでICRC-2 pullを行う。
+Deposit IDはdomain-separated hashの`(canister ID, Base chain ID, Bridge address, deployment instance ID, caller, owner_sequence)`で決まり、同じinstall domainとsequenceの異なるpayloadは`DepositConflict`になる。受付時は同じcanonical Base snapshotで候補IDが未処理であることを確認してから、正式Depositとは別のfunding attempt、固定transfer identity、quota reservationだけを保存し、同じupdate callでICRC-2 pullを行う。
 
 ```text
 FundingAttempt
