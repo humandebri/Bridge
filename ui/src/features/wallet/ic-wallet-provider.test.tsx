@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { loadIcHistoryOwner, saveIcHistoryOwner } from "@/lib/ic-history-owner"
+import { clearIcHistoryOwner, loadIcHistoryOwner, saveIcHistoryOwner } from "@/lib/ic-history-owner"
 import { IcWalletProviderRoot, useIcWallet } from "./ic-wallet-provider"
 
 const mocks = vi.hoisted(() => ({
@@ -44,7 +44,7 @@ describe("IC wallet history restoration", () => {
   afterEach(cleanup)
 
   beforeEach(() => {
-    window.localStorage.clear()
+    clearIcHistoryOwner()
     mocks.connect.mockReset().mockResolvedValue({ owner: "2vxsx-fae" })
     mocks.disconnect.mockReset().mockResolvedValue(undefined)
   })

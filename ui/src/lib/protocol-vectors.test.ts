@@ -27,6 +27,8 @@ describe("Lean protocol conformance vectors", () => {
       "canonical_probe_count",
       "deposit_admission_cases",
       "deposit_admission_count",
+      "deposit_identity_cases",
+      "deposit_identity_count",
       "fee_payout_cases",
       "fee_payout_count",
       "fee_rotation_cases",
@@ -67,6 +69,7 @@ describe("Lean protocol conformance vectors", () => {
     expect(vectors.settlement_cases).toHaveLength(vectors.settlement_count)
     expect(vectors.payment_cases).toHaveLength(vectors.payment_count)
     expect(vectors.deposit_admission_cases).toHaveLength(vectors.deposit_admission_count)
+    expect(vectors.deposit_identity_cases).toHaveLength(vectors.deposit_identity_count)
     expect(vectors.reservation_cases).toHaveLength(vectors.reservation_count)
     expect(vectors.service_fee_cases).toHaveLength(vectors.service_fee_count)
     expect(vectors.fee_rotation_cases).toHaveLength(vectors.fee_rotation_count)
@@ -86,6 +89,7 @@ describe("Lean protocol conformance vectors", () => {
     expect(vectors.settlement_count).toBeGreaterThan(0)
     expect(vectors.payment_count).toBeGreaterThan(0)
     expect(vectors.deposit_admission_count).toBeGreaterThan(0)
+    expect(vectors.deposit_identity_count).toBeGreaterThan(0)
     expect(vectors.reservation_count).toBeGreaterThan(0)
     expect(vectors.service_fee_count).toBeGreaterThan(0)
     expect(vectors.fee_rotation_count).toBeGreaterThan(0)

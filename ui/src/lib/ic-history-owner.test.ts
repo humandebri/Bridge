@@ -1,31 +1,41 @@
 import { Principal } from "@dfinity/principal"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { clearIcHistoryOwner, icHistoryOwnerStorageKey, loadIcHistoryOwner, sameIcAccount, saveIcHistoryOwner } from "./ic-history-owner"
 
+function memoryStorage() {
+  const values = new Map<string, string>()
+  return {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value) },
+    removeItem: (key: string) => { values.delete(key) },
+  }
+}
+
 describe("remembered IC history owner", () => {
-  beforeEach(() => window.localStorage.clear())
-
   it("restores only the validated read-only owner metadata", () => {
+    const storage = memoryStorage()
     const account = { owner: Principal.anonymous().toText(), subaccount: Uint8Array.from({ length: 32 }, (_, index) => index) }
-    saveIcHistoryOwner({ account, provider: "oisy" })
+    saveIcHistoryOwner({ account, provider: "oisy" }, storage)
 
-    expect(loadIcHistoryOwner()).toEqual({ account, provider: "oisy" })
+    expect(loadIcHistoryOwner(storage)).toEqual({ account, provider: "oisy" })
   })
 
   it("rejects malformed, noncanonical, and wrong-sized stored values", () => {
+    const storage = memoryStorage()
     const key = icHistoryOwnerStorageKey()
-    window.localStorage.setItem(key, JSON.stringify({ version: 1, owner: "not-a-principal", subaccount: null, provider: "oisy" }))
-    expect(loadIcHistoryOwner()).toBeUndefined()
-    window.localStorage.setItem(key, JSON.stringify({ version: 1, owner: "aaaaa-aa", subaccount: "00", provider: "oisy" }))
-    expect(loadIcHistoryOwner()).toBeUndefined()
-    window.localStorage.setItem(key, JSON.stringify({ version: 1, owner: "aaaaa-aa", subaccount: null, provider: "unknown" }))
-    expect(loadIcHistoryOwner()).toBeUndefined()
+    storage.setItem(key, JSON.stringify({ version: 1, owner: "not-a-principal", subaccount: null, provider: "oisy" }))
+    expect(loadIcHistoryOwner(storage)).toBeUndefined()
+    storage.setItem(key, JSON.stringify({ version: 1, owner: "aaaaa-aa", subaccount: "00", provider: "oisy" }))
+    expect(loadIcHistoryOwner(storage)).toBeUndefined()
+    storage.setItem(key, JSON.stringify({ version: 1, owner: "aaaaa-aa", subaccount: null, provider: "unknown" }))
+    expect(loadIcHistoryOwner(storage)).toBeUndefined()
   })
 
   it("clears the remembered owner on explicit disconnect", () => {
-    saveIcHistoryOwner({ account: { owner: "aaaaa-aa" }, provider: "plug" })
-    clearIcHistoryOwner()
-    expect(loadIcHistoryOwner()).toBeUndefined()
+    const storage = memoryStorage()
+    saveIcHistoryOwner({ account: { owner: "aaaaa-aa" }, provider: "plug" }, storage)
+    clearIcHistoryOwner(storage)
+    expect(loadIcHistoryOwner(storage)).toBeUndefined()
   })
 
   it("does not let browser storage failures break wallet lifecycle calls", () => {
