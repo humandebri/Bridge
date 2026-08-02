@@ -7,9 +7,12 @@ import json
 import re
 from pathlib import Path
 
+from check_proof_impact import source_fingerprint
+
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
 REPORT = ROOT / "verification" / "output" / "claim-report.json"
+CLAIM_REPORT_SCHEMA = 2
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REQUIRED_SCALAR_CALLS = (
     "deadlineAccepts(",
@@ -220,16 +223,22 @@ def build_claim_report() -> dict[str, object]:
             )
             is None
         ]
+        vector_consumer = (
+            "generated-refinement-tested"
+            if vectors != "-"
+            else "not-applicable"
+        )
         kernel_strength = (
-            "refinement-tested"
-            if model_only or unreferenced_kernels
-            else "implementation-proved"
+            "implementation-proved"
+            if smt_links or (obligations and not model_only)
+            else "refinement-tested"
         )
         evidence = {
             "abstract": "proved",
-            "production_kernel": kernel_strength,
+            "production_kernel": "ownership-registered",
             "smt_scalar": "implementation-proved" if smt_links else "not-applicable",
-            "adapter": "refinement-tested" if tests else "missing",
+            "adapter": "transaction-tested" if tests else "missing",
+            "vector_consumer": vector_consumer,
             "external": "assumed" if items(assumption_ids) else "not-applicable",
         }
         reasons: list[str] = []
@@ -264,7 +273,11 @@ def build_claim_report() -> dict[str, object]:
                 f"external assumption dependency mismatch for {assumption}: "
                 f"declared={sorted(declared)} actual={sorted(actual)}"
             )
-    return {"schema": 1, "claims": results}
+    return {
+        "schema": CLAIM_REPORT_SCHEMA,
+        "source_fingerprint": source_fingerprint(),
+        "claims": results,
+    }
 
 
 def write_claim_report(report: dict[str, object], path: Path = REPORT) -> None:

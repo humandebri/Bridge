@@ -22,7 +22,7 @@ KINIC mainnet Ledgerのfeeは`100000` rawであり、stagingとの差は意図�
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv30、record wireはv26を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
+stable schemaはv31、record wireはv27を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
 
 ## 保持制限と監査
 
@@ -30,7 +30,7 @@ stable schemaはv30、record wireはv26を唯一の現行形式とする。未�
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v30またはwire v26以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
+schema v31またはwire v27以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。Ledger feeとService Feeをreview済みprofileへ同期した後、対象ownerまたは運用principalがHistoryから`continue_withdrawal`を実行する。Canisterが最新Ledger feeを再取得し、charged Service Fee以下であることを確認した場合だけ、同じrecordからreleaseを開始してguardを解除する。
 本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。
@@ -54,7 +54,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 
 - ETHはGovernance Operator addressだけへ、`governance_eth_floor_wei`を上回るまで運用者が送る。Mint Signerへ補充せず、Deposit admissionやAuthorization発行にETHを要求しない。SNS-token feeの自動交換は行わない。
 - cyclesはBridgeの30日floorとfreezing thresholdの両方を満たすことを確認する。
-- permissionlessな`notify_withdrawal`は、既定では600秒あたりglobal 60件まで有料EVM RPCを開始できる。この上限は無権限trafficによる消費速度を制限するが正当通知用の枠を予約しないため、`RateLimited`の増加とcycles減少を監視し、window上限を最悪時の許容RPC予算以下に設定する。枠枯渇時は追加通知を反復せず、攻撃またはprovider障害としてpause判断を行う。
+- permissionlessな`notify_withdrawal`は、既定では600秒あたりglobal 60件まで有料EVM RPCを開始でき、canonical confirmed eventの永続化は別のingestion上限30件で制限する。missing、pending、reverted、不正response、duplicateはingestion枠を消費しない。verification上限は無権限trafficによる消費速度を制限するが正当通知用の枠を予約しないため、Sybil trafficで枯渇したwindowでは正規通知も一時的に遅延し得る。`RateLimited`の増加とcycles減少を監視し、verification上限を最悪時の許容RPC予算以下に設定する。枠枯渇時は追加通知を反復せず、攻撃またはprovider障害としてpause判断を行う。
 - 補充後も自動resumeしない。Governanceが観測回復と資産状態を確認してからBridgeをresumeする。
 
 ## EVM RPC provider

@@ -19,7 +19,7 @@ CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 30
+CURRENT_STABLE_SCHEMA = 31
 LIVE_PUBLIC_CONFIG_ARTIFACT_KIND = "live-public-config"
 REINSTALL_INSTANCE_CHECK_ARTIFACT_KIND = "reinstall-instance-check"
 STAGES = (
@@ -212,11 +212,7 @@ def reinstall_instance_check(
         "schema_version",
         "live PublicConfig",
     )
-    if schema_version == 29:
-        if live_public_config.get("deployment_instance_id") is not None:
-            fail("v29 live PublicConfig must not contain a deployment instance ID")
-        previous = None
-    elif schema_version == CURRENT_STABLE_SCHEMA:
+    if schema_version == CURRENT_STABLE_SCHEMA:
         previous = deployment_instance_hex(
             live_public_config.get("deployment_instance_id"),
             "live PublicConfig deployment_instance_id",
@@ -224,7 +220,7 @@ def reinstall_instance_check(
         if previous == next_id:
             fail("staging reinstall rejected reuse of the live deployment instance ID")
     else:
-        fail("staging reinstall only accepts live stable schema v29 or v30")
+        fail(f"staging reinstall only accepts live stable schema v{CURRENT_STABLE_SCHEMA}")
     return {
         "live_schema_version": schema_version,
         "previous_deployment_instance_id": previous,
@@ -359,6 +355,9 @@ def validate_initialize(details: dict[str, Any], binding: dict[str, Any]) -> Non
             "index_canister_id",
             "evm_rpc_canister_id",
             "expected_bridge_signer",
+            "bridge_address",
+            "timelock_address",
+            "expected_bridge_runtime_sha256",
             "governance_operator",
             "canister_deposits_paused",
             "storage_integrity",
@@ -369,14 +368,20 @@ def validate_initialize(details: dict[str, Any], binding: dict[str, Any]) -> Non
         fail(f"staging must initialize current stable schema v{CURRENT_STABLE_SCHEMA}")
     if require_deployment_instance_id(details, "deployment_instance_id", context) != binding["deployment_instance_id"]:
         fail("initialized deployment instance ID differs from the reviewed binding")
-    if details["chain_id"] != CHAIN_ID:
+    if details["chain_id"] != binding["chain_id"]:
         fail("initialized Bridge has the wrong chain ID")
+    for field in ("bridge_address", "timelock_address", "expected_bridge_signer"):
+        require_pattern(details, field, EVM_ADDRESS, context)
+        if details[field] != binding[field]:
+            fail(f"initialized {field} differs from the reviewed binding")
+    require_pattern(details, "expected_bridge_runtime_sha256", EVM_HASH, context)
+    if details["expected_bridge_runtime_sha256"] != binding["bridge_runtime_sha256"]:
+        fail("initialized Bridge runtime differs from the reviewed binding")
     for field in ("ledger_canister_id", "index_canister_id"):
         if details[field] != binding[field]:
             fail(f"initialized {field} differs from the reviewed binding")
     if details["evm_rpc_canister_id"] != EVM_RPC_CANISTER_ID:
         fail("initialized Bridge does not use the official EVM RPC Canister")
-    require_pattern(details, "expected_bridge_signer", EVM_ADDRESS, context)
     require_pattern(details, "governance_operator", EVM_ADDRESS, context)
     require_bool(details, "canister_deposits_paused", True, context)
     if details["storage_integrity"] != "ok":
@@ -393,6 +398,8 @@ def validate_contracts(details: dict[str, Any], binding: dict[str, Any]) -> None
             "timelock_address",
             "bridge_runtime_template_sha256",
             "bsns_runtime_template_sha256",
+            "bridge_runtime_sha256",
+            "bsns_runtime_sha256",
             "deployment_block",
             "deployment_transaction_hashes",
             "mint_signer",
@@ -403,6 +410,15 @@ def validate_contracts(details: dict[str, Any], binding: dict[str, Any]) -> None
     )
     for field in ("bridge_address", "bsns_address", "timelock_address", "mint_signer", "governance_operator"):
         require_pattern(details, field, EVM_ADDRESS, context)
+    for field in ("bridge_address", "bsns_address", "timelock_address"):
+        if details[field] != binding[field]:
+            fail(f"staging {field} differs from the reviewed binding")
+    if details["mint_signer"] != binding["expected_bridge_signer"]:
+        fail("staging mint signer differs from the reviewed binding")
+    for field in ("bridge_runtime_sha256", "bsns_runtime_sha256"):
+        require_pattern(details, field, EVM_HASH, context)
+        if details[field] != binding[field]:
+            fail(f"staging {field} differs from the reviewed binding")
     if (
         details["bridge_runtime_template_sha256"] != binding["bridge_runtime_template_sha256"]
         or details["bsns_runtime_template_sha256"] != binding["bsns_runtime_template_sha256"]
@@ -647,6 +663,13 @@ def validate_binding(binding: Any) -> dict[str, Any]:
         "environment_mode",
         "activation_timelock_delay_seconds",
         "deployment_instance_id",
+        "chain_id",
+        "bridge_address",
+        "bsns_address",
+        "timelock_address",
+        "bridge_runtime_sha256",
+        "bsns_runtime_sha256",
+        "expected_bridge_signer",
     }
     exact_keys(binding, expected, "binding")
     require_pattern(binding, "source_commit", GIT_COMMIT, "binding")
@@ -655,6 +678,12 @@ def validate_binding(binding: Any) -> dict[str, Any]:
     for field in ("bridge_runtime_template_sha256", "bsns_runtime_template_sha256"):
         require_pattern(binding, field, EVM_HASH, "binding")
     require_deployment_instance_id(binding, "deployment_instance_id", "binding")
+    if require_nat(binding, "chain_id", "binding") != CHAIN_ID:
+        fail("binding has the wrong chain ID")
+    for field in ("bridge_address", "bsns_address", "timelock_address", "expected_bridge_signer"):
+        require_pattern(binding, field, EVM_ADDRESS, "binding")
+    for field in ("bridge_runtime_sha256", "bsns_runtime_sha256"):
+        require_pattern(binding, field, EVM_HASH, "binding")
     for field in ("bridge_canister_id", "ledger_canister_id", "index_canister_id"):
         require_pattern(binding, field, PRINCIPAL, "binding")
     if binding["environment_mode"] != ENVIRONMENT_MODE:
@@ -798,6 +827,13 @@ def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo
         "environment_mode": local.get("environment_mode"),
         "activation_timelock_delay_seconds": local.get("activation_timelock_delay_seconds"),
         "deployment_instance_id": profile.get("deploymentInstanceId"),
+        "chain_id": profile.get("chainId"),
+        "bridge_address": profile.get("bridgeAddress"),
+        "bsns_address": profile.get("bsnsAddress"),
+        "timelock_address": profile.get("timelockAddress"),
+        "bridge_runtime_sha256": profile.get("bridgeRuntimeHash"),
+        "bsns_runtime_sha256": profile.get("bsnsRuntimeHash"),
+        "expected_bridge_signer": profile.get("expected_bridge_signer"),
     }
     validate_binding(binding)
     timestamp = now()

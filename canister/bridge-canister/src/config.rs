@@ -32,6 +32,7 @@ pub struct BridgeInitArgs {
     pub deposit_rate_limit_per_principal: u16,
     pub notification_rate_limit_window_seconds: u64,
     pub notification_rate_limit_global: u16,
+    pub notification_ingestion_rate_limit_global: u16,
     pub settlement_rate_limit_window_seconds: u64,
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
@@ -84,6 +85,7 @@ pub(crate) struct ImmutableBridgeConfig {
     pub deposit_rate_limit_per_principal: u16,
     pub notification_rate_limit_window_seconds: u64,
     pub notification_rate_limit_global: u16,
+    pub notification_ingestion_rate_limit_global: u16,
     pub settlement_rate_limit_window_seconds: u64,
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
@@ -116,6 +118,8 @@ impl ImmutableBridgeConfig {
             deposit_rate_limit_per_principal: value.deposit_rate_limit_per_principal,
             notification_rate_limit_window_seconds: value.notification_rate_limit_window_seconds,
             notification_rate_limit_global: value.notification_rate_limit_global,
+            notification_ingestion_rate_limit_global: value
+                .notification_ingestion_rate_limit_global,
             settlement_rate_limit_window_seconds: value.settlement_rate_limit_window_seconds,
             settlement_rate_limit_global: value.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: value.settlement_rate_limit_per_principal,
@@ -153,6 +157,7 @@ impl ImmutableBridgeConfig {
             deposit_rate_limit_per_principal: self.deposit_rate_limit_per_principal,
             notification_rate_limit_window_seconds: self.notification_rate_limit_window_seconds,
             notification_rate_limit_global: self.notification_rate_limit_global,
+            notification_ingestion_rate_limit_global: self.notification_ingestion_rate_limit_global,
             settlement_rate_limit_window_seconds: self.settlement_rate_limit_window_seconds,
             settlement_rate_limit_global: self.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
@@ -250,6 +255,7 @@ impl BridgeInitArgs {
         }
         if !(60..=3_600).contains(&self.notification_rate_limit_window_seconds)
             || !(1..=100).contains(&self.notification_rate_limit_global)
+            || !(1..=100).contains(&self.notification_ingestion_rate_limit_global)
         {
             return Err(
                 "notification rate limit must satisfy 60 <= window <= 3600 and 1 <= global <= 100",
@@ -472,6 +478,12 @@ mod tests {
         args = valid_args();
         args.notification_rate_limit_global = 101;
         assert!(args.validate().is_err());
+        args = valid_args();
+        args.notification_ingestion_rate_limit_global = 0;
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.notification_ingestion_rate_limit_global = 101;
+        assert!(args.validate().is_err());
     }
 
     #[test]
@@ -519,6 +531,7 @@ mod tests {
             deposit_rate_limit_per_principal: 2,
             notification_rate_limit_window_seconds: 600,
             notification_rate_limit_global: 60,
+            notification_ingestion_rate_limit_global: 30,
             settlement_rate_limit_window_seconds: 600,
             settlement_rate_limit_global: 60,
             settlement_rate_limit_per_principal: 6,

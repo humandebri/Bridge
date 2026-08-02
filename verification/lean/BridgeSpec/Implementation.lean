@@ -108,8 +108,10 @@ def refundRequestIdentityImpl
   decideRefundRequestIdentity authenticated ownerMatch
 
 def notificationAdmissionImpl
-    (globalCount callerCount globalLimit callerLimit : U16) : Bool :=
-  notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val
+    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : U16) :
+    Bool × Bool :=
+  (notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val,
+    notificationIngestionAllowed ingestionCount.val ingestionLimit.val)
 
 def leaseLaneClaimImpl
     (targetActive targetAutomatic : Bool) (activeInLane capacity : U64) :

@@ -1171,6 +1171,17 @@ verus! {
 }
 
 verus! {
+    pub fn notification_ingestion_allowed(
+        ingestion_count: u16,
+        ingestion_limit: u16,
+    ) -> (result: bool)
+        ensures result == (ingestion_count < ingestion_limit),
+    {
+        ingestion_count < ingestion_limit
+    }
+}
+
+verus! {
     pub fn lease_lane_claim_decision(
         target_active: bool,
         target_automatic: bool,

@@ -449,7 +449,7 @@ run_policy_vector_consumers() {
 run_refinement_gate() {
   python3 "$ROOT/scripts/test_reproducible_artifacts.py" || return
   python3 "$ROOT/scripts/test_refinement_manifest.py" || return
-  python3 "$ROOT/scripts/test_claim_test_manifest.py" || return
+  python3 "$ROOT/scripts/generate_refinement_harness.py" --check || return
   python3 "$ROOT/scripts/check_refinement_manifest.py" || return
   python3 "$ROOT/scripts/check_proof_impact.py"
 }
@@ -479,15 +479,15 @@ run_proofs() {
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
-  python3 "$ROOT/scripts/check_claim_manifest.py"
   python3 "$ROOT/scripts/test_write_proof_receipt.py"
-  python3 "$ROOT/scripts/write_proof_receipt.py" \
-    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
   python3 "$ROOT/scripts/check_failure_manifests.py"
+  run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"
   run_proof_stage lean run_lean_proofs
   run_proof_stage lean-negative run_lean_failure_fixtures
   run_proof_stage policy-vector-consumers run_policy_vector_consumers
   run_proof_stage refinement-gate run_refinement_gate
+  run_proof_stage claim-transaction-tests \
+    python3 "$ROOT/scripts/check_claim_test_manifest.py"
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt
@@ -791,6 +791,7 @@ run_smoke() {
     deposit_rate_limit_per_principal = 3 : nat16;
     notification_rate_limit_window_seconds = 600 : nat64;
     notification_rate_limit_global = 60 : nat16;
+    notification_ingestion_rate_limit_global = 30 : nat16;
     settlement_rate_limit_window_seconds = 600 : nat64;
     settlement_rate_limit_global = 60 : nat16;
     settlement_rate_limit_per_principal = 6 : nat16;

@@ -12,10 +12,12 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_STAGES = (
+    "claim-manifest",
     "lean",
     "lean-negative",
     "policy-vector-consumers",
     "refinement-gate",
+    "claim-transaction-tests",
     "known-answer-consumers",
     "smt-and-negative",
     "verus-and-negative",
@@ -27,6 +29,10 @@ FINGERPRINT_SOURCE_ROOTS = (
     ("integration", frozenset({".ts"})),
     ("scripts", frozenset({"", ".mjs", ".py", ".sh"})),
     ("ui/src", frozenset({".ts", ".tsx"})),
+    (
+        "verification",
+        frozenset({".json", ".lean", ".rs", ".sol", ".toml", ".tsv"}),
+    ),
 )
 FINGERPRINT_CONFIG_FILES = (
     ".gitmodules",
@@ -259,7 +265,18 @@ def fingerprint_inputs(
         paths.update(
             path
             for path in source_root.rglob("*")
-            if path.is_file() and path.suffix in suffixes
+            if path.is_file()
+            and path.suffix in suffixes
+            and not (
+                relative_root == "verification"
+                and (
+                    "output" in path.relative_to(source_root).parts
+                    or any(
+                        part.startswith(".")
+                        for part in path.relative_to(source_root).parts
+                    )
+                )
+            )
         )
     paths.update(repo_root / relative for relative in FINGERPRINT_CONFIG_FILES)
     missing = [path for path in paths if not path.is_file()]

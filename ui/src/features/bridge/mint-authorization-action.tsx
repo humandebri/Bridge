@@ -210,12 +210,16 @@ export function MintAuthorizationAction({
   const recipient = authorization
     ? `0x${Array.from(authorization.recipient, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
     : ""
-  const baseTimestamp = heartbeat.data?.snapshot
+  const finalizedTimestamp = heartbeat.data?.snapshot?.blockTimestamp
+  const estimatedTimestamp = heartbeat.data?.snapshot
     ? heartbeat.data.snapshot.blockTimestamp + BigInt(Math.max(0, Math.floor((clockNow - heartbeat.data.checkedAt) / 1_000)))
     : undefined
-  const expired = authorization !== undefined
-    && baseTimestamp !== undefined
-    && baseTimestamp > authorization.deadline
+  const estimatedDeadlinePassed = authorization !== undefined
+    && estimatedTimestamp !== undefined
+    && estimatedTimestamp > authorization.deadline
+  const finalizedDeadlinePassed = authorization !== undefined
+    && finalizedTimestamp !== undefined
+    && finalizedTimestamp > authorization.deadline
 
   useEffect(() => {
     if (!autoPromptKey
@@ -224,10 +228,10 @@ export function MintAuthorizationAction({
       || !address
       || address.toLowerCase() !== recipient.toLowerCase()
       || chainId !== deploymentProfile.chainId
-      || baseTimestamp === undefined
+      || finalizedTimestamp === undefined
       || heartbeat.isError
       || heartbeat.isStale
-      || expired
+      || finalizedDeadlinePassed
       || mintBlockedReason
       || identityConflict
       || pending
@@ -235,13 +239,13 @@ export function MintAuthorizationAction({
       || write.isPending) return
     attemptedAutoMintPrompts.add(autoPromptKey)
     mint.mutate()
-  }, [address, authorizationAvailable, autoPromptKey, baseTimestamp, chainId, expired, heartbeat.isError, heartbeat.isStale, identityConflict, mint, mintBlockedReason, pending, recipient, write.isPending])
+  }, [address, authorizationAvailable, autoPromptKey, chainId, finalizedDeadlinePassed, finalizedTimestamp, heartbeat.isError, heartbeat.isStale, identityConflict, mint, mintBlockedReason, pending, recipient, write.isPending])
 
   if (!authorization || !authorizationAvailable) return null
-  const remaining = baseTimestamp === undefined
+  const remaining = estimatedTimestamp === undefined
     ? undefined
-    : authorization.deadline > baseTimestamp
-      ? authorization.deadline - baseTimestamp
+    : authorization.deadline > estimatedTimestamp
+      ? authorization.deadline - estimatedTimestamp
       : 0n
   const payerDiffers = Boolean(address && address.toLowerCase() !== recipient.toLowerCase())
 
@@ -256,7 +260,7 @@ export function MintAuthorizationAction({
       ? <p className="font-bold text-[#b42318]">Deposit identity conflict. Do not submit another transaction.</p>
       : receiptConfirmed && pending
       ? <p className="font-bold text-[#176b3a]">Minted on Base</p>
-      : expired
+      : finalizedDeadlinePassed
       ? <div className="space-y-2">
           <p className="text-xs font-bold text-[#8a4b08]">Expired. Claim a refund from History after Base Finalized time passes the deadline.</p>
           {onRequestRefund && <Button size="sm" variant="ghost" disabled={claimingRefund} onClick={onRequestRefund}>
@@ -264,8 +268,9 @@ export function MintAuthorizationAction({
           </Button>}
         </div>
       : <div className="space-y-1">
+          {estimatedDeadlinePassed && <p className="text-xs font-bold text-[#8a4b08]">Estimated Base time has passed the deadline. A fresh finalized check will decide whether mint or refund is available.</p>}
           {mintBlockedReason && <p className="text-xs font-bold text-[#8a4b08]">{mintBlockedReason}</p>}
-          <Button size={compact ? "sm" : "lg"} className={compact ? "" : "mt-3 w-full"} disabled={Boolean(mintBlockedReason) || identityConflict || !address || baseTimestamp === undefined || heartbeat.isError || heartbeat.isStale || Boolean(pending) || mint.isPending || write.isPending} onClick={() => {
+          <Button size={compact ? "sm" : "lg"} className={compact ? "" : "mt-3 w-full"} disabled={Boolean(mintBlockedReason) || identityConflict || !address || finalizedTimestamp === undefined || heartbeat.isError || heartbeat.isStale || Boolean(pending) || mint.isPending || write.isPending} onClick={() => {
             if (autoPromptKey) attemptedAutoMintPrompts.add(autoPromptKey)
             mint.mutate()
           }}>

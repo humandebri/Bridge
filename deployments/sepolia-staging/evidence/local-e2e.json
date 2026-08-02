@@ -18,7 +18,7 @@
     "verified": true,
     "before": {
       "status": {
-        "schema_version": 30,
+        "schema_version": 31,
         "counts": {
           "retained_audit_events": "9",
           "reconciliation_holds": "0",
@@ -185,6 +185,7 @@
         },
         "mint_authorization_epoch": "3",
         "notification_rate_limit_global": 60,
+        "notification_ingestion_rate_limit_global": 30,
         "deposit_rate_limit_window_seconds": "60",
         "base_chain_id": "31337",
         "bridge_contract": [
@@ -255,7 +256,7 @@
           3,
           3
         ],
-        "schema_version": 30,
+        "schema_version": 31,
         "governance_eth_floor_wei": "1",
         "deposit_rate_limit_global": 30,
         "pause_principal": {
@@ -1354,7 +1355,7 @@
     },
     "after": {
       "status": {
-        "schema_version": 30,
+        "schema_version": 31,
         "counts": {
           "retained_audit_events": "9",
           "reconciliation_holds": "0",
@@ -1521,6 +1522,7 @@
         },
         "mint_authorization_epoch": "3",
         "notification_rate_limit_global": 60,
+        "notification_ingestion_rate_limit_global": 30,
         "deposit_rate_limit_window_seconds": "60",
         "base_chain_id": "31337",
         "bridge_contract": [
@@ -1591,7 +1593,7 @@
           3,
           3
         ],
-        "schema_version": 30,
+        "schema_version": 31,
         "governance_eth_floor_wei": "1",
         "deposit_rate_limit_global": 30,
         "pause_principal": {

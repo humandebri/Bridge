@@ -164,12 +164,16 @@ def refundRequestIdentityCase
         (decideRefundRequestIdentity authenticated ownerMatch)) ++ "}"
 
 def notificationAdmissionCase
-    (globalCount callerCount globalLimit callerLimit : Nat) : String :=
+    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : Nat) : String :=
   "{" ++ natField "global_count" globalCount ++ "," ++
     natField "caller_count" callerCount ++ "," ++ natField "global_limit" globalLimit ++ "," ++
     natField "caller_limit" callerLimit ++ "," ++
+    natField "ingestion_count" ingestionCount ++ "," ++
+    natField "ingestion_limit" ingestionLimit ++ "," ++
     field "allowed"
-      (boolJson (notificationAdmissionAllowed globalCount callerCount globalLimit callerLimit)) ++ "}"
+      (boolJson (notificationAdmissionAllowed globalCount callerCount globalLimit callerLimit)) ++ "," ++
+    field "ingestion_allowed"
+      (boolJson (notificationIngestionAllowed ingestionCount ingestionLimit)) ++ "}"
 
 def leaseLaneDecisionName : LeaseLaneClaimDecision → String
   | .allow => "allow"
@@ -301,10 +305,10 @@ def document : String :=
     refundRequestIdentityCase true (some false),
     refundRequestIdentityCase true (some true)]
   let notificationAdmissions := [
-    notificationAdmissionCase 0 0 48 6,
-    notificationAdmissionCase 47 5 48 6,
-    notificationAdmissionCase 48 0 48 6,
-    notificationAdmissionCase 0 6 48 6]
+    notificationAdmissionCase 0 0 48 6 0 24,
+    notificationAdmissionCase 47 5 48 6 23 24,
+    notificationAdmissionCase 48 0 48 6 0 24,
+    notificationAdmissionCase 0 6 48 6 24 24]
   let leaseLanes := [
     leaseLaneCase false false 0 4,
     leaseLaneCase false false 4 4,

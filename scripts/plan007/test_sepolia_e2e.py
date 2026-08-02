@@ -48,8 +48,8 @@ class SepoliaE2ETests(unittest.TestCase):
                     "bsns_runtime_template_sha256": TX_B,
                     "state_upgrade": {
                         "verified": True,
-                        "before": {"status": {"schema_version": 30}},
-                        "after": {"status": {"schema_version": 30}},
+                        "before": {"status": {"schema_version": 31}},
+                        "after": {"status": {"schema_version": 31}},
                     },
                     "tests": {
                         "full_local_ci": "passed",
@@ -75,6 +75,12 @@ class SepoliaE2ETests(unittest.TestCase):
                     "deploymentInstanceId": TX_B,
                     "ledgerCanisterId": "ryjl3-tyaaa-aaaaa-aaaba-cai",
                     "indexCanisterId": "qhbym-qaaaa-aaaaa-aaafq-cai",
+                    "bridgeAddress": ADDRESS,
+                    "bsnsAddress": ADDRESS_B,
+                    "timelockAddress": ADDRESS_C,
+                    "bridgeRuntimeHash": TX,
+                    "bsnsRuntimeHash": TX_B,
+                    "expected_bridge_signer": ADDRESS,
                 }
             ),
             encoding="utf-8",
@@ -105,11 +111,11 @@ class SepoliaE2ETests(unittest.TestCase):
         check: dict[str, object] | None = None,
     ) -> list[dict[str, str]]:
         if live is None:
-            live = {"schema_version": 29}
+            live = {"schema_version": 31, "deployment_instance_id": [17] * 32}
         if check is None:
             check = {
-                "live_schema_version": 29,
-                "previous_deployment_instance_id": None,
+                "live_schema_version": 31,
+                "previous_deployment_instance_id": TX,
                 "next": TX_B,
             }
         artifacts = self.root / "artifacts"
@@ -149,20 +155,23 @@ class SepoliaE2ETests(unittest.TestCase):
                 "base_withdrawals_paused": True,
                 "canister_deposits_paused": True,
                 "configured_rpc_url_sha256": [H64, H64_B, H64_C],
-                "live_schema_version": 29,
-                "previous_deployment_instance_id": None,
+                "live_schema_version": 31,
+                "previous_deployment_instance_id": TX,
             }
         if stage == "install":
             return {"install_mode": "reinstall", "module_sha256": H64, "cycles_balance": 1, "controller_principals": ["aaaaa-aa"]}
         if stage == "initialize":
             return {
-                "schema_version": 30,
+                "schema_version": 31,
                 "deployment_instance_id": TX_B,
                 "chain_id": 84532,
                 "ledger_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
                 "index_canister_id": "qhbym-qaaaa-aaaaa-aaafq-cai",
                 "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
                 "expected_bridge_signer": ADDRESS,
+                "bridge_address": ADDRESS,
+                "timelock_address": ADDRESS_C,
+                "expected_bridge_runtime_sha256": TX,
                 "governance_operator": ADDRESS_B,
                 "canister_deposits_paused": True,
                 "storage_integrity": "ok",
@@ -174,6 +183,8 @@ class SepoliaE2ETests(unittest.TestCase):
                 "timelock_address": ADDRESS_C,
                 "bridge_runtime_template_sha256": TX,
                 "bsns_runtime_template_sha256": TX_B,
+                "bridge_runtime_sha256": TX,
+                "bsns_runtime_sha256": TX_B,
                 "deployment_block": 1,
                 "deployment_transaction_hashes": [TX],
                 "mint_signer": ADDRESS,
@@ -308,7 +319,7 @@ class SepoliaE2ETests(unittest.TestCase):
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
         self.assertEqual(manifest["binding"]["deployment_instance_id"], TX_B)
 
-    def test_v29_preflight_allows_missing_previous_instance(self) -> None:
+    def test_current_schema_preflight_accepts_distinct_previous_instance(self) -> None:
         sepolia_e2e.validate_preflight(
             self.details("preflight"),
             json.loads(self.manifest.read_text(encoding="utf-8"))["binding"],
@@ -316,26 +327,26 @@ class SepoliaE2ETests(unittest.TestCase):
             self.manifest,
         )
 
-    def test_v30_preflight_requires_a_distinct_previous_instance(self) -> None:
+    def test_v31_preflight_requires_a_distinct_previous_instance(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
-        details["live_schema_version"] = 30
+        details["live_schema_version"] = 31
         details["previous_deployment_instance_id"] = TX
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 30, "deployment_instance_id": [17] * 32},
+            {"schema_version": 31, "deployment_instance_id": [17] * 32},
             {
-                "live_schema_version": 30,
+                "live_schema_version": 31,
                 "previous_deployment_instance_id": TX,
                 "next": TX_B,
             },
         )
         sepolia_e2e.validate_preflight(details, binding, artifacts, self.manifest)
         for live in (
-            {"schema_version": 30},
-            {"schema_version": 30, "deployment_instance_id": TX_B},
-            {"schema_version": 30, "deployment_instance_id": f"0x{'0' * 64}"},
-            {"schema_version": 30, "deployment_instance_id": "0x11"},
-            {"schema_version": 30, "deployment_instance_id": [17] * 31},
+            {"schema_version": 31},
+            {"schema_version": 31, "deployment_instance_id": TX_B},
+            {"schema_version": 31, "deployment_instance_id": f"0x{'0' * 64}"},
+            {"schema_version": 31, "deployment_instance_id": "0x11"},
+            {"schema_version": 31, "deployment_instance_id": [17] * 31},
             {"schema_version": 28, "deployment_instance_id": TX},
         ):
             invalid_artifacts = self.reinstall_artifacts(live)
@@ -378,10 +389,10 @@ class SepoliaE2ETests(unittest.TestCase):
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 29},
+            {"schema_version": 31, "deployment_instance_id": TX},
             {
-                "live_schema_version": 29,
-                "previous_deployment_instance_id": None,
+                "live_schema_version": 31,
+                "previous_deployment_instance_id": TX,
                 "next": TX,
             },
         )
@@ -394,10 +405,10 @@ class SepoliaE2ETests(unittest.TestCase):
             )
 
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 29},
+            {"schema_version": 31, "deployment_instance_id": TX},
             {
-                "live_schema_version": 29,
-                "previous_deployment_instance_id": None,
+                "live_schema_version": 31,
+                "previous_deployment_instance_id": TX,
                 "next": TX_B,
                 "unexpected": True,
             },
@@ -423,10 +434,10 @@ class SepoliaE2ETests(unittest.TestCase):
             )
 
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 30, "deployment_instance_id": TX},
+            {"schema_version": 31, "deployment_instance_id": TX},
             {
-                "live_schema_version": 29,
-                "previous_deployment_instance_id": None,
+                "live_schema_version": 30,
+                "previous_deployment_instance_id": TX,
                 "next": TX_B,
             },
         )
@@ -467,7 +478,7 @@ class SepoliaE2ETests(unittest.TestCase):
             )
 
     def test_node_checker_output_is_accepted_by_manifest_validation(self) -> None:
-        live = {"schema_version": 30, "deployment_instance_id": [17] * 32}
+        live = {"schema_version": 31, "deployment_instance_id": [17] * 32}
         live_path = self.root / "node-live-public-config.json"
         live_path.write_text(json.dumps(live), encoding="utf-8")
         output = subprocess.run(
@@ -483,7 +494,7 @@ class SepoliaE2ETests(unittest.TestCase):
         ).stdout
         check = json.loads(output)
         details = self.details("preflight")
-        details["live_schema_version"] = 30
+        details["live_schema_version"] = 31
         details["previous_deployment_instance_id"] = TX
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         sepolia_e2e.validate_preflight(
@@ -506,6 +517,40 @@ class SepoliaE2ETests(unittest.TestCase):
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "differs"):
             sepolia_e2e.validate_initialize(details, binding)
 
+    def test_deployment_identity_rejects_each_contract_tuple_drift(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        mutations = {
+            "bridge_address": ADDRESS_C,
+            "bsns_address": ADDRESS_C,
+            "timelock_address": ADDRESS,
+            "bridge_runtime_sha256": TX_B,
+            "bsns_runtime_sha256": TX,
+            "mint_signer": ADDRESS_B,
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                details = self.details("contracts")
+                details[field] = value
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "differs"):
+                    sepolia_e2e.validate_contracts(details, binding)
+
+    def test_public_config_identity_rejects_each_shared_field_drift(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        mutations = {
+            "chain_id": 1,
+            "bridge_address": ADDRESS_C,
+            "timelock_address": ADDRESS,
+            "expected_bridge_runtime_sha256": TX_B,
+            "expected_bridge_signer": ADDRESS_B,
+            "deployment_instance_id": TX,
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                details = self.details("initialize")
+                details[field] = value
+                with self.assertRaises(sepolia_e2e.EvidenceError):
+                    sepolia_e2e.validate_initialize(details, binding)
+
     def test_upgrade_hash_drift_is_rejected(self) -> None:
         details = self.details("wallet_e2e")
         details["same_wasm_upgrade"]["after_state_sha256"] = H64_B
@@ -518,7 +563,7 @@ class SepoliaE2ETests(unittest.TestCase):
         local["state_upgrade"]["before"]["status"]["schema_version"] = 28
         local["state_upgrade"]["after"]["status"]["schema_version"] = 28
         self.local.write_text(json.dumps(local), encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must use stable schema v30"):
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must use stable schema v31"):
             sepolia_e2e.initialize(self.manifest, self.local, self.profile)
 
     def test_artifact_hash_drift_is_rejected(self) -> None:

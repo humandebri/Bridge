@@ -55,13 +55,14 @@ class CiModeTests(unittest.TestCase):
             ["run_versions", "run_rust", "run_contracts", "run_proofs", "run_ui", "run_icp_build"],
         )
 
-    def test_proofs_build_claim_evidence_before_the_first_receipt(self) -> None:
+    def test_proofs_use_independent_claim_stages(self) -> None:
         body = function_body("run_proofs")
-        claim_manifest = body.index('python3 "$ROOT/scripts/check_claim_manifest.py"')
         receipt_regression = body.index('python3 "$ROOT/scripts/test_write_proof_receipt.py"')
-        first_receipt = body.index('python3 "$ROOT/scripts/write_proof_receipt.py"')
-        self.assertLess(claim_manifest, first_receipt)
-        self.assertLess(receipt_regression, first_receipt)
+        claim_manifest = body.index(
+            'run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"'
+        )
+        self.assertLess(receipt_regression, claim_manifest)
+        self.assertIn("run_proof_stage claim-transaction-tests", body)
 
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
         body = function_body("run_proof_stage")

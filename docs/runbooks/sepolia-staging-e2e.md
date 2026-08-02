@@ -54,8 +54,8 @@ preflight
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
 `reinstall` の前には、live `public_config` をJSONへ保存し、次のgateを必ず通す。
-v29からv30への初回reinstallだけは旧instance IDなしを許可する。v30以降はprofileの新IDが
-live IDと異なることを要求し、欠落、ゼロ値、同一ID、未知schemaをfail closedにする。
+現行v31のreinstallではprofileの新IDがlive IDと異なることを要求し、欠落、ゼロ値、
+同一ID、旧・未知schemaをfail closedにする。
 出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、
 manifest検証でも同じ比較を行う。
 

@@ -21,6 +21,9 @@ const mocks = vi.hoisted(() => ({
   exactMintReceiptFinalization: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  heartbeatAgeMs: { value: 0 },
+  heartbeatTimestamp: { value: 1_000n },
+  authorizationDeadline: { value: 2_000n },
 }))
 
 vi.mock("wagmi", () => ({
@@ -35,9 +38,9 @@ vi.mock("@/features/status/use-status", () => ({
     data: {
       ready: true,
       blockers: [],
-      checkedAt: Date.now(),
+      checkedAt: Date.now() - mocks.heartbeatAgeMs.value,
       snapshot: {
-        blockTimestamp: 1_000n,
+        blockTimestamp: mocks.heartbeatTimestamp.value,
         bridgeSigner: "0x0303030303030303030303030303030303030303",
         mintAuthorizationEpoch: 1n,
         depositsPaused: false,
@@ -68,7 +71,7 @@ vi.mock("@/lib/mint-authorization", () => ({
     grossAmount: 500_000_000n,
     maxServiceFee: 50_000_000n,
     chargedServiceFee: 50_000_000n,
-    deadline: 2_000n,
+    deadline: mocks.authorizationDeadline.value,
     authorizationEpoch: 1n,
   }),
   validateMintAuthorization: mocks.validateMintAuthorization,
@@ -157,6 +160,9 @@ describe("MintAuthorizationAction pending retry", () => {
     mocks.savePendingMint.mockReset().mockResolvedValue(undefined)
     mocks.toastSuccess.mockReset()
     mocks.toastError.mockReset()
+    mocks.heartbeatAgeMs.value = 0
+    mocks.heartbeatTimestamp.value = 1_000n
+    mocks.authorizationDeadline.value = 2_000n
     mocks.useAccount.mockReset().mockReturnValue({
       address: "0x0000000000000000000000000000000000000001",
     })
@@ -329,5 +335,39 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(screen.getByText("Mint on Base")).toBeDisabled()
     fireEvent.click(screen.getByText("Mint on Base"))
     expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+  })
+
+  it("does not enable refund from a locally extrapolated timestamp", async () => {
+    mocks.readPendingMint.mockReturnValue(undefined)
+    mocks.heartbeatAgeMs.value = 2_000_000
+    const onRequestRefund = vi.fn()
+
+    render(<MintAuthorizationAction record={record} onRequestRefund={onRequestRefund} />, { wrapper: Wrapper })
+
+    expect(await screen.findByText("Estimated Base time has passed the deadline. A fresh finalized check will decide whether mint or refund is available.")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Claim refund" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Mint on Base" })).toBeEnabled()
+  })
+
+  it("keeps mint available when finalized time is exactly the deadline", async () => {
+    mocks.readPendingMint.mockReturnValue(undefined)
+    mocks.heartbeatTimestamp.value = 2_000n
+
+    render(<MintAuthorizationAction record={record} onRequestRefund={vi.fn()} />, { wrapper: Wrapper })
+
+    expect(screen.queryByRole("button", { name: "Claim refund" })).not.toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: "Mint on Base" })).toBeEnabled()
+  })
+
+  it("enables refund only after the finalized timestamp passes the deadline", async () => {
+    mocks.readPendingMint.mockReturnValue(undefined)
+    mocks.heartbeatTimestamp.value = 2_001n
+    const onRequestRefund = vi.fn()
+
+    render(<MintAuthorizationAction record={record} onRequestRefund={onRequestRefund} />, { wrapper: Wrapper })
+
+    const button = await screen.findByRole("button", { name: "Claim refund" })
+    fireEvent.click(button)
+    expect(onRequestRefund).toHaveBeenCalledOnce()
   })
 })

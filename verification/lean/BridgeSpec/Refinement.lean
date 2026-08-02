@@ -178,9 +178,11 @@ theorem refund_request_identity_refinement
   rfl
 
 theorem notification_admission_refinement
-    (globalCount callerCount globalLimit callerLimit : U16) :
-    notificationAdmissionImpl globalCount callerCount globalLimit callerLimit =
-      notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val := by
+    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : U16) :
+    notificationAdmissionImpl globalCount callerCount globalLimit callerLimit
+        ingestionCount ingestionLimit =
+      (notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val,
+        notificationIngestionAllowed ingestionCount.val ingestionLimit.val) := by
   rfl
 
 theorem lease_lane_refinement

@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 30;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 31;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -180,6 +180,7 @@ struct RateLimits {
     deposit_per_principal: u16,
     notification_window_seconds: u64,
     notification_global: u16,
+    notification_ingestion_global: u16,
     settlement_window_seconds: u64,
     settlement_global: u16,
     settlement_per_principal: u16,
@@ -361,6 +362,7 @@ struct LivePublicConfig {
     deposit_rate_limit_per_principal: u16,
     notification_rate_limit_window_seconds: u64,
     notification_rate_limit_global: u16,
+    notification_ingestion_rate_limit_global: u16,
     settlement_rate_limit_window_seconds: u64,
     settlement_rate_limit_global: u16,
     settlement_rate_limit_per_principal: u16,
@@ -1167,6 +1169,7 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         || r.deposit_global > 100
         || !(60..=3_600).contains(&r.notification_window_seconds)
         || !(1..=100).contains(&r.notification_global)
+        || !(1..=100).contains(&r.notification_ingestion_global)
         || !(60..=3_600).contains(&r.settlement_window_seconds)
         || r.settlement_per_record == 0
         || r.settlement_per_record > r.settlement_per_principal
@@ -1346,6 +1349,7 @@ fn render_release_inputs(
         "deposit_rate_limit_per_principal": profile.rate_limits.deposit_per_principal,
         "notification_rate_limit_window_seconds": profile.rate_limits.notification_window_seconds,
         "notification_rate_limit_global": profile.rate_limits.notification_global,
+        "notification_ingestion_rate_limit_global": profile.rate_limits.notification_ingestion_global,
         "settlement_rate_limit_window_seconds": profile.rate_limits.settlement_window_seconds,
         "settlement_rate_limit_global": profile.rate_limits.settlement_global,
         "settlement_rate_limit_per_principal": profile.rate_limits.settlement_per_principal,
@@ -1981,6 +1985,7 @@ fn validate_live_public_config(
         || observed.deposit_rate_limit_per_principal != r.deposit_per_principal
         || observed.notification_rate_limit_window_seconds != r.notification_window_seconds
         || observed.notification_rate_limit_global != r.notification_global
+        || observed.notification_ingestion_rate_limit_global != r.notification_ingestion_global
         || observed.settlement_rate_limit_window_seconds != r.settlement_window_seconds
         || observed.settlement_rate_limit_global != r.settlement_global
         || observed.settlement_rate_limit_per_principal != r.settlement_per_principal
@@ -2970,6 +2975,7 @@ mod tests {
                 deposit_per_principal: 3,
                 notification_window_seconds: 600,
                 notification_global: 60,
+                notification_ingestion_global: 30,
                 settlement_window_seconds: 600,
                 settlement_global: 60,
                 settlement_per_principal: 6,
@@ -3009,6 +3015,9 @@ mod tests {
             deposit_rate_limit_per_principal: profile.rate_limits.deposit_per_principal,
             notification_rate_limit_window_seconds: profile.rate_limits.notification_window_seconds,
             notification_rate_limit_global: profile.rate_limits.notification_global,
+            notification_ingestion_rate_limit_global: profile
+                .rate_limits
+                .notification_ingestion_global,
             settlement_rate_limit_window_seconds: profile.rate_limits.settlement_window_seconds,
             settlement_rate_limit_global: profile.rate_limits.settlement_global,
             settlement_rate_limit_per_principal: profile.rate_limits.settlement_per_principal,
@@ -3149,6 +3158,14 @@ mod tests {
         let mut profile = valid_profile();
         profile.rate_limits.notification_global = 101;
         assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_ingestion_global = 0;
+        assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_ingestion_global = 101;
+        assert!(validate_profile(&profile, true).is_err());
     }
 
     #[test]
@@ -3223,6 +3240,7 @@ mod tests {
             "deposit_rate_limit_per_principal",
             "notification_rate_limit_window_seconds",
             "notification_rate_limit_global",
+            "notification_ingestion_rate_limit_global",
             "settlement_rate_limit_window_seconds",
             "settlement_rate_limit_global",
             "settlement_rate_limit_per_principal",

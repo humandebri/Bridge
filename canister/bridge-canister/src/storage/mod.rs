@@ -229,7 +229,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 30, 26);
+INSERT INTO bridge_metadata VALUES (1, 31, 27);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1140,7 +1140,8 @@ struct SettlementAdmissionControl {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct NotificationAdmissionControl {
     window_id: u64,
-    global_count: u16,
+    verification_count: u16,
+    ingestion_count: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1536,6 +1537,7 @@ pub enum StorageError {
     SequenceMismatch { expected: u64 },
     DepositsPaused,
     DepositRateLimited { retry_after_seconds: u64 },
+    NotificationRateLimited,
     RecordNotFound,
     DatabaseFailure,
     StaleSnapshotRefresh,
@@ -2841,7 +2843,7 @@ impl StableStore {
         decode(&self.deposit_admission.get()?)
     }
 
-    pub fn consume_notification_quota(
+    pub fn consume_notification_verification_quota(
         &mut self,
         now_ns: u64,
         window_seconds: u64,
@@ -2859,19 +2861,20 @@ impl StableStore {
         if admission.window_id != window_id {
             admission = NotificationAdmissionControl {
                 window_id,
-                global_count: 0,
+                verification_count: 0,
+                ingestion_count: 0,
             };
         }
         if !bridge_core::notification_admission_allowed(
-            admission.global_count,
+            admission.verification_count,
             caller_count,
             global_limit,
             caller_limit,
         ) {
             return Ok(false);
         }
-        admission.global_count = admission
-            .global_count
+        admission.verification_count = admission
+            .verification_count
             .checked_add(1)
             .ok_or(StorageError::CounterOverflow)?;
         let next_blob = encode(&admission)?;
@@ -2889,6 +2892,72 @@ impl StableStore {
             )
         })?;
         Ok(true)
+    }
+
+    pub fn consume_notification_ingestion_quota(
+        &mut self,
+        now_ns: u64,
+        window_seconds: u64,
+        ingestion_limit: u16,
+    ) -> Result<bool, StorageError> {
+        let window_ns = window_seconds.saturating_mul(1_000_000_000);
+        if window_ns == 0 || ingestion_limit == 0 {
+            return Err(StorageError::DecodeFailed);
+        }
+        let (previous_blob, next_blob) = match self.prepare_notification_ingestion_quota(
+            now_ns,
+            window_seconds,
+            ingestion_limit,
+        ) {
+            Ok(blobs) => blobs,
+            Err(StorageError::NotificationRateLimited) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_blob.as_slice(),
+                "stale notification admission",
+            )?;
+            connection.execute(
+                "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
+                params![next_blob.to_sql_bytes()],
+            )
+        })?;
+        Ok(true)
+    }
+
+    fn prepare_notification_ingestion_quota(
+        &self,
+        now_ns: u64,
+        window_seconds: u64,
+        ingestion_limit: u16,
+    ) -> Result<(StableBlob, StableBlob), StorageError> {
+        let window_ns = window_seconds.saturating_mul(1_000_000_000);
+        if window_ns == 0 || ingestion_limit == 0 {
+            return Err(StorageError::DecodeFailed);
+        }
+        let previous_blob = self.notification_admission.get()?;
+        let mut admission: NotificationAdmissionControl = decode(&previous_blob)?;
+        let window_id = now_ns / window_ns;
+        if admission.window_id != window_id {
+            admission = NotificationAdmissionControl {
+                window_id,
+                verification_count: 0,
+                ingestion_count: 0,
+            };
+        }
+        if !bridge_core::notification_ingestion_allowed(admission.ingestion_count, ingestion_limit)
+        {
+            return Err(StorageError::NotificationRateLimited);
+        }
+        admission.ingestion_count = admission
+            .ingestion_count
+            .checked_add(1)
+            .ok_or(StorageError::CounterOverflow)?;
+        Ok((previous_blob, encode(&admission)?))
     }
 
     pub fn current_mint_authorization_epoch(&self) -> Result<u64, StorageError> {
@@ -3949,6 +4018,56 @@ impl StableStore {
             .deposit_admission()?
             .base_snapshot
             .filter(|cached| cached.deposit_id == Some(deposit_id)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn cache_deposit_authorization_observation(
+        &mut self,
+        deposit_id: [u8; 32],
+        observed_at_ns: u64,
+        snapshot: BaseMintSnapshot,
+        bridge_signer: [u8; 20],
+        mint_authorization_epoch: u64,
+        deposits_paused: bool,
+        finalized_observation: FinalizedObservationRecord,
+    ) -> Result<(), StorageError> {
+        let previous_admission = self.deposit_admission.get()?;
+        let mut admission: DepositAdmissionControl = decode(&previous_admission)?;
+        let previous_progress = self.external_progress.get()?;
+        let mut progress: ExternalProgress = decode(&previous_progress)?;
+        progress.observe_finalized(finalized_observation)?;
+        admission.base_snapshot = Some(CachedBaseMintSnapshot {
+            generation: admission.refresh_generation,
+            deposit_id: Some(deposit_id),
+            observed_at_ns,
+            snapshot,
+            bridge_signer,
+            mint_authorization_epoch,
+            deposits_paused,
+        });
+        let next_admission = encode(&admission)?;
+        let next_progress = encode(&progress)?;
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_admission.as_slice(),
+                "stale deposit authorization observation",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT external_progress FROM singleton_state WHERE id = 1",
+                params![],
+                previous_progress.as_slice(),
+                "stale finalized observation",
+            )?;
+            connection.execute(
+                "UPDATE singleton_state SET deposit_admission = ?1, external_progress = ?2 WHERE id = 1",
+                params![next_admission.to_sql_bytes(), next_progress.to_sql_bytes()],
+            )
+        })?;
+        Ok(())
     }
 
     pub fn fail_base_snapshot_refresh(&mut self, owner: u64) -> Result<(), StorageError> {
@@ -6414,7 +6533,7 @@ impl StableStore {
         withdrawal: &WithdrawalRecord,
         progress: &ExternalProgress,
     ) -> Result<bool, StorageError> {
-        self.commit_new_withdrawal_release_bundle_inner(withdrawal, progress, None, None)
+        self.commit_new_withdrawal_release_bundle_inner(withdrawal, progress, None, None, None)
     }
 
     pub fn commit_new_withdrawal_release_bundle_with_rpc_audit(
@@ -6425,12 +6544,19 @@ impl StableStore {
         timestamp_ns: u64,
         audit_kinds: Vec<AuditEventKind>,
         transaction_hash: [u8; 32],
+        notification_window_seconds: u64,
+        notification_ingestion_limit: u16,
     ) -> Result<bool, StorageError> {
         self.commit_new_withdrawal_release_bundle_inner(
             withdrawal,
             progress,
             Some((caller, timestamp_ns, audit_kinds)),
             Some(transaction_hash),
+            Some((
+                timestamp_ns,
+                notification_window_seconds,
+                notification_ingestion_limit,
+            )),
         )
     }
 
@@ -6440,6 +6566,7 @@ impl StableStore {
         progress: &ExternalProgress,
         rpc_audit: Option<(Principal, u64, Vec<AuditEventKind>)>,
         notification_hash: Option<[u8; 32]>,
+        notification_ingestion: Option<(u64, u64, u16)>,
     ) -> Result<bool, StorageError> {
         if notification_hash
             .is_some_and(|hash| self.withdrawal_notification_index.get(&hash).is_some())
@@ -6484,6 +6611,11 @@ impl StableStore {
         let counters_blob = encode(&counters)?;
         let progress_blob = encode(progress)?;
         let key = withdrawal.id.bytes().to_sql_bytes();
+        let notification_blobs = notification_ingestion
+            .map(|(now_ns, window_seconds, limit)| {
+                self.prepare_notification_ingestion_quota(now_ns, window_seconds, limit)
+            })
+            .transpose()?;
 
         self.handle.update(|connection| {
             expect_blob(
@@ -6493,6 +6625,15 @@ impl StableStore {
                 previous_counters_blob.as_slice(),
                 "stale withdrawal ingest",
             )?;
+            if let Some((previous_notification, _)) = &notification_blobs {
+                expect_blob(
+                    connection,
+                    "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                    params![],
+                    previous_notification.as_slice(),
+                    "stale notification ingestion",
+                )?;
+            }
             replace_withdrawal_row(
                 connection,
                 key.clone(),
@@ -6520,12 +6661,37 @@ impl StableStore {
                 progress.last_finalized_observation_ns,
             )?;
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
-            if let Some(audit) = &prepared_audit {
+            if let (Some(audit), Some((_, next_notification))) =
+                (&prepared_audit, &notification_blobs)
+            {
+                commit_audit_batch(connection, audit)?;
+                rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, external_progress = ?2,
+                        audit_retention = ?3, notification_admission = ?4 WHERE id = 1",
+                    params![
+                        counters_blob.to_sql_bytes(),
+                        progress_blob.to_sql_bytes(),
+                        audit.retention_blob.to_sql_bytes(),
+                        next_notification.to_sql_bytes()
+                    ],
+                )?;
+            } else if let Some(audit) = &prepared_audit {
                 commit_audit_batch(connection, audit)?;
                 rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
                 connection.execute(
                     "UPDATE singleton_state SET counters = ?1, external_progress = ?2, audit_retention = ?3 WHERE id = 1",
                     params![counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+                )?;
+            } else if let Some((_, next_notification)) = &notification_blobs {
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, external_progress = ?2,
+                        notification_admission = ?3 WHERE id = 1",
+                    params![
+                        counters_blob.to_sql_bytes(),
+                        progress_blob.to_sql_bytes(),
+                        next_notification.to_sql_bytes()
+                    ],
                 )?;
             } else {
                 connection.execute(
@@ -6550,6 +6716,8 @@ impl StableStore {
         timestamp_ns: u64,
         audit_kinds: Vec<AuditEventKind>,
         transaction_hash: [u8; 32],
+        notification_window_seconds: u64,
+        notification_ingestion_limit: u16,
     ) -> Result<(), StorageError> {
         if self
             .withdrawal_notification_index
@@ -6581,6 +6749,12 @@ impl StableStore {
         let previous_admin_blob = self.admin_state.get()?;
         let withdrawal_blob = encode(withdrawal)?;
         let key = withdrawal.id.bytes().to_sql_bytes();
+        let (previous_notification_blob, notification_blob) = self
+            .prepare_notification_ingestion_quota(
+                timestamp_ns,
+                notification_window_seconds,
+                notification_ingestion_limit,
+            )?;
 
         self.handle.update(|connection| {
             expect_blob(
@@ -6589,6 +6763,13 @@ impl StableStore {
                 params![],
                 previous_counters_blob.as_slice(),
                 "stale withdrawal fee guard trip",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_notification_blob.as_slice(),
+                "stale notification ingestion",
             )?;
             expect_blob(
                 connection,
@@ -6616,12 +6797,14 @@ impl StableStore {
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
             connection.execute(
                 "UPDATE singleton_state SET counters = ?1, external_progress = ?2,
-                    admin_state = ?3, audit_retention = ?4 WHERE id = 1",
+                    admin_state = ?3, audit_retention = ?4,
+                    notification_admission = ?5 WHERE id = 1",
                 params![
                     counters_blob.to_sql_bytes(),
                     progress_blob.to_sql_bytes(),
                     admin_blob.to_sql_bytes(),
-                    audit.retention_blob.to_sql_bytes()
+                    audit.retention_blob.to_sql_bytes(),
+                    notification_blob.to_sql_bytes()
                 ],
             )?;
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
@@ -7701,6 +7884,7 @@ mod tests {
             deposit_rate_limit_per_principal: 3,
             notification_rate_limit_window_seconds: 600,
             notification_rate_limit_global: 60,
+            notification_ingestion_rate_limit_global: 30,
             settlement_rate_limit_window_seconds: 600,
             settlement_rate_limit_global: 60,
             settlement_rate_limit_per_principal: 6,
@@ -7788,6 +7972,7 @@ mod tests {
         progress: ExternalProgress,
         admin: StableBlob,
         admission: StableBlob,
+        notification_admission: StableBlob,
         retention: StableBlob,
         withdrawals: Vec<([u8; 32], StableBlob)>,
         release_indexes: Vec<([u8; 32], u8)>,
@@ -7802,6 +7987,10 @@ mod tests {
             progress: store.external_progress().expect("progress"),
             admin: store.admin_state.get().expect("admin blob"),
             admission: store.deposit_admission.get().expect("admission blob"),
+            notification_admission: store
+                .notification_admission
+                .get()
+                .expect("notification admission blob"),
             retention: store.audit_retention.get().expect("retention blob"),
             withdrawals: store
                 .withdrawals
@@ -8763,6 +8952,8 @@ mod tests {
                         charged_service_fee: 10,
                     }],
                     [94; 32],
+                    600,
+                    30,
                 )
                 .is_err());
             set_rpc_atomic_failpoint(None);
@@ -8798,6 +8989,8 @@ mod tests {
                             charged_service_fee: 10,
                         }],
                         [tag; 32],
+                        600,
+                        30,
                     )
                     .expect("trip fixture");
                 let before = rpc_atomic_snapshot(&store, None);
@@ -8865,6 +9058,8 @@ mod tests {
                     charged_service_fee: 10,
                 }],
                 [97; 32],
+                600,
+                30,
             )
             .expect("trip fee guard");
         assert!(store
@@ -9836,8 +10031,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 30);
-        assert_eq!(WIRE_VERSION, 26);
+        assert_eq!(SCHEMA_VERSION, 31);
+        assert_eq!(WIRE_VERSION, 27);
     }
 
     #[test]
@@ -11507,6 +11702,57 @@ mod tests {
 
     #[test]
     #[serial]
+    fn recovery_observation_cache_is_deposit_bound_and_survives_reopen() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        let snapshot = BaseMintSnapshot {
+            finalized_head_block_number: 10,
+            confirmed_block_timestamp: 20,
+            service_fee: Amount::new(1),
+            max_service_fee: Amount::new(2),
+            per_deposit_limit: Amount::new(100),
+            mint_window_limit: Amount::new(1_000),
+            mint_window_started_at: 0,
+            mint_window_duration: 100,
+            minted_in_window: Amount::ZERO,
+        };
+        let finalized = FinalizedObservationRecord {
+            chain_id: 8453,
+            block_number: 10,
+            block_hash: [10; 32],
+            observed_at_ns: 100,
+            bridge_signer: [7; 20],
+            runtime_sha256: [8; 32],
+        };
+        store
+            .cache_deposit_authorization_observation(
+                [42; 32], 100, snapshot, [7; 20], 3, false, finalized,
+            )
+            .expect("cache recovery observation");
+        drop(store);
+
+        let reopened = StableStore::reopen(memory).expect("reopen");
+        let cached = reopened
+            .cached_deposit_authorization_snapshot([42; 32])
+            .expect("read cache")
+            .expect("deposit-bound cache");
+        assert_eq!(cached.snapshot, snapshot);
+        assert_eq!(cached.observed_at_ns, 100);
+        assert!(reopened
+            .cached_deposit_authorization_snapshot([43; 32])
+            .expect("other cache")
+            .is_none());
+        assert_eq!(
+            reopened
+                .external_progress()
+                .expect("finalized progress")
+                .finalized_observation,
+            Some(finalized)
+        );
+    }
+
+    #[test]
+    #[serial]
     fn stale_snapshot_worker_cannot_finish_or_release_a_new_owner() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory).expect("initialize");
@@ -11596,6 +11842,8 @@ mod tests {
                 1,
                 vec![],
                 transaction_hash,
+                600,
+                30,
             )
             .expect("commit notification");
         assert_eq!(
@@ -11612,6 +11860,69 @@ mod tests {
                 .expect("reopened notification index"),
             Some(withdrawal.id.bytes())
         );
+    }
+
+    #[test]
+    #[serial]
+    fn withdrawal_ingestion_quota_commits_and_rolls_back_with_business_state() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        let first = withdrawal();
+        store
+            .commit_new_withdrawal_release_bundle_with_rpc_audit(
+                &first,
+                &ExternalProgress::default(),
+                Principal::anonymous(),
+                1,
+                vec![],
+                [0x61; 32],
+                600,
+                1,
+            )
+            .expect("consume the only ingestion slot");
+
+        let mut second = withdrawal();
+        second.id = WithdrawalId::new([0x62; 32]);
+        second.payload_hash = [0x63; 32];
+        assert_eq!(
+            store.commit_new_withdrawal_release_bundle_with_rpc_audit(
+                &second,
+                &ExternalProgress::default(),
+                Principal::anonymous(),
+                2,
+                vec![],
+                [0x62; 32],
+                600,
+                1,
+            ),
+            Err(StorageError::NotificationRateLimited)
+        );
+        assert!(store
+            .withdrawal(second.id.bytes())
+            .expect("read rejected withdrawal")
+            .is_none());
+
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize rollback store");
+        let before = rpc_atomic_snapshot(&store, None);
+        set_rpc_atomic_failpoint(Some(RpcAtomicFailpoint::Singleton));
+        assert!(store
+            .commit_new_withdrawal_release_bundle_with_rpc_audit(
+                &first,
+                &ExternalProgress::default(),
+                Principal::anonymous(),
+                1,
+                vec![],
+                [0x64; 32],
+                600,
+                1,
+            )
+            .is_err());
+        set_rpc_atomic_failpoint(None);
+        assert_eq!(rpc_atomic_snapshot(&store, None), before);
+        assert!(store
+            .consume_notification_ingestion_quota(1, 600, 1)
+            .expect("rolled-back quota remains available"));
     }
 
     #[test]

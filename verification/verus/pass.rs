@@ -556,6 +556,15 @@ fn notification_admission_checks_global_and_caller_windows(
         global_count, caller_count, global_limit, caller_limit)
 }
 
+fn notification_ingestion_checks_global_window(
+    ingestion_count: u16,
+    ingestion_limit: u16,
+) -> (result: bool)
+    ensures result <==> ingestion_count < ingestion_limit,
+{
+    kernel::notification_ingestion_allowed(ingestion_count, ingestion_limit)
+}
+
 fn lease_lane_claim_is_record_and_lane_scoped(
     target_active: bool,
     target_automatic: bool,

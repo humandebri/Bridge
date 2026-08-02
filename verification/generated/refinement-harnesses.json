@@ -1,0 +1,149 @@
+{
+  "schema": 3,
+  "consumers": [
+    {
+      "section": "canonical_probe_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_canonical_probe_cases_matches_production"
+    },
+    {
+      "section": "deposit_admission_cases",
+      "runner": "foundry",
+      "target": "contracts/test/GeneratedRefinement.t.sol",
+      "selector": "test_mint_transition_matches_lean_deposit_admission_cases"
+    },
+    {
+      "section": "deposit_admission_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_deposit_admission_cases_matches_production"
+    },
+    {
+      "section": "deposit_identity_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_deposit_identity_cases_matches_production"
+    },
+    {
+      "section": "fee_payout_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_fee_payout_cases_matches_production"
+    },
+    {
+      "section": "fee_rotation_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_fee_rotation_cases_matches_production"
+    },
+    {
+      "section": "finalization_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_finalization_cases_matches_rust_decision"
+    },
+    {
+      "section": "finalization_cases",
+      "runner": "vitest",
+      "target": "ui/src/lib/generated-refinement.test.ts",
+      "selector": "protocol_finalization_cases_matches_production"
+    },
+    {
+      "section": "funding_attempt_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_funding_attempt_cases_matches_production"
+    },
+    {
+      "section": "funding_reconciliation_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_funding_reconciliation_cases_matches_production"
+    },
+    {
+      "section": "hold_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_hold_cases_matches_production"
+    },
+    {
+      "section": "lease_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_lease_cases_matches_production"
+    },
+    {
+      "section": "lease_lane_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_lease_lane_cases_matches_production"
+    },
+    {
+      "section": "manual_claim_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_manual_claim_cases_matches_production"
+    },
+    {
+      "section": "notification_admission_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_notification_admission_cases_matches_production"
+    },
+    {
+      "section": "payment_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_payment_cases_matches_production"
+    },
+    {
+      "section": "queue_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_queue_cases_matches_rust_decision"
+    },
+    {
+      "section": "queue_cases",
+      "runner": "vitest",
+      "target": "ui/src/lib/generated-refinement.test.ts",
+      "selector": "protocol_queue_cases_matches_production"
+    },
+    {
+      "section": "quote_cases",
+      "runner": "foundry",
+      "target": "contracts/test/GeneratedRefinement.t.sol",
+      "selector": "test_protocol_quote_cases_matches_production"
+    },
+    {
+      "section": "quote_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_quote_cases_matches_production"
+    },
+    {
+      "section": "refund_request_identity_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_refund_request_identity_cases_matches_production"
+    },
+    {
+      "section": "reservation_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_reservation_cases_matches_production"
+    },
+    {
+      "section": "service_fee_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_service_fee_cases_matches_production"
+    },
+    {
+      "section": "settlement_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_settlement_cases_matches_production"
+    }
+  ]
+}

@@ -30,7 +30,7 @@ describe("Phase 3 PocketIC saga", () => {
   let pic: PocketIc | undefined;
   let serverUrl = "";
 
-  async function setup(activate = true) {
+  async function setup(activate = true, initOverrides: Record<string, unknown> = {}) {
     const mockBytes = readFileSync(mockWasm);
     const subnet = await pic!.getFiduciarySubnet();
     if (subnet === undefined) throw new Error("Fiduciary subnet was not created");
@@ -48,7 +48,8 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, notification_ingestion_rate_limit_global: 30, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    Object.assign(init, initOverrides);
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(bridgeWasm), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
@@ -109,7 +110,7 @@ describe("Phase 3 PocketIC saga", () => {
       minted_amount: authorization.gross_amount - authorization.charged_service_fee,
       transaction_hash: transactionHash,
     }]);
-    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
     const result = await (bridge.actor as any).request_deposit_refund(depositId);
     // The mock exposes one processed flag and one log list rather than a
     // deposit-keyed contract state. Do not leak one completed Mint into the
@@ -118,11 +119,19 @@ describe("Phase 3 PocketIC saga", () => {
     await evm.actor.set_mint_log([]);
     return result;
   }
+  async function advancePastSnapshotCache() {
+    await pic!.advanceTime(60_001);
+    await pic!.tick(1);
+  }
+  async function setExpiredBlockTimestamp(evm: any, timestamp: bigint) {
+    await advancePastSnapshotCache();
+    await evm.actor.set_block_timestamp(timestamp);
+  }
   async function expireUnusedAuthorization(bridge: any, evm: any, depositId: Uint8Array, timestampOffset = 1n) {
     const authorization = await awaitMintAuthorization(bridge, depositId);
     await evm.actor.set_processed_deposit(false);
     await evm.actor.set_mint_log([]);
-    await evm.actor.set_block_timestamp(authorization.deadline + timestampOffset);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + timestampOffset);
     return {
       authorization,
       result: await (bridge.actor as any).request_deposit_refund(depositId),
@@ -271,6 +280,10 @@ describe("Phase 3 PocketIC saga", () => {
     await evm.actor.set_block_timestamp(authorization.deadline);
     const boundary: any = await (bridge.actor as any).request_deposit_refund(deposit.Ok.deposit_id);
     expect(boundary).toEqual({ Err: { NotClaimable: null } });
+    const callsAfterBoundary = await (evm.actor as any).eth_call_count();
+    expect(await (bridge.actor as any).request_deposit_refund(deposit.Ok.deposit_id))
+      .toEqual({ Err: { NotClaimable: null } });
+    expect(await (evm.actor as any).eth_call_count()).toBe(callsAfterBoundary);
     let stored: any = await bridge.actor.get_deposit(deposit.Ok.deposit_id);
     expect(phaseName(stored[0].state)).toBe("AuthorizationAvailable");
     expect(stored[0].refund).toEqual([]);
@@ -288,7 +301,7 @@ describe("Phase 3 PocketIC saga", () => {
     bridge.actor.setPrincipal(owner);
     const callsBeforeExpiry = await (evm.actor as any).eth_call_count();
     const processedCallsBeforeExpiry = await (evm.actor as any).deposit_processed_call_count();
-    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
     expect(await (bridge.actor as any).request_deposit_refund(deposit.Ok.deposit_id)).toHaveProperty("Ok.state.Refunded");
     expect(await (evm.actor as any).eth_call_count()).toBeLessThanOrEqual(callsBeforeExpiry + 2n);
     expect(await (evm.actor as any).deposit_processed_call_count()).toBe(processedCallsBeforeExpiry + 1n);
@@ -306,7 +319,7 @@ describe("Phase 3 PocketIC saga", () => {
     const deposit: any = await requestDefaultDeposit(bridge);
     const authorization = await awaitMintAuthorization(bridge, deposit.Ok.deposit_id);
     await evm.actor.set_processed_deposit(false);
-    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
 
     const deferred = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
     deferred.setPrincipal(runtimePrincipal);
@@ -521,11 +534,12 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(30);
+    expect(config.schema_version).toBe(31);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(10_000n);
     expect(config.notification_rate_limit_window_seconds).toBe(600n);
     expect(config.notification_rate_limit_global).toBe(60);
+    expect(config.notification_ingestion_rate_limit_global).toBe(30);
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
     expect(config.rpc_provider_urls_sha256).toHaveLength(32);
 
@@ -906,6 +920,32 @@ describe("Phase 3 PocketIC saga", () => {
     expect(broadcasts).toHaveLength(0);
   });
 
+  it("charges ingestion quota only when the validated withdrawal is committed", async () => {
+    const { evm, bridge, runtimePrincipal } = await setup(true, {
+      notification_ingestion_rate_limit_global: 1,
+    });
+    const id = new Uint8Array(32).fill(0x68);
+    await (evm.actor as any).set_withdrawal([{
+      id,
+      owner: runtimePrincipal.toUint8Array(),
+      subaccount: new Uint8Array(32),
+      amount: 100_000n,
+      max_service_fee: 10_000n,
+      charged_service_fee: 10_000n,
+      amount_out: 90_000n,
+    }]);
+    await (evm.actor as any).set_receipt_mode({ DecodeFailure: null });
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(0x67),
+    })).toEqual({ Err: { InvalidBaseResponse: null } });
+
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(9),
+    })).toHaveProperty("Ok.Ingested");
+    expect(await (bridge.actor as any).get_withdrawal(id)).toHaveLength(1);
+  });
+
   it("never calls the Ledger before the user withdrawal reaches the finalized head", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(0xa0);
@@ -1250,7 +1290,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect((bridge.actor as any).notify_deposit_mint).toBeUndefined();
     expect(phaseName((await bridge.actor.get_deposit(result.Ok.deposit_id))[0].state)).toBe("AuthorizationAvailable");
     await evm.actor.set_processed_deposit(true);
-    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id))
       .toHaveProperty("Ok.state.Minted");
     expect(phaseName((await bridge.actor.get_deposit(result.Ok.deposit_id))[0].state)).toBe("Minted");
@@ -1262,7 +1302,7 @@ describe("Phase 3 PocketIC saga", () => {
     const authorization = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
     await evm.actor.set_processed_deposit(true);
     await evm.actor.set_mint_log([]);
-    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
     const processedCallsBeforeExpiry = await (evm.actor as any).deposit_processed_call_count();
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id)).toHaveProperty("Err");
     expect(await (evm.actor as any).deposit_processed_call_count()).toBe(processedCallsBeforeExpiry + 1n);
@@ -1301,7 +1341,7 @@ describe("Phase 3 PocketIC saga", () => {
       transaction_hash: transactionHash,
     }]);
     await evm.actor.set_processed_deposit(true);
-    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
 
     await (evm.actor as any).set_receipt_mode({ RpcFailure: null });
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id))
@@ -1343,7 +1383,7 @@ describe("Phase 3 PocketIC saga", () => {
       transaction_hash: transactionHash,
     }]);
     await evm.actor.set_processed_deposit(true);
-    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
 
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id))
       .toEqual({ Err: { DepositIdentityConflict: null } });
@@ -1359,7 +1399,7 @@ describe("Phase 3 PocketIC saga", () => {
     const { evm, bridge } = await setup();
     const result: any = await requestDefaultDeposit(bridge);
     const authorization = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
-    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
     await evm.actor.set_block_mode({ FinalizedInconsistent: null });
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id))
       .toEqual({ Err: { RpcInconsistent: null } });
@@ -1436,7 +1476,7 @@ describe("Phase 3 PocketIC saga", () => {
     let stored: any = await bridge.actor.get_deposit(result.Ok.deposit_id);
     expect(stored[0].refund).toEqual([]);
 
-    await evm.actor.set_block_timestamp(authorization.deadline + 1n);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id)).toHaveProperty("Ok.state.Refunded");
     stored = await bridge.actor.get_deposit(result.Ok.deposit_id);
     expect(phaseName(stored[0].state)).toBe("Refunded");
@@ -1664,7 +1704,7 @@ describe("Phase 3 PocketIC saga", () => {
       expect(seeded.Ok).toBe(100);
     }
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(30);
+    expect(before.schema_version).toBe(31);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.retained_audit_events).toBe(10_000n);
     expect(before.settlement_scheduler.scheduled).toBe(10_000n);
@@ -1683,7 +1723,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(30);
+    expect(after.schema_version).toBe(31);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(10_000n);
     expect(await (bridge.actor as any).get_withdrawal(firstId)).toHaveLength(1);

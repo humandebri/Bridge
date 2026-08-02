@@ -154,6 +154,10 @@ class ProofImpactTests(unittest.TestCase):
             "ui/src/lib/mint-authorization.test.ts",
             "scripts/check_tool_versions.sh",
             "scripts/plan007/evm-rpc-fault-injector",
+            "verification/claims.tsv",
+            "verification/lean/BridgeSpec/Claims.lean",
+            "verification/generated/protocol-vectors.json",
+            "verification/verus/fail/notification_ingestion_allowed.rs",
             "contracts/foundry.toml",
             "Cargo.lock",
             "pnpm-lock.yaml",
@@ -172,7 +176,7 @@ class ProofImpactTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(f"{relative}\n", encoding="utf-8")
             verification = root / "verification"
-            verification.mkdir()
+            verification.mkdir(exist_ok=True)
             (verification / "claims.tsv").write_text("claims\n", encoding="utf-8")
             consumer = root / "contracts" / "test" / "ProtocolVectors.t.sol"
             consumer.parent.mkdir(parents=True)
@@ -184,6 +188,33 @@ class ProofImpactTests(unittest.TestCase):
             after = check_proof_impact.source_fingerprint(root, manifest)
 
             self.assertNotEqual(before["digest"], after["digest"])
+
+    def test_fingerprint_changes_when_proof_evidence_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative_root, _ in check_proof_impact.FINGERPRINT_SOURCE_ROOTS:
+                (root / relative_root).mkdir(parents=True)
+            for relative in check_proof_impact.FINGERPRINT_CONFIG_FILES:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"{relative}\n", encoding="utf-8")
+            claims = root / "verification" / "claims.tsv"
+            claims.write_text("before\n", encoding="utf-8")
+            manifest = check_proof_impact.ImpactManifest((), ())
+
+            before = check_proof_impact.source_fingerprint(root, manifest)
+            claims.write_text("after\n", encoding="utf-8")
+            after = check_proof_impact.source_fingerprint(root, manifest)
+
+            self.assertNotEqual(before["digest"], after["digest"])
+
+    def test_fingerprint_excludes_generated_receipts_and_build_state(self) -> None:
+        inputs = {
+            path.relative_to(ROOT).as_posix()
+            for path in check_proof_impact.fingerprint_inputs()
+        }
+        self.assertFalse(any(path.startswith("verification/output/") for path in inputs))
+        self.assertFalse(any("/.lake/" in path for path in inputs))
 
 
 if __name__ == "__main__":

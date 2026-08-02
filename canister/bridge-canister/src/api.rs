@@ -343,6 +343,8 @@ pub async fn notify_withdrawal(
                 true,
             )),
         ],
+        config.notification_rate_limit_window_seconds,
+        config.notification_ingestion_rate_limit_global,
     )?;
     Ok(receipt)
 }
@@ -413,6 +415,7 @@ fn existing_notified_withdrawal(
 
 fn notification_commit_error(error: crate::storage::StorageError) -> NotifyWithdrawalError {
     match error {
+        crate::storage::StorageError::NotificationRateLimited => NotifyWithdrawalError::RateLimited,
         crate::storage::StorageError::Core(
             bridge_core::CoreError::ConflictingReplay | bridge_core::CoreError::PayloadConflict,
         ) => NotifyWithdrawalError::WithdrawalConflict,
@@ -453,6 +456,8 @@ fn ingest_notified_withdrawal(
     finalized_head_block_number: u64,
     stable_observation: FinalizedObservationRecord,
     rpc_audit: Vec<crate::storage::AuditEventKind>,
+    notification_window_seconds: u64,
+    notification_ingestion_limit: u16,
 ) -> Result<NotifyWithdrawalReceipt, NotifyWithdrawalError> {
     let payload_hash = notified_withdrawal_payload_hash(&observed);
     STORE.with(|store| {
@@ -525,6 +530,8 @@ fn ingest_notified_withdrawal(
                     now_ns,
                     audit,
                     transaction_hash,
+                    notification_window_seconds,
+                    notification_ingestion_limit,
                 )
                 .map_err(notification_commit_error)?;
             return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
@@ -580,14 +587,17 @@ fn ingest_notified_withdrawal(
                 },
             })
             .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
+        let now_ns = ic_cdk::api::time();
         store
             .commit_new_withdrawal_release_bundle_with_rpc_audit(
                 &withdrawal,
                 &progress,
                 ic_cdk::api::canister_self(),
-                ic_cdk::api::time(),
+                now_ns,
                 rpc_audit,
                 transaction_hash,
+                notification_window_seconds,
+                notification_ingestion_limit,
             )
             .map_err(notification_commit_error)?;
         Ok(NotifyWithdrawalReceipt::Ingested {
@@ -604,6 +614,12 @@ const BASE_SNAPSHOT_REFRESH_STALE_LOCK_NS: u64 = 300_000_000_000;
 pub(crate) struct CachedAuthorizationObservation {
     pub finalized: evm_rpc::FinalizedObservation,
     pub snapshot: evm_rpc::BridgeSnapshot,
+}
+
+impl CachedAuthorizationObservation {
+    pub(crate) fn is_fresh_at(&self, now_ns: u64) -> bool {
+        now_ns.saturating_sub(self.finalized.observed_at_ns) <= BASE_SNAPSHOT_TTL_NS
+    }
 }
 
 pub(crate) fn cached_authorization_observation(
@@ -651,6 +667,33 @@ pub(crate) fn cached_authorization_observation(
                 withdrawals_paused: false,
             },
         }))
+    })
+}
+
+pub(crate) fn cache_recovery_observation(
+    deposit_id: [u8; 32],
+    observation: &evm_rpc::RecoveryObservation,
+) -> Result<(), DepositError> {
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .cache_deposit_authorization_observation(
+                deposit_id,
+                observation.finalized.observed_at_ns,
+                observation.snapshot.mint,
+                observation.snapshot.bridge_signer,
+                observation.snapshot.mint_authorization_epoch,
+                observation.snapshot.deposits_paused,
+                FinalizedObservationRecord {
+                    chain_id: observation.finalized.chain_id,
+                    block_number: observation.finalized.block_number,
+                    block_hash: observation.finalized.block_hash,
+                    observed_at_ns: observation.finalized.observed_at_ns,
+                    bridge_signer: observation.bridge_identity.signer,
+                    runtime_sha256: observation.bridge_identity.runtime_sha256,
+                },
+            )
+            .map_err(|_| DepositError::StorageFailure)
     })
 }
 

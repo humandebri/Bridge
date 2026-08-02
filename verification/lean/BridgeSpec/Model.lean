@@ -195,20 +195,27 @@ def decideRefundRequestIdentity
     | some false => .ownerMismatch
 
 structure NotificationIsolationState where
-  persistentGlobalCount : Nat
+  persistentVerificationCount : Nat
+  persistentIngestionCount : Nat
   callerWindowCount : Nat
   settlementAdmission : Nat
   settlementJobs : Nat
 deriving DecidableEq
 
-def processNotification (state : NotificationIsolationState) : NotificationIsolationState :=
+def processNotificationVerification (state : NotificationIsolationState) : NotificationIsolationState :=
   { state with
-      persistentGlobalCount := state.persistentGlobalCount + 1
+      persistentVerificationCount := state.persistentVerificationCount + 1
       callerWindowCount := state.callerWindowCount + 1 }
+
+def processNotificationIngestion (state : NotificationIsolationState) : NotificationIsolationState :=
+  { state with persistentIngestionCount := state.persistentIngestionCount + 1 }
 
 def notificationAdmissionAllowed
     (globalCount callerCount globalLimit callerLimit : Nat) : Bool :=
   globalCount < globalLimit && callerCount < callerLimit
+
+def notificationIngestionAllowed (ingestionCount ingestionLimit : Nat) : Bool :=
+  ingestionCount < ingestionLimit
 
 inductive LeaseLaneClaimDecision where
   | allow

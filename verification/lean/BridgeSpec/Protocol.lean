@@ -741,12 +741,14 @@ theorem manual_claim_cannot_select_active_or_fresh_scheduled_job
       scheduled.2.2.1, scheduled.2.2.2]
 
 theorem notification_quota_isolation (state : NotificationIsolationState) :
-    let next := processNotification state
-    next.persistentGlobalCount = state.persistentGlobalCount + 1 ∧
-      next.callerWindowCount = state.callerWindowCount + 1 ∧
-      next.settlementAdmission = state.settlementAdmission ∧
-      next.settlementJobs = state.settlementJobs := by
-  simp [processNotification]
+    let verified := processNotificationVerification state
+    let ingested := processNotificationIngestion verified
+    verified.persistentVerificationCount = state.persistentVerificationCount + 1 ∧
+      verified.persistentIngestionCount = state.persistentIngestionCount ∧
+      ingested.persistentIngestionCount = state.persistentIngestionCount + 1 ∧
+      ingested.settlementAdmission = state.settlementAdmission ∧
+      ingested.settlementJobs = state.settlementJobs := by
+  simp [processNotificationVerification, processNotificationIngestion]
 
 structure LeaseLaneSnapshot where
   targetActive : Bool

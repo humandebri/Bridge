@@ -123,6 +123,7 @@ pub struct PublicConfig {
     pub deposit_rate_limit_per_principal: u16,
     pub notification_rate_limit_window_seconds: u64,
     pub notification_rate_limit_global: u16,
+    pub notification_ingestion_rate_limit_global: u16,
     pub settlement_rate_limit_window_seconds: u64,
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
@@ -575,6 +576,16 @@ async fn request_deposit_refund(
                 tasks::start_deposit_refund(id, reason, None).map_err(|_| Error::StorageFailure)?;
             } else {
                 let authorization = authorization.ok_or(Error::StorageFailure)?;
+                if api::cached_authorization_observation(&config, id)
+                    .map_err(|_| Error::StorageFailure)?
+                    .is_some_and(|cached| {
+                        cached.is_fresh_at(ic_cdk::api::time())
+                            && cached.snapshot.mint.confirmed_block_timestamp
+                                <= authorization.authorization.deadline
+                    })
+                {
+                    return Err(Error::NotClaimable);
+                }
                 let observation =
                     evm_rpc::recovery_observation(&config, evm_rpc::RecoveryTarget::Deposit(id))
                         .await
@@ -584,6 +595,8 @@ async fn request_deposit_refund(
                                 error,
                             )
                         })?;
+                api::cache_recovery_observation(id, &observation)
+                    .map_err(|_| Error::StorageFailure)?;
                 if observation.snapshot.mint.confirmed_block_timestamp
                     <= authorization.authorization.deadline
                 {
@@ -762,7 +775,7 @@ async fn notify_withdrawal(
     );
     let admitted = STORE
         .with(|store| {
-            store.borrow_mut().consume_notification_quota(
+            store.borrow_mut().consume_notification_verification_quota(
                 now_ns,
                 config.notification_rate_limit_window_seconds,
                 config.notification_rate_limit_global,
@@ -1238,6 +1251,8 @@ fn get_public_config() -> PublicConfig {
             deposit_rate_limit_per_principal: config.deposit_rate_limit_per_principal,
             notification_rate_limit_window_seconds: config.notification_rate_limit_window_seconds,
             notification_rate_limit_global: config.notification_rate_limit_global,
+            notification_ingestion_rate_limit_global: config
+                .notification_ingestion_rate_limit_global,
             settlement_rate_limit_window_seconds: config.settlement_rate_limit_window_seconds,
             settlement_rate_limit_global: config.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: config.settlement_rate_limit_per_principal,
@@ -1554,12 +1569,12 @@ mod candid_tests {
         for _ in 0..NotificationAdmissionGuard::PER_CALLER_LIMIT {
             let count = NotificationAdmissionGuard::caller_count(caller, 0, 600);
             assert!(store
-                .consume_notification_quota(0, 600, 60, count, 6)
+                .consume_notification_verification_quota(0, 600, 60, count, 6)
                 .expect("consume notification quota"));
             NotificationAdmissionGuard::record(caller, 0, 600);
         }
         assert!(!store
-            .consume_notification_quota(
+            .consume_notification_verification_quota(
                 0,
                 600,
                 60,
@@ -1568,16 +1583,30 @@ mod candid_tests {
             )
             .expect("enforce caller quota"));
         drop(store);
-        let mut reopened = StableStore::reopen(memory).expect("reopen");
+        let mut reopened = StableStore::reopen(memory.clone()).expect("reopen");
         assert!(reopened
-            .consume_notification_quota(0, 600, 7, 0, 6)
+            .consume_notification_verification_quota(0, 600, 7, 0, 6)
             .expect("persisted global budget"));
         assert!(!reopened
-            .consume_notification_quota(0, 600, 7, 0, 6)
+            .consume_notification_verification_quota(0, 600, 7, 0, 6)
             .expect("enforce persisted global budget"));
         assert!(reopened
-            .consume_notification_quota(600 * 1_000_000_000, 600, 7, 0, 6)
+            .consume_notification_verification_quota(600 * 1_000_000_000, 600, 7, 0, 6)
             .expect("reset notification window"));
+        assert!(reopened
+            .consume_notification_ingestion_quota(600 * 1_000_000_000, 600, 1)
+            .expect("consume canonical ingestion budget"));
+        assert!(!reopened
+            .consume_notification_ingestion_quota(600 * 1_000_000_000, 600, 1)
+            .expect("enforce canonical ingestion budget"));
+        drop(reopened);
+        let mut reopened = StableStore::reopen(memory).expect("reopen ingestion budget");
+        assert!(!reopened
+            .consume_notification_ingestion_quota(600 * 1_000_000_000, 600, 1)
+            .expect("persist canonical ingestion budget"));
+        assert!(reopened
+            .consume_notification_ingestion_quota(1_200 * 1_000_000_000, 600, 1)
+            .expect("reset canonical ingestion window"));
 
         let hash = [9; 32];
         let guard = InFlightGuard::acquire(ActionKey::Notification(hash))

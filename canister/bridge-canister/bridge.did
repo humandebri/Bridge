@@ -113,6 +113,7 @@ type BridgeInitArgs = record {
   notification_rate_limit_window_seconds : nat64;
   settlement_rate_limit_window_seconds : nat64;
   ecdsa_derivation_path : vec blob;
+  notification_ingestion_rate_limit_global : nat16;
   evm_rpc_canister_id : principal;
   deposit_rate_limit_per_principal : nat16;
   deployment_instance_id : blob;
@@ -398,6 +399,7 @@ type PublicConfig = record {
   fee_recipient : FeeRecipientConfig;
   notification_rate_limit_window_seconds : nat64;
   settlement_rate_limit_window_seconds : nat64;
+  notification_ingestion_rate_limit_global : nat16;
   evm_rpc_canister_id : principal;
   deposit_rate_limit_per_principal : nat16;
   deployment_instance_id : blob;

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-import check_claim_test_manifest
+from generate_refinement_harness import RENDERERS, Renderer, expected_outputs
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,11 +20,11 @@ MODEL = ROOT / "verification" / "lean" / "BridgeSpec" / "Model.lean"
 IMPLEMENTATION = ROOT / "verification" / "lean" / "BridgeSpec" / "Implementation.lean"
 REFINEMENT = ROOT / "verification" / "lean" / "BridgeSpec" / "Refinement.lean"
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-RUNNER_TARGETS = {
-    ("rust", "canister/bridge-core/tests/protocol_vectors.rs"),
-    ("foundry", "contracts/test/ProtocolVectors.t.sol"),
-    ("vitest", "ui/src/lib/protocol-vectors.test.ts"),
-}
+NON_GENERATED_TESTS = (
+    "canister/bridge-core/tests/protocol_vectors.rs",
+    "contracts/test/ProtocolVectors.t.sol",
+    "ui/src/lib/protocol-vectors.test.ts",
+)
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,6 @@ class Consumer:
     runner: str
     target: str
     selector: str
-    production_symbol: str
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -55,57 +54,6 @@ def declaration(source: str, keyword: str, name: str) -> str:
     return source[start.start() : end]
 
 
-def consumer_source(source: str, consumer: Consumer) -> str:
-    if consumer.runner == "rust":
-        start_pattern = rf"(?m)^fn\s+{re.escape(consumer.selector)}\s*\("
-        end_pattern = r"(?m)^fn\s+[A-Za-z_][A-Za-z0-9_]*\s*\("
-    elif consumer.runner == "foundry":
-        start_pattern = (
-            rf"(?m)^[ \t]+function\s+{re.escape(consumer.selector)}\s*\("
-        )
-        end_pattern = r"(?m)^[ \t]+function\s+[A-Za-z_][A-Za-z0-9_]*\s*\("
-    elif consumer.runner == "vitest":
-        start_pattern = (
-            rf"""(?mx)^[ \t]+(?:it|test)\s*\(\s*
-            (?P<quote>["']){re.escape(consumer.selector)}(?P=quote)\s*,
-            """
-        )
-        end_pattern = r"(?m)^(?:[ \t]+(?:it|test)\s*\(|\}\)\s*;?\s*$)"
-    else:
-        raise ValueError(f"unknown refinement runner: {consumer.runner}")
-
-    start = re.search(start_pattern, source)
-    if start is None:
-        raise ValueError(f"refinement selector is missing: {consumer.selector}")
-    following = re.search(end_pattern, source[start.end() :])
-    end = len(source) if following is None else start.end() + following.start()
-    return source[start.start() : end]
-
-
-def validate_consumer_binding(consumer: Consumer, source: str) -> None:
-    body = consumer_source(source, consumer)
-    if consumer.runner == "rust":
-        section_pattern = (
-            rf"\bvectors\s*\(\s*\)\s*\.\s*{re.escape(consumer.section)}\b"
-        )
-    elif consumer.runner == "vitest":
-        section_pattern = rf"\bvectors\s*\.\s*{re.escape(consumer.section)}\b"
-    else:
-        section_pattern = rf"""["']\.{re.escape(consumer.section)}\[[\"']"""
-    if re.search(section_pattern, body) is None:
-        raise ValueError(
-            f"refinement consumer does not consume section: "
-            f"{consumer.selector} -> {consumer.section}"
-        )
-    if re.search(
-        rf"\b{re.escape(consumer.production_symbol)}\s*\(", body
-    ) is None:
-        raise ValueError(
-            f"refinement consumer does not call production symbol: "
-            f"{consumer.selector} -> {consumer.production_symbol}"
-        )
-
-
 def parse_manifest(
     document: dict[str, object],
     manifest_text: str,
@@ -113,6 +61,7 @@ def parse_manifest(
     implementation: str,
     refinement: str,
     root: Path = ROOT,
+    renderers: dict[tuple[str, str], Renderer] = RENDERERS,
 ) -> list[Consumer]:
     if document.get("schema_version") != 3:
         raise ValueError("protocol vector schema must be exactly v3")
@@ -126,12 +75,16 @@ def parse_manifest(
 
     consumers: list[Consumer] = []
     associations: dict[str, tuple[str, str, str]] = {}
-    identities: set[tuple[str, str, str]] = set()
+    identities: set[tuple[str, str]] = set()
     for number, line in enumerate(manifest_text.splitlines(), 1):
         fields = line.split("\t")
-        if len(fields) != 8 or not all(fields):
+        if len(fields) != 5 or not all(fields):
             raise ValueError(f"invalid refinement manifest row {number}")
-        consumer = Consumer(*fields)
+        key = (fields[0], fields[4])
+        renderer = renderers.get(key)
+        if renderer is None:
+            raise ValueError(f"missing refinement renderer: {key}")
+        consumer = Consumer(*fields, renderer.target, renderer.selector)
         if not all(
             IDENTIFIER.fullmatch(value)
             for value in (
@@ -139,22 +92,12 @@ def parse_manifest(
                 consumer.abstract_definition,
                 consumer.implementation_definition,
                 consumer.theorem,
-                consumer.selector,
-                consumer.production_symbol,
             )
         ):
             raise ValueError(f"invalid refinement identifier in row {number}")
-        if (consumer.runner, consumer.target) not in RUNNER_TARGETS:
-            raise ValueError(
-                f"unsupported refinement runner target: {consumer.runner} {consumer.target}"
-            )
         target = (root / consumer.target).resolve()
         if root.resolve() not in target.parents or not target.is_file():
             raise ValueError(f"refinement consumer is missing: {consumer.target}")
-        validate_consumer_binding(
-            consumer,
-            target.read_text(encoding="utf-8"),
-        )
         association = (
             consumer.abstract_definition,
             consumer.implementation_definition,
@@ -163,7 +106,7 @@ def parse_manifest(
         previous = associations.setdefault(consumer.section, association)
         if previous != association:
             raise ValueError(f"conflicting refinement association: {consumer.section}")
-        identity = (consumer.runner, consumer.target, consumer.selector)
+        identity = (consumer.section, consumer.runner)
         if identity in identities:
             raise ValueError(f"duplicate refinement consumer: {identity}")
         identities.add(identity)
@@ -173,6 +116,12 @@ def parse_manifest(
         raise ValueError(
             f"refinement sections {sorted(associations)} do not match vectors "
             f"{sorted(vector_sections)}"
+        )
+    if identities != set(renderers):
+        raise ValueError(
+            f"renderer coverage differs from manifest: "
+            f"missing={sorted(set(renderers) - identities)} "
+            f"extra={sorted(identities - set(renderers))}"
         )
     for section, (abstract, bounded, theorem) in associations.items():
         declaration(model, "def", abstract)
@@ -203,12 +152,36 @@ def run_command(
     return result
 
 
+def validate_generated_selector_ownership(
+    consumers: list[Consumer],
+    root: Path = ROOT,
+    non_generated_tests: tuple[str, ...] = NON_GENERATED_TESTS,
+) -> None:
+    sources = {
+        target: (root / target).read_text(encoding="utf-8")
+        for target in non_generated_tests
+        if (root / target).is_file()
+    }
+    for consumer in consumers:
+        owners = [
+            target
+            for target, source in sources.items()
+            if re.search(rf"\b{re.escape(consumer.selector)}\b", source)
+        ]
+        if owners:
+            raise ValueError(
+                f"generated refinement selector has a non-generated owner: "
+                f"{consumer.selector} -> {', '.join(owners)}"
+            )
+
+
 def execute_consumer(
     consumer: Consumer,
     root: Path = ROOT,
     runner: CommandRunner = subprocess.run,
 ) -> None:
     if consumer.runner == "rust":
+        target_name = Path(consumer.target).stem
         result = run_command(
             [
                 "cargo",
@@ -217,7 +190,7 @@ def execute_consumer(
                 "-p",
                 "bridge-core",
                 "--test",
-                "protocol_vectors",
+                target_name,
                 consumer.selector,
                 "--",
                 "--exact",
@@ -237,6 +210,11 @@ def execute_consumer(
                 f"Rust refinement consumer did not pass exactly once: {consumer.selector}"
             )
     elif consumer.runner == "foundry":
+        target = Path(consumer.target)
+        try:
+            match_path = target.relative_to("contracts").as_posix()
+        except ValueError as error:
+            raise ValueError(f"Foundry consumer is outside contracts: {consumer.target}") from error
         result = run_command(
             [
                 "forge",
@@ -244,7 +222,7 @@ def execute_consumer(
                 "--root",
                 "contracts",
                 "--match-path",
-                "test/ProtocolVectors.t.sol",
+                match_path,
                 "--match-test",
                 consumer.selector,
                 "--json",
@@ -267,6 +245,11 @@ def execute_consumer(
                 f"Foundry refinement consumer did not pass exactly once: {consumer.selector}"
             )
     elif consumer.runner == "vitest":
+        target = Path(consumer.target)
+        try:
+            test_path = target.relative_to("ui").as_posix()
+        except ValueError as error:
+            raise ValueError(f"Vitest consumer is outside ui: {consumer.target}") from error
         result = run_command(
             [
                 "pnpm",
@@ -275,7 +258,7 @@ def execute_consumer(
                 "exec",
                 "vitest",
                 "run",
-                "src/lib/protocol-vectors.test.ts",
+                test_path,
                 "-t",
                 consumer.selector,
                 "--reporter=json",
@@ -300,6 +283,13 @@ def execute_consumer(
 
 
 def main() -> int:
+    stale = [
+        path.relative_to(ROOT).as_posix()
+        for path, expected in expected_outputs().items()
+        if not path.is_file() or path.read_text(encoding="utf-8") != expected
+    ]
+    if stale:
+        raise ValueError(f"generated refinement harness is stale: {', '.join(stale)}")
     consumers = parse_manifest(
         json.loads(VECTORS.read_text(encoding="utf-8")),
         MANIFEST.read_text(encoding="utf-8"),
@@ -307,13 +297,13 @@ def main() -> int:
         IMPLEMENTATION.read_text(encoding="utf-8"),
         REFINEMENT.read_text(encoding="utf-8"),
     )
+    validate_generated_selector_ownership(consumers)
     for consumer in consumers:
         execute_consumer(consumer)
         print(
             f"refinement consumer passed: {consumer.section} "
             f"{consumer.runner} {consumer.selector}"
         )
-    check_claim_test_manifest.main()
     return 0
 
 

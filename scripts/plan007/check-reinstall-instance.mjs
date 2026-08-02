@@ -23,14 +23,8 @@ export function verifyReinstallInstance(profile, livePublicConfig) {
   if (!Number.isInteger(schemaVersion)) {
     throw new Error("live PublicConfig schema_version must be an integer")
   }
-  if (schemaVersion === 29) {
-    if (livePublicConfig?.deployment_instance_id != null) {
-      throw new Error("v29 live PublicConfig must not contain a deployment instance ID")
-    }
-    return { live_schema_version: schemaVersion, previous_deployment_instance_id: null, next }
-  }
-  if (schemaVersion !== 30) {
-    throw new Error("staging reinstall only accepts live stable schema v29 or v30")
+  if (schemaVersion !== 31) {
+    throw new Error("staging reinstall only accepts live stable schema v31")
   }
   const previous = deploymentInstanceHex(
     livePublicConfig?.deployment_instance_id,

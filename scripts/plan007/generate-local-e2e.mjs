@@ -8,7 +8,7 @@ import { runtimeTemplateSha256FromFile } from "./runtime-template-hash.mjs"
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 export const LOCAL_E2E_SCHEMA_VERSION = 7
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
-export const CURRENT_STABLE_SCHEMA_VERSION = 30
+export const CURRENT_STABLE_SCHEMA_VERSION = 31
 
 export function validateUpgradeEvidence(upgrade) {
   if (!upgrade || upgrade.verified !== true) throw new Error("real E2E did not prove same-Wasm state preservation")
@@ -37,7 +37,7 @@ export function validateUpgradeEvidence(upgrade) {
     throw new Error("upgrade evidence omitted the pending Timelock operation identity")
   }
   if (state.storage_integrity !== "ok") throw new Error("upgrade evidence did not pass storage_integrity_check")
-  for (const field of ["deployment_instance_id", "deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "notification_rate_limit_window_seconds", "notification_rate_limit_global", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]) {
+  for (const field of ["deployment_instance_id", "deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "notification_rate_limit_window_seconds", "notification_rate_limit_global", "notification_ingestion_rate_limit_global", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]) {
     if (!(field in state.public_config)) throw new Error(`upgrade evidence omitted rate-limit configuration ${field}`)
   }
   if (!state.deposits.some((record) => record && record.deposit_id && "owner_sequence" in record && record.mint_authorization?.length === 1)) {
