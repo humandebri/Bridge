@@ -55,6 +55,26 @@ class CiModeTests(unittest.TestCase):
             ["run_versions", "run_rust", "run_contracts", "run_proofs", "run_ui", "run_icp_build"],
         )
 
+    def test_proofs_negotiate_independent_claim_stages(self) -> None:
+        body = function_body("run_proofs")
+        self.assertIn("test_write_proof_receipt.py", body)
+        self.assertIn("check_claim_test_manifest.py", body)
+        self.assertIn('run_proof_stage claim-manifest python3', body)
+        self.assertIn('run_proof_stage claim-transaction-tests', body)
+        self.assertIn('python3 "$ROOT/scripts/write_proof_receipt.py"', body)
+
+    def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
+        body = function_body("run_proof_stage")
+        self.assertIn('  (\n    set -e\n    "$@"\n  )\n', body)
+        refinement = function_body("run_refinement_gate")
+        self.assertIn('generate_refinement_harness.py" --check || return', refinement)
+        commands = [
+            line.strip()
+            for line in refinement.splitlines()
+            if line.strip().startswith("python3")
+        ]
+        self.assertTrue(all(command.endswith("|| return") for command in commands[:-1]))
+
     def test_new_modes_are_exposed(self) -> None:
         for mode in (
             "rust-fast",
