@@ -140,6 +140,51 @@ def run_command(
     return result
 
 
+def prepare_test_dependencies(
+    tests: Sequence[ClaimTest],
+    root: Path = ROOT,
+    runner: CommandRunner = subprocess.run,
+) -> None:
+    if not any(test.runner == "jest" for test in tests):
+        return
+    run_command(
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "--manifest-path",
+            str(root / "Cargo.toml"),
+            "--target-dir",
+            str(root / "target/test-deployment"),
+            "--target",
+            "wasm32-unknown-unknown",
+            "--release",
+            "-p",
+            "bridge-canister",
+            "--features",
+            "test-deployment",
+        ],
+        root,
+        runner,
+    )
+    run_command(
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "--manifest-path",
+            str(root / "Cargo.toml"),
+            "--target",
+            "wasm32-unknown-unknown",
+            "--release",
+            "-p",
+            "mock-external",
+        ],
+        root,
+        runner,
+    )
+
+
 def execute_test(
     test: ClaimTest,
     root: Path = ROOT,
@@ -275,6 +320,7 @@ def main() -> int:
         CLAIMS.read_text(encoding="utf-8"),
         MANIFEST.read_text(encoding="utf-8"),
     )
+    prepare_test_dependencies(tests)
     for test in tests:
         execute_test(test)
         print(f"claim transaction test passed: {test.runner} {test.symbol}")

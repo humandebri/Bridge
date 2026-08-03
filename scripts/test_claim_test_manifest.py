@@ -100,6 +100,51 @@ class ClaimTestManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "did not pass exactly once"):
             claim_tests.execute_test(test, Path("."), runner)
 
+    def test_jest_dependencies_are_built_once_before_execution(self) -> None:
+        tests = [
+            claim_tests.ClaimTest(
+                "jest",
+                "integration/phase3.spec.ts",
+                "first_test",
+                "first test",
+            ),
+            claim_tests.ClaimTest(
+                "jest",
+                "integration/phase3.spec.ts",
+                "second_test",
+                "second test",
+            ),
+        ]
+        commands: list[list[str]] = []
+
+        def runner(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        root = Path("/tmp/claim-test-root")
+        claim_tests.prepare_test_dependencies(tests, root, runner)
+
+        self.assertEqual(len(commands), 2)
+        self.assertIn(str(root / "target/test-deployment"), commands[0])
+        self.assertIn("bridge-canister", commands[0])
+        self.assertIn("test-deployment", commands[0])
+        self.assertIn("mock-external", commands[1])
+
+    def test_non_jest_dependencies_require_no_build(self) -> None:
+        test = claim_tests.ClaimTest(
+            "rust-core",
+            "canister/bridge-core/tests/example.rs",
+            "exact_test",
+            "exact_test",
+        )
+
+        def runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            self.fail("dependency build should not run without Jest claim tests")
+
+        claim_tests.prepare_test_dependencies([test], Path("."), runner)
+
     def test_live_manifest_parses(self) -> None:
         parsed = claim_tests.parse_manifest(
             claim_tests.CLAIMS.read_text(encoding="utf-8"),
