@@ -181,13 +181,19 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     && !isDepositAuthorizationPending(activeDepositRecord.data.state)
     ? "idle"
     : depositProgress
+  const activeDepositTerminal = Boolean(
+    activeDepositRecord.data && isDepositTerminal(activeDepositRecord.data.state),
+  )
   useEffect(() => {
-    if (!activeDepositRecord.data || !isDepositTerminal(activeDepositRecord.data.state)) return
-    setDepositAmount("")
-    setReviewedDeposit(undefined)
-    setActiveDeposit(undefined)
-    setDepositProgress("idle")
-  }, [activeDepositRecord.data])
+    if (!activeDepositTerminal) return
+    const reset = window.setTimeout(() => {
+      setDepositAmount("")
+      setReviewedDeposit(undefined)
+      setActiveDeposit(undefined)
+      setDepositProgress("idle")
+    }, 0)
+    return () => window.clearTimeout(reset)
+  }, [activeDepositTerminal])
   const ledger = useQuery({
     queryKey: ["deposit-ledger", ic.account?.owner, bytesHex(ic.account?.subaccount ?? new Uint8Array())],
     enabled: direction === "deposit" && Boolean(ic.account),

@@ -6536,6 +6536,9 @@ impl StableStore {
         self.commit_new_withdrawal_release_bundle_inner(withdrawal, progress, None, None, None)
     }
 
+    // Keep the business record, audit identity, replay key, and quota inputs explicit at
+    // this atomic commit boundary so callers cannot construct a partially bound bundle.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_new_withdrawal_release_bundle_with_rpc_audit(
         &mut self,
         withdrawal: &WithdrawalRecord,
