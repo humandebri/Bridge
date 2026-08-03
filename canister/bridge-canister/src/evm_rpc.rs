@@ -220,8 +220,7 @@ pub enum NotifiedWithdrawalOutcome {
 }
 
 const SMALL_RESPONSE_BYTES: u64 = 4 * 1024;
-const DEPOSIT_PREFLIGHT_RPC_CALLS: [&str; 4] = [
-    "eth_chainId",
+const DEPOSIT_PREFLIGHT_RPC_CALLS: [&str; 3] = [
     "eth_getBlockByNumber(finalized)",
     "eth_call(isDepositProcessed,EIP-1898-finalized-hash)",
     "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
@@ -388,30 +387,42 @@ fn eth_call_request(
 
 pub async fn bridge_snapshot(
     args: &BridgeInitArgs,
+    runtime_attested: bool,
 ) -> Result<CompletedFinalizedObservation, ObservationError> {
     let finalized = finalized_observation(args).await?;
-    bridge_snapshot_at(args, finalized).await
+    bridge_snapshot_at(args, finalized, runtime_attested).await
 }
 
 pub async fn bridge_snapshot_at(
     args: &BridgeInitArgs,
     finalized: FinalizedObservation,
+    runtime_attested: bool,
 ) -> Result<CompletedFinalizedObservation, ObservationError> {
     if finalized.chain_id != args.base_chain_id {
         return Err(ObservationError::ChainIdMismatch);
     }
-    let (snapshot, bridge_identity) = observe_bridge_at(args, finalized).await?;
+    let (snapshot, bridge_identity) = observe_bridge_at(args, finalized, runtime_attested).await?;
     Ok(CompletedFinalizedObservation {
         finalized,
         snapshot,
         bridge_identity,
-        rpc_audit: rpc_audit_evidence(args, finalized, snapshot, bridge_identity, None, None, None),
+        rpc_audit: rpc_audit_evidence(
+            args,
+            finalized,
+            snapshot,
+            bridge_identity,
+            None,
+            None,
+            None,
+            !runtime_attested,
+        ),
     })
 }
 
 pub async fn recovery_observation(
     args: &BridgeInitArgs,
     target: RecoveryTarget,
+    runtime_attested: bool,
 ) -> Result<RecoveryObservation, ObservationError> {
     let finalized = finalized_observation(args).await?;
     let state_call = async {
@@ -426,11 +437,21 @@ pub async fn recovery_observation(
             }
         }
     };
-    let (state, bridge) = futures::join!(state_call, observe_bridge_at(args, finalized));
+    let (state, bridge) = futures::join!(
+        state_call,
+        observe_bridge_at(args, finalized, runtime_attested)
+    );
     let state = state?;
     let (snapshot, bridge_identity) = bridge?;
-    let rpc_audit =
-        recovery_rpc_audit_evidence(args, finalized, snapshot, bridge_identity, target, &state);
+    let rpc_audit = recovery_rpc_audit_evidence(
+        args,
+        finalized,
+        snapshot,
+        bridge_identity,
+        target,
+        &state,
+        !runtime_attested,
+    );
     Ok(RecoveryObservation {
         finalized,
         snapshot,
@@ -677,7 +698,23 @@ fn exact_receipt_log_matches(
 async fn observe_bridge_at(
     args: &BridgeInitArgs,
     observation: FinalizedObservation,
+    runtime_attested: bool,
 ) -> Result<(BridgeSnapshot, ObservedBridgeIdentity), ObservationError> {
+    let expected_runtime: [u8; 32] = args
+        .expected_bridge_runtime_sha256
+        .as_slice()
+        .try_into()
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    if runtime_attested {
+        let snapshot = observe_bridge_snapshot_at(args, observation).await?;
+        return Ok((
+            snapshot,
+            ObservedBridgeIdentity {
+                signer: snapshot.bridge_signer,
+                runtime_sha256: expected_runtime,
+            },
+        ));
+    }
     let (snapshot, runtime) = futures::join!(
         observe_bridge_snapshot_at(args, observation),
         bridge_runtime_at_observation(args, observation)
@@ -687,11 +724,6 @@ async fn observe_bridge_at(
     if runtime.is_empty() {
         return Err(ObservationError::InvalidResponse);
     }
-    let expected_runtime: [u8; 32] = args
-        .expected_bridge_runtime_sha256
-        .as_slice()
-        .try_into()
-        .map_err(|_| ObservationError::InvalidResponse)?;
     if !runtime_matches_expected(&runtime, expected_runtime) {
         return Err(ObservationError::BaseStateMismatch);
     }
@@ -723,6 +755,7 @@ async fn observe_bridge_snapshot_at(
     Ok(snapshot)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rpc_audit_evidence(
     args: &BridgeInitArgs,
     finalized: FinalizedObservation,
@@ -731,26 +764,28 @@ fn rpc_audit_evidence(
     transaction_hash: Option<[u8; 32]>,
     receipt_block_number: Option<u64>,
     withdrawal: Option<&ObservedWithdrawal>,
+    runtime_attestation_refreshed: bool,
 ) -> RpcAuditEvidence {
     // These digests bind the exact logical JSON-RPC transcript that reached 2-of-3
     // consensus.  They intentionally hash normalized semantics instead of provider
     // response bytes, whose insignificant JSON formatting is provider-dependent.
-    let calls = if transaction_hash.is_some() {
+    let mut calls = if transaction_hash.is_some() {
         vec![
             "eth_getBlockByNumber(finalized)",
             "eth_getTransactionReceipt",
             "eth_call(bridgeSnapshot,EIP-1898-receipt-hash)",
             "eth_call(getWithdrawal,EIP-1898-finalized-hash)",
             "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
-            "eth_getCode(EIP-1898-finalized-hash)",
         ]
     } else {
         vec![
             "eth_getBlockByNumber(finalized)",
             "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
-            "eth_getCode(EIP-1898-finalized-hash)",
         ]
     };
+    if runtime_attestation_refreshed {
+        calls.push("eth_getCode(EIP-1898-finalized-hash)");
+    }
     let request = json!({
         "evm_rpc_canister_id": args.evm_rpc_canister_id.to_text(),
         "candid_method": "multi_request",
@@ -817,6 +852,7 @@ fn recovery_rpc_audit_evidence(
     identity: ObservedBridgeIdentity,
     target: RecoveryTarget,
     state: &RecoveryBaseState,
+    runtime_attestation_refreshed: bool,
 ) -> RpcAuditEvidence {
     let (method, target_value, state_value) = match (target, state) {
         (RecoveryTarget::Deposit(id), RecoveryBaseState::DepositProcessed(processed)) => (
@@ -825,15 +861,18 @@ fn recovery_rpc_audit_evidence(
             json!({ "processed": processed }),
         ),
     };
+    let mut calls = vec![
+        "eth_getBlockByNumber(finalized)",
+        method,
+        "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
+    ];
+    if runtime_attestation_refreshed {
+        calls.push("eth_getCode(EIP-1898-finalized-hash)");
+    }
     let request = json!({
         "evm_rpc_canister_id": args.evm_rpc_canister_id.to_text(),
         "candid_method": "multi_request",
-        "calls": [
-            "eth_getBlockByNumber(finalized)",
-            method,
-            "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
-            "eth_getCode(EIP-1898-finalized-hash)",
-        ],
+        "calls": calls,
         "configured_chain_id": args.base_chain_id,
         "bridge_contract": format!("0x{}", hex(&args.bridge_contract)),
         "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
@@ -1058,41 +1097,14 @@ fn decode_bridge_snapshot(value: &str) -> Result<BridgeSnapshot, ObservationErro
 pub async fn finalized_observation(
     args: &BridgeInitArgs,
 ) -> Result<FinalizedObservation, ObservationError> {
-    let (chain_id, block) = futures::join!(observed_chain_id(args), finalized_block(args));
-    let chain_id = chain_id?;
-    if chain_id != args.base_chain_id {
-        return Err(ObservationError::ChainIdMismatch);
-    }
-    let block = block?;
+    let block = finalized_block(args).await?;
     let observation = FinalizedObservation {
-        chain_id,
+        chain_id: args.base_chain_id,
         block_number: u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?,
         block_hash: *block.hash.as_array(),
         observed_at_ns: ic_cdk::api::time(),
     };
     Ok(observation)
-}
-
-async fn observed_chain_id(args: &BridgeInitArgs) -> Result<u64, ObservationError> {
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "eth_chainId",
-        "params": [],
-    });
-    match client(args)
-        .multi_request(request)
-        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(value)) => {
-            u64::try_from(parse_u128(&value)?).map_err(|_| ObservationError::Overflow)
-        }
-        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-    }
 }
 
 async fn finalized_block(args: &BridgeInitArgs) -> Result<Block, ObservationError> {
@@ -1246,31 +1258,23 @@ pub async fn transaction_count(
 ) -> Result<u64, ObservationError> {
     let address = Hex20::from_str(&format!("0x{}", hex(&address)))
         .map_err(|_| ObservationError::InvalidResponse)?;
-    let nonce = async {
-        match client(args)
-            .get_transaction_count(GetTransactionCountArgs {
-                address,
-                block: BlockTag::Pending,
-            })
-            .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-            .try_send()
-            .await
-            .map_err(|_| ObservationError::Rpc)?
-        {
-            MultiRpcResult::Consistent(Ok(value)) => {
-                u64::try_from(value).map_err(|_| ObservationError::Overflow)
-            }
-            MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-            MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
+    match client(args)
+        .get_transaction_count(GetTransactionCountArgs {
+            address,
+            block: BlockTag::Pending,
+        })
+        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+        .try_send()
+        .await
+        .map_err(|_| ObservationError::Rpc)?
+    {
+        MultiRpcResult::Consistent(Ok(value)) => {
+            u64::try_from(value).map_err(|_| ObservationError::Overflow)
         }
-    };
-    let (chain_id, nonce) = futures::join!(observed_chain_id(args), nonce);
-    if chain_id? != args.base_chain_id {
-        return Err(ObservationError::ChainIdMismatch);
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
     }
-    nonce
 }
-
 pub async fn signer_eth_balance_on_attested_chain(
     args: &BridgeInitArgs,
     address: [u8; 20],
@@ -1354,6 +1358,7 @@ pub(crate) fn signed_transaction_hash(raw: &[u8]) -> [u8; 32] {
 pub async fn notified_withdrawal_outcome(
     args: &BridgeInitArgs,
     transaction_hash: [u8; 32],
+    runtime_attested: bool,
 ) -> Result<NotifiedWithdrawalOutcome, ObservationError> {
     let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
         .map_err(|_| ObservationError::InvalidResponse)?;
@@ -1417,7 +1422,7 @@ pub async fn notified_withdrawal_outcome(
     // Bind every event field to the same provider-consistent Finalized state used for release.
     let (current, bridge) = futures::join!(
         eth_call_at_observation(args, &withdrawal_calldata, finalized_observation),
-        observe_bridge_at(args, finalized_observation)
+        observe_bridge_at(args, finalized_observation, runtime_attested)
     );
     let current = decode_current_withdrawal(&current?)?;
     if !is_same_committed_withdrawal(&current, &withdrawal) {
@@ -1432,6 +1437,7 @@ pub async fn notified_withdrawal_outcome(
         Some(transaction_hash),
         Some(receipt_block_number),
         Some(&withdrawal),
+        !runtime_attested,
     );
     let stable_observation = Box::new(FinalizedObservationRecord {
         chain_id: finalized_observation.chain_id,
@@ -1683,17 +1689,16 @@ mod tests {
     }
 
     #[test]
-    fn deposit_preflight_attests_chain_then_uses_one_finalized_anchor_for_two_state_calls() {
+    fn deposit_preflight_uses_configured_chain_and_one_finalized_anchor_for_two_state_calls() {
         assert_eq!(
             DEPOSIT_PREFLIGHT_RPC_CALLS,
             [
-                "eth_chainId",
                 "eth_getBlockByNumber(finalized)",
                 "eth_call(isDepositProcessed,EIP-1898-finalized-hash)",
                 "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
             ]
         );
-        assert!(DEPOSIT_PREFLIGHT_RPC_CALLS
+        assert!(!DEPOSIT_PREFLIGHT_RPC_CALLS
             .iter()
             .any(|call| call.contains("chainId")));
         assert!(!DEPOSIT_PREFLIGHT_RPC_CALLS
@@ -1920,6 +1925,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         let completed = CompletedFinalizedObservation {
             finalized,
@@ -1978,6 +1984,7 @@ mod tests {
             Some([1; 32]),
             Some(40),
             None,
+            false,
         );
         let second = rpc_audit_evidence(
             &args,
@@ -1990,6 +1997,7 @@ mod tests {
             Some([2; 32]),
             Some(40),
             None,
+            false,
         );
         assert_ne!(first.request_digest, second.request_digest);
         assert_ne!(first.quorum_response_digest, second.quorum_response_digest);

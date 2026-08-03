@@ -47,14 +47,21 @@ case "$MODE" in
     python3 "$RPC_RECORDER" capture-fault "$2" "$3" "$4" "$5" "$6" -- evm-rpc-fault-injector
     ;;
   check-reinstall-instance)
-    [[ "$#" -eq 2 ]] || {
-      echo "usage: $0 check-reinstall-instance <live-public-config.json>" >&2
+    [[ "$#" -eq 3 ]] || {
+      echo "usage: $0 check-reinstall-instance <live-public-config.json> <live-canister-status.json>" >&2
       exit 2
     }
-    node "$ROOT/scripts/plan007/check-reinstall-instance.mjs" "$PROFILE" "$2"
+    node "$ROOT/scripts/plan007/check-reinstall-instance.mjs" "$PROFILE" "$2" "$3"
+    ;;
+  capture-obsolete-pause)
+    [[ "$#" -eq 5 ]] || {
+      echo "usage: $0 capture-obsolete-pause <capture-config.json> <live-public-config.json> <live-canister-status.json> <output.json>" >&2
+      exit 2
+    }
+    python3 "$RECORDER" capture-obsolete-pause "$2" "$5" "$PROFILE" "$3" "$4"
     ;;
   *)
-    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault|check-reinstall-instance}" >&2
+    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault|check-reinstall-instance|capture-obsolete-pause}" >&2
     exit 2
     ;;
 esac

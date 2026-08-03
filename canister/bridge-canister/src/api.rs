@@ -276,23 +276,28 @@ pub async fn notify_withdrawal(
         .with(|store| store.borrow().config())
         .map_err(|_| NotifyWithdrawalError::StorageFailure)?
         .ok_or(NotifyWithdrawalError::StorageFailure)?;
-    let outcome = match evm_rpc::notified_withdrawal_outcome(&config, transaction_hash).await {
-        Ok(outcome) => outcome,
-        Err(evm_rpc::ObservationError::Inconsistent) => {
-            let decision =
-                evm_rpc::quorum_loss_decision("notify_withdrawal", Some(transaction_hash));
-            STORE
-                .with(|store| {
-                    store.borrow_mut().append_audit_events_atomically(
-                        ic_cdk::api::canister_self(),
-                        vec![rpc_decision_event_kind(&decision)],
-                    )
-                })
-                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-            return Err(NotifyWithdrawalError::RpcInconsistent);
-        }
-        Err(error) => return Err(map_withdrawal_observation_error(error)),
-    };
+    let runtime_attested =
+        runtime_attested(&config).map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+    let outcome =
+        match evm_rpc::notified_withdrawal_outcome(&config, transaction_hash, runtime_attested)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(evm_rpc::ObservationError::Inconsistent) => {
+                let decision =
+                    evm_rpc::quorum_loss_decision("notify_withdrawal", Some(transaction_hash));
+                STORE
+                    .with(|store| {
+                        store.borrow_mut().append_audit_events_atomically(
+                            ic_cdk::api::canister_self(),
+                            vec![rpc_decision_event_kind(&decision)],
+                        )
+                    })
+                    .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+                return Err(NotifyWithdrawalError::RpcInconsistent);
+            }
+            Err(error) => return Err(map_withdrawal_observation_error(error)),
+        };
     let (observed, snapshot, rpc_audit, stable_observation, finalized_head_block_number) =
         match outcome {
             evm_rpc::NotifiedWithdrawalOutcome::Missing => {
@@ -693,6 +698,45 @@ pub(crate) fn cache_recovery_observation(
                     runtime_sha256: observation.bridge_identity.runtime_sha256,
                 },
             )
+            .map_err(|_| DepositError::StorageFailure)
+    })
+}
+
+pub(crate) fn runtime_attested(config: &BridgeInitArgs) -> Result<bool, DepositError> {
+    let expected_runtime: [u8; 32] = config
+        .expected_bridge_runtime_sha256
+        .as_slice()
+        .try_into()
+        .map_err(|_| DepositError::StorageFailure)?;
+    STORE.with(|store| {
+        store
+            .borrow()
+            .external_progress()
+            .map(|progress| {
+                let observation = progress.finalized_observation;
+                bridge_core::runtime_attestation_matches(
+                    observation.is_some(),
+                    observation.is_some_and(|value| value.chain_id == config.base_chain_id),
+                    observation.is_some_and(|value| value.runtime_sha256 == expected_runtime),
+                )
+            })
+            .map_err(|_| DepositError::StorageFailure)
+    })
+}
+
+pub(crate) fn cache_runtime_attestation(
+    observation: &evm_rpc::CompletedFinalizedObservation,
+) -> Result<(), DepositError> {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let mut progress = store
+            .external_progress()
+            .map_err(|_| DepositError::StorageFailure)?;
+        progress
+            .observe_finalized(evm_rpc::stable_observation(observation))
+            .map_err(|_| DepositError::BaseObservationUnavailable)?;
+        store
+            .set_external_progress(&progress)
             .map_err(|_| DepositError::StorageFailure)
     })
 }
@@ -1398,7 +1442,8 @@ pub(crate) async fn base_mint_snapshot(
     let Some(refresh_owner) = refresh_owner else {
         return Err(DepositError::BaseObservationUnavailable);
     };
-    let completed = match evm_rpc::bridge_snapshot(config).await {
+    let runtime_attested = runtime_attested(config)?;
+    let completed = match evm_rpc::bridge_snapshot(config, runtime_attested).await {
         Ok(completed) => completed,
         Err(error) => {
             if matches!(error, evm_rpc::ObservationError::Inconsistent) {
@@ -1500,22 +1545,7 @@ async fn fresh_deposit_preflight(
     let Some(refresh_owner) = refresh_owner else {
         return Err(DepositError::BaseObservationUnavailable);
     };
-    let expected_runtime: [u8; 32] = config
-        .expected_bridge_runtime_sha256
-        .as_slice()
-        .try_into()
-        .map_err(|_| DepositError::StorageFailure)?;
-    let runtime_attested = STORE.with(|store| {
-        store
-            .borrow()
-            .external_progress()
-            .map(|progress| {
-                progress
-                    .finalized_observation
-                    .is_some_and(|value| value.runtime_sha256 == expected_runtime)
-            })
-            .map_err(|_| DepositError::StorageFailure)
-    })?;
+    let runtime_attested = runtime_attested(config)?;
     let observation = match evm_rpc::deposit_preflight_observation(
         config,
         deposit_id,

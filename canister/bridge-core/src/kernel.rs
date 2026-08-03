@@ -155,6 +155,12 @@ macro_rules! canonical_probe_matches_body {
     };
 }
 
+macro_rules! runtime_attestation_matches_body {
+    ($observation_present:expr, $chain_id_matches:expr, $runtime_hash_matches:expr) => {
+        $observation_present && $chain_id_matches && $runtime_hash_matches
+    };
+}
+
 macro_rules! withdrawal_finalization_decision_body {
     ($succeeded:expr, $receipt_block:expr, $finalized_block:expr, $retry:expr, $notify:expr, $discard:expr) => {
         match $finalized_block {
@@ -818,6 +824,17 @@ pub const fn checked_counter_transition(
 #[cfg(not(verus_keep_ghost))]
 pub const fn canonical_probe_matches(receipt_block: u64, snapshot_block: u64) -> bool {
     canonical_probe_matches_body!(receipt_block, snapshot_block)
+}
+
+/// Allows reuse of a persisted runtime attestation only when every immutable-config
+/// binding is present and matches exactly.
+#[cfg(not(verus_keep_ghost))]
+pub const fn runtime_attestation_matches(
+    observation_present: bool,
+    chain_id_matches: bool,
+    runtime_hash_matches: bool,
+) -> bool {
+    runtime_attestation_matches_body!(observation_present, chain_id_matches, runtime_hash_matches)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1739,6 +1756,15 @@ verus! {
 
     pub open spec fn canonical_probe_matches_spec(receipt_block: int, snapshot_block: int) -> bool {
         canonical_probe_matches_body!(receipt_block, snapshot_block)
+    }
+
+    pub open spec fn runtime_attestation_matches_spec(
+        observation_present: bool,
+        chain_id_matches: bool,
+        runtime_hash_matches: bool,
+    ) -> bool {
+        runtime_attestation_matches_body!(
+            observation_present, chain_id_matches, runtime_hash_matches)
     }
 
     pub open spec fn withdrawal_finalization_decision_spec(

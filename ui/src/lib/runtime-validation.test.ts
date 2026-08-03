@@ -81,6 +81,7 @@ let indexLedgerId = ledgerId
 let contractSigner = expectedSigner
 let timelockDelay = 300n
 const getBlockMock = vi.fn()
+const getChainIdMock = vi.fn()
 const getCodeMock = vi.fn()
 const readContractMock = vi.fn()
 
@@ -119,7 +120,7 @@ beforeEach(() => {
   })
   mocks.createPublicClient.mockReturnValue({
     getBlock: getBlockMock,
-    getChainId: vi.fn().mockResolvedValue(profile.chainId),
+    getChainId: getChainIdMock.mockResolvedValue(profile.chainId),
     getCode: getCodeMock,
     readContract: readContractMock,
   })
@@ -211,7 +212,7 @@ describe("validateRuntime token bindings", () => {
     })
   })
 
-  it("uses only dynamic reads for the runtime heartbeat", async () => {
+  it("uses only dynamic identity and state reads for the runtime heartbeat", async () => {
     await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
     expect(mocks.getBridgeStatus).toHaveBeenCalledOnce()
     expect(readContractMock).toHaveBeenCalledOnce()
@@ -221,10 +222,20 @@ describe("validateRuntime token bindings", () => {
       requireCanonical: true,
     }))
     expect(mocks.getPublicConfig).not.toHaveBeenCalled()
+    expect(getChainIdMock).toHaveBeenCalledOnce()
     expect(getCodeMock).not.toHaveBeenCalled()
     expect(mocks.sha256).not.toHaveBeenCalled()
     expect(mocks.createLedgerActor).not.toHaveBeenCalled()
     expect(mocks.createIndexActor).not.toHaveBeenCalled()
+  })
+
+  it("fails_the_runtime_heartbeat_after_the_RPC_changes_chain", async () => {
+    getChainIdMock.mockResolvedValueOnce(profile.chainId + 1)
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: [`Base RPC is on chain ${profile.chainId + 1}; expected ${profile.chainId}`],
+      chainId: profile.chainId + 1,
+    })
   })
 
   it("fails the runtime heartbeat on a fee guard or signer rotation", async () => {

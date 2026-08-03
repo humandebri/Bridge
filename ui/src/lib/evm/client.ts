@@ -60,6 +60,28 @@ export async function firstSuccessfulHistoryClient<C, T>(
   throw new AggregateError(errors, "Base history RPCs are unavailable")
 }
 
+export async function withHistoryClientFailover<C, T>(
+  clients: readonly C[],
+  failedClientIndexes: Set<number>,
+  operation: (client: C) => Promise<T>,
+): Promise<T> {
+  let candidates = clients
+    .map((client, index) => ({ client, index }))
+    .filter(({ index }) => !failedClientIndexes.has(index))
+  if (candidates.length === 0) {
+    failedClientIndexes.clear()
+    candidates = clients.map((client, index) => ({ client, index }))
+  }
+  return firstSuccessfulHistoryClient(candidates, async ({ client, index }) => {
+    try {
+      return await operation(client)
+    } catch (error) {
+      failedClientIndexes.add(index)
+      throw error
+    }
+  })
+}
+
 export function withBaseHistoryClient<T>(
   operation: (client: (typeof baseHistoryClients)[number]) => Promise<T>,
 ): Promise<T> {

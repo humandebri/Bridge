@@ -425,20 +425,18 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (bridge.actor as any).get_pending_base_governance_transaction()).Ok).toEqual([]);
   });
 
-  async function governance_nonce_rejects_wrong_chain() {
+  async function governance_nonce_uses_configured_chain_without_runtime_probe() {
     const { bridge, evm, runtimePrincipal } = await setup();
     bridge.actor.setPrincipal(runtimePrincipal);
-    await (evm.actor as any).set_chain_id_mode({ Wrong: null });
 
     expect(await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null }))
-      .toEqual({ Err: { ObservationUnavailable: null } });
-    expect((await (bridge.actor as any).get_pending_base_governance_transaction()).Ok).toEqual([]);
-    expect(await (evm.actor as any).chain_id_call_count()).toBeGreaterThan(0n);
+      .toHaveProperty("Ok.chain_id", 8453n);
+    expect(await (evm.actor as any).chain_id_call_count()).toBe(0n);
   }
 
   it(
-    "rejects a wrong-chain governance nonce before persisting a transaction",
-    governance_nonce_rejects_wrong_chain,
+    "binds the governance nonce to configured chain without a runtime chain probe",
+    governance_nonce_uses_configured_chain_without_runtime_probe,
   );
 
   it("lets the pause principal relay only pause and recorded timelock cancellation", async () => {
@@ -1006,12 +1004,10 @@ describe("Phase 3 PocketIC saga", () => {
     expect(Array.from(await (evm.actor as any).pinned_eth_call_block_numbers())).toEqual([99n, 100n, 100n]);
   });
 
-  it.each([
-    { mode: { Wrong: null }, error: "BaseStateMismatch", tag: 0x9b },
-    { mode: { Inconsistent: null }, error: "RpcInconsistent", tag: 0x9c },
-  ])("fails closed on $error eth_chainId observations before Ledger", async ({ mode, error, tag }) => {
-    const { ledger, evm, bridge, runtimePrincipal } = await setup();
-    const id = new Uint8Array(32).fill(tag);
+  async function runtime_attestation_is_reused_across_withdrawal_upgrade_and_governance() {
+    const { evm, bridge, init, runtimePrincipal } = await setup();
+    expect(await (evm.actor as any).get_code_call_count()).toBe(0n);
+    const id = new Uint8Array(32).fill(0x9b);
     await (evm.actor as any).set_withdrawal([{
       id,
       owner: runtimePrincipal.toUint8Array(),
@@ -1019,13 +1015,62 @@ describe("Phase 3 PocketIC saga", () => {
       amount: 100_000n,
       max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n,
     }]);
-    await (evm.actor as any).set_chain_id_mode(mode);
-
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) }))
-      .toHaveProperty(`Err.${error}`);
-    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
-    expect(await (evm.actor as any).chain_id_call_count()).toBeGreaterThan(0n);
-  });
+      .toHaveProperty("Ok.Ingested");
+    expect(await (evm.actor as any).chain_id_call_count()).toBe(0n);
+    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+
+    const secondId = new Uint8Array(32).fill(0x9c);
+    await (evm.actor as any).set_observed_transaction(
+      new Uint8Array(32).fill(10),
+      new Uint8Array(20).fill(1),
+      new Uint8Array(20).fill(0x22),
+      100n,
+    );
+    await (evm.actor as any).set_withdrawal([{
+      id: secondId,
+      owner: runtimePrincipal.toUint8Array(),
+      subaccount: new Uint8Array(32),
+      amount: 100_000n,
+      max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n,
+    }]);
+    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(10) }))
+      .toHaveProperty("Ok.Ingested");
+    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+
+    await pic!.upgradeCanister({
+      canisterId: bridge.canisterId,
+      wasm: readFileSync(bridgeWasm),
+      arg: IDL.encode([], []),
+    });
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await (bridge.actor as any).prepare_base_governance_action({
+      SetServiceFee: { value: 1n },
+    })).toHaveProperty("Ok.chain_id", 8453n);
+    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+    expect(await (evm.actor as any).chain_id_call_count()).toBe(0n);
+
+    await pic!.reinstallCode({
+      canisterId: bridge.canisterId,
+      wasm: readFileSync(bridgeWasm),
+      arg: IDL.encode([bridgeInit], [init]),
+    });
+    bridge.actor.setPrincipal(Principal.anonymous());
+    expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await (bridge.actor as any).resume_new_deposits()).toHaveProperty("Ok");
+    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+    expect(await (bridge.actor as any).prepare_base_governance_action({
+      SetServiceFee: { value: 1n },
+    })).toHaveProperty("Ok.chain_id", 8453n);
+    expect(await (evm.actor as any).get_code_call_count()).toBe(2n);
+    expect(await (evm.actor as any).chain_id_call_count()).toBe(0n);
+  }
+
+  it(
+    "reuses runtime attestation across withdrawal and upgrade but not reinstall",
+    runtime_attestation_is_reused_across_withdrawal_upgrade_and_governance,
+  );
 
   it.each([
     { mode: { FinalizedUnavailable: null }, error: "RpcUnavailable", tag: 0x9c },
@@ -1260,12 +1305,36 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(2n);
   });
 
-  it("refunds an unused Authorization only when its owner claims after the finalized deadline", async () => {
-    const { ledger, evm, bridge } = await setup();
+  async function refund_observation_preserves_global_runtime_attestation() {
+    const { ledger, evm, bridge, runtimePrincipal } = await setup();
+    expect(await (evm.actor as any).get_code_call_count()).toBe(0n);
     const result: any = await requestDefaultDeposit(bridge);
+    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
     await assertAuthorizationRefunded(bridge, evm, result.Ok.deposit_id);
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(2);
-  });
+    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+
+    const withdrawalId = new Uint8Array(32).fill(0x8b);
+    await (evm.actor as any).set_withdrawal([{
+      id: withdrawalId,
+      owner: runtimePrincipal.toUint8Array(),
+      subaccount: new Uint8Array(32),
+      amount: 100_000n,
+      max_service_fee: 10_000n,
+      charged_service_fee: 10_000n,
+      amount_out: 90_000n,
+    }]);
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(9),
+    })).toHaveProperty("Ok.Ingested");
+    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+    expect(await (evm.actor as any).chain_id_call_count()).toBe(0n);
+  }
+
+  it(
+    "persists refund observation for cross-path runtime attestation reuse",
+    refund_observation_preserves_global_runtime_attestation,
+  );
 
   it("has no success confirmation API and persists exact Mint evidence only during a refund claim", async () => {
     const { evm, bridge } = await setup();

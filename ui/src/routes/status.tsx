@@ -35,10 +35,10 @@ function StatusPage() {
     void (async () => {
       if (validation.data?.ready !== true) {
         const checked = await refetchValidation()
-        if (checked.data?.ready !== true) {
+        if (checked.data?.ready !== true && !(checked.data && "status" in checked.data && checked.data.status)) {
           await refetchCanister()
-          return
         }
+        return
       }
       await Promise.all([refetchBase(), refetchCanister()])
     })()

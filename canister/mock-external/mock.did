@@ -496,6 +496,7 @@ service : (InitArgs) -> {
     );
   get_account_transactions : (GetAccountTransactionsArgs) -> (Result_5) query;
   get_archive_transactions : (GetBlocksRequest) -> (TransactionRange) query;
+  get_code_call_count : () -> (nat64) query;
   get_transactions : (GetBlocksRequest) -> (GetTransactionsResponse) query;
   icrc1_fee : () -> (nat) query;
   icrc1_transfer : (TransferArg) -> (Result_6);

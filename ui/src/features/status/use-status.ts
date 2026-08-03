@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useReducer, useRef, useState } from "react"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
@@ -18,6 +18,7 @@ interface RuntimeValidationQueryOptions extends AutomaticQueryOptions {
 }
 
 export function useRuntimeValidation(chainId?: number, options: RuntimeValidationQueryOptions = {}) {
+  const queryClient = useQueryClient()
   const {
     enabled = false,
     gcTime = Number.POSITIVE_INFINITY,
@@ -27,7 +28,24 @@ export function useRuntimeValidation(chainId?: number, options: RuntimeValidatio
   const query = useQuery({
     queryKey: ["runtime-validation", runtimeProfileFingerprint(deploymentProfile), chainId],
     queryFn: async () => {
-      try { return await validateRuntime(deploymentProfile, chainId) }
+      try {
+        const validation = await validateRuntime(deploymentProfile, chainId)
+        if (validation.snapshot) {
+          queryClient.setQueryData(
+            ["runtime-heartbeat", runtimeProfileFingerprint(deploymentProfile), chainId],
+            validation,
+            { updatedAt: validation.checkedAt },
+          )
+        }
+        if (validation.status) {
+          queryClient.setQueryData(
+            ["bridge-status", deploymentProfile.bridgeCanisterId],
+            validation.status,
+            { updatedAt: validation.checkedAt },
+          )
+        }
+        return validation
+      }
       catch (error) { return { ready: false, checkedAt: Date.now(), blockers: [error instanceof Error ? error.message : "Runtime validation failed"] } }
     },
     enabled,

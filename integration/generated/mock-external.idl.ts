@@ -452,6 +452,7 @@ export const idlFactory = ({ IDL }) => {
         [TransactionRange],
         ['query'],
       ),
+    'get_code_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
     'get_transactions' : IDL.Func(
         [GetBlocksRequest],
         [GetTransactionsResponse],

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "environment": "sepolia-staging",
+  "observed_at": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+  "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "live_schema_version": 30,
+  "previous_deployment_instance_id": "REPLACE_WITH_0X_32_BYTE_DEPLOYMENT_INSTANCE_ID",
+  "module_hash": "REPLACE_WITH_0X_32_BYTE_MODULE_HASH",
+  "public_config_sha256": "REPLACE_WITH_SHA256",
+  "bridge_status_sha256": "REPLACE_WITH_SHA256",
+  "activation_status_sha256": "REPLACE_WITH_SHA256",
+  "canister_status_sha256": "REPLACE_WITH_SHA256",
+  "storage_integrity_sha256": "REPLACE_WITH_SHA256",
+  "ledger_balance_sha256": "REPLACE_WITH_SHA256",
+  "pause_evidence_sha256": "REPLACE_WITH_SHA256",
+  "counts": {
+    "deposits": "REPLACE_WITH_RAW_COUNT",
+    "withdrawals": 0,
+    "pending_ledger_operations": 0,
+    "reconciliation_holds": 0,
+    "reserved_deposit_mint_operations": "REPLACE_WITH_RAW_COUNT",
+    "reserved_deposit_mint_amount": "REPLACE_WITH_RAW_AMOUNT",
+    "unpaid_withdrawal_count": 0,
+    "unpaid_withdrawal_amount_out": 0
+  },
+  "pending_timelock_operations": 0,
+  "ledger_balance_raw": "REPLACE_WITH_RAW_AMOUNT",
+  "disposition": "discard-test-state",
+  "complete": true
+}

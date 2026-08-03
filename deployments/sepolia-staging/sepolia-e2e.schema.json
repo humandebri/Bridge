@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "kind", "state", "created_at", "updated_at", "binding", "stages", "complete"],
   "properties": {
-    "schema_version": { "const": 4 },
+    "schema_version": { "const": 5 },
     "kind": { "const": "kinic-bridge-sepolia-staging-e2e" },
     "state": {
       "enum": [
@@ -112,7 +112,7 @@
           "additionalProperties": false,
           "required": ["schema_version", "stage", "observed_at", "source_commit", "artifacts", "details"],
           "properties": {
-            "schema_version": { "const": 4 },
+            "schema_version": { "const": 5 },
             "stage": {
               "enum": [
                 "preflight",
@@ -168,6 +168,51 @@
                     ]
                   }
                 }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "stage": { "const": "preflight" },
+                  "details": {
+                    "type": "object",
+                    "properties": {
+                      "replacement_mode": { "const": "obsolete-schema-reinstall" }
+                    },
+                    "required": ["replacement_mode"]
+                  }
+                },
+                "required": ["stage", "details"]
+              },
+              "then": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "artifacts": {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "obsolete-state-disposition" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "artifacts": {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "obsolete-pause-evidence" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      }
+                    }
+                  }
+                ]
               }
             }
           ]

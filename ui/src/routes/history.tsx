@@ -2,7 +2,7 @@ import { Principal } from "@dfinity/principal"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createFileRoute } from "@tanstack/react-router"
 import { Clock3, RefreshCcw } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { hexToBytes, numberToHex } from "viem"
 import { useAccount, useChainId } from "wagmi"
@@ -35,7 +35,7 @@ import {
   type DepositMintLogScan,
   type ExpectedDepositMint,
 } from "@/lib/deposit-mint-finalization"
-import { baseTransactionExplorerUrl, withBaseHistoryClient } from "@/lib/evm/client"
+import { baseHistoryClients, baseTransactionExplorerUrl, withHistoryClientFailover } from "@/lib/evm/client"
 import { sameIcAccount } from "@/lib/ic-history-owner"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import type { IcWalletAdapter } from "@/lib/ic/wallet"
@@ -71,6 +71,7 @@ function HistoryPage() {
   const [loadingOlderWithdrawals, setLoadingOlderWithdrawals] = useState(false)
   const [loadingOlderDeposits, setLoadingOlderDeposits] = useState(false)
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === "visible")
+  const failedHistoryClients = useRef(new Set<number>())
 
   const depositQueryKey = ["deposit-history", historyAccount?.owner] as const
   const readDepositHistory = async (mode: "refresh" | "older", previous?: DepositHistoryData): Promise<DepositHistoryData> => {
@@ -122,16 +123,16 @@ function HistoryPage() {
         return authorization.finalized_block_number
       })
       if (!authorizationBlocks.length) throw new Error("No Mint Authorization is available to scan")
-      return withBaseHistoryClient(async (client) => {
+      const deploymentBlock = authorizationBlocks.reduce((minimum, block) => block < minimum ? block : minimum)
+      return withHistoryClientFailover(baseHistoryClients, failedHistoryClients.current, async (client) => {
         const finalized = await client.getBlock({ blockTag: "finalized" })
         if (finalized.number === null || finalized.hash === null) throw new Error("finalized Base block is unavailable")
-        const deploymentBlock = authorizationBlocks.reduce((minimum, block) => block < minimum ? block : minimum)
         let previous = queryClient.getQueryData<DepositMintLogScan>(depositMintQueryKey)
         if (previous) {
           const checkpoint = await client.getBlock({ blockNumber: previous.lastFinalizedBlock })
           if (finalized.number < previous.lastFinalizedBlock || checkpoint.hash !== previous.lastFinalizedBlockHash) previous = undefined
         }
-        return scanDepositMintLogs({
+        return await scanDepositMintLogs({
           deploymentBlock,
           finalizedBlock: finalized.number,
           finalizedBlockHash: finalized.hash,
@@ -158,7 +159,7 @@ function HistoryPage() {
 
   const withdrawalQueryKey = ["withdraw-history", deploymentProfile.chainId, deploymentProfile.bridgeAddress, address] as const
   const readWithdrawalHistory = async (mode: "refresh" | "older", previous?: WithdrawalHistoryData): Promise<WithdrawalHistoryData> => {
-    const evmHistory = await withBaseHistoryClient(async (client) => {
+    const evmHistory = await withHistoryClientFailover(baseHistoryClients, failedHistoryClients.current, async (client) => {
       const finalized = await client.getBlock({ blockTag: "finalized" })
       if (finalized.number === null || finalized.hash === null) throw new Error("finalized Base block is unavailable")
       let usablePrevious = previous

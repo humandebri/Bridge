@@ -586,15 +586,17 @@ async fn request_deposit_refund(
                 {
                     return Err(Error::NotClaimable);
                 }
-                let observation =
-                    evm_rpc::recovery_observation(&config, evm_rpc::RecoveryTarget::Deposit(id))
-                        .await
-                        .map_err(|error| {
-                            map_deposit_refund_observation_error(
-                                "request_deposit_refund_recovery",
-                                error,
-                            )
-                        })?;
+                let runtime_attested =
+                    api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
+                let observation = evm_rpc::recovery_observation(
+                    &config,
+                    evm_rpc::RecoveryTarget::Deposit(id),
+                    runtime_attested,
+                )
+                .await
+                .map_err(|error| {
+                    map_deposit_refund_observation_error("request_deposit_refund_recovery", error)
+                })?;
                 api::cache_recovery_observation(id, &observation)
                     .map_err(|_| Error::StorageFailure)?;
                 if observation.snapshot.mint.confirmed_block_timestamp

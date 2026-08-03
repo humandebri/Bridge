@@ -498,7 +498,9 @@ async fn prepare_escrowed_deposit(
     let (finalized, observed_snapshot) = if let Some(observation) = cached {
         (observation.finalized, observation.snapshot)
     } else {
-        let observation = match evm_rpc::bridge_snapshot(config).await {
+        let runtime_attested = crate::api::runtime_attested(config)
+            .map_err(|_| SettlementActionError::StorageFailure)?;
+        let observation = match evm_rpc::bridge_snapshot(config, runtime_attested).await {
             Ok(observation) => observation,
             Err(evm_rpc::ObservationError::Inconsistent) => {
                 return Ok(EscrowPreparation::Stopped(
@@ -511,6 +513,8 @@ async fn prepare_escrowed_deposit(
                 ));
             }
         };
+        crate::api::cache_runtime_attestation(&observation)
+            .map_err(|_| SettlementActionError::StorageFailure)?;
         (observation.finalized, observation.snapshot)
     };
     let snapshot = observed_snapshot.mint;

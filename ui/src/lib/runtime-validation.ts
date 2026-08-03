@@ -7,6 +7,7 @@ import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { profileCompleteness, type DeploymentProfile } from "@/config/profile"
 import { runtimeBytecodeSha256 } from "@/lib/runtime-bytecode-hash"
 import { createBasePublicClient } from "@/lib/evm/client"
+import type { BridgeStatus } from "@/generated/bridge.did"
 
 const timelockDelayAbi = [{
   type: "function",
@@ -18,7 +19,7 @@ const timelockDelayAbi = [{
 
 export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number }
 
-export interface DeploymentAttestation extends RuntimeValidation {
+export interface DeploymentAttestation extends FinalizedRuntimeObservation {
   profileFingerprint: string
 }
 
@@ -44,6 +45,7 @@ export interface FinalizedRuntimeObservation extends RuntimeValidation {
   finalizedBlockHash?: `0x${string}`
   finalizedBlockTimestamp?: bigint
   snapshot?: BridgeSnapshotObservation
+  status?: BridgeStatus
 }
 
 export const RUNTIME_VALIDATION_TTL_MS = 60_000
@@ -138,7 +140,19 @@ export async function validateRuntimeHeartbeat(profile: DeploymentProfile, conne
   if (localFinalized.number === null || localFinalized.hash === null) blockers.push("Finalized Base block number or hash is unavailable")
   const timestampBlocker = finalizedHeadTimestampBlocker(localFinalized.timestamp)
   if (timestampBlocker) blockers.push(timestampBlocker)
-  if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now(), profileFingerprint }
+  if (blockers.length > 0) {
+    return {
+      ready: false,
+      blockers,
+      checkedAt: Date.now(),
+      profileFingerprint,
+      chainId: localChainId,
+      finalizedBlock: localFinalized.number ?? undefined,
+      finalizedBlockHash: localFinalized.hash ?? undefined,
+      finalizedBlockTimestamp: localFinalized.timestamp,
+      status,
+    }
+  }
 
   const bridgeSnapshot = await client.readContract({
     address: bridgeAddress,
@@ -160,6 +174,7 @@ export async function validateRuntimeHeartbeat(profile: DeploymentProfile, conne
     finalizedBlockHash: localFinalized.hash,
     finalizedBlockTimestamp: localFinalized.timestamp,
     snapshot: bridgeSnapshotView(bridgeSnapshot),
+    status,
   }
 }
 
@@ -283,7 +298,18 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (ledgerName !== profile.icToken.name || ledgerSymbol !== profile.icToken.symbol || ledgerDecimals !== profile.icToken.decimals) {
     blockers.push(`IC token metadata is not ${profile.icToken.name}/${profile.icToken.symbol}/${profile.icToken.decimals}`)
   }
-  return { ready: blockers.length === 0, blockers, checkedAt: Date.now(), profileFingerprint }
+  return {
+    ready: blockers.length === 0,
+    blockers,
+    checkedAt: Date.now(),
+    profileFingerprint,
+    chainId: localChainId,
+    finalizedBlock: localFinalized.number,
+    finalizedBlockHash: localFinalized.hash,
+    finalizedBlockTimestamp: localFinalized.timestamp,
+    snapshot: bridgeSnapshotView(bridgeSnapshot),
+    status,
+  }
 }
 
 export function bytesHex(bytes: Uint8Array | number[], expectedLength: number): `0x${string}` | undefined {

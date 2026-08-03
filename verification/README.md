@@ -25,6 +25,7 @@ Solidity SMTはproduction共有predicateの性質であり、完全なdeployed c
 frontend LeanモデルはTypeScript実装そのものの証明ではなく、生成vectorと純粋な判断関数との対応をテストで検査する。
 Bridge SignerはEIP-712 Mint Authorizationへ署名する。侵害されたSignerは未処理Deposit IDへの有効なAuthorizationを作成できるため、epoch invalidation、pause、固定limit、mint windowが被害速度の境界となる。
 EIP-1898 `requireCanonical`の正しさ、EVM rollbackとEIP-1153 transient storage lifetime、ABI decoder、Web Locks、browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityとSQL row selectionは外部仮定である。形式証明の対象は、decode後のblock一致、enumから派生indexへの分類、成功したbrowser storage更新後のqueue状態までである。
+Bridge runtimeの不変性は外部仮定である。保存済み観測をwarm attestationとして再利用できる条件はproduction-shared predicateとVerusで検査し、cold成功後の永続化、経路間再利用、upgrade/reinstall境界はRustとPocketIC transaction testで検査する。
 Verus/Rust/LLVM、Lean kernel、Solidity SMTChecker、Wasm compilerはtrusted computing baseであり、source-level proofをWasm binary verificationとは呼ばない。
 Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
 

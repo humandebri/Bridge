@@ -107,7 +107,7 @@ describe("automatic status queries", () => {
     expect(mocks.validateRuntime).toHaveBeenCalledTimes(4)
   })
 
-  it("does not reuse full validation as a finalized observation", async () => {
+  it("does not treat validation without an observation as heartbeat data", async () => {
     const initialValidation = { ready: true, blockers: [], checkedAt: Date.now() }
     const view = renderHook(
       () => useRuntimeHeartbeat(undefined, initialValidation, { enabled: true, refetchInterval: 20 }),
@@ -118,6 +118,42 @@ describe("automatic status queries", () => {
     await waitFor(() => expect(view.result.current.data).toBeDefined())
     expect(mocks.validateRuntime).not.toHaveBeenCalled()
     view.unmount()
+  })
+
+  it("seeds a completed validation into heartbeat without an immediate duplicate read", async () => {
+    const checkedAt = Date.now()
+    const validation = {
+      ready: true,
+      blockers: [],
+      checkedAt,
+      profileFingerprint: "profile",
+      finalizedBlock: 12n,
+      finalizedBlockHash: `0x${"44".repeat(32)}` as const,
+      snapshot: {
+        serviceFee: 1n,
+        maxServiceFee: 1n,
+        perDepositLimit: 10n,
+        minted: 0n,
+        limit: 10n,
+        startedAt: 0n,
+        duration: 60n,
+        depositsPaused: false,
+        withdrawalsPaused: false,
+        bridgeSigner: `0x${"11".repeat(20)}` as const,
+        mintAuthorizationEpoch: 1n,
+        blockTimestamp: 1n,
+      },
+    }
+    mocks.validateRuntime.mockResolvedValue(validation)
+    const view = renderHook(() => {
+      const full = useRuntimeValidation(undefined, { enabled: true })
+      const heartbeat = useRuntimeHeartbeat(undefined, full.data, { enabled: full.data?.ready === true, refetchInterval: 45_000 })
+      return { full, heartbeat }
+    }, { wrapper: wrapper() })
+
+    await waitFor(() => expect(view.result.current.heartbeat.data?.snapshot).toBeDefined())
+    expect(mocks.validateRuntimeHeartbeat).not.toHaveBeenCalled()
+    expect(view.result.current.heartbeat.data?.checkedAt).toBe(checkedAt)
   })
 
   it("pauses while hidden and refreshes on focus and reconnect", async () => {

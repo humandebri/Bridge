@@ -382,6 +382,16 @@ proof fn canonical_probe_accepts_exact_block(receipt_block: int, snapshot_block:
         <==> receipt_block == snapshot_block
 {}
 
+proof fn runtime_attestation_requires_every_config_binding(
+    observation_present: bool,
+    chain_id_matches: bool,
+    runtime_hash_matches: bool,
+)
+    ensures kernel::runtime_attestation_matches_spec(
+        observation_present, chain_id_matches, runtime_hash_matches)
+            <==> observation_present && chain_id_matches && runtime_hash_matches
+{}
+
 proof fn withdrawal_finalization_decision_is_fail_closed(
     receipt_succeeded: bool,
     receipt_block: int,
