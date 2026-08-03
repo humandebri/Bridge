@@ -442,14 +442,17 @@ run_lean_proofs() {
 }
 
 run_policy_vector_consumers() {
-  python3 "$ROOT/scripts/test_protocol_vectors.py"
+  python3 "$ROOT/scripts/test_protocol_vectors.py" || return
   python3 "$ROOT/scripts/protocol_vectors.py" --check
 }
 
 run_refinement_gate() {
-  python3 "$ROOT/scripts/test_reproducible_artifacts.py"
-  python3 "$ROOT/scripts/test_refinement_manifest.py"
-  python3 "$ROOT/scripts/check_refinement_manifest.py"
+  python3 "$ROOT/scripts/test_reproducible_artifacts.py" || return
+  python3 "$ROOT/scripts/test_refinement_manifest.py" || return
+  if [[ -f "$ROOT/scripts/generate_refinement_harness.py" ]]; then
+    python3 "$ROOT/scripts/generate_refinement_harness.py" --check || return
+  fi
+  python3 "$ROOT/scripts/check_refinement_manifest.py" || return
   python3 "$ROOT/scripts/check_proof_impact.py"
 }
 
@@ -458,7 +461,10 @@ run_proof_stage() {
   shift
   local status
   set +e
-  "$@"
+  (
+    set -e
+    "$@"
+  )
   status=$?
   set -e
   if [[ "$status" -eq 0 ]]; then
@@ -471,17 +477,40 @@ run_proof_stage() {
   return "$status"
 }
 
+select_proof_stage_layout() {
+  local root="$1"
+  if [[ -f "$root/scripts/test_write_proof_receipt.py" \
+    && -f "$root/scripts/check_claim_test_manifest.py" ]]; then
+    printf '%s\n' "independent-claims"
+  else
+    printf '%s\n' "legacy"
+  fi
+}
+
 run_proofs() {
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
+  local proof_stage_layout
+  proof_stage_layout="$(select_proof_stage_layout "$ROOT")"
   : >"$PROOF_STAGE_RECEIPT"
-  python3 "$ROOT/scripts/write_proof_receipt.py" \
-    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
+  if [[ "$proof_stage_layout" == "independent-claims" ]]; then
+    python3 "$ROOT/scripts/test_write_proof_receipt.py"
+  else
+    python3 "$ROOT/scripts/write_proof_receipt.py" \
+      "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
+  fi
   python3 "$ROOT/scripts/check_failure_manifests.py"
+  if [[ "$proof_stage_layout" == "independent-claims" ]]; then
+    run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"
+  fi
   run_proof_stage lean run_lean_proofs
   run_proof_stage lean-negative run_lean_failure_fixtures
   run_proof_stage policy-vector-consumers run_policy_vector_consumers
   run_proof_stage refinement-gate run_refinement_gate
+  if [[ "$proof_stage_layout" == "independent-claims" ]]; then
+    run_proof_stage claim-transaction-tests \
+      python3 "$ROOT/scripts/check_claim_test_manifest.py"
+  fi
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt
