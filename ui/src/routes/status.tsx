@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { RefreshCcw } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useChainId } from "wagmi"
 import { formatEther } from "viem"
 import { Badge } from "@/components/ui/badge"
@@ -30,6 +30,7 @@ function StatusPage() {
   const { refetch: refetchValidation } = validation
   const { refetch: refetchBase } = base
   const { refetch: refetchCanister } = canister
+  const initialRefreshChainId = useRef<number | null>(null)
 
   const refresh = useCallback(() => {
     void (async () => {
@@ -40,11 +41,18 @@ function StatusPage() {
         }
         return
       }
-      await Promise.all([refetchBase(), refetchCanister()])
+      const checked = await refetchBase()
+      if (!(checked.data && "status" in checked.data && checked.data.status)) {
+        await refetchCanister()
+      }
     })()
   }, [refetchBase, refetchCanister, refetchValidation, validation.data?.ready])
 
-  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    if (initialRefreshChainId.current === chainId) return
+    initialRefreshChainId.current = chainId
+    refresh()
+  }, [chainId, refresh])
 
   useEffect(() => {
     const timestamps = [runtime?.checkedAt, base.dataUpdatedAt, canister.dataUpdatedAt]

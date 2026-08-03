@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   baseRefetch: vi.fn(),
   getDepositByOwnerSequence: vi.fn(),
   removeDepositIntent: vi.fn(),
+  saveDepositIntent: vi.fn(),
+  runtimeValidation: { value: { ready: true, blockers: [] as string[], checkedAt: 0 } },
 }))
 
 vi.mock("wagmi", () => ({
@@ -48,7 +50,7 @@ vi.mock("@/features/bridge/mint-authorization-action", () => ({
   })}>Complete test mint</button>,
 }))
 vi.mock("@/features/status/use-status", () => ({
-  useRuntimeValidation: () => ({ data: { ready: true, blockers: [], checkedAt: Date.now() }, isAutoRetryPending: mocks.runtimeAutoRetryPending(), isFetching: false, refetch: mocks.runtimeRefetch }),
+  useRuntimeValidation: () => ({ data: mocks.runtimeValidation.value, isAutoRetryPending: mocks.runtimeAutoRetryPending(), isFetching: false, refetch: mocks.runtimeRefetch }),
   useRuntimeHeartbeat: () => ({
     data: {
       ready: true,
@@ -99,7 +101,7 @@ vi.mock("@/lib/evm/client", () => ({
 vi.mock("@/lib/deposit-intents", () => ({
   readDepositIntent: mocks.readDepositIntent,
   removeDepositIntent: mocks.removeDepositIntent,
-  saveDepositIntent: vi.fn(),
+  saveDepositIntent: mocks.saveDepositIntent,
 }))
 
 vi.mock("@/lib/browser-lock", () => ({
@@ -141,6 +143,7 @@ describe("BridgePage automatic wallet refresh", () => {
     mocks.readDepositIntent.mockReset().mockReturnValue(undefined)
     mocks.runtimeWriteReadiness.mockReset().mockReturnValue({ ready: true, reason: undefined })
     mocks.runtimeAutoRetryPending.mockReset().mockReturnValue(false)
+    mocks.runtimeValidation.value = { ready: true, blockers: [], checkedAt: Date.now() }
     mocks.runtimeRefetch.mockReset().mockResolvedValue({
       data: { ready: true, blockers: [], checkedAt: Date.now() },
     })
@@ -171,6 +174,27 @@ describe("BridgePage automatic wallet refresh", () => {
       state: { AuthorizationPending: null },
     }])
     mocks.removeDepositIntent.mockReset().mockResolvedValue(undefined)
+    mocks.saveDepositIntent.mockReset().mockResolvedValue(undefined)
+  })
+
+  it("refreshes only the heartbeat after full runtime validation succeeds", async () => {
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+
+    await waitFor(() => expect(mocks.baseRefetch).toHaveBeenCalledOnce())
+    expect(mocks.runtimeRefetch).not.toHaveBeenCalled()
+  })
+
+  it("retries only full runtime validation when it has not succeeded", async () => {
+    mocks.runtimeValidation.value = { ready: false, blockers: ["Runtime validation failed"], checkedAt: Date.now() }
+    mocks.runtimeWriteReadiness.mockReturnValue({ ready: false, reason: "Runtime validation failed" })
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+
+    await waitFor(() => expect(mocks.runtimeRefetch).toHaveBeenCalledOnce())
+    expect(mocks.baseRefetch).not.toHaveBeenCalled()
   })
 
   it("loads IC balance, allowance, and sequence when an IC wallet appears later", async () => {
@@ -415,9 +439,9 @@ describe("BridgePage automatic wallet refresh", () => {
   })
 
   it.each([
-    { label: "with approval", allowance: 0n, expectedApprovals: 1 },
-    { label: "without approval", allowance: 300_010_000n, expectedApprovals: 0 },
-  ])("reuses one Oisy session $label, then closes it before authorization polling", async ({ allowance, expectedApprovals }) => {
+    { label: "with approval", allowance: 0n, expectedApprovals: 1, expectedRuntimeObservations: 2 },
+    { label: "without approval", allowance: 300_010_000n, expectedApprovals: 0, expectedRuntimeObservations: 1 },
+  ])("reuses one Oisy session $label, then closes it before authorization polling", async ({ allowance, expectedApprovals, expectedRuntimeObservations }) => {
     const closeWallet = vi.fn().mockResolvedValue(undefined)
     const account = { owner: "aaaaa-aa" }
     const adapter = {
@@ -461,10 +485,74 @@ describe("BridgePage automatic wallet refresh", () => {
       expect(mocks.removeDepositIntent).toHaveBeenCalledOnce()
     })
     expect(adapter.approve).toHaveBeenCalledTimes(expectedApprovals)
+    expect(mocks.baseRefetch).toHaveBeenCalledTimes(expectedRuntimeObservations)
     expect(closeWallet.mock.invocationCallOrder[0]).toBeLessThan(mocks.removeDepositIntent.mock.invocationCallOrder[0]!)
     expect(screen.queryByRole("button", { name: "Generating authorization…" })).not.toBeInTheDocument()
     expect(screen.getByText("The Deposit was accepted. Waiting for the Mint Authorization to become available.")).toBeVisible()
     expect(screen.getByText(/Complete the current deposit above/)).toBeVisible()
+  })
+
+  it("fails closed before saving or requesting a Deposit when the post-approval heartbeat fails", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const adapter = {
+      prepare: vi.fn().mockResolvedValue(vi.fn().mockResolvedValue(undefined)),
+      getAccount: vi.fn().mockResolvedValue(account),
+      approve: vi.fn().mockResolvedValue(7n),
+      requestDeposit: vi.fn(),
+    }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter,
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    mocks.ledgerAllowance.mockResolvedValue({ allowance: 0n })
+    mocks.baseRefetch
+      .mockResolvedValueOnce({
+        data: {
+          ready: true,
+          blockers: [],
+          checkedAt: Date.now(),
+          snapshot: {
+            serviceFee: 50_000_000n,
+            maxServiceFee: 50_000_000n,
+            perDepositLimit: 15_000_000_000_000n,
+            minted: 0n,
+            limit: 15_000_000_000_000n,
+            startedAt: 0n,
+            duration: 86_400n,
+            depositsPaused: false,
+            withdrawalsPaused: false,
+            bridgeSigner: "0x0000000000000000000000000000000000000001",
+            mintAuthorizationEpoch: 1n,
+            blockTimestamp: 1_000n,
+          },
+        },
+        isError: false,
+        isStale: false,
+      })
+      .mockResolvedValueOnce({
+        data: { ready: false, blockers: ["Runtime heartbeat failed"], checkedAt: Date.now() },
+        isError: false,
+        isStale: false,
+      })
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm and open wallet" }))
+
+    await waitFor(() => expect(adapter.approve).toHaveBeenCalledOnce())
+    await waitFor(() => expect(mocks.baseRefetch).toHaveBeenCalledTimes(2))
+    expect(adapter.requestDeposit).not.toHaveBeenCalled()
+    expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
   })
 
   it("closes Oisy when the Deposit response fails and restores retry recovery", async () => {

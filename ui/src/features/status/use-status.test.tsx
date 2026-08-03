@@ -2,6 +2,7 @@ import { StrictMode, type ReactNode } from "react"
 import { focusManager, onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { deploymentProfile } from "@/config/profile"
 import type * as RuntimeValidationModule from "@/lib/runtime-validation"
 import { useCurrentBaseQuote, useRuntimeHeartbeat, useRuntimeValidation } from "./use-status"
 
@@ -154,6 +155,27 @@ describe("automatic status queries", () => {
     await waitFor(() => expect(view.result.current.heartbeat.data?.snapshot).toBeDefined())
     expect(mocks.validateRuntimeHeartbeat).not.toHaveBeenCalled()
     expect(view.result.current.heartbeat.data?.checkedAt).toBe(checkedAt)
+  })
+
+  it("publishes heartbeat Canister status to the shared status cache", async () => {
+    const status = { marker: "heartbeat-status" }
+    mocks.validateRuntimeHeartbeat.mockResolvedValue({
+      ready: true,
+      blockers: [],
+      checkedAt: Date.now(),
+      status,
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const TestWrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+    const view = renderHook(
+      () => useRuntimeHeartbeat(undefined, undefined, { enabled: true }),
+      { wrapper: TestWrapper },
+    )
+
+    await waitFor(() => expect(view.result.current.isSuccess).toBe(true))
+    expect(client.getQueryData(["bridge-status", deploymentProfile.bridgeCanisterId])).toEqual(status)
   })
 
   it("pauses while hidden and refreshes on focus and reconnect", async () => {

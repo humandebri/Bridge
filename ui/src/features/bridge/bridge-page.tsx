@@ -231,7 +231,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const ownerSequenceData = !ownerSequence.isError && !ownerSequence.isStale ? ownerSequence.data : undefined
   const refreshing = runtime.isFetching || runtime.isAutoRetryPending || heartbeat.isFetching || ledger.isFetching || bsnsBalance.isFetching || (!unresolvedDeposit && ownerSequence.isFetching)
   const refreshBridgeData = () => {
-    const calls: Promise<unknown>[] = [runtime.refetch(), heartbeat.refetch()]
+    const calls: Promise<unknown>[] = [runtime.data?.ready === true ? heartbeat.refetch() : runtime.refetch()]
     if (direction === "deposit" && ic.account) {
       calls.push(ledger.refetch())
       if (!unresolvedDeposit) calls.push(ownerSequence.refetch())
@@ -326,12 +326,18 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       await withBrowserLock(`kinic-deposit-owner:${confirmedAccount.owner}`, async () => {
         const beforeApproval = reviewed.gate
         const requiredAllowance = reviewed.amount + beforeApproval.ledger.fee
+        let approvalPerformed = false
         if (beforeApproval.ledger.allowance < requiredAllowance) {
           await withBrowserLock(`kinic-wallet-prompt:ic:${confirmedAccount.owner}`, () => ic.adapter!.approve({ amount: requiredAllowance, currentAllowance: beforeApproval.ledger.allowance, ledgerFee: beforeApproval.ledger.fee }))
+          approvalPerformed = true
         }
         const [finalEvm, finalIc] = await Promise.all([currentBaseWallet(), ic.adapter!.getAccount()])
         requireWalletSnapshot(expectedWallets, { ...finalEvm, icAccount: finalIc }, "during approval")
-        const final = await refetchDepositWriteGate(reviewed.amount, beforeApproval.sequence, beforeApproval.observation)
+        const final = await refetchDepositWriteGate(
+          reviewed.amount,
+          beforeApproval.sequence,
+          approvalPerformed ? undefined : beforeApproval.observation,
+        )
         const attempt: UnresolvedDepositAttempt = {
           call: { ownerSequence: final.sequence, baseRecipient: hexToBytes(confirmedRecipient), grossAmount: reviewed.amount, maxServiceFee: final.base.serviceFee },
           account: { owner: confirmedAccount.owner, subaccount: confirmedAccount.subaccount?.slice() },
