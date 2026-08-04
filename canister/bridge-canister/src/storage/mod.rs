@@ -19,7 +19,10 @@ use transaction::*;
 use validation::expect_row_shape;
 
 use crate::admin::AdminState;
-use crate::config::{BridgeInitArgs, FeeRecipientConfig, ImmutableBridgeConfig};
+use crate::config::{
+    BridgeInitArgs, EvmFeePolicy, FeeRecipientConfig, GovernanceReplacementPolicy,
+    ImmutableBridgeConfig,
+};
 use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
     BaseMintSnapshot, CoreError, DepositHoldResolution, DepositId, DepositRecord, ExternalProgress,
@@ -1951,6 +1954,71 @@ fn decode_wire_payload<T: DeserializeOwned>(
     Ok(value)
 }
 
+#[derive(Deserialize)]
+struct LegacyImmutableBridgeConfigV30 {
+    ledger_canister_id: Principal,
+    index_canister_id: Principal,
+    evm_rpc_canister_id: Principal,
+    custom_evm_rpc_urls: Vec<String>,
+    base_chain_id: u64,
+    bridge_contract: Vec<u8>,
+    timelock_contract: Vec<u8>,
+    deployment_instance_id: Vec<u8>,
+    ecdsa_key_name: String,
+    ecdsa_derivation_path: Vec<Vec<u8>>,
+    governance_ecdsa_derivation_path: Vec<Vec<u8>>,
+    deposit_rate_limit_window_seconds: u64,
+    deposit_rate_limit_global: u16,
+    deposit_rate_limit_per_principal: u16,
+    notification_rate_limit_window_seconds: u64,
+    notification_rate_limit_global: u16,
+    settlement_rate_limit_window_seconds: u64,
+    settlement_rate_limit_global: u16,
+    settlement_rate_limit_per_principal: u16,
+    settlement_rate_limit_per_record: u16,
+    settlement_retry_interval_seconds: u64,
+    governance_evm_fee: EvmFeePolicy,
+    governance_replacement: GovernanceReplacementPolicy,
+    governance_eth_floor_wei: u128,
+    cycles_floor: u128,
+    settlement_cycle_ceiling: u128,
+}
+
+impl LegacyImmutableBridgeConfigV30 {
+    fn migrate(self, expected_bridge_runtime_sha256: [u8; 32]) -> ImmutableBridgeConfig {
+        ImmutableBridgeConfig {
+            ledger_canister_id: self.ledger_canister_id,
+            index_canister_id: self.index_canister_id,
+            evm_rpc_canister_id: self.evm_rpc_canister_id,
+            custom_evm_rpc_urls: self.custom_evm_rpc_urls,
+            base_chain_id: self.base_chain_id,
+            bridge_contract: self.bridge_contract,
+            expected_bridge_runtime_sha256: expected_bridge_runtime_sha256.to_vec(),
+            timelock_contract: self.timelock_contract,
+            deployment_instance_id: self.deployment_instance_id,
+            ecdsa_key_name: self.ecdsa_key_name,
+            ecdsa_derivation_path: self.ecdsa_derivation_path,
+            governance_ecdsa_derivation_path: self.governance_ecdsa_derivation_path,
+            deposit_rate_limit_window_seconds: self.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: self.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: self.deposit_rate_limit_per_principal,
+            notification_rate_limit_window_seconds: self.notification_rate_limit_window_seconds,
+            notification_rate_limit_global: self.notification_rate_limit_global,
+            notification_ingestion_rate_limit_global: 30,
+            settlement_rate_limit_window_seconds: self.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: self.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: self.settlement_rate_limit_per_record,
+            settlement_retry_interval_seconds: self.settlement_retry_interval_seconds,
+            governance_evm_fee: self.governance_evm_fee,
+            governance_replacement: self.governance_replacement,
+            governance_eth_floor_wei: self.governance_eth_floor_wei,
+            cycles_floor: self.cycles_floor,
+            settlement_cycle_ceiling: self.settlement_cycle_ceiling,
+        }
+    }
+}
+
 fn migrate_v30_to_v31(handle: DbHandle) -> Result<(), StorageError> {
     handle.update(|connection| {
         let migration_30 = connection.query_scalar::<i64>(
@@ -1988,13 +2056,30 @@ fn migrate_v30_to_v31(handle: DbHandle) -> Result<(), StorageError> {
                 ))
             },
         )?;
-        let legacy_config: ImmutableBridgeConfig =
+        let legacy_config: LegacyImmutableBridgeConfigV30 =
             decode_wire_payload(&singleton.3, LEGACY_WIRE_VERSION_V26)
                 .map_err(|_| migration_constraint("v30 config is not decodable"))?;
+        let legacy_progress: ExternalProgress =
+            decode_wire_payload(&singleton.2, LEGACY_WIRE_VERSION_V26)
+                .map_err(|_| migration_constraint("v30 external progress is not decodable"))?;
+        let finalized_observation = legacy_progress.finalized_observation.ok_or_else(|| {
+            migration_constraint("v30 migration requires a finalized runtime observation")
+        })?;
+        if finalized_observation.chain_id != legacy_config.base_chain_id
+            || finalized_observation
+                .runtime_sha256
+                .iter()
+                .all(|byte| *byte == 0)
+        {
+            return Err(migration_constraint(
+                "v30 finalized runtime observation does not match the configured chain",
+            ));
+        }
+        let migrated_config = legacy_config.migrate(finalized_observation.runtime_sha256);
         let legacy_notification: NotificationAdmissionControl =
             decode_wire_payload(&singleton.6, LEGACY_WIRE_VERSION_V26)
                 .map_err(|_| migration_constraint("v30 notification quota is not decodable"))?;
-        let config = encode(&legacy_config)
+        let config = encode(&migrated_config)
             .map_err(|_| migration_constraint("v30 config migration encoding failed"))?;
         let notification = encode(&legacy_notification)
             .map_err(|_| migration_constraint("v30 notification migration encoding failed"))?;
@@ -10931,7 +11016,11 @@ mod tests {
                 )?;
                 let config = legacy_v30_blob(&row.3, |fields| {
                     fields.retain(|(key, _)| {
-                        key != &Value::Text("notification_ingestion_rate_limit_global".to_owned())
+                        key != &Value::Text("expected_bridge_runtime_sha256".to_owned())
+                            && key
+                                != &Value::Text(
+                                    "notification_ingestion_rate_limit_global".to_owned(),
+                                )
                     });
                 });
                 let notification = legacy_v30_blob(&row.6, |fields| {
@@ -11023,6 +11112,23 @@ mod tests {
             .expect("downgrade fixture to v30");
     }
 
+    fn seed_finalized_runtime_observation(store: &mut StableStore, runtime_sha256: [u8; 32]) {
+        let mut progress = store.external_progress().expect("read external progress");
+        progress
+            .observe_finalized(FinalizedObservationRecord {
+                chain_id: config().base_chain_id,
+                block_number: 100,
+                block_hash: [0x41; 32],
+                observed_at_ns: 1_000,
+                bridge_signer: [0x42; 20],
+                runtime_sha256,
+            })
+            .expect("seed finalized runtime observation");
+        store
+            .set_external_progress(&progress)
+            .expect("persist finalized runtime observation");
+    }
+
     #[test]
     #[serial]
     fn unreviewed_schema_fails_closed_even_when_empty() {
@@ -11058,6 +11164,8 @@ mod tests {
         store
             .record_reserve_observation(10, 2, owner)
             .expect("seed v30 audit");
+        let migrated_runtime_sha256 = [0x43; 32];
+        seed_finalized_runtime_observation(&mut store, migrated_runtime_sha256);
         let revision_before = storage_revision(&store);
         downgrade_fixture_to_v30(&store);
         assert_eq!(
@@ -11085,13 +11193,14 @@ mod tests {
                 .expect("read migrated owner sequence"),
             1
         );
+        let migrated_config = migrated
+            .config()
+            .expect("read migrated config")
+            .expect("configured store");
+        assert_eq!(migrated_config.notification_ingestion_rate_limit_global, 30);
         assert_eq!(
-            migrated
-                .config()
-                .expect("read migrated config")
-                .expect("configured store")
-                .notification_ingestion_rate_limit_global,
-            30
+            migrated_config.expected_bridge_runtime_sha256,
+            migrated_runtime_sha256
         );
         assert!(migrated
             .consume_notification_verification_quota(1, 600, 2, 0, 2)
@@ -11120,6 +11229,33 @@ mod tests {
 
     #[test]
     #[serial]
+    fn v30_upgrade_requires_a_finalized_nonzero_runtime_observation() {
+        for runtime_sha256 in [None, Some([0; 32])] {
+            let memory = VectorMemory::default();
+            let mut store =
+                StableStore::init_configured(memory.clone(), &config()).expect("initialize v31");
+            if let Some(runtime_sha256) = runtime_sha256 {
+                seed_finalized_runtime_observation(&mut store, runtime_sha256);
+            }
+            downgrade_fixture_to_v30(&store);
+            drop(store);
+
+            assert_eq!(
+                StableStore::reopen_after_upgrade(memory.clone()).err(),
+                Some(StorageError::DatabaseFailure)
+            );
+
+            reset_sqlite_test_runtime();
+            let handle = open_database(memory).expect("reopen rejected v30 image");
+            assert_eq!(
+                stored_metadata(handle).expect("read unchanged v30 metadata"),
+                (LEGACY_SCHEMA_VERSION_V30, LEGACY_WIRE_VERSION_V26)
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
     fn failed_v30_upgrade_rolls_back_every_migration_write() {
         let memory = VectorMemory::default();
         let owner = Principal::self_authenticating([0x32; 32]);
@@ -11136,6 +11272,7 @@ mod tests {
                 None,
             )
             .expect("seed deposit");
+        seed_finalized_runtime_observation(&mut store, [0x44; 32]);
         downgrade_fixture_to_v30(&store);
         store
             .handle
