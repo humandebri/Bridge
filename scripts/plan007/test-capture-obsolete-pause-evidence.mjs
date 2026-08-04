@@ -49,7 +49,7 @@ const runIcpImpl = (_canister, _environment, method) => {
     return `record { schema_version = 30 : nat16; deployment_instance_id = blob "${"\\55".repeat(32)}" }`
   }
   if (method === "get_bridge_status") {
-    return "record { deposits_paused = true : bool; last_audit_sequence = opt (7 : nat64) }"
+    return "record { deposits_paused = true; last_audit_sequence = opt (7 : nat64) }"
   }
   return 'record { kind = variant { DepositsPaused }; caller = principal "aaaaa-aa"; sequence = 7 : nat64 }'
 }

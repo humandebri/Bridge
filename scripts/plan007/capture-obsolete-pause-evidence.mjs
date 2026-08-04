@@ -170,7 +170,7 @@ function moduleHash(value) {
 export function observeIcLive(canisterId, environment, runIcpImpl = runIcp, runStatusImpl = runCanisterStatus) {
   const publicConfig = runIcpImpl(canisterId, environment, "get_public_config", "()", true)
   const bridgeStatus = runIcpImpl(canisterId, environment, "get_bridge_status", "()", true)
-  if (!/\bdeposits_paused\s*=\s*true\s*:\s*bool\b/s.test(bridgeStatus)) {
+  if (!/\bdeposits_paused\s*=\s*true(?:\s*:\s*bool)?\s*;/s.test(bridgeStatus)) {
     fail("post-pause BridgeStatus did not confirm deposits_paused")
   }
   return {
@@ -198,7 +198,7 @@ export function observeIcPause(canisterId, environment, auditCursor, runIcpImpl 
   const pause = runIcpImpl(canisterId, environment, "pause_new_deposits", "()")
   if (!/variant\s*\{\s*Ok\s*\}/s.test(pause)) fail("pause_new_deposits did not return Ok")
   const status = runIcpImpl(canisterId, environment, "get_bridge_status", "()", true)
-  if (!/\bdeposits_paused\s*=\s*true\s*:\s*bool\b/s.test(status)) fail("get_bridge_status did not confirm deposits_paused")
+  if (!/\bdeposits_paused\s*=\s*true(?:\s*:\s*bool)?\s*;/s.test(status)) fail("get_bridge_status did not confirm deposits_paused")
   const statusSequences = [...status.matchAll(/\blast_audit_sequence\s*=\s*opt\s*\(\s*(\d+)\s*:\s*nat64\s*\)/g)]
   if (statusSequences.length !== 1) fail("get_bridge_status did not expose exactly one nat64 last_audit_sequence")
   const statusSequence = statusSequences[0][1]
