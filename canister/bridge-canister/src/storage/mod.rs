@@ -358,6 +358,19 @@ const MIGRATIONS: &[Migration] = &[Migration {
     sql: SQLITE_SCHEMA,
 }];
 
+const LEGACY_SCHEMA_VERSION_V30: u16 = 30;
+const LEGACY_WIRE_VERSION_V26: u8 = 26;
+const V30_WIRE_VALUE_TABLES: &[&str] = &[
+    "deposits",
+    "deposit_funding_attempts",
+    "withdrawals",
+    "reconciliation_holds",
+    "reconciliation_scans",
+    "audit_events",
+    "fee_payouts",
+];
+const MAX_V30_MIGRATION_ROWS: usize = 10_000;
+
 fn deposit_owner_index_prefix(owner: Principal) -> Vec<u8> {
     let owner_bytes = owner.as_slice();
     let mut prefix = Vec::with_capacity(1 + owner_bytes.len());
@@ -1154,7 +1167,9 @@ struct SettlementAdmissionControl {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct NotificationAdmissionControl {
     window_id: u64,
+    #[serde(alias = "global_count")]
     verification_count: u16,
+    #[serde(default)]
     ingestion_count: u16,
 }
 
@@ -1889,7 +1904,7 @@ fn open_database(memory: DefaultMemoryImpl) -> Result<DbHandle, StorageError> {
     DbHandle::init(manager.get(SQLITE_MEMORY_ID)).map_err(StorageError::from)
 }
 
-fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
+fn stored_metadata(handle: DbHandle) -> Result<(u16, u8), StorageError> {
     let (application_schema, record_wire): (i64, i64) = handle.query(|connection| {
         connection.query_one(
             "SELECT application_schema_version, record_wire_version FROM bridge_metadata WHERE id = 1",
@@ -1897,15 +1912,166 @@ fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
             |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
         )
     })?;
-    if application_schema != i64::from(SCHEMA_VERSION) {
-        return Err(StorageError::UnsupportedSchemaVersion(
-            u16::try_from(application_schema).unwrap_or(u16::MAX),
-        ));
+    Ok((
+        u16::try_from(application_schema).unwrap_or(u16::MAX),
+        u8::try_from(record_wire).unwrap_or(u8::MAX),
+    ))
+}
+
+fn migration_constraint(context: &str) -> DbError {
+    DbError::Constraint(context.to_owned())
+}
+
+fn migrate_v26_wire_blob(mut bytes: Vec<u8>) -> Result<Vec<u8>, DbError> {
+    let version = bytes
+        .first_mut()
+        .ok_or_else(|| migration_constraint("v30 migration found a missing wire version"))?;
+    if *version != LEGACY_WIRE_VERSION_V26 {
+        return Err(migration_constraint("v30 migration found a non-v26 record"));
     }
-    if record_wire != i64::from(WIRE_VERSION) {
-        return Err(StorageError::UnsupportedWireVersion(
-            u8::try_from(record_wire).unwrap_or(u8::MAX),
-        ));
+    *version = WIRE_VERSION;
+    Ok(bytes)
+}
+
+fn decode_wire_payload<T: DeserializeOwned>(
+    bytes: &[u8],
+    expected_version: u8,
+) -> Result<T, StorageError> {
+    let (version, payload) = bytes
+        .split_first()
+        .ok_or(StorageError::MissingWireVersion)?;
+    if *version != expected_version {
+        return Err(StorageError::UnsupportedWireVersion(*version));
+    }
+    let mut cursor = Cursor::new(payload);
+    let value = ciborium::from_reader(&mut cursor).map_err(|_| StorageError::DecodeFailed)?;
+    if cursor.position() != payload.len() as u64 {
+        return Err(StorageError::DecodeFailed);
+    }
+    Ok(value)
+}
+
+fn migrate_v30_to_v31(handle: DbHandle) -> Result<(), StorageError> {
+    handle.update(|connection| {
+        let migration_30 = connection.query_scalar::<i64>(
+            "SELECT EXISTS(SELECT 1 FROM __ic_sqlite_migrations WHERE version = 30)",
+            params![],
+        )?;
+        let migration_31 = connection.query_scalar::<i64>(
+            "SELECT EXISTS(SELECT 1 FROM __ic_sqlite_migrations WHERE version = 31)",
+            params![],
+        )?;
+        if migration_30 != 1 || migration_31 != 0 {
+            return Err(migration_constraint(
+                "v30 migration history does not match the reviewed predecessor",
+            ));
+        }
+
+        let singleton = connection.query_one(
+            "SELECT accounting, counters, external_progress, config, admin_state,
+                    deposit_admission, notification_admission, audit_retention,
+                    settlement_admission, settlement_scheduler_health
+             FROM singleton_state WHERE id = 1",
+            params![],
+            |row| {
+                Ok((
+                    row.get::<Vec<u8>>(0)?,
+                    row.get::<Vec<u8>>(1)?,
+                    row.get::<Vec<u8>>(2)?,
+                    row.get::<Vec<u8>>(3)?,
+                    row.get::<Vec<u8>>(4)?,
+                    row.get::<Vec<u8>>(5)?,
+                    row.get::<Vec<u8>>(6)?,
+                    row.get::<Vec<u8>>(7)?,
+                    row.get::<Vec<u8>>(8)?,
+                    row.get::<Vec<u8>>(9)?,
+                ))
+            },
+        )?;
+        let legacy_config: ImmutableBridgeConfig =
+            decode_wire_payload(&singleton.3, LEGACY_WIRE_VERSION_V26)
+                .map_err(|_| migration_constraint("v30 config is not decodable"))?;
+        let legacy_notification: NotificationAdmissionControl =
+            decode_wire_payload(&singleton.6, LEGACY_WIRE_VERSION_V26)
+                .map_err(|_| migration_constraint("v30 notification quota is not decodable"))?;
+        let config = encode(&legacy_config)
+            .map_err(|_| migration_constraint("v30 config migration encoding failed"))?;
+        let notification = encode(&legacy_notification)
+            .map_err(|_| migration_constraint("v30 notification migration encoding failed"))?;
+
+        connection.execute(
+            "UPDATE singleton_state SET accounting = ?1, counters = ?2,
+                external_progress = ?3, config = ?4, admin_state = ?5,
+                deposit_admission = ?6, notification_admission = ?7,
+                audit_retention = ?8, settlement_admission = ?9,
+                settlement_scheduler_health = ?10 WHERE id = 1",
+            params![
+                migrate_v26_wire_blob(singleton.0)?,
+                migrate_v26_wire_blob(singleton.1)?,
+                migrate_v26_wire_blob(singleton.2)?,
+                config.to_sql_bytes(),
+                migrate_v26_wire_blob(singleton.4)?,
+                migrate_v26_wire_blob(singleton.5)?,
+                notification.to_sql_bytes(),
+                migrate_v26_wire_blob(singleton.7)?,
+                migrate_v26_wire_blob(singleton.8)?,
+                migrate_v26_wire_blob(singleton.9)?,
+            ],
+        )?;
+
+        let mut migrated_rows = 0usize;
+        for table in V30_WIRE_VALUE_TABLES {
+            let select = format!("SELECT key, value FROM {table}");
+            let rows = connection.query_all(&select, params![], |row| {
+                Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+            })?;
+            migrated_rows = migrated_rows
+                .checked_add(rows.len())
+                .ok_or_else(|| migration_constraint("v30 migration row count overflow"))?;
+            if migrated_rows > MAX_V30_MIGRATION_ROWS {
+                return Err(migration_constraint(
+                    "v30 migration exceeds the reviewed row bound",
+                ));
+            }
+            let update = format!("UPDATE {table} SET value = ?1 WHERE key = ?2");
+            for (key, value) in rows {
+                connection.execute(&update, params![migrate_v26_wire_blob(value)?, key])?;
+            }
+        }
+
+        connection.execute(
+            "UPDATE bridge_metadata SET application_schema_version = 31,
+                record_wire_version = 27
+             WHERE id = 1 AND application_schema_version = 30 AND record_wire_version = 26",
+            params![],
+        )?;
+        let migrated_metadata = connection.query_scalar::<i64>(
+            "SELECT COUNT(*) FROM bridge_metadata
+             WHERE id = 1 AND application_schema_version = 31 AND record_wire_version = 27",
+            params![],
+        )?;
+        if migrated_metadata != 1 {
+            return Err(migration_constraint(
+                "v30 migration metadata changed during validation",
+            ));
+        }
+        connection.execute(
+            "INSERT INTO __ic_sqlite_migrations(version) VALUES (31)",
+            params![],
+        )?;
+        Ok(())
+    })?;
+    handle.migrate(MIGRATIONS)?;
+    Ok(())
+}
+
+fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
+    let (application_schema, record_wire) = stored_metadata(handle)?;
+    if application_schema != SCHEMA_VERSION {
+        return Err(StorageError::UnsupportedSchemaVersion(application_schema));
+    }
+    if record_wire != WIRE_VERSION {
+        return Err(StorageError::UnsupportedWireVersion(record_wire));
     }
     Ok(())
 }
@@ -2439,7 +2605,20 @@ impl StableStore {
     }
 
     pub fn reopen_after_upgrade(memory: DefaultMemoryImpl) -> Result<Self, StorageError> {
-        Self::reopen(memory)
+        #[cfg(test)]
+        reset_sqlite_test_runtime();
+        let handle = open_database(memory)?;
+        match stored_metadata(handle)? {
+            (SCHEMA_VERSION, WIRE_VERSION) => {}
+            (LEGACY_SCHEMA_VERSION_V30, LEGACY_WIRE_VERSION_V26) => {
+                migrate_v30_to_v31(handle)?;
+            }
+            (schema, _) if schema != SCHEMA_VERSION => {
+                return Err(StorageError::UnsupportedSchemaVersion(schema));
+            }
+            (_, wire) => return Err(StorageError::UnsupportedWireVersion(wire)),
+        }
+        Self::reopen_handle(handle)
     }
 
     fn validate_singletons(&self) -> Result<(), StorageError> {
@@ -8067,19 +8246,7 @@ fn encode<T: Serialize>(value: &T) -> Result<StableBlob, StorageError> {
 }
 
 fn decode<T: DeserializeOwned>(blob: &StableBlob) -> Result<T, StorageError> {
-    let (version, payload) = blob
-        .as_slice()
-        .split_first()
-        .ok_or(StorageError::MissingWireVersion)?;
-    if *version != WIRE_VERSION {
-        return Err(StorageError::UnsupportedWireVersion(*version));
-    }
-    let mut cursor = Cursor::new(payload);
-    let value = ciborium::from_reader(&mut cursor).map_err(|_| StorageError::DecodeFailed)?;
-    if cursor.position() != payload.len() as u64 {
-        return Err(StorageError::DecodeFailed);
-    }
-    Ok(value)
+    decode_wire_payload(blob.as_slice(), WIRE_VERSION)
 }
 
 #[cfg(test)]
@@ -10717,12 +10884,149 @@ mod tests {
             .expect("mark stored schema");
     }
 
+    fn legacy_v30_blob(
+        bytes: &[u8],
+        transform: impl FnOnce(&mut Vec<(ciborium::value::Value, ciborium::value::Value)>),
+    ) -> Vec<u8> {
+        use ciborium::value::Value;
+
+        assert_eq!(bytes.first(), Some(&WIRE_VERSION));
+        let mut value: Value = ciborium::from_reader(&bytes[1..]).expect("decode current CBOR");
+        let Value::Map(fields) = &mut value else {
+            panic!("expected a CBOR map")
+        };
+        transform(fields);
+        let mut legacy = vec![LEGACY_WIRE_VERSION_V26];
+        ciborium::into_writer(&value, &mut legacy).expect("encode v30 CBOR");
+        legacy
+    }
+
+    fn downgrade_fixture_to_v30(store: &StableStore) {
+        use ciborium::value::Value;
+
+        store
+            .handle
+            .0
+            .update(|connection| {
+                let row = connection.query_one(
+                    "SELECT accounting, counters, external_progress, config, admin_state,
+                            deposit_admission, notification_admission, audit_retention,
+                            settlement_admission, settlement_scheduler_health
+                     FROM singleton_state WHERE id = 1",
+                    params![],
+                    |row| {
+                        Ok((
+                            row.get::<Vec<u8>>(0)?,
+                            row.get::<Vec<u8>>(1)?,
+                            row.get::<Vec<u8>>(2)?,
+                            row.get::<Vec<u8>>(3)?,
+                            row.get::<Vec<u8>>(4)?,
+                            row.get::<Vec<u8>>(5)?,
+                            row.get::<Vec<u8>>(6)?,
+                            row.get::<Vec<u8>>(7)?,
+                            row.get::<Vec<u8>>(8)?,
+                            row.get::<Vec<u8>>(9)?,
+                        ))
+                    },
+                )?;
+                let config = legacy_v30_blob(&row.3, |fields| {
+                    fields.retain(|(key, _)| {
+                        key != &Value::Text("notification_ingestion_rate_limit_global".to_owned())
+                    });
+                });
+                let notification = legacy_v30_blob(&row.6, |fields| {
+                    fields.retain(|(key, _)| key != &Value::Text("ingestion_count".to_owned()));
+                    for (key, _) in fields {
+                        if key == &Value::Text("verification_count".to_owned()) {
+                            *key = Value::Text("global_count".to_owned());
+                        }
+                    }
+                });
+                connection.execute(
+                    "UPDATE singleton_state SET accounting = ?1, counters = ?2,
+                        external_progress = ?3, config = ?4, admin_state = ?5,
+                        deposit_admission = ?6, notification_admission = ?7,
+                        audit_retention = ?8, settlement_admission = ?9,
+                        settlement_scheduler_health = ?10 WHERE id = 1",
+                    params![
+                        {
+                            let mut value = row.0;
+                            assert_eq!(value.first(), Some(&WIRE_VERSION));
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.1;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.2;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        config,
+                        {
+                            let mut value = row.4;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.5;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        notification,
+                        {
+                            let mut value = row.7;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.8;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.9;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                    ],
+                )?;
+                for table in V30_WIRE_VALUE_TABLES {
+                    let select = format!("SELECT key, value FROM {table}");
+                    let rows = connection.query_all(&select, params![], |row| {
+                        Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+                    })?;
+                    let update = format!("UPDATE {table} SET value = ?1 WHERE key = ?2");
+                    for (key, mut value) in rows {
+                        assert_eq!(value.first(), Some(&WIRE_VERSION));
+                        value[0] = LEGACY_WIRE_VERSION_V26;
+                        connection.execute(&update, params![value, key])?;
+                    }
+                }
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = 30,
+                        record_wire_version = 26 WHERE id = 1",
+                    params![],
+                )?;
+                connection.execute(
+                    "DELETE FROM __ic_sqlite_migrations WHERE version = 31",
+                    params![],
+                )?;
+                connection.execute(
+                    "INSERT INTO __ic_sqlite_migrations(version) VALUES (30)",
+                    params![],
+                )
+            })
+            .expect("downgrade fixture to v30");
+    }
+
     #[test]
     #[serial]
-    fn obsolete_schema_fails_closed_even_when_empty() {
-        let obsolete_version = SCHEMA_VERSION
-            .checked_sub(1)
-            .expect("current schema has a predecessor");
+    fn unreviewed_schema_fails_closed_even_when_empty() {
+        let obsolete_version = LEGACY_SCHEMA_VERSION_V30 - 1;
         let memory = VectorMemory::default();
         let store = StableStore::init(memory.clone()).expect("initialize current schema");
         mark_stored_schema(&store, obsolete_version);
@@ -10733,6 +11037,150 @@ mod tests {
             Err(StorageError::UnsupportedSchemaVersion(version))
                 if version == obsolete_version
         ));
+    }
+
+    #[test]
+    #[serial]
+    fn reviewed_v30_upgrade_migrates_records_config_quota_and_audit_once() {
+        let memory = VectorMemory::default();
+        let owner = Principal::self_authenticating([0x30; 32]);
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize v31");
+        let mut deposit = deposit_for(owner);
+        deposit.id = DepositId::new([0x31; 32]);
+        let deposit_intent = intent(deposit.id.bytes(), owner);
+        store
+            .admit_deposit(owner, &deposit_intent, &deposit, None, None)
+            .expect("seed v30 deposit");
+        assert!(store
+            .consume_notification_verification_quota(1, 600, 2, 0, 2)
+            .expect("seed v30 quota"));
+        store
+            .record_reserve_observation(10, 2, owner)
+            .expect("seed v30 audit");
+        let revision_before = storage_revision(&store);
+        downgrade_fixture_to_v30(&store);
+        assert_eq!(
+            stored_metadata(store.handle.0).expect("read v30 metadata"),
+            (LEGACY_SCHEMA_VERSION_V30, LEGACY_WIRE_VERSION_V26)
+        );
+        drop(store);
+
+        let mut migrated =
+            StableStore::reopen_after_upgrade(memory.clone()).expect("migrate v30 to v31");
+        assert_eq!(
+            stored_metadata(migrated.handle.0).expect("read migrated metadata"),
+            (SCHEMA_VERSION, WIRE_VERSION)
+        );
+        assert_eq!(storage_revision(&migrated), revision_before);
+        assert_eq!(
+            migrated
+                .deposit(deposit.id.bytes())
+                .expect("read migrated deposit"),
+            Some(deposit.clone())
+        );
+        assert_eq!(
+            migrated
+                .next_deposit_sequence(owner)
+                .expect("read migrated owner sequence"),
+            1
+        );
+        assert_eq!(
+            migrated
+                .config()
+                .expect("read migrated config")
+                .expect("configured store")
+                .notification_ingestion_rate_limit_global,
+            30
+        );
+        assert!(migrated
+            .consume_notification_verification_quota(1, 600, 2, 0, 2)
+            .expect("consume remaining migrated verification quota"));
+        assert!(!migrated
+            .consume_notification_verification_quota(1, 600, 2, 0, 2)
+            .expect("enforce migrated verification quota"));
+        assert_eq!(
+            migrated
+                .audit_events(0, 10)
+                .expect("read migrated audit")
+                .events
+                .len(),
+            1
+        );
+        drop(migrated);
+
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("reopen migrated v31");
+        assert_eq!(
+            reopened
+                .deposit(deposit.id.bytes())
+                .expect("read deposit after second upgrade"),
+            Some(deposit)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn failed_v30_upgrade_rolls_back_every_migration_write() {
+        let memory = VectorMemory::default();
+        let owner = Principal::self_authenticating([0x32; 32]);
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize v31");
+        let mut deposit = deposit_for(owner);
+        deposit.id = DepositId::new([0x33; 32]);
+        store
+            .admit_deposit(
+                owner,
+                &intent(deposit.id.bytes(), owner),
+                &deposit,
+                None,
+                None,
+            )
+            .expect("seed deposit");
+        downgrade_fixture_to_v30(&store);
+        store
+            .handle
+            .0
+            .update(|connection| {
+                let mut value = connection.query_scalar::<Vec<u8>>(
+                    "SELECT value FROM deposits WHERE key = ?1",
+                    params![deposit.id.bytes().to_vec()],
+                )?;
+                value[0] = LEGACY_WIRE_VERSION_V26 - 1;
+                connection.execute(
+                    "UPDATE deposits SET value = ?1 WHERE key = ?2",
+                    params![value, deposit.id.bytes().to_vec()],
+                )
+            })
+            .expect("corrupt a late migration row");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen_after_upgrade(memory.clone()).err(),
+            Some(StorageError::DatabaseFailure)
+        );
+
+        reset_sqlite_test_runtime();
+        let handle = open_database(memory).expect("reopen failed migration image");
+        assert_eq!(
+            stored_metadata(handle).expect("read rolled-back metadata"),
+            (LEGACY_SCHEMA_VERSION_V30, LEGACY_WIRE_VERSION_V26)
+        );
+        let (config_version, migration_31): (Vec<u8>, i64) = handle
+            .query(|connection| {
+                Ok((
+                    connection.query_scalar::<Vec<u8>>(
+                        "SELECT config FROM singleton_state WHERE id = 1",
+                        params![],
+                    )?,
+                    connection.query_scalar::<i64>(
+                        "SELECT EXISTS(SELECT 1 FROM __ic_sqlite_migrations WHERE version = 31)",
+                        params![],
+                    )?,
+                ))
+            })
+            .expect("inspect rolled-back migration");
+        assert_eq!(config_version.first(), Some(&LEGACY_WIRE_VERSION_V26));
+        assert_eq!(migration_31, 0);
     }
 
     #[test]

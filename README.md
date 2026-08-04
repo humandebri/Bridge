@@ -171,4 +171,4 @@ icp network stop --project-root-override .
 
 手動実行の`prepare_local_network.py --write`は`icp.yaml`を永続的に変更する。必要なら停止後に利用者が元のportへ戻す。
 
-本番未デプロイ期間に旧schemaが残るdevelopment/staging Canisterは、stateを保持するupgradeではなく明示的な`--mode reinstall`で現行schemaへ揃える。本番deploy後はreinstallを禁止し、migration方針を別途導入する。
+stable schema変更は、明示的な一方向migrationと旧Wasm→新WasmのPocketIC保持試験を同じ変更へ含め、`--mode upgrade`で適用する。現在登録済みなのは監査済みv30→v31だけであり、v29以下・未知schema・未知wireはfail closedとする。`reinstall`はstate破棄を明示承認した使い捨て環境に限定する。

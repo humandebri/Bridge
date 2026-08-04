@@ -22,7 +22,7 @@ KINIC mainnet Ledgerのfeeは`100000` rawであり、stagingとの差は意図�
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv31、record wireはv27を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
+stable schemaはv31、record wireはv27を現行形式とする。`post_upgrade`では登録済みのv30／wire v26だけを一方向migrationし、成功時は全recordとmetadataを一つのSQLite transactionでcommitする。dual-readや旧wire fallbackは持たない。
 
 ## 保持制限と監査
 
@@ -33,7 +33,7 @@ stable schemaはv31、record wireはv27を唯一の現行形式とする。未�
 schema v31またはwire v27以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。Ledger feeとService Feeをreview済みprofileへ同期した後、対象ownerまたは運用principalがHistoryから`continue_withdrawal`を実行する。Canisterが最新Ledger feeを再取得し、charged Service Fee以下であることを確認した場合だけ、同じrecordからreleaseを開始してguardを解除する。
-本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。
+旧schemaの開発・テストcanisterは、対応する旧Wasm fixture、保持試験、rollback試験、source/module/config bindingが揃った登録済みmigrationだけを`upgrade`する。未登録schemaは起動前にfail closedとし、state破棄を明示承認しない限りreinstallしない。
 SQLite DBやcounterを手作業で変更しない。
 
 schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipient、Authorization、失効またはMint確定証拠を一つのstable envelopeへ保存する。pending Ledger、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、primary rowとliability index・集計は一つのSQLite transactionで更新する。
@@ -48,7 +48,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 2. `storage_integrity_check()` queryが`ok`を返すことを確認する。upgrade処理からこの検査は自動実行されない。
 3. `refresh_storage_checksum(4194304)`を`complete = true`まで反復する。一回の呼出しは最大4 MiBであり、raw stable-memoryコピーやfilesystem backupとして扱わない。
 
-旧schemaのlocal/staging Canisterはupgradeせず再作成する。WAL、mmap、compaction、旧`ic-sqlite-vfs`からの直接移行は行わない。
+local/stagingのschema変更も登録済みmigrationを使用する。WAL、mmap、compaction、旧`ic-sqlite-vfs` layoutからの未対応直接移行は行わない。
 
 ## ETH・cycles補充
 
@@ -102,7 +102,7 @@ npm run governance-relayer -- run --operation-id <id>
 
 `IC_IDENTITY_PEM`はCanisterの認可APIだけに使用し、通常操作ではGovernance identity、緊急pause/cancelではpause identityを指定できる。EVM秘密鍵は用意しない。gasはthreshold Governance Operator EOAが負担する。RPC URL/API keyやPEM内容をログ・shell history・incident evidenceへ記録しない。
 
-stagingをこのschemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認し、旧schema Canisterはreinstallする。rollbackでは最初にrelayerを停止し、対応するWasmとstable snapshotをセットで復元する。旧Wasmだけを現在のstable stateへ適用しない。
+stagingをこのschemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認し、v30 Canisterは登録済みmigrationでupgradeする。upgrade前後のcount、deployment instance ID、integrityを照合する。rollbackでは最初にrelayerを停止し、対応するWasmとstable snapshotをセットで復元する。旧Wasmだけをmigration済みstateへ適用しない。
 
 本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
 

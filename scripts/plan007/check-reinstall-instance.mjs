@@ -36,27 +36,30 @@ export function verifyReinstallInstance(profile, livePublicConfig, liveCanisterS
     throw new Error("live PublicConfig schema_version must be an integer")
   }
   if (schemaVersion !== 31 && schemaVersion !== 30) {
-    throw new Error("staging reinstall only accepts current schema v31 or audited obsolete schema v30")
+    throw new Error("staging install check only accepts current schema v31 or audited obsolete schema v30")
   }
   const previous = deploymentInstanceHex(
     livePublicConfig?.deployment_instance_id,
     "live PublicConfig deployment_instance_id",
   )
-  if (next === previous) {
+  if (schemaVersion === 31 && next === previous) {
     throw new Error("staging reinstall rejected reuse of the live deployment instance ID")
+  }
+  if (schemaVersion === 30 && next !== previous) {
+    throw new Error("staging upgrade must preserve the live deployment instance ID")
   }
   const liveModuleHash = moduleHash(liveCanisterStatus?.module_hash, "live canister status module_hash")
   const replacementMode = schemaVersion === 31
     ? "current-schema-reinstall"
-    : "obsolete-schema-reinstall"
-  if (replacementMode === "obsolete-schema-reinstall") {
+    : "obsolete-schema-upgrade"
+  if (replacementMode === "obsolete-schema-upgrade") {
     if (
       profile?.bridgeCanisterId !== obsoleteReplacementPolicy.bridge_canister_id
       || schemaVersion !== obsoleteReplacementPolicy.live_schema_version
       || previous !== obsoleteReplacementPolicy.previous_deployment_instance_id
       || liveModuleHash !== obsoleteReplacementPolicy.module_hash
     ) {
-      throw new Error("obsolete staging reinstall does not match the reviewed replacement policy")
+      throw new Error("obsolete staging upgrade does not match the reviewed replacement policy")
     }
   }
   return {

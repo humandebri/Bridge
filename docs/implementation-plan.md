@@ -129,7 +129,7 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 - KINICトークン専用とし、state とデプロイ構成から token ID による分岐を排除する。
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
-- 本番未デプロイ中はlegacy schemaを維持せず、現行stable schemaの再オープンとupgrade保持、未知versionのfail-closedを検証する。
+- stable schema変更は登録済み一方向migration、旧Wasm→新Wasm保持試験、失敗rollback試験を必須とする。現在はv30→v31だけを受理し、未知versionはfail closedとする。
 - schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v31・record wire v27とする。
 - Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
 - Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。

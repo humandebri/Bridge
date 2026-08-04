@@ -85,6 +85,7 @@ pub(crate) struct ImmutableBridgeConfig {
     pub deposit_rate_limit_per_principal: u16,
     pub notification_rate_limit_window_seconds: u64,
     pub notification_rate_limit_global: u16,
+    #[serde(default = "default_notification_ingestion_rate_limit_global")]
     pub notification_ingestion_rate_limit_global: u16,
     pub settlement_rate_limit_window_seconds: u64,
     pub settlement_rate_limit_global: u16,
@@ -96,6 +97,10 @@ pub(crate) struct ImmutableBridgeConfig {
     pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
+}
+
+const fn default_notification_ingestion_rate_limit_global() -> u16 {
+    30
 }
 
 impl ImmutableBridgeConfig {

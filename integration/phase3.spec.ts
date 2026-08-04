@@ -11,6 +11,7 @@ import { PocketIc, SubnetStateType } from "@dfinity/pic";
 
 const root = resolve(__dirname, "..");
 const bridgeWasm = resolve(root, "target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm");
+const bridgeV30Wasm = resolve(root, "target/v30-upgrade-fixture/bridge_canister_v30.wasm");
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
 
 const mockInit = mockInitFactory({ IDL })[0];
@@ -30,7 +31,11 @@ describe("Phase 3 PocketIC saga", () => {
   let pic: PocketIc | undefined;
   let serverUrl = "";
 
-  async function setup(activate = true, initOverrides: Record<string, unknown> = {}) {
+  async function setup(
+    activate = true,
+    initOverrides: Record<string, unknown> = {},
+    wasmPath = bridgeWasm,
+  ) {
     const mockBytes = readFileSync(mockWasm);
     const subnet = await pic!.getFiduciarySubnet();
     if (subnet === undefined) throw new Error("Fiduciary subnet was not created");
@@ -50,7 +55,7 @@ describe("Phase 3 PocketIC saga", () => {
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
     const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, notification_ingestion_rate_limit_global: 30, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     Object.assign(init, initOverrides);
-    const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(bridgeWasm), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
+    const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(wasmPath), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
     const configuredSigner: any = await (evm.actor as any).set_bridge_signer_for_canister(bridge.canisterId, init.ecdsa_key_name);
@@ -278,6 +283,74 @@ describe("Phase 3 PocketIC saga", () => {
       expect(Array.from(replayAfterUpgrade.Ok.deposit_id)).toEqual(Array.from(first.Ok.deposit_id));
     }
   });
+
+  async function upgrades_the_reviewed_v30_wasm_to_v31_without_losing_deposit_state() {
+    const { bridge, runtimePrincipal } = await setup(false, {}, bridgeV30Wasm);
+    const legacyAdminIdl = ({ IDL }: { IDL: any }) => IDL.Service({
+      resume_new_deposits: IDL.Func(
+        [],
+        [IDL.Variant({
+          Ok: IDL.Null,
+          Err: IDL.Variant({
+            Busy: IDL.Null,
+            InsufficientFeeReserve: IDL.Null,
+            Unauthorized: IDL.Null,
+            InvalidArgument: IDL.Text,
+            StorageFailure: IDL.Null,
+          }),
+        })],
+        [],
+      ),
+    });
+    const legacyAdmin: any = pic!.createActor(legacyAdminIdl as any, bridge.canisterId);
+    legacyAdmin.setPrincipal(runtimePrincipal);
+    expect(await legacyAdmin.resume_new_deposits()).toHaveProperty("Ok");
+
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const request = {
+      owner_sequence: 0n,
+      base_recipient: new Uint8Array(20).fill(0x30),
+      from_subaccount: [],
+      gross_amount: 20_000n,
+      max_service_fee: 10n,
+    };
+    const deposited: any = await (bridge.actor as any).request_deposit(request);
+    expect(deposited).toHaveProperty("Ok");
+    const auditBefore: any = await (bridge.actor as any).get_audit_events(0n, 100);
+    const [controller] = await pic!.getControllers(bridge.canisterId);
+    if (controller === undefined) throw new Error("bridge controller is missing");
+
+    await pic!.upgradeCanister({
+      canisterId: bridge.canisterId,
+      wasm: readFileSync(bridgeWasm),
+      arg: IDL.encode([], []),
+      sender: controller,
+    });
+
+    const status: any = await (bridge.actor as any).get_bridge_status();
+    expect(status.schema_version).toBe(31);
+    expect(status.counts.deposits).toBe(1n);
+    expect(await (bridge.actor as any).get_next_deposit_sequence(runtimePrincipal)).toBe(1n);
+    expect(await (bridge.actor as any).get_deposit(deposited.Ok.deposit_id)).toHaveLength(1);
+    expect((await (bridge.actor as any).get_public_config()).notification_ingestion_rate_limit_global).toBe(30);
+    expect((await (bridge.actor as any).get_audit_events(0n, 100)).Ok.events).toHaveLength(
+      auditBefore.Ok.events.length,
+    );
+    const replay: any = await (bridge.actor as any).request_deposit(request);
+    expect(Array.from(replay.Ok.deposit_id)).toEqual(Array.from(deposited.Ok.deposit_id));
+
+    await pic!.upgradeCanister({
+      canisterId: bridge.canisterId,
+      wasm: readFileSync(bridgeWasm),
+      arg: IDL.encode([], []),
+      sender: controller,
+    });
+    expect((await (bridge.actor as any).get_bridge_status()).counts.deposits).toBe(1n);
+  }
+  it(
+    "upgrades the reviewed v30 Wasm to v31 without losing Deposit state",
+    upgrades_the_reviewed_v30_wasm_to_v31_without_losing_deposit_state,
+  );
 
   it("uses a stable owner sequence for deterministic replay, conflicts, and gaps", async () => {
     const { bridge, runtimePrincipal } = await setup();

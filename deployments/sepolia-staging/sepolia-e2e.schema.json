@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "kind", "state", "created_at", "updated_at", "binding", "stages", "complete"],
   "properties": {
-    "schema_version": { "const": 6 },
+    "schema_version": { "const": 7 },
     "kind": { "const": "kinic-bridge-sepolia-staging-e2e" },
     "state": {
       "enum": [
@@ -112,7 +112,7 @@
           "additionalProperties": false,
           "required": ["schema_version", "stage", "observed_at", "source_commit", "artifacts", "details"],
           "properties": {
-            "schema_version": { "const": 6 },
+            "schema_version": { "const": 7 },
             "stage": {
               "enum": [
                 "preflight",
@@ -177,7 +177,7 @@
                   "details": {
                     "type": "object",
                     "properties": {
-                      "replacement_mode": { "const": "obsolete-schema-reinstall" }
+                      "replacement_mode": { "const": "obsolete-schema-upgrade" }
                     },
                     "required": ["replacement_mode"]
                   }
@@ -186,19 +186,6 @@
               },
               "then": {
                 "allOf": [
-                  {
-                    "properties": {
-                      "artifacts": {
-                        "contains": {
-                          "type": "object",
-                          "properties": { "kind": { "const": "obsolete-state-disposition" } },
-                          "required": ["kind"]
-                        },
-                        "minContains": 1,
-                        "maxContains": 1
-                      }
-                    }
-                  },
                   {
                     "properties": {
                       "artifacts": {

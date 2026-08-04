@@ -31,7 +31,7 @@ Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal paus
 
 Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_step_preserves_safe`が受理された各生遷移について安全性を直接証明し、有限trace定理はそのlemmaから帰納する。canonical・Ledger certificateは対象identityを含むが、その履歴やRPC情報の真正性は外部仮定である。
 
-本番未デプロイのためschema v31再オープンとwire v27を検証する。migration、compatibility shim、dual-read、fallbackは提供せず、旧schemaと未知schemaはfail closedにする。
+schema v31再オープンとwire v27に加え、監査済みv30／wire 26からの一方向migrationをRust transaction testと旧Wasm→新Wasm PocketIC testで検証する。migrationは成功時に全recordを同時commitし、失敗時は全rollbackする。dual-readやfallbackは提供せず、v29以下・未知schema・未知wireはfail closedにする。
 
 ## Release proof gate
 

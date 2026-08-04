@@ -29,6 +29,7 @@ ADDRESS_B = f"0x{'5' * 40}"
 ADDRESS_C = f"0x{'6' * 40}"
 SOURCE = "a" * 40
 OBSOLETE_POLICY = sepolia_e2e.OBSOLETE_REPLACEMENT_POLICY
+PROFILE_INSTANCE = OBSOLETE_POLICY["previous_deployment_instance_id"]
 
 
 class SepoliaE2ETests(unittest.TestCase):
@@ -75,7 +76,7 @@ class SepoliaE2ETests(unittest.TestCase):
                     "chainId": 84532,
                     "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
                     "bridgeCanisterId": OBSOLETE_POLICY["bridge_canister_id"],
-                    "deploymentInstanceId": TX_B,
+                    "deploymentInstanceId": PROFILE_INSTANCE,
                     "ledgerCanisterId": "ryjl3-tyaaa-aaaaa-aaaba-cai",
                     "indexCanisterId": "qhbym-qaaaa-aaaaa-aaafq-cai",
                     "bridgeAddress": ADDRESS,
@@ -122,7 +123,7 @@ class SepoliaE2ETests(unittest.TestCase):
                 "live_schema_version": 31,
                 "previous_deployment_instance_id": TX,
                 "live_module_hash": TX,
-                "next": TX_B,
+                "next": PROFILE_INSTANCE,
             }
         if status is None:
             status = {
@@ -163,7 +164,6 @@ class SepoliaE2ETests(unittest.TestCase):
         activation_status: dict[str, object] | None = None,
         integrity: dict[str, object] | None = None,
         pause_mutation: object | None = None,
-        disposition_mutation: object | None = None,
     ) -> list[dict[str, str]]:
         live = {
             "schema_version": 30,
@@ -172,13 +172,13 @@ class SepoliaE2ETests(unittest.TestCase):
             ],
         }
         check = {
-            "replacement_mode": "obsolete-schema-reinstall",
+            "replacement_mode": "obsolete-schema-upgrade",
             "live_schema_version": 30,
             "previous_deployment_instance_id": OBSOLETE_POLICY[
                 "previous_deployment_instance_id"
             ],
             "live_module_hash": OBSOLETE_POLICY["module_hash"],
-            "next": TX_B,
+            "next": PROFILE_INSTANCE,
         }
         canister_status = {
             "module_hash": OBSOLETE_POLICY["module_hash"],
@@ -303,34 +303,6 @@ class SepoliaE2ETests(unittest.TestCase):
                 "kind": sepolia_e2e.OBSOLETE_PAUSE_EVIDENCE_ARTIFACT_KIND,
             }
         )
-        disposition: dict[str, object] = {
-            "schema_version": 1,
-            "environment": "sepolia-staging",
-            "observed_at": "2026-07-24T00:00:00Z",
-            "bridge_canister_id": OBSOLETE_POLICY["bridge_canister_id"],
-            "live_schema_version": 30,
-            "previous_deployment_instance_id": OBSOLETE_POLICY[
-                "previous_deployment_instance_id"
-            ],
-            "module_hash": OBSOLETE_POLICY["module_hash"],
-            **snapshot_hashes,
-            "counts": dict(snapshots["bridge_status_sha256"][1]),
-            "pending_timelock_operations": 0,
-            "ledger_balance_raw": 600_000_000,
-            "disposition": "discard-test-state",
-            "complete": True,
-        }
-        if callable(disposition_mutation):
-            disposition_mutation(disposition)
-        disposition_path = artifact_root / "obsolete-state-disposition.json"
-        disposition_path.write_text(json.dumps(disposition) + "\n", encoding="utf-8")
-        artifacts.append(
-            {
-                "path": "artifacts/obsolete-state-disposition.json",
-                "sha256": sepolia_e2e.digest(disposition_path),
-                "kind": sepolia_e2e.OBSOLETE_STATE_DISPOSITION_ARTIFACT_KIND,
-            }
-        )
         return artifacts
 
     def details(self, stage: str) -> dict[str, object]:
@@ -360,7 +332,7 @@ class SepoliaE2ETests(unittest.TestCase):
         if stage == "initialize":
             return {
                 "schema_version": 31,
-                "deployment_instance_id": TX_B,
+                "deployment_instance_id": PROFILE_INSTANCE,
                 "chain_id": 84532,
                 "ledger_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
                 "index_canister_id": "qhbym-qaaaa-aaaaa-aaafq-cai",
@@ -489,7 +461,7 @@ class SepoliaE2ETests(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
-                    "schema_version": 6,
+                    "schema_version": sepolia_e2e.SCHEMA_VERSION,
                     "stage": stage,
                     "observed_at": "2026-07-24T00:00:00Z",
                     "source_commit": SOURCE,
@@ -515,7 +487,7 @@ class SepoliaE2ETests(unittest.TestCase):
 
     def test_binding_uses_profile_instance_instead_of_local_evidence(self) -> None:
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["binding"]["deployment_instance_id"], TX_B)
+        self.assertEqual(manifest["binding"]["deployment_instance_id"], PROFILE_INSTANCE)
 
     def test_current_schema_preflight_accepts_distinct_previous_instance(self) -> None:
         sepolia_e2e.validate_preflight(
@@ -525,11 +497,39 @@ class SepoliaE2ETests(unittest.TestCase):
             self.manifest,
         )
 
-    def test_obsolete_schema_preflight_accepts_audited_test_state_discard(self) -> None:
+    def test_upgrade_install_requires_exact_state_and_instance_preservation(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        counts = {
+            "deposits": 2,
+            "withdrawals": 0,
+            "pending_ledger_operations": 0,
+            "reconciliation_holds": 0,
+            "reserved_deposit_mint_operations": 2,
+            "reserved_deposit_mint_amount": 1_000_000_000,
+            "unpaid_withdrawal_count": 0,
+            "unpaid_withdrawal_amount_out": 0,
+        }
+        details = {
+            "install_mode": "upgrade",
+            "module_sha256": H64,
+            "cycles_balance": 1,
+            "controller_principals": ["aaaaa-aa"],
+            "state_counts_before": counts,
+            "state_counts_after": dict(counts),
+            "schema_version_after": 31,
+            "deployment_instance_id_after": PROFILE_INSTANCE,
+            "storage_integrity_after": "ok",
+        }
+        sepolia_e2e.validate_install(details, binding)
+        details["state_counts_after"] = {**counts, "deposits": 1}
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "changed persisted"):
+            sepolia_e2e.validate_install(details, binding)
+
+    def test_obsolete_schema_preflight_accepts_audited_state_preserving_upgrade(self) -> None:
         details = self.details("preflight")
         details.update(
             {
-                "replacement_mode": "obsolete-schema-reinstall",
+                "replacement_mode": "obsolete-schema-upgrade",
                 "live_schema_version": 30,
                 "previous_deployment_instance_id": OBSOLETE_POLICY[
                     "previous_deployment_instance_id"
@@ -547,7 +547,7 @@ class SepoliaE2ETests(unittest.TestCase):
         details = self.details("preflight")
         details.update(
             {
-                "replacement_mode": "obsolete-schema-reinstall",
+                "replacement_mode": "obsolete-schema-upgrade",
                 "live_schema_version": 30,
                 "previous_deployment_instance_id": OBSOLETE_POLICY[
                     "previous_deployment_instance_id"
@@ -557,7 +557,6 @@ class SepoliaE2ETests(unittest.TestCase):
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         artifacts = self.obsolete_reinstall_artifacts()
         required = (
-            sepolia_e2e.OBSOLETE_STATE_DISPOSITION_ARTIFACT_KIND,
             sepolia_e2e.OBSOLETE_PAUSE_EVIDENCE_ARTIFACT_KIND,
             sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
             sepolia_e2e.LIVE_ACTIVATION_STATUS_ARTIFACT_KIND,
@@ -571,11 +570,11 @@ class SepoliaE2ETests(unittest.TestCase):
                 with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exactly one"):
                     sepolia_e2e.validate_preflight(details, binding, missing, self.manifest)
 
-    def test_obsolete_schema_preflight_refuses_unsettled_liabilities(self) -> None:
+    def test_obsolete_schema_preflight_preserves_unsettled_liabilities(self) -> None:
         details = self.details("preflight")
         details.update(
             {
-                "replacement_mode": "obsolete-schema-reinstall",
+                "replacement_mode": "obsolete-schema-upgrade",
                 "live_schema_version": 30,
                 "previous_deployment_instance_id": OBSOLETE_POLICY[
                     "previous_deployment_instance_id"
@@ -602,19 +601,18 @@ class SepoliaE2ETests(unittest.TestCase):
                     "unpaid_withdrawal_amount_out": 0,
                 }
                 status[field] = 1
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "refuses to discard"):
-                    sepolia_e2e.validate_preflight(
-                        details,
-                        binding,
-                        self.obsolete_reinstall_artifacts(bridge_status=status),
-                        self.manifest,
-                    )
+                sepolia_e2e.validate_preflight(
+                    details,
+                    binding,
+                    self.obsolete_reinstall_artifacts(bridge_status=status),
+                    self.manifest,
+                )
 
-    def test_obsolete_schema_preflight_rejects_timelock_integrity_and_disposition_drift(self) -> None:
+    def test_obsolete_schema_preflight_rejects_timelock_and_integrity_drift(self) -> None:
         details = self.details("preflight")
         details.update(
             {
-                "replacement_mode": "obsolete-schema-reinstall",
+                "replacement_mode": "obsolete-schema-upgrade",
                 "live_schema_version": 30,
                 "previous_deployment_instance_id": OBSOLETE_POLICY[
                     "previous_deployment_instance_id"
@@ -625,11 +623,6 @@ class SepoliaE2ETests(unittest.TestCase):
         fixture_args = (
             {"activation_status": {"pending_timelock_operations": 1}},
             {"integrity": {"result": "failed"}},
-            {
-                "disposition_mutation": lambda value: value.update(
-                    {"disposition": "recover-test-state"}
-                )
-            },
         )
         for kwargs in fixture_args:
             with self.assertRaises(sepolia_e2e.EvidenceError):
@@ -644,7 +637,7 @@ class SepoliaE2ETests(unittest.TestCase):
         details = self.details("preflight")
         details.update(
             {
-                "replacement_mode": "obsolete-schema-reinstall",
+                "replacement_mode": "obsolete-schema-upgrade",
                 "live_schema_version": 30,
                 "previous_deployment_instance_id": OBSOLETE_POLICY[
                     "previous_deployment_instance_id"
@@ -662,7 +655,7 @@ class SepoliaE2ETests(unittest.TestCase):
                 self.manifest,
             )
 
-    def test_obsolete_schema_reinstall_is_limited_to_the_reviewed_tuple(self) -> None:
+    def test_obsolete_schema_upgrade_is_limited_to_the_reviewed_tuple(self) -> None:
         live = {
             "schema_version": OBSOLETE_POLICY["live_schema_version"],
             "deployment_instance_id": OBSOLETE_POLICY[
@@ -677,9 +670,12 @@ class SepoliaE2ETests(unittest.TestCase):
         )
         for candidate_live, candidate_status, canister_id in cases:
             with self.subTest(live=candidate_live, status=candidate_status, canister_id=canister_id):
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reviewed replacement policy"):
+                with self.assertRaisesRegex(
+                    sepolia_e2e.EvidenceError,
+                    "reviewed replacement policy|must preserve",
+                ):
                     sepolia_e2e.reinstall_instance_check(
-                        TX_B,
+                        PROFILE_INSTANCE,
                         candidate_live,
                         candidate_status,
                         canister_id,
@@ -689,7 +685,7 @@ class SepoliaE2ETests(unittest.TestCase):
         details = self.details("preflight")
         details.update(
             {
-                "replacement_mode": "obsolete-schema-reinstall",
+                "replacement_mode": "obsolete-schema-upgrade",
                 "live_schema_version": 30,
                 "previous_deployment_instance_id": OBSOLETE_POLICY[
                     "previous_deployment_instance_id"
@@ -913,12 +909,14 @@ class SepoliaE2ETests(unittest.TestCase):
                         self.manifest,
                     )
 
-    def test_checked_in_json_schema_tracks_manifest_schema_v6(self) -> None:
+    def test_checked_in_json_schema_tracks_manifest_schema_v7(self) -> None:
         schema_path = MODULE_PATH.parents[2] / "deployments/sepolia-staging/sepolia-e2e.schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        self.assertEqual(schema["properties"]["schema_version"]["const"], 6)
-        self.assertIn("obsolete-state-disposition", schema_path.read_text(encoding="utf-8"))
-        self.assertIn("obsolete-pause-evidence", schema_path.read_text(encoding="utf-8"))
+        self.assertEqual(schema["properties"]["schema_version"]["const"], 7)
+        schema_text = schema_path.read_text(encoding="utf-8")
+        self.assertNotIn("obsolete-state-disposition", schema_text)
+        self.assertIn("obsolete-schema-upgrade", schema_text)
+        self.assertIn("obsolete-pause-evidence", schema_text)
 
     def test_v31_preflight_requires_a_distinct_previous_instance(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
@@ -932,13 +930,13 @@ class SepoliaE2ETests(unittest.TestCase):
                 "live_schema_version": 31,
                 "previous_deployment_instance_id": TX,
                 "live_module_hash": TX,
-                "next": TX_B,
+                "next": PROFILE_INSTANCE,
             },
         )
         sepolia_e2e.validate_preflight(details, binding, artifacts, self.manifest)
         for live in (
             {"schema_version": 31},
-            {"schema_version": 31, "deployment_instance_id": TX_B},
+            {"schema_version": 31, "deployment_instance_id": PROFILE_INSTANCE},
             {"schema_version": 31, "deployment_instance_id": f"0x{'0' * 64}"},
             {"schema_version": 31, "deployment_instance_id": "0x11"},
             {"schema_version": 31, "deployment_instance_id": [17] * 31},
@@ -1008,7 +1006,7 @@ class SepoliaE2ETests(unittest.TestCase):
                 "live_schema_version": 31,
                 "previous_deployment_instance_id": TX,
                 "live_module_hash": TX,
-                "next": TX_B,
+                "next": PROFILE_INSTANCE,
                 "unexpected": True,
             },
         )
@@ -1028,7 +1026,7 @@ class SepoliaE2ETests(unittest.TestCase):
             sepolia_e2e.validate_preflight(
                 {
                     **details,
-                    "replacement_mode": "obsolete-schema-reinstall",
+                    "replacement_mode": "obsolete-schema-upgrade",
                     "live_schema_version": 30,
                 },
                 binding,
@@ -1039,11 +1037,11 @@ class SepoliaE2ETests(unittest.TestCase):
         artifacts = self.reinstall_artifacts(
             {"schema_version": 31, "deployment_instance_id": TX},
             {
-                "replacement_mode": "obsolete-schema-reinstall",
+                "replacement_mode": "obsolete-schema-upgrade",
                 "live_schema_version": 30,
                 "previous_deployment_instance_id": TX,
                 "live_module_hash": TX,
-                "next": TX_B,
+                "next": PROFILE_INSTANCE,
             },
         )
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not match"):

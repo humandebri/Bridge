@@ -56,7 +56,7 @@ def main() -> None:
         ),
         (
             "deployments/sepolia-staging/evidence/README.md",
-            r"Canister v(\d+) reinstall",
+            r"Canister v(\d+) upgrade",
             1,
         ),
         ("docs/implementation-plan.md", r"(?:stable schema v|現行stable schemaはv)(\d+)", 2),

@@ -7,7 +7,7 @@ const nextHex = `0x${"22".repeat(32)}`
 const currentStatus = { module_hash: `0x${"33".repeat(32)}` }
 const obsoleteProfile = {
   bridgeCanisterId: obsoleteReplacementPolicy.bridge_canister_id,
-  deploymentInstanceId: nextHex,
+  deploymentInstanceId: obsoleteReplacementPolicy.previous_deployment_instance_id,
 }
 const obsoleteLive = {
   schema_version: obsoleteReplacementPolicy.live_schema_version,
@@ -37,11 +37,11 @@ assert.deepEqual(
     obsoleteStatus,
   ),
   {
-    replacement_mode: "obsolete-schema-reinstall",
+    replacement_mode: "obsolete-schema-upgrade",
     live_schema_version: 30,
     previous_deployment_instance_id: obsoleteReplacementPolicy.previous_deployment_instance_id,
     live_module_hash: obsoleteReplacementPolicy.module_hash,
-    next: nextHex,
+    next: obsoleteReplacementPolicy.previous_deployment_instance_id,
   },
 )
 assert.throws(
@@ -75,7 +75,7 @@ for (const [profile, live, status] of [
 ]) {
   assert.throws(
     () => verifyReinstallInstance(profile, live, status),
-    /reviewed replacement policy/,
+    /reviewed replacement policy|must preserve/,
   )
 }
 assert.throws(
@@ -94,4 +94,4 @@ for (const value of [undefined, `0x${"00".repeat(32)}`, [], Array(32).fill(0)]) 
   assert.throws(() => deploymentInstanceHex(value, "test"))
 }
 
-process.stdout.write("staging reinstall deployment instance tests passed\n")
+process.stdout.write("staging install deployment instance tests passed\n")
