@@ -1,0 +1,129 @@
+{
+  "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+  "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "capture_id": "f1901a4d-b670-4784-aacb-785cf2dffb3d",
+  "capture_started_at": "2026-08-04T04:58:46.772Z",
+  "chain_id": 84532,
+  "complete": true,
+  "environment": "sepolia-staging",
+  "ic_live": {
+    "live_module_hash": "0x824497d795237aa82c17081ae6be5360c32b699db6823be1a237f56e6081cfc4",
+    "live_schema_version": 30,
+    "observed_at": "2026-08-04T04:58:55.074Z",
+    "previous_deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+    "status_deposits_paused": true
+  },
+  "ic_pause": {
+    "audit_caller": "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+    "audit_kind": "DepositsPauseRepeated",
+    "audit_sequence": 10,
+    "method": "pause_new_deposits",
+    "observed_at": "2026-08-04T04:58:52.095Z",
+    "response": "Ok",
+    "status_deposits_paused": true,
+    "status_last_audit_sequence": 10
+  },
+  "observed_at": "2026-08-04T04:58:55.074Z",
+  "providers": [
+    {
+      "actions": [
+        {
+          "block_hash": "0x52ba7376fe9cccfa1c1cb150ed3a545e8b33db7b1ce8235cb96c635343511ff4",
+          "block_number": 45023902,
+          "calldata_hex": "0x15415f22",
+          "canonical_probe_succeeded": true,
+          "event_observed": true,
+          "event_topic": "0x7a8cbbf7de1b70cf6a63059c06484e4a6ca4b28f18ced89f03ea751608fc29a1",
+          "kind": "PauseDepositMints",
+          "receipt_status": 1,
+          "target": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+          "transaction_hash": "0x7ecb350b0bcb8b45befe3b327a24e247f8595f8e7c66c0c8a99c1e37de71b535"
+        },
+        {
+          "block_hash": "0xb2369b62423be8911e91c5a32b51902d44f8ebbd6ed4893838b044f7b5cde6fe",
+          "block_number": 45024740,
+          "calldata_hex": "0x56bb54a7",
+          "canonical_probe_succeeded": true,
+          "event_observed": true,
+          "event_topic": "0x7c82b8b6bc44325506945ff406eeb0f2add5b91cfdd2265e80994967d30a787d",
+          "kind": "PauseWithdrawals",
+          "receipt_status": 1,
+          "target": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+          "transaction_hash": "0x72619ce2988d0d47d7b12d125fa4f958b7819bb6b464c29126300a68bf306b56"
+        }
+      ],
+      "chain_id": 84532,
+      "finalized_block_hash": "0x7a48bfd88a69b743950dc6a4bc647aa079bf13a62ec421bf67273137f624a92b",
+      "finalized_block_number": 45024760,
+      "observed_at": "2026-08-04T04:58:47.597Z",
+      "provider_url_sha256": "a30ce743ddc719cd42638750cfdc375ae936209f7ba24268b4b2eb533494616f"
+    },
+    {
+      "actions": [
+        {
+          "block_hash": "0x52ba7376fe9cccfa1c1cb150ed3a545e8b33db7b1ce8235cb96c635343511ff4",
+          "block_number": 45023902,
+          "calldata_hex": "0x15415f22",
+          "canonical_probe_succeeded": true,
+          "event_observed": true,
+          "event_topic": "0x7a8cbbf7de1b70cf6a63059c06484e4a6ca4b28f18ced89f03ea751608fc29a1",
+          "kind": "PauseDepositMints",
+          "receipt_status": 1,
+          "target": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+          "transaction_hash": "0x7ecb350b0bcb8b45befe3b327a24e247f8595f8e7c66c0c8a99c1e37de71b535"
+        },
+        {
+          "block_hash": "0xb2369b62423be8911e91c5a32b51902d44f8ebbd6ed4893838b044f7b5cde6fe",
+          "block_number": 45024740,
+          "calldata_hex": "0x56bb54a7",
+          "canonical_probe_succeeded": true,
+          "event_observed": true,
+          "event_topic": "0x7c82b8b6bc44325506945ff406eeb0f2add5b91cfdd2265e80994967d30a787d",
+          "kind": "PauseWithdrawals",
+          "receipt_status": 1,
+          "target": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+          "transaction_hash": "0x72619ce2988d0d47d7b12d125fa4f958b7819bb6b464c29126300a68bf306b56"
+        }
+      ],
+      "chain_id": 84532,
+      "finalized_block_hash": "0x7a48bfd88a69b743950dc6a4bc647aa079bf13a62ec421bf67273137f624a92b",
+      "finalized_block_number": 45024760,
+      "observed_at": "2026-08-04T04:58:47.975Z",
+      "provider_url_sha256": "5916966ddb71dda2015e9e4991f67d0df96798966b5b2e0deb8ef43405d39e2e"
+    },
+    {
+      "actions": [
+        {
+          "block_hash": "0x52ba7376fe9cccfa1c1cb150ed3a545e8b33db7b1ce8235cb96c635343511ff4",
+          "block_number": 45023902,
+          "calldata_hex": "0x15415f22",
+          "canonical_probe_succeeded": true,
+          "event_observed": true,
+          "event_topic": "0x7a8cbbf7de1b70cf6a63059c06484e4a6ca4b28f18ced89f03ea751608fc29a1",
+          "kind": "PauseDepositMints",
+          "receipt_status": 1,
+          "target": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+          "transaction_hash": "0x7ecb350b0bcb8b45befe3b327a24e247f8595f8e7c66c0c8a99c1e37de71b535"
+        },
+        {
+          "block_hash": "0xb2369b62423be8911e91c5a32b51902d44f8ebbd6ed4893838b044f7b5cde6fe",
+          "block_number": 45024740,
+          "calldata_hex": "0x56bb54a7",
+          "canonical_probe_succeeded": true,
+          "event_observed": true,
+          "event_topic": "0x7c82b8b6bc44325506945ff406eeb0f2add5b91cfdd2265e80994967d30a787d",
+          "kind": "PauseWithdrawals",
+          "receipt_status": 1,
+          "target": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+          "transaction_hash": "0x72619ce2988d0d47d7b12d125fa4f958b7819bb6b464c29126300a68bf306b56"
+        }
+      ],
+      "chain_id": 84532,
+      "finalized_block_hash": "0xc4306e627b6a2412de56a3b4f5e794b8b4a570371ace8fb58d31b057d75a115b",
+      "finalized_block_number": 45025002,
+      "observed_at": "2026-08-04T04:58:48.200Z",
+      "provider_url_sha256": "6dbd0deb51a5f497d7eb0587c807d9939346d9fdad6e53538bb87f61b8819b49"
+    }
+  ],
+  "schema_version": 2
+}

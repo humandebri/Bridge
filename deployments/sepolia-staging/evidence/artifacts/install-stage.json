@@ -1,0 +1,45 @@
+{
+  "schema_version": 7,
+  "stage": "install",
+  "observed_at": "2026-08-04T06:44:42Z",
+  "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
+  "artifacts": [
+    {
+      "path": "artifacts/install-live.json",
+      "sha256": "6dcf513f9ae0a5f9532f54f6e2ebe32408e0e42d849c37640d3663a538646971",
+      "kind": "raw"
+    }
+  ],
+  "details": {
+    "install_mode": "upgrade",
+    "module_sha256": "3570e2371931aa902a68f4342a96b296df4447506846a4c3847a18930cfc70d2",
+    "cycles_balance": 1071042440686,
+    "controller_principals": [
+      "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+      "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
+    ],
+    "state_counts_before": {
+      "deposits": 2,
+      "withdrawals": 0,
+      "pending_ledger_operations": 0,
+      "reconciliation_holds": 0,
+      "reserved_deposit_mint_operations": 2,
+      "reserved_deposit_mint_amount": 1000000000,
+      "unpaid_withdrawal_count": 0,
+      "unpaid_withdrawal_amount_out": 0
+    },
+    "state_counts_after": {
+      "deposits": 2,
+      "withdrawals": 0,
+      "pending_ledger_operations": 0,
+      "reconciliation_holds": 0,
+      "reserved_deposit_mint_operations": 2,
+      "reserved_deposit_mint_amount": 1000000000,
+      "unpaid_withdrawal_count": 0,
+      "unpaid_withdrawal_amount_out": 0
+    },
+    "schema_version_after": 31,
+    "deployment_instance_id_after": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+    "storage_integrity_after": "ok"
+  }
+}

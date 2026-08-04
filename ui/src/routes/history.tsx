@@ -24,6 +24,7 @@ import {
   type ActivityItem,
   type WithdrawalHistoryItem,
 } from "@/lib/activity-history"
+import { useActivityAutoRefresh } from "@/lib/activity-auto-refresh"
 import { formatTokenAmount } from "@/lib/amounts"
 import { withBrowserLock } from "@/lib/browser-lock"
 import { depositIdsForRefresh, mergeDepositHistoryPage, type DepositHistoryData } from "@/lib/deposit-history"
@@ -256,17 +257,16 @@ function HistoryPage() {
     document.addEventListener("visibilitychange", onVisibilityChange)
     return () => document.removeEventListener("visibilitychange", onVisibilityChange)
   }, [])
-  useEffect(() => {
-    if (!activityAutoRefreshEnabled(pageVisible, Boolean(historyAccount), Boolean(address))) return
-    const timer = window.setInterval(() => {
+  useActivityAutoRefresh(
+    activityAutoRefreshEnabled(pageVisible, Boolean(historyAccount), Boolean(address)),
+    () => {
       void Promise.all([
         historyAccount ? deposits.refetch() : Promise.resolve(),
         ...depositMintScans.map((scan) => scan.refetch()),
         address ? withdrawals.refetch() : Promise.resolve(),
       ])
-    }, 60_000)
-    return () => window.clearInterval(timer)
-  }, [address, depositMintScans, deposits, historyAccount, pageVisible, withdrawals])
+    },
+  )
 
   const scanOlderWithdrawals = async () => {
     if (!withdrawals.data || withdrawals.data.olderCursor === null) return

@@ -31,7 +31,7 @@ describe("finalizedCheckpointMatches", () => {
     expect(reorged.fetchCheckpointBlockHash).not.toHaveBeenCalled()
   })
 
-  it("fetches an older checkpoint once after the finalized head advances", async () => {
+  async function older_checkpoint_requires_matching_canonical_hash() {
     const matching = input(101n, newHash)
     await expect(finalizedCheckpointMatches(matching)).resolves.toBe(true)
     expect(matching.fetchCheckpointBlockHash).toHaveBeenCalledOnce()
@@ -41,5 +41,10 @@ describe("finalizedCheckpointMatches", () => {
     reorged.fetchCheckpointBlockHash.mockResolvedValue(newHash)
     await expect(finalizedCheckpointMatches(reorged)).resolves.toBe(false)
     expect(reorged.fetchCheckpointBlockHash).toHaveBeenCalledOnce()
-  })
+  }
+
+  it(
+    "requires an older checkpoint hash to remain canonical after the finalized head advances",
+    older_checkpoint_requires_matching_canonical_hash,
+  )
 })
