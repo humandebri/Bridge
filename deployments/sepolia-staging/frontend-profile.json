@@ -27,9 +27,9 @@
     "symbol": "KINIC",
     "decimals": 8
   },
-  "bridgeAddress": "0x722733d0fFfd634AbD828Bf1F9bBedcA55c7e004",
-  "bsnsAddress": "0x265e6b05A2f6BDA29f464D70867a37acdE3CcdE8",
-  "timelockAddress": "0xE808780d5F91FDF33f46e9D2f798C71b0C2E0168",
+  "bridgeAddress": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+  "bsnsAddress": "0x265e6b05a2f6bda29f464d70867a37acde3ccde8",
+  "timelockAddress": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
   "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
   "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
   "rpcProviderUrlsSha256": "0xe9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb",
