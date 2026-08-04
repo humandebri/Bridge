@@ -634,6 +634,9 @@ export const idlFactory = ({ IDL }) => {
     'Err' : DepositError,
   });
   const RequestDepositRefundError = IDL.Variant({
+    'AutomaticProgressPending' : IDL.Record({
+      'next_run_at_ns' : IDL.Opt(IDL.Nat64),
+    }),
     'NotClaimable' : IDL.Null,
     'Busy' : IDL.Null,
     'InvalidDepositId' : IDL.Null,
@@ -642,6 +645,7 @@ export const idlFactory = ({ IDL }) => {
     'OwnerMismatch' : IDL.Null,
     'DepositIdentityConflict' : IDL.Null,
     'RpcInconsistent' : IDL.Null,
+    'RateLimited' : IDL.Record({ 'retry_after_seconds' : IDL.Nat64 }),
     'StorageFailure' : IDL.Null,
     'BaseStateMismatch' : IDL.Null,
     'FinalityUnavailable' : IDL.Null,
@@ -745,7 +749,6 @@ export const idlFactory = ({ IDL }) => {
     'request_deposit' : IDL.Func([DepositArgs], [Result_15], []),
     'request_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_16], []),
     'request_fee_payout' : IDL.Func([IDL.Nat], [Result_17], []),
-    'resume_new_deposits' : IDL.Func([], [Result_13], []),
     'rotate_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_13], []),
     'rotate_pause_principal' : IDL.Func(
         [RotatePausePrincipalArgs],

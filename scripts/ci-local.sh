@@ -481,6 +481,8 @@ run_proofs() {
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
   python3 "$ROOT/scripts/test_write_proof_receipt.py"
+  python3 "$ROOT/scripts/test_claim_test_manifest.py"
+  python3 "$ROOT/scripts/test_check_claim_manifest.py"
   python3 "$ROOT/scripts/check_failure_manifests.py"
   run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"
   run_proof_stage lean run_lean_proofs

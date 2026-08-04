@@ -27,7 +27,7 @@ import { createLedgerActor, ledgerAccount } from "@/lib/ic/ledger"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import type { DepositCall, IcAccount } from "@/lib/ic/wallet"
 import { basePublicClient } from "@/lib/evm/client"
-import { refetchRuntimeWriteReady, runtimeWriteBlocker, RUNTIME_VALIDATION_TTL_MS, type FinalizedRuntimeObservation } from "@/lib/runtime-validation"
+import { refetchRuntimeAttestedWriteReady, runtimeWriteBlocker, RUNTIME_VALIDATION_TTL_MS, type FinalizedRuntimeObservation } from "@/lib/runtime-validation"
 import { currentInjectedWallet, requireWalletSnapshot, sameIcAccount } from "@/lib/wallet-snapshot"
 import { createWithdrawalAfterRevalidation } from "@/lib/withdrawal-submit"
 import { savePendingConfirmation } from "@/lib/pending-confirmations"
@@ -134,14 +134,18 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     enabled: true,
     gcTime: Infinity,
     retryNotReadyAfterMs: 1_000,
-    staleTime: Infinity,
+    staleTime: RUNTIME_VALIDATION_TTL_MS,
   })
   const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, {
     enabled: runtime.data?.ready === true,
     refetchInterval: AUTO_REFRESH_INTERVAL_MS,
   })
-  const activeRuntimeValidation = runtime.data?.ready === true ? heartbeat.data : runtime.data
-  const runtimeReadiness = useRuntimeWriteReadiness(activeRuntimeValidation)
+  const attestationReadiness = useRuntimeWriteReadiness(runtime.data)
+  const heartbeatReadiness = useRuntimeWriteReadiness(heartbeat.data)
+  const runtimeReadiness = {
+    ready: attestationReadiness.ready && heartbeatReadiness.ready,
+    reason: attestationReadiness.reason ?? heartbeatReadiness.reason,
+  }
   const sendToken = direction === "deposit" ? deploymentProfile.icToken : deploymentProfile.baseToken
   const receiveToken = direction === "deposit" ? deploymentProfile.baseToken : deploymentProfile.icToken
   const baseData = runtimeReadiness.ready ? finalizedObservationQuote(heartbeat.data) : undefined
@@ -240,7 +244,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     void Promise.all(calls)
   }
   const refetchBaseSnapshot = async () => {
-    const observation = await refetchRuntimeWriteReady(() => heartbeat.refetch())
+    const observation = await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
     if (!observation.snapshot) throw new Error("Finalized Base snapshot is unavailable")
     return observation.snapshot
   }
@@ -326,17 +330,15 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       await withBrowserLock(`kinic-deposit-owner:${confirmedAccount.owner}`, async () => {
         const beforeApproval = reviewed.gate
         const requiredAllowance = reviewed.amount + beforeApproval.ledger.fee
-        let approvalPerformed = false
         if (beforeApproval.ledger.allowance < requiredAllowance) {
           await withBrowserLock(`kinic-wallet-prompt:ic:${confirmedAccount.owner}`, () => ic.adapter!.approve({ amount: requiredAllowance, currentAllowance: beforeApproval.ledger.allowance, ledgerFee: beforeApproval.ledger.fee }))
-          approvalPerformed = true
         }
         const [finalEvm, finalIc] = await Promise.all([currentBaseWallet(), ic.adapter!.getAccount()])
         requireWalletSnapshot(expectedWallets, { ...finalEvm, icAccount: finalIc }, "during approval")
         const final = await refetchDepositWriteGate(
           reviewed.amount,
           beforeApproval.sequence,
-          approvalPerformed ? undefined : beforeApproval.observation,
+          undefined,
         )
         const attempt: UnresolvedDepositAttempt = {
           call: { ownerSequence: final.sequence, baseRecipient: hexToBytes(confirmedRecipient), grossAmount: reviewed.amount, maxServiceFee: final.base.serviceFee },
@@ -363,7 +365,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   ): Promise<DepositWriteGate> => {
     const observationPromise = reusableObservation && runtimeWriteBlocker(reusableObservation) === undefined
       ? Promise.resolve(reusableObservation)
-      : refetchRuntimeWriteReady(() => heartbeat.refetch())
+      : refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
     const [observation, ledgerResult, sequenceResult] = await Promise.all([observationPromise, ledger.refetch(), ownerSequence.refetch()])
     const quote = observation.snapshot
     if (!quote || ledgerResult.isError || ledgerResult.isStale || !ledgerResult.data || sequenceResult.isError || sequenceResult.isStale || sequenceResult.data === undefined) {
@@ -425,7 +427,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc }, "before opening the wallet prompt")
         return { account, recipient }
       })
-      const observation = await runPreflightCheck(runId, "runtime", () => refetchRuntimeWriteReady(() => heartbeat.refetch()))
+      const observation = await runPreflightCheck(runId, "runtime", () => refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch))
       await runPreflightCheck(runId, "financials", () => {
         if (unresolvedDeposit) return
         if (!depositParsed.ok) throw new Error(depositParsed.reason)
@@ -469,7 +471,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         const [activeEvm, activeIc] = await Promise.all([currentBaseWallet(), ic.adapter.getAccount()])
         requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc }, "before opening the wallet prompt")
       })
-      const observation = await runPreflightCheck(runId, "runtime", () => refetchRuntimeWriteReady(() => heartbeat.refetch()))
+      const observation = await runPreflightCheck(runId, "runtime", () => refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch))
       await runPreflightCheck(runId, "financials", () => {
         if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
         if (baseData === undefined || bsnsBalanceData === undefined) throw new Error("Fee or balance data is unavailable or stale")
@@ -583,11 +585,13 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       }
       const broadcast = await createWithdrawalAfterRevalidation({
         expectedWallets,
-        refetchRuntime: () => heartbeat.refetch(),
+        refetchRuntime: async () => ({ data: await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch) }),
         currentEvmWallet: currentBaseWallet,
         currentIcAccount: () => ic.adapter!.getAccount(),
-        refetchFinancials: async () => {
-          const [quote, balanceResult] = await Promise.all([refetchBaseSnapshot(), bsnsBalance.refetch()])
+        refetchFinancials: async (observation) => {
+          const quote = observation.snapshot
+          if (!quote) throw new Error("Finalized Base snapshot is unavailable")
+          const balanceResult = await bsnsBalance.refetch()
           if (balanceResult.isError || balanceResult.isStale || balanceResult.data === undefined) throw new Error("Fee or balance data changed and could not be verified")
           return { serviceFee: quote.serviceFee, balance: balanceResult.data, withdrawalsPaused: quote.withdrawalsPaused }
         },
@@ -619,7 +623,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     ? undefined
     : runtime.isFetching || runtime.isAutoRetryPending || heartbeat.isFetching
       ? "Checking availability…"
-      : activeRuntimeValidation
+      : (runtime.data?.ready === true ? heartbeat.data : runtime.data)
         ? "Bridge is temporarily unavailable. Try Refresh."
         : "Refresh before continuing."
   const depositBlockers = unresolvedDeposit

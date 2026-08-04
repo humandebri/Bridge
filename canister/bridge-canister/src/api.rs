@@ -110,6 +110,8 @@ pub enum RequestDepositRefundError {
     DepositIdentityConflict,
     StorageFailure,
     Busy,
+    AutomaticProgressPending { next_run_at_ns: Option<u64> },
+    RateLimited { retry_after_seconds: u64 },
     InsufficientCycles,
 }
 
@@ -1113,14 +1115,6 @@ pub async fn request_deposit(
         return Err(DepositError::DepositsPaused);
     }
     let now = ic_cdk::api::time();
-    fresh_deposit_preflight(
-        &config,
-        now,
-        deposit_id,
-        Amount::new(gross_amount),
-        Amount::new(max_service_fee),
-    )
-    .await?;
     let existing_attempt = STORE.with(|store| {
         store
             .borrow()
@@ -1168,9 +1162,7 @@ pub async fn request_deposit(
         gross_amount,
         max_service_fee,
         transfer: transfer.clone(),
-        state: DepositFundingAttemptState::Dispatched {
-            dispatched_at_ns: now,
-        },
+        state: DepositFundingAttemptState::Prepared,
         created_at_ns: now,
         updated_at_ns: now,
         last_failure: None,
@@ -1193,64 +1185,67 @@ pub async fn request_deposit(
                 .map_err(deposit_storage_error)
         })?
     };
-    let attempt = if matches!(outcome, crate::storage::DepositAdmissionOutcome::Existing) {
-        let previous = STORE.with(|store| {
+    let previous = if matches!(outcome, crate::storage::DepositAdmissionOutcome::Existing) {
+        STORE.with(|store| {
             store
                 .borrow()
                 .deposit_funding_attempt(deposit_id)
                 .map_err(|_| DepositError::StorageFailure)?
                 .ok_or(DepositError::StorageFailure)
-        })?;
-        if previous.intent != intent || previous.transfer != transfer {
-            return Err(DepositError::DepositConflict);
-        }
-        match previous.state {
-            DepositFundingAttemptState::Retryable { retry_after_ns } if now >= retry_after_ns => {
-                let mut next = previous.clone();
-                next.state = DepositFundingAttemptState::Dispatched {
-                    dispatched_at_ns: now,
-                };
-                next.updated_at_ns = now;
-                STORE.with(|store| {
-                    store
-                        .borrow_mut()
-                        .update_deposit_funding_attempt(&previous, &next)
-                        .map_err(|_| DepositError::StorageFailure)
-                })?;
-                next
-            }
-            DepositFundingAttemptState::Prepared => {
-                let mut next = previous.clone();
-                next.state = DepositFundingAttemptState::Dispatched {
-                    dispatched_at_ns: now,
-                };
-                next.updated_at_ns = now;
-                STORE.with(|store| {
-                    store
-                        .borrow_mut()
-                        .update_deposit_funding_attempt(&previous, &next)
-                        .map_err(|_| DepositError::StorageFailure)
-                })?;
-                next
-            }
-            DepositFundingAttemptState::Retryable { retry_after_ns } => {
-                return Err(DepositError::FundingUnavailable {
-                    retry_after_seconds: retry_after_ns
-                        .saturating_sub(now)
-                        .saturating_add(999_999_999)
-                        / 1_000_000_000,
-                });
-            }
-            DepositFundingAttemptState::Dispatched { .. }
-            | DepositFundingAttemptState::Reconciling { .. } => {
-                return Err(DepositError::FundingUnavailable {
-                    retry_after_seconds: 30,
-                });
-            }
-        }
+        })?
     } else {
         proposed
     };
+    if previous.intent != intent || previous.transfer != transfer {
+        return Err(DepositError::DepositConflict);
+    }
+    match previous.state {
+        DepositFundingAttemptState::Retryable { retry_after_ns } if now < retry_after_ns => {
+            return Err(DepositError::FundingUnavailable {
+                retry_after_seconds: retry_after_ns
+                    .saturating_sub(now)
+                    .saturating_add(999_999_999)
+                    / 1_000_000_000,
+            });
+        }
+        DepositFundingAttemptState::Dispatched { .. }
+        | DepositFundingAttemptState::Reconciling { .. } => {
+            return Err(DepositError::FundingUnavailable {
+                retry_after_seconds: 30,
+            });
+        }
+        DepositFundingAttemptState::Prepared | DepositFundingAttemptState::Retryable { .. } => {}
+    }
+
+    if let Err(error) = fresh_deposit_preflight(
+        &config,
+        now,
+        deposit_id,
+        Amount::new(gross_amount),
+        Amount::new(max_service_fee),
+    )
+    .await
+    {
+        STORE.with(|store| {
+            store
+                .borrow_mut()
+                .remove_deposit_funding_attempt(caller, &previous)
+                .map_err(|_| DepositError::StorageFailure)
+        })?;
+        return Err(error);
+    }
+
+    let mut attempt = previous.clone();
+    attempt.state = DepositFundingAttemptState::Dispatched {
+        dispatched_at_ns: now,
+    };
+    attempt.updated_at_ns = now;
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .update_deposit_funding_attempt(&previous, &attempt)
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
 
     let ledger_outcome = ledger::pull(config.ledger_canister_id, &attempt.transfer).await;
     let outcome_kind = match &ledger_outcome {

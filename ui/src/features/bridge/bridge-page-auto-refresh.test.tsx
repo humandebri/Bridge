@@ -440,7 +440,7 @@ describe("BridgePage automatic wallet refresh", () => {
 
   it.each([
     { label: "with approval", allowance: 0n, expectedApprovals: 1, expectedRuntimeObservations: 2 },
-    { label: "without approval", allowance: 300_010_000n, expectedApprovals: 0, expectedRuntimeObservations: 1 },
+    { label: "without approval", allowance: 300_010_000n, expectedApprovals: 0, expectedRuntimeObservations: 2 },
   ])("reuses one Oisy session $label, then closes it before authorization polling", async ({ allowance, expectedApprovals, expectedRuntimeObservations }) => {
     const closeWallet = vi.fn().mockResolvedValue(undefined)
     const account = { owner: "aaaaa-aa" }

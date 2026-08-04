@@ -56,9 +56,9 @@ service_fee初期値 = 0.5 KINIC
   + cycles の N 日分の運用費
 ```
 
-- ETH固定floor: 未確定。Sepolia gas 100回計測とBase mainnet 30日fee分布の証跡が揃った後、Settlement 100件分を設定する。
-- max fee per gas上限: 未確定。Base mainnet直近30日のbase fee p99×2 + priority fee p95で算出する。
-- cycles floor: 未確定。pause状態の基礎日次消費、100回のsettlement cycles計測、承認済み日次最大件数から次式で設定する。
+- ETH固定floor: 未確定。Sepolia governance gas 10回計測とBase mainnet 7日fee分布の証跡が揃った後、承認済みreserve window内のGovernance transaction数へ2倍の余裕を掛けて設定する。
+- max fee per gas上限: 未確定。Base mainnet直近7日のbase fee p99×20、priority fee p95×4、L1 fee p99×10で各ceilingを算出する。
+- cycles floor: 未確定。pause状態の基礎日次消費、10回のsettlement cycles計測、承認済み日次最大件数から次式で設定する。
 - `cycles floor = (baseline cycles/day + max(settlement cycles) × expected daily settlements) × 30 × 2`
 - `settlement cycle ceiling = ceil(max(settlement cycles) × 1.5)`
 - N: 30日

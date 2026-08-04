@@ -11,7 +11,7 @@ cargo run -p bridge-profile -- verify-gate-a-live evidence/release-id
 cargo run -p bridge-profile -- verify-live evidence/release-id
 ```
 
-`derive`はDeposit mint gasとsettlement cyclesを各100件、開始・終了時刻で30日以上のBase fee sample、pause時の基礎日次cycles、承認済み日次settlement上限が揃わなければ失敗する。cycles floorは30日負荷モデルの2倍、settlement ceilingは100回最大値の1.5倍切り上げである。Mint limitとwindow長はderiveせず、profileへraw unitで明示する。通常デプロイ前に使う`validate`は`test_assets_only = true`を必ず拒否する。Sepolia rehearsalだけが明示的な`validate-test`を使える。
+`derive`はschema v2のgovernance gas、settlement cycles、各fee系列を10件以上、開始・終了時刻で7日以上のBase fee sample、pause時の基礎日次cycles、承認済み日次settlement上限が揃わなければ失敗する。cycles floorは30日負荷モデルの2倍、settlement ceilingは10回以上のsample最大値の1.5倍切り上げである。Mint limitとwindow長はderiveせず、profileへraw unitで明示する。通常デプロイ前に使う`validate`は`test_assets_only = true`を必ず拒否する。Sepolia rehearsalだけが明示的な`validate-test`を使える。
 
 本番配置と資産受付開始は、必ず`production-release.sh`を経由する。`deploy`はoffline構造検査に加え、監視演習のIC certificate、emergency pause reply/audit、Base receipt/logをrepository-owned verifierで検証する。Base側はbundleへ束縛された3つのcredential-free RPC URLを`BRIDGE_GATE_A_RPC_URL_1`〜`3`として渡し、2-of-3の同一Finalized結果を要求する。Bridge contractとBridge Canisterはいずれも初期pause状態で配置され、この段階では資産を受け付けない。
 
@@ -61,7 +61,7 @@ Plan 007のIC stagingで新規作成またはinstallするCanisterは`sepolia-st
 
 外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh`をclean commitで実行し、`deployments/sepolia-staging/evidence/local-e2e.json`を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
-外部stageのschema v5証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証でき、`COMPLETE`には実wallet matrix、10件のRPC rehearsal、同一Wasm upgrade、Base/ICのfinal pause、pending settlement/Timelockゼロが必要である。`deployments/sepolia-staging/obsolete-replacement-policy.json`のCanister ID・旧instance ID・module hash tupleに一致する旧v30 stagingを同じCanister IDへv31 reinstallする場合だけ、3-provider Base receipt quorumとIC audit/statusから検証生成したpause evidence、live snapshot、`discard-test-state`証跡を必須とする`obsolete-schema-reinstall`を使用する。これはmigration、互換読取、または未知schemaの受理ではない。
+外部stageのschema v6証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証でき、`EXTENDED_COMPLETE`には実wallet matrix、10件のRPC rehearsal、同一Wasm upgrade、Base/ICのfinal pause、pending settlement/Timelockゼロが必要である。この詳細完了はproduction activationをblockしない。Gate BはRPC rehearsalの主要5件による`LAUNCH_READY`だけを要求する。`deployments/sepolia-staging/obsolete-replacement-policy.json`のCanister ID・旧instance ID・module hash tupleに一致する旧v30 stagingを同じCanister IDへv31 reinstallする場合だけ、3-provider Base receipt quorumとIC audit/statusから検証生成したpause evidence、live snapshot、`discard-test-state`証跡を必須とする`obsolete-schema-reinstall`を使用する。これはmigration、互換読取、または未知schemaの受理ではない。
 
 新規作成するstaging Bridge Canister IDだけを`.icp/data/mappings/sepolia-staging.ids.json`へ保存する。既存`testicrc`を新規作成対象としてmappingへ追加しない。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`の`pnpm run deploy:test`でCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
 

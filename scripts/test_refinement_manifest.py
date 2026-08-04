@@ -67,6 +67,24 @@ class RefinementManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate refinement consumer"):
             self.parse(tuple(fixture))
 
+    def test_theorem_names_in_hypotheses_do_not_establish_refinement(self) -> None:
+        fixture = list(self.fixture())
+        fixture[5] = "theorem example_refinement (h : exampleImpl = example) : True := by\n  trivial\n"
+        with self.assertRaisesRegex(ValueError, "top-level equality"):
+            self.parse(tuple(fixture))
+
+    def test_unrelated_conjunction_does_not_establish_refinement(self) -> None:
+        fixture = list(self.fixture())
+        fixture[5] = "theorem example_refinement : exampleImpl = true ∧ example = true := by\n  simp\n"
+        with self.assertRaisesRegex(ValueError, "top-level equality"):
+            self.parse(tuple(fixture))
+
+    def test_refinement_sides_cannot_be_reversed(self) -> None:
+        fixture = list(self.fixture())
+        fixture[5] = "theorem example_refinement : example = exampleImpl := by\n  rfl\n"
+        with self.assertRaisesRegex(ValueError, "must place"):
+            self.parse(tuple(fixture))
+
     def test_manifest_cannot_register_target_selector_or_symbol_strings(self) -> None:
         fixture = list(self.fixture())
         fixture[2] += "\tgenerated/fake.rs\tfake_selector\tfake_symbol"

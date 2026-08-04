@@ -135,10 +135,9 @@ cat >"$T/bin/icp" <<'SH'
 echo "icp $*" >>"$TRACE"
 if [[ "$*" == *initialize_public_config* ]]; then if [[ "${INITIALIZE_PUBLIC_CONFIG_FAIL:-false}" == true ]]; then echo '{"Err":"DerivationUnavailable"}'; else echo '{"Ok":null}'; fi;
 elif [[ "$*" == *get_public_config* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"base_chain_id":8453,"bridge_contract":[51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51],"expected_bridge_runtime_sha256":[110,52,11,156,255,179,122,152,156,165,68,230,187,120,10,44,120,144,29,63,179,55,56,118,133,17,163,6,23,175,160,29],"timelock_contract":[34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34],"deployment_instance_id":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"ledger_canister_id":"aaaaa-aa","index_canister_id":"aaaaa-aa","schema_version":31,"expected_bridge_signer":[%s],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s","deposit_rate_limit_window_seconds":1,"deposit_rate_limit_global":1,"deposit_rate_limit_per_principal":1,"notification_rate_limit_window_seconds":600,"notification_rate_limit_global":60,"notification_ingestion_rate_limit_global":30,"settlement_rate_limit_window_seconds":1,"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_rate_limit_per_record":1,"settlement_retry_interval_seconds":60,"governance_evm_fee":{"gas_limit_ceiling":"1","max_fee_per_gas_ceiling":"1","max_priority_fee_per_gas_ceiling":"1","l1_fee_per_transaction_ceiling_wei":"1","quote_validity_seconds":90,"gas_limit_multiplier_bps":13000,"base_fee_multiplier_bps":60000,"l1_fee_multiplier_bps":15000},"governance_replacement":{"max_replacements":3,"fee_bump_bps":1250},"governance_eth_floor_wei":"1","cycles_floor":"1","settlement_cycle_ceiling":"1","governance_principal":"aaaaa-aa","pause_principal":"2vxsx-fae","fee_recipient":{"owner":"aaaaa-aa","subaccount":[]}}\n' "$signer" "$RPC_DIGEST";
-elif [[ "$*" == *get_bridge_status* ]]; then if [[ -e "$IC_RESUMED_MARKER" ]]; then paused=false; else paused="${CANISTER_PAUSED:-true}"; fi; printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "$paused";
+elif [[ "$*" == *get_bridge_status* ]]; then printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "${CANISTER_PAUSED:-true}";
 elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
-elif [[ "$*" == *resume_new_deposits* ]]; then if [[ "${RESUME_FAIL:-}" == true ]]; then echo '{"Err":"StorageFailure"}'; exit 1; fi; touch "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
-elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; rm -f "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
+elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; echo '{"Ok":null}';
 elif [[ "$*" == *'identity principal --identity production'* ]]; then echo 'aaaaa-aa';
 elif [[ "$*" == *list_nervous_system_functions* ]]; then echo '{"functions":[{"id":1,"target_canister_id":"aaaaa-aa","target_method_name":"schedule_activation"}]}';
 elif [[ "$*" == *manage_neuron* ]]; then echo '{"command":{"MakeProposal":{"proposal_id":[]}}}';
@@ -149,7 +148,7 @@ SH
 chmod +x "$T/bin/forge" "$T/bin/cast" "$T/bin/icp" "$T/bin/ci-local.sh"
 export PATH="$T/bin:$PATH"
 export PATH_PROOF_OVERRIDE_MARKER="$T/path-proof-override-used"
-export EXECUTED_MARKER="$T/executed" CANCELLED_MARKER="$T/cancelled" IC_RESUMED_MARKER="$T/ic-resumed" DEPOSIT_PAUSED_MARKER="$T/deposit-paused" WITHDRAWAL_PAUSED_MARKER="$T/withdrawal-paused"
+export EXECUTED_MARKER="$T/executed" CANCELLED_MARKER="$T/cancelled" DEPOSIT_PAUSED_MARKER="$T/deposit-paused" WITHDRAWAL_PAUSED_MARKER="$T/withdrawal-paused"
 export TIMELOCK_DEPLOYED_MARKER="$T/timelock-deployed" BRIDGE_DEPLOYED_MARKER="$T/bridge-deployed"
 export BRIDGE_TIMELOCK_CANCELLER_ADDRESS=0x5555555555555555555555555555555555555555
 export BRIDGE_ICP_IDENTITY=production

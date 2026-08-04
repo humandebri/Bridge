@@ -48,7 +48,7 @@ flowchart TB
 ## Deposit
 
 1. UIはIC wallet、Base recipient、Bridge runtime、Finalized Base snapshot、Service Fee、Ledger残高・allowanceを再検証する。
-2. IC walletが`request_deposit`を呼ぶ。Canisterは固定funding identityを保存してICRC-2 pullを行う。確定失敗では正式Depositを作らず、結果不明はReconciliation Holdへ入れる。
+2. IC walletが`request_deposit`を呼ぶ。Canisterは有料Base preflightより前に固定funding identityを`Prepared`で保存し、deposit quotaを消費してactive reservationとcycle reserveを確認する。admission成功後だけBase preflightとICRC-2 pullを行う。確定失敗ではattemptとactive reservationを削除するがquotaは戻さず、正式Depositは作らない。結果不明はReconciliation Holdへ入れる。
 3. pull確定後、CanisterはFinalized Base snapshotからquote、2時間の固定TTL（変更時は公開設定と文書を同期）、Authorization epoch、EIP-712 domainとdigestを一度だけ決定する。
 4. Canisterは同じdigestへthreshold ECDSA署名する。署名の保存と同じtransactionでBridge service feeを一度だけ確定し、fee reserveへ計上する。署名再試行でpayloadやdeadlineを変更せず、認可発行前の確定失敗ではservice feeを計上しない。
 5. UIは`AuthorizationAvailable`をpollし、chain ID、runtime hash、contract、pause、epoch、未処理Deposit、EIP-712 domain、全field、digest、復元signer、最新Base timestampを検証する。

@@ -3,10 +3,14 @@
 
 import unittest
 
-from check_claim_manifest import missing_scalar_calls, solidity_function_body
+from check_claim_manifest import abstract_evidence_status, missing_scalar_calls, solidity_function_body
 
 
 class SolidityFunctionBodyTests(unittest.TestCase):
+    def test_abstract_evidence_distinguishes_absent_theorems(self) -> None:
+        self.assertEqual(abstract_evidence_status("-"), "not-applicable")
+        self.assertEqual(abstract_evidence_status("proved_theorem"), "proved")
+
     def test_extracts_only_the_named_function_with_nested_braces(self) -> None:
         source = """
 function evaluateMint(uint256 value) internal pure returns (uint256) {

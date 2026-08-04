@@ -45,11 +45,15 @@ const fetchImpl = async (_url, request) => {
 }
 const runIcpImpl = (_canister, _environment, method) => {
   if (method === "pause_new_deposits") return "variant { Ok }"
+  if (method === "get_public_config") {
+    return `record { schema_version = 30 : nat16; deployment_instance_id = blob "${"\\55".repeat(32)}" }`
+  }
   if (method === "get_bridge_status") {
     return "record { deposits_paused = true : bool; last_audit_sequence = opt (7 : nat64) }"
   }
   return 'record { kind = variant { DepositsPaused }; caller = principal "aaaaa-aa"; sequence = 7 : nat64 }'
 }
+const runStatusImpl = () => ({ module_hash: "6".repeat(64) })
 
 const evidence = await collectEvidence(
   {
@@ -58,10 +62,16 @@ const evidence = await collectEvidence(
     chainId: 84532,
   },
   config,
-  { schema_version: 30, deployment_instance_id: hash("5") },
-  { module_hash: hash("6") },
-  { fetchImpl, runIcpImpl, now: () => new Date("2026-08-03T00:00:00Z") },
+  {
+    fetchImpl,
+    runIcpImpl,
+    runStatusImpl,
+    now: () => new Date("2026-08-03T00:00:00Z"),
+    captureId: "11111111-1111-4111-8111-111111111111",
+  },
 )
+assert.equal(evidence.schema_version, 2)
+assert.equal(evidence.ic_live.previous_deployment_instance_id, hash("5"))
 assert.equal(evidence.providers.length, 3)
 assert.ok(evidence.providers.every((provider) => provider.actions.every((action) => (
   action.receipt_status === 1 && action.event_observed && action.canonical_probe_succeeded
@@ -74,6 +84,7 @@ assert.deepEqual(evidence.ic_pause, {
   audit_caller: "aaaaa-aa",
   status_deposits_paused: true,
   status_last_audit_sequence: 7,
+  observed_at: "2026-08-03T00:00:00.000Z",
 })
 
 let icCalled = false
@@ -81,8 +92,6 @@ await assert.rejects(
   collectEvidence(
     { bridgeAddress: address, bridgeCanisterId: "rlhjx-iyaaa-aaaaf-qcnyq-cai", chainId: 84532 },
     config,
-    { schema_version: 30, deployment_instance_id: hash("5") },
-    { module_hash: hash("6") },
     {
       fetchImpl: async (url, request) => {
         const response = await fetchImpl(url, request)

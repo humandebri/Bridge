@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 KIND = "kinic-bridge-sepolia-staging-e2e"
 CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
@@ -202,13 +202,14 @@ def require_bool(value: dict[str, Any], name: str, expected: bool, context: str)
         fail(f"{context}.{name} must be {str(expected).lower()}")
 
 
-def validate_timestamp(value: str, context: str) -> None:
+def validate_timestamp(value: str, context: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         fail(f"{context} must be an ISO-8601 timestamp")
     if parsed.tzinfo is None:
         fail(f"{context} must include a timezone")
+    return parsed
 
 
 def validate_artifacts(artifacts: Any, manifest_path: Path, context: str, verify_files: bool) -> None:
@@ -379,34 +380,54 @@ def validate_obsolete_pause_evidence(
         {
             "schema_version",
             "environment",
+            "capture_id",
+            "capture_started_at",
             "observed_at",
             "bridge_canister_id",
             "chain_id",
             "bridge_address",
-            "live_schema_version",
-            "previous_deployment_instance_id",
-            "live_module_hash",
             "providers",
             "ic_pause",
+            "ic_live",
             "complete",
         },
         context,
     )
-    if value["schema_version"] != 1 or value["environment"] != "sepolia-staging":
-        fail(f"{context} must be a schema v1 Sepolia staging record")
-    validate_timestamp(require_string(value, "observed_at", context), f"{context}.observed_at")
+    if value["schema_version"] != 2 or value["environment"] != "sepolia-staging":
+        fail(f"{context} must be a schema v2 Sepolia staging record")
+    capture_id = require_string(value, "capture_id", context)
+    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", capture_id):
+        fail(f"{context}.capture_id must be a UUIDv4")
+    started_at = validate_timestamp(require_string(value, "capture_started_at", context), f"{context}.capture_started_at")
+    completed_at = validate_timestamp(require_string(value, "observed_at", context), f"{context}.observed_at")
+    if completed_at < started_at or (completed_at - started_at).total_seconds() > 300:
+        fail(f"{context} capture must complete within five minutes")
+    if (completed_at - datetime.now(timezone.utc)).total_seconds() > 60:
+        fail(f"{context} capture timestamp is too far in the future")
+    ic_live = value["ic_live"]
+    if not isinstance(ic_live, dict):
+        fail(f"{context}.ic_live must be an object")
+    exact_keys(
+        ic_live,
+        {"observed_at", "live_schema_version", "previous_deployment_instance_id", "live_module_hash", "status_deposits_paused"},
+        f"{context}.ic_live",
+    )
+    ic_live_at = validate_timestamp(require_string(ic_live, "observed_at", f"{context}.ic_live"), f"{context}.ic_live.observed_at")
+    if ic_live_at < started_at or ic_live_at > completed_at or (completed_at - ic_live_at).total_seconds() > 60:
+        fail(f"{context}.ic_live must be observed in the final capture minute")
     if (
         value["bridge_canister_id"] != binding["bridge_canister_id"]
         or require_nat(value, "chain_id", context) != CHAIN_ID
-        or require_nat(value, "live_schema_version", context)
+        or require_nat(ic_live, "live_schema_version", f"{context}.ic_live")
         != expected_check["live_schema_version"]
         or deployment_instance_hex(
-            value["previous_deployment_instance_id"],
-            f"{context}.previous_deployment_instance_id",
+            ic_live["previous_deployment_instance_id"],
+            f"{context}.ic_live.previous_deployment_instance_id",
         )
         != expected_check["previous_deployment_instance_id"]
-        or require_pattern(value, "live_module_hash", EVM_HASH, context)
+        or require_pattern(ic_live, "live_module_hash", EVM_HASH, f"{context}.ic_live")
         != expected_check["live_module_hash"]
+        or ic_live["status_deposits_paused"] is not True
         or require_string(value, "bridge_address", context).lower()
         != str(binding["bridge_address"]).lower()
         or value["complete"] is not True
@@ -417,6 +438,7 @@ def validate_obsolete_pause_evidence(
     if not isinstance(providers, list) or len(providers) != 3:
         fail(f"{context} requires exactly three provider observations")
     provider_digests: set[str] = set()
+    provider_observed_at: list[datetime] = []
     heads: list[tuple[int, str]] = []
     normalized_actions: list[dict[str, tuple[Any, ...]]] = []
     action_fields = {
@@ -443,6 +465,7 @@ def validate_obsolete_pause_evidence(
                 "finalized_block_number",
                 "finalized_block_hash",
                 "actions",
+                "observed_at",
             },
             provider_context,
         )
@@ -453,6 +476,10 @@ def validate_obsolete_pause_evidence(
             provider_context,
         )
         provider_digests.add(provider_digest)
+        provider_at = validate_timestamp(require_string(provider, "observed_at", provider_context), f"{provider_context}.observed_at")
+        if provider_at < started_at or provider_at > completed_at:
+            fail(f"{provider_context} timestamp is outside the capture window")
+        provider_observed_at.append(provider_at)
         if require_nat(provider, "chain_id", provider_context) != CHAIN_ID:
             fail(f"{provider_context} observed the wrong chain")
         finalized_number = require_nat(
@@ -540,10 +567,17 @@ def validate_obsolete_pause_evidence(
             "audit_caller",
             "status_deposits_paused",
             "status_last_audit_sequence",
+            "observed_at",
         },
         f"{context}.ic_pause",
     )
     audit_sequence = require_nat(ic_pause, "audit_sequence", f"{context}.ic_pause")
+    ic_pause_at = validate_timestamp(require_string(ic_pause, "observed_at", f"{context}.ic_pause"), f"{context}.ic_pause.observed_at")
+    if ic_pause_at < started_at or ic_pause_at > ic_live_at or (ic_live_at - ic_pause_at).total_seconds() > 60:
+        fail(f"{context} IC pause and live observations must be within one minute")
+    observation_times = [*provider_observed_at, ic_pause_at, ic_live_at]
+    if (max(observation_times) - min(observation_times)).total_seconds() > 60:
+        fail(f"{context} observations must be captured within one minute")
     if (
         ic_pause["method"] != "pause_new_deposits"
         or ic_pause["response"] != "Ok"
@@ -1093,11 +1127,23 @@ def validate_wallet_e2e(details: dict[str, Any]) -> None:
 
 def validate_rpc(details: dict[str, Any]) -> None:
     context = "rpc_rehearsal.details"
-    exact_keys(details, {"manifest_sha256", "state", "complete", "scenarios", "providers_restored"}, context)
+    exact_keys(
+        details,
+        {
+            "manifest_sha256",
+            "state",
+            "launch_ready",
+            "extended_complete",
+            "scenarios",
+            "providers_restored",
+        },
+        context,
+    )
     require_pattern(details, "manifest_sha256", SHA256, context)
-    if details["state"] != "COMPLETE":
-        fail("RPC rehearsal is not COMPLETE")
-    require_bool(details, "complete", True, context)
+    if details["state"] != "EXTENDED_COMPLETE":
+        fail("non-blocking detailed RPC rehearsal is not EXTENDED_COMPLETE")
+    require_bool(details, "launch_ready", True, context)
+    require_bool(details, "extended_complete", True, context)
     scenarios = details["scenarios"]
     if not isinstance(scenarios, list) or set(scenarios) != RPC_SCENARIOS or len(scenarios) != len(RPC_SCENARIOS):
         fail("RPC rehearsal does not bind the complete ten-scenario set")
@@ -1386,8 +1432,6 @@ def capture_obsolete_pause_evidence(
         str(OBSOLETE_PAUSE_COLLECTOR_PATH),
         str(profile_path),
         str(capture_config_path),
-        str(live_public_config_path),
-        str(live_canister_status_path),
     ]
     try:
         completed = run_collector(
@@ -1409,15 +1453,29 @@ def capture_obsolete_pause_evidence(
         "bridge_canister_id": profile.get("bridgeCanisterId"),
         "bridge_address": profile.get("bridgeAddress"),
     }
+    ic_live = value.get("ic_live")
+    if not isinstance(ic_live, dict):
+        fail("live pause collector did not return post-pause IC observations")
     expected_check = reinstall_instance_check(
         profile.get("deploymentInstanceId"),
-        live_public_config,
-        live_canister_status,
+        {
+            "schema_version": ic_live.get("live_schema_version"),
+            "deployment_instance_id": ic_live.get("previous_deployment_instance_id"),
+        },
+        {"module_hash": ic_live.get("live_module_hash")},
         str(profile.get("bridgeCanisterId")),
     )
     if expected_check["replacement_mode"] != OBSOLETE_SCHEMA_REINSTALL:
         fail("obsolete pause evidence is only valid for the reviewed v30 replacement")
     validate_obsolete_pause_evidence(value, binding, expected_check)
+    preflight_check = reinstall_instance_check(
+        profile.get("deploymentInstanceId"),
+        live_public_config,
+        live_canister_status,
+        str(profile.get("bridgeCanisterId")),
+    )
+    if preflight_check != expected_check:
+        fail("post-pause IC observations differ from the reviewed preflight snapshots")
     write_new_object_atomically(output_path, value)
 
 

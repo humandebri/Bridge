@@ -455,12 +455,22 @@ export function decodeNotifyWithdrawalReply(reply: Uint8Array): NotifyWithdrawal
 
 function unwrapRequestDepositRefundResult(result: unknown): DepositView {
   if (!isObject(result)) throw new Error("Wallet reply has an invalid refund claim result")
-  if ("Err" in result) throw new Error(`Refund claim failed: ${stringify(Reflect.get(result, "Err"))}`)
+  if ("Err" in result) {
+    const error = Reflect.get(result, "Err")
+    throw new Error(requestDepositRefundErrorMessage(error))
+  }
   const record: unknown = Reflect.get(result, "Ok")
   if (!isObject(record) || !isDepositPhase(Reflect.get(record, "state"))) {
     throw new Error("Wallet reply has an invalid refund claim receipt")
   }
   return record as unknown as DepositView
+}
+
+export function requestDepositRefundErrorMessage(error: unknown): string {
+  if (isObject(error) && ("AutomaticProgressPending" in error || "RateLimited" in error)) {
+    return settlementActionErrorMessage(error)
+  }
+  return `Refund claim failed: ${stringify(error)}`
 }
 
 function unwrapNotifyWithdrawalResult(result: unknown): NotifyWithdrawalReceipt {

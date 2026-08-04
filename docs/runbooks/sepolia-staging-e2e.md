@@ -1,6 +1,6 @@
 # IC mainnet × Base Sepolia staging E2E
 
-このrunbookはPlan 007の外部stageを、同一source commitへ束縛された再開可能な証跡として実行する。
+このrunbookはPlan 007の非blocking外部stageを、schema v6で同一source commitへ束縛された再開可能な証跡として実行する。
 production Canister、KINIC Ledger、Base Mainnet、SNSを対象にしてはならない。
 
 Base Sepolia stagingだけは`short-delay-test-only` policyによりactivation delayを300秒とする。production artifactの24時間制約は変更せず、短縮版artifactと証跡をproduction rehearsalへ使用しない。
@@ -48,7 +48,7 @@ preflight
   -> wallet_e2e
   -> rpc_rehearsal
   -> final_pause
-  -> COMPLETE
+  -> SHORT_DELAY_COMPLETE
 ```
 
 各stageは、操作後に取得したraw artifact、artifact SHA-256、source commit、観測値だけをstage evidenceへ記録する。
@@ -144,4 +144,4 @@ fault proxy 3件の通常応答を再確認してから`final_pause`を記録し
 scripts/plan007/staging-e2e-driver.sh verify
 ```
 
-`COMPLETE`はtest-only staging E2Eの完了だけを意味し、本番deploy、SNS操作、資産受付開始を承認しない。
+`SHORT_DELAY_COMPLETE`はtest-only stagingの追加wallet互換性と全10 RPC scenarioを含む詳細E2Eの完了だけを意味し、本番deploy、SNS操作、資産受付開始を承認しない。この詳細完了はproduction activationをblockしない。

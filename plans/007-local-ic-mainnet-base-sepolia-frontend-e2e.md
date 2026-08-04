@@ -7,6 +7,7 @@
 - **IC mainnet / Base Sepolia / Cloudflare Worker**: 明示承認待ち（未実行）
 - **Staging evidence tooling**: DONE（ordered manifest、offline verifier、RPC fault injector）
 - **Production / SNS**: 対象外
+- **Production activation dependency**: なし。wallet matrixと追加5 RPC scenarioは非blocking検証として継続する。
 
 本計画はproduction資産、production Canister、KINIC Ledger、Base Mainnet、SNS controllerを変更しない。外部実行前に、同一commitから生成した`local-e2e.json`を必須とする。
 
@@ -64,4 +65,4 @@ gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実
 
 ## 完了条件
 
-Plan 007の完了は、local evidenceに加えてOISY/Plug双方の実Deposit、双方宛のWithdrawal release、RPC障害、pause/cancel、reload/duplicate、同一Wasm upgradeを`sepolia-e2e.json`へ固定し、test環境をpauseしてpending operationをゼロにした時点とする。100回gas/cycles計測とSNS proposal upgradeはPlan 005/006に残す。x402はBridgeの完了条件に含めない。
+Plan 007の完了は、local evidenceに加えてOISY/Plug双方の実Deposit、双方宛のWithdrawal release、追加5 RPC scenario、pause/cancel、reload/duplicate、同一Wasm upgradeをschema v6の`sepolia-e2e.json`へ固定し、test環境をpauseしてpending operationをゼロにした時点とする。これはproduction activationのblockerではない。10回・7日計測とSNS proposal upgradeはPlan 005/006に残す。x402はBridgeの完了条件に含めない。

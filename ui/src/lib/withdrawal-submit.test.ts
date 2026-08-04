@@ -8,9 +8,11 @@ const expectedWallets = {
 }
 
 function dependencies() {
+  const runtime = { ready: true as const, blockers: [], checkedAt: Date.now(), snapshot: { serviceFee: 10n } }
   return {
     expectedWallets,
-    refetchRuntime: vi.fn().mockResolvedValue({ data: { ready: true, blockers: [], checkedAt: Date.now() } }),
+    runtime,
+    refetchRuntime: vi.fn().mockResolvedValue({ data: runtime }),
     currentEvmWallet: vi.fn().mockResolvedValue({ address: expectedWallets.address, chainId: expectedWallets.chainId }),
     currentIcAccount: vi.fn().mockResolvedValue(expectedWallets.icAccount),
     refetchFinancials: vi.fn().mockResolvedValue({ serviceFee: 10n, balance: 100n }),
@@ -40,6 +42,7 @@ describe("createWithdrawalAfterRevalidation", () => {
     await expect(createWithdrawalAfterRevalidation(deps)).resolves.toEqual({ transactionHash: "0xtx", pendingSaved: true })
     expect(deps.refetchRuntime).toHaveBeenCalledOnce()
     expect(deps.refetchFinancials).toHaveBeenCalledOnce()
+    expect(deps.refetchFinancials).toHaveBeenCalledWith(deps.runtime)
     expect(deps.validateFinancials).toHaveBeenCalledWith({ serviceFee: 10n, balance: 100n })
     expect(deps.createWithdrawal).toHaveBeenCalledWith({ serviceFee: 10n, balance: 100n })
     expect(deps.onBroadcast).toHaveBeenCalledWith("0xtx")

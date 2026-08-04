@@ -127,10 +127,10 @@ state machineは次の順に進む。完了済みscenarioへ異なる証跡を�
 ```text
 AWAITING_PREFLIGHT
   -> READY_FOR_ASSET_FLOWS
-  -> READY_FOR_FAILURE_SCENARIOS
+  -> READY_FOR_QUORUM_LOSS
   -> READY_FOR_FINAL_PAUSE
-  -> AWAITING_RAW_ARTIFACT_VERIFICATION
-  -> COMPLETE
+     ├─ final_pause -> LAUNCH_READY
+     └─ 追加5件 -> final_pause -> EXTENDED_COMPLETE
 ```
 
 asset flowとして次の4件を実行し、各transactionをFinalized headまで待つ。
@@ -153,7 +153,7 @@ EVM RPC clientはthreshold判定に使ったprovider別全responseやexact agree
 代わりにconfigured count、required threshold、故障注入artifact、処理継続またはfail-closed decisionをthreshold certificateとして記録する。
 故障注入条件はBridge/Canister auditへ存在しないfieldを合成せず、専用`fault` raw artifactへ分離する。このartifactは`rehearsal_id`、scenario、run reference、configured provider count 3、required threshold 2、failed provider count、request/config digestを持ち、manifest hashで保護する。Canister `EvmRpcDecision`は継続またはfail-closedの判断だけを証明する。
 
-failure scenario後に`final_pause`を記録する。BaseのDeposit/WithdrawalとCanisterの新規Deposit受付をpauseし、Base側pause transactionのFinalized block/hashを再読する。
+Gate B用の最小演習は`preflight`、`authorization_mint`、`withdrawal_release`、`quorum_loss`の順に実行し、最後に`final_pause`を記録する。BaseのDeposit/WithdrawalとCanisterの新規Deposit受付をpauseし、Base側pause transactionのFinalized block/hashを再読する。残り5 scenarioを詳細Plan 007として記録する場合は、`final_pause`より前に完了する。`final_pause`後の追記は拒否される。
 
 各scenarioの`details`の正確なfield名と型は`scripts/evm-rpc-rehearsal/rehearsal.py`がfail closedで検査する。
 templateの`details`文字列を実objectへ置換し、次のように一件ずつrecordする。
@@ -167,8 +167,8 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 
 ## 終了条件
 
-- manifestが`COMPLETE`かつ`complete=true`である。
-- 全10 scenarioが公式EVM RPC Canister、Base Sepolia、同じrehearsal ID、同じBridge Canisterへbindingされている。
+- Gate Bではmanifestが`LAUNCH_READY`または`EXTENDED_COMPLETE`かつ`launch_ready=true`である。
+- 主要5 scenarioが公式EVM RPC Canister、Base Sepolia、同じrehearsal ID、同じBridge Canisterへbindingされている。追加5 scenarioまで揃うと`extended_complete=true`になるが、production activationはblockしない。
 - rehearsalのsource revision/tree、Bridge Canister Wasm、Bridge runtime bytecodeがrelease bundleと一致する。
 - quorum成功scenarioの`canister_audit`がraw `get_audit_events` artifactから再導出され、preflight module hashがreleaseのBridge Wasmと一致する。
 - signer triple、Authorization digest、receipt hash、EIP-1898 canonical probe、exact eventが一致する。
@@ -177,4 +177,4 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 - Base BridgeとCanisterは演習終了時もpause状態に戻す。資産受付開始はこの演習とは別の明示承認とする。
 - `rpc-e2e.json`のSHA-256をrelease evidence bundleへ登録し、参照する`artifacts/`も同じbundleへ含める。artifactにはcredentialを含まないraw command stdoutだけを保存し、生authorization、credential URL、秘密は含めない。
 
-`COMPLETE`は実演習の証跡が構造上揃ったことだけを意味し、本番deploy、controller handover、unpause、資産受付開始を承認しない。
+`LAUNCH_READY`と`EXTENDED_COMPLETE`は実演習の証跡が構造上揃ったことだけを意味し、本番deploy、controller handover、unpause、資産受付開始を承認しない。

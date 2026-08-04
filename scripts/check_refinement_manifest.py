@@ -54,6 +54,46 @@ def declaration(source: str, keyword: str, name: str) -> str:
     return source[start.start() : end]
 
 
+def top_level_equality_sides(theorem_source: str, theorem: str) -> tuple[str, str]:
+    header = theorem_source.split(":= by", 1)[0]
+    marker = re.search(rf"^theorem\s+{re.escape(theorem)}\b", header)
+    if marker is None:
+        raise ValueError(f"Lean theorem header is malformed: {theorem}")
+    depth = 0
+    proposition_start: int | None = None
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    closing = set(pairs.values())
+    for index in range(marker.end(), len(header)):
+        character = header[index]
+        if character in pairs:
+            depth += 1
+        elif character in closing:
+            depth -= 1
+            if depth < 0:
+                raise ValueError(f"Lean theorem binders are unbalanced: {theorem}")
+        elif character == ":" and depth == 0:
+            proposition_start = index + 1
+            break
+    if proposition_start is None:
+        raise ValueError(f"Lean theorem proposition is missing: {theorem}")
+    proposition = header[proposition_start:]
+    depth = 0
+    equalities: list[int] = []
+    for index, character in enumerate(proposition):
+        if character in pairs:
+            depth += 1
+        elif character in closing:
+            depth -= 1
+            if depth < 0:
+                raise ValueError(f"Lean theorem proposition is unbalanced: {theorem}")
+        elif character == "=" and depth == 0:
+            equalities.append(index)
+    if depth != 0 or len(equalities) != 1:
+        raise ValueError(f"Lean theorem {theorem} must have one top-level equality")
+    equality = equalities[0]
+    return proposition[:equality].strip(), proposition[equality + 1 :].strip()
+
+
 def parse_manifest(
     document: dict[str, object],
     manifest_text: str,
@@ -127,13 +167,15 @@ def parse_manifest(
         declaration(model, "def", abstract)
         declaration(implementation, "def", bounded)
         theorem_source = declaration(refinement, "theorem", theorem)
-        statement = theorem_source.split(":= by", 1)[0]
-        if not re.search(rf"\b{re.escape(abstract)}\b", statement) or not re.search(
-            rf"\b{re.escape(bounded)}\b", statement
-        ):
+        left, right = top_level_equality_sides(theorem_source, theorem)
+        bounded_left = re.search(rf"\b{re.escape(bounded)}\b", left) is not None
+        abstract_right = re.search(rf"\b{re.escape(abstract)}\b", right) is not None
+        abstract_left = re.search(rf"\b{re.escape(abstract)}\b", left) is not None
+        bounded_right = re.search(rf"\b{re.escape(bounded)}\b", right) is not None
+        if not bounded_left or not abstract_right or abstract_left or bounded_right:
             raise ValueError(
-                f"Lean theorem {theorem} does not relate {abstract} and {bounded} "
-                f"for {section}"
+                f"Lean theorem {theorem} must place {bounded} on the left and "
+                f"{abstract} on the right for {section}"
             )
     return consumers
 

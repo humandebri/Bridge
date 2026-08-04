@@ -23,7 +23,7 @@ export function useRuntimeValidation(chainId?: number, options: RuntimeValidatio
     enabled = false,
     gcTime = Number.POSITIVE_INFINITY,
     retryNotReadyAfterMs,
-    staleTime = Number.POSITIVE_INFINITY,
+    staleTime = RUNTIME_VALIDATION_TTL_MS,
   } = options
   const query = useQuery({
     queryKey: ["runtime-validation", runtimeProfileFingerprint(deploymentProfile), chainId],

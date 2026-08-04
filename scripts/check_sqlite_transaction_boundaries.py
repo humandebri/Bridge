@@ -16,7 +16,7 @@ FORBIDDEN_SEQUENCE_WRITES = (
     ".allocate_hold_id()",
     ".put_open_reconciliation_hold(",
 )
-START = ".update(|connection|"
+STARTS = (".update(|connection|", ".update_effect(|connection|")
 FORBIDDEN = (".await", "call_perform", "ic_cdk::call", "call::bounded_wait")
 
 
@@ -38,14 +38,18 @@ def closure(source: str, start: int) -> str:
 def main() -> int:
     source = SOURCE.read_text(encoding="utf-8")
     offset = 0
-    while (start := source.find(START, offset)) >= 0:
+    while True:
+        candidates = [position for token in STARTS if (position := source.find(token, offset)) >= 0]
+        if not candidates:
+            break
+        start = min(candidates)
         body = closure(source, start)
         for token in FORBIDDEN:
             if token in body:
                 line = source.count("\n", 0, start) + 1
                 print(f"{SOURCE}:{line}: forbidden {token!r} in SQLite transaction", file=sys.stderr)
                 return 1
-        offset = start + len(START)
+        offset = start + 1
     for caller_source in CALLER_SOURCES:
         caller = caller_source.read_text(encoding="utf-8")
         for token in FORBIDDEN_SEQUENCE_WRITES:
@@ -106,7 +110,7 @@ def main() -> int:
         if function_name == "put_deposit" and "put_deposit_with_audit(" in body:
             helper_start = storage.index("fn put_deposit_with_audit(")
             transaction_body = closure(storage, helper_start)
-        if "self.handle.update(|connection|" not in transaction_body:
+        if not any(f"self.handle{token}" in transaction_body for token in STARTS):
             print(
                 f"{SOURCE}: {function_name} must commit record, indexes, and counters in one SQLite transaction",
                 file=sys.stderr,

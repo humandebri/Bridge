@@ -4,6 +4,7 @@ import { bridgeAbi } from "@/generated/abi/bridge.generated"
 
 export const DEPOSIT_MINT_LOG_CHUNK_SIZE = 2_000n
 export const DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP = 4
+export const DEPOSIT_MINT_SCAN_CHUNKS_PER_MANUAL_REFRESH = 32
 
 export interface ExpectedDepositMint {
   depositId: `0x${string}`
@@ -135,6 +136,7 @@ export async function scanDepositMintLogs({
   finalizedBlock,
   finalizedBlockHash,
   previous,
+  maxChunks = DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP,
   fetchLogs,
   fetchBlockHash,
 }: {
@@ -142,6 +144,7 @@ export async function scanDepositMintLogs({
   finalizedBlock: bigint
   finalizedBlockHash: `0x${string}`
   previous?: DepositMintLogScan
+  maxChunks?: number
   fetchLogs: (fromBlock: bigint, toBlock: bigint) => Promise<FinalizedDepositMintLog[]>
   fetchBlockHash: (blockNumber: bigint) => Promise<`0x${string}`>
 }): Promise<DepositMintLogScan> {
@@ -165,7 +168,7 @@ export async function scanDepositMintLogs({
 
   if (previous && checkpoint < finalizedBlock) {
     let fromBlock = checkpoint + 1n
-    while (fromBlock <= finalizedBlock && calls < DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP) {
+    while (fromBlock <= finalizedBlock && calls < maxChunks) {
       const toBlock = minBigInt(fromBlock + DEPOSIT_MINT_LOG_CHUNK_SIZE - 1n, finalizedBlock)
       logs.push(...await fetchLogs(fromBlock, toBlock))
       checkpoint = toBlock
@@ -179,7 +182,7 @@ export async function scanDepositMintLogs({
 
   while (olderCursor !== null
     && olderCursor >= deploymentBlock
-    && calls < DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP) {
+    && calls < maxChunks) {
     const fromBlock = maxBigInt(
       deploymentBlock,
       olderCursor - DEPOSIT_MINT_LOG_CHUNK_SIZE + 1n,

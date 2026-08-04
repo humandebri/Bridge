@@ -433,13 +433,13 @@ enum EscrowPreparation {
     Stopped(SettlementStopReason),
 }
 
-pub(crate) fn start_deposit_refund(
+pub(crate) fn prepare_deposit_refund(
     deposit_id: [u8; 32],
     reason: DepositRefundReason,
     expiry_evidence: Option<bridge_core::MintExpiryEvidence>,
-) -> Result<(), SettlementActionError> {
+) -> Result<(bridge_core::DepositRecord, bridge_core::ApplyResult), SettlementActionError> {
     STORE.with(|store| {
-        let mut store = store.borrow_mut();
+        let store = store.borrow();
         let mut deposit = store
             .deposit(deposit_id)
             .map_err(|_| SettlementActionError::StorageFailure)?
@@ -483,9 +483,7 @@ pub(crate) fn start_deposit_refund(
                 expiry_evidence: expiry_evidence.map(Box::new),
             })
             .map_err(|_| SettlementActionError::StorageFailure)?;
-        store
-            .put_deposit_transition(&deposit, result)
-            .map_err(|_| SettlementActionError::StorageFailure)
+        Ok((deposit, result))
     })
 }
 

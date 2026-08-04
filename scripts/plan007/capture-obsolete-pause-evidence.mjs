@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -54,6 +55,25 @@ async function sha256(value) {
   return Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex")
 }
 
+function validateCredentialFreeRpcUrl(value, index) {
+  let parsed
+  try {
+    parsed = new URL(value)
+  } catch {
+    fail(`capture config RPC provider ${index + 1} is not a valid URL`)
+  }
+  if (
+    parsed.protocol !== "https:"
+    || !parsed.hostname
+    || parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+  ) {
+    fail(`capture config RPC provider ${index + 1} must be a credential-free HTTPS origin or path`)
+  }
+}
+
 export async function observeProvider(url, bridgeAddress, config, fetchImpl = fetch) {
   const chainId = hexQuantity(await rpc(url, "eth_chainId", [], fetchImpl), "eth_chainId")
   const finalized = await rpc(url, "eth_getBlockByNumber", ["finalized", false], fetchImpl)
@@ -86,7 +106,7 @@ export async function observeProvider(url, bridgeAddress, config, fetchImpl = fe
       || !eventObserved
       || !canonical
     ) {
-      fail(`${kind} is not a canonical successful pause on ${url}`)
+      fail(`${kind} is not a canonical successful pause on provider ${await sha256(url)}`)
     }
     observedActions.push({
       kind,
@@ -107,6 +127,57 @@ export async function observeProvider(url, bridgeAddress, config, fetchImpl = fe
     finalized_block_number: finalizedNumber,
     finalized_block_hash: String(finalized.hash).toLowerCase(),
     actions: observedActions,
+  }
+}
+
+function runCanisterStatus(canisterId, environment) {
+  const output = execFileSync(
+    "icp",
+    ["canister", "status", canisterId, "-e", environment, "--json", "--project-root-override", root],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+  )
+  return JSON.parse(output)
+}
+
+function candidNat(candid, field, context) {
+  const matches = [...candid.matchAll(new RegExp(`\\b${field}\\s*=\\s*(\\d+)\\s*:\\s*nat(?:16|32|64)?\\b`, "g"))]
+  if (matches.length !== 1) fail(`${context} did not expose exactly one ${field}`)
+  return Number(matches[0][1])
+}
+
+function candidBlob32(candid, field, context) {
+  const vector = candid.match(new RegExp(`\\b${field}\\s*=\\s*vec\\s*\\{([^}]*)\\}`, "s"))
+  const blob = candid.match(new RegExp(`\\b${field}\\s*=\\s*blob\\s*"([^"]*)"`, "s"))
+  const bytes = vector
+    ? [...vector[1].matchAll(/(\d+)\s*:\s*nat8/g)].map((item) => Number(item[1]))
+    : blob
+      ? [...blob[1].matchAll(/\\([0-9a-fA-F]{2})/g)].map((item) => Number.parseInt(item[1], 16))
+      : []
+  if (bytes.length !== 32 || bytes.every((byte) => byte === 0) || bytes.some((byte) => byte < 0 || byte > 255)) {
+    fail(`${context} ${field} is not a nonzero 32-byte value`)
+  }
+  return `0x${Buffer.from(bytes).toString("hex")}`
+}
+
+function moduleHash(value) {
+  const raw = value?.module_hash ?? value?.moduleHash
+  const lowered = typeof raw === "string" ? raw.toLowerCase() : ""
+  const normalized = /^[0-9a-f]{64}$/.test(lowered) ? `0x${lowered}` : lowered
+  if (!/^0x[0-9a-f]{64}$/.test(normalized)) fail("canister status did not expose a module hash")
+  return normalized
+}
+
+export function observeIcLive(canisterId, environment, runIcpImpl = runIcp, runStatusImpl = runCanisterStatus) {
+  const publicConfig = runIcpImpl(canisterId, environment, "get_public_config", "()", true)
+  const bridgeStatus = runIcpImpl(canisterId, environment, "get_bridge_status", "()", true)
+  if (!/\bdeposits_paused\s*=\s*true\s*:\s*bool\b/s.test(bridgeStatus)) {
+    fail("post-pause BridgeStatus did not confirm deposits_paused")
+  }
+  return {
+    live_schema_version: candidNat(publicConfig, "schema_version", "get_public_config"),
+    previous_deployment_instance_id: candidBlob32(publicConfig, "deployment_instance_id", "get_public_config"),
+    live_module_hash: moduleHash(runStatusImpl(canisterId, environment)),
+    status_deposits_paused: true,
   }
 }
 
@@ -147,10 +218,13 @@ export function observeIcPause(canisterId, environment, auditCursor, runIcpImpl 
   }
 }
 
-export async function collectEvidence(profile, config, live, canisterStatus, dependencies = {}) {
+export async function collectEvidence(profile, config, dependencies = {}) {
   const fetchImpl = dependencies.fetchImpl ?? fetch
   const runIcpImpl = dependencies.runIcpImpl ?? runIcp
+  const runStatusImpl = dependencies.runStatusImpl ?? runCanisterStatus
   const now = dependencies.now ?? (() => new Date())
+  const captureId = dependencies.captureId ?? randomUUID()
+  const captureStartedAt = now().toISOString()
   exactKeys(config, [
     "schema_version", "rpc_urls", "pause_deposit_mints_transaction_hash",
     "pause_withdrawals_transaction_hash", "ic_environment", "audit_cursor",
@@ -158,9 +232,7 @@ export async function collectEvidence(profile, config, live, canisterStatus, dep
   if (config.schema_version !== 1 || !Array.isArray(config.rpc_urls) || config.rpc_urls.length !== 3 || new Set(config.rpc_urls).size !== 3) {
     fail("capture config must contain exactly three distinct RPC URLs")
   }
-  if (config.rpc_urls.some((url) => typeof url !== "string" || !url.startsWith("https://"))) {
-    fail("capture config RPC URLs must use HTTPS")
-  }
+  config.rpc_urls.forEach(validateCredentialFreeRpcUrl)
   for (const expected of Object.values(actions)) {
     if (typeof config[expected.configField] !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(config[expected.configField])) {
       fail(`${expected.configField} must be a transaction hash`)
@@ -170,7 +242,10 @@ export async function collectEvidence(profile, config, live, canisterStatus, dep
     fail("capture config must bind sepolia-staging and a nonnegative audit cursor")
   }
   const bridgeAddress = String(profile.bridgeAddress).toLowerCase()
-  const providers = await Promise.all(config.rpc_urls.map((url) => observeProvider(url, bridgeAddress, config, fetchImpl)))
+  const providers = await Promise.all(config.rpc_urls.map(async (url) => ({
+    ...(await observeProvider(url, bridgeAddress, config, fetchImpl)),
+    observed_at: now().toISOString(),
+  })))
   if (providers.some((provider) => provider.chain_id !== profile.chainId)) {
     fail("a Base RPC provider observed the wrong chain")
   }
@@ -184,32 +259,39 @@ export async function collectEvidence(profile, config, live, canisterStatus, dep
       fail(`${kind} has no 2-of-3 canonical agreement`)
     }
   }
-  const icPause = observeIcPause(profile.bridgeCanisterId, config.ic_environment, config.audit_cursor, runIcpImpl)
+  const icPause = {
+    ...observeIcPause(profile.bridgeCanisterId, config.ic_environment, config.audit_cursor, runIcpImpl),
+    observed_at: now().toISOString(),
+  }
+  const icLive = {
+    ...observeIcLive(profile.bridgeCanisterId, config.ic_environment, runIcpImpl, runStatusImpl),
+    observed_at: now().toISOString(),
+  }
   return {
-    schema_version: 1,
+    schema_version: 2,
     environment: "sepolia-staging",
+    capture_id: captureId,
+    capture_started_at: captureStartedAt,
     observed_at: now().toISOString(),
     bridge_canister_id: profile.bridgeCanisterId,
     chain_id: profile.chainId,
     bridge_address: profile.bridgeAddress,
-    live_schema_version: Number(live.schema_version),
-    previous_deployment_instance_id: live.deployment_instance_id,
-    live_module_hash: canisterStatus.module_hash,
     providers,
     ic_pause: icPause,
+    ic_live: icLive,
     complete: true,
   }
 }
 
 async function main() {
-  const [, , profileArg, configArg, liveArg, statusArg] = process.argv
-  if (!profileArg || !configArg || !liveArg || !statusArg) {
-    fail("usage: capture-obsolete-pause-evidence.mjs <frontend-profile.json> <capture-config.json> <live-public-config.json> <live-canister-status.json>")
+  const [, , profileArg, configArg] = process.argv
+  if (!profileArg || !configArg) {
+    fail("usage: capture-obsolete-pause-evidence.mjs <frontend-profile.json> <capture-config.json>")
   }
-  const [profile, config, live, canisterStatus] = await Promise.all(
-    [profileArg, configArg, liveArg, statusArg].map(async (file) => JSON.parse(await readFile(path.resolve(file), "utf8"))),
+  const [profile, config] = await Promise.all(
+    [profileArg, configArg].map(async (file) => JSON.parse(await readFile(path.resolve(file), "utf8"))),
   )
-  process.stdout.write(`${JSON.stringify(await collectEvidence(profile, config, live, canisterStatus))}\n`)
+  process.stdout.write(`${JSON.stringify(await collectEvidence(profile, config))}\n`)
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

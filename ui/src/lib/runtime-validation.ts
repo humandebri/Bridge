@@ -17,7 +17,7 @@ const timelockDelayAbi = [{
   outputs: [{ name: "", type: "uint256" }],
 }] as const
 
-export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number }
+export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number; profileFingerprint?: string }
 
 export interface DeploymentAttestation extends FinalizedRuntimeObservation {
   profileFingerprint: string
@@ -119,6 +119,28 @@ export async function refetchRuntimeWriteReady<T extends RuntimeValidation>(
   const result = await refetch()
   requireRuntimeWriteReady(result.data)
   return result.data
+}
+
+export async function refetchRuntimeAttestedWriteReady<
+  TAttestation extends RuntimeValidation,
+  THeartbeat extends RuntimeValidation,
+>(
+  cachedAttestation: TAttestation | undefined,
+  refetchAttestation: () => Promise<{ data?: TAttestation }>,
+  refetchHeartbeat: () => Promise<{ data?: THeartbeat }>,
+): Promise<THeartbeat & { ready: true }> {
+  let attestation = cachedAttestation
+  if (runtimeWriteBlocker(attestation)) {
+    attestation = (await refetchAttestation()).data
+  }
+  requireRuntimeWriteReady(attestation)
+  const heartbeat = await refetchRuntimeWriteReady(refetchHeartbeat)
+  if (attestation.profileFingerprint
+    && heartbeat.profileFingerprint
+    && attestation.profileFingerprint !== heartbeat.profileFingerprint) {
+    throw new Error("Runtime attestation and heartbeat refer to different deployment profiles")
+  }
+  return heartbeat
 }
 
 export async function validateRuntimeHeartbeat(profile: DeploymentProfile, connectedChainId?: number): Promise<FinalizedRuntimeObservation> {

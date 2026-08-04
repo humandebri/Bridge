@@ -213,7 +213,11 @@ describe("validateRuntime token bindings", () => {
   })
 
   it("uses only dynamic identity and state reads for the runtime heartbeat", async () => {
-    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
+      ready: true,
+      blockers: [],
+      chainId: profile.chainId,
+    })
     expect(mocks.getBridgeStatus).toHaveBeenCalledOnce()
     expect(readContractMock).toHaveBeenCalledOnce()
     expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -234,8 +238,29 @@ describe("validateRuntime token bindings", () => {
     await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
       ready: false,
       blockers: [`Base RPC is on chain ${profile.chainId + 1}; expected ${profile.chainId}`],
-      chainId: profile.chainId + 1,
     })
+    expect(getCodeMock).not.toHaveBeenCalled()
+    expect(readContractMock).not.toHaveBeenCalled()
+  })
+
+  it("rejects a wallet chain mismatch before heartbeat RPCs", async () => {
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId + 1)).resolves.toMatchObject({
+      ready: false,
+      blockers: [`Wallet is on chain ${profile.chainId + 1}; expected ${profile.chainId}`],
+    })
+    expect(getBlockMock).not.toHaveBeenCalled()
+    expect(readContractMock).not.toHaveBeenCalled()
+    expect(mocks.getBridgeStatus).not.toHaveBeenCalled()
+  })
+
+  it("keeps the Base RPC chain check in the full runtime validation", async () => {
+    getChainIdMock.mockResolvedValueOnce(profile.chainId + 1)
+    await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: [`Base RPC is on chain ${profile.chainId + 1}; expected ${profile.chainId}`],
+    })
+    expect(getCodeMock).not.toHaveBeenCalled()
+    expect(readContractMock).not.toHaveBeenCalled()
   })
 
   it("fails the runtime heartbeat on a fee guard or signer rotation", async () => {
@@ -254,6 +279,7 @@ describe("validateRuntime token bindings", () => {
 
   it("accepts the reviewed TICRC1 ledger, index, and KINIC Base token", async () => {
     await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
+    expect(getChainIdMock).toHaveBeenCalledOnce()
     expect(mocks.sha256).toHaveBeenCalledWith("0x01")
     expect(mocks.sha256).toHaveBeenCalledWith("0x02")
     expect(getCodeMock).toHaveBeenCalledWith(expect.objectContaining({ blockHash: finalizedHash, requireCanonical: true }))

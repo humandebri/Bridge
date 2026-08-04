@@ -215,14 +215,15 @@ struct EvmFeePolicy {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Evidence {
+    schema_version: u8,
     environment: String,
     ledger_fee: u128,
     governance_gas_used: Vec<u128>,
     fee_observation_start_unix: u64,
     fee_observation_end_unix: u64,
-    base_fee_per_gas_30d: Vec<u128>,
-    priority_fee_per_gas_30d: Vec<u128>,
-    l1_fee_upper_bound_wei_30d: Vec<u128>,
+    base_fee_per_gas: Vec<u128>,
+    priority_fee_per_gas: Vec<u128>,
+    l1_fee_upper_bound_wei: Vec<u128>,
     total_governance_fee_wei: Vec<u128>,
     governance_transactions_per_reserve_window: u128,
     settlement_cycles: Vec<u128>,
@@ -712,15 +713,18 @@ fn percentile(values: &[u128], numerator: usize, denominator: usize) -> Result<u
 }
 
 fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
-    if evidence.governance_gas_used.len() < 100
-        || evidence.settlement_cycles.len() < 100
-        || evidence.base_fee_per_gas_30d.len() < 100
-        || evidence.priority_fee_per_gas_30d.len() < 100
-        || evidence.l1_fee_upper_bound_wei_30d.len() < 100
-        || evidence.total_governance_fee_wei.len() < 100
+    if evidence.schema_version != 2 {
+        return Err("measurement evidence must use schema v2".into());
+    }
+    if evidence.governance_gas_used.len() < 10
+        || evidence.settlement_cycles.len() < 10
+        || evidence.base_fee_per_gas.len() < 10
+        || evidence.priority_fee_per_gas.len() < 10
+        || evidence.l1_fee_upper_bound_wei.len() < 10
+        || evidence.total_governance_fee_wei.len() < 10
     {
         return Err(
-            "governance gas, fee, total-fee, and cycle evidence must contain at least 100 samples each".into(),
+            "governance gas, fee, total-fee, and cycle evidence must contain at least 10 samples each".into(),
         );
     }
     if evidence.ledger_fee == 0
@@ -729,18 +733,19 @@ fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
         || evidence.governance_transactions_per_reserve_window == 0
         || evidence.governance_gas_used.contains(&0)
         || evidence.settlement_cycles.contains(&0)
-        || evidence.base_fee_per_gas_30d.is_empty()
-        || evidence.base_fee_per_gas_30d.len() != evidence.priority_fee_per_gas_30d.len()
-        || evidence.base_fee_per_gas_30d.contains(&0)
-        || evidence.priority_fee_per_gas_30d.contains(&0)
-        || evidence.l1_fee_upper_bound_wei_30d.contains(&0)
+        || evidence.base_fee_per_gas.is_empty()
+        || evidence.base_fee_per_gas.len() != evidence.priority_fee_per_gas.len()
+        || evidence.base_fee_per_gas.len() != evidence.l1_fee_upper_bound_wei.len()
+        || evidence.base_fee_per_gas.len() != evidence.total_governance_fee_wei.len()
+        || evidence.base_fee_per_gas.contains(&0)
+        || evidence.priority_fee_per_gas.contains(&0)
+        || evidence.l1_fee_upper_bound_wei.contains(&0)
         || evidence.total_governance_fee_wei.contains(&0)
     {
         return Err("measurement evidence values must be positive and fee samples aligned".into());
     }
     let minimum_days = match evidence.environment.as_str() {
-        "base-sepolia" => 7,
-        "mainnet-candidate" => 30,
+        "base-sepolia" | "mainnet-candidate" => 7,
         _ => return Err("unsupported evidence environment".into()),
     };
     if evidence
@@ -761,16 +766,15 @@ fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
         .checked_add(999)
         .map(|value| value / 1_000 * 1_000)
         .ok_or("gas limit overflow")?;
-    let max_priority_fee_per_gas_ceiling = percentile(&evidence.priority_fee_per_gas_30d, 95, 100)?
+    let max_priority_fee_per_gas_ceiling = percentile(&evidence.priority_fee_per_gas, 95, 100)?
         .checked_mul(4)
         .ok_or("priority fee cap overflow")?;
-    let max_fee_per_gas_ceiling = percentile(&evidence.base_fee_per_gas_30d, 99, 100)?
+    let max_fee_per_gas_ceiling = percentile(&evidence.base_fee_per_gas, 99, 100)?
         .checked_mul(20)
         .ok_or("max fee cap overflow")?;
-    let l1_fee_per_transaction_ceiling_wei =
-        percentile(&evidence.l1_fee_upper_bound_wei_30d, 99, 100)?
-            .checked_mul(10)
-            .ok_or("L1 fee cap overflow")?;
+    let l1_fee_per_transaction_ceiling_wei = percentile(&evidence.l1_fee_upper_bound_wei, 99, 100)?
+        .checked_mul(10)
+        .ok_or("L1 fee cap overflow")?;
     let floor_transactions = if evidence.environment == "base-sepolia" {
         10
     } else {
@@ -838,6 +842,10 @@ fn valid_hash32(value: &str) -> bool {
         && value[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn valid_nonzero_hash32(value: &str) -> bool {
+    valid_hash32(value) && value[2..].bytes().any(|byte| byte != b'0')
+}
+
 fn valid_nonempty_hex(value: &str) -> bool {
     let value = value.strip_prefix("0x").unwrap_or(value);
     !value.is_empty()
@@ -868,10 +876,6 @@ fn validate_monitor_drill(
     ] {
         validate_evidence_time(at, manifest.created_at_unix, now)?;
     }
-    let elapsed = |at: u64| {
-        at.checked_sub(drill.fault_started_at_unix)
-            .ok_or("monitor timestamp precedes fault")
-    };
     let expected_cancel_count = usize::from(drill.pending_timelock_operation_before);
     let count = |kind: &str| drill.base_actions.iter().filter(|a| a.kind == kind).count();
     let transactions = drill
@@ -910,7 +914,7 @@ fn validate_monitor_drill(
             && action.calldata_hex.len() == exact_length
             && action.canonical_finalized
     });
-    if drill.schema_version != 3
+    if drill.schema_version != 4
         || drill.rehearsal_id.trim().is_empty()
         || drill.source_revision != manifest.source_revision
         || !drill
@@ -928,10 +932,7 @@ fn validate_monitor_drill(
             .bridge_runtime_bytecode_sha256
             .eq_ignore_ascii_case(&profile.bridge_runtime_bytecode_sha256)
         || !valid_sha256(&drill.rpc_provider_urls_sha256)
-        || elapsed(drill.detected_at_unix)? > 5 * 60
-        || elapsed(drill.acknowledged_at_unix)? > 15 * 60
-        || elapsed(drill.base_paused_at_unix)? > 60 * 60
-        || elapsed(drill.ic_pause.paused_at_unix)? > 60 * 60
+        || drill.detected_at_unix < drill.fault_started_at_unix
         || drill.acknowledged_at_unix < drill.detected_at_unix
         || drill.base_paused_at_unix < drill.acknowledged_at_unix
         || drill.ic_pause.paused_at_unix < drill.acknowledged_at_unix
@@ -960,7 +961,7 @@ fn validate_monitor_drill(
             .routing_sha256
             .eq_ignore_ascii_case(&profile.monitoring.routing_sha256)
     {
-        return Err("monitor drill does not satisfy the authenticated 5/15/60 contract".into());
+        return Err("monitor drill does not prove the authenticated pause/cancel path".into());
     }
     Ok(())
 }
@@ -1045,7 +1046,7 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     if profile.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER {
         return Err("profile must bind the official EVM RPC canister ID".into());
     }
-    if !valid_hash32(&profile.deployment_instance_id)
+    if !valid_nonzero_hash32(&profile.deployment_instance_id)
         || !valid_sha256(&profile.bridge_canister_wasm_sha256)
         || !valid_sha256(&profile.bridge_runtime_bytecode_sha256)
         || !valid_sha256(&profile.bsns_runtime_bytecode_sha256)
@@ -1513,6 +1514,9 @@ fn validate_rpc_rehearsal(bundle: &ValidatedBundle) -> Result<(), String> {
         .and_then(Value::as_object)
         .ok_or("rehearsal scenarios are missing")?;
     for scenario in scenarios.values() {
+        if scenario.is_null() {
+            continue;
+        }
         let observed = scenario
             .get("observed_at")
             .and_then(Value::as_str)
@@ -1554,8 +1558,8 @@ fn validate_rpc_rehearsal(bundle: &ValidatedBundle) -> Result<(), String> {
     if rehearsal_url_hashes.len() != 3 {
         return Err("rehearsal must bind three distinct Base Sepolia RPC URLs".into());
     }
-    if value.pointer("/complete") != Some(&Value::Bool(true))
-        || string("/state")? != "COMPLETE"
+    if value.pointer("/launch_ready") != Some(&Value::Bool(true))
+        || !matches!(string("/state")?, "LAUNCH_READY" | "EXTENDED_COMPLETE")
         || string("/source/revision")? != bundle.manifest.source_revision
         || !string("/source/source_tree_sha256")?
             .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
@@ -2895,6 +2899,12 @@ mod tests {
         assert!(!valid_release_id(&"a".repeat(65)));
     }
 
+    #[test]
+    fn deployment_instance_id_must_be_nonzero() {
+        assert!(valid_nonzero_hash32(&format!("0x{}", "11".repeat(32))));
+        assert!(!valid_nonzero_hash32(&format!("0x{}", "00".repeat(32))));
+    }
+
     fn valid_profile() -> Profile {
         Profile {
             environment: "mainnet-candidate".into(),
@@ -3042,17 +3052,18 @@ mod tests {
     #[test]
     fn conservative_derivation_uses_exact_boundaries() {
         let evidence = Evidence {
+            schema_version: 2,
             environment: "mainnet-candidate".into(),
             ledger_fee: 100_000,
-            governance_gas_used: vec![30_001; 100],
+            governance_gas_used: vec![30_001; 10],
             fee_observation_start_unix: 1_700_000_000,
-            fee_observation_end_unix: 1_700_000_000 + 30 * 24 * 60 * 60,
-            base_fee_per_gas_30d: vec![10; 100],
-            priority_fee_per_gas_30d: vec![2; 100],
-            l1_fee_upper_bound_wei_30d: vec![5; 100],
-            total_governance_fee_wei: vec![100; 100],
+            fee_observation_end_unix: 1_700_000_000 + 7 * 24 * 60 * 60,
+            base_fee_per_gas: vec![10; 10],
+            priority_fee_per_gas: vec![2; 10],
+            l1_fee_upper_bound_wei: vec![5; 10],
+            total_governance_fee_wei: vec![100; 10],
             governance_transactions_per_reserve_window: 4,
-            settlement_cycles: vec![1_000; 100],
+            settlement_cycles: vec![1_000; 10],
             baseline_cycles_per_day: 10_000,
             expected_daily_settlements: 4,
         };
@@ -3069,17 +3080,18 @@ mod tests {
     #[test]
     fn derivation_rejects_incomplete_stale_and_obsolete_measurement_shapes() {
         let mut evidence = Evidence {
+            schema_version: 2,
             environment: "mainnet-candidate".into(),
             ledger_fee: 100_000,
-            governance_gas_used: vec![10_000; 100],
+            governance_gas_used: vec![10_000; 10],
             fee_observation_start_unix: 1_700_000_000,
-            fee_observation_end_unix: 1_700_000_000 + 30 * 24 * 60 * 60,
-            base_fee_per_gas_30d: vec![10; 100],
-            priority_fee_per_gas_30d: vec![2; 100],
-            l1_fee_upper_bound_wei_30d: vec![5; 100],
-            total_governance_fee_wei: vec![100; 100],
+            fee_observation_end_unix: 1_700_000_000 + 7 * 24 * 60 * 60,
+            base_fee_per_gas: vec![10; 10],
+            priority_fee_per_gas: vec![2; 10],
+            l1_fee_upper_bound_wei: vec![5; 10],
+            total_governance_fee_wei: vec![100; 10],
             governance_transactions_per_reserve_window: 4,
-            settlement_cycles: vec![1_001; 100],
+            settlement_cycles: vec![1_001; 10],
             baseline_cycles_per_day: 10_000,
             expected_daily_settlements: 4,
         };
@@ -3088,8 +3100,16 @@ mod tests {
         assert!(serde_json::from_value::<Evidence>(value).is_err());
 
         let mut short = serde_json::to_value(&evidence).unwrap();
-        short["governance_gas_used"] = serde_json::to_value(vec![10_000u128; 99]).unwrap();
+        short["governance_gas_used"] = serde_json::to_value(vec![10_000u128; 9]).unwrap();
         assert!(derive(&serde_json::from_value(short).unwrap()).is_err());
+
+        let mut obsolete_schema = serde_json::to_value(&evidence).unwrap();
+        obsolete_schema["schema_version"] = Value::from(1);
+        assert!(derive(&serde_json::from_value(obsolete_schema).unwrap()).is_err());
+
+        let mut obsolete_field = serde_json::to_value(&evidence).unwrap();
+        obsolete_field["base_fee_per_gas_30d"] = obsolete_field["base_fee_per_gas"].clone();
+        assert!(serde_json::from_value::<Evidence>(obsolete_field).is_err());
 
         let mut short_period = serde_json::to_value(&evidence).unwrap();
         short_period["fee_observation_end_unix"] = Value::from(1_700_000_001u64);
@@ -3378,7 +3398,9 @@ spec=importlib.util.spec_from_file_location('fixture',sys.argv[1]); m=importlib.
 m.SIGNER=sys.argv[3]; m.SHA_A=sys.argv[4]; m.SHA_B=sys.argv[5]; binding=m.rehearsal.validate_config(m.config()); value=m.manifest(binding); value['source']['revision']='a'*40; value['source']['source_tree_sha256']='2'*64
 root=Path(sys.argv[2]).parent; tool=root/'tool'
 os.environ['PATH']=str(root)+os.pathsep+os.environ.get('PATH','')
-for scenario,item in m.all_evidence(binding).items():
+items=m.all_evidence(binding)
+for scenario in ('preflight','authorization_mint','withdrawal_release','quorum_loss','final_pause'):
+ item=items[scenario]
  m.rehearsal.now=lambda: item['observed_at']
  fault_fields={'configured_provider_count','required_provider_threshold','injected_provider_failures','fault_injection_reference'}; command_details={k:v for k,v in item['details'].items() if scenario not in {'single_provider_failure','quorum_loss'} or k not in fault_fields}; audit_event=None
  if item['canister_decision'] is not None:
@@ -3418,7 +3440,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .unwrap();
         assert!(generated.success());
         let drill = MonitorDrill {
-            schema_version: 3,
+            schema_version: 4,
             rehearsal_id: "rehearsal-1".into(),
             source_revision: "a".repeat(40),
             source_tree_sha256: "2".repeat(64),
@@ -3431,10 +3453,10 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
             rpc_provider_urls_sha256: "6".repeat(64),
             routing_sha256: profile.monitoring.routing_sha256.clone(),
-            fault_started_at_unix: now - 100,
-            detected_at_unix: now - 99,
-            acknowledged_at_unix: now - 98,
-            base_paused_at_unix: now - 97,
+            fault_started_at_unix: now - 5_000,
+            detected_at_unix: now - 4_000,
+            acknowledged_at_unix: now - 3_000,
+            base_paused_at_unix: now - 1_000,
             pending_timelock_operation_before: false,
             base_actions: vec![
                 MonitorBaseAction {
@@ -3459,7 +3481,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 },
             ],
             ic_pause: MonitorIcPause {
-                paused_at_unix: now - 96,
+                paused_at_unix: now - 900,
                 response_hex: hex(b"pause response"),
                 response_sha256: hex(&Sha256::digest(b"pause response")),
                 pause_principal: profile.pause_principal.clone(),
@@ -3886,7 +3908,11 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         fs::write(root.join("release-manifest.json"), valid_manifest_bytes).unwrap();
         let valid_rehearsal = fs::read(root.join("rpc-e2e.json")).unwrap();
         let mut incomplete: Value = serde_json::from_slice(&valid_rehearsal).unwrap();
-        incomplete["complete"] = Value::Bool(false);
+        incomplete["scenarios"]["quorum_loss"] = Value::Null;
+        incomplete["scenarios"]["final_pause"] = Value::Null;
+        incomplete["state"] = Value::String("READY_FOR_QUORUM_LOSS".into());
+        incomplete["launch_ready"] = Value::Bool(false);
+        incomplete["extended_complete"] = Value::Bool(false);
         fs::write(
             root.join("rpc-e2e.json"),
             serde_json::to_vec(&incomplete).unwrap(),

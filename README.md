@@ -9,10 +9,10 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | 対象 | 状態 | 残作業 |
 |---|---|---|
 | Plan 001〜004 | 完了 | 履歴資料として保持 |
-| Plan 005 | 進行中 | 外部計測、固定limit承認、pause/cancel演習 |
+| Plan 005 | 進行中 | 10回・7日外部計測、固定limit承認、pause/cancel経路演習 |
 | Plan 006 | リポジトリ実装済み | SNS handover、本番preflight、mainnet evidence |
-| Plan 007 | Local完了 / External待ち | IC mainnet test Canister、Base Sepolia、test frontend |
-| Production | 未デプロイ | Plan 001〜007と本番運用条件の完了まで資産受付禁止 |
+| Plan 007 | Local完了 / External待ち | 非blockingのwallet互換性・追加障害シナリオ |
+| Production | 未デプロイ | 最小Gate A/Bと本番activation完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、Mint Authorization、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
 `bridge-canister`はstable schema v31・record wire v27の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
@@ -23,7 +23,7 @@ Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-
 
 Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed`化を原子的に実行する。Canisterは同じcanonical Finalized block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証してから、固定IC AccountへICP送金する。Base refundとrelease acknowledgementはなく、障害時は同じ債務をLedger側で再試行・照合する。Finalized headまたはcanonical hashが2-of-3で収束しない場合はfail closedとし、Safeへfallbackしない。
 
-本番Bridgeは未デプロイであり、Plan 005の外部計測と単一emergency pause演習、Plan 006のSNS handoverとCanister操作型production preflightが完了するまで本番資産を受け付けない。
+本番Bridgeは未デプロイであり、Plan 005の10回・7日外部計測と単一emergency pause経路演習、Plan 006の主要5 scenario、SNS handover、Canister操作型production preflightが完了するまで本番資産を受け付けない。Plan 007の追加wallet互換性と追加5 scenarioは非blockingで継続する。
 
 Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、実装計画は[docs/implementation-plan.md](docs/implementation-plan.md)、用語は[docs/glossary.md](docs/glossary.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
 

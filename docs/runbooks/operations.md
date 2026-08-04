@@ -54,6 +54,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 
 - ETHはGovernance Operator addressだけへ、`governance_eth_floor_wei`を上回るまで運用者が送る。Mint Signerへ補充せず、Deposit admissionやAuthorization発行にETHを要求しない。SNS-token feeの自動交換は行わない。
 - cyclesはBridgeの30日floorとfreezing thresholdの両方を満たすことを確認する。
+- permissionlessな`request_deposit`は、cycle reserveと既定60秒windowのglobal 30件・principalあたり3件のquotaを通過してから有料Base preflightを開始する。開始を許可されたattemptはBase検証またはLedger fundingが後で確定失敗してもquotaを消費し、attemptとactive reservationの削除でquotaは戻らない。`RateLimited`と`ReserveUnavailable`の増加を監視し、window reset前に無資金requestを反復しない。
 - permissionlessな`notify_withdrawal`は、既定では600秒あたりglobal 60件まで有料EVM RPCを開始でき、canonical confirmed eventの永続化は別のingestion上限30件で制限する。missing、pending、reverted、不正response、duplicateはingestion枠を消費しない。verification上限は無権限trafficによる消費速度を制限するが正当通知用の枠を予約しないため、Sybil trafficで枯渇したwindowでは正規通知も一時的に遅延し得る。`RateLimited`の増加とcycles減少を監視し、verification上限を最悪時の許容RPC予算以下に設定する。枠枯渇時は追加通知を反復せず、攻撃またはprovider障害としてpause判断を行う。
 - 補充後も自動resumeしない。Governanceが観測回復と資産状態を確認してからBridgeをresumeする。
 
@@ -63,7 +64,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 
 ## 緊急pause
 
-監視SLOは同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。単一emergency pause principalの実request IDとaudit event、両transaction/callの確定時刻をevidenceへ入れる。SLO未達、証跡欠落、公式EVM RPC Canister IDまたはchainの不一致、Canisterによるpending Timelock cancel不能はいずれもproduction承認blockerである。EVM RPC Canister配下providerの運営主体・基盤・可用性は外部仮定として扱う。
+監視目標は同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。単一emergency pause principalの実request IDとaudit event、両transaction/callの確定時刻をevidenceへ入れる。本番ゲートはpause/cancel経路の成功、証跡、公式EVM RPC Canister IDとchain、pending Timelock cancel可能性を要求し、5/15/60の実測達成は公開後に評価する。EVM RPC Canister配下providerの運営主体・基盤・可用性は外部仮定として扱う。
 
 - 承認済みpause principal identityから`pause_new_deposits`を実行する。未期限Mint AuthorizationはBase側の`pauseDepositMints`によるepoch増加で失効するが、返金は元deadline後のFinalized未処理証拠まで待つ。各Authorizationのdeadlineと停止理由を監視する。
 - Base側の異常では単一emergency pause principalがCanisterの`emergency_pause`を呼ぶ。この呼出しの成功条件はIC側pauseとBase action queueの永続化までであり、Baseへの送信完了ではない。同じpause principal identityを使う外部CLIで`drain-emergency`を実行し、Deposit/Withdrawal pauseと記録済みTimelock cancelを順に署名・送信・確定する。

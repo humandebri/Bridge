@@ -236,23 +236,21 @@ class SepoliaE2ETests(unittest.TestCase):
                 {"path": f"artifacts/{kind}.json", "sha256": sha256, "kind": kind}
             )
         pause_evidence = {
-            "schema_version": 1,
+            "schema_version": 2,
             "environment": "sepolia-staging",
-            "observed_at": "2026-07-24T00:00:00Z",
+            "capture_id": "11111111-1111-4111-8111-111111111111",
+            "capture_started_at": "2026-07-24T00:00:00Z",
+            "observed_at": "2026-07-24T00:00:30Z",
             "bridge_canister_id": OBSOLETE_POLICY["bridge_canister_id"],
             "chain_id": 84532,
             "bridge_address": ADDRESS,
-            "live_schema_version": 30,
-            "previous_deployment_instance_id": OBSOLETE_POLICY[
-                "previous_deployment_instance_id"
-            ],
-            "live_module_hash": OBSOLETE_POLICY["module_hash"],
             "providers": [
                 {
                     "provider_url_sha256": digest_char * 64,
                     "chain_id": 84532,
                     "finalized_block_number": 101,
                     "finalized_block_hash": TX_B,
+                    "observed_at": "2026-07-24T00:00:10Z",
                     "actions": [
                         {
                             "kind": kind,
@@ -279,6 +277,16 @@ class SepoliaE2ETests(unittest.TestCase):
                 "audit_caller": "aaaaa-aa",
                 "status_deposits_paused": True,
                 "status_last_audit_sequence": 7,
+                "observed_at": "2026-07-24T00:00:20Z",
+            },
+            "ic_live": {
+                "observed_at": "2026-07-24T00:00:25Z",
+                "live_schema_version": 30,
+                "previous_deployment_instance_id": OBSOLETE_POLICY[
+                    "previous_deployment_instance_id"
+                ],
+                "live_module_hash": OBSOLETE_POLICY["module_hash"],
+                "status_deposits_paused": True,
             },
             "complete": True,
         }
@@ -456,8 +464,9 @@ class SepoliaE2ETests(unittest.TestCase):
         if stage == "rpc_rehearsal":
             return {
                 "manifest_sha256": H64,
-                "state": "COMPLETE",
-                "complete": True,
+                "state": "EXTENDED_COMPLETE",
+                "launch_ready": True,
+                "extended_complete": True,
                 "scenarios": sorted(sepolia_e2e.RPC_SCENARIOS),
                 "providers_restored": True,
             }
@@ -480,7 +489,7 @@ class SepoliaE2ETests(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
-                    "schema_version": 5,
+                    "schema_version": 6,
                     "stage": stage,
                     "observed_at": "2026-07-24T00:00:00Z",
                     "source_commit": SOURCE,
@@ -692,7 +701,19 @@ class SepoliaE2ETests(unittest.TestCase):
         def first_action(value: dict[str, object]) -> dict[str, object]:
             return value["providers"][0]["actions"][0]
 
+        def spread_observations(value: dict[str, object]) -> None:
+            value["observed_at"] = "2026-07-24T00:01:10Z"
+            value["providers"][0]["observed_at"] = "2026-07-24T00:00:00Z"
+            value["ic_live"]["observed_at"] = "2026-07-24T00:01:01Z"
+
         mutations = {
+            "invalid capture ID": lambda value: value.update({"capture_id": "not-a-capture-id"}),
+            "stale capture": lambda value: value.update({"observed_at": "2026-07-24T00:06:00Z"}),
+            "future capture": lambda value: value.update({"observed_at": "2999-07-24T00:00:30Z"}),
+            "observation interval": spread_observations,
+            "instance drift": lambda value: value["ic_live"].update({"previous_deployment_instance_id": TX}),
+            "module drift": lambda value: value["ic_live"].update({"live_module_hash": TX}),
+            "post-pause status drift": lambda value: value["ic_live"].update({"status_deposits_paused": False}),
             "reverted receipt": lambda value: first_action(value).update({"receipt_status": 0}),
             "wrong target": lambda value: first_action(value).update({"target": ADDRESS_B}),
             "wrong calldata": lambda value: first_action(value).update({"calldata_hex": "0x00000000"}),
@@ -892,10 +913,10 @@ class SepoliaE2ETests(unittest.TestCase):
                         self.manifest,
                     )
 
-    def test_checked_in_json_schema_tracks_manifest_schema_v5(self) -> None:
+    def test_checked_in_json_schema_tracks_manifest_schema_v6(self) -> None:
         schema_path = MODULE_PATH.parents[2] / "deployments/sepolia-staging/sepolia-e2e.schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        self.assertEqual(schema["properties"]["schema_version"]["const"], 5)
+        self.assertEqual(schema["properties"]["schema_version"]["const"], 6)
         self.assertIn("obsolete-state-disposition", schema_path.read_text(encoding="utf-8"))
         self.assertIn("obsolete-pause-evidence", schema_path.read_text(encoding="utf-8"))
 

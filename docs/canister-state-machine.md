@@ -13,12 +13,12 @@ Mint用Base transaction laneは存在しない。Governance laneはnonce、署�
 
 ## Deposit（ICP → Base）
 
-Deposit IDはdomain-separated hashの`(canister ID, Base chain ID, Bridge address, deployment instance ID, caller, owner_sequence)`で決まり、同じinstall domainとsequenceの異なるpayloadは`DepositConflict`になる。受付時は同じcanonical Base snapshotで候補IDが未処理であることを確認してから、正式Depositとは別のfunding attempt、固定transfer identity、quota reservationだけを保存し、同じupdate callでICRC-2 pullを行う。
+Deposit IDはdomain-separated hashの`(canister ID, Base chain ID, Bridge address, deployment instance ID, caller, owner_sequence)`で決まり、同じinstall domainとsequenceの異なるpayloadは`DepositConflict`になる。受付時は有料Base preflightより先に、正式Depositとは別の`Prepared` funding attempt、固定transfer identity、消費済みdeposit quota、active funding reservationを保存し、cycle reserveを確認する。このadmission成功後だけ、同じcanonical Base snapshotで候補IDが未処理であることを確認し、attemptを`Dispatched`へ進めて同じupdate callでICRC-2 pullを行う。Base preflightまたはLedgerの確定的失敗ではattemptとactive reservationを削除するが、開始済みpreflightのquotaは戻さない。
 
 ```text
 FundingAttempt
   ├─ Ledger成功 / Duplicate → EscrowedUnquoted
-  ├─ Ledger確定的失敗      → attempt削除（正式Depositなし）
+  ├─ Base/Ledger確定的失敗 → attempt削除（正式Depositなし、quotaは保持）
   └─ Ledger結果不明        → FundingReconciliationHold
                                 ├─ 成功証拠       → EscrowedUnquoted
                                 └─ 完全な不存在証拠 → Cancelled

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import check_proof_impact
+from check_claim_manifest import CLAIM_REPORT_SCHEMA, build_claim_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +66,11 @@ class ProofImpactTests(unittest.TestCase):
         self.assertEqual(impact["stages"], [])
 
     def valid_receipt(self) -> dict[str, object]:
+        claims = build_claim_report()["claims"]
+        summary = {
+            status: sum(claim.get("status") == status for claim in claims)
+            for status in ("implementation-proved", "refinement-tested", "partial", "assumed")
+        }
         return {
             "schema": check_proof_impact.RECEIPT_SCHEMA,
             "required_stages": list(check_proof_impact.REQUIRED_STAGES),
@@ -73,7 +79,9 @@ class ProofImpactTests(unittest.TestCase):
                 for stage in check_proof_impact.REQUIRED_STAGES
             ],
             "source_fingerprint": {"algorithm": "sha256", "digest": "current"},
-            "claims": [{"id": "claim"}],
+            "claim_report_schema": CLAIM_REPORT_SCHEMA,
+            "claims": claims,
+            "claim_summary": summary,
             "complete": True,
         }
 
@@ -142,6 +150,17 @@ class ProofImpactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "stale"):
                 check_proof_impact.check_receipt(path)
 
+    def test_receipt_rejects_forged_claims_and_summary(self) -> None:
+        forged_claims = self.valid_receipt()
+        forged_claims["claims"][0]["status"] = "forged"
+        with self.assertRaisesRegex(ValueError, "claims do not match"):
+            self.check_receipt(forged_claims)
+
+        forged_summary = self.valid_receipt()
+        forged_summary["claim_summary"]["partial"] += 1
+        with self.assertRaisesRegex(ValueError, "summary does not match"):
+            self.check_receipt(forged_summary)
+
     def test_conservative_fingerprint_covers_consumers_drivers_and_configs(self) -> None:
         inputs = {
             path.relative_to(ROOT).as_posix()
@@ -162,6 +181,8 @@ class ProofImpactTests(unittest.TestCase):
             "Cargo.lock",
             "pnpm-lock.yaml",
             "ui/vitest.config.ts",
+            "ui/pnpm-lock.yaml",
+            "ui/pnpm-workspace.yaml",
         ):
             with self.subTest(relative=relative):
                 self.assertIn(relative, inputs)

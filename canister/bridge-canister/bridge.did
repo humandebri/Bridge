@@ -427,6 +427,7 @@ type PublicConfigInitializationError = variant {
   DerivationUnavailable;
 };
 type RequestDepositRefundError = variant {
+  AutomaticProgressPending : record { next_run_at_ns : opt nat64 };
   NotClaimable;
   Busy;
   InvalidDepositId;
@@ -435,6 +436,7 @@ type RequestDepositRefundError = variant {
   OwnerMismatch;
   DepositIdentityConflict;
   RpcInconsistent;
+  RateLimited : record { retry_after_seconds : nat64 };
   StorageFailure;
   BaseStateMismatch;
   FinalityUnavailable;
@@ -636,7 +638,6 @@ service : (BridgeInitArgs) -> {
   request_deposit : (DepositArgs) -> (Result_15);
   request_deposit_refund : (blob) -> (Result_16);
   request_fee_payout : (nat) -> (Result_17);
-  resume_new_deposits : () -> (Result_13);
   rotate_fee_recipient : (FeeRecipientConfig) -> (Result_13);
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_13);
   schedule_activation : () -> (Result_5);

@@ -53,6 +53,7 @@ vi.mock("@/features/status/use-status", () => ({
 }))
 
 vi.mock("@/lib/runtime-validation", () => ({
+  refetchRuntimeAttestedWriteReady: mocks.refetchRuntimeWriteReady,
   refetchRuntimeWriteReady: mocks.refetchRuntimeWriteReady,
   runtimeWriteBlocker: mocks.runtimeWriteBlocker,
 }))
@@ -274,7 +275,7 @@ describe("MintAuthorizationAction pending retry", () => {
     const view = render(<MintAuthorizationAction record={record} autoPromptOwner="aaaaa-aa" />, { wrapper: Wrapper })
 
     await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())
-    expect(mocks.refetchRuntimeWriteReady).not.toHaveBeenCalled()
+    expect(mocks.refetchRuntimeWriteReady).toHaveBeenCalledOnce()
     expect(await screen.findByText("Minted on Base")).toBeInTheDocument()
     expect(screen.queryByText("Confirm mint on IC")).not.toBeInTheDocument()
     expect(mocks.writeContractAsync).toHaveBeenCalledWith(expect.objectContaining({
@@ -286,7 +287,7 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(mocks.writeContractAsync).toHaveBeenCalledOnce()
   })
 
-  it("refreshes the shared finalized observation only after it expires", async () => {
+  it("refreshes the dynamic heartbeat before every mint write", async () => {
     mocks.readPendingMint.mockReturnValue(undefined)
     mocks.useAccount.mockReturnValue({
       address: "0x0303030303030303030303030303030303030303",

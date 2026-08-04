@@ -13,7 +13,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
 Bridge canisterはstable schema v31、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
-Plan 005は本番パラメータの外部計測と単一emergency pause演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、Gate A/Gate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、IC mainnet test CanisterとBase Sepoliaの外部実行は明示承認待ちである。
+Plan 005は10回・7日の本番パラメータ外部計測と単一emergency pause経路演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、主要5 scenarioのGate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
 
 ## 全体構成
 
@@ -136,8 +136,8 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 
 ### 2-2. Deposit フロー（ADR 0001、0004、0005）
 
-1. 受付時はlocal pause、入力、`gross_amount > 10_000`を検査し、正式Depositと分離したbounded funding attemptへ固定transfer identityとquota reservationを保存する。
-2. 同じupdate callでICRC-2 pullを実行し、成功または`Duplicate`だけを正式Depositへ昇格する。確定的失敗はattemptとreservationを削除し、曖昧・callback消失は同じidentityでreconciliationする。
+1. 受付時はlocal pause、入力、`gross_amount > 10_000`を検査し、有料Base preflightより前に、正式Depositと分離したbounded funding attemptへ固定transfer identity、消費済みquota、active reservationを保存してcycle reserveを確認する。
+2. admission成功後だけfresh Base preflightを行い、同じupdate callでICRC-2 pullを実行する。成功または`Duplicate`だけを正式Depositへ昇格する。BaseまたはLedgerの確定的失敗はattemptとactive reservationを削除するがquotaは戻さず、曖昧・callback消失は同じidentityでreconciliationする。
 3. freshな観測でquoteとmint予約を原子的に確定する。観測不能・不一致・stale observationでは返金せず再観測する。
 4. 認可発行前のBase pause、fee拒否、上限超過では`RefundAvailable`にし、ownerの明示請求時だけ元accountへ`gross_amount - 10_000`を送る。認可発行後はstrict deadlineとcanonical未処理証拠を確認し、`gross_amount - charged_service_fee - 10_000`を送る。初回pull fee、確定service fee、refund Ledger feeは返さない。曖昧結果はRefund Reconciliation Holdへ移し、ownerの再請求で照合する。
 5. Mint Authorization署名の保存時だけService Feeをfee reserveへ一度計上する。Base mint成否でこのfeeを戻さず、fee payoutは確定済みreserveだけを使用する。
@@ -228,7 +228,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 
 ## 未完了事項
 
-Plan 005の完了には、SepoliaでのDeposit mint gas 100回とsettlement cycles 100回、Base mainnetの30日fee分布、承認済み日次settlement上限、単一pause principalの実request/audit証跡、固定limitの承認、監視pause/cancel演習が必要である。cycles floorは基礎日次消費と100回計測最大値を用いる30日負荷モデルへ2倍の安全係数を掛けて導出する。
+Plan 005の完了には、Sepoliaでのgovernance gasとsettlement cycles各10回、Base mainnetの7日fee分布、承認済み日次settlement上限、単一pause principalの実request/audit証跡、固定limitの承認、pause/cancel経路演習が必要である。cycles floorは基礎日次消費と10回計測最大値を用いる30日負荷モデルへ2倍の安全係数を掛けて導出する。5/15/60は本番ゲートではなく公開後の監視目標とする。
 これらの証跡が揃うまでmainnet candidateを`validated`にしない。
 Plan 006のrepository実装は完了している。完了判定には、SNS Rootへの実controller handover、実upgrade proposal、認証済みGate A/Gate B、schedule/execute activation receiptをmainnet evidenceとして取得する必要がある。
 

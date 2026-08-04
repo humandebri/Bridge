@@ -62,6 +62,8 @@ class CiModeTests(unittest.TestCase):
             'run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"'
         )
         self.assertLess(receipt_regression, claim_manifest)
+        self.assertIn('python3 "$ROOT/scripts/test_claim_test_manifest.py"', body)
+        self.assertIn('python3 "$ROOT/scripts/test_check_claim_manifest.py"', body)
         self.assertIn("run_proof_stage claim-transaction-tests", body)
 
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:

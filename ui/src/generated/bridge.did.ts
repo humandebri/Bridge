@@ -430,7 +430,10 @@ export type PublicConfigInitializationError = { 'ConflictingAddress' : null } |
   { 'Unauthorized' : null } |
   { 'StorageFailure' : null } |
   { 'DerivationUnavailable' : null };
-export type RequestDepositRefundError = { 'NotClaimable' : null } |
+export type RequestDepositRefundError = {
+    'AutomaticProgressPending' : { 'next_run_at_ns' : [] | [bigint] }
+  } |
+  { 'NotClaimable' : null } |
   { 'Busy' : null } |
   { 'InvalidDepositId' : null } |
   { 'NotFound' : null } |
@@ -438,6 +441,7 @@ export type RequestDepositRefundError = { 'NotClaimable' : null } |
   { 'OwnerMismatch' : null } |
   { 'DepositIdentityConflict' : null } |
   { 'RpcInconsistent' : null } |
+  { 'RateLimited' : { 'retry_after_seconds' : bigint } } |
   { 'StorageFailure' : null } |
   { 'BaseStateMismatch' : null } |
   { 'FinalityUnavailable' : null } |
@@ -636,7 +640,6 @@ export interface _SERVICE {
   'request_deposit' : ActorMethod<[DepositArgs], Result_15>,
   'request_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result_16>,
   'request_fee_payout' : ActorMethod<[bigint], Result_17>,
-  'resume_new_deposits' : ActorMethod<[], Result_13>,
   'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_13>,
   'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_13>,
   'schedule_activation' : ActorMethod<[], Result_5>,

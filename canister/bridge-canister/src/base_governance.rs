@@ -478,9 +478,10 @@ pub async fn confirm(
             receipt_block_number,
         }
     };
-    complete(&transaction)?;
-    if activates && !emergency_base_actions_pending()? {
-        admin::resume(caller).map_err(|_| BaseGovernanceError::StorageFailure)?;
+    if activates {
+        complete_confirmed_activation(&transaction, caller)?;
+    } else {
+        complete(&transaction)?;
     }
     let confirmation = BaseGovernanceConfirmation {
         operation_id: transaction.id,
@@ -797,6 +798,23 @@ fn complete(transaction: &storage::GovernanceTransaction) -> Result<(), BaseGove
         store
             .borrow_mut()
             .complete_governance_transaction(transaction.clone())
+            .map_err(|_| BaseGovernanceError::StorageFailure)
+    })
+}
+
+fn complete_confirmed_activation(
+    transaction: &storage::GovernanceTransaction,
+    caller: Principal,
+) -> Result<(), BaseGovernanceError> {
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .complete_confirmed_activation_and_resume_if_clear(
+                transaction.clone(),
+                caller,
+                ic_cdk::api::time(),
+            )
+            .map(drop)
             .map_err(|_| BaseGovernanceError::StorageFailure)
     })
 }

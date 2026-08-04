@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dialog"
 import { useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
 import { withBrowserLock } from "@/lib/browser-lock"
-import { refetchRuntimeWriteReady, runtimeWriteBlocker, type FinalizedRuntimeObservation } from "@/lib/runtime-validation"
+import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 import {
   contractAuthorization,
@@ -62,7 +62,7 @@ export function MintAuthorizationAction({
   const chainId = useChainId()
   const write = useWriteContract()
   const queryClient = useQueryClient()
-  const runtime = useRuntimeValidation(chainId, { enabled: true, gcTime: Infinity, staleTime: Infinity })
+  const runtime = useRuntimeValidation(chainId, { enabled: true, gcTime: Infinity, staleTime: 60_000 })
   const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, {
     enabled: runtime.data?.ready === true,
     refetchInterval: FINALIZED_OBSERVATION_REFRESH_MS,
@@ -162,7 +162,7 @@ export function MintAuthorizationAction({
     mutationFn: async () => {
       if (!address) throw new Error("Connect a Base wallet to pay gas")
       if (chainId !== deploymentProfile.chainId) throw new Error("Switch the gas-paying wallet to Base")
-      const observation = await freshRuntimeObservation(heartbeat.data, heartbeat.refetch)
+      const observation = await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
       const validated = await validateMintAuthorization(record, observation)
       const hash = await withBrowserLock(
         `kinic-wallet-prompt:base:${address.toLowerCase()}`,
@@ -190,7 +190,7 @@ export function MintAuthorizationAction({
   const verifyRetry = useMutation({
     mutationFn: async () => {
       if (chainId !== deploymentProfile.chainId) throw new Error("Switch the gas-paying wallet to Base")
-      const observation = await freshRuntimeObservation(heartbeat.data, heartbeat.refetch)
+      const observation = await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
       return validateMintAuthorization(record, observation)
     },
     onSuccess: () => setRetryDialogOpen(true),
@@ -301,16 +301,6 @@ export function MintAuthorizationAction({
       </DialogContent>
     </Dialog>
   </div>
-}
-
-async function freshRuntimeObservation(
-  observation: FinalizedRuntimeObservation | undefined,
-  refetch: () => Promise<{ data?: FinalizedRuntimeObservation }>,
-): Promise<FinalizedRuntimeObservation & { ready: true }> {
-  if (runtimeWriteBlocker(observation) === undefined) {
-    return observation as FinalizedRuntimeObservation & { ready: true }
-  }
-  return refetchRuntimeWriteReady(refetch)
 }
 
 function expectedDepositMint(expected: PendingMintExpectation): ExpectedDepositMint {

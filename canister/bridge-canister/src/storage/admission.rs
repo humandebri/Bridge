@@ -46,19 +46,7 @@ pub(super) fn consume_deposit_quota(
         .iter()
         .find(|entry| entry.caller == owner.as_slice())
         .map_or(0, |entry| entry.count);
-    let active_global = u16::try_from(admission.funding_reservations.len())
-        .map_err(|_| StorageError::CounterOverflow)?;
-    let active_caller = u16::try_from(
-        admission
-            .funding_reservations
-            .iter()
-            .filter(|entry| entry.caller == owner.as_slice())
-            .count(),
-    )
-    .map_err(|_| StorageError::CounterOverflow)?;
-    if admission.global_count.saturating_add(active_global) >= quota.global_limit
-        || caller_count.saturating_add(active_caller) >= quota.per_principal_limit
-    {
+    if admission.global_count >= quota.global_limit || caller_count >= quota.per_principal_limit {
         return Err(StorageError::DepositRateLimited {
             retry_after_seconds,
         });
@@ -86,7 +74,7 @@ pub(super) fn consume_deposit_quota(
     Ok(())
 }
 
-pub(super) fn reserve_deposit_funding_quota(
+pub(super) fn consume_deposit_quota_and_reserve_funding(
     admission: &mut DepositAdmissionControl,
     owner: Principal,
     deposit_id: [u8; 32],
@@ -99,24 +87,6 @@ pub(super) fn reserve_deposit_funding_quota(
     {
         return Ok(());
     }
-    let window_ns = quota.window_seconds.saturating_mul(1_000_000_000);
-    let window_id = quota.now_ns / window_ns;
-    if admission.window_id != window_id {
-        admission.window_id = window_id;
-        admission.global_count = 0;
-        admission.caller_counts.clear();
-    }
-    let retry_after_seconds = ((window_id + 1)
-        .saturating_mul(window_ns)
-        .saturating_sub(quota.now_ns)
-        .saturating_add(999_999_999)
-        / 1_000_000_000)
-        .max(1);
-    let committed_caller = admission
-        .caller_counts
-        .iter()
-        .find(|entry| entry.caller == owner.as_slice())
-        .map_or(0, |entry| entry.count);
     let active_global = u16::try_from(admission.funding_reservations.len())
         .map_err(|_| StorageError::CounterOverflow)?;
     let active_caller = u16::try_from(
@@ -127,15 +97,12 @@ pub(super) fn reserve_deposit_funding_quota(
             .count(),
     )
     .map_err(|_| StorageError::CounterOverflow)?;
-    if active_global >= 16
-        || active_caller >= 1
-        || admission.global_count.saturating_add(active_global) >= quota.global_limit
-        || committed_caller.saturating_add(active_caller) >= quota.per_principal_limit
-    {
+    if active_global >= 16 || active_caller >= 1 {
         return Err(StorageError::DepositRateLimited {
-            retry_after_seconds,
+            retry_after_seconds: 1,
         });
     }
+    consume_deposit_quota(admission, owner, quota)?;
     admission
         .funding_reservations
         .push(DepositFundingReservation {
@@ -145,53 +112,7 @@ pub(super) fn reserve_deposit_funding_quota(
     Ok(())
 }
 
-pub(super) fn commit_deposit_funding_quota(
-    admission: &mut DepositAdmissionControl,
-    owner: Principal,
-    deposit_id: [u8; 32],
-    quota: DepositQuotaAdmission,
-) -> Result<(), StorageError> {
-    let Some(index) = admission
-        .funding_reservations
-        .iter()
-        .position(|reservation| {
-            reservation.deposit_id == deposit_id && reservation.caller == owner.as_slice()
-        })
-    else {
-        return Err(StorageError::RecordNotFound);
-    };
-    let window_ns = quota.window_seconds.saturating_mul(1_000_000_000);
-    let window_id = quota.now_ns / window_ns;
-    if admission.window_id != window_id {
-        admission.window_id = window_id;
-        admission.global_count = 0;
-        admission.caller_counts.clear();
-    }
-    admission.funding_reservations.remove(index);
-    admission.global_count = admission
-        .global_count
-        .checked_add(1)
-        .ok_or(StorageError::CounterOverflow)?;
-    match admission
-        .caller_counts
-        .iter_mut()
-        .find(|entry| entry.caller == owner.as_slice())
-    {
-        Some(entry) => {
-            entry.count = entry
-                .count
-                .checked_add(1)
-                .ok_or(StorageError::CounterOverflow)?;
-        }
-        None => admission.caller_counts.push(DepositCallerQuota {
-            caller: owner.as_slice().to_vec(),
-            count: 1,
-        }),
-    }
-    Ok(())
-}
-
-pub(super) fn release_deposit_funding_quota(
+pub(super) fn release_deposit_funding_reservation(
     admission: &mut DepositAdmissionControl,
     owner: Principal,
     deposit_id: [u8; 32],

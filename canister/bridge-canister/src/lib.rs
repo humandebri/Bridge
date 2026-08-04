@@ -27,6 +27,8 @@ mod signer;
 pub mod storage;
 mod tasks;
 
+#[cfg(feature = "test-deployment")]
+use storage::SettlementClaimProfile;
 use storage::{
     AuditEventKind, ChecksumRefreshStatus, StableStore, StorageError, StorageMaintenanceError,
     StorageValidationStatus, SCHEMA_VERSION,
@@ -502,6 +504,7 @@ async fn request_deposit_refund(
             .map(|record| record.state)
             .ok_or(Error::NotFound)
     })?;
+    let mut refund_start = None;
     match state {
         bridge_core::DepositState::Minted { .. } | bridge_core::DepositState::Refunded { .. } => {
             return api::get_deposit(id.to_vec()).ok_or(Error::StorageFailure);
@@ -547,12 +550,14 @@ async fn request_deposit_refund(
                 }
                 Ok::<_, Error>(())
             })?;
-            tasks::start_deposit_refund(
-                id,
-                bridge_core::DepositRefundReason::AuthorizationExpired,
-                None,
-            )
-            .map_err(|_| Error::StorageFailure)?;
+            refund_start = Some(
+                tasks::prepare_deposit_refund(
+                    id,
+                    bridge_core::DepositRefundReason::AuthorizationExpired,
+                    None,
+                )
+                .map_err(|_| Error::StorageFailure)?,
+            );
         }
         bridge_core::DepositState::AuthorizationAvailable { .. }
         | bridge_core::DepositState::RefundAvailable { .. } => {
@@ -573,7 +578,10 @@ async fn request_deposit_refund(
                 .is_some_and(|authorization| authorization.signature.is_some())
             {
                 let reason = refund_reason.ok_or(Error::StorageFailure)?;
-                tasks::start_deposit_refund(id, reason, None).map_err(|_| Error::StorageFailure)?;
+                refund_start = Some(
+                    tasks::prepare_deposit_refund(id, reason, None)
+                        .map_err(|_| Error::StorageFailure)?,
+                );
             } else {
                 let authorization = authorization.ok_or(Error::StorageFailure)?;
                 if api::cached_authorization_observation(&config, id)
@@ -630,31 +638,35 @@ async fn request_deposit_refund(
                 })?;
                 match observation.state {
                     evm_rpc::RecoveryBaseState::DepositProcessed(false) => {
-                        tasks::start_deposit_refund(
-                            id,
-                            bridge_core::DepositRefundReason::AuthorizationExpired,
-                            Some(bridge_core::MintExpiryEvidence {
-                                deposit_id: authorization.authorization.deposit_id,
-                                authorization_digest: authorization.digest,
-                                chain_id: observation.finalized.chain_id,
-                                verifying_contract: authorization.domain.verifying_contract,
-                                deposit_processed: false,
-                                finalized_block_number: observation.finalized.block_number,
-                                finalized_block_hash: observation.finalized.block_hash,
-                                finalized_block_timestamp: observation
-                                    .snapshot
-                                    .mint
-                                    .confirmed_block_timestamp,
-                                bridge_signer: observation.bridge_identity.signer,
-                                mint_authorization_epoch: observation
-                                    .snapshot
-                                    .mint_authorization_epoch,
-                                runtime_sha256: observation.bridge_identity.runtime_sha256,
-                                rpc_request_digest: observation.rpc_audit.request_digest,
-                                rpc_response_digest: observation.rpc_audit.quorum_response_digest,
-                            }),
-                        )
-                        .map_err(|_| Error::StorageFailure)?;
+                        refund_start = Some(
+                            tasks::prepare_deposit_refund(
+                                id,
+                                bridge_core::DepositRefundReason::AuthorizationExpired,
+                                Some(bridge_core::MintExpiryEvidence {
+                                    deposit_id: authorization.authorization.deposit_id,
+                                    authorization_digest: authorization.digest,
+                                    chain_id: observation.finalized.chain_id,
+                                    verifying_contract: authorization.domain.verifying_contract,
+                                    deposit_processed: false,
+                                    finalized_block_number: observation.finalized.block_number,
+                                    finalized_block_hash: observation.finalized.block_hash,
+                                    finalized_block_timestamp: observation
+                                        .snapshot
+                                        .mint
+                                        .confirmed_block_timestamp,
+                                    bridge_signer: observation.bridge_identity.signer,
+                                    mint_authorization_epoch: observation
+                                        .snapshot
+                                        .mint_authorization_epoch,
+                                    runtime_sha256: observation.bridge_identity.runtime_sha256,
+                                    rpc_request_digest: observation.rpc_audit.request_digest,
+                                    rpc_response_digest: observation
+                                        .rpc_audit
+                                        .quorum_response_digest,
+                                }),
+                            )
+                            .map_err(|_| Error::StorageFailure)?,
+                        );
                     }
                     evm_rpc::RecoveryBaseState::DepositProcessed(true) => {
                         let evidence = evm_rpc::exact_mint_evidence(
@@ -690,19 +702,15 @@ async fn request_deposit_refund(
     }
     drop(guard);
 
-    let job =
-        claim_job(storage::SettlementJobKind::Deposit, id, caller).map_err(
-            |error| match error {
-                tasks::SettlementActionError::Busy => Error::Busy,
-                _ => Error::StorageFailure,
-            },
-        )?;
+    let job = if let Some((deposit, transition)) = refund_start {
+        claim_refund_start(deposit, transition, caller).map_err(map_refund_settlement_error)?
+    } else {
+        claim_job(storage::SettlementJobKind::Deposit, id, caller)
+            .map_err(map_refund_settlement_error)?
+    };
     scheduler::run_claimed(job)
         .await
-        .map_err(|error| match error {
-            tasks::SettlementActionError::Busy => Error::Busy,
-            _ => Error::StorageFailure,
-        })?;
+        .map_err(map_refund_settlement_error)?;
     api::get_deposit(id.to_vec()).ok_or(Error::StorageFailure)
 }
 
@@ -889,6 +897,73 @@ fn manual_claim_result(
     }
 }
 
+fn map_refund_settlement_error(
+    error: tasks::SettlementActionError,
+) -> api::RequestDepositRefundError {
+    use api::RequestDepositRefundError as Error;
+    match error {
+        tasks::SettlementActionError::Busy => Error::Busy,
+        tasks::SettlementActionError::AutomaticProgressPending { next_run_at_ns } => {
+            Error::AutomaticProgressPending { next_run_at_ns }
+        }
+        tasks::SettlementActionError::RateLimited {
+            retry_after_seconds,
+        } => Error::RateLimited {
+            retry_after_seconds,
+        },
+        _ => Error::StorageFailure,
+    }
+}
+
+fn settlement_quota_limits(config: &config::BridgeInitArgs) -> storage::SettlementQuotaLimits {
+    storage::SettlementQuotaLimits {
+        window_seconds: config.settlement_rate_limit_window_seconds,
+        global: config.settlement_rate_limit_global,
+        per_principal: config.settlement_rate_limit_per_principal,
+        per_record: config.settlement_rate_limit_per_record,
+    }
+}
+
+fn claim_refund_start(
+    deposit: bridge_core::DepositRecord,
+    transition: bridge_core::ApplyResult,
+    caller: candid::Principal,
+) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+            .ok_or(tasks::SettlementActionError::StorageFailure)
+    })?;
+    let now_ns = ic_cdk::api::time();
+    let context = storage::ManualSettlementClaimContext {
+        kind: storage::SettlementJobKind::Deposit,
+        settlement_id: deposit.id.bytes(),
+        caller,
+        now_ns,
+        lease_until_ns: now_ns.saturating_add(120_000_000_000),
+        overdue_after_ns: 300_000_000_000,
+        limits: settlement_quota_limits(&config),
+    };
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .put_deposit_transition_and_claim_manual_job(&deposit, transition, context)
+            .map_err(|error| match error {
+                storage::SettlementAdmissionError::RateLimited {
+                    retry_after_seconds,
+                } => tasks::SettlementActionError::RateLimited {
+                    retry_after_seconds,
+                },
+                storage::SettlementAdmissionError::Storage => {
+                    tasks::SettlementActionError::StorageFailure
+                }
+            })
+            .and_then(manual_claim_result)
+    })
+}
+
 fn claim_job(
     kind: storage::SettlementJobKind,
     id: [u8; 32],
@@ -903,12 +978,7 @@ fn claim_job(
     })?;
     STORE.with(|store| {
         let now_ns = ic_cdk::api::time();
-        let limits = storage::SettlementQuotaLimits {
-            window_seconds: config.settlement_rate_limit_window_seconds,
-            global: config.settlement_rate_limit_global,
-            per_principal: config.settlement_rate_limit_per_principal,
-            per_record: config.settlement_rate_limit_per_record,
-        };
+        let limits = settlement_quota_limits(&config);
         let claim = store.borrow_mut().claim_manual_settlement_job(
             kind,
             id,
@@ -1144,6 +1214,26 @@ fn refresh_storage_checksum(
 fn seed_storage_test_data(start: u64, count: u16) -> Result<u16, StorageMaintenanceError> {
     require_controller()?;
     STORE.with(|store| store.borrow_mut().seed_storage_test_data(start, count))
+}
+
+#[cfg(feature = "test-deployment")]
+#[ic_cdk::update]
+fn profile_due_settlement_claim() -> Result<SettlementClaimProfile, StorageMaintenanceError> {
+    require_controller()?;
+    STORE.with(|store| store.borrow_mut().profile_due_settlement_claim())
+}
+
+#[cfg(feature = "test-deployment")]
+#[ic_cdk::update]
+fn profile_rejected_manual_settlement_claim(
+    settlement_id: [u8; 32],
+) -> Result<SettlementClaimProfile, StorageMaintenanceError> {
+    require_controller()?;
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .profile_rejected_manual_settlement_claim(settlement_id)
+    })
 }
 
 #[ic_cdk::update]
@@ -1392,10 +1482,6 @@ fn pause_new_deposits() -> Result<(), admin::AdminError> {
     admin::pause(ic_cdk::api::msg_caller())
 }
 #[ic_cdk::update]
-fn resume_new_deposits() -> Result<(), admin::AdminError> {
-    admin::resume(ic_cdk::api::msg_caller())
-}
-#[ic_cdk::update]
 fn rotate_pause_principal(args: admin::RotatePausePrincipalArgs) -> Result<(), admin::AdminError> {
     admin::rotate_pause_principal(ic_cdk::api::msg_caller(), args)
 }
@@ -1490,6 +1576,7 @@ mod candid_tests {
         let checked_in = include_str!("../bridge.did");
         assert_eq!(normalize(&generated), normalize(checked_in));
         assert!(!generated.contains("refresh_base_observation"));
+        assert!(!generated.contains("resume_new_deposits"));
         let normalized = normalize(&generated);
         assert!(normalized.contains("get_public_config:()->(PublicConfig)query;"));
         assert!(normalized.contains("initialize_public_config:()->("));

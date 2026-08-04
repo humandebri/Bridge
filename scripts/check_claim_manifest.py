@@ -7,7 +7,7 @@ import json
 import re
 from pathlib import Path
 
-from check_proof_impact import source_fingerprint
+from proof_fingerprint import source_fingerprint
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
@@ -28,6 +28,10 @@ REQUIRED_SCALAR_CALLS = (
 
 def items(value: str) -> list[str]:
     return [] if value == "-" else value.split(";")
+
+
+def abstract_evidence_status(value: str) -> str:
+    return "proved" if items(value) else "not-applicable"
 
 
 def checked_link(value: str) -> tuple[Path, str]:
@@ -234,7 +238,7 @@ def build_claim_report() -> dict[str, object]:
             else "refinement-tested"
         )
         evidence = {
-            "abstract": "proved",
+            "abstract": abstract_evidence_status(abstract_theorems),
             "production_kernel": "ownership-registered",
             "smt_scalar": "implementation-proved" if smt_links else "not-applicable",
             "adapter": "transaction-tested" if tests else "missing",
