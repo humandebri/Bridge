@@ -739,6 +739,7 @@ def validate_raw_artifacts(evidence: dict[str, Any], binding: dict[str, Any], ro
     response_records: list[str] = []
     fault_claim: dict[str, Any] | None = None
     decision_events: list[dict[str, Any]] = []
+    preflight_provider_indices: list[int] = []
     root = root.resolve()
     for reference in evidence["artifacts"]:
         relative = reference["path"]
@@ -779,6 +780,8 @@ def validate_raw_artifacts(evidence: dict[str, Any], binding: dict[str, Any], ro
             fail("raw artifact argv is invalid")
         validate_capture_command(artifact["kind"], artifact["tool"], artifact["argv"], binding)
         validate_transport(artifact, binding)
+        if evidence["scenario"] == "preflight" and artifact["kind"] == "base":
+            preflight_provider_indices.append(artifact["transport"]["provider_index"])
         if artifact["kind"] == "fault":
             exact_keys(parsed, {"schema_version", "rehearsal_id", "scenario", "run_reference", "configured_provider_count", "required_threshold", "failed_provider_count", "failed_provider_indices", "provider_url_digests", "failure_rule", "started_at", "completed_at", "restored_provider_indices", "injector_output_digest", "request_config_digest", "decision_sequence", "decision_timestamp_ns", "decision_digest"}, "fault injection artifact")
             expected = evidence["details"]
@@ -846,6 +849,8 @@ def validate_raw_artifacts(evidence: dict[str, Any], binding: dict[str, Any], ro
             if observed != evidence["details"][field]:
                 fail(f"raw artifact disagrees with scenario detail: {field}")
             covered.add(field)
+    if evidence["scenario"] == "preflight" and sorted(preflight_provider_indices) != [0, 1, 2]:
+        fail("preflight must bind exactly one chain ID artifact for each provider index 0, 1, and 2")
     if evidence["scenario"] in {"single_provider_failure", "quorum_loss"}:
         if fault_claim is None:
             fail("fault scenario lacks its execution claim")

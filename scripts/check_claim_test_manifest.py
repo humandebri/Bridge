@@ -147,6 +147,12 @@ def prepare_test_dependencies(
 ) -> None:
     if not any(test.runner == "jest" for test in tests):
         return
+    # The Jest claim set exercises the reviewed deployed staging v30 predecessor upgrade.
+    run_command(
+        ["bash", str(root / "scripts/build-v30-upgrade-fixture.sh")],
+        root,
+        runner,
+    )
     run_command(
         [
             "cargo",

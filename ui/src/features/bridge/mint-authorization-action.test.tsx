@@ -217,6 +217,7 @@ describe("MintAuthorizationAction pending retry", () => {
 
   it("keeps_a_mined_transaction_pending_until_its_block_is_finalized", async () => {
     const onMintConfirmed = vi.fn()
+    const onProgress = vi.fn()
     mocks.getTransactionReceipt.mockResolvedValue({
       status: "success",
       blockNumber: 101n,
@@ -224,17 +225,24 @@ describe("MintAuthorizationAction pending retry", () => {
       logs: [],
     })
 
-    render(<MintAuthorizationAction record={record} onMintConfirmed={onMintConfirmed} />, { wrapper: Wrapper })
+    render(<MintAuthorizationAction record={record} onMintConfirmed={onMintConfirmed} onProgress={onProgress} />, { wrapper: Wrapper })
 
     await waitFor(() => expect(mocks.getTransactionReceipt).toHaveBeenCalled())
     expect(mocks.exactMintReceiptFinalization).not.toHaveBeenCalled()
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
     expect(onMintConfirmed).not.toHaveBeenCalled()
+    expect(onProgress).toHaveBeenCalledWith({
+      phase: "included",
+      transactionHash: pendingHash,
+      blockNumber: 101n,
+      outcome: "success",
+    })
     expect(screen.getByText("Included on Base; awaiting finality")).toBeInTheDocument()
     expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
   })
 
   it("does not offer a retry for a reverted receipt before its block is finalized", async () => {
+    const onProgress = vi.fn()
     mocks.getTransactionReceipt.mockResolvedValue({
       status: "reverted",
       blockNumber: 101n,
@@ -242,11 +250,17 @@ describe("MintAuthorizationAction pending retry", () => {
       logs: [],
     })
 
-    render(<MintAuthorizationAction record={record} />, { wrapper: Wrapper })
+    render(<MintAuthorizationAction record={record} onProgress={onProgress} />, { wrapper: Wrapper })
 
     expect(await screen.findByText("Transaction reverted; awaiting finality")).toBeInTheDocument()
     expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
+    expect(onProgress).toHaveBeenCalledWith({
+      phase: "included",
+      transactionHash: pendingHash,
+      blockNumber: 101n,
+      outcome: "reverted",
+    })
   })
 
   it("reports a saved transaction exactly once after its exact receipt is confirmed", async () => {

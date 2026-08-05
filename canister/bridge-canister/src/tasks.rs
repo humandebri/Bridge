@@ -511,7 +511,7 @@ async fn prepare_escrowed_deposit(
                 ));
             }
         };
-        crate::api::cache_runtime_attestation(&observation)
+        crate::api::cache_runtime_attestation(config, &observation)
             .map_err(|_| SettlementActionError::StorageFailure)?;
         (observation.finalized, observation.snapshot)
     };

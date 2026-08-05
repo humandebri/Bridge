@@ -168,7 +168,7 @@ pub async fn prepare(
         let observed = evm_rpc::bridge_snapshot(&config, runtime_attested)
             .await
             .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-        crate::api::cache_runtime_attestation(&observed)
+        crate::api::cache_runtime_attestation(&config, &observed)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
         require_action_authorization(caller, &action)?;
         if !bridge_core::service_fee_change_allowed(
@@ -457,7 +457,7 @@ pub async fn confirm(
             evm_rpc::bridge_snapshot_at(&config, finalized_observation, runtime_attested)
                 .await
                 .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-        crate::api::cache_runtime_attestation(&observed)
+        crate::api::cache_runtime_attestation(&config, &observed)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
         require_transaction_authorization(caller, &transaction.kind)?;
         if !activation_postcondition_matches(
@@ -677,15 +677,11 @@ async fn activation_preflight(
     let observed = evm_rpc::bridge_snapshot(config, runtime_attested)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    crate::api::cache_runtime_attestation(&observed)
+    crate::api::cache_runtime_attestation(config, &observed)
         .map_err(|_| BaseGovernanceError::StorageFailure)?;
     let (finalized_eth, safe_eth) = futures::join!(
         evm_rpc::signer_eth_balance_at(config, governance_operator, observed.finalized),
-        evm_rpc::signer_eth_balance_on_attested_chain(
-            config,
-            governance_operator,
-            observed.finalized
-        )
+        evm_rpc::signer_eth_balance_safe(config, governance_operator)
     );
     let finalized_eth = finalized_eth.map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     let safe_eth = safe_eth.map_err(|_| BaseGovernanceError::ObservationUnavailable)?;

@@ -30,6 +30,13 @@ def number(value):
  if isinstance(value,int): return value
  value=str(value); return int(value,16) if value.startswith('0x') else int(value)
 def finalized_block(rpc): return json.loads(run(['cast','block','finalized','--rpc-url',rpc,'--json']))
+def verify_all_provider_chain_ids(providers,expected,context):
+ for index,rpc in enumerate(providers):
+  try: chain_id=int(run(['cast','chain-id','--rpc-url',rpc]))
+  except (OSError,subprocess.CalledProcessError,ValueError):
+   raise SystemExit(f'{context} RPC provider {index} chain ID check failed')
+  if chain_id!=expected:
+   raise SystemExit(f'{context} RPC provider {index} returned chain ID {chain_id}; expected {expected}')
 def canonical_probe(rpc,address,signature,block_hash,expected_block=None):
  if not re.fullmatch(r'0x[0-9a-f]{64}',block_hash): raise ValueError('invalid canonical probe block hash')
  data=run(['cast','calldata',signature])
@@ -50,9 +57,9 @@ def canonical_probe(rpc,address,signature,block_hash,expected_block=None):
  else:
   raise ValueError('unsupported canonical probe')
 heads=[]
+verify_all_provider_chain_ids(providers,drill['base_chain_id'],'Gate A')
 for index,rpc in enumerate(providers):
  try:
-  if int(run(['cast','chain-id','--rpc-url',rpc]))!=drill['base_chain_id']: continue
   value=finalized_block(rpc); heads.append((index,number(value['number']),str(value['hash']).lower()))
  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
 if not heads: raise SystemExit('Gate A has no usable Finalized provider')
@@ -113,6 +120,13 @@ def number(value):
  if isinstance(value,int): return value
  value=str(value); return int(value,16) if value.startswith('0x') else int(value)
 def finalized_block(rpc): return json.loads(run(['cast','block','finalized','--rpc-url',rpc,'--json']))
+def verify_all_provider_chain_ids(providers,expected,context):
+ for index,rpc in enumerate(providers):
+  try: chain_id=int(run(['cast','chain-id','--rpc-url',rpc]))
+  except (OSError,subprocess.CalledProcessError,ValueError):
+   raise SystemExit(f'{context} RPC provider {index} chain ID check failed')
+  if chain_id!=expected:
+   raise SystemExit(f'{context} RPC provider {index} returned chain ID {chain_id}; expected {expected}')
 def bool_call(rpc,address,signature,*args):
  data=run(['cast','calldata',signature,*args])
  request=json.dumps({'to':address,'data':data},separators=(',',':'))
@@ -126,9 +140,9 @@ def bool_call(rpc,address,signature,*args):
  if decoded not in (0,1): raise ValueError('non-boolean ABI response')
  return decoded==1
 heads=[]
+verify_all_provider_chain_ids(providers,profile['chain_id'],'activation')
 for index,rpc in enumerate(providers):
  try:
-  if int(run(['cast','chain-id','--rpc-url',rpc]))!=profile['chain_id']: continue
   value=finalized_block(rpc); heads.append((index,number(value['number']),str(value['hash']).lower()))
  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
 if not heads: raise SystemExit('activation verification has no usable Finalized provider')
@@ -196,6 +210,14 @@ p=json.load(open(sys.argv[1])); root=Path(sys.argv[3]); mode=sys.argv[4]
 snapshot=json.load(open(sys.argv[2])) if mode=='verify' else None
 snapshot_height=snapshot['finalized_head_block_number'] if snapshot else None
 snapshot_hash=str(snapshot['finalized_head_block_hash']).lower() if snapshot else None
+def verify_all_provider_chain_ids(providers,expected,context):
+ for index,rpc in enumerate(providers):
+  try:
+   chain=subprocess.check_output(['cast','chain-id','--rpc-url',rpc],text=True,stderr=subprocess.DEVNULL).strip()
+  except (OSError,subprocess.CalledProcessError):
+   raise SystemExit(f'{context} RPC provider {index} chain ID check failed')
+  if chain!=str(expected):
+   raise SystemExit(f'{context} RPC provider {index} returned chain ID {chain}; expected {expected}')
 def bridge_snapshot_probe(rpc,block_hash,expected_block):
  if not re.fullmatch(r'0x[0-9a-f]{64}',block_hash): raise ValueError('invalid snapshot block hash')
  data=subprocess.check_output(['cast','calldata','bridgeSnapshot()'],text=True,stderr=subprocess.DEVNULL).strip()
@@ -208,13 +230,12 @@ def bridge_snapshot_probe(rpc,block_hash,expected_block):
   raise ValueError('malformed bridgeSnapshot response')
  if int(value[2:66],16)!=expected_block: raise ValueError('bridgeSnapshot block number mismatch')
 observations=[]
+verify_all_provider_chain_ids([entry['url'] for entry in p['rpc_providers']],p['chain_id'],'live preflight')
 for index,entry in enumerate(p['rpc_providers']):
  try:
   rpc=entry['url']
-  chain=subprocess.check_output(['cast','chain-id','--rpc-url',rpc],text=True,stderr=subprocess.DEVNULL).strip()
-  if chain!=str(p['chain_id']): raise ValueError('wrong chain')
   finalized=json.loads(subprocess.check_output(['cast','block','finalized','--rpc-url',rpc,'--json'],text=True,stderr=subprocess.DEVNULL))
-  observation={'provider_index':index,'chain_id':int(chain),'finalized':finalized}
+  observation={'provider_index':index,'chain_id':p['chain_id'],'finalized':finalized}
   if snapshot_height is not None:
    bridge_snapshot_probe(rpc,snapshot_hash,snapshot_height)
    observation['snapshot_probe']={'number':snapshot_height,'hash':snapshot_hash}

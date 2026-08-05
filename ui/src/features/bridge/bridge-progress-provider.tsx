@@ -7,6 +7,7 @@ import {
   bridgeProgressLabel,
   bridgeProgressSteps,
   createBridgeProgress,
+  isDepositTransactionComplete,
   readLatestBridgeProgress,
   removeLatestBridgeProgress,
   saveLatestBridgeProgress,
@@ -119,26 +120,37 @@ export function useBridgeProgress(): BridgeProgressContextValue {
 }
 
 function ProgressDialog({ progress, action, onMinimize, onDismiss }: { progress: BridgeProgressRecord; action?: ProgressAction; onMinimize: () => void; onDismiss: () => void }) {
-  const terminal = progress.phase === "complete" || progress.phase === "attention"
+  const canonicalTerminal = progress.phase === "complete" || progress.phase === "attention"
+  const depositTransactionComplete = isDepositTransactionComplete(progress)
+  const dismissible = canonicalTerminal || depositTransactionComplete
+  const handleOutsidePointerDown = dismissible ? onDismiss : onMinimize
   const steps = bridgeProgressSteps(progress)
-  return <Dialog open onOpenChange={(open) => { if (!open && terminal) onDismiss() }}>
-    <DialogContent dismissible={terminal} className="max-h-[min(760px,calc(100vh-2rem))] max-w-[560px] overflow-y-auto">
+  return <Dialog open onOpenChange={(open) => { if (!open && dismissible) onDismiss() }}>
+    <DialogContent
+      dismissible={dismissible}
+      aria-describedby={canonicalTerminal ? "bridge-progress-description" : undefined}
+      onOverlayPointerDown={handleOutsidePointerDown}
+      onPointerDownOutside={(event) => {
+        event.preventDefault()
+        handleOutsidePointerDown()
+      }}
+      className="max-h-[min(760px,calc(100vh-2rem))] max-w-[560px] overflow-y-auto"
+    >
       <DialogHeader>
         <div className="flex items-start justify-between gap-4 pr-7">
           <div>
             <DialogTitle>{progress.direction === "deposit" ? "Bridge to Base" : "Bridge to IC"}</DialogTitle>
-            <DialogDescription>{terminal ? "Review the result below." : "Keep this window open, or minimize it while the transfer continues."}</DialogDescription>
+            {canonicalTerminal && <DialogDescription id="bridge-progress-description">Review the result below.</DialogDescription>}
           </div>
-          {!terminal && <Button size="sm" variant="ghost" onClick={onMinimize}><Minus className="size-4" />Minimize</Button>}
+          {!dismissible && <Button size="sm" variant="ghost" onClick={onMinimize}><Minus className="size-4" />Minimize</Button>}
         </div>
       </DialogHeader>
-      <div className={`mt-5 rounded-2xl border p-4 ${progress.phase === "attention" ? "border-[#ffbdad] bg-[#fff0ec]" : progress.phase === "complete" ? "border-[#9ed8b3] bg-[#eaf8ef]" : "border-[#bfd7ff] bg-[#eef5ff]"}`} role="status" aria-live="polite">
+      {progress.phase === "attention" && <div className="mt-5 rounded-2xl border border-[#ffbdad] bg-[#fff0ec] p-4" role="alert">
         <p className="font-bold text-black">{bridgeProgressLabel(progress)}</p>
         <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{bridgeProgressDetail(progress)}</p>
-        {progress.transactionHash && <p className="mt-2 break-all font-mono text-xs text-[#335f9d]">{progress.transactionHash}</p>}
-      </div>
+      </div>}
       <ol className="mt-5 space-y-1" aria-label="Transfer progress">
-        {steps.map((step, index) => <li key={step.label} className="relative flex min-h-11 items-start gap-3">
+        {steps.map((step, index) => <li key={step.label} aria-current={step.status === "current" ? "step" : undefined} aria-label={depositTransactionComplete && step.label === "Base transaction" ? "Base transaction complete" : undefined} className="relative flex min-h-11 items-start gap-3">
           {index < steps.length - 1 && <span aria-hidden="true" className="absolute left-[15px] top-8 h-[calc(100%-1rem)] w-px bg-[var(--line)]" />}
           <span className={`relative z-10 grid size-8 shrink-0 place-items-center rounded-full border ${step.status === "complete" ? "border-[#9ed8b3] bg-[#eaf8ef] text-[#157347]" : step.status === "current" ? "border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink)]" : "border-[var(--line)] bg-white text-[var(--muted)]"}`}>
             {step.status === "complete" ? <Check className="size-4" /> : step.status === "current" ? <LoaderCircle className="size-4 animate-spin" /> : <Circle className="size-3" />}
@@ -146,20 +158,10 @@ function ProgressDialog({ progress, action, onMinimize, onDismiss }: { progress:
           <span className={`pt-1 text-sm font-bold ${step.status === "waiting" ? "text-[var(--muted)]" : "text-black"}`}>{step.label}</span>
         </li>)}
       </ol>
-      <div className="mt-5 grid gap-3 rounded-2xl bg-[var(--panel)] p-4 text-sm sm:grid-cols-2">
-        <ProgressFact label="Send" value={`${progress.sendAmount} ${progress.sendSymbol}`} />
-        <ProgressFact label="Receive" value={`${progress.receiveAmount} ${progress.receiveSymbol}`} />
-        <ProgressFact label="From" value={progress.source} />
-        <ProgressFact label="To" value={progress.destination} />
-      </div>
       <DialogFooter>
         {action && <Button disabled={action.pending} onClick={() => void action.run()}>{action.pending ? "Working…" : action.label}</Button>}
-        {terminal && <Button onClick={onDismiss}>Close</Button>}
+        {dismissible && <Button onClick={onDismiss}>Close</Button>}
       </DialogFooter>
     </DialogContent>
   </Dialog>
-}
-
-function ProgressFact({ label, value }: { label: string; value: string }) {
-  return <div className="min-w-0"><p className="text-xs text-[var(--muted)]">{label}</p><p className="mt-1 break-all font-bold text-black">{value}</p></div>
 }

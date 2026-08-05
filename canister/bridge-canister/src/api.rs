@@ -374,7 +374,6 @@ fn map_withdrawal_observation_error(error: evm_rpc::ObservationError) -> NotifyW
         evm_rpc::ObservationError::Rpc => NotifyWithdrawalError::RpcUnavailable,
         evm_rpc::ObservationError::Inconsistent => NotifyWithdrawalError::RpcInconsistent,
         evm_rpc::ObservationError::BaseStateMismatch => NotifyWithdrawalError::BaseStateMismatch,
-        evm_rpc::ObservationError::ChainIdMismatch => NotifyWithdrawalError::BaseStateMismatch,
         evm_rpc::ObservationError::InvalidResponse | evm_rpc::ObservationError::Overflow => {
             NotifyWithdrawalError::InvalidBaseResponse
         }
@@ -661,7 +660,6 @@ pub(crate) fn cached_authorization_observation(
         }
         Ok(Some(CachedAuthorizationObservation {
             finalized: evm_rpc::FinalizedObservation {
-                chain_id: finalized.chain_id,
                 block_number: finalized.block_number,
                 block_hash: finalized.block_hash,
                 observed_at_ns: finalized.observed_at_ns,
@@ -678,6 +676,7 @@ pub(crate) fn cached_authorization_observation(
 }
 
 pub(crate) fn cache_recovery_observation(
+    config: &BridgeInitArgs,
     deposit_id: [u8; 32],
     observation: &evm_rpc::RecoveryObservation,
 ) -> Result<(), DepositError> {
@@ -692,7 +691,7 @@ pub(crate) fn cache_recovery_observation(
                 observation.snapshot.mint_authorization_epoch,
                 observation.snapshot.deposits_paused,
                 FinalizedObservationRecord {
-                    chain_id: observation.finalized.chain_id,
+                    chain_id: config.base_chain_id,
                     block_number: observation.finalized.block_number,
                     block_hash: observation.finalized.block_hash,
                     observed_at_ns: observation.finalized.observed_at_ns,
@@ -727,6 +726,7 @@ pub(crate) fn runtime_attested(config: &BridgeInitArgs) -> Result<bool, DepositE
 }
 
 pub(crate) fn cache_runtime_attestation(
+    config: &BridgeInitArgs,
     observation: &evm_rpc::CompletedFinalizedObservation,
 ) -> Result<(), DepositError> {
     STORE.with(|store| {
@@ -735,7 +735,10 @@ pub(crate) fn cache_runtime_attestation(
             .external_progress()
             .map_err(|_| DepositError::StorageFailure)?;
         progress
-            .observe_finalized(evm_rpc::stable_observation(observation))
+            .observe_finalized(evm_rpc::stable_observation(
+                observation,
+                config.base_chain_id,
+            ))
             .map_err(|_| DepositError::BaseObservationUnavailable)?;
         store
             .set_external_progress(&progress)
@@ -1476,7 +1479,10 @@ pub(crate) async fn base_mint_snapshot(
             snapshot.mint_authorization_epoch,
             snapshot.deposits_paused,
             None,
-            Some(evm_rpc::stable_observation(&completed)),
+            Some(evm_rpc::stable_observation(
+                &completed,
+                config.base_chain_id,
+            )),
             ic_cdk::api::canister_self(),
             vec![
                 rpc_audit_event_kind(&completed.rpc_audit),
@@ -1588,7 +1594,7 @@ async fn fresh_deposit_preflight(
             snapshot.deposits_paused,
             Some(deposit_id),
             Some(FinalizedObservationRecord {
-                chain_id: observation.finalized.chain_id,
+                chain_id: config.base_chain_id,
                 block_number: observation.finalized.block_number,
                 block_hash: observation.finalized.block_hash,
                 observed_at_ns: observation.finalized.observed_at_ns,

@@ -1,4 +1,5 @@
 import { deploymentProfile } from "@/config/profile"
+import { browserLocalStorage } from "@/lib/browser-lock"
 
 export type BridgeProgressDirection = "deposit" | "withdraw"
 
@@ -48,6 +49,7 @@ export interface BridgeProgressRecord {
   updatedAt: number
   transactionHash?: `0x${string}`
   receiptBlockNumber?: string
+  baseTransactionOutcome?: "success" | "reverted"
   deposit?: BridgeProgressDepositIdentity
   withdrawal?: BridgeProgressWithdrawalIdentity
   attentionMessage?: string
@@ -108,12 +110,12 @@ export function saveLatestBridgeProgress(record: BridgeProgressRecord): void {
   if (typeof window === "undefined") return
   try {
     if (record.phase === "complete") {
-      window.localStorage.removeItem(storageKey())
+      browserLocalStorage().removeItem(storageKey())
       return
     }
     const phase = restorablePhase(record)
     if (!phase) {
-      window.localStorage.removeItem(storageKey())
+      browserLocalStorage().removeItem(storageKey())
       return
     }
     const stored: StoredBridgeProgress = {
@@ -133,7 +135,7 @@ export function saveLatestBridgeProgress(record: BridgeProgressRecord): void {
       withdrawal: record.withdrawal,
       attentionMessage: phase === "attention" ? record.attentionMessage : undefined,
     }
-    window.localStorage.setItem(storageKey(), JSON.stringify(stored))
+    browserLocalStorage().setItem(storageKey(), JSON.stringify(stored))
   } catch {
     // The in-memory provider still owns the live transfer for this session.
   }
@@ -142,7 +144,7 @@ export function saveLatestBridgeProgress(record: BridgeProgressRecord): void {
 export function readLatestBridgeProgress(): BridgeProgressRecord | undefined {
   if (typeof window === "undefined") return undefined
   try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(storageKey()) ?? "null")
+    const value: unknown = JSON.parse(browserLocalStorage().getItem(storageKey()) ?? "null")
     if (!isStoredBridgeProgress(value)) return undefined
     return { ...value, updatedAt: Date.now() }
   } catch {
@@ -154,13 +156,16 @@ export function removeLatestBridgeProgress(id?: string): void {
   if (typeof window === "undefined") return
   try {
     const current = readLatestBridgeProgress()
-    if (!id || current?.id === id) window.localStorage.removeItem(storageKey())
+    if (!id || current?.id === id) browserLocalStorage().removeItem(storageKey())
   } catch {
     // A failed cleanup must not make a completed transfer look incomplete in memory.
   }
 }
 
 export function bridgeProgressLabel(record: BridgeProgressRecord): string {
+  if (record.direction === "deposit" && record.phase === "base-mint-included" && record.baseTransactionOutcome === "reverted") {
+    return "Base transaction reverted"
+  }
   const labels: Record<BridgeProgressPhase, string> = {
     "awaiting-ic-allowance": "Confirm token access in your IC wallet",
     "awaiting-ic-deposit": "Confirm the deposit in your IC wallet",
@@ -195,6 +200,9 @@ export function bridgeProgressDetail(record: BridgeProgressRecord): string {
   if (record.phase === "awaiting-base-withdrawal") return `${record.sendAmount} ${record.sendSymbol} will be burned and sent to ${shortDestination(record.destination)}.`
   if (record.phase === "awaiting-ic-notification") return "Submit the finalized Base withdrawal proof so the IC payout can begin."
   if (record.phase === "ledger-payout") return "The withdrawal is recorded. The Ledger payout continues automatically."
+  if (record.direction === "deposit" && record.phase === "base-mint-included" && record.baseTransactionOutcome === "reverted") {
+    return "The transaction reverted. Waiting for Base finality before enabling a safe retry."
+  }
   if (record.receiptBlockNumber && ["base-mint-included", "base-mint-finalizing", "base-withdrawal-included", "base-withdrawal-finalizing"].includes(record.phase)) {
     return `Included in Base block ${record.receiptBlockNumber}. Waiting for the finalized chain to confirm it.`
   }
@@ -209,9 +217,7 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): Array<{ label
     ["IC wallet", ["awaiting-ic-allowance", "awaiting-ic-deposit"]],
     ["IC deposit", ["ic-deposit-accepted"]],
     ["Bridge authorization", ["authorization-generating", "awaiting-base-mint"]],
-    ["Base transaction", ["base-mint-submitted", "base-mint-included"]],
-    ["Base finality", ["base-mint-finalizing"]],
-    ["Complete", ["complete"]],
+    ["Base transaction", ["base-mint-submitted", "base-mint-included", "base-mint-finalizing"]],
   ] as const
   const withdrawal = [
     ["Base wallet", ["awaiting-base-allowance", "awaiting-base-withdrawal"]],
@@ -221,13 +227,23 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): Array<{ label
     ["Complete", ["complete"]],
   ] as const
   const steps = record.direction === "deposit" ? deposit : withdrawal
+  const depositTransactionComplete = isDepositTransactionComplete(record)
   const currentIndex = record.phase === "attention"
     ? Math.max(0, steps.findIndex(([, phases]) => (phases as readonly string[]).includes(previousPhase(record))))
     : Math.max(0, steps.findIndex(([, phases]) => (phases as readonly string[]).includes(record.phase)))
   return steps.map(([label], index) => ({
     label,
-    status: index < currentIndex ? "complete" : index === currentIndex ? "current" : "waiting",
+    status: depositTransactionComplete || record.direction === "deposit" && record.phase === "complete"
+      ? "complete"
+      : index < currentIndex ? "complete" : index === currentIndex ? "current" : "waiting",
   }))
+}
+
+/** True after Base has returned a successful receipt, before canonical finality is known. */
+export function isDepositTransactionComplete(record: BridgeProgressRecord): boolean {
+  return record.direction === "deposit"
+    && record.baseTransactionOutcome === "success"
+    && (record.phase === "base-mint-included" || record.phase === "base-mint-finalizing")
 }
 
 function previousPhase(record: BridgeProgressRecord): string {

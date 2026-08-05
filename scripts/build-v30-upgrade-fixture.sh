@@ -8,7 +8,11 @@ OUTPUT_WASM="$OUTPUT_DIR/bridge_canister_v30.wasm"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bridge-v30-upgrade.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-git -C "$ROOT" cat-file -e "$V30_SOURCE_COMMIT^{commit}"
+if ! git -C "$ROOT" cat-file -e "$V30_SOURCE_COMMIT^{commit}" 2>/dev/null; then
+  printf 'required reviewed v30 source commit is missing: %s\n' "$V30_SOURCE_COMMIT" >&2
+  printf 'fetch the full repository history before running the proof gate\n' >&2
+  exit 1
+fi
 git -C "$ROOT" archive --format=tar --output="$WORK_DIR/source.tar" "$V30_SOURCE_COMMIT"
 mkdir "$WORK_DIR/source"
 tar -xf "$WORK_DIR/source.tar" -C "$WORK_DIR/source"

@@ -51,12 +51,12 @@ export function DepositProgressCoordinator() {
     return () => { active = false; window.clearInterval(interval) }
   }, [bridgeProgress, identity, progress])
 
-  if (!progress || progress.direction !== "deposit" || !record || !("AuthorizationAvailable" in record.state)) return null
+  if (!progress || progress.direction !== "deposit" || !identity || !record || !("AuthorizationAvailable" in record.state)) return null
 
   const onProgress = (event: MintProgressEvent) => {
     if (event.phase === "awaiting-wallet") bridgeProgress.update(progress.id, { phase: "awaiting-base-mint" })
-    else if (event.phase === "submitted") bridgeProgress.update(progress.id, { phase: "base-mint-submitted", transactionHash: event.transactionHash, receiptBlockNumber: undefined })
-    else if (event.phase === "included") bridgeProgress.update(progress.id, { phase: "base-mint-included", transactionHash: event.transactionHash, receiptBlockNumber: event.blockNumber.toString() })
+    else if (event.phase === "submitted") bridgeProgress.update(progress.id, { phase: "base-mint-submitted", transactionHash: event.transactionHash, receiptBlockNumber: undefined, baseTransactionOutcome: undefined })
+    else if (event.phase === "included") bridgeProgress.update(progress.id, { phase: "base-mint-included", transactionHash: event.transactionHash, receiptBlockNumber: event.blockNumber.toString(), baseTransactionOutcome: event.outcome })
     else if (event.phase === "finalizing") bridgeProgress.update(progress.id, { phase: "base-mint-finalizing", transactionHash: event.transactionHash, receiptBlockNumber: event.blockNumber.toString() })
     else if (event.phase === "attention") bridgeProgress.update(progress.id, { phase: "attention", transactionHash: event.transactionHash ?? progress.transactionHash, attentionMessage: event.message })
   }
@@ -69,6 +69,7 @@ export function DepositProgressCoordinator() {
   return <MintAuthorizationAction
     record={record}
     headless
+    autoPromptOwner={identity.owner}
     onProgress={onProgress}
     onMintConfirmed={onMintConfirmed}
     registerAction={registerAction}

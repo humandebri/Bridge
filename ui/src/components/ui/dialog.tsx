@@ -9,10 +9,11 @@ export const DialogClose = DialogPrimitive.Close
 
 interface DialogContentProps extends ComponentProps<typeof DialogPrimitive.Content> {
   dismissible?: boolean
+  onOverlayPointerDown?: ComponentProps<typeof DialogPrimitive.Overlay>["onPointerDown"]
 }
 
-export function DialogContent({ className, children, dismissible = true, onEscapeKeyDown, onPointerDownOutside, ...props }: DialogContentProps) {
-  return <DialogPrimitive.Portal><DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm" /><DialogPrimitive.Content
+export function DialogContent({ className, children, dismissible = true, onEscapeKeyDown, onOverlayPointerDown, onPointerDownOutside, ...props }: DialogContentProps) {
+  return <DialogPrimitive.Portal><DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm" onPointerDown={onOverlayPointerDown} /><DialogPrimitive.Content
     className={cn("fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-[20px] bg-white p-6 shadow-2xl", className)}
     onEscapeKeyDown={(event) => { onEscapeKeyDown?.(event); if (!dismissible) event.preventDefault() }}
     onPointerDownOutside={(event) => { onPointerDownOutside?.(event); if (!dismissible) event.preventDefault() }}

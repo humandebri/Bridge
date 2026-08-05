@@ -25,7 +25,7 @@ Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その�
 
 本番Bridgeは未デプロイであり、Plan 005の10回・7日外部計測と単一emergency pause経路演習、Plan 006の主要5 scenario、SNS handover、Canister操作型production preflightが完了するまで本番資産を受け付けない。Plan 007の追加wallet互換性と追加5 scenarioは非blockingで継続する。
 
-Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、実装計画は[docs/implementation-plan.md](docs/implementation-plan.md)、用語は[docs/glossary.md](docs/glossary.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
+Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、実装計画は[docs/implementation-plan.md](docs/implementation-plan.md)、用語は[docs/glossary.md](docs/glossary.md)、安全上の決定は[docs/adr](docs/adr)を参照する。RPC providerのchain bindingとruntime quorumの保証境界は[ADR 0024](docs/adr/0024-validate-rpc-chain-binding-before-runtime.md)を正本とする。
 
 ## KINIC mainnet canister
 

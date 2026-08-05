@@ -60,7 +60,7 @@ local/stagingのschema変更も登録済みmigrationを使用する。WAL、mmap
 
 ## EVM RPC provider
 
-本番Base MainnetのCanister outcallは公式EVM RPC Canisterの組み込み`BaseMainnet` provider群を使い、初期化値`custom_evm_rpc_urls`は空配列とする。公開設定の`rpc_provider_urls_sha256`は実際のcustom URL配列を表すため、本番の正規値は`SHA-256("[]")`である。production profileの3件のcredential-free RPCはCanisterへ注入せず、Gate A、live preflight、UI監視で公式経路から独立して状態を検証するためだけに使う。Base Sepolia stagingと故障演習は従来どおりcustom provider 3件を使う。
+本番Base MainnetのCanister outcallは公式EVM RPC Canisterの組み込み`BaseMainnet` provider群を使い、初期化値`custom_evm_rpc_urls`は空配列とする。公開設定の`rpc_provider_urls_sha256`は実際のcustom URL配列を表すため、本番の正規値は`SHA-256("[]")`である。production profileの3件のcredential-free RPCはCanisterへ注入せず、Gate A、live preflight、UI監視で公式経路から独立して状態を検証するためだけに使う。Base Sepolia stagingと故障演習のcustom provider 3件はURL、chain ID、接続先chainを稼働中固定し、deploy・activation前preflightで全3件のchain ID一致を確認する。runtimeの2-of-3 quorumは応答不一致と障害への対策であり、chain切替検知には使用しない。この設計判断と記録の意味論は[ADR 0024](../adr/0024-validate-rpc-chain-binding-before-runtime.md)を正本とする。
 
 ## 緊急pause
 

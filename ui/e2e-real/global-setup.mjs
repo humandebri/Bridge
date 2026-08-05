@@ -531,6 +531,7 @@ async function setup() {
         return send(response, 200, null)
       }
       if (request.url === "/test/settle") {
+        await syncObservedHeads()
         for (let round = 0; round < 10; round += 1) {
           await pic.advanceTime(60_001)
           await pic.tick(30)

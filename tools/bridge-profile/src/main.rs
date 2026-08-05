@@ -3406,6 +3406,7 @@ for scenario in ('preflight','authorization_mint','withdrawal_release','quorum_l
  if item['canister_decision'] is not None:
   timestamp_ns=int(m.rehearsal.datetime.fromisoformat(item['observed_at'].replace('Z','+00:00')).timestamp()*1_000_000_000); audit_event={'sequence':7,'timestamp_ns':timestamp_ns,'kind':{'EvmRpcDecision':item['canister_decision']}}
  payload=json.dumps({**command_details,'canister_audit':item['canister_audit'],'audit_events':[audit_event] if audit_event else []},separators=(',',':')); tool.write_text("#!/bin/sh\nprintf '%s' '"+payload+"'\n"); tool.chmod(0o755)
+ base_provider_index=0
  for reference in item['artifacts']:
   kind=reference['kind']; output=root/reference['path']
   if kind=='fault':
@@ -3419,7 +3420,8 @@ for scenario in ('preflight','authorization_mint','withdrawal_release','quorum_l
   else:
    method='icrc1_fee' if kind=='ledger' else ('get_audit_events' if kind=='audit' else 'get_bridge_status')
    command=['icp','canister','call',binding['ledger_canister_id'] if kind=='ledger' else binding['bridge_canister_id'],method,'()','-n','ic','--json']
-  m.rehearsal.capture_artifact(value,m.config(),scenario,kind,output,command,0 if kind=='base' else None); reference['sha256']=m.rehearsal.hashlib.sha256(output.read_bytes()).hexdigest()
+  m.rehearsal.capture_artifact(value,m.config(),scenario,kind,output,command,base_provider_index if kind=='base' else None); reference['sha256']=m.rehearsal.hashlib.sha256(output.read_bytes()).hexdigest()
+  if kind=='base': base_provider_index+=1
  request_records=[]; response_records=[]
  for reference in item['artifacts']:
   artifact=json.loads((root/reference['path']).read_text(encoding='utf-8')); request_records.append([artifact['tool'],*artifact['argv'],artifact['transport']]); response_records.append(artifact['stdout'])

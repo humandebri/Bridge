@@ -22,14 +22,12 @@ pub enum ObservationError {
     InvalidResponse,
     Overflow,
     BaseStateMismatch,
-    ChainIdMismatch,
     TransactionPending,
     TransactionReverted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FinalizedObservation {
-    pub chain_id: u64,
     pub block_number: u64,
     pub block_hash: [u8; 32],
     pub observed_at_ns: u64,
@@ -119,16 +117,23 @@ pub struct CompletedFinalizedObservation {
 
 pub fn stable_observation(
     observation: &CompletedFinalizedObservation,
+    configured_chain_id: u64,
 ) -> FinalizedObservationRecord {
-    stable_observation_parts(&observation.finalized, &observation.bridge_identity)
+    stable_observation_parts(
+        &observation.finalized,
+        &observation.bridge_identity,
+        configured_chain_id,
+    )
 }
 
 fn stable_observation_parts(
     finalized: &FinalizedObservation,
     bridge_identity: &ObservedBridgeIdentity,
+    configured_chain_id: u64,
 ) -> FinalizedObservationRecord {
     FinalizedObservationRecord {
-        chain_id: finalized.chain_id,
+        // This is the immutable install-domain binding, not an RPC response field.
+        chain_id: configured_chain_id,
         block_number: finalized.block_number,
         block_hash: finalized.block_hash,
         observed_at_ns: finalized.observed_at_ns,
@@ -398,9 +403,6 @@ pub async fn bridge_snapshot_at(
     finalized: FinalizedObservation,
     runtime_attested: bool,
 ) -> Result<CompletedFinalizedObservation, ObservationError> {
-    if finalized.chain_id != args.base_chain_id {
-        return Err(ObservationError::ChainIdMismatch);
-    }
     let (snapshot, bridge_identity) = observe_bridge_at(args, finalized, runtime_attested).await?;
     Ok(CompletedFinalizedObservation {
         finalized,
@@ -545,9 +547,6 @@ async fn exact_mint_evidence_inner(
     finalized: FinalizedObservation,
     expected_transaction_hash: Option<[u8; 32]>,
 ) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
-    if finalized.chain_id != args.base_chain_id {
-        return Err(ObservationError::ChainIdMismatch);
-    }
     let finalized_head_block_number = finalized.block_number;
     let mut event_topic = [0u8; 32];
     let mut hasher = Keccak::v256();
@@ -660,7 +659,7 @@ async fn exact_mint_evidence_inner(
         deposit_id: authorization.authorization.deposit_id,
         recipient: authorization.authorization.recipient,
         authorization_digest: authorization.digest,
-        chain_id: finalized_observation.chain_id,
+        chain_id: args.base_chain_id,
         verifying_contract: authorization.domain.verifying_contract,
         gross_amount: authorization.authorization.gross_amount,
         charged_service_fee: authorization.authorization.charged_service_fee,
@@ -809,7 +808,6 @@ fn rpc_audit_evidence(
         })
     });
     let response = json!({
-        "configured_chain_id": finalized.chain_id,
         "finalized_block_number": finalized.block_number,
         "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
         "receipt_block_number": receipt_block_number,
@@ -879,7 +877,6 @@ fn recovery_rpc_audit_evidence(
         "target": target_value,
     });
     let response = json!({
-        "configured_chain_id": finalized.chain_id,
         "finalized_block_number": finalized.block_number,
         "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
         "bridge_signer": format!("0x{}", hex(&snapshot.bridge_signer)),
@@ -927,7 +924,6 @@ fn deposit_preflight_rpc_audit_evidence(
         "refresh_generation": refresh_generation,
     });
     let response = json!({
-        "configured_chain_id": finalized.chain_id,
         "finalized_block_number": finalized.block_number,
         "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
         "refresh_generation": refresh_generation,
@@ -982,7 +978,6 @@ fn transaction_rpc_audit_evidence(
         "transaction_hash": format!("0x{}", hex(&transaction_hash)),
     });
     let response = json!({
-        "configured_chain_id": finalized.chain_id,
         "finalized_block_number": finalized.block_number,
         "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
         "transaction_hash": format!("0x{}", hex(&transaction_hash)),
@@ -1099,7 +1094,6 @@ pub async fn finalized_observation(
 ) -> Result<FinalizedObservation, ObservationError> {
     let block = finalized_block(args).await?;
     let observation = FinalizedObservation {
-        chain_id: args.base_chain_id,
         block_number: u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?,
         block_hash: *block.hash.as_array(),
         observed_at_ns: ic_cdk::api::time(),
@@ -1163,9 +1157,6 @@ async fn canonical_finalized_receipt_at(
     transaction_hash: [u8; 32],
     finalized: FinalizedObservation,
 ) -> Result<CanonicalFinalizedReceiptOutcome, ObservationError> {
-    if finalized.chain_id != args.base_chain_id {
-        return Err(ObservationError::ChainIdMismatch);
-    }
     let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
         .map_err(|_| ObservationError::InvalidResponse)?;
     let receipt = match client(args)
@@ -1203,7 +1194,6 @@ async fn canonical_finalized_receipt_with_hash(
         });
     }
     let receipt_observation = FinalizedObservation {
-        chain_id: finalized.chain_id,
         block_number: receipt_block,
         block_hash: *receipt.block_hash.as_array(),
         observed_at_ns: finalized.observed_at_ns,
@@ -1275,14 +1265,10 @@ pub async fn transaction_count(
         MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
     }
 }
-pub async fn signer_eth_balance_on_attested_chain(
+pub async fn signer_eth_balance_safe(
     args: &BridgeInitArgs,
     address: [u8; 20],
-    attestation: FinalizedObservation,
 ) -> Result<u128, ObservationError> {
-    if attestation.chain_id != args.base_chain_id {
-        return Err(ObservationError::ChainIdMismatch);
-    }
     let request = json!({ "jsonrpc":"2.0", "id":1, "method":"eth_getBalance", "params":[format!("0x{}", hex(&address)), "safe"] });
     match client(args)
         .multi_request(request)
@@ -1440,7 +1426,8 @@ pub async fn notified_withdrawal_outcome(
         !runtime_attested,
     );
     let stable_observation = Box::new(FinalizedObservationRecord {
-        chain_id: finalized_observation.chain_id,
+        // The stable record binds this observation to the configured install domain.
+        chain_id: args.base_chain_id,
         block_number: finalized_observation.block_number,
         block_hash: finalized_observation.block_hash,
         observed_at_ns: finalized_observation.observed_at_ns,
@@ -1761,7 +1748,6 @@ mod tests {
     #[test]
     fn eth_call_is_bound_to_a_canonical_block_hash() {
         let observation = FinalizedObservation {
-            chain_id: 8453,
             block_number: 42,
             block_hash: [0xabu8; 32],
             observed_at_ns: 7,
@@ -1784,7 +1770,6 @@ mod tests {
     #[test]
     fn receipt_probe_requires_a_decodable_snapshot_at_the_receipt_height() {
         let observation = FinalizedObservation {
-            chain_id: 8453,
             block_number: 42,
             block_hash: [0xabu8; 32],
             observed_at_ns: 7,
@@ -1890,7 +1875,6 @@ mod tests {
     #[test]
     fn completed_observation_cache_cannot_publish_torn_fields() {
         let finalized = FinalizedObservation {
-            chain_id: 8453,
             block_number: 42,
             block_hash: [0xaa; 32],
             observed_at_ns: 7,
@@ -1934,9 +1918,9 @@ mod tests {
             rpc_audit: rpc_audit.clone(),
         };
         assert_eq!(
-            stable_observation(&completed),
+            stable_observation(&completed, args.base_chain_id),
             FinalizedObservationRecord {
-                chain_id: finalized.chain_id,
+                chain_id: args.base_chain_id,
                 block_number: finalized.block_number,
                 block_hash: finalized.block_hash,
                 observed_at_ns: finalized.observed_at_ns,
@@ -1949,7 +1933,6 @@ mod tests {
     #[test]
     fn rpc_audit_evidence_binds_transaction_and_finalized_hash() {
         let finalized = FinalizedObservation {
-            chain_id: 8453,
             block_number: 42,
             block_hash: [0xaa; 32],
             observed_at_ns: 7,
@@ -1985,6 +1968,26 @@ mod tests {
             Some(40),
             None,
             false,
+        );
+        let mut different_config = test_init_args();
+        different_config.base_chain_id += 1;
+        let different_config_evidence = rpc_audit_evidence(
+            &different_config,
+            finalized,
+            snapshot,
+            identity,
+            Some([1; 32]),
+            Some(40),
+            None,
+            false,
+        );
+        assert_ne!(
+            first.request_digest,
+            different_config_evidence.request_digest
+        );
+        assert_eq!(
+            first.quorum_response_digest,
+            different_config_evidence.quorum_response_digest
         );
         let second = rpc_audit_evidence(
             &args,

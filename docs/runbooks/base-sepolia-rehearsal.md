@@ -8,7 +8,7 @@ IC canisterとKINIC Ledgerは接続しない。
 
 - networkはBase Sepolia、chain IDは`84532`とする。
 - 公開RPCの初期値は`https://base-sepolia-rpc.publicnode.com`とする。
-- RPCは実行時にchain IDを検査するため、別providerへ差し替えられる。
+- RPC URL、chain ID、各URLの接続先chainはrehearsal期間中固定する。deploy・activation前preflightで3 providerすべての`eth_chainId`を個別確認し、1件でも失敗または不一致なら開始しない。
 - credentialを含むRPC URLは公開manifestへ保存される可能性があるため使用しない。
 - 実験walletはtest-onlyとし、本番鍵や本番ceremonyへ再利用しない。
 - 今回のdeployerはBase Admin walletとRuntime Administratorを兼ねる。

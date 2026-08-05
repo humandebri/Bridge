@@ -4,6 +4,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { BridgePage } from "./bridge-page"
 import { BridgeProgressProvider } from "./bridge-progress-provider"
+import { browserLocalStorage } from "@/lib/browser-lock"
+import type * as BrowserLockModule from "@/lib/browser-lock"
 import { createBridgeProgress, saveLatestBridgeProgress } from "@/lib/bridge-progress"
 
 const mocks = vi.hoisted(() => ({
@@ -93,7 +95,8 @@ vi.mock("@/lib/deposit-intents", () => ({
   saveDepositIntent: mocks.saveDepositIntent,
 }))
 
-vi.mock("@/lib/browser-lock", () => ({
+vi.mock("@/lib/browser-lock", async (importOriginal) => ({
+  ...await importOriginal<typeof BrowserLockModule>(),
   withBrowserLock: (_name: string, action: () => unknown) => action(),
 }))
 
@@ -115,7 +118,7 @@ describe("BridgePage automatic wallet refresh", () => {
   afterEach(cleanup)
 
   beforeEach(() => {
-    window.localStorage.clear()
+    browserLocalStorage().clear()
     mocks.useAccount.mockReset().mockReturnValue({ address: undefined, isConnected: false })
     mocks.useIcWallet.mockReset().mockReturnValue({
       account: undefined,
@@ -422,7 +425,7 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(prepare).toHaveBeenCalledOnce()
 
     await waitFor(() => expect(requestDeposit).toHaveBeenCalledOnce())
-    expect(screen.getByText("Confirm the deposit in your IC wallet")).toBeVisible()
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("IC wallet")
     expect(closeWallet).not.toHaveBeenCalled()
   })
 
@@ -467,7 +470,7 @@ describe("BridgePage automatic wallet refresh", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Check status" }))
 
     expect(await screen.findByRole("heading", { name: "Bridge to Base" })).toBeVisible()
-    expect(screen.getByText("Confirm the mint in your Base wallet")).toBeVisible()
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Bridge authorization")
     expect(mocks.removeDepositIntent).toHaveBeenCalledOnce()
   })
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest"
+import { browserLocalStorage } from "./browser-lock"
 import {
   bridgeProgressSteps,
   createBridgeProgress,
@@ -6,7 +7,7 @@ import {
   saveLatestBridgeProgress,
 } from "./bridge-progress"
 
-beforeEach(() => window.localStorage.clear())
+beforeEach(() => browserLocalStorage().clear())
 
 describe("latest bridge progress persistence", () => {
   it("persists_immutable_transfer_identity_and_a_broadcast_hash_without_persisting_observed_presentation_state", () => {
@@ -21,15 +22,18 @@ describe("latest bridge progress persistence", () => {
       receiveSymbol: "KINIC",
       transactionHash: `0x${"22".repeat(32)}`,
       receiptBlockNumber: "123",
+      baseTransactionOutcome: "success",
       deposit: { owner: "aaaaa-aa", ownerSequence: "3", depositId: `0x${"07".repeat(32)}` },
       attentionMessage: "stale presentation",
     })
 
     saveLatestBridgeProgress(record)
 
-    const stored = Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.getItem(window.localStorage.key(index)!))[0]!
+    const storage = browserLocalStorage()
+    const stored = Array.from({ length: storage.length }, (_, index) => storage.getItem(storage.key(index)!))[0]!
     expect(stored).not.toContain("base-mint-finalizing")
     expect(stored).not.toContain("receiptBlockNumber")
+    expect(stored).not.toContain("baseTransactionOutcome")
     expect(stored).not.toContain("stale presentation")
     expect(readLatestBridgeProgress()).toMatchObject({
       id: record.id,
@@ -117,10 +121,11 @@ describe("latest bridge progress persistence", () => {
       deposit: { owner: "aaaaa-aa", ownerSequence: "3", depositId: `0x${"07".repeat(32)}` },
     })
     saveLatestBridgeProgress(record)
-    const key = window.localStorage.key(0)!
-    const stored = JSON.parse(window.localStorage.getItem(key)!) as { deposit: { ownerSequence: string } }
+    const storage = browserLocalStorage()
+    const key = storage.key(0)!
+    const stored = JSON.parse(storage.getItem(key)!) as { deposit: { ownerSequence: string } }
     stored.deposit.ownerSequence = "not-a-number"
-    window.localStorage.setItem(key, JSON.stringify(stored))
+    storage.setItem(key, JSON.stringify(stored))
 
     expect(readLatestBridgeProgress()).toBeUndefined()
   })
@@ -144,8 +149,50 @@ describe("latest bridge progress persistence", () => {
       { label: "IC deposit", status: "complete" },
       { label: "Bridge authorization", status: "current" },
       { label: "Base transaction", status: "waiting" },
-      { label: "Base finality", status: "waiting" },
-      { label: "Complete", status: "waiting" },
+    ])
+  })
+
+  it("ends Deposit presentation at a successful Base transaction without changing Withdrawal steps", () => {
+    const deposit = createBridgeProgress({
+      direction: "deposit",
+      phase: "base-mint-included",
+      source: "aaaaa-aa",
+      destination: "0x0000000000000000000000000000000000000002",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "TICRC1",
+      receiveSymbol: "KINIC",
+      transactionHash: `0x${"22".repeat(32)}`,
+      receiptBlockNumber: "123",
+      baseTransactionOutcome: "success",
+      deposit: { owner: "aaaaa-aa", ownerSequence: "3", depositId: `0x${"07".repeat(32)}` },
+    })
+    expect(bridgeProgressSteps(deposit)).toEqual([
+      { label: "IC wallet", status: "complete" },
+      { label: "IC deposit", status: "complete" },
+      { label: "Bridge authorization", status: "complete" },
+      { label: "Base transaction", status: "complete" },
+    ])
+
+    const withdrawal = createBridgeProgress({
+      direction: "withdraw",
+      phase: "base-withdrawal-finalizing",
+      source: "0x0000000000000000000000000000000000000002",
+      destination: "aaaaa-aa",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "KINIC",
+      receiveSymbol: "TICRC1",
+      transactionHash: `0x${"33".repeat(32)}`,
+      receiptBlockNumber: "123",
+      withdrawal: { owner: "aaaaa-aa" },
+    })
+    expect(bridgeProgressSteps(withdrawal).map(({ label }) => label)).toEqual([
+      "Base wallet",
+      "Base transaction",
+      "Base finality",
+      "IC processing",
+      "Complete",
     ])
   })
 })

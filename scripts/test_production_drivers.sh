@@ -77,7 +77,7 @@ case "$1 $2" in
   'keccak 0x01') printf '0x%s\n' "$(printf 'dd%.0s' {1..32})";;
   'nonce 0x4444444444444444444444444444444444444444') [[ -e "$TIMELOCK_DEPLOYED_MARKER" ]] && echo 1 || echo 0;;
   'compute-address 0x4444444444444444444444444444444444444444') [[ "$*" == *'--nonce 0'* ]] && echo 'Computed Address: 0x2222222222222222222222222222222222222222' || echo 'Computed Address: 0x3333333333333333333333333333333333333333';;
-  'chain-id --rpc-url') if [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; elif [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 2 && "$*" == *two.example* ]]; then echo 1; else echo 8453; fi;;
+  'chain-id --rpc-url') if [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; elif [[ "${PROVIDER_MALFORMED_CHAINS:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_MALFORMED_CHAINS:-0}" -ge 2 && "$*" == *two.example* ]]; then echo invalid; elif [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 2 && "$*" == *two.example* ]]; then echo 1; else echo 8453; fi;;
   'block safe'|'block finalized') if [[ "${PROVIDER_SAFE_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_SAFE_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; fi; h="${LATEST_HEIGHT:-100}"; if [[ "${LATEST_BLOCK_DRIFT:-}" =~ ^(all|one)$ && "$*" == *one.example* ]]; then x=1; elif [[ "${LATEST_BLOCK_DRIFT:-}" == all && "$*" == *two.example* ]]; then x=2; elif [[ "${LATEST_BLOCK_DRIFT:-}" == all ]]; then x=3; else x=a; fi; printf '{"number":"0x%x","hash":"0x%s"}\n' "$h" "$(printf "$x%.0s" {1..64})";;
   'block 100') if [[ "${MID_READ_REORG:-}" == all ]]; then x=f; elif [[ "${MID_READ_REORG:-}" == one && "$*" == *three.example* ]]; then x=f; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all && "$*" == *one.example* ]]; then x=1; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all && "$*" == *two.example* ]]; then x=2; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all ]]; then x=3; else x=a; fi; printf '{"number":"0x64","hash":"0x%s"}\n' "$(printf "$x%.0s" {1..64})";;
   'block 1') printf '{"number":"0x1","hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})";;
@@ -186,6 +186,13 @@ BRIDGE_GATE_A_RPC_URL_1=https://one.example BRIDGE_GATE_A_RPC_URL_2=https://two.
 [[ "$(grep -c '^cast block finalized' "$TRACE")" -eq 3 ]]
 [[ "$(grep -c '^cast rpc ' "$TRACE")" -eq 9 ]]
 ! grep -Eq '^cast block [0-9]+' "$TRACE"
+for chain_fault in failure malformed mismatch; do
+  if [[ "$chain_fault" == failure ]]; then args=(PROVIDER_CHAIN_FAILURES=1); elif [[ "$chain_fault" == malformed ]]; then args=(PROVIDER_MALFORMED_CHAINS=1); else args=(PROVIDER_WRONG_CHAINS=1); fi
+  if env "${args[@]}" BRIDGE_GATE_A_RPC_URL_1=https://one.example BRIDGE_GATE_A_RPC_URL_2=https://two.example BRIDGE_GATE_A_RPC_URL_3=https://three.example \
+    "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-gate-a "$T/bundle" >/dev/null 2>&1; then
+    echo "Gate A accepted one provider chain ID $chain_fault" >&2; exit 1
+  fi
+done
 if CANONICAL_PROBE_MALFORMED=true \
   BRIDGE_GATE_A_RPC_URL_1=https://one.example BRIDGE_GATE_A_RPC_URL_2=https://two.example BRIDGE_GATE_A_RPC_URL_3=https://three.example \
   "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-gate-a "$T/bundle" >/dev/null 2>&1; then
@@ -235,19 +242,28 @@ if grep -q sign_chain_key_challenge "$TRACE"; then
   echo "live preflight called the retired chain-key challenge endpoint" >&2; exit 1
 fi
 cp "$T/snapshot.json" "$T/bundle/signer-snapshot.json"
-for isolated in chain_failure wrong_chain safe_failure eip1898_unsupported; do
+ACTIVATION_OPERATION_ID="0x$(printf 'b%.0s' {1..64})"
+for chain_fault in failure malformed mismatch; do
+  if [[ "$chain_fault" == failure ]]; then args=(PROVIDER_CHAIN_FAILURES=1); elif [[ "$chain_fault" == malformed ]]; then args=(PROVIDER_MALFORMED_CHAINS=1); else args=(PROVIDER_WRONG_CHAINS=1); fi
+  if env "${args[@]}" "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-activation schedule "$T/bundle" "$ACTIVATION_OPERATION_ID" >/dev/null 2>&1; then
+    echo "activation preflight accepted one provider chain ID $chain_fault" >&2; exit 1
+  fi
+done
+for isolated in safe_failure eip1898_unsupported; do
   case "$isolated" in
-    chain_failure) args=(PROVIDER_CHAIN_FAILURES=1);;
-    wrong_chain) args=(PROVIDER_WRONG_CHAINS=1);;
     safe_failure) args=(PROVIDER_SAFE_FAILURES=1);;
     eip1898_unsupported) args=(PROVIDER_EIP1898_FAILURES=1);;
   esac
   env "${args[@]}" BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/isolated-$isolated.json"
 done
-for insufficient in chain_failure wrong_chain safe_failure eip1898_unsupported; do
+for chain_fault in failure malformed mismatch; do
+  if [[ "$chain_fault" == failure ]]; then args=(PROVIDER_CHAIN_FAILURES=1); elif [[ "$chain_fault" == malformed ]]; then args=(PROVIDER_MALFORMED_CHAINS=1); else args=(PROVIDER_WRONG_CHAINS=1); fi
+  if env "${args[@]}" BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/invalid-chain-$chain_fault.json" >/dev/null 2>&1; then
+    echo "live preflight accepted one provider chain ID $chain_fault" >&2; exit 1
+  fi
+done
+for insufficient in safe_failure eip1898_unsupported; do
   case "$insufficient" in
-    chain_failure) args=(PROVIDER_CHAIN_FAILURES=2);;
-    wrong_chain) args=(PROVIDER_WRONG_CHAINS=2);;
     safe_failure) args=(PROVIDER_SAFE_FAILURES=2);;
     eip1898_unsupported) args=(PROVIDER_EIP1898_FAILURES=2);;
   esac

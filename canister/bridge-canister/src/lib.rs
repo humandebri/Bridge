@@ -419,7 +419,6 @@ fn map_deposit_refund_observation_error(
             Error::FinalityUnavailable
         }
         evm_rpc::ObservationError::BaseStateMismatch
-        | evm_rpc::ObservationError::ChainIdMismatch
         | evm_rpc::ObservationError::InvalidResponse
         | evm_rpc::ObservationError::Overflow
         | evm_rpc::ObservationError::TransactionReverted => Error::BaseStateMismatch,
@@ -605,7 +604,7 @@ async fn request_deposit_refund(
                 .map_err(|error| {
                     map_deposit_refund_observation_error("request_deposit_refund_recovery", error)
                 })?;
-                api::cache_recovery_observation(id, &observation)
+                api::cache_recovery_observation(&config, id, &observation)
                     .map_err(|_| Error::StorageFailure)?;
                 if observation.snapshot.mint.confirmed_block_timestamp
                     <= authorization.authorization.deadline
@@ -645,7 +644,7 @@ async fn request_deposit_refund(
                                 Some(bridge_core::MintExpiryEvidence {
                                     deposit_id: authorization.authorization.deposit_id,
                                     authorization_digest: authorization.digest,
-                                    chain_id: observation.finalized.chain_id,
+                                    chain_id: config.base_chain_id,
                                     verifying_contract: authorization.domain.verifying_contract,
                                     deposit_processed: false,
                                     finalized_block_number: observation.finalized.block_number,

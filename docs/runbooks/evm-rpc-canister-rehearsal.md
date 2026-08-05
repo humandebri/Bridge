@@ -8,10 +8,14 @@ CIが確認するのは、rehearsal recorderのテスト、公式Canister IDへ�
 
 ## 保証境界
 
+RPC chain bindingを稼働前に検証し、runtime quorumを応答不一致・障害対策として扱う設計判断は[ADR 0024](../adr/0024-validate-rpc-chain-binding-before-runtime.md)を正本とする。
+
 - networkはIC mainnetとBase Sepolia（chain ID `84532`）に固定する。
 - EVM RPC CanisterはDFINITY管理の`7hfb6-caaaa-aaaar-qadga-cai`に固定する。
 - custom RPC URLはcredentialを含まないHTTPSを3件指定し、URL文字列の重複だけを拒否する。
+- custom RPC URL、期待chain ID、各URLの接続先chainは稼働中不変とする。deploy・activation前に3 URLすべてへ`eth_chainId`を実行し、全件一致を必須とする。
 - providerの運営主体、upstream、ASN、cloud、region、障害ドメイン、可用性は監査しない。
+- runtimeの2-of-3 quorumは応答不一致とprovider障害を扱うものであり、稼働中の接続chain切替を検出する仕組みとして扱わない。
 - 「EVM RPC Canisterと設定providerのquorumがcanonical Finalized Base Sepolia chainを正しく返す」ことは外部仮定として証跡に残す。
 - orphan receipt、same-height hash不一致、provider誤応答の決定的検査は既存PocketICテストの責務とする。実公開RPCへの故障注入は本番承認条件にしない。
 

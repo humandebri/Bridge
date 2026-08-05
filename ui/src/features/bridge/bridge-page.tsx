@@ -126,6 +126,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const [reviewedApprovalNeeded, setReviewedApprovalNeeded] = useState<boolean>()
   const [preflight, setPreflight] = useState<PreflightState>()
   const preflightRunId = useRef(0)
+  const activeDepositProgressSeen = useRef(false)
   const queryClient = useQueryClient()
   const bridgeProgress = useBridgeProgress()
   const { address, isConnected } = useAccount()
@@ -219,6 +220,25 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     }, 0)
     return () => window.clearTimeout(reset)
   }, [activeDepositTerminal])
+  useEffect(() => {
+    if (!activeDeposit) {
+      activeDepositProgressSeen.current = false
+      return
+    }
+    const progress = bridgeProgress.progress
+    if (progress?.direction === "deposit"
+      && progress.deposit?.owner === activeDeposit.owner
+      && progress.deposit.ownerSequence === activeDeposit.sequence.toString()) {
+      activeDepositProgressSeen.current = true
+      return
+    }
+    if (progress || !activeDepositProgressSeen.current) return
+    activeDepositProgressSeen.current = false
+    setDepositAmount("")
+    setReviewedDeposit(undefined)
+    setActiveDeposit(undefined)
+    setDepositProgress("idle")
+  }, [activeDeposit, bridgeProgress.progress])
   const ledger = useQuery({
     queryKey: ["deposit-ledger", ic.account?.owner, bytesHex(ic.account?.subaccount ?? new Uint8Array())],
     enabled: direction === "deposit" && Boolean(ic.account),

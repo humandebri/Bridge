@@ -44,7 +44,7 @@ export interface MintConfirmation {
 export type MintProgressEvent =
   | { phase: "awaiting-wallet" }
   | { phase: "submitted"; transactionHash: `0x${string}` }
-  | { phase: "included"; transactionHash: `0x${string}`; blockNumber: bigint }
+  | { phase: "included"; transactionHash: `0x${string}`; blockNumber: bigint; outcome: "success" | "reverted" }
   | { phase: "finalizing"; transactionHash: `0x${string}`; blockNumber: bigint }
   | { phase: "finalized"; transactionHash: `0x${string}`; blockNumber: bigint }
   | { phase: "attention"; message: string; transactionHash?: `0x${string}` }
@@ -124,7 +124,12 @@ export function MintAuthorizationAction({
         const receipt = await basePublicClient.getTransactionReceipt({ hash: pending.transactionHash })
         if (receipt.blockNumber === null || receipt.blockHash === null) return
         if (active) setReceiptObservation(receipt.status === "success" ? "sequencer-success" : "sequencer-reverted")
-        if (active) onProgress?.({ phase: "included", transactionHash: pending.transactionHash, blockNumber: receipt.blockNumber })
+        if (active) onProgress?.({
+          phase: "included",
+          transactionHash: pending.transactionHash,
+          blockNumber: receipt.blockNumber,
+          outcome: receipt.status === "success" ? "success" : "reverted",
+        })
         const finalized = await basePublicClient.getBlock({ blockTag: "finalized" })
         if (finalized.number === null || receipt.blockNumber > finalized.number) return
         if (active) onProgress?.({ phase: "finalizing", transactionHash: pending.transactionHash, blockNumber: receipt.blockNumber })
