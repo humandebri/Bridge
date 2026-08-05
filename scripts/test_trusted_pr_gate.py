@@ -30,6 +30,12 @@ class TrustedPrGateTests(unittest.TestCase):
     def test_untrusted_jobs_are_read_only_and_sha_pinned(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("ref: ${{ github.event.pull_request.head.sha }}", workflow)
+        self.assertIn(
+            "ref: ${{ github.event.pull_request.head.sha }}\n"
+            "          path: source\n"
+            "          fetch-depth: 0",
+            workflow,
+        )
         self.assertGreaterEqual(workflow.count("persist-credentials: false"), 2)
         self.assertNotIn("secrets.", workflow)
         for action in (
