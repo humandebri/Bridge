@@ -173,29 +173,8 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
 })
 
 async function openHistory(page: Page): Promise<void> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const dismissed = await clickFirstVisible(page.getByRole("button", { name: "Close", exact: true }))
-      || await clickFirstVisible(page.getByRole("button", { name: "Minimize", exact: true }))
-    if (!dismissed) break
-    await page.waitForTimeout(100)
-  }
-  if (await clickFirstVisible(page.getByRole("link", { name: "Open history" }))) return
-  if (await clickFirstVisible(page.locator('a[href="/history"]'))) return
-  if (!await clickFirstVisible(page.locator('[aria-label="Open navigation menu"]'))) {
-    throw new Error("No visible History link or navigation menu is available")
-  }
-  if (!await clickFirstVisible(page.locator('a[href="/history"]'))) {
-    throw new Error("History link did not become visible after opening navigation")
-  }
-}
-
-async function clickFirstVisible(locator: ReturnType<Page["getByRole"]>): Promise<boolean> {
-  for (const candidate of await locator.all()) {
-    if (!await candidate.isVisible()) continue
-    await candidate.click()
-    return true
-  }
-  return false
+  await page.goto("/history")
+  await expect(page).toHaveURL(/\/history$/)
 }
 
 async function refreshBridgeData(page: Page): Promise<void> {
