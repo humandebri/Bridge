@@ -69,6 +69,16 @@ class ClaimTestManifestTests(unittest.TestCase):
                 len(claim_tests.parse_manifest(claims, manifest, root)), 1
             )
 
+    def test_manifest_accepts_vitest_tsx_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "ui/src/example.test.tsx"
+            target.parent.mkdir(parents=True)
+            target.write_text('it("tsx_test", () => <div />)\n', encoding="utf-8")
+            claims = "kind\tclaim\ta\t-\t-\tv\t-\tp\tui/src/example.test.tsx#tsx_test\t-\t-\n"
+            manifest = "vitest\tui/src/example.test.tsx\ttsx_test\ttsx_test\n"
+            self.assertEqual(len(claim_tests.parse_manifest(claims, manifest, root)), 1)
+
     def test_manifest_accepts_named_jest_callback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

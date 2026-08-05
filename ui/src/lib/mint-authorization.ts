@@ -129,7 +129,7 @@ export async function validateMintAuthorization(
   ])
 
   if (processed) {
-    throw new Error("Deposit identity conflict: this Deposit ID is already processed on Base")
+    throw new Error("This Deposit ID is already processed on Base. Do not submit another mint; refresh History for finalized status.")
   }
   if (snapshot.depositsPaused
     || snapshot.mintAuthorizationEpoch !== authorization.authorizationEpoch

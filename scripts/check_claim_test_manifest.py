@@ -62,7 +62,7 @@ def runner_accepts(test: ClaimTest) -> bool:
         or (
             test.runner == "vitest"
             and test.target.startswith("ui/src/")
-            and test.target.endswith(".test.ts")
+            and test.target.endswith((".test.ts", ".test.tsx"))
         )
         or (test.runner == "jest" and test.target == "integration/phase3.spec.ts")
     )

@@ -58,6 +58,14 @@ export function isDepositTerminal(phase: DepositPhase): boolean {
   return name === "Minted" || name === "Refunded" || name === "Cancelled"
 }
 
+export function depositUsesPendingMintStatus(
+  phase: DepositPhase,
+  hasPendingMint: boolean,
+  mintedOnBase: boolean,
+): boolean {
+  return hasPendingMint && !mintedOnBase && "AuthorizationAvailable" in phase
+}
+
 export function isWithdrawalTerminal(phase: WithdrawalPhase): boolean {
   const name = variantName(phase, withdrawalNames)
   return name === "Paid"

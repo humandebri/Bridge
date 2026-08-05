@@ -2,6 +2,8 @@ import { Link, Outlet } from "@tanstack/react-router"
 import { BookOpen, History, Menu, ShieldCheck } from "lucide-react"
 import { WalletCenter, WalletDialogProvider } from "@/features/wallet/wallet-controls"
 import { SettlementConfirmationCoordinator } from "@/features/bridge/settlement-confirmation-coordinator"
+import { BridgeProgressProvider } from "@/features/bridge/bridge-progress-provider"
+import { DepositProgressCoordinator } from "@/features/bridge/deposit-progress-coordinator"
 import { RiskAcknowledgementDialog } from "@/features/risk/risk-acknowledgement"
 import blueKinic from "@/assets/blue_kinic.png"
 import openChatLogo from "@/assets/openchat-logo.svg"
@@ -14,7 +16,7 @@ function XBrandIcon({ className }: { className?: string }) {
 }
 
 export function AppShell() {
-  return <WalletDialogProvider><RiskAcknowledgementDialog /><SettlementConfirmationCoordinator /><div className="flex min-h-screen flex-col">
+  return <WalletDialogProvider><BridgeProgressProvider><RiskAcknowledgementDialog /><DepositProgressCoordinator /><SettlementConfirmationCoordinator /><div className="flex min-h-screen flex-col">
     {deploymentProfile.testOnly ? <div role="status" aria-label="Test deployment" className="border-b border-amber-300 bg-amber-100 px-4 py-2 text-center text-xs font-bold tracking-[.08em] text-amber-950">
       IC MAINNET × BASE SEPOLIA TEST — TEST ASSETS ONLY
       {deploymentProfile.environmentMode === "short-delay-test-only"
@@ -56,5 +58,5 @@ export function AppShell() {
         </a>
       </nav>
     </footer>
-  </div></WalletDialogProvider>
+  </div></BridgeProgressProvider></WalletDialogProvider>
 }

@@ -174,18 +174,28 @@ describe("MintAuthorizationAction pending retry", () => {
 
     await waitFor(() => expect(mocks.getTransactionReceipt).toHaveBeenCalledWith({ hash: pendingHash }))
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
-    expect(screen.getByText("Check status and retry")).toBeEnabled()
+    expect(screen.queryByText(/Authorization valid for/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Waiting for inclusion\./)).toBeInTheDocument()
+    expect(screen.getByText("Review saved transaction")).toBeEnabled()
+  })
+
+  it("keeps retry recovery out of the compact History action cell", async () => {
+    render(<MintAuthorizationAction record={record} compact />, { wrapper: Wrapper })
+
+    expect(await screen.findByText("Base receipt unavailable; checking")).toBeInTheDocument()
+    expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button")).not.toBeInTheDocument()
   })
 
   it("keeps the hash when Base revalidation fails", async () => {
     mocks.validateMintAuthorization.mockRejectedValue(new Error("Mint authorization is no longer valid on Base"))
     render(<MintAuthorizationAction record={record} />, { wrapper: Wrapper })
 
-    fireEvent.click(await screen.findByText("Check status and retry"))
+    fireEvent.click(await screen.findByText("Review saved transaction"))
 
     await waitFor(() => expect(mocks.validateMintAuthorization).toHaveBeenCalledWith(record, expect.any(Object)))
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
-    expect(screen.queryByText("Clear the saved transaction?")).not.toBeInTheDocument()
+    expect(screen.queryByText("Clear the saved transaction reference?")).not.toBeInTheDocument()
   })
 
   it("does not treat a successful receipt without the exact mint event as current", async () => {
@@ -205,7 +215,7 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(onMintConfirmed).not.toHaveBeenCalled()
   })
 
-  it("keeps a mined transaction pending until its block is finalized", async () => {
+  it("keeps_a_mined_transaction_pending_until_its_block_is_finalized", async () => {
     const onMintConfirmed = vi.fn()
     mocks.getTransactionReceipt.mockResolvedValue({
       status: "success",
@@ -220,7 +230,23 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(mocks.exactMintReceiptFinalization).not.toHaveBeenCalled()
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
     expect(onMintConfirmed).not.toHaveBeenCalled()
-    expect(screen.getByText("Check status and retry")).toBeEnabled()
+    expect(screen.getByText("Included on Base; awaiting finality")).toBeInTheDocument()
+    expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
+  })
+
+  it("does not offer a retry for a reverted receipt before its block is finalized", async () => {
+    mocks.getTransactionReceipt.mockResolvedValue({
+      status: "reverted",
+      blockNumber: 101n,
+      blockHash: finalizedBlockHash,
+      logs: [],
+    })
+
+    render(<MintAuthorizationAction record={record} />, { wrapper: Wrapper })
+
+    expect(await screen.findByText("Transaction reverted; awaiting finality")).toBeInTheDocument()
+    expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
+    expect(mocks.removePendingMint).not.toHaveBeenCalled()
   })
 
   it("reports a saved transaction exactly once after its exact receipt is confirmed", async () => {
@@ -245,17 +271,17 @@ describe("MintAuthorizationAction pending retry", () => {
 
   it("clears the hash only after successful revalidation and explicit confirmation", async () => {
     render(<MintAuthorizationAction record={record} />, { wrapper: Wrapper })
-    fireEvent.click(await screen.findByText("Check status and retry"))
+    fireEvent.click(await screen.findByText("Review saved transaction"))
 
-    expect(await screen.findByText("Clear the saved transaction?")).toBeInTheDocument()
+    expect(await screen.findByText("Clear the saved transaction reference?")).toBeInTheDocument()
     expect(screen.getByText(/original transaction is mined later/)).toBeInTheDocument()
     fireEvent.click(screen.getByText("Cancel"))
     await waitFor(() =>
-      expect(screen.queryByText("Clear the saved transaction?")).not.toBeInTheDocument()
+      expect(screen.queryByText("Clear the saved transaction reference?")).not.toBeInTheDocument()
     )
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByText("Check status and retry"))
+    fireEvent.click(screen.getByText("Review saved transaction"))
     fireEvent.click(await screen.findByText("Clear and retry"))
     await waitFor(() => expect(mocks.removePendingMint).toHaveBeenCalledWith(pendingExpectation))
     await waitFor(() => expect(screen.getByText("Mint on Base")).toBeEnabled())

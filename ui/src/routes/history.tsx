@@ -44,7 +44,7 @@ import { createBridgeActor } from "@/lib/ic/bridge"
 import type { IcWalletAdapter } from "@/lib/ic/wallet"
 import { readPendingMint, removePendingConfirmation } from "@/lib/pending-confirmations"
 import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
-import { depositPhaseName, depositPhaseTone, depositReconciliationMessage, isDepositTerminal, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName, withdrawalPhaseTone } from "@/lib/settlement-phase"
+import { depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositTerminal, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName, withdrawalPhaseTone } from "@/lib/settlement-phase"
 import { fetchInBatches, fetchUniqueBlockTimestamps, scanWithdrawalLogs, type FinalizedEventLog, type WithdrawalLogScan } from "@/lib/withdrawal-history"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
 
@@ -550,6 +550,7 @@ function DepositActivityRow({ item, mintFinalization, mintTransactionHash, mintS
   const availableRefund = record.available_refund_amount[0]
   const reconciliationMessage = depositReconciliationMessage(record.state, record.last_settlement_stop_reason[0])
   const mintedOnBase = mintFinalization === "minted"
+  const mintSubmitted = depositUsesPendingMintStatus(record.state, Boolean(pendingMint), mintedOnBase)
   const mintBlockedReason = mintFinalization === "unavailable"
     ? "Finalized Base mint history is unavailable. Refresh before minting."
     : mintFinalization === "checking"
@@ -566,9 +567,9 @@ function DepositActivityRow({ item, mintFinalization, mintTransactionHash, mintS
       ? <BaseTransactionLink transactionHash={transactionHash} />
       : <p className="mt-1 text-xs text-[var(--muted)]">Base transaction not submitted</p>}</div>
     <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{amountText}</p>{availableRefund !== undefined && <p className="mt-1 text-xs text-[var(--muted)]">Available after non-refundable fees: {formatTokenAmount(availableRefund)} KINIC</p>}{refund && <p className="mt-1 text-xs text-[var(--muted)]">Non-refundable refund Ledger fee: {formatTokenAmount(refund.ledger_fee)} KINIC</p>}</div>
-    <div><MobileLabel>Status</MobileLabel><Badge tone={mintedOnBase ? "good" : depositPhaseTone(record.state)}>{mintedOnBase ? "Minted on Base (finalized)" : depositPhaseName(record.state)}</Badge>{!mintedOnBase && progress && <AutomaticProgress progress={progress} />}{!mintedOnBase && refund && "ReconciliationRequired" in refund.status && <p className="mt-1 text-xs font-bold text-[#b42318]">Ledger result is uncertain — requesting again checks the same transfer.</p>}{!mintedOnBase && reconciliationMessage && <p className={`mt-1 text-xs font-bold ${record.last_settlement_stop_reason[0] ? "text-[#b42318]" : "text-[var(--muted)]"}`}>{reconciliationMessage}</p>}</div>
+    <div><MobileLabel>Status</MobileLabel><Badge tone={mintedOnBase ? "good" : mintSubmitted ? "info" : depositPhaseTone(record.state)}>{mintedOnBase ? "Minted on Base (finalized)" : mintSubmitted ? "Mint submitted" : depositPhaseName(record.state)}</Badge>{!mintedOnBase && !mintSubmitted && progress && <AutomaticProgress progress={progress} />}{!mintedOnBase && refund && "ReconciliationRequired" in refund.status && <p className="mt-1 text-xs font-bold text-[#b42318]">Ledger result is uncertain — requesting again checks the same transfer.</p>}{!mintedOnBase && reconciliationMessage && <p className={`mt-1 text-xs font-bold ${record.last_settlement_stop_reason[0] ? "text-[#b42318]" : "text-[var(--muted)]"}`}>{reconciliationMessage}</p>}</div>
     <div><MobileLabel>Time</MobileLabel><ActivityTime valueNs={item.createdAtNs} /></div>
-    <div className="lg:text-right"><MobileLabel>Action</MobileLabel>{mintedOnBase
+    <div className="min-w-0 lg:text-right"><MobileLabel>Action</MobileLabel>{mintedOnBase
       ? <span className="text-sm text-[var(--muted)]">—</span>
       : "AuthorizationAvailable" in record.state
         ? <MintAuthorizationAction record={record} compact mintBlockedReason={mintBlockedReason} onRequestRefund={writesEnabled ? () => void onRequestRefund(record) : undefined} claimingRefund={actioningId === key} />

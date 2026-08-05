@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowDownUp, ArrowRight, Check, Circle, LoaderCircle, LockKeyhole, RefreshCcw, TriangleAlert } from "lucide-react"
+import { ArrowDownUp, ArrowRight, LoaderCircle, LockKeyhole, RefreshCcw, TriangleAlert } from "lucide-react"
 import { Principal } from "@dfinity/principal"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
@@ -17,7 +17,8 @@ import { deploymentProfile } from "@/config/profile"
 import { finalizedObservationQuote, useRuntimeHeartbeat, useRuntimeValidation, useRuntimeWriteReadiness } from "@/features/status/use-status"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { useWalletDialog } from "@/features/wallet/wallet-controls"
-import { MintAuthorizationAction, type MintConfirmation } from "@/features/bridge/mint-authorization-action"
+import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
+import type { DepositView } from "@/generated/bridge.did"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { estimatedAmountOut, formatTokenAmount, parseTokenAmount, requiredDepositBalance } from "@/lib/amounts"
@@ -34,10 +35,12 @@ import { savePendingConfirmation } from "@/lib/pending-confirmations"
 import { readDepositIntent, removeDepositIntent, saveDepositIntent } from "@/lib/deposit-intents"
 import { withBrowserLock } from "@/lib/browser-lock"
 import { isDepositTerminal } from "@/lib/settlement-phase"
+import type { BridgeProgressPhase } from "@/lib/bridge-progress"
 
 export type BridgeDirection = "deposit" | "withdraw"
 type BridgeNetwork = "ic" | "base"
 const AUTO_REFRESH_INTERVAL_MS = 45_000
+const currentUnixSeconds = () => BigInt(Math.floor(Date.now() / 1_000))
 const automaticQueryOptions = {
   refetchInterval: AUTO_REFRESH_INTERVAL_MS,
   refetchIntervalInBackground: false,
@@ -73,6 +76,7 @@ interface ReviewedDeposit {
 interface DepositMutationInput {
   attempt: UnresolvedDepositAttempt
   closeWalletSession: () => Promise<void>
+  progressId: string
 }
 
 type PreflightCheckId = "wallets" | "runtime" | "financials" | "availability"
@@ -118,11 +122,12 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const [resolvedIntentOwner, setResolvedIntentOwner] = useState<string>()
   const [checkingDeposit, setCheckingDeposit] = useState(false)
   const [activeDeposit, setActiveDeposit] = useState<{ owner: string; sequence: bigint }>()
-  const [mintCompletion, setMintCompletion] = useState<MintConfirmation>()
   const [submittingWithdrawal, setSubmittingWithdrawal] = useState(false)
+  const [reviewedApprovalNeeded, setReviewedApprovalNeeded] = useState<boolean>()
   const [preflight, setPreflight] = useState<PreflightState>()
   const preflightRunId = useRef(0)
   const queryClient = useQueryClient()
+  const bridgeProgress = useBridgeProgress()
   const { address, isConnected } = useAccount()
   const chainId = useChainId()
   const ic = useIcWallet()
@@ -188,6 +193,22 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const activeDepositTerminal = Boolean(
     activeDepositRecord.data && isDepositTerminal(activeDepositRecord.data.state),
   )
+  useEffect(() => {
+    const progress = bridgeProgress.progress
+    const record = activeDepositRecord.data
+    if (!progress || progress.direction !== "deposit" || !record || !activeDeposit) return
+    if (progress.deposit
+      && (progress.deposit.owner !== activeDeposit.owner || progress.deposit.ownerSequence !== activeDeposit.sequence.toString())) return
+    if ("Minted" in record.state) {
+      bridgeProgress.update(progress.id, { phase: "complete", completionMessage: `${progress.receiveAmount} ${progress.receiveSymbol} was minted on Base.` })
+    } else if ("AuthorizationAvailable" in record.state && !progress.transactionHash) {
+      bridgeProgress.update(progress.id, { phase: "awaiting-base-mint" })
+    } else if (isDepositAuthorizationPending(record.state)) {
+      bridgeProgress.update(progress.id, { phase: "authorization-generating" })
+    } else if ("RefundAvailable" in record.state || "RefundProcessing" in record.state || "Refunded" in record.state || "FundingReconciliationHold" in record.state || "Cancelled" in record.state) {
+      bridgeProgress.update(progress.id, { phase: "attention", attentionMessage: "This deposit is not minting on Base. Open History to review the available refund path." })
+    }
+  }, [activeDeposit, activeDepositRecord.data, bridgeProgress])
   useEffect(() => {
     if (!activeDepositTerminal) return
     const reset = window.setTimeout(() => {
@@ -287,10 +308,18 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       )
       return receipt
     },
-    onSuccess: async (receipt, { attempt }) => {
+    onSuccess: async (receipt, { attempt, progressId }) => {
       queryClient.setQueryData(["deposit-owner-sequence", attempt.account.owner], receipt.owner_sequence + 1n)
       setActiveDeposit({ owner: attempt.account.owner, sequence: receipt.owner_sequence })
       setDepositProgress("authorization")
+      bridgeProgress.update(progressId, {
+        phase: "ic-deposit-accepted",
+        deposit: {
+          owner: attempt.account.owner,
+          ownerSequence: receipt.owner_sequence.toString(),
+          depositId: bytesHex(receipt.deposit_id),
+        },
+      })
       try { await removeDepositIntent(attempt.account) } catch { /* The canonical receipt is the recovery source. */ }
       setUnresolvedDeposit(undefined)
       void Promise.allSettled([
@@ -301,13 +330,19 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       ])
       toast.success(`Deposit ${bytesHex(receipt.deposit_id).slice(0, 14)}… accepted. Mint Authorization is being generated.`)
     },
-    onError: (error) => {
+    onError: (error, { progressId }) => {
       setDepositProgress("idle")
+      bridgeProgress.update(progressId, {
+        phase: "attention",
+        attentionMessage: error instanceof Error
+          ? `${error.message}. Check History before starting another deposit.`
+          : "The deposit response is unresolved. Check History before starting another deposit.",
+      })
       toast.error(error instanceof Error ? `${error.message}. Retry the same deposit or check whether it was accepted.` : "Deposit response is unresolved")
     },
   })
 
-  const submitDeposit = async () => {
+  const submitDeposit = async (progressId: string) => {
     let closeWalletSession: (() => Promise<void>) | undefined
     try {
       if (!ic.account || !ic.adapter) throw new Error("Connect OISY or Plug")
@@ -316,7 +351,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       const walletSession = ic.adapter.prepare()
       if (unresolvedDeposit) {
         closeWalletSession = onceAsync(await walletSession)
-        await withBrowserLock(`kinic-deposit-owner:${unresolvedDeposit.account.owner}`, () => deposit.mutateAsync({ attempt: unresolvedDeposit, closeWalletSession: closeWalletSession! }))
+        bridgeProgress.update(progressId, { phase: "awaiting-ic-deposit" })
+        await withBrowserLock(`kinic-deposit-owner:${unresolvedDeposit.account.owner}`, () => deposit.mutateAsync({ attempt: unresolvedDeposit, closeWalletSession: closeWalletSession!, progressId }))
         return
       }
       const reviewed = reviewedDeposit!
@@ -331,8 +367,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         const beforeApproval = reviewed.gate
         const requiredAllowance = reviewed.amount + beforeApproval.ledger.fee
         if (beforeApproval.ledger.allowance < requiredAllowance) {
+          bridgeProgress.update(progressId, { phase: "awaiting-ic-allowance" })
           await withBrowserLock(`kinic-wallet-prompt:ic:${confirmedAccount.owner}`, () => ic.adapter!.approve({ amount: requiredAllowance, currentAllowance: beforeApproval.ledger.allowance, ledgerFee: beforeApproval.ledger.fee }))
         }
+        bridgeProgress.update(progressId, { phase: "awaiting-ic-deposit" })
         const [finalEvm, finalIc] = await Promise.all([currentBaseWallet(), ic.adapter!.getAccount()])
         requireWalletSnapshot(expectedWallets, { ...finalEvm, icAccount: finalIc }, "during approval")
         const final = await refetchDepositWriteGate(
@@ -347,10 +385,14 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         }
         await saveDepositIntent({ ...attempt, state: "prepared" })
         setUnresolvedDeposit(attempt)
-        await deposit.mutateAsync({ attempt, closeWalletSession: closeWalletSession! })
+        await deposit.mutateAsync({ attempt, closeWalletSession: closeWalletSession!, progressId })
       })
     } catch (error) {
       setDepositProgress("idle")
+      bridgeProgress.update(progressId, {
+        phase: "attention",
+        attentionMessage: error instanceof Error ? error.message : "The deposit could not continue.",
+      })
       toast.error(error instanceof Error ? error.message : "Deposit failed")
     } finally {
       await closeWalletSession?.().catch(() => undefined)
@@ -374,7 +416,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     if (quote.depositsPaused) throw new Error("Deposits are paused on Base")
     if (amount > quote.perDepositLimit) throw new Error("Amount exceeds the current per-deposit limit")
     if (amount <= quote.serviceFee) throw new Error("Amount must exceed the current service fee")
-    const now = BigInt(Math.floor(Date.now() / 1000))
+    const now = currentUnixSeconds()
     if (now < quote.startedAt + quote.duration && quote.minted + amount - quote.serviceFee > quote.limit) throw new Error("Amount exceeds the remaining mint window limit")
     if (sequenceResult.data !== expectedSequence) throw new Error("Another deposit used this owner sequence; refresh and review again")
     if (ledgerResult.data.balance < requiredDepositBalance(amount, ledgerResult.data.fee, ledgerResult.data.allowance)) throw new Error(`${deploymentProfile.icToken.symbol} balance does not cover the deposit and required ledger fees`)
@@ -449,6 +491,9 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
           recipient: walletSnapshot.recipient,
           gate,
         })
+        setReviewedApprovalNeeded(gate.ledger.allowance < depositParsed.value + gate.ledger.fee)
+      } else if (unresolvedDeposit) {
+        setReviewedApprovalNeeded(false)
       }
       completePreflight(runId)
     } catch {
@@ -478,7 +523,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         if (withdrawParsed.value <= baseData.serviceFee) throw new Error("Amount must be greater than the current service fee")
         if (bsnsBalanceData < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
       })
-      await runPreflightCheck(runId, "availability", async () => {
+      const allowance = await runPreflightCheck(runId, "availability", async () => {
         if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
         const quote = observation.snapshot
         const balanceResult = await bsnsBalance.refetch()
@@ -488,7 +533,15 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         if (quote.withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
         if (withdrawParsed.value <= quote.serviceFee) throw new Error("Amount must be greater than the current service fee")
         if (balanceResult.data < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
+        return basePublicClient.readContract({
+          address: deploymentProfile.bsnsAddress as `0x${string}`,
+          abi: bsnsAbi,
+          functionName: "allowance",
+          args: [address!, deploymentProfile.bridgeAddress as `0x${string}`],
+        })
       })
+      if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
+      setReviewedApprovalNeeded(allowance < withdrawParsed.value)
       completePreflight(runId)
     } catch {
       // The failed step already owns the user-visible error.
@@ -496,10 +549,11 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   }
 
   const beginBridgeReview = () => {
-    if (direction === "deposit" && effectiveDepositProgress !== "idle") return
+    if (bridgeProgress.progress || direction === "deposit" && effectiveDepositProgress !== "idle") return
     const runId = preflightRunId.current + 1
     preflightRunId.current = runId
     setPreflight(initialPreflight(runId, direction))
+    setReviewedApprovalNeeded(undefined)
     setConfirming(true)
     if (direction === "deposit") void runDepositPreflight(runId)
     else void runWithdrawalPreflight(runId)
@@ -529,6 +583,37 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
           || bytesHex(record[0].from_subaccount[0] ?? new Uint8Array(32)) !== bytesHex(unresolvedDeposit.account.subaccount ?? new Uint8Array(32))) {
           throw new Error("Canonical deposit does not match the saved intent")
         }
+        const canonical = record[0]
+        const existingProgress = bridgeProgress.progress
+        const matchesExistingProgress = existingProgress?.direction === "deposit"
+          && existingProgress.deposit?.owner === unresolvedDeposit.account.owner
+          && existingProgress.deposit.ownerSequence === unresolvedDeposit.call.ownerSequence.toString()
+        if (existingProgress && !matchesExistingProgress) {
+          throw new Error("Another transfer is active. Close it before recovering this deposit from History.")
+        }
+        const progressState = recoveredDepositProgressState(canonical)
+        const depositIdentity = {
+          owner: unresolvedDeposit.account.owner,
+          ownerSequence: unresolvedDeposit.call.ownerSequence.toString(),
+          depositId: bytesHex(canonical.deposit_id),
+        }
+        if (existingProgress) {
+          bridgeProgress.update(existingProgress.id, { ...progressState, deposit: depositIdentity })
+        } else {
+          const quotedNetAmount = canonical.quote[0]?.net_amount
+            ?? (canonical.gross_amount > canonical.max_service_fee ? canonical.gross_amount - canonical.max_service_fee : 0n)
+          bridgeProgress.start({
+            direction: "deposit",
+            ...progressState,
+            source: unresolvedDeposit.account.owner,
+            destination: unresolvedDeposit.recipient,
+            sendAmount: formatTokenAmount(canonical.gross_amount),
+            receiveAmount: formatTokenAmount(quotedNetAmount),
+            sendSymbol: deploymentProfile.icToken.symbol,
+            receiveSymbol: deploymentProfile.baseToken.symbol,
+            deposit: depositIdentity,
+          })
+        }
         setActiveDeposit({ owner: unresolvedDeposit.account.owner, sequence: unresolvedDeposit.call.ownerSequence })
         queryClient.setQueryData(["deposit-owner-sequence", unresolvedDeposit.account.owner], nextSequence)
         await removeDepositIntent(unresolvedDeposit.account)
@@ -544,7 +629,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     }
   }
 
-  const submitWithdrawal = async () => {
+  const submitWithdrawal = async (progressId: string) => {
     try {
       setSubmittingWithdrawal(true)
       if (!address) throw new Error("Connect the EVM wallet that owns bSNS")
@@ -573,6 +658,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         args: [snapshotAddress, deploymentProfile.bridgeAddress as `0x${string}`],
       })
       if (allowance < withdrawParsed.value) {
+        bridgeProgress.update(progressId, { phase: "awaiting-base-allowance" })
         const approvalHash = await withBrowserLock(`kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`, () => write.writeContractAsync({
           account: snapshotAddress,
           address: deploymentProfile.bsnsAddress as `0x${string}`,
@@ -583,6 +669,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         const approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
         if (approvalReceipt.status !== "success") throw new Error("Token approval failed")
       }
+      bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal" })
       const broadcast = await createWithdrawalAfterRevalidation({
         expectedWallets,
         refetchRuntime: async () => ({ data: await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch) }),
@@ -601,11 +688,14 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
           if (finalBalance < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
         },
         createWithdrawal: ({ serviceFee }) => withBrowserLock(`kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`, () => write.writeContractAsync({ account: snapshotAddress, address: deploymentProfile.bridgeAddress as `0x${string}`, abi: bridgeAbi, functionName: "createWithdrawal", args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)] })),
-        onBroadcast: (transactionHash) => savePendingConfirmation({
-          kind: "withdrawal",
-          transactionHash,
-          owner: confirmedIcAccount.owner,
-        }),
+        onBroadcast: async (transactionHash) => {
+          bridgeProgress.update(progressId, { phase: "base-withdrawal-submitted", transactionHash })
+          return savePendingConfirmation({
+            kind: "withdrawal",
+            transactionHash,
+            owner: confirmedIcAccount.owner,
+          })
+        },
       })
       setWithdrawAmount("")
       if (broadcast.pendingSaved) {
@@ -613,7 +703,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       } else {
         toast.warning(`Withdrawal ${broadcast.transactionHash} was submitted, but this browser could not save it. Copy the transaction hash; after it succeeds, recover it from History.`)
       }
-    } catch (error) { toast.error(error instanceof Error ? error.message : "Withdrawal failed") }
+    } catch (error) {
+      bridgeProgress.update(progressId, { phase: "attention", attentionMessage: error instanceof Error ? error.message : "The withdrawal could not continue." })
+      toast.error(error instanceof Error ? error.message : "Withdrawal failed")
+    }
     finally { setSubmittingWithdrawal(false) }
   }
 
@@ -626,10 +719,13 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       : (runtime.data?.ready === true ? heartbeat.data : runtime.data)
         ? "Bridge is temporarily unavailable. Try Refresh."
         : "Refresh before continuing."
+  const activeTransferReason = bridgeProgress.progress
+    ? "Complete or close the current transfer before starting another one"
+    : undefined
   const depositBlockers = unresolvedDeposit
-    ? [runtimeReason, !ic.account && "Reconnect the original IC wallet", !address && "Reconnect the original EVM wallet", ic.account && !retryAccountMatches && "Reconnect the original IC wallet", address && !retryRecipientMatches && "Reconnect the original EVM wallet"].filter(Boolean) as string[]
-    : [!address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || !ledgerData || ownerSequenceData === undefined) && "Balance or fee information is unavailable", !depositParsed.ok && (depositParsed.reason ?? "Enter an amount")].filter(Boolean) as string[]
-  const withdrawalBlockers = [!address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || bsnsBalanceData === undefined) && "Fee and balance data is unavailable", !withdrawParsed.ok && (withdrawParsed.reason ?? "Enter an amount"), withdrawParsed.ok && baseData && withdrawParsed.value <= baseData.serviceFee && "Amount must exceed the service fee"].filter(Boolean) as string[]
+    ? [activeTransferReason, runtimeReason, !ic.account && "Reconnect the original IC wallet", !address && "Reconnect the original EVM wallet", ic.account && !retryAccountMatches && "Reconnect the original IC wallet", address && !retryRecipientMatches && "Reconnect the original EVM wallet"].filter(Boolean) as string[]
+    : [activeTransferReason, !address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || !ledgerData || ownerSequenceData === undefined) && "Balance or fee information is unavailable", !depositParsed.ok && (depositParsed.reason ?? "Enter an amount")].filter(Boolean) as string[]
+  const withdrawalBlockers = [activeTransferReason, !address && "Connect both wallets", !ic.account && "Connect both wallets", runtimeReason, (!baseData || bsnsBalanceData === undefined) && "Fee and balance data is unavailable", !withdrawParsed.ok && (withdrawParsed.reason ?? "Enter an amount"), withdrawParsed.ok && baseData && withdrawParsed.value <= baseData.serviceFee && "Amount must exceed the service fee"].filter(Boolean) as string[]
   const blockers = direction === "deposit" ? depositBlockers : withdrawalBlockers
   const awaitingDepositAuthorization = direction === "deposit"
     && Boolean(activeDeposit)
@@ -647,13 +743,6 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     && (Boolean(unresolvedDeposit) || effectiveDepositProgress !== "idle" || depositFlowActive)
 
   const changeDirection = () => { if (depositControlsLocked) return; setConfirming(false); onDirectionChange(direction === "deposit" ? "withdraw" : "deposit") }
-  const completeMint = (confirmation: MintConfirmation) => {
-    setDepositAmount("")
-    setReviewedDeposit(undefined)
-    setActiveDeposit(undefined)
-    setDepositProgress("idle")
-    setMintCompletion(confirmation)
-  }
   const setBridgeReviewOpen = (open: boolean) => {
     if (open) {
       setConfirming(true)
@@ -669,8 +758,34 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     preflightRunId.current += 1
     setConfirming(false)
     setPreflight(undefined)
-    if (direction === "deposit") void submitDeposit()
-    else void submitWithdrawal()
+    let progress
+    try {
+      progress = bridgeProgress.start({
+        direction,
+        phase: direction === "deposit"
+          ? reviewedApprovalNeeded === false ? "awaiting-ic-deposit" : "awaiting-ic-allowance"
+          : reviewedApprovalNeeded === false ? "awaiting-base-withdrawal" : "awaiting-base-allowance",
+        source: source.wallet,
+        destination: destination.wallet,
+        sendAmount: amount || "—",
+        receiveAmount: receive !== undefined ? formatTokenAmount(receive) : "—",
+        sendSymbol: sendToken.symbol,
+        receiveSymbol: receiveToken.symbol,
+        deposit: direction === "deposit"
+          ? unresolvedDeposit
+            ? { owner: unresolvedDeposit.account.owner, ownerSequence: unresolvedDeposit.call.ownerSequence.toString() }
+            : reviewedDeposit
+              ? { owner: reviewedDeposit.account.owner, ownerSequence: reviewedDeposit.gate.sequence.toString() }
+              : undefined
+          : undefined,
+        withdrawal: direction === "withdraw" && ic.account ? { owner: ic.account.owner } : undefined,
+      })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Another transfer is already active")
+      return
+    }
+    if (direction === "deposit") void submitDeposit(progress.id)
+    else void submitWithdrawal(progress.id)
   }
   const depositActionLabel = effectiveDepositProgress === "checking"
     ? "Checking deposit…"
@@ -707,7 +822,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       )}
       {direction === "deposit" && activeDepositRecord.data && (
         ("AuthorizationAvailable" in activeDepositRecord.data.state)
-          ? <MintAuthorizationAction record={activeDepositRecord.data} autoPromptOwner={activeDeposit?.owner} onMintConfirmed={completeMint} />
+          ? <DepositProgressCard title="Mint Authorization ready" detail="Continue from the transfer progress window to confirm the Base mint transaction." />
           : <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm">
               <p className="font-bold text-black">Generating authorization…</p>
               <p className="mt-1 text-[var(--muted)]">{depositPhaseLabel(activeDepositRecord.data)}</p>
@@ -731,9 +846,26 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
           : blockers.length > 0 ? `Next: ${blockers[0]}` : null}
       </p>
     </section>
-    <BridgeConfirmationDialog direction={direction} open={confirming} setOpen={setBridgeReviewOpen} preflight={preflight} source={source.wallet} destination={destination.wallet} amount={amount} receive={receive} sendSymbol={sendToken.symbol} receiveSymbol={receiveToken.symbol} pending={deposit.isPending || write.isPending || submittingWithdrawal} onRetry={beginBridgeReview} onConfirm={confirmBridgeReview} />
-    <MintCompletionDialog confirmation={mintCompletion} onClose={() => setMintCompletion(undefined)} />
+    <BridgeConfirmationDialog direction={direction} open={confirming} setOpen={setBridgeReviewOpen} preflight={preflight} source={source.wallet} destination={destination.wallet} amount={amount} receive={receive} fee={fee} sendSymbol={sendToken.symbol} receiveSymbol={receiveToken.symbol} approvalNeeded={reviewedApprovalNeeded} pending={deposit.isPending || write.isPending || submittingWithdrawal} onRetry={beginBridgeReview} onConfirm={confirmBridgeReview} />
   </div>
+}
+
+function recoveredDepositProgressState(record: DepositView): {
+  phase: BridgeProgressPhase
+  attentionMessage?: string
+  completionMessage?: string
+} {
+  if ("Minted" in record.state) {
+    return { phase: "complete", completionMessage: "This deposit was already minted on Base." }
+  }
+  if ("AuthorizationAvailable" in record.state) return { phase: "awaiting-base-mint" }
+  if ("EscrowedUnquoted" in record.state || "AuthorizationPending" in record.state) {
+    return { phase: "authorization-generating" }
+  }
+  return {
+    phase: "attention",
+    attentionMessage: "This deposit cannot continue to Base minting. Open History to review its refund or reconciliation state.",
+  }
 }
 
 function EndpointCard({ label, network, wallet, disabled, onClick }: { label: string; network: BridgeNetwork; wallet: string; disabled?: boolean; onClick: () => void }) {
@@ -753,68 +885,16 @@ function onceAsync(action: () => Promise<void>): () => Promise<void> {
   }
 }
 
-function MintCompletionDialog({ confirmation, onClose }: { confirmation?: MintConfirmation; onClose: () => void }) {
-  return <Dialog open={Boolean(confirmation)} onOpenChange={(open) => { if (!open) onClose() }}>
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>Bridge complete</DialogTitle>
-        <DialogDescription>Your tokens were minted on Base. The form is ready for a new bridge.</DialogDescription>
-      </DialogHeader>
-      {confirmation && <div className="mt-5 space-y-4 rounded-2xl bg-[var(--panel)] p-4">
-        <ConfirmRow label="Minted" value={`${formatTokenAmount(confirmation.mintedAmount)} ${deploymentProfile.baseToken.symbol}`} />
-        <ConfirmRow label="Recipient" value={confirmation.recipient} />
-        <ConfirmRow label="Base transaction" value={confirmation.transactionHash} />
-      </div>}
-      <DialogFooter>
-        <Button asChild variant="ghost"><Link to="/history">View History</Link></Button>
-        <DialogClose asChild><Button>Close</Button></DialogClose>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>
-}
-
-function PreflightStepper({ checks }: { checks: PreflightCheck[] }) {
-  return <ol className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--panel)] px-4 py-4" aria-label="Preflight checks">
-    {checks.map((check, index) => {
-      const icon = check.status === "checking"
-        ? <LoaderCircle className="size-4 animate-spin" />
-        : check.status === "passed"
-          ? <Check className="size-4" />
-          : check.status === "failed"
-            ? <TriangleAlert className="size-4" />
-            : <Circle className="size-3" />
-      const iconClass = check.status === "checking"
-        ? "border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink)]"
-        : check.status === "passed"
-          ? "border-[#9ed8b3] bg-[#eaf8ef] text-[#157347]"
-          : check.status === "failed"
-            ? "border-[#ffbdad] bg-[#fff0ec] text-[#b42318]"
-            : "border-[var(--line)] bg-white text-[var(--muted)]"
-      return <li key={check.id} data-status={check.status} className="relative flex min-h-12 gap-3 pb-4 last:min-h-0 last:pb-0">
-        {index < checks.length - 1 && <span aria-hidden="true" className="absolute left-[15px] top-8 h-[calc(100%-1rem)] w-px bg-[var(--line)]" />}
-        <span aria-hidden="true" className={`relative z-10 grid size-8 shrink-0 place-items-center rounded-full border ${iconClass}`}>{icon}</span>
-        <div className="min-w-0 pt-1">
-          <p className={`text-sm font-bold ${check.status === "waiting" ? "text-[var(--muted)]" : "text-black"}`}>
-            {check.label}
-            <span className="sr-only">: {check.status}</span>
-          </p>
-          {check.error && <p className="mt-1 break-words text-sm leading-5 text-[#b42318]">{check.error}</p>}
-        </div>
-      </li>
-    })}
-  </ol>
-}
-
 function preflightAnnouncement(preflight?: PreflightState): string {
   if (!preflight) return ""
-  if (preflight.phase === "ready") return "All preflight checks passed."
+  if (preflight.phase === "ready") return "Transfer review ready."
   const failed = preflight.checks.find((check) => check.status === "failed")
   if (failed) return `${failed.label} failed. ${failed.error ?? ""}`.trim()
   const checking = preflight.checks.find((check) => check.status === "checking")
   return checking ? `Checking ${checking.label}.` : "Preparing preflight checks."
 }
 
-export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, source, destination, amount, receive, sendSymbol, receiveSymbol, pending, onRetry, onConfirm }: {
+export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, source, destination, amount, receive, fee, sendSymbol, receiveSymbol, approvalNeeded, pending, onRetry, onConfirm }: {
   direction: BridgeDirection
   open: boolean
   setOpen: (open: boolean) => void
@@ -823,8 +903,10 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
   destination: string
   amount: string
   receive?: bigint
+  fee?: bigint
   sendSymbol: string
   receiveSymbol: string
+  approvalNeeded?: boolean
   pending: boolean
   onRetry: () => void
   onConfirm: () => void
@@ -836,11 +918,10 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
   }
   const ready = preflight?.phase === "ready"
   const failed = preflight?.phase === "failed"
+  const failedCheck = preflight?.checks.find((check) => check.status === "failed")
   const description = ready
-    ? "All checks passed. Review the transfer before opening your wallet."
-    : failed
-      ? "One check needs attention. No transaction has been sent."
-      : "Checking current bridge conditions. No transaction has been sent."
+    ? "Review the transfer and the wallet actions that come next."
+    : failed ? "No transaction was sent." : "Checking current bridge conditions. No transaction has been sent."
   return <Dialog open={open} onOpenChange={close}>
     <DialogContent className="max-h-[min(760px,calc(100vh-2rem))] max-w-[560px] overflow-y-auto">
       <DialogHeader>
@@ -848,12 +929,23 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
         <DialogDescription>{description}</DialogDescription>
       </DialogHeader>
       <p className="sr-only" aria-live="polite">{preflightAnnouncement(preflight)}</p>
-      {preflight && <PreflightStepper checks={preflight.checks} />}
-      {ready && <div className="mt-5 space-y-4 rounded-2xl bg-[var(--panel)] p-4">
-        <ConfirmRow label="Source" value={source} />
-        <ConfirmRow label="Destination" value={destination} />
-        <ConfirmRow label="Send / receive" value={`${amount || "—"} ${sendSymbol} / ${receive !== undefined ? formatTokenAmount(receive) : "—"} ${receiveSymbol}`} />
-      </div>}
+      {!ready && !failed && <div className="mt-5 flex items-center gap-3 rounded-2xl border border-[#bfd7ff] bg-[#eef5ff] p-4" role="status"><LoaderCircle className="size-5 shrink-0 animate-spin text-[var(--pink)]" /><p className="text-sm font-bold text-black">Checking your wallets, balance, fees, and bridge availability…</p></div>}
+      {failed && failedCheck && <div className="mt-5 rounded-2xl border border-[#ffbdad] bg-[#fff0ec] p-4" role="alert"><div className="flex items-center gap-2 font-bold text-[#b42318]"><TriangleAlert className="size-4" />{failedCheck.label}</div><p className="mt-2 text-sm leading-6 text-[#7a271a]">{failedCheck.error ?? "This check could not be completed."}</p></div>}
+      {ready && <><div className="mt-5 grid gap-4 rounded-2xl bg-[var(--panel)] p-4 sm:grid-cols-2">
+        <ConfirmRow label="You send" value={`${amount || "—"} ${sendSymbol}`} />
+        <ConfirmRow label="You receive" value={`${receive !== undefined ? formatTokenAmount(receive) : "—"} ${receiveSymbol}`} />
+        <ConfirmRow label="Bridge fee" value={`${fee !== undefined ? formatTokenAmount(fee) : "—"} ${sendSymbol}`} />
+        <ConfirmRow label="From" value={source} />
+        <div className="sm:col-span-2"><ConfirmRow label="Recipient" value={destination} /></div>
+      </div>
+      <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white p-4">
+        <p className="text-xs font-bold uppercase tracking-[.12em] text-[var(--support)]">Next in your wallets</p>
+        <ol className="mt-3 space-y-2 text-sm leading-6 text-black">
+          {approvalNeeded !== false && <li><strong>1.</strong> {direction === "deposit" ? `Allow the bridge to use ${sendSymbol} in your IC wallet.` : `Allow the bridge to use ${sendSymbol} in your Base wallet.`}</li>}
+          <li><strong>{approvalNeeded !== false ? "2" : "1"}.</strong> {direction === "deposit" ? "Confirm the deposit request in your IC wallet." : "Confirm the withdrawal transaction in your Base wallet."}</li>
+          <li><strong>{approvalNeeded !== false ? "3" : "2"}.</strong> {direction === "deposit" ? "After the Bridge prepares a Mint Authorization, confirm the mint transaction in your Base wallet. The Bridge signs the authorization; you sign and pay gas for the Base transaction." : "After Base finality, confirm the notification in your IC wallet if your wallet asks. The Bridge then processes the ledger payout."}</li>
+        </ol>
+      </div></>}
       {ready && direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5">
         <Checkbox aria-label="Acknowledge irreversible burn" checked={burnAcknowledged} onCheckedChange={(checked) => setBurnAcknowledged(checked === true)} />
         <span>I understand that confirming burns the Base tokens and no Base refund is available.</span>
@@ -861,7 +953,7 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
       <DialogFooter>
         <DialogClose asChild><Button variant="ghost">{failed ? "Close" : "Cancel"}</Button></DialogClose>
         {failed && <Button onClick={() => { setBurnAcknowledged(false); onRetry() }}>Try again</Button>}
-        {ready && <Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>Confirm and open wallet</Button>}
+        {ready && <Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>{direction === "deposit" ? "Continue to IC wallet" : "Continue to Base wallet"}</Button>}
       </DialogFooter>
     </DialogContent>
   </Dialog>
