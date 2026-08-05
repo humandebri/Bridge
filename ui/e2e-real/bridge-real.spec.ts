@@ -173,7 +173,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
 })
 
 async function openHistory(page: Page): Promise<void> {
-  await page.goto("/history")
+  const historyLink = page.locator('a[href="/history"]:visible').first()
+  await expect(historyLink).toBeVisible()
+  await historyLink.evaluate((link: HTMLAnchorElement) => link.click())
   await expect(page).toHaveURL(/\/history$/)
 }
 
