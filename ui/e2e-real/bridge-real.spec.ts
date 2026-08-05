@@ -173,8 +173,11 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
 })
 
 async function openHistory(page: Page): Promise<void> {
-  if (!await clickFirstVisible(page.getByRole("button", { name: "Close", exact: true }))) {
-    await clickFirstVisible(page.getByRole("button", { name: "Minimize", exact: true }))
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const dismissed = await clickFirstVisible(page.getByRole("button", { name: "Close", exact: true }))
+      || await clickFirstVisible(page.getByRole("button", { name: "Minimize", exact: true }))
+    if (!dismissed) break
+    await page.waitForTimeout(100)
   }
   if (await clickFirstVisible(page.getByRole("link", { name: "Open history" }))) return
   if (await clickFirstVisible(page.locator('a[href="/history"]'))) return
