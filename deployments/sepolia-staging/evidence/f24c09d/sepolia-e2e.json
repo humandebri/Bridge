@@ -98,7 +98,26 @@
       "stage": "contracts"
     },
     "final_pause": null,
-    "frontend_publish": null,
+    "frontend_publish": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/frontend-publish-live.json",
+          "sha256": "7a3cfb589bf8d760a45d6fc07b86e48b088f79002ac5db11c26a69ec28741f8d"
+        }
+      ],
+      "details": {
+        "deployment_id": "2d5c23d3-7e4c-4bda-846d-034b571e6755",
+        "profile_sha256": "1cffb76243b328358a15d21ad437267ee45097cf11da715e7e016cc156ef8a6d",
+        "runtime_verification_fresh": true,
+        "test_banner_visible": true,
+        "url": "https://kinic-bridge-ui-test.hude.workers.dev"
+      },
+      "observed_at": "2026-08-05T12:14:06Z",
+      "schema_version": 7,
+      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "stage": "frontend_publish"
+    },
     "initialize": {
       "artifacts": [
         {
@@ -246,6 +265,6 @@
     "smoke_e2e": null,
     "wallet_e2e": null
   },
-  "state": "AWAITING_FRONTEND_PUBLISH",
-  "updated_at": "2026-08-05T09:26:53.970831Z"
+  "state": "AWAITING_SMOKE_E2E",
+  "updated_at": "2026-08-05T12:14:44.215359Z"
 }

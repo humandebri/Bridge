@@ -1,0 +1,26 @@
+{
+  "worker_name": "kinic-bridge-ui-test",
+  "url": "https://kinic-bridge-ui-test.hude.workers.dev",
+  "deployment_id": "2d5c23d3-7e4c-4bda-846d-034b571e6755",
+  "version_id": "7bf7f675-a9b2-4632-b9e0-f0d7cb3be47d",
+  "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+  "checkout_commit": "eee5ed95731eed60af012758fdd8df7547e48ee0",
+  "build_inputs_match_source_commit": true,
+  "frontend_profile_file_sha256": "1cffb76243b328358a15d21ad437267ee45097cf11da715e7e016cc156ef8a6d",
+  "built_profile_json_sha256": "18b515b4bfdd8c940e2b7475a14a2eb4118a2ecaa24a48e6b5639bcd2ff808c6",
+  "asset_count": 100,
+  "uploaded_asset_count": 8,
+  "test_banner": "IC MAINNET × BASE SEPOLIA TEST — TEST ASSETS ONLY — 5-MINUTE TIMELOCK",
+  "test_banner_visible": true,
+  "runtime_verification": {
+    "availability": "Available",
+    "to_base": "Available",
+    "to_internet_computer": "Available",
+    "deposits": 4,
+    "withdrawals": 0,
+    "console_errors": 0,
+    "console_warnings": 0,
+    "critical_requests_succeeded": true
+  },
+  "observed_at": "2026-08-05T12:14:06Z"
+}
