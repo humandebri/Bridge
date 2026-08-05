@@ -1,0 +1,7 @@
+{
+  "replacement_mode": "current-schema-upgrade",
+  "live_schema_version": 31,
+  "previous_deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+  "live_module_hash": "0xa0b8c359b82f1952e2c9cff0a6409f876601f76fd5f1f8242558fce6d412bc09",
+  "next": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48"
+}
