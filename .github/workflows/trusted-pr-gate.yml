@@ -75,6 +75,7 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           path: source
+          fetch-depth: 0
           submodules: recursive
           persist-credentials: false
       - name: Install pinned Rust toolchain
