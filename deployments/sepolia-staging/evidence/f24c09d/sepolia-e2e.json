@@ -1,0 +1,42 @@
+{
+  "binding": {
+    "activation_timelock_delay_seconds": 300,
+    "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+    "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+    "bridge_runtime_template_sha256": "0x4be5b6884d6293924865c2d2f669d1e8de7f285be74c12506ffb0e3c63bfb5a0",
+    "bridge_wasm_sha256": "53a44aa8e4c97a1f21416af0c4e5383947de6816b8d714bf0785b8d4f49a5c1a",
+    "bsns_address": "0x265e6b05a2f6bda29f464d70867a37acde3ccde8",
+    "bsns_runtime_sha256": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b",
+    "bsns_runtime_template_sha256": "0x10be95adefd5f76cf8d1f8dd137247dc9371d81335a793984dc88d2aa20955ac",
+    "chain_id": 84532,
+    "deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+    "environment_mode": "short-delay-test-only",
+    "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+    "frontend_profile_sha256": "1cffb76243b328358a15d21ad437267ee45097cf11da715e7e016cc156ef8a6d",
+    "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+    "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+    "local_e2e_sha256": "88c6cd5212fb52e40d9190c585e91156d665bf4bd59edbca6917d5671fc26ce6",
+    "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+    "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
+  },
+  "complete": false,
+  "created_at": "2026-08-05T07:26:55.443029Z",
+  "kind": "kinic-bridge-sepolia-staging-e2e",
+  "schema_version": 7,
+  "stages": {
+    "activation_execute": null,
+    "activation_schedule": null,
+    "contracts": null,
+    "final_pause": null,
+    "frontend_publish": null,
+    "initialize": null,
+    "install": null,
+    "preflight": null,
+    "rpc_rehearsal": null,
+    "smoke_e2e": null,
+    "wallet_e2e": null
+  },
+  "state": "AWAITING_PREFLIGHT",
+  "updated_at": "2026-08-05T07:26:55.443029Z"
+}
