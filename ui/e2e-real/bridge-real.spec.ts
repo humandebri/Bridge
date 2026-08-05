@@ -177,6 +177,11 @@ async function openHistory(page: Page): Promise<void> {
   await expect(historyLink).toBeVisible()
   await historyLink.evaluate((link: HTMLAnchorElement) => link.click())
   await expect(page).toHaveURL(/\/history$/)
+  const progressOverlay = page.locator('div[data-state="open"][aria-hidden="true"].fixed.inset-0').last()
+  if (await progressOverlay.isVisible()) {
+    await progressOverlay.click({ position: { x: 4, y: 4 } })
+    await expect(progressOverlay).toBeHidden()
+  }
 }
 
 async function refreshBridgeData(page: Page): Promise<void> {
