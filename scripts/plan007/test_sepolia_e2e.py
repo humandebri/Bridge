@@ -186,55 +186,13 @@ class SepoliaE2ETests(unittest.TestCase):
             "cycles_balance": 1,
         }
         artifacts = self.reinstall_artifacts(live, check, canister_status)
-        snapshots: dict[str, tuple[str, dict[str, object]]] = {
-            "bridge_status_sha256": (
-                sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
-                bridge_status
-                or {
-                    "deposits": 2,
-                    "withdrawals": 0,
-                    "pending_ledger_operations": 0,
-                    "reconciliation_holds": 0,
-                    "reserved_deposit_mint_operations": 2,
-                    "reserved_deposit_mint_amount": 1_000_000_000,
-                    "unpaid_withdrawal_count": 0,
-                    "unpaid_withdrawal_amount_out": 0,
-                },
-            ),
-            "activation_status_sha256": (
-                sepolia_e2e.LIVE_ACTIVATION_STATUS_ARTIFACT_KIND,
-                activation_status or {"pending_timelock_operations": 0},
-            ),
-            "storage_integrity_sha256": (
-                sepolia_e2e.LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND,
-                integrity or {"result": "ok"},
-            ),
-            "ledger_balance_sha256": (
-                sepolia_e2e.LIVE_LEDGER_BALANCE_ARTIFACT_KIND,
-                {"balance_raw": 600_000_000},
-            ),
-        }
-        snapshot_hashes: dict[str, str] = {
-            "public_config_sha256": next(
-                item["sha256"]
-                for item in artifacts
-                if item["kind"] == sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND
-            ),
-            "canister_status_sha256": next(
-                item["sha256"]
-                for item in artifacts
-                if item["kind"] == sepolia_e2e.LIVE_CANISTER_STATUS_ARTIFACT_KIND
-            ),
-        }
+        self.add_upgrade_snapshots(
+            artifacts,
+            bridge_status=bridge_status,
+            activation_status=activation_status,
+            integrity=integrity,
+        )
         artifact_root = self.root / "artifacts"
-        for hash_field, (kind, value) in snapshots.items():
-            path = artifact_root / f"{kind}.json"
-            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
-            sha256 = sepolia_e2e.digest(path)
-            snapshot_hashes[hash_field] = sha256
-            artifacts.append(
-                {"path": f"artifacts/{kind}.json", "sha256": sha256, "kind": kind}
-            )
         pause_evidence = {
             "schema_version": 2,
             "environment": "sepolia-staging",
@@ -295,7 +253,6 @@ class SepoliaE2ETests(unittest.TestCase):
         pause_path = artifact_root / "obsolete-pause-evidence.json"
         pause_path.write_text(json.dumps(pause_evidence) + "\n", encoding="utf-8")
         pause_sha256 = sepolia_e2e.digest(pause_path)
-        snapshot_hashes["pause_evidence_sha256"] = pause_sha256
         artifacts.append(
             {
                 "path": "artifacts/obsolete-pause-evidence.json",
@@ -303,6 +260,72 @@ class SepoliaE2ETests(unittest.TestCase):
                 "kind": sepolia_e2e.OBSOLETE_PAUSE_EVIDENCE_ARTIFACT_KIND,
             }
         )
+        return artifacts
+
+    def add_upgrade_snapshots(
+        self,
+        artifacts: list[dict[str, str]],
+        *,
+        bridge_status: dict[str, object] | None = None,
+        activation_status: dict[str, object] | None = None,
+        integrity: dict[str, object] | None = None,
+    ) -> None:
+        snapshots: dict[str, tuple[str, dict[str, object]]] = {
+            "bridge_status_sha256": (
+                sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
+                bridge_status
+                or {
+                    "deposits": 2,
+                    "withdrawals": 0,
+                    "pending_ledger_operations": 0,
+                    "reconciliation_holds": 0,
+                    "reserved_deposit_mint_operations": 2,
+                    "reserved_deposit_mint_amount": 1_000_000_000,
+                    "unpaid_withdrawal_count": 0,
+                    "unpaid_withdrawal_amount_out": 0,
+                },
+            ),
+            "activation_status_sha256": (
+                sepolia_e2e.LIVE_ACTIVATION_STATUS_ARTIFACT_KIND,
+                activation_status or {"pending_timelock_operations": 0},
+            ),
+            "storage_integrity_sha256": (
+                sepolia_e2e.LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND,
+                integrity or {"result": "ok"},
+            ),
+            "ledger_balance_sha256": (
+                sepolia_e2e.LIVE_LEDGER_BALANCE_ARTIFACT_KIND,
+                {"balance_raw": 600_000_000},
+            ),
+        }
+        artifact_root = self.root / "artifacts"
+        for _, (kind, value) in snapshots.items():
+            path = artifact_root / f"{kind}.json"
+            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+            sha256 = sepolia_e2e.digest(path)
+            artifacts.append(
+                {"path": f"artifacts/{kind}.json", "sha256": sha256, "kind": kind}
+            )
+
+    def current_upgrade_artifacts(self) -> list[dict[str, str]]:
+        live = {
+            "schema_version": 31,
+            "deployment_instance_id": PROFILE_INSTANCE,
+        }
+        check = {
+            "replacement_mode": "current-schema-upgrade",
+            "live_schema_version": 31,
+            "previous_deployment_instance_id": PROFILE_INSTANCE,
+            "live_module_hash": TX,
+            "next": PROFILE_INSTANCE,
+        }
+        status = {
+            "module_hash": TX,
+            "controller_principals": ["aaaaa-aa"],
+            "cycles_balance": 1,
+        }
+        artifacts = self.reinstall_artifacts(live, check, status)
+        self.add_upgrade_snapshots(artifacts)
         return artifacts
 
     def details(self, stage: str) -> dict[str, object]:
@@ -915,10 +938,11 @@ class SepoliaE2ETests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema_version"]["const"], 7)
         schema_text = schema_path.read_text(encoding="utf-8")
         self.assertNotIn("obsolete-state-disposition", schema_text)
+        self.assertIn("current-schema-upgrade", schema_text)
         self.assertIn("obsolete-schema-upgrade", schema_text)
         self.assertIn("obsolete-pause-evidence", schema_text)
 
-    def test_v31_preflight_requires_a_distinct_previous_instance(self) -> None:
+    def test_v31_reinstall_preflight_requires_a_distinct_previous_instance(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
         details["live_schema_version"] = 31
@@ -936,7 +960,6 @@ class SepoliaE2ETests(unittest.TestCase):
         sepolia_e2e.validate_preflight(details, binding, artifacts, self.manifest)
         for live in (
             {"schema_version": 31},
-            {"schema_version": 31, "deployment_instance_id": PROFILE_INSTANCE},
             {"schema_version": 31, "deployment_instance_id": f"0x{'0' * 64}"},
             {"schema_version": 31, "deployment_instance_id": "0x11"},
             {"schema_version": 31, "deployment_instance_id": [17] * 31},
@@ -950,6 +973,34 @@ class SepoliaE2ETests(unittest.TestCase):
                     invalid_artifacts,
                     self.manifest,
                 )
+
+    def test_v31_upgrade_preflight_requires_state_preservation_snapshots(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        details = self.details("preflight")
+        details.update(
+            {
+                "replacement_mode": "current-schema-upgrade",
+                "live_schema_version": 31,
+                "previous_deployment_instance_id": PROFILE_INSTANCE,
+            }
+        )
+        artifacts = self.current_upgrade_artifacts()
+        sepolia_e2e.validate_preflight(details, binding, artifacts, self.manifest)
+        for kind in (
+            sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
+            sepolia_e2e.LIVE_ACTIVATION_STATUS_ARTIFACT_KIND,
+            sepolia_e2e.LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND,
+            sepolia_e2e.LIVE_LEDGER_BALANCE_ARTIFACT_KIND,
+        ):
+            with self.subTest(kind=kind):
+                missing = [artifact for artifact in artifacts if artifact["kind"] != kind]
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exactly one"):
+                    sepolia_e2e.validate_preflight(
+                        details,
+                        binding,
+                        missing,
+                        self.manifest,
+                    )
 
     def test_preflight_requires_unique_reinstall_artifacts(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]

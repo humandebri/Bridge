@@ -55,7 +55,9 @@ preflight
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
 Canister installの前にはlive `public_config` をJSONへ保存し、次のgateを必ず通す。
-現行v31のreinstallではprofileの新IDがlive IDと異なることを要求する。
+現行v31のreinstallではprofileの新IDがlive IDと異なることを要求する。現行v31のupgradeでは
+`current-schema-upgrade`としてprofileとliveのinstance ID一致を要求し、upgrade前後のstate count、
+schema v31、instance ID、`storage_integrity_check = ok`を照合する。
 repository-owned `deployments/sepolia-staging/obsolete-replacement-policy.json` に固定したCanister ID・instance ID・module hashのtupleと完全一致する旧v30 stagingだけは`obsolete-schema-upgrade`として受理し、profileとliveのinstance IDが同一であることを要求する。
 v29以下、未知schema、欠落、ゼロ値、tuple不一致はfail closedにする。v30→v31は一つのSQLite transactionでrecord wire、config、quota、auditを移行し、失敗時は全rollbackする。
 出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、
@@ -75,14 +77,14 @@ preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-
 各artifactを再読し、live設定とmodule hashから比較を再計算してchecker出力および`details`と照合する。
 別のlive取得結果、手編集したchecker出力、manifest外のpathは使用しない。
 
-v30 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
+v30→v31またはv31→v31 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
 
 - `live-bridge-status`: Deposit／reservationを含むcountsと、Withdrawal、pending Ledger operation、reconciliation hold、未払額を保持する。
 - `live-activation-status`: pending Timelock operation数を保持する。
 - `live-canister-status`: module hash、controller principals、cycles balanceを保持する。
 - `live-storage-integrity`: 認可済みcallerによる`storage_integrity_check()`の`ok`結果を保持する。
 - `live-ledger-balance`: Bridge principalのTICRC1 raw balanceを保持する。
-- `obsolete-pause-evidence`: Base Sepolia RPC 3件で取得したchain ID、Finalized head、PauseDepositMints／PauseWithdrawalsのreceipt・target・calldata・event・canonical blockと、ICの`pause_new_deposits`応答・audit sequence・pause後statusを保持する。validatorはBase観測の2-of-3一致を要求する。
+- v30→v31だけは`obsolete-pause-evidence`も保存する。Base Sepolia RPC 3件で取得したchain ID、Finalized head、PauseDepositMints／PauseWithdrawalsのreceipt・target・calldata・event・canonical blockと、ICの`pause_new_deposits`応答・audit sequence・pause後statusを保持する。validatorはBase観測の2-of-3一致を要求する。
 - install stageにはupgrade前後の全count、schema v31、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
 
 `deployments/sepolia-staging/obsolete-pause-capture.template.json`をsecure作業領域へコピーし、3 provider URL、2件のpause transaction hash、pause実行前の次audit sequenceを設定する。次のcapture commandは3 RPCを直接queryし、承認済みIC identityで`pause_new_deposits`を再確認実行した直後に`get_bridge_status`と`get_audit_events`をqueryし、検証済みartifactだけをatomicに出力する。外部mutationを含むため、明示承認を得てから実行する。正式artifactを生成するoffline verifierは提供しないため、自己申告boolean、手書きの成功要約、collectorの標準出力をpreflight artifactとして登録しない。

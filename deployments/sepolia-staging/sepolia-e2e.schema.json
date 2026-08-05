@@ -177,6 +177,65 @@
                   "details": {
                     "type": "object",
                     "properties": {
+                      "replacement_mode": { "const": "current-schema-upgrade" }
+                    },
+                    "required": ["replacement_mode"]
+                  }
+                },
+                "required": ["stage", "details"]
+              },
+              "then": {
+                "properties": {
+                  "artifacts": {
+                    "allOf": [
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-bridge-status" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      },
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-activation-status" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      },
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-storage-integrity" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      },
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-ledger-balance" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "stage": { "const": "preflight" },
+                  "details": {
+                    "type": "object",
+                    "properties": {
                       "replacement_mode": { "const": "obsolete-schema-upgrade" }
                     },
                     "required": ["replacement_mode"]

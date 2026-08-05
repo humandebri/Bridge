@@ -42,15 +42,14 @@ export function verifyReinstallInstance(profile, livePublicConfig, liveCanisterS
     livePublicConfig?.deployment_instance_id,
     "live PublicConfig deployment_instance_id",
   )
-  if (schemaVersion === 31 && next === previous) {
-    throw new Error("staging reinstall rejected reuse of the live deployment instance ID")
-  }
   if (schemaVersion === 30 && next !== previous) {
     throw new Error("staging upgrade must preserve the live deployment instance ID")
   }
   const liveModuleHash = moduleHash(liveCanisterStatus?.module_hash, "live canister status module_hash")
   const replacementMode = schemaVersion === 31
-    ? "current-schema-reinstall"
+    ? next === previous
+      ? "current-schema-upgrade"
+      : "current-schema-reinstall"
     : "obsolete-schema-upgrade"
   if (replacementMode === "obsolete-schema-upgrade") {
     if (

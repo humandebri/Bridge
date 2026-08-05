@@ -32,6 +32,20 @@ assert.deepEqual(
 )
 assert.deepEqual(
   verifyReinstallInstance(
+    { deploymentInstanceId: previousHex },
+    { schema_version: 31, deployment_instance_id: previousBytes },
+    currentStatus,
+  ),
+  {
+    replacement_mode: "current-schema-upgrade",
+    live_schema_version: 31,
+    previous_deployment_instance_id: previousHex,
+    live_module_hash: currentStatus.module_hash,
+    next: previousHex,
+  },
+)
+assert.deepEqual(
+  verifyReinstallInstance(
     obsoleteProfile,
     obsoleteLive,
     obsoleteStatus,
@@ -43,14 +57,6 @@ assert.deepEqual(
     live_module_hash: obsoleteReplacementPolicy.module_hash,
     next: obsoleteReplacementPolicy.previous_deployment_instance_id,
   },
-)
-assert.throws(
-  () => verifyReinstallInstance(
-    { deploymentInstanceId: previousHex },
-    { schema_version: 31, deployment_instance_id: previousBytes },
-    currentStatus,
-  ),
-  /rejected reuse/,
 )
 assert.throws(
   () => verifyReinstallInstance(

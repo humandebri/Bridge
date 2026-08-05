@@ -43,6 +43,7 @@ LIVE_CANISTER_STATUS_ARTIFACT_KIND = "live-canister-status"
 LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND = "live-storage-integrity"
 LIVE_LEDGER_BALANCE_ARTIFACT_KIND = "live-ledger-balance"
 CURRENT_SCHEMA_REINSTALL = "current-schema-reinstall"
+CURRENT_SCHEMA_UPGRADE = "current-schema-upgrade"
 OBSOLETE_SCHEMA_UPGRADE = "obsolete-schema-upgrade"
 UPGRADE_STATE_COUNT_FIELDS = {
     "deposits",
@@ -291,8 +292,6 @@ def reinstall_instance_check(
         live_public_config.get("deployment_instance_id"),
         "live PublicConfig deployment_instance_id",
     )
-    if schema_version == CURRENT_STABLE_SCHEMA and previous == next_id:
-        fail("staging reinstall rejected reuse of the live deployment instance ID")
     if schema_version == OBSOLETE_REPLACEABLE_SCHEMA and previous != next_id:
         fail("staging upgrade must preserve the live deployment instance ID")
     live_module_hash = require_pattern(
@@ -304,7 +303,11 @@ def reinstall_instance_check(
     if live_module_hash == "0x" + "0" * 64:
         fail("live canister status module_hash must be nonzero")
     replacement_mode = (
-        CURRENT_SCHEMA_REINSTALL
+        (
+            CURRENT_SCHEMA_UPGRADE
+            if previous == next_id
+            else CURRENT_SCHEMA_REINSTALL
+        )
         if schema_version == CURRENT_STABLE_SCHEMA
         else OBSOLETE_SCHEMA_UPGRADE
     )
@@ -355,18 +358,24 @@ def normalized_reinstall_check(value: dict[str, Any]) -> dict[str, Any]:
     )
     schema_version = require_nat(value, "live_schema_version", context)
     replacement_mode = require_string(value, "replacement_mode", context)
-    expected_mode = {
-        CURRENT_STABLE_SCHEMA: CURRENT_SCHEMA_REINSTALL,
-        OBSOLETE_REPLACEABLE_SCHEMA: OBSOLETE_SCHEMA_UPGRADE,
-    }.get(schema_version)
-    if replacement_mode != expected_mode:
-        fail(f"{context} replacement_mode does not match live_schema_version")
     previous_value = value["previous_deployment_instance_id"]
     previous = (
         None
         if previous_value is None
         else deployment_instance_hex(previous_value, f"{context} previous_deployment_instance_id")
     )
+    next_id = deployment_instance_hex(value["next"], f"{context} next")
+    expected_mode = (
+        CURRENT_SCHEMA_UPGRADE
+        if schema_version == CURRENT_STABLE_SCHEMA and previous == next_id
+        else CURRENT_SCHEMA_REINSTALL
+        if schema_version == CURRENT_STABLE_SCHEMA
+        else OBSOLETE_SCHEMA_UPGRADE
+        if schema_version == OBSOLETE_REPLACEABLE_SCHEMA
+        else None
+    )
+    if replacement_mode != expected_mode:
+        fail(f"{context} replacement_mode does not match schema and deployment instance IDs")
     return {
         "replacement_mode": replacement_mode,
         "live_schema_version": schema_version,
@@ -377,7 +386,7 @@ def normalized_reinstall_check(value: dict[str, Any]) -> dict[str, Any]:
             EVM_HASH,
             context,
         ),
-        "next": deployment_instance_hex(value["next"], f"{context} next"),
+        "next": next_id,
     }
 
 
@@ -606,7 +615,7 @@ def validate_obsolete_pause_evidence(
         fail(f"{context} IC pause response, audit, and status do not agree")
 
 
-def validate_obsolete_upgrade_snapshots(
+def validate_upgrade_snapshots(
     artifacts: Any,
     manifest_path: Path,
 ) -> None:
@@ -614,7 +623,7 @@ def validate_obsolete_upgrade_snapshots(
         artifacts,
         manifest_path,
         LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
-        "v30 upgrade preflight",
+        "upgrade preflight",
     )
     exact_keys(bridge_status, UPGRADE_STATE_COUNT_FIELDS, "live bridge status")
     for field in UPGRADE_STATE_COUNT_FIELDS:
@@ -624,7 +633,7 @@ def validate_obsolete_upgrade_snapshots(
         artifacts,
         manifest_path,
         LIVE_ACTIVATION_STATUS_ARTIFACT_KIND,
-        "v30 upgrade preflight",
+        "upgrade preflight",
     )
     exact_keys(activation, {"pending_timelock_operations"}, "live activation status")
     if require_nat(
@@ -632,23 +641,23 @@ def validate_obsolete_upgrade_snapshots(
         "pending_timelock_operations",
         "live activation status",
     ) != 0:
-        fail("v30 upgrade requires zero pending Timelock operations")
+        fail("upgrade requires zero pending Timelock operations")
 
     integrity = required_json_artifact(
         artifacts,
         manifest_path,
         LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND,
-        "v30 upgrade preflight",
+        "upgrade preflight",
     )
     exact_keys(integrity, {"result"}, "live storage integrity")
     if integrity["result"] != "ok":
-        fail("v30 upgrade requires storage_integrity_check to return ok")
+        fail("upgrade requires storage_integrity_check to return ok")
 
     ledger = required_json_artifact(
         artifacts,
         manifest_path,
         LIVE_LEDGER_BALANCE_ARTIFACT_KIND,
-        "v30 upgrade preflight",
+        "upgrade preflight",
     )
     exact_keys(ledger, {"balance_raw"}, "live ledger balance")
     require_nat(ledger, "balance_raw", "live ledger balance")
@@ -753,19 +762,11 @@ def validate_preflight(
             OBSOLETE_PAUSE_EVIDENCE_ARTIFACT_KIND,
         }
     ]
-    if expected_check["replacement_mode"] == OBSOLETE_SCHEMA_UPGRADE:
-        validate_obsolete_upgrade_snapshots(artifacts, manifest_path)
-        pause_evidence = required_json_artifact(
-            artifacts,
-            manifest_path,
-            OBSOLETE_PAUSE_EVIDENCE_ARTIFACT_KIND,
-            "preflight",
-        )
-        validate_obsolete_pause_evidence(
-            pause_evidence,
-            binding,
-            expected_check,
-        )
+    if expected_check["replacement_mode"] in {
+        CURRENT_SCHEMA_UPGRADE,
+        OBSOLETE_SCHEMA_UPGRADE,
+    }:
+        validate_upgrade_snapshots(artifacts, manifest_path)
         if (
             live_canister_status["controller_principals"]
             != details["controller_principals"]
@@ -777,13 +778,25 @@ def validate_preflight(
             != require_nat(details, "cycles_balance", context)
         ):
             fail("preflight summary differs from the live canister status snapshot")
+    if expected_check["replacement_mode"] == OBSOLETE_SCHEMA_UPGRADE:
+        pause_evidence = required_json_artifact(
+            artifacts,
+            manifest_path,
+            OBSOLETE_PAUSE_EVIDENCE_ARTIFACT_KIND,
+            "preflight",
+        )
+        validate_obsolete_pause_evidence(
+            pause_evidence,
+            binding,
+            expected_check,
+        )
         if any(
             artifact.get("kind") == OBSOLETE_STATE_DISPOSITION_ARTIFACT_KIND
             for artifact in obsolete_artifact_matches
         ):
             fail("schema upgrade must not include discarded-state evidence")
     elif obsolete_artifact_matches:
-        fail("current-schema reinstall must not include obsolete replacement artifacts")
+        fail("current-schema replacement must not include obsolete replacement artifacts")
 
 
 def validate_install(details: dict[str, Any], binding: dict[str, Any]) -> None:
