@@ -126,6 +126,10 @@ theorem deposit_admission_refinement
     depositAdmissionImpl admission = admitDeposit admission := by
   simp [depositAdmissionImpl, bounded]
 
+theorem deposit_identity_preflight_refinement (processed : Bool) :
+    depositIdentityImpl processed = decideDepositIdentity processed := by
+  cases processed <;> rfl
+
 theorem reservation_refinement
     (reserved candidate : U128) (bounded : reserved.val + candidate.val ≤ maxU128) :
     reservationImpl reserved candidate =
@@ -167,10 +171,18 @@ theorem manual_claim_refinement
       manualClaimAllowed scheduled active stopped overdue expired := by
   rfl
 
+theorem refund_request_identity_refinement
+    (authenticated : Bool) (ownerMatch : Option Bool) :
+    refundRequestIdentityImpl authenticated ownerMatch =
+      decideRefundRequestIdentity authenticated ownerMatch := by
+  rfl
+
 theorem notification_admission_refinement
-    (callerCount hashCount callerLimit hashLimit : U64) :
-    notificationAdmissionImpl callerCount hashCount callerLimit hashLimit =
-      notificationAdmissionAllowed callerCount.val hashCount.val callerLimit.val hashLimit.val := by
+    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : U16) :
+    notificationAdmissionImpl globalCount callerCount globalLimit callerLimit
+        ingestionCount ingestionLimit =
+      (notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val,
+        notificationIngestionAllowed ingestionCount.val ingestionLimit.val) := by
   rfl
 
 theorem lease_lane_refinement
@@ -181,6 +193,12 @@ theorem lease_lane_refinement
 
 theorem funding_attempt_refinement (outcome : FundingOutcomeKind) :
     fundingAttemptImpl outcome = decideFundingAttempt outcome := by
+  rfl
+
+theorem funding_reconciliation_refinement
+    (completeAbsence finalScan dedupExpired : Bool) :
+    fundingReconciliationImpl completeAbsence finalScan dedupExpired =
+      decideFundingReconciliation completeAbsence finalScan dedupExpired := by
   rfl
 
 end BridgeSpec.Refinement

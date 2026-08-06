@@ -37,7 +37,7 @@ build_once() {
   cp "$output/cargo/wasm32-unknown-unknown/release/bridge_canister.wasm" \
     "$output/bridge-canister.wasm"
   verify_source
-  FOUNDRY_OFFLINE=true forge build --offline --force --root "$SOURCE_ROOT/contracts" \
+  FOUNDRY_PROFILE=default FOUNDRY_OFFLINE=true forge build --offline --force --root "$SOURCE_ROOT/contracts" \
     --out "$output/forge" --cache-path "$output/forge-cache"
   verify_source
   python3 - "$output/forge/Bridge.sol/Bridge.json" "$output/bridge-runtime.bin" <<'PY'

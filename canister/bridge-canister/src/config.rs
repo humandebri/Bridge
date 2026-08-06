@@ -21,13 +21,18 @@ pub struct BridgeInitArgs {
     pub custom_evm_rpc_urls: Vec<String>,
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
+    pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
+    pub deployment_instance_id: Vec<u8>,
     pub ecdsa_key_name: String,
     pub ecdsa_derivation_path: Vec<Vec<u8>>,
     pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
     pub deposit_rate_limit_window_seconds: u64,
     pub deposit_rate_limit_global: u16,
     pub deposit_rate_limit_per_principal: u16,
+    pub notification_rate_limit_window_seconds: u64,
+    pub notification_rate_limit_global: u16,
+    pub notification_ingestion_rate_limit_global: u16,
     pub settlement_rate_limit_window_seconds: u64,
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
@@ -69,13 +74,19 @@ pub(crate) struct ImmutableBridgeConfig {
     pub custom_evm_rpc_urls: Vec<String>,
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
+    pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
+    pub deployment_instance_id: Vec<u8>,
     pub ecdsa_key_name: String,
     pub ecdsa_derivation_path: Vec<Vec<u8>>,
     pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
     pub deposit_rate_limit_window_seconds: u64,
     pub deposit_rate_limit_global: u16,
     pub deposit_rate_limit_per_principal: u16,
+    pub notification_rate_limit_window_seconds: u64,
+    pub notification_rate_limit_global: u16,
+    #[serde(default = "default_notification_ingestion_rate_limit_global")]
+    pub notification_ingestion_rate_limit_global: u16,
     pub settlement_rate_limit_window_seconds: u64,
     pub settlement_rate_limit_global: u16,
     pub settlement_rate_limit_per_principal: u16,
@@ -88,6 +99,10 @@ pub(crate) struct ImmutableBridgeConfig {
     pub settlement_cycle_ceiling: u128,
 }
 
+const fn default_notification_ingestion_rate_limit_global() -> u16 {
+    30
+}
+
 impl ImmutableBridgeConfig {
     pub(crate) fn from_init(value: &BridgeInitArgs) -> Self {
         Self {
@@ -97,13 +112,19 @@ impl ImmutableBridgeConfig {
             custom_evm_rpc_urls: value.custom_evm_rpc_urls.clone(),
             base_chain_id: value.base_chain_id,
             bridge_contract: value.bridge_contract.clone(),
+            expected_bridge_runtime_sha256: value.expected_bridge_runtime_sha256.clone(),
             timelock_contract: value.timelock_contract.clone(),
+            deployment_instance_id: value.deployment_instance_id.clone(),
             ecdsa_key_name: value.ecdsa_key_name.clone(),
             ecdsa_derivation_path: value.ecdsa_derivation_path.clone(),
             governance_ecdsa_derivation_path: value.governance_ecdsa_derivation_path.clone(),
             deposit_rate_limit_window_seconds: value.deposit_rate_limit_window_seconds,
             deposit_rate_limit_global: value.deposit_rate_limit_global,
             deposit_rate_limit_per_principal: value.deposit_rate_limit_per_principal,
+            notification_rate_limit_window_seconds: value.notification_rate_limit_window_seconds,
+            notification_rate_limit_global: value.notification_rate_limit_global,
+            notification_ingestion_rate_limit_global: value
+                .notification_ingestion_rate_limit_global,
             settlement_rate_limit_window_seconds: value.settlement_rate_limit_window_seconds,
             settlement_rate_limit_global: value.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: value.settlement_rate_limit_per_principal,
@@ -130,13 +151,18 @@ impl ImmutableBridgeConfig {
             custom_evm_rpc_urls: self.custom_evm_rpc_urls,
             base_chain_id: self.base_chain_id,
             bridge_contract: self.bridge_contract,
+            expected_bridge_runtime_sha256: self.expected_bridge_runtime_sha256,
             timelock_contract: self.timelock_contract,
+            deployment_instance_id: self.deployment_instance_id,
             ecdsa_key_name: self.ecdsa_key_name,
             ecdsa_derivation_path: self.ecdsa_derivation_path,
             governance_ecdsa_derivation_path: self.governance_ecdsa_derivation_path,
             deposit_rate_limit_window_seconds: self.deposit_rate_limit_window_seconds,
             deposit_rate_limit_global: self.deposit_rate_limit_global,
             deposit_rate_limit_per_principal: self.deposit_rate_limit_per_principal,
+            notification_rate_limit_window_seconds: self.notification_rate_limit_window_seconds,
+            notification_rate_limit_global: self.notification_rate_limit_global,
+            notification_ingestion_rate_limit_global: self.notification_ingestion_rate_limit_global,
             settlement_rate_limit_window_seconds: self.settlement_rate_limit_window_seconds,
             settlement_rate_limit_global: self.settlement_rate_limit_global,
             settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
@@ -165,14 +191,23 @@ impl Default for GovernanceReplacementPolicy {
 
 impl BridgeInitArgs {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.bridge_contract.len() != 20 || self.timelock_contract.len() != 20 {
-            return Err("bridge and Timelock contracts must be 20 bytes");
+        if self.bridge_contract.len() != 20
+            || self.expected_bridge_runtime_sha256.len() != 32
+            || self.timelock_contract.len() != 20
+            || self.deployment_instance_id.len() != 32
+        {
+            return Err("bridge and Timelock contracts must be 20 bytes and deployment instance ID must be 32 bytes");
         }
         if self.bridge_contract.iter().all(|byte| *byte == 0)
             || self.timelock_contract.iter().all(|byte| *byte == 0)
+            || self.deployment_instance_id.iter().all(|byte| *byte == 0)
+            || self
+                .expected_bridge_runtime_sha256
+                .iter()
+                .all(|byte| *byte == 0)
             || self.bridge_contract == self.timelock_contract
         {
-            return Err("bridge and Timelock contracts must be nonzero and distinct");
+            return Err("bridge, Timelock, and deployment instance ID must be nonzero, with distinct contracts");
         }
         if self.base_chain_id == 0
             || self.ecdsa_key_name.is_empty()
@@ -222,6 +257,14 @@ impl BridgeInitArgs {
             || self.deposit_rate_limit_global > 100
         {
             return Err("deposit rate limit must satisfy 60 <= window <= 300 and 1 <= per-principal <= global <= 100");
+        }
+        if !(60..=3_600).contains(&self.notification_rate_limit_window_seconds)
+            || !(1..=100).contains(&self.notification_rate_limit_global)
+            || !(1..=100).contains(&self.notification_ingestion_rate_limit_global)
+        {
+            return Err(
+                "notification rate limit must satisfy 60 <= window <= 3600 and 1 <= global <= 100",
+            );
         }
         if !(60..=3_600).contains(&self.settlement_rate_limit_window_seconds)
             || self.settlement_rate_limit_per_record == 0
@@ -427,6 +470,28 @@ mod tests {
     }
 
     #[test]
+    fn validates_notification_rate_limit_bounds() {
+        let mut args = valid_args();
+        args.notification_rate_limit_window_seconds = 59;
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.notification_rate_limit_window_seconds = 3_601;
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.notification_rate_limit_global = 0;
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.notification_rate_limit_global = 101;
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.notification_ingestion_rate_limit_global = 0;
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.notification_ingestion_rate_limit_global = 101;
+        assert!(args.validate().is_err());
+    }
+
+    #[test]
     fn contracts_must_be_nonzero_and_distinct() {
         let mut args = valid_args();
         args.bridge_contract = vec![0; 20];
@@ -436,6 +501,12 @@ mod tests {
         assert!(args.validate().is_err());
         args = valid_args();
         args.timelock_contract = args.bridge_contract.clone();
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.expected_bridge_runtime_sha256 = vec![0; 32];
+        assert!(args.validate().is_err());
+        args = valid_args();
+        args.expected_bridge_runtime_sha256 = vec![4; 31];
         assert!(args.validate().is_err());
     }
 
@@ -454,13 +525,18 @@ mod tests {
             custom_evm_rpc_urls: vec![],
             base_chain_id: BASE_MAINNET_CHAIN_ID,
             bridge_contract: vec![1; 20],
+            expected_bridge_runtime_sha256: vec![4; 32],
             timelock_contract: vec![2; 20],
+            deployment_instance_id: vec![3; 32],
             ecdsa_key_name: "key_1".into(),
             ecdsa_derivation_path: vec![],
             governance_ecdsa_derivation_path: vec![b"governance-operator".to_vec()],
             deposit_rate_limit_window_seconds: 60,
             deposit_rate_limit_global: 10,
             deposit_rate_limit_per_principal: 2,
+            notification_rate_limit_window_seconds: 600,
+            notification_rate_limit_global: 60,
+            notification_ingestion_rate_limit_global: 30,
             settlement_rate_limit_window_seconds: 600,
             settlement_rate_limit_global: 60,
             settlement_rate_limit_per_principal: 6,

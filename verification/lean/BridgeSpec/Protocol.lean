@@ -16,7 +16,7 @@ inductive Event where
   | fund (grossAmount : Nat)
   | commitAuthorization (authorization : Authorization) (origin : AuthorizationOrigin)
   | installSignature
-  | beginExpiryReconciliation
+  | releaseExpiredReservation (finalizedTimestamp : Nat)
   | startExpiredRefund (origin : AuthorizationOrigin) (evidence : ExpiryEvidence)
   | completeMint (evidence : MintEvidence)
   | completeRefund
@@ -31,7 +31,8 @@ def depositStep (state : State) : Event → Option State
   | .commitAuthorization authorization origin =>
       commitAuthorization state authorization origin
   | .installSignature => installSignature state
-  | .beginExpiryReconciliation => beginExpiryReconciliation state
+  | .releaseExpiredReservation finalizedTimestamp =>
+      releaseExpiredReservation state finalizedTimestamp
   | .startExpiredRefund origin evidence => startExpiredRefund state origin evidence
   | .completeMint evidence => completeMint state evidence
   | .completeRefund => completeRefund state
@@ -57,15 +58,31 @@ def initial : State := {
 
 def ReservationConsistent (state : State) : Prop :=
   match state.phase with
-  | .authorizationPending | .authorizationAvailable | .expiryReconciliation =>
+  | .authorizationPending =>
       ∃ authorization,
         state.authorization = some authorization ∧
         state.reservedMint = authorization.netAmount ∧
-        authorization.grossAmount ≤ state.pendingDepositLiability
+        authorization.grossAmount ≤ state.pendingDepositLiability ∧
+        authorization.netAmount + authorization.chargedServiceFee =
+          authorization.grossAmount
+  | .authorizationAvailable =>
+      ∃ authorization,
+        state.authorization = some authorization ∧
+        state.reservedMint = authorization.netAmount ∧
+        authorization.netAmount ≤ state.pendingDepositLiability ∧
+        authorization.netAmount + authorization.chargedServiceFee =
+          authorization.grossAmount
   | _ => state.reservedMint = 0
 
 def FeeConsistent (state : State) : Prop :=
-  state.feeCounted = true → state.phase = .minted
+  (state.phase = .authorizationAvailable →
+      state.feeCounted = true) ∧
+    (state.feeCounted = true →
+      state.phase = .authorizationAvailable ∨
+      state.phase = .refundAvailable ∨
+      state.phase = .refundPending ∨
+      state.phase = .refundReconciliationHold ∨
+      state.phase = .refunded ∨ state.phase = .minted)
 
 def WellFormed (state : State) : Prop :=
   BridgeSpec.MintAuthorization.Backed state ∧
@@ -75,13 +92,19 @@ theorem initial_well_formed : WellFormed initial := by
   simp [WellFormed, initial, BridgeSpec.MintAuthorization.Backed,
     ReservationConsistent, FeeConsistent]
 
-theorem fee_false_of_consistent_of_not_minted
+theorem fee_false_of_consistent_of_preauthorization
     {state : State} (consistent : FeeConsistent state)
-    (notMinted : state.phase ≠ .minted) :
+    (preauthorization :
+      state.phase = .fundingPending ∨
+      state.phase = .escrowedUnquoted ∨
+      state.phase = .authorizationPending ∨
+      state.phase = .cancelled) :
     state.feeCounted = false := by
   cases counted : state.feeCounted with
   | false => rfl
-  | true => exact (notMinted (consistent counted)).elim
+  | true =>
+      rcases consistent.2 counted with available | refundAvailable | refundPending | refundHold | refunded | minted <;>
+        simp_all
 
 theorem deposit_step_preserves_well_formed
     {state next : State} {event : Event}
@@ -100,7 +123,7 @@ theorem deposit_step_preserves_well_formed
         have reserved : state.reservedMint = 0 := by
           simpa [ReservationConsistent, phase] using reservation
         have feeFalse : state.feeCounted = false :=
-          fee_false_of_consistent_of_not_minted fee (by simp [phase])
+          fee_false_of_consistent_of_preauthorization fee (Or.inl phase)
         constructor
         · exact funding_preserves_backing backed
         · simp [ReservationConsistent, FeeConsistent, fund, reserved, feeFalse]
@@ -112,51 +135,67 @@ theorem deposit_step_preserves_well_formed
       next allowed =>
         simp only [Option.some.injEq] at accepted
         subst next
-        rcases allowed with ⟨phase, _, _, liability⟩
+        rcases allowed with ⟨phase, _, authValid, liability⟩
+        have amount :
+            authorization.netAmount + authorization.chargedServiceFee =
+              authorization.grossAmount :=
+          authValid.2.2.2.2.2.2.1
         have feeFalse : state.feeCounted = false :=
-          fee_false_of_consistent_of_not_minted fee (by simp [phase])
+          fee_false_of_consistent_of_preauthorization fee (Or.inr (Or.inl phase))
         exact ⟨backed, by
-          simp [ReservationConsistent, liability], by
+          simp [ReservationConsistent, liability, amount], by
           simp [FeeConsistent, feeFalse]⟩
       next => simp at accepted
   | installSignature =>
       simp only [depositStep] at accepted
       unfold installSignature at accepted
-      split at accepted
-      next phase =>
-        simp [phase, ReservationConsistent] at reservation
-        have feeFalse : state.feeCounted = false :=
-          fee_false_of_consistent_of_not_minted fee (by simp [phase])
-        simp only [Option.some.injEq] at accepted
-        subst next
-        rcases reservation with ⟨authorization, auth, reserved, liability⟩
-        exact ⟨backed, by
-          simp [ReservationConsistent, auth, reserved, liability], by
-          simp [FeeConsistent, feeFalse]⟩
-      next => simp at accepted
-  | beginExpiryReconciliation =>
+      cases auth : state.authorization with
+      | none => simp [auth] at accepted
+      | some authorization =>
+          simp only [auth] at accepted
+          split at accepted
+          next allowed =>
+            rcases allowed with ⟨phase, feeFalse, feeBound⟩
+            simp [phase, ReservationConsistent, auth] at reservation
+            rcases reservation with ⟨reserved, liability, amount⟩
+            simp only [Option.some.injEq] at accepted
+            subst next
+            constructor
+            · simp only [BridgeSpec.MintAuthorization.Backed] at backed ⊢
+              omega
+            · constructor
+              · simp [ReservationConsistent, auth, reserved, amount]
+                omega
+              · simp [FeeConsistent]
+          next => simp at accepted
+  | releaseExpiredReservation finalizedTimestamp =>
       simp only [depositStep] at accepted
-      unfold beginExpiryReconciliation at accepted
-      split at accepted
-      next phase =>
-        simp only [Option.some.injEq] at accepted
-        subst next
-        cases phase with
-        | inl pending =>
-            simp [pending, ReservationConsistent] at reservation
-            have feeFalse : state.feeCounted = false :=
-              fee_false_of_consistent_of_not_minted fee (by simp [pending])
-            exact ⟨backed, by
-              simpa [ReservationConsistent] using reservation, by
-              simp [FeeConsistent, feeFalse]⟩
-        | inr available =>
-            simp [available, ReservationConsistent] at reservation
-            have feeFalse : state.feeCounted = false :=
-              fee_false_of_consistent_of_not_minted fee (by simp [available])
-            exact ⟨backed, by
-              simpa [ReservationConsistent] using reservation, by
-              simp [FeeConsistent, feeFalse]⟩
-      next => simp at accepted
+      unfold releaseExpiredReservation at accepted
+      cases auth : state.authorization with
+      | none => simp [auth] at accepted
+      | some authorization =>
+          simp only [auth] at accepted
+          split at accepted
+          next =>
+            split at accepted
+            next pending =>
+              simp only [Option.some.injEq] at accepted
+              subst next
+              have feeFalse :=
+                fee_false_of_consistent_of_preauthorization fee
+                  (Or.inr (Or.inr (Or.inl pending)))
+              exact ⟨backed, by simp [ReservationConsistent], by
+                simp [FeeConsistent, feeFalse]⟩
+            next =>
+              split at accepted
+              next available =>
+                simp only [Option.some.injEq] at accepted
+                subst next
+                have feeCounted := fee.1 available
+                exact ⟨backed, by simp [ReservationConsistent], by
+                  simp [FeeConsistent, feeCounted]⟩
+              next => simp at accepted
+          next => simp at accepted
   | startExpiredRefund origin evidence =>
       simp only [depositStep] at accepted
       unfold startExpiredRefund at accepted
@@ -166,13 +205,11 @@ theorem deposit_step_preserves_well_formed
           simp only [auth] at accepted
           split at accepted
           next allowed =>
-            have feeFalse : state.feeCounted = false :=
-              fee_false_of_consistent_of_not_minted fee (by
-                exact fun minted => by simp [minted] at allowed)
+            have feeCounted : state.feeCounted = true := allowed.2.2
             simp only [Option.some.injEq] at accepted
             subst next
             exact ⟨backed, by simp [ReservationConsistent], by
-              simp [FeeConsistent, feeFalse]⟩
+              simp [FeeConsistent, feeCounted]⟩
           next => simp at accepted
   | completeMint evidence =>
       simp only [depositStep] at accepted
@@ -183,7 +220,7 @@ theorem deposit_step_preserves_well_formed
           simp only [auth] at accepted
           split at accepted
           next allowed =>
-            rcases allowed with ⟨_, exactEvidence, liability, _⟩
+            rcases allowed with ⟨_, exactEvidence, liability, feeCounted⟩
             simp only [Option.some.injEq] at accepted
             subst next
             have amount :
@@ -193,29 +230,19 @@ theorem deposit_step_preserves_well_formed
             constructor
             · simp only [BridgeSpec.MintAuthorization.Backed] at backed ⊢
               omega
-            · simp [ReservationConsistent, FeeConsistent]
+            · simp [ReservationConsistent, FeeConsistent, feeCounted]
           next => simp at accepted
   | completeRefund =>
-      simp only [depositStep] at accepted
-      unfold completeRefund at accepted
-      cases auth : state.authorization with
-      | none => simp [auth] at accepted
-      | some authorization =>
-          simp only [auth] at accepted
-          split at accepted
-          next allowed =>
-            rcases allowed with ⟨phase, liability, escrowBound⟩
-            have feeFalse : state.feeCounted = false :=
-              fee_false_of_consistent_of_not_minted fee (by simp [phase])
-            simp only [Option.some.injEq] at accepted
-            subst next
-            constructor
-            · simp only [BridgeSpec.MintAuthorization.Backed] at backed ⊢
-              omega
-            · constructor
-              · simp [ReservationConsistent]
-              · simp [FeeConsistent, feeFalse]
-          next => simp at accepted
+      have refundSafe :=
+        refund_preserves_backing_and_keeps_charged_fee backed accepted
+      rcases refundSafe with ⟨nextBacked, nextPhase, nextReserved, nextCounted, _⟩
+      constructor
+      · exact nextBacked
+      · constructor
+        · simp [ReservationConsistent, nextPhase, nextReserved]
+        · cases counted : state.feeCounted with
+          | false => simp [FeeConsistent, nextCounted, counted, nextPhase]
+          | true => simp [FeeConsistent, nextCounted, counted, nextPhase]
   | manualClaim now nextLeaseGeneration =>
       simp only [depositStep] at accepted
       unfold manualClaim at accepted
@@ -283,16 +310,24 @@ theorem deposit_step_preserves_existing_authorization
   · unfold commitAuthorization at accepted
     simp [committed] at accepted
   · unfold installSignature at accepted
+    simp only [committed] at accepted
     split at accepted
     · simp only [Option.some.injEq] at accepted
       subst next
       simpa using committed
     · simp at accepted
-  · unfold beginExpiryReconciliation at accepted
+  · unfold releaseExpiredReservation at accepted
+    simp only [committed] at accepted
     split at accepted
-    · simp only [Option.some.injEq] at accepted
-      subst next
-      simpa using committed
+    · split at accepted
+      · simp only [Option.some.injEq] at accepted
+        subst next
+        simpa using committed
+      · split at accepted
+        · simp only [Option.some.injEq] at accepted
+          subst next
+          simpa using committed
+        · simp at accepted
     · simp at accepted
   · unfold startExpiredRefund at accepted
     simp only [committed] at accepted
@@ -311,10 +346,16 @@ theorem deposit_step_preserves_existing_authorization
   · unfold completeRefund at accepted
     simp only [committed] at accepted
     split at accepted
-    · simp only [Option.some.injEq] at accepted
-      subst next
-      simpa using committed
-    · simp at accepted
+    · split at accepted
+      · simp only [Option.some.injEq] at accepted
+        subst next
+        simpa using committed
+      · simp at accepted
+    · split at accepted
+      · simp only [Option.some.injEq] at accepted
+        subst next
+        simpa using committed
+      · simp at accepted
   · unfold manualClaim at accepted
     split at accepted
     · simp only [Option.some.injEq] at accepted
@@ -346,7 +387,7 @@ theorem terminal_step_is_rejected
   cases event <;>
     cases phaseEq : state.phase <;>
     simp [depositStep, terminal, phaseEq, commitAuthorization, installSignature,
-      beginExpiryReconciliation, startExpiredRefund, completeMint, completeRefund,
+      releaseExpiredReservation, startExpiredRefund, completeMint, completeRefund,
       manualClaim] at terminalState ⊢
   all_goals cases state.authorization <;> simp
 
@@ -639,7 +680,7 @@ inductive DepositTracePhase where
   | escrowedUnquoted
   | authorizationPending
   | authorizationAvailable
-  | expiryReconciliation
+  | refundAvailable
   | minted
   | fundingReconciliationHold
   | refundPending
@@ -700,10 +741,14 @@ theorem manual_claim_cannot_select_active_or_fresh_scheduled_job
       scheduled.2.2.1, scheduled.2.2.2]
 
 theorem notification_quota_isolation (state : NotificationIsolationState) :
-    let next := processNotification state
-    next.settlementAdmission = state.settlementAdmission ∧
-      next.settlementJobs = state.settlementJobs := by
-  simp [processNotification]
+    let verified := processNotificationVerification state
+    let ingested := processNotificationIngestion verified
+    verified.persistentVerificationCount = state.persistentVerificationCount + 1 ∧
+      verified.persistentIngestionCount = state.persistentIngestionCount ∧
+      ingested.persistentIngestionCount = state.persistentIngestionCount + 1 ∧
+      ingested.settlementAdmission = state.settlementAdmission ∧
+      ingested.settlementJobs = state.settlementJobs := by
+  simp [processNotificationVerification, processNotificationIngestion]
 
 structure LeaseLaneSnapshot where
   targetActive : Bool
@@ -751,6 +796,17 @@ theorem funding_attempt_lifecycle :
       duplicated.formalArtifacts = 1 ∧ duplicated.promotions = 1 ∧
       ambiguous.formalArtifacts = 1 ∧ ambiguous.promotions = 1 ∧
       (applyFundingDecision succeeded (decideFundingAttempt .duplicate)) = succeeded := by
+  decide
+
+theorem funding_reconciliation_requires_fresh_expired_absence :
+    decideFundingReconciliation false false false = .wait ∧
+      decideFundingReconciliation false false true = .wait ∧
+      decideFundingReconciliation false true false = .wait ∧
+      decideFundingReconciliation false true true = .wait ∧
+      decideFundingReconciliation true false false = .restartFresh ∧
+      decideFundingReconciliation true false true = .restartFresh ∧
+      decideFundingReconciliation true true false = .wait ∧
+      decideFundingReconciliation true true true = .release := by
   decide
 
 structure ExecutorWitness where
@@ -822,7 +878,7 @@ inductive ProtocolEvent where
       (holdIdentity : HoldIdentity) (transferIdentity : TransferIdentity)
   | fundingFailed (transferIdentity : TransferIdentity)
   | authorizationSigned
-  | beginExpiryReconciliation
+  | releaseExpiredReservation
   | mintReconciled
   | feePayoutSucceeded (amount fee : Nat)
   | resolveHold (evidence : HoldEvidence)
@@ -897,22 +953,33 @@ def rawStep (state : ProtocolState) : ProtocolEvent → Option ProtocolState
       else none
   | .authorizationSigned =>
       if state.deposit.phase = .authorizationPending then
-        some { state with deposit := { state.deposit with phase := .authorizationAvailable } }
+        some { state with deposit := {
+          state.deposit with phase := .authorizationAvailable, feeCounted := true } }
       else none
-  | .beginExpiryReconciliation =>
-      if state.deposit.phase = .authorizationPending ∨
-          state.deposit.phase = .authorizationAvailable then
-        some { state with deposit := { state.deposit with phase := .expiryReconciliation } }
+  | .releaseExpiredReservation =>
+      if state.deposit.phase = .authorizationPending then
+        some { state with deposit := {
+          state.deposit with
+            phase := .refundAvailable
+            reserved := 0
+            candidate := 0
+            requirement := 0 } }
+      else if state.deposit.phase = .authorizationAvailable then
+        some { state with deposit := {
+          state.deposit with
+            phase := .refundAvailable
+            reserved := 0
+            candidate := 0
+            requirement := 0 } }
       else none
   | .mintReconciled =>
-      if state.deposit.phase = .expiryReconciliation then
+      if state.deposit.phase = .refundAvailable ∧ state.deposit.feeCounted = true then
         some { state with deposit := {
           state.deposit with
             phase := .minted
             reserved := 0
             candidate := 0
-            requirement := 0
-            feeCounted := true } }
+            requirement := 0 } }
       else none
   | .feePayoutSucceeded amount fee =>
       let debit := amount + fee
@@ -1088,15 +1155,22 @@ theorem raw_step_preserves_safe
         exact ⟨backed, feeEconomic, payoutBound, windowBound, reservation,
           destination, amountOut, counted, leaseSafe⟩
       next => simp at accepted
-  | beginExpiryReconciliation =>
+  | releaseExpiredReservation =>
       simp only [rawStep] at accepted
       split at accepted
       next =>
         simp only [Option.some.injEq] at accepted
         subst next
-        exact ⟨backed, feeEconomic, payoutBound, windowBound, reservation,
+        exact ⟨backed, feeEconomic, payoutBound, windowBound, by simp,
           destination, amountOut, counted, leaseSafe⟩
-      next => simp at accepted
+      next =>
+        split at accepted
+        next =>
+          simp only [Option.some.injEq] at accepted
+          subst next
+          exact ⟨backed, feeEconomic, payoutBound, windowBound, by simp,
+            destination, amountOut, counted, leaseSafe⟩
+        next => simp at accepted
   | mintReconciled =>
       simp only [rawStep] at accepted
       split at accepted
@@ -1315,14 +1389,20 @@ theorem paid_is_terminal_across_step
         subst next
         rfl
       next => simp at accepted
-  | beginExpiryReconciliation =>
+  | releaseExpiredReservation =>
       simp only [step, rawStep] at accepted
       split at accepted
       next =>
         simp only [Option.some.injEq] at accepted
         subst next
         rfl
-      next => simp at accepted
+      next =>
+        split at accepted
+        next =>
+          simp only [Option.some.injEq] at accepted
+          subst next
+          rfl
+        next => simp at accepted
   | mintReconciled =>
       simp only [step, rawStep] at accepted
       split at accepted

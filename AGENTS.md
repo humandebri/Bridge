@@ -7,6 +7,12 @@
 - Unknown or obsolete stable schema versions must fail closed. Test upgrades and stable-memory reopen behavior only for the current schema unless an earlier schema has actually been deployed.
 - Revisit and explicitly tighten this policy when the first production deployment is approved.
 
+## RPC chain binding review policy
+
+- Follow `docs/adr/0024-validate-rpc-chain-binding-before-runtime.md` when reviewing EVM RPC chain binding. Under its fixed-provider assumptions, the absence of runtime `eth_chainId` calls is not a finding; all three reviewed Custom RPC endpoints are checked before deployment and activation.
+- Do not treat configured chain IDs as RPC-observed Finalized response fields. `FinalizedObservation` is block evidence, RPC audit requests bind the configured chain ID, quorum response digests omit it, and stable record chain IDs bind observations to the install domain.
+- Runtime 2-of-3 quorum handles response disagreement and provider failure, not provider chain switching. Reassess this policy before making an RPC URL, configured chain ID, or endpoint upstream chain mutable during runtime.
+
 ## Logic changes and proof impact
 
 - Treat production state transitions, admission and rejection conditions, authorization, deadlines, epochs, replay protection, accounting deltas, scheduler or lease decisions, storage commit effects, and Solidity policy or kernel code as safety-related logic.

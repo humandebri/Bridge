@@ -2,15 +2,16 @@ use bridge_core::{
     administrator_authorized, audit_next, authorization_commit_allowed, checked_counter_transition,
     checked_requirement, counter_delta, deposit_admission_decision, deposit_reservation_active,
     deposit_transition, deposit_transition_decision, evidence_matches, expiry_refund_allowed,
-    fee_delta_once, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
-    hold_resolution_decision, lease_generation_next, lease_outcome_is_current,
-    manual_claim_decision, mint_admission_total, mint_finalization_allowed, next_attempt,
-    outbound_settlement, payout_allowed, payout_debit, refresh_generation_next,
-    refresh_owner_matches, release_transfer_matches, replay_matches, reservation_decision,
-    reserve_admission_preserves_requirement, resources_sufficient, scan_complete,
-    service_fee_change_allowed, settlement_decision, withdrawal_phase_allows,
+    fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
+    funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
+    lease_outcome_is_current, manual_claim_decision, mint_admission_total,
+    mint_finalization_allowed, next_attempt, outbound_settlement, payout_allowed, payout_debit,
+    refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
+    reservation_decision, reserve_admission_preserves_requirement, resources_sufficient,
+    scan_complete, service_fee_change_allowed, settlement_decision, withdrawal_phase_allows,
     withdrawal_phase_step, DepositEventGuard, DepositTransitionDecision, DepositTransitionInput,
-    FeeRecipientRotationDecision, HoldResolutionDecision, ManualClaimDecision,
+    FeeRecipientRotationDecision, FundingReconciliationDecision, HoldResolutionDecision,
+    ManualClaimDecision,
 };
 
 #[test]
@@ -114,6 +115,25 @@ fn typed_decisions_preserve_every_shared_guard() {
         hold_resolution_decision(false, true),
         HoldResolutionDecision::ResolveAbsent
     );
+    for complete_absence in [false, true] {
+        for final_scan in [false, true] {
+            for dedup_expired in [false, true] {
+                let expected = if !complete_absence {
+                    FundingReconciliationDecision::Wait
+                } else if !final_scan {
+                    FundingReconciliationDecision::RestartFresh
+                } else if dedup_expired {
+                    FundingReconciliationDecision::Release
+                } else {
+                    FundingReconciliationDecision::Wait
+                };
+                assert_eq!(
+                    funding_reconciliation_decision(complete_absence, final_scan, dedup_expired,),
+                    expected
+                );
+            }
+        }
+    }
     assert_eq!(
         manual_claim_decision(false, false, false, false, false),
         ManualClaimDecision::Allow
@@ -220,13 +240,10 @@ fn finite_scan_domain_finds_inclusive_tip_counterexample() {
 }
 
 #[test]
-fn attempt_and_fee_boundaries_are_checked() {
+fn attempt_and_transfer_boundaries_are_checked() {
     assert_eq!(next_attempt(0), Some(1));
     assert_eq!(next_attempt(u64::MAX - 1), Some(u64::MAX));
     assert_eq!(next_attempt(u64::MAX), None);
-    assert_eq!(fee_delta_once(false, true, 9), 9);
-    assert_eq!(fee_delta_once(true, true, 9), 0);
-    assert_eq!(fee_delta_once(false, false, 9), 0);
     assert!(release_transfer_matches(85, 5, 85, 5));
     assert!(!release_transfer_matches(84, 5, 85, 5));
     assert!(!release_transfer_matches(85, 6, 85, 5));
@@ -273,18 +290,17 @@ fn compact_phase_kernels_match_the_legal_transition_graphs() {
         (0, 1, 5),
         (0, 2, 9),
         (1, 3, 2),
-        (1, 4, 6),
+        (1, 4, 4),
+        (2, 4, 4),
         (2, 5, 3),
-        (2, 6, 4),
-        (3, 6, 4),
-        (3, 7, 10),
-        (4, 7, 10),
-        (4, 4, 6),
-        (6, 9, 8),
-        (6, 10, 7),
+        (3, 4, 4),
+        (4, 6, 10),
+        (4, 7, 6),
+        (6, 8, 8),
+        (6, 9, 7),
     ];
     for state in 0..=10 {
-        for event in 0..=10 {
+        for event in 0..=9 {
             let expected = deposit_edges
                 .iter()
                 .find(|(from, input, _)| *from == state && *input == event)
@@ -293,7 +309,7 @@ fn compact_phase_kernels_match_the_legal_transition_graphs() {
         }
     }
     for state in 0..=10 {
-        assert_eq!(deposit_reservation_active(state), matches!(state, 2..=4));
+        assert_eq!(deposit_reservation_active(state), matches!(state, 2..=3));
     }
     assert!(authorization_commit_allowed(
         true, true, true, true, true, true
@@ -346,29 +362,31 @@ fn deposit_transition_decision_effects_cover_every_state_event_and_idempotency()
                 deadline_valid: true,
                 pristine: true,
             },
-            4 => DepositEventGuard::StartRefund {
-                attempt_matches: true,
-                policy_matches: true,
+            4 => DepositEventGuard::MarkRefundAvailable {
+                policy_allowed: true,
             },
             5 => DepositEventGuard::InstallSignature {
                 dispatched: true,
                 signature_absent: true,
                 signature_length_valid: true,
             },
-            6 => DepositEventGuard::BeginExpiry,
-            7 => DepositEventGuard::MintFinalization {
+            6 => DepositEventGuard::MintFinalization {
                 fixed_fields_match: true,
                 receipt_succeeded: true,
                 receipt_block: 0,
                 finalized_block: 0,
                 audit_complete: true,
             },
+            7 => DepositEventGuard::StartRefund {
+                attempt_matches: true,
+                policy_matches: true,
+            },
             _ => DepositEventGuard::RefundResult,
         }
     }
 
     for state in 0..=10 {
-        for event in 0..=10 {
+        for event in 0..=9 {
             assert_eq!(
                 deposit_transition_decision(DepositTransitionInput {
                     state,
@@ -398,15 +416,12 @@ fn deposit_transition_decision_effects_cover_every_state_event_and_idempotency()
                 (None, DepositTransitionDecision::Reject) => {}
                 (Some(next_state), DepositTransitionDecision::Apply(effects)) => {
                     assert_eq!(effects.next_state, next_state);
-                    assert_eq!(effects.reservation_active, matches!(next_state, 2..=4));
+                    assert_eq!(effects.reservation_active, matches!(next_state, 2..=3));
                     assert_eq!(
                         effects.release_reservation,
-                        ((state == 3 || state == 4) && event == 7) || (state == 4 && event == 4)
+                        (state == 3 && event == 4) || (state == 2 && event == 4)
                     );
-                    assert_eq!(
-                        effects.charge_service_fee,
-                        (state == 3 || state == 4) && event == 7
-                    );
+                    assert_eq!(effects.charge_service_fee, state == 2 && event == 5);
                     assert_eq!(effects.fee_credit, u128::from(effects.charge_service_fee));
                     assert_eq!(
                         effects.reservation_add,
@@ -424,24 +439,21 @@ fn deposit_transition_decision_effects_cover_every_state_event_and_idempotency()
                     );
                     assert_eq!(
                         effects.pending_liability_debit,
-                        if ((state == 3 || state == 4) && event == 7) || (state == 6 && event == 9)
-                        {
-                            11
+                        if state == 2 && event == 5 {
+                            1
+                        } else if (state == 4 && event == 6) || (state == 6 && event == 8) {
+                            10
                         } else {
                             0
                         }
                     );
                     assert_eq!(
                         effects.escrow_debit,
-                        if state == 6 && event == 9 { 11 } else { 0 }
+                        if state == 6 && event == 8 { 10 } else { 0 }
                     );
                     assert_eq!(
                         effects.mint_supply_increase,
-                        if (state == 3 || state == 4) && event == 7 {
-                            10
-                        } else {
-                            0
-                        }
+                        if state == 4 && event == 6 { 10 } else { 0 }
                     );
                 }
                 pair => panic!("transition decision mismatch: {pair:?}"),

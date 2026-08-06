@@ -49,7 +49,16 @@ def main() -> None:
         ("verification/README.md", r"schema v(\d+)再オープン", 1),
         ("docs/bridge-flow.md", r"SQLite schema v(\d+)", 1),
         ("docs/canister-state-machine.md", r"(?:Stable schema v|schema v)(\d+)", 2),
-        ("docs/runbooks/operations.md", r"schema v(\d+)またはwire v\d+", 1),
+        (
+            "docs/runbooks/operations.md",
+            r"(?:stable schemaはv|schema v)(\d+)(?:、record wireはv\d+|またはwire v\d+)",
+            2,
+        ),
+        (
+            "deployments/sepolia-staging/evidence/README.md",
+            r"Canister v(\d+) upgrade",
+            1,
+        ),
         ("docs/implementation-plan.md", r"(?:stable schema v|現行stable schemaはv)(\d+)", 2),
         (
             "canister/bridge-canister/src/storage/mod.rs",
@@ -73,8 +82,8 @@ def main() -> None:
             1,
         ),
         (
-            "scripts/plan007/test-generate-local-e2e.mjs",
-            r'schema_version: "(\d+)"',
+            "scripts/plan007/generate-local-e2e.mjs",
+            r"CURRENT_STABLE_SCHEMA_VERSION = (\d+)",
             1,
         ),
         (
@@ -88,7 +97,11 @@ def main() -> None:
     wire_checks = (
         ("verification/README.md", r"wire v(\d+)", 1),
         ("docs/canister-state-machine.md", r"record wire version v(\d+)", 1),
-        ("docs/runbooks/operations.md", r"schema v\d+またはwire v(\d+)", 1),
+        (
+            "docs/runbooks/operations.md",
+            r"(?:stable schemaはv\d+、record wireはv|schema v\d+またはwire v)(\d+)",
+            2,
+        ),
         ("docs/implementation-plan.md", r"record wire v(\d+)", 1),
     )
     for path, pattern, expected_count in wire_checks:

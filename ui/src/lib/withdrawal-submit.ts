@@ -13,7 +13,7 @@ export interface WithdrawalBroadcastResult {
   pendingSaved: boolean
 }
 
-export async function createWithdrawalAfterRevalidation<Q>({
+export async function createWithdrawalAfterRevalidation<R extends RuntimeValidation, Q>({
   expectedWallets,
   refetchRuntime,
   currentEvmWallet,
@@ -24,16 +24,16 @@ export async function createWithdrawalAfterRevalidation<Q>({
   onBroadcast,
 }: {
   expectedWallets: ExpectedWallets
-  refetchRuntime: () => Promise<{ data?: RuntimeValidation }>
+  refetchRuntime: () => Promise<{ data?: R }>
   currentEvmWallet: () => Promise<{ address: `0x${string}`; chainId: number }>
   currentIcAccount: () => Promise<IcAccount>
-  refetchFinancials: () => Promise<Q>
+  refetchFinancials: (runtime: R & { ready: true }) => Promise<Q>
   validateFinancials: (quote: Q) => void
   createWithdrawal: (quote: Q) => Promise<`0x${string}`>
   onBroadcast: (transactionHash: `0x${string}`) => Promise<void> | void
 }): Promise<WithdrawalBroadcastResult> {
-  await refetchRuntimeWriteReady(refetchRuntime)
-  const [evm, icAccount, quote] = await Promise.all([currentEvmWallet(), currentIcAccount(), refetchFinancials()])
+  const runtime = await refetchRuntimeWriteReady(refetchRuntime)
+  const [evm, icAccount, quote] = await Promise.all([currentEvmWallet(), currentIcAccount(), refetchFinancials(runtime)])
   requireWalletSnapshot(expectedWallets, { ...evm, icAccount }, "after approval or runtime verification")
   validateFinancials(quote)
   const transactionHash = await createWithdrawal(quote)

@@ -6,7 +6,10 @@ use candid::{CandidType, Deserialize, Nat, Principal};
 use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
 
+#[cfg(not(feature = "test-deployment"))]
 const ACTIVATION_TIMELOCK_DELAY_SECONDS: u128 = 24 * 60 * 60;
+#[cfg(feature = "test-deployment")]
+const ACTIVATION_TIMELOCK_DELAY_SECONDS: u128 = 5 * 60;
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum BaseGovernanceAction {
@@ -160,9 +163,13 @@ pub async fn prepare(
     let config = config()?;
     if let GovernanceAction::SetServiceFee { value } = &action {
         let value = nat_u128(value).ok_or(BaseGovernanceError::InvalidArgument)?;
-        let observed = evm_rpc::bridge_snapshot(&config)
+        let runtime_attested = crate::api::runtime_attested(&config)
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        let observed = evm_rpc::bridge_snapshot(&config, runtime_attested)
             .await
             .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        crate::api::cache_runtime_attestation(&config, &observed)
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
         require_action_authorization(caller, &action)?;
         if !bridge_core::service_fee_change_allowed(
             value,
@@ -420,7 +427,7 @@ pub async fn confirm(
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     require_transaction_authorization(caller, &transaction.kind)?;
-    let (receipt_block_number, succeeded) = match outcome {
+    let (receipt_block_number, succeeded, finalized_observation) = match outcome {
         evm_rpc::ConfirmedReceiptOutcome::Missing
         | evm_rpc::ConfirmedReceiptOutcome::Pending { .. } => {
             return Err(BaseGovernanceError::TransactionNotFinalized {
@@ -429,12 +436,14 @@ pub async fn confirm(
         }
         evm_rpc::ConfirmedReceiptOutcome::Succeeded {
             receipt_block_number,
+            finalized_observation,
             ..
-        } => (receipt_block_number, true),
+        } => (receipt_block_number, true, finalized_observation),
         evm_rpc::ConfirmedReceiptOutcome::Reverted {
             receipt_block_number,
+            finalized_observation,
             ..
-        } => (receipt_block_number, false),
+        } => (receipt_block_number, false, finalized_observation),
     };
     let activates = succeeded
         && matches!(
@@ -442,11 +451,19 @@ pub async fn confirm(
             storage::GovernanceTransactionKind::ExecuteActivation { .. }
         );
     if activates {
-        let observed = evm_rpc::bridge_snapshot(&config)
-            .await
-            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        let runtime_attested = crate::api::runtime_attested(&config)
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        let observed =
+            evm_rpc::bridge_snapshot_at(&config, finalized_observation, runtime_attested)
+                .await
+                .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        crate::api::cache_runtime_attestation(&config, &observed)
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
         require_transaction_authorization(caller, &transaction.kind)?;
-        if observed.snapshot.deposits_paused || observed.snapshot.withdrawals_paused {
+        if !activation_postcondition_matches(
+            observed.snapshot.deposits_paused,
+            observed.snapshot.withdrawals_paused,
+        ) {
             return Err(BaseGovernanceError::ObservationUnavailable);
         }
     }
@@ -461,9 +478,10 @@ pub async fn confirm(
             receipt_block_number,
         }
     };
-    complete(&transaction)?;
-    if activates && !emergency_base_actions_pending()? {
-        admin::resume(caller).map_err(|_| BaseGovernanceError::StorageFailure)?;
+    if activates {
+        complete_confirmed_activation(&transaction, caller)?;
+    } else {
+        complete(&transaction)?;
     }
     let confirmation = BaseGovernanceConfirmation {
         operation_id: transaction.id,
@@ -654,20 +672,25 @@ async fn activation_preflight(
     let governance_operator = crate::api::cached_governance_operator_address(config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let observed = evm_rpc::bridge_snapshot(config)
+    let runtime_attested =
+        crate::api::runtime_attested(config).map_err(|_| BaseGovernanceError::StorageFailure)?;
+    let observed = evm_rpc::bridge_snapshot(config, runtime_attested)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let finalized_eth =
-        evm_rpc::signer_eth_balance_at(config, governance_operator, observed.finalized)
-            .await
-            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let safe_eth = evm_rpc::signer_eth_balance(config, governance_operator)
-        .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    if observed.snapshot.bridge_signer != expected_bridge_signer
-        || !observed.snapshot.deposits_paused
-        || !observed.snapshot.withdrawals_paused
-    {
+    crate::api::cache_runtime_attestation(config, &observed)
+        .map_err(|_| BaseGovernanceError::StorageFailure)?;
+    let (finalized_eth, safe_eth) = futures::join!(
+        evm_rpc::signer_eth_balance_at(config, governance_operator, observed.finalized),
+        evm_rpc::signer_eth_balance_safe(config, governance_operator)
+    );
+    let finalized_eth = finalized_eth.map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let safe_eth = safe_eth.map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    if !activation_base_preflight_matches(
+        observed.snapshot.bridge_signer,
+        expected_bridge_signer,
+        observed.snapshot.deposits_paused,
+        observed.snapshot.withdrawals_paused,
+    ) {
         return Err(BaseGovernanceError::ObservationUnavailable);
     }
     let observed_eth = finalized_eth.min(safe_eth);
@@ -701,6 +724,19 @@ async fn activation_preflight(
             .record_reserve_observation(observed_eth, observed_at_ns, caller)
             .map_err(|_| BaseGovernanceError::StorageFailure)
     })
+}
+
+fn activation_base_preflight_matches(
+    observed_signer: [u8; 20],
+    expected_signer: [u8; 20],
+    deposits_paused: bool,
+    withdrawals_paused: bool,
+) -> bool {
+    observed_signer == expected_signer && deposits_paused && withdrawals_paused
+}
+
+fn activation_postcondition_matches(deposits_paused: bool, withdrawals_paused: bool) -> bool {
+    !deposits_paused && !withdrawals_paused
 }
 
 fn governance_lane(
@@ -758,6 +794,23 @@ fn complete(transaction: &storage::GovernanceTransaction) -> Result<(), BaseGove
         store
             .borrow_mut()
             .complete_governance_transaction(transaction.clone())
+            .map_err(|_| BaseGovernanceError::StorageFailure)
+    })
+}
+
+fn complete_confirmed_activation(
+    transaction: &storage::GovernanceTransaction,
+    caller: Principal,
+) -> Result<(), BaseGovernanceError> {
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .complete_confirmed_activation_and_resume_if_clear(
+                transaction.clone(),
+                caller,
+                ic_cdk::api::time(),
+            )
+            .map(drop)
             .map_err(|_| BaseGovernanceError::StorageFailure)
     })
 }
@@ -1166,7 +1219,8 @@ fn keccak(value: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::{
-        action_authorized, activation_operation_id, activation_salt, execute_activation_calldata,
+        action_authorized, activation_base_preflight_matches, activation_operation_id,
+        activation_postcondition_matches, activation_salt, execute_activation_calldata,
         initial_fee, minimum_fee_bump, pending_signature_action, schedule_activation_calldata,
         selector, transaction_authorized, word_u128, GovernanceAction, PendingSignatureAction,
         ACTIVATION_TIMELOCK_DELAY_SECONDS,
@@ -1199,9 +1253,31 @@ mod tests {
             &execute_activation_calldata(bridge, salt)[..4],
             selector("executeBatch(address[],uint256[],bytes[],bytes32,bytes32)")
         );
+        #[cfg(not(feature = "test-deployment"))]
         assert_eq!(ACTIVATION_TIMELOCK_DELAY_SECONDS, 86_400);
+        #[cfg(feature = "test-deployment")]
+        assert_eq!(ACTIVATION_TIMELOCK_DELAY_SECONDS, 300);
         assert_ne!(activation_operation_id(bridge, salt), [0; 32]);
         assert_eq!(word_u128(42)[31], 42);
+    }
+
+    #[test]
+    fn activation_preflight_and_postcondition_fail_closed() {
+        assert!(activation_base_preflight_matches(
+            [7; 20], [7; 20], true, true
+        ));
+        assert!(!activation_base_preflight_matches(
+            [8; 20], [7; 20], true, true
+        ));
+        assert!(!activation_base_preflight_matches(
+            [7; 20], [7; 20], false, true
+        ));
+        assert!(!activation_base_preflight_matches(
+            [7; 20], [7; 20], true, false
+        ));
+        assert!(activation_postcondition_matches(false, false));
+        assert!(!activation_postcondition_matches(true, false));
+        assert!(!activation_postcondition_matches(false, true));
     }
 
     #[test]

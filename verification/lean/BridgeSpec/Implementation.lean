@@ -6,6 +6,7 @@ open BridgeSpec
 
 def maxU128 : Nat := 2 ^ 128 - 1
 def maxU64 : Nat := 2 ^ 64 - 1
+def maxU16 : Nat := 2 ^ 16 - 1
 
 structure U128 where
   val : Nat
@@ -15,6 +16,11 @@ deriving DecidableEq
 structure U64 where
   val : Nat
   bounded : val ≤ maxU64
+deriving DecidableEq
+
+structure U16 where
+  val : Nat
+  bounded : val ≤ maxU16
 deriving DecidableEq
 
 def checkedAdd128 (left right : Nat) : Option Nat :=
@@ -69,6 +75,9 @@ def depositAdmissionImpl (admission : DepositAdmission) : Option Nat :=
     admitDeposit admission
   else none
 
+def depositIdentityImpl (processed : Bool) : DepositIdentityDecision :=
+  if processed then .conflict else .allow
+
 def reservationImpl (reserved candidate : U128) : Option (Nat × Nat) :=
   (checkedAdd128 reserved.val candidate.val).map (fun total => (total, 0))
 
@@ -93,9 +102,16 @@ def manualClaimImpl
     (scheduled active stopped overdue expired : Bool) : Bool :=
   manualClaimAllowed scheduled active stopped overdue expired
 
+def refundRequestIdentityImpl
+    (authenticated : Bool) (ownerMatch : Option Bool) :
+    RefundRequestIdentityDecision :=
+  decideRefundRequestIdentity authenticated ownerMatch
+
 def notificationAdmissionImpl
-    (callerCount hashCount callerLimit hashLimit : U64) : Bool :=
-  notificationAdmissionAllowed callerCount.val hashCount.val callerLimit.val hashLimit.val
+    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : U16) :
+    Bool × Bool :=
+  (notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val,
+    notificationIngestionAllowed ingestionCount.val ingestionLimit.val)
 
 def leaseLaneClaimImpl
     (targetActive targetAutomatic : Bool) (activeInLane capacity : U64) :
@@ -104,6 +120,10 @@ def leaseLaneClaimImpl
 
 def fundingAttemptImpl (outcome : FundingOutcomeKind) : FundingAttemptDecision :=
   decideFundingAttempt outcome
+
+def fundingReconciliationImpl
+    (completeAbsence finalScan dedupExpired : Bool) : FundingReconciliationDecision :=
+  decideFundingReconciliation completeAbsence finalScan dedupExpired
 
 def finalizationImpl
     (receiptSucceeded : Bool) (receiptBlock : U64) (finalizedBlock : Option U64) :

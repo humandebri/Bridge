@@ -473,6 +473,7 @@ type WithdrawalFixture = record {
 service : (InitArgs) -> {
   bridge_signer : () -> (blob) query;
   broadcast_transactions : () -> (vec blob) query;
+  chain_id_call_count : () -> (nat64) query;
   deposit_processed_call_count : () -> (nat64) query;
   derive_chain_key_address : (principal, text, vec blob) -> (blob);
   eth_call_count : () -> (nat64) query;
@@ -495,6 +496,7 @@ service : (InitArgs) -> {
     );
   get_account_transactions : (GetAccountTransactionsArgs) -> (Result_5) query;
   get_archive_transactions : (GetBlocksRequest) -> (TransactionRange) query;
+  get_code_call_count : () -> (nat64) query;
   get_transactions : (GetBlocksRequest) -> (GetTransactionsResponse) query;
   icrc1_fee : () -> (nat) query;
   icrc1_transfer : (TransferArg) -> (Result_6);

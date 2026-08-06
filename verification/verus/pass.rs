@@ -30,6 +30,15 @@ pub open spec fn deposit_admission_decision_view(
     }
 }
 
+pub open spec fn deposit_identity_decision_view(
+    result: kernel::DepositIdentityDecision,
+) -> int {
+    match result {
+        kernel::DepositIdentityDecision::Allow => 0,
+        kernel::DepositIdentityDecision::Conflict => 1,
+    }
+}
+
 pub open spec fn reservation_decision_view(
     result: Option<kernel::ReservationDecision>,
 ) -> Option<(int, int)> {
@@ -83,6 +92,17 @@ pub open spec fn manual_claim_decision_view(result: kernel::ManualClaimDecision)
     }
 }
 
+pub open spec fn refund_request_identity_decision_view(
+    result: kernel::RefundRequestIdentityDecision,
+) -> int {
+    match result {
+        kernel::RefundRequestIdentityDecision::Allow => 0,
+        kernel::RefundRequestIdentityDecision::OwnerLookupRequired => 1,
+        kernel::RefundRequestIdentityDecision::AnonymousCaller => 2,
+        kernel::RefundRequestIdentityDecision::OwnerMismatch => 3,
+    }
+}
+
 pub open spec fn lease_lane_claim_decision_view(
     result: kernel::LeaseLaneClaimDecision,
 ) -> int {
@@ -101,6 +121,16 @@ pub open spec fn funding_attempt_decision_view(
         kernel::FundingAttemptDecision::PromoteAmbiguous => 1,
         kernel::FundingAttemptDecision::Release => 2,
         kernel::FundingAttemptDecision::Retain => 3,
+    }
+}
+
+pub open spec fn funding_reconciliation_decision_view(
+    result: kernel::FundingReconciliationDecision,
+) -> int {
+    match result {
+        kernel::FundingReconciliationDecision::Wait => 0,
+        kernel::FundingReconciliationDecision::RestartFresh => 1,
+        kernel::FundingReconciliationDecision::Release => 2,
     }
 }
 
@@ -212,14 +242,6 @@ proof fn candidate_reservation_increases_both_requirements(
     vstd::arithmetic::mul::lemma_mul_inequality(current, current + 1, unit);
 }
 
-proof fn fee_is_counted_exactly_on_first_transfer(fee: int)
-    requires 0 <= fee
-    ensures
-        kernel::fee_delta_once_spec(false, true, fee) == fee,
-        kernel::fee_delta_once_spec(true, true, fee) == 0,
-        kernel::fee_delta_once_spec(false, false, fee) == 0
-{}
-
 proof fn release_transfer_requires_exact_amount_and_fee(
     transfer_amount: int, transfer_fee: int, amount_out: int, ledger_fee: int,
 )
@@ -297,6 +319,15 @@ fn deposit_admission_decision_checks_every_bound(
         gross, fee, maximum_fee, per_deposit, consumed, reserved, window_limit)
 }
 
+fn deposit_identity_decision_is_fail_closed(
+    processed: bool,
+) -> (result: kernel::DepositIdentityDecision)
+    ensures
+        deposit_identity_decision_view(result) == if processed { 1int } else { 0int },
+{
+    kernel::deposit_identity_decision(processed)
+}
+
 fn reservation_decision_preserves_candidate_requirement(
     reserved: u128, candidate: u128,
 ) -> (result: Option<kernel::ReservationDecision>)
@@ -349,6 +380,16 @@ proof fn active_counter_transition_preserves_classification(current: int, old: b
 proof fn canonical_probe_accepts_exact_block(receipt_block: int, snapshot_block: int)
     ensures kernel::canonical_probe_matches_spec(receipt_block, snapshot_block)
         <==> receipt_block == snapshot_block
+{}
+
+proof fn runtime_attestation_requires_every_config_binding(
+    observation_present: bool,
+    chain_id_matches: bool,
+    runtime_hash_matches: bool,
+)
+    ensures kernel::runtime_attestation_matches_spec(
+        observation_present, chain_id_matches, runtime_hash_matches)
+            <==> observation_present && chain_id_matches && runtime_hash_matches
 {}
 
 proof fn withdrawal_finalization_decision_is_fail_closed(
@@ -496,16 +537,42 @@ fn manual_claim_decision_matches_shared_guard(
         scheduled, active, stopped, overdue, expired)
 }
 
-fn notification_admission_checks_caller_and_hash_windows(
-    caller_count: u8,
-    hash_count: u8,
-    caller_limit: u8,
-    hash_limit: u8,
+fn refund_request_requires_authenticated_owner(
+    authenticated: bool,
+    owner_match: Option<bool>,
+) -> (result: kernel::RefundRequestIdentityDecision)
+    ensures
+        refund_request_identity_decision_view(result) == 0
+            <==> authenticated && owner_match == Some(true),
+        refund_request_identity_decision_view(result) == 1
+            <==> authenticated && owner_match == None::<bool>,
+        refund_request_identity_decision_view(result) == 2
+            <==> !authenticated,
+        refund_request_identity_decision_view(result) == 3
+            <==> authenticated && owner_match == Some(false),
+{
+    kernel::refund_request_identity_decision(authenticated, owner_match)
+}
+
+fn notification_admission_checks_global_and_caller_windows(
+    global_count: u16,
+    caller_count: u16,
+    global_limit: u16,
+    caller_limit: u16,
 ) -> (result: bool)
-    ensures result <==> caller_count < caller_limit && hash_count < hash_limit,
+    ensures result <==> global_count < global_limit && caller_count < caller_limit,
 {
     kernel::notification_admission_allowed(
-        caller_count, hash_count, caller_limit, hash_limit)
+        global_count, caller_count, global_limit, caller_limit)
+}
+
+fn notification_ingestion_checks_global_window(
+    ingestion_count: u16,
+    ingestion_limit: u16,
+) -> (result: bool)
+    ensures result <==> ingestion_count < ingestion_limit,
+{
+    kernel::notification_ingestion_allowed(ingestion_count, ingestion_limit)
 }
 
 fn lease_lane_claim_is_record_and_lane_scoped(
@@ -537,6 +604,22 @@ fn funding_outcome_classifies_reservation_action(
                 && outcome_kind != 2 && outcome_kind != 3,
 {
     kernel::funding_attempt_decision(outcome_kind)
+}
+
+fn funding_reconciliation_requires_fresh_expired_absence(
+    complete_absence: bool,
+    final_scan: bool,
+    dedup_expired: bool,
+) -> (result: kernel::FundingReconciliationDecision)
+    ensures
+        funding_reconciliation_decision_view(result) == 0
+            <==> !complete_absence || (final_scan && !dedup_expired),
+        funding_reconciliation_decision_view(result) == 1
+            <==> complete_absence && !final_scan,
+        funding_reconciliation_decision_view(result) == 2
+            <==> complete_absence && final_scan && dedup_expired,
+{
+    kernel::funding_reconciliation_decision(complete_absence, final_scan, dedup_expired)
 }
 
 proof fn role_action_matrix(action: int, pause: bool, governance: bool)
@@ -600,36 +683,38 @@ proof fn refund_start_requires_attempt_and_policy(attempt: bool, policy: bool)
 
 proof fn reservation_exists_only_for_authorization_progress(state: int)
     ensures kernel::deposit_reservation_active_spec(state)
-        <==> state == 2 || state == 3 || state == 4
+        <==> state == 2 || state == 3
 {}
 
-proof fn deposit_fee_is_charged_only_on_mint_transition(state: int, event: int)
+proof fn deposit_fee_is_charged_only_on_authorization_signature(state: int, event: int)
     ensures kernel::deposit_charge_service_fee_spec(state, event)
-        <==> (state == 3 || state == 4) && event == 7
+        <==> state == 2 && event == 5
 {}
 
-proof fn deposit_reservation_is_released_only_at_mint_or_refund(state: int, event: int)
+proof fn deposit_reservation_is_released_at_local_expiry(state: int, event: int)
     ensures kernel::deposit_releases_reservation_spec(state, event)
-        <==> ((state == 3 || state == 4) && event == 7) || (state == 4 && event == 4)
+        <==> (state == 2 && event == 4) || (state == 3 && event == 4)
 {}
 
 proof fn deposit_numeric_effects_match_every_economic_transition(
     gross: int, net: int, fee: int, reserved: int,
 )
-    requires 0 <= gross, 0 <= net, 0 <= fee, 0 <= reserved
+    requires 0 <= gross, 0 < net, 0 <= fee, 0 <= reserved
     ensures
         kernel::deposit_numeric_effects_spec(1, 3, gross, net, fee, 0)
             == (net, net, 0int, 0int, 0int, 0int, 0int),
-        kernel::deposit_numeric_effects_spec(3, 7, gross, net, fee, reserved)
-            == (0int, 0int, reserved, fee, gross, 0int, net),
-        kernel::deposit_numeric_effects_spec(4, 7, gross, net, fee, reserved)
-            == (0int, 0int, reserved, fee, gross, 0int, net),
-        kernel::deposit_numeric_effects_spec(4, 4, gross, net, fee, reserved)
+        kernel::deposit_numeric_effects_spec(2, 5, gross, net, fee, reserved)
+            == (reserved, 0int, 0int, fee, fee, 0int, 0int),
+        kernel::deposit_numeric_effects_spec(3, 4, gross, net, fee, reserved)
             == (0int, 0int, reserved, 0int, 0int, 0int, 0int),
-        kernel::deposit_numeric_effects_spec(6, 9, gross, net, fee, 0)
+        kernel::deposit_numeric_effects_spec(4, 6, gross, net, fee, 0)
+            == (0int, 0int, 0int, 0int, net, 0int, net),
+        kernel::deposit_numeric_effects_spec(6, 8, gross, 0, fee, 0)
             == (0int, 0int, 0int, 0int, gross, gross, 0int),
-        kernel::deposit_numeric_effects_spec(2, 6, gross, net, fee, reserved)
-            == (reserved, 0int, 0int, 0int, 0int, 0int, 0int)
+        kernel::deposit_numeric_effects_spec(6, 8, gross, net, fee, 0)
+            == (0int, 0int, 0int, 0int, net, net, 0int),
+        kernel::deposit_numeric_effects_spec(2, 4, gross, net, fee, reserved)
+            == (0int, 0int, reserved, 0int, 0int, 0int, 0int)
 {}
 
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
@@ -649,10 +734,14 @@ proof fn withdrawal_phase_allowance_matches_a_transition(state: int, event: int)
             || (state == 1 && event == 1)
 {}
 
-proof fn deposit_refund_debits_exactly_gross(gross: int, ledger_fee: int)
-    requires 0 <= ledger_fee < gross
-    ensures kernel::deposit_refund_amount_spec(gross, ledger_fee) == Some(gross - ledger_fee),
-        (gross - ledger_fee) + ledger_fee == gross
+proof fn deposit_refund_deducts_charged_fee_and_ledger_fee(
+    gross: int, service_fee: int, ledger_fee: int,
+)
+    requires 0 <= service_fee, 0 <= ledger_fee, service_fee + ledger_fee < gross
+    ensures
+        kernel::deposit_refund_amount_spec(gross, service_fee, ledger_fee)
+            == Some(gross - service_fee - ledger_fee),
+        (gross - service_fee - ledger_fee) + service_fee + ledger_fee == gross
 {}
 
 proof fn refund_retry_requires_matching_evidence(request: bool, hold: bool, transfer: bool, open_or_retry: bool)

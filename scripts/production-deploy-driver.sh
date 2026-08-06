@@ -47,9 +47,9 @@ if values(value,'Err') or len(values(value,'Ok')) != 1:
 PY
 PUBLIC_CONFIG="$(icp canister call bridge-canister get_public_config '()' -e production --query --json)"
 STATUS="$(icp canister call bridge-canister get_bridge_status '()' -e production --json)"
-python3 - "$EXPECTED_SIGNER" "$GOVERNANCE_OPERATOR" "$PUBLIC_CONFIG" "$STATUS" <<'PY'
+python3 - "$EXPECTED_SIGNER" "$GOVERNANCE_OPERATOR" "$EXPECTED_BRIDGE_RUNTIME" "$PUBLIC_CONFIG" "$STATUS" <<'PY'
 import json,sys
-expected_signer,expected_operator,public_raw,status_raw=sys.argv[1:]
+expected_signer,expected_operator,expected_runtime,public_raw,status_raw=sys.argv[1:]
 def values(value,key):
  out=[]
  if isinstance(value,dict):
@@ -63,8 +63,10 @@ def address(value):
  return '0x'+bytes(value).hex() if isinstance(value,list) else str(value).lower()
 public=json.loads(public_raw); status=json.loads(status_raw)
 signers=values(public,'expected_bridge_signer'); operators=values(public,'governance_operator')
+runtime_hashes=values(public,'expected_bridge_runtime_sha256')
 if len(signers)!=1 or address(signers[0])!=expected_signer.lower(): raise SystemExit('production Canister Mint Signer differs from profile')
 if len(operators)!=1 or address(operators[0])!=expected_operator.lower(): raise SystemExit('production Canister Governance Operator differs from profile')
+if len(runtime_hashes)!=1 or bytes(runtime_hashes[0]).hex()!=expected_runtime.lower().removeprefix('0x'): raise SystemExit('production Canister expected Bridge runtime differs from profile')
 if values(status,'deposits_paused') != [True]: raise SystemExit('production Canister must remain paused before Base deployment')
 PY
 
@@ -114,7 +116,7 @@ DEPLOYED_TIMELOCK="${DEPLOYED_TIMELOCK:-$EXPECTED_TIMELOCK}"
 if [[ -z "$TIMELOCK_TX" ]]; then
   precheck_create "$EXPECTED_TIMELOCK"
   ARGS=(); while IFS= read -r x; do ARGS+=("$x"); done < <(python3 -c 'import json,sys; emit=lambda x: print("["+",".join(x)+"]" if isinstance(x,list) else x); [emit(x) for x in json.load(open(sys.argv[1]))["timelock"]]' "$CONSTRUCTOR_ARGS_FILE")
-  TIMELOCK_JSON="$(forge create --root "$SOURCE_ROOT/contracts" src/BridgeTimelockController.sol:BridgeTimelockController --broadcast --rpc-url "$RPC" --chain "$CHAIN" --ledger --from "$BRIDGE_DEPLOYER_ADDRESS" "${FORGE_CAPS[@]}" --json --constructor-args "${ARGS[@]}")"
+  TIMELOCK_JSON="$(FOUNDRY_PROFILE=default forge create --root "$SOURCE_ROOT/contracts" src/BridgeTimelockController.sol:BridgeTimelockController --broadcast --rpc-url "$RPC" --chain "$CHAIN" --ledger --from "$BRIDGE_DEPLOYER_ADDRESS" "${FORGE_CAPS[@]}" --json --constructor-args "${ARGS[@]}")"
   DEPLOYED_TIMELOCK="$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["deployedTo"])' <<<"$TIMELOCK_JSON")"
   TIMELOCK_TX="$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["transactionHash"])' <<<"$TIMELOCK_JSON")"
   TIMELOCK_RECEIPT="$(cast receipt "$TIMELOCK_TX" --rpc-url "$RPC" --json)"
@@ -137,7 +139,7 @@ DEPLOYED_BRIDGE="$(checkpoint_value bridge address 2>/dev/null || true)"
 DEPLOYED_BRIDGE="${DEPLOYED_BRIDGE:-$BRIDGE}"
 if [[ -z "$BRIDGE_TX" ]]; then
   precheck_create "$BRIDGE"
-  BRIDGE_JSON="$(forge create --root "$SOURCE_ROOT/contracts" src/Bridge.sol:Bridge --broadcast --rpc-url "$RPC" --chain "$CHAIN" --ledger --from "$BRIDGE_DEPLOYER_ADDRESS" "${FORGE_CAPS[@]}" --json --constructor-args "${ARGS[@]}")"
+  BRIDGE_JSON="$(FOUNDRY_PROFILE=default forge create --root "$SOURCE_ROOT/contracts" src/Bridge.sol:Bridge --broadcast --rpc-url "$RPC" --chain "$CHAIN" --ledger --from "$BRIDGE_DEPLOYER_ADDRESS" "${FORGE_CAPS[@]}" --json --constructor-args "${ARGS[@]}")"
   DEPLOYED_BRIDGE="$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["deployedTo"])' <<<"$BRIDGE_JSON")"
   BRIDGE_TX="$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["transactionHash"])' <<<"$BRIDGE_JSON")"
   BRIDGE_RECEIPT="$(cast receipt "$BRIDGE_TX" --rpc-url "$RPC" --json)"

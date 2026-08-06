@@ -4,43 +4,31 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from proof_fingerprint import (
+    FINGERPRINT_CONFIG_FILES,
+    FINGERPRINT_SOURCE_ROOTS,
+    fingerprint_inputs,
+    source_fingerprint,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_STAGES = (
+    "claim-manifest",
     "lean",
     "lean-negative",
     "policy-vector-consumers",
     "refinement-gate",
+    "claim-transaction-tests",
     "known-answer-consumers",
     "smt-and-negative",
     "verus-and-negative",
 )
-RECEIPT_SCHEMA = 3
-FINGERPRINT_SOURCE_ROOTS = (
-    ("canister", frozenset({".did", ".rs", ".toml"})),
-    ("contracts", frozenset({".sol", ".toml"})),
-    ("scripts", frozenset({"", ".mjs", ".py", ".sh"})),
-    ("ui/src", frozenset({".ts", ".tsx"})),
-)
-FINGERPRINT_CONFIG_FILES = (
-    ".gitmodules",
-    "Cargo.lock",
-    "Cargo.toml",
-    "package.json",
-    "pnpm-lock.yaml",
-    "rust-toolchain.toml",
-    "ui/package.json",
-    "ui/tsconfig.app.json",
-    "ui/tsconfig.json",
-    "ui/tsconfig.node.json",
-    "ui/vite.config.ts",
-    "ui/vitest.config.ts",
-)
+RECEIPT_SCHEMA = 4
 
 
 @dataclass(frozen=True)
@@ -236,61 +224,6 @@ def classify_paths(
     }
 
 
-def fingerprint_inputs(
-    repo_root: Path = ROOT, manifest: ImpactManifest | None = None
-) -> tuple[Path, ...]:
-    manifest = manifest or load_manifest(repo_root)
-    paths = {
-        repo_root / source for area in manifest.areas for source in area.sources
-    }
-    verification = repo_root / "verification"
-    paths.update(
-        path
-        for path in verification.rglob("*")
-        if path.is_file()
-        and verification / "output" not in path.parents
-        and ".lake" not in path.parts
-    )
-    for relative_root, suffixes in FINGERPRINT_SOURCE_ROOTS:
-        source_root = repo_root / relative_root
-        if not source_root.is_dir():
-            raise ValueError(f"missing proof fingerprint root: {relative_root}")
-        paths.update(
-            path
-            for path in source_root.rglob("*")
-            if path.is_file() and path.suffix in suffixes
-        )
-    paths.update(repo_root / relative for relative in FINGERPRINT_CONFIG_FILES)
-    missing = [path for path in paths if not path.is_file()]
-    if missing:
-        raise ValueError(
-            "missing proof fingerprint inputs: "
-            + ", ".join(
-                path.relative_to(repo_root).as_posix() for path in sorted(missing)
-            )
-        )
-    return tuple(sorted(paths))
-
-
-def source_fingerprint(
-    repo_root: Path = ROOT, manifest: ImpactManifest | None = None
-) -> dict[str, object]:
-    digest = hashlib.sha256()
-    inputs = fingerprint_inputs(repo_root, manifest)
-    for path in inputs:
-        relative = path.relative_to(repo_root).as_posix().encode()
-        content = path.read_bytes()
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return {
-        "algorithm": "sha256",
-        "digest": digest.hexdigest(),
-        "input_count": len(inputs),
-    }
-
-
 def validate_receipt_contents(receipt: object) -> None:
     if (
         not isinstance(receipt, dict)
@@ -334,6 +267,33 @@ def check_receipt(receipt_path: Path, repo_root: Path = ROOT) -> None:
     validate_receipt_contents(receipt)
     if receipt.get("source_fingerprint") != source_fingerprint(repo_root):
         raise ValueError("proof receipt source fingerprint is stale")
+    if repo_root.resolve() != ROOT.resolve():
+        raise ValueError("claim report regeneration requires the repository root")
+    from check_claim_manifest import CLAIM_REPORT_SCHEMA, build_claim_report
+
+    expected_report = build_claim_report()
+    expected_claims = expected_report.get("claims")
+    summary_statuses = (
+        "implementation-proved",
+        "refinement-tested",
+        "partial",
+        "assumed",
+    )
+    expected_summary = {
+        status: sum(
+            isinstance(claim, dict) and claim.get("status") == status
+            for claim in expected_claims
+        )
+        for status in summary_statuses
+    }
+    if receipt.get("claim_report_schema") != CLAIM_REPORT_SCHEMA:
+        raise ValueError("proof receipt claim report schema is stale")
+    if receipt.get("claims") != expected_claims:
+        raise ValueError("proof receipt claims do not match deterministic claim evidence")
+    if receipt.get("claim_summary") != expected_summary:
+        raise ValueError("proof receipt claim summary does not match deterministic claim evidence")
+    if "claim_report_error" in receipt:
+        raise ValueError("completed proof receipt contains a claim report error")
 
 
 def main() -> int:

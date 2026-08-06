@@ -1,7 +1,7 @@
 import { IDL } from "@dfinity/candid"
 import { describe, expect, it, vi } from "vitest"
 import { idlFactory } from "@/generated/bridge.idl"
-import { decodeDepositReply, decodeNotifyWithdrawalReply, NotifyWithdrawalCallError, notifyWithdrawalErrorMessage, OisyAdapter } from "./wallet"
+import { decodeDepositReply, decodeNotifyWithdrawalReply, NotifyWithdrawalCallError, notifyWithdrawalErrorMessage, OisyAdapter, requestDepositRefundErrorMessage } from "./wallet"
 
 // didc's runtime JS intentionally has no static return type; the checked-in TS binding is the typed contract.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
@@ -15,6 +15,11 @@ function resultType(method: "request_deposit" | "notify_withdrawal") {
 }
 
 describe("OISY deposit reply decoding", () => {
+  it("keeps refund admission retry guidance actionable", () => {
+    expect(requestDepositRefundErrorMessage({ RateLimited: { retry_after_seconds: 42n } })).toContain("Retry after")
+    expect(requestDepositRefundErrorMessage({ AutomaticProgressPending: { next_run_at_ns: [2_000_000_000n] } })).toContain("Next confirmation check")
+  })
+
   it("decodes RateLimited as a normal bridge rejection", () => {
     const reply = new Uint8Array(IDL.encode([resultType("request_deposit")], [{ Err: { RateLimited: { retry_after_seconds: 42n } } }]))
 
@@ -44,6 +49,15 @@ describe("OISY deposit reply decoding", () => {
     expect(() => decodeDepositReply(rejected)).toThrow("allowance is insufficient")
     expect(() => decodeDepositReply(rejected)).toThrow("current 7")
     expect(() => decodeDepositReply(unavailable)).toThrow("Retry the same deposit in 30 seconds")
+  })
+
+  it("explains reservation maintenance with a same-deposit retry delay", () => {
+    const reply = new Uint8Array(IDL.encode(
+      [resultType("request_deposit")],
+      [{ Err: { ReservationMaintenance: { retry_after_seconds: 17n } } }],
+    ))
+
+    expect(() => decodeDepositReply(reply)).toThrow("Retry the same deposit in 17 seconds")
   })
 })
 

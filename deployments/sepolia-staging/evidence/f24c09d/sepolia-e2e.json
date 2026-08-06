@@ -1,0 +1,270 @@
+{
+  "binding": {
+    "activation_timelock_delay_seconds": 300,
+    "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+    "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+    "bridge_runtime_template_sha256": "0x4be5b6884d6293924865c2d2f669d1e8de7f285be74c12506ffb0e3c63bfb5a0",
+    "bridge_wasm_sha256": "53a44aa8e4c97a1f21416af0c4e5383947de6816b8d714bf0785b8d4f49a5c1a",
+    "bsns_address": "0x265e6b05a2f6bda29f464d70867a37acde3ccde8",
+    "bsns_runtime_sha256": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b",
+    "bsns_runtime_template_sha256": "0x10be95adefd5f76cf8d1f8dd137247dc9371d81335a793984dc88d2aa20955ac",
+    "chain_id": 84532,
+    "deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+    "environment_mode": "short-delay-test-only",
+    "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+    "frontend_profile_sha256": "1cffb76243b328358a15d21ad437267ee45097cf11da715e7e016cc156ef8a6d",
+    "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+    "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+    "local_e2e_sha256": "88c6cd5212fb52e40d9190c585e91156d665bf4bd59edbca6917d5671fc26ce6",
+    "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+    "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
+  },
+  "complete": false,
+  "created_at": "2026-08-05T07:26:55.443029Z",
+  "kind": "kinic-bridge-sepolia-staging-e2e",
+  "schema_version": 7,
+  "stages": {
+    "activation_execute": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/activation-execute-live.json",
+          "sha256": "41a0d00e508508b3d5f8296597a54ef0d0f1c1a3d3bfe960976862f055ae8e63"
+        }
+      ],
+      "details": {
+        "base_deposits_paused": false,
+        "base_withdrawals_paused": false,
+        "canister_deposits_paused": false,
+        "delay_seconds": 300,
+        "execute_transaction_hash": "0x36cf4687177816d1b00303f5bf69a97c33aae5e20de38e5a069825af8b61b7b1",
+        "finalized_block_hash": "0xfb7bc17864ba27dd766e6f64411c447471718feebc853effd174f566073168d7",
+        "finalized_block_number": 45076053,
+        "pending_timelock_operations": 0
+      },
+      "observed_at": "2026-08-05T09:26:17Z",
+      "schema_version": 7,
+      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "stage": "activation_execute"
+    },
+    "activation_schedule": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/activation-schedule-live.json",
+          "sha256": "82fd510134f4ffee48e50e62723eb300ca753105dd8cf1a19148f83ce6bb7a88"
+        }
+      ],
+      "details": {
+        "early_execute_reverted": true,
+        "finalized_block_hash": "0xfbbbb50626d3c2b8d4a1aac7f3b1fca64397359897d7c27280c2c49207913c24",
+        "finalized_block_number": 45075356,
+        "operation_id": "0x36d209c4d634f6e0919bf4e29f5f0e7c58318dfee8c3e80f04772fbb99536a43",
+        "schedule_transaction_hash": "0xd7f16af844c35ea05ba79d7bbd5b013a88fe704c6b856b148c3d358b1c10ae9d"
+      },
+      "observed_at": "2026-08-05T08:58:15Z",
+      "schema_version": 7,
+      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "stage": "activation_schedule"
+    },
+    "contracts": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/contracts-live.json",
+          "sha256": "14ce5df486c3f339a2716166fa784381b16de7af8b5973d46bd486b6f90223ca"
+        }
+      ],
+      "details": {
+        "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+        "bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+        "bridge_runtime_template_sha256": "0x4be5b6884d6293924865c2d2f669d1e8de7f285be74c12506ffb0e3c63bfb5a0",
+        "bsns_address": "0x265e6b05a2f6bda29f464d70867a37acde3ccde8",
+        "bsns_runtime_sha256": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b",
+        "bsns_runtime_template_sha256": "0x10be95adefd5f76cf8d1f8dd137247dc9371d81335a793984dc88d2aa20955ac",
+        "deployer_roles_zero": true,
+        "deployment_block": 44770225,
+        "deployment_transaction_hashes": [
+          "0x8862d8746295643efc8730fb11a9034af858a07862441fb144b77a164b674d35"
+        ],
+        "governance_operator": "0x64639cb99ae61436cb1d66d775283f757e436479",
+        "mint_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+        "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
+      },
+      "observed_at": "2026-08-05T08:23:05Z",
+      "schema_version": 7,
+      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "stage": "contracts"
+    },
+    "final_pause": null,
+    "frontend_publish": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/frontend-publish-live.json",
+          "sha256": "7a3cfb589bf8d760a45d6fc07b86e48b088f79002ac5db11c26a69ec28741f8d"
+        }
+      ],
+      "details": {
+        "deployment_id": "2d5c23d3-7e4c-4bda-846d-034b571e6755",
+        "profile_sha256": "1cffb76243b328358a15d21ad437267ee45097cf11da715e7e016cc156ef8a6d",
+        "runtime_verification_fresh": true,
+        "test_banner_visible": true,
+        "url": "https://kinic-bridge-ui-test.hude.workers.dev"
+      },
+      "observed_at": "2026-08-05T12:14:06Z",
+      "schema_version": 7,
+      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "stage": "frontend_publish"
+    },
+    "initialize": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/initialize-live.json",
+          "sha256": "cba9f00ddf32dfdb0e23b3667738b81ae2dba361ec007ec860093639c4f4f593"
+        }
+      ],
+      "details": {
+        "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+        "canister_deposits_paused": true,
+        "chain_id": 84532,
+        "deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+        "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+        "expected_bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+        "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+        "governance_operator": "0x64639cb99ae61436cb1d66d775283f757e436479",
+        "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+        "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+        "schema_version": 31,
+        "storage_integrity": "ok",
+        "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
+      },
+      "observed_at": "2026-08-05T08:25:26Z",
+      "schema_version": 7,
+      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "stage": "initialize"
+    },
+    "install": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/install-live.json",
+          "sha256": "86c1bafbfd070a85815d7c9ca59bc54c999146e1be0e583aa3a9cff186698853"
+        }
+      ],
+      "details": {
+        "controller_principals": [
+          "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+          "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
+        ],
+        "cycles_balance": 774746052185,
+        "deployment_instance_id_after": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+        "install_mode": "upgrade",
+        "module_sha256": "53a44aa8e4c97a1f21416af0c4e5383947de6816b8d714bf0785b8d4f49a5c1a",
+        "schema_version_after": 31,
+        "state_counts_after": {
+          "deposits": 4,
+          "pending_ledger_operations": 0,
+          "reconciliation_holds": 0,
+          "reserved_deposit_mint_amount": 1000000000,
+          "reserved_deposit_mint_operations": 1,
+          "unpaid_withdrawal_amount_out": 0,
+          "unpaid_withdrawal_count": 0,
+          "withdrawals": 0
+        },
+        "state_counts_before": {
+          "deposits": 4,
+          "pending_ledger_operations": 0,
+          "reconciliation_holds": 0,
+          "reserved_deposit_mint_amount": 1000000000,
+          "reserved_deposit_mint_operations": 1,
+          "unpaid_withdrawal_amount_out": 0,
+          "unpaid_withdrawal_count": 0,
+          "withdrawals": 0
+        },
+        "storage_integrity_after": "ok"
+      },
+      "observed_at": "2026-08-05T08:24:40Z",
+      "schema_version": 7,
+      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "stage": "install"
+    },
+    "preflight": {
+      "artifacts": [
+        {
+          "kind": "live-public-config",
+          "path": "artifacts/live-public-config.json",
+          "sha256": "e92885a96f73267ec19f36dc1e4910d344168fcf4a90bbd3c60b4ce2c306134f"
+        },
+        {
+          "kind": "reinstall-instance-check",
+          "path": "artifacts/reinstall-instance-check.json",
+          "sha256": "2deefb07a9cfac0d29eb325c81cb43ac859c8f02031df7b2374beab43e4203de"
+        },
+        {
+          "kind": "live-canister-status",
+          "path": "artifacts/live-canister-status.json",
+          "sha256": "9634e061a292597ca975bc98707d963e8761c1ac65eff5a35eeaaf617b604861"
+        },
+        {
+          "kind": "live-bridge-status",
+          "path": "artifacts/live-bridge-status.json",
+          "sha256": "c262296c5c9d7a2155338c5eb9ef5bfa4f8a610e0f5cb7fd032fb174743e6215"
+        },
+        {
+          "kind": "live-activation-status",
+          "path": "artifacts/live-activation-status.json",
+          "sha256": "45337fadaa22f07c941b7493cf49832944bec6527a40fd87b6be1bd18882a848"
+        },
+        {
+          "kind": "live-storage-integrity",
+          "path": "artifacts/live-storage-integrity.json",
+          "sha256": "a0dc537f108d6a486c9ae6289236224929ffb224403bed4bafea854f309732a6"
+        },
+        {
+          "kind": "live-ledger-balance",
+          "path": "artifacts/live-ledger-balance.json",
+          "sha256": "c5dc44dc23c9b5bed8459fcf4202a3c35d30160ea5f250ac818214641ed8064e"
+        }
+      ],
+      "details": {
+        "base_deposits_paused": true,
+        "base_withdrawals_paused": true,
+        "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+        "canister_deposits_paused": true,
+        "chain_id": 84532,
+        "configured_rpc_url_sha256": [
+          "a30ce743ddc719cd42638750cfdc375ae936209f7ba24268b4b2eb533494616f",
+          "5916966ddb71dda2015e9e4991f67d0df96798966b5b2e0deb8ef43405d39e2e",
+          "6dbd0deb51a5f497d7eb0587c807d9939346d9fdad6e53538bb87f61b8819b49"
+        ],
+        "controller_principals": [
+          "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+          "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
+        ],
+        "cycles_balance": 808148878982,
+        "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+        "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+        "index_ledger_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+        "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+        "ledger_decimals": 8,
+        "ledger_fee": 10000,
+        "ledger_symbol": "TICRC1",
+        "live_schema_version": 31,
+        "previous_deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+        "replacement_mode": "current-schema-upgrade"
+      },
+      "observed_at": "2026-08-05T08:20:38Z",
+      "schema_version": 7,
+      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "stage": "preflight"
+    },
+    "rpc_rehearsal": null,
+    "smoke_e2e": null,
+    "wallet_e2e": null
+  },
+  "state": "AWAITING_SMOKE_E2E",
+  "updated_at": "2026-08-05T12:14:44.215359Z"
+}

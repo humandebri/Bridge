@@ -66,6 +66,11 @@ theorem deposit_admission_claim
     omega
   next => simp at accepted
 
+theorem deposit_identity_preflight_claim (processed : Bool) :
+    (decideDepositIdentity processed = .allow ↔ processed = false) ∧
+      (decideDepositIdentity processed = .conflict ↔ processed = true) := by
+  cases processed <;> simp [decideDepositIdentity]
+
 theorem reservation_claim (reserved candidate : Nat) :
     let next := commitMintReservation reserved candidate
     next.1 + next.2 = reserved + candidate := by
@@ -122,11 +127,17 @@ theorem manual_claim_claim :
   · rfl
 
 theorem notification_admission_claim
-    {callerCount hashCount callerLimit hashLimit : Nat}
-    (accepted :
-      notificationAdmissionAllowed callerCount hashCount callerLimit hashLimit = true) :
-    callerCount < callerLimit ∧ hashCount < hashLimit := by
-  simpa [notificationAdmissionAllowed, Bool.and_eq_true] using accepted
+    {globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : Nat}
+    (verificationAccepted :
+      notificationAdmissionAllowed globalCount callerCount globalLimit callerLimit = true)
+    (ingestionAccepted :
+      notificationIngestionAllowed ingestionCount ingestionLimit = true) :
+    globalCount < globalLimit ∧ callerCount < callerLimit ∧ ingestionCount < ingestionLimit := by
+  have verification : globalCount < globalLimit ∧ callerCount < callerLimit := by
+    simpa [notificationAdmissionAllowed, Bool.and_eq_true] using verificationAccepted
+  have ingestion : ingestionCount < ingestionLimit := by
+    simpa [notificationIngestionAllowed] using ingestionAccepted
+  exact ⟨verification.1, verification.2, ingestion⟩
 
 theorem lease_lane_claim
     {targetActive targetAutomatic : Bool} {activeInLane capacity : Nat}
@@ -144,6 +155,17 @@ theorem funding_attempt_claim :
       decideFundingAttempt .duplicate = .promoteSuccess ∧
       decideFundingAttempt .ambiguous = .promoteAmbiguous ∧
       decideFundingAttempt .retryableFailure = .retain := by
+  decide
+
+theorem funding_reconciliation_claim :
+    decideFundingReconciliation false false false = .wait ∧
+      decideFundingReconciliation false false true = .wait ∧
+      decideFundingReconciliation false true false = .wait ∧
+      decideFundingReconciliation false true true = .wait ∧
+      decideFundingReconciliation true false false = .restartFresh ∧
+      decideFundingReconciliation true false true = .restartFresh ∧
+      decideFundingReconciliation true true false = .wait ∧
+      decideFundingReconciliation true true true = .release := by
   decide
 
 end BridgeSpec.Claims

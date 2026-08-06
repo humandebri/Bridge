@@ -1,6 +1,13 @@
+overrides:
+  # Security override until @coinbase/cdp-sdk permits axios 1.18.0 or newer.
+  axios: 1.18.0
+  brace-expansion: 5.0.8
+  postcss: 8.5.23
 allowBuilds:
   '@dfinity/pic': true
   '@reown/appkit': false
   esbuild: true
   sharp: true
   workerd: true
+patchedDependencies:
+  '@dfinity/oisy-wallet-signer@6.0.0': patches/@dfinity__oisy-wallet-signer@6.0.0.patch

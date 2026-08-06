@@ -136,6 +136,14 @@ def admitDeposit (a : DepositAdmission) : Option Nat :=
     some (a.grossAmount - a.serviceFee)
   else none
 
+inductive DepositIdentityDecision where
+  | allow
+  | conflict
+deriving DecidableEq
+
+def decideDepositIdentity (processed : Bool) : DepositIdentityDecision :=
+  if processed then .conflict else .allow
+
 def commitMintReservation (reserved candidate : Nat) : Nat × Nat :=
   (reserved + candidate, 0)
 
@@ -169,18 +177,45 @@ def manualClaimAllowed
     (scheduled active stopped overdue expired : Bool) : Bool :=
   (!active || expired) && (!scheduled || stopped || overdue || expired)
 
+inductive RefundRequestIdentityDecision where
+  | allow
+  | ownerLookupRequired
+  | anonymousCaller
+  | ownerMismatch
+deriving DecidableEq
+
+def decideRefundRequestIdentity
+    (authenticated : Bool) (ownerMatch : Option Bool) :
+    RefundRequestIdentityDecision :=
+  if !authenticated then .anonymousCaller
+  else
+    match ownerMatch with
+    | none => .ownerLookupRequired
+    | some true => .allow
+    | some false => .ownerMismatch
+
 structure NotificationIsolationState where
-  notificationCount : Nat
+  persistentVerificationCount : Nat
+  persistentIngestionCount : Nat
+  callerWindowCount : Nat
   settlementAdmission : Nat
   settlementJobs : Nat
 deriving DecidableEq
 
-def processNotification (state : NotificationIsolationState) : NotificationIsolationState :=
-  { state with notificationCount := state.notificationCount + 1 }
+def processNotificationVerification (state : NotificationIsolationState) : NotificationIsolationState :=
+  { state with
+      persistentVerificationCount := state.persistentVerificationCount + 1
+      callerWindowCount := state.callerWindowCount + 1 }
+
+def processNotificationIngestion (state : NotificationIsolationState) : NotificationIsolationState :=
+  { state with persistentIngestionCount := state.persistentIngestionCount + 1 }
 
 def notificationAdmissionAllowed
-    (callerCount hashCount callerLimit hashLimit : Nat) : Bool :=
-  callerCount < callerLimit && hashCount < hashLimit
+    (globalCount callerCount globalLimit callerLimit : Nat) : Bool :=
+  globalCount < globalLimit && callerCount < callerLimit
+
+def notificationIngestionAllowed (ingestionCount ingestionLimit : Nat) : Bool :=
+  ingestionCount < ingestionLimit
 
 inductive LeaseLaneClaimDecision where
   | allow
@@ -216,5 +251,18 @@ def decideFundingAttempt : FundingOutcomeKind → FundingAttemptDecision
   | .ambiguous => .promoteAmbiguous
   | .definitiveFailure => .release
   | .retryableFailure => .retain
+
+inductive FundingReconciliationDecision where
+  | wait
+  | restartFresh
+  | release
+deriving DecidableEq
+
+def decideFundingReconciliation
+    (completeAbsence finalScan dedupExpired : Bool) : FundingReconciliationDecision :=
+  if completeAbsence = false then .wait
+  else if finalScan = false then .restartFresh
+  else if dedupExpired then .release
+  else .wait
 
 end BridgeSpec

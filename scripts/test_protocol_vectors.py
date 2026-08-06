@@ -18,13 +18,13 @@ class ProtocolVectorDriftTests(unittest.TestCase):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             accepted = protocol_vectors.matches_expected(
-                '{"schema_version":1}\n',
                 '{"schema_version":2}\n',
+                '{"schema_version":3}\n',
                 "fixture",
             )
         self.assertFalse(accepted)
-        self.assertIn("-{'schema_version':1}".replace("'", '"'), stderr.getvalue())
-        self.assertIn("+{'schema_version':2}".replace("'", '"'), stderr.getvalue())
+        self.assertIn("-{'schema_version':2}".replace("'", '"'), stderr.getvalue())
+        self.assertIn("+{'schema_version':3}".replace("'", '"'), stderr.getvalue())
 
 
 if __name__ == "__main__":

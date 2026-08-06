@@ -28,6 +28,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           submodules: recursive
+          fetch-depth: 0
           persist-credentials: false
       - name: Verify OpenZeppelin revision
         run: test "$(git -C contracts/lib/openzeppelin-contracts rev-parse HEAD)" = "5fd1781b1454fd1ef8e722282f86f9293cacf256"

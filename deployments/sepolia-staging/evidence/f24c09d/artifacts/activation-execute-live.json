@@ -1,0 +1,26 @@
+{
+  "chain_id": 84532,
+  "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
+  "operation_id": "0x36d209c4d634f6e0919bf4e29f5f0e7c58318dfee8c3e80f04772fbb99536a43",
+  "execute_transaction_hash": "0x36cf4687177816d1b00303f5bf69a97c33aae5e20de38e5a069825af8b61b7b1",
+  "receipt": {
+    "block_number": 45076053,
+    "block_hash": "0xfb7bc17864ba27dd766e6f64411c447471718feebc853effd174f566073168d7",
+    "status": "success"
+  },
+  "finalized_observation": {
+    "block_number": 45076160,
+    "base_deposits_paused": false,
+    "base_withdrawals_paused": false
+  },
+  "canister_confirmation": {
+    "operation_id": "7",
+    "receipt_block_number": 45076053,
+    "succeeded": true,
+    "deposits_paused": false,
+    "pending_timelock_operations": 0,
+    "pending_governance_transactions": 0,
+    "deposits_resumed_audit_sequence": 21,
+    "retained_audit_events": 22
+  }
+}

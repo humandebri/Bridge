@@ -3,7 +3,7 @@
 ## Status
 
 - **State**: IN PROGRESS
-- **Dependency**: Plan 005の計測、固定limit承認、実pause principal、監視pause/cancel演習が完了していること
+- **Dependency**: Plan 005の10回・7日計測、固定limit承認、実pause principal、pause/cancel経路演習が完了していること
 - **Safety**: Gate B executeへの明示承認まで本番資産を受け付けない。外部transaction、controller変更、proposal提出、activationは個別承認なしに実行しない。
 
 ## 権限モデル
@@ -15,7 +15,7 @@ Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operato
 ## 固定stage
 
 1. clean revisionでCI、Verus、ABI/Candid、current schema reopenと未知schema fail-closedを完了する。
-2. 同一Wasmのtest canisterで100回計測、RPC 10 scenario、実データ相当stateのupgrade、pause/cancel演習を完了する。
+2. 同一Wasmのtest canisterで10回計測、launch-ready RPC 5 scenario、実データ相当stateのupgrade、pause/cancel経路演習を完了する。
 3. production Canisterへ通常のpause状態で同一Wasmをinstallし、Canister固有のMint SignerとGovernance Operatorを導出する。追加のbootstrap lifecycleやdeployment binding APIは設けない。
 4. 最終profile、予測contract address、4 artifactのGate Aを固定する。
 5. 一時deployerでTimelockとBridgeをpause状態で配置する。constructorは導出済みMint Signer、Governance Operator、Timelockだけをroleへ設定し、deployerへroleを残さない。
@@ -35,7 +35,7 @@ Gate Aは`profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridg
 
 - 人間の永続EVM roleが0件である。
 - SNS Root-only controllerとSNS proposal upgradeが成功している。
-- RPC 10 scenarioが完了している。
+- `preflight`、`authorization_mint`、`withdrawal_release`、`quorum_loss`、`final_pause`の主要5 scenarioがraw artifact付きで`LAUNCH_READY`になっている。
 - Canister発のTimelock schedule/executeとcanonical Finalized receiptが存在する。
 - Base/IC双方がactiveで、controller、code、role、reserveにdriftがない。
 

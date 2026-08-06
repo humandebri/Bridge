@@ -5,7 +5,7 @@ test = "test"
 script = "script"
 out = "out"
 cache_path = "cache"
-remappings = ["@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/", "bridge-src/=src/"]
+remappings = ["@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/", "bridge-src/=src/", "bridge-deployment-policy/=src/policies/production/"]
 solc = "0.8.36"
 evm_version = "prague"
 optimizer = true
@@ -30,6 +30,11 @@ runs = 1000
 runs = 256
 depth = 100
 fail_on_revert = true
+
+[profile.staging]
+out = "out-staging"
+cache_path = "cache-staging"
+remappings = ["@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/", "bridge-src/=src/", "bridge-deployment-policy/=src/policies/staging/"]
 
 [profile.smt]
 # The trusted driver invokes this profile from the contracts project. Scope all

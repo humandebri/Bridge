@@ -22,33 +22,61 @@ const scope = {
   chainId: deploymentProfile.chainId,
   bridgeAddress: deploymentProfile.bridgeAddress?.toLowerCase() ?? "",
 }
+const mintExpectation = {
+  depositId: `0x${"11".repeat(32)}` as const,
+  authorizationDigest: `0x${"33".repeat(32)}` as const,
+  recipient: `0x${"44".repeat(20)}` as const,
+  grossAmount: "500000000",
+  chargedServiceFee: "50000000",
+  mintedAmount: "450000000",
+}
 
 describe("pending finalized confirmations", () => {
   beforeEach(() => window.localStorage.clear())
 
   it("persists and removes a deployment-scoped pending mint transaction", async () => {
-    const depositId = `0x${"11".repeat(32)}` as const
     const transactionHash = `0x${"22".repeat(32)}` as const
+    const pending = { ...mintExpectation, transactionHash }
 
-    await savePendingMint(depositId, transactionHash)
-    expect(readPendingMint(depositId)).toBe(transactionHash)
+    await savePendingMint(pending)
+    expect(readPendingMint(mintExpectation)).toEqual(pending)
 
-    await removePendingMint(depositId)
-    expect(readPendingMint(depositId)).toBeUndefined()
+    await removePendingMint(mintExpectation)
+    expect(readPendingMint(mintExpectation)).toBeUndefined()
   })
 
   it("retains a session recovery hash when durable storage is unavailable", async () => {
-    const depositId = `0x${"33".repeat(32)}` as const
     const transactionHash = `0x${"44".repeat(32)}` as const
+    const pending = { ...mintExpectation, transactionHash }
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("storage unavailable")
     })
 
-    await expect(savePendingMint(depositId, transactionHash)).resolves.toBeUndefined()
-    expect(readPendingMint(depositId)).toBe(transactionHash)
+    await expect(savePendingMint(pending)).resolves.toBeUndefined()
+    expect(readPendingMint(mintExpectation)).toEqual(pending)
 
     setItem.mockRestore()
-    await removePendingMint(depositId)
+    await removePendingMint(mintExpectation)
+  })
+
+  it("ignores obsolete pending mint v1 and mismatched v2 payloads", () => {
+    const legacyKey = [
+      "kinic.bridge.pending-mint.v1",
+      deploymentProfile.chainId,
+      deploymentProfile.bridgeAddress?.toLowerCase(),
+      deploymentProfile.bridgeCanisterId,
+      mintExpectation.depositId,
+    ].join(":")
+    window.localStorage.setItem(legacyKey, `0x${"22".repeat(32)}`)
+    expect(readPendingMint(mintExpectation)).toBeUndefined()
+  })
+
+  it("does not associate a saved mint with another authorization digest", async () => {
+    await savePendingMint({ ...mintExpectation, transactionHash: `0x${"22".repeat(32)}` })
+    expect(readPendingMint({
+      ...mintExpectation,
+      authorizationDigest: `0x${"55".repeat(32)}`,
+    })).toBeUndefined()
   })
 
   it("persists, updates, blocks, and removes a settlement", async () => {

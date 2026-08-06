@@ -7,7 +7,10 @@ describe("reviewed deployment profile", () => {
     expect(blockers).toContain("Bridge contract address is missing")
     expect(blockers).toContain("IC token index ID is missing")
     expect(blockers).toContain("Expected Bridge signer is missing")
-    expect(blockers).toHaveLength(13)
+    expect(blockers).toContain("Timelock contract address is missing")
+    expect(blockers).toContain("Timelock delay is missing")
+    expect(blockers).toContain("Deployment instance ID is missing")
+    expect(blockers).toHaveLength(16)
     expect(deploymentProfile.icToken).toEqual({ name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 })
     expect(deploymentProfile.baseToken).toEqual({ symbol: "KINIC", decimals: 8 })
   })
@@ -18,6 +21,28 @@ describe("reviewed deployment profile", () => {
       deploymentBlock: "123",
     })
     expect(parsed.deploymentBlock).toBe(123n)
+  })
+
+  it("requires reviewed history RPCs for Sepolia staging", () => {
+    expect(() => deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      environment: "sepolia-staging",
+      environmentMode: "short-delay-test-only",
+      activationTimelockDelaySeconds: 300,
+      bridgeCanisterId: "aaaaa-aa",
+      deploymentInstanceId: `0x${"99".repeat(32)}`,
+      ledgerCanisterId: "aaaaa-aa",
+      indexCanisterId: "aaaaa-aa",
+      evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
+      baseHistoryRpcUrls: undefined,
+    })).toThrow("reviewed Base history RPC URLs")
+  })
+
+  it("rejects a zero deployment instance ID", () => {
+    expect(() => deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      deploymentInstanceId: `0x${"00".repeat(32)}`,
+    })).toThrow("hash must be nonzero")
   })
 
   it("fails closed for a production profile without Gate B deployment binding", () => {

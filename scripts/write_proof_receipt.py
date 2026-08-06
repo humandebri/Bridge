@@ -7,11 +7,37 @@ import json
 import sys
 from pathlib import Path
 
+from check_claim_manifest import CLAIM_REPORT_SCHEMA, REPORT, build_claim_report
 from check_proof_impact import RECEIPT_SCHEMA, REQUIRED_STAGES, source_fingerprint
 
 REQUIRED = REQUIRED_STAGES
-ROOT = Path(__file__).resolve().parents[1]
-CLAIM_REPORT = ROOT / "verification" / "output" / "claim-report.json"
+
+
+def current_claim_evidence() -> tuple[list[dict[str, object]], dict[str, object]]:
+    if not REPORT.is_file():
+        raise ValueError("claim report is missing")
+    try:
+        report = json.loads(REPORT.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("claim report is unreadable") from error
+
+    fingerprint_before = source_fingerprint()
+    expected = build_claim_report()
+    fingerprint_after = source_fingerprint()
+    if fingerprint_before != fingerprint_after:
+        raise ValueError("proof inputs changed while computing claim evidence")
+    claims = report.get("claims")
+    if report.get("schema") != CLAIM_REPORT_SCHEMA:
+        raise ValueError("claim report schema does not match the current generator")
+    if report.get("source_fingerprint") != fingerprint_before:
+        raise ValueError("claim report source fingerprint is stale")
+    if report != expected:
+        raise ValueError("claim report does not match deterministic generator output")
+    if not isinstance(claims, list) or not claims:
+        raise ValueError("claim evidence must contain a non-empty claim list")
+    if not all(isinstance(claim, dict) for claim in claims):
+        raise ValueError("claim evidence contains a malformed claim")
+    return claims, fingerprint_after
 
 
 def main() -> int:
@@ -25,14 +51,16 @@ def main() -> int:
             if stage not in REQUIRED or status not in {"pass", "fail"} or stage in stages:
                 raise ValueError(f"invalid proof receipt stage: {line}")
             stages[stage] = status
-    claim_report = (
-        json.loads(CLAIM_REPORT.read_text(encoding="utf-8"))
-        if CLAIM_REPORT.is_file()
-        else {"schema": 1, "claims": []}
-    )
-    claims = claim_report.get("claims", [])
+    claim_error: str | None = None
+    try:
+        claims, fingerprint = current_claim_evidence()
+    except ValueError as error:
+        claims = []
+        fingerprint = source_fingerprint()
+        claim_error = str(error)
     complete = (
-        tuple(stages) == REQUIRED
+        claim_error is None
+        and tuple(stages) == REQUIRED
         and all(status == "pass" for status in stages.values())
         and bool(claims)
     )
@@ -41,9 +69,10 @@ def main() -> int:
         json.dumps(
             {
                 "schema": RECEIPT_SCHEMA,
+                "claim_report_schema": CLAIM_REPORT_SCHEMA,
                 "required_stages": list(REQUIRED),
                 "stages": [{"id": stage, "status": stages[stage]} for stage in stages],
-                "source_fingerprint": source_fingerprint(),
+                "source_fingerprint": fingerprint,
                 "claims": claims,
                 "claim_summary": {
                     status: sum(claim.get("status") == status for claim in claims)
@@ -55,13 +84,14 @@ def main() -> int:
                     )
                 },
                 "complete": complete,
+                **({"claim_report_error": claim_error} if claim_error is not None else {}),
             },
             indent=2,
         )
         + "\n",
         encoding="utf-8",
     )
-    return 0
+    return 0 if claim_error is None else 1
 
 
 if __name__ == "__main__":

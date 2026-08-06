@@ -6,11 +6,10 @@ pub enum DepositPhase {
     EscrowedUnquoted,
     AuthorizationPending,
     AuthorizationAvailable,
-    ExpiryReconciliation,
+    RefundAvailable,
     Minted,
     FundingReconciliationHold,
-    RefundPending,
-    RefundReconciliationHold,
+    RefundProcessing,
     Refunded,
     Cancelled,
 }
@@ -24,11 +23,12 @@ impl From<&DepositState> for DepositPhase {
             DepositState::EscrowedUnquoted { .. } => Self::EscrowedUnquoted,
             DepositState::AuthorizationPending { .. } => Self::AuthorizationPending,
             DepositState::AuthorizationAvailable { .. } => Self::AuthorizationAvailable,
-            DepositState::ExpiryReconciliation { .. } => Self::ExpiryReconciliation,
+            DepositState::RefundAvailable { .. } => Self::RefundAvailable,
             DepositState::Minted { .. } => Self::Minted,
             DepositState::FundingReconciliationHold { .. } => Self::FundingReconciliationHold,
-            DepositState::RefundPending { .. } => Self::RefundPending,
-            DepositState::RefundReconciliationHold { .. } => Self::RefundReconciliationHold,
+            DepositState::RefundPending { .. } | DepositState::RefundReconciliationHold { .. } => {
+                Self::RefundProcessing
+            }
             DepositState::Refunded { .. } => Self::Refunded,
             DepositState::Cancelled { .. } => Self::Cancelled,
         }

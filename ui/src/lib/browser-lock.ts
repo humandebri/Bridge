@@ -10,6 +10,11 @@ interface BrowserLease {
   fencingToken: number
 }
 
+/** Keeps direct browser-storage access inside the reviewed storage boundary. */
+export function browserLocalStorage(): Storage {
+  return window.localStorage
+}
+
 class BrowserLockStorageError extends Error {
   constructor(cause: unknown) {
     super("Browser lock storage is unavailable", { cause })
@@ -99,7 +104,7 @@ function requiresCrossTabLock(name: string): boolean {
 function readLease(key: string): BrowserLease | undefined | null {
   let raw: string | null
   try {
-    raw = window.localStorage.getItem(key)
+    raw = browserLocalStorage().getItem(key)
   } catch (error) {
     throw new BrowserLockStorageError(error)
   }
@@ -130,7 +135,7 @@ function ownsLease(current: BrowserLease | undefined | null, expected: BrowserLe
 
 function setLease(key: string, lease: BrowserLease): void {
   try {
-    window.localStorage.setItem(key, JSON.stringify(lease))
+    browserLocalStorage().setItem(key, JSON.stringify(lease))
   } catch (error) {
     throw new BrowserLockStorageError(error)
   }
@@ -138,7 +143,7 @@ function setLease(key: string, lease: BrowserLease): void {
 
 function removeLease(key: string): void {
   try {
-    window.localStorage.removeItem(key)
+    browserLocalStorage().removeItem(key)
   } catch (error) {
     throw new BrowserLockStorageError(error)
   }

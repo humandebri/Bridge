@@ -67,7 +67,8 @@ pub enum DepositState {
     AuthorizationAvailable {
         ledger_block_index: u128,
     },
-    ExpiryReconciliation {
+    RefundAvailable {
+        reason: DepositRefundReason,
         ledger_block_index: u128,
     },
     Minted {
@@ -116,7 +117,10 @@ pub enum DepositEvent {
     AuthorizationSigned {
         signature: Vec<u8>,
     },
-    BeginExpiryReconciliation,
+    MarkRefundAvailable {
+        reason: DepositRefundReason,
+        finalized_timestamp: Option<u64>,
+    },
     MintReconciled {
         evidence: Box<MintFinalizationEvidence>,
     },
@@ -207,8 +211,21 @@ impl DepositRecord {
             (Event::CommitAuthorization { quote, .. }, _) => Some(*quote),
             (_, quote) => quote,
         };
-        let net_amount = transition_quote.map_or(0, |quote| quote.net_amount.get());
-        let service_fee = transition_quote.map_or(0, |quote| quote.service_fee.get());
+        let authorization_issued = self
+            .mint_authorization
+            .as_ref()
+            .is_some_and(|authorization| authorization.signature.is_some())
+            || matches!(event, Event::AuthorizationSigned { .. });
+        let service_fee = if authorization_issued {
+            transition_quote.map_or(0, |quote| quote.service_fee.get())
+        } else {
+            0
+        };
+        let net_amount = if matches!(event, Event::StartRefund { .. }) && !authorization_issued {
+            self.gross_amount.get()
+        } else {
+            transition_quote.map_or(0, |quote| quote.net_amount.get())
+        };
         let reserved_amount = self.reserved_mint_amount()?.get();
         let transition = crate::deposit_transition_decision(crate::DepositTransitionInput {
             state: self.state.code(),
@@ -303,15 +320,19 @@ impl DepositRecord {
                     Some(authorization),
                     self.mint_finalization_evidence.clone(),
                     self.mint_expiry_evidence.clone(),
-                    Amount::ZERO,
+                    self.quote.ok_or(CoreError::InvalidAmount)?.service_fee,
                 )
             }
             (
-                State::AuthorizationPending { ledger_block_index }
-                | State::AuthorizationAvailable { ledger_block_index },
-                Event::BeginExpiryReconciliation,
+                State::EscrowedUnquoted { ledger_block_index }
+                | State::AuthorizationPending { ledger_block_index },
+                Event::MarkRefundAvailable {
+                    reason,
+                    finalized_timestamp: _,
+                },
             ) => (
-                State::ExpiryReconciliation {
+                State::RefundAvailable {
+                    reason,
                     ledger_block_index: *ledger_block_index,
                 },
                 self.quote,
@@ -321,24 +342,39 @@ impl DepositRecord {
                 Amount::ZERO,
             ),
             (
-                State::AuthorizationAvailable { ledger_block_index }
-                | State::ExpiryReconciliation { ledger_block_index },
-                Event::MintReconciled { evidence },
-            ) => {
-                let service_fee = self.quote.ok_or(CoreError::InvalidAmount)?.service_fee;
-                (
-                    State::Minted {
-                        ledger_block_index: *ledger_block_index,
-                    },
-                    self.quote,
-                    self.mint_authorization.clone(),
-                    Some(*evidence),
-                    None,
-                    Amount::new(crate::fee_delta_once(false, true, service_fee.get())),
-                )
-            }
+                State::AuthorizationAvailable { ledger_block_index },
+                Event::MarkRefundAvailable {
+                    reason,
+                    finalized_timestamp: _,
+                },
+            ) => (
+                State::RefundAvailable {
+                    reason,
+                    ledger_block_index: *ledger_block_index,
+                },
+                self.quote,
+                self.mint_authorization.clone(),
+                self.mint_finalization_evidence.clone(),
+                self.mint_expiry_evidence.clone(),
+                Amount::ZERO,
+            ),
             (
-                State::EscrowedUnquoted { .. } | State::ExpiryReconciliation { .. },
+                State::RefundAvailable {
+                    ledger_block_index, ..
+                },
+                Event::MintReconciled { evidence },
+            ) => (
+                State::Minted {
+                    ledger_block_index: *ledger_block_index,
+                },
+                self.quote,
+                self.mint_authorization.clone(),
+                Some(*evidence),
+                None,
+                Amount::ZERO,
+            ),
+            (
+                State::RefundAvailable { .. },
                 Event::StartRefund {
                     reason,
                     attempt,
@@ -509,7 +545,32 @@ impl DepositRecord {
                     (!guard.accepts()).then_some(CoreError::ConflictingReplay),
                 )
             }
-            Event::BeginExpiryReconciliation => (Guard::BeginExpiry, None),
+            Event::MarkRefundAvailable {
+                reason,
+                finalized_timestamp,
+            } => {
+                let deadline = self
+                    .mint_authorization
+                    .as_ref()
+                    .map(|record| record.authorization.deadline);
+                (
+                    Guard::MarkRefundAvailable {
+                        policy_allowed: match (&self.state, reason, finalized_timestamp) {
+                            (State::EscrowedUnquoted { .. }, reason, None) => {
+                                *reason != DepositRefundReason::AuthorizationExpired
+                            }
+                            (
+                                State::AuthorizationPending { .. }
+                                | State::AuthorizationAvailable { .. },
+                                DepositRefundReason::AuthorizationExpired,
+                                Some(finalized_timestamp),
+                            ) => deadline.is_some_and(|deadline| *finalized_timestamp > deadline),
+                            _ => false,
+                        },
+                    },
+                    None,
+                )
+            }
             Event::MintReconciled { evidence } => {
                 let authorization = self.mint_authorization.as_ref();
                 let expected_net = authorization.and_then(|record| {
@@ -520,7 +581,8 @@ impl DepositRecord {
                         .ok()
                 });
                 let fixed_fields_match = authorization.is_some_and(|authorization| {
-                    evidence.authorization_digest == authorization.digest
+                    authorization.signature.is_some()
+                        && evidence.authorization_digest == authorization.digest
                         && evidence.deposit_id == authorization.authorization.deposit_id
                         && evidence.recipient == authorization.authorization.recipient
                         && evidence.chain_id == authorization.domain.chain_id
@@ -556,6 +618,15 @@ impl DepositRecord {
                 expiry_evidence,
             } => {
                 let identity = &attempt.identity;
+                let service_fee = if self
+                    .mint_authorization
+                    .as_ref()
+                    .is_some_and(|authorization| authorization.signature.is_some())
+                {
+                    self.quote.map_or(Amount::ZERO, |quote| quote.service_fee)
+                } else {
+                    Amount::ZERO
+                };
                 let attempt_matches = attempt.attempt_no == 0
                     && identity.operation == LedgerOperation::RefundDeposit
                     && identity.spender.is_none()
@@ -564,16 +635,30 @@ impl DepositRecord {
                     && identity
                         .amount
                         .checked_add(identity.fee)
+                        .and_then(|amount| amount.checked_add(service_fee))
                         .is_ok_and(|amount| amount == self.gross_amount);
+                let signed_authorization = self
+                    .mint_authorization
+                    .as_ref()
+                    .is_some_and(|authorization| authorization.signature.is_some());
                 let policy_matches = match (&self.state, reason, expiry_evidence.as_deref()) {
                     (
-                        State::ExpiryReconciliation { .. },
+                        State::RefundAvailable {
+                            reason: expected, ..
+                        },
                         DepositRefundReason::AuthorizationExpired,
                         Some(evidence),
-                    ) => self.expiry_evidence_matches(evidence),
-                    (State::EscrowedUnquoted { .. }, reason, None) => {
-                        *reason != DepositRefundReason::AuthorizationExpired
+                    ) if signed_authorization => {
+                        *expected == DepositRefundReason::AuthorizationExpired
+                            && self.expiry_evidence_matches(evidence)
                     }
+                    (
+                        State::RefundAvailable {
+                            reason: expected, ..
+                        },
+                        reason,
+                        None,
+                    ) if !signed_authorization => expected == reason,
                     _ => false,
                 };
                 let guard = Guard::StartRefund {
@@ -637,7 +722,7 @@ impl DepositRecord {
             (
                 State::AuthorizationPending { .. }
                 | State::AuthorizationAvailable { .. }
-                | State::ExpiryReconciliation { .. }
+                | State::RefundAvailable { .. }
                 | State::Minted { .. },
                 Event::CommitAuthorization {
                     quote,
@@ -653,7 +738,12 @@ impl DepositRecord {
                     .and_then(|record| record.signature.as_ref())
                     == Some(signature)
             }
-            (State::ExpiryReconciliation { .. }, Event::BeginExpiryReconciliation) => true,
+            (
+                State::RefundAvailable {
+                    reason: current, ..
+                },
+                Event::MarkRefundAvailable { reason, .. },
+            ) => current == reason,
             (State::Minted { .. }, Event::MintReconciled { evidence }) => {
                 self.mint_finalization_evidence.as_ref() == Some(evidence)
             }
@@ -698,12 +788,12 @@ impl DepositEvent {
             Self::FundingAmbiguous { .. } => 1,
             Self::FundingFailed { .. } => 2,
             Self::CommitAuthorization { .. } => 3,
-            Self::StartRefund { .. } => 4,
+            Self::MarkRefundAvailable { .. } => 4,
             Self::AuthorizationSigned { .. } => 5,
-            Self::BeginExpiryReconciliation => 6,
-            Self::MintReconciled { .. } => 7,
-            Self::RefundSucceeded { .. } => 9,
-            Self::RefundAmbiguous { .. } => 10,
+            Self::MintReconciled { .. } => 6,
+            Self::StartRefund { .. } => 7,
+            Self::RefundSucceeded { .. } => 8,
+            Self::RefundAmbiguous { .. } => 9,
         }
     }
 
@@ -714,7 +804,7 @@ impl DepositEvent {
             Self::FundingFailed { .. } => "funding_failed",
             Self::CommitAuthorization { .. } => "commit_authorization",
             Self::AuthorizationSigned { .. } => "authorization_signed",
-            Self::BeginExpiryReconciliation => "begin_expiry_reconciliation",
+            Self::MarkRefundAvailable { .. } => "mark_refund_available",
             Self::MintReconciled { .. } => "mint_reconciled",
             Self::StartRefund { .. } => "start_refund",
             Self::RefundSucceeded { .. } => "refund_succeeded",
@@ -730,7 +820,7 @@ impl DepositState {
             Self::EscrowedUnquoted { .. } => 1,
             Self::AuthorizationPending { .. } => 2,
             Self::AuthorizationAvailable { .. } => 3,
-            Self::ExpiryReconciliation { .. } => 4,
+            Self::RefundAvailable { .. } => 4,
             Self::FundingReconciliationHold { .. } => 5,
             Self::RefundPending { .. } => 6,
             Self::RefundReconciliationHold { .. } => 7,

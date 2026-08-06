@@ -10,7 +10,14 @@ vi.mock("@/features/wallet/wallet-controls", () => ({
   WalletDialogProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 vi.mock("@/features/bridge/settlement-confirmation-coordinator", () => ({ SettlementConfirmationCoordinator: () => null }))
+vi.mock("@/features/bridge/deposit-progress-coordinator", () => ({ DepositProgressCoordinator: () => null }))
 vi.mock("@/features/risk/risk-acknowledgement", () => ({ RiskAcknowledgementDialog: () => null }))
+vi.mock("@/config/profile", () => ({
+  deploymentProfile: {
+    testOnly: true,
+    environmentMode: "short-delay-test-only",
+  },
+}))
 
 import { AppShell } from "./app-shell"
 
@@ -20,6 +27,7 @@ describe("AppShell test deployment banner", () => {
   it("always identifies a test-only deployment", () => {
     render(<AppShell />)
     expect(screen.getByRole("status", { name: "Test deployment" })).toHaveTextContent("IC MAINNET × BASE SEPOLIA TEST")
+    expect(screen.getByRole("status", { name: "Test deployment" })).toHaveTextContent("5-MINUTE TIMELOCK")
   })
 })
 

@@ -23,47 +23,62 @@ const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v5"
 let sessionQueue: PendingConfirmation[] | undefined
 export const PENDING_CONFIRMATIONS_CHANGED = "kinic-pending-confirmations-changed"
 
-function pendingMintKey(depositId: Hex): string {
+export interface PendingMintExpectation {
+  depositId: Hex
+  authorizationDigest: Hex
+  recipient: Hex
+  grossAmount: string
+  chargedServiceFee: string
+  mintedAmount: string
+}
+
+export interface PendingMint extends PendingMintExpectation {
+  transactionHash: Hex
+}
+
+function pendingMintKey(expected: PendingMintExpectation): string {
   return [
-    "kinic.bridge.pending-mint.v1",
+    "kinic.bridge.pending-mint.v2",
     deploymentProfile.chainId,
     String(deploymentProfile.bridgeAddress).toLowerCase(),
     deploymentProfile.bridgeCanisterId ?? "",
-    depositId.toLowerCase(),
+    deploymentProfile.deploymentInstanceId?.toLowerCase() ?? "",
+    expected.depositId.toLowerCase(),
+    expected.authorizationDigest.toLowerCase(),
   ].join(":")
 }
 
-const sessionPendingMints = new Map<string, Hex>()
+const sessionPendingMints = new Map<string, PendingMint>()
 const removedSessionPendingMints = new Set<string>()
 
-export async function savePendingMint(depositId: Hex, transactionHash: Hex): Promise<void> {
-  const key = pendingMintKey(depositId)
+export async function savePendingMint(value: PendingMint): Promise<void> {
+  const key = pendingMintKey(value)
   removedSessionPendingMints.delete(key)
-  sessionPendingMints.set(key, transactionHash)
+  sessionPendingMints.set(key, value)
   await withBrowserLock(`kinic-storage:${key}`, () => {
     try {
-      window.localStorage.setItem(key, transactionHash)
+      window.localStorage.setItem(key, JSON.stringify(value))
       sessionPendingMints.delete(key)
     } catch { /* The session copy still preserves recovery after a successful wallet broadcast. */ }
   })
 }
 
-export function readPendingMint(depositId: Hex): Hex | undefined {
+export function readPendingMint(expected: PendingMintExpectation): PendingMint | undefined {
   if (typeof window === "undefined") return undefined
-  const key = pendingMintKey(depositId)
+  const key = pendingMintKey(expected)
   if (removedSessionPendingMints.has(key)) return undefined
   const sessionValue = sessionPendingMints.get(key)
   if (sessionValue) return sessionValue
   try {
-    const value = window.localStorage.getItem(key)
-    return value && /^0x[0-9a-fA-F]{64}$/.test(value) ? value as Hex : undefined
+    const value: unknown = JSON.parse(window.localStorage.getItem(key) ?? "null")
+    return pendingMintMatches(value, expected) ? value : undefined
   } catch {
     return undefined
   }
 }
 
-export async function removePendingMint(depositId: Hex): Promise<void> {
-  const key = pendingMintKey(depositId)
+export async function removePendingMint(expected: PendingMintExpectation): Promise<void> {
+  const key = pendingMintKey(expected)
   sessionPendingMints.delete(key)
   removedSessionPendingMints.add(key)
   await withBrowserLock(`kinic-storage:${key}`, () => {
@@ -72,6 +87,18 @@ export async function removePendingMint(depositId: Hex): Promise<void> {
       removedSessionPendingMints.delete(key)
     } catch { /* The session tombstone prevents a reverted transaction from reappearing. */ }
   })
+}
+
+function pendingMintMatches(value: unknown, expected: PendingMintExpectation): value is PendingMint {
+  if (!value || typeof value !== "object") return false
+  const candidate = value as Partial<PendingMint>
+  return /^0x[0-9a-fA-F]{64}$/.test(candidate.transactionHash ?? "")
+    && candidate.depositId?.toLowerCase() === expected.depositId.toLowerCase()
+    && candidate.authorizationDigest?.toLowerCase() === expected.authorizationDigest.toLowerCase()
+    && candidate.recipient?.toLowerCase() === expected.recipient.toLowerCase()
+    && candidate.grossAmount === expected.grossAmount
+    && candidate.chargedServiceFee === expected.chargedServiceFee
+    && candidate.mintedAmount === expected.mintedAmount
 }
 
 export function pendingConfirmationKey(value: PendingConfirmation | PendingConfirmationInput): string {

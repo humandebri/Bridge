@@ -22,7 +22,7 @@ Plan 001〜004は完了済みの履歴資料であり、現行仕様はリポジ
 - 003はSettlementの実コストと未完了状態を観測できる002の後に実装する。ただし権限モデルと監査ログの設計は001と並行してレビューできる。
 - 004はproductionと共有するcoreが存在してから、各proof obligationを追加する。
 - 005のTBD解消は、初期値を本番へ入れる前に必要であり、006のpreflightをブロックする。
-- 007はproduction/SNSから独立したstaging検証である。local gateのclean commit証跡なしに外部stageへ進めない。
+- 007はproduction/SNSから独立した非blocking staging検証である。local gateのclean commit証跡なしに外部stageへ進めないが、詳細wallet matrixと追加障害シナリオの未完了はproduction activationを妨げない。
 
 ## 今回の推奨着手点
 
@@ -30,4 +30,4 @@ Plan 007のlocal gateをclean commitから再実行してpromotion evidenceを�
 
 ## 残作業の完了条件
 
-production開始には、Base contractの検証成功だけでは足りない。少なくとも、001〜007、`docs/parameters.md`のTBD解消、対象SNSの確定、SNS Root単独controllerへのhandover、testnetでのdeposit・withdrawal release・Ledger fee guard・reconciliation・upgrade実証、鍵と監視の運用runbookが必要である。
+production開始には、Base contractの検証成功だけでは足りない。少なくとも、001〜006、`docs/parameters.md`のTBD解消、対象SNSの確定、SNS Root単独controllerへのhandover、Sepoliaでの主要5 scenario、SNS proposal upgrade、pause/cancel経路、鍵と監視の運用runbookが必要である。Plan 007の追加wallet互換性と追加5 scenarioは非blockingで継続する。

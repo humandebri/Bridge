@@ -5,8 +5,8 @@ mod transaction;
 mod validation;
 
 use admission::{
-    commit_deposit_funding_quota, consume_deposit_quota, release_deposit_funding_quota,
-    reserve_deposit_funding_quota,
+    consume_deposit_quota, consume_deposit_quota_and_reserve_funding,
+    release_deposit_funding_reservation,
 };
 pub use admission::{DepositAdmissionOutcome, DepositCycleAdmission, DepositQuotaAdmission};
 pub use schema::{RETIRED_STABLE_STRUCTURE_MEMORY_IDS, SCHEMA_VERSION, SQLITE_MEMORY_ID};
@@ -19,7 +19,10 @@ use transaction::*;
 use validation::expect_row_shape;
 
 use crate::admin::AdminState;
-use crate::config::{BridgeInitArgs, FeeRecipientConfig, ImmutableBridgeConfig};
+use crate::config::{
+    BridgeInitArgs, EvmFeePolicy, FeeRecipientConfig, GovernanceReplacementPolicy,
+    ImmutableBridgeConfig,
+};
 use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
     BaseMintSnapshot, CoreError, DepositHoldResolution, DepositId, DepositRecord, ExternalProgress,
@@ -229,7 +232,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 27, 23);
+INSERT INTO bridge_metadata VALUES (1, 31, 27);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -239,6 +242,7 @@ CREATE TABLE singleton_state (
     config BLOB NOT NULL,
     admin_state BLOB NOT NULL,
     deposit_admission BLOB NOT NULL,
+    notification_admission BLOB NOT NULL,
     audit_retention BLOB NOT NULL,
     settlement_admission BLOB NOT NULL,
     settlement_scheduler_health BLOB NOT NULL,
@@ -259,6 +263,10 @@ CREATE TABLE reconciliation_scans (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT
 CREATE TABLE audit_events (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE fee_payouts (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE deposit_owner_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE deposit_authorization_deadline_index (
+    key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 40),
+    value BLOB NOT NULL CHECK (length(value) = 32)
+) STRICT, WITHOUT ROWID;
 CREATE TABLE pull_pending_deposit_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE release_pending_withdrawal_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE open_hold_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
@@ -338,6 +346,7 @@ INSERT INTO table_counts(name, count) VALUES
  ('audit_events', X'0000000000000000'),
  ('fee_payouts', X'0000000000000000'),
  ('deposit_owner_index', X'0000000000000000'),
+ ('deposit_authorization_deadline_index', X'0000000000000000'),
  ('pull_pending_deposit_index', X'0000000000000000'),
  ('release_pending_withdrawal_index', X'0000000000000000'),
  ('open_hold_index', X'0000000000000000'),
@@ -351,6 +360,19 @@ const MIGRATIONS: &[Migration] = &[Migration {
     version: SCHEMA_VERSION as u64,
     sql: SQLITE_SCHEMA,
 }];
+
+const LEGACY_SCHEMA_VERSION_V30: u16 = 30;
+const LEGACY_WIRE_VERSION_V26: u8 = 26;
+const V30_WIRE_VALUE_TABLES: &[&str] = &[
+    "deposits",
+    "deposit_funding_attempts",
+    "withdrawals",
+    "reconciliation_holds",
+    "reconciliation_scans",
+    "audit_events",
+    "fee_payouts",
+];
+const MAX_V30_MIGRATION_ROWS: usize = 10_000;
 
 fn deposit_owner_index_prefix(owner: Principal) -> Vec<u8> {
     let owner_bytes = owner.as_slice();
@@ -385,6 +407,16 @@ fn deposit_sequence_from_index_key(key: &StableBlob) -> Result<u64, StorageError
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or(StorageError::DecodeFailed)?;
     Ok(u64::MAX - u64::from_be_bytes(reverse_bytes))
+}
+
+fn deposit_authorization_deadline_index_key(
+    deadline: u64,
+    deposit_id: [u8; 32],
+) -> Result<StableBlob, StorageError> {
+    let mut bytes = Vec::with_capacity(40);
+    bytes.extend_from_slice(&deadline.to_be_bytes());
+    bytes.extend_from_slice(&deposit_id);
+    StableBlob::new(bytes)
 }
 
 fn reconciliation_scan_key(target: &ReconciliationTarget) -> [u8; 9] {
@@ -514,6 +546,11 @@ struct SqlEntry<K, V> {
 #[derive(Clone, Copy)]
 struct RevisionedHandle(DbHandle);
 
+enum TransactionEffect<T> {
+    Changed(T),
+    Unchanged(T),
+}
+
 impl RevisionedHandle {
     fn query<T, F>(self, f: F) -> Result<T, DbError>
     where
@@ -526,10 +563,19 @@ impl RevisionedHandle {
     where
         F: FnOnce(&UpdateConnection<'_>) -> Result<T, DbError>,
     {
-        self.0.update(|connection| {
-            let result = f(connection)?;
-            bump_storage_revision(connection)?;
-            Ok(result)
+        self.update_effect(|connection| f(connection).map(TransactionEffect::Changed))
+    }
+
+    fn update_effect<T, F>(self, f: F) -> Result<T, DbError>
+    where
+        F: FnOnce(&UpdateConnection<'_>) -> Result<TransactionEffect<T>, DbError>,
+    {
+        self.0.update(|connection| match f(connection)? {
+            TransactionEffect::Changed(result) => {
+                bump_storage_revision(connection)?;
+                Ok(result)
+            }
+            TransactionEffect::Unchanged(result) => Ok(result),
         })
     }
 
@@ -726,6 +772,7 @@ enum SingletonColumn {
     Config,
     AdminState,
     DepositAdmission,
+    NotificationAdmission,
     AuditRetention,
     SettlementAdmission,
     SettlementSchedulerHealth,
@@ -740,6 +787,7 @@ impl SingletonColumn {
             Self::Config => "config",
             Self::AdminState => "admin_state",
             Self::DepositAdmission => "deposit_admission",
+            Self::NotificationAdmission => "notification_admission",
             Self::AuditRetention => "audit_retention",
             Self::SettlementAdmission => "settlement_admission",
             Self::SettlementSchedulerHealth => "settlement_scheduler_health",
@@ -1025,6 +1073,7 @@ pub struct DepositFundingReservation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedBaseMintSnapshot {
     pub generation: u64,
+    pub deposit_id: Option<[u8; 32]>,
     pub observed_at_ns: u64,
     pub snapshot: BaseMintSnapshot,
     pub bridge_signer: [u8; 20],
@@ -1118,6 +1167,15 @@ struct SettlementAdmissionControl {
     record_counts: Vec<SettlementRecordQuota>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct NotificationAdmissionControl {
+    window_id: u64,
+    #[serde(alias = "global_count")]
+    verification_count: u16,
+    #[serde(default)]
+    ingestion_count: u16,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SettlementCallerQuota {
     caller: Principal,
@@ -1204,6 +1262,61 @@ pub enum SettlementJobClaim {
     None,
 }
 
+struct DueSettlementCandidate {
+    deadline_ns: u64,
+    kind: SettlementJobKind,
+    settlement_id: [u8; 32],
+    attempts: u8,
+    lease_generation: u64,
+}
+
+const DUE_SCHEDULED_SETTLEMENT_SQL: &str =
+    "SELECT next_run_at_ns, settlement_kind, settlement_id, attempts, lease_generation
+     FROM settlement_jobs WHERE status = 0 AND next_run_at_ns <= ?1
+     ORDER BY next_run_at_ns, settlement_kind, settlement_id LIMIT 1";
+const DUE_EXPIRED_SETTLEMENT_SQL: &str =
+    "SELECT lease_until_ns, settlement_kind, settlement_id, attempts, lease_generation
+     FROM settlement_jobs WHERE status = 1 AND lease_until_ns <= ?1
+     ORDER BY lease_until_ns, settlement_kind, settlement_id LIMIT 1";
+
+fn query_due_settlement_candidate(
+    connection: &UpdateConnection<'_>,
+    sql: &'static str,
+    now_ns: u64,
+) -> Result<Option<DueSettlementCandidate>, DbError> {
+    let rows = connection.query_all(sql, params![now_ns.to_sql_bytes()], |row| {
+        Ok((
+            row.get::<Vec<u8>>(0)?,
+            row.get::<i64>(1)?,
+            row.get::<Vec<u8>>(2)?,
+            row.get::<i64>(3)?,
+            row.get::<Vec<u8>>(4)?,
+        ))
+    })?;
+    let Some((deadline, kind, settlement_id, attempts, generation)) = rows.into_iter().next()
+    else {
+        return Ok(None);
+    };
+    let kind = match kind {
+        0 => SettlementJobKind::Deposit,
+        1 => SettlementJobKind::Withdrawal,
+        2 => SettlementJobKind::FeePayout,
+        _ => return Err(DbError::Constraint("invalid settlement kind".into())),
+    };
+    Ok(Some(DueSettlementCandidate {
+        deadline_ns: u64::from_sql_bytes(deadline)
+            .map_err(|_| DbError::Constraint("invalid settlement deadline".into()))?,
+        kind,
+        settlement_id: settlement_id
+            .try_into()
+            .map_err(|_| DbError::Constraint("invalid settlement id".into()))?,
+        attempts: u8::try_from(attempts)
+            .map_err(|_| DbError::Constraint("invalid attempt count".into()))?,
+        lease_generation: u64::from_sql_bytes(generation)
+            .map_err(|_| DbError::Constraint("invalid lease generation".into()))?,
+    }))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManualSettlementClaim {
     Claimed(SettlementJob),
@@ -1212,10 +1325,239 @@ pub enum ManualSettlementClaim {
 }
 
 enum ManualClaimTransaction {
-    Claimed,
+    Claimed(SettlementJob),
     AutomaticProgressPending(Option<u64>),
     Busy,
     RateLimited(u64),
+}
+
+#[derive(Clone, Copy)]
+pub struct ManualSettlementClaimContext {
+    pub kind: SettlementJobKind,
+    pub settlement_id: [u8; 32],
+    pub caller: Principal,
+    pub now_ns: u64,
+    pub lease_until_ns: u64,
+    pub overdue_after_ns: u64,
+    pub limits: SettlementQuotaLimits,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn claim_settlement_job_transaction(
+    connection: &UpdateConnection<'_>,
+    kind: SettlementJobKind,
+    settlement_id: [u8; 32],
+    caller: Principal,
+    now_ns: u64,
+    lease_until_ns: u64,
+    overdue_after_ns: u64,
+    limits: Option<SettlementQuotaLimits>,
+    lane: SettlementLeaseLane,
+    admission: &mut SettlementAdmissionControl,
+) -> Result<ManualClaimTransaction, DbError> {
+    let mut record_key = Vec::with_capacity(33);
+    record_key.push(kind.sql() as u8);
+    record_key.extend_from_slice(&settlement_id);
+
+    let target = connection.query_all(
+        "SELECT status, next_run_at_ns, attempts, lease_generation, lease_until_ns, lease_lane
+         FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2",
+        params![kind.sql(), settlement_id.to_sql_bytes()],
+        |row| {
+            Ok((
+                row.get::<i64>(0)?,
+                row.get::<Option<Vec<u8>>>(1)?,
+                row.get::<i64>(2)?,
+                row.get::<Vec<u8>>(3)?,
+                row.get::<Option<Vec<u8>>>(4)?,
+                row.get::<i64>(5)?,
+            ))
+        },
+    )?;
+    if let Some((status, next_raw, _, _, lease_raw, active_lane)) = target.first() {
+        let next = next_raw
+            .clone()
+            .map(u64::from_sql_bytes)
+            .transpose()
+            .map_err(|_| DbError::Constraint("invalid next run time".into()))?;
+        let lease_until = lease_raw
+            .clone()
+            .map(u64::from_sql_bytes)
+            .transpose()
+            .map_err(|_| DbError::Constraint("invalid lease deadline".into()))?;
+        let scheduled = *status == 0;
+        let active = *status == 1 && lease_until.is_some_and(|deadline| deadline > now_ns);
+        match bridge_core::lease_lane_claim_decision(
+            active,
+            *active_lane == SettlementLeaseLane::Automatic.sql(),
+            0,
+            lane.capacity(),
+        ) {
+            bridge_core::LeaseLaneClaimDecision::AutomaticProgressPending => {
+                return Ok(ManualClaimTransaction::AutomaticProgressPending(None));
+            }
+            bridge_core::LeaseLaneClaimDecision::Busy => {
+                return Ok(ManualClaimTransaction::Busy);
+            }
+            bridge_core::LeaseLaneClaimDecision::Allow => {}
+        }
+        let stopped = *status == 2;
+        let overdue = scheduled
+            && next.is_some_and(|deadline| now_ns >= deadline.saturating_add(overdue_after_ns));
+        let expired = *status == 1 && lease_until.is_some_and(|deadline| deadline <= now_ns);
+        if !matches!(
+            bridge_core::manual_claim_decision(scheduled, active, stopped, overdue, expired),
+            bridge_core::ManualClaimDecision::Allow
+        ) {
+            return Ok(ManualClaimTransaction::AutomaticProgressPending(next));
+        }
+    }
+
+    let active_in_lane = connection.query_scalar::<i64>(
+        "SELECT COUNT(*) FROM settlement_jobs
+         WHERE status = 1 AND lease_until_ns > ?1 AND lease_lane = ?2",
+        params![now_ns.to_sql_bytes(), lane.sql()],
+    )?;
+    let active_in_lane = u64::try_from(active_in_lane)
+        .map_err(|_| DbError::Constraint("invalid lane lease count".into()))?;
+    if matches!(
+        bridge_core::lease_lane_claim_decision(false, false, active_in_lane, lane.capacity()),
+        bridge_core::LeaseLaneClaimDecision::Busy
+    ) {
+        return Ok(ManualClaimTransaction::Busy);
+    }
+
+    if let Some(limits) = limits {
+        let window_ns = limits.window_seconds.saturating_mul(1_000_000_000);
+        let window_id = now_ns / window_ns;
+        if admission.window_id != window_id {
+            *admission = SettlementAdmissionControl {
+                window_id,
+                ..Default::default()
+            };
+        }
+        let caller_count = admission
+            .caller_counts
+            .iter()
+            .find(|entry| entry.caller == caller)
+            .map_or(0, |entry| entry.count);
+        let record_count = admission
+            .record_counts
+            .iter()
+            .find(|entry| entry.key == record_key)
+            .map_or(0, |entry| entry.count);
+        let retry_after_seconds = ((window_id + 1)
+            .saturating_mul(window_ns)
+            .saturating_sub(now_ns)
+            .saturating_add(999_999_999)
+            / 1_000_000_000)
+            .max(1);
+        if admission.global_count >= limits.global
+            || caller_count >= limits.per_principal
+            || record_count >= limits.per_record
+        {
+            return Ok(ManualClaimTransaction::RateLimited(retry_after_seconds));
+        }
+        admission.global_count = admission
+            .global_count
+            .checked_add(1)
+            .ok_or_else(|| DbError::Constraint("settlement quota overflow".into()))?;
+        match admission
+            .caller_counts
+            .iter_mut()
+            .find(|entry| entry.caller == caller)
+        {
+            Some(entry) => {
+                entry.count = entry
+                    .count
+                    .checked_add(1)
+                    .ok_or_else(|| DbError::Constraint("caller quota overflow".into()))?
+            }
+            None => admission
+                .caller_counts
+                .push(SettlementCallerQuota { caller, count: 1 }),
+        }
+        match admission
+            .record_counts
+            .iter_mut()
+            .find(|entry| entry.key == record_key)
+        {
+            Some(entry) => {
+                entry.count = entry
+                    .count
+                    .checked_add(1)
+                    .ok_or_else(|| DbError::Constraint("record quota overflow".into()))?
+            }
+            None => admission.record_counts.push(SettlementRecordQuota {
+                key: record_key,
+                count: 1,
+            }),
+        }
+    }
+
+    let generation = target
+        .first()
+        .map(|(_, _, _, raw, _, _)| u64::from_sql_bytes(raw.clone()))
+        .transpose()
+        .map_err(|_| DbError::Constraint("invalid lease generation".into()))?
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
+    if target.is_empty() {
+        connection.execute(
+            "INSERT INTO settlement_jobs(settlement_kind, settlement_id, status,
+             next_run_at_ns, attempts, lease_generation, lease_until_ns,
+             lease_lane, last_error_code, last_error_detail, updated_at_ns)
+             VALUES(?1, ?2, 1, NULL, 0, ?3, ?4, ?5, NULL, NULL, ?6)",
+            params![
+                kind.sql(),
+                settlement_id.to_sql_bytes(),
+                generation.to_sql_bytes(),
+                lease_until_ns.to_sql_bytes(),
+                lane.sql(),
+                now_ns.to_sql_bytes()
+            ],
+        )?;
+    } else {
+        connection.execute(
+            "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
+             lease_generation = ?1, lease_until_ns = ?2, lease_lane = ?6,
+             last_error_code = NULL, last_error_detail = NULL, updated_at_ns = ?3
+             WHERE settlement_kind = ?4 AND settlement_id = ?5",
+            params![
+                generation.to_sql_bytes(),
+                lease_until_ns.to_sql_bytes(),
+                now_ns.to_sql_bytes(),
+                kind.sql(),
+                settlement_id.to_sql_bytes(),
+                lane.sql(),
+            ],
+        )?;
+    }
+    if limits.is_some() {
+        connection.execute(
+            "UPDATE singleton_state SET settlement_admission = ?1 WHERE id = 1",
+            params![encode(admission)
+                .map_err(|_| DbError::Constraint("settlement quota encoding failed".into()))?
+                .to_sql_bytes()],
+        )?;
+    }
+    let attempts = target.first().map_or(Ok(0), |(_, _, attempts, _, _, _)| {
+        u8::try_from(*attempts).map_err(|_| DbError::Constraint("invalid attempt count".into()))
+    })?;
+    Ok(ManualClaimTransaction::Claimed(SettlementJob {
+        kind,
+        settlement_id,
+        status: SettlementJobStatus::Leased,
+        next_run_at_ns: None,
+        attempts,
+        lease_generation: generation,
+        lease_until_ns: Some(lease_until_ns),
+        lease_lane: lane,
+        last_error_code: None,
+        last_error_detail: None,
+        updated_at_ns: now_ns,
+    }))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1403,6 +1745,15 @@ pub struct ChecksumRefreshStatus {
     pub db_size: u64,
 }
 
+#[cfg(feature = "test-deployment")]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SettlementClaimProfile {
+    pub instructions: u64,
+    pub storage_revision_before: u64,
+    pub storage_revision_after: u64,
+    pub outcome: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct StorageValidationProgress {
     expected_revision: u64,
@@ -1454,6 +1805,7 @@ pub enum DepositFundingAttemptState {
     Reconciling {
         progress: Box<ReconciliationScanProgress>,
         next_check_at_ns: u64,
+        final_absence_scan: bool,
     },
 }
 
@@ -1510,8 +1862,10 @@ pub enum StorageError {
     SequenceMismatch { expected: u64 },
     DepositsPaused,
     DepositRateLimited { retry_after_seconds: u64 },
+    NotificationRateLimited,
     RecordNotFound,
     DatabaseFailure,
+    StaleSnapshotRefresh,
     ReserveUnavailable,
     StaleReserveObservation,
     QuoteSnapshotMismatch,
@@ -1553,7 +1907,7 @@ fn open_database(memory: DefaultMemoryImpl) -> Result<DbHandle, StorageError> {
     DbHandle::init(manager.get(SQLITE_MEMORY_ID)).map_err(StorageError::from)
 }
 
-fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
+fn stored_metadata(handle: DbHandle) -> Result<(u16, u8), StorageError> {
     let (application_schema, record_wire): (i64, i64) = handle.query(|connection| {
         connection.query_one(
             "SELECT application_schema_version, record_wire_version FROM bridge_metadata WHERE id = 1",
@@ -1561,15 +1915,248 @@ fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
             |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
         )
     })?;
-    if application_schema != i64::from(SCHEMA_VERSION) {
-        return Err(StorageError::UnsupportedSchemaVersion(
-            u16::try_from(application_schema).unwrap_or(u16::MAX),
-        ));
+    Ok((
+        u16::try_from(application_schema).unwrap_or(u16::MAX),
+        u8::try_from(record_wire).unwrap_or(u8::MAX),
+    ))
+}
+
+fn migration_constraint(context: &str) -> DbError {
+    DbError::Constraint(context.to_owned())
+}
+
+fn migrate_v26_wire_blob(mut bytes: Vec<u8>) -> Result<Vec<u8>, DbError> {
+    let version = bytes
+        .first_mut()
+        .ok_or_else(|| migration_constraint("v30 migration found a missing wire version"))?;
+    if *version != LEGACY_WIRE_VERSION_V26 {
+        return Err(migration_constraint("v30 migration found a non-v26 record"));
     }
-    if record_wire != i64::from(WIRE_VERSION) {
-        return Err(StorageError::UnsupportedWireVersion(
-            u8::try_from(record_wire).unwrap_or(u8::MAX),
-        ));
+    *version = WIRE_VERSION;
+    Ok(bytes)
+}
+
+fn decode_wire_payload<T: DeserializeOwned>(
+    bytes: &[u8],
+    expected_version: u8,
+) -> Result<T, StorageError> {
+    let (version, payload) = bytes
+        .split_first()
+        .ok_or(StorageError::MissingWireVersion)?;
+    if *version != expected_version {
+        return Err(StorageError::UnsupportedWireVersion(*version));
+    }
+    let mut cursor = Cursor::new(payload);
+    let value = ciborium::from_reader(&mut cursor).map_err(|_| StorageError::DecodeFailed)?;
+    if cursor.position() != payload.len() as u64 {
+        return Err(StorageError::DecodeFailed);
+    }
+    Ok(value)
+}
+
+#[derive(Deserialize)]
+struct LegacyImmutableBridgeConfigV30 {
+    ledger_canister_id: Principal,
+    index_canister_id: Principal,
+    evm_rpc_canister_id: Principal,
+    custom_evm_rpc_urls: Vec<String>,
+    base_chain_id: u64,
+    bridge_contract: Vec<u8>,
+    timelock_contract: Vec<u8>,
+    deployment_instance_id: Vec<u8>,
+    ecdsa_key_name: String,
+    ecdsa_derivation_path: Vec<Vec<u8>>,
+    governance_ecdsa_derivation_path: Vec<Vec<u8>>,
+    deposit_rate_limit_window_seconds: u64,
+    deposit_rate_limit_global: u16,
+    deposit_rate_limit_per_principal: u16,
+    notification_rate_limit_window_seconds: u64,
+    notification_rate_limit_global: u16,
+    settlement_rate_limit_window_seconds: u64,
+    settlement_rate_limit_global: u16,
+    settlement_rate_limit_per_principal: u16,
+    settlement_rate_limit_per_record: u16,
+    settlement_retry_interval_seconds: u64,
+    governance_evm_fee: EvmFeePolicy,
+    governance_replacement: GovernanceReplacementPolicy,
+    governance_eth_floor_wei: u128,
+    cycles_floor: u128,
+    settlement_cycle_ceiling: u128,
+}
+
+impl LegacyImmutableBridgeConfigV30 {
+    fn migrate(self, expected_bridge_runtime_sha256: [u8; 32]) -> ImmutableBridgeConfig {
+        ImmutableBridgeConfig {
+            ledger_canister_id: self.ledger_canister_id,
+            index_canister_id: self.index_canister_id,
+            evm_rpc_canister_id: self.evm_rpc_canister_id,
+            custom_evm_rpc_urls: self.custom_evm_rpc_urls,
+            base_chain_id: self.base_chain_id,
+            bridge_contract: self.bridge_contract,
+            expected_bridge_runtime_sha256: expected_bridge_runtime_sha256.to_vec(),
+            timelock_contract: self.timelock_contract,
+            deployment_instance_id: self.deployment_instance_id,
+            ecdsa_key_name: self.ecdsa_key_name,
+            ecdsa_derivation_path: self.ecdsa_derivation_path,
+            governance_ecdsa_derivation_path: self.governance_ecdsa_derivation_path,
+            deposit_rate_limit_window_seconds: self.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: self.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: self.deposit_rate_limit_per_principal,
+            notification_rate_limit_window_seconds: self.notification_rate_limit_window_seconds,
+            notification_rate_limit_global: self.notification_rate_limit_global,
+            notification_ingestion_rate_limit_global: 30,
+            settlement_rate_limit_window_seconds: self.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: self.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: self.settlement_rate_limit_per_record,
+            settlement_retry_interval_seconds: self.settlement_retry_interval_seconds,
+            governance_evm_fee: self.governance_evm_fee,
+            governance_replacement: self.governance_replacement,
+            governance_eth_floor_wei: self.governance_eth_floor_wei,
+            cycles_floor: self.cycles_floor,
+            settlement_cycle_ceiling: self.settlement_cycle_ceiling,
+        }
+    }
+}
+
+fn migrate_v30_to_v31(handle: DbHandle) -> Result<(), StorageError> {
+    handle.update(|connection| {
+        let migration_30 = connection.query_scalar::<i64>(
+            "SELECT EXISTS(SELECT 1 FROM __ic_sqlite_migrations WHERE version = 30)",
+            params![],
+        )?;
+        let migration_31 = connection.query_scalar::<i64>(
+            "SELECT EXISTS(SELECT 1 FROM __ic_sqlite_migrations WHERE version = 31)",
+            params![],
+        )?;
+        if migration_30 != 1 || migration_31 != 0 {
+            return Err(migration_constraint(
+                "v30 migration history does not match the reviewed predecessor",
+            ));
+        }
+
+        let singleton = connection.query_one(
+            "SELECT accounting, counters, external_progress, config, admin_state,
+                    deposit_admission, notification_admission, audit_retention,
+                    settlement_admission, settlement_scheduler_health
+             FROM singleton_state WHERE id = 1",
+            params![],
+            |row| {
+                Ok((
+                    row.get::<Vec<u8>>(0)?,
+                    row.get::<Vec<u8>>(1)?,
+                    row.get::<Vec<u8>>(2)?,
+                    row.get::<Vec<u8>>(3)?,
+                    row.get::<Vec<u8>>(4)?,
+                    row.get::<Vec<u8>>(5)?,
+                    row.get::<Vec<u8>>(6)?,
+                    row.get::<Vec<u8>>(7)?,
+                    row.get::<Vec<u8>>(8)?,
+                    row.get::<Vec<u8>>(9)?,
+                ))
+            },
+        )?;
+        let legacy_config: LegacyImmutableBridgeConfigV30 =
+            decode_wire_payload(&singleton.3, LEGACY_WIRE_VERSION_V26)
+                .map_err(|_| migration_constraint("v30 config is not decodable"))?;
+        let legacy_progress: ExternalProgress =
+            decode_wire_payload(&singleton.2, LEGACY_WIRE_VERSION_V26)
+                .map_err(|_| migration_constraint("v30 external progress is not decodable"))?;
+        let finalized_observation = legacy_progress.finalized_observation.ok_or_else(|| {
+            migration_constraint("v30 migration requires a finalized runtime observation")
+        })?;
+        if finalized_observation.chain_id != legacy_config.base_chain_id
+            || finalized_observation
+                .runtime_sha256
+                .iter()
+                .all(|byte| *byte == 0)
+        {
+            return Err(migration_constraint(
+                "v30 finalized runtime observation does not match the configured chain",
+            ));
+        }
+        let migrated_config = legacy_config.migrate(finalized_observation.runtime_sha256);
+        let legacy_notification: NotificationAdmissionControl =
+            decode_wire_payload(&singleton.6, LEGACY_WIRE_VERSION_V26)
+                .map_err(|_| migration_constraint("v30 notification quota is not decodable"))?;
+        let config = encode(&migrated_config)
+            .map_err(|_| migration_constraint("v30 config migration encoding failed"))?;
+        let notification = encode(&legacy_notification)
+            .map_err(|_| migration_constraint("v30 notification migration encoding failed"))?;
+
+        connection.execute(
+            "UPDATE singleton_state SET accounting = ?1, counters = ?2,
+                external_progress = ?3, config = ?4, admin_state = ?5,
+                deposit_admission = ?6, notification_admission = ?7,
+                audit_retention = ?8, settlement_admission = ?9,
+                settlement_scheduler_health = ?10 WHERE id = 1",
+            params![
+                migrate_v26_wire_blob(singleton.0)?,
+                migrate_v26_wire_blob(singleton.1)?,
+                migrate_v26_wire_blob(singleton.2)?,
+                config.to_sql_bytes(),
+                migrate_v26_wire_blob(singleton.4)?,
+                migrate_v26_wire_blob(singleton.5)?,
+                notification.to_sql_bytes(),
+                migrate_v26_wire_blob(singleton.7)?,
+                migrate_v26_wire_blob(singleton.8)?,
+                migrate_v26_wire_blob(singleton.9)?,
+            ],
+        )?;
+
+        let mut migrated_rows = 0usize;
+        for table in V30_WIRE_VALUE_TABLES {
+            let select = format!("SELECT key, value FROM {table}");
+            let rows = connection.query_all(&select, params![], |row| {
+                Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+            })?;
+            migrated_rows = migrated_rows
+                .checked_add(rows.len())
+                .ok_or_else(|| migration_constraint("v30 migration row count overflow"))?;
+            if migrated_rows > MAX_V30_MIGRATION_ROWS {
+                return Err(migration_constraint(
+                    "v30 migration exceeds the reviewed row bound",
+                ));
+            }
+            let update = format!("UPDATE {table} SET value = ?1 WHERE key = ?2");
+            for (key, value) in rows {
+                connection.execute(&update, params![migrate_v26_wire_blob(value)?, key])?;
+            }
+        }
+
+        connection.execute(
+            "UPDATE bridge_metadata SET application_schema_version = 31,
+                record_wire_version = 27
+             WHERE id = 1 AND application_schema_version = 30 AND record_wire_version = 26",
+            params![],
+        )?;
+        let migrated_metadata = connection.query_scalar::<i64>(
+            "SELECT COUNT(*) FROM bridge_metadata
+             WHERE id = 1 AND application_schema_version = 31 AND record_wire_version = 27",
+            params![],
+        )?;
+        if migrated_metadata != 1 {
+            return Err(migration_constraint(
+                "v30 migration metadata changed during validation",
+            ));
+        }
+        connection.execute(
+            "INSERT INTO __ic_sqlite_migrations(version) VALUES (31)",
+            params![],
+        )?;
+        Ok(())
+    })?;
+    handle.migrate(MIGRATIONS)?;
+    Ok(())
+}
+
+fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
+    let (application_schema, record_wire) = stored_metadata(handle)?;
+    if application_schema != SCHEMA_VERSION {
+        return Err(StorageError::UnsupportedSchemaVersion(application_schema));
+    }
+    if record_wire != WIRE_VERSION {
+        return Err(StorageError::UnsupportedWireVersion(record_wire));
     }
     Ok(())
 }
@@ -1591,6 +2178,7 @@ fn initialize_singleton_state(
     let config = encode(&config.map(ImmutableBridgeConfig::from_init))?.to_sql_bytes();
     let admin = encode(&admin)?.to_sql_bytes();
     let deposit_admission = encode(&DepositAdmissionControl::default())?.to_sql_bytes();
+    let notification_admission = encode(&NotificationAdmissionControl::default())?.to_sql_bytes();
     let audit_retention = encode(&AuditRetentionState::default())?.to_sql_bytes();
     let settlement_admission = encode(&SettlementAdmissionControl::default())?.to_sql_bytes();
     let settlement_scheduler_health = encode(&SettlementSchedulerHealth::default())?.to_sql_bytes();
@@ -1598,10 +2186,10 @@ fn initialize_singleton_state(
         connection.execute(
             "INSERT INTO singleton_state(
                 id, accounting, counters, external_progress, config, admin_state,
-                deposit_admission, audit_retention,
+                deposit_admission, notification_admission, audit_retention,
                 settlement_admission, settlement_scheduler_health, storage_revision,
                 withdrawal_liability_amount, storage_validation
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)",
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)",
             params![
                 accounting,
                 counters,
@@ -1609,6 +2197,7 @@ fn initialize_singleton_state(
                 config,
                 admin,
                 deposit_admission,
+                notification_admission,
                 audit_retention,
                 settlement_admission,
                 settlement_scheduler_health,
@@ -1641,7 +2230,9 @@ pub struct StableStore {
     audit_events: SqlMap<u64, StableBlob>,
     fee_payouts: SqlMap<u64, StableBlob>,
     deposit_owner_index: SqlMap<StableBlob, [u8; 32]>,
+    deposit_authorization_deadline_index: SqlMap<StableBlob, [u8; 32]>,
     deposit_admission: SqlCell<StableBlob>,
+    notification_admission: SqlCell<StableBlob>,
     pull_pending_deposit_index: SqlMap<[u8; 32], u8>,
     release_pending_withdrawal_index: SqlMap<[u8; 32], u8>,
     withdrawal_notification_index: SqlMap<[u8; 32], [u8; 32]>,
@@ -1825,6 +2416,29 @@ fn validate_storage_row(
                 return Err(DbError::Constraint("orphan deposit owner index".into()));
             }
         }
+        "deposit_authorization_deadline_index" => {
+            expect_row_shape(key, value, 40, 32, "invalid deposit deadline index")?;
+            if &key[8..] != value {
+                return Err(DbError::Constraint(
+                    "deposit deadline index id mismatch".into(),
+                ));
+            }
+            let stored = connection
+                .query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM deposits WHERE key = ?1",
+                    params![value],
+                )?
+                .ok_or_else(|| DbError::Constraint("orphan deposit deadline index".into()))?;
+            let stored: StoredDeposit =
+                decode_with_context(stored, "invalid deadline-indexed deposit")?;
+            let deadline = deposit_authorization_deadline(&stored.record)
+                .ok_or_else(|| DbError::Constraint("stale deposit deadline index".into()))?;
+            if key[..8] != deadline.to_be_bytes() {
+                return Err(DbError::Constraint(
+                    "deposit deadline index key mismatch".into(),
+                ));
+            }
+        }
         "pull_pending_deposit_index" | "release_pending_withdrawal_index" => {
             let (primary, context) = if table == "pull_pending_deposit_index" {
                 ("deposits", "orphan deposit pending index")
@@ -1947,6 +2561,42 @@ impl Drop for StableStore {
 }
 
 impl StableStore {
+    pub fn release_expired_deposit_reservations(
+        &mut self,
+        finalized_timestamp: u64,
+        limit: usize,
+    ) -> Result<bool, StorageError> {
+        if finalized_timestamp == 0 || limit == 0 {
+            return Ok(false);
+        }
+        let end = deposit_authorization_deadline_index_key(finalized_timestamp - 1, [u8::MAX; 32])?;
+        let entries =
+            self.deposit_authorization_deadline_index
+                .range_limited(..=end.clone(), limit, false);
+        for entry in entries {
+            let deposit_id = entry.value();
+            let mut deposit = self
+                .deposit(deposit_id)?
+                .ok_or(StorageError::RecordNotFound)?;
+            let event = match deposit.state {
+                bridge_core::DepositState::AuthorizationPending { .. }
+                | bridge_core::DepositState::AuthorizationAvailable { .. } => {
+                    bridge_core::DepositEvent::MarkRefundAvailable {
+                        reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                        finalized_timestamp: Some(finalized_timestamp),
+                    }
+                }
+                _ => return Err(StorageError::Core(CoreError::ConflictingReplay)),
+            };
+            let result = deposit.apply(event).map_err(StorageError::Core)?;
+            self.put_deposit_transition(&deposit, result)?;
+        }
+        Ok(self
+            .deposit_authorization_deadline_index
+            .first_in_range(..=end)
+            .is_some())
+    }
+
     pub fn deposit_reserve_token(&self) -> Result<DepositReserveToken, StorageError> {
         let counters = self.counters()?;
         let progress = self.external_progress()?;
@@ -2002,7 +2652,12 @@ impl StableStore {
             audit_events: SqlMap::new(handle, "audit_events"),
             fee_payouts: SqlMap::new(handle, "fee_payouts"),
             deposit_owner_index: SqlMap::new(handle, "deposit_owner_index"),
+            deposit_authorization_deadline_index: SqlMap::new(
+                handle,
+                "deposit_authorization_deadline_index",
+            ),
             deposit_admission: SqlCell::load(handle, SingletonColumn::DepositAdmission)?,
+            notification_admission: SqlCell::load(handle, SingletonColumn::NotificationAdmission)?,
             pull_pending_deposit_index: SqlMap::new(handle, "pull_pending_deposit_index"),
             release_pending_withdrawal_index: SqlMap::new(
                 handle,
@@ -2035,7 +2690,20 @@ impl StableStore {
     }
 
     pub fn reopen_after_upgrade(memory: DefaultMemoryImpl) -> Result<Self, StorageError> {
-        Self::reopen(memory)
+        #[cfg(test)]
+        reset_sqlite_test_runtime();
+        let handle = open_database(memory)?;
+        match stored_metadata(handle)? {
+            (SCHEMA_VERSION, WIRE_VERSION) => {}
+            (LEGACY_SCHEMA_VERSION_V30, LEGACY_WIRE_VERSION_V26) => {
+                migrate_v30_to_v31(handle)?;
+            }
+            (schema, _) if schema != SCHEMA_VERSION => {
+                return Err(StorageError::UnsupportedSchemaVersion(schema));
+            }
+            (_, wire) => return Err(StorageError::UnsupportedWireVersion(wire)),
+        }
+        Self::reopen_handle(handle)
     }
 
     fn validate_singletons(&self) -> Result<(), StorageError> {
@@ -2045,6 +2713,7 @@ impl StableStore {
         self.config()?;
         decode::<Option<AdminState>>(&self.admin_state.get()?)?;
         self.deposit_admission()?;
+        decode::<NotificationAdmissionControl>(&self.notification_admission.get()?)?;
         decode::<AuditRetentionState>(&self.audit_retention.get()?)?;
         decode::<SettlementAdmissionControl>(&self.settlement_admission.get()?)?;
         decode::<SettlementSchedulerHealth>(&self.settlement_scheduler_health.get()?)?;
@@ -2507,6 +3176,82 @@ impl StableStore {
             .map_err(|_| StorageMaintenanceError::StorageFailure)?;
         Ok(count)
     }
+
+    #[cfg(feature = "test-deployment")]
+    fn measured_storage_revision(&self) -> Result<u64, StorageMaintenanceError> {
+        self.handle
+            .query(|connection| {
+                let raw = connection.query_scalar::<Vec<u8>>(
+                    "SELECT storage_revision FROM singleton_state WHERE id = 1",
+                    params![],
+                )?;
+                u64::from_sql_bytes(raw)
+                    .map_err(|_| DbError::Constraint("invalid storage revision".into()))
+            })
+            .map_err(|_| StorageMaintenanceError::StorageFailure)
+    }
+
+    #[cfg(feature = "test-deployment")]
+    pub fn profile_due_settlement_claim(
+        &mut self,
+    ) -> Result<SettlementClaimProfile, StorageMaintenanceError> {
+        let storage_revision_before = self.measured_storage_revision()?;
+        let instructions_before = ic_cdk::api::instruction_counter();
+        let claim = self
+            .claim_due_settlement_job(u64::MAX, u64::MAX, u64::MAX)
+            .map_err(|_| StorageMaintenanceError::StorageFailure)?;
+        let instructions = ic_cdk::api::instruction_counter().saturating_sub(instructions_before);
+        let outcome = match claim {
+            SettlementJobClaim::Claimed(_) => "claimed",
+            SettlementJobClaim::ActiveLease { .. } => "active_lease",
+            SettlementJobClaim::None => "none",
+        }
+        .to_string();
+        Ok(SettlementClaimProfile {
+            instructions,
+            storage_revision_before,
+            storage_revision_after: self.measured_storage_revision()?,
+            outcome,
+        })
+    }
+
+    #[cfg(feature = "test-deployment")]
+    pub fn profile_rejected_manual_settlement_claim(
+        &mut self,
+        settlement_id: [u8; 32],
+    ) -> Result<SettlementClaimProfile, StorageMaintenanceError> {
+        let storage_revision_before = self.measured_storage_revision()?;
+        let instructions_before = ic_cdk::api::instruction_counter();
+        let claim = self
+            .claim_manual_settlement_job(
+                SettlementJobKind::Withdrawal,
+                settlement_id,
+                Principal::anonymous(),
+                0,
+                1,
+                u64::MAX,
+                SettlementQuotaLimits {
+                    window_seconds: 60,
+                    global: u16::MAX,
+                    per_principal: u16::MAX,
+                    per_record: u16::MAX,
+                },
+            )
+            .map_err(|_| StorageMaintenanceError::StorageFailure)?;
+        let instructions = ic_cdk::api::instruction_counter().saturating_sub(instructions_before);
+        let outcome = match claim {
+            ManualSettlementClaim::Claimed(_) => "claimed",
+            ManualSettlementClaim::AutomaticProgressPending { .. } => "automatic_progress_pending",
+            ManualSettlementClaim::Busy => "busy",
+        }
+        .to_string();
+        Ok(SettlementClaimProfile {
+            instructions,
+            storage_revision_before,
+            storage_revision_after: self.measured_storage_revision()?,
+            outcome,
+        })
+    }
     #[cfg(test)]
     fn validate_relations(&self) -> Result<(), StorageError> {
         const COUNTED_TABLES: &[&str] = &[
@@ -2745,6 +3490,123 @@ impl StableStore {
         decode(&self.deposit_admission.get()?)
     }
 
+    pub fn consume_notification_verification_quota(
+        &mut self,
+        now_ns: u64,
+        window_seconds: u64,
+        global_limit: u16,
+        caller_count: u16,
+        caller_limit: u16,
+    ) -> Result<bool, StorageError> {
+        let window_ns = window_seconds.saturating_mul(1_000_000_000);
+        if window_ns == 0 || global_limit == 0 || caller_limit == 0 {
+            return Err(StorageError::DecodeFailed);
+        }
+        let previous_blob = self.notification_admission.get()?;
+        let mut admission: NotificationAdmissionControl = decode(&previous_blob)?;
+        let window_id = now_ns / window_ns;
+        if admission.window_id != window_id {
+            admission = NotificationAdmissionControl {
+                window_id,
+                verification_count: 0,
+                ingestion_count: 0,
+            };
+        }
+        if !bridge_core::notification_admission_allowed(
+            admission.verification_count,
+            caller_count,
+            global_limit,
+            caller_limit,
+        ) {
+            return Ok(false);
+        }
+        admission.verification_count = admission
+            .verification_count
+            .checked_add(1)
+            .ok_or(StorageError::CounterOverflow)?;
+        let next_blob = encode(&admission)?;
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_blob.as_slice(),
+                "stale notification admission",
+            )?;
+            connection.execute(
+                "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
+                params![next_blob.to_sql_bytes()],
+            )
+        })?;
+        Ok(true)
+    }
+
+    pub fn consume_notification_ingestion_quota(
+        &mut self,
+        now_ns: u64,
+        window_seconds: u64,
+        ingestion_limit: u16,
+    ) -> Result<bool, StorageError> {
+        let window_ns = window_seconds.saturating_mul(1_000_000_000);
+        if window_ns == 0 || ingestion_limit == 0 {
+            return Err(StorageError::DecodeFailed);
+        }
+        let (previous_blob, next_blob) = match self.prepare_notification_ingestion_quota(
+            now_ns,
+            window_seconds,
+            ingestion_limit,
+        ) {
+            Ok(blobs) => blobs,
+            Err(StorageError::NotificationRateLimited) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_blob.as_slice(),
+                "stale notification admission",
+            )?;
+            connection.execute(
+                "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
+                params![next_blob.to_sql_bytes()],
+            )
+        })?;
+        Ok(true)
+    }
+
+    fn prepare_notification_ingestion_quota(
+        &self,
+        now_ns: u64,
+        window_seconds: u64,
+        ingestion_limit: u16,
+    ) -> Result<(StableBlob, StableBlob), StorageError> {
+        let window_ns = window_seconds.saturating_mul(1_000_000_000);
+        if window_ns == 0 || ingestion_limit == 0 {
+            return Err(StorageError::DecodeFailed);
+        }
+        let previous_blob = self.notification_admission.get()?;
+        let mut admission: NotificationAdmissionControl = decode(&previous_blob)?;
+        let window_id = now_ns / window_ns;
+        if admission.window_id != window_id {
+            admission = NotificationAdmissionControl {
+                window_id,
+                verification_count: 0,
+                ingestion_count: 0,
+            };
+        }
+        if !bridge_core::notification_ingestion_allowed(admission.ingestion_count, ingestion_limit)
+        {
+            return Err(StorageError::NotificationRateLimited);
+        }
+        admission.ingestion_count = admission
+            .ingestion_count
+            .checked_add(1)
+            .ok_or(StorageError::CounterOverflow)?;
+        Ok((previous_blob, encode(&admission)?))
+    }
+
     pub fn current_mint_authorization_epoch(&self) -> Result<u64, StorageError> {
         Ok(self
             .deposit_admission()?
@@ -2858,40 +3720,61 @@ impl StableStore {
         overdue_after_ns: u64,
         limits: SettlementQuotaLimits,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
-        self.claim_settlement_job_with_mode(
+        let admission_blob = self
+            .settlement_admission
+            .get()
+            .map_err(|_| SettlementAdmissionError::Storage)?;
+        let mut admission = decode::<SettlementAdmissionControl>(&admission_blob)
+            .map_err(|_| SettlementAdmissionError::Storage)?;
+        let context = ManualSettlementClaimContext {
             kind,
             settlement_id,
             caller,
             now_ns,
             lease_until_ns,
             overdue_after_ns,
-            Some(limits),
-            SettlementLeaseLane::PublicManual,
-            false,
-        )
+            limits,
+        };
+        let outcome = self
+            .handle
+            .update_effect(|connection| {
+                let outcome = claim_settlement_job_transaction(
+                    connection,
+                    context.kind,
+                    context.settlement_id,
+                    context.caller,
+                    context.now_ns,
+                    context.lease_until_ns,
+                    context.overdue_after_ns,
+                    Some(context.limits),
+                    SettlementLeaseLane::PublicManual,
+                    &mut admission,
+                )?;
+                Ok(if matches!(outcome, ManualClaimTransaction::Claimed(_)) {
+                    TransactionEffect::Changed(outcome)
+                } else {
+                    TransactionEffect::Unchanged(outcome)
+                })
+            })
+            .map_err(|_| SettlementAdmissionError::Storage)?;
+        Self::manual_claim_outcome(outcome)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn claim_deposit_expiry_reconciliation_job(
-        &mut self,
-        settlement_id: [u8; 32],
-        caller: Principal,
-        now_ns: u64,
-        lease_until_ns: u64,
-        overdue_after_ns: u64,
-        limits: SettlementQuotaLimits,
+    fn manual_claim_outcome(
+        outcome: ManualClaimTransaction,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
-        self.claim_settlement_job_with_mode(
-            SettlementJobKind::Deposit,
-            settlement_id,
-            caller,
-            now_ns,
-            lease_until_ns,
-            overdue_after_ns,
-            Some(limits),
-            SettlementLeaseLane::PublicManual,
-            true,
-        )
+        match outcome {
+            ManualClaimTransaction::Claimed(job) => Ok(ManualSettlementClaim::Claimed(job)),
+            ManualClaimTransaction::AutomaticProgressPending(next_run_at_ns) => {
+                Ok(ManualSettlementClaim::AutomaticProgressPending { next_run_at_ns })
+            }
+            ManualClaimTransaction::Busy => Ok(ManualSettlementClaim::Busy),
+            ManualClaimTransaction::RateLimited(retry_after_seconds) => {
+                Err(SettlementAdmissionError::RateLimited {
+                    retry_after_seconds,
+                })
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2913,10 +3796,8 @@ impl StableStore {
             overdue_after_ns,
             None,
             SettlementLeaseLane::GovernanceRecovery,
-            false,
         )
     }
-
     #[allow(clippy::too_many_arguments)]
     fn claim_settlement_job_with_mode(
         &mut self,
@@ -2928,242 +3809,41 @@ impl StableStore {
         overdue_after_ns: u64,
         limits: Option<SettlementQuotaLimits>,
         lane: SettlementLeaseLane,
-        allow_scheduled_early: bool,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
-        let admission_blob = self
-            .settlement_admission
-            .get()
-            .map_err(|_| SettlementAdmissionError::Storage)?;
-        let mut admission = decode::<SettlementAdmissionControl>(&admission_blob)
-            .map_err(|_| SettlementAdmissionError::Storage)?;
-        let record_key = {
-            let mut key = Vec::with_capacity(33);
-            key.push(kind.sql() as u8);
-            key.extend_from_slice(&settlement_id);
-            key
-        };
-        let outcome =
-            self.handle
-                .update(|connection| {
-                    let target = connection.query_all(
-                    "SELECT status, next_run_at_ns, lease_generation, lease_until_ns, lease_lane
-                     FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2",
-                    params![kind.sql(), settlement_id.to_sql_bytes()],
-                    |row| Ok((
-                        row.get::<i64>(0)?,
-                        row.get::<Option<Vec<u8>>>(1)?,
-                        row.get::<Vec<u8>>(2)?,
-                        row.get::<Option<Vec<u8>>>(3)?,
-                        row.get::<i64>(4)?,
-                    )),
-                )?;
-                    if let Some((status, next_raw, _, lease_raw, active_lane)) = target.first() {
-                        let next = next_raw
-                            .clone()
-                            .map(u64::from_sql_bytes)
-                            .transpose()
-                            .map_err(|_| DbError::Constraint("invalid next run time".into()))?;
-                        let lease_until = lease_raw
-                            .clone()
-                            .map(u64::from_sql_bytes)
-                            .transpose()
-                            .map_err(|_| DbError::Constraint("invalid lease deadline".into()))?;
-                        let scheduled = *status == 0;
-                        let active =
-                            *status == 1 && lease_until.is_some_and(|deadline| deadline > now_ns);
-                        match bridge_core::lease_lane_claim_decision(
-                            active,
-                            *active_lane == SettlementLeaseLane::Automatic.sql(),
-                            0,
-                            lane.capacity(),
-                        ) {
-                            bridge_core::LeaseLaneClaimDecision::AutomaticProgressPending => {
-                                return Ok(ManualClaimTransaction::AutomaticProgressPending(None));
-                            }
-                            bridge_core::LeaseLaneClaimDecision::Busy => {
-                                return Ok(ManualClaimTransaction::Busy);
-                            }
-                            bridge_core::LeaseLaneClaimDecision::Allow => {}
-                        }
-                        let stopped = *status == 2;
-                        let overdue = scheduled
-                            && next.is_some_and(|deadline| {
-                                now_ns >= deadline.saturating_add(overdue_after_ns)
-                            });
-                        let expired =
-                            *status == 1 && lease_until.is_some_and(|deadline| deadline <= now_ns);
-                        let allowed = (allow_scheduled_early && scheduled)
-                            || matches!(
-                                bridge_core::manual_claim_decision(
-                                    scheduled, active, stopped, overdue, expired,
-                                ),
-                                bridge_core::ManualClaimDecision::Allow
-                            );
-                        if !allowed {
-                            return Ok(ManualClaimTransaction::AutomaticProgressPending(next));
-                        }
-                    }
-
-                    let active_in_lane = connection.query_scalar::<i64>(
-                        "SELECT COUNT(*) FROM settlement_jobs
-                     WHERE status = 1 AND lease_until_ns > ?1 AND lease_lane = ?2",
-                        params![now_ns.to_sql_bytes(), lane.sql()],
-                    )?;
-                    let active_in_lane = u64::try_from(active_in_lane)
-                        .map_err(|_| DbError::Constraint("invalid lane lease count".into()))?;
-                    if matches!(
-                        bridge_core::lease_lane_claim_decision(
-                            false,
-                            false,
-                            active_in_lane,
-                            lane.capacity(),
-                        ),
-                        bridge_core::LeaseLaneClaimDecision::Busy
-                    ) {
-                        return Ok(ManualClaimTransaction::Busy);
-                    }
-
-                    let admission_blob = if let Some(limits) = limits {
-                        let window_ns = limits.window_seconds.saturating_mul(1_000_000_000);
-                        let window_id = now_ns / window_ns;
-                        if admission.window_id != window_id {
-                            admission = SettlementAdmissionControl {
-                                window_id,
-                                ..Default::default()
-                            };
-                        }
-                        let caller_count = admission
-                            .caller_counts
-                            .iter()
-                            .find(|entry| entry.caller == caller)
-                            .map_or(0, |entry| entry.count);
-                        let record_count = admission
-                            .record_counts
-                            .iter()
-                            .find(|entry| entry.key == record_key)
-                            .map_or(0, |entry| entry.count);
-                        let retry_after_seconds = ((window_id + 1)
-                            .saturating_mul(window_ns)
-                            .saturating_sub(now_ns)
-                            .saturating_add(999_999_999)
-                            / 1_000_000_000)
-                            .max(1);
-                        if admission.global_count >= limits.global
-                            || caller_count >= limits.per_principal
-                            || record_count >= limits.per_record
-                        {
-                            return Ok(ManualClaimTransaction::RateLimited(retry_after_seconds));
-                        }
-                        admission.global_count =
-                            admission.global_count.checked_add(1).ok_or_else(|| {
-                                DbError::Constraint("settlement quota overflow".into())
-                            })?;
-                        match admission
-                            .caller_counts
-                            .iter_mut()
-                            .find(|entry| entry.caller == caller)
-                        {
-                            Some(entry) => {
-                                entry.count = entry.count.checked_add(1).ok_or_else(|| {
-                                    DbError::Constraint("caller quota overflow".into())
-                                })?
-                            }
-                            None => admission
-                                .caller_counts
-                                .push(SettlementCallerQuota { caller, count: 1 }),
-                        }
-                        match admission
-                            .record_counts
-                            .iter_mut()
-                            .find(|entry| entry.key == record_key)
-                        {
-                            Some(entry) => {
-                                entry.count = entry.count.checked_add(1).ok_or_else(|| {
-                                    DbError::Constraint("record quota overflow".into())
-                                })?
-                            }
-                            None => admission.record_counts.push(SettlementRecordQuota {
-                                key: record_key.clone(),
-                                count: 1,
-                            }),
-                        }
-                        Some(encode(&admission).map_err(|_| {
-                            DbError::Constraint("settlement quota encoding failed".into())
-                        })?)
-                    } else {
-                        None
-                    };
-
-                    let generation = target
-                        .first()
-                        .map(|(_, _, raw, _, _)| u64::from_sql_bytes(raw.clone()))
-                        .transpose()
-                        .map_err(|_| DbError::Constraint("invalid lease generation".into()))?
-                        .unwrap_or(0)
-                        .checked_add(1)
-                        .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
-                    if target.is_empty() {
-                        connection.execute(
-                            "INSERT INTO settlement_jobs(settlement_kind, settlement_id, status,
-                         next_run_at_ns, attempts, lease_generation, lease_until_ns,
-                         lease_lane, last_error_code, last_error_detail, updated_at_ns)
-                         VALUES(?1, ?2, 1, NULL, 0, ?3, ?4, ?5, NULL, NULL, ?6)",
-                            params![
-                                kind.sql(),
-                                settlement_id.to_sql_bytes(),
-                                generation.to_sql_bytes(),
-                                lease_until_ns.to_sql_bytes(),
-                                lane.sql(),
-                                now_ns.to_sql_bytes()
-                            ],
-                        )?;
-                    } else {
-                        connection.execute(
-                            "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
-                         lease_generation = ?1, lease_until_ns = ?2,
-                         lease_lane = ?6,
-                         last_error_code = NULL, last_error_detail = NULL, updated_at_ns = ?3
-                         WHERE settlement_kind = ?4 AND settlement_id = ?5",
-                            params![
-                                generation.to_sql_bytes(),
-                                lease_until_ns.to_sql_bytes(),
-                                now_ns.to_sql_bytes(),
-                                kind.sql(),
-                                settlement_id.to_sql_bytes(),
-                                lane.sql(),
-                            ],
-                        )?;
-                    }
-                    if let Some(admission_blob) = admission_blob.as_ref() {
-                        connection.execute(
-                            "UPDATE singleton_state SET settlement_admission = ?1 WHERE id = 1",
-                            params![admission_blob.to_sql_bytes()],
-                        )?;
-                    }
-                    Ok(ManualClaimTransaction::Claimed)
-                })
+        let mut admission = if limits.is_some() {
+            let admission_blob = self
+                .settlement_admission
+                .get()
                 .map_err(|_| SettlementAdmissionError::Storage)?;
-
-        match outcome {
-            ManualClaimTransaction::Claimed => {
-                let job = self
-                    .settlement_job(kind, settlement_id)
-                    .map_err(|_| SettlementAdmissionError::Storage)?
-                    .ok_or(SettlementAdmissionError::Storage)?;
-                Ok(ManualSettlementClaim::Claimed(job))
-            }
-            ManualClaimTransaction::AutomaticProgressPending(next_run_at_ns) => {
-                Ok(ManualSettlementClaim::AutomaticProgressPending { next_run_at_ns })
-            }
-            ManualClaimTransaction::Busy => Ok(ManualSettlementClaim::Busy),
-            ManualClaimTransaction::RateLimited(retry_after_seconds) => {
-                Err(SettlementAdmissionError::RateLimited {
-                    retry_after_seconds,
+            decode::<SettlementAdmissionControl>(&admission_blob)
+                .map_err(|_| SettlementAdmissionError::Storage)?
+        } else {
+            SettlementAdmissionControl::default()
+        };
+        let outcome = self
+            .handle
+            .update_effect(|connection| {
+                let outcome = claim_settlement_job_transaction(
+                    connection,
+                    kind,
+                    settlement_id,
+                    caller,
+                    now_ns,
+                    lease_until_ns,
+                    overdue_after_ns,
+                    limits,
+                    lane,
+                    &mut admission,
+                )?;
+                Ok(if matches!(outcome, ManualClaimTransaction::Claimed(_)) {
+                    TransactionEffect::Changed(outcome)
+                } else {
+                    TransactionEffect::Unchanged(outcome)
                 })
-            }
-        }
+            })
+            .map_err(|_| SettlementAdmissionError::Storage)?;
+        Self::manual_claim_outcome(outcome)
     }
-
     pub fn settlement_job(
         &self,
         kind: SettlementJobKind,
@@ -3248,7 +3928,7 @@ impl StableStore {
         max_active_leases: u64,
     ) -> Result<SettlementJobClaim, StorageError> {
         self.handle
-            .update(|connection| {
+            .update_effect(|connection| {
                 if max_active_leases == 0 {
                     return Err(DbError::Constraint(
                         "automatic settlement concurrency must be positive".into(),
@@ -3256,7 +3936,7 @@ impl StableStore {
                 }
                 let active_leases = connection.query_scalar::<i64>(
                     "SELECT COUNT(*) FROM settlement_jobs
-                 WHERE status = 1 AND lease_until_ns > ?1 AND lease_lane = 0",
+                     WHERE status = 1 AND lease_until_ns > ?1 AND lease_lane = 0",
                     params![now_ns.to_sql_bytes()],
                 )?;
                 if u64::try_from(active_leases)
@@ -3265,79 +3945,81 @@ impl StableStore {
                 {
                     let lease_until_ns = connection.query_scalar::<Vec<u8>>(
                         "SELECT lease_until_ns FROM settlement_jobs
-                     WHERE status = 1 AND lease_until_ns > ?1 AND lease_lane = 0
-                     ORDER BY lease_until_ns LIMIT 1",
+                         WHERE status = 1 AND lease_until_ns > ?1 AND lease_lane = 0
+                         ORDER BY lease_until_ns LIMIT 1",
                         params![now_ns.to_sql_bytes()],
                     )?;
-                    return Ok(SettlementJobClaim::ActiveLease {
-                        lease_until_ns: u64::from_sql_bytes(lease_until_ns)
-                            .map_err(|_| DbError::Constraint("invalid lease deadline".into()))?,
-                    });
+                    return Ok(TransactionEffect::Unchanged(
+                        SettlementJobClaim::ActiveLease {
+                            lease_until_ns: u64::from_sql_bytes(lease_until_ns).map_err(|_| {
+                                DbError::Constraint("invalid lease deadline".into())
+                            })?,
+                        },
+                    ));
                 }
-                let rows = connection.query_all(
-                    "SELECT settlement_kind, settlement_id, attempts, lease_generation
-                 FROM settlement_jobs WHERE (status = 0 AND next_run_at_ns <= ?1)
-                    OR (status = 1 AND lease_until_ns <= ?1)
-                 ORDER BY CASE status WHEN 1 THEN lease_until_ns ELSE next_run_at_ns END,
-                          settlement_kind, settlement_id LIMIT 1",
-                    params![now_ns.to_sql_bytes()],
-                    |row| {
-                        Ok((
-                            row.get::<i64>(0)?,
-                            row.get::<Vec<u8>>(1)?,
-                            row.get::<i64>(2)?,
-                            row.get::<Vec<u8>>(3)?,
-                        ))
-                    },
+                let scheduled = query_due_settlement_candidate(
+                    connection,
+                    DUE_SCHEDULED_SETTLEMENT_SQL,
+                    now_ns,
                 )?;
-                let Some((kind_raw, id_raw, attempts, generation_raw)) = rows.into_iter().next()
-                else {
-                    return Ok(SettlementJobClaim::None);
+                let expired =
+                    query_due_settlement_candidate(connection, DUE_EXPIRED_SETTLEMENT_SQL, now_ns)?;
+                let candidate = match (scheduled, expired) {
+                    (Some(scheduled), Some(expired)) => {
+                        let scheduled_key = (
+                            scheduled.deadline_ns,
+                            scheduled.kind.sql(),
+                            scheduled.settlement_id,
+                        );
+                        let expired_key = (
+                            expired.deadline_ns,
+                            expired.kind.sql(),
+                            expired.settlement_id,
+                        );
+                        if scheduled_key <= expired_key {
+                            Some(scheduled)
+                        } else {
+                            Some(expired)
+                        }
+                    }
+                    (Some(candidate), None) | (None, Some(candidate)) => Some(candidate),
+                    (None, None) => None,
                 };
-                let kind = match kind_raw {
-                    0 => SettlementJobKind::Deposit,
-                    1 => SettlementJobKind::Withdrawal,
-                    2 => SettlementJobKind::FeePayout,
-                    _ => return Err(DbError::Constraint("invalid settlement kind".into())),
+                let Some(candidate) = candidate else {
+                    return Ok(TransactionEffect::Unchanged(SettlementJobClaim::None));
                 };
-                let settlement_id: [u8; 32] = id_raw
-                    .try_into()
-                    .map_err(|_| DbError::Constraint("invalid settlement id".into()))?;
-                let generation = bridge_core::lease_generation_next(
-                    u64::from_sql_bytes(generation_raw)
-                        .map_err(|_| DbError::Constraint("invalid lease generation".into()))?,
-                )
-                .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
+                let generation = bridge_core::lease_generation_next(candidate.lease_generation)
+                    .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
                 connection.execute(
                     "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
-                 lease_generation = ?1, lease_until_ns = ?2, lease_lane = 0, updated_at_ns = ?3
-                 WHERE settlement_kind = ?4 AND settlement_id = ?5",
+                     lease_generation = ?1, lease_until_ns = ?2, lease_lane = 0, updated_at_ns = ?3
+                     WHERE settlement_kind = ?4 AND settlement_id = ?5",
                     params![
                         generation.to_sql_bytes(),
                         lease_until_ns.to_sql_bytes(),
                         now_ns.to_sql_bytes(),
-                        kind.sql(),
-                        settlement_id.to_sql_bytes()
+                        candidate.kind.sql(),
+                        candidate.settlement_id.to_sql_bytes()
                     ],
                 )?;
-                Ok(SettlementJobClaim::Claimed(SettlementJob {
-                    kind,
-                    settlement_id,
-                    status: SettlementJobStatus::Leased,
-                    next_run_at_ns: None,
-                    attempts: u8::try_from(attempts)
-                        .map_err(|_| DbError::Constraint("invalid attempt count".into()))?,
-                    lease_generation: generation,
-                    lease_until_ns: Some(lease_until_ns),
-                    lease_lane: SettlementLeaseLane::Automatic,
-                    last_error_code: None,
-                    last_error_detail: None,
-                    updated_at_ns: now_ns,
-                }))
+                Ok(TransactionEffect::Changed(SettlementJobClaim::Claimed(
+                    SettlementJob {
+                        kind: candidate.kind,
+                        settlement_id: candidate.settlement_id,
+                        status: SettlementJobStatus::Leased,
+                        next_run_at_ns: None,
+                        attempts: candidate.attempts,
+                        lease_generation: generation,
+                        lease_until_ns: Some(lease_until_ns),
+                        lease_lane: SettlementLeaseLane::Automatic,
+                        last_error_code: None,
+                        last_error_detail: None,
+                        updated_at_ns: now_ns,
+                    },
+                )))
             })
             .map_err(Into::into)
     }
-
     pub fn claim_specific_due_settlement_job(
         &mut self,
         kind: SettlementJobKind,
@@ -3346,11 +4028,11 @@ impl StableStore {
         lease_until_ns: u64,
     ) -> Result<SettlementJobClaim, StorageError> {
         self.handle
-            .update(|connection| {
+            .update_effect(|connection| {
                 if let Some(active) = connection.query_optional_scalar::<Vec<u8>>(
                     "SELECT lease_until_ns FROM settlement_jobs
-                 WHERE settlement_kind = ?1 AND settlement_id = ?2
-                   AND status = 1 AND lease_until_ns > ?3",
+                     WHERE settlement_kind = ?1 AND settlement_id = ?2
+                       AND status = 1 AND lease_until_ns > ?3",
                     params![
                         kind.sql(),
                         settlement_id.to_sql_bytes(),
@@ -3359,13 +4041,15 @@ impl StableStore {
                 )? {
                     let lease_until_ns = u64::from_sql_bytes(active)
                         .map_err(|_| DbError::Constraint("invalid lease deadline".into()))?;
-                    return Ok(SettlementJobClaim::ActiveLease { lease_until_ns });
+                    return Ok(TransactionEffect::Unchanged(
+                        SettlementJobClaim::ActiveLease { lease_until_ns },
+                    ));
                 }
                 let rows = connection.query_all(
                     "SELECT attempts, lease_generation
-                 FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2
-                   AND ((status = 0 AND next_run_at_ns <= ?3)
-                     OR (status = 1 AND lease_until_ns <= ?3)) LIMIT 1",
+                     FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2
+                       AND ((status = 0 AND next_run_at_ns <= ?3)
+                         OR (status = 1 AND lease_until_ns <= ?3)) LIMIT 1",
                     params![
                         kind.sql(),
                         settlement_id.to_sql_bytes(),
@@ -3374,7 +4058,7 @@ impl StableStore {
                     |row| Ok((row.get::<i64>(0)?, row.get::<Vec<u8>>(1)?)),
                 )?;
                 let Some((attempts, generation)) = rows.into_iter().next() else {
-                    return Ok(SettlementJobClaim::None);
+                    return Ok(TransactionEffect::Unchanged(SettlementJobClaim::None));
                 };
                 let generation = bridge_core::lease_generation_next(
                     u64::from_sql_bytes(generation)
@@ -3383,8 +4067,8 @@ impl StableStore {
                 .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
                 connection.execute(
                     "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
-                 lease_generation = ?1, lease_until_ns = ?2, lease_lane = 0, updated_at_ns = ?3
-                 WHERE settlement_kind = ?4 AND settlement_id = ?5",
+                     lease_generation = ?1, lease_until_ns = ?2, lease_lane = 0, updated_at_ns = ?3
+                     WHERE settlement_kind = ?4 AND settlement_id = ?5",
                     params![
                         generation.to_sql_bytes(),
                         lease_until_ns.to_sql_bytes(),
@@ -3393,31 +4077,32 @@ impl StableStore {
                         settlement_id.to_sql_bytes()
                     ],
                 )?;
-                Ok(SettlementJobClaim::Claimed(SettlementJob {
-                    kind,
-                    settlement_id,
-                    status: SettlementJobStatus::Leased,
-                    next_run_at_ns: None,
-                    attempts: u8::try_from(attempts)
-                        .map_err(|_| DbError::Constraint("invalid attempt count".into()))?,
-                    lease_generation: generation,
-                    lease_until_ns: Some(lease_until_ns),
-                    lease_lane: SettlementLeaseLane::Automatic,
-                    last_error_code: None,
-                    last_error_detail: None,
-                    updated_at_ns: now_ns,
-                }))
+                Ok(TransactionEffect::Changed(SettlementJobClaim::Claimed(
+                    SettlementJob {
+                        kind,
+                        settlement_id,
+                        status: SettlementJobStatus::Leased,
+                        next_run_at_ns: None,
+                        attempts: u8::try_from(attempts)
+                            .map_err(|_| DbError::Constraint("invalid attempt count".into()))?,
+                        lease_generation: generation,
+                        lease_until_ns: Some(lease_until_ns),
+                        lease_lane: SettlementLeaseLane::Automatic,
+                        last_error_code: None,
+                        last_error_detail: None,
+                        updated_at_ns: now_ns,
+                    },
+                )))
             })
             .map_err(Into::into)
     }
-
     pub fn renew_settlement_lease(
         &mut self,
         job: &mut SettlementJob,
         now_ns: u64,
         lease_until_ns: u64,
     ) -> Result<bool, StorageError> {
-        let changed = self.handle.update(|connection| {
+        let changed = self.handle.update_effect(|connection| {
             connection.execute(
                 "UPDATE settlement_jobs SET lease_until_ns = ?1, updated_at_ns = ?2
                  WHERE settlement_kind = ?3 AND settlement_id = ?4 AND status = 1
@@ -3430,7 +4115,7 @@ impl StableStore {
                     job.lease_generation.to_sql_bytes()
                 ],
             )?;
-            Ok(connection
+            let changed = connection
                 .query_optional_scalar::<Vec<u8>>(
                     "SELECT lease_until_ns FROM settlement_jobs
                      WHERE settlement_kind = ?1 AND settlement_id = ?2 AND status = 1
@@ -3442,7 +4127,12 @@ impl StableStore {
                     ],
                 )?
                 .as_deref()
-                == Some(lease_until_ns.to_sql_bytes().as_slice()))
+                == Some(lease_until_ns.to_sql_bytes().as_slice());
+            Ok(if changed {
+                TransactionEffect::Changed(true)
+            } else {
+                TransactionEffect::Unchanged(false)
+            })
         })?;
         if changed {
             job.lease_until_ns = Some(lease_until_ns);
@@ -3512,11 +4202,13 @@ impl StableStore {
                 ("fee_payouts", id.to_sql_bytes(), encoded.clone(), encoded)
             }
         };
-        self.handle.update(|connection| {
+        self.handle.update_effect(|connection| {
             let generation = connection.query_optional_scalar::<Vec<u8>>(
                 "SELECT lease_generation FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2 AND status = 1",
                 params![job.kind.sql(), job.settlement_id.to_sql_bytes()])?;
-            if generation.as_deref() != Some(job.lease_generation.to_sql_bytes().as_slice()) { return Ok(()) }
+            if generation.as_deref() != Some(job.lease_generation.to_sql_bytes().as_slice()) {
+                return Ok(TransactionEffect::Unchanged(()));
+            }
             let select_record = match record_table {
                 "deposits" => "SELECT value FROM deposits WHERE key = ?1",
                 "withdrawals" => "SELECT value FROM withdrawals WHERE key = ?1",
@@ -3550,7 +4242,7 @@ impl StableStore {
                      attempts = ?1, last_error_code = ?2, last_error_detail = ?3,
                      updated_at_ns = ?4 WHERE settlement_kind = ?5 AND settlement_id = ?6",
                     params![i64::from(attempts), code, detail, now_ns.to_sql_bytes(), job.kind.sql(), job.settlement_id.to_sql_bytes()],
-                )
+                )?;
             } else if let Some(next) = next_run_at_ns {
                 connection.execute(
                     "UPDATE settlement_jobs SET status = 0, next_run_at_ns = ?1, lease_until_ns = NULL,
@@ -3558,13 +4250,14 @@ impl StableStore {
                      last_error_detail = NULL, updated_at_ns = ?3
                      WHERE settlement_kind = ?4 AND settlement_id = ?5",
                     params![next.to_sql_bytes(), i64::from(attempts), now_ns.to_sql_bytes(), job.kind.sql(), job.settlement_id.to_sql_bytes()],
-                )
+                )?;
             } else {
                 connection.execute(
                     "DELETE FROM settlement_jobs WHERE settlement_kind = ?1 AND settlement_id = ?2",
                     params![job.kind.sql(), job.settlement_id.to_sql_bytes()],
-                )
+                )?;
             }
+            Ok(TransactionEffect::Changed(()))
         })?;
         Ok(())
     }
@@ -3708,10 +4401,11 @@ impl StableStore {
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
         if !bridge_core::refresh_owner_matches(admission.refresh_owner, owner) {
-            return Err(StorageError::DatabaseFailure);
+            return Err(StorageError::StaleSnapshotRefresh);
         }
         admission.base_snapshot = Some(CachedBaseMintSnapshot {
             generation: owner,
+            deposit_id: None,
             observed_at_ns,
             snapshot,
             bridge_signer,
@@ -3743,6 +4437,7 @@ impl StableStore {
             mint_authorization_epoch,
             deposits_paused,
             None,
+            None,
             caller,
             audit_kinds,
         )
@@ -3757,13 +4452,14 @@ impl StableStore {
         bridge_signer: [u8; 20],
         mint_authorization_epoch: u64,
         deposits_paused: bool,
+        deposit_id: Option<[u8; 32]>,
         finalized_observation: Option<FinalizedObservationRecord>,
         caller: Principal,
         audit_kinds: Vec<AuditEventKind>,
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
         if !bridge_core::refresh_owner_matches(admission.refresh_owner, owner) {
-            return Err(StorageError::DatabaseFailure);
+            return Err(StorageError::StaleSnapshotRefresh);
         }
         let previous_admission = self.deposit_admission.get()?;
         let mut progress = self.external_progress()?;
@@ -3773,6 +4469,7 @@ impl StableStore {
         }
         admission.base_snapshot = Some(CachedBaseMintSnapshot {
             generation: owner,
+            deposit_id,
             observed_at_ns,
             snapshot,
             bridge_signer,
@@ -3814,6 +4511,66 @@ impl StableStore {
                 params![admission_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
             )?;
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        Ok(())
+    }
+
+    pub fn cached_deposit_authorization_snapshot(
+        &self,
+        deposit_id: [u8; 32],
+    ) -> Result<Option<CachedBaseMintSnapshot>, StorageError> {
+        Ok(self
+            .deposit_admission()?
+            .base_snapshot
+            .filter(|cached| cached.deposit_id == Some(deposit_id)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn cache_deposit_authorization_observation(
+        &mut self,
+        deposit_id: [u8; 32],
+        observed_at_ns: u64,
+        snapshot: BaseMintSnapshot,
+        bridge_signer: [u8; 20],
+        mint_authorization_epoch: u64,
+        deposits_paused: bool,
+        finalized_observation: FinalizedObservationRecord,
+    ) -> Result<(), StorageError> {
+        let previous_admission = self.deposit_admission.get()?;
+        let mut admission: DepositAdmissionControl = decode(&previous_admission)?;
+        let previous_progress = self.external_progress.get()?;
+        let mut progress: ExternalProgress = decode(&previous_progress)?;
+        progress.observe_finalized(finalized_observation)?;
+        admission.base_snapshot = Some(CachedBaseMintSnapshot {
+            generation: admission.refresh_generation,
+            deposit_id: Some(deposit_id),
+            observed_at_ns,
+            snapshot,
+            bridge_signer,
+            mint_authorization_epoch,
+            deposits_paused,
+        });
+        let next_admission = encode(&admission)?;
+        let next_progress = encode(&progress)?;
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_admission.as_slice(),
+                "stale deposit authorization observation",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT external_progress FROM singleton_state WHERE id = 1",
+                params![],
+                previous_progress.as_slice(),
+                "stale finalized observation",
+            )?;
+            connection.execute(
+                "UPDATE singleton_state SET deposit_admission = ?1, external_progress = ?2 WHERE id = 1",
+                params![next_admission.to_sql_bytes(), next_progress.to_sql_bytes()],
+            )
         })?;
         Ok(())
     }
@@ -4120,6 +4877,108 @@ impl StableStore {
         transaction: GovernanceTransaction,
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
+        Self::apply_governance_completion(&mut admission, &transaction)?;
+        self.set_deposit_admission(&admission)
+    }
+
+    pub fn complete_confirmed_activation_and_resume_if_clear(
+        &mut self,
+        transaction: GovernanceTransaction,
+        caller: Principal,
+        timestamp_ns: u64,
+    ) -> Result<bool, StorageError> {
+        if !matches!(
+            transaction.kind,
+            GovernanceTransactionKind::ExecuteActivation { .. }
+        ) || !matches!(
+            transaction.state,
+            GovernanceTransactionState::Confirmed { .. }
+        ) {
+            return Err(StorageError::DecodeFailed);
+        }
+
+        let previous_admission = self.deposit_admission.get()?;
+        let mut admission = self.deposit_admission()?;
+        Self::apply_governance_completion(&mut admission, &transaction)?;
+
+        let previous_admin = self.admin_state.get()?;
+        let mut admin = self.admin_state()?;
+        if !admin.deposits_paused
+            || !crate::admin::confirmed_activation_resume_authorized(&admin, caller)
+        {
+            return Err(StorageError::DecodeFailed);
+        }
+        let resume = !admission.emergency_pause_deposit_required
+            && !admission.emergency_pause_withdrawal_required
+            && !admission.emergency_cancel_required;
+        admin.deposits_paused = !resume;
+
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = resume
+            .then(|| {
+                self.prepare_audit_batch(
+                    &mut counters,
+                    caller,
+                    timestamp_ns,
+                    vec![AuditEventKind::DepositsResumed],
+                )
+            })
+            .transpose()?;
+        let admission_blob = encode(&admission)?;
+        let admin_blob = encode(&Some(admin))?;
+        let counters_blob = encode(&counters)?;
+        let retention_blob = audit.as_ref().map_or_else(
+            || self.audit_retention.get(),
+            |batch| Ok(batch.retention_blob.clone()),
+        )?;
+
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_admission.as_slice(),
+                "stale activation completion",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT admin_state FROM singleton_state WHERE id = 1",
+                params![],
+                previous_admin.as_slice(),
+                "stale activation administrator state",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+                previous_counters.as_slice(),
+                "stale activation audit counters",
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            if let Some(audit) = &audit {
+                commit_audit_batch(connection, audit)?;
+            }
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET deposit_admission = ?1, admin_state = ?2,
+                    counters = ?3, audit_retention = ?4 WHERE id = 1",
+                params![
+                    admission_blob.to_sql_bytes(),
+                    admin_blob.to_sql_bytes(),
+                    counters_blob.to_sql_bytes(),
+                    retention_blob.to_sql_bytes(),
+                ],
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        Ok(resume)
+    }
+
+    fn apply_governance_completion(
+        admission: &mut DepositAdmissionControl,
+        transaction: &GovernanceTransaction,
+    ) -> Result<(), StorageError> {
         if admission
             .pending_governance_transaction
             .as_ref()
@@ -4208,7 +5067,7 @@ impl StableStore {
             | GovernanceTransactionKind::ExecuteActivation { .. }
             | GovernanceTransactionKind::CancelTimelock { .. } => {}
         }
-        self.set_deposit_admission(&admission)
+        Ok(())
     }
 
     pub fn set_signer_public_key_if_absent(
@@ -5121,7 +5980,8 @@ impl StableStore {
     }
 
     pub fn put_deposit(&mut self, value: &DepositRecord) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, None, None)
+        self.put_deposit_with_audit(value, None, None, None, None)
+            .map(|_| ())
     }
 
     pub fn put_deposit_transition(
@@ -5129,7 +5989,21 @@ impl StableStore {
         value: &DepositRecord,
         result: ApplyResult,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, None, Some(result))
+        self.put_deposit_with_audit(value, None, None, Some(result), None)
+            .map(|_| ())
+    }
+
+    pub fn put_deposit_transition_and_claim_manual_job(
+        &mut self,
+        value: &DepositRecord,
+        result: ApplyResult,
+        context: ManualSettlementClaimContext,
+    ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
+        let outcome = self
+            .put_deposit_with_audit(value, None, None, Some(result), Some(context))
+            .map_err(|_| SettlementAdmissionError::Storage)?
+            .ok_or(SettlementAdmissionError::Storage)?;
+        Self::manual_claim_outcome(outcome)
     }
 
     pub fn put_deposit_and_audit(
@@ -5138,7 +6012,8 @@ impl StableStore {
         caller: Principal,
         kind: AuditEventKind,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, Some((caller, kind)), None, None)
+        self.put_deposit_with_audit(value, Some((caller, kind)), None, None, None)
+            .map(|_| ())
     }
 
     pub fn put_deposit_funding_callback(
@@ -5146,7 +6021,8 @@ impl StableStore {
         value: &DepositRecord,
         token: &SettlementCallbackToken,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, Some(token), None)
+        self.put_deposit_with_audit(value, None, Some(token), None, None)
+            .map(|_| ())
     }
 
     pub fn put_deposit_transition_funding_callback(
@@ -5155,7 +6031,8 @@ impl StableStore {
         token: &SettlementCallbackToken,
         result: ApplyResult,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, Some(token), Some(result))
+        self.put_deposit_with_audit(value, None, Some(token), Some(result), None)
+            .map(|_| ())
     }
 
     fn put_deposit_with_audit(
@@ -5164,7 +6041,8 @@ impl StableStore {
         audit_kind: Option<(Principal, AuditEventKind)>,
         callback_token: Option<&SettlementCallbackToken>,
         transition_result: Option<ApplyResult>,
-    ) -> Result<(), StorageError> {
+        manual_claim: Option<ManualSettlementClaimContext>,
+    ) -> Result<Option<ManualClaimTransaction>, StorageError> {
         let previous_stored = self.stored_deposit(value.id.bytes())?;
         let previous = previous_stored.as_ref().map(|stored| stored.record.clone());
         if let Some(token) = callback_token {
@@ -5208,8 +6086,11 @@ impl StableStore {
         )?;
         let derived_fee_delta = match (previous.as_ref().map(|record| &record.state), &value.state)
         {
-            (Some(previous_state), bridge_core::DepositState::Minted { .. })
-                if !matches!(previous_state, bridge_core::DepositState::Minted { .. }) =>
+            (Some(previous_state), bridge_core::DepositState::AuthorizationAvailable { .. })
+                if !matches!(
+                    previous_state,
+                    bridge_core::DepositState::AuthorizationAvailable { .. }
+                ) =>
             {
                 value
                     .quote
@@ -5253,8 +6134,22 @@ impl StableStore {
                         matches!(record.state, bridge_core::DepositState::Refunded { .. })
                     });
             let expected_net = value.quote.map_or(Amount::ZERO, |quote| quote.net_amount);
+            let charged_service_fee = if value
+                .mint_authorization
+                .as_ref()
+                .is_some_and(|authorization| authorization.signature.is_some())
+            {
+                value.quote.map_or(Amount::ZERO, |quote| quote.service_fee)
+            } else {
+                Amount::ZERO
+            };
             let expected_terminal_debit = if mint_completed || refund_completed {
-                value.gross_amount
+                value
+                    .gross_amount
+                    .checked_sub(charged_service_fee)
+                    .map_err(StorageError::Core)?
+            } else if derived_fee_delta != Amount::ZERO {
+                derived_fee_delta
             } else {
                 Amount::ZERO
             };
@@ -5266,7 +6161,7 @@ impl StableStore {
                 || effects.pending_liability_debit != expected_terminal_debit
                 || effects.escrow_debit
                     != if refund_completed {
-                        value.gross_amount
+                        expected_terminal_debit
                     } else {
                         Amount::ZERO
                     }
@@ -5303,8 +6198,47 @@ impl StableStore {
         let previous_accounting_blob = encode(&previous_accounting)?;
         record_write_storage_failpoint(RecordWriteFailpoint::Encode)?;
         let key = value.id.bytes().to_sql_bytes();
+        let previous_deadline_key = previous
+            .as_ref()
+            .and_then(deposit_authorization_deadline)
+            .map(|deadline| deposit_authorization_deadline_index_key(deadline, value.id.bytes()))
+            .transpose()?;
+        let next_deadline_key = deposit_authorization_deadline(value)
+            .map(|deadline| deposit_authorization_deadline_index_key(deadline, value.id.bytes()))
+            .transpose()?;
         let previous_blob = previous_stored.as_ref().map(encode).transpose()?;
-        self.handle.update(|connection| {
+        let mut settlement_admission = manual_claim
+            .map(|_| {
+                self.settlement_admission
+                    .get()
+                    .map_err(|_| StorageError::DatabaseFailure)
+                    .and_then(|blob| decode::<SettlementAdmissionControl>(&blob))
+            })
+            .transpose()?;
+        let claim_outcome = self.handle.update_effect(|connection| {
+            let claim_outcome = if let Some(context) = manual_claim {
+                let admission = settlement_admission
+                    .as_mut()
+                    .ok_or_else(|| DbError::Constraint("missing settlement admission".into()))?;
+                let outcome = claim_settlement_job_transaction(
+                    connection,
+                    context.kind,
+                    context.settlement_id,
+                    context.caller,
+                    context.now_ns,
+                    context.lease_until_ns,
+                    context.overdue_after_ns,
+                    Some(context.limits),
+                    SettlementLeaseLane::PublicManual,
+                    admission,
+                )?;
+                if !matches!(outcome, ManualClaimTransaction::Claimed(_)) {
+                    return Ok(TransactionEffect::Unchanged(Some(outcome)));
+                }
+                Some(outcome)
+            } else {
+                None
+            };
             if let Some(token) = callback_token {
                 let current = connection.query_optional_scalar::<Vec<u8>>(
                     "SELECT lease_generation FROM settlement_jobs
@@ -5339,6 +6273,13 @@ impl StableStore {
             if previous.as_ref().is_some_and(is_pending_deposit_ledger) {
                 remove_table_entry(connection, "pull_pending_deposit_index", key.clone())?;
             }
+            if let Some(previous_deadline_key) = &previous_deadline_key {
+                remove_table_entry(
+                    connection,
+                    "deposit_authorization_deadline_index",
+                    previous_deadline_key.as_slice().to_vec(),
+                )?;
+            }
             record_write_db_failpoint(RecordWriteFailpoint::RemoveIndex)?;
             if is_pending_deposit_ledger(value) {
                 upsert_table_entry(
@@ -5346,6 +6287,14 @@ impl StableStore {
                     "pull_pending_deposit_index",
                     key.clone(),
                     0u8.to_sql_bytes(),
+                )?;
+            }
+            if let Some(next_deadline_key) = &next_deadline_key {
+                upsert_table_entry(
+                    connection,
+                    "deposit_authorization_deadline_index",
+                    next_deadline_key.as_slice().to_vec(),
+                    value.id.bytes().to_sql_bytes(),
                 )?;
             }
             record_write_db_failpoint(RecordWriteFailpoint::AddIndex)?;
@@ -5370,9 +6319,10 @@ impl StableStore {
                     params![counters_blob.to_sql_bytes(), accounting_blob.to_sql_bytes()],
                 )?;
             }
-            record_write_db_failpoint(RecordWriteFailpoint::SingletonState)
+            record_write_db_failpoint(RecordWriteFailpoint::SingletonState)?;
+            Ok(TransactionEffect::Changed(claim_outcome))
         })?;
-        Ok(())
+        Ok(claim_outcome)
     }
 
     pub fn deposit_funding_attempt(
@@ -5475,7 +6425,12 @@ impl StableStore {
         }
         let previous_admission_blob = self.deposit_admission.get()?;
         let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
-        reserve_deposit_funding_quota(&mut admission, owner, attempt.intent.deposit_id, quota)?;
+        consume_deposit_quota_and_reserve_funding(
+            &mut admission,
+            owner,
+            attempt.intent.deposit_id,
+            quota,
+        )?;
         let active_funding_reservations = u64::try_from(admission.funding_reservations.len())
             .map_err(|_| StorageError::CounterOverflow)?;
         let required_cycles = cycles.reserve_policy.required_cycles(
@@ -5588,7 +6543,7 @@ impl StableStore {
     ) -> Result<(), StorageError> {
         let previous_admission_blob = self.deposit_admission.get()?;
         let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
-        release_deposit_funding_quota(&mut admission, owner, attempt.intent.deposit_id)?;
+        release_deposit_funding_reservation(&mut admission, owner, attempt.intent.deposit_id)?;
         let admission_blob = encode(&admission)?;
         let attempt_blob = encode(attempt)?;
         let key = attempt.intent.deposit_id.to_sql_bytes();
@@ -5663,14 +6618,13 @@ impl StableStore {
         }
 
         let quota_state = match (quota_admission, funding_promotion) {
-            (Some(quota), Some((attempt, _))) => {
+            (Some(_quota), Some((attempt, _))) => {
                 let previous_admission_blob = self.deposit_admission.get()?;
                 let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
-                commit_deposit_funding_quota(
+                release_deposit_funding_reservation(
                     &mut admission,
                     owner,
                     attempt.intent.deposit_id,
-                    quota,
                 )?;
                 Some((None, previous_admission_blob, encode(&admission)?))
             }
@@ -5862,17 +6816,6 @@ impl StableStore {
                     "open_hold_index",
                     hold.id.get().to_sql_bytes(),
                     0u8.to_sql_bytes(),
-                )?;
-                connection.execute(
-                    "UPDATE settlement_jobs SET status = 2, next_run_at_ns = NULL,
-                     lease_until_ns = NULL, lease_lane = 0,
-                     last_error_code = 'LedgerAmbiguous',
-                     last_error_detail = 'deposit funding requires reconciliation'
-                     WHERE settlement_kind = ?1 AND settlement_id = ?2",
-                    params![
-                        SettlementJobKind::Deposit.sql(),
-                        record.id.bytes().to_sql_bytes()
-                    ],
                 )?;
             }
             if promotion_attempt.is_some() {
@@ -6252,9 +7195,12 @@ impl StableStore {
         withdrawal: &WithdrawalRecord,
         progress: &ExternalProgress,
     ) -> Result<bool, StorageError> {
-        self.commit_new_withdrawal_release_bundle_inner(withdrawal, progress, None, None)
+        self.commit_new_withdrawal_release_bundle_inner(withdrawal, progress, None, None, None)
     }
 
+    // Keep the business record, audit identity, replay key, and quota inputs explicit at
+    // this atomic commit boundary so callers cannot construct a partially bound bundle.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_new_withdrawal_release_bundle_with_rpc_audit(
         &mut self,
         withdrawal: &WithdrawalRecord,
@@ -6263,12 +7209,19 @@ impl StableStore {
         timestamp_ns: u64,
         audit_kinds: Vec<AuditEventKind>,
         transaction_hash: [u8; 32],
+        notification_window_seconds: u64,
+        notification_ingestion_limit: u16,
     ) -> Result<bool, StorageError> {
         self.commit_new_withdrawal_release_bundle_inner(
             withdrawal,
             progress,
             Some((caller, timestamp_ns, audit_kinds)),
             Some(transaction_hash),
+            Some((
+                timestamp_ns,
+                notification_window_seconds,
+                notification_ingestion_limit,
+            )),
         )
     }
 
@@ -6278,6 +7231,7 @@ impl StableStore {
         progress: &ExternalProgress,
         rpc_audit: Option<(Principal, u64, Vec<AuditEventKind>)>,
         notification_hash: Option<[u8; 32]>,
+        notification_ingestion: Option<(u64, u64, u16)>,
     ) -> Result<bool, StorageError> {
         if notification_hash
             .is_some_and(|hash| self.withdrawal_notification_index.get(&hash).is_some())
@@ -6322,6 +7276,11 @@ impl StableStore {
         let counters_blob = encode(&counters)?;
         let progress_blob = encode(progress)?;
         let key = withdrawal.id.bytes().to_sql_bytes();
+        let notification_blobs = notification_ingestion
+            .map(|(now_ns, window_seconds, limit)| {
+                self.prepare_notification_ingestion_quota(now_ns, window_seconds, limit)
+            })
+            .transpose()?;
 
         self.handle.update(|connection| {
             expect_blob(
@@ -6331,6 +7290,15 @@ impl StableStore {
                 previous_counters_blob.as_slice(),
                 "stale withdrawal ingest",
             )?;
+            if let Some((previous_notification, _)) = &notification_blobs {
+                expect_blob(
+                    connection,
+                    "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                    params![],
+                    previous_notification.as_slice(),
+                    "stale notification ingestion",
+                )?;
+            }
             replace_withdrawal_row(
                 connection,
                 key.clone(),
@@ -6358,12 +7326,37 @@ impl StableStore {
                 progress.last_finalized_observation_ns,
             )?;
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
-            if let Some(audit) = &prepared_audit {
+            if let (Some(audit), Some((_, next_notification))) =
+                (&prepared_audit, &notification_blobs)
+            {
+                commit_audit_batch(connection, audit)?;
+                rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, external_progress = ?2,
+                        audit_retention = ?3, notification_admission = ?4 WHERE id = 1",
+                    params![
+                        counters_blob.to_sql_bytes(),
+                        progress_blob.to_sql_bytes(),
+                        audit.retention_blob.to_sql_bytes(),
+                        next_notification.to_sql_bytes()
+                    ],
+                )?;
+            } else if let Some(audit) = &prepared_audit {
                 commit_audit_batch(connection, audit)?;
                 rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
                 connection.execute(
                     "UPDATE singleton_state SET counters = ?1, external_progress = ?2, audit_retention = ?3 WHERE id = 1",
                     params![counters_blob.to_sql_bytes(), progress_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+                )?;
+            } else if let Some((_, next_notification)) = &notification_blobs {
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, external_progress = ?2,
+                        notification_admission = ?3 WHERE id = 1",
+                    params![
+                        counters_blob.to_sql_bytes(),
+                        progress_blob.to_sql_bytes(),
+                        next_notification.to_sql_bytes()
+                    ],
                 )?;
             } else {
                 connection.execute(
@@ -6388,6 +7381,8 @@ impl StableStore {
         timestamp_ns: u64,
         audit_kinds: Vec<AuditEventKind>,
         transaction_hash: [u8; 32],
+        notification_window_seconds: u64,
+        notification_ingestion_limit: u16,
     ) -> Result<(), StorageError> {
         if self
             .withdrawal_notification_index
@@ -6419,6 +7414,12 @@ impl StableStore {
         let previous_admin_blob = self.admin_state.get()?;
         let withdrawal_blob = encode(withdrawal)?;
         let key = withdrawal.id.bytes().to_sql_bytes();
+        let (previous_notification_blob, notification_blob) = self
+            .prepare_notification_ingestion_quota(
+                timestamp_ns,
+                notification_window_seconds,
+                notification_ingestion_limit,
+            )?;
 
         self.handle.update(|connection| {
             expect_blob(
@@ -6427,6 +7428,13 @@ impl StableStore {
                 params![],
                 previous_counters_blob.as_slice(),
                 "stale withdrawal fee guard trip",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_notification_blob.as_slice(),
+                "stale notification ingestion",
             )?;
             expect_blob(
                 connection,
@@ -6454,12 +7462,14 @@ impl StableStore {
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
             connection.execute(
                 "UPDATE singleton_state SET counters = ?1, external_progress = ?2,
-                    admin_state = ?3, audit_retention = ?4 WHERE id = 1",
+                    admin_state = ?3, audit_retention = ?4,
+                    notification_admission = ?5 WHERE id = 1",
                 params![
                     counters_blob.to_sql_bytes(),
                     progress_blob.to_sql_bytes(),
                     admin_blob.to_sql_bytes(),
-                    audit.retention_blob.to_sql_bytes()
+                    audit.retention_blob.to_sql_bytes(),
+                    notification_blob.to_sql_bytes()
                 ],
             )?;
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
@@ -7197,6 +8207,21 @@ fn is_deposit_mint_reserved(value: &DepositRecord) -> bool {
     value.reserves_mint_resources()
 }
 
+fn deposit_authorization_deadline(value: &DepositRecord) -> Option<u64> {
+    matches!(
+        value.state,
+        bridge_core::DepositState::AuthorizationPending { .. }
+            | bridge_core::DepositState::AuthorizationAvailable { .. }
+    )
+    .then(|| {
+        value
+            .mint_authorization
+            .as_ref()
+            .map(|authorization| authorization.authorization.deadline)
+    })
+    .flatten()
+}
+
 fn adjust_reserved_mint_amount(
     current: u128,
     previous: Option<&DepositRecord>,
@@ -7306,19 +8331,7 @@ fn encode<T: Serialize>(value: &T) -> Result<StableBlob, StorageError> {
 }
 
 fn decode<T: DeserializeOwned>(blob: &StableBlob) -> Result<T, StorageError> {
-    let (version, payload) = blob
-        .as_slice()
-        .split_first()
-        .ok_or(StorageError::MissingWireVersion)?;
-    if *version != WIRE_VERSION {
-        return Err(StorageError::UnsupportedWireVersion(*version));
-    }
-    let mut cursor = Cursor::new(payload);
-    let value = ciborium::from_reader(&mut cursor).map_err(|_| StorageError::DecodeFailed)?;
-    if cursor.position() != payload.len() as u64 {
-        return Err(StorageError::DecodeFailed);
-    }
-    Ok(value)
+    decode_wire_payload(blob.as_slice(), WIRE_VERSION)
 }
 
 #[cfg(test)]
@@ -7326,16 +8339,31 @@ mod tests {
     use super::*;
     use bridge_core::{
         Account, Amount, ApplyOutcome, BaseMintSnapshot, DepositEvent, DepositHoldResolution,
-        DepositId, DepositQuote, DepositRequest, DepositState, GovernanceCallIntent,
-        GovernanceOperationId, HoldId, LedgerOperation, LedgerTransferIdentity, MintAuthorization,
-        MintAuthorizationDomain, MintAuthorizationOrigin, MintAuthorizationRecord,
-        ReconciliationArchiveRange, ReconciliationHoldRecord, ReconciliationHoldState,
-        ReconciliationLedgerPage, ReconciliationScanPhase, ReconciliationScanProgress,
-        ReconciliationTarget, RequestReference, Settlement, TransferAttempt, WithdrawalEvent,
-        WithdrawalHoldResolution, WithdrawalId,
+        DepositId, DepositQuote, DepositRefundReason, DepositRequest, DepositState,
+        GovernanceCallIntent, GovernanceOperationId, HoldId, LedgerOperation,
+        LedgerTransferIdentity, MintAuthorization, MintAuthorizationDomain,
+        MintAuthorizationOrigin, MintAuthorizationRecord, ReconciliationArchiveRange,
+        ReconciliationHoldRecord, ReconciliationHoldState, ReconciliationLedgerPage,
+        ReconciliationScanPhase, ReconciliationScanProgress, ReconciliationTarget,
+        RequestReference, Settlement, TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution,
+        WithdrawalId,
     };
     use ic_sqlite_vfs::DefaultMemoryImpl as VectorMemory;
     use serial_test::serial;
+
+    fn storage_revision(store: &StableStore) -> u64 {
+        store
+            .handle
+            .query(|connection| {
+                let raw = connection.query_scalar::<Vec<u8>>(
+                    "SELECT storage_revision FROM singleton_state WHERE id = 1",
+                    params![],
+                )?;
+                u64::from_sql_bytes(raw)
+                    .map_err(|_| DbError::Constraint("invalid storage revision".into()))
+            })
+            .expect("storage revision")
+    }
 
     fn account(tag: u8) -> Account {
         Account::new(vec![tag], [tag; 32]).expect("valid account")
@@ -7513,13 +8541,18 @@ mod tests {
             custom_evm_rpc_urls: vec![],
             base_chain_id: 8453,
             bridge_contract: vec![1; 20],
+            expected_bridge_runtime_sha256: vec![4; 32],
             timelock_contract: vec![2; 20],
+            deployment_instance_id: vec![3; 32],
             ecdsa_key_name: "test_key".into(),
             ecdsa_derivation_path: vec![],
             governance_ecdsa_derivation_path: vec![b"governance-operator".to_vec()],
             deposit_rate_limit_window_seconds: 60,
             deposit_rate_limit_global: 30,
             deposit_rate_limit_per_principal: 3,
+            notification_rate_limit_window_seconds: 600,
+            notification_rate_limit_global: 60,
+            notification_ingestion_rate_limit_global: 30,
             settlement_rate_limit_window_seconds: 600,
             settlement_rate_limit_global: 60,
             settlement_rate_limit_per_principal: 6,
@@ -7589,6 +8622,48 @@ mod tests {
         }
     }
 
+    fn confirmed_activation_transaction(
+        store: &mut StableStore,
+    ) -> (GovernanceTransaction, Principal) {
+        let governance = config().governance_principal;
+        let operation_id = [0x41; 32];
+        let salt = [0x42; 32];
+        store
+            .initialize_governance_nonce(7)
+            .expect("initialize governance nonce");
+        let mut schedule = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
+            envelope: governance_intent(GovernanceOperationId::new(0), [0x43; 32]).assign_nonce(7),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(schedule.clone())
+            .expect("prepare activation schedule");
+        schedule.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [0x44; 32],
+            receipt_block_number: 10,
+        };
+        store
+            .complete_governance_transaction(schedule)
+            .expect("complete activation schedule");
+
+        let mut execute = GovernanceTransaction {
+            id: 1,
+            kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
+            envelope: governance_intent(GovernanceOperationId::new(1), [0x45; 32]).assign_nonce(8),
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(execute.clone())
+            .expect("prepare activation execute");
+        execute.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [0x46; 32],
+            receipt_block_number: 20,
+        };
+        (execute, governance)
+    }
+
     fn rpc_audit_kind(tag: u8) -> AuditEventKind {
         AuditEventKind::EvmRpcObservation {
             evm_rpc_canister_id: Principal::self_authenticating([tag; 32]),
@@ -7607,6 +8682,7 @@ mod tests {
         progress: ExternalProgress,
         admin: StableBlob,
         admission: StableBlob,
+        notification_admission: StableBlob,
         retention: StableBlob,
         withdrawals: Vec<([u8; 32], StableBlob)>,
         release_indexes: Vec<([u8; 32], u8)>,
@@ -7621,6 +8697,10 @@ mod tests {
             progress: store.external_progress().expect("progress"),
             admin: store.admin_state.get().expect("admin blob"),
             admission: store.deposit_admission.get().expect("admission blob"),
+            notification_admission: store
+                .notification_admission
+                .get()
+                .expect("notification admission blob"),
             retention: store.audit_retention.get().expect("retention blob"),
             withdrawals: store
                 .withdrawals
@@ -7870,6 +8950,160 @@ mod tests {
                 .expect("cleared activation"),
             None
         );
+    }
+
+    #[test]
+    #[serial]
+    fn confirmed_activation_completion_resumes_and_audits_once_atomically() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let (transaction, governance) = confirmed_activation_transaction(&mut store);
+        let revision_before = storage_revision(&store);
+
+        assert!(store
+            .complete_confirmed_activation_and_resume_if_clear(
+                transaction.clone(),
+                governance,
+                1_000,
+            )
+            .expect("complete activation"));
+        assert_eq!(storage_revision(&store), revision_before + 1);
+        assert!(!store.admin_state().expect("admin state").deposits_paused);
+        assert_eq!(
+            store
+                .last_completed_governance_transaction()
+                .expect("completed transaction"),
+            Some(transaction.clone())
+        );
+        assert!(store
+            .pending_timelock_operation()
+            .expect("pending activation")
+            .is_none());
+        let events = store.audit_events(0, 10).expect("audit events").events;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, AuditEventKind::DepositsResumed);
+        let completed = rpc_atomic_snapshot(&store, None);
+        assert!(store
+            .complete_confirmed_activation_and_resume_if_clear(transaction, governance, 2_000)
+            .is_err());
+        assert_eq!(rpc_atomic_snapshot(&store, None), completed);
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen completed activation");
+        assert_eq!(rpc_atomic_snapshot(&reopened, None), completed);
+        assert_eq!(storage_revision(&reopened), revision_before + 1);
+    }
+
+    #[test]
+    #[serial]
+    fn confirmed_activation_completion_keeps_pause_while_emergency_actions_remain() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let (transaction, governance) = confirmed_activation_transaction(&mut store);
+        store
+            .enqueue_emergency_base_actions()
+            .expect("queue emergency actions");
+
+        assert!(!store
+            .complete_confirmed_activation_and_resume_if_clear(transaction, governance, 1_000)
+            .expect("complete paused activation"));
+        assert!(store.admin_state().expect("admin state").deposits_paused);
+        assert!(store
+            .audit_events(0, 10)
+            .expect("audit events")
+            .events
+            .is_empty());
+        assert!(store
+            .last_completed_governance_transaction()
+            .expect("completed transaction")
+            .is_some());
+        assert!(store
+            .emergency_base_actions_pending()
+            .expect("emergency actions"));
+    }
+
+    #[test]
+    #[serial]
+    fn confirmed_activation_completion_rejects_unauthorized_or_unpaused_state() {
+        let mut unauthorized =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let (transaction, _) = confirmed_activation_transaction(&mut unauthorized);
+        let before = rpc_atomic_snapshot(&unauthorized, None);
+        assert!(unauthorized
+            .complete_confirmed_activation_and_resume_if_clear(
+                transaction,
+                config().pause_principal,
+                1_000,
+            )
+            .is_err());
+        assert_eq!(rpc_atomic_snapshot(&unauthorized, None), before);
+
+        let mut unpaused =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let (transaction, governance) = confirmed_activation_transaction(&mut unpaused);
+        let mut admin = unpaused.admin_state().expect("admin state");
+        admin.deposits_paused = false;
+        unpaused.set_admin_state(&admin).expect("set invalid state");
+        let before = rpc_atomic_snapshot(&unpaused, None);
+        assert!(unpaused
+            .complete_confirmed_activation_and_resume_if_clear(transaction, governance, 1_000,)
+            .is_err());
+        assert_eq!(rpc_atomic_snapshot(&unpaused, None), before);
+    }
+
+    #[test]
+    #[serial]
+    fn confirmed_activation_completion_rolls_back_at_every_rpc_failpoint() {
+        for failpoint in [
+            RpcAtomicFailpoint::Business,
+            RpcAtomicFailpoint::Audit,
+            RpcAtomicFailpoint::Singleton,
+        ] {
+            let memory = VectorMemory::default();
+            let mut store =
+                StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+            let (transaction, governance) = confirmed_activation_transaction(&mut store);
+            let before = rpc_atomic_snapshot(&store, None);
+            let revision_before = storage_revision(&store);
+
+            set_rpc_atomic_failpoint(Some(failpoint));
+            assert!(store
+                .complete_confirmed_activation_and_resume_if_clear(
+                    transaction.clone(),
+                    governance,
+                    1_000,
+                )
+                .is_err());
+            set_rpc_atomic_failpoint(None);
+            assert_eq!(rpc_atomic_snapshot(&store, None), before, "{failpoint:?}");
+            assert_eq!(storage_revision(&store), revision_before, "{failpoint:?}");
+            drop(store);
+
+            let mut reopened = StableStore::reopen(memory).expect("reopen failed activation");
+            assert_eq!(
+                rpc_atomic_snapshot(&reopened, None),
+                before,
+                "reopen {failpoint:?}"
+            );
+            assert_eq!(
+                storage_revision(&reopened),
+                revision_before,
+                "reopen {failpoint:?}"
+            );
+            assert!(reopened
+                .complete_confirmed_activation_and_resume_if_clear(transaction, governance, 2_000,)
+                .expect("retry activation"));
+            assert!(!reopened.admin_state().expect("admin state").deposits_paused);
+            assert_eq!(
+                reopened
+                    .audit_events(0, 10)
+                    .expect("audit events")
+                    .events
+                    .len(),
+                1
+            );
+        }
     }
 
     #[test]
@@ -8282,13 +9516,13 @@ mod tests {
         let mut store = StableStore::init(memory).expect("initialize stable store");
         let owner = Principal::self_authenticating([3; 32]);
         let record = deposit_for(owner);
-        let intent = intent(record.id.bytes(), owner);
+        let deposit_intent = intent(record.id.bytes(), owner);
         store
-            .admit_deposit(owner, &intent, &record, None, None)
+            .admit_deposit(owner, &deposit_intent, &record, None, None)
             .expect("first admission");
         assert_eq!(
             store
-                .admit_deposit(owner, &intent, &record, None, None)
+                .admit_deposit(owner, &deposit_intent, &record, None, None)
                 .expect("idempotent admission"),
             DepositAdmissionOutcome::Existing
         );
@@ -8303,7 +9537,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn deposit_quota_is_committed_only_with_a_new_record() {
+    fn direct_formal_deposit_admission_consumes_quota_only_with_a_new_record() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init_configured(memory, &config()).expect("initialize");
         let make = |owner: Principal, id: [u8; 32], payload_hash: [u8; 32]| {
@@ -8429,11 +9663,20 @@ mod tests {
                     current.bridge_signer,
                     1,
                     false,
+                    Some([42; 32]),
                     Some(current),
                     caller,
                     vec![rpc_audit_kind(90)],
                 )
                 .expect("persist current observation");
+            assert!(store
+                .cached_deposit_authorization_snapshot([42; 32])
+                .expect("read deposit-bound snapshot")
+                .is_some());
+            assert!(store
+                .cached_deposit_authorization_snapshot([43; 32])
+                .expect("reject a different deposit binding")
+                .is_none());
             let rejected_owner = store
                 .begin_base_snapshot_refresh(1_050, 1_000, 1)
                 .expect("begin rejected refresh")
@@ -8448,6 +9691,7 @@ mod tests {
                     candidate.bridge_signer,
                     1,
                     false,
+                    None,
                     Some(candidate),
                     caller,
                     vec![rpc_audit_kind(91)],
@@ -8572,6 +9816,8 @@ mod tests {
                         charged_service_fee: 10,
                     }],
                     [94; 32],
+                    600,
+                    30,
                 )
                 .is_err());
             set_rpc_atomic_failpoint(None);
@@ -8607,6 +9853,8 @@ mod tests {
                             charged_service_fee: 10,
                         }],
                         [tag; 32],
+                        600,
+                        30,
                     )
                     .expect("trip fixture");
                 let before = rpc_atomic_snapshot(&store, None);
@@ -8674,6 +9922,8 @@ mod tests {
                     charged_service_fee: 10,
                 }],
                 [97; 32],
+                600,
+                30,
             )
             .expect("trip fee guard");
         assert!(store
@@ -8927,14 +10177,14 @@ mod tests {
 
     #[test]
     #[serial]
-    fn mint_authorization_reservation_releases_only_at_terminal_state() {
+    fn authorization_signature_charges_fee_once_and_local_expiry_releases_reservation() {
         let mut store =
             StableStore::init_configured(VectorMemory::default(), &config()).expect("initialize");
         let owner = Principal::self_authenticating([36; 32]);
         let mut record = deposit_for(owner);
-        let intent = intent(record.id.bytes(), owner);
+        let deposit_intent = intent(record.id.bytes(), owner);
         store
-            .admit_deposit(owner, &intent, &record, None, None)
+            .admit_deposit(owner, &deposit_intent, &record, None, None)
             .expect("admit");
         let quote = DepositQuote {
             service_fee: Amount::new(10),
@@ -8942,7 +10192,7 @@ mod tests {
         };
         let authorization = MintAuthorization {
             deposit_id: record.id.bytes(),
-            recipient: intent.base_recipient,
+            recipient: deposit_intent.base_recipient,
             gross_amount: record.gross_amount,
             max_service_fee: record.max_service_fee,
             charged_service_fee: quote.service_fee,
@@ -8957,7 +10207,7 @@ mod tests {
                 quote,
                 authorization: Box::new(MintAuthorizationRecord {
                     authorization,
-                    domain,
+                    domain: domain.clone(),
                     digest,
                     origin: MintAuthorizationOrigin {
                         finalized_block_number: 7,
@@ -8987,20 +10237,111 @@ mod tests {
         store
             .put_deposit_transition(&record, signature_result)
             .expect("persist active authorization");
+
+        let second_owner = Principal::self_authenticating([37; 32]);
+        let mut second = deposit_for(second_owner);
+        second.id = DepositId::new([37; 32]);
+        let second_intent = intent(second.id.bytes(), second_owner);
+        store
+            .admit_deposit(second_owner, &second_intent, &second, None, None)
+            .expect("admit second deposit");
+        let second_authorization = MintAuthorization {
+            deposit_id: second.id.bytes(),
+            recipient: second_intent.base_recipient,
+            ..authorization
+        };
+        let second_digest = crate::mint_authorization::digest(&domain, second_authorization);
+        let second_commit = second
+            .apply(DepositEvent::CommitAuthorization {
+                quote,
+                authorization: Box::new(MintAuthorizationRecord {
+                    authorization: second_authorization,
+                    domain,
+                    digest: second_digest,
+                    origin: MintAuthorizationOrigin {
+                        finalized_block_number: 7,
+                        finalized_block_hash: [7; 32],
+                        finalized_block_timestamp: 100,
+                    },
+                    signature_dispatch_attempt: 0,
+                    signature_dispatched: false,
+                    signature: None,
+                }),
+            })
+            .expect("commit second authorization");
+        store
+            .put_deposit_transition(&second, second_commit)
+            .expect("persist second reservation");
         assert_eq!(
             store
                 .counters()
                 .expect("active counters")
                 .reserved_deposit_mint_operations,
+            2
+        );
+        assert_eq!(
+            store
+                .accounting()
+                .expect("fee charged at authorization")
+                .fee_reserve,
+            quote.service_fee
+        );
+        assert!(!store
+            .release_expired_deposit_reservations(authorization.deadline, 1)
+            .expect("deadline equality is not expired"));
+        assert_eq!(
+            store
+                .counters()
+                .expect("reservation retained at equality")
+                .reserved_deposit_mint_operations,
+            2
+        );
+        assert!(store
+            .release_expired_deposit_reservations(authorization.deadline + 1, 1)
+            .expect("bounded sweep reports remaining backlog"));
+        assert_eq!(
+            store
+                .counters()
+                .expect("one conservative reservation remains")
+                .reserved_deposit_mint_operations,
             1
         );
-
-        let expiry_result = record
-            .apply(DepositEvent::BeginExpiryReconciliation)
-            .expect("begin expiry");
-        store
-            .put_deposit_transition(&record, expiry_result)
-            .expect("persist expiry reconciliation");
+        assert!(!store
+            .release_expired_deposit_reservations(authorization.deadline + 1, 1)
+            .expect("second sweep clears backlog"));
+        record = store
+            .deposit(record.id.bytes())
+            .expect("read expired deposit")
+            .expect("expired deposit");
+        assert!(matches!(
+            record.state,
+            DepositState::RefundAvailable {
+                reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                ..
+            }
+        ));
+        assert_eq!(
+            store
+                .counters()
+                .expect("reservation released locally")
+                .reserved_deposit_mint_operations,
+            0
+        );
+        assert!(matches!(
+            store
+                .deposit(second.id.bytes())
+                .expect("read second expired deposit")
+                .expect("second expired deposit")
+                .state,
+            DepositState::RefundAvailable {
+                reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                ..
+            }
+        ));
+        assert_eq!(
+            store.accounting().expect("fee remains charged").fee_reserve,
+            quote.service_fee
+        );
         let mint_result = record
             .apply(DepositEvent::MintReconciled {
                 evidence: Box::new(bridge_core::MintFinalizationEvidence {
@@ -9554,8 +10895,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 27);
-        assert_eq!(WIRE_VERSION, 23);
+        assert_eq!(SCHEMA_VERSION, 31);
+        assert_eq!(WIRE_VERSION, 27);
     }
 
     #[test]
@@ -9628,12 +10969,170 @@ mod tests {
             .expect("mark stored schema");
     }
 
+    fn legacy_v30_blob(
+        bytes: &[u8],
+        transform: impl FnOnce(&mut Vec<(ciborium::value::Value, ciborium::value::Value)>),
+    ) -> Vec<u8> {
+        use ciborium::value::Value;
+
+        assert_eq!(bytes.first(), Some(&WIRE_VERSION));
+        let mut value: Value = ciborium::from_reader(&bytes[1..]).expect("decode current CBOR");
+        let Value::Map(fields) = &mut value else {
+            panic!("expected a CBOR map")
+        };
+        transform(fields);
+        let mut legacy = vec![LEGACY_WIRE_VERSION_V26];
+        ciborium::into_writer(&value, &mut legacy).expect("encode v30 CBOR");
+        legacy
+    }
+
+    fn downgrade_fixture_to_v30(store: &StableStore) {
+        use ciborium::value::Value;
+
+        store
+            .handle
+            .0
+            .update(|connection| {
+                let row = connection.query_one(
+                    "SELECT accounting, counters, external_progress, config, admin_state,
+                            deposit_admission, notification_admission, audit_retention,
+                            settlement_admission, settlement_scheduler_health
+                     FROM singleton_state WHERE id = 1",
+                    params![],
+                    |row| {
+                        Ok((
+                            row.get::<Vec<u8>>(0)?,
+                            row.get::<Vec<u8>>(1)?,
+                            row.get::<Vec<u8>>(2)?,
+                            row.get::<Vec<u8>>(3)?,
+                            row.get::<Vec<u8>>(4)?,
+                            row.get::<Vec<u8>>(5)?,
+                            row.get::<Vec<u8>>(6)?,
+                            row.get::<Vec<u8>>(7)?,
+                            row.get::<Vec<u8>>(8)?,
+                            row.get::<Vec<u8>>(9)?,
+                        ))
+                    },
+                )?;
+                let config = legacy_v30_blob(&row.3, |fields| {
+                    fields.retain(|(key, _)| {
+                        key != &Value::Text("expected_bridge_runtime_sha256".to_owned())
+                            && key
+                                != &Value::Text(
+                                    "notification_ingestion_rate_limit_global".to_owned(),
+                                )
+                    });
+                });
+                let notification = legacy_v30_blob(&row.6, |fields| {
+                    fields.retain(|(key, _)| key != &Value::Text("ingestion_count".to_owned()));
+                    for (key, _) in fields {
+                        if key == &Value::Text("verification_count".to_owned()) {
+                            *key = Value::Text("global_count".to_owned());
+                        }
+                    }
+                });
+                connection.execute(
+                    "UPDATE singleton_state SET accounting = ?1, counters = ?2,
+                        external_progress = ?3, config = ?4, admin_state = ?5,
+                        deposit_admission = ?6, notification_admission = ?7,
+                        audit_retention = ?8, settlement_admission = ?9,
+                        settlement_scheduler_health = ?10 WHERE id = 1",
+                    params![
+                        {
+                            let mut value = row.0;
+                            assert_eq!(value.first(), Some(&WIRE_VERSION));
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.1;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.2;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        config,
+                        {
+                            let mut value = row.4;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.5;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        notification,
+                        {
+                            let mut value = row.7;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.8;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                        {
+                            let mut value = row.9;
+                            value[0] = LEGACY_WIRE_VERSION_V26;
+                            value
+                        },
+                    ],
+                )?;
+                for table in V30_WIRE_VALUE_TABLES {
+                    let select = format!("SELECT key, value FROM {table}");
+                    let rows = connection.query_all(&select, params![], |row| {
+                        Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+                    })?;
+                    let update = format!("UPDATE {table} SET value = ?1 WHERE key = ?2");
+                    for (key, mut value) in rows {
+                        assert_eq!(value.first(), Some(&WIRE_VERSION));
+                        value[0] = LEGACY_WIRE_VERSION_V26;
+                        connection.execute(&update, params![value, key])?;
+                    }
+                }
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = 30,
+                        record_wire_version = 26 WHERE id = 1",
+                    params![],
+                )?;
+                connection.execute(
+                    "DELETE FROM __ic_sqlite_migrations WHERE version = 31",
+                    params![],
+                )?;
+                connection.execute(
+                    "INSERT INTO __ic_sqlite_migrations(version) VALUES (30)",
+                    params![],
+                )
+            })
+            .expect("downgrade fixture to v30");
+    }
+
+    fn seed_finalized_runtime_observation(store: &mut StableStore, runtime_sha256: [u8; 32]) {
+        let mut progress = store.external_progress().expect("read external progress");
+        progress
+            .observe_finalized(FinalizedObservationRecord {
+                chain_id: config().base_chain_id,
+                block_number: 100,
+                block_hash: [0x41; 32],
+                observed_at_ns: 1_000,
+                bridge_signer: [0x42; 20],
+                runtime_sha256,
+            })
+            .expect("seed finalized runtime observation");
+        store
+            .set_external_progress(&progress)
+            .expect("persist finalized runtime observation");
+    }
+
     #[test]
     #[serial]
-    fn obsolete_schema_fails_closed_even_when_empty() {
-        let obsolete_version = SCHEMA_VERSION
-            .checked_sub(1)
-            .expect("current schema has a predecessor");
+    fn unreviewed_schema_fails_closed_even_when_empty() {
+        let obsolete_version = LEGACY_SCHEMA_VERSION_V30 - 1;
         let memory = VectorMemory::default();
         let store = StableStore::init(memory.clone()).expect("initialize current schema");
         mark_stored_schema(&store, obsolete_version);
@@ -9644,6 +11143,181 @@ mod tests {
             Err(StorageError::UnsupportedSchemaVersion(version))
                 if version == obsolete_version
         ));
+    }
+
+    #[test]
+    #[serial]
+    fn reviewed_v30_upgrade_migrates_records_config_quota_and_audit_once() {
+        let memory = VectorMemory::default();
+        let owner = Principal::self_authenticating([0x30; 32]);
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize v31");
+        let mut deposit = deposit_for(owner);
+        deposit.id = DepositId::new([0x31; 32]);
+        let deposit_intent = intent(deposit.id.bytes(), owner);
+        store
+            .admit_deposit(owner, &deposit_intent, &deposit, None, None)
+            .expect("seed v30 deposit");
+        assert!(store
+            .consume_notification_verification_quota(1, 600, 2, 0, 2)
+            .expect("seed v30 quota"));
+        store
+            .record_reserve_observation(10, 2, owner)
+            .expect("seed v30 audit");
+        let migrated_runtime_sha256 = [0x43; 32];
+        seed_finalized_runtime_observation(&mut store, migrated_runtime_sha256);
+        let revision_before = storage_revision(&store);
+        downgrade_fixture_to_v30(&store);
+        assert_eq!(
+            stored_metadata(store.handle.0).expect("read v30 metadata"),
+            (LEGACY_SCHEMA_VERSION_V30, LEGACY_WIRE_VERSION_V26)
+        );
+        drop(store);
+
+        let mut migrated =
+            StableStore::reopen_after_upgrade(memory.clone()).expect("migrate v30 to v31");
+        assert_eq!(
+            stored_metadata(migrated.handle.0).expect("read migrated metadata"),
+            (SCHEMA_VERSION, WIRE_VERSION)
+        );
+        assert_eq!(storage_revision(&migrated), revision_before);
+        assert_eq!(
+            migrated
+                .deposit(deposit.id.bytes())
+                .expect("read migrated deposit"),
+            Some(deposit.clone())
+        );
+        assert_eq!(
+            migrated
+                .next_deposit_sequence(owner)
+                .expect("read migrated owner sequence"),
+            1
+        );
+        let migrated_config = migrated
+            .config()
+            .expect("read migrated config")
+            .expect("configured store");
+        assert_eq!(migrated_config.notification_ingestion_rate_limit_global, 30);
+        assert_eq!(
+            migrated_config.expected_bridge_runtime_sha256,
+            migrated_runtime_sha256
+        );
+        assert!(migrated
+            .consume_notification_verification_quota(1, 600, 2, 0, 2)
+            .expect("consume remaining migrated verification quota"));
+        assert!(!migrated
+            .consume_notification_verification_quota(1, 600, 2, 0, 2)
+            .expect("enforce migrated verification quota"));
+        assert_eq!(
+            migrated
+                .audit_events(0, 10)
+                .expect("read migrated audit")
+                .events
+                .len(),
+            1
+        );
+        drop(migrated);
+
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("reopen migrated v31");
+        assert_eq!(
+            reopened
+                .deposit(deposit.id.bytes())
+                .expect("read deposit after second upgrade"),
+            Some(deposit)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn v30_upgrade_requires_a_finalized_nonzero_runtime_observation() {
+        for runtime_sha256 in [None, Some([0; 32])] {
+            let memory = VectorMemory::default();
+            let mut store =
+                StableStore::init_configured(memory.clone(), &config()).expect("initialize v31");
+            if let Some(runtime_sha256) = runtime_sha256 {
+                seed_finalized_runtime_observation(&mut store, runtime_sha256);
+            }
+            downgrade_fixture_to_v30(&store);
+            drop(store);
+
+            assert_eq!(
+                StableStore::reopen_after_upgrade(memory.clone()).err(),
+                Some(StorageError::DatabaseFailure)
+            );
+
+            reset_sqlite_test_runtime();
+            let handle = open_database(memory).expect("reopen rejected v30 image");
+            assert_eq!(
+                stored_metadata(handle).expect("read unchanged v30 metadata"),
+                (LEGACY_SCHEMA_VERSION_V30, LEGACY_WIRE_VERSION_V26)
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn failed_v30_upgrade_rolls_back_every_migration_write() {
+        let memory = VectorMemory::default();
+        let owner = Principal::self_authenticating([0x32; 32]);
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize v31");
+        let mut deposit = deposit_for(owner);
+        deposit.id = DepositId::new([0x33; 32]);
+        store
+            .admit_deposit(
+                owner,
+                &intent(deposit.id.bytes(), owner),
+                &deposit,
+                None,
+                None,
+            )
+            .expect("seed deposit");
+        seed_finalized_runtime_observation(&mut store, [0x44; 32]);
+        downgrade_fixture_to_v30(&store);
+        store
+            .handle
+            .0
+            .update(|connection| {
+                let mut value = connection.query_scalar::<Vec<u8>>(
+                    "SELECT value FROM deposits WHERE key = ?1",
+                    params![deposit.id.bytes().to_vec()],
+                )?;
+                value[0] = LEGACY_WIRE_VERSION_V26 - 1;
+                connection.execute(
+                    "UPDATE deposits SET value = ?1 WHERE key = ?2",
+                    params![value, deposit.id.bytes().to_vec()],
+                )
+            })
+            .expect("corrupt a late migration row");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen_after_upgrade(memory.clone()).err(),
+            Some(StorageError::DatabaseFailure)
+        );
+
+        reset_sqlite_test_runtime();
+        let handle = open_database(memory).expect("reopen failed migration image");
+        assert_eq!(
+            stored_metadata(handle).expect("read rolled-back metadata"),
+            (LEGACY_SCHEMA_VERSION_V30, LEGACY_WIRE_VERSION_V26)
+        );
+        let (config_version, migration_31): (Vec<u8>, i64) = handle
+            .query(|connection| {
+                Ok((
+                    connection.query_scalar::<Vec<u8>>(
+                        "SELECT config FROM singleton_state WHERE id = 1",
+                        params![],
+                    )?,
+                    connection.query_scalar::<i64>(
+                        "SELECT EXISTS(SELECT 1 FROM __ic_sqlite_migrations WHERE version = 31)",
+                        params![],
+                    )?,
+                ))
+            })
+            .expect("inspect rolled-back migration");
+        assert_eq!(config_version.first(), Some(&LEGACY_WIRE_VERSION_V26));
+        assert_eq!(migration_31, 0);
     }
 
     #[test]
@@ -9749,6 +11423,144 @@ mod tests {
                 lease_until_ns: 500
             }
         ));
+    }
+
+    #[test]
+    #[serial]
+    fn due_settlement_selection_merges_index_heads_in_legacy_order() {
+        fn seed_job(
+            store: &StableStore,
+            kind: SettlementJobKind,
+            settlement_id: [u8; 32],
+            status: SettlementJobStatus,
+            deadline_ns: u64,
+        ) {
+            store
+                .handle
+                .update(|connection| {
+                    enqueue_settlement_job(connection, kind, settlement_id, deadline_ns)?;
+                    if status == SettlementJobStatus::Leased {
+                        connection.execute(
+                            "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
+                             lease_generation = ?1, lease_until_ns = ?2, updated_at_ns = ?2
+                             WHERE settlement_kind = ?3 AND settlement_id = ?4",
+                            params![
+                                1_u64.to_sql_bytes(),
+                                deadline_ns.to_sql_bytes(),
+                                kind.sql(),
+                                settlement_id.to_sql_bytes()
+                            ],
+                        )?;
+                    }
+                    Ok(())
+                })
+                .expect("seed settlement job");
+        }
+
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        seed_job(
+            &store,
+            SettlementJobKind::Withdrawal,
+            [2; 32],
+            SettlementJobStatus::Scheduled,
+            20,
+        );
+        seed_job(
+            &store,
+            SettlementJobKind::Deposit,
+            [3; 32],
+            SettlementJobStatus::Leased,
+            10,
+        );
+        let SettlementJobClaim::Claimed(earliest) = store
+            .claim_due_settlement_job(100, 200, u64::MAX)
+            .expect("claim earliest deadline")
+        else {
+            panic!("earliest candidate was not claimed")
+        };
+        assert_eq!(earliest.kind, SettlementJobKind::Deposit);
+        assert_eq!(earliest.settlement_id, [3; 32]);
+
+        let mut same_deadline = StableStore::init(VectorMemory::default()).expect("initialize");
+        seed_job(
+            &same_deadline,
+            SettlementJobKind::Withdrawal,
+            [0; 32],
+            SettlementJobStatus::Scheduled,
+            10,
+        );
+        seed_job(
+            &same_deadline,
+            SettlementJobKind::Deposit,
+            [255; 32],
+            SettlementJobStatus::Leased,
+            10,
+        );
+        let SettlementJobClaim::Claimed(kind_tie_break) = same_deadline
+            .claim_due_settlement_job(10, 200, u64::MAX)
+            .expect("claim kind tie break")
+        else {
+            panic!("same-deadline candidate was not claimed")
+        };
+        assert_eq!(kind_tie_break.kind, SettlementJobKind::Deposit);
+        assert_eq!(kind_tie_break.settlement_id, [255; 32]);
+
+        let mut same_kind = StableStore::init(VectorMemory::default()).expect("initialize");
+        seed_job(
+            &same_kind,
+            SettlementJobKind::Deposit,
+            [2; 32],
+            SettlementJobStatus::Scheduled,
+            10,
+        );
+        seed_job(
+            &same_kind,
+            SettlementJobKind::Deposit,
+            [1; 32],
+            SettlementJobStatus::Leased,
+            10,
+        );
+        let SettlementJobClaim::Claimed(id_tie_break) = same_kind
+            .claim_due_settlement_job(10, 200, u64::MAX)
+            .expect("claim id tie break")
+        else {
+            panic!("same-kind candidate was not claimed")
+        };
+        assert_eq!(id_tie_break.settlement_id, [1; 32]);
+    }
+
+    #[test]
+    #[serial]
+    fn due_settlement_selection_remains_bounded_with_ten_thousand_jobs() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        let mut expected_id = [0; 32];
+        expected_id[24..].copy_from_slice(&9_999_u64.to_be_bytes());
+        store
+            .handle
+            .update(|connection| {
+                for index in 0_u64..10_000 {
+                    let mut settlement_id = [0; 32];
+                    settlement_id[24..].copy_from_slice(&index.to_be_bytes());
+                    let kind = match index % 3 {
+                        0 => SettlementJobKind::Deposit,
+                        1 => SettlementJobKind::Withdrawal,
+                        _ => SettlementJobKind::FeePayout,
+                    };
+                    let deadline = if index == 9_999 { 0 } else { 1_000 + index };
+                    enqueue_settlement_job(connection, kind, settlement_id, deadline)?;
+                }
+                Ok(())
+            })
+            .expect("seed backlog");
+
+        let SettlementJobClaim::Claimed(job) = store
+            .claim_due_settlement_job(u64::MAX, u64::MAX, u64::MAX)
+            .expect("claim from backlog")
+        else {
+            panic!("backlog candidate was not claimed")
+        };
+        assert_eq!(job.kind, SettlementJobKind::Deposit);
+        assert_eq!(job.settlement_id, expected_id);
     }
 
     #[test]
@@ -9902,8 +11714,9 @@ mod tests {
 
     #[test]
     #[serial]
-    fn funding_definitive_failure_releases_attempt_without_formal_artifacts() {
-        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+    fn funding_definitive_failure_preserves_consumed_quota_without_formal_artifacts() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
         initialize_unpaused_admin(&mut store);
         let owner = Principal::self_authenticating([61; 32]);
         let (attempt, record, _) = funding_attempt(
@@ -9948,8 +11761,17 @@ mod tests {
             .deposit_ids
             .is_empty());
         let admission = store.deposit_admission().expect("admission");
-        assert_eq!(admission.global_count, 0);
-        assert!(admission.caller_counts.is_empty());
+        assert_eq!(admission.global_count, 1);
+        assert_eq!(admission.caller_counts.len(), 1);
+        assert_eq!(admission.caller_counts[0].caller, owner.as_slice());
+        assert_eq!(admission.caller_counts[0].count, 1);
+        assert!(admission.funding_reservations.is_empty());
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen after failed funding");
+        let admission = reopened.deposit_admission().expect("reopened admission");
+        assert_eq!(admission.global_count, 1);
+        assert_eq!(admission.caller_counts[0].count, 1);
         assert!(admission.funding_reservations.is_empty());
     }
 
@@ -9974,7 +11796,7 @@ mod tests {
             .expect("reserve prepared attempt");
         drop(store);
 
-        let mut reopened = StableStore::reopen(memory).expect("reopen");
+        let mut reopened = StableStore::reopen(memory.clone()).expect("reopen");
         assert_eq!(
             reopened
                 .deposit_funding_attempt(attempt.intent.deposit_id)
@@ -10015,13 +11837,48 @@ mod tests {
             Some(dispatched.clone())
         );
 
-        let mut retryable = dispatched.clone();
+        let mut reconciling = dispatched.clone();
+        reconciling.state = DepositFundingAttemptState::Reconciling {
+            progress: Box::new(ReconciliationScanProgress::new(
+                ReconciliationTarget::FundingAttempt(DepositId::new(reconciling.intent.deposit_id)),
+                reconciling.transfer.clone(),
+            )),
+            next_check_at_ns: 650,
+            final_absence_scan: true,
+        };
+        reconciling.updated_at_ns = 600;
+        reopened
+            .update_deposit_funding_attempt(&dispatched, &reconciling)
+            .expect("mark final reconciliation scan");
+        drop(reopened);
+
+        let mut reopened = StableStore::reopen(memory).expect("reopen reconciliation marker");
+        assert_eq!(
+            reopened
+                .deposit_funding_attempt(reconciling.intent.deposit_id)
+                .expect("persisted reconciliation attempt"),
+            Some(reconciling.clone())
+        );
+        assert_eq!(
+            reopened
+                .next_deposit_funding_attempt_for_recovery(649)
+                .expect("before reconciliation deadline"),
+            None
+        );
+        assert_eq!(
+            reopened
+                .next_deposit_funding_attempt_for_recovery(650)
+                .expect("at reconciliation deadline"),
+            Some(reconciling.clone())
+        );
+
+        let mut retryable = reconciling.clone();
         retryable.state = DepositFundingAttemptState::Retryable {
             retry_after_ns: 700,
         };
         retryable.updated_at_ns = 700;
         reopened
-            .update_deposit_funding_attempt(&dispatched, &retryable)
+            .update_deposit_funding_attempt(&reconciling, &retryable)
             .expect("mark retryable");
         assert_eq!(retryable.transfer, attempt.transfer);
         assert_eq!(
@@ -10181,7 +12038,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn funding_ambiguous_promotes_once_with_open_hold() {
+    fn funding_ambiguous_promotes_once_with_open_hold_and_internal_recovery_job() {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
         initialize_unpaused_admin(&mut store);
         let owner = Principal::self_authenticating([63; 32]);
@@ -10197,6 +12054,7 @@ mod tests {
                 attempt.transfer.clone(),
             )),
             next_check_at_ns: 2,
+            final_absence_scan: false,
         };
         let hold_id = HoldId::new(0);
         record = DepositRecord::accept(DepositRequest {
@@ -10242,7 +12100,8 @@ mod tests {
             .settlement_job(SettlementJobKind::Deposit, record.id.bytes())
             .expect("job")
             .expect("present");
-        assert_eq!(job.status, SettlementJobStatus::Stopped);
+        assert_eq!(job.status, SettlementJobStatus::Scheduled);
+        assert_eq!(job.next_run_at_ns, Some(quota.now_ns));
         assert_eq!(store.next_deposit_sequence(owner).expect("sequence"), 1);
         assert_eq!(
             store.deposit_admission().expect("admission").global_count,
@@ -10405,6 +12264,176 @@ mod tests {
 
     #[test]
     #[serial]
+    fn settlement_updates_advance_revision_only_when_state_changes() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        let record = deposit();
+        store.put_deposit(&record).expect("deposit");
+        store
+            .handle
+            .update(|connection| {
+                enqueue_settlement_job(
+                    connection,
+                    SettlementJobKind::Deposit,
+                    record.id.bytes(),
+                    10,
+                )
+            })
+            .expect("job");
+
+        let before_claim = storage_revision(&store);
+        let SettlementJobClaim::Claimed(mut job) =
+            store.claim_due_settlement_job(10, 100, 1).expect("claim")
+        else {
+            panic!("job was not claimed")
+        };
+        assert_eq!(storage_revision(&store), before_claim + 1);
+        assert_eq!(job.attempts, 0);
+        assert_eq!(job.lease_generation, 1);
+        assert_eq!(job.lease_until_ns, Some(100));
+
+        let unchanged = storage_revision(&store);
+        assert!(matches!(
+            store
+                .claim_due_settlement_job(20, 120, 1)
+                .expect("automatic capacity"),
+            SettlementJobClaim::ActiveLease {
+                lease_until_ns: 100
+            }
+        ));
+        assert!(matches!(
+            store
+                .claim_specific_due_settlement_job(
+                    SettlementJobKind::Deposit,
+                    record.id.bytes(),
+                    20,
+                    120,
+                )
+                .expect("specific active lease"),
+            SettlementJobClaim::ActiveLease {
+                lease_until_ns: 100
+            }
+        ));
+        assert!(matches!(
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    record.id.bytes(),
+                    Principal::self_authenticating([44; 32]),
+                    20,
+                    120,
+                    300,
+                    SettlementQuotaLimits {
+                        window_seconds: 60,
+                        global: 10,
+                        per_principal: 10,
+                        per_record: 10,
+                    },
+                )
+                .expect("automatic progress"),
+            ManualSettlementClaim::AutomaticProgressPending {
+                next_run_at_ns: None
+            }
+        ));
+        assert_eq!(storage_revision(&store), unchanged);
+
+        let mut stale = job.clone();
+        stale.lease_generation += 1;
+        assert!(!store
+            .renew_settlement_lease(&mut stale, 30, 130)
+            .expect("stale renewal"));
+        store
+            .finish_settlement_job(&stale, None, 0, None, None, 30)
+            .expect("stale completion");
+        assert_eq!(storage_revision(&store), unchanged);
+
+        assert!(store
+            .renew_settlement_lease(&mut job, 40, 140)
+            .expect("renew"));
+        assert_eq!(storage_revision(&store), unchanged + 1);
+        store
+            .finish_settlement_job(&job, None, 0, None, None, 50)
+            .expect("finish");
+        assert_eq!(storage_revision(&store), unchanged + 2);
+
+        let after_finish = storage_revision(&store);
+        assert_eq!(
+            store
+                .claim_due_settlement_job(50, 150, 1)
+                .expect("empty automatic queue"),
+            SettlementJobClaim::None
+        );
+        assert_eq!(
+            store
+                .claim_specific_due_settlement_job(
+                    SettlementJobKind::Deposit,
+                    record.id.bytes(),
+                    50,
+                    150,
+                )
+                .expect("missing specific job"),
+            SettlementJobClaim::None
+        );
+        let rate_limited = store.claim_manual_settlement_job(
+            SettlementJobKind::Deposit,
+            [90; 32],
+            Principal::self_authenticating([45; 32]),
+            50,
+            150,
+            300,
+            SettlementQuotaLimits {
+                window_seconds: 60,
+                global: 0,
+                per_principal: 10,
+                per_record: 10,
+            },
+        );
+        assert!(matches!(
+            rate_limited,
+            Err(SettlementAdmissionError::RateLimited { .. })
+        ));
+        assert_eq!(storage_revision(&store), after_finish);
+
+        let caller = Principal::self_authenticating([46; 32]);
+        let limits = SettlementQuotaLimits {
+            window_seconds: 60,
+            global: 10,
+            per_principal: 10,
+            per_record: 10,
+        };
+        assert!(matches!(
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    [91; 32],
+                    caller,
+                    50,
+                    150,
+                    300,
+                    limits,
+                )
+                .expect("manual claim"),
+            ManualSettlementClaim::Claimed(_)
+        ));
+        let before_busy = storage_revision(&store);
+        assert_eq!(
+            store
+                .claim_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    [91; 32],
+                    caller,
+                    50,
+                    150,
+                    300,
+                    limits,
+                )
+                .expect("busy claim"),
+            ManualSettlementClaim::Busy
+        );
+        assert_eq!(storage_revision(&store), before_busy);
+    }
+
+    #[test]
+    #[serial]
     fn stopped_job_and_record_stop_reason_commit_together() {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
         let record = deposit();
@@ -10453,42 +12482,6 @@ mod tests {
         assert_eq!(stopped.status, SettlementJobStatus::Stopped);
         assert_eq!(stopped.last_error_code.as_deref(), Some("RpcInconsistent"));
         assert_eq!(stopped.updated_at_ns, 20);
-    }
-
-    #[test]
-    #[serial]
-    fn explicit_expiry_reconciliation_can_claim_a_scheduled_deposit_job_early() {
-        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
-        let caller = Principal::self_authenticating([54; 32]);
-        let record = deposit();
-        store.put_deposit(&record).expect("deposit");
-        store
-            .handle
-            .update(|connection| {
-                enqueue_settlement_job(
-                    connection,
-                    SettlementJobKind::Deposit,
-                    record.id.bytes(),
-                    1_000,
-                )
-            })
-            .expect("scheduled job");
-        let claim = store
-            .claim_deposit_expiry_reconciliation_job(
-                record.id.bytes(),
-                caller,
-                0,
-                120,
-                300,
-                SettlementQuotaLimits {
-                    window_seconds: 60,
-                    global: 1,
-                    per_principal: 1,
-                    per_record: 1,
-                },
-            )
-            .expect("explicit expiry claim");
-        assert!(matches!(claim, ManualSettlementClaim::Claimed(_)));
     }
 
     #[test]
@@ -10568,6 +12561,283 @@ mod tests {
             ),
             Err(SettlementAdmissionError::RateLimited { .. })
         ));
+    }
+
+    #[test]
+    #[serial]
+    fn refund_start_and_manual_claim_rejection_leave_record_and_quota_unchanged() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        let caller = Principal::self_authenticating([91; 32]);
+        let limits = SettlementQuotaLimits {
+            window_seconds: 60,
+            global: 1,
+            per_principal: 1,
+            per_record: 1,
+        };
+        let mut record = deposit();
+        store.put_deposit(&record).expect("deposit");
+        let available = record
+            .apply(DepositEvent::MarkRefundAvailable {
+                reason: DepositRefundReason::BasePaused,
+                finalized_timestamp: None,
+            })
+            .expect("refund available");
+        store
+            .put_deposit_transition(&record, available)
+            .expect("persist refund availability");
+        let before = record.clone();
+        let transition = record
+            .apply(DepositEvent::StartRefund {
+                reason: DepositRefundReason::BasePaused,
+                attempt: Box::new(TransferAttempt {
+                    attempt_no: 0,
+                    identity: LedgerTransferIdentity {
+                        operation: LedgerOperation::RefundDeposit,
+                        created_at_time_ns: 40,
+                        memo: [40; 32],
+                        amount: Amount::new(109),
+                        fee: Amount::new(1),
+                        from: before.transfer.to.clone(),
+                        to: before.transfer.from.clone(),
+                        spender: None,
+                    },
+                }),
+                expiry_evidence: None,
+            })
+            .expect("prepare refund");
+        store
+            .handle
+            .update(|connection| {
+                enqueue_settlement_job(
+                    connection,
+                    SettlementJobKind::Deposit,
+                    before.id.bytes(),
+                    1_000,
+                )
+            })
+            .expect("scheduled automatic job");
+        let context = ManualSettlementClaimContext {
+            kind: SettlementJobKind::Deposit,
+            settlement_id: before.id.bytes(),
+            caller,
+            now_ns: 0,
+            lease_until_ns: 120,
+            overdue_after_ns: 300,
+            limits,
+        };
+        let revision_before = storage_revision(&store);
+        assert!(matches!(
+            store
+                .put_deposit_transition_and_claim_manual_job(&record, transition, context)
+                .expect("admission decision"),
+            ManualSettlementClaim::AutomaticProgressPending {
+                next_run_at_ns: Some(1_000)
+            }
+        ));
+        assert_eq!(storage_revision(&store), revision_before);
+        assert_eq!(
+            store.deposit(before.id.bytes()).expect("deposit"),
+            Some(before)
+        );
+        let admission = decode::<SettlementAdmissionControl>(
+            &store
+                .settlement_admission
+                .get()
+                .expect("settlement admission"),
+        )
+        .expect("decode settlement admission");
+        assert_eq!(admission.global_count, 0);
+        assert!(admission.caller_counts.is_empty());
+        assert!(admission.record_counts.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn refund_start_and_manual_claim_commit_once_and_reopen_together() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        let mut record = deposit();
+        store.put_deposit(&record).expect("deposit");
+        let available = record
+            .apply(DepositEvent::MarkRefundAvailable {
+                reason: DepositRefundReason::BasePaused,
+                finalized_timestamp: None,
+            })
+            .expect("refund available");
+        store
+            .put_deposit_transition(&record, available)
+            .expect("persist refund availability");
+        let transition = record
+            .apply(DepositEvent::StartRefund {
+                reason: DepositRefundReason::BasePaused,
+                attempt: Box::new(TransferAttempt {
+                    attempt_no: 0,
+                    identity: LedgerTransferIdentity {
+                        operation: LedgerOperation::RefundDeposit,
+                        created_at_time_ns: 42,
+                        memo: [42; 32],
+                        amount: Amount::new(109),
+                        fee: Amount::new(1),
+                        from: record.transfer.to.clone(),
+                        to: record.transfer.from.clone(),
+                        spender: None,
+                    },
+                }),
+                expiry_evidence: None,
+            })
+            .expect("prepare refund");
+        let context = ManualSettlementClaimContext {
+            kind: SettlementJobKind::Deposit,
+            settlement_id: record.id.bytes(),
+            caller: Principal::self_authenticating([93; 32]),
+            now_ns: 2,
+            lease_until_ns: 122,
+            overdue_after_ns: 300,
+            limits: SettlementQuotaLimits {
+                window_seconds: 60,
+                global: 10,
+                per_principal: 10,
+                per_record: 10,
+            },
+        };
+        let revision_before = storage_revision(&store);
+        let ManualSettlementClaim::Claimed(job) = store
+            .put_deposit_transition_and_claim_manual_job(&record, transition, context)
+            .expect("refund and claim")
+        else {
+            panic!("manual settlement was not claimed")
+        };
+        assert_eq!(storage_revision(&store), revision_before + 1);
+        assert_eq!(
+            store.deposit(record.id.bytes()).expect("deposit"),
+            Some(record.clone())
+        );
+        assert_eq!(
+            store
+                .settlement_job(SettlementJobKind::Deposit, record.id.bytes())
+                .expect("job"),
+            Some(job.clone())
+        );
+        let admission = decode::<SettlementAdmissionControl>(
+            &store.settlement_admission.get().expect("admission"),
+        )
+        .expect("decode admission");
+        assert_eq!(admission.global_count, 1);
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen committed refund and claim");
+        assert_eq!(storage_revision(&reopened), revision_before + 1);
+        assert_eq!(
+            reopened
+                .deposit(record.id.bytes())
+                .expect("reopened deposit"),
+            Some(record)
+        );
+        assert_eq!(
+            reopened
+                .settlement_job(SettlementJobKind::Deposit, context.settlement_id)
+                .expect("reopened job"),
+            Some(job)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn refund_start_and_manual_claim_roll_back_together_at_record_failpoints() {
+        for failpoint in [
+            RecordWriteFailpoint::Encode,
+            RecordWriteFailpoint::RemoveIndex,
+            RecordWriteFailpoint::AddIndex,
+            RecordWriteFailpoint::OperationOwner,
+            RecordWriteFailpoint::Record,
+            RecordWriteFailpoint::SingletonState,
+        ] {
+            let memory = VectorMemory::default();
+            let mut store = StableStore::init(memory.clone()).expect("initialize");
+            let mut record = deposit();
+            store.put_deposit(&record).expect("deposit");
+            let available = record
+                .apply(DepositEvent::MarkRefundAvailable {
+                    reason: DepositRefundReason::BasePaused,
+                    finalized_timestamp: None,
+                })
+                .expect("refund available");
+            store
+                .put_deposit_transition(&record, available)
+                .expect("persist refund availability");
+            let before = record.clone();
+            let transition = record
+                .apply(DepositEvent::StartRefund {
+                    reason: DepositRefundReason::BasePaused,
+                    attempt: Box::new(TransferAttempt {
+                        attempt_no: 0,
+                        identity: LedgerTransferIdentity {
+                            operation: LedgerOperation::RefundDeposit,
+                            created_at_time_ns: 41,
+                            memo: [41; 32],
+                            amount: Amount::new(109),
+                            fee: Amount::new(1),
+                            from: before.transfer.to.clone(),
+                            to: before.transfer.from.clone(),
+                            spender: None,
+                        },
+                    }),
+                    expiry_evidence: None,
+                })
+                .expect("prepare refund");
+            let context = ManualSettlementClaimContext {
+                kind: SettlementJobKind::Deposit,
+                settlement_id: before.id.bytes(),
+                caller: Principal::self_authenticating([92; 32]),
+                now_ns: 1,
+                lease_until_ns: 121,
+                overdue_after_ns: 300,
+                limits: SettlementQuotaLimits {
+                    window_seconds: 60,
+                    global: 10,
+                    per_principal: 10,
+                    per_record: 10,
+                },
+            };
+            let revision_before = storage_revision(&store);
+            set_record_write_failpoint(Some(failpoint));
+            assert!(store
+                .put_deposit_transition_and_claim_manual_job(&record, transition, context)
+                .is_err());
+            set_record_write_failpoint(None);
+            assert_eq!(storage_revision(&store), revision_before, "{failpoint:?}");
+            assert_eq!(
+                store.deposit(before.id.bytes()).expect("deposit"),
+                Some(before.clone())
+            );
+            assert!(store
+                .settlement_job(SettlementJobKind::Deposit, context.settlement_id)
+                .expect("job")
+                .is_none());
+            let admission = decode::<SettlementAdmissionControl>(
+                &store.settlement_admission.get().expect("admission"),
+            )
+            .expect("decode admission");
+            assert_eq!(admission.global_count, 0);
+            drop(store);
+            let reopened = StableStore::reopen(memory).expect("reopen after rollback");
+            assert_eq!(
+                reopened
+                    .deposit(before.id.bytes())
+                    .expect("reopened deposit"),
+                Some(before),
+                "{failpoint:?}"
+            );
+            assert!(reopened
+                .settlement_job(SettlementJobKind::Deposit, context.settlement_id)
+                .expect("reopened job")
+                .is_none());
+            assert_eq!(
+                storage_revision(&reopened),
+                revision_before,
+                "{failpoint:?}"
+            );
+        }
     }
 
     #[test]
@@ -11224,6 +13494,57 @@ mod tests {
 
     #[test]
     #[serial]
+    fn recovery_observation_cache_is_deposit_bound_and_survives_reopen() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        let snapshot = BaseMintSnapshot {
+            finalized_head_block_number: 10,
+            confirmed_block_timestamp: 20,
+            service_fee: Amount::new(1),
+            max_service_fee: Amount::new(2),
+            per_deposit_limit: Amount::new(100),
+            mint_window_limit: Amount::new(1_000),
+            mint_window_started_at: 0,
+            mint_window_duration: 100,
+            minted_in_window: Amount::ZERO,
+        };
+        let finalized = FinalizedObservationRecord {
+            chain_id: 8453,
+            block_number: 10,
+            block_hash: [10; 32],
+            observed_at_ns: 100,
+            bridge_signer: [7; 20],
+            runtime_sha256: [8; 32],
+        };
+        store
+            .cache_deposit_authorization_observation(
+                [42; 32], 100, snapshot, [7; 20], 3, false, finalized,
+            )
+            .expect("cache recovery observation");
+        drop(store);
+
+        let reopened = StableStore::reopen(memory).expect("reopen");
+        let cached = reopened
+            .cached_deposit_authorization_snapshot([42; 32])
+            .expect("read cache")
+            .expect("deposit-bound cache");
+        assert_eq!(cached.snapshot, snapshot);
+        assert_eq!(cached.observed_at_ns, 100);
+        assert!(reopened
+            .cached_deposit_authorization_snapshot([43; 32])
+            .expect("other cache")
+            .is_none());
+        assert_eq!(
+            reopened
+                .external_progress()
+                .expect("finalized progress")
+                .finalized_observation,
+            Some(finalized)
+        );
+    }
+
+    #[test]
+    #[serial]
     fn stale_snapshot_worker_cannot_finish_or_release_a_new_owner() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory).expect("initialize");
@@ -11313,6 +13634,8 @@ mod tests {
                 1,
                 vec![],
                 transaction_hash,
+                600,
+                30,
             )
             .expect("commit notification");
         assert_eq!(
@@ -11329,6 +13652,69 @@ mod tests {
                 .expect("reopened notification index"),
             Some(withdrawal.id.bytes())
         );
+    }
+
+    #[test]
+    #[serial]
+    fn withdrawal_ingestion_quota_commits_and_rolls_back_with_business_state() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize");
+        let first = withdrawal();
+        store
+            .commit_new_withdrawal_release_bundle_with_rpc_audit(
+                &first,
+                &ExternalProgress::default(),
+                Principal::anonymous(),
+                1,
+                vec![],
+                [0x61; 32],
+                600,
+                1,
+            )
+            .expect("consume the only ingestion slot");
+
+        let mut second = withdrawal();
+        second.id = WithdrawalId::new([0x62; 32]);
+        second.payload_hash = [0x63; 32];
+        assert_eq!(
+            store.commit_new_withdrawal_release_bundle_with_rpc_audit(
+                &second,
+                &ExternalProgress::default(),
+                Principal::anonymous(),
+                2,
+                vec![],
+                [0x62; 32],
+                600,
+                1,
+            ),
+            Err(StorageError::NotificationRateLimited)
+        );
+        assert!(store
+            .withdrawal(second.id.bytes())
+            .expect("read rejected withdrawal")
+            .is_none());
+
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory).expect("initialize rollback store");
+        let before = rpc_atomic_snapshot(&store, None);
+        set_rpc_atomic_failpoint(Some(RpcAtomicFailpoint::Singleton));
+        assert!(store
+            .commit_new_withdrawal_release_bundle_with_rpc_audit(
+                &first,
+                &ExternalProgress::default(),
+                Principal::anonymous(),
+                1,
+                vec![],
+                [0x64; 32],
+                600,
+                1,
+            )
+            .is_err());
+        set_rpc_atomic_failpoint(None);
+        assert_eq!(rpc_atomic_snapshot(&store, None), before);
+        assert!(store
+            .consume_notification_ingestion_quota(1, 600, 1)
+            .expect("rolled-back quota remains available"));
     }
 
     #[test]
@@ -12050,6 +14436,38 @@ mod tests {
             }),
             "kind count lookup must use its primary key: {details:?}"
         );
+
+        for (query, expected_index) in [
+            (DUE_SCHEDULED_SETTLEMENT_SQL, "SETTLEMENT_JOBS_DUE"),
+            (DUE_EXPIRED_SETTLEMENT_SQL, "SETTLEMENT_JOBS_LEASE"),
+        ] {
+            let explain = format!("EXPLAIN QUERY PLAN {query}");
+            let details = store
+                .handle
+                .query(|connection| {
+                    connection.query_all(&explain, params![u64::MAX.to_sql_bytes()], |row| {
+                        row.get::<String>(3)
+                    })
+                })
+                .expect("explain due settlement query");
+            let normalized = details
+                .iter()
+                .map(|detail| detail.to_ascii_uppercase())
+                .collect::<Vec<_>>();
+            assert!(
+                normalized
+                    .iter()
+                    .any(|detail| detail.contains(expected_index)),
+                "due query must use {expected_index}: {details:?}"
+            );
+            assert!(
+                normalized.iter().all(|detail| {
+                    !detail.contains("SCAN SETTLEMENT_JOBS")
+                        && !detail.contains("USE TEMP B-TREE FOR ORDER BY")
+                }),
+                "due query must not scan or sort the full candidate set: {details:?}"
+            );
+        }
     }
 
     #[test]

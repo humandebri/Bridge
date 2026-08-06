@@ -4,21 +4,23 @@
   "additionalProperties": false,
   "required": ["schema_version", "kind", "state", "created_at", "updated_at", "binding", "stages", "complete"],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 7 },
     "kind": { "const": "kinic-bridge-sepolia-staging-e2e" },
     "state": {
       "enum": [
         "AWAITING_PREFLIGHT",
+        "AWAITING_CONTRACTS",
         "AWAITING_INSTALL",
         "AWAITING_INITIALIZE",
-        "AWAITING_CONTRACTS",
         "AWAITING_ACTIVATION_SCHEDULE",
         "AWAITING_ACTIVATION_EXECUTE",
         "AWAITING_FRONTEND_PUBLISH",
+        "AWAITING_SMOKE_E2E",
+        "SHORT_DELAY_ACTIVE_SMOKE_PASSED",
         "AWAITING_WALLET_E2E",
         "AWAITING_RPC_REHEARSAL",
         "AWAITING_FINAL_PAUSE",
-        "COMPLETE"
+        "SHORT_DELAY_COMPLETE"
       ]
     },
     "created_at": { "type": "string", "format": "date-time" },
@@ -30,23 +32,29 @@
         "source_commit",
         "local_e2e_sha256",
         "bridge_wasm_sha256",
-        "bridge_runtime_hash",
-        "bsns_runtime_hash",
+        "bridge_runtime_template_sha256",
+        "bsns_runtime_template_sha256",
         "frontend_profile_sha256",
         "bridge_canister_id",
         "ledger_canister_id",
         "index_canister_id"
+        ,"environment_mode"
+        ,"activation_timelock_delay_seconds"
+        ,"deployment_instance_id"
       ],
       "properties": {
         "source_commit": { "$ref": "#/$defs/gitCommit" },
         "local_e2e_sha256": { "$ref": "#/$defs/sha256" },
         "bridge_wasm_sha256": { "$ref": "#/$defs/sha256" },
-        "bridge_runtime_hash": { "$ref": "#/$defs/evmHash" },
-        "bsns_runtime_hash": { "$ref": "#/$defs/evmHash" },
+        "bridge_runtime_template_sha256": { "$ref": "#/$defs/evmHash" },
+        "bsns_runtime_template_sha256": { "$ref": "#/$defs/evmHash" },
         "frontend_profile_sha256": { "$ref": "#/$defs/sha256" },
         "bridge_canister_id": { "$ref": "#/$defs/principal" },
         "ledger_canister_id": { "$ref": "#/$defs/principal" },
         "index_canister_id": { "$ref": "#/$defs/principal" }
+        ,"environment_mode": { "const": "short-delay-test-only" }
+        ,"activation_timelock_delay_seconds": { "const": 300 }
+        ,"deployment_instance_id": { "$ref": "#/$defs/evmHash" }
       }
     },
     "stages": {
@@ -60,6 +68,7 @@
         "activation_schedule",
         "activation_execute",
         "frontend_publish",
+        "smoke_e2e",
         "wallet_e2e",
         "rpc_rehearsal",
         "final_pause"
@@ -72,6 +81,7 @@
         "activation_schedule": { "$ref": "#/$defs/stage" },
         "activation_execute": { "$ref": "#/$defs/stage" },
         "frontend_publish": { "$ref": "#/$defs/stage" },
+        "smoke_e2e": { "$ref": "#/$defs/stage" },
         "wallet_e2e": { "$ref": "#/$defs/stage" },
         "rpc_rehearsal": { "$ref": "#/$defs/stage" },
         "final_pause": { "$ref": "#/$defs/stage" }
@@ -102,7 +112,7 @@
           "additionalProperties": false,
           "required": ["schema_version", "stage", "observed_at", "source_commit", "artifacts", "details"],
           "properties": {
-            "schema_version": { "const": 1 },
+            "schema_version": { "const": 7 },
             "stage": {
               "enum": [
                 "preflight",
@@ -112,6 +122,7 @@
                 "activation_schedule",
                 "activation_execute",
                 "frontend_publish",
+                "smoke_e2e",
                 "wallet_e2e",
                 "rpc_rehearsal",
                 "final_pause"
@@ -125,7 +136,132 @@
               "items": { "$ref": "#/$defs/artifact" }
             },
             "details": { "type": "object" }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "stage": { "const": "preflight" } },
+                "required": ["stage"]
+              },
+              "then": {
+                "properties": {
+                  "artifacts": {
+                    "allOf": [
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-public-config" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      },
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "reinstall-instance-check" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "stage": { "const": "preflight" },
+                  "details": {
+                    "type": "object",
+                    "properties": {
+                      "replacement_mode": { "const": "current-schema-upgrade" }
+                    },
+                    "required": ["replacement_mode"]
+                  }
+                },
+                "required": ["stage", "details"]
+              },
+              "then": {
+                "properties": {
+                  "artifacts": {
+                    "allOf": [
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-bridge-status" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      },
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-activation-status" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      },
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-storage-integrity" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      },
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "live-ledger-balance" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "stage": { "const": "preflight" },
+                  "details": {
+                    "type": "object",
+                    "properties": {
+                      "replacement_mode": { "const": "obsolete-schema-upgrade" }
+                    },
+                    "required": ["replacement_mode"]
+                  }
+                },
+                "required": ["stage", "details"]
+              },
+              "then": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "artifacts": {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "obsolete-pause-evidence" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
         }
       ]
     }

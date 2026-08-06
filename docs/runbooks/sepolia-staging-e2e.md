@@ -1,7 +1,9 @@
 # IC mainnet × Base Sepolia staging E2E
 
-このrunbookはPlan 007の外部stageを、同一source commitへ束縛された再開可能な証跡として実行する。
+このrunbookはPlan 007の非blocking外部stageを、schema v7で同一source commitへ束縛された再開可能な証跡として実行する。
 production Canister、KINIC Ledger、Base Mainnet、SNSを対象にしてはならない。
+
+Base Sepolia stagingだけは`short-delay-test-only` policyによりactivation delayを300秒とする。production artifactの24時間制約は変更せず、短縮版artifactと証跡をproduction rehearsalへ使用しない。
 
 ## Test Ledgerのfee
 
@@ -19,7 +21,8 @@ production artifactへこの値を流用せず、KINIC mainnet Ledgerのlive fee
 - clean commitで`scripts/plan007-local-gate.sh`を実行し、現行commitの`local-e2e.json`を発行する。
 - `frontend-profile.json`の値を予定値として信用せず、共有test Ledger/Index、staging Bridge、Base Sepoliaのlive値を再読する。
 - ICP identity名、wallet secret、RPC fault controller tokenはリポジトリへ保存しない。
-- Canister install/reinstallとcycles投入、Base Sepolia transaction、Cloudflare test UI公開は別々に承認を得る。
+- Canister install/upgrade/reinstallとcycles投入、Base Sepolia transaction、Cloudflare test UI公開は別々に承認を得る。
+- v30→v31 upgrade前にIC Deposit、Base Deposit Mint、Base Withdrawalをpauseし、Finalized postconditionを記録する。v30で直接resumeされた状態をv31のactivation経路へ持ち込まないためであり、どれか一つでもpauseできない場合は後続を実行しない。
 
 ## 証跡state machine
 
@@ -35,20 +38,66 @@ stageは次の順序に固定され、途中を飛ばせない。
 
 ```text
 preflight
+  -> contracts
   -> install
   -> initialize
-  -> contracts
   -> activation_schedule
   -> activation_execute
   -> frontend_publish
+  -> smoke_e2e
   -> wallet_e2e
   -> rpc_rehearsal
   -> final_pause
-  -> COMPLETE
+  -> SHORT_DELAY_COMPLETE
 ```
 
 各stageは、操作後に取得したraw artifact、artifact SHA-256、source commit、観測値だけをstage evidenceへ記録する。
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
+
+Canister installの前にはlive `public_config` をJSONへ保存し、次のgateを必ず通す。
+現行v31のreinstallではprofileの新IDがlive IDと異なることを要求する。現行v31のupgradeでは
+`current-schema-upgrade`としてprofileとliveのinstance ID一致を要求し、upgrade前後のstate count、
+schema v31、instance ID、`storage_integrity_check = ok`を照合する。
+repository-owned `deployments/sepolia-staging/obsolete-replacement-policy.json` に固定したCanister ID・instance ID・module hashのtupleと完全一致する旧v30 stagingだけは`obsolete-schema-upgrade`として受理し、profileとliveのinstance IDが同一であることを要求する。
+v29以下、未知schema、欠落、ゼロ値、tuple不一致はfail closedにする。v30→v31は一つのSQLite transactionでrecord wire、config、quota、auditを移行し、失敗時は全rollbackする。
+出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、
+manifest検証でも同じ比較を行う。
+
+```sh
+scripts/plan007/staging-e2e-driver.sh check-reinstall-instance \
+  /secure/work/live-public-config.json \
+  /secure/work/live-canister-status.json \
+  > /secure/work/reinstall-instance-check.json
+```
+
+checkerへ渡した `live-public-config.json`、`live-canister-status.json` と、その標準出力
+`reinstall-instance-check.json` を変更せずmanifestディレクトリ配下へコピーする。
+preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-config`、`live-canister-status` と
+`reinstall-instance-check` を付け、コピー後のSHA-256を記録する。manifest validatorは
+各artifactを再読し、live設定とmodule hashから比較を再計算してchecker出力および`details`と照合する。
+別のlive取得結果、手編集したchecker出力、manifest外のpathは使用しない。
+
+v30→v31またはv31→v31 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
+
+- `live-bridge-status`: Deposit／reservationを含むcountsと、Withdrawal、pending Ledger operation、reconciliation hold、未払額を保持する。
+- `live-activation-status`: pending Timelock operation数を保持する。
+- `live-canister-status`: module hash、controller principals、cycles balanceを保持する。
+- `live-storage-integrity`: 認可済みcallerによる`storage_integrity_check()`の`ok`結果を保持する。
+- `live-ledger-balance`: Bridge principalのTICRC1 raw balanceを保持する。
+- v30→v31だけは`obsolete-pause-evidence`も保存する。Base Sepolia RPC 3件で取得したchain ID、Finalized head、PauseDepositMints／PauseWithdrawalsのreceipt・target・calldata・event・canonical blockと、ICの`pause_new_deposits`応答・audit sequence・pause後statusを保持する。validatorはBase観測の2-of-3一致を要求する。
+- install stageにはupgrade前後の全count、schema v31、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
+
+`deployments/sepolia-staging/obsolete-pause-capture.template.json`をsecure作業領域へコピーし、3 provider URL、2件のpause transaction hash、pause実行前の次audit sequenceを設定する。次のcapture commandは3 RPCを直接queryし、承認済みIC identityで`pause_new_deposits`を再確認実行した直後に`get_bridge_status`と`get_audit_events`をqueryし、検証済みartifactだけをatomicに出力する。外部mutationを含むため、明示承認を得てから実行する。正式artifactを生成するoffline verifierは提供しないため、自己申告boolean、手書きの成功要約、collectorの標準出力をpreflight artifactとして登録しない。
+
+```sh
+scripts/plan007/staging-e2e-driver.sh capture-obsolete-pause \
+  /secure/work/obsolete-pause-capture.json \
+  /secure/work/live-public-config.json \
+  /secure/work/live-canister-status.json \
+  /secure/work/obsolete-pause-evidence.json
+```
+
+manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は破棄せずmigration後も保持する。
 
 ```sh
 scripts/plan007/staging-e2e-driver.sh record /secure/work/preflight-evidence.json
@@ -94,4 +143,4 @@ fault proxy 3件の通常応答を再確認してから`final_pause`を記録し
 scripts/plan007/staging-e2e-driver.sh verify
 ```
 
-`COMPLETE`はtest-only staging E2Eの完了だけを意味し、本番deploy、SNS操作、資産受付開始を承認しない。
+`SHORT_DELAY_COMPLETE`はtest-only stagingの追加wallet互換性と全10 RPC scenarioを含む詳細E2Eの完了だけを意味し、本番deploy、SNS操作、資産受付開始を承認しない。この詳細完了はproduction activationをblockしない。

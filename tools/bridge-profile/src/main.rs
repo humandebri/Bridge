@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 27;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 31;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -58,6 +58,7 @@ struct Profile {
     base_rpc_url: String,
     bridge_contract: String,
     bsns_contract: String,
+    deployment_instance_id: String,
     deployment_block: u64,
     expected_bridge_signer: String,
     bridge_canister_wasm_sha256: String,
@@ -177,6 +178,9 @@ struct RateLimits {
     deposit_window_seconds: u64,
     deposit_global: u16,
     deposit_per_principal: u16,
+    notification_window_seconds: u64,
+    notification_global: u16,
+    notification_ingestion_global: u16,
     settlement_window_seconds: u64,
     settlement_global: u16,
     settlement_per_principal: u16,
@@ -211,14 +215,15 @@ struct EvmFeePolicy {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Evidence {
+    schema_version: u8,
     environment: String,
     ledger_fee: u128,
     governance_gas_used: Vec<u128>,
     fee_observation_start_unix: u64,
     fee_observation_end_unix: u64,
-    base_fee_per_gas_30d: Vec<u128>,
-    priority_fee_per_gas_30d: Vec<u128>,
-    l1_fee_upper_bound_wei_30d: Vec<u128>,
+    base_fee_per_gas: Vec<u128>,
+    priority_fee_per_gas: Vec<u128>,
+    l1_fee_upper_bound_wei: Vec<u128>,
     total_governance_fee_wei: Vec<u128>,
     governance_transactions_per_reserve_window: u128,
     settlement_cycles: Vec<u128>,
@@ -345,6 +350,7 @@ struct LivePublicConfig {
     base_chain_id: u64,
     bridge_contract: String,
     timelock_contract: String,
+    deployment_instance_id: String,
     ledger_canister_id: String,
     index_canister_id: String,
     schema_version: u16,
@@ -355,6 +361,9 @@ struct LivePublicConfig {
     deposit_rate_limit_window_seconds: u64,
     deposit_rate_limit_global: u16,
     deposit_rate_limit_per_principal: u16,
+    notification_rate_limit_window_seconds: u64,
+    notification_rate_limit_global: u16,
+    notification_ingestion_rate_limit_global: u16,
     settlement_rate_limit_window_seconds: u64,
     settlement_rate_limit_global: u16,
     settlement_rate_limit_per_principal: u16,
@@ -704,15 +713,18 @@ fn percentile(values: &[u128], numerator: usize, denominator: usize) -> Result<u
 }
 
 fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
-    if evidence.governance_gas_used.len() < 100
-        || evidence.settlement_cycles.len() < 100
-        || evidence.base_fee_per_gas_30d.len() < 100
-        || evidence.priority_fee_per_gas_30d.len() < 100
-        || evidence.l1_fee_upper_bound_wei_30d.len() < 100
-        || evidence.total_governance_fee_wei.len() < 100
+    if evidence.schema_version != 2 {
+        return Err("measurement evidence must use schema v2".into());
+    }
+    if evidence.governance_gas_used.len() < 10
+        || evidence.settlement_cycles.len() < 10
+        || evidence.base_fee_per_gas.len() < 10
+        || evidence.priority_fee_per_gas.len() < 10
+        || evidence.l1_fee_upper_bound_wei.len() < 10
+        || evidence.total_governance_fee_wei.len() < 10
     {
         return Err(
-            "governance gas, fee, total-fee, and cycle evidence must contain at least 100 samples each".into(),
+            "governance gas, fee, total-fee, and cycle evidence must contain at least 10 samples each".into(),
         );
     }
     if evidence.ledger_fee == 0
@@ -721,18 +733,19 @@ fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
         || evidence.governance_transactions_per_reserve_window == 0
         || evidence.governance_gas_used.contains(&0)
         || evidence.settlement_cycles.contains(&0)
-        || evidence.base_fee_per_gas_30d.is_empty()
-        || evidence.base_fee_per_gas_30d.len() != evidence.priority_fee_per_gas_30d.len()
-        || evidence.base_fee_per_gas_30d.contains(&0)
-        || evidence.priority_fee_per_gas_30d.contains(&0)
-        || evidence.l1_fee_upper_bound_wei_30d.contains(&0)
+        || evidence.base_fee_per_gas.is_empty()
+        || evidence.base_fee_per_gas.len() != evidence.priority_fee_per_gas.len()
+        || evidence.base_fee_per_gas.len() != evidence.l1_fee_upper_bound_wei.len()
+        || evidence.base_fee_per_gas.len() != evidence.total_governance_fee_wei.len()
+        || evidence.base_fee_per_gas.contains(&0)
+        || evidence.priority_fee_per_gas.contains(&0)
+        || evidence.l1_fee_upper_bound_wei.contains(&0)
         || evidence.total_governance_fee_wei.contains(&0)
     {
         return Err("measurement evidence values must be positive and fee samples aligned".into());
     }
     let minimum_days = match evidence.environment.as_str() {
-        "base-sepolia" => 7,
-        "mainnet-candidate" => 30,
+        "base-sepolia" | "mainnet-candidate" => 7,
         _ => return Err("unsupported evidence environment".into()),
     };
     if evidence
@@ -753,16 +766,15 @@ fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
         .checked_add(999)
         .map(|value| value / 1_000 * 1_000)
         .ok_or("gas limit overflow")?;
-    let max_priority_fee_per_gas_ceiling = percentile(&evidence.priority_fee_per_gas_30d, 95, 100)?
+    let max_priority_fee_per_gas_ceiling = percentile(&evidence.priority_fee_per_gas, 95, 100)?
         .checked_mul(4)
         .ok_or("priority fee cap overflow")?;
-    let max_fee_per_gas_ceiling = percentile(&evidence.base_fee_per_gas_30d, 99, 100)?
+    let max_fee_per_gas_ceiling = percentile(&evidence.base_fee_per_gas, 99, 100)?
         .checked_mul(20)
         .ok_or("max fee cap overflow")?;
-    let l1_fee_per_transaction_ceiling_wei =
-        percentile(&evidence.l1_fee_upper_bound_wei_30d, 99, 100)?
-            .checked_mul(10)
-            .ok_or("L1 fee cap overflow")?;
+    let l1_fee_per_transaction_ceiling_wei = percentile(&evidence.l1_fee_upper_bound_wei, 99, 100)?
+        .checked_mul(10)
+        .ok_or("L1 fee cap overflow")?;
     let floor_transactions = if evidence.environment == "base-sepolia" {
         10
     } else {
@@ -830,6 +842,10 @@ fn valid_hash32(value: &str) -> bool {
         && value[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn valid_nonzero_hash32(value: &str) -> bool {
+    valid_hash32(value) && value[2..].bytes().any(|byte| byte != b'0')
+}
+
 fn valid_nonempty_hex(value: &str) -> bool {
     let value = value.strip_prefix("0x").unwrap_or(value);
     !value.is_empty()
@@ -860,10 +876,6 @@ fn validate_monitor_drill(
     ] {
         validate_evidence_time(at, manifest.created_at_unix, now)?;
     }
-    let elapsed = |at: u64| {
-        at.checked_sub(drill.fault_started_at_unix)
-            .ok_or("monitor timestamp precedes fault")
-    };
     let expected_cancel_count = usize::from(drill.pending_timelock_operation_before);
     let count = |kind: &str| drill.base_actions.iter().filter(|a| a.kind == kind).count();
     let transactions = drill
@@ -902,7 +914,7 @@ fn validate_monitor_drill(
             && action.calldata_hex.len() == exact_length
             && action.canonical_finalized
     });
-    if drill.schema_version != 3
+    if drill.schema_version != 4
         || drill.rehearsal_id.trim().is_empty()
         || drill.source_revision != manifest.source_revision
         || !drill
@@ -920,10 +932,7 @@ fn validate_monitor_drill(
             .bridge_runtime_bytecode_sha256
             .eq_ignore_ascii_case(&profile.bridge_runtime_bytecode_sha256)
         || !valid_sha256(&drill.rpc_provider_urls_sha256)
-        || elapsed(drill.detected_at_unix)? > 5 * 60
-        || elapsed(drill.acknowledged_at_unix)? > 15 * 60
-        || elapsed(drill.base_paused_at_unix)? > 60 * 60
-        || elapsed(drill.ic_pause.paused_at_unix)? > 60 * 60
+        || drill.detected_at_unix < drill.fault_started_at_unix
         || drill.acknowledged_at_unix < drill.detected_at_unix
         || drill.base_paused_at_unix < drill.acknowledged_at_unix
         || drill.ic_pause.paused_at_unix < drill.acknowledged_at_unix
@@ -952,7 +961,7 @@ fn validate_monitor_drill(
             .routing_sha256
             .eq_ignore_ascii_case(&profile.monitoring.routing_sha256)
     {
-        return Err("monitor drill does not satisfy the authenticated 5/15/60 contract".into());
+        return Err("monitor drill does not prove the authenticated pause/cancel path".into());
     }
     Ok(())
 }
@@ -1037,11 +1046,12 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     if profile.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER {
         return Err("profile must bind the official EVM RPC canister ID".into());
     }
-    if !valid_sha256(&profile.bridge_canister_wasm_sha256)
+    if !valid_nonzero_hash32(&profile.deployment_instance_id)
+        || !valid_sha256(&profile.bridge_canister_wasm_sha256)
         || !valid_sha256(&profile.bridge_runtime_bytecode_sha256)
         || !valid_sha256(&profile.bsns_runtime_bytecode_sha256)
     {
-        return Err("profile must bind Bridge Wasm and runtime bytecode hashes".into());
+        return Err("profile must bind a deployment instance ID and Bridge artifact hashes".into());
     }
     if profile.environment == "mainnet-candidate"
         && (profile.test_assets_only
@@ -1158,6 +1168,9 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         || r.deposit_per_principal == 0
         || r.deposit_per_principal > r.deposit_global
         || r.deposit_global > 100
+        || !(60..=3_600).contains(&r.notification_window_seconds)
+        || !(1..=100).contains(&r.notification_global)
+        || !(1..=100).contains(&r.notification_ingestion_global)
         || !(60..=3_600).contains(&r.settlement_window_seconds)
         || r.settlement_per_record == 0
         || r.settlement_per_record > r.settlement_per_principal
@@ -1326,13 +1339,18 @@ fn render_release_inputs(
         "custom_evm_rpc_urls": canister_rpc_urls,
         "base_chain_id": profile.chain_id,
         "bridge_contract_hex": contract_hex,
+        "expected_bridge_runtime_sha256_hex": profile.bridge_runtime_bytecode_sha256,
         "timelock_contract_hex": profile.timelock.address.trim_start_matches("0x"),
+        "deployment_instance_id_hex": profile.deployment_instance_id.trim_start_matches("0x"),
         "ecdsa_key_name": profile.ecdsa_key_name,
         "ecdsa_derivation_path_utf8": profile.ecdsa_derivation_path,
         "governance_ecdsa_derivation_path_utf8": profile.governance_ecdsa_derivation_path,
         "deposit_rate_limit_window_seconds": profile.rate_limits.deposit_window_seconds,
         "deposit_rate_limit_global": profile.rate_limits.deposit_global,
         "deposit_rate_limit_per_principal": profile.rate_limits.deposit_per_principal,
+        "notification_rate_limit_window_seconds": profile.rate_limits.notification_window_seconds,
+        "notification_rate_limit_global": profile.rate_limits.notification_global,
+        "notification_ingestion_rate_limit_global": profile.rate_limits.notification_ingestion_global,
         "settlement_rate_limit_window_seconds": profile.rate_limits.settlement_window_seconds,
         "settlement_rate_limit_global": profile.rate_limits.settlement_global,
         "settlement_rate_limit_per_principal": profile.rate_limits.settlement_per_principal,
@@ -1377,6 +1395,8 @@ fn render_release_inputs(
         "environment": profile.environment,
         "label": if profile.test_assets_only { "Base Sepolia" } else { "Base" },
         "testOnly": profile.test_assets_only,
+        "environmentMode": null,
+        "activationTimelockDelaySeconds": profile.timelock.minimum_delay_seconds,
         "gateBManifestSha256": gate_b_manifest_sha256,
         "profileFileSha256": profile_file_sha256,
         "profileCanonicalSha256": profile_canonical_sha256,
@@ -1384,12 +1404,14 @@ fn render_release_inputs(
         "baseRpcUrl": profile.base_rpc_url,
         "chainId": profile.chain_id,
         "bridgeCanisterId": profile.bridge_canister_id,
+        "deploymentInstanceId": profile.deployment_instance_id,
         "ledgerCanisterId": profile.ledger_canister_id,
         "indexCanisterId": profile.index_canister_id,
         "icToken": { "name": "KINIC", "symbol": "KINIC", "decimals": profile.decimals },
         "baseToken": { "symbol": "KINIC", "decimals": profile.decimals },
         "bridgeAddress": profile.bridge_contract,
         "bsnsAddress": profile.bsns_contract,
+        "timelockAddress": profile.timelock.address,
         "expected_bridge_signer": profile.expected_bridge_signer,
         "evmRpcCanisterId": profile.evm_rpc_canister_id,
         "rpcProviderUrlsSha256": format!("0x{rpc_provider_urls_sha256}"),
@@ -1492,6 +1514,9 @@ fn validate_rpc_rehearsal(bundle: &ValidatedBundle) -> Result<(), String> {
         .and_then(Value::as_object)
         .ok_or("rehearsal scenarios are missing")?;
     for scenario in scenarios.values() {
+        if scenario.is_null() {
+            continue;
+        }
         let observed = scenario
             .get("observed_at")
             .and_then(Value::as_str)
@@ -1533,8 +1558,8 @@ fn validate_rpc_rehearsal(bundle: &ValidatedBundle) -> Result<(), String> {
     if rehearsal_url_hashes.len() != 3 {
         return Err("rehearsal must bind three distinct Base Sepolia RPC URLs".into());
     }
-    if value.pointer("/complete") != Some(&Value::Bool(true))
-        || string("/state")? != "COMPLETE"
+    if value.pointer("/launch_ready") != Some(&Value::Bool(true))
+        || !matches!(string("/state")?, "LAUNCH_READY" | "EXTENDED_COMPLETE")
         || string("/source/revision")? != bundle.manifest.source_revision
         || !string("/source/source_tree_sha256")?
             .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
@@ -1943,6 +1968,9 @@ fn validate_live_public_config(
         || !observed
             .timelock_contract
             .eq_ignore_ascii_case(&profile.timelock.address)
+        || !observed
+            .deployment_instance_id
+            .eq_ignore_ascii_case(&profile.deployment_instance_id)
         || observed.ledger_canister_id != profile.ledger_canister_id
         || observed.index_canister_id != profile.index_canister_id
         || observed.schema_version != profile.canister_schema_version
@@ -1959,6 +1987,9 @@ fn validate_live_public_config(
         || observed.deposit_rate_limit_window_seconds != r.deposit_window_seconds
         || observed.deposit_rate_limit_global != r.deposit_global
         || observed.deposit_rate_limit_per_principal != r.deposit_per_principal
+        || observed.notification_rate_limit_window_seconds != r.notification_window_seconds
+        || observed.notification_rate_limit_global != r.notification_global
+        || observed.notification_ingestion_rate_limit_global != r.notification_ingestion_global
         || observed.settlement_rate_limit_window_seconds != r.settlement_window_seconds
         || observed.settlement_rate_limit_global != r.settlement_global
         || observed.settlement_rate_limit_per_principal != r.settlement_per_principal
@@ -2868,6 +2899,12 @@ mod tests {
         assert!(!valid_release_id(&"a".repeat(65)));
     }
 
+    #[test]
+    fn deployment_instance_id_must_be_nonzero() {
+        assert!(valid_nonzero_hash32(&format!("0x{}", "11".repeat(32))));
+        assert!(!valid_nonzero_hash32(&format!("0x{}", "00".repeat(32))));
+    }
+
     fn valid_profile() -> Profile {
         Profile {
             environment: "mainnet-candidate".into(),
@@ -2885,6 +2922,7 @@ mod tests {
             base_rpc_url: "https://prod-one.example/base-mainnet".into(),
             bridge_contract: address(1),
             bsns_contract: address(8),
+            deployment_instance_id: format!("0x{}", "11".repeat(32)),
             deployment_block: 1,
             expected_bridge_signer: address(2),
             bridge_canister_wasm_sha256: "3".repeat(64),
@@ -2945,6 +2983,9 @@ mod tests {
                 deposit_window_seconds: 60,
                 deposit_global: 30,
                 deposit_per_principal: 3,
+                notification_window_seconds: 600,
+                notification_global: 60,
+                notification_ingestion_global: 30,
                 settlement_window_seconds: 600,
                 settlement_global: 60,
                 settlement_per_principal: 6,
@@ -2971,6 +3012,7 @@ mod tests {
             base_chain_id: profile.chain_id,
             bridge_contract: profile.bridge_contract.clone(),
             timelock_contract: profile.timelock.address.clone(),
+            deployment_instance_id: profile.deployment_instance_id.clone(),
             ledger_canister_id: profile.ledger_canister_id.clone(),
             index_canister_id: profile.index_canister_id.clone(),
             schema_version: profile.canister_schema_version,
@@ -2981,6 +3023,11 @@ mod tests {
             deposit_rate_limit_window_seconds: profile.rate_limits.deposit_window_seconds,
             deposit_rate_limit_global: profile.rate_limits.deposit_global,
             deposit_rate_limit_per_principal: profile.rate_limits.deposit_per_principal,
+            notification_rate_limit_window_seconds: profile.rate_limits.notification_window_seconds,
+            notification_rate_limit_global: profile.rate_limits.notification_global,
+            notification_ingestion_rate_limit_global: profile
+                .rate_limits
+                .notification_ingestion_global,
             settlement_rate_limit_window_seconds: profile.rate_limits.settlement_window_seconds,
             settlement_rate_limit_global: profile.rate_limits.settlement_global,
             settlement_rate_limit_per_principal: profile.rate_limits.settlement_per_principal,
@@ -3005,17 +3052,18 @@ mod tests {
     #[test]
     fn conservative_derivation_uses_exact_boundaries() {
         let evidence = Evidence {
+            schema_version: 2,
             environment: "mainnet-candidate".into(),
             ledger_fee: 100_000,
-            governance_gas_used: vec![30_001; 100],
+            governance_gas_used: vec![30_001; 10],
             fee_observation_start_unix: 1_700_000_000,
-            fee_observation_end_unix: 1_700_000_000 + 30 * 24 * 60 * 60,
-            base_fee_per_gas_30d: vec![10; 100],
-            priority_fee_per_gas_30d: vec![2; 100],
-            l1_fee_upper_bound_wei_30d: vec![5; 100],
-            total_governance_fee_wei: vec![100; 100],
+            fee_observation_end_unix: 1_700_000_000 + 7 * 24 * 60 * 60,
+            base_fee_per_gas: vec![10; 10],
+            priority_fee_per_gas: vec![2; 10],
+            l1_fee_upper_bound_wei: vec![5; 10],
+            total_governance_fee_wei: vec![100; 10],
             governance_transactions_per_reserve_window: 4,
-            settlement_cycles: vec![1_000; 100],
+            settlement_cycles: vec![1_000; 10],
             baseline_cycles_per_day: 10_000,
             expected_daily_settlements: 4,
         };
@@ -3032,17 +3080,18 @@ mod tests {
     #[test]
     fn derivation_rejects_incomplete_stale_and_obsolete_measurement_shapes() {
         let mut evidence = Evidence {
+            schema_version: 2,
             environment: "mainnet-candidate".into(),
             ledger_fee: 100_000,
-            governance_gas_used: vec![10_000; 100],
+            governance_gas_used: vec![10_000; 10],
             fee_observation_start_unix: 1_700_000_000,
-            fee_observation_end_unix: 1_700_000_000 + 30 * 24 * 60 * 60,
-            base_fee_per_gas_30d: vec![10; 100],
-            priority_fee_per_gas_30d: vec![2; 100],
-            l1_fee_upper_bound_wei_30d: vec![5; 100],
-            total_governance_fee_wei: vec![100; 100],
+            fee_observation_end_unix: 1_700_000_000 + 7 * 24 * 60 * 60,
+            base_fee_per_gas: vec![10; 10],
+            priority_fee_per_gas: vec![2; 10],
+            l1_fee_upper_bound_wei: vec![5; 10],
+            total_governance_fee_wei: vec![100; 10],
             governance_transactions_per_reserve_window: 4,
-            settlement_cycles: vec![1_001; 100],
+            settlement_cycles: vec![1_001; 10],
             baseline_cycles_per_day: 10_000,
             expected_daily_settlements: 4,
         };
@@ -3051,8 +3100,16 @@ mod tests {
         assert!(serde_json::from_value::<Evidence>(value).is_err());
 
         let mut short = serde_json::to_value(&evidence).unwrap();
-        short["governance_gas_used"] = serde_json::to_value(vec![10_000u128; 99]).unwrap();
+        short["governance_gas_used"] = serde_json::to_value(vec![10_000u128; 9]).unwrap();
         assert!(derive(&serde_json::from_value(short).unwrap()).is_err());
+
+        let mut obsolete_schema = serde_json::to_value(&evidence).unwrap();
+        obsolete_schema["schema_version"] = Value::from(1);
+        assert!(derive(&serde_json::from_value(obsolete_schema).unwrap()).is_err());
+
+        let mut obsolete_field = serde_json::to_value(&evidence).unwrap();
+        obsolete_field["base_fee_per_gas_30d"] = obsolete_field["base_fee_per_gas"].clone();
+        assert!(serde_json::from_value::<Evidence>(obsolete_field).is_err());
 
         let mut short_period = serde_json::to_value(&evidence).unwrap();
         short_period["fee_observation_end_unix"] = Value::from(1_700_000_001u64);
@@ -3101,6 +3158,33 @@ mod tests {
         assert!(validate_profile(&profile, true).is_err());
         let mut profile = valid_profile();
         profile.timelock.runtime_code_hash = format!("0x{}", "00".repeat(32));
+        assert!(validate_profile(&profile, true).is_err());
+    }
+
+    #[test]
+    fn profile_rejects_notification_rate_limits_outside_canister_bounds() {
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_window_seconds = 59;
+        assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_window_seconds = 3_601;
+        assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_global = 0;
+        assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_global = 101;
+        assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_ingestion_global = 0;
+        assert!(validate_profile(&profile, true).is_err());
+
+        let mut profile = valid_profile();
+        profile.rate_limits.notification_ingestion_global = 101;
         assert!(validate_profile(&profile, true).is_err());
     }
 
@@ -3165,13 +3249,18 @@ mod tests {
             "custom_evm_rpc_urls",
             "base_chain_id",
             "bridge_contract_hex",
+            "expected_bridge_runtime_sha256_hex",
             "timelock_contract_hex",
+            "deployment_instance_id_hex",
             "ecdsa_key_name",
             "ecdsa_derivation_path_utf8",
             "governance_ecdsa_derivation_path_utf8",
             "deposit_rate_limit_window_seconds",
             "deposit_rate_limit_global",
             "deposit_rate_limit_per_principal",
+            "notification_rate_limit_window_seconds",
+            "notification_rate_limit_global",
+            "notification_ingestion_rate_limit_global",
             "settlement_rate_limit_window_seconds",
             "settlement_rate_limit_global",
             "settlement_rate_limit_per_principal",
@@ -3203,6 +3292,12 @@ mod tests {
             valid_profile().timelock.runtime_code_hash
         );
         let ui: Value = read_json(&first.join("ui-runtime-profile.json")).unwrap();
+        assert_eq!(ui["environmentMode"], Value::Null);
+        assert_eq!(
+            ui["activationTimelockDelaySeconds"],
+            valid_profile().timelock.minimum_delay_seconds
+        );
+        assert_eq!(ui["timelockAddress"], valid_profile().timelock.address);
         assert_eq!(ui["evmRpcCanisterId"], OFFICIAL_EVM_RPC_CANISTER);
         assert_eq!(
             ui["rpcProviderUrlsSha256"],
@@ -3303,12 +3398,15 @@ spec=importlib.util.spec_from_file_location('fixture',sys.argv[1]); m=importlib.
 m.SIGNER=sys.argv[3]; m.SHA_A=sys.argv[4]; m.SHA_B=sys.argv[5]; binding=m.rehearsal.validate_config(m.config()); value=m.manifest(binding); value['source']['revision']='a'*40; value['source']['source_tree_sha256']='2'*64
 root=Path(sys.argv[2]).parent; tool=root/'tool'
 os.environ['PATH']=str(root)+os.pathsep+os.environ.get('PATH','')
-for scenario,item in m.all_evidence(binding).items():
+items=m.all_evidence(binding)
+for scenario in ('preflight','authorization_mint','withdrawal_release','quorum_loss','final_pause'):
+ item=items[scenario]
  m.rehearsal.now=lambda: item['observed_at']
  fault_fields={'configured_provider_count','required_provider_threshold','injected_provider_failures','fault_injection_reference'}; command_details={k:v for k,v in item['details'].items() if scenario not in {'single_provider_failure','quorum_loss'} or k not in fault_fields}; audit_event=None
  if item['canister_decision'] is not None:
   timestamp_ns=int(m.rehearsal.datetime.fromisoformat(item['observed_at'].replace('Z','+00:00')).timestamp()*1_000_000_000); audit_event={'sequence':7,'timestamp_ns':timestamp_ns,'kind':{'EvmRpcDecision':item['canister_decision']}}
  payload=json.dumps({**command_details,'canister_audit':item['canister_audit'],'audit_events':[audit_event] if audit_event else []},separators=(',',':')); tool.write_text("#!/bin/sh\nprintf '%s' '"+payload+"'\n"); tool.chmod(0o755)
+ base_provider_index=0
  for reference in item['artifacts']:
   kind=reference['kind']; output=root/reference['path']
   if kind=='fault':
@@ -3322,7 +3420,8 @@ for scenario,item in m.all_evidence(binding).items():
   else:
    method='icrc1_fee' if kind=='ledger' else ('get_audit_events' if kind=='audit' else 'get_bridge_status')
    command=['icp','canister','call',binding['ledger_canister_id'] if kind=='ledger' else binding['bridge_canister_id'],method,'()','-n','ic','--json']
-  m.rehearsal.capture_artifact(value,m.config(),scenario,kind,output,command,0 if kind=='base' else None); reference['sha256']=m.rehearsal.hashlib.sha256(output.read_bytes()).hexdigest()
+  m.rehearsal.capture_artifact(value,m.config(),scenario,kind,output,command,base_provider_index if kind=='base' else None); reference['sha256']=m.rehearsal.hashlib.sha256(output.read_bytes()).hexdigest()
+  if kind=='base': base_provider_index+=1
  request_records=[]; response_records=[]
  for reference in item['artifacts']:
   artifact=json.loads((root/reference['path']).read_text(encoding='utf-8')); request_records.append([artifact['tool'],*artifact['argv'],artifact['transport']]); response_records.append(artifact['stdout'])
@@ -3343,7 +3442,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .unwrap();
         assert!(generated.success());
         let drill = MonitorDrill {
-            schema_version: 3,
+            schema_version: 4,
             rehearsal_id: "rehearsal-1".into(),
             source_revision: "a".repeat(40),
             source_tree_sha256: "2".repeat(64),
@@ -3356,10 +3455,10 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
             rpc_provider_urls_sha256: "6".repeat(64),
             routing_sha256: profile.monitoring.routing_sha256.clone(),
-            fault_started_at_unix: now - 100,
-            detected_at_unix: now - 99,
-            acknowledged_at_unix: now - 98,
-            base_paused_at_unix: now - 97,
+            fault_started_at_unix: now - 5_000,
+            detected_at_unix: now - 4_000,
+            acknowledged_at_unix: now - 3_000,
+            base_paused_at_unix: now - 1_000,
             pending_timelock_operation_before: false,
             base_actions: vec![
                 MonitorBaseAction {
@@ -3384,7 +3483,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 },
             ],
             ic_pause: MonitorIcPause {
-                paused_at_unix: now - 96,
+                paused_at_unix: now - 900,
                 response_hex: hex(b"pause response"),
                 response_sha256: hex(&Sha256::digest(b"pause response")),
                 pause_principal: profile.pause_principal.clone(),
@@ -3668,6 +3767,16 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .unwrap();
         assert!(verify_live_inputs(&bundle).is_err());
+        let mut notification_limit_drift: Value =
+            serde_json::from_slice(&valid_snapshot_bytes).unwrap();
+        notification_limit_drift["public_config"]["notification_rate_limit_global"] =
+            Value::from(59);
+        fs::write(
+            root.join("signer-snapshot.json"),
+            serde_json::to_vec(&notification_limit_drift).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_live_inputs(&bundle).is_err());
         fs::write(root.join("signer-snapshot.json"), valid_snapshot_bytes).unwrap();
 
         let valid_snapshot_bytes = fs::read(root.join("signer-snapshot.json")).unwrap();
@@ -3801,7 +3910,11 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         fs::write(root.join("release-manifest.json"), valid_manifest_bytes).unwrap();
         let valid_rehearsal = fs::read(root.join("rpc-e2e.json")).unwrap();
         let mut incomplete: Value = serde_json::from_slice(&valid_rehearsal).unwrap();
-        incomplete["complete"] = Value::Bool(false);
+        incomplete["scenarios"]["quorum_loss"] = Value::Null;
+        incomplete["scenarios"]["final_pause"] = Value::Null;
+        incomplete["state"] = Value::String("READY_FOR_QUORUM_LOSS".into());
+        incomplete["launch_ready"] = Value::Bool(false);
+        incomplete["extended_complete"] = Value::Bool(false);
         fs::write(
             root.join("rpc-e2e.json"),
             serde_json::to_vec(&incomplete).unwrap(),

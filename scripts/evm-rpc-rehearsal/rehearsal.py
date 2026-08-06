@@ -35,6 +35,16 @@ SCENARIOS = (
     "processed_event_mismatch",
     "final_pause",
 )
+LAUNCH_SCENARIOS = frozenset(
+    {
+        "preflight",
+        "authorization_mint",
+        "withdrawal_release",
+        "quorum_loss",
+        "final_pause",
+    }
+)
+EXTENDED_SCENARIOS = frozenset(SCENARIOS)
 REQUIRED_ARTIFACTS = {
     "preflight": {"bridge", "base", "audit", "module"},
     "authorization_mint": {"bridge", "base", "ledger", "audit"},
@@ -326,7 +336,7 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 
 def initial_manifest(config: dict[str, Any], root: Path) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "base-sepolia-evm-rpc-canister-rehearsal",
         "state": "AWAITING_PREFLIGHT",
         "created_at": now(),
@@ -340,7 +350,8 @@ def initial_manifest(config: dict[str, Any], root: Path) -> dict[str, Any]:
         },
         "binding": config,
         "scenarios": {name: None for name in SCENARIOS},
-        "complete": False,
+        "launch_ready": False,
+        "extended_complete": False,
         "guarantee_boundary": {
             "provider_operator_or_infrastructure_audited": False,
             "external_assumption": (
@@ -354,11 +365,11 @@ def initial_manifest(config: dict[str, Any], root: Path) -> dict[str, Any]:
 def validate_manifest_envelope(manifest: dict[str, Any]) -> None:
     exact_keys(
         manifest,
-        {"schema_version", "kind", "state", "created_at", "updated_at", "source", "binding", "scenarios", "complete", "guarantee_boundary"},
+        {"schema_version", "kind", "state", "created_at", "updated_at", "source", "binding", "scenarios", "launch_ready", "extended_complete", "guarantee_boundary"},
         "rehearsal manifest",
     )
-    if manifest["schema_version"] != 1 or manifest["kind"] != "base-sepolia-evm-rpc-canister-rehearsal":
-        fail("manifest is not a v1 EVM RPC rehearsal manifest")
+    if manifest["schema_version"] != 2 or manifest["kind"] != "base-sepolia-evm-rpc-canister-rehearsal":
+        fail("manifest is not a v2 EVM RPC rehearsal manifest")
     valid_timestamp(manifest["created_at"], "manifest.created_at")
     valid_timestamp(manifest["updated_at"], "manifest.updated_at")
     source = manifest["source"]
@@ -728,6 +739,7 @@ def validate_raw_artifacts(evidence: dict[str, Any], binding: dict[str, Any], ro
     response_records: list[str] = []
     fault_claim: dict[str, Any] | None = None
     decision_events: list[dict[str, Any]] = []
+    preflight_provider_indices: list[int] = []
     root = root.resolve()
     for reference in evidence["artifacts"]:
         relative = reference["path"]
@@ -768,6 +780,8 @@ def validate_raw_artifacts(evidence: dict[str, Any], binding: dict[str, Any], ro
             fail("raw artifact argv is invalid")
         validate_capture_command(artifact["kind"], artifact["tool"], artifact["argv"], binding)
         validate_transport(artifact, binding)
+        if evidence["scenario"] == "preflight" and artifact["kind"] == "base":
+            preflight_provider_indices.append(artifact["transport"]["provider_index"])
         if artifact["kind"] == "fault":
             exact_keys(parsed, {"schema_version", "rehearsal_id", "scenario", "run_reference", "configured_provider_count", "required_threshold", "failed_provider_count", "failed_provider_indices", "provider_url_digests", "failure_rule", "started_at", "completed_at", "restored_provider_indices", "injector_output_digest", "request_config_digest", "decision_sequence", "decision_timestamp_ns", "decision_digest"}, "fault injection artifact")
             expected = evidence["details"]
@@ -835,6 +849,8 @@ def validate_raw_artifacts(evidence: dict[str, Any], binding: dict[str, Any], ro
             if observed != evidence["details"][field]:
                 fail(f"raw artifact disagrees with scenario detail: {field}")
             covered.add(field)
+    if evidence["scenario"] == "preflight" and sorted(preflight_provider_indices) != [0, 1, 2]:
+        fail("preflight must bind exactly one chain ID artifact for each provider index 0, 1, and 2")
     if evidence["scenario"] in {"single_provider_failure", "quorum_loss"}:
         if fault_claim is None:
             fail("fault scenario lacks its execution claim")
@@ -1205,24 +1221,23 @@ def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, 
     fail(f"unsupported scenario: {scenario}")
 
 
-def derive_state(scenarios: dict[str, Any]) -> tuple[str, bool]:
+def derive_state(scenarios: dict[str, Any]) -> tuple[str, bool, bool]:
     completed = {name for name, evidence in scenarios.items() if evidence is not None}
     if "preflight" not in completed:
-        return "AWAITING_PREFLIGHT", False
-    flow = {"authorization_mint", "withdrawal_release", "ledger_fee_guard", "canonical_receipt"}
-    faults = {
-        "single_provider_failure",
-        "quorum_loss",
-        "authorization_expiry",
-        "processed_event_mismatch",
-    }
+        return "AWAITING_PREFLIGHT", False, False
+    flow = {"authorization_mint", "withdrawal_release"}
     if not flow.issubset(completed):
-        return "READY_FOR_ASSET_FLOWS", False
-    if not faults.issubset(completed):
-        return "READY_FOR_FAILURE_SCENARIOS", False
+        return "READY_FOR_ASSET_FLOWS", False, False
+    if "quorum_loss" not in completed:
+        return "READY_FOR_QUORUM_LOSS", False, False
     if "final_pause" not in completed:
-        return "READY_FOR_FINAL_PAUSE", False
-    return "COMPLETE", True
+        return "READY_FOR_FINAL_PAUSE", False, False
+    extended_complete = EXTENDED_SCENARIOS.issubset(completed)
+    return (
+        "EXTENDED_COMPLETE" if extended_complete else "LAUNCH_READY",
+        LAUNCH_SCENARIOS.issubset(completed),
+        extended_complete,
+    )
 
 
 def record(
@@ -1242,6 +1257,12 @@ def record(
     validate_binding(manifest["binding"])
     if scenario != "preflight" and scenarios["preflight"] is None:
         fail("preflight evidence must be recorded first")
+    if scenarios["final_pause"] is not None and scenarios[scenario] is None:
+        fail("no scenario may be recorded after final_pause")
+    if scenario == "final_pause":
+        completed = {name for name, value in scenarios.items() if value is not None}
+        if not (LAUNCH_SCENARIOS - {"final_pause"}).issubset(completed):
+            fail("final_pause requires every other launch scenario first")
     validate_common(evidence, manifest["binding"], scenario)
     validate_details(scenario, evidence["details"], manifest["binding"])
     if artifact_root is not None:
@@ -1250,10 +1271,14 @@ def record(
     if current is not None and current != evidence:
         fail("conflicting evidence already exists for this scenario")
     scenarios[scenario] = evidence
-    manifest["state"], manifest["complete"] = derive_state(scenarios)
-    if manifest["complete"] and artifact_root is None:
+    state, launch_ready, extended_complete = derive_state(scenarios)
+    manifest["state"] = state
+    manifest["launch_ready"] = launch_ready
+    manifest["extended_complete"] = extended_complete
+    if launch_ready and artifact_root is None:
         manifest["state"] = "AWAITING_RAW_ARTIFACT_VERIFICATION"
-        manifest["complete"] = False
+        manifest["launch_ready"] = False
+        manifest["extended_complete"] = False
     manifest["updated_at"] = now()
 
 
@@ -1274,10 +1299,14 @@ def verify_manifest(manifest: dict[str, Any], artifact_root: Path | None = None)
             validate_details(scenario, evidence["details"], binding)
             if artifact_root is not None:
                 validate_raw_artifacts(evidence, binding, artifact_root)
-    state, complete = derive_state(scenarios)
-    if complete and artifact_root is None:
-        fail("COMPLETE rehearsal verification requires the raw artifact directory")
-    if manifest.get("state") != state or manifest.get("complete") is not complete:
+    state, launch_ready, extended_complete = derive_state(scenarios)
+    if launch_ready and artifact_root is None:
+        fail("launch-ready rehearsal verification requires the raw artifact directory")
+    if (
+        manifest.get("state") != state
+        or manifest.get("launch_ready") is not launch_ready
+        or manifest.get("extended_complete") is not extended_complete
+    ):
         fail("manifest state does not match its evidence")
 
 

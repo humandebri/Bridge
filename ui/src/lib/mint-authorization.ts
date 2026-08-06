@@ -9,6 +9,7 @@ import type { DepositView, MintAuthorizationView } from "@/generated/bridge.did"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { deploymentProfile } from "@/config/profile"
 import { basePublicClient } from "@/lib/evm/client"
+import type { FinalizedRuntimeObservation } from "@/lib/runtime-validation"
 
 export const mintAuthorizationTypes = {
   MintAuthorization: [
@@ -39,12 +40,6 @@ export interface ValidatedMintAuthorization {
   recipient: Address
   signer: Address
   latestBlockTimestamp: bigint
-}
-
-export function formatMintAuthorizationTtl(seconds: bigint): string {
-  if (seconds > 0n && seconds % 3_600n === 0n) return `${seconds / 3_600n}時間`
-  if (seconds > 0n && seconds % 60n === 0n) return `${seconds / 60n}分`
-  return `${seconds}秒`
 }
 
 function fixedHex(bytes: Uint8Array | number[], length: number, label: string): Hex {
@@ -80,7 +75,10 @@ function assertCanonicalDeposit(record: DepositView, view: MintAuthorizationView
   }
 }
 
-export async function validateMintAuthorization(record: DepositView): Promise<ValidatedMintAuthorization> {
+export async function validateMintAuthorization(
+  record: DepositView,
+  runtimeObservation: FinalizedRuntimeObservation,
+): Promise<ValidatedMintAuthorization> {
   const view = record.mint_authorization[0]
   const signatureBytes = view?.signature[0]
   if (!view || !signatureBytes || !("AuthorizationAvailable" in record.state)) {
@@ -116,34 +114,25 @@ export async function validateMintAuthorization(record: DepositView): Promise<Va
 
   const signature = fixedHex(signatureBytes, 65, "Mint signature")
   const recovered = await recoverAddress({ hash: digest, signature })
-  const [snapshot, processed, contractDomain, latestBlock] = await Promise.all([
-    basePublicClient.readContract({
-      address: configuredContract,
-      abi: bridgeAbi,
-      functionName: "bridgeSnapshot",
-    }),
+  const snapshot = runtimeObservation.snapshot
+  if (!runtimeObservation.ready || !snapshot) {
+    throw new Error("Finalized Base runtime observation is unavailable")
+  }
+  const [processed, latestBlock] = await Promise.all([
     basePublicClient.readContract({
       address: configuredContract,
       abi: bridgeAbi,
       functionName: "isDepositProcessed",
       args: [authorization.depositId],
     }),
-    basePublicClient.readContract({
-      address: configuredContract,
-      abi: bridgeAbi,
-      functionName: "eip712Domain",
-    }),
     basePublicClient.getBlock({ blockTag: "latest" }),
   ])
 
-  const [, contractName, contractVersion, contractChainId, verifyingContract] = contractDomain
-  if (snapshot.depositMintsPaused
+  if (processed) {
+    throw new Error("This Deposit ID is already processed on Base. Do not submit another mint; refresh History for finalized status.")
+  }
+  if (snapshot.depositsPaused
     || snapshot.mintAuthorizationEpoch !== authorization.authorizationEpoch
-    || processed
-    || contractName !== domain.name
-    || contractVersion !== domain.version
-    || contractChainId !== domain.chainId
-    || verifyingContract.toLowerCase() !== domain.verifyingContract.toLowerCase()
     || recovered.toLowerCase() !== snapshot.bridgeSigner.toLowerCase()
     || latestBlock.timestamp > authorization.deadline) {
     throw new Error("Mint authorization is no longer valid on Base")

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { createPrivateKey } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { pathToFileURL } from "node:url"
 import { Actor, HttpAgent } from "@icp-sdk/core/agent"
+import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
 import {
   createPublicClient,
@@ -102,6 +104,14 @@ async function main(): Promise<void> {
       process.stdout.write(`${JSON.stringify(jsonValue(confirmation))}\n`)
       return
     }
+    case "schedule-activation": {
+      await runActivation(actor, rpcClient(), "schedule")
+      return
+    }
+    case "execute-activation": {
+      await runActivation(actor, rpcClient(), "execute")
+      return
+    }
     case "drain-emergency": {
       const rpc = rpcClient()
       for (;;) {
@@ -125,6 +135,25 @@ async function main(): Promise<void> {
   }
 }
 
+async function runActivation(
+  actor: _SERVICE,
+  rpc: RelayerRpc,
+  phase: "schedule" | "execute",
+): Promise<void> {
+  const result = phase === "schedule"
+    ? await actor.schedule_activation()
+    : await actor.execute_activation()
+  const artifact = unwrap(result)
+  await validateArtifact(artifact)
+  await relay(rpc, artifact)
+  await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
+  const confirmation = unwrap(await actor.confirm_base_governance_transaction({
+    operation_id: artifact.operation_id,
+    transaction_hash: artifact.transaction_hash,
+  }))
+  process.stdout.write(`${JSON.stringify(jsonValue(confirmation))}\n`)
+}
+
 function rpcClient(): RelayerRpc {
   return createPublicClient({
     transport: http(requiredEnv("BASE_RPC_URL")),
@@ -134,7 +163,7 @@ function rpcClient(): RelayerRpc {
 async function bridgeActor(): Promise<_SERVICE> {
   const pemPath = requiredEnv("IC_IDENTITY_PEM")
   const pem = await readFile(pemPath, "utf8")
-  const identity = Secp256k1KeyIdentity.fromPem(pem)
+  const identity = identityFromPem(pem)
   const host = process.env.IC_HOST || "https://icp-api.io"
   const agent = HttpAgent.createSync({ identity, host })
   if (agent.isLocal()) await agent.fetchRootKey()
@@ -142,6 +171,20 @@ async function bridgeActor(): Promise<_SERVICE> {
     agent,
     canisterId: requiredEnv("BRIDGE_CANISTER_ID"),
   })
+}
+
+export function identityFromPem(pem: string): Ed25519KeyIdentity | Secp256k1KeyIdentity {
+  const key = createPrivateKey(pem)
+  const jwk = key.export({ format: "jwk" })
+  if (!jwk.d) throw new Error("Identity PEM does not contain a private key")
+  const secretKey = new Uint8Array(Buffer.from(jwk.d, "base64url"))
+  if (key.asymmetricKeyType === "ed25519" && jwk.crv === "Ed25519") {
+    return Ed25519KeyIdentity.fromSecretKey(secretKey)
+  }
+  if (key.asymmetricKeyType === "ec" && jwk.crv === "secp256k1") {
+    return Secp256k1KeyIdentity.fromSecretKey(secretKey)
+  }
+  throw new Error(`Unsupported identity PEM key type: ${jwk.crv ?? key.asymmetricKeyType}`)
 }
 
 async function pendingArtifact(
@@ -320,6 +363,8 @@ Commands:
   relay [--operation-id N]
   confirm [--operation-id N] [--hash 0x...]
   run [--operation-id N | --action ...]
+  schedule-activation
+  execute-activation
   replace --operation-id N --max-fee N --priority-fee N
   drain-emergency
 

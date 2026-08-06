@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import check_proof_impact
+from check_claim_manifest import CLAIM_REPORT_SCHEMA, build_claim_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +66,11 @@ class ProofImpactTests(unittest.TestCase):
         self.assertEqual(impact["stages"], [])
 
     def valid_receipt(self) -> dict[str, object]:
+        claims = build_claim_report()["claims"]
+        summary = {
+            status: sum(claim.get("status") == status for claim in claims)
+            for status in ("implementation-proved", "refinement-tested", "partial", "assumed")
+        }
         return {
             "schema": check_proof_impact.RECEIPT_SCHEMA,
             "required_stages": list(check_proof_impact.REQUIRED_STAGES),
@@ -73,7 +79,9 @@ class ProofImpactTests(unittest.TestCase):
                 for stage in check_proof_impact.REQUIRED_STAGES
             ],
             "source_fingerprint": {"algorithm": "sha256", "digest": "current"},
-            "claims": [{"id": "claim"}],
+            "claim_report_schema": CLAIM_REPORT_SCHEMA,
+            "claims": claims,
+            "claim_summary": summary,
             "complete": True,
         }
 
@@ -142,6 +150,17 @@ class ProofImpactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "stale"):
                 check_proof_impact.check_receipt(path)
 
+    def test_receipt_rejects_forged_claims_and_summary(self) -> None:
+        forged_claims = self.valid_receipt()
+        forged_claims["claims"][0]["status"] = "forged"
+        with self.assertRaisesRegex(ValueError, "claims do not match"):
+            self.check_receipt(forged_claims)
+
+        forged_summary = self.valid_receipt()
+        forged_summary["claim_summary"]["partial"] += 1
+        with self.assertRaisesRegex(ValueError, "summary does not match"):
+            self.check_receipt(forged_summary)
+
     def test_conservative_fingerprint_covers_consumers_drivers_and_configs(self) -> None:
         inputs = {
             path.relative_to(ROOT).as_posix()
@@ -149,14 +168,21 @@ class ProofImpactTests(unittest.TestCase):
         }
         for relative in (
             "contracts/test/ProtocolVectors.t.sol",
+            "integration/phase3.spec.ts",
             "ui/src/lib/mint-authorization.ts",
             "ui/src/lib/mint-authorization.test.ts",
             "scripts/check_tool_versions.sh",
             "scripts/plan007/evm-rpc-fault-injector",
+            "verification/claims.tsv",
+            "verification/lean/BridgeSpec/Claims.lean",
+            "verification/generated/protocol-vectors.json",
+            "verification/verus/fail/notification_ingestion_allowed.rs",
             "contracts/foundry.toml",
             "Cargo.lock",
             "pnpm-lock.yaml",
             "ui/vitest.config.ts",
+            "ui/pnpm-lock.yaml",
+            "ui/pnpm-workspace.yaml",
         ):
             with self.subTest(relative=relative):
                 self.assertIn(relative, inputs)
@@ -171,7 +197,7 @@ class ProofImpactTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(f"{relative}\n", encoding="utf-8")
             verification = root / "verification"
-            verification.mkdir()
+            verification.mkdir(exist_ok=True)
             (verification / "claims.tsv").write_text("claims\n", encoding="utf-8")
             consumer = root / "contracts" / "test" / "ProtocolVectors.t.sol"
             consumer.parent.mkdir(parents=True)
@@ -183,6 +209,33 @@ class ProofImpactTests(unittest.TestCase):
             after = check_proof_impact.source_fingerprint(root, manifest)
 
             self.assertNotEqual(before["digest"], after["digest"])
+
+    def test_fingerprint_changes_when_proof_evidence_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative_root, _ in check_proof_impact.FINGERPRINT_SOURCE_ROOTS:
+                (root / relative_root).mkdir(parents=True)
+            for relative in check_proof_impact.FINGERPRINT_CONFIG_FILES:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"{relative}\n", encoding="utf-8")
+            claims = root / "verification" / "claims.tsv"
+            claims.write_text("before\n", encoding="utf-8")
+            manifest = check_proof_impact.ImpactManifest((), ())
+
+            before = check_proof_impact.source_fingerprint(root, manifest)
+            claims.write_text("after\n", encoding="utf-8")
+            after = check_proof_impact.source_fingerprint(root, manifest)
+
+            self.assertNotEqual(before["digest"], after["digest"])
+
+    def test_fingerprint_excludes_generated_receipts_and_build_state(self) -> None:
+        inputs = {
+            path.relative_to(ROOT).as_posix()
+            for path in check_proof_impact.fingerprint_inputs()
+        }
+        self.assertFalse(any(path.startswith("verification/output/") for path in inputs))
+        self.assertFalse(any("/.lake/" in path for path in inputs))
 
 
 if __name__ == "__main__":

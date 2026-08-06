@@ -145,15 +145,11 @@ pub fn pause_with_audit(caller: Principal) -> Result<crate::storage::AuditEvent,
     })
 }
 
-pub fn resume(caller: Principal) -> Result<(), AdminError> {
-    mutate(caller, |state| {
-        if !authorized(state, caller, ACTION_RESUME) {
-            return Err(AdminError::Unauthorized);
-        }
-        state.deposits_paused = false;
-        Ok(crate::storage::AuditEventKind::DepositsResumed)
-    })
-    .map(drop)
+pub(crate) fn confirmed_activation_resume_authorized(
+    state: &AdminState,
+    caller: Principal,
+) -> bool {
+    authorized(state, caller, ACTION_RESUME)
 }
 
 pub fn rotate_pause_principal(

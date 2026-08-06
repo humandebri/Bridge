@@ -8,6 +8,11 @@ import {Bridge} from "../src/Bridge.sol";
 import {BridgeTimelockController} from "../src/BridgeTimelockController.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
 import {TestBase} from "./TestBase.sol";
+import {DeploymentPolicy} from "bridge-deployment-policy/DeploymentPolicy.sol";
+import {
+    ProductionTimelockPolicyNegativeFixture,
+    StagingTimelockPolicyNegativeFixture
+} from "./fixtures/TimelockPolicyNegativeFixtures.sol";
 
 contract BridgeTimelockTest is TestBase {
     address private constant BRIDGE_SIGNER = address(0x11);
@@ -15,7 +20,7 @@ contract BridgeTimelockTest is TestBase {
     address private constant BASE_ADMIN_WALLET = address(0x33);
     address private constant OUTSIDER = address(0x44);
     address private constant CANCELLER = address(0x55);
-    uint256 private constant TIMELOCK_DELAY = 24 hours;
+    uint256 private constant TIMELOCK_DELAY = DeploymentPolicy.MINIMUM_TIMELOCK_DELAY;
 
     Bridge private bridge;
     BridgeTimelockController private timelock;
@@ -181,6 +186,25 @@ contract BridgeTimelockTest is TestBase {
             abi.encodeWithSelector(BridgeTimelockController.MaximumDelayTooLong.selector, 30 days + 1, 30 days)
         );
         new BridgeTimelockController(30 days + 1, proposers, cancellers, executors);
+    }
+
+    function testSelectedBuildRejectsItsEnvironmentSpecificNegativeFixture() public {
+        uint256 rejectedDelay;
+        if (TIMELOCK_DELAY == ProductionTimelockPolicyNegativeFixture.MINIMUM_DELAY) {
+            rejectedDelay = ProductionTimelockPolicyNegativeFixture.REJECTED_DELAY;
+        } else {
+            assert(TIMELOCK_DELAY == StagingTimelockPolicyNegativeFixture.MINIMUM_DELAY);
+            rejectedDelay = StagingTimelockPolicyNegativeFixture.REJECTED_DELAY;
+        }
+
+        address[] memory operator = new address[](1);
+        operator[0] = BASE_ADMIN_WALLET;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                BridgeTimelockController.MinimumDelayTooShort.selector, rejectedDelay, TIMELOCK_DELAY
+            )
+        );
+        new BridgeTimelockController(rejectedDelay, operator, operator, operator);
     }
 
     function testDelayCannotBeReducedBelowPermanentMinimum() public {

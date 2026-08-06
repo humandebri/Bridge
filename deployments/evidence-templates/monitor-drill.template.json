@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "rehearsal_id": "<unique-rehearsal-id>",
   "source_revision": "<reviewed-revision>",
   "source_tree_sha256": "<64-hex>",

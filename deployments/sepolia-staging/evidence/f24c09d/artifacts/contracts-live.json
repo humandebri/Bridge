@@ -1,0 +1,15 @@
+{
+  "deployment_block": 44770225,
+  "deployment_transaction_hash": "0x8862d8746295643efc8730fb11a9034af858a07862441fb144b77a164b674d35",
+  "deployment_receipt_status": 1,
+  "deployed_bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+  "deployer": "0x7f4743128368cded5413e8c42c9bd689ea64d192",
+  "deployer_timelock_roles": {
+    "default_admin": false,
+    "proposer": false,
+    "executor": false,
+    "canceller": false
+  },
+  "bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+  "runtime_administrator": "0x64639cb99ae61436cb1d66d775283f757e436479"
+}

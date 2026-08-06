@@ -7,9 +7,12 @@ import json
 import re
 from pathlib import Path
 
+from proof_fingerprint import source_fingerprint
+
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
 REPORT = ROOT / "verification" / "output" / "claim-report.json"
+CLAIM_REPORT_SCHEMA = 2
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REQUIRED_SCALAR_CALLS = (
     "deadlineAccepts(",
@@ -25,6 +28,10 @@ REQUIRED_SCALAR_CALLS = (
 
 def items(value: str) -> list[str]:
     return [] if value == "-" else value.split(";")
+
+
+def abstract_evidence_status(value: str) -> str:
+    return "proved" if items(value) else "not-applicable"
 
 
 def checked_link(value: str) -> tuple[Path, str]:
@@ -94,7 +101,7 @@ def check_solidity_wrapper_refinement() -> None:
         raise ValueError(f"Bridge mint wrapper does not apply one exact transition: {missing}")
 
 
-def main() -> int:
+def build_claim_report() -> dict[str, object]:
     check_solidity_wrapper_refinement()
     lean_source = "\n".join(
         path.read_text(encoding="utf-8")
@@ -113,12 +120,28 @@ def main() -> int:
         if registration in verus_rows.setdefault(proof, []):
             raise ValueError(f"duplicate Verus proof registration: {proof}/{kernel}")
         verus_rows[proof].append(registration)
-    assumptions = {
-        line.split("\t", 1)[0]
-        for line in (ROOT / "verification" / "assumptions.tsv")
+    assumption_dependencies: dict[str, set[str]] = {}
+    for number, line in enumerate(
+        (ROOT / "verification" / "assumptions.tsv")
         .read_text(encoding="utf-8")
-        .splitlines()
-        if line
+        .splitlines(),
+        1,
+    ):
+        fields = line.split("\t")
+        if len(fields) != 6 or not all(fields):
+            raise ValueError(f"invalid external assumption row {number}")
+        assumption, _, dependent_claims, validation_links, _, _ = fields
+        if assumption in assumption_dependencies:
+            raise ValueError(f"duplicate external assumption: {assumption}")
+        dependencies = set(dependent_claims.split(";"))
+        if not dependencies:
+            raise ValueError(f"external assumption has no dependent claim: {assumption}")
+        for link in validation_links.split(";"):
+            checked_link(link)
+        assumption_dependencies[assumption] = dependencies
+    assumptions = set(assumption_dependencies)
+    actual_assumption_dependencies = {
+        assumption: set() for assumption in assumption_dependencies
     }
     vector_sections = {
         line.split("\t", 1)[0]
@@ -181,6 +204,8 @@ def main() -> int:
             raise ValueError(
                 f"unknown assumption for {claim_id}: {sorted(unknown_assumptions)}"
             )
+        for assumption in items(assumption_ids):
+            actual_assumption_dependencies[assumption].add(claim_id)
         if vectors != "-" and vectors not in vector_sections:
             raise ValueError(f"unknown refinement vector section for {claim_id}: {vectors}")
 
@@ -202,16 +227,22 @@ def main() -> int:
             )
             is None
         ]
+        vector_consumer = (
+            "generated-refinement-tested"
+            if vectors != "-"
+            else "not-applicable"
+        )
         kernel_strength = (
-            "refinement-tested"
-            if model_only or unreferenced_kernels
-            else "implementation-proved"
+            "implementation-proved"
+            if smt_links or (obligations and not model_only)
+            else "refinement-tested"
         )
         evidence = {
-            "abstract": "proved",
-            "production_kernel": kernel_strength,
+            "abstract": abstract_evidence_status(abstract_theorems),
+            "production_kernel": "ownership-registered",
             "smt_scalar": "implementation-proved" if smt_links else "not-applicable",
-            "adapter": "refinement-tested" if tests else "missing",
+            "adapter": "transaction-tested" if tests else "missing",
+            "vector_consumer": vector_consumer,
             "external": "assumed" if items(assumption_ids) else "not-applicable",
         }
         reasons: list[str] = []
@@ -239,11 +270,30 @@ def main() -> int:
         raise ValueError(
             f"unregistered Verus obligations in unified claims: {sorted(missing_verus)}"
         )
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(
-        json.dumps({"schema": 1, "claims": results}, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    for assumption, declared in assumption_dependencies.items():
+        actual = actual_assumption_dependencies[assumption]
+        if declared != actual:
+            raise ValueError(
+                f"external assumption dependency mismatch for {assumption}: "
+                f"declared={sorted(declared)} actual={sorted(actual)}"
+            )
+    return {
+        "schema": CLAIM_REPORT_SCHEMA,
+        "source_fingerprint": source_fingerprint(),
+        "claims": results,
+    }
+
+
+def write_claim_report(report: dict[str, object], path: Path = REPORT) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    report = build_claim_report()
+    write_claim_report(report)
+    results = report["claims"]
+    assert isinstance(results, list)
     print(f"unified claim manifest passed ({len(results)} claims)")
     return 0
 

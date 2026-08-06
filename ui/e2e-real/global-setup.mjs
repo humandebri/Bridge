@@ -22,8 +22,9 @@ const runtimeDir = path.join(uiRoot, ".e2e-runtime")
 const rpcUrl = "http://127.0.0.1:8545"
 const controlPort = 43119
 const uiPort = 4174
-const ACTIVATION_DELAY_SECONDS = 24 * 60 * 60
+const ACTIVATION_DELAY_SECONDS = 5 * 60
 const ACTIVATION_TIME_ADVANCES = 3
+const stagingForgeEnv = { ...process.env, FOUNDRY_PROFILE: "staging" }
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 const testIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(7))
 const testOwner = testIdentity.getPrincipal()
@@ -49,7 +50,10 @@ export default async function globalSetup() {
 async function setup() {
   await mkdir(runtimeDir, { recursive: true })
   buildWasm()
-  execFileSync("forge", ["build", "--root", path.join(root, "contracts")], { stdio: "inherit" })
+  execFileSync("forge", ["build", "--root", path.join(root, "contracts")], {
+    stdio: "inherit",
+    env: stagingForgeEnv,
+  })
 
   if (await isTcpPortOpen("127.0.0.1", 8545)) {
     throw new Error("TCP port 8545 is already in use; real E2E never reuses an existing endpoint")
@@ -184,13 +188,18 @@ async function setup() {
       ],
       base_chain_id: 31_337n,
       bridge_contract: hexToBytes(bridgeAddress),
+      expected_bridge_runtime_sha256: hexToBytes(sha256(bridgeCode)),
       timelock_contract: hexToBytes(timelockAddress),
+      deployment_instance_id: new Uint8Array(32).fill(3),
       ecdsa_key_name: "key_1",
       ecdsa_derivation_path: [],
       governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")],
       deposit_rate_limit_window_seconds: 60n,
       deposit_rate_limit_global: 30,
       deposit_rate_limit_per_principal: 3,
+      notification_rate_limit_window_seconds: 600n,
+      notification_rate_limit_global: 60,
+      notification_ingestion_rate_limit_global: 30,
       settlement_rate_limit_window_seconds: 600n,
       settlement_rate_limit_global: 60,
       settlement_rate_limit_per_principal: 6,
@@ -267,10 +276,12 @@ async function setup() {
     ledgerId: ledgerId.toText(),
     indexId: indexId.toText(),
     bridgeId: bridge.canisterId.toText(),
+    deploymentInstanceId: bytesHex(publicConfig.deployment_instance_id),
     evmRpcCanisterId: publicConfig.evm_rpc_canister_id.toText(),
     rpcProviderUrlsSha256: bytesHex(publicConfig.rpc_provider_urls_sha256),
     bridgeAddress,
     bsnsAddress,
+    timelockAddress,
     expected_bridge_signer: signer,
     deploymentBlock,
     bridgeHash: sha256(bridgeCode),
@@ -427,8 +438,6 @@ async function setup() {
     recovery_execute_transaction: bytesHex(recoveryExecuteSubmitted.Ok.transaction_hash),
   }
   await writeLocalFacts({
-    bridge_runtime_hash: sha256(bridgeCode),
-    bsns_runtime_hash: sha256(bsnsCode),
     mint_signer: signer,
     governance_operator: governanceOperator,
     timelock: timelockAddress,
@@ -478,22 +487,11 @@ async function setup() {
         }
         return send(response, 200, { deposit_id: bytesHex(result.Ok.deposit_id), owner_sequence: result.Ok.owner_sequence.toString(), state: result.Ok.state })
       }
-      if (request.url === "/ic/notify-deposit-mint") {
+      if (request.url === "/ic/request-deposit-refund") {
         await syncObservedHeads()
-        const result = await bridge.actor.notify_deposit_mint({
-          deposit_id: hexToBytes(body.depositId),
-          transaction_hash: hexToBytes(body.transactionHash),
-        })
-        if ("Err" in result) throw new Error(`mint notification rejected: ${json(result.Err)}`)
-        if ("Minted" in result.Ok) return send(response, 200, { Minted: {
-          deposit_id: bytesHex(result.Ok.Minted.deposit_id),
-          transaction_hash: bytesHex(result.Ok.Minted.transaction_hash),
-          finalized_head_block_number: result.Ok.Minted.finalized_head_block_number.toString(),
-        } })
-        return send(response, 200, { Duplicate: {
-          deposit_id: bytesHex(result.Ok.Duplicate.deposit_id),
-          transaction_hash: bytesHex(result.Ok.Duplicate.transaction_hash),
-        } })
+        const result = await bridge.actor.request_deposit_refund(hexToBytes(body.id))
+        if ("Err" in result) throw new Error(`refund claim rejected: ${json(result.Err)}`)
+        return send(response, 200, result.Ok)
       }
       if (request.url === "/ic/notify") {
         notifyCalls += 1
@@ -519,11 +517,6 @@ async function setup() {
         if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id) } })
         return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id) } })
       }
-      if (request.url === "/ic/continue-deposit") {
-        const result = await bridge.actor.continue_deposit(hexToBytes(body.id))
-        if ("Err" in result) throw new Error(`deposit continuation rejected: ${json(result.Err)}`)
-        return send(response, 200, settlementJson(result.Ok))
-      }
       if (request.url === "/ic/continue-withdrawal") {
         const result = await bridge.actor.continue_withdrawal(hexToBytes(body.id))
         if ("Err" in result) throw new Error(`withdrawal continuation rejected: ${json(result.Err)}`)
@@ -538,8 +531,10 @@ async function setup() {
         return send(response, 200, null)
       }
       if (request.url === "/test/settle") {
+        await syncObservedHeads()
         for (let round = 0; round < 10; round += 1) {
-          for (const id of knownDeposits) await bridge.actor.continue_deposit(id)
+          await pic.advanceTime(60_001)
+          await pic.tick(30)
           for (const id of knownWithdrawals) await bridge.actor.continue_withdrawal(id)
         }
         return send(response, 200, null)
@@ -666,7 +661,6 @@ async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
     unpaid_withdrawal_count: status.unpaid_withdrawal_count,
     unpaid_withdrawal_amount_out: status.unpaid_withdrawal_amount_out,
     withdrawal_stop_reasons: status.withdrawal_stop_reasons,
-    observed_base_chain_id: status.observed_base_chain_id,
     observed_bridge_signer: status.observed_bridge_signer,
     observed_bridge_runtime_sha256: status.observed_bridge_runtime_sha256,
     last_finalized_base_block: status.last_finalized_base_block,
@@ -758,8 +752,11 @@ function deployTimelock(governanceOperator) {
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast",
     "src/BridgeTimelockController.sol:BridgeTimelockController", "--constructor-args",
-    "86400", `[${governanceOperator}]`, `[${governanceOperator}]`, `[${governanceOperator}]`,
-  ], { encoding: "utf8" })
+    String(ACTIVATION_DELAY_SECONDS),
+    `[${governanceOperator}]`,
+    `[${governanceOperator}]`,
+    `[${governanceOperator}]`,
+  ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Timelock deployment:\n${output}`)
   return match[1]
@@ -774,7 +771,7 @@ function deployBridge(signer, governanceOperator, timelockAddress) {
     "--from", deployer, "--unlocked", "--broadcast", "src/Bridge.sol:Bridge", "--constructor-args",
     "Bridged KINIC", "KINIC", "8", signer, governanceOperator, timelockAddress, timelockCodeHash,
     "1000000000000", "10000000000000", "3600", "100000000", "1000000",
-  ], { encoding: "utf8" })
+  ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Bridge deployment:\n${output}`)
   assertFrozenCanisterRoles(match[1], timelockAddress, governanceOperator)
@@ -811,24 +808,27 @@ async function writeProfile(values) {
   const source = `
 export interface DeploymentProfile {
   environment: string; label: string; testOnly: boolean;
+  environmentMode: "short-delay-test-only" | null; activationTimelockDelaySeconds: number | null;
   icHost: string; baseRpcUrl: string; chainId: number; bridgeCanisterId: string | null; ledgerCanisterId: string | null; indexCanisterId: string | null;
+  deploymentInstanceId: \`0x\${string}\` | null;
   evmRpcCanisterId: string | null; rpcProviderUrlsSha256: \`0x\${string}\` | null;
   icToken: { name: string; symbol: string; decimals: number }; baseToken: { symbol: string; decimals: number };
-  bridgeAddress: \`0x\${string}\` | null; bsnsAddress: \`0x\${string}\` | null; expected_bridge_signer: \`0x\${string}\` | null; deploymentBlock: bigint | null;
+  bridgeAddress: \`0x\${string}\` | null; bsnsAddress: \`0x\${string}\` | null; timelockAddress: \`0x\${string}\` | null; expected_bridge_signer: \`0x\${string}\` | null; deploymentBlock: bigint | null;
   bridgeRuntimeHash: \`0x\${string}\` | null; bsnsRuntimeHash: \`0x\${string}\` | null;
 }
 export const deploymentProfile: DeploymentProfile = ${serialize({
     environment: "local-real-e2e", label: "Local Anvil + PocketIC", testOnly: true,
+    environmentMode: "short-delay-test-only", activationTimelockDelaySeconds: ACTIVATION_DELAY_SECONDS,
     icHost: `http://127.0.0.1:${values.gatewayPort}`,
-    baseRpcUrl: rpcUrl, chainId: 31337, bridgeCanisterId: values.bridgeId, ledgerCanisterId: values.ledgerId, indexCanisterId: values.indexId,
+    baseRpcUrl: rpcUrl, chainId: 31337, bridgeCanisterId: values.bridgeId, deploymentInstanceId: values.deploymentInstanceId, ledgerCanisterId: values.ledgerId, indexCanisterId: values.indexId,
     evmRpcCanisterId: values.evmRpcCanisterId, rpcProviderUrlsSha256: values.rpcProviderUrlsSha256,
     icToken: { name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 }, baseToken: { symbol: "KINIC", decimals: 8 },
-    bridgeAddress: values.bridgeAddress, bsnsAddress: values.bsnsAddress, expected_bridge_signer: values.expected_bridge_signer, deploymentBlock: values.deploymentBlock,
+    bridgeAddress: values.bridgeAddress, bsnsAddress: values.bsnsAddress, timelockAddress: values.timelockAddress, expected_bridge_signer: values.expected_bridge_signer, deploymentBlock: values.deploymentBlock,
     bridgeRuntimeHash: values.bridgeHash, bsnsRuntimeHash: values.bsnsHash,
   })}
 export function profileCompleteness(profile: DeploymentProfile): string[] {
   const blockers: string[] = []
-  if (!profile.bridgeCanisterId || !profile.ledgerCanisterId || !profile.indexCanisterId || !profile.evmRpcCanisterId || !profile.rpcProviderUrlsSha256 || !profile.bridgeAddress || !profile.bsnsAddress || !profile.expected_bridge_signer || profile.deploymentBlock === null || !profile.bridgeRuntimeHash || !profile.bsnsRuntimeHash) blockers.push("Deployment profile is incomplete")
+  if (!profile.bridgeCanisterId || !profile.deploymentInstanceId || !profile.ledgerCanisterId || !profile.indexCanisterId || !profile.evmRpcCanisterId || !profile.rpcProviderUrlsSha256 || !profile.bridgeAddress || !profile.bsnsAddress || !profile.timelockAddress || !profile.expected_bridge_signer || profile.deploymentBlock === null || !profile.bridgeRuntimeHash || !profile.bsnsRuntimeHash) blockers.push("Deployment profile is incomplete")
   return blockers
 }
 `
@@ -848,7 +848,13 @@ function serialize(value) {
 
 function account(owner) { return { owner, subaccount: [] } }
 function bytesHex(bytes) { return `0x${Buffer.from(bytes).toString("hex")}` }
-function json(value) { return JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item) }
+function json(value) {
+  return JSON.stringify(value, (_key, item) => {
+    if (typeof item === "bigint") return item.toString()
+    if (item instanceof Uint8Array) return Array.from(item)
+    return item
+  })
+}
 function settlementJson(value) {
   if ("Submitted" in value) return { Submitted: { ...value.Submitted, transaction_hash: Array.from(value.Submitted.transaction_hash) } }
   if ("WaitingForConfirmation" in value) return { WaitingForConfirmation: { ...value.WaitingForConfirmation, transaction_hash: Array.from(value.WaitingForConfirmation.transaction_hash) } }

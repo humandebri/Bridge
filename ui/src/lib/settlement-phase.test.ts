@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { depositPhaseName, depositPhaseTone, depositReconciliationMessage, isDepositPhase, isDepositTerminal, isSettlementActionResult, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName } from "./settlement-phase"
+import { depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositPhase, isDepositTerminal, isSettlementActionResult, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName } from "./settlement-phase"
 
 describe("settlement phase helpers", () => {
   it("preserves public display names and terminal tones", () => {
@@ -7,7 +7,7 @@ describe("settlement phase helpers", () => {
     expect(depositPhaseTone({ Minted: null })).toBe("good")
     expect(depositPhaseName({ EscrowedUnquoted: null })).toBe("Checking Base")
     expect(depositPhaseName({ Refunded: null })).toBe("Refunded")
-    expect(depositPhaseTone({ RefundReconciliationHold: null })).toBe("warn")
+    expect(depositPhaseTone({ RefundProcessing: null })).toBe("warn")
     expect(isDepositTerminal({ Refunded: null })).toBe(true)
     expect(isDepositTerminal({ Cancelled: null })).toBe(true)
     expect(withdrawalPhaseName({ ReleasePending: null })).toBe("Processing")
@@ -29,9 +29,24 @@ describe("settlement phase helpers", () => {
   })
 
   it("distinguishes finalized confirmation, RPC stops, and audit stops", () => {
-    const phase = { ExpiryReconciliation: null } as const
-    expect(depositReconciliationMessage(phase)).toBe("Confirming the finalized Base state")
-    expect(depositReconciliationMessage(phase, "RpcUnavailable")).toBe("Base RPC confirmation stopped — retry is safe")
+    const phase = { RefundAvailable: null } as const
+    expect(depositReconciliationMessage(phase)).toBeUndefined()
+    expect(depositReconciliationMessage(phase, "RpcUnavailable")).toBe("Base RPC confirmation stopped — requesting again is safe")
     expect(depositReconciliationMessage(phase, "BaseStateMismatch")).toBe("Mint evidence requires audit — refund is blocked")
+  })
+
+  it("uses a browser pending mint only while the canonical Deposit remains mintable", () => {
+    expect(depositUsesPendingMintStatus({ AuthorizationAvailable: null }, true, false)).toBe(true)
+    expect(depositUsesPendingMintStatus({ AuthorizationAvailable: null }, true, true)).toBe(false)
+    for (const phase of [
+      { Minted: null },
+      { RefundAvailable: null },
+      { RefundProcessing: null },
+      { Refunded: null },
+      { FundingReconciliationHold: null },
+      { Cancelled: null },
+    ] as const) {
+      expect(depositUsesPendingMintStatus(phase, true, false)).toBe(false)
+    }
   })
 })

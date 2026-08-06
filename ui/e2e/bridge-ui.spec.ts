@@ -69,7 +69,7 @@ test("bridge defaults to IC to Base and reports incomplete configuration", async
   await capture(page, testInfo, "bridge-deposit")
 })
 
-test("direction switch is URL-backed and exposes withdrawal protection", async ({ page }, testInfo) => {
+test("direction switch is URL-backed and updates bridge endpoints", async ({ page }, testInfo) => {
   await page.goto("/?direction=deposit")
   await expect(page.locator(".kinic-rail")).not.toHaveClass(/is-withdraw/)
   await page.getByRole("button", { name: "Reverse bridge direction" }).click()
@@ -79,7 +79,6 @@ test("direction switch is URL-backed and exposes withdrawal protection", async (
   await expect(page.getByRole("button", { name: "To Internet Computer Connect IC wallet", exact: true }).locator('[data-network-logo="ic"]')).toBeVisible()
   await expect(page.getByRole("button", { name: "Bridge to IC" })).toBeDisabled()
   await expect(page.getByText("Estimated receive", { exact: true })).toBeVisible()
-  await expect(page.getByText("Base refund is not available after burn.", { exact: true })).toBeVisible()
   await capture(page, testInfo, "bridge-withdraw")
 })
 
@@ -123,13 +122,14 @@ test("IC and EVM wallet controls are separate", async ({ page }, testInfo) => {
 test("history and status are separate low-density surfaces", async ({ page }, testInfo) => {
   await page.goto("/history")
   await expect(page.getByRole("heading", { name: "Bridge history" })).toBeVisible()
-  await expect(page.getByRole("alert")).toContainText("Actions unavailable")
-  await expect(page.getByRole("alert")).toContainText("Refresh before continuing")
+  await expect(page.getByText("Actions unavailable")).toHaveCount(0)
+  await expect(page.getByText("Some activity is unavailable")).toHaveCount(0)
+  await expect(page.getByText("Connect an IC wallet to include IC → Base activity.")).toHaveCount(0)
+  await expect(page.getByText("Connect a wallet", { exact: true })).toBeVisible()
   await expect(page.getByRole("tab")).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "All", exact: true })).toHaveAttribute("aria-pressed", "true")
-  await page.getByRole("button", { name: "To IC", exact: true }).click()
-  await expect(page.getByRole("button", { name: "To IC", exact: true })).toHaveAttribute("aria-pressed", "true")
-  await expect(page).not.toHaveURL(/tab=/)
+  await expect(page.getByRole("button", { name: "All", exact: true })).toHaveCount(0)
+  await expect(page.getByRole("button", { name: "To Base", exact: true })).toHaveCount(0)
+  await expect(page.getByRole("button", { name: "To IC", exact: true })).toHaveCount(0)
   await capture(page, testInfo, "history")
   await page.goto("/status")
   await expect(page.getByRole("heading", { name: "Bridge status" })).toBeVisible()

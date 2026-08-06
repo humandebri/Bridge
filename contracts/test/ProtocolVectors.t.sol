@@ -1,133 +1,11 @@
-// contracts/test: bind the production Withdrawal implementation to Lean-generated protocol vectors.
+// contracts/test: non-generated known-answer checks for the shared mint authorization vector.
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
-import {Bridge} from "../src/Bridge.sol";
-import {IBSNS} from "../src/interfaces/IBSNS.sol";
-import {IBridge} from "../src/interfaces/IBridge.sol";
-import {MintAuthorizationPolicy} from "../src/libraries/MintAuthorizationPolicy.sol";
 import {TestBase} from "./TestBase.sol";
 
 contract ProtocolVectorsTest is TestBase {
-    string private constant VECTORS = "../verification/generated/protocol-vectors.json";
     string private constant MINT_AUTHORIZATION_VECTOR = "../verification/generated/mint-authorization-vector.json";
-    uint256 private constant BRIDGE_SIGNER_KEY = 0xA11CE;
-    address private constant RUNTIME_ADMINISTRATOR = address(0x22);
-    address private constant USER = address(0x44);
-
-    function _deployBridge(uint256 serviceFee) private returns (Bridge bridge, IBSNS token) {
-        address bridgeSigner = vm.addr(BRIDGE_SIGNER_KEY);
-        address timelock = _deployTestTimelock(address(0x33));
-        bridge = new Bridge(
-            "kinic",
-            "KINIC",
-            8,
-            bridgeSigner,
-            RUNTIME_ADMINISTRATOR,
-            timelock,
-            _timelockCodeHash(timelock),
-            2_000,
-            2_000,
-            1 hours,
-            100,
-            serviceFee
-        );
-        token = bridge.bsns();
-        vm.prank(timelock);
-        bridge.unpauseDepositMints();
-        vm.prank(timelock);
-        bridge.unpauseWithdrawals();
-        IBridge.MintAuthorization memory authorization = IBridge.MintAuthorization({
-            depositId: keccak256(abi.encode(serviceFee)),
-            recipient: USER,
-            grossAmount: 1_100,
-            maxServiceFee: serviceFee,
-            chargedServiceFee: serviceFee,
-            deadline: block.timestamp + 30 minutes,
-            authorizationEpoch: bridge.mintAuthorizationEpoch()
-        });
-        _submitMintAuthorization(BRIDGE_SIGNER_KEY, bridge, authorization, address(this));
-    }
-
-    function test_protocol_quote_cases_matches_production() public {
-        string memory json = vm.readFile(VECTORS);
-        assert(vm.parseJsonUint(json, ".schema_version") == 2);
-        uint256 count = vm.parseJsonUint(json, ".quote_count");
-        assert(count > 0);
-
-        for (uint256 index = 0; index < count; ++index) {
-            string memory base = string.concat(".quote_cases[", vm.toString(index), "]");
-            uint256 amount = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".amount")));
-            uint256 serviceFee = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".service_fee")));
-            bool accepted = vm.parseJsonBool(json, string.concat(base, ".accepted"));
-            (Bridge bridge, IBSNS token) = _deployBridge(serviceFee);
-
-            vm.prank(USER);
-            token.approve(address(bridge), amount);
-
-            if (!accepted) {
-                vm.prank(USER);
-                vm.expectRevert(abi.encodeWithSelector(IBridge.InvalidAmount.selector, amount));
-                bridge.createWithdrawal(amount, serviceFee, hex"01", bytes32(0));
-                continue;
-            }
-
-            uint256 expectedAmountOut = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".amount_out")));
-            vm.prank(USER);
-            uint256 withdrawalId = bridge.createWithdrawal(amount, serviceFee, hex"01", bytes32(0));
-            IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(withdrawalId);
-            assert(withdrawal.amount == amount);
-            assert(withdrawal.chargedServiceFee == serviceFee);
-            assert(withdrawal.amountOut == expectedAmountOut);
-            assert(withdrawal.status == IBridge.WithdrawalStatus.Committed);
-        }
-    }
-
-    function test_mint_transition_matches_lean_deposit_admission_cases() public view {
-        string memory json = vm.readFile(VECTORS);
-        uint256 count = vm.parseJsonUint(json, ".deposit_admission_count");
-        assert(count > 0);
-
-        for (uint256 index = 0; index < count; ++index) {
-            string memory base = string.concat(".deposit_admission_cases[", vm.toString(index), "]");
-            uint256 serviceFee = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".service_fee")));
-            uint256 maximumFee = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".maximum_service_fee")));
-            uint256 grossAmount = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".gross")));
-            uint256 perDepositLimit = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".per_deposit_limit")));
-            uint256 consumed = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".minted_in_window")));
-            uint256 windowLimit = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".mint_window_limit")));
-            bool expectedAccepted = vm.parseJsonBool(json, string.concat(base, ".accepted"));
-            MintAuthorizationPolicy.MintTransitionInput memory input = MintAuthorizationPolicy.MintTransitionInput({
-                timestamp: 0,
-                deadline: 0,
-                authorizationEpoch: 1,
-                currentEpoch: 1,
-                recipient: USER,
-                bridge: address(2),
-                token: address(3),
-                grossAmount: grossAmount,
-                maximumFee: maximumFee,
-                chargedFee: serviceFee,
-                protocolMaximumFee: maximumFee,
-                perDepositLimit: perDepositLimit,
-                consumedInWindow: consumed,
-                windowLimit: windowLimit,
-                windowStartedAt: 0,
-                windowDuration: 1,
-                paused: false,
-                processed: false
-            });
-            (MintAuthorizationPolicy.RejectReason reason, MintAuthorizationPolicy.MintEffects memory effects,) =
-                MintAuthorizationPolicy.evaluateMint(input);
-            assert((reason == MintAuthorizationPolicy.RejectReason.None) == expectedAccepted);
-            if (expectedAccepted) {
-                uint256 expectedNet = vm.parseUint(vm.parseJsonString(json, string.concat(base, ".net")));
-                assert(effects.mintAmount == expectedNet);
-                assert(effects.supplyIncrease == expectedNet);
-                assert(effects.eventMintedAmount == expectedNet);
-            }
-        }
-    }
 
     function test_mint_authorization_shared_vector() public view {
         string memory json = vm.readFile(MINT_AUTHORIZATION_VECTOR);
@@ -199,12 +77,8 @@ contract ProtocolVectorsTest is TestBase {
 
     function _nibble(bytes1 value) private pure returns (uint8) {
         uint8 digit = uint8(value);
-        if (digit >= 48 && digit <= 57) {
-            return digit - 48;
-        }
-        if (digit >= 97 && digit <= 102) {
-            return digit - 97 + 10;
-        }
+        if (digit >= 48 && digit <= 57) return digit - 48;
+        if (digit >= 97 && digit <= 102) return digit - 97 + 10;
         revert();
     }
 }

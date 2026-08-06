@@ -65,10 +65,12 @@ pub enum FundingFailure {
 pub enum DepositError {
     InvalidRequest(String),
     BaseObservationUnavailable,
+    DepositIdentityConflict,
     Rejected(String),
     StorageFailure,
     DepositsPaused,
     ReserveUnavailable,
+    ReservationMaintenance { retry_after_seconds: u64 },
     RateLimited { retry_after_seconds: u64 },
     SequenceMismatch { expected: u64 },
     DepositConflict,
@@ -85,6 +87,7 @@ pub struct DepositView {
     pub gross_amount: Nat,
     pub quote: Option<DepositQuoteView>,
     pub refund: Option<DepositRefundView>,
+    pub available_refund_amount: Option<Nat>,
     pub max_service_fee: Nat,
     pub base_recipient: Vec<u8>,
     pub from_subaccount: Option<Vec<u8>>,
@@ -92,6 +95,24 @@ pub struct DepositView {
     pub last_settlement_stop_reason: Option<String>,
     pub mint_authorization: Option<MintAuthorizationView>,
     pub automatic_progress: Option<AutomaticProgressView>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum RequestDepositRefundError {
+    AnonymousCaller,
+    InvalidDepositId,
+    NotFound,
+    OwnerMismatch,
+    NotClaimable,
+    FinalityUnavailable,
+    RpcInconsistent,
+    BaseStateMismatch,
+    DepositIdentityConflict,
+    StorageFailure,
+    Busy,
+    AutomaticProgressPending { next_run_at_ns: Option<u64> },
+    RateLimited { retry_after_seconds: u64 },
+    InsufficientCycles,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -145,10 +166,18 @@ impl From<DepositRefundReason> for DepositRefundReasonView {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct DepositRefundView {
     pub reason: DepositRefundReasonView,
+    pub status: DepositRefundStatusView,
     pub amount: Nat,
     pub ledger_fee: Nat,
     pub attempt_no: u64,
     pub block_index: Option<Nat>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepositRefundStatusView {
+    Sending,
+    ReconciliationRequired,
+    Completed,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -220,7 +249,6 @@ pub enum NotifyWithdrawalError {
     TransactionNotFound,
     TransactionNotConfirmed,
     TransactionReverted,
-    OwnerMismatch,
     LedgerFeeExceedsServiceFee {
         ledger_fee: Nat,
         charged_service_fee: Nat,
@@ -232,153 +260,6 @@ pub enum NotifyWithdrawalError {
     Busy,
     RateLimited,
     InsufficientCycles,
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct NotifyDepositMintArgs {
-    pub deposit_id: Vec<u8>,
-    pub transaction_hash: Vec<u8>,
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum NotifyDepositMintReceipt {
-    Minted {
-        deposit_id: Vec<u8>,
-        transaction_hash: Vec<u8>,
-        finalized_head_block_number: u64,
-    },
-    Duplicate {
-        deposit_id: Vec<u8>,
-        transaction_hash: Vec<u8>,
-    },
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum NotifyDepositMintError {
-    AnonymousCaller,
-    InvalidDepositId,
-    InvalidTransactionHash,
-    NotFound,
-    OwnerMismatch,
-    InvalidState,
-    TransactionNotConfirmed,
-    TransactionReverted,
-    RpcUnavailable,
-    RpcInconsistent,
-    InvalidBaseResponse,
-    StorageFailure,
-    Busy,
-    InsufficientCycles,
-}
-
-pub async fn notify_deposit_mint(
-    caller: Principal,
-    args: NotifyDepositMintArgs,
-) -> Result<NotifyDepositMintReceipt, NotifyDepositMintError> {
-    if caller == Principal::anonymous() {
-        return Err(NotifyDepositMintError::AnonymousCaller);
-    }
-    let deposit_id: [u8; 32] = args
-        .deposit_id
-        .as_slice()
-        .try_into()
-        .map_err(|_| NotifyDepositMintError::InvalidDepositId)?;
-    let transaction_hash: [u8; 32] = args
-        .transaction_hash
-        .as_slice()
-        .try_into()
-        .map_err(|_| NotifyDepositMintError::InvalidTransactionHash)?;
-    let (authorization, duplicate) = STORE.with(|store| {
-        let store = store.borrow();
-        let intent = store
-            .deposit_intent(deposit_id)
-            .map_err(|_| NotifyDepositMintError::StorageFailure)?
-            .ok_or(NotifyDepositMintError::NotFound)?;
-        if intent.caller != caller.as_slice() {
-            return Err(NotifyDepositMintError::OwnerMismatch);
-        }
-        let deposit = store
-            .deposit(deposit_id)
-            .map_err(|_| NotifyDepositMintError::StorageFailure)?
-            .ok_or(NotifyDepositMintError::NotFound)?;
-        if let bridge_core::DepositState::Minted { .. } = deposit.state {
-            let duplicate = deposit
-                .mint_finalization_evidence
-                .as_ref()
-                .is_some_and(|evidence| evidence.transaction_hash == transaction_hash);
-            return Ok((deposit.mint_authorization, duplicate));
-        }
-        if !matches!(
-            deposit.state,
-            bridge_core::DepositState::AuthorizationAvailable { .. }
-                | bridge_core::DepositState::ExpiryReconciliation { .. }
-        ) {
-            return Err(NotifyDepositMintError::InvalidState);
-        }
-        Ok((deposit.mint_authorization, false))
-    })?;
-    if duplicate {
-        return Ok(NotifyDepositMintReceipt::Duplicate {
-            deposit_id: deposit_id.to_vec(),
-            transaction_hash: transaction_hash.to_vec(),
-        });
-    }
-    let authorization = authorization.ok_or(NotifyDepositMintError::InvalidState)?;
-    let config = STORE
-        .with(|store| store.borrow().config())
-        .map_err(|_| NotifyDepositMintError::StorageFailure)?
-        .ok_or(NotifyDepositMintError::StorageFailure)?;
-    let finalized = evm_rpc::finalized_observation(&config)
-        .await
-        .map_err(map_deposit_mint_observation_error)?;
-    let evidence = evm_rpc::notified_mint_evidence(
-        &config,
-        &authorization,
-        finalized.block_number,
-        transaction_hash,
-    )
-    .await
-    .map_err(map_deposit_mint_observation_error)?;
-    STORE.with(|store| {
-        let mut store = store.borrow_mut();
-        let mut current = store
-            .deposit(deposit_id)
-            .map_err(|_| NotifyDepositMintError::StorageFailure)?
-            .ok_or(NotifyDepositMintError::NotFound)?;
-        if current.mint_authorization.as_ref() != Some(&authorization) {
-            return Err(NotifyDepositMintError::InvalidState);
-        }
-        current
-            .apply(bridge_core::DepositEvent::MintReconciled {
-                evidence: Box::new(evidence),
-            })
-            .map_err(|_| NotifyDepositMintError::InvalidState)?;
-        store
-            .put_deposit(&current)
-            .map_err(|_| NotifyDepositMintError::StorageFailure)
-    })?;
-    Ok(NotifyDepositMintReceipt::Minted {
-        deposit_id: deposit_id.to_vec(),
-        transaction_hash: transaction_hash.to_vec(),
-        finalized_head_block_number: finalized.block_number,
-    })
-}
-
-fn map_deposit_mint_observation_error(error: evm_rpc::ObservationError) -> NotifyDepositMintError {
-    match error {
-        evm_rpc::ObservationError::Rpc => NotifyDepositMintError::RpcUnavailable,
-        evm_rpc::ObservationError::Inconsistent => NotifyDepositMintError::RpcInconsistent,
-        evm_rpc::ObservationError::TransactionPending => {
-            NotifyDepositMintError::TransactionNotConfirmed
-        }
-        evm_rpc::ObservationError::TransactionReverted => {
-            NotifyDepositMintError::TransactionReverted
-        }
-        evm_rpc::ObservationError::BaseStateMismatch
-        | evm_rpc::ObservationError::ChainIdMismatch
-        | evm_rpc::ObservationError::InvalidResponse
-        | evm_rpc::ObservationError::Overflow => NotifyDepositMintError::InvalidBaseResponse,
-    }
 }
 
 pub async fn notify_withdrawal(
@@ -397,23 +278,28 @@ pub async fn notify_withdrawal(
         .with(|store| store.borrow().config())
         .map_err(|_| NotifyWithdrawalError::StorageFailure)?
         .ok_or(NotifyWithdrawalError::StorageFailure)?;
-    let outcome = match evm_rpc::notified_withdrawal_outcome(&config, transaction_hash).await {
-        Ok(outcome) => outcome,
-        Err(evm_rpc::ObservationError::Inconsistent) => {
-            let decision =
-                evm_rpc::quorum_loss_decision("notify_withdrawal", Some(transaction_hash));
-            STORE
-                .with(|store| {
-                    store.borrow_mut().append_audit_events_atomically(
-                        ic_cdk::api::canister_self(),
-                        vec![rpc_decision_event_kind(&decision)],
-                    )
-                })
-                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-            return Err(NotifyWithdrawalError::RpcInconsistent);
-        }
-        Err(error) => return Err(map_withdrawal_observation_error(error)),
-    };
+    let runtime_attested =
+        runtime_attested(&config).map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+    let outcome =
+        match evm_rpc::notified_withdrawal_outcome(&config, transaction_hash, runtime_attested)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(evm_rpc::ObservationError::Inconsistent) => {
+                let decision =
+                    evm_rpc::quorum_loss_decision("notify_withdrawal", Some(transaction_hash));
+                STORE
+                    .with(|store| {
+                        store.borrow_mut().append_audit_events_atomically(
+                            ic_cdk::api::canister_self(),
+                            vec![rpc_decision_event_kind(&decision)],
+                        )
+                    })
+                    .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+                return Err(NotifyWithdrawalError::RpcInconsistent);
+            }
+            Err(error) => return Err(map_withdrawal_observation_error(error)),
+        };
     let (observed, snapshot, rpc_audit, stable_observation, finalized_head_block_number) =
         match outcome {
             evm_rpc::NotifiedWithdrawalOutcome::Missing => {
@@ -440,13 +326,6 @@ pub async fn notify_withdrawal(
                 finalized_head_block_number,
             ),
         };
-    let owner = Principal::try_from_slice(&observed.owner)
-        .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
-    let administrator = crate::admin::can_advance_settlement(caller)
-        .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-    if !notification_caller_allowed(caller, owner, administrator) {
-        return Err(NotifyWithdrawalError::OwnerMismatch);
-    }
     let expected_signer = cached_signer_address(&config)
         .await
         .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
@@ -471,12 +350,10 @@ pub async fn notify_withdrawal(
                 true,
             )),
         ],
+        config.notification_rate_limit_window_seconds,
+        config.notification_ingestion_rate_limit_global,
     )?;
     Ok(receipt)
-}
-
-fn notification_caller_allowed(caller: Principal, owner: Principal, administrator: bool) -> bool {
-    caller == owner || administrator
 }
 
 pub(crate) fn notification_action_hash(
@@ -497,7 +374,6 @@ fn map_withdrawal_observation_error(error: evm_rpc::ObservationError) -> NotifyW
         evm_rpc::ObservationError::Rpc => NotifyWithdrawalError::RpcUnavailable,
         evm_rpc::ObservationError::Inconsistent => NotifyWithdrawalError::RpcInconsistent,
         evm_rpc::ObservationError::BaseStateMismatch => NotifyWithdrawalError::BaseStateMismatch,
-        evm_rpc::ObservationError::ChainIdMismatch => NotifyWithdrawalError::BaseStateMismatch,
         evm_rpc::ObservationError::InvalidResponse | evm_rpc::ObservationError::Overflow => {
             NotifyWithdrawalError::InvalidBaseResponse
         }
@@ -545,6 +421,7 @@ fn existing_notified_withdrawal(
 
 fn notification_commit_error(error: crate::storage::StorageError) -> NotifyWithdrawalError {
     match error {
+        crate::storage::StorageError::NotificationRateLimited => NotifyWithdrawalError::RateLimited,
         crate::storage::StorageError::Core(
             bridge_core::CoreError::ConflictingReplay | bridge_core::CoreError::PayloadConflict,
         ) => NotifyWithdrawalError::WithdrawalConflict,
@@ -553,7 +430,6 @@ fn notification_commit_error(error: crate::storage::StorageError) -> NotifyWithd
 }
 
 pub(crate) fn existing_notified_withdrawal_by_hash(
-    caller: Principal,
     transaction_hash: [u8; 32],
 ) -> Result<Option<NotifyWithdrawalReceipt>, NotifyWithdrawalError> {
     let found = STORE.with(|store| {
@@ -564,27 +440,15 @@ pub(crate) fn existing_notified_withdrawal_by_hash(
         else {
             return Ok(None);
         };
-        let withdrawal = store
+        store
             .withdrawal(withdrawal_id)
             .map_err(|_| NotifyWithdrawalError::StorageFailure)?
             .ok_or(NotifyWithdrawalError::StorageFailure)?;
-        let admin = store
-            .admin_state()
-            .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-        Ok(Some((withdrawal_id, withdrawal.owner, admin)))
+        Ok(Some(withdrawal_id))
     })?;
-    let Some((withdrawal_id, owner, admin)) = found else {
+    let Some(withdrawal_id) = found else {
         return Ok(None);
     };
-    let administrator = caller == admin.governance_principal || caller == admin.pause_principal;
-    if !notification_caller_allowed(
-        caller,
-        Principal::try_from_slice(&owner)
-            .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?,
-        administrator,
-    ) {
-        return Err(NotifyWithdrawalError::OwnerMismatch);
-    }
     Ok(Some(NotifyWithdrawalReceipt::Duplicate {
         withdrawal_id: withdrawal_id.to_vec(),
     }))
@@ -598,6 +462,8 @@ fn ingest_notified_withdrawal(
     finalized_head_block_number: u64,
     stable_observation: FinalizedObservationRecord,
     rpc_audit: Vec<crate::storage::AuditEventKind>,
+    notification_window_seconds: u64,
+    notification_ingestion_limit: u16,
 ) -> Result<NotifyWithdrawalReceipt, NotifyWithdrawalError> {
     let payload_hash = notified_withdrawal_payload_hash(&observed);
     STORE.with(|store| {
@@ -670,6 +536,8 @@ fn ingest_notified_withdrawal(
                     now_ns,
                     audit,
                     transaction_hash,
+                    notification_window_seconds,
+                    notification_ingestion_limit,
                 )
                 .map_err(notification_commit_error)?;
             return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
@@ -725,14 +593,17 @@ fn ingest_notified_withdrawal(
                 },
             })
             .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
+        let now_ns = ic_cdk::api::time();
         store
             .commit_new_withdrawal_release_bundle_with_rpc_audit(
                 &withdrawal,
                 &progress,
                 ic_cdk::api::canister_self(),
-                ic_cdk::api::time(),
+                now_ns,
                 rpc_audit,
                 transaction_hash,
+                notification_window_seconds,
+                notification_ingestion_limit,
             )
             .map_err(notification_commit_error)?;
         Ok(NotifyWithdrawalReceipt::Ingested {
@@ -746,6 +617,135 @@ const BASE_SNAPSHOT_TTL_NS: u64 = 60_000_000_000;
 const BASE_SNAPSHOT_REFRESH_COOLDOWN_NS: u64 = 60_000_000_000;
 const BASE_SNAPSHOT_REFRESH_STALE_LOCK_NS: u64 = 300_000_000_000;
 
+pub(crate) struct CachedAuthorizationObservation {
+    pub finalized: evm_rpc::FinalizedObservation,
+    pub snapshot: evm_rpc::BridgeSnapshot,
+}
+
+impl CachedAuthorizationObservation {
+    pub(crate) fn is_fresh_at(&self, now_ns: u64) -> bool {
+        now_ns.saturating_sub(self.finalized.observed_at_ns) <= BASE_SNAPSHOT_TTL_NS
+    }
+}
+
+pub(crate) fn cached_authorization_observation(
+    config: &BridgeInitArgs,
+    deposit_id: [u8; 32],
+) -> Result<Option<CachedAuthorizationObservation>, DepositError> {
+    let expected_runtime: [u8; 32] = config
+        .expected_bridge_runtime_sha256
+        .as_slice()
+        .try_into()
+        .map_err(|_| DepositError::StorageFailure)?;
+    STORE.with(|store| {
+        let store = store.borrow();
+        let progress = store
+            .external_progress()
+            .map_err(|_| DepositError::StorageFailure)?;
+        let Some(cached) = store
+            .cached_deposit_authorization_snapshot(deposit_id)
+            .map_err(|_| DepositError::StorageFailure)?
+        else {
+            return Ok(None);
+        };
+        let Some(finalized) = progress.finalized_observation else {
+            return Ok(None);
+        };
+        if finalized.chain_id != config.base_chain_id
+            || finalized.block_number != cached.snapshot.finalized_head_block_number
+            || finalized.bridge_signer != cached.bridge_signer
+            || finalized.runtime_sha256 != expected_runtime
+        {
+            return Ok(None);
+        }
+        Ok(Some(CachedAuthorizationObservation {
+            finalized: evm_rpc::FinalizedObservation {
+                block_number: finalized.block_number,
+                block_hash: finalized.block_hash,
+                observed_at_ns: finalized.observed_at_ns,
+            },
+            snapshot: evm_rpc::BridgeSnapshot {
+                mint: cached.snapshot,
+                bridge_signer: cached.bridge_signer,
+                mint_authorization_epoch: cached.mint_authorization_epoch,
+                deposits_paused: cached.deposits_paused,
+                withdrawals_paused: false,
+            },
+        }))
+    })
+}
+
+pub(crate) fn cache_recovery_observation(
+    config: &BridgeInitArgs,
+    deposit_id: [u8; 32],
+    observation: &evm_rpc::RecoveryObservation,
+) -> Result<(), DepositError> {
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .cache_deposit_authorization_observation(
+                deposit_id,
+                observation.finalized.observed_at_ns,
+                observation.snapshot.mint,
+                observation.snapshot.bridge_signer,
+                observation.snapshot.mint_authorization_epoch,
+                observation.snapshot.deposits_paused,
+                FinalizedObservationRecord {
+                    chain_id: config.base_chain_id,
+                    block_number: observation.finalized.block_number,
+                    block_hash: observation.finalized.block_hash,
+                    observed_at_ns: observation.finalized.observed_at_ns,
+                    bridge_signer: observation.bridge_identity.signer,
+                    runtime_sha256: observation.bridge_identity.runtime_sha256,
+                },
+            )
+            .map_err(|_| DepositError::StorageFailure)
+    })
+}
+
+pub(crate) fn runtime_attested(config: &BridgeInitArgs) -> Result<bool, DepositError> {
+    let expected_runtime: [u8; 32] = config
+        .expected_bridge_runtime_sha256
+        .as_slice()
+        .try_into()
+        .map_err(|_| DepositError::StorageFailure)?;
+    STORE.with(|store| {
+        store
+            .borrow()
+            .external_progress()
+            .map(|progress| {
+                let observation = progress.finalized_observation;
+                bridge_core::runtime_attestation_matches(
+                    observation.is_some(),
+                    observation.is_some_and(|value| value.chain_id == config.base_chain_id),
+                    observation.is_some_and(|value| value.runtime_sha256 == expected_runtime),
+                )
+            })
+            .map_err(|_| DepositError::StorageFailure)
+    })
+}
+
+pub(crate) fn cache_runtime_attestation(
+    config: &BridgeInitArgs,
+    observation: &evm_rpc::CompletedFinalizedObservation,
+) -> Result<(), DepositError> {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let mut progress = store
+            .external_progress()
+            .map_err(|_| DepositError::StorageFailure)?;
+        progress
+            .observe_finalized(evm_rpc::stable_observation(
+                observation,
+                config.base_chain_id,
+            ))
+            .map_err(|_| DepositError::BaseObservationUnavailable)?;
+        store
+            .set_external_progress(&progress)
+            .map_err(|_| DepositError::StorageFailure)
+    })
+}
+
 fn nat_u128(value: &Nat) -> Result<u128, DepositError> {
     value
         .0
@@ -754,10 +754,9 @@ fn nat_u128(value: &Nat) -> Result<u128, DepositError> {
         .map_err(|_| DepositError::InvalidRequest("amount exceeds u128".into()))
 }
 
-fn hash(parts: &[&[u8]]) -> [u8; 32] {
+fn hash_concat(parts: &[&[u8]]) -> [u8; 32] {
     let mut digest = Sha256::new();
     for part in parts {
-        digest.update((part.len() as u64).to_be_bytes());
         digest.update(part);
     }
     digest.finalize().into()
@@ -827,12 +826,55 @@ pub(crate) fn deposit_action_id(
     args: &DepositArgs,
 ) -> Result<[u8; 32], DepositError> {
     validate_deposit_args(caller, args)?;
-    Ok(derive_deposit_id(caller, args.owner_sequence))
+    let config = config()?;
+    derive_deposit_id(
+        &config,
+        ic_cdk::api::canister_self(),
+        caller,
+        args.owner_sequence,
+    )
 }
 
-fn derive_deposit_id(caller: Principal, owner_sequence: u64) -> [u8; 32] {
-    hash(&[
-        b"KINIC-DEPOSIT-ID-V2",
+fn derive_deposit_id(
+    config: &BridgeInitArgs,
+    canister_id: Principal,
+    caller: Principal,
+    owner_sequence: u64,
+) -> Result<[u8; 32], DepositError> {
+    let bridge_contract: [u8; 20] = config
+        .bridge_contract
+        .as_slice()
+        .try_into()
+        .map_err(|_| DepositError::StorageFailure)?;
+    let deployment_instance_id: [u8; 32] = config
+        .deployment_instance_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| DepositError::StorageFailure)?;
+    Ok(derive_deposit_id_v3(
+        canister_id,
+        config.base_chain_id,
+        bridge_contract,
+        deployment_instance_id,
+        caller,
+        owner_sequence,
+    ))
+}
+
+fn derive_deposit_id_v3(
+    canister_id: Principal,
+    base_chain_id: u64,
+    bridge_contract: [u8; 20],
+    deployment_instance_id: [u8; 32],
+    caller: Principal,
+    owner_sequence: u64,
+) -> [u8; 32] {
+    hash_concat(&[
+        b"KINIC-DEPOSIT-ID-V3",
+        canister_id.as_slice(),
+        &base_chain_id.to_be_bytes(),
+        &bridge_contract,
+        &deployment_instance_id,
         caller.as_slice(),
         &owner_sequence.to_be_bytes(),
     ])
@@ -1033,11 +1075,15 @@ pub async fn request_deposit(
     let from_subaccount = validated.from_subaccount;
     let gross_amount = validated.gross_amount;
     let max_service_fee = validated.max_service_fee;
-    let deposit_id = derive_deposit_id(caller, owner_sequence);
-    let payload_hash = hash(&[
-        b"KINIC-DEPOSIT-PAYLOAD-V2",
-        caller.as_slice(),
-        &owner_sequence.to_be_bytes(),
+    let deposit_id = derive_deposit_id(
+        &config()?,
+        ic_cdk::api::canister_self(),
+        caller,
+        owner_sequence,
+    )?;
+    let payload_hash = hash_concat(&[
+        b"KINIC-DEPOSIT-PAYLOAD-V3",
+        &deposit_id,
         &base_recipient,
         &from_subaccount,
         &gross_amount.to_be_bytes(),
@@ -1072,42 +1118,6 @@ pub async fn request_deposit(
         return Err(DepositError::DepositsPaused);
     }
     let now = ic_cdk::api::time();
-    let (mint_snapshot, _snapshot_generation) = base_mint_snapshot(&config, now).await?;
-    mint_snapshot
-        .quote(Amount::new(gross_amount), Amount::new(max_service_fee))
-        .map_err(preflight_error)?;
-    let cached_preflight = STORE.with(|store| {
-        let store = store.borrow();
-        let minimum_finalized_block = store
-            .external_progress()
-            .map_err(|_| DepositError::StorageFailure)?
-            .last_finalized_base_block;
-        let Some(cached) = store
-            .cached_base_mint_snapshot(now, BASE_SNAPSHOT_TTL_NS, minimum_finalized_block)
-            .map_err(|_| DepositError::StorageFailure)?
-        else {
-            return Ok(None);
-        };
-        if cached.deposits_paused {
-            return Ok(Some(Err(DepositError::DepositsPaused)));
-        }
-        let reserved = store
-            .counters()
-            .map_err(|_| DepositError::StorageFailure)?
-            .reserved_deposit_mint_amount;
-        Ok(Some(
-            cached_deposit_preflight(
-                cached.snapshot,
-                reserved,
-                Amount::new(gross_amount),
-                Amount::new(max_service_fee),
-            )
-            .map_err(preflight_error),
-        ))
-    })?;
-    if let Some(result) = cached_preflight {
-        result?;
-    }
     let existing_attempt = STORE.with(|store| {
         store
             .borrow()
@@ -1115,7 +1125,7 @@ pub async fn request_deposit(
             .map_err(|_| DepositError::StorageFailure)
     })?;
     let ledger_fee = ledger::KINIC_LEDGER_FEE;
-    let memo = hash(&[b"KINIC-DEPOSIT", &deposit_id]);
+    let memo = hash_concat(&[b"KINIC-DEPOSIT-MEMO-V3", &deposit_id]);
     let canister = ic_cdk::api::canister_self();
     let fresh_transfer = LedgerTransferIdentity {
         operation: LedgerOperation::PullDeposit,
@@ -1155,9 +1165,7 @@ pub async fn request_deposit(
         gross_amount,
         max_service_fee,
         transfer: transfer.clone(),
-        state: DepositFundingAttemptState::Dispatched {
-            dispatched_at_ns: now,
-        },
+        state: DepositFundingAttemptState::Prepared,
         created_at_ns: now,
         updated_at_ns: now,
         last_failure: None,
@@ -1180,64 +1188,67 @@ pub async fn request_deposit(
                 .map_err(deposit_storage_error)
         })?
     };
-    let attempt = if matches!(outcome, crate::storage::DepositAdmissionOutcome::Existing) {
-        let previous = STORE.with(|store| {
+    let previous = if matches!(outcome, crate::storage::DepositAdmissionOutcome::Existing) {
+        STORE.with(|store| {
             store
                 .borrow()
                 .deposit_funding_attempt(deposit_id)
                 .map_err(|_| DepositError::StorageFailure)?
                 .ok_or(DepositError::StorageFailure)
-        })?;
-        if previous.intent != intent || previous.transfer != transfer {
-            return Err(DepositError::DepositConflict);
-        }
-        match previous.state {
-            DepositFundingAttemptState::Retryable { retry_after_ns } if now >= retry_after_ns => {
-                let mut next = previous.clone();
-                next.state = DepositFundingAttemptState::Dispatched {
-                    dispatched_at_ns: now,
-                };
-                next.updated_at_ns = now;
-                STORE.with(|store| {
-                    store
-                        .borrow_mut()
-                        .update_deposit_funding_attempt(&previous, &next)
-                        .map_err(|_| DepositError::StorageFailure)
-                })?;
-                next
-            }
-            DepositFundingAttemptState::Prepared => {
-                let mut next = previous.clone();
-                next.state = DepositFundingAttemptState::Dispatched {
-                    dispatched_at_ns: now,
-                };
-                next.updated_at_ns = now;
-                STORE.with(|store| {
-                    store
-                        .borrow_mut()
-                        .update_deposit_funding_attempt(&previous, &next)
-                        .map_err(|_| DepositError::StorageFailure)
-                })?;
-                next
-            }
-            DepositFundingAttemptState::Retryable { retry_after_ns } => {
-                return Err(DepositError::FundingUnavailable {
-                    retry_after_seconds: retry_after_ns
-                        .saturating_sub(now)
-                        .saturating_add(999_999_999)
-                        / 1_000_000_000,
-                });
-            }
-            DepositFundingAttemptState::Dispatched { .. }
-            | DepositFundingAttemptState::Reconciling { .. } => {
-                return Err(DepositError::FundingUnavailable {
-                    retry_after_seconds: 30,
-                });
-            }
-        }
+        })?
     } else {
         proposed
     };
+    if previous.intent != intent || previous.transfer != transfer {
+        return Err(DepositError::DepositConflict);
+    }
+    match previous.state {
+        DepositFundingAttemptState::Retryable { retry_after_ns } if now < retry_after_ns => {
+            return Err(DepositError::FundingUnavailable {
+                retry_after_seconds: retry_after_ns
+                    .saturating_sub(now)
+                    .saturating_add(999_999_999)
+                    / 1_000_000_000,
+            });
+        }
+        DepositFundingAttemptState::Dispatched { .. }
+        | DepositFundingAttemptState::Reconciling { .. } => {
+            return Err(DepositError::FundingUnavailable {
+                retry_after_seconds: 30,
+            });
+        }
+        DepositFundingAttemptState::Prepared | DepositFundingAttemptState::Retryable { .. } => {}
+    }
+
+    if let Err(error) = fresh_deposit_preflight(
+        &config,
+        now,
+        deposit_id,
+        Amount::new(gross_amount),
+        Amount::new(max_service_fee),
+    )
+    .await
+    {
+        STORE.with(|store| {
+            store
+                .borrow_mut()
+                .remove_deposit_funding_attempt(caller, &previous)
+                .map_err(|_| DepositError::StorageFailure)
+        })?;
+        return Err(error);
+    }
+
+    let mut attempt = previous.clone();
+    attempt.state = DepositFundingAttemptState::Dispatched {
+        dispatched_at_ns: now,
+    };
+    attempt.updated_at_ns = now;
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .update_deposit_funding_attempt(&previous, &attempt)
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
 
     let ledger_outcome = ledger::pull(config.ledger_canister_id, &attempt.transfer).await;
     let outcome_kind = match &ledger_outcome {
@@ -1394,6 +1405,20 @@ pub(crate) async fn base_mint_snapshot(
             .cached_base_mint_snapshot(now_ns, BASE_SNAPSHOT_TTL_NS, minimum_finalized_block)
             .map_err(|_| DepositError::StorageFailure)
     })? {
+        let backlog = STORE.with(|store| {
+            store
+                .borrow_mut()
+                .release_expired_deposit_reservations(
+                    snapshot.snapshot.confirmed_block_timestamp,
+                    256,
+                )
+                .map_err(|_| DepositError::StorageFailure)
+        })?;
+        if backlog {
+            return Err(DepositError::ReservationMaintenance {
+                retry_after_seconds: 1,
+            });
+        }
         return validate_base_deposit_snapshot(
             snapshot.snapshot,
             snapshot.bridge_signer,
@@ -1415,7 +1440,8 @@ pub(crate) async fn base_mint_snapshot(
     let Some(refresh_owner) = refresh_owner else {
         return Err(DepositError::BaseObservationUnavailable);
     };
-    let completed = match evm_rpc::bridge_snapshot(config).await {
+    let runtime_attested = runtime_attested(config)?;
+    let completed = match evm_rpc::bridge_snapshot(config, runtime_attested).await {
         Ok(completed) => completed,
         Err(error) => {
             if matches!(error, evm_rpc::ObservationError::Inconsistent) {
@@ -1439,9 +1465,6 @@ pub(crate) async fn base_mint_snapshot(
                         .map_err(|_| DepositError::StorageFailure)
                 })?;
             }
-            if matches!(error, evm_rpc::ObservationError::ChainIdMismatch) {
-                pause_deposits_for_safety()?;
-            }
             return Err(DepositError::BaseObservationUnavailable);
         }
     };
@@ -1455,7 +1478,11 @@ pub(crate) async fn base_mint_snapshot(
             snapshot.bridge_signer,
             snapshot.mint_authorization_epoch,
             snapshot.deposits_paused,
-            Some(evm_rpc::stable_observation(&completed)),
+            None,
+            Some(evm_rpc::stable_observation(
+                &completed,
+                config.base_chain_id,
+            )),
             ic_cdk::api::canister_self(),
             vec![
                 rpc_audit_event_kind(&completed.rpc_audit),
@@ -1467,6 +1494,9 @@ pub(crate) async fn base_mint_snapshot(
             ],
         ) {
             Ok(()) => Ok(()),
+            Err(crate::storage::StorageError::StaleSnapshotRefresh) => {
+                Err(DepositError::BaseObservationUnavailable)
+            }
             Err(crate::storage::StorageError::Core(
                 bridge_core::CoreError::StaleFinalizedObservation
                 | bridge_core::CoreError::ConflictingFinalizedObservation,
@@ -1479,6 +1509,17 @@ pub(crate) async fn base_mint_snapshot(
             Err(_) => Err(DepositError::StorageFailure),
         }
     })?;
+    let backlog = STORE.with(|store| {
+        store
+            .borrow_mut()
+            .release_expired_deposit_reservations(snapshot.mint.confirmed_block_timestamp, 256)
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
+    if backlog {
+        return Err(DepositError::ReservationMaintenance {
+            retry_after_seconds: 1,
+        });
+    }
     validate_base_deposit_snapshot(
         snapshot.mint,
         snapshot.bridge_signer,
@@ -1488,20 +1529,146 @@ pub(crate) async fn base_mint_snapshot(
     .map(|mint| (mint, refresh_owner))
 }
 
-pub(crate) fn pause_deposits_for_safety() -> Result<(), DepositError> {
+async fn fresh_deposit_preflight(
+    config: &BridgeInitArgs,
+    now_ns: u64,
+    deposit_id: [u8; 32],
+    gross_amount: Amount,
+    max_service_fee: Amount,
+) -> Result<(), DepositError> {
+    let expected_signer = cached_signer_address(config).await?;
+    let refresh_owner = STORE.with(|store| {
+        store
+            .borrow_mut()
+            .begin_base_snapshot_refresh(now_ns, BASE_SNAPSHOT_REFRESH_STALE_LOCK_NS, 0)
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
+    let Some(refresh_owner) = refresh_owner else {
+        return Err(DepositError::BaseObservationUnavailable);
+    };
+    let runtime_attested = runtime_attested(config)?;
+    let observation = match evm_rpc::deposit_preflight_observation(
+        config,
+        deposit_id,
+        refresh_owner,
+        runtime_attested,
+    )
+    .await
+    {
+        Ok(observation) => observation,
+        Err(evm_rpc::ObservationError::Inconsistent) => {
+            let decision =
+                evm_rpc::quorum_loss_decision("request_deposit_identity_preflight", None);
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .fail_base_snapshot_refresh_with_rpc_audit(
+                        refresh_owner,
+                        ic_cdk::api::canister_self(),
+                        ic_cdk::api::time(),
+                        vec![rpc_decision_event_kind(&decision)],
+                    )
+                    .map_err(|_| DepositError::StorageFailure)
+            })?;
+            return Err(DepositError::BaseObservationUnavailable);
+        }
+        Err(_) => {
+            STORE.with(|store| {
+                store
+                    .borrow_mut()
+                    .fail_base_snapshot_refresh(refresh_owner)
+                    .map_err(|_| DepositError::StorageFailure)
+            })?;
+            return Err(DepositError::BaseObservationUnavailable);
+        }
+    };
+    let snapshot = observation.snapshot;
     STORE.with(|store| {
         let mut store = store.borrow_mut();
-        let mut admin = store
-            .admin_state()
-            .map_err(|_| DepositError::StorageFailure)?;
-        if admin.deposits_paused {
-            return Ok(());
+        match store.finish_base_snapshot_refresh_with_rpc_audit_and_observation(
+            refresh_owner,
+            ic_cdk::api::time(),
+            snapshot.mint,
+            snapshot.bridge_signer,
+            snapshot.mint_authorization_epoch,
+            snapshot.deposits_paused,
+            Some(deposit_id),
+            Some(FinalizedObservationRecord {
+                chain_id: config.base_chain_id,
+                block_number: observation.finalized.block_number,
+                block_hash: observation.finalized.block_hash,
+                observed_at_ns: observation.finalized.observed_at_ns,
+                bridge_signer: observation.bridge_identity.signer,
+                runtime_sha256: observation.bridge_identity.runtime_sha256,
+            }),
+            ic_cdk::api::canister_self(),
+            vec![
+                rpc_audit_event_kind(&observation.rpc_audit),
+                rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
+                    "request_deposit_identity_preflight",
+                    None,
+                    false,
+                )),
+            ],
+        ) {
+            Ok(()) => Ok(()),
+            Err(crate::storage::StorageError::StaleSnapshotRefresh) => {
+                Err(DepositError::BaseObservationUnavailable)
+            }
+            Err(crate::storage::StorageError::Core(
+                bridge_core::CoreError::StaleFinalizedObservation
+                | bridge_core::CoreError::ConflictingFinalizedObservation,
+            )) => {
+                store
+                    .fail_base_snapshot_refresh(refresh_owner)
+                    .map_err(|_| DepositError::StorageFailure)?;
+                Err(DepositError::BaseObservationUnavailable)
+            }
+            Err(_) => {
+                store
+                    .fail_base_snapshot_refresh(refresh_owner)
+                    .map_err(|_| DepositError::StorageFailure)?;
+                Err(DepositError::StorageFailure)
+            }
         }
-        admin.deposits_paused = true;
+    })?;
+    let backlog = STORE.with(|store| {
         store
-            .set_admin_state(&admin)
+            .borrow_mut()
+            .release_expired_deposit_reservations(snapshot.mint.confirmed_block_timestamp, 256)
             .map_err(|_| DepositError::StorageFailure)
-    })
+    })?;
+    if backlog {
+        return Err(DepositError::ReservationMaintenance {
+            retry_after_seconds: 1,
+        });
+    }
+    let mint_snapshot = validate_base_deposit_snapshot(
+        snapshot.mint,
+        snapshot.bridge_signer,
+        snapshot.deposits_paused,
+        expected_signer,
+    )?;
+    let reserved_mint_amount = STORE.with(|store| {
+        store
+            .borrow()
+            .counters()
+            .map(|counters| counters.reserved_deposit_mint_amount)
+            .map_err(|_| DepositError::StorageFailure)
+    })?;
+    cached_deposit_preflight(
+        mint_snapshot,
+        reserved_mint_amount,
+        gross_amount,
+        max_service_fee,
+    )
+    .map_err(preflight_error)?;
+    match bridge_core::deposit_identity_decision(observation.processed) {
+        bridge_core::DepositIdentityDecision::Allow => Ok(()),
+        bridge_core::DepositIdentityDecision::Conflict => {
+            Err(DepositError::DepositIdentityConflict)
+        }
+    }
 }
 
 fn validate_base_deposit_snapshot(
@@ -1611,6 +1778,7 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
                 net_amount: Nat::from(quote.net_amount.get()),
             }),
             refund: deposit_refund_view(&record),
+            available_refund_amount: available_refund_amount(&record).map(Nat::from),
             max_service_fee: Nat::from(record.max_service_fee.get()),
             base_recipient: intent.base_recipient.to_vec(),
             from_subaccount: (intent.from_subaccount != [0; 32])
@@ -1624,6 +1792,26 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
             automatic_progress: automatic_progress(job),
         })
     })
+}
+
+fn available_refund_amount(record: &DepositRecord) -> Option<u128> {
+    if !matches!(record.state, DepositState::RefundAvailable { .. }) {
+        return None;
+    }
+    let service_fee = if record
+        .mint_authorization
+        .as_ref()
+        .is_some_and(|authorization| authorization.signature.is_some())
+    {
+        record.quote?.service_fee.get()
+    } else {
+        0
+    };
+    bridge_core::deposit_refund_amount(
+        record.gross_amount.get(),
+        service_fee,
+        crate::ledger::KINIC_LEDGER_FEE.get(),
+    )
 }
 
 fn mint_authorization_view(record: &bridge_core::MintAuthorizationRecord) -> MintAuthorizationView {
@@ -1654,21 +1842,34 @@ fn deposit_created_at_ns(record: &DepositRecord) -> u64 {
 }
 
 fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
-    let (reason, attempt, block_index) = match &record.state {
-        DepositState::RefundPending { reason, attempt } => (*reason, attempt, None),
+    let (reason, status, attempt, block_index) = match &record.state {
+        DepositState::RefundPending { reason, attempt } => {
+            (*reason, DepositRefundStatusView::Sending, attempt, None)
+        }
         DepositState::RefundReconciliationHold {
             reason, attempt, ..
-        } => (*reason, attempt, None),
+        } => (
+            *reason,
+            DepositRefundStatusView::ReconciliationRequired,
+            attempt,
+            None,
+        ),
         DepositState::Refunded {
             reason,
             attempt,
             ledger_block_index,
             ..
-        } => (*reason, attempt, Some(Nat::from(*ledger_block_index))),
+        } => (
+            *reason,
+            DepositRefundStatusView::Completed,
+            attempt,
+            Some(Nat::from(*ledger_block_index)),
+        ),
         _ => return None,
     };
     Some(DepositRefundView {
         reason: reason.into(),
+        status,
         amount: Nat::from(attempt.identity.amount.get()),
         ledger_fee: Nat::from(attempt.identity.fee.get()),
         attempt_no: attempt.attempt_no,
@@ -1677,7 +1878,10 @@ fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
 }
 
 pub fn get_deposit_by_owner_sequence(owner: Principal, owner_sequence: u64) -> Option<DepositView> {
-    get_deposit(derive_deposit_id(owner, owner_sequence).to_vec())
+    let config = config().ok()?;
+    let id =
+        derive_deposit_id(&config, ic_cdk::api::canister_self(), owner, owner_sequence).ok()?;
+    get_deposit(id.to_vec())
 }
 
 pub fn get_withdrawal(id: Vec<u8>) -> Option<WithdrawalView> {
@@ -1768,29 +1972,66 @@ mod tests {
     }
 
     #[test]
-    fn deposit_identity_binds_caller_and_owner_sequence_and_calldata_is_static() {
+    fn deposit_identity_binds_every_install_domain_field() {
+        let canister = Principal::self_authenticating([9; 32]);
         let first = Principal::self_authenticating([1; 32]);
         let second = Principal::self_authenticating([2; 32]);
-        let args = DepositArgs {
-            owner_sequence: 7,
-            base_recipient: vec![2; 20],
-            from_subaccount: None,
-            gross_amount: Nat::from(30_000u64),
-            max_service_fee: Nat::from(1u8),
-        };
+        let bridge = [3; 20];
+        let instance = [4; 32];
+        let id = derive_deposit_id_v3(canister, 84_532, bridge, instance, first, 7);
         assert_eq!(
-            deposit_action_id(first, &args),
-            deposit_action_id(first, &args)
+            id,
+            derive_deposit_id_v3(canister, 84_532, bridge, instance, first, 7)
         );
         assert_ne!(
-            deposit_action_id(first, &args),
-            deposit_action_id(second, &args)
+            id,
+            derive_deposit_id_v3(canister, 84_532, bridge, instance, second, 7)
         );
-        let mut next = args.clone();
-        next.owner_sequence += 1;
         assert_ne!(
-            deposit_action_id(first, &args),
-            deposit_action_id(first, &next)
+            id,
+            derive_deposit_id_v3(canister, 84_532, bridge, instance, first, 8)
+        );
+        assert_ne!(
+            id,
+            derive_deposit_id_v3(
+                Principal::self_authenticating([8; 32]),
+                84_532,
+                bridge,
+                instance,
+                first,
+                7,
+            )
+        );
+        assert_ne!(
+            id,
+            derive_deposit_id_v3(canister, 84_533, bridge, instance, first, 7)
+        );
+        assert_ne!(
+            id,
+            derive_deposit_id_v3(canister, 84_532, [5; 20], instance, first, 7)
+        );
+        assert_ne!(
+            id,
+            derive_deposit_id_v3(canister, 84_532, bridge, [6; 32], first, 7)
+        );
+    }
+
+    #[test]
+    fn reinstall_namespace_avoids_the_processed_id_without_reusing_the_ledger_sequence() {
+        let canister = Principal::self_authenticating([9; 32]);
+        let caller = Principal::self_authenticating([1; 32]);
+        let bridge = [3; 20];
+        let previous = derive_deposit_id_v3(canister, 84_532, bridge, [4; 32], caller, 0);
+        let next = derive_deposit_id_v3(canister, 84_532, bridge, [5; 32], caller, 0);
+
+        assert_ne!(previous, next);
+        assert_eq!(
+            bridge_core::deposit_identity_decision(true),
+            bridge_core::DepositIdentityDecision::Conflict
+        );
+        assert_eq!(
+            bridge_core::deposit_identity_decision(false),
+            bridge_core::DepositIdentityDecision::Allow
         );
     }
 
@@ -1817,14 +2058,5 @@ mod tests {
         .expect("valid deposit");
 
         assert_eq!(deposit_created_at_ns(&record), 123_456);
-    }
-
-    #[test]
-    fn withdrawal_notification_allows_only_the_ic_owner_or_an_administrator() {
-        let owner = Principal::self_authenticating([3; 32]);
-        let third_party = Principal::self_authenticating([4; 32]);
-        assert!(notification_caller_allowed(owner, owner, false));
-        assert!(notification_caller_allowed(third_party, owner, true));
-        assert!(!notification_caller_allowed(third_party, owner, false));
     }
 }

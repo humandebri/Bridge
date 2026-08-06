@@ -131,6 +131,8 @@ impl GovernanceTransactionEnvelope {
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FinalizedObservationRecord {
+    /// Immutable install-domain binding. This value comes from configuration,
+    /// not from a runtime `eth_chainId` response.
     pub chain_id: u64,
     pub block_number: u64,
     pub block_hash: [u8; 32],

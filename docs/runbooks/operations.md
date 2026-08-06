@@ -22,7 +22,7 @@ KINIC mainnet Ledgerのfeeは`100000` rawであり、stagingとの差は意図�
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv27、record wireはv23を唯一の現行形式とする。未本番期間は現行schema定義を直接置換し、migrationや旧wire fallbackを持たない。旧形式が残るdevelopment/staging Canisterはupgradeせずreinstallする。
+stable schemaはv31、record wireはv27を現行形式とする。`post_upgrade`では登録済みのv30／wire v26だけを一方向migrationし、成功時は全recordとmetadataを一つのSQLite transactionでcommitする。dual-readや旧wire fallbackは持たない。
 
 ## 保持制限と監査
 
@@ -30,10 +30,10 @@ stable schemaはv27、record wireはv23を唯一の現行形式とする。未�
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v27またはwire v23以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
+schema v31またはwire v27以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。Ledger feeとService Feeをreview済みprofileへ同期した後、対象ownerまたは運用principalがHistoryから`continue_withdrawal`を実行する。Canisterが最新Ledger feeを再取得し、charged Service Fee以下であることを確認した場合だけ、同じrecordからreleaseを開始してguardを解除する。
-本番未デプロイ期間の開発・テストcanisterで旧schemaが残っている場合はupgradeせずreinstallする。
+旧schemaの開発・テストcanisterは、対応する旧Wasm fixture、保持試験、rollback試験、source/module/config bindingが揃った登録済みmigrationだけを`upgrade`する。未登録schemaは起動前にfail closedとし、state破棄を明示承認しない限りreinstallしない。
 SQLite DBやcounterを手作業で変更しない。
 
 schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipient、Authorization、失効またはMint確定証拠を一つのstable envelopeへ保存する。pending Ledger、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、primary rowとliability index・集計は一つのSQLite transactionで更新する。
@@ -48,21 +48,23 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 2. `storage_integrity_check()` queryが`ok`を返すことを確認する。upgrade処理からこの検査は自動実行されない。
 3. `refresh_storage_checksum(4194304)`を`complete = true`まで反復する。一回の呼出しは最大4 MiBであり、raw stable-memoryコピーやfilesystem backupとして扱わない。
 
-旧schemaのlocal/staging Canisterはupgradeせず再作成する。WAL、mmap、compaction、旧`ic-sqlite-vfs`からの直接移行は行わない。
+local/stagingのschema変更も登録済みmigrationを使用する。WAL、mmap、compaction、旧`ic-sqlite-vfs` layoutからの未対応直接移行は行わない。
 
 ## ETH・cycles補充
 
 - ETHはGovernance Operator addressだけへ、`governance_eth_floor_wei`を上回るまで運用者が送る。Mint Signerへ補充せず、Deposit admissionやAuthorization発行にETHを要求しない。SNS-token feeの自動交換は行わない。
 - cyclesはBridgeの30日floorとfreezing thresholdの両方を満たすことを確認する。
+- permissionlessな`request_deposit`は、cycle reserveと既定60秒windowのglobal 30件・principalあたり3件のquotaを通過してから有料Base preflightを開始する。開始を許可されたattemptはBase検証またはLedger fundingが後で確定失敗してもquotaを消費し、attemptとactive reservationの削除でquotaは戻らない。`RateLimited`と`ReserveUnavailable`の増加を監視し、window reset前に無資金requestを反復しない。
+- permissionlessな`notify_withdrawal`は、既定では600秒あたりglobal 60件まで有料EVM RPCを開始でき、canonical confirmed eventの永続化は別のingestion上限30件で制限する。missing、pending、reverted、不正response、duplicateはingestion枠を消費しない。verification上限は無権限trafficによる消費速度を制限するが正当通知用の枠を予約しないため、Sybil trafficで枯渇したwindowでは正規通知も一時的に遅延し得る。`RateLimited`の増加とcycles減少を監視し、verification上限を最悪時の許容RPC予算以下に設定する。枠枯渇時は追加通知を反復せず、攻撃またはprovider障害としてpause判断を行う。
 - 補充後も自動resumeしない。Governanceが観測回復と資産状態を確認してからBridgeをresumeする。
 
 ## EVM RPC provider
 
-本番Base MainnetのCanister outcallは公式EVM RPC Canisterの組み込み`BaseMainnet` provider群を使い、初期化値`custom_evm_rpc_urls`は空配列とする。公開設定の`rpc_provider_urls_sha256`は実際のcustom URL配列を表すため、本番の正規値は`SHA-256("[]")`である。production profileの3件のcredential-free RPCはCanisterへ注入せず、Gate A、live preflight、UI監視で公式経路から独立して状態を検証するためだけに使う。Base Sepolia stagingと故障演習は従来どおりcustom provider 3件を使う。
+本番Base MainnetのCanister outcallは公式EVM RPC Canisterの組み込み`BaseMainnet` provider群を使い、初期化値`custom_evm_rpc_urls`は空配列とする。公開設定の`rpc_provider_urls_sha256`は実際のcustom URL配列を表すため、本番の正規値は`SHA-256("[]")`である。production profileの3件のcredential-free RPCはCanisterへ注入せず、Gate A、live preflight、UI監視で公式経路から独立して状態を検証するためだけに使う。Base Sepolia stagingと故障演習のcustom provider 3件はURL、chain ID、接続先chainを稼働中固定し、deploy・activation前preflightで全3件のchain ID一致を確認する。runtimeの2-of-3 quorumは応答不一致と障害への対策であり、chain切替検知には使用しない。この設計判断と記録の意味論は[ADR 0024](../adr/0024-validate-rpc-chain-binding-before-runtime.md)を正本とする。
 
 ## 緊急pause
 
-監視SLOは同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。単一emergency pause principalの実request IDとaudit event、両transaction/callの確定時刻をevidenceへ入れる。SLO未達、証跡欠落、公式EVM RPC Canister IDまたはchainの不一致、Canisterによるpending Timelock cancel不能はいずれもproduction承認blockerである。EVM RPC Canister配下providerの運営主体・基盤・可用性は外部仮定として扱う。
+監視目標は同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。単一emergency pause principalの実request IDとaudit event、両transaction/callの確定時刻をevidenceへ入れる。本番ゲートはpause/cancel経路の成功、証跡、公式EVM RPC Canister IDとchain、pending Timelock cancel可能性を要求し、5/15/60の実測達成は公開後に評価する。EVM RPC Canister配下providerの運営主体・基盤・可用性は外部仮定として扱う。
 
 - 承認済みpause principal identityから`pause_new_deposits`を実行する。未期限Mint AuthorizationはBase側の`pauseDepositMints`によるepoch増加で失効するが、返金は元deadline後のFinalized未処理証拠まで待つ。各Authorizationのdeadlineと停止理由を監視する。
 - Base側の異常では単一emergency pause principalがCanisterの`emergency_pause`を呼ぶ。この呼出しの成功条件はIC側pauseとBase action queueの永続化までであり、Baseへの送信完了ではない。同じpause principal identityを使う外部CLIで`drain-emergency`を実行し、Deposit/Withdrawal pauseと記録済みTimelock cancelを順に署名・送信・確定する。
@@ -100,7 +102,7 @@ npm run governance-relayer -- run --operation-id <id>
 
 `IC_IDENTITY_PEM`はCanisterの認可APIだけに使用し、通常操作ではGovernance identity、緊急pause/cancelではpause identityを指定できる。EVM秘密鍵は用意しない。gasはthreshold Governance Operator EOAが負担する。RPC URL/API keyやPEM内容をログ・shell history・incident evidenceへ記録しない。
 
-stagingをこのschemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認し、旧schema Canisterはreinstallする。rollbackでは最初にrelayerを停止し、対応するWasmとstable snapshotをセットで復元する。旧Wasmだけを現在のstable stateへ適用しない。
+stagingをこのschemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認し、v30 Canisterは登録済みmigrationでupgradeする。upgrade前後のcount、deployment instance ID、integrityを照合する。rollbackでは最初にrelayerを停止し、対応するWasmとstable snapshotをセットで復元する。旧Wasmだけをmigration済みstateへ適用しない。
 
 本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
 
@@ -111,13 +113,13 @@ proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`
 - Holdの強制解除、nonce操作、任意transaction送信は行わない。
 ## Mint証拠不一致
 
-期限後に`isDepositProcessed(depositId) == true`なのに、`DepositMinted` eventがない、複数ある、Authorization digest・recipient・amount・feeが異なる、またはcanonical成功receiptへ束縛できない場合、Canisterは対象Depositを`ExpiryReconciliation`で停止し、新規Depositをlocal pauseする。返金や別Authorization発行へfallbackしない。
+ownerのRefund請求で`isDepositProcessed(depositId) == true`なのに、`DepositMinted` eventがない、複数ある、Authorization digest・recipient・amount・feeが異なる、またはcanonical成功receiptへ束縛できない場合、Canisterは資金を動かさずfail closedにする。返金や別Authorization発行へfallbackしない。
 
-監査ではDeposit ID、Authorization digest、作成元block、観測Finalized head、runtime hash、signer、epoch、RPC providerの不一致内容を保存する。独立RPCでcontract storage、logs、receipt、canonical block hashを確認し、原因解消後にGovernanceまたはpause principalから`continue_deposit`を一度実行する。record、counter、証拠を手作業で変更しない。
+監査ではDeposit ID、Authorization digest、作成元block、観測Finalized head、runtime hash、signer、epoch、RPC providerの不一致内容を保存する。独立RPCでcontract storage、logs、receipt、canonical block hashを確認し、原因解消後にDeposit ownerから`request_deposit_refund`を再実行する。record、counter、証拠を手作業で変更しない。
 
 ## Stable Settlement executorと手動復旧
 
-Mint Authorizationは作成元Finalized timestampから固定2時間（7,200秒）の期限を持つ。Canister timerはIC時刻でおおよそ期限後に起床するが、返金判定はBase Finalized timestampだけを使う。owner、Governance、pause principalは`continue_deposit`で期限照合を手動起動できるが、`Finalized timestamp > deadline`と`isDepositProcessed == false`のcanonical証拠を迂回できない。期限前、等値、RPC不一致では返金しない。
+Mint Authorizationは作成元Finalized timestampから固定2時間（7,200秒）の期限を持つ。新規Depositなどが取得したFinalized snapshotでdeadline順indexを上限付きに走査し、`Finalized timestamp > deadline`の予約だけを個別RPCなしで解放する。Depositごとのtimer、自動Base照合、自動Ledger返金はない。ownerが`request_deposit_refund`を実行した場合だけ、認可発行済みDepositの`isDepositProcessed == false`をcanonical blockで確認して返金する。期限前、等値、RPC不一致では資金を動かさない。
 
 `settlement_scheduler.health = Degraded`の場合はstopped、5分以上overdueのschedule、expired leaseを特定する。active leaseがある間の次回起床はlease期限であり、別のoverdue jobへ即時timerを再armしない。`Faulted`の場合は`last_internal_error`と`last_dispatcher_run_at_ns`を記録し、新規DepositをpauseしてSQLiteを手作業で変更せず、同じWasmをupgradeしてstable job tableからtimerを再armする。改善しなければ障害Wasmとして調査する。
 一時障害の基準retry間隔は公開設定`settlement_retry_interval_seconds`であり、Governance transactionの監視設定とは独立している。
@@ -126,17 +128,17 @@ RPC障害では複数providerの応答一致とcanonical Finalized headを回復
 
 Base burnが未通知なら、Historyの`Check and notify`でCanisterのFinalized receipt検証と通知を一回だけ実行する。
 Withdrawal transaction hashはactive deploymentに束縛したpending confirmationとしてbrowser localStorageへ保存する。recovery cursorは保存しない。回復はWithdrawal Historyの明示的な`Refresh`と必要な回数の`Scan older`でFinalized Base eventを取得し、event行の`Check and notify`から同じhashを通知する。
-Deposit mint transaction hashもactive deploymentに束縛して保存する。wallet receipt成功後はHistoryの`Confirm mint on IC`からowner identityで`notify_deposit_mint`を再実行できる。Canisterはexact Finalized receipt・event・Authorizationを毎回検証し、成功済みの同一hashは冪等に返す。通知不能でも期限後reconciliationはfallbackとして残る。
-Depositの不明応答はbrowser storageへ保存しない。`Refresh`でowner sequenceとHistoryを読み、受付済みrecordがあればそれをContinueし、未受付なら同じ次sequenceで再度明示送信する。
+Deposit mint transaction hashはactive deploymentに束縛して保存する。HistoryはFinalized `DepositMinted` logとCanister DepositをIDで統合し、exact Authorization fieldが一致する成功を復元する。成功後のIC wallet署名やCanister通知はない。
+Depositの不明応答はbrowser storageへ保存しない。`Refresh`でowner sequenceとHistoryを読み、受付済みrecordがあれば状態を表示し、未受付なら同じ次sequenceで再度明示送信する。
 
-所有者が操作できない場合、Governanceまたはpause administratorは停止原因の解消を確認する。stopped、expired、または非終端なのにjobがないrecordには`continue_deposit`または`continue_withdrawal`を一度実行する。別recordのactive lease中は`Busy`、quota超過は`RateLimited`を返す。
+Deposit refundはownerだけが請求でき、Governanceやpause administratorは代行しない。Withdrawalのstoppedまたは非終端なのにjobがないrecordには、停止原因の解消後に`continue_withdrawal`を一度実行する。別recordのactive lease中は`Busy`、quota超過は`RateLimited`を返す。
 fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行する。
 
 - Governance nonceを確保したoperation: `governance-relayer status`で署名成果物を取得し、同じrawを送信・確定する。必要時だけ明示的replacementを要求する。nonceやstable counterを手作業で変更しない。
-- Mint Authorization: signatureが未完成なら同一digestを再署名する。`AuthorizationAvailable`ならBase walletで期限内に送信し、成功receiptを直ちに通知する。通知できなくても期限後の自動照合はfallbackとして残し、deadlineを変えた再発行は行わない。
+- Mint Authorization: signatureが未完成なら同一digestを再署名する。`AuthorizationAvailable`ならBase walletで期限内に送信し、成功receipt/eventはUIが追跡する。deadlineを変えた再発行は行わない。
 - Withdrawal Ledger hold: `continue_withdrawal`で同一Withdrawal ID・IC Account・固定amountOutを維持する。dedup期間内は同一transfer identityを一度だけ再送し、期間後は一回につきreconciliationを1 stepだけ進める。完全な不在証拠なしに別identityを作らない。送金先変更、任意送金、Base refundは行わない。
 - Deposit funding hold: pullの成功証拠または完全な不存在証明まで補償を行わない。成功時は`EscrowedUnquoted`、不存在時は`Cancelled`へ進める。
-- Deposit refund hold: 元account、attemptに保存した`gross - ledger_fee`、feeを照合する。成功証拠で`Refunded`へ進め、曖昧結果は完全な不存在証明後だけattempt番号、created-at time、memoを更新する。確定的な`BadFee`は固定fee設定の不一致として停止し、返金payloadを変更しない。Ledger feeを変更せず、Canister設定とLedger設定の不一致を解消してから同じrecordを再実行する。
+- Deposit refund hold: 元account、attemptに保存した金額と固定Ledger feeを照合する。認可発行前は`gross - ledger_fee`、発行後は`gross - charged_service_fee - ledger_fee`で、初回pull fee・確定service fee・refund feeは返さない。成功証拠で`Refunded`へ進め、曖昧結果はownerの再請求でのみ照合する。完全な不存在証明後だけattempt番号、created-at time、memoを更新する。確定的な`BadFee`は固定fee設定の不一致として停止し、返金payloadを変更しない。
 - 停止理由: Historyまたは`get_deposit`/`get_withdrawal`の`last_settlement_stop_reason`を記録し、外部障害を解消してからContinueする。
 
 手動Retryの既定quotaは10分windowあたりglobal 60、caller 6、record 3である。profile値を変更する場合は`1 <= per_record <= per_principal <= global`とwindow 60〜3600秒を維持する。

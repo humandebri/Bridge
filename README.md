@@ -9,23 +9,23 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | 対象 | 状態 | 残作業 |
 |---|---|---|
 | Plan 001〜004 | 完了 | 履歴資料として保持 |
-| Plan 005 | 進行中 | 外部計測、固定limit承認、pause/cancel演習 |
+| Plan 005 | 進行中 | 10回・7日外部計測、固定limit承認、pause/cancel経路演習 |
 | Plan 006 | リポジトリ実装済み | SNS handover、本番preflight、mainnet evidence |
-| Plan 007 | Local完了 / External待ち | IC mainnet test Canister、Base Sepolia、test frontend |
-| Production | 未デプロイ | Plan 001〜007と本番運用条件の完了まで資産受付禁止 |
+| Plan 007 | Local完了 / External待ち | 非blockingのwallet互換性・追加障害シナリオ |
+| Production | 未デプロイ | 最小Gate A/Bと本番activation完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、Mint Authorization、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v27・record wire v23の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+`bridge-canister`はstable schema v31・record wire v27の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 ICP→BaseではCanisterはFinalized Base timestampから固定期限のEIP-712 Mint Authorizationへ署名するだけで、Base transactionを生成・送信しない。任意のBase walletが`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。
-期限後、CanisterはBase Finalized timestampと`isDepositProcessed`を同じcanonical block hashへ束縛して照合する。未処理なら失効証拠を保存してLedger refundへ進み、処理済みならexact `DepositMinted` eventとcanonical receiptの証拠を保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では返金せずfail closedする。
+期限後、既存のBase Finalized snapshotを使うdeadline順の上限付きローカル走査でmint予約だけを解放する。Depositごとのtimerや個別Base照合、自動返金は行わない。ownerが`request_deposit_refund`を明示実行した場合だけ、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を照合し、未処理なら固定net額をLedger refund、処理済みならexact `DepositMinted` eventとcanonical receiptを保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では資金を動かさない。
 Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
 Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの24時間Timelockへ接続している。
 
 Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed`化を原子的に実行する。Canisterは同じcanonical Finalized block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証してから、固定IC AccountへICP送金する。Base refundとrelease acknowledgementはなく、障害時は同じ債務をLedger側で再試行・照合する。Finalized headまたはcanonical hashが2-of-3で収束しない場合はfail closedとし、Safeへfallbackしない。
 
-本番Bridgeは未デプロイであり、Plan 005の外部計測と単一emergency pause演習、Plan 006のSNS handoverとCanister操作型production preflightが完了するまで本番資産を受け付けない。
+本番Bridgeは未デプロイであり、Plan 005の10回・7日外部計測と単一emergency pause経路演習、Plan 006の主要5 scenario、SNS handover、Canister操作型production preflightが完了するまで本番資産を受け付けない。Plan 007の追加wallet互換性と追加5 scenarioは非blockingで継続する。
 
-Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、実装計画は[docs/implementation-plan.md](docs/implementation-plan.md)、用語は[docs/glossary.md](docs/glossary.md)、安全上の決定は[docs/adr](docs/adr)を参照する。
+Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、実装計画は[docs/implementation-plan.md](docs/implementation-plan.md)、用語は[docs/glossary.md](docs/glossary.md)、安全上の決定は[docs/adr](docs/adr)を参照する。RPC providerのchain bindingとruntime quorumの保証境界は[ADR 0024](docs/adr/0024-validate-rpc-chain-binding-before-runtime.md)を正本とする。
 
 ## KINIC mainnet canister
 
@@ -119,7 +119,7 @@ bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をreq
 `contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
 `proofs`はLeanをcross-chain protocolの正式な抽象仕様としてビルドし、`sorry`・`admit`を拒否する。
 Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、各vector sectionについてmanifestにない仕様・定理・consumerのdriftを拒否する。
-manifestに登録したconsumerは許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。
+manifestに登録したconsumerはsectionとproduction symbolへの構造的な結合を検査してから許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。
 この照合は列挙した境界値に対する限定的なconformanceであり、各言語実装全体の完全なsemantic refinementではない。
 productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。
 `ui`はABI/Candid drift、typecheck、lint、unit test、build、desktop/mobile Playwrightを実行する。`real`は実Ledger suiteとAnvilを使うPlaywright統合テストを実行し、`all`にも含まれるが短時間用の`checks`には含まれない。
@@ -147,7 +147,7 @@ release対象claim、抽象・有限幅・trace定理、Verus/SMT義務、produc
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 27、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 31、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
 5. 24時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
@@ -171,4 +171,4 @@ icp network stop --project-root-override .
 
 手動実行の`prepare_local_network.py --write`は`icp.yaml`を永続的に変更する。必要なら停止後に利用者が元のportへ戻す。
 
-本番未デプロイ期間に旧schemaが残るdevelopment/staging Canisterは、stateを保持するupgradeではなく明示的な`--mode reinstall`で現行schemaへ揃える。本番deploy後はreinstallを禁止し、migration方針を別途導入する。
+stable schema変更は、明示的な一方向migrationと旧Wasm→新WasmのPocketIC保持試験を同じ変更へ含め、`--mode upgrade`で適用する。現在登録済みなのは監査済みv30→v31だけであり、v29以下・未知schema・未知wireはfail closedとする。`reinstall`はstate破棄を明示承認した使い捨て環境に限定する。

@@ -44,6 +44,7 @@ function deposit(sequence: number): DepositView {
     gross_amount: 100n,
     quote: [{ net_amount: 90n, service_fee: 10n }],
     refund: [],
+    available_refund_amount: [],
     max_service_fee: 10n,
     from_subaccount: [],
     base_recipient: new Uint8Array(20),

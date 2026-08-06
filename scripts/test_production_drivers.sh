@@ -77,7 +77,7 @@ case "$1 $2" in
   'keccak 0x01') printf '0x%s\n' "$(printf 'dd%.0s' {1..32})";;
   'nonce 0x4444444444444444444444444444444444444444') [[ -e "$TIMELOCK_DEPLOYED_MARKER" ]] && echo 1 || echo 0;;
   'compute-address 0x4444444444444444444444444444444444444444') [[ "$*" == *'--nonce 0'* ]] && echo 'Computed Address: 0x2222222222222222222222222222222222222222' || echo 'Computed Address: 0x3333333333333333333333333333333333333333';;
-  'chain-id --rpc-url') if [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; elif [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 2 && "$*" == *two.example* ]]; then echo 1; else echo 8453; fi;;
+  'chain-id --rpc-url') if [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; elif [[ "${PROVIDER_MALFORMED_CHAINS:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_MALFORMED_CHAINS:-0}" -ge 2 && "$*" == *two.example* ]]; then echo invalid; elif [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 2 && "$*" == *two.example* ]]; then echo 1; else echo 8453; fi;;
   'block safe'|'block finalized') if [[ "${PROVIDER_SAFE_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_SAFE_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; fi; h="${LATEST_HEIGHT:-100}"; if [[ "${LATEST_BLOCK_DRIFT:-}" =~ ^(all|one)$ && "$*" == *one.example* ]]; then x=1; elif [[ "${LATEST_BLOCK_DRIFT:-}" == all && "$*" == *two.example* ]]; then x=2; elif [[ "${LATEST_BLOCK_DRIFT:-}" == all ]]; then x=3; else x=a; fi; printf '{"number":"0x%x","hash":"0x%s"}\n' "$h" "$(printf "$x%.0s" {1..64})";;
   'block 100') if [[ "${MID_READ_REORG:-}" == all ]]; then x=f; elif [[ "${MID_READ_REORG:-}" == one && "$*" == *three.example* ]]; then x=f; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all && "$*" == *one.example* ]]; then x=1; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all && "$*" == *two.example* ]]; then x=2; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all ]]; then x=3; else x=a; fi; printf '{"number":"0x64","hash":"0x%s"}\n' "$(printf "$x%.0s" {1..64})";;
   'block 1') printf '{"number":"0x1","hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})";;
@@ -134,11 +134,10 @@ cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 echo "icp $*" >>"$TRACE"
 if [[ "$*" == *initialize_public_config* ]]; then if [[ "${INITIALIZE_PUBLIC_CONFIG_FAIL:-false}" == true ]]; then echo '{"Err":"DerivationUnavailable"}'; else echo '{"Ok":null}'; fi;
-elif [[ "$*" == *get_public_config* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"base_chain_id":8453,"bridge_contract":[51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51],"timelock_contract":[34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34],"ledger_canister_id":"aaaaa-aa","index_canister_id":"aaaaa-aa","schema_version":27,"expected_bridge_signer":[%s],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s","deposit_rate_limit_window_seconds":1,"deposit_rate_limit_global":1,"deposit_rate_limit_per_principal":1,"settlement_rate_limit_window_seconds":1,"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_rate_limit_per_record":1,"settlement_retry_interval_seconds":60,"governance_evm_fee":{"gas_limit_ceiling":"1","max_fee_per_gas_ceiling":"1","max_priority_fee_per_gas_ceiling":"1","l1_fee_per_transaction_ceiling_wei":"1","quote_validity_seconds":90,"gas_limit_multiplier_bps":13000,"base_fee_multiplier_bps":60000,"l1_fee_multiplier_bps":15000},"governance_replacement":{"max_replacements":3,"fee_bump_bps":1250},"governance_eth_floor_wei":"1","cycles_floor":"1","settlement_cycle_ceiling":"1","governance_principal":"aaaaa-aa","pause_principal":"2vxsx-fae","fee_recipient":{"owner":"aaaaa-aa","subaccount":[]}}\n' "$signer" "$RPC_DIGEST";
-elif [[ "$*" == *get_bridge_status* ]]; then if [[ -e "$IC_RESUMED_MARKER" ]]; then paused=false; else paused="${CANISTER_PAUSED:-true}"; fi; printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "$paused";
+elif [[ "$*" == *get_public_config* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"base_chain_id":8453,"bridge_contract":[51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51],"expected_bridge_runtime_sha256":[110,52,11,156,255,179,122,152,156,165,68,230,187,120,10,44,120,144,29,63,179,55,56,118,133,17,163,6,23,175,160,29],"timelock_contract":[34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34],"deployment_instance_id":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"ledger_canister_id":"aaaaa-aa","index_canister_id":"aaaaa-aa","schema_version":31,"expected_bridge_signer":[%s],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s","deposit_rate_limit_window_seconds":1,"deposit_rate_limit_global":1,"deposit_rate_limit_per_principal":1,"notification_rate_limit_window_seconds":600,"notification_rate_limit_global":60,"notification_ingestion_rate_limit_global":30,"settlement_rate_limit_window_seconds":1,"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_rate_limit_per_record":1,"settlement_retry_interval_seconds":60,"governance_evm_fee":{"gas_limit_ceiling":"1","max_fee_per_gas_ceiling":"1","max_priority_fee_per_gas_ceiling":"1","l1_fee_per_transaction_ceiling_wei":"1","quote_validity_seconds":90,"gas_limit_multiplier_bps":13000,"base_fee_multiplier_bps":60000,"l1_fee_multiplier_bps":15000},"governance_replacement":{"max_replacements":3,"fee_bump_bps":1250},"governance_eth_floor_wei":"1","cycles_floor":"1","settlement_cycle_ceiling":"1","governance_principal":"aaaaa-aa","pause_principal":"2vxsx-fae","fee_recipient":{"owner":"aaaaa-aa","subaccount":[]}}\n' "$signer" "$RPC_DIGEST";
+elif [[ "$*" == *get_bridge_status* ]]; then printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "${CANISTER_PAUSED:-true}";
 elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
-elif [[ "$*" == *resume_new_deposits* ]]; then if [[ "${RESUME_FAIL:-}" == true ]]; then echo '{"Err":"StorageFailure"}'; exit 1; fi; touch "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
-elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; rm -f "$IC_RESUMED_MARKER"; echo '{"Ok":null}';
+elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; echo '{"Ok":null}';
 elif [[ "$*" == *'identity principal --identity production'* ]]; then echo 'aaaaa-aa';
 elif [[ "$*" == *list_nervous_system_functions* ]]; then echo '{"functions":[{"id":1,"target_canister_id":"aaaaa-aa","target_method_name":"schedule_activation"}]}';
 elif [[ "$*" == *manage_neuron* ]]; then echo '{"command":{"MakeProposal":{"proposal_id":[]}}}';
@@ -149,7 +148,7 @@ SH
 chmod +x "$T/bin/forge" "$T/bin/cast" "$T/bin/icp" "$T/bin/ci-local.sh"
 export PATH="$T/bin:$PATH"
 export PATH_PROOF_OVERRIDE_MARKER="$T/path-proof-override-used"
-export EXECUTED_MARKER="$T/executed" CANCELLED_MARKER="$T/cancelled" IC_RESUMED_MARKER="$T/ic-resumed" DEPOSIT_PAUSED_MARKER="$T/deposit-paused" WITHDRAWAL_PAUSED_MARKER="$T/withdrawal-paused"
+export EXECUTED_MARKER="$T/executed" CANCELLED_MARKER="$T/cancelled" DEPOSIT_PAUSED_MARKER="$T/deposit-paused" WITHDRAWAL_PAUSED_MARKER="$T/withdrawal-paused"
 export TIMELOCK_DEPLOYED_MARKER="$T/timelock-deployed" BRIDGE_DEPLOYED_MARKER="$T/bridge-deployed"
 export BRIDGE_TIMELOCK_CANCELLER_ADDRESS=0x5555555555555555555555555555555555555555
 export BRIDGE_ICP_IDENTITY=production
@@ -165,7 +164,7 @@ cat >"$T/constructors.json" <<'JSON'
 {"timelock":["86400","[0x6666666666666666666666666666666666666666]","[0x6666666666666666666666666666666666666666]","[0x6666666666666666666666666666666666666666]"],"bridge":["KINIC","KINIC","8","0x1111111111111111111111111111111111111111","0x6666666666666666666666666666666666666666","0x2222222222222222222222222222222222222222","0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","1","2","3600","2","1"]}
 JSON
 cat >"$T/init.json" <<'JSON'
-{"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_cycle_ceiling":"1","settlement_rate_limit_per_record":1,"settlement_retry_interval_seconds":60,"deposit_rate_limit_window_seconds":1,"ecdsa_key_name":"key_1","base_chain_id":8453,"bridge_contract_hex":"3333333333333333333333333333333333333333","timelock_contract_hex":"2222222222222222222222222222222222222222","governance_evm_fee":{"gas_limit_ceiling":"1","max_fee_per_gas_ceiling":"1","max_priority_fee_per_gas_ceiling":"1","l1_fee_per_transaction_ceiling_wei":"1","quote_validity_seconds":90,"gas_limit_multiplier_bps":13000,"base_fee_multiplier_bps":60000,"l1_fee_multiplier_bps":15000},"governance_replacement":{"max_replacements":3,"fee_bump_bps":1250},"fee_recipient":{"owner":"aaaaa-aa","subaccount_hex":""},"settlement_rate_limit_window_seconds":1,"ecdsa_derivation_path_utf8":["bridge-operator"],"governance_ecdsa_derivation_path_utf8":["governance-operator"],"evm_rpc_canister_id":"aaaaa-aa","deposit_rate_limit_per_principal":1,"pause_principal":"2vxsx-fae","governance_eth_floor_wei":"1","custom_evm_rpc_urls":[],"deposit_rate_limit_global":1,"governance_principal":"aaaaa-aa","index_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","cycles_floor":"1"}
+{"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_cycle_ceiling":"1","settlement_rate_limit_per_record":1,"settlement_retry_interval_seconds":60,"deposit_rate_limit_window_seconds":1,"notification_rate_limit_window_seconds":600,"notification_rate_limit_global":60,"notification_ingestion_rate_limit_global":30,"ecdsa_key_name":"key_1","base_chain_id":8453,"bridge_contract_hex":"3333333333333333333333333333333333333333","expected_bridge_runtime_sha256_hex":"4444444444444444444444444444444444444444444444444444444444444444","timelock_contract_hex":"2222222222222222222222222222222222222222","deployment_instance_id_hex":"1111111111111111111111111111111111111111111111111111111111111111","governance_evm_fee":{"gas_limit_ceiling":"1","max_fee_per_gas_ceiling":"1","max_priority_fee_per_gas_ceiling":"1","l1_fee_per_transaction_ceiling_wei":"1","quote_validity_seconds":90,"gas_limit_multiplier_bps":13000,"base_fee_multiplier_bps":60000,"l1_fee_multiplier_bps":15000},"governance_replacement":{"max_replacements":3,"fee_bump_bps":1250},"fee_recipient":{"owner":"aaaaa-aa","subaccount_hex":""},"settlement_rate_limit_window_seconds":1,"ecdsa_derivation_path_utf8":["bridge-operator"],"governance_ecdsa_derivation_path_utf8":["governance-operator"],"evm_rpc_canister_id":"aaaaa-aa","deposit_rate_limit_per_principal":1,"pause_principal":"2vxsx-fae","governance_eth_floor_wei":"1","custom_evm_rpc_urls":[],"deposit_rate_limit_global":1,"governance_principal":"aaaaa-aa","index_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","cycles_floor":"1"}
 JSON
 mkdir -p "$T/rendered"
 cp "$T/init.json" "$T/rendered/canister-init.json"
@@ -187,6 +186,13 @@ BRIDGE_GATE_A_RPC_URL_1=https://one.example BRIDGE_GATE_A_RPC_URL_2=https://two.
 [[ "$(grep -c '^cast block finalized' "$TRACE")" -eq 3 ]]
 [[ "$(grep -c '^cast rpc ' "$TRACE")" -eq 9 ]]
 ! grep -Eq '^cast block [0-9]+' "$TRACE"
+for chain_fault in failure malformed mismatch; do
+  if [[ "$chain_fault" == failure ]]; then args=(PROVIDER_CHAIN_FAILURES=1); elif [[ "$chain_fault" == malformed ]]; then args=(PROVIDER_MALFORMED_CHAINS=1); else args=(PROVIDER_WRONG_CHAINS=1); fi
+  if env "${args[@]}" BRIDGE_GATE_A_RPC_URL_1=https://one.example BRIDGE_GATE_A_RPC_URL_2=https://two.example BRIDGE_GATE_A_RPC_URL_3=https://three.example \
+    "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-gate-a "$T/bundle" >/dev/null 2>&1; then
+    echo "Gate A accepted one provider chain ID $chain_fault" >&2; exit 1
+  fi
+done
 if CANONICAL_PROBE_MALFORMED=true \
   BRIDGE_GATE_A_RPC_URL_1=https://one.example BRIDGE_GATE_A_RPC_URL_2=https://two.example BRIDGE_GATE_A_RPC_URL_3=https://three.example \
   "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-gate-a "$T/bundle" >/dev/null 2>&1; then
@@ -236,19 +242,28 @@ if grep -q sign_chain_key_challenge "$TRACE"; then
   echo "live preflight called the retired chain-key challenge endpoint" >&2; exit 1
 fi
 cp "$T/snapshot.json" "$T/bundle/signer-snapshot.json"
-for isolated in chain_failure wrong_chain safe_failure eip1898_unsupported; do
+ACTIVATION_OPERATION_ID="0x$(printf 'b%.0s' {1..64})"
+for chain_fault in failure malformed mismatch; do
+  if [[ "$chain_fault" == failure ]]; then args=(PROVIDER_CHAIN_FAILURES=1); elif [[ "$chain_fault" == malformed ]]; then args=(PROVIDER_MALFORMED_CHAINS=1); else args=(PROVIDER_WRONG_CHAINS=1); fi
+  if env "${args[@]}" "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-activation schedule "$T/bundle" "$ACTIVATION_OPERATION_ID" >/dev/null 2>&1; then
+    echo "activation preflight accepted one provider chain ID $chain_fault" >&2; exit 1
+  fi
+done
+for isolated in safe_failure eip1898_unsupported; do
   case "$isolated" in
-    chain_failure) args=(PROVIDER_CHAIN_FAILURES=1);;
-    wrong_chain) args=(PROVIDER_WRONG_CHAINS=1);;
     safe_failure) args=(PROVIDER_SAFE_FAILURES=1);;
     eip1898_unsupported) args=(PROVIDER_EIP1898_FAILURES=1);;
   esac
   env "${args[@]}" BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/isolated-$isolated.json"
 done
-for insufficient in chain_failure wrong_chain safe_failure eip1898_unsupported; do
+for chain_fault in failure malformed mismatch; do
+  if [[ "$chain_fault" == failure ]]; then args=(PROVIDER_CHAIN_FAILURES=1); elif [[ "$chain_fault" == malformed ]]; then args=(PROVIDER_MALFORMED_CHAINS=1); else args=(PROVIDER_WRONG_CHAINS=1); fi
+  if env "${args[@]}" BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/invalid-chain-$chain_fault.json" >/dev/null 2>&1; then
+    echo "live preflight accepted one provider chain ID $chain_fault" >&2; exit 1
+  fi
+done
+for insufficient in safe_failure eip1898_unsupported; do
   case "$insufficient" in
-    chain_failure) args=(PROVIDER_CHAIN_FAILURES=2);;
-    wrong_chain) args=(PROVIDER_WRONG_CHAINS=2);;
     safe_failure) args=(PROVIDER_SAFE_FAILURES=2);;
     eip1898_unsupported) args=(PROVIDER_EIP1898_FAILURES=2);;
   esac

@@ -41,6 +41,8 @@ the 60-second lifetime of a successfully fetched runtime or status result.
 - Confirm the selected owner/subaccount remains the approval and deposit source.
 - Approve the exact gross amount plus transfer-from fee with current allowance and 30-minute expiry.
 - Confirm OISY displays the Bridge canister's ICRC-21 message and the bSNS governance disclosure.
+- Keep an OISY approval or Bridge confirmation open for at least 10 seconds, then approve it and
+  confirm the same popup completes approval and deposit without a false signer disconnect.
 - Submit a deposit and verify canister history and the Finalized Base mint.
 - Reject one approval and one Bridge call, close one popup, then reconnect.
 - Change the selected account after confirmation; verify the transaction is aborted and must be

@@ -70,6 +70,17 @@ def evidence(scenario, details):
                 "bindings": bindings,
             }
         )
+    if scenario == "preflight":
+        base = next(artifact for artifact in artifacts if artifact["kind"] == "base")
+        base["path"] = "artifacts/preflight-base-0.json"
+        for provider_index in (1, 2):
+            artifacts.append(
+                {
+                    **base,
+                    "path": f"artifacts/preflight-base-{provider_index}.json",
+                    "bindings": dict(base["bindings"]),
+                }
+            )
     if scenario in {"single_provider_failure", "quorum_loss"}:
         fault_fields = {"configured_provider_count", "required_provider_threshold", "injected_provider_failures", "fault_injection_reference"}
         for artifact in artifacts:
@@ -246,7 +257,7 @@ def write_fault_artifact(item, scenario, output):
 
 def manifest(binding):
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "base-sepolia-evm-rpc-canister-rehearsal",
         "state": "AWAITING_PREFLIGHT",
         "created_at": "2026-07-15T00:00:00Z",
@@ -254,7 +265,8 @@ def manifest(binding):
         "source": {"revision": "a" * 40, "source_tree_sha256": "c" * 64, "worktree_status_sha256": "b" * 64},
         "binding": binding,
         "scenarios": {name: None for name in rehearsal.SCENARIOS},
-        "complete": False,
+        "launch_ready": False,
+        "extended_complete": False,
         "guarantee_boundary": {
             "provider_operator_or_infrastructure_audited": False,
             "external_assumption": "The configured quorum returns the canonical Finalized chain.",
@@ -289,13 +301,62 @@ class RehearsalTests(unittest.TestCase):
         with self.assertRaises(rehearsal.InvalidEvidence):
             rehearsal.validate_config(value)
 
-    def test_self_reported_scenarios_cannot_derive_complete_state(self):
+    def test_self_reported_scenarios_cannot_derive_launch_ready_state(self):
         binding = rehearsal.validate_config(config())
         value = manifest(binding)
         for scenario, item in all_evidence(binding).items():
             rehearsal.record(value, item, scenario)
         self.assertEqual(value["state"], "AWAITING_RAW_ARTIFACT_VERIFICATION")
-        self.assertFalse(value["complete"])
+        self.assertFalse(value["launch_ready"])
+        self.assertFalse(value["extended_complete"])
+
+    def test_launch_and_extended_states_are_distinct(self):
+        binding = rehearsal.validate_config(config())
+        value = manifest(binding)
+        items = all_evidence(binding)
+        for scenario in (
+            "preflight",
+            "authorization_mint",
+            "withdrawal_release",
+            "quorum_loss",
+            "final_pause",
+        ):
+            value["scenarios"][scenario] = items[scenario]
+        state, launch_ready, extended_complete = rehearsal.derive_state(value["scenarios"])
+        self.assertEqual(state, "LAUNCH_READY")
+        self.assertTrue(launch_ready)
+        self.assertFalse(extended_complete)
+
+        for scenario, item in items.items():
+            value["scenarios"][scenario] = item
+        state, launch_ready, extended_complete = rehearsal.derive_state(value["scenarios"])
+        self.assertEqual(state, "EXTENDED_COMPLETE")
+        self.assertTrue(launch_ready)
+        self.assertTrue(extended_complete)
+
+    def test_old_schema_and_post_pause_append_are_rejected(self):
+        binding = rehearsal.validate_config(config())
+        obsolete = manifest(binding)
+        obsolete["schema_version"] = 1
+        with self.assertRaises(rehearsal.InvalidEvidence):
+            rehearsal.validate_manifest_envelope(obsolete)
+
+        value = manifest(binding)
+        items = all_evidence(binding)
+        for scenario in (
+            "preflight",
+            "authorization_mint",
+            "withdrawal_release",
+            "quorum_loss",
+            "final_pause",
+        ):
+            rehearsal.record(value, items[scenario], scenario)
+        with self.assertRaises(rehearsal.InvalidEvidence):
+            rehearsal.record(
+                value,
+                items["canonical_receipt"],
+                "canonical_receipt",
+            )
 
     def test_boolean_claim_cannot_replace_canister_audit_or_module_binding(self):
         binding = rehearsal.validate_config(config())
@@ -516,6 +577,7 @@ class RehearsalTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 tool.chmod(0o755)
+                base_provider_index = 0
                 for reference in item["artifacts"]:
                     kind = reference["kind"]
                     output = root / reference["path"]
@@ -542,8 +604,10 @@ class RehearsalTests(unittest.TestCase):
                             kind,
                             output,
                             command,
-                            0 if kind == "base" else None,
+                            base_provider_index if kind == "base" else None,
                         )
+                    if kind == "base":
+                        base_provider_index += 1
                     reference["sha256"] = rehearsal.hashlib.sha256(output.read_bytes()).hexdigest()
                 request_records = []
                 response_records = []
@@ -559,7 +623,8 @@ class RehearsalTests(unittest.TestCase):
                 ).hexdigest()
                 rehearsal.record(value, item, scenario, root)
             rehearsal.verify_manifest(value, root)
-            self.assertTrue(value["complete"])
+            self.assertTrue(value["launch_ready"])
+            self.assertTrue(value["extended_complete"])
             manifest_path = root / "rpc-e2e.json"
             manifest_path.write_text(json.dumps(value), encoding="utf-8")
             verified = subprocess.run(
@@ -569,6 +634,30 @@ class RehearsalTests(unittest.TestCase):
                 stderr=subprocess.PIPE,
             )
             self.assertEqual(verified.returncode, 0, verified.stderr)
+
+            preflight_references = [
+                reference
+                for reference in items["preflight"]["artifacts"]
+                if reference["kind"] == "base"
+            ]
+            duplicate_reference = preflight_references[2]
+            duplicate_path = root / duplicate_reference["path"]
+            original_preflight = duplicate_path.read_bytes()
+            original_preflight_digest = duplicate_reference["sha256"]
+            duplicate_provider = json.loads(original_preflight)
+            duplicate_provider["transport"]["provider_index"] = 1
+            duplicate_path.write_text(json.dumps(duplicate_provider), encoding="utf-8")
+            duplicate_reference["sha256"] = rehearsal.hashlib.sha256(duplicate_path.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(value), encoding="utf-8")
+            duplicate_rejected = subprocess.run(
+                ["python3", str(MODULE_PATH), "verify", str(manifest_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertNotEqual(duplicate_rejected.returncode, 0)
+            duplicate_path.write_bytes(original_preflight)
+            duplicate_reference["sha256"] = original_preflight_digest
+            manifest_path.write_text(json.dumps(value), encoding="utf-8")
 
             base_reference = next(
                 reference

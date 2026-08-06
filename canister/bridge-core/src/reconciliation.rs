@@ -151,8 +151,9 @@ pub fn resolve_deposit_hold(
                 | DepositState::AuthorizationAvailable {
                     ledger_block_index: current,
                 }
-                | DepositState::ExpiryReconciliation {
+                | DepositState::RefundAvailable {
                     ledger_block_index: current,
+                    ..
                 }
                 | DepositState::Minted {
                     ledger_block_index: current,
