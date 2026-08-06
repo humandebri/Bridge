@@ -103,6 +103,23 @@ describe("SettlementConfirmationCoordinator", () => {
     expect(mocks.update).not.toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "complete" }))
   })
 
+  it("waits for an explicit action before a restored IC wallet sends a notification", async () => {
+    mocks.adapter.requiresUserGesture = true
+    mocks.getBlock.mockResolvedValue({ number: 10n })
+    render(<SettlementConfirmationCoordinator />)
+
+    await waitFor(() => expect(mocks.setAction).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({
+      label: "Confirm with IC wallet",
+      pending: false,
+    })))
+    expect(mocks.adapter.notifyWithdrawal).not.toHaveBeenCalled()
+
+    const action = progressActionCalls().find(([, candidate]) => candidate?.label === "Confirm with IC wallet" && candidate.pending === false)?.[1]
+    await action!.run()
+
+    await waitFor(() => expect(mocks.adapter.notifyWithdrawal).toHaveBeenCalledOnce())
+  })
+
   it("marks_the_transfer_complete_only_when_the_canister_withdrawal_reaches_Paid", async () => {
     mocks.readPending.mockReturnValue([])
     mocks.progress = {

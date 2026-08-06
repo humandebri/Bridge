@@ -90,7 +90,10 @@ export class OisyAdapter implements IcWalletAdapter {
     private readonly ledgerCanisterId: string,
     private readonly bridgeCanisterId: string,
     private readonly connectWallet: () => Promise<OisyWalletSession> = () => BridgeIcrcWallet.connect({ url: OISY_SIGNER_URL, host, connectionOptions: { timeoutInMilliseconds: CALL_TIMEOUT_MS } }),
-  ) {}
+    restoredAccount?: IcAccount,
+  ) {
+    this.#account = restoredAccount ? copyAccount(restoredAccount) : undefined
+  }
 
   async connect(): Promise<IcAccount> {
     const wallet = await this.openWallet()
@@ -243,9 +246,19 @@ declare global { interface Window { ic?: { plug?: PlugApi } } }
 
 export class PlugAdapter implements IcWalletAdapter {
   readonly provider = "plug" as const
-  readonly requiresUserGesture = false
+  #requiresUserGesture: boolean
   #account?: IcAccount
-  constructor(private readonly host: string, private readonly ledgerCanisterId: string, private readonly bridgeCanisterId: string) {}
+  constructor(
+    private readonly host: string,
+    private readonly ledgerCanisterId: string,
+    private readonly bridgeCanisterId: string,
+    restoredAccount?: IcAccount,
+  ) {
+    this.#account = restoredAccount ? copyAccount(restoredAccount) : undefined
+    this.#requiresUserGesture = restoredAccount !== undefined
+  }
+
+  get requiresUserGesture(): boolean { return this.#requiresUserGesture }
 
   async connect(): Promise<IcAccount> {
     const plug = requiredPlug()
@@ -253,12 +266,16 @@ export class PlugAdapter implements IcWalletAdapter {
     if (!connected) throw new Error("Plug connection was rejected")
     const principal = await plug.agent.getPrincipal()
     this.#account = { owner: principal.toText() }
+    this.#requiresUserGesture = false
     return this.#account
   }
 
   async disconnect(): Promise<void> { await requiredPlug().disconnect(); this.#account = undefined }
 
-  prepare(): Promise<() => Promise<void>> { return Promise.resolve(() => Promise.resolve()) }
+  prepare(): Promise<() => Promise<void>> {
+    this.#requiresUserGesture = false
+    return Promise.resolve(() => Promise.resolve())
+  }
 
   async getAccount(): Promise<IcAccount> { return this.assertConnectedPrincipal() }
 

@@ -5,7 +5,7 @@
     "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
     "bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
     "bridge_runtime_template_sha256": "0x4be5b6884d6293924865c2d2f669d1e8de7f285be74c12506ffb0e3c63bfb5a0",
-    "bridge_wasm_sha256": "53a44aa8e4c97a1f21416af0c4e5383947de6816b8d714bf0785b8d4f49a5c1a",
+    "bridge_wasm_sha256": "3570e2371931aa902a68f4342a96b296df4447506846a4c3847a18930cfc70d2",
     "bsns_address": "0x265e6b05a2f6bda29f464d70867a37acde3ccde8",
     "bsns_runtime_sha256": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b",
     "bsns_runtime_template_sha256": "0x10be95adefd5f76cf8d1f8dd137247dc9371d81335a793984dc88d2aa20955ac",
@@ -16,12 +16,12 @@
     "frontend_profile_sha256": "1cffb76243b328358a15d21ad437267ee45097cf11da715e7e016cc156ef8a6d",
     "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
     "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
-    "local_e2e_sha256": "88c6cd5212fb52e40d9190c585e91156d665bf4bd59edbca6917d5671fc26ce6",
-    "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+    "local_e2e_sha256": "e123aa964e00cca65cdd54d5d7e882bf651d0b2f17c2279a42ef447c03984cd8",
+    "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
     "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
   },
   "complete": false,
-  "created_at": "2026-08-05T07:26:55.443029Z",
+  "created_at": "2026-08-04T06:35:02.878280Z",
   "kind": "kinic-bridge-sepolia-staging-e2e",
   "schema_version": 7,
   "stages": {
@@ -30,7 +30,7 @@
         {
           "kind": "raw",
           "path": "artifacts/activation-execute-live.json",
-          "sha256": "41a0d00e508508b3d5f8296597a54ef0d0f1c1a3d3bfe960976862f055ae8e63"
+          "sha256": "a5d6c576d62f3d693693002082a8f399b50df8d09c33c7abc772a063060a669f"
         }
       ],
       "details": {
@@ -38,14 +38,14 @@
         "base_withdrawals_paused": false,
         "canister_deposits_paused": false,
         "delay_seconds": 300,
-        "execute_transaction_hash": "0x36cf4687177816d1b00303f5bf69a97c33aae5e20de38e5a069825af8b61b7b1",
-        "finalized_block_hash": "0xfb7bc17864ba27dd766e6f64411c447471718feebc853effd174f566073168d7",
-        "finalized_block_number": 45076053,
+        "execute_transaction_hash": "0x945e1ef00dcc0c3a776ea86a95484af9d877e37669d5d51c30265004626c0145",
+        "finalized_block_hash": "0x9614ea9d608124fd60c8bb0750f491b1489f9ce282a6c76f96d04916faab7141",
+        "finalized_block_number": 45029855,
         "pending_timelock_operations": 0
       },
-      "observed_at": "2026-08-05T09:26:17Z",
+      "observed_at": "2026-08-04T07:49:28Z",
       "schema_version": 7,
-      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
       "stage": "activation_execute"
     },
     "activation_schedule": {
@@ -53,19 +53,19 @@
         {
           "kind": "raw",
           "path": "artifacts/activation-schedule-live.json",
-          "sha256": "82fd510134f4ffee48e50e62723eb300ca753105dd8cf1a19148f83ce6bb7a88"
+          "sha256": "29daf57091357d44562dc4f586789fd7226066f8b4108cde4174d29d5f67db2f"
         }
       ],
       "details": {
         "early_execute_reverted": true,
-        "finalized_block_hash": "0xfbbbb50626d3c2b8d4a1aac7f3b1fca64397359897d7c27280c2c49207913c24",
-        "finalized_block_number": 45075356,
-        "operation_id": "0x36d209c4d634f6e0919bf4e29f5f0e7c58318dfee8c3e80f04772fbb99536a43",
-        "schedule_transaction_hash": "0xd7f16af844c35ea05ba79d7bbd5b013a88fe704c6b856b148c3d358b1c10ae9d"
+        "finalized_block_hash": "0x85ac1d582d578b90921a82cf88f4170beab57ddc494cc75205c329c9c49c6101",
+        "finalized_block_number": 45028958,
+        "operation_id": "0xcc4deed7b51499db068ab22c8c54e6de60a18a1311bc6d4f7c80164a8d62ab54",
+        "schedule_transaction_hash": "0x84fa66309de5b06ad5c6a4d639a8d9e229aef75f1ac88c56d0309aec7f53bac2"
       },
-      "observed_at": "2026-08-05T08:58:15Z",
+      "observed_at": "2026-08-04T07:18:58Z",
       "schema_version": 7,
-      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
       "stage": "activation_schedule"
     },
     "contracts": {
@@ -92,32 +92,13 @@
         "mint_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
         "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
       },
-      "observed_at": "2026-08-05T08:23:05Z",
+      "observed_at": "2026-08-04T06:42:59Z",
       "schema_version": 7,
-      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
       "stage": "contracts"
     },
     "final_pause": null,
-    "frontend_publish": {
-      "artifacts": [
-        {
-          "kind": "raw",
-          "path": "artifacts/frontend-publish-live.json",
-          "sha256": "7a3cfb589bf8d760a45d6fc07b86e48b088f79002ac5db11c26a69ec28741f8d"
-        }
-      ],
-      "details": {
-        "deployment_id": "2d5c23d3-7e4c-4bda-846d-034b571e6755",
-        "profile_sha256": "1cffb76243b328358a15d21ad437267ee45097cf11da715e7e016cc156ef8a6d",
-        "runtime_verification_fresh": true,
-        "test_banner_visible": true,
-        "url": "https://kinic-bridge-ui-test.hude.workers.dev"
-      },
-      "observed_at": "2026-08-05T12:14:06Z",
-      "schema_version": 7,
-      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
-      "stage": "frontend_publish"
-    },
+    "frontend_publish": null,
     "initialize": {
       "artifacts": [
         {
@@ -141,9 +122,9 @@
         "storage_integrity": "ok",
         "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
       },
-      "observed_at": "2026-08-05T08:25:26Z",
+      "observed_at": "2026-08-04T06:45:55Z",
       "schema_version": 7,
-      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
       "stage": "initialize"
     },
     "install": {
@@ -151,7 +132,7 @@
         {
           "kind": "raw",
           "path": "artifacts/install-live.json",
-          "sha256": "86c1bafbfd070a85815d7c9ca59bc54c999146e1be0e583aa3a9cff186698853"
+          "sha256": "6dcf513f9ae0a5f9532f54f6e2ebe32408e0e42d849c37640d3663a538646971"
         }
       ],
       "details": {
@@ -159,36 +140,36 @@
           "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
           "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
         ],
-        "cycles_balance": 774746052185,
+        "cycles_balance": 1071042440686,
         "deployment_instance_id_after": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
         "install_mode": "upgrade",
-        "module_sha256": "53a44aa8e4c97a1f21416af0c4e5383947de6816b8d714bf0785b8d4f49a5c1a",
+        "module_sha256": "3570e2371931aa902a68f4342a96b296df4447506846a4c3847a18930cfc70d2",
         "schema_version_after": 31,
         "state_counts_after": {
-          "deposits": 4,
+          "deposits": 2,
           "pending_ledger_operations": 0,
           "reconciliation_holds": 0,
           "reserved_deposit_mint_amount": 1000000000,
-          "reserved_deposit_mint_operations": 1,
+          "reserved_deposit_mint_operations": 2,
           "unpaid_withdrawal_amount_out": 0,
           "unpaid_withdrawal_count": 0,
           "withdrawals": 0
         },
         "state_counts_before": {
-          "deposits": 4,
+          "deposits": 2,
           "pending_ledger_operations": 0,
           "reconciliation_holds": 0,
           "reserved_deposit_mint_amount": 1000000000,
-          "reserved_deposit_mint_operations": 1,
+          "reserved_deposit_mint_operations": 2,
           "unpaid_withdrawal_amount_out": 0,
           "unpaid_withdrawal_count": 0,
           "withdrawals": 0
         },
         "storage_integrity_after": "ok"
       },
-      "observed_at": "2026-08-05T08:24:40Z",
+      "observed_at": "2026-08-04T06:44:42Z",
       "schema_version": 7,
-      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
       "stage": "install"
     },
     "preflight": {
@@ -196,22 +177,22 @@
         {
           "kind": "live-public-config",
           "path": "artifacts/live-public-config.json",
-          "sha256": "e92885a96f73267ec19f36dc1e4910d344168fcf4a90bbd3c60b4ce2c306134f"
+          "sha256": "9b2bac835e0159ac3c0d3c5182f88ff45016a162f019d572609a68499bc0af36"
         },
         {
           "kind": "reinstall-instance-check",
           "path": "artifacts/reinstall-instance-check.json",
-          "sha256": "2deefb07a9cfac0d29eb325c81cb43ac859c8f02031df7b2374beab43e4203de"
+          "sha256": "d380059a89e7acb07bae5b6e25d2641da2da06256b20f3478d07d802840f083d"
         },
         {
           "kind": "live-canister-status",
           "path": "artifacts/live-canister-status.json",
-          "sha256": "9634e061a292597ca975bc98707d963e8761c1ac65eff5a35eeaaf617b604861"
+          "sha256": "4b16f45ec51c4692eb15d991070a5e89c1e207bb5fdaaf58bd92ad5e2e2d1e0b"
         },
         {
           "kind": "live-bridge-status",
           "path": "artifacts/live-bridge-status.json",
-          "sha256": "c262296c5c9d7a2155338c5eb9ef5bfa4f8a610e0f5cb7fd032fb174743e6215"
+          "sha256": "306712ec01258b0fd0f9dfc27d6f9c14541f5c067cd0e0966a63b3172decbcd6"
         },
         {
           "kind": "live-activation-status",
@@ -226,7 +207,12 @@
         {
           "kind": "live-ledger-balance",
           "path": "artifacts/live-ledger-balance.json",
-          "sha256": "c5dc44dc23c9b5bed8459fcf4202a3c35d30160ea5f250ac818214641ed8064e"
+          "sha256": "390d2bf77cd9dba99ac42a23af9ba53a4f88d8361b7b7d8e8cbe2b4bdfdc392d"
+        },
+        {
+          "kind": "obsolete-pause-evidence",
+          "path": "artifacts/obsolete-pause-evidence.json",
+          "sha256": "b3bb78d637ee71235b32903a93e1b8117c5d039c0a515c33c8b6d0773c1fecb1"
         }
       ],
       "details": {
@@ -244,7 +230,7 @@
           "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
           "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
         ],
-        "cycles_balance": 808148878982,
+        "cycles_balance": 1092984181032,
         "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
         "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
         "index_ledger_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
@@ -252,19 +238,19 @@
         "ledger_decimals": 8,
         "ledger_fee": 10000,
         "ledger_symbol": "TICRC1",
-        "live_schema_version": 31,
+        "live_schema_version": 30,
         "previous_deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
-        "replacement_mode": "current-schema-upgrade"
+        "replacement_mode": "obsolete-schema-upgrade"
       },
-      "observed_at": "2026-08-05T08:20:38Z",
+      "observed_at": "2026-08-04T06:42:22Z",
       "schema_version": 7,
-      "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+      "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
       "stage": "preflight"
     },
     "rpc_rehearsal": null,
     "smoke_e2e": null,
     "wallet_e2e": null
   },
-  "state": "AWAITING_SMOKE_E2E",
-  "updated_at": "2026-08-05T12:14:44.215359Z"
+  "state": "AWAITING_FRONTEND_PUBLISH",
+  "updated_at": "2026-08-04T07:50:03.153582Z"
 }

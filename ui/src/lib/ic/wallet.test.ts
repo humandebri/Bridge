@@ -1,7 +1,8 @@
 import { IDL } from "@dfinity/candid"
-import { describe, expect, it, vi } from "vitest"
+import { Principal } from "@dfinity/principal"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { idlFactory } from "@/generated/bridge.idl"
-import { decodeDepositReply, decodeNotifyWithdrawalReply, NotifyWithdrawalCallError, notifyWithdrawalErrorMessage, OisyAdapter, requestDepositRefundErrorMessage } from "./wallet"
+import { decodeDepositReply, decodeNotifyWithdrawalReply, NotifyWithdrawalCallError, notifyWithdrawalErrorMessage, OisyAdapter, PlugAdapter, requestDepositRefundErrorMessage } from "./wallet"
 
 // didc's runtime JS intentionally has no static return type; the checked-in TS binding is the typed contract.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
@@ -83,6 +84,31 @@ describe("OISY popup lifecycle", () => {
     expect(wallet.disconnect).toHaveBeenCalledOnce()
   })
 
+  it("restores the expected account without opening OISY and validates it on prepare", async () => {
+    const wallet = createWallet()
+    const connectWallet = vi.fn().mockResolvedValue(wallet)
+    const adapter = new OisyAdapter("https://icp-api.io", owner, owner, connectWallet, { owner })
+
+    await expect(adapter.getAccount()).resolves.toEqual({ owner })
+    expect(connectWallet).not.toHaveBeenCalled()
+
+    const close = await adapter.prepare()
+    expect(connectWallet).toHaveBeenCalledOnce()
+    await close()
+    expect(wallet.disconnect).toHaveBeenCalledOnce()
+  })
+
+  it("rejects a changed restored OISY account before an action", async () => {
+    const wallet = createWallet("2vxsx-fae")
+    const connectWallet = vi.fn().mockResolvedValue(wallet)
+    const adapter = new OisyAdapter("https://icp-api.io", owner, owner, connectWallet, { owner })
+
+    await expect(adapter.prepare()).rejects.toThrow("OISY account changed")
+    expect(wallet.approve).not.toHaveBeenCalled()
+    expect(wallet.callCanister).not.toHaveBeenCalled()
+    expect(wallet.disconnect).toHaveBeenCalledOnce()
+  })
+
   it("reuses a prepared popup for approval and closes it after the action", async () => {
     const initialWallet = createWallet()
     const approvalWallet = createWallet()
@@ -115,6 +141,43 @@ describe("OISY popup lifecycle", () => {
 
     expect(changedWallet.approve).not.toHaveBeenCalled()
     expect(changedWallet.disconnect).toHaveBeenCalledOnce()
+  })
+})
+
+describe("Plug restored account validation", () => {
+  afterEach(() => {
+    Object.defineProperty(window, "ic", { configurable: true, value: undefined })
+  })
+
+  function installPlug(owner: string) {
+    const plug = {
+      requestConnect: vi.fn(),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+      agent: { getPrincipal: vi.fn().mockResolvedValue(Principal.fromText(owner)) },
+      createActor: vi.fn(),
+    }
+    Object.defineProperty(window, "ic", { configurable: true, value: { plug } })
+    return plug
+  }
+
+  it("uses a restored Plug account without requesting a new connection", async () => {
+    const plug = installPlug("aaaaa-aa")
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", { owner: "aaaaa-aa" })
+
+    expect(adapter.requiresUserGesture).toBe(true)
+    await expect(adapter.getAccount()).resolves.toEqual({ owner: "aaaaa-aa" })
+    expect(plug.requestConnect).not.toHaveBeenCalled()
+
+    await adapter.prepare()
+    expect(adapter.requiresUserGesture).toBe(false)
+  })
+
+  it("rejects a changed Plug principal before creating an actor", async () => {
+    const plug = installPlug("2vxsx-fae")
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", { owner: "aaaaa-aa" })
+
+    await expect(adapter.getAccount()).rejects.toThrow("Plug account changed")
+    expect(plug.createActor).not.toHaveBeenCalled()
   })
 })
 

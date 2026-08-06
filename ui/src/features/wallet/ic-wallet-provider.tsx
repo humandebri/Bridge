@@ -18,11 +18,12 @@ const IcWalletContext = createContext<IcWalletState | undefined>(undefined)
 
 export function IcWalletProviderRoot({ children }: { children: ReactNode }) {
   const [rememberedOwner] = useState(loadIcHistoryOwner)
-  const [account, setAccount] = useState<IcAccount>()
+  const [restoredWallet] = useState(() => restoreWallet(rememberedOwner))
+  const [account, setAccount] = useState<IcAccount | undefined>(restoredWallet?.account)
   const [historyAccount, setHistoryAccount] = useState<IcAccount | undefined>(rememberedOwner?.account)
   const [historyProvider, setHistoryProvider] = useState<IcWalletProvider | undefined>(rememberedOwner?.provider)
-  const [provider, setProvider] = useState<IcWalletProvider>()
-  const [adapter, setAdapter] = useState<IcWalletAdapter>()
+  const [provider, setProvider] = useState<IcWalletProvider | undefined>(restoredWallet?.provider)
+  const [adapter, setAdapter] = useState<IcWalletAdapter | undefined>(restoredWallet?.adapter)
   const [connecting, setConnecting] = useState<IcWalletProvider>()
 
   const connect = useCallback(async (nextProvider: IcWalletProvider) => {
@@ -58,6 +59,30 @@ export function IcWalletProviderRoot({ children }: { children: ReactNode }) {
     [account, historyAccount, historyProvider, provider, adapter, connecting, connect, disconnect],
   )
   return <IcWalletContext.Provider value={value}>{children}</IcWalletContext.Provider>
+}
+
+function restoreWallet(owner: ReturnType<typeof loadIcHistoryOwner>): {
+  account: IcAccount
+  provider: IcWalletProvider
+  adapter: IcWalletAdapter
+} | undefined {
+  if (!owner || !deploymentProfile.ledgerCanisterId || !deploymentProfile.bridgeCanisterId) return undefined
+  const account = { owner: owner.account.owner, subaccount: owner.account.subaccount?.slice() }
+  const adapter = owner.provider === "oisy"
+    ? new OisyAdapter(
+      deploymentProfile.icHost,
+      deploymentProfile.ledgerCanisterId,
+      deploymentProfile.bridgeCanisterId,
+      undefined,
+      account,
+    )
+    : new PlugAdapter(
+      deploymentProfile.icHost,
+      deploymentProfile.ledgerCanisterId,
+      deploymentProfile.bridgeCanisterId,
+      account,
+    )
+  return { account, provider: owner.provider, adapter }
 }
 
 export function useIcWallet(): IcWalletState {

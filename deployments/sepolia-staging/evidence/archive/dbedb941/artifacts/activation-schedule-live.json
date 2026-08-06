@@ -1,0 +1,23 @@
+{
+  "chain_id": 84532,
+  "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
+  "operation_id": "0xcc4deed7b51499db068ab22c8c54e6de60a18a1311bc6d4f7c80164a8d62ab54",
+  "schedule_transaction_hash": "0x84fa66309de5b06ad5c6a4d639a8d9e229aef75f1ac88c56d0309aec7f53bac2",
+  "finalized_receipt": {
+    "block_number": 45028958,
+    "block_hash": "0x85ac1d582d578b90921a82cf88f4170beab57ddc494cc75205c329c9c49c6101",
+    "status": "success"
+  },
+  "early_execute_check": {
+    "method": "eth_call",
+    "block_number": 45028958,
+    "from": "0x64639cb99ae61436cb1d66d775283f757e436479",
+    "reverted": true,
+    "revert_data": "0x5ead8eb5cc4deed7b51499db068ab22c8c54e6de60a18a1311bc6d4f7c80164a8d62ab540000000000000000000000000000000000000000000000000000000000000004"
+  },
+  "canister_confirmation": {
+    "operation_id": "2",
+    "succeeded": true,
+    "deposits_paused": true
+  }
+}

@@ -3,7 +3,7 @@ import { useEffect, useReducer, useRef, useState } from "react"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { finalizedHeadTimestampBlocker, RUNTIME_VALIDATION_TTL_MS, runtimeProfileFingerprint, runtimeWriteBlocker, validateRuntime, validateRuntimeHeartbeat, type FinalizedRuntimeObservation, type RuntimeValidation } from "@/lib/runtime-validation"
+import { RUNTIME_VALIDATION_TTL_MS, runtimeProfileFingerprint, runtimeWriteBlocker, validateRuntime, validateRuntimeHeartbeat, type FinalizedRuntimeObservation, type RuntimeValidation } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 
 interface AutomaticQueryOptions {
@@ -156,34 +156,6 @@ export function useCurrentBaseQuote(options: AutomaticQueryOptions = {}) {
       const address = deploymentProfile.bridgeAddress as `0x${string}`
       const snapshot = await client.readContract({ address, abi: bridgeAbi, functionName: "bridgeSnapshot" })
       return bridgeSnapshotView(snapshot)
-    },
-  })
-}
-
-export function useConfirmedBaseStatus() {
-  return useQuery({
-    queryKey: ["base-status-finalized", deploymentProfile.bridgeAddress],
-    enabled: false,
-    queryFn: async () => {
-      const client = basePublicClient
-      const address = deploymentProfile.bridgeAddress as `0x${string}`
-      const finalized = await client.getBlock({ blockTag: "finalized" })
-      if (finalized.number === null || finalized.hash === null) throw new Error("Finalized Base block number or hash is unavailable")
-      const timestampBlocker = finalizedHeadTimestampBlocker(finalized.timestamp)
-      if (timestampBlocker) throw new Error(timestampBlocker)
-      const snapshot = await client.readContract({
-        address,
-        abi: bridgeAbi,
-        functionName: "bridgeSnapshot",
-        blockHash: finalized.hash,
-        requireCanonical: true,
-      })
-      return {
-        ...bridgeSnapshotView(snapshot),
-        observedBlock: finalized.number,
-        observedBlockHash: finalized.hash,
-        observedTimestamp: snapshot.blockTimestamp,
-      }
     },
   })
 }

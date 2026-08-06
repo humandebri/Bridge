@@ -1,8 +1,8 @@
 {
   "schema_version": 7,
   "stage": "contracts",
-  "observed_at": "2026-08-05T08:23:05Z",
-  "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+  "observed_at": "2026-08-04T06:42:59Z",
+  "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
   "artifacts": [
     {
       "path": "artifacts/contracts-live.json",

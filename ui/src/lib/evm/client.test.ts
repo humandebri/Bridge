@@ -8,8 +8,10 @@ describe("Base clients", () => {
     expect(basePublicClient.chain?.id).toBe(deploymentProfile.chainId)
   })
 
-  it("offers the Coinbase Wallet connector", () => {
+  it("offers injected and Coinbase connectors without the MetaMask SDK connector", () => {
+    expect(wagmiConfig.connectors.some((connector) => connector.id === "injected")).toBe(true)
     expect(wagmiConfig.connectors.some((connector) => connector.id === "coinbaseWalletSDK")).toBe(true)
+    expect(wagmiConfig.connectors.some((connector) => connector.id === "metaMaskSDK")).toBe(false)
   })
 
   it("builds Base explorer transaction URLs only for supported chains and hashes", () => {

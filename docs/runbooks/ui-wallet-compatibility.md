@@ -75,7 +75,12 @@ the 60-second lifetime of a successfully fetched runtime or status result.
 - After approve succeeds but deposit fails, record the remaining allowance, expiry, and retry path.
 - Force one withdrawal notification failure and verify a later explicit History refresh reconstructs
   the Finalized event and exposes `Check and notify` again.
-- Reload the page and reconnect both wallets; verify neither action retries the notification.
+- Reload the page and verify both wallet summaries remain connected without a new IC wallet prompt;
+  verify the reload itself does not retry the notification.
+- Start a withdrawal and verify OISY confirms the restored IC destination before any Base approval or
+  burn; switch the OISY account and verify no Base transaction is submitted.
+- Start the next IC write and verify OISY reopens or Plug checks its current Principal before the
+  notification is submitted.
 - Select `Check and notify` and verify one receipt check and at most one notification call are made.
 - After successful ingestion, close the wallet and browser; verify canister timers complete the IC
   release without another Base transaction or wallet prompt. Reopen History and verify

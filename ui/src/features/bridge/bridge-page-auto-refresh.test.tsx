@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   runtimeRefetch: vi.fn(),
   runtimeAutoRetryPending: vi.fn<() => boolean>(),
   baseRefetch: vi.fn(),
+  writeContractAsync: vi.fn(),
+  savePendingConfirmation: vi.fn(),
   getDepositByOwnerSequence: vi.fn(),
   removeDepositIntent: vi.fn(),
   saveDepositIntent: vi.fn(),
@@ -31,7 +33,7 @@ vi.mock("wagmi", () => ({
   useAccount: mocks.useAccount,
   useChainId: () => 84_532,
   useConnectorClient: () => ({ data: undefined }),
-  useWriteContract: () => ({ isPending: false, writeContractAsync: vi.fn() }),
+  useWriteContract: () => ({ isPending: false, writeContractAsync: mocks.writeContractAsync }),
 }))
 
 vi.mock("@tanstack/react-router", () => ({
@@ -93,6 +95,10 @@ vi.mock("@/lib/deposit-intents", () => ({
   readDepositIntent: mocks.readDepositIntent,
   removeDepositIntent: mocks.removeDepositIntent,
   saveDepositIntent: mocks.saveDepositIntent,
+}))
+
+vi.mock("@/lib/pending-confirmations", () => ({
+  savePendingConfirmation: mocks.savePendingConfirmation,
 }))
 
 vi.mock("@/lib/browser-lock", async (importOriginal) => ({
@@ -163,6 +169,8 @@ describe("BridgePage automatic wallet refresh", () => {
       isError: false,
       isStale: false,
     })
+    mocks.writeContractAsync.mockReset().mockResolvedValue(`0x${"77".repeat(32)}`)
+    mocks.savePendingConfirmation.mockReset().mockResolvedValue(undefined)
     mocks.getDepositByOwnerSequence.mockReset().mockResolvedValue([{
       state: { AuthorizationPending: null },
     }])
@@ -282,9 +290,99 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(await screen.findByText("Review the transfer and the wallet actions that come next.")).toBeVisible()
     expect(screen.queryByText("Wallets connected")).not.toBeInTheDocument()
     expect(screen.queryByText("Transfer availability checked")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Continue to Base wallet" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Verify IC destination and continue" })).toBeDisabled()
     fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge irreversible burn" }))
-    expect(screen.getByRole("button", { name: "Continue to Base wallet" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Verify IC destination and continue" })).toBeEnabled()
+  })
+
+  it("does not submit a Base transaction when OISY destination verification fails", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const prepare = vi.fn().mockRejectedValue(new Error("OISY account changed; reconnect and review the transaction"))
+    const getAccount = vi.fn().mockResolvedValue(account)
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter: { prepare, getAccount },
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+
+    render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
+    const acknowledgment = await screen.findByRole("checkbox", { name: "Acknowledge irreversible burn" })
+    getAccount.mockClear()
+    fireEvent.click(acknowledgment)
+    fireEvent.click(screen.getByRole("button", { name: "Verify IC destination and continue" }))
+
+    await waitFor(() => expect(screen.getAllByText("OISY account changed; reconnect and review the transaction").length).toBeGreaterThan(0))
+    expect(prepare).toHaveBeenCalledOnce()
+    expect(getAccount).not.toHaveBeenCalled()
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+    expect(mocks.savePendingConfirmation).not.toHaveBeenCalled()
+  })
+
+  it("closes the verified OISY session before submitting the verified destination to Base", async () => {
+    const account = { owner: "2vxsx-fae", subaccount: new Uint8Array(32).fill(0x55) }
+    const events: string[] = []
+    const closeWallet = vi.fn(() => {
+      events.push("close")
+      return Promise.resolve()
+    })
+    const prepare = vi.fn(() => {
+      events.push("prepare")
+      return Promise.resolve(closeWallet)
+    })
+    const getAccount = vi.fn(() => {
+      events.push("getAccount")
+      return Promise.resolve({ owner: account.owner, subaccount: account.subaccount.slice() })
+    })
+    mocks.writeContractAsync.mockImplementation(() => {
+      events.push("baseWrite")
+      return Promise.resolve(`0x${"77".repeat(32)}`)
+    })
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter: { prepare, getAccount },
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+
+    render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
+    const acknowledgment = await screen.findByRole("checkbox", { name: "Acknowledge irreversible burn" })
+    events.length = 0
+    getAccount.mockClear()
+    fireEvent.click(acknowledgment)
+    fireEvent.click(screen.getByRole("button", { name: "Verify IC destination and continue" }))
+
+    await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())
+    expect(events.indexOf("prepare")).toBeLessThan(events.indexOf("getAccount"))
+    expect(events.indexOf("getAccount")).toBeLessThan(events.indexOf("close"))
+    expect(events.indexOf("close")).toBeLessThan(events.indexOf("baseWrite"))
+    expect(closeWallet).toHaveBeenCalledOnce()
+    expect(mocks.writeContractAsync).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: "createWithdrawal",
+      args: [200_000_000n, 50_000_000n, "0x04", `0x${"55".repeat(32)}`],
+    }))
+    await waitFor(() => expect(mocks.savePendingConfirmation).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "withdrawal",
+      owner: account.owner,
+    })))
   })
 
   it("shows a failed preflight check and restarts all checks on retry", async () => {

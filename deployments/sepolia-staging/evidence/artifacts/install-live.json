@@ -1,7 +1,7 @@
 {
   "canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
-  "installed_module_hash": "0xa0b8c359b82f1952e2c9cff0a6409f876601f76fd5f1f8242558fce6d412bc09",
-  "decompressed_wasm_sha256": "3570e2371931aa902a68f4342a96b296df4447506846a4c3847a18930cfc70d2",
+  "installed_module_hash": "0x53a44aa8e4c97a1f21416af0c4e5383947de6816b8d714bf0785b8d4f49a5c1a",
+  "decompressed_wasm_sha256": "53a44aa8e4c97a1f21416af0c4e5383947de6816b8d714bf0785b8d4f49a5c1a",
   "schema_version": 31,
   "deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
   "deposits_paused": true,

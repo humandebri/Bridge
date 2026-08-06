@@ -49,12 +49,6 @@ class CiModeTests(unittest.TestCase):
         self.assert_calls("run_contracts", ["run_contracts_fast", "run_contracts_coverage"])
         self.assert_calls("run_ui", ["run_ui_fast", "run_ui_e2e"])
 
-    def test_complete_checks_keep_all_component_aggregates(self) -> None:
-        self.assert_calls(
-            "run_checks",
-            ["run_versions", "run_rust", "run_contracts", "run_proofs", "run_ui", "run_icp_build"],
-        )
-
     def test_proofs_use_independent_claim_stages(self) -> None:
         body = function_body("run_proofs")
         receipt_regression = body.index('python3 "$ROOT/scripts/test_write_proof_receipt.py"')

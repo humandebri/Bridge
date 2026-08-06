@@ -1,20 +1,20 @@
 {
   "schema_version": 7,
   "stage": "activation_execute",
-  "observed_at": "2026-08-04T07:49:28Z",
-  "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
+  "observed_at": "2026-08-05T09:26:17Z",
+  "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
   "artifacts": [
     {
       "path": "artifacts/activation-execute-live.json",
-      "sha256": "a5d6c576d62f3d693693002082a8f399b50df8d09c33c7abc772a063060a669f",
+      "sha256": "41a0d00e508508b3d5f8296597a54ef0d0f1c1a3d3bfe960976862f055ae8e63",
       "kind": "raw"
     }
   ],
   "details": {
     "delay_seconds": 300,
-    "execute_transaction_hash": "0x945e1ef00dcc0c3a776ea86a95484af9d877e37669d5d51c30265004626c0145",
-    "finalized_block_number": 45029855,
-    "finalized_block_hash": "0x9614ea9d608124fd60c8bb0750f491b1489f9ce282a6c76f96d04916faab7141",
+    "execute_transaction_hash": "0x36cf4687177816d1b00303f5bf69a97c33aae5e20de38e5a069825af8b61b7b1",
+    "finalized_block_number": 45076053,
+    "finalized_block_hash": "0xfb7bc17864ba27dd766e6f64411c447471718feebc853effd174f566073168d7",
     "base_deposits_paused": false,
     "base_withdrawals_paused": false,
     "canister_deposits_paused": false,

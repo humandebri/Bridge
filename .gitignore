@@ -14,6 +14,7 @@
 target/
 
 # Foundry build and deployment artifacts
+/cache/
 contracts/cache/
 contracts/out/
 contracts/out-staging/
@@ -29,9 +30,14 @@ contracts/.forge-snapshots/
 .pnpm-store/
 verification/output/
 verification/lean/.lake/
+/node_modules/
 ui/node_modules/
 ui/dist/
 ui/playwright-report/
 ui/test-results/
 ui/.e2e-cache/
 ui/.e2e-runtime/
+
+# pnpm is the only package manager used by CI.
+package-lock.json
+npm-shrinkwrap.json

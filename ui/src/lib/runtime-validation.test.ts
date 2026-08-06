@@ -41,8 +41,8 @@ const bridgeHash = `0x${"aa".repeat(32)}` as const
 const bsnsHash = `0x${"bb".repeat(32)}` as const
 const expectedSigner = `0x${"33".repeat(20)}` as const
 const finalizedHash = `0x${"44".repeat(32)}` as const
-const ledgerId = "3jkp5-oyaaa-aaaaj-azwqa-cai"
-const indexId = "qzre3-3iaaa-aaaai-aqmsa-cai"
+const ledgerId = Principal.selfAuthenticating(new Uint8Array(32).fill(0x11)).toText()
+const indexId = Principal.selfAuthenticating(new Uint8Array(32).fill(0x22)).toText()
 
 const profile: DeploymentProfile = {
   environment: "test",

@@ -32,6 +32,16 @@ JS
 TEST_TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-ci-guards.XXXXXX")"
 trap 'rm -rf "$TEST_TMP_ROOT"' EXIT
 
+LOCKFILE_ROOT="$TEST_TMP_ROOT/lockfiles"
+mkdir -p "$LOCKFILE_ROOT/ui"
+verify_no_npm_lockfiles "$LOCKFILE_ROOT"
+touch "$LOCKFILE_ROOT/ui/package-lock.json"
+if verify_no_npm_lockfiles "$LOCKFILE_ROOT" >/dev/null 2>&1; then
+  echo "npm lockfile guard accepted a package-lock.json" >&2
+  exit 1
+fi
+rm "$LOCKFILE_ROOT/ui/package-lock.json"
+
 expect_match() {
   local name="$1"
   local output="$2"

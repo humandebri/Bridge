@@ -39,11 +39,14 @@ The deployment profile has no manual read-only flag or origin allowlist. Control
 when the profile is complete and runtime verification passes. The CSP limits browser connections,
 but it is not canister authorization: direct canister calls remain possible.
 
-OISY Wallet and Plug are the only supported IC wallets. MetaMask is always offered for Base,
-other Base wallets are discovered through EIP-6963, and Plug is excluded from the Base wallet list.
+OISY Wallet and Plug are the only supported IC wallets. MetaMask and other Base browser extensions
+are discovered through EIP-6963, and Plug is excluded from the Base wallet list.
 A production build also exposes WalletConnect when `VITE_WALLETCONNECT_PROJECT_ID` is configured.
 The WalletConnect project must allowlist every deployed UI origin. Internet Identity
-and delegated browser identities are not used. Deposit history is read from the public canister index; anyone who knows
+and delegated browser identities are not used. The selected IC account is restored after a reload for
+display and read-only access, but no signing authority is persisted: OISY reopens on the next explicit
+wallet action, and a withdrawal verifies its IC destination before any Base approval or burn. Restored
+Plug requires an explicit first action and checks its current Principal before any write. Deposit history is read from the public canister index; anyone who knows
 an owner Principal can enumerate its deposit IDs and correlate them with the Base recipients in
 the corresponding deposit records. Withdrawal History scans Finalized Base logs in 5,000-block
 chunks, with at most four RPC requests per refresh or manual `Scan older` action. The resumable

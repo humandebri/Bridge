@@ -1,20 +1,20 @@
 {
   "schema_version": 7,
   "stage": "activation_schedule",
-  "observed_at": "2026-08-04T07:18:58Z",
-  "source_commit": "dbedb941972c6bebbed369928f3b6557bb03e860",
+  "observed_at": "2026-08-05T08:58:15Z",
+  "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
   "artifacts": [
     {
       "path": "artifacts/activation-schedule-live.json",
-      "sha256": "29daf57091357d44562dc4f586789fd7226066f8b4108cde4174d29d5f67db2f",
+      "sha256": "82fd510134f4ffee48e50e62723eb300ca753105dd8cf1a19148f83ce6bb7a88",
       "kind": "raw"
     }
   ],
   "details": {
-    "operation_id": "0xcc4deed7b51499db068ab22c8c54e6de60a18a1311bc6d4f7c80164a8d62ab54",
-    "schedule_transaction_hash": "0x84fa66309de5b06ad5c6a4d639a8d9e229aef75f1ac88c56d0309aec7f53bac2",
-    "finalized_block_number": 45028958,
-    "finalized_block_hash": "0x85ac1d582d578b90921a82cf88f4170beab57ddc494cc75205c329c9c49c6101",
+    "operation_id": "0x36d209c4d634f6e0919bf4e29f5f0e7c58318dfee8c3e80f04772fbb99536a43",
+    "schedule_transaction_hash": "0xd7f16af844c35ea05ba79d7bbd5b013a88fe704c6b856b148c3d358b1c10ae9d",
+    "finalized_block_number": 45075356,
+    "finalized_block_hash": "0xfbbbb50626d3c2b8d4a1aac7f3b1fca64397359897d7c27280c2c49207913c24",
     "early_execute_reverted": true
   }
 }

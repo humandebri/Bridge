@@ -650,6 +650,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   }
 
   const submitWithdrawal = async (progressId: string) => {
+    let closeWalletSession: (() => Promise<void>) | undefined
     try {
       setSubmittingWithdrawal(true)
       if (!address) throw new Error("Connect the EVM wallet that owns bSNS")
@@ -658,14 +659,17 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       if (baseData === undefined || bsnsBalanceData === undefined) throw new Error("Fee or balance data is unavailable or stale")
       if (withdrawParsed.value <= baseData.serviceFee) throw new Error("Amount must be greater than the current service fee")
       if (bsnsBalanceData < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
-      const confirmedIcAccount = { owner: ic.account.owner, subaccount: ic.account.subaccount }
+      const reviewedIcAccount = { owner: ic.account.owner, subaccount: ic.account.subaccount }
       const snapshotAddress = address
-      const activeEvm = await currentBaseWallet()
-      const activeIc = await ic.adapter.getAccount()
-      const expectedWallets = { address: snapshotAddress, chainId: deploymentProfile.chainId, icAccount: confirmedIcAccount }
-      requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc })
-      const owner = Principal.fromText(confirmedIcAccount.owner).toUint8Array()
-      const subaccount = confirmedIcAccount.subaccount ?? new Uint8Array(32)
+      const walletSession = ic.adapter.prepare()
+      closeWalletSession = onceAsync(await walletSession)
+      const [activeEvm, verifiedIcAccount] = await Promise.all([currentBaseWallet(), ic.adapter.getAccount()])
+      const expectedWallets = { address: snapshotAddress, chainId: deploymentProfile.chainId, icAccount: reviewedIcAccount }
+      requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: verifiedIcAccount })
+      await closeWalletSession()
+      closeWalletSession = undefined
+      const owner = Principal.fromText(verifiedIcAccount.owner).toUint8Array()
+      const subaccount = verifiedIcAccount.subaccount ?? new Uint8Array(32)
       const [approvalQuote, approvalBalance] = await Promise.all([refetchBaseSnapshot(), bsnsBalance.refetch()])
       if (approvalBalance.isError || approvalBalance.isStale || approvalBalance.data === undefined) throw new Error("Withdrawal limits, fee, or balance could not be verified")
       if (approvalQuote.withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
@@ -713,7 +717,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
           return savePendingConfirmation({
             kind: "withdrawal",
             transactionHash,
-            owner: confirmedIcAccount.owner,
+            owner: verifiedIcAccount.owner,
           })
         },
       })
@@ -727,7 +731,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       bridgeProgress.update(progressId, { phase: "attention", attentionMessage: error instanceof Error ? error.message : "The withdrawal could not continue." })
       toast.error(error instanceof Error ? error.message : "Withdrawal failed")
     }
-    finally { setSubmittingWithdrawal(false) }
+    finally {
+      await closeWalletSession?.().catch(() => undefined)
+      setSubmittingWithdrawal(false)
+    }
   }
 
   const retryAccountMatches = unresolvedDeposit && ic.account ? sameIcAccount(ic.account, unresolvedDeposit.account) : false
@@ -961,9 +968,10 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
       <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white p-4">
         <p className="text-xs font-bold uppercase tracking-[.12em] text-[var(--support)]">Next in your wallets</p>
         <ol className="mt-3 space-y-2 text-sm leading-6 text-black">
-          {approvalNeeded !== false && <li><strong>1.</strong> {direction === "deposit" ? `Allow the bridge to use ${sendSymbol} in your IC wallet.` : `Allow the bridge to use ${sendSymbol} in your Base wallet.`}</li>}
-          <li><strong>{approvalNeeded !== false ? "2" : "1"}.</strong> {direction === "deposit" ? "Confirm the deposit request in your IC wallet." : "Confirm the withdrawal transaction in your Base wallet."}</li>
-          <li><strong>{approvalNeeded !== false ? "3" : "2"}.</strong> {direction === "deposit" ? "After the Bridge prepares a Mint Authorization, confirm the mint transaction in your Base wallet. The Bridge signs the authorization; you sign and pay gas for the Base transaction." : "After Base finality, confirm the notification in your IC wallet if your wallet asks. The Bridge then processes the ledger payout."}</li>
+          {direction === "withdraw" && <li><strong>1.</strong> Verify the destination account in your IC wallet.</li>}
+          {approvalNeeded !== false && <li><strong>{direction === "withdraw" ? "2" : "1"}.</strong> {direction === "deposit" ? `Allow the bridge to use ${sendSymbol} in your IC wallet.` : `Allow the bridge to use ${sendSymbol} in your Base wallet.`}</li>}
+          <li><strong>{direction === "withdraw" ? approvalNeeded !== false ? "3" : "2" : approvalNeeded !== false ? "2" : "1"}.</strong> {direction === "deposit" ? "Confirm the deposit request in your IC wallet." : "Confirm the withdrawal transaction in your Base wallet."}</li>
+          <li><strong>{direction === "withdraw" ? approvalNeeded !== false ? "4" : "3" : approvalNeeded !== false ? "3" : "2"}.</strong> {direction === "deposit" ? "After the Bridge prepares a Mint Authorization, confirm the mint transaction in your Base wallet. The Bridge signs the authorization; you sign and pay gas for the Base transaction." : "After Base finality, confirm the notification in your IC wallet if your wallet asks. The Bridge then processes the ledger payout."}</li>
         </ol>
       </div></>}
       {ready && direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5">
@@ -973,7 +981,7 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
       <DialogFooter>
         <DialogClose asChild><Button variant="ghost">{failed ? "Close" : "Cancel"}</Button></DialogClose>
         {failed && <Button onClick={() => { setBurnAcknowledged(false); onRetry() }}>Try again</Button>}
-        {ready && <Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>{direction === "deposit" ? "Continue to IC wallet" : "Continue to Base wallet"}</Button>}
+        {ready && <Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>{direction === "deposit" ? "Continue to IC wallet" : "Verify IC destination and continue"}</Button>}
       </DialogFooter>
     </DialogContent>
   </Dialog>

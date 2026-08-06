@@ -1,5 +1,5 @@
 import { createConfig, http } from "wagmi"
-import { coinbaseWallet, injected, metaMask, walletConnect } from "wagmi/connectors"
+import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors"
 import { createPublicClient, defineChain } from "viem"
 import { base, baseSepolia } from "viem/chains"
 import { deploymentProfile, type DeploymentProfile } from "@/config/profile"
@@ -82,12 +82,6 @@ export async function withHistoryClientFailover<C, T>(
   })
 }
 
-export function withBaseHistoryClient<T>(
-  operation: (client: (typeof baseHistoryClients)[number]) => Promise<T>,
-): Promise<T> {
-  return firstSuccessfulHistoryClient(baseHistoryClients, operation)
-}
-
 const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID?.trim()
 const walletConnectMetadata = typeof window === "undefined" ? undefined : {
   name: "KINIC Bridge",
@@ -103,7 +97,6 @@ export const wagmiConfig = createConfig({
       appName: "KINIC Bridge",
       appLogoUrl: typeof window === "undefined" ? null : new URL("/kinic-mark.png", window.location.origin).href,
     }),
-    metaMask(),
     injected(),
     ...(walletConnectProjectId ? [walletConnect({
       projectId: walletConnectProjectId,

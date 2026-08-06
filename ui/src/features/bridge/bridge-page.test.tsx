@@ -122,7 +122,14 @@ describe("BridgeConfirmationDialog", () => {
     expect(screen.getByText("10 KINIC")).toBeVisible()
     expect(screen.getByText("0.00000009 TICRC1")).toBeVisible()
     expect(screen.getByRole("heading", { name: "Review bridge to IC" })).toBeVisible()
-    const confirm = screen.getByRole("button", { name: "Continue to Base wallet" })
+    expect(screen.getByText("Verify the destination account in your IC wallet.")).toBeVisible()
+    expect(screen.getAllByRole("listitem").map((step) => step.textContent)).toEqual([
+      "1. Verify the destination account in your IC wallet.",
+      "2. Allow the bridge to use KINIC in your Base wallet.",
+      "3. Confirm the withdrawal transaction in your Base wallet.",
+      "4. After Base finality, confirm the notification in your IC wallet if your wallet asks. The Bridge then processes the ledger payout.",
+    ])
+    const confirm = screen.getByRole("button", { name: "Verify IC destination and continue" })
     expect(confirm).toBeDisabled()
     fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge irreversible burn" }))
     expect(confirm).toBeEnabled()

@@ -111,6 +111,7 @@ run_step() {
 }
 
 run_versions() {
+  verify_no_npm_lockfiles "$ROOT"
   "$ROOT/scripts/check_tool_versions.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
   verify_no_obsolete_withdrawal_terms \
@@ -128,6 +129,7 @@ run_versions() {
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
+  node "$ROOT/scripts/plan007/test-check-reinstall-instance.mjs"
   node "$ROOT/scripts/plan007/test-capture-obsolete-pause-evidence.mjs"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
@@ -204,6 +206,8 @@ run_rust_integration() {
     echo "node_modules is missing; run pnpm install --frozen-lockfile before checks" >&2
     return 1
   fi
+  pnpm --dir "$ROOT" run governance-relayer:test
+  pnpm --dir "$ROOT" run governance-relayer:typecheck
   pnpm --dir "$ROOT" run test:e2e
   python3 "$ROOT/scripts/test_prepare_local_network.py"
   bash "$ROOT/scripts/test_ci_local_safety.sh"
@@ -1285,15 +1289,6 @@ for field, (value, candid_type) in stable_fields.items():
     "$(cast call "$bridge_address" "withdrawalsPaused()(bool)" --rpc-url http://127.0.0.1:8545)" \
     "true"
   echo "Bridge-created bSNS deployed at $bsns_address" >&2
-}
-
-run_checks() {
-  run_versions
-  run_rust
-  run_contracts
-  run_proofs
-  run_ui
-  run_icp_build
 }
 
 run_real() {
