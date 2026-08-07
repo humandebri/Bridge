@@ -5,7 +5,7 @@ import { useChainId } from "wagmi"
 import { formatEther } from "viem"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { useBridgeStatus, useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
+import { useBridgeStatus, useRuntimeHeartbeat, useRuntimeValidation, useRuntimeWriteReadiness } from "@/features/status/use-status"
 import { formatTokenAmount } from "@/lib/amounts"
 import { bridgeAvailability, displayCyclesSufficient, STATUS_FRESHNESS_MS, statusDataIsFresh } from "@/lib/bridge-availability"
 
@@ -14,6 +14,7 @@ export const Route = createFileRoute("/status")({ component: StatusPage })
 function StatusPage() {
   const chainId = useChainId()
   const validation = useRuntimeValidation(chainId)
+  const validationReadiness = useRuntimeWriteReadiness(validation.data)
   const base = useRuntimeHeartbeat(chainId, validation.data)
   const canister = useBridgeStatus()
   const runtime = validation.data
@@ -34,7 +35,7 @@ function StatusPage() {
 
   const refresh = useCallback(() => {
     void (async () => {
-      if (validation.data?.ready !== true) {
+      if (!validationReadiness.ready) {
         const checked = await refetchValidation()
         if (checked.data?.ready !== true && !(checked.data && "status" in checked.data && checked.data.status)) {
           await refetchCanister()
@@ -46,7 +47,7 @@ function StatusPage() {
         await refetchCanister()
       }
     })()
-  }, [refetchBase, refetchCanister, refetchValidation, validation.data?.ready])
+  }, [refetchBase, refetchCanister, refetchValidation, validationReadiness.ready])
 
   useEffect(() => {
     if (initialRefreshChainId.current === chainId) return

@@ -34,6 +34,9 @@ vi.mock("@/features/status/use-status", () => ({
     isFetching: false,
     refetch: mocks.validationRefetch,
   }),
+  useRuntimeWriteReadiness: (value?: { ready: boolean; checkedAt: number }) => ({
+    ready: value?.ready === true && Date.now() - value.checkedAt <= 60_000,
+  }),
   useRuntimeHeartbeat: () => ({
     data: undefined,
     dataUpdatedAt: 1,
@@ -91,6 +94,19 @@ describe("StatusPage refresh", () => {
     await waitFor(() => expect(mocks.validationRefetch).toHaveBeenCalledOnce())
     expect(mocks.heartbeatRefetch).not.toHaveBeenCalled()
     expect(mocks.canisterRefetch).toHaveBeenCalledOnce()
+  })
+
+  it("retries full validation when the successful result has expired", async () => {
+    mocks.validationData.value = { ready: true, blockers: [], checkedAt: Date.now() - 60_001 }
+    mocks.validationRefetch.mockResolvedValue({
+      data: { ready: true, blockers: [], checkedAt: Date.now(), status: { source: "refreshed-validation" } },
+    })
+
+    render(<StatusPage />)
+
+    await waitFor(() => expect(mocks.validationRefetch).toHaveBeenCalledOnce())
+    expect(mocks.heartbeatRefetch).not.toHaveBeenCalled()
+    expect(mocks.canisterRefetch).not.toHaveBeenCalled()
   })
 
   it("does not follow a successful full validation with an immediate heartbeat", async () => {

@@ -198,6 +198,17 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(mocks.baseRefetch).not.toHaveBeenCalled()
   })
 
+  it("retries full runtime validation when the successful result has expired", async () => {
+    mocks.runtimeValidation.value = { ready: true, blockers: [], checkedAt: Date.now() - 60_001 }
+    mocks.runtimeWriteReadiness.mockReturnValue({ ready: false, reason: "Runtime validation expired" })
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+
+    await waitFor(() => expect(mocks.runtimeRefetch).toHaveBeenCalledOnce())
+    expect(mocks.baseRefetch).not.toHaveBeenCalled()
+  })
+
   it("loads IC balance, allowance, and sequence when an IC wallet appears later", async () => {
     const view = render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
     expect(mocks.ledgerBalance).not.toHaveBeenCalled()

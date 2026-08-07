@@ -276,7 +276,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const ownerSequenceData = !ownerSequence.isError && !ownerSequence.isStale ? ownerSequence.data : undefined
   const refreshing = runtime.isFetching || runtime.isAutoRetryPending || heartbeat.isFetching || ledger.isFetching || bsnsBalance.isFetching || (!unresolvedDeposit && ownerSequence.isFetching)
   const refreshBridgeData = () => {
-    const calls: Promise<unknown>[] = [runtime.data?.ready === true ? heartbeat.refetch() : runtime.refetch()]
+    const calls: Promise<unknown>[] = [runtimeWriteBlocker(runtime.data) === undefined ? heartbeat.refetch() : runtime.refetch()]
     if (direction === "deposit" && ic.account) {
       calls.push(ledger.refetch())
       if (!unresolvedDeposit) calls.push(ownerSequence.refetch())
