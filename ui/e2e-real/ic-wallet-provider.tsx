@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
-import type { DepositPhase, DepositReceipt, DepositView, NotifyWithdrawalReceipt, SettlementActionResult } from "@/generated/bridge.did"
+import type { DepositPhase, DepositReceipt, DepositView, SettlementActionResult } from "@/generated/bridge.did"
 import { clearIcHistoryOwner, loadIcHistoryOwner, saveIcHistoryOwner } from "@/lib/ic-history-owner"
 import type { ApprovalCall, DepositCall, IcAccount, IcWalletAdapter, IcWalletProvider } from "@/lib/ic/wallet"
 
@@ -46,14 +46,6 @@ class HarnessWalletAdapter implements IcWalletAdapter {
   }
   requestDepositRefund(depositId: Uint8Array) {
     return request<DepositView>("/ic/request-deposit-refund", { id: hex(depositId) }, (value) => value as DepositView)
-  }
-  notifyWithdrawal(transactionHash: Uint8Array) {
-    return request<NotifyWithdrawalReceipt>("/ic/notify", { transactionHash: hex(transactionHash) }, (value) => {
-      const receipt = value as { Ingested?: { finalized_head_block_number: string; withdrawal_id: string }; Duplicate?: { withdrawal_id: string } }
-      if (receipt.Ingested) return { Ingested: { finalized_head_block_number: BigInt(receipt.Ingested.finalized_head_block_number), withdrawal_id: bytes(receipt.Ingested.withdrawal_id) } }
-      if (receipt.Duplicate) return { Duplicate: { withdrawal_id: bytes(receipt.Duplicate.withdrawal_id) } }
-      throw new Error("Harness returned an invalid notification receipt")
-    })
   }
   continueWithdrawal(withdrawalId: Uint8Array) { return request<SettlementActionResult>("/ic/continue-withdrawal", { id: hex(withdrawalId) }) }
 }

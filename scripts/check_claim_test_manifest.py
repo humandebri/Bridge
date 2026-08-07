@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+from claim_manifest import parse_claim_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 CLAIMS = ROOT / "verification" / "claims.tsv"
@@ -31,10 +32,8 @@ CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 def claim_test_links(claims_text: str) -> set[tuple[str, str]]:
     links: set[tuple[str, str]] = set()
-    for number, line in enumerate(claims_text.splitlines(), 1):
-        fields = line.split("\t")
-        if len(fields) != 11:
-            raise ValueError(f"invalid claim row {number}")
+    manifest = parse_claim_manifest(claims_text)
+    for fields in manifest.rows:
         for link in fields[8].split(";"):
             if link.count("#") != 1:
                 raise ValueError(f"invalid claim transaction test: {link}")

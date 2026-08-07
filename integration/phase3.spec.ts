@@ -1307,6 +1307,9 @@ describe("Phase 3 PocketIC saga", () => {
     const relayer = Principal.selfAuthenticating(new Uint8Array(32).fill(9));
     const subaccount = new Uint8Array(32).fill(0x4a);
     await (evm.actor as any).set_withdrawal([{ id, owner: owner.toUint8Array(), subaccount, amount: 100_000n, max_service_fee: 10_000n, charged_service_fee: 10_000n, amount_out: 90_000n }]);
+    bridge.actor.setPrincipal(Principal.anonymous());
+    expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) }))
+      .toEqual({ Err: { AnonymousCaller: null } });
     bridge.actor.setPrincipal(relayer);
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Ok.Ingested");
     expect(await (bridge.actor as any).get_withdrawal(id)).toHaveLength(1);

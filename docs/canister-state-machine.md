@@ -78,7 +78,7 @@ Base Committed
                                   └─ 完全な不存在証拠 → ReleasePending
 ```
 
-UIはtransaction hashをlocalStorageへ保存し、Finalized eventを検出した後にIC walletから`notify_withdrawal`を呼ぶ。Canisterはreceipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛する。Ledger結果不明は時間経過だけで失敗扱いにせず、LedgerとIndexの完全なwatermarkで不存在を証明できるまでHoldを維持する。
+UIはtransaction hashをlocalStorageへ保存し、Finalized eventを検出した後にdeployment-scopedなブラウザ通知Identityから`notify_withdrawal`を1回呼ぶ。通知にIC walletの署名やICRC-21同意取得は使用しない。Canisterはreceipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛する。Ledger結果不明は時間経過だけで失敗扱いにせず、LedgerとIndexの完全なwatermarkで不存在を証明できるまでHoldを維持する。
 
 ## 公開APIと権限
 
@@ -86,7 +86,7 @@ UIはtransaction hashをlocalStorageへ保存し、Finalized eventを検出し�
 |---|---|---|
 | `request_deposit` | Deposit owner | Ledger pullとAuthorization作成開始 |
 | `request_deposit_refund` | Deposit owner | claimable amount確認、必要なFinalized照合、Ledger refundまたはhold再照合 |
-| `notify_withdrawal` | Withdrawal owner、Governance、pause principal | Finalized Withdrawalの通知 |
+| `notify_withdrawal` | 任意の非anonymous Principal | Finalized Withdrawalのpermissionless通知。送金先はBase eventへ束縛 |
 | `continue_withdrawal` | owner、Governance、pause principal | Ledger release・照合の再開 |
 | Base governance prepare/status/replace/confirm | Governance、またはpause/cancelに限りpause principal | 外部relayer向け署名成果物とFinalized確定 |
 | `prepare_next_emergency_base_action` | Governance、pause principal | emergency queueのpause/cancelを順に署名 |

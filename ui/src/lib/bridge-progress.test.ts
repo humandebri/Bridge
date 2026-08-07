@@ -5,6 +5,7 @@ import {
   createBridgeProgress,
   readLatestBridgeProgress,
   saveLatestBridgeProgress,
+  withdrawalFinalityProgress,
 } from "./bridge-progress"
 
 beforeEach(() => browserLocalStorage().clear())
@@ -31,6 +32,8 @@ describe("latest bridge progress persistence", () => {
 
     const storage = browserLocalStorage()
     const stored = Array.from({ length: storage.length }, (_, index) => storage.getItem(storage.key(index)!))[0]!
+    expect(stored).toContain('"version":3')
+    expect(stored).toContain('"tokenApproval":"not-required"')
     expect(stored).not.toContain("base-mint-finalizing")
     expect(stored).not.toContain("receiptBlockNumber")
     expect(stored).not.toContain("baseTransactionOutcome")
@@ -130,6 +133,41 @@ describe("latest bridge progress persistence", () => {
     expect(readLatestBridgeProgress()).toBeUndefined()
   })
 
+  it("does not restore the obsolete v2 progress format", () => {
+    const current = createBridgeProgress({
+      direction: "withdraw",
+      phase: "base-withdrawal-submitted",
+      source: "0x0000000000000000000000000000000000000002",
+      destination: "aaaaa-aa",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "KINIC",
+      receiveSymbol: "TICRC1",
+      transactionHash: `0x${"33".repeat(32)}`,
+      withdrawal: { owner: "aaaaa-aa" },
+    })
+    saveLatestBridgeProgress(current)
+    const storage = browserLocalStorage()
+    const key = storage.key(0)!
+    storage.setItem(key, JSON.stringify({
+      version: 2,
+      id: current.id,
+      direction: "withdraw",
+      phase: "base-withdrawal-submitted",
+      source: "0x0000000000000000000000000000000000000002",
+      destination: "aaaaa-aa",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "KINIC",
+      receiveSymbol: "TICRC1",
+      createdAt: 1,
+      transactionHash: `0x${"33".repeat(32)}`,
+      withdrawal: { owner: "aaaaa-aa" },
+    }))
+
+    expect(readLatestBridgeProgress()).toBeUndefined()
+  })
+
   it("places accepted Deposit attention after the canonical IC deposit", () => {
     const record = createBridgeProgress({
       direction: "deposit",
@@ -145,10 +183,10 @@ describe("latest bridge progress persistence", () => {
     })
 
     expect(bridgeProgressSteps(record)).toEqual([
-      { label: "IC wallet", status: "complete" },
-      { label: "IC deposit", status: "complete" },
+      { label: "IC token approval", status: "complete", note: "Not required" },
+      { label: "IC deposit transaction", status: "complete" },
       { label: "Bridge authorization", status: "current" },
-      { label: "Base transaction", status: "waiting" },
+      { label: "Base mint transaction", status: "waiting" },
     ])
   })
 
@@ -168,10 +206,10 @@ describe("latest bridge progress persistence", () => {
       deposit: { owner: "aaaaa-aa", ownerSequence: "3", depositId: `0x${"07".repeat(32)}` },
     })
     expect(bridgeProgressSteps(deposit)).toEqual([
-      { label: "IC wallet", status: "complete" },
-      { label: "IC deposit", status: "complete" },
+      { label: "IC token approval", status: "complete", note: "Not required" },
+      { label: "IC deposit transaction", status: "complete" },
       { label: "Bridge authorization", status: "complete" },
-      { label: "Base transaction", status: "complete" },
+      { label: "Base mint transaction", status: "complete" },
     ])
 
     const withdrawal = createBridgeProgress({
@@ -188,11 +226,106 @@ describe("latest bridge progress persistence", () => {
       withdrawal: { owner: "aaaaa-aa" },
     })
     expect(bridgeProgressSteps(withdrawal).map(({ label }) => label)).toEqual([
-      "Base wallet",
-      "Base transaction",
+      "Base token approval",
+      "Base withdrawal transaction",
       "Base finality",
-      "IC processing",
+      "IC notification",
+      "Ledger payout",
       "Complete",
     ])
+  })
+
+  it("separates wallet approval, transaction, notification, and payout steps", () => {
+    const withdrawal = createBridgeProgress({
+      direction: "withdraw",
+      phase: "awaiting-base-allowance",
+      tokenApproval: "required",
+      source: "0x0000000000000000000000000000000000000002",
+      destination: "aaaaa-aa",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "KINIC",
+      receiveSymbol: "TICRC1",
+      withdrawal: { owner: "aaaaa-aa" },
+    })
+
+    expect(bridgeProgressSteps(withdrawal)).toEqual([
+      { label: "Base token approval", status: "current" },
+      { label: "Base withdrawal transaction", status: "waiting" },
+      { label: "Base finality", status: "waiting" },
+      { label: "IC notification", status: "waiting" },
+      { label: "Ledger payout", status: "waiting" },
+      { label: "Complete", status: "waiting" },
+    ])
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-base-withdrawal" })[1]).toEqual({ label: "Base withdrawal transaction", status: "current" })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-ic-notification" })[3]).toEqual({ label: "IC notification", status: "current" })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "ledger-payout" })[4]).toEqual({ label: "Ledger payout", status: "current" })
+  })
+
+  it("marks every Withdrawal step complete after the payout reaches its terminal state", () => {
+    const withdrawal = createBridgeProgress({
+      direction: "withdraw",
+      phase: "complete",
+      tokenApproval: "not-required",
+      source: "0x0000000000000000000000000000000000000002",
+      destination: "aaaaa-aa",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "KINIC",
+      receiveSymbol: "TICRC1",
+      withdrawal: { owner: "aaaaa-aa", withdrawalId: `0x${"07".repeat(32)}` },
+    })
+
+    expect(bridgeProgressSteps(withdrawal)).toEqual([
+      { label: "Base token approval", status: "complete", note: "Not required" },
+      { label: "Base withdrawal transaction", status: "complete" },
+      { label: "Base finality", status: "complete" },
+      { label: "IC notification", status: "complete" },
+      { label: "Ledger payout", status: "complete" },
+      { label: "Complete", status: "complete" },
+    ])
+  })
+
+  it("shows an unnecessary approval as complete and preserves the attention source step", () => {
+    const withdrawal = createBridgeProgress({
+      direction: "withdraw",
+      phase: "attention",
+      tokenApproval: "not-required",
+      attentionPhase: "awaiting-base-withdrawal",
+      attentionMessage: "Withdrawal failed.",
+      source: "0x0000000000000000000000000000000000000002",
+      destination: "aaaaa-aa",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "KINIC",
+      receiveSymbol: "TICRC1",
+      withdrawal: { owner: "aaaaa-aa" },
+    })
+
+    expect(bridgeProgressSteps(withdrawal)[0]).toEqual({ label: "Base token approval", status: "complete", note: "Not required" })
+    expect(bridgeProgressSteps(withdrawal)[1]).toEqual({ label: "Base withdrawal transaction", status: "current" })
+  })
+
+  it("reports exact Withdrawal finality block progress without changing Deposit presentation", () => {
+    const withdrawal = createBridgeProgress({
+      direction: "withdraw",
+      phase: "base-withdrawal-finalizing",
+      source: "0x0000000000000000000000000000000000000002",
+      destination: "aaaaa-aa",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "KINIC",
+      receiveSymbol: "TICRC1",
+      receiptBlockNumber: "45115968",
+      finalizedBlockNumber: "45115603",
+      withdrawal: { owner: "aaaaa-aa" },
+    })
+
+    expect(withdrawalFinalityProgress(withdrawal)).toEqual({
+      finalizedBlockNumber: "45,115,603",
+      targetBlockNumber: "45,115,968",
+      remainingBlocks: "365",
+    })
+    expect(withdrawalFinalityProgress({ ...withdrawal, direction: "deposit" })).toBeUndefined()
   })
 })

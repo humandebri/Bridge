@@ -14,6 +14,7 @@ from proof_fingerprint import (
     fingerprint_inputs,
     source_fingerprint,
 )
+from claim_manifest import parse_claim_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,12 +59,10 @@ def _parts(value: str) -> tuple[str, ...]:
 
 def _claim_catalog(repo_root: Path) -> dict[str, str]:
     catalog: dict[str, str] = {}
-    for line in (repo_root / "verification" / "claims.tsv").read_text(
-        encoding="utf-8"
-    ).splitlines():
-        row = line.split("\t")
-        if len(row) != 11:
-            raise ValueError("claim manifest must be valid before impact resolution")
+    manifest = parse_claim_manifest(
+        (repo_root / "verification" / "claims.tsv").read_text(encoding="utf-8")
+    )
+    for row in manifest.rows:
         kind, claim_id = row[:2]
         if claim_id in catalog:
             raise ValueError(f"duplicate claim id: {claim_id}")
@@ -73,12 +72,10 @@ def _claim_catalog(repo_root: Path) -> dict[str, str]:
 
 def _claim_production_sources(repo_root: Path) -> set[str]:
     sources: set[str] = set()
-    for line in (repo_root / "verification" / "claims.tsv").read_text(
-        encoding="utf-8"
-    ).splitlines():
-        row = line.split("\t")
-        if len(row) != 11:
-            raise ValueError("claim manifest must be valid before impact resolution")
+    manifest = parse_claim_manifest(
+        (repo_root / "verification" / "claims.tsv").read_text(encoding="utf-8")
+    )
+    for row in manifest.rows:
         for link in row[7].split(";"):
             if link == "-" or link.count("#") != 1:
                 raise ValueError(f"invalid production source link: {link}")

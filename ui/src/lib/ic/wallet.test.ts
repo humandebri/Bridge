@@ -2,12 +2,12 @@ import { IDL } from "@dfinity/candid"
 import { Principal } from "@dfinity/principal"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { idlFactory } from "@/generated/bridge.idl"
-import { decodeDepositReply, decodeNotifyWithdrawalReply, NotifyWithdrawalCallError, notifyWithdrawalErrorMessage, OisyAdapter, PlugAdapter, requestDepositRefundErrorMessage } from "./wallet"
+import { decodeDepositReply, OisyAdapter, PlugAdapter, requestDepositRefundErrorMessage } from "./wallet"
 
 // didc's runtime JS intentionally has no static return type; the checked-in TS binding is the typed contract.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const bridgeService: IDL.ServiceClass = idlFactory({ IDL })
-function resultType(method: "request_deposit" | "notify_withdrawal") {
+function resultType(method: "request_deposit") {
   const codec = (bridgeService._fields as Array<[string, IDL.FuncClass]>).find(([name]) => name === method)?.[1]
   if (!codec) throw new Error(`Missing generated codec for ${method}`)
   const result = codec.retTypes[0]
@@ -179,48 +179,4 @@ describe("Plug restored account validation", () => {
     await expect(adapter.getAccount()).rejects.toThrow("Plug account changed")
     expect(plug.createActor).not.toHaveBeenCalled()
   })
-})
-
-describe("withdrawal notification errors", () => {
-  it("renders actionable RPC and rate-limit failures", () => {
-    expect(notifyWithdrawalErrorMessage({ RpcInconsistent: null })).toContain("providers disagreed")
-  })
-
-  it("decodes the confirmed-head receipt shape used by the public Candid", () => {
-    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Ok: { Ingested: { finalized_head_block_number: 42n, withdrawal_id: new Uint8Array(32).fill(7) } } }]))
-
-    expect(decodeNotifyWithdrawalReply(reply)).toMatchObject({ Ingested: { finalized_head_block_number: 42n } })
-  })
-
-  it.each(["BaseStateMismatch", "BridgeSignerMismatch"] as const)("decodes %s as a normal bridge rejection", (variant) => {
-    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Err: { [variant]: null } }]))
-
-    expect(() => decodeNotifyWithdrawalReply(reply)).toThrow(variant === "BaseStateMismatch" ? "state does not match" : "signer does not match")
-  })
-
-  it.each(["RateLimited", "InsufficientCycles"] as const)("decodes %s as a normal bridge rejection", (variant) => {
-    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Err: { [variant]: null } }]))
-
-    expect(() => decodeNotifyWithdrawalReply(reply)).toThrow(variant === "RateLimited" ? "rate limited" : "enough cycles")
-  })
-
-  it("decodes the fee guard as an actionable bridge rejection", () => {
-    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{
-      Err: { LedgerFeeExceedsServiceFee: { charged_service_fee: 10n, ledger_fee: 11n } },
-    }]))
-
-    let thrown: unknown
-    try {
-      decodeNotifyWithdrawalReply(reply)
-    } catch (error) {
-      thrown = error
-    }
-    expect(thrown).toBeInstanceOf(NotifyWithdrawalCallError)
-    expect((thrown as NotifyWithdrawalCallError).code).toBe("LedgerFeeExceedsServiceFee")
-    expect((thrown as Error).message).toContain("ledger fee exceeded")
-    expect((thrown as Error).message).toContain("Contact the bridge operator")
-    expect((thrown as Error).message).not.toContain("will be retried")
-    expect((thrown as Error).message).not.toContain("invalid withdrawal notification error")
-  })
-
 })

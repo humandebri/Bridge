@@ -9,7 +9,7 @@ import { IDL } from "@dfinity/candid"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Principal } from "@dfinity/principal"
 import { PocketIc, PocketIcServer, SubnetStateType } from "@dfinity/pic"
-import { createPublicClient, decodeEventLog, hexToBytes, http, keccak256, numberToHex, recoverTransactionAddress, sha256 } from "viem"
+import { createPublicClient, hexToBytes, http, keccak256, numberToHex, recoverTransactionAddress, sha256 } from "viem"
 import { publicKeyToAddress } from "viem/accounts"
 import { idlFactory as bridgeIdl, init as bridgeInitFactory } from "./generated/bridge.idl.mjs"
 import { idlFactory as mockIdl, init as mockInitFactory } from "./generated/mock-external.idl.mjs"
@@ -289,8 +289,6 @@ async function setup() {
   })
 
   let relayedBroadcasts = 0
-  let notifyCalls = 0
-  let failNextNotification = false
   let failNextDepositResponse = false
   let connectedAccount = testOwner.toText()
   const knownDeposits = []
@@ -320,6 +318,37 @@ async function setup() {
       mock.actor.set_withdrawals_paused(snapshot.withdrawalsPaused),
       mock.actor.set_mint_authorization_epoch(snapshot.mintAuthorizationEpoch),
     ])
+  }
+  const prepareLatestWithdrawal = async () => {
+    const logs = await publicClient.getContractEvents({
+      address: bridgeAddress,
+      abi: bridgeAbi,
+      eventName: "WithdrawalCommitted",
+      fromBlock: deploymentBlock,
+    })
+    const created = logs.at(-1)
+    if (!created?.transactionHash) throw new Error("WithdrawalCommitted log is unavailable")
+    const receipt = await publicClient.getTransactionReceipt({ hash: created.transactionHash })
+    await mock.actor.set_withdrawal([{
+      id: hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 })),
+      owner: hexToBytes(created.args.owner),
+      subaccount: hexToBytes(created.args.subaccount),
+      amount: created.args.amount,
+      max_service_fee: created.args.maxServiceFee,
+      charged_service_fee: created.args.chargedServiceFee,
+      amount_out: created.args.amountOut,
+    }])
+    const observed = await mock.actor.set_observed_transaction(
+      hexToBytes(created.transactionHash),
+      hexToBytes(bridgeAddress),
+      hexToBytes(created.args.requester),
+      Number(receipt.blockNumber),
+    )
+    if ("Err" in observed) throw new Error(observed.Err)
+    const withdrawalId = hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 }))
+    if (!knownWithdrawals.some((id) => bytesHex(id) === bytesHex(withdrawalId))) knownWithdrawals.push(withdrawalId)
+    await syncObservedHeads()
+    return created.transactionHash
   }
   await syncObservedHeads()
   const relaySigned = async (artifact) => {
@@ -493,38 +522,13 @@ async function setup() {
         if ("Err" in result) throw new Error(`refund claim rejected: ${json(result.Err)}`)
         return send(response, 200, result.Ok)
       }
-      if (request.url === "/ic/notify") {
-        notifyCalls += 1
-        if (failNextNotification) {
-          failNextNotification = false
-          return send(response, 503, { error: "Injected notification failure" })
-        }
-        if (connectedAccount !== testOwner.toText()) throw new Error("test IC account changed")
-        const transactionHash = body.transactionHash
-        const receipt = await publicClient.getTransactionReceipt({ hash: transactionHash })
-        const created = receipt.logs.map((log) => {
-          try { return decodeEventLog({ abi: bridgeAbi, eventName: "WithdrawalCommitted", data: log.data, topics: log.topics }) } catch { return undefined }
-        }).find(Boolean)
-        if (!created) throw new Error("WithdrawalCommitted log is missing from the Anvil receipt")
-        await mock.actor.set_withdrawal([{ id: hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 })), owner: hexToBytes(created.args.owner), subaccount: hexToBytes(created.args.subaccount), amount: created.args.amount, max_service_fee: created.args.maxServiceFee, charged_service_fee: created.args.chargedServiceFee, amount_out: created.args.amountOut }])
-        const observed = await mock.actor.set_observed_transaction(hexToBytes(transactionHash), hexToBytes(bridgeAddress), hexToBytes(created.args.requester), Number(receipt.blockNumber))
-        if ("Err" in observed) throw new Error(observed.Err)
-        await syncObservedHeads()
-        const result = await bridge.actor.notify_withdrawal({ transaction_hash: hexToBytes(transactionHash) })
-        if ("Err" in result) throw new Error(`withdrawal notification rejected: ${json(result.Err)}`)
-        const withdrawalId = "Ingested" in result.Ok ? result.Ok.Ingested.withdrawal_id : result.Ok.Duplicate.withdrawal_id
-        if (!knownWithdrawals.some((id) => bytesHex(id) === bytesHex(withdrawalId))) knownWithdrawals.push(withdrawalId)
-        if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id) } })
-        return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id) } })
-      }
       if (request.url === "/ic/continue-withdrawal") {
         const result = await bridge.actor.continue_withdrawal(hexToBytes(body.id))
         if ("Err" in result) throw new Error(`withdrawal continuation rejected: ${json(result.Err)}`)
         return send(response, 200, settlementJson(result.Ok))
       }
-      if (request.url === "/test/fail-next-notification") {
-        failNextNotification = true
-        return send(response, 200, null)
+      if (request.url === "/test/prepare-latest-withdrawal") {
+        return send(response, 200, { transactionHash: await prepareLatestWithdrawal() })
       }
       if (request.url === "/test/fail-next-deposit-response") {
         failNextDepositResponse = true
@@ -586,17 +590,20 @@ async function setup() {
       }
       if (request.url === "/test/state") {
         const balance = await publicClient.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "balanceOf", args: [deployer] })
-        const [allowance, ledgerBalance, indexBalance, indexLedgerId, indexStatus, nextDepositSequence] = await Promise.all([
+        const [allowance, ledgerBalance, indexBalance, indexLedgerId, indexStatus, nextDepositSequence, bridgeStatus, receiptCalls] = await Promise.all([
           publicClient.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "allowance", args: [deployer, bridgeAddress] }),
           ledger.icrc1_balance_of(account(testOwner)),
           index.icrc1_balance_of(account(testOwner)),
           index.ledger_id(),
           index.status(),
           bridge.actor.get_next_deposit_sequence(testOwner),
+          bridge.actor.get_bridge_status(),
+          mock.actor.receipt_call_count(),
         ])
         return send(response, 200, {
           broadcasts: relayedBroadcasts,
-          notifyCalls,
+          withdrawalCount: bridgeStatus.counts.withdrawals.toString(),
+          receiptCalls: receiptCalls.toString(),
           knownDepositCount: knownDeposits.length,
           depositSequences,
           nextDepositSequence: nextDepositSequence.toString(),

@@ -3,10 +3,9 @@ import { hexToBytes } from "viem"
 import { toast } from "sonner"
 import { deploymentProfile } from "@/config/profile"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
-import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { basePublicClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { withBrowserLock } from "@/lib/browser-lock"
+import { NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
 import {
   readPendingConfirmations,
   removePendingConfirmation,
@@ -24,7 +23,6 @@ type PendingWithdrawal = Extract<PendingConfirmation, { kind: "withdrawal" }>
  * inclusion, finality, IC notification, and Ledger payout remain distinct facts.
  */
 export function SettlementConfirmationCoordinator() {
-  const ic = useIcWallet()
   const bridgeProgress = useBridgeProgress()
   const progressRef = useRef(bridgeProgress.progress)
   const runningRef = useRef(new Set<string>())
@@ -32,26 +30,16 @@ export function SettlementConfirmationCoordinator() {
   const notificationRunsRef = useRef(new Set<string>())
   const completedNotificationsRef = useRef(new Set<string>())
   const observerGenerationRef = useRef(0)
-  const registeredActionRef = useRef<{ progressId: string; transactionHash: string } | undefined>(undefined)
   const update = bridgeProgress.update
-  const setAction = bridgeProgress.setAction
 
   useEffect(() => {
     progressRef.current = bridgeProgress.progress
   }, [bridgeProgress.progress])
 
   useEffect(() => {
-    const owner = ic.account?.owner
-    const adapter = ic.adapter
     const generation = observerGenerationRef.current + 1
     observerGenerationRef.current = generation
     const isCurrent = () => observerGenerationRef.current === generation
-    const clearRegisteredAction = () => {
-      const registered = registeredActionRef.current
-      if (!registered) return
-      setAction(registered.progressId, undefined)
-      registeredActionRef.current = undefined
-    }
     const activeProgressFor = (entry: PendingWithdrawal) => {
       const current = progressRef.current
       if (current?.direction !== "withdraw"
@@ -74,12 +62,8 @@ export function SettlementConfirmationCoordinator() {
         const ownsLatest = latest?.direction === "withdraw"
           && latest.transactionHash?.toLowerCase() === entry.transactionHash.toLowerCase()
         if (ownsLatest && (latest.phase === "complete" || latest.phase === "attention")) return false
-        return entry.owner === owner || ownsLatest
+        return true
       })
-      const registered = registeredActionRef.current
-      if (registered && !entries.some((entry) => entry.transactionHash.toLowerCase() === registered.transactionHash)) {
-        clearRegisteredAction()
-      }
       for (const entry of entries) {
         const transactionKey = entry.transactionHash.toLowerCase()
         if (runningRef.current.has(transactionKey)) continue
@@ -120,75 +104,22 @@ export function SettlementConfirmationCoordinator() {
       if (observedProgressId && activeProgressFor(entry)?.id !== observedProgressId) return
       latest = activeProgressFor(entry)
       if (finalized.number === null || finalized.number < receipt.blockNumber) {
-        if (latest) update(latest.id, { phase: "base-withdrawal-finalizing" })
-        return
-      }
-      if (latest) update(latest.id, { phase: "awaiting-ic-notification" })
-
-      if (!adapter || owner !== entry.owner) return
-      if (adapter.requiresUserGesture) {
-        if (!latest) return
-        const actionProgress = latest
-        const runNotification = async () => {
-          const transactionKey = entry.transactionHash.toLowerCase()
-          if (notificationRunsRef.current.has(transactionKey)) return
-          if (!presentationIsCurrent(actionProgress.id, entry)) return
-          notificationRunsRef.current.add(transactionKey)
-          setAction(actionProgress.id, {
-            label: "Confirm with IC wallet",
-            pending: true,
-            run: runNotification,
-          })
-          let closeWalletSession: (() => Promise<void>) | undefined
-          let shouldRestoreAction = true
-          try {
-            closeWalletSession = await adapter.prepare()
-            if (!presentationIsCurrent(actionProgress.id, entry)) return
-            await notifyWithdrawal(entry, adapter, actionProgress.id, update, presentationIsCurrent, completedNotificationsRef.current)
-            shouldRestoreAction = false
-            if (!presentationIsCurrent(actionProgress.id, entry)) return
-            setAction(actionProgress.id, undefined)
-            registeredActionRef.current = undefined
-          } catch (error) {
-            if (notificationFailureIsTerminal(error)) {
-              shouldRestoreAction = false
-              await setPendingConfirmationBlocked(entry, true).catch(() => undefined)
-              if (presentationIsCurrent(actionProgress.id, entry)) {
-                setAction(actionProgress.id, undefined)
-                registeredActionRef.current = undefined
-                update(actionProgress.id, {
-                  phase: "attention",
-                  attentionMessage: error instanceof Error ? error.message : "The finalized withdrawal identity could not be accepted by the IC.",
-                })
-              }
-            }
-            if (presentationIsCurrent(actionProgress.id, entry)) {
-              toast.error(error instanceof Error ? error.message : "Withdrawal notification failed")
-            }
-          } finally {
-            await closeWalletSession?.().catch(() => undefined)
-            notificationRunsRef.current.delete(transactionKey)
-            if (shouldRestoreAction
-              && isCurrent()
-              && presentationIsCurrent(actionProgress.id, entry)) {
-              setAction(actionProgress.id, {
-                label: "Confirm with IC wallet",
-                pending: false,
-                run: runNotification,
-              })
-            }
-          }
-        }
-        registeredActionRef.current = { progressId: actionProgress.id, transactionHash: entry.transactionHash.toLowerCase() }
-        setAction(actionProgress.id, {
-          label: "Confirm with IC wallet",
-          pending: false,
-          run: runNotification,
+        if (latest) update(latest.id, {
+          phase: "base-withdrawal-finalizing",
+          finalizedBlockNumber: finalized.number?.toString(),
         })
         return
       }
+      if (latest) update(latest.id, {
+        phase: "awaiting-ic-notification",
+        finalizedBlockNumber: finalized.number.toString(),
+      })
+
+      const transactionKey = entry.transactionHash.toLowerCase()
+      if (notificationRunsRef.current.has(transactionKey)) return
+      notificationRunsRef.current.add(transactionKey)
       try {
-        await notifyWithdrawal(entry, adapter, latest?.id, update, presentationIsCurrent, completedNotificationsRef.current)
+        await notifyWithdrawal(entry, latest?.id, update, presentationIsCurrent, completedNotificationsRef.current)
       } catch (error) {
         if (!isCurrent()) return
         if (notificationFailureIsTerminal(error)) {
@@ -199,6 +130,8 @@ export function SettlementConfirmationCoordinator() {
           })
         }
         throw error
+      } finally {
+        notificationRunsRef.current.delete(transactionKey)
       }
     }
 
@@ -208,11 +141,10 @@ export function SettlementConfirmationCoordinator() {
     tick()
     return () => {
       if (observerGenerationRef.current === generation) observerGenerationRef.current += 1
-      clearRegisteredAction()
       window.clearInterval(interval)
       document.removeEventListener("visibilitychange", tick)
     }
-  }, [ic.account?.owner, ic.adapter, setAction, update])
+  }, [update])
 
   const payoutProgress = bridgeProgress.progress
   useEffect(() => {
@@ -246,21 +178,17 @@ export function SettlementConfirmationCoordinator() {
 
 async function notifyWithdrawal(
   entry: PendingWithdrawal,
-  adapter: NonNullable<ReturnType<typeof useIcWallet>["adapter"]>,
   progressId: string | undefined,
   update: ReturnType<typeof useBridgeProgress>["update"],
   presentationIsCurrent: (progressId: string | undefined, entry: PendingWithdrawal) => boolean,
   completedNotifications: Set<string>,
 ) {
-  const notified = await withBrowserLock(
-    `kinic-wallet-prompt:ic:${entry.owner}`,
-    () => adapter.notifyWithdrawal(hexToBytes(entry.transactionHash)),
-  )
+  const notified = await notifyWithdrawalWithBrowserIdentity(hexToBytes(entry.transactionHash))
   completedNotifications.add(entry.transactionHash.toLowerCase())
-  const canPresentAfterWallet = presentationIsCurrent(progressId, entry)
+  const canPresentAfterNotification = presentationIsCurrent(progressId, entry)
   const withdrawalId = "Duplicate" in notified ? notified.Duplicate.withdrawal_id : notified.Ingested.withdrawal_id
   await removePendingConfirmation(entry).catch(() => undefined)
-  const canPresent = canPresentAfterWallet
+  const canPresent = canPresentAfterNotification
     && presentationIsCurrent(progressId, entry)
   if (!canPresent) return
   if (progressId) update(progressId, {
@@ -282,6 +210,17 @@ function shortAddress(value: string): string {
 }
 
 function notificationFailureIsTerminal(error: unknown): boolean {
+  if (error instanceof NotifyWithdrawalCallError) {
+    return [
+      "AnonymousCaller",
+      "BaseStateMismatch",
+      "BridgeSignerMismatch",
+      "InvalidTransactionHash",
+      "LedgerFeeExceedsServiceFee",
+      "TransactionReverted",
+      "WithdrawalConflict",
+    ].includes(error.code)
+  }
   return error instanceof Error
     && /conflict|reverted|invalid transaction hash|bridge signer mismatch|base state mismatch/i.test(error.message)
 }

@@ -12,6 +12,14 @@ import check_claim_test_manifest as claim_tests
 
 
 class ClaimTestManifestTests(unittest.TestCase):
+    @staticmethod
+    def claims(row: str) -> str:
+        return (
+            "schema\t3\t-\t-\t-\n"
+            "contract\tclaim\timplementation-only\t-\t-\n"
+            + row
+        )
+
     def fixture(self) -> tuple[Path, str, str]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -19,7 +27,10 @@ class ClaimTestManifestTests(unittest.TestCase):
         target = root / "canister/bridge-core/tests/example.rs"
         target.parent.mkdir(parents=True)
         target.write_text("fn exact_test() {}\n", encoding="utf-8")
-        claims = "kind\tclaim\ta\t-\t-\tv\t-\tp\tcanister/bridge-core/tests/example.rs#exact_test\t-\t-\n"
+        claims = self.claims(
+            "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+            "canister/bridge-core/tests/example.rs#exact_test\t-\t-\n"
+        )
         manifest = (
             "rust-core\tcanister/bridge-core/tests/example.rs\t"
             "exact_test\texact_test\n"
@@ -58,7 +69,7 @@ class ClaimTestManifestTests(unittest.TestCase):
                 'function exact_test() {}\nit("human title", exact_test)\n',
                 encoding="utf-8",
             )
-            claims = (
+            claims = self.claims(
                 "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
                 "ui/src/example.test.ts#exact_test\t-\t-\n"
             )
@@ -75,7 +86,10 @@ class ClaimTestManifestTests(unittest.TestCase):
             target = root / "ui/src/example.test.tsx"
             target.parent.mkdir(parents=True)
             target.write_text('it("tsx_test", () => <div />)\n', encoding="utf-8")
-            claims = "kind\tclaim\ta\t-\t-\tv\t-\tp\tui/src/example.test.tsx#tsx_test\t-\t-\n"
+            claims = self.claims(
+                "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+                "ui/src/example.test.tsx#tsx_test\t-\t-\n"
+            )
             manifest = "vitest\tui/src/example.test.tsx\ttsx_test\ttsx_test\n"
             self.assertEqual(len(claim_tests.parse_manifest(claims, manifest, root)), 1)
 
@@ -88,7 +102,7 @@ class ClaimTestManifestTests(unittest.TestCase):
                 'async function exact_test() {}\ntest("human title", exact_test)\n',
                 encoding="utf-8",
             )
-            claims = (
+            claims = self.claims(
                 "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
                 "integration/phase3.spec.ts#exact_test\t-\t-\n"
             )

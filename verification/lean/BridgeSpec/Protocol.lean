@@ -45,6 +45,56 @@ def depositRun : State → List Event → Option State
       | none => none
       | some next => depositRun next events
 
+theorem deposit_run_append {state final : State} {historyPrefix suffix : List Event}
+    (accepted : depositRun state (historyPrefix ++ suffix) = some final) :
+    ∃ middle, depositRun state historyPrefix = some middle ∧
+      depositRun middle suffix = some final := by
+  induction historyPrefix generalizing state with
+  | nil => exact ⟨state, rfl, accepted⟩
+  | cons event rest ih =>
+      simp only [List.cons_append, depositRun] at accepted
+      cases stepped : depositStep state event with
+      | none => simp [stepped] at accepted
+      | some next =>
+          simp only [stepped] at accepted
+          obtain ⟨middle, prefixAccepted, suffixAccepted⟩ := ih accepted
+          exact ⟨middle, by simp [depositRun, stepped, prefixAccepted], suffixAccepted⟩
+
+theorem refund_event_in_accepted_trace_requires_finalized_absence
+    {final : State} {historyPrefix suffix : List Event}
+    {origin : AuthorizationOrigin} {evidence : ExpiryEvidence}
+    (accepted :
+      depositRun initial
+        (historyPrefix ++ .startExpiredRefund origin evidence :: suffix) = some final) :
+    evidence.depositProcessed = false ∧
+      ∃ authorization : Authorization,
+        evidence.depositId = authorization.depositId ∧
+        evidence.authorizationDigest = authorization.digest ∧
+        evidence.finalizedTimestamp > authorization.deadline := by
+  obtain ⟨middle, _, tailAccepted⟩ := deposit_run_append accepted
+  simp only [depositRun] at tailAccepted
+  cases started : depositStep middle (.startExpiredRefund origin evidence) with
+  | none => simp [started] at tailAccepted
+  | some next =>
+      have localAccepted : startExpiredRefund middle origin evidence = some next := by
+        simpa [depositStep] using started
+      obtain ⟨unprocessed, authorization, _, depositId, digest, expired⟩ :=
+        refund_request_cannot_bypass_finalized_evidence localAccepted
+      exact ⟨unprocessed, authorization, depositId, digest, expired⟩
+
+theorem refund_request_after_accepted_prefix_requires_owner_and_absence
+    {state next : State} {historyPrefix : List Event}
+    {authenticated : Bool} {ownerMatch : Option Bool}
+    {origin : AuthorizationOrigin} {evidence : ExpiryEvidence}
+    (_prefixAccepted : depositRun initial historyPrefix = some state)
+    (accepted :
+      requestExpiredRefund authenticated ownerMatch state origin evidence = some next) :
+    authenticated = true ∧ ownerMatch = some true ∧
+      evidence.depositProcessed = false := by
+  have checked :=
+    accepted_refund_request_requires_authenticated_owner_and_finalized_absence accepted
+  exact ⟨checked.1, checked.2.1, checked.2.2.1⟩
+
 def initial : State := {
   phase := .fundingPending
   authorization := none
@@ -289,12 +339,121 @@ theorem deposit_run_preserves_reservation_consistency
 def feeCreditCount (state : State) : Nat :=
   if state.feeCounted then 1 else 0
 
-theorem deposit_run_fee_credit_count_at_most_once
+def Event.feeCreditCount : Event → Nat
+  | .installSignature => 1
+  | _ => 0
+
+def traceFeeCreditCount : List Event → Nat
+  | [] => 0
+  | event :: events => event.feeCreditCount + traceFeeCreditCount events
+
+theorem deposit_step_fee_credit_count
+    {state next : State} {event : Event}
+    (accepted : depositStep state event = some next) :
+    feeCreditCount next = feeCreditCount state + event.feeCreditCount := by
+  cases event <;>
+    simp only [depositStep] at accepted
+  · split at accepted
+    · simp only [Option.some.injEq] at accepted
+      subst next
+      simp [feeCreditCount, Event.feeCreditCount, fund]
+    · simp at accepted
+  · unfold commitAuthorization at accepted
+    split at accepted
+    · simp only [Option.some.injEq] at accepted
+      subst next
+      simp [feeCreditCount, Event.feeCreditCount]
+    · simp at accepted
+  · unfold installSignature at accepted
+    cases auth : state.authorization with
+    | none => simp [auth] at accepted
+    | some authorization =>
+        simp only [auth] at accepted
+        split at accepted
+        next allowed =>
+          simp only [Option.some.injEq] at accepted
+          subst next
+          simp [feeCreditCount, Event.feeCreditCount, allowed.2.1]
+        next => simp at accepted
+  · unfold releaseExpiredReservation at accepted
+    cases auth : state.authorization with
+    | none => simp [auth] at accepted
+    | some authorization =>
+        simp only [auth] at accepted
+        split at accepted
+        · split at accepted
+          · simp only [Option.some.injEq] at accepted
+            subst next
+            simp [feeCreditCount, Event.feeCreditCount]
+          · split at accepted
+            · simp only [Option.some.injEq] at accepted
+              subst next
+              simp [feeCreditCount, Event.feeCreditCount]
+            · simp at accepted
+        · simp at accepted
+  · unfold startExpiredRefund at accepted
+    cases auth : state.authorization with
+    | none => simp [auth] at accepted
+    | some authorization =>
+        simp only [auth] at accepted
+        split at accepted
+        · simp only [Option.some.injEq] at accepted
+          subst next
+          simp [feeCreditCount, Event.feeCreditCount]
+        · simp at accepted
+  · unfold completeMint at accepted
+    cases auth : state.authorization with
+    | none => simp [auth] at accepted
+    | some authorization =>
+        simp only [auth] at accepted
+        split at accepted
+        · simp only [Option.some.injEq] at accepted
+          subst next
+          simp [feeCreditCount, Event.feeCreditCount]
+        · simp at accepted
+  · unfold completeRefund at accepted
+    cases auth : state.authorization with
+    | none => simp [auth] at accepted
+    | some authorization =>
+        simp only [auth] at accepted
+        split at accepted <;> split at accepted
+        all_goals try
+          simp only [Option.some.injEq] at accepted
+          subst next
+          simp [feeCreditCount, Event.feeCreditCount]
+        all_goals simp at accepted
+  · unfold manualClaim at accepted
+    split at accepted
+    · simp only [Option.some.injEq] at accepted
+      subst next
+      simp [feeCreditCount, Event.feeCreditCount]
+    · simp at accepted
+
+theorem deposit_run_fee_credit_count_exact
     {state next : State} {events : List Event}
-    (wellFormed : WellFormed state)
     (accepted : depositRun state events = some next) :
-    feeCreditCount next ≤ 1 := by
-  have _ := deposit_run_preserves_well_formed wellFormed accepted
+    feeCreditCount next = feeCreditCount state + traceFeeCreditCount events := by
+  induction events generalizing state with
+  | nil =>
+      simp [depositRun] at accepted
+      subst next
+      simp [traceFeeCreditCount]
+  | cons event events ih =>
+      simp only [depositRun] at accepted
+      cases step : depositStep state event with
+      | none => simp [step] at accepted
+      | some intermediate =>
+          simp only [step] at accepted
+          rw [ih accepted, deposit_step_fee_credit_count step]
+          simp [traceFeeCreditCount, Nat.add_assoc, Nat.add_left_comm]
+
+theorem deposit_run_fee_credit_count_at_most_once
+    {next : State} {events : List Event}
+    (accepted : depositRun initial events = some next) :
+    traceFeeCreditCount events ≤ 1 := by
+  have exact := deposit_run_fee_credit_count_exact accepted
+  simp [feeCreditCount, initial] at exact
+  rw [← exact]
   cases counted : next.feeCounted <;> simp [feeCreditCount, counted]
 
 theorem deposit_step_preserves_existing_authorization
@@ -853,6 +1012,46 @@ def Safe (state : ProtocolState) : Prop :=
     state.withdrawalFeeCounted = state.withdrawal.paid ∧
     leaseBounded state.lease
 
+def initialState : ProtocolState := {
+  economic := { escrow := 0, baseSupply := 0, feeReserve := 0, unpaidLiability := 0 }
+  withdrawal := {
+    amount := 0
+    chargedServiceFee := 0
+    amountOut := 0
+    destination := { owner := [], subaccount := [] }
+    paid := false }
+  committedDestination := { owner := [], subaccount := [] }
+  committedAmountOut := 0
+  committedPayloadIdentity := 0
+  committedTransferIdentity := 0
+  canonicalObserved := false
+  withdrawalFeeCounted := false
+  fee := {
+    reserve := 0
+    confirmedDepositFees := 0
+    confirmedWithdrawalFees := 0
+    pendingPayout := 0
+    recipient := 0 }
+  deposit := {
+    phase := .fundingPending
+    transferIdentity := 0
+    requestIdentity := 0
+    reserved := 0
+    candidate := 0
+    requirement := 0
+    feeCounted := false }
+  window := { windowId := 0, consumed := 0, reserved := 0 }
+  holdOpen := false
+  holdRequestIdentity := 0
+  holdIdentity := 0
+  holdTransferIdentity := 0
+  job := { kind := .deposit, status := .scheduled, overdue := false, expired := false }
+  lease := { activeGeneration := none, nextGeneration := 0 }
+}
+
+theorem initial_state_is_safe : Safe initialState := by
+  simp [Safe, initialState, Backed, leaseBounded]
+
 structure LedgerSuccessCertificate where
   transferIdentity : TransferIdentity
   transfer : LedgerTransfer
@@ -1262,6 +1461,29 @@ theorem runs_preserve_safe
       simp only [Runs] at runs
       obtain ⟨next, accepted, tail⟩ := runs
       exact ih (step_preserves_safe safe accepted) tail
+
+def Reachable (state : ProtocolState) : Prop :=
+  ∃ events, Runs initialState events state
+
+theorem reachable_is_safe {state : ProtocolState} (reachable : Reachable state) :
+    Safe state := by
+  obtain ⟨events, runs⟩ := reachable
+  exact runs_preserve_safe initial_state_is_safe runs
+
+noncomputable def reopenState (stored : ProtocolState) : Option ProtocolState := by
+  classical
+  exact if Safe stored then some stored else none
+
+theorem reopened_state_is_safe {stored reopened : ProtocolState}
+    (accepted : reopenState stored = some reopened) : Safe reopened := by
+  unfold reopenState at accepted
+  classical
+  split at accepted
+  next safe =>
+    simp only [Option.some.injEq] at accepted
+    subst reopened
+    exact safe
+  next => simp at accepted
 
 theorem runs_preserve_backing
     {state final : ProtocolState} {events : List ProtocolEvent}

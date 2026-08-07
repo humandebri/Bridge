@@ -33,6 +33,7 @@
     "@coinbase/wallet-sdk": "^4.3.7",
     "@dfinity/agent": "3.4.3",
     "@dfinity/candid": "3.4.3",
+    "@dfinity/identity": "3.4.3",
     "@dfinity/oisy-wallet-signer": "6.0.0",
     "@dfinity/principal": "3.4.3",
     "@dfinity/utils": "4.0.3",

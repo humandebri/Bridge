@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test"
+import { Cbor, requestIdOf } from "@dfinity/agent"
+import { expect, test, type APIRequestContext, type Page, type Request, type Response, type Route } from "@playwright/test"
 
 const DEPLOYER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
@@ -15,7 +16,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.goto("/")
   await page.getByRole("checkbox", { name: "Acknowledge unaudited bridge risk" }).check()
   await page.getByRole("button", { name: "Acknowledge and continue" }).click()
-  await expect(page.getByRole("heading", { name: "Bridge KINIC" })).toBeVisible()
+  await expect(page.getByRole("region", { name: "KINIC bridge" })).toBeVisible()
   await page.goto("/status")
   await expect(page.getByText("Availability is fail-closed until fresh status checks succeed.")).toBeHidden()
   await expect(page.getByText("To Base").locator("..")).toContainText("Available")
@@ -113,6 +114,16 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   expect(BigInt(afterDeposit.indexBlocksSynced)).toBeGreaterThanOrEqual(BigInt(initial.indexBlocksSynced) + 4n)
   await openHistory(page)
   await expect(page.getByText("Minted on Base (finalized)").first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("1.99 KINIC", { exact: true })).toBeVisible()
+  await expect(page.getByText(/KINIC (?:on Base|returned to IC|awaiting quote)/)).toHaveCount(0)
+  const nextStepHeader = page.getByText("Next step", { exact: true }).filter({ visible: true })
+  const completedDepositNextStep = page.locator("article").filter({ hasText: "Minted on Base (finalized)" }).first().getByText("—", { exact: true })
+  const nextStepHeaderBox = await nextStepHeader.boundingBox()
+  const completedDepositNextStepBox = await completedDepositNextStep.boundingBox()
+  expect(nextStepHeaderBox).not.toBeNull()
+  expect(completedDepositNextStepBox).not.toBeNull()
+  if (!nextStepHeaderBox || !completedDepositNextStepBox) throw new Error("History Next step alignment could not be measured")
+  expect(completedDepositNextStepBox.x).toBeCloseTo(nextStepHeaderBox.x, 0)
   await expect(page.getByRole("button", { name: "Confirm mint on IC" })).toHaveCount(0)
   await page.reload()
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
@@ -120,6 +131,8 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByText("Minted on Base (finalized)").first()).toBeVisible({ timeout: 30_000 })
 
   const beforeWithdrawal = await controlState(request)
+  const bridgeUpdateGate = await holdIcUpdateMethod(page, "notify_withdrawal")
+  const bridgeUpdateObserver = observeIcUpdateMethods(page)
   await page.getByRole("link", { name: "KINIC Bridge home" }).click()
   await page.getByRole("button", { name: "Reverse bridge direction" }).click()
   await refreshBridgeData(page)
@@ -127,7 +140,6 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.getByLabel("You send").fill("1.00000000")
   await expect(page.getByText("0.99 TICRC1", { exact: true })).toBeVisible()
   const withdraw = page.getByRole("button", { name: "Bridge to IC" })
-  await postControl(request, "/test/fail-next-notification", {})
   await expect.poll(async () => {
     if (!await withdraw.isEnabled()) return await page.getByText(/^Next:/).textContent()
     try {
@@ -138,12 +150,25 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
     }
   }, { timeout: 30_000 }).toBe("opened")
   await page.getByRole("checkbox", { name: "Acknowledge irreversible burn" }).check()
-  await page.getByRole("button", { name: "Verify IC destination and continue" }).click()
+  await page.getByRole("button", { name: "Continue to Base wallet" }).click()
   await expect(page.getByText(/Withdrawal submitted:/)).toBeVisible()
-  await expect.poll(async () => (await controlState(request)).notifyCalls).toBe(beforeWithdrawal.notifyCalls + 1)
+  await postControl(request, "/test/prepare-latest-withdrawal", {})
+  bridgeUpdateGate.release()
+  await expect.poll(async () => BigInt((await controlState(request)).withdrawalCount)).toBe(BigInt(beforeWithdrawal.withdrawalCount) + 1n)
+  await expect.poll(() => [...bridgeUpdateObserver.acceptedCalls]).toEqual([
+    expect.objectContaining({ method: "notify_withdrawal" }),
+  ])
+  expect([...new Set(bridgeUpdateObserver.attempts.map((call) => call.method))]).toEqual(["notify_withdrawal"])
+  const notificationReceiptCalls = (await controlState(request)).receiptCalls
   const retryClock = await page.evaluate(() => Date.now())
   await page.clock.setFixedTime(retryClock + 60_000)
-  await expect.poll(async () => (await controlState(request)).notifyCalls, { timeout: 45_000 }).toBeGreaterThanOrEqual(beforeWithdrawal.notifyCalls + 2)
+  await expect.poll(async () => (await controlState(request)).receiptCalls, { timeout: 45_000 }).toBe(notificationReceiptCalls)
+  await expect.poll(() => [...bridgeUpdateObserver.acceptedCalls], { timeout: 45_000 }).toEqual([
+    expect.objectContaining({ method: "notify_withdrawal" }),
+  ])
+  expect([...new Set(bridgeUpdateObserver.attempts.map((call) => call.method))]).toEqual(["notify_withdrawal"])
+  bridgeUpdateObserver.stop()
+  await bridgeUpdateGate.stop()
   await expect(page.getByText("Withdrawal is recorded. Processing will continue automatically.", { exact: true })).toBeVisible()
   expect((await controlState(request)).bsnsAllowance).toBe("0")
   await openHistory(page)
@@ -155,6 +180,8 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByRole("button", { name: "Connect IC wallet", exact: true })).toHaveCount(0)
   await page.getByRole("button", { name: "Refresh", exact: true }).click()
   await expect(page.getByText("Paid", { exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("0.99 KINIC", { exact: true }).last()).toBeVisible()
+  await expect(page.getByText(/KINIC to IC/)).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0)
   await expect.poll(async () => BigInt((await controlState(request)).ledgerBalance)).toBe(BigInt(beforeWithdrawal.ledgerBalance) + 99_000_000n)
   await expect.poll(async () => {
@@ -203,10 +230,71 @@ interface ControlState {
   indexBalance: string
   indexLedgerId: string
   indexBlocksSynced: string
-  notifyCalls: number
+  withdrawalCount: string
+  receiptCalls: string
   knownDepositCount: number
   depositSequences: string[]
   nextDepositSequence: string
+}
+
+function observeIcUpdateMethods(page: Page): {
+  attempts: Array<{ method: string; requestId: string }>
+  acceptedCalls: Array<{ method: string; requestId: string }>
+  stop: () => void
+} {
+  const attempts: Array<{ method: string; requestId: string }> = []
+  const acceptedCalls: Array<{ method: string; requestId: string }> = []
+  const requestListener = (request: Request) => {
+    const call = decodeIcUpdateRequest(request)
+    if (call) attempts.push(call)
+  }
+  const responseListener = (response: Response) => {
+    if (response.status() !== 200 && response.status() !== 202) return
+    const call = decodeIcUpdateRequest(response.request())
+    if (call) acceptedCalls.push(call)
+  }
+  page.on("request", requestListener)
+  page.on("response", responseListener)
+  return {
+    attempts,
+    acceptedCalls,
+    stop: () => {
+      page.off("request", requestListener)
+      page.off("response", responseListener)
+    },
+  }
+}
+
+async function holdIcUpdateMethod(page: Page, method: string): Promise<{ release: () => void; stop: () => Promise<void> }> {
+  let release!: () => void
+  const released = new Promise<void>((resolve) => { release = resolve })
+  const pattern = /\/api\/v[23]\/canister\/[^/]+\/call$/
+  const handler = async (route: Route) => {
+    if (decodeIcUpdateRequest(route.request())?.method === method) await released
+    await route.continue()
+  }
+  await page.route(pattern, handler)
+  return { release, stop: () => page.unroute(pattern, handler) }
+}
+
+function decodeIcUpdateRequest(request: Request): { method: string; requestId: string } | undefined {
+  const pathname = new URL(request.url()).pathname
+  if (request.method() !== "POST" || !/^\/api\/v[23]\/canister\/[^/]+\/call$/.test(pathname)) return undefined
+  const body = request.postDataBuffer()
+  if (!body) return { method: "<missing-body>", requestId: "<unknown>" }
+  try {
+    const envelope = Cbor.decode<{ content?: Record<string, unknown> & { method_name?: unknown } }>(new Uint8Array(body))
+    return {
+      method: typeof envelope.content?.method_name === "string" ? envelope.content.method_name : "<missing-method>",
+      requestId: envelope.content ? hexBytes(requestIdOf(envelope.content)) : "<unknown>",
+    }
+  } catch {
+    return { method: "<invalid-cbor>", requestId: "<unknown>" }
+  }
+}
+
+function hexBytes(value: Uint8Array): string {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("")
 }
 
 async function controlState(request: APIRequestContext): Promise<ControlState> {

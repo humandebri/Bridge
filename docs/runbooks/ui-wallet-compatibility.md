@@ -19,9 +19,10 @@ and the production OISY signer. Automated test adapters do not satisfy this gate
 
 Attach the runtime-verification screen and record that every check is fresh and passing. Stop the
 test if bridge controls become unavailable or any identifier differs from the reviewed profile.
-The browser must reject a Finalized Base head that is more than 45 minutes old, has no timestamp,
-or is more than 60 seconds ahead of the browser clock. This chain-head limit is independent from
-the 60-second lifetime of a successfully fetched runtime or status result.
+The browser RPC must return the configured chain and a Finalized block number and hash. Browser
+block timestamps do not gate writes: Deposit safety uses the Canister's quorum-backed Finalized
+observation, while Withdrawal safety is enforced by the Base contract at execution time. The
+60-second lifetime of a successfully fetched runtime or status result remains unchanged.
 
 ## Plug
 
@@ -74,14 +75,13 @@ the 60-second lifetime of a successfully fetched runtime or status result.
   or stale sequence and verify `SequenceMismatch`.
 - After approve succeeds but deposit fails, record the remaining allowance, expiry, and retry path.
 - Force one withdrawal notification failure and verify a later explicit History refresh reconstructs
-  the Finalized event and exposes `Check and notify` again.
+  the Finalized event and exposes `Check status` again.
 - Reload the page and verify both wallet summaries remain connected without a new IC wallet prompt;
-  verify the reload itself does not retry the notification.
-- Start a withdrawal and verify OISY confirms the restored IC destination before any Base approval or
-  burn; switch the OISY account and verify no Base transaction is submitted.
-- Start the next IC write and verify OISY reopens or Plug checks its current Principal before the
-  notification is submitted.
-- Select `Check and notify` and verify one receipt check and at most one notification call are made.
+  verify a saved retryable withdrawal notification resumes without reopening either wallet.
+- Start a withdrawal and verify the reviewed IC recipient is submitted to Base without reopening OISY.
+- After Base finality, verify the browser notification Identity submits exactly one
+  `notify_withdrawal` update without an OISY/Plug prompt or ICRC-21 consent call.
+- Select `Check status` and verify one receipt check and at most one notification call are made.
 - After successful ingestion, close the wallet and browser; verify canister timers complete the IC
   release without another Base transaction or wallet prompt. Reopen History and verify
   `Confirming automatically` is shown only while scheduled, and `Retry settlement` only after a stop.

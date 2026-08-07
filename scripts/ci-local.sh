@@ -452,6 +452,8 @@ run_policy_vector_consumers() {
 }
 
 run_refinement_gate() {
+  python3 "$ROOT/scripts/test_transition_manifest.py" || return
+  python3 "$ROOT/scripts/check_transition_manifest.py" || return
   python3 "$ROOT/scripts/test_reproducible_artifacts.py" || return
   python3 "$ROOT/scripts/test_refinement_manifest.py" || return
   python3 "$ROOT/scripts/generate_refinement_harness.py" --check || return

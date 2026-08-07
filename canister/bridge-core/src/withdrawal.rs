@@ -158,14 +158,27 @@ impl WithdrawalRecord {
             return Ok(ApplyResult::idempotent());
         }
 
-        if !crate::withdrawal_phase_allows(self.state.phase_code(), event.phase_code()) {
+        let state_code = self.state.phase_code();
+        let event_code = event.phase_code();
+        if !crate::withdrawal_phase_allows(state_code, event_code) {
             return Err(CoreError::InvalidTransition {
                 entity: "withdrawal",
                 event: event.name(),
             });
         }
 
-        let (next, fee_delta) = match (&self.state, event) {
+        let settlement_for_effects = match (&self.state, &event) {
+            (_, Event::StartRelease { settlement, .. }) => *settlement,
+            (State::ReleasePending { settlement, .. }, _)
+            | (State::ReconciliationHold { settlement, .. }, _) => *settlement,
+            _ => Settlement {
+                amount_out: Amount::ZERO,
+                service_fee: Amount::ZERO,
+                ledger_fee: Amount::ZERO,
+            },
+        };
+
+        let next = match (&self.state, event) {
             (
                 State::Observed,
                 Event::StartRelease {
@@ -174,13 +187,10 @@ impl WithdrawalRecord {
                 },
             ) => {
                 self.validate_attempt(&attempt, settlement)?;
-                (
-                    State::ReleasePending {
-                        attempt: *attempt,
-                        settlement,
-                    },
-                    Amount::ZERO,
-                )
+                State::ReleasePending {
+                    attempt: *attempt,
+                    settlement,
+                }
             }
             (
                 State::ReleasePending {
@@ -190,15 +200,12 @@ impl WithdrawalRecord {
                 Event::ReleaseSucceeded { ledger_block_index },
             ) => {
                 self.validate_attempt(attempt, *settlement)?;
-                (
-                    State::Paid {
-                        attempt: attempt.clone(),
-                        settlement: *settlement,
-                        ledger_block_index,
-                        source_hold: None,
-                    },
-                    settlement.net_service_fee()?,
-                )
+                State::Paid {
+                    attempt: attempt.clone(),
+                    settlement: *settlement,
+                    ledger_block_index,
+                    source_hold: None,
+                }
             }
             (
                 State::ReleasePending {
@@ -206,14 +213,11 @@ impl WithdrawalRecord {
                     settlement,
                 },
                 Event::ReleaseAmbiguous { hold_id },
-            ) => (
-                State::ReconciliationHold {
-                    hold_id,
-                    attempt: attempt.clone(),
-                    settlement: *settlement,
-                },
-                Amount::ZERO,
-            ),
+            ) => State::ReconciliationHold {
+                hold_id,
+                attempt: attempt.clone(),
+                settlement: *settlement,
+            },
             (_, other) => {
                 return Err(CoreError::InvalidTransition {
                     entity: "withdrawal",
@@ -221,6 +225,19 @@ impl WithdrawalRecord {
                 });
             }
         };
+        let effects = crate::withdrawal_transition_effects(
+            state_code,
+            event_code,
+            settlement_for_effects.amount_out.get(),
+            settlement_for_effects.ledger_fee.get(),
+            settlement_for_effects.service_fee.get(),
+        )
+        .ok_or(CoreError::InvalidTransition {
+            entity: "withdrawal",
+            event: "effect_mismatch",
+        })?;
+        debug_assert_eq!(next.phase_code(), effects.0);
+        let fee_delta = Amount::new(effects.2);
         self.state = next;
         Ok(ApplyResult::applied(fee_delta))
     }

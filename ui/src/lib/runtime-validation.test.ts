@@ -3,9 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { DeploymentProfile } from "@/config/profile"
 import {
   bridgeSignerBlockers,
-  FINALIZED_HEAD_FUTURE_SKEW_MS,
-  FINALIZED_HEAD_MAX_AGE_MS,
-  finalizedHeadTimestampBlocker,
   refetchRuntimeWriteReady,
   requireRuntimeWriteReady,
   RUNTIME_VALIDATION_TTL_MS,
@@ -154,28 +151,39 @@ beforeEach(() => {
 })
 
 describe("validateRuntime token bindings", () => {
-  it("accepts only a recent finalized Base timestamp within the browser clock skew", () => {
-    const now = 2_000_000_000_000
-    const nowSeconds = BigInt(now / 1_000)
-    expect(finalizedHeadTimestampBlocker(nowSeconds, now)).toBeUndefined()
-    expect(finalizedHeadTimestampBlocker(nowSeconds - BigInt(FINALIZED_HEAD_MAX_AGE_MS / 1_000), now)).toBeUndefined()
-    expect(finalizedHeadTimestampBlocker(nowSeconds - BigInt(FINALIZED_HEAD_MAX_AGE_MS / 1_000) - 1n, now)).toBe("Finalized Base head is stale")
-    expect(finalizedHeadTimestampBlocker(nowSeconds + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS / 1_000), now)).toBeUndefined()
-    expect(finalizedHeadTimestampBlocker(nowSeconds + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS / 1_000) + 1n, now)).toBe("Finalized Base block timestamp is ahead of the browser clock")
-    expect(finalizedHeadTimestampBlocker(0n, now)).toBe("Finalized Base block timestamp is unavailable")
-    expect(finalizedHeadTimestampBlocker(undefined, now)).toBe("Finalized Base block timestamp is unavailable")
-  })
-
-  it("rejects a stale finalized head before pinned contract reads", async () => {
+  it.each([
+    ["stale", BigInt(Math.floor(Date.now() / 1_000)) - 86_400n],
+    ["missing", undefined],
+    ["ahead of the browser clock", BigInt(Math.floor(Date.now() / 1_000)) + 86_400n],
+  ])("does not use a %s finalized timestamp as a write-readiness gate", async (_label, timestamp) => {
     getBlockMock.mockResolvedValue({
       number: 12n,
       hash: finalizedHash,
-      timestamp: BigInt(Math.floor((Date.now() - FINALIZED_HEAD_MAX_AGE_MS) / 1_000)) - 1n,
+      timestamp,
     })
+
+    await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
+    expect(getCodeMock).toHaveBeenCalled()
+    expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({
+      blockHash: finalizedHash,
+      requireCanonical: true,
+    }))
+  })
+
+  it.each([
+    ["number", null, finalizedHash],
+    ["hash", 12n, null],
+  ])("still rejects a Finalized block without a %s", async (_label, number, hash) => {
+    getBlockMock.mockResolvedValue({ number, hash, timestamp: BigInt(Math.floor(Date.now() / 1_000)) })
 
     await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({
       ready: false,
-      blockers: ["Finalized Base head is stale"],
+      blockers: ["Finalized Base block number or hash is unavailable"],
+    })
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: ["Finalized Base block number or hash is unavailable"],
     })
     expect(getCodeMock).not.toHaveBeenCalled()
     expect(readContractMock).not.toHaveBeenCalled()

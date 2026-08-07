@@ -9,9 +9,9 @@ use bridge_core::{
     refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
     reservation_decision, reserve_admission_preserves_requirement, resources_sufficient,
     scan_complete, service_fee_change_allowed, settlement_decision, withdrawal_phase_allows,
-    withdrawal_phase_step, DepositEventGuard, DepositTransitionDecision, DepositTransitionInput,
-    FeeRecipientRotationDecision, FundingReconciliationDecision, HoldResolutionDecision,
-    ManualClaimDecision,
+    withdrawal_phase_step, withdrawal_transition_effects, DepositEventGuard,
+    DepositTransitionDecision, DepositTransitionInput, FeeRecipientRotationDecision,
+    FundingReconciliationDecision, HoldResolutionDecision, ManualClaimDecision,
 };
 
 #[test]
@@ -281,6 +281,24 @@ fn outbound_settlement_matches_the_backing_equation_at_boundaries() {
             }
         }
     }
+}
+
+#[test]
+fn withdrawal_transition_effects_match_every_phase_and_checked_delta() {
+    assert_eq!(
+        withdrawal_transition_effects(0, 0, 90, 5, 10),
+        Some((1, 0, 0, 0))
+    );
+    assert_eq!(
+        withdrawal_transition_effects(1, 2, 90, 5, 10),
+        Some((2, 95, 5, 100))
+    );
+    assert_eq!(
+        withdrawal_transition_effects(1, 3, 90, 5, 10),
+        Some((3, 0, 0, 0))
+    );
+    assert_eq!(withdrawal_transition_effects(1, 2, 90, 11, 10), None);
+    assert_eq!(withdrawal_transition_effects(2, 2, 90, 5, 10), None);
 }
 
 #[test]

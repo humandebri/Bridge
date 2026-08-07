@@ -25,6 +25,9 @@ importers:
       '@dfinity/candid':
         specifier: 3.4.3
         version: 3.4.3(@dfinity/principal@3.4.3)
+      '@dfinity/identity':
+        specifier: 3.4.3
+        version: 3.4.3(@dfinity/agent@3.4.3(@dfinity/candid@3.4.3(@dfinity/principal@3.4.3))(@dfinity/principal@3.4.3)(@noble/hashes@1.8.0))(@dfinity/candid@3.4.3(@dfinity/principal@3.4.3))(@dfinity/principal@3.4.3)(@noble/curves@1.9.7)(@noble/hashes@1.8.0)
       '@dfinity/oisy-wallet-signer':
         specifier: 6.0.0
         version: 6.0.0(patch_hash=1c9ebf8c3269e9385a02d5266c3c62bd2f69fb7063a663d41532475f067085eb)(b1505c42bb50bb564eccc0dc0a1e8037)

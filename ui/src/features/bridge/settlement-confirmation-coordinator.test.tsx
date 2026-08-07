@@ -2,12 +2,7 @@ import { cleanup, render, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
-  adapter: {
-    requiresUserGesture: false,
-    notifyWithdrawal: vi.fn(),
-    prepare: vi.fn(),
-  },
-  wallet: undefined as undefined | { account?: { owner: string }; adapter?: { requiresUserGesture: boolean; notifyWithdrawal: ReturnType<typeof vi.fn>; prepare: ReturnType<typeof vi.fn> } },
+  notifyWithdrawal: vi.fn(),
   getReceipt: vi.fn(),
   getBlock: vi.fn(),
   readPending: vi.fn(),
@@ -22,9 +17,6 @@ const mocks = vi.hoisted(() => ({
   progress: undefined as undefined | Record<string, unknown>,
 }))
 
-vi.mock("@/features/wallet/ic-wallet-provider", () => ({
-  useIcWallet: () => mocks.wallet,
-}))
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
   useBridgeProgress: () => ({ progress: mocks.progress, update: mocks.update, setAction: mocks.setAction }),
 }))
@@ -39,7 +31,10 @@ vi.mock("@/lib/pending-confirmations", () => ({
 vi.mock("@/lib/ic/bridge", () => ({
   createBridgeActor: vi.fn().mockResolvedValue({ get_withdrawal: mocks.getWithdrawal }),
 }))
-vi.mock("@/lib/browser-lock", () => ({ withBrowserLock: (_name: string, action: () => unknown) => action() }))
+vi.mock("@/lib/ic/withdrawal-notification-client", () => ({
+  NotifyWithdrawalCallError: class NotifyWithdrawalCallError extends Error {},
+  notifyWithdrawalWithBrowserIdentity: mocks.notifyWithdrawal,
+}))
 vi.mock("@/lib/withdrawal-notification", () => ({
   withdrawalNotificationPresentation: () => ({ tone: "info", message: "recorded" }),
 }))
@@ -50,16 +45,9 @@ import { SettlementConfirmationCoordinator } from "./settlement-confirmation-coo
 
 const hash = `0x${"33".repeat(32)}` as const
 const pending = { kind: "withdrawal", transactionHash: hash, owner: "aaaaa-aa", blocked: false }
-type ProgressAction = { label: string; pending?: boolean; run: () => Promise<void> }
-
-function progressActionCalls(): Array<[string, ProgressAction | undefined]> {
-  return mocks.setAction.mock.calls as Array<[string, ProgressAction | undefined]>
-}
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mocks.adapter.requiresUserGesture = false
-  mocks.wallet = { account: { owner: "aaaaa-aa" }, adapter: mocks.adapter }
   mocks.progress = {
     id: "withdraw:1",
     direction: "withdraw",
@@ -74,8 +62,7 @@ beforeEach(() => {
   mocks.getBlock.mockResolvedValue({ number: 9n })
   mocks.removePending.mockResolvedValue(undefined)
   mocks.setBlocked.mockResolvedValue(undefined)
-  mocks.adapter.notifyWithdrawal.mockResolvedValue({ Ingested: { finalized_head_block_number: 10n, withdrawal_id: new Uint8Array(32).fill(7) } })
-  mocks.adapter.prepare.mockResolvedValue(vi.fn().mockResolvedValue(undefined))
+  mocks.notifyWithdrawal.mockResolvedValue({ Ingested: { finalized_head_block_number: 10n, withdrawal_id: new Uint8Array(32).fill(7) } })
 })
 
 afterEach(cleanup)
@@ -85,39 +72,41 @@ describe("SettlementConfirmationCoordinator", () => {
     render(<SettlementConfirmationCoordinator />)
 
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "base-withdrawal-included", receiptBlockNumber: "10" })))
-    expect(mocks.update).toHaveBeenCalledWith("withdraw:1", { phase: "base-withdrawal-finalizing" })
-    expect(mocks.adapter.notifyWithdrawal).not.toHaveBeenCalled()
+    expect(mocks.update).toHaveBeenCalledWith("withdraw:1", {
+      phase: "base-withdrawal-finalizing",
+      finalizedBlockNumber: "9",
+    })
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
     expect(mocks.removePending).not.toHaveBeenCalled()
   })
 
-  it("records the IC withdrawal identity after Base finality without declaring payout complete", async () => {
+  it("notifies_with_the_browser_identity_after_Base_finality_without_an_IC_wallet", async () => {
     mocks.getBlock.mockResolvedValue({ number: 10n })
     render(<SettlementConfirmationCoordinator />)
 
-    await waitFor(() => expect(mocks.adapter.notifyWithdrawal).toHaveBeenCalled())
-    expect(mocks.update).toHaveBeenCalledWith("withdraw:1", { phase: "awaiting-ic-notification" })
+    await waitFor(() => expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce())
+    expect(mocks.update).toHaveBeenCalledWith("withdraw:1", {
+      phase: "awaiting-ic-notification",
+      finalizedBlockNumber: "10",
+    })
     expect(mocks.update).toHaveBeenCalledWith("withdraw:1", {
       phase: "ic-notification-recorded",
       withdrawal: { owner: "aaaaa-aa", withdrawalId: `0x${"07".repeat(32)}` },
     })
+    expect(mocks.setAction).not.toHaveBeenCalled()
     expect(mocks.update).not.toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "complete" }))
   })
 
-  it("waits for an explicit action before a restored IC wallet sends a notification", async () => {
-    mocks.adapter.requiresUserGesture = true
+  it("accepts a duplicate notification receipt as recorded", async () => {
     mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.notifyWithdrawal.mockResolvedValue({ Duplicate: { withdrawal_id: new Uint8Array(32).fill(8) } })
+
     render(<SettlementConfirmationCoordinator />)
 
-    await waitFor(() => expect(mocks.setAction).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({
-      label: "Confirm with IC wallet",
-      pending: false,
-    })))
-    expect(mocks.adapter.notifyWithdrawal).not.toHaveBeenCalled()
-
-    const action = progressActionCalls().find(([, candidate]) => candidate?.label === "Confirm with IC wallet" && candidate.pending === false)?.[1]
-    await action!.run()
-
-    await waitFor(() => expect(mocks.adapter.notifyWithdrawal).toHaveBeenCalledOnce())
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("withdraw:1", {
+      phase: "ic-notification-recorded",
+      withdrawal: { owner: "aaaaa-aa", withdrawalId: `0x${"08".repeat(32)}` },
+    }))
   })
 
   it("marks_the_transfer_complete_only_when_the_canister_withdrawal_reaches_Paid", async () => {
@@ -134,7 +123,7 @@ describe("SettlementConfirmationCoordinator", () => {
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "complete" })))
   })
 
-  it("does not start a second notification observer when progress rerenders during receipt lookup", async () => {
+  it("does not start a second observer when progress rerenders during receipt lookup", async () => {
     let resolveReceipt!: (receipt: { status: "success"; blockNumber: bigint }) => void
     mocks.getReceipt.mockReturnValue(new Promise((resolve) => { resolveReceipt = resolve }))
     mocks.getBlock.mockResolvedValue({ number: 10n })
@@ -145,66 +134,52 @@ describe("SettlementConfirmationCoordinator", () => {
     view.rerender(<SettlementConfirmationCoordinator />)
     resolveReceipt({ status: "success", blockNumber: 10n })
 
-    await waitFor(() => expect(mocks.adapter.notifyWithdrawal).toHaveBeenCalledOnce())
+    await waitFor(() => expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce())
     expect(mocks.getReceipt).toHaveBeenCalledOnce()
   })
 
-  it("clears its owned wallet action when the wallet disconnects", async () => {
-    mocks.adapter.requiresUserGesture = true
+  it("browser_notification_remains_current_across_unrelated_rerenders", async () => {
     mocks.getBlock.mockResolvedValue({ number: 10n })
+    let resolveNotification!: (value: { Ingested: { finalized_head_block_number: bigint; withdrawal_id: Uint8Array } }) => void
+    mocks.notifyWithdrawal.mockReturnValue(new Promise((resolve) => { resolveNotification = resolve }))
     const view = render(<SettlementConfirmationCoordinator />)
-    await waitFor(() => expect(mocks.setAction).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({
-      label: "Confirm with IC wallet",
-    })))
+    await waitFor(() => expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce())
 
-    mocks.wallet = {}
+    mocks.progress = { ...mocks.progress, phase: "awaiting-ic-notification" }
     view.rerender(<SettlementConfirmationCoordinator />)
+    resolveNotification({ Ingested: { finalized_head_block_number: 10n, withdrawal_id: new Uint8Array(32).fill(7) } })
 
-    expect(mocks.setAction).toHaveBeenLastCalledWith("withdraw:1", undefined)
+    await waitFor(() => expect(mocks.removePending).toHaveBeenCalledOnce())
+    expect(mocks.update).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "ic-notification-recorded" }))
+    expect(mocks.toastInfo).toHaveBeenCalledOnce()
   })
 
   it("terminal_notification_failure_blocks_the_pending_observer_without_reopening_attention", async () => {
-    mocks.adapter.requiresUserGesture = true
     mocks.getBlock.mockResolvedValue({ number: 10n })
-    mocks.adapter.notifyWithdrawal.mockRejectedValue(new Error("Withdrawal identity conflict"))
+    mocks.notifyWithdrawal.mockRejectedValue(new Error("Withdrawal identity conflict"))
     const view = render(<SettlementConfirmationCoordinator />)
-    await waitFor(() => expect(mocks.setAction).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({
-      label: "Confirm with IC wallet",
-      pending: false,
-    })))
-    const registered = progressActionCalls().find(([, action]) => action?.label === "Confirm with IC wallet" && action.pending === false)?.[1]
-    expect(registered).toBeDefined()
-
-    await registered!.run()
 
     await waitFor(() => expect(mocks.setBlocked).toHaveBeenCalledWith(pending, true))
     expect(mocks.update).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "attention" }))
-    expect(mocks.setAction).toHaveBeenCalledWith("withdraw:1", undefined)
-    const actionRegistrations = progressActionCalls().filter(([, action]) => action?.label === "Confirm with IC wallet").length
+
     mocks.progress = { ...mocks.progress, phase: "attention" }
     view.rerender(<SettlementConfirmationCoordinator />)
     document.dispatchEvent(new Event("visibilitychange"))
     await Promise.resolve()
 
     expect(mocks.getReceipt).toHaveBeenCalledOnce()
-    expect(progressActionCalls().filter(([, action]) => action?.label === "Confirm with IC wallet")).toHaveLength(actionRegistrations)
   })
 
-  it("wallet_generation_change_suppresses_stale_progress_updates_after_notification", async () => {
+  it("keeps retryable notification failures pending", async () => {
     mocks.getBlock.mockResolvedValue({ number: 10n })
-    let resolveNotification!: (value: { Ingested: { finalized_head_block_number: bigint; withdrawal_id: Uint8Array } }) => void
-    mocks.adapter.notifyWithdrawal.mockReturnValue(new Promise((resolve) => { resolveNotification = resolve }))
-    const view = render(<SettlementConfirmationCoordinator />)
-    await waitFor(() => expect(mocks.adapter.notifyWithdrawal).toHaveBeenCalledOnce())
+    mocks.notifyWithdrawal.mockRejectedValue(new Error("Base RPC is unavailable"))
 
-    mocks.wallet = {}
-    view.rerender(<SettlementConfirmationCoordinator />)
-    resolveNotification({ Ingested: { finalized_head_block_number: 10n, withdrawal_id: new Uint8Array(32).fill(7) } })
+    render(<SettlementConfirmationCoordinator />)
 
-    await waitFor(() => expect(mocks.removePending).toHaveBeenCalledOnce())
-    expect(mocks.adapter.notifyWithdrawal).toHaveBeenCalledOnce()
-    expect(mocks.update).not.toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "ic-notification-recorded" }))
-    expect(mocks.toastInfo).not.toHaveBeenCalled()
+    await waitFor(() => expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce())
+    expect(mocks.setBlocked).not.toHaveBeenCalled()
+    expect(mocks.removePending).not.toHaveBeenCalled()
+    expect(mocks.update).not.toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "attention" }))
   })
 
   it("does not repeat a successful notification when pending storage cleanup fails", async () => {
@@ -216,7 +191,7 @@ describe("SettlementConfirmationCoordinator", () => {
     document.dispatchEvent(new Event("visibilitychange"))
     await Promise.resolve()
 
-    expect(mocks.adapter.notifyWithdrawal).toHaveBeenCalledOnce()
+    expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce()
     expect(mocks.removePending).toHaveBeenCalledOnce()
   })
 

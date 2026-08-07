@@ -14,7 +14,7 @@ import { MintAuthorizationAction } from "@/features/bridge/mint-authorization-ac
 import { useRuntimeHeartbeat, useRuntimeValidation, useRuntimeWriteReadiness } from "@/features/status/use-status"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
-import type { AutomaticProgressView, DepositView, SettlementActionResult, WithdrawalView } from "@/generated/bridge.did"
+import type { AutomaticProgressView, DepositView, NotifyWithdrawalReceipt, SettlementActionResult, WithdrawalView } from "@/generated/bridge.did"
 import {
   activityAutoRefreshEnabled,
   mergeActivityItems,
@@ -41,7 +41,7 @@ import { baseHistoryClients, baseTransactionExplorerUrl, withHistoryClientFailov
 import { finalizedCheckpointMatches } from "@/lib/finalized-checkpoint"
 import { sameIcAccount } from "@/lib/ic-history-owner"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import type { IcWalletAdapter } from "@/lib/ic/wallet"
+import { notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
 import { readPendingMint, removePendingConfirmation } from "@/lib/pending-confirmations"
 import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
 import { depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositTerminal, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName, withdrawalPhaseTone } from "@/lib/settlement-phase"
@@ -294,21 +294,17 @@ function HistoryPage() {
     await Promise.all(olderSources.map((source) => source === "to-base" ? scanOlderDeposits() : scanOlderWithdrawals()))
   }
   const checkAndNotify = async (item: WithdrawalHistoryItem) => {
-    let closeWalletSession: (() => Promise<void>) | undefined
     try {
       setRetryingHash(item.hash)
-      if (!ic.adapter) throw new Error("Connect the destination IC wallet before retrying")
-      closeWalletSession = await ic.adapter.prepare()
       await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
-      const receipt = await withBrowserLock(`kinic-wallet-prompt:ic:${ic.account?.owner ?? "unknown"}`, () => ic.adapter!.notifyWithdrawal(hexToBytes(item.hash)))
-      await removePendingConfirmation({ kind: "withdrawal", transactionHash: item.hash, owner: ic.account?.owner ?? "" })
+      const receipt = await notifyWithdrawalWithBrowserIdentity(hexToBytes(item.hash))
+      await removePendingConfirmation({ kind: "withdrawal", transactionHash: item.hash, owner: "" })
       toastWithdrawalNotification(receipt)
       await withdrawals.refetch()
     } catch (error) {
       await withdrawals.refetch()
       toast.error(error instanceof Error ? error.message : "Withdrawal notification failed")
     } finally {
-      await closeWalletSession?.()
       setRetryingHash(undefined)
     }
   }
@@ -475,7 +471,7 @@ function ActivityList({
     {unavailable.length > 0 && <HistoryUnavailable sourceStates={sourceStates} onRefresh={onRefresh} compact />}
     {historyTruncated && <p className="rounded-xl bg-[#fff3e4] px-3 py-2 text-xs font-medium text-[#8a4b08]">Some older IC → Base activity is no longer available.</p>}
     <div className="hidden grid-cols-[minmax(6.5rem,0.7fr)_minmax(7rem,0.8fr)_minmax(10.5rem,1.6fr)_minmax(8rem,1fr)_minmax(6.5rem,0.8fr)_10rem] gap-4 px-4 pb-1 text-xs font-bold uppercase tracking-[0.08em] text-[var(--muted)] lg:grid">
-      <span>Direction</span><span>Tx ID</span><span>Amount</span><span>Status</span><span>Time</span><span>Action</span>
+      <span>Direction</span><span>Tx ID</span><span>Amount</span><span>Status</span><span>Time</span><span>Next step</span>
     </div>
     {items.map((item) => {
       const mintScan = item.direction === "to-base" ? depositMintScans.get(bytesHex(item.deposit.deposit_id)) : undefined
@@ -547,7 +543,6 @@ function DepositActivityRow({ item, mintFinalization, mintTransactionHash, mintS
   const progress = automaticProgressInfo(record.automatic_progress)
   const refund = record.refund[0]
   const quote = record.quote[0]
-  const availableRefund = record.available_refund_amount[0]
   const reconciliationMessage = depositReconciliationMessage(record.state, record.last_settlement_stop_reason[0])
   const mintedOnBase = mintFinalization === "minted"
   const mintSubmitted = depositUsesPendingMintStatus(record.state, Boolean(pendingMint), mintedOnBase)
@@ -557,19 +552,19 @@ function DepositActivityRow({ item, mintFinalization, mintTransactionHash, mintS
       ? `Checking finalized Base mint history before minting${mintScan?.olderCursor === null ? "" : ` (${mintScan?.olderCursor === undefined ? "starting" : `${mintScan.olderCursor.toString()} is the next older block`})`}.`
       : undefined
   const amountText = refund
-    ? `${formatTokenAmount(refund.amount)} KINIC returned to IC`
+    ? `${formatTokenAmount(refund.amount)} KINIC`
     : quote
-      ? `${formatTokenAmount(quote.net_amount)} KINIC on Base`
-      : `${formatTokenAmount(record.gross_amount)} KINIC awaiting quote`
+      ? `${formatTokenAmount(quote.net_amount)} KINIC`
+      : `${formatTokenAmount(record.gross_amount)} KINIC`
   return <article className="grid gap-4 rounded-2xl bg-white p-4 lg:grid-cols-[minmax(6.5rem,0.7fr)_minmax(7rem,0.8fr)_minmax(10.5rem,1.6fr)_minmax(8rem,1fr)_minmax(6.5rem,0.8fr)_10rem] lg:items-center">
     <div><MobileLabel>Direction</MobileLabel><Badge tone="info">IC → Base</Badge></div>
     <div><MobileLabel>Tx ID</MobileLabel>{transactionHash
       ? <BaseTransactionLink transactionHash={transactionHash} />
       : <p className="mt-1 text-xs text-[var(--muted)]">Base transaction not submitted</p>}</div>
-    <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{amountText}</p>{availableRefund !== undefined && <p className="mt-1 text-xs text-[var(--muted)]">Available after non-refundable fees: {formatTokenAmount(availableRefund)} KINIC</p>}{refund && <p className="mt-1 text-xs text-[var(--muted)]">Non-refundable refund Ledger fee: {formatTokenAmount(refund.ledger_fee)} KINIC</p>}</div>
+    <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{amountText}</p></div>
     <div><MobileLabel>Status</MobileLabel><Badge tone={mintedOnBase ? "good" : mintSubmitted ? "info" : depositPhaseTone(record.state)}>{mintedOnBase ? "Minted on Base (finalized)" : mintSubmitted ? "Mint submitted" : depositPhaseName(record.state)}</Badge>{!mintedOnBase && !mintSubmitted && progress && <AutomaticProgress progress={progress} />}{!mintedOnBase && refund && "ReconciliationRequired" in refund.status && <p className="mt-1 text-xs font-bold text-[#b42318]">Ledger result is uncertain — requesting again checks the same transfer.</p>}{!mintedOnBase && reconciliationMessage && <p className={`mt-1 text-xs font-bold ${record.last_settlement_stop_reason[0] ? "text-[#b42318]" : "text-[var(--muted)]"}`}>{reconciliationMessage}</p>}</div>
     <div><MobileLabel>Time</MobileLabel><ActivityTime valueNs={item.createdAtNs} /></div>
-    <div className="min-w-0 lg:text-right"><MobileLabel>Action</MobileLabel>{mintedOnBase
+    <div className="min-w-0"><MobileLabel>Next step</MobileLabel>{mintedOnBase
       ? <span className="text-sm text-[var(--muted)]">—</span>
       : "AuthorizationAvailable" in record.state
         ? <MintAuthorizationAction record={record} compact mintBlockedReason={mintBlockedReason} onRequestRefund={writesEnabled ? () => void onRequestRefund(record) : undefined} claimingRefund={actioningId === key} />
@@ -598,10 +593,10 @@ function WithdrawalActivityRow({ item, writesEnabled, actioningId, retryingHash,
   return <article className="grid gap-4 rounded-2xl bg-white p-4 lg:grid-cols-[minmax(6.5rem,0.7fr)_minmax(7rem,0.8fr)_minmax(10.5rem,1.6fr)_minmax(8rem,1fr)_minmax(6.5rem,0.8fr)_10rem] lg:items-center">
     <div><MobileLabel>Direction</MobileLabel><Badge tone="info">Base → IC</Badge></div>
     <div><MobileLabel>Tx ID</MobileLabel><BaseTransactionLink transactionHash={record.hash} /></div>
-    <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{record.amountOut === undefined ? "Amount unavailable" : `${formatTokenAmount(record.amountOut)} KINIC to IC`}</p></div>
+    <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{record.amountOut === undefined ? "Amount unavailable" : `${formatTokenAmount(record.amountOut)} KINIC`}</p></div>
     <div><MobileLabel>Status</MobileLabel><Badge tone={needsAttention ? "warn" : record.canister ? withdrawalPhaseTone(record.canister.state) : "neutral"}>{label}</Badge>{progress && <AutomaticProgress progress={progress} />}{needsAttention && <p className="mt-1 text-xs font-bold text-[#b42318]">Needs attention</p>}</div>
     <div><MobileLabel>Time</MobileLabel><ActivityTime valueNs={item.createdAtNs} /></div>
-    <div className="lg:text-right"><MobileLabel>Action</MobileLabel>{!record.canister ? <Button size="sm" variant="ghost" disabled={!writesEnabled || retryingHash === record.hash} onClick={() => void onCheckAndNotify(record)}>{retryingHash === record.hash ? "Checking…" : "Check status"}</Button> : !terminal && (!progress || progress.retryAllowed) ? <Button size="sm" variant="ghost" disabled={(!writesEnabled && !feeGuardBlocked(record.canister)) || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry"}</Button> : <span className="text-sm text-[var(--muted)]">—</span>}</div>
+    <div><MobileLabel>Next step</MobileLabel>{!record.canister ? <Button size="sm" variant="ghost" disabled={!writesEnabled || retryingHash === record.hash} onClick={() => void onCheckAndNotify(record)}>{retryingHash === record.hash ? "Checking…" : "Check status"}</Button> : !terminal && (!progress || progress.retryAllowed) ? <Button size="sm" variant="ghost" disabled={(!writesEnabled && !feeGuardBlocked(record.canister)) || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry"}</Button> : <span className="text-sm text-[var(--muted)]">—</span>}</div>
   </article>
 }
 
@@ -679,7 +674,7 @@ function toastSettlement(result: SettlementActionResult) {
   toast.success(`Transfer ${settlementStateName(result.Complete.state).toLowerCase()}.`)
 }
 
-function toastWithdrawalNotification(receipt: Awaited<ReturnType<IcWalletAdapter["notifyWithdrawal"]>>): void {
+function toastWithdrawalNotification(receipt: NotifyWithdrawalReceipt): void {
   const presentation = withdrawalNotificationPresentation(receipt)
   if (presentation.tone === "success") toast.success(presentation.message)
   else if (presentation.tone === "warning") toast.warning(presentation.message)

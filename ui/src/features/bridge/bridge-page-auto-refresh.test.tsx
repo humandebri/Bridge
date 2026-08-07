@@ -290,55 +290,15 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(await screen.findByText("Review the transfer and the wallet actions that come next.")).toBeVisible()
     expect(screen.queryByText("Wallets connected")).not.toBeInTheDocument()
     expect(screen.queryByText("Transfer availability checked")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Verify IC destination and continue" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Continue to Base wallet" })).toBeDisabled()
     fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge irreversible burn" }))
-    expect(screen.getByRole("button", { name: "Verify IC destination and continue" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Continue to Base wallet" })).toBeEnabled()
   })
 
-  it("does not submit a Base transaction when OISY destination verification fails", async () => {
-    const account = { owner: "aaaaa-aa" }
-    const prepare = vi.fn().mockRejectedValue(new Error("OISY account changed; reconnect and review the transaction"))
-    const getAccount = vi.fn().mockResolvedValue(account)
-    mocks.useAccount.mockReturnValue({
-      address: "0x0000000000000000000000000000000000000002",
-      isConnected: true,
-    })
-    mocks.useIcWallet.mockReturnValue({
-      account,
-      provider: "oisy",
-      adapter: { prepare, getAccount },
-      connecting: undefined,
-      connect: vi.fn(),
-      disconnect: vi.fn(),
-    })
-
-    render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
-    await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
-    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
-    fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
-    const acknowledgment = await screen.findByRole("checkbox", { name: "Acknowledge irreversible burn" })
-    getAccount.mockClear()
-    fireEvent.click(acknowledgment)
-    fireEvent.click(screen.getByRole("button", { name: "Verify IC destination and continue" }))
-
-    await waitFor(() => expect(screen.getAllByText("OISY account changed; reconnect and review the transaction").length).toBeGreaterThan(0))
-    expect(prepare).toHaveBeenCalledOnce()
-    expect(getAccount).not.toHaveBeenCalled()
-    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
-    expect(mocks.savePendingConfirmation).not.toHaveBeenCalled()
-  })
-
-  it("closes the verified OISY session before submitting the verified destination to Base", async () => {
+  it("submits the reviewed IC destination without reopening OISY", async () => {
     const account = { owner: "2vxsx-fae", subaccount: new Uint8Array(32).fill(0x55) }
     const events: string[] = []
-    const closeWallet = vi.fn(() => {
-      events.push("close")
-      return Promise.resolve()
-    })
-    const prepare = vi.fn(() => {
-      events.push("prepare")
-      return Promise.resolve(closeWallet)
-    })
+    const prepare = vi.fn().mockRejectedValue(new Error("OISY must not be opened before the Base withdrawal"))
     const getAccount = vi.fn(() => {
       events.push("getAccount")
       return Promise.resolve({ owner: account.owner, subaccount: account.subaccount.slice() })
@@ -368,13 +328,13 @@ describe("BridgePage automatic wallet refresh", () => {
     events.length = 0
     getAccount.mockClear()
     fireEvent.click(acknowledgment)
-    fireEvent.click(screen.getByRole("button", { name: "Verify IC destination and continue" }))
+    fireEvent.click(screen.getByRole("button", { name: "Continue to Base wallet" }))
 
     await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())
-    expect(events.indexOf("prepare")).toBeLessThan(events.indexOf("getAccount"))
-    expect(events.indexOf("getAccount")).toBeLessThan(events.indexOf("close"))
-    expect(events.indexOf("close")).toBeLessThan(events.indexOf("baseWrite"))
-    expect(closeWallet).toHaveBeenCalledOnce()
+    expect(screen.getByText("Base token approval").parentElement).toHaveTextContent("Not required")
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base withdrawal transaction")
+    expect(prepare).not.toHaveBeenCalled()
+    expect(events.indexOf("getAccount")).toBeLessThan(events.indexOf("baseWrite"))
     expect(mocks.writeContractAsync).toHaveBeenCalledWith(expect.objectContaining({
       functionName: "createWithdrawal",
       args: [200_000_000n, 50_000_000n, "0x04", `0x${"55".repeat(32)}`],
@@ -523,7 +483,7 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(prepare).toHaveBeenCalledOnce()
 
     await waitFor(() => expect(requestDeposit).toHaveBeenCalledOnce())
-    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("IC wallet")
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("IC deposit transaction")
     expect(closeWallet).not.toHaveBeenCalled()
   })
 
@@ -568,7 +528,7 @@ describe("BridgePage automatic wallet refresh", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Check status" }))
 
     expect(await screen.findByRole("heading", { name: "Bridge to Base" })).toBeVisible()
-    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Bridge authorization")
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base mint transaction")
     expect(mocks.removeDepositIntent).toHaveBeenCalledOnce()
   })
 

@@ -6,13 +6,13 @@
 
 | コンポーネント | 役割 |
 |---|---|
-| IC wallet | ICRC-2 approve、`request_deposit`、`request_deposit_refund`、`notify_withdrawal` |
+| IC wallet | ICRC-2 approve、`request_deposit`、`request_deposit_refund`、`continue_withdrawal` |
 | Base wallet | Mint Authorization送信時のgas支払い、Withdrawalのapprove・burn transaction |
 | Bridge Canister | SQLite schema v31、Ledger操作、EIP-712署名、Finalized照合、Governance transaction署名 |
 | Ledger / Index | Deposit pull、refund、Withdrawal release、履歴照合 |
 | EVM RPC Canister | provider quorumによるcanonical Finalized観測 |
 | Base Bridge / bSNS | 署名検証付きDeposit mint、atomic Withdrawal burn |
-| Browser UI | runtime・Authorization検証、Base transaction送信、状態表示 |
+| Browser UI | runtime・Authorization検証、Base transaction送信、通知専用IdentityからのWithdrawal通知、状態表示 |
 
 ## 全体フロー
 
@@ -38,7 +38,7 @@ flowchart TB
   subgraph Withdrawal["Withdrawal: Base → ICP"]
     W1["Base wallet: approve"] --> W2["createWithdrawal"]
     W2 --> W3["transferFrom + burn + Committed"]
-    W3 --> W4["IC wallet: notify_withdrawal"]
+    W3 --> W4["Browser notification Identity: notify_withdrawal"]
     W4 --> W5["Canister: canonical Finalized検証"]
     W5 --> W6["Ledger release"]
     W6 --> W7["Paid"]
@@ -63,7 +63,7 @@ flowchart TB
 
 1. UIはBase wallet、送付先IC Account、Service Fee、bSNS残高、chain/runtimeを再検証し、必要額をBridgeへapproveする。
 2. Base walletが`createWithdrawal`を送る。Contractは同じtransactionで`transferFrom`、burn、固定quoteを持つ`Committed` record、`WithdrawalCommitted` eventを原子的に作る。
-3. UIはtransaction hashをlocalStorageへ保存し、Finalized receiptを検出した後にIC walletから`notify_withdrawal`を呼ぶ。
+3. UIはtransaction hashをlocalStorageへ保存し、Finalized receiptを検出した後にdeployment-scopedな通知専用Identityから`notify_withdrawal`を呼ぶ。IC wallet確認とICRC-21同意取得は行わず、Canister updateは1回だけ送る。
 4. Canisterはreceipt、event、Withdrawal state、Bridge snapshotを同じcanonical Finalized block hashへ束縛してquorum検証する。
 5. 検証後、固定`amountOut`をLedgerで送る。結果不明はReconciliation Holdへ入り、Ledger・Indexの完全な不存在証拠なしに別identityを送らない。
 

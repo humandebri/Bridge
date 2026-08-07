@@ -39,6 +39,43 @@ pub open spec fn deposit_identity_decision_view(
     }
 }
 
+pub open spec fn deposit_transition_decision_effects_valid(
+    input: kernel::DepositTransitionInput,
+    result: kernel::DepositTransitionDecision,
+) -> bool {
+    match result {
+        kernel::DepositTransitionDecision::Idempotent => input.same_payload,
+        kernel::DepositTransitionDecision::Reject => !input.same_payload,
+        kernel::DepositTransitionDecision::Apply(effects) =>
+            !input.same_payload
+            && kernel::deposit_transition_spec(input.state as int, input.event as int)
+                == Some(effects.next_state as int)
+            && effects.reservation_active
+                == kernel::deposit_reservation_active_spec(effects.next_state as int)
+            && effects.release_reservation
+                == (kernel::deposit_reservation_active_spec(input.state as int)
+                    && !kernel::deposit_reservation_active_spec(effects.next_state as int))
+            && effects.charge_service_fee
+                == kernel::deposit_charge_service_fee_spec(
+                    input.state as int, input.event as int)
+            && (
+                effects.reservation_after as int,
+                effects.reservation_add as int,
+                effects.reservation_release as int,
+                effects.fee_credit as int,
+                effects.pending_liability_debit as int,
+                effects.escrow_debit as int,
+                effects.mint_supply_increase as int,
+            ) == kernel::deposit_numeric_effects_spec(
+                input.state as int,
+                input.event as int,
+                input.gross_amount as int,
+                input.net_amount as int,
+                input.service_fee as int,
+                input.reserved_amount as int),
+    }
+}
+
 pub open spec fn reservation_decision_view(
     result: Option<kernel::ReservationDecision>,
 ) -> Option<(int, int)> {
@@ -716,6 +753,57 @@ proof fn deposit_numeric_effects_match_every_economic_transition(
         kernel::deposit_numeric_effects_spec(2, 4, gross, net, fee, reserved)
             == (0int, 0int, reserved, 0int, 0int, 0int, 0int)
 {}
+
+fn deposit_transition_effects_match_every_economic_transition(
+    state: u8, event: u8, gross: u128, net: u128, fee: u128, reserved: u128,
+) -> (result: (u128, u128, u128, u128, u128, u128, u128))
+    ensures
+        state == 1 && event == 3 ==> result ==
+            (net, net, 0u128, 0u128, 0u128, 0u128, 0u128),
+        state == 2 && event == 5 ==> result ==
+            (reserved, 0u128, 0u128, fee, fee, 0u128, 0u128),
+        state == 3 && event == 4 ==> result ==
+            (0u128, 0u128, reserved, 0u128, 0u128, 0u128, 0u128),
+        state == 4 && event == 6 && net != 0 ==> result ==
+            (0u128, 0u128, 0u128, 0u128, net, 0u128, net),
+        state == 6 && event == 8 && net == 0 ==>
+            result == (0u128, 0u128, 0u128, 0u128, gross, gross, 0u128),
+        state == 6 && event == 8 && net != 0 ==>
+            result == (0u128, 0u128, 0u128, 0u128, net, net, 0u128),
+        state == 2 && event == 4 ==> result ==
+            (0u128, 0u128, reserved, 0u128, 0u128, 0u128, 0u128),
+{
+    kernel::deposit_transition_effects(state, event, gross, net, fee, reserved)
+}
+
+fn deposit_transition_decision_applies_verified_effects(
+    input: kernel::DepositTransitionInput,
+) -> (result: kernel::DepositTransitionDecision)
+    ensures deposit_transition_decision_effects_valid(input, result),
+{
+    kernel::deposit_transition_decision(input)
+}
+
+fn withdrawal_transition_effects_return_exact_checked_delta(
+    amount_out: u128, ledger_fee: u128, service_fee: u128,
+) -> (result: Option<(u8, u128, u128, u128)>)
+    requires
+        ledger_fee <= service_fee,
+        amount_out as int + service_fee as int
+            <= 340282366920938463463374607431768211455int,
+    ensures match result {
+        Some((next, escrow_debit, reserve_credit, liability_debit)) =>
+            next == 2
+                && escrow_debit as int == amount_out as int + ledger_fee as int
+                && reserve_credit as int == service_fee as int - ledger_fee as int
+                && liability_debit as int == amount_out as int + service_fee as int,
+        None => false,
+    },
+{
+    assert(amount_out <= u128::MAX - ledger_fee);
+    assert(amount_out <= u128::MAX - service_fee);
+    kernel::withdrawal_transition_effects(1, 2, amount_out, ledger_fee, service_fee)
+}
 
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
     requires state == 2

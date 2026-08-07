@@ -706,6 +706,44 @@ macro_rules! withdrawal_step_body {
     }};
 }
 
+macro_rules! withdrawal_transition_effects_body {
+    (
+        $state:expr, $event:expr, $amount_out:expr, $ledger_fee:expr, $service_fee:expr,
+        $max:expr, $zero_state:expr, $release_pending:expr, $paid:expr, $hold:expr,
+        $start:expr, $retry:expr, $succeeded:expr, $ambiguous:expr, $hold_succeeded:expr,
+        $hold_absent:expr, $amount_zero:expr
+    ) => {{
+        let next = withdrawal_step_body!(
+            $state,
+            $event,
+            $zero_state,
+            $release_pending,
+            $paid,
+            $hold,
+            $hold_succeeded,
+            $hold_absent
+        );
+        if next == $state && !($state == $release_pending && $event == $retry) {
+            None
+        } else if $state == $release_pending && $event == $succeeded {
+            match outbound_settlement_body!($amount_out, $ledger_fee, $service_fee, $max) {
+                None => None,
+                Some((escrow_debit, reserve_credit, liability_debit)) => {
+                    Some((next, escrow_debit, reserve_credit, liability_debit))
+                }
+            }
+        } else if ($state == $zero_state && $event == $start)
+            || ($state == $release_pending && $event == $ambiguous)
+            || ($state == $hold && ($event == $hold_succeeded || $event == $hold_absent))
+            || ($state == $release_pending && $event == $retry)
+        {
+            Some((next, $amount_zero, $amount_zero, $amount_zero))
+        } else {
+            None
+        }
+    }};
+}
+
 #[cfg(verus_keep_ghost)]
 macro_rules! asset_backed_body {
     ($escrow:expr, $supply:expr, $fees:expr, $unminted:expr, $unreleased:expr) => {
@@ -1344,14 +1382,12 @@ pub const fn audit_next(current: u64) -> Option<u64> {
     next_attempt_body!(current, u64::MAX, 1u64)
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn deposit_transition(state: u8, event: u8) -> Option<u8> {
     deposit_transition_body!(
         state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn authorization_commit_allowed(
     identity_matches: bool,
     amounts_match: bool,
@@ -1385,7 +1421,6 @@ pub const fn expiry_refund_allowed(
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn mint_finalization_allowed(
     binding_matches: bool,
     receipt_succeeded: bool,
@@ -1400,7 +1435,6 @@ pub const fn mint_finalization_allowed(
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn signature_install_allowed(
     signature_dispatched: bool,
     signature_absent: bool,
@@ -1413,22 +1447,18 @@ pub const fn signature_install_allowed(
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn refund_start_allowed(attempt_matches: bool, policy_matches: bool) -> bool {
     refund_start_allowed_body!(attempt_matches, policy_matches)
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn deposit_reservation_active(state: u8) -> bool {
     deposit_reservation_active_body!(state, 2u8, 3u8)
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn deposit_charge_service_fee(state: u8, event: u8) -> bool {
     deposit_charge_fee_body!(state, event, 2u8, 5u8)
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn deposit_releases_reservation(state: u8, event: u8) -> bool {
     match deposit_transition(state, event) {
         None => false,
@@ -1468,8 +1498,46 @@ pub const fn deposit_numeric_effects(
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+verus! {
+    pub fn deposit_transition_effects(
+        state: u8,
+        event: u8,
+        gross_amount: u128,
+        net_amount: u128,
+        service_fee: u128,
+        reserved_amount: u128,
+    ) -> (result: (u128, u128, u128, u128, u128, u128, u128))
+        ensures result == deposit_numeric_effects_body!(
+            state, event, gross_amount, net_amount, service_fee, reserved_amount,
+            0u128, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8),
+    {
+        deposit_numeric_effects_body!(
+            state,
+            event,
+            gross_amount,
+            net_amount,
+            service_fee,
+            reserved_amount,
+            0u128,
+            0u8,
+            1u8,
+            2u8,
+            3u8,
+            4u8,
+            5u8,
+            6u8,
+            7u8,
+            8u8,
+            9u8,
+            10u8,
+            11u8
+        )
+    }
+}
+
+verus! {
+#[derive(Clone, Copy)]
+#[cfg_attr(not(verus_keep_ghost), derive(Debug, PartialEq, Eq))]
 pub enum DepositEventGuard {
     Funding,
     CommitAuthorization {
@@ -1501,7 +1569,6 @@ pub enum DepositEventGuard {
     RefundResult,
 }
 
-#[cfg(not(verus_keep_ghost))]
 impl DepositEventGuard {
     pub const fn matches_event(self, event: u8) -> bool {
         match self {
@@ -1525,41 +1592,42 @@ impl DepositEventGuard {
                 canonical_domain_strings,
                 deadline_valid,
                 pristine,
-            } => authorization_commit_allowed(
+            } => authorization_commit_allowed_body!(
                 fixed_fields_match,
                 quote_valid,
                 canonical_domain_strings,
                 fixed_fields_match,
                 pristine,
-                deadline_valid,
+                deadline_valid
             ),
             Self::InstallSignature {
                 dispatched,
                 signature_absent,
                 signature_length_valid,
-            } => signature_install_allowed(dispatched, signature_absent, signature_length_valid),
+            } => signature_install_allowed_body!(
+                dispatched, signature_absent, signature_length_valid),
             Self::MintFinalization {
                 fixed_fields_match,
                 receipt_succeeded,
                 receipt_block,
                 finalized_block,
                 audit_complete,
-            } => mint_finalization_allowed(
-                fixed_fields_match && audit_complete,
+            } => mint_finalization_allowed_body!(
+                (fixed_fields_match && audit_complete),
                 receipt_succeeded,
                 receipt_block,
-                finalized_block,
+                finalized_block
             ),
             Self::StartRefund {
                 attempt_matches,
                 policy_matches,
-            } => refund_start_allowed(attempt_matches, policy_matches),
+            } => refund_start_allowed_body!(attempt_matches, policy_matches),
         }
     }
 }
 
-#[cfg(not(verus_keep_ghost))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
+#[cfg_attr(not(verus_keep_ghost), derive(Debug, PartialEq, Eq))]
 pub struct DepositTransitionInput {
     pub state: u8,
     pub event: u8,
@@ -1571,8 +1639,8 @@ pub struct DepositTransitionInput {
     pub reserved_amount: u128,
 }
 
-#[cfg(not(verus_keep_ghost))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
+#[cfg_attr(not(verus_keep_ghost), derive(Debug, PartialEq, Eq))]
 pub struct DepositEffects {
     pub next_state: u8,
     pub reservation_active: bool,
@@ -1587,59 +1655,101 @@ pub struct DepositEffects {
     pub mint_supply_increase: u128,
 }
 
-#[cfg(not(verus_keep_ghost))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
+#[cfg_attr(not(verus_keep_ghost), derive(Debug, PartialEq, Eq))]
 pub enum DepositTransitionDecision {
     Idempotent,
     Apply(DepositEffects),
     Reject,
 }
+}
 
-#[cfg(not(verus_keep_ghost))]
-pub const fn deposit_transition_decision(
-    input: DepositTransitionInput,
-) -> DepositTransitionDecision {
-    if input.same_payload {
-        return DepositTransitionDecision::Idempotent;
-    }
-    if !input.guard.matches_event(input.event) || !input.guard.accepts() {
-        return DepositTransitionDecision::Reject;
-    }
-    match deposit_transition(input.state, input.event) {
-        None => DepositTransitionDecision::Reject,
-        Some(next_state) => {
-            let after_reserved = deposit_reservation_active(next_state);
-            let release_reservation = deposit_releases_reservation(input.state, input.event);
-            let charge_service_fee = deposit_charge_service_fee(input.state, input.event);
-            let (
-                reservation_after,
-                reservation_add,
-                reservation_release,
-                fee_credit,
-                pending_liability_debit,
-                escrow_debit,
-                mint_supply_increase,
-            ) = deposit_numeric_effects(
-                input.state,
-                input.event,
-                input.gross_amount,
-                input.net_amount,
-                input.service_fee,
-                input.reserved_amount,
-            );
-            DepositTransitionDecision::Apply(DepositEffects {
-                next_state,
-                reservation_active: after_reserved,
-                release_reservation,
-                charge_service_fee,
-                reservation_after,
-                reservation_add,
-                reservation_release,
-                fee_credit,
-                pending_liability_debit,
-                escrow_debit,
-                mint_supply_increase,
-            })
+verus! {
+    pub fn deposit_transition_decision(
+        input: DepositTransitionInput,
+    ) -> (result: DepositTransitionDecision)
+        ensures ((match result {
+                DepositTransitionDecision::Idempotent => true,
+                _ => false,
+            }) == input.same_payload)
+            && (match result {
+                DepositTransitionDecision::Apply(effects) =>
+                    deposit_transition_body!(
+                        input.state, input.event,
+                        0u8, 1u8, 2u8, 3u8, 4u8, 5u8,
+                        6u8, 7u8, 8u8, 9u8, 10u8, 11u8)
+                        == Some(effects.next_state)
+                    && effects.reservation_active
+                        == deposit_reservation_active_body!(effects.next_state, 2u8, 3u8)
+                    && effects.release_reservation
+                        == (deposit_reservation_active_body!(input.state, 2u8, 3u8)
+                            && !deposit_reservation_active_body!(effects.next_state, 2u8, 3u8))
+                    && effects.charge_service_fee
+                        == deposit_charge_fee_body!(input.state, input.event, 2u8, 5u8)
+                    && (
+                        effects.reservation_after,
+                        effects.reservation_add,
+                        effects.reservation_release,
+                        effects.fee_credit,
+                        effects.pending_liability_debit,
+                        effects.escrow_debit,
+                        effects.mint_supply_increase,
+                    ) == deposit_numeric_effects_body!(
+                        input.state, input.event, input.gross_amount, input.net_amount,
+                        input.service_fee, input.reserved_amount,
+                        0u128, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8,
+                        6u8, 7u8, 8u8, 9u8, 10u8, 11u8),
+                _ => true,
+            }),
+    {
+        if input.same_payload {
+            return DepositTransitionDecision::Idempotent;
+        }
+        if !input.guard.matches_event(input.event) || !input.guard.accepts() {
+            return DepositTransitionDecision::Reject;
+        }
+        match deposit_transition_body!(
+            input.state, input.event,
+            0u8, 1u8, 2u8, 3u8, 4u8, 5u8,
+            6u8, 7u8, 8u8, 9u8, 10u8, 11u8) {
+            None => DepositTransitionDecision::Reject,
+            Some(next_state) => {
+                let after_reserved = deposit_reservation_active_body!(next_state, 2u8, 3u8);
+                let release_reservation =
+                    deposit_reservation_active_body!(input.state, 2u8, 3u8)
+                    && !after_reserved;
+                let charge_service_fee =
+                    deposit_charge_fee_body!(input.state, input.event, 2u8, 5u8);
+                let (
+                    reservation_after,
+                    reservation_add,
+                    reservation_release,
+                    fee_credit,
+                    pending_liability_debit,
+                    escrow_debit,
+                    mint_supply_increase,
+                ) = deposit_transition_effects(
+                    input.state,
+                    input.event,
+                    input.gross_amount,
+                    input.net_amount,
+                    input.service_fee,
+                    input.reserved_amount,
+                );
+                DepositTransitionDecision::Apply(DepositEffects {
+                    next_state,
+                    reservation_active: after_reserved,
+                    release_reservation,
+                    charge_service_fee,
+                    reservation_after,
+                    reservation_add,
+                    reservation_release,
+                    fee_credit,
+                    pending_liability_debit,
+                    escrow_debit,
+                    mint_supply_increase,
+                })
+            }
         }
     }
 }
@@ -1653,6 +1763,40 @@ pub const fn withdrawal_phase_step(state: u8, event: u8) -> u8 {
 #[cfg(not(verus_keep_ghost))]
 pub const fn withdrawal_phase_allows(state: u8, event: u8) -> bool {
     withdrawal_phase_step(state, event) != state || (state == 1 && event == 1)
+}
+
+verus! {
+    pub fn withdrawal_transition_effects(
+        state: u8,
+        event: u8,
+        amount_out: u128,
+        ledger_fee: u128,
+        service_fee: u128,
+    ) -> (result: Option<(u8, u128, u128, u128)>)
+        ensures result == withdrawal_transition_effects_body!(
+            state, event, amount_out, ledger_fee, service_fee, u128::MAX,
+            0u8, 1u8, 2u8, 3u8, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 0u128),
+    {
+        withdrawal_transition_effects_body!(
+            state,
+            event,
+            amount_out,
+            ledger_fee,
+            service_fee,
+            u128::MAX,
+            0u8,
+            1u8,
+            2u8,
+            3u8,
+            0u8,
+            1u8,
+            2u8,
+            3u8,
+            4u8,
+            5u8,
+            0u128
+        )
+    }
 }
 
 #[cfg(verus_keep_ghost)]

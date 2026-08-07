@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test"
 import type { Page, TestInfo } from "@playwright/test"
 
 const RISK_ACKNOWLEDGEMENT_KEY = "kinic.bridge.risk-acknowledgement.v1:84532::"
+const BRIDGE_PROGRESS_KEY = "kinic.bridge.latest-progress.v3:84532:null::"
 
 test.beforeEach(async ({ page }, testInfo) => {
   if (testInfo.title === "requires risk acknowledgement on first use") return
@@ -31,7 +32,10 @@ test("requires risk acknowledgement on first use", async ({ page }, testInfo) =>
 
 test("bridge defaults to IC to Base and reports incomplete configuration", async ({ page }, testInfo) => {
   await page.goto("/")
-  await expect(page.getByRole("heading", { name: "Bridge KINIC" })).toBeVisible()
+  await expect(page.getByText("Bridge KINIC", { exact: true })).toHaveCount(0)
+  await expect(page.getByText("Move tokens between IC and Base.", { exact: true })).toHaveCount(0)
+  await expect(page.getByText("1:1 across both networks", { exact: true })).toHaveCount(0)
+  await expect(page.getByRole("region", { name: "KINIC bridge" })).toBeVisible()
   const homeLink = page.getByRole("link", { name: "KINIC Bridge home" })
   await expect(homeLink).toContainText("KINIC Bridge")
   await expect(homeLink.locator("img")).toHaveAttribute("src", /blue_kinic/)
@@ -58,12 +62,10 @@ test("bridge defaults to IC to Base and reports incomplete configuration", async
     await expect(page.getByLabel("Open navigation menu")).toBeVisible()
   }
   if ((page.viewportSize()?.width ?? 0) >= 1024) {
-    const intro = await page.getByTestId("bridge-intro").boundingBox()
     const panel = await page.getByTestId("bridge-panel").boundingBox()
-    expect(intro).not.toBeNull()
     expect(panel).not.toBeNull()
-    expect(panel!.x).toBeGreaterThan(intro!.x)
     expect(panel!.width).toBeLessThanOrEqual(621)
+    expect(Math.abs(panel!.x + panel!.width / 2 - (page.viewportSize()?.width ?? 0) / 2)).toBeLessThanOrEqual(2)
   }
   await expect(page.locator(".kinic-rail i")).toHaveCount(4)
   await capture(page, testInfo, "bridge-deposit")
@@ -80,6 +82,51 @@ test("direction switch is URL-backed and updates bridge endpoints", async ({ pag
   await expect(page.getByRole("button", { name: "Bridge to IC" })).toBeDisabled()
   await expect(page.getByText("Estimated receive", { exact: true })).toBeVisible()
   await capture(page, testInfo, "bridge-withdraw")
+})
+
+test("withdrawal progress separates wallet operations and restores after minimize", async ({ page }, testInfo) => {
+  await page.addInitScript(({ key, value }) => window.localStorage.setItem(key, JSON.stringify(value)), {
+    key: BRIDGE_PROGRESS_KEY,
+    value: {
+      version: 3,
+      id: "withdraw:e2e-progress",
+      direction: "withdraw",
+      phase: "base-withdrawal-submitted",
+      source: "0x1111111111111111111111111111111111111111",
+      destination: "aaaaa-aa",
+      sendAmount: "10",
+      receiveAmount: "10",
+      sendSymbol: "KINIC",
+      receiveSymbol: "KINIC",
+      tokenApproval: "not-required",
+      createdAt: 1,
+      transactionHash: `0x${"ab".repeat(32)}`,
+      withdrawal: { owner: "0x1111111111111111111111111111111111111111" },
+    },
+  })
+  await page.goto("/")
+
+  const restore = page.getByRole("button", { name: /Open transfer progress/ })
+  await expect(restore).toBeVisible()
+  await restore.click()
+  await expect(page.getByRole("heading", { name: "Bridge to IC" })).toBeVisible()
+
+  const progress = page.getByRole("list", { name: "Transfer progress" })
+  await expect(progress.getByRole("listitem")).toHaveCount(6)
+  await expect(progress.getByText("Base token approval", { exact: true })).toBeVisible()
+  await expect(progress.getByText("Not required", { exact: true })).toBeVisible()
+  await expect(progress.locator('li[aria-current="step"]')).toContainText("Base withdrawal transaction")
+  await expect(progress.getByText("Base finality", { exact: true })).toBeVisible()
+  await expect(progress.getByText("IC notification", { exact: true })).toBeVisible()
+  await expect(progress.getByText("Ledger payout", { exact: true })).toBeVisible()
+  await expect(progress.getByText("Complete", { exact: true })).toBeVisible()
+  await capture(page, testInfo, "withdrawal-progress")
+
+  await page.getByRole("button", { name: "Minimize" }).click()
+  await expect(page.getByRole("heading", { name: "Bridge to IC" })).toBeHidden()
+  await expect(restore).toBeVisible()
+  await restore.click()
+  await expect(page.getByRole("heading", { name: "Bridge to IC" })).toBeVisible()
 })
 
 test("IC and EVM wallet controls are separate", async ({ page }, testInfo) => {
