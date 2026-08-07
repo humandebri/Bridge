@@ -4,6 +4,7 @@ import { browserLocalStorage } from "@/lib/browser-lock"
 export type BridgeProgressDirection = "deposit" | "withdraw"
 
 export type BridgeProgressPhase =
+  | "verifying-ic-destination"
   | "awaiting-ic-allowance"
   | "awaiting-ic-deposit"
   | "ic-deposit-accepted"
@@ -178,6 +179,7 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
     return "Base transaction reverted"
   }
   const labels: Record<BridgeProgressPhase, string> = {
+    "verifying-ic-destination": "Verifying the destination IC account",
     "awaiting-ic-allowance": "Confirm token access in your IC wallet",
     "awaiting-ic-deposit": "Confirm the deposit in your IC wallet",
     "ic-deposit-accepted": "Deposit accepted on the Internet Computer",
@@ -203,6 +205,7 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
 export function bridgeProgressDetail(record: BridgeProgressRecord): string {
   if (record.phase === "attention") return record.attentionMessage ?? "Review the transfer in History before trying again."
   if (record.phase === "complete") return record.completionMessage ?? "The transfer reached its destination."
+  if (record.phase === "verifying-ic-destination") return "The bridge is checking that the connected IC account matches the reviewed destination."
   if (record.phase === "awaiting-ic-allowance") return `Allow the bridge to use the ${record.sendSymbol} required for this transfer.`
   if (record.phase === "awaiting-ic-deposit") return `${record.sendAmount} ${record.sendSymbol} will be deposited for ${shortDestination(record.destination)}.`
   if (record.phase === "authorization-generating") return "No wallet action is needed. The Bridge is signing the fixed mint recipient and amount."
@@ -237,6 +240,7 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): BridgeProgres
     ["Base mint transaction", ["awaiting-base-mint", "base-mint-submitted", "base-mint-included", "base-mint-finalizing"]],
   ] as const
   const withdrawal = [
+    ["IC destination verification", ["verifying-ic-destination"]],
     ["Base token approval", ["awaiting-base-allowance"]],
     ["Base withdrawal transaction", ["awaiting-base-withdrawal", "base-withdrawal-submitted", "base-withdrawal-included"]],
     ["Base finality", ["base-withdrawal-finalizing"]],
@@ -293,7 +297,7 @@ function previousPhase(record: BridgeProgressRecord): string {
   if (record.receiptBlockNumber) return record.direction === "deposit" ? "base-mint-finalizing" : "base-withdrawal-finalizing"
   if (record.transactionHash) return record.direction === "deposit" ? "base-mint-submitted" : "base-withdrawal-submitted"
   if (record.direction === "deposit" && record.deposit?.depositId) return "authorization-generating"
-  return record.direction === "deposit" ? "awaiting-ic-deposit" : "awaiting-base-withdrawal"
+  return record.direction === "deposit" ? "awaiting-ic-deposit" : "verifying-ic-destination"
 }
 
 function shortDestination(value: string): string {
@@ -372,6 +376,7 @@ function validOptionalWithdrawalIdentity(value: unknown): value is BridgeProgres
 
 function validOptionalActivePhase(value: unknown): value is ActiveBridgeProgressPhase | undefined {
   return value === undefined || typeof value === "string" && [
+    "verifying-ic-destination",
     "awaiting-ic-allowance",
     "awaiting-ic-deposit",
     "ic-deposit-accepted",

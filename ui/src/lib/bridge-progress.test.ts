@@ -226,6 +226,7 @@ describe("latest bridge progress persistence", () => {
       withdrawal: { owner: "aaaaa-aa" },
     })
     expect(bridgeProgressSteps(withdrawal).map(({ label }) => label)).toEqual([
+      "IC destination verification",
       "Base token approval",
       "Base withdrawal transaction",
       "Base finality",
@@ -238,7 +239,7 @@ describe("latest bridge progress persistence", () => {
   it("separates wallet approval, transaction, notification, and payout steps", () => {
     const withdrawal = createBridgeProgress({
       direction: "withdraw",
-      phase: "awaiting-base-allowance",
+      phase: "verifying-ic-destination",
       tokenApproval: "required",
       source: "0x0000000000000000000000000000000000000002",
       destination: "aaaaa-aa",
@@ -250,16 +251,18 @@ describe("latest bridge progress persistence", () => {
     })
 
     expect(bridgeProgressSteps(withdrawal)).toEqual([
-      { label: "Base token approval", status: "current" },
+      { label: "IC destination verification", status: "current" },
+      { label: "Base token approval", status: "waiting" },
       { label: "Base withdrawal transaction", status: "waiting" },
       { label: "Base finality", status: "waiting" },
       { label: "IC notification", status: "waiting" },
       { label: "Ledger payout", status: "waiting" },
       { label: "Complete", status: "waiting" },
     ])
-    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-base-withdrawal" })[1]).toEqual({ label: "Base withdrawal transaction", status: "current" })
-    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-ic-notification" })[3]).toEqual({ label: "IC notification", status: "current" })
-    expect(bridgeProgressSteps({ ...withdrawal, phase: "ledger-payout" })[4]).toEqual({ label: "Ledger payout", status: "current" })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-base-allowance" })[1]).toEqual({ label: "Base token approval", status: "current" })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-base-withdrawal" })[2]).toEqual({ label: "Base withdrawal transaction", status: "current" })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-ic-notification" })[4]).toEqual({ label: "IC notification", status: "current" })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "ledger-payout" })[5]).toEqual({ label: "Ledger payout", status: "current" })
   })
 
   it("marks every Withdrawal step complete after the payout reaches its terminal state", () => {
@@ -277,6 +280,7 @@ describe("latest bridge progress persistence", () => {
     })
 
     expect(bridgeProgressSteps(withdrawal)).toEqual([
+      { label: "IC destination verification", status: "complete" },
       { label: "Base token approval", status: "complete", note: "Not required" },
       { label: "Base withdrawal transaction", status: "complete" },
       { label: "Base finality", status: "complete" },
@@ -302,8 +306,9 @@ describe("latest bridge progress persistence", () => {
       withdrawal: { owner: "aaaaa-aa" },
     })
 
-    expect(bridgeProgressSteps(withdrawal)[0]).toEqual({ label: "Base token approval", status: "complete", note: "Not required" })
-    expect(bridgeProgressSteps(withdrawal)[1]).toEqual({ label: "Base withdrawal transaction", status: "current" })
+    expect(bridgeProgressSteps(withdrawal)[1]).toEqual({ label: "Base token approval", status: "complete", note: "Not required" })
+    expect(bridgeProgressSteps(withdrawal)[2]).toEqual({ label: "Base withdrawal transaction", status: "current" })
+    expect(bridgeProgressSteps({ ...withdrawal, attentionPhase: "verifying-ic-destination" })[0]).toEqual({ label: "IC destination verification", status: "current" })
   })
 
   it("reports exact Withdrawal finality block progress without changing Deposit presentation", () => {

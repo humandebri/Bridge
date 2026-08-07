@@ -112,7 +112,8 @@ test("withdrawal progress separates wallet operations and restores after minimiz
   await expect(page.getByRole("heading", { name: "Bridge to IC" })).toBeVisible()
 
   const progress = page.getByRole("list", { name: "Transfer progress" })
-  await expect(progress.getByRole("listitem")).toHaveCount(6)
+  await expect(progress.getByRole("listitem")).toHaveCount(7)
+  await expect(progress.getByText("IC destination verification", { exact: true })).toBeVisible()
   await expect(progress.getByText("Base token approval", { exact: true })).toBeVisible()
   await expect(progress.getByText("Not required", { exact: true })).toBeVisible()
   await expect(progress.locator('li[aria-current="step"]')).toContainText("Base withdrawal transaction")

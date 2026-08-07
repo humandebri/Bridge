@@ -299,6 +299,7 @@ describe("BridgePage automatic wallet refresh", () => {
     const account = { owner: "2vxsx-fae", subaccount: new Uint8Array(32).fill(0x55) }
     const events: string[] = []
     const prepare = vi.fn().mockRejectedValue(new Error("OISY must not be opened before the Base withdrawal"))
+    let resolveAccount!: (value: typeof account) => void
     const getAccount = vi.fn(() => {
       events.push("getAccount")
       return Promise.resolve({ owner: account.owner, subaccount: account.subaccount.slice() })
@@ -327,9 +328,16 @@ describe("BridgePage automatic wallet refresh", () => {
     const acknowledgment = await screen.findByRole("checkbox", { name: "Acknowledge irreversible burn" })
     events.length = 0
     getAccount.mockClear()
+    getAccount.mockImplementationOnce(() => {
+      events.push("getAccount")
+      return new Promise<typeof account>((resolve) => { resolveAccount = resolve })
+    })
     fireEvent.click(acknowledgment)
     fireEvent.click(screen.getByRole("button", { name: "Continue to Base wallet" }))
 
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("IC destination verification")
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+    resolveAccount({ owner: account.owner, subaccount: account.subaccount.slice() })
     await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())
     expect(screen.getByText("Base token approval").parentElement).toHaveTextContent("Not required")
     expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base withdrawal transaction")

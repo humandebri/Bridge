@@ -688,10 +688,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         }))
         const approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
         if (approvalReceipt.status !== "success") throw new Error("Token approval failed")
+        bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal" })
       } else {
-        bridgeProgress.update(progressId, { tokenApproval: "not-required" })
+        bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal", tokenApproval: "not-required" })
       }
-      bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal" })
       const broadcast = await createWithdrawalAfterRevalidation({
         expectedWallets,
         refetchRuntime: async () => ({ data: await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch) }),
@@ -786,7 +786,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         direction,
         phase: direction === "deposit"
           ? reviewedApprovalNeeded === false ? "awaiting-ic-deposit" : "awaiting-ic-allowance"
-          : reviewedApprovalNeeded === false ? "awaiting-base-withdrawal" : "awaiting-base-allowance",
+          : "verifying-ic-destination",
         tokenApproval: reviewedApprovalNeeded === false ? "not-required" : "required",
         source: source.wallet,
         destination: destination.wallet,
