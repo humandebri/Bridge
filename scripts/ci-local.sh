@@ -60,6 +60,7 @@ cleanup_runtime() {
     echo "local CI cleanup was incomplete; retained snapshots and current state require manual inspection" >&2
     return 1
   fi
+  return 0
 }
 
 cleanup() {
@@ -113,6 +114,7 @@ run_step() {
 run_versions() {
   verify_no_npm_lockfiles "$ROOT"
   "$ROOT/scripts/check_tool_versions.sh"
+  "$ROOT/scripts/test_tool_version_gate.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
   verify_no_obsolete_withdrawal_terms \
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
@@ -683,7 +685,7 @@ prepare_smoke_canister_state() {
 restore_smoke_canister_state() {
   local restore_failed=0 restored=0
   if [[ "$ICP_SMOKE_STATE_PREPARED" -eq 0 ]]; then
-    return
+    return 0
   fi
   if [[ "$ICP_TEST_CANISTER_CREATED" -eq 1 ]]; then
     icp canister stop bridge-canister -e local --project-root-override "$ROOT" >/dev/null 2>&1 || true

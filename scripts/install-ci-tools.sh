@@ -2,9 +2,30 @@
 # Install checksum-pinned tools that are not provided by setup actions.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-all}"
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
+
+install_lean_toolchain() {
+  local toolchain attempt
+  toolchain="$(tr -d '\r\n' <"$ROOT/lean-toolchain")"
+  if [[ -z "$toolchain" ]]; then
+    echo "lean-toolchain is empty" >&2
+    return 1
+  fi
+
+  for attempt in 1 2 3; do
+    if "$HOME/.elan/bin/elan" toolchain install "$toolchain"; then
+      return 0
+    fi
+    echo "Lean toolchain installation failed (attempt $attempt/3): $toolchain" >&2
+    if [[ "$attempt" -eq 3 ]]; then
+      return 1
+    fi
+    sleep 2
+  done
+}
 
 install_didc() {
   curl --proto '=https' --tlsv1.2 -LsSf \
@@ -70,6 +91,7 @@ install_proof_tools() {
   echo "a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53  $elan_installer" \
     | sha256sum --check
   sh "$elan_installer" -y --default-toolchain none
+  install_lean_toolchain
 }
 
 case "$MODE" in
