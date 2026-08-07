@@ -25,6 +25,7 @@ import {
   unwrapNotifyWithdrawalResult,
   withdrawalNotificationIdentityStorageKey,
 } from "./withdrawal-notification-client"
+import { browserLocalStorage } from "@/lib/browser-lock"
 
 function profile(instanceByte: string): Pick<DeploymentProfile, "chainId" | "bridgeCanisterId" | "deploymentInstanceId" | "icHost"> {
   return {
@@ -37,7 +38,7 @@ function profile(instanceByte: string): Pick<DeploymentProfile, "chainId" | "bri
 
 beforeEach(() => {
   vi.clearAllMocks()
-  window.localStorage.clear()
+  browserLocalStorage().clear()
   mocks.createBridgeActor.mockResolvedValue({ notify_withdrawal: mocks.notifyWithdrawal })
   mocks.notifyWithdrawal.mockResolvedValue({
     Ok: { Ingested: { finalized_head_block_number: 42n, withdrawal_id: new Uint8Array(32).fill(7) } },
@@ -49,7 +50,7 @@ describe("withdrawal notification identity", () => {
     const deployment = profile("1")
     const first = await getWithdrawalNotificationIdentity(deployment)
     const storageKey = withdrawalNotificationIdentityStorageKey(deployment)
-    expect(window.localStorage.getItem(storageKey)).not.toBeNull()
+    expect(browserLocalStorage().getItem(storageKey)).not.toBeNull()
 
     vi.resetModules()
     const reloadedClient = await import("./withdrawal-notification-client")
@@ -69,12 +70,12 @@ describe("withdrawal notification identity", () => {
   it("replaces a malformed persisted identity", async () => {
     const deployment = profile("4")
     const key = withdrawalNotificationIdentityStorageKey(deployment)
-    window.localStorage.setItem(key, "malformed")
+    browserLocalStorage().setItem(key, "malformed")
 
     const identity = await getWithdrawalNotificationIdentity(deployment)
 
     expect(identity.getPrincipal().toText()).not.toBe(Principal.anonymous().toText())
-    expect(window.localStorage.getItem(key)).not.toBe("malformed")
+    expect(browserLocalStorage().getItem(key)).not.toBe("malformed")
   })
 
   it("keeps a session identity when browser storage is unavailable", async () => {
