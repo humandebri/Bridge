@@ -122,12 +122,8 @@ pub enum RequestDepositRefundError {
     DepositIdentityConflict,
     StorageFailure,
     Busy,
-    AutomaticProgressPending {
-        next_run_at_ns: Option<u64>,
-    },
-    RateLimited {
-        retry_after_seconds: u64,
-    },
+    AutomaticProgressPending { next_run_at_ns: Option<u64> },
+    RateLimited { retry_after_seconds: u64 },
     InsufficientCycles,
 }
 
