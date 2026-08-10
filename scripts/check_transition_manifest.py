@@ -32,10 +32,21 @@ def strip_comments_and_strings(source: str) -> str:
     index = 0
     state = "code"
     block_depth = 0
+    raw_terminator = ""
     while index < len(source):
         pair = source[index : index + 2]
         char = source[index]
         if state == "code":
+            raw = re.match(r'(?:br|r)(#{0,255})"', source[index:])
+            if raw is not None and (
+                index == 0 or not (source[index - 1].isalnum() or source[index - 1] == "_")
+            ):
+                raw_terminator = '"' + raw.group(1)
+                for offset in range(raw.end()):
+                    result[index + offset] = " "
+                index += raw.end()
+                state = "raw_string"
+                continue
             if pair == "//":
                 result[index] = result[index + 1] = " "
                 index += 2
@@ -50,7 +61,12 @@ def strip_comments_and_strings(source: str) -> str:
             if char == '"':
                 result[index] = " "
                 state = "string"
-            elif char == "'" and index + 2 < len(source):
+            elif char == "'" and (
+                index + 2 < len(source) and source[index + 2] == "'"
+                or index + 3 < len(source)
+                and source[index + 1] == "\\"
+                and source[index + 3] == "'"
+            ):
                 result[index] = " "
                 state = "char"
         elif state == "line":
@@ -80,6 +96,14 @@ def strip_comments_and_strings(source: str) -> str:
                 continue
             if (state == "string" and char == '"') or (state == "char" and char == "'"):
                 state = "code"
+        elif state == "raw_string":
+            if source.startswith(raw_terminator, index):
+                for offset in range(len(raw_terminator)):
+                    result[index + offset] = " "
+                index += len(raw_terminator)
+                state = "code"
+                continue
+            result[index] = " "
         index += 1
     return "".join(result)
 
@@ -129,11 +153,55 @@ def function_declaration(source: str, name: str) -> str:
     return cleaned[match.start() : body_start + len(body)]
 
 
+def rust_function_body(source: str, name: str) -> str:
+    cleaned = strip_comments_and_strings(source)
+    marker = re.compile(
+        rf"\b(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+{re.escape(name)}\s*\("
+    )
+    match = marker.search(cleaned)
+    if match is None:
+        raise ValueError(f"missing function body: {name}")
+    depth = 0
+    start = None
+    for index in range(match.end(), len(cleaned)):
+        if cleaned[index] == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif cleaned[index] == "}":
+            if depth == 0:
+                break
+            depth -= 1
+            if depth == 0:
+                assert start is not None
+                return cleaned[start : index + 1]
+    raise ValueError(f"unbalanced function body: {name}")
+
+
 def body_calls(body: str, symbol: str) -> bool:
     return re.search(rf"\bkernel\s*::\s*{re.escape(symbol)}\s*\(", body) is not None
 
 
-def checked_production_link(link: str) -> str:
+def production_body_calls(
+    body: str, symbol: str, *, kernel_internal: bool = False
+) -> bool:
+    qualified = re.compile(
+        rf"(?<![A-Za-z0-9_:])(?:crate|bridge_core)\s*::\s*{re.escape(symbol)}\s*\("
+    )
+    if qualified.search(body) is not None:
+        return True
+    if not kernel_internal:
+        return False
+    kernel_call = re.compile(
+        rf"(?<![A-Za-z0-9_:])self\s*::\s*{re.escape(symbol)}\s*\("
+    )
+    kernel_macro = re.compile(
+        rf"(?<![A-Za-z0-9_]){re.escape(symbol)}_body\s*!\s*\("
+    )
+    return kernel_call.search(body) is not None or kernel_macro.search(body) is not None
+
+
+def checked_kernel_link(link: str) -> str:
     if link.count("#") != 1:
         raise ValueError(f"invalid production link: {link}")
     path_text, symbol = link.split("#")
@@ -143,6 +211,23 @@ def checked_production_link(link: str) -> str:
     if re.search(rf"\b{re.escape(symbol)}\b", path.read_text(encoding="utf-8")) is None:
         raise ValueError(f"missing production transition: {link}")
     return symbol
+
+
+def check_production_call_site(link: str, kernel_symbol: str) -> None:
+    if link.count("#") != 1:
+        raise ValueError(f"invalid production call-site: {link}")
+    path_text, function = link.split("#")
+    path = ROOT / path_text
+    if not path.is_file():
+        raise ValueError(f"missing production call-site file: {link}")
+    source = path.read_text(encoding="utf-8")
+    body = function_body(source, function) if path.resolve() == KERNEL.resolve() else rust_function_body(source, function)
+    if not production_body_calls(
+        body, kernel_symbol, kernel_internal=path.resolve() == KERNEL.resolve()
+    ):
+        raise ValueError(
+            f"production call-site does not call registered kernel: {link} -> {kernel_symbol}"
+        )
 
 
 def verus_rows() -> dict[str, tuple[str, str, str]]:
@@ -184,17 +269,19 @@ def main() -> int:
     pass_source = VERUS_PASS.read_text(encoding="utf-8")
 
     lines = MANIFEST.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0].split("\t") != ["schema", "2", "-", "-", "-", "-", "-"]:
-        raise ValueError("transition manifest must start with schema 2")
+    if not lines or lines[0].split("\t") != ["schema", "3", "-", "-", "-", "-", "-", "-"]:
+        raise ValueError("transition manifest must start with schema 3")
     for number, line in enumerate(lines[1:], 2):
         fields = line.split("\t")
-        if len(fields) != 7 or not all(fields):
+        if len(fields) != 8 or not all(fields):
             raise ValueError(f"invalid transition manifest row {number}")
-        production_link, lean_contract, lean_witness, kind, proof, fixture_link, claim_text = fields
-        symbol = checked_production_link(production_link)
+        kernel_link, call_sites, lean_contract, lean_witness, kind, proof, fixture_link, claim_text = fields
+        symbol = checked_kernel_link(kernel_link)
         if symbol in registered:
             raise ValueError(f"duplicate transition registration: {symbol}")
         registered.add(symbol)
+        for call_site in call_sites.split(";"):
+            check_production_call_site(call_site, symbol)
         if LEAN_NAME.fullmatch(lean_contract) is None or LEAN_NAME.fullmatch(lean_witness) is None:
             raise ValueError(f"invalid Lean transition contract row {number}")
         examples.append((lean_contract, lean_witness))

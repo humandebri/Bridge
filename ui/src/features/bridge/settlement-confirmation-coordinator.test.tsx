@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getReceipt: vi.fn(),
   getBlock: vi.fn(),
   readPending: vi.fn(),
+  markNotified: vi.fn(),
   removePending: vi.fn(),
   setBlocked: vi.fn(),
   getWithdrawal: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock("@/lib/evm/client", () => ({
 }))
 vi.mock("@/lib/pending-confirmations", () => ({
   readPendingConfirmations: mocks.readPending,
+  markPendingConfirmationNotified: mocks.markNotified,
   removePendingConfirmation: mocks.removePending,
   setPendingConfirmationBlocked: mocks.setBlocked,
 }))
@@ -46,7 +48,17 @@ vi.mock("@/config/profile", () => ({ deploymentProfile: { icHost: "https://ic.ex
 import { SettlementConfirmationCoordinator } from "./settlement-confirmation-coordinator"
 
 const hash = `0x${"33".repeat(32)}` as const
-const pending = { kind: "withdrawal", transactionHash: hash, owner: "aaaaa-aa", blocked: false }
+const pending = {
+  kind: "withdrawal",
+  transactionHash: hash,
+  owner: "aaaaa-aa",
+  blocked: false,
+  notification: { status: "awaiting-notification" as const },
+}
+const notifiedPending = {
+  ...pending,
+  notification: { status: "notified" as const, withdrawalId: `0x${"07".repeat(32)}` as const },
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -63,6 +75,7 @@ beforeEach(() => {
   mocks.getReceipt.mockResolvedValue({ status: "success", blockNumber: 10n })
   mocks.getBlock.mockResolvedValue({ number: 9n })
   mocks.removePending.mockResolvedValue(undefined)
+  mocks.markNotified.mockResolvedValue(undefined)
   mocks.setBlocked.mockResolvedValue(undefined)
   mocks.notifyWithdrawal.mockResolvedValue({ Ingested: { finalized_head_block_number: 10n, withdrawal_id: new Uint8Array(32).fill(7) } })
   mocks.continueWithdrawal.mockResolvedValue({ Complete: { state: { Withdrawal: { Paid: null } } } })
@@ -90,6 +103,8 @@ describe("SettlementConfirmationCoordinator", () => {
     await waitFor(() => expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce())
     await waitFor(() => expect(mocks.continueWithdrawal).toHaveBeenCalledOnce())
     expect(mocks.continueWithdrawal).toHaveBeenCalledWith(new Uint8Array(32).fill(7))
+    expect(mocks.markNotified).toHaveBeenCalledWith(pending, `0x${"07".repeat(32)}`)
+    expect(mocks.markNotified.mock.invocationCallOrder[0]).toBeLessThan(mocks.continueWithdrawal.mock.invocationCallOrder[0]!)
     expect(mocks.update).toHaveBeenCalledWith("withdraw:1", {
       phase: "awaiting-ic-notification",
       finalizedBlockNumber: "10",
@@ -116,7 +131,7 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("marks_the_transfer_complete_only_when_the_canister_withdrawal_reaches_Paid", async () => {
-    mocks.readPending.mockReturnValue([])
+    mocks.readPending.mockReturnValue([notifiedPending])
     mocks.progress = {
       ...mocks.progress,
       phase: "ledger-payout",
@@ -127,6 +142,8 @@ describe("SettlementConfirmationCoordinator", () => {
     render(<SettlementConfirmationCoordinator />)
 
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "complete" })))
+    expect(mocks.removePending).toHaveBeenCalledWith(notifiedPending)
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
   })
 
   it("does not start a second observer when progress rerenders during receipt lookup", async () => {
@@ -155,7 +172,8 @@ describe("SettlementConfirmationCoordinator", () => {
     view.rerender(<SettlementConfirmationCoordinator />)
     resolveNotification({ Ingested: { finalized_head_block_number: 10n, withdrawal_id: new Uint8Array(32).fill(7) } })
 
-    await waitFor(() => expect(mocks.removePending).toHaveBeenCalledOnce())
+    await waitFor(() => expect(mocks.markNotified).toHaveBeenCalledOnce())
+    expect(mocks.removePending).not.toHaveBeenCalled()
     expect(mocks.update).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "ic-notification-recorded" }))
     expect(mocks.toastInfo).toHaveBeenCalledOnce()
   })
@@ -188,18 +206,42 @@ describe("SettlementConfirmationCoordinator", () => {
     expect(mocks.update).not.toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "attention" }))
   })
 
-  it("does not repeat a successful notification when pending storage cleanup fails", async () => {
+  it("retains a successful notification until Paid", async () => {
     mocks.getBlock.mockResolvedValue({ number: 10n })
-    mocks.removePending.mockRejectedValue(new Error("storage unavailable"))
 
     render(<SettlementConfirmationCoordinator />)
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "ic-notification-recorded" })))
-    document.dispatchEvent(new Event("visibilitychange"))
-    await Promise.resolve()
 
     expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce()
     expect(mocks.continueWithdrawal).toHaveBeenCalledOnce()
-    expect(mocks.removePending).toHaveBeenCalledOnce()
+    expect(mocks.removePending).not.toHaveBeenCalled()
+  })
+
+  it("restores_a_notified_withdrawal_without_notifying_again", async () => {
+    mocks.readPending.mockReturnValue([notifiedPending])
+    mocks.getWithdrawal.mockResolvedValue([{ state: { ReleasePending: null } }])
+
+    render(<SettlementConfirmationCoordinator />)
+
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("withdraw:1", {
+      phase: "ledger-payout",
+      withdrawal: { owner: "aaaaa-aa", withdrawalId: notifiedPending.notification.withdrawalId },
+    }))
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
+    expect(mocks.removePending).not.toHaveBeenCalled()
+  })
+
+  it("retains_a_notified_reconciliation_hold_for_explicit_recovery", async () => {
+    mocks.readPending.mockReturnValue([notifiedPending])
+    mocks.getWithdrawal.mockResolvedValue([{ state: { ReconciliationHold: null } }])
+
+    render(<SettlementConfirmationCoordinator />)
+
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({
+      phase: "attention",
+      withdrawal: { owner: "aaaaa-aa", withdrawalId: notifiedPending.notification.withdrawalId },
+    })))
+    expect(mocks.removePending).not.toHaveBeenCalled()
   })
 
   it("does_not_automatically_repeat_an_incomplete_payout_step", async () => {

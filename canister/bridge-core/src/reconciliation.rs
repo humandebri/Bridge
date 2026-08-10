@@ -346,33 +346,41 @@ pub fn resolve_withdrawal_hold(
                     settlement,
                     ..
                 } => {
+                    let (next_state, escrow_debit, reserve_credit, liability_debit) =
+                        crate::withdrawal_transition_effects(
+                            3,
+                            4,
+                            settlement.amount_out.get(),
+                            settlement.ledger_fee.get(),
+                            settlement.service_fee.get(),
+                        )
+                        .ok_or(CoreError::SettlementMismatch)?;
+                    if next_state != 2
+                        || Amount::new(escrow_debit)
+                            != settlement.amount_out.checked_add(settlement.ledger_fee)?
+                        || Amount::new(liability_debit)
+                            != settlement.amount_out.checked_add(settlement.service_fee)?
+                    {
+                        return Err(CoreError::SettlementMismatch);
+                    }
                     next_withdrawal.state = WithdrawalState::Paid {
                         attempt: attempt.clone(),
                         settlement: *settlement,
                         release_ledger_block_index: next_release,
                         source_hold: Some(hold.id),
                     };
-                    ApplyOutcome::Applied
+                    (ApplyOutcome::Applied, Amount::new(reserve_credit))
                 }
                 WithdrawalState::Paid {
                     release_ledger_block_index: current,
                     source_hold: Some(id),
                     ..
                 } if *id == hold.id && *current == release_ledger_block_index => {
-                    ApplyOutcome::Idempotent
+                    (ApplyOutcome::Idempotent, Amount::ZERO)
                 }
                 _ => return Err(CoreError::HoldMismatch),
             };
-            let fee = if ro == ApplyOutcome::Applied {
-                match &withdrawal.state {
-                    WithdrawalState::ReconciliationHold { settlement, .. } => {
-                        settlement.net_service_fee()?
-                    }
-                    _ => Amount::ZERO,
-                }
-            } else {
-                Amount::ZERO
-            };
+            let (ro, fee) = ro;
             (ho, ro, fee)
         }
         WithdrawalHoldResolution::Absent {
@@ -386,6 +394,22 @@ pub fn resolve_withdrawal_hold(
                     settlement,
                     ..
                 } => {
+                    let (next_state, escrow_debit, reserve_credit, liability_debit) =
+                        crate::withdrawal_transition_effects(
+                            3,
+                            5,
+                            settlement.amount_out.get(),
+                            settlement.ledger_fee.get(),
+                            settlement.service_fee.get(),
+                        )
+                        .ok_or(CoreError::SettlementMismatch)?;
+                    if next_state != 1
+                        || escrow_debit != 0
+                        || reserve_credit != 0
+                        || liability_debit != 0
+                    {
+                        return Err(CoreError::SettlementMismatch);
+                    }
                     let next_attempt: TransferAttempt =
                         attempt.retry_after_absence(*next_identity)?;
                     next_withdrawal.state = WithdrawalState::ReleasePending {

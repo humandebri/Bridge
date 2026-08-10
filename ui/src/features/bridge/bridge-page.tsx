@@ -135,6 +135,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const [confirming, setConfirming] = useState(false)
   const [depositProgress, setDepositProgress] = useState<DepositProgress>("idle")
   const [reviewedDeposit, setReviewedDeposit] = useState<ReviewedDeposit>()
+  const [reviewedWithdrawalAccount, setReviewedWithdrawalAccount] = useState<IcAccount>()
   const [reviewedObservation, setReviewedObservation] = useState<FinalizedRuntimeObservation>()
   const [unresolvedDeposit, setUnresolvedDeposit] = useState<UnresolvedDepositAttempt>()
   const [resolvedIntentOwner, setResolvedIntentOwner] = useState<string>()
@@ -541,17 +542,25 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
 
   const runWithdrawalPreflight = async (runId: number) => {
     setReviewedObservation(undefined)
+    setReviewedWithdrawalAccount(undefined)
     try {
-      await runPreflightCheck(runId, "wallets", async () => {
+      const reviewedAccount = await runPreflightCheck(runId, "wallets", async () => {
         if (!address || !isConnected) throw new Error("Connect the EVM wallet that owns bSNS")
         if (!ic.account || !ic.adapter) throw new Error("Connect the destination IC wallet")
+        let closeWalletSession: (() => Promise<void>) | undefined
         const expectedWallets = {
           address,
           chainId: deploymentProfile.chainId,
           icAccount: { owner: ic.account.owner, subaccount: ic.account.subaccount },
         }
-        const [activeEvm, activeIc] = await Promise.all([currentBaseWallet(), ic.adapter.getAccount()])
-        requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc }, "before opening the wallet prompt")
+        try {
+          closeWalletSession = await ic.adapter.prepare()
+          const [activeEvm, activeIc] = await Promise.all([currentBaseWallet(), ic.adapter.getAccount()])
+          requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc }, "during destination verification")
+          return { owner: activeIc.owner, subaccount: activeIc.subaccount?.slice() }
+        } finally {
+          await closeWalletSession?.()
+        }
       })
       const observation = await runPreflightCheck(runId, "runtime", () => refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch))
       const balance = await runPreflightCheck(runId, "financials", async () => {
@@ -580,6 +589,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         })
       })
       if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
+      setReviewedWithdrawalAccount(reviewedAccount)
       setReviewedApprovalNeeded(allowance < withdrawParsed.value)
       setReviewedObservation(observation)
       completePreflight(runId)
@@ -674,16 +684,19 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     try {
       setSubmittingWithdrawal(true)
       if (!address) throw new Error("Connect the EVM wallet that owns bSNS")
-      if (!ic.account || !ic.adapter) throw new Error("Connect the destination IC wallet")
+      if (!reviewedWithdrawalAccount) throw new Error("Verify the destination IC wallet again")
       if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
       if (baseData === undefined || bsnsBalanceData === undefined) throw new Error("Fee or balance data is unavailable or stale")
       if (withdrawParsed.value <= baseData.serviceFee) throw new Error("Amount must be greater than the current service fee")
       if (bsnsBalanceData < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
-      const confirmedIcAccount = { owner: ic.account.owner, subaccount: ic.account.subaccount }
+      const confirmedIcAccount = {
+        owner: reviewedWithdrawalAccount.owner,
+        subaccount: reviewedWithdrawalAccount.subaccount?.slice(),
+      }
       const snapshotAddress = address
-      const [activeEvm, activeIc] = await Promise.all([currentBaseWallet(), ic.adapter.getAccount()])
+      const activeEvm = await currentBaseWallet()
       const expectedWallets = { address: snapshotAddress, chainId: deploymentProfile.chainId, icAccount: confirmedIcAccount }
-      requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc })
+      requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: confirmedIcAccount })
       const owner = Principal.fromText(confirmedIcAccount.owner).toUint8Array()
       const subaccount = confirmedIcAccount.subaccount ?? new Uint8Array(32)
       const [approvalQuote, approvalBalance] = await Promise.all([refetchBaseSnapshot(), bsnsBalance.refetch()])
@@ -716,7 +729,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         expectedWallets,
         refetchRuntime: async () => ({ data: await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch) }),
         currentEvmWallet: currentBaseWallet,
-        currentIcAccount: () => ic.adapter!.getAccount(),
+        currentIcAccount: () => Promise.resolve({
+          owner: confirmedIcAccount.owner,
+          subaccount: confirmedIcAccount.subaccount?.slice(),
+        }),
         refetchFinancials: async (observation) => {
           const quote = observation.snapshot
           if (!quote) throw new Error("Finalized Base snapshot is unavailable")
@@ -784,7 +800,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const feeLabel = reviewedQuote || (!heartbeat.isError && heartbeatReadiness.ready) ? "Current bridge fee" : baseData ? "Last known bridge fee" : "Bridge fee"
   const receive = direction === "deposit" ? (unresolvedDeposit ? (unresolvedDeposit.call.grossAmount > unresolvedDeposit.call.maxServiceFee ? unresolvedDeposit.call.grossAmount - unresolvedDeposit.call.maxServiceFee : 0n) : depositParsed.ok && fee !== undefined ? (depositParsed.value > fee ? depositParsed.value - fee : 0n) : undefined) : withdrawParsed.ok && fee !== undefined && withdrawParsed.value > fee ? estimatedAmountOut(withdrawParsed.value, fee) : undefined
   const source = direction === "deposit" ? { network: "ic" as const, wallet: unresolvedDeposit?.account.owner ?? ic.account?.owner ?? "Connect IC wallet" } : { network: "base" as const, wallet: address ?? "Connect EVM wallet" }
-  const destination = direction === "deposit" ? { network: "base" as const, wallet: unresolvedDeposit?.recipient ?? address ?? "Connect EVM wallet" } : { network: "ic" as const, wallet: ic.account?.owner ?? "Connect IC wallet" }
+  const destination = direction === "deposit" ? { network: "base" as const, wallet: unresolvedDeposit?.recipient ?? address ?? "Connect EVM wallet" } : { network: "ic" as const, wallet: reviewedWithdrawalAccount?.owner ?? ic.account?.owner ?? "Connect IC wallet" }
   const depositFlowActive = direction === "deposit" && Boolean(activeDeposit)
   const depositControlsLocked = direction === "deposit"
     && (Boolean(unresolvedDeposit) || effectiveDepositProgress !== "idle" || depositFlowActive)
@@ -799,6 +815,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     setConfirming(false)
     setPreflight(undefined)
     setReviewedDeposit(undefined)
+    setReviewedWithdrawalAccount(undefined)
     setReviewedObservation(undefined)
     setDepositProgress((current) => current === "checking" ? "idle" : current)
   }
@@ -808,6 +825,9 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     setPreflight(undefined)
     let progress
     try {
+      if (direction === "withdraw" && !reviewedWithdrawalAccount) {
+        throw new Error("Verify the destination IC wallet again")
+      }
       progress = bridgeProgress.start({
         direction,
         phase: direction === "deposit"
@@ -827,7 +847,9 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
               ? { owner: reviewedDeposit.account.owner, ownerSequence: reviewedDeposit.gate.sequence.toString() }
               : undefined
           : undefined,
-        withdrawal: direction === "withdraw" && ic.account ? { owner: ic.account.owner } : undefined,
+        withdrawal: direction === "withdraw" && reviewedWithdrawalAccount
+          ? { owner: reviewedWithdrawalAccount.owner }
+          : undefined,
       })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Another transfer is already active")

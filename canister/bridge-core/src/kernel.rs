@@ -730,7 +730,9 @@ macro_rules! withdrawal_transition_effects_body {
         );
         if next == $state && !($state == $release_pending && $event == $retry) {
             None
-        } else if $state == $release_pending && $event == $succeeded {
+        } else if ($state == $release_pending && $event == $succeeded)
+            || ($state == $hold && $event == $hold_succeeded)
+        {
             match outbound_settlement_body!($amount_out, $ledger_fee, $service_fee, $max) {
                 None => None,
                 Some((escrow_debit, reserve_credit, liability_debit)) => {
@@ -739,7 +741,7 @@ macro_rules! withdrawal_transition_effects_body {
             }
         } else if ($state == $zero_state && $event == $start)
             || ($state == $release_pending && $event == $ambiguous)
-            || ($state == $hold && ($event == $hold_succeeded || $event == $hold_absent))
+            || ($state == $hold && $event == $hold_absent)
             || ($state == $release_pending && $event == $retry)
         {
             Some((next, $amount_zero, $amount_zero, $amount_zero))
@@ -1464,7 +1466,7 @@ pub const fn deposit_charge_service_fee(state: u8, event: u8) -> bool {
 }
 
 pub const fn deposit_releases_reservation(state: u8, event: u8) -> bool {
-    match deposit_transition(state, event) {
+    match self::deposit_transition(state, event) {
         None => false,
         Some(next) => deposit_reservation_active(state) && !deposit_reservation_active(next),
     }
@@ -1732,7 +1734,7 @@ verus! {
                     pending_liability_debit,
                     escrow_debit,
                     mint_supply_increase,
-                ) = deposit_transition_effects(
+                ) = self::deposit_transition_effects(
                     input.state,
                     input.event,
                     input.gross_amount,

@@ -8,6 +8,7 @@ import { createBridgeActor } from "@/lib/ic/bridge"
 import { continueWithdrawalWithBrowserIdentity, NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
 import {
   readPendingConfirmations,
+  markPendingConfirmationNotified,
   removePendingConfirmation,
   setPendingConfirmationBlocked,
   type PendingConfirmation,
@@ -28,7 +29,6 @@ export function SettlementConfirmationCoordinator() {
   const runningRef = useRef(new Set<string>())
   const tickRef = useRef<() => void>(() => undefined)
   const notificationRunsRef = useRef(new Set<string>())
-  const completedNotificationsRef = useRef(new Set<string>())
   const observerGenerationRef = useRef(0)
   const update = bridgeProgress.update
 
@@ -48,6 +48,13 @@ export function SettlementConfirmationCoordinator() {
         || current.phase === "attention") return undefined
       return current
     }
+    const matchingProgressFor = (entry: PendingWithdrawal) => {
+      const current = progressRef.current
+      return current?.direction === "withdraw"
+        && current.transactionHash?.toLowerCase() === entry.transactionHash.toLowerCase()
+        ? current
+        : undefined
+    }
     const presentationIsCurrent = (progressId: string | undefined, entry: PendingWithdrawal) => {
       return isCurrent() && (progressId === undefined || activeProgressFor(entry)?.id === progressId)
     }
@@ -56,12 +63,12 @@ export function SettlementConfirmationCoordinator() {
       if (!isCurrent() || document.visibilityState !== "visible") return
       const latest = progressRef.current
       const entries = readPendingConfirmations().filter((entry): entry is PendingWithdrawal => {
-        if (entry.kind !== "withdrawal"
-          || entry.blocked
-          || completedNotificationsRef.current.has(entry.transactionHash.toLowerCase())) return false
+        if (entry.kind !== "withdrawal" || entry.blocked) return false
         const ownsLatest = latest?.direction === "withdraw"
           && latest.transactionHash?.toLowerCase() === entry.transactionHash.toLowerCase()
-        if (ownsLatest && (latest.phase === "complete" || latest.phase === "attention")) return false
+        if (entry.notification.status === "awaiting-notification"
+          && ownsLatest
+          && (latest.phase === "complete" || latest.phase === "attention")) return false
         return true
       })
       for (const entry of entries) {
@@ -78,6 +85,32 @@ export function SettlementConfirmationCoordinator() {
     }
 
     const observeWithdrawal = async (entry: PendingWithdrawal, observedProgressId: string | undefined) => {
+      if (entry.notification.status === "notified") {
+        const progress = matchingProgressFor(entry)
+        const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
+        const record = await actor.get_withdrawal(hexToBytes(entry.notification.withdrawalId))
+        if (!isCurrent() || !record[0]) return
+        if ("Paid" in record[0].state) {
+          if (progress) update(progress.id, {
+            phase: "complete",
+            withdrawal: { owner: entry.owner, withdrawalId: entry.notification.withdrawalId },
+            completionMessage: `${progress.receiveAmount} ${progress.receiveSymbol} was paid to ${shortAddress(progress.destination)}.`,
+          })
+          await removePendingConfirmation(entry)
+        } else if ("ReconciliationHold" in record[0].state) {
+          if (progress) update(progress.id, {
+            phase: "attention",
+            withdrawal: { owner: entry.owner, withdrawalId: entry.notification.withdrawalId },
+            attentionMessage: "The withdrawal is recorded but needs reconciliation. Open History to review the available action.",
+          })
+        } else if (progress) {
+          update(progress.id, {
+            phase: "ledger-payout",
+            withdrawal: { owner: entry.owner, withdrawalId: entry.notification.withdrawalId },
+          })
+        }
+        return
+      }
       const receipt = await basePublicClient.getTransactionReceipt({ hash: entry.transactionHash })
       if (!isCurrent()) return
       if (observedProgressId && activeProgressFor(entry)?.id !== observedProgressId) return
@@ -119,7 +152,7 @@ export function SettlementConfirmationCoordinator() {
       if (notificationRunsRef.current.has(transactionKey)) return
       notificationRunsRef.current.add(transactionKey)
       try {
-        await notifyWithdrawal(entry, latest?.id, update, presentationIsCurrent, completedNotificationsRef.current)
+        await notifyWithdrawal(entry, latest?.id, update, presentationIsCurrent)
       } catch (error) {
         if (!isCurrent()) return
         if (notificationFailureIsTerminal(error)) {
@@ -146,33 +179,6 @@ export function SettlementConfirmationCoordinator() {
     }
   }, [update])
 
-  const payoutProgress = bridgeProgress.progress
-  useEffect(() => {
-    const progress = payoutProgress
-    const withdrawalId = progress?.direction === "withdraw" ? progress.withdrawal?.withdrawalId : undefined
-    if (!progress || !withdrawalId || progress.phase === "complete" || progress.phase === "attention") return
-    let active = true
-    const tick = async () => {
-      try {
-        const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
-        const record = await actor.get_withdrawal(hexToBytes(withdrawalId))
-        if (!active || !record[0]) return
-        if ("Paid" in record[0].state) {
-          update(progress.id, { phase: "complete", completionMessage: `${progress.receiveAmount} ${progress.receiveSymbol} was paid to ${shortAddress(progress.destination)}.` })
-        } else if ("ReconciliationHold" in record[0].state) {
-          update(progress.id, { phase: "attention", attentionMessage: "The withdrawal is recorded but needs reconciliation. Open History to review the available action." })
-        } else {
-          update(progress.id, { phase: "ledger-payout" })
-        }
-      } catch {
-        // A temporary query failure does not turn a canonical pending payout into a terminal error.
-      }
-    }
-    void tick()
-    const interval = window.setInterval(() => void tick(), CONFIRMATION_POLL_MS)
-    return () => { active = false; window.clearInterval(interval) }
-  }, [payoutProgress, update])
-
   return null
 }
 
@@ -181,13 +187,16 @@ async function notifyWithdrawal(
   progressId: string | undefined,
   update: ReturnType<typeof useBridgeProgress>["update"],
   presentationIsCurrent: (progressId: string | undefined, entry: PendingWithdrawal) => boolean,
-  completedNotifications: Set<string>,
 ) {
   const notified = await notifyWithdrawalWithBrowserIdentity(hexToBytes(entry.transactionHash))
-  completedNotifications.add(entry.transactionHash.toLowerCase())
   const canPresentAfterNotification = presentationIsCurrent(progressId, entry)
   const withdrawalId = "Duplicate" in notified ? notified.Duplicate.withdrawal_id : notified.Ingested.withdrawal_id
-  await removePendingConfirmation(entry).catch(() => undefined)
+  const withdrawalIdHex = bytesHex(withdrawalId)
+  await markPendingConfirmationNotified(entry, withdrawalIdHex)
+  if (progressId && canPresentAfterNotification) update(progressId, {
+    phase: "ic-notification-recorded",
+    withdrawal: { owner: entry.owner, withdrawalId: withdrawalIdHex },
+  })
   let continuation: Awaited<ReturnType<typeof continueWithdrawalWithBrowserIdentity>> | undefined
   let continuationError: unknown
   try {
@@ -198,10 +207,6 @@ async function notifyWithdrawal(
   const canPresent = canPresentAfterNotification
     && presentationIsCurrent(progressId, entry)
   if (!canPresent) return
-  if (progressId) update(progressId, {
-    phase: "ic-notification-recorded",
-    withdrawal: { owner: entry.owner, withdrawalId: bytesHex(withdrawalId) },
-  })
   const presentation = withdrawalNotificationPresentation(notified)
   if (presentation.tone === "success") toast.success(presentation.message)
   else if (presentation.tone === "warning") toast.warning(presentation.message)

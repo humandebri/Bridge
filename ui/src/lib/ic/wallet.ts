@@ -193,9 +193,10 @@ export class OisyAdapter implements IcWalletAdapter {
 
 interface PlugLedgerActor { icrc2_approve(args: Record<string, unknown>): Promise<{ Ok: bigint } | { Err: unknown }> }
 interface PlugApi {
+  isConnected(): Promise<boolean>
   requestConnect(options: { whitelist: string[]; host: string }): Promise<boolean>
   disconnect(): Promise<void>
-  agent: { getPrincipal(): Promise<LegacyPrincipal> }
+  agent?: { getPrincipal(): Promise<LegacyPrincipal> }
   createActor<T>(options: { canisterId: string; interfaceFactory: IDL.InterfaceFactory }): Promise<T>
 }
 
@@ -221,7 +222,9 @@ export class PlugAdapter implements IcWalletAdapter {
     const plug = requiredPlug()
     const connected = await plug.requestConnect({ whitelist: [this.ledgerCanisterId, this.bridgeCanisterId], host: this.host })
     if (!connected) throw new Error("Plug connection was rejected")
-    const principal = await plug.agent.getPrincipal()
+    const agent = plug.agent
+    if (!agent) throw new Error("Plug did not initialize its Agent; reconnect and try again")
+    const principal = await agent.getPrincipal()
     this.#account = { owner: principal.toText() }
     this.#requiresUserGesture = false
     return this.#account
@@ -229,9 +232,21 @@ export class PlugAdapter implements IcWalletAdapter {
 
   async disconnect(): Promise<void> { await requiredPlug().disconnect(); this.#account = undefined }
 
-  prepare(): Promise<() => Promise<void>> {
+  async prepare(): Promise<() => Promise<void>> {
+    const plug = requiredPlug()
+    let connected = false
+    try {
+      connected = await plug.isConnected()
+    } catch {
+      // A failed session probe requires an explicit reconnect below.
+    }
+    if (!connected || !plug.agent) {
+      const accepted = await plug.requestConnect({ whitelist: [this.ledgerCanisterId, this.bridgeCanisterId], host: this.host })
+      if (!accepted) throw new Error("Plug connection was rejected")
+    }
+    await this.assertConnectedPrincipal()
     this.#requiresUserGesture = false
-    return Promise.resolve(() => Promise.resolve())
+    return () => Promise.resolve()
   }
 
   async getAccount(): Promise<IcAccount> { return this.assertConnectedPrincipal() }
@@ -271,7 +286,9 @@ export class PlugAdapter implements IcWalletAdapter {
 
   private async assertConnectedPrincipal(): Promise<IcAccount> {
     if (!this.#account) throw new Error("Connect Plug first")
-    const current = (await requiredPlug().agent.getPrincipal()).toText()
+    const agent = requiredPlug().agent
+    if (!agent) throw new Error("Plug Agent is unavailable; reconnect and review the transaction")
+    const current = (await agent.getPrincipal()).toText()
     if (current !== this.#account.owner) throw new Error("Plug account changed; reconnect and review the transaction")
     return this.#account
   }

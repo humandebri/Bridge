@@ -843,6 +843,62 @@ fn withdrawal_hold_requires_evidence_before_payment_becomes_terminal() {
             ..
         }
     ));
+    let replay = resolve_withdrawal_hold(
+        &mut withdrawal,
+        &mut hold,
+        WithdrawalHoldResolution::Succeeded {
+            release_ledger_block_index: 46,
+        },
+    )
+    .expect("resolve success replay");
+    assert_eq!(replay.outcome, ApplyOutcome::Idempotent);
+    assert_eq!(replay.fee_delta, Amount::ZERO);
+}
+
+#[test]
+fn withdrawal_hold_success_rejects_an_invalid_settlement_effect_without_mutation() {
+    let mut withdrawal = observed_withdrawal();
+    withdrawal
+        .apply(WithdrawalEvent::StartRelease {
+            attempt: Box::new(attempt(withdrawal_transfer(90, 5, 47))),
+            settlement: settlement(),
+        })
+        .expect("start release");
+    let hold_id = HoldId::new(45);
+    withdrawal
+        .apply(WithdrawalEvent::ReleaseAmbiguous { hold_id })
+        .expect("enter hold");
+    let hold_transfer = match &mut withdrawal.state {
+        WithdrawalState::ReconciliationHold {
+            attempt,
+            settlement,
+            ..
+        } => {
+            settlement.ledger_fee = Amount::new(11);
+            attempt.identity.clone()
+        }
+        _ => panic!("withdrawal must be held"),
+    };
+    let mut hold = ReconciliationHoldRecord::open(
+        hold_id,
+        RequestReference::Withdrawal(withdrawal.id),
+        hold_transfer,
+    );
+    let original_withdrawal = withdrawal.clone();
+    let original_hold = hold.clone();
+
+    assert_eq!(
+        resolve_withdrawal_hold(
+            &mut withdrawal,
+            &mut hold,
+            WithdrawalHoldResolution::Succeeded {
+                release_ledger_block_index: 48,
+            },
+        ),
+        Err(CoreError::SettlementMismatch)
+    );
+    assert_eq!(withdrawal, original_withdrawal);
+    assert_eq!(hold, original_hold);
 }
 
 #[test]
@@ -1053,18 +1109,14 @@ fn withdrawal_absence_resolution_replay_binds_old_hold_to_exact_replacement() {
         next_identity: Box::new(replacement.clone()),
     };
 
-    assert_eq!(
-        resolve_withdrawal_hold(&mut withdrawal, &mut hold, resolution.clone())
-            .expect("resolve absence")
-            .outcome,
-        ApplyOutcome::Applied
-    );
-    assert_eq!(
-        resolve_withdrawal_hold(&mut withdrawal, &mut hold, resolution)
-            .expect("replay absence")
-            .outcome,
-        ApplyOutcome::Idempotent
-    );
+    let applied = resolve_withdrawal_hold(&mut withdrawal, &mut hold, resolution.clone())
+        .expect("resolve absence");
+    assert_eq!(applied.outcome, ApplyOutcome::Applied);
+    assert_eq!(applied.fee_delta, Amount::ZERO);
+    let replay =
+        resolve_withdrawal_hold(&mut withdrawal, &mut hold, resolution).expect("replay absence");
+    assert_eq!(replay.outcome, ApplyOutcome::Idempotent);
+    assert_eq!(replay.fee_delta, Amount::ZERO);
 
     let mut different = replacement;
     different.created_at_time_ns += 1;

@@ -1,5 +1,63 @@
+import { Principal } from "@dfinity/principal"
+import { bytesToHex, hexToBytes, type Hex } from "viem"
+import type { NotifyWithdrawalReceipt } from "@/generated/bridge.did"
+import { notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
+import { ensurePendingWithdrawalConfirmation, markPendingConfirmationNotified, type PendingConfirmationInput } from "@/lib/pending-confirmations"
+
 export const WITHDRAWAL_LOG_CHUNK_SIZE = 2_000n
 export const WITHDRAWAL_SCAN_CHUNKS_PER_STEP = 4
+
+export interface WithdrawalDestinationAccount {
+  owner: string
+  subaccount: Uint8Array
+}
+
+export function decodeWithdrawalDestination(owner: Hex, subaccount: Hex): WithdrawalDestinationAccount {
+  const ownerBytes = hexToBytes(owner)
+  if (ownerBytes.length === 0
+    || ownerBytes.length > 29
+    || ownerBytes.length === 1 && ownerBytes[0] === 0x04) {
+    throw new Error("Finalized withdrawal destination owner is invalid")
+  }
+  const subaccountBytes = hexToBytes(subaccount)
+  if (subaccountBytes.length !== 32) throw new Error("Finalized withdrawal destination subaccount must be 32 bytes")
+  return {
+    owner: Principal.fromUint8Array(ownerBytes).toText(),
+    subaccount: subaccountBytes,
+  }
+}
+
+interface HistoryWithdrawalNotificationTarget {
+  hash: Hex
+  destinationAccount: WithdrawalDestinationAccount
+}
+
+interface HistoryWithdrawalNotificationDependencies {
+  ensurePending: (value: PendingConfirmationInput) => Promise<void>
+  notify: (transactionHash: Uint8Array) => Promise<NotifyWithdrawalReceipt>
+  markNotified: (value: PendingConfirmationInput, withdrawalId: Hex) => Promise<void>
+}
+
+export async function notifyHistoryWithdrawal(
+  target: HistoryWithdrawalNotificationTarget,
+  dependencies: HistoryWithdrawalNotificationDependencies = {
+    ensurePending: ensurePendingWithdrawalConfirmation,
+    notify: notifyWithdrawalWithBrowserIdentity,
+    markNotified: markPendingConfirmationNotified,
+  },
+): Promise<{ pending: PendingConfirmationInput; receipt: NotifyWithdrawalReceipt; withdrawalId: Uint8Array }> {
+  const pending: PendingConfirmationInput = {
+    kind: "withdrawal",
+    transactionHash: target.hash,
+    owner: target.destinationAccount.owner,
+  }
+  await dependencies.ensurePending(pending)
+  const receipt = await dependencies.notify(hexToBytes(target.hash))
+  const withdrawalId = "Duplicate" in receipt ? receipt.Duplicate.withdrawal_id : receipt.Ingested.withdrawal_id
+  const withdrawalIdBytes = Uint8Array.from(withdrawalId)
+  await dependencies.markNotified(pending, bytesToHex(withdrawalIdBytes))
+  return { pending, receipt, withdrawalId: withdrawalIdBytes }
+}
 
 export interface FinalizedEventLog {
   blockNumber: bigint | null

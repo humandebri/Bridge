@@ -297,7 +297,17 @@ fn withdrawal_transition_effects_match_every_phase_and_checked_delta() {
         withdrawal_transition_effects(1, 3, 90, 5, 10),
         Some((3, 0, 0, 0))
     );
+    assert_eq!(
+        withdrawal_transition_effects(3, 4, 90, 5, 10),
+        Some((2, 95, 5, 100))
+    );
+    assert_eq!(
+        withdrawal_transition_effects(3, 5, 90, 5, 10),
+        Some((1, 0, 0, 0))
+    );
     assert_eq!(withdrawal_transition_effects(1, 2, 90, 11, 10), None);
+    assert_eq!(withdrawal_transition_effects(3, 4, 90, 11, 10), None);
+    assert_eq!(withdrawal_transition_effects(3, 4, u128::MAX, 1, 1), None);
     assert_eq!(withdrawal_transition_effects(2, 2, 90, 5, 10), None);
 }
 

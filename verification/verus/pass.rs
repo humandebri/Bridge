@@ -772,25 +772,39 @@ fn deposit_transition_decision_applies_verified_effects(
     kernel::deposit_transition_decision(input)
 }
 
-fn withdrawal_transition_effects_return_exact_checked_delta(
+fn withdrawal_transition_effects_cover_release_and_hold_resolutions(
     amount_out: u128, ledger_fee: u128, service_fee: u128,
-) -> (result: Option<(u8, u128, u128, u128)>)
+) -> (result: (
+    Option<(u8, u128, u128, u128)>,
+    Option<(u8, u128, u128, u128)>,
+    Option<(u8, u128, u128, u128)>,
+))
     requires
         ledger_fee <= service_fee,
         amount_out as int + service_fee as int
             <= 340282366920938463463374607431768211455int,
-    ensures match result {
-        Some((next, escrow_debit, reserve_credit, liability_debit)) =>
-            next == 2
-                && escrow_debit as int == amount_out as int + ledger_fee as int
-                && reserve_credit as int == service_fee as int - ledger_fee as int
-                && liability_debit as int == amount_out as int + service_fee as int,
-        None => false,
-    },
+    ensures
+        result.0 == Some((
+            2u8,
+            (amount_out as int + ledger_fee as int) as u128,
+            (service_fee as int - ledger_fee as int) as u128,
+            (amount_out as int + service_fee as int) as u128,
+        )),
+        result.1 == Some((
+            2u8,
+            (amount_out as int + ledger_fee as int) as u128,
+            (service_fee as int - ledger_fee as int) as u128,
+            (amount_out as int + service_fee as int) as u128,
+        )),
+        result.2 == Some((1u8, 0u128, 0u128, 0u128)),
 {
     assert(amount_out <= u128::MAX - ledger_fee);
     assert(amount_out <= u128::MAX - service_fee);
-    kernel::withdrawal_transition_effects(1, 2, amount_out, ledger_fee, service_fee)
+    (
+        kernel::withdrawal_transition_effects(1, 2, amount_out, ledger_fee, service_fee),
+        kernel::withdrawal_transition_effects(3, 4, amount_out, ledger_fee, service_fee),
+        kernel::withdrawal_transition_effects(3, 5, amount_out, ledger_fee, service_fee),
+    )
 }
 
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)

@@ -16,6 +16,7 @@ function withdrawal(byte: string, blocked: boolean, owner: string): PendingConfi
     transactionHash: `0x${byte.repeat(64)}`,
     owner,
     blocked,
+    notification: { status: "awaiting-notification" },
     ...deployment,
   }
 }

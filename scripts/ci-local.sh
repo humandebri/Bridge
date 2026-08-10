@@ -367,6 +367,17 @@ run_verus() {
           echo "Verus executable kernel is missing: $kernel_name" >&2
           return 1
         }
+        IFS=';' read -r -a production_sources <<<"$production_path"
+        for production_source in "${production_sources[@]}"; do
+          [[ -n "$production_source" ]] || {
+            echo "executable Verus kernel has an empty production path: $kernel_name" >&2
+            return 1
+          }
+          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
+            echo "executable Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
+            return 1
+          }
+        done
         ;;
       model)
         rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {

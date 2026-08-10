@@ -41,17 +41,28 @@ import { baseHistoryClients, baseTransactionExplorerUrl, withHistoryClientFailov
 import { finalizedCheckpointMatches } from "@/lib/finalized-checkpoint"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { kinicTransactionExplorerUrl } from "@/lib/ic/transaction-explorer"
-import { continueWithdrawalWithBrowserIdentity, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
-import { readPendingMint, removePendingConfirmation } from "@/lib/pending-confirmations"
+import { continueWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
+import {
+  readPendingMint,
+  removePendingConfirmation,
+} from "@/lib/pending-confirmations"
 import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
 import { depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositTerminal, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName, withdrawalPhaseTone } from "@/lib/settlement-phase"
-import { fetchInBatches, fetchUniqueBlockTimestamps, scanWithdrawalLogs, type FinalizedEventLog, type WithdrawalLogScan } from "@/lib/withdrawal-history"
+import { decodeWithdrawalDestination, fetchInBatches, fetchUniqueBlockTimestamps, notifyHistoryWithdrawal, scanWithdrawalLogs, type FinalizedEventLog, type WithdrawalLogScan } from "@/lib/withdrawal-history"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
 
 export const Route = createFileRoute("/history")({ component: HistoryPage })
 
 interface WithdrawalEventLog extends FinalizedEventLog {
-  args: { withdrawalId: bigint; amount: bigint; maxServiceFee: bigint; chargedServiceFee: bigint; amountOut: bigint }
+  args: {
+    withdrawalId: bigint
+    amount: bigint
+    maxServiceFee: bigint
+    chargedServiceFee: bigint
+    amountOut: bigint
+    owner: `0x${string}`
+    subaccount: `0x${string}`
+  }
 }
 
 export interface WithdrawalHistoryData extends WithdrawalLogScan<WithdrawalEventLog> {
@@ -242,6 +253,7 @@ function HistoryPage() {
         blockNumber: log.blockNumber,
         logIndex: log.logIndex,
         createdAtNs,
+        destinationAccount: decodeWithdrawalDestination(log.args.owner, log.args.subaccount),
         canister: views?.[index]?.[0],
       }
     })
@@ -316,12 +328,16 @@ function HistoryPage() {
     try {
       setRetryingHash(item.hash)
       await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
-      const receipt = await notifyWithdrawalWithBrowserIdentity(hexToBytes(item.hash))
-      await removePendingConfirmation({ kind: "withdrawal", transactionHash: item.hash, owner: "" })
+      const { pending, receipt, withdrawalId } = await notifyHistoryWithdrawal(item)
       toastWithdrawalNotification(receipt)
-      const withdrawalId = "Duplicate" in receipt ? receipt.Duplicate.withdrawal_id : receipt.Ingested.withdrawal_id
       try {
-        toastSettlement(await continueWithdrawalWithBrowserIdentity(Uint8Array.from(withdrawalId)))
+        const result = await continueWithdrawalWithBrowserIdentity(withdrawalId)
+        toastSettlement(result)
+        if ("Complete" in result
+          && "Withdrawal" in result.Complete.state
+          && isWithdrawalTerminal(result.Complete.state.Withdrawal)) {
+          await removePendingConfirmation(pending)
+        }
       } catch (error) {
         toast.warning(error instanceof Error ? error.message : "The payout needs another attempt from History.")
       }

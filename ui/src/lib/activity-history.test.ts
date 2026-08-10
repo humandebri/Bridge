@@ -102,5 +102,6 @@ function withdrawal(hash: `0x${string}`, logIndex: number, createdAtNs: bigint):
     blockNumber: createdAtNs,
     logIndex,
     createdAtNs,
+    destinationAccount: { owner: "aaaaa-aa", subaccount: new Uint8Array(32) },
   }
 }
