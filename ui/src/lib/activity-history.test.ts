@@ -78,6 +78,7 @@ function deposit(sequence: number, createdAtNs: bigint): DepositView {
     deposit_id: new Uint8Array(32).fill(sequence),
     owner_sequence: BigInt(sequence),
     created_at_ns: createdAtNs,
+    funding_ledger_block_index: [BigInt(sequence)],
     gross_amount: 100n,
     quote: [{ net_amount: 90n, service_fee: 10n }],
   refund: [],
@@ -87,8 +88,8 @@ function deposit(sequence: number, createdAtNs: bigint): DepositView {
     base_recipient: new Uint8Array(20),
     state: { Minted: null },
     last_settlement_stop_reason: [],
-    mint_authorization: [],
     automatic_progress: [],
+    mint_authorization: [],
   }
 }
 

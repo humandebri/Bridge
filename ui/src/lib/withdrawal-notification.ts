@@ -10,5 +10,5 @@ export function withdrawalNotificationPresentation(receipt: NotifyWithdrawalRece
   if (duplicate) {
     return { tone: "info", message: "Withdrawal was already recorded. Check History for its current status." }
   }
-  return { tone: "info", message: "Withdrawal is recorded. Processing will continue automatically." }
+  return { tone: "info", message: "Withdrawal is recorded. One payout step will now be attempted." }
 }

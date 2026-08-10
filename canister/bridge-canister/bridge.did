@@ -140,6 +140,7 @@ type BridgeStatus = record {
   last_reserve_observation_ns : nat64;
   reserve : ReserveStatus;
   withdrawal_stop_reasons : vec text;
+  audit_retention_warning : bool;
   deposits_paused : bool;
   schema_version : nat16;
   observed_bridge_runtime_sha256 : blob;
@@ -224,8 +225,8 @@ type DepositRefundStatusView = variant {
 };
 type DepositRefundView = record {
   status : DepositRefundStatusView;
+  refund_ledger_block_index : opt nat;
   attempt_no : nat64;
-  block_index : opt nat;
   ledger_fee : nat;
   amount : nat;
   reason : DepositRefundReasonView;
@@ -235,6 +236,7 @@ type DepositView = record {
   deposit_id : blob;
   quote : opt DepositQuoteView;
   max_service_fee : nat;
+  funding_ledger_block_index : opt nat;
   from_subaccount : opt blob;
   last_settlement_stop_reason : opt text;
   created_at_ns : nat64;
@@ -348,6 +350,14 @@ type MintAuthorizationView = record {
   digest : blob;
   gross_amount : nat;
 };
+type NonterminalDepositRef = record {
+  deposit_id : blob;
+  owner_sequence : nat64;
+};
+type NonterminalDepositRefPage = record {
+  next_cursor : opt nat64;
+  deposits : vec NonterminalDepositRef;
+};
 type NotifyWithdrawalArgs = record { transaction_hash : blob };
 type NotifyWithdrawalError = variant {
   LedgerFeeExceedsServiceFee : record {
@@ -433,7 +443,6 @@ type RequestDepositRefundError = variant {
   InvalidDepositId;
   NotFound;
   InsufficientCycles;
-  OwnerMismatch;
   DepositIdentityConflict;
   RpcInconsistent;
   RateLimited : record { retry_after_seconds : nat64 };
@@ -463,18 +472,22 @@ type Result_1 = variant {
 type Result_10 = variant { Ok; Err : PublicConfigInitializationError };
 type Result_11 = variant { Ok : DepositIdPage; Err : ListDepositIdsError };
 type Result_12 = variant {
+  Ok : NonterminalDepositRefPage;
+  Err : ListDepositIdsError;
+};
+type Result_13 = variant {
   Ok : NotifyWithdrawalReceipt;
   Err : NotifyWithdrawalError;
 };
-type Result_13 = variant { Ok; Err : AdminError };
-type Result_14 = variant {
+type Result_14 = variant { Ok; Err : AdminError };
+type Result_15 = variant {
   Ok : ChecksumRefreshStatus;
   Err : StorageMaintenanceError;
 };
-type Result_15 = variant { Ok : DepositReceipt; Err : DepositError };
-type Result_16 = variant { Ok : DepositView; Err : RequestDepositRefundError };
-type Result_17 = variant { Ok : FeePayoutReceipt; Err : AdminError };
-type Result_18 = variant { Ok : text; Err : StorageMaintenanceError };
+type Result_16 = variant { Ok : DepositReceipt; Err : DepositError };
+type Result_17 = variant { Ok : DepositView; Err : RequestDepositRefundError };
+type Result_18 = variant { Ok : FeePayoutReceipt; Err : AdminError };
+type Result_19 = variant { Ok : text; Err : StorageMaintenanceError };
 type Result_2 = variant {
   Ok : StorageValidationStatus;
   Err : StorageMaintenanceError;
@@ -508,6 +521,7 @@ type SettlementActionError = variant {
   Busy;
   WrongState;
   NotFound;
+  InsufficientCycles;
   Unauthorized;
   RateLimited : record { retry_after_seconds : nat64 };
   StorageFailure;
@@ -595,11 +609,11 @@ type WithdrawalView = record {
   charged_service_fee : nat;
   withdrawal_id : blob;
   max_service_fee : nat;
+  release_ledger_block_index : opt nat;
   last_settlement_stop_reason : opt text;
   amount_out : nat;
   state : WithdrawalPhase;
   ledger_fee : nat;
-  automatic_progress : opt AutomaticProgressView;
   amount : nat;
 };
 service : (BridgeInitArgs) -> {
@@ -627,20 +641,21 @@ service : (BridgeInitArgs) -> {
     );
   initialize_public_config : () -> (Result_10);
   list_deposit_ids : (ListDepositIdsArgs) -> (Result_11) query;
-  notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_12);
-  pause_new_deposits : () -> (Result_13);
+  list_nonterminal_deposit_refs : (ListDepositIdsArgs) -> (Result_12) query;
+  notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_13);
+  pause_new_deposits : () -> (Result_14);
   prepare_base_governance_action : (BaseGovernanceAction) -> (Result_5);
   prepare_base_governance_replacement : (
       PrepareBaseGovernanceReplacementArgs,
     ) -> (Result_5);
   prepare_next_emergency_base_action : () -> (Result_5);
-  refresh_storage_checksum : (nat64) -> (Result_14);
-  request_deposit : (DepositArgs) -> (Result_15);
-  request_deposit_refund : (blob) -> (Result_16);
-  request_fee_payout : (nat) -> (Result_17);
-  rotate_fee_recipient : (FeeRecipientConfig) -> (Result_13);
-  rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_13);
+  refresh_storage_checksum : (nat64) -> (Result_15);
+  request_deposit : (DepositArgs) -> (Result_16);
+  request_deposit_refund : (blob) -> (Result_17);
+  request_fee_payout : (nat) -> (Result_18);
+  rotate_fee_recipient : (FeeRecipientConfig) -> (Result_14);
+  rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_14);
   schedule_activation : () -> (Result_5);
   start_storage_validation : () -> (Result_2);
-  storage_integrity_check : () -> (Result_18) query;
+  storage_integrity_check : () -> (Result_19) query;
 }

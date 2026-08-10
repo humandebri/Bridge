@@ -116,6 +116,8 @@ run_versions() {
   "$ROOT/scripts/check_tool_versions.sh"
   "$ROOT/scripts/test_tool_version_gate.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
+  python3 "$ROOT/scripts/check_no_obsolete_release_dependencies.py"
+  python3 "$ROOT/scripts/test_no_obsolete_release_dependencies.py"
   verify_no_obsolete_withdrawal_terms \
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
@@ -132,7 +134,6 @@ run_versions() {
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
   node "$ROOT/scripts/plan007/test-check-reinstall-instance.mjs"
-  node "$ROOT/scripts/plan007/test-capture-obsolete-pause-evidence.mjs"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
     "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
@@ -296,6 +297,8 @@ run_verus() {
   local proof_name
   local expected_fixture
   local production_path
+  local production_source
+  local -a production_sources
   local verus_version
 
   verus_version="$(verus --version 2>&1)"
@@ -335,10 +338,17 @@ run_verus() {
           echo "shared Verus kernel is missing: $kernel_name" >&2
           return 1
         }
-        rg -q "\b${kernel_name}\b" "$ROOT/$production_path" || {
-          echo "shared Verus kernel is not referenced by production path: $kernel_name -> $production_path" >&2
-          return 1
-        }
+        IFS=';' read -r -a production_sources <<<"$production_path"
+        for production_source in "${production_sources[@]}"; do
+          [[ -n "$production_source" ]] || {
+            echo "shared Verus kernel has an empty production path: $kernel_name" >&2
+            return 1
+          }
+          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
+            echo "shared Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
+            return 1
+          }
+        done
         ;;
       executable)
         rg -q "^fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {

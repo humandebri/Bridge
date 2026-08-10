@@ -70,6 +70,7 @@ pub struct BridgeStatus {
     pub unpaid_withdrawal_amount_out: u128,
     pub oldest_unpaid_withdrawal_observed_at_ns: Option<u64>,
     pub withdrawal_stop_reasons: Vec<String>,
+    pub audit_retention_warning: bool,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -442,41 +443,16 @@ async fn request_deposit_refund(
     use api::RequestDepositRefundError as Error;
 
     let caller = ic_cdk::api::msg_caller();
-    match bridge_core::refund_request_identity_decision(
-        caller != candid::Principal::anonymous(),
-        None,
-    ) {
-        bridge_core::RefundRequestIdentityDecision::OwnerLookupRequired => {}
+    match bridge_core::refund_request_identity_decision(caller != candid::Principal::anonymous()) {
+        bridge_core::RefundRequestIdentityDecision::Allow => {}
         bridge_core::RefundRequestIdentityDecision::AnonymousCaller => {
             return Err(Error::AnonymousCaller);
-        }
-        bridge_core::RefundRequestIdentityDecision::Allow
-        | bridge_core::RefundRequestIdentityDecision::OwnerMismatch => {
-            return Err(Error::StorageFailure);
         }
     }
     let id: [u8; 32] = deposit_id
         .as_slice()
         .try_into()
         .map_err(|_| Error::InvalidDepositId)?;
-    let owned = STORE.with(|store| {
-        store
-            .borrow()
-            .deposit_intent(id)
-            .map_err(|_| Error::StorageFailure)?
-            .map(|intent| intent.caller == caller.as_slice())
-            .ok_or(Error::NotFound)
-    })?;
-    match bridge_core::refund_request_identity_decision(true, Some(owned)) {
-        bridge_core::RefundRequestIdentityDecision::Allow => {}
-        bridge_core::RefundRequestIdentityDecision::OwnerMismatch => {
-            return Err(Error::OwnerMismatch);
-        }
-        bridge_core::RefundRequestIdentityDecision::OwnerLookupRequired
-        | bridge_core::RefundRequestIdentityDecision::AnonymousCaller => {
-            return Err(Error::StorageFailure);
-        }
-    }
     let config = STORE.with(|store| {
         store
             .borrow()
@@ -506,7 +482,7 @@ async fn request_deposit_refund(
     let mut refund_start = None;
     match state {
         bridge_core::DepositState::Minted { .. } | bridge_core::DepositState::Refunded { .. } => {
-            return api::get_deposit(id.to_vec()).ok_or(Error::StorageFailure);
+            return Err(Error::NotClaimable);
         }
         bridge_core::DepositState::AuthorizationPending { .. } => {
             let deadline = STORE.with(|store| {
@@ -690,7 +666,7 @@ async fn request_deposit_refund(
                                 .put_deposit_transition(&deposit, result)
                                 .map_err(|_| Error::StorageFailure)
                         })?;
-                        return api::get_deposit(id.to_vec()).ok_or(Error::StorageFailure);
+                        return Err(Error::NotClaimable);
                     }
                 }
             }
@@ -726,6 +702,13 @@ fn list_deposit_ids(
     args: api::ListDepositIdsArgs,
 ) -> Result<api::DepositIdPage, api::ListDepositIdsError> {
     api::list_deposit_ids(args)
+}
+
+#[ic_cdk::query]
+fn list_nonterminal_deposit_refs(
+    args: api::ListDepositIdsArgs,
+) -> Result<api::NonterminalDepositRefPage, api::ListDepositIdsError> {
+    api::list_nonterminal_deposit_refs(args)
 }
 
 #[ic_cdk::query]
@@ -807,7 +790,6 @@ async fn notify_withdrawal(
         api::NotifyWithdrawalReceipt::Duplicate { .. } => return Ok(receipt),
     }
     drop(notification_guard);
-    scheduler::arm();
     Ok(receipt)
 }
 
@@ -815,25 +797,8 @@ fn has_external_call_cycle_budget(current: u128, floor: u128, call_ceiling: u128
     current > floor.saturating_add(call_ceiling)
 }
 
-fn can_advance_withdrawal(
-    caller: candid::Principal,
-    id: [u8; 32],
-) -> Result<bool, tasks::SettlementActionError> {
-    if caller == candid::Principal::anonymous() {
-        return Err(tasks::SettlementActionError::AnonymousCaller);
-    }
-    let owned = STORE.with(|store| {
-        store
-            .borrow()
-            .withdrawal(id)
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-            .map(|record| record.owner == caller.as_slice())
-            .ok_or(tasks::SettlementActionError::NotFound)
-    })?;
-    if owned {
-        return Ok(true);
-    }
-    admin::can_advance_settlement(caller).map_err(|_| tasks::SettlementActionError::StorageFailure)
+fn can_continue_withdrawal(caller: candid::Principal) -> bool {
+    caller != candid::Principal::anonymous()
 }
 
 #[ic_cdk::update]
@@ -845,8 +810,8 @@ async fn continue_withdrawal(
         .try_into()
         .map_err(|_| tasks::SettlementActionError::InvalidId)?;
     let caller = ic_cdk::api::msg_caller();
-    if !can_advance_withdrawal(caller, id)? {
-        return Err(tasks::SettlementActionError::Unauthorized);
+    if !can_continue_withdrawal(caller) {
+        return Err(tasks::SettlementActionError::AnonymousCaller);
     }
     let Some(guard) = InFlightGuard::acquire(ActionKey::Withdrawal(id)) else {
         return Err(tasks::SettlementActionError::Busy);
@@ -869,11 +834,23 @@ async fn continue_withdrawal(
     if let Some(state) = terminal_state {
         return Ok(tasks::SettlementActionResult::Complete { state });
     }
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+            .ok_or(tasks::SettlementActionError::StorageFailure)
+    })?;
+    if !has_external_call_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.cycles_floor,
+        config.settlement_cycle_ceiling,
+    ) {
+        return Err(tasks::SettlementActionError::InsufficientCycles);
+    }
     drop(guard);
     let job = claim_manual_job(storage::SettlementJobKind::Withdrawal, id, caller)?;
-    let result = scheduler::run_claimed(job).await?;
-    scheduler::arm();
-    Ok(result)
+    scheduler::run_claimed(job).await
 }
 
 fn claim_manual_job(
@@ -910,6 +887,7 @@ fn map_refund_settlement_error(
         } => Error::RateLimited {
             retry_after_seconds,
         },
+        tasks::SettlementActionError::InsufficientCycles => Error::InsufficientCycles,
         _ => Error::StorageFailure,
     }
 }
@@ -1115,6 +1093,7 @@ fn get_bridge_status() -> BridgeStatus {
                 pruned_audit_events: counts.pruned_audit_events,
                 retained_deposit_index_entries: counts.retained_deposit_index_entries,
             },
+            audit_retention_warning: storage::audit_retention_warning(counts.retained_audit_events),
             last_finalized_base_block: finalized_observation
                 .map(|observation| observation.block_number)
                 .unwrap_or_default(),
@@ -1555,9 +1534,9 @@ pub fn generated_candid_interface() -> String {
 #[cfg(test)]
 mod candid_tests {
     use super::{
-        has_external_call_cycle_budget, storage::StorageError, storage_or_trap, ActionKey,
-        DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
-        NOTIFICATION_CALLER_ADMISSION,
+        can_continue_withdrawal, has_external_call_cycle_budget, storage::StorageError,
+        storage_or_trap, ActionKey, DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard,
+        StableStore, NOTIFICATION_CALLER_ADMISSION,
     };
 
     #[cfg(not(feature = "test-deployment"))]
@@ -1616,23 +1595,23 @@ mod candid_tests {
     }
 
     #[test]
-    fn refund_request_identity_decision_preserves_endpoint_error_order() {
+    fn withdrawal_continuation_rejects_only_anonymous_callers() {
+        assert!(!can_continue_withdrawal(candid::Principal::anonymous()));
+        assert!(can_continue_withdrawal(
+            candid::Principal::self_authenticating([1; 32])
+        ));
+    }
+
+    #[test]
+    fn refund_request_identity_decision_accepts_any_authenticated_caller() {
         use bridge_core::RefundRequestIdentityDecision as Decision;
 
         assert_eq!(
-            bridge_core::refund_request_identity_decision(false, None),
+            bridge_core::refund_request_identity_decision(false),
             Decision::AnonymousCaller
         );
         assert_eq!(
-            bridge_core::refund_request_identity_decision(true, None),
-            Decision::OwnerLookupRequired
-        );
-        assert_eq!(
-            bridge_core::refund_request_identity_decision(true, Some(false)),
-            Decision::OwnerMismatch
-        );
-        assert_eq!(
-            bridge_core::refund_request_identity_decision(true, Some(true)),
+            bridge_core::refund_request_identity_decision(true),
             Decision::Allow
         );
     }

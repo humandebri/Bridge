@@ -82,18 +82,18 @@ theorem refund_event_in_accepted_trace_requires_finalized_absence
         refund_request_cannot_bypass_finalized_evidence localAccepted
       exact ⟨unprocessed, authorization, depositId, digest, expired⟩
 
-theorem refund_request_after_accepted_prefix_requires_owner_and_absence
+theorem refund_request_after_accepted_prefix_requires_authentication_and_absence
     {state next : State} {historyPrefix : List Event}
-    {authenticated : Bool} {ownerMatch : Option Bool}
+    {authenticated : Bool}
     {origin : AuthorizationOrigin} {evidence : ExpiryEvidence}
     (_prefixAccepted : depositRun initial historyPrefix = some state)
     (accepted :
-      requestExpiredRefund authenticated ownerMatch state origin evidence = some next) :
-    authenticated = true ∧ ownerMatch = some true ∧
+      requestExpiredRefund authenticated state origin evidence = some next) :
+    authenticated = true ∧
       evidence.depositProcessed = false := by
   have checked :=
-    accepted_refund_request_requires_authenticated_owner_and_finalized_absence accepted
-  exact ⟨checked.1, checked.2.1, checked.2.2.1⟩
+    accepted_refund_request_requires_authentication_and_finalized_absence accepted
+  exact ⟨checked.1, checked.2.1⟩
 
 def initial : State := {
   phase := .fundingPending

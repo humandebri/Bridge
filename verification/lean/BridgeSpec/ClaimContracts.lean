@@ -2,12 +2,19 @@ import BridgeSpec.Protocol
 import BridgeSpec.ControlPlane
 import BridgeSpec.GlobalHistory
 import BridgeSpec.Liveness
+import BridgeSpec.Claims
+import BridgeSpec.Refinement
+import BridgeSpec.LedgerBlockProvenance
 
 namespace BridgeSpec.ClaimContracts
 
 open BridgeSpec
 open BridgeSpec.MintAuthorization
 open BridgeSpec.Protocol.Deposit
+
+abbrev LedgerBlockProvenance := BridgeSpec.LedgerBlockProvenance.ClaimContract
+theorem ledger_block_provenance_witness : LedgerBlockProvenance :=
+  BridgeSpec.LedgerBlockProvenance.claim_contract_witness
 
 def FeeAccountingOnce : Prop :=
   (∀ {next : State} {events : List Event},
@@ -109,15 +116,15 @@ theorem refund_evidence_enforcement_witness : RefundEvidenceEnforcement := by
 
 def RefundRequestAuthorization : Prop :=
   ∀ {state next : State} {historyPrefix : List Event}
-      {authenticated : Bool} {ownerMatch : Option Bool}
+      {authenticated : Bool}
       {origin : AuthorizationOrigin} {evidence : ExpiryEvidence},
     depositRun initial historyPrefix = some state →
-      requestExpiredRefund authenticated ownerMatch state origin evidence = some next →
-        authenticated = true ∧ ownerMatch = some true ∧
+      requestExpiredRefund authenticated state origin evidence = some next →
+        authenticated = true ∧
           evidence.depositProcessed = false
 
 theorem refund_request_authorization_witness : RefundRequestAuthorization := by
-  exact refund_request_after_accepted_prefix_requires_owner_and_absence
+  exact refund_request_after_accepted_prefix_requires_authentication_and_absence
 
 def SettlementBacking : Prop :=
   (∀ {state final : GlobalHistory.GlobalState} {events : List GlobalHistory.Event},
@@ -194,6 +201,206 @@ def DepositDecisionSafety : Prop := DepositTransitionSafety ∧ DepositBacking
 theorem deposit_decision_safety_witness : DepositDecisionSafety := by
   exact ⟨deposit_transition_safety_witness, deposit_backing_witness⟩
 
+def CommittedQuote : Prop :=
+  (∀ {amount serviceFee : Nat} {destination : Account} {withdrawal : Withdrawal},
+      commit amount serviceFee destination = some withdrawal → QuoteValid withdrawal) ∧
+    IntegratedProtocolReachability
+
+theorem committed_quote_witness : CommittedQuote :=
+  ⟨Claims.committed_quote_claim, integrated_protocol_reachability_witness⟩
+
+def DepositAdmission : Prop :=
+  (∀ {admission : BridgeSpec.DepositAdmission} {net : Nat}, admitDeposit admission = some net →
+      admission.serviceFee ≤ admission.maximumServiceFee ∧
+      admission.serviceFee < admission.grossAmount ∧
+      net = admission.grossAmount - admission.serviceFee ∧ net > 0 ∧
+      net ≤ admission.perDepositLimit ∧
+      admission.mintedInWindow + net ≤ admission.mintWindowLimit) ∧
+    IntegratedProtocolReachability
+
+theorem deposit_admission_witness : DepositAdmission :=
+  ⟨Claims.deposit_admission_claim, integrated_protocol_reachability_witness⟩
+
+def ReservationCommit : Prop :=
+  (∀ reserved candidate : Nat,
+      let next := commitMintReservation reserved candidate
+      next.1 + next.2 = reserved + candidate) ∧ ReservationLifecycle
+
+theorem reservation_commit_witness : ReservationCommit :=
+  ⟨Claims.reservation_claim, reservation_lifecycle_witness⟩
+
+def ServiceFeeMaximum : Prop :=
+  (∀ serviceFee maximumServiceFee : Nat,
+      serviceFeeChangeAllowed serviceFee maximumServiceFee = true ↔
+        serviceFee ≤ maximumServiceFee) ∧ FeeAccountingOnce
+
+theorem service_fee_maximum_witness : ServiceFeeMaximum :=
+  ⟨by intro serviceFee maximumServiceFee; exact Claims.service_fee_claim,
+    fee_accounting_once_witness⟩
+
+def FeeRecipientRotation : Prop :=
+  (∀ {state next : FeeState} {recipient : Nat},
+      rotateFeeRecipient state recipient = some next →
+        state.pendingPayout = 0 ∧ next.reserve = state.reserve ∧
+        next.confirmedDepositFees = state.confirmedDepositFees ∧
+        next.confirmedWithdrawalFees = state.confirmedWithdrawalFees ∧
+        next.pendingPayout = 0 ∧ next.recipient = recipient) ∧
+    IntegratedProtocolReachability
+
+theorem fee_recipient_rotation_witness : FeeRecipientRotation :=
+  ⟨Claims.fee_rotation_claim, integrated_protocol_reachability_witness⟩
+
+def FeePayout : Prop :=
+  (∀ {reserve pending amount fee : Nat},
+      feePayoutAllowed reserve pending amount fee = true →
+        pending ≤ reserve ∧ amount + fee ≤ reserve - pending ∧
+        payoutDebit false amount fee = 0 ∧ payoutDebit true amount fee = amount + fee) ∧
+    SettlementBacking
+
+theorem fee_payout_witness : FeePayout :=
+  ⟨Claims.fee_payout_claim, settlement_backing_witness⟩
+
+def HoldResolution : Prop :=
+  (∀ {success absence : Bool}, holdRetryAllowed success absence = true →
+      success = true ∨ absence = true) ∧ IntegratedProtocolReachability
+
+theorem hold_resolution_witness : HoldResolution :=
+  ⟨Claims.hold_claim, integrated_protocol_reachability_witness⟩
+
+def LeaseOutcome : Prop :=
+  (∀ {active : Bool} {currentGeneration outcomeGeneration : Nat},
+      leaseOutcomeCurrent active currentGeneration outcomeGeneration = true →
+        active = true ∧ currentGeneration = outcomeGeneration) ∧
+    GlobalInterleavingSafety
+
+theorem lease_outcome_witness : LeaseOutcome :=
+  ⟨Claims.lease_claim, global_interleaving_safety_witness⟩
+
+def NotificationQuotaIsolation : Prop :=
+  (∀ {globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : Nat},
+      notificationAdmissionAllowed globalCount callerCount globalLimit callerLimit = true →
+      notificationIngestionAllowed ingestionCount ingestionLimit = true →
+        globalCount < globalLimit ∧ callerCount < callerLimit ∧
+          ingestionCount < ingestionLimit) ∧ IntegratedProtocolReachability
+
+theorem notification_quota_isolation_witness : NotificationQuotaIsolation :=
+  ⟨Claims.notification_admission_claim, integrated_protocol_reachability_witness⟩
+
+def LeaseLaneIsolation : Prop :=
+  (∀ {targetActive targetAutomatic : Bool} {activeInLane capacity : Nat},
+      decideLeaseLaneClaim targetActive targetAutomatic activeInLane capacity = .allow →
+        targetActive = false ∧ activeInLane < capacity) ∧
+    GlobalInterleavingSafety
+
+theorem lease_lane_isolation_witness : LeaseLaneIsolation :=
+  ⟨Claims.lease_lane_claim, global_interleaving_safety_witness⟩
+
+def FundingAttemptLifecycle : Prop :=
+  (decideFundingAttempt .definitiveFailure = .release ∧
+    decideFundingAttempt .success = .promoteSuccess ∧
+    decideFundingAttempt .duplicate = .promoteSuccess ∧
+    decideFundingAttempt .ambiguous = .promoteAmbiguous ∧
+    decideFundingAttempt .retryableFailure = .retain) ∧ IntegratedProtocolReachability
+
+theorem funding_attempt_lifecycle_witness : FundingAttemptLifecycle :=
+  ⟨Claims.funding_attempt_claim, integrated_protocol_reachability_witness⟩
+
+def FundingReconciliationFreshness : Prop :=
+  (decideFundingReconciliation false false false = .wait ∧
+    decideFundingReconciliation false false true = .wait ∧
+    decideFundingReconciliation false true false = .wait ∧
+    decideFundingReconciliation false true true = .wait ∧
+    decideFundingReconciliation true false false = .restartFresh ∧
+    decideFundingReconciliation true false true = .restartFresh ∧
+    decideFundingReconciliation true true false = .wait ∧
+    decideFundingReconciliation true true true = .release) ∧ IntegratedProtocolReachability
+
+theorem funding_reconciliation_freshness_witness : FundingReconciliationFreshness :=
+  ⟨Claims.funding_reconciliation_claim, integrated_protocol_reachability_witness⟩
+
+def WithdrawalFinalization : Prop :=
+  (∀ {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat},
+      decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) = .notify →
+        receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock) ∧
+    (∀ {receiptSucceeded : Bool} {receiptBlock : Nat},
+      decideWithdrawalFinalization receiptSucceeded receiptBlock none = .retry)
+
+theorem withdrawal_finalization_witness : WithdrawalFinalization := by
+  constructor
+  · exact Claims.withdrawal_finalization_claim
+  · intro receiptSucceeded receiptBlock
+    rfl
+
+def PendingQueue : Prop :=
+  (∀ {queue : BridgeSpec.PendingQueue} {existing incoming : PendingQueueEntry},
+      existing.blocked = true → queue incoming.key = some existing →
+        (restorePendingQueue queue incoming incoming.key).map
+          (fun entry => entry.blocked) = some true) ∧
+    (∀ queue : BridgeSpec.PendingQueue,
+      restorePendingQueue queue = restorePendingQueue queue)
+
+theorem pending_queue_witness : PendingQueue := by
+  exact ⟨Claims.pending_queue_claim, fun _ => rfl⟩
+
+def CanonicalProbe : Prop :=
+  (∀ receiptBlock snapshotBlock : Nat,
+      canonicalProbeMatches receiptBlock snapshotBlock = true ↔
+        receiptBlock = snapshotBlock) ∧ IntegratedProtocolReachability
+
+theorem canonical_probe_witness : CanonicalProbe :=
+  ⟨by intro receiptBlock snapshotBlock; exact Claims.canonical_probe_claim,
+    integrated_protocol_reachability_witness⟩
+
+def AuthorizationBinding : Prop :=
+  (∀ {state next : DepositState} {authorization : Authorization}
+      {origin : AuthorizationOrigin},
+      commitAuthorization state authorization origin = some next →
+        next.authorization = some authorization ∧
+        authorization.deadline = origin.finalizedTimestamp + authorizationTtl ∧
+        authorization.chainId = origin.expectedChainId ∧
+        authorization.verifyingContract = origin.expectedVerifyingContract ∧
+        authorization.epoch = origin.expectedEpoch) ∧ DepositTransitionSafety
+
+theorem authorization_binding_witness : AuthorizationBinding := by
+  constructor
+  · intro state next authorization origin accepted
+    rcases accepted_authorization_is_exact_and_has_fixed_deadline accepted with
+      ⟨stored, _, _, deadline, chain, contract, epoch, _⟩
+    exact ⟨stored, deadline, chain, contract, epoch⟩
+  · exact deposit_transition_safety_witness
+
+def ExpiryRefund : Prop :=
+  (∀ {state next : DepositState} {origin : AuthorizationOrigin} {evidence : ExpiryEvidence},
+      startExpiredRefund state origin evidence = some next →
+        evidence.depositProcessed = false ∧
+        ∃ authorization, state.authorization = some authorization ∧
+          evidence.depositId = authorization.depositId ∧
+          evidence.authorizationDigest = authorization.digest ∧
+          evidence.finalizedTimestamp > authorization.deadline) ∧ DepositBacking
+
+theorem expiry_refund_witness : ExpiryRefund :=
+  ⟨accepted_expiry_refund_requires_finalized_unprocessed_expiry, deposit_backing_witness⟩
+
+def ExactMintFinalization : Prop :=
+  (∀ {state next : DepositState} {evidence : MintEvidence},
+      completeMint state evidence = some next →
+        evidence.receiptSucceeded = true ∧ evidence.receiptBlock ≤ evidence.finalizedBlock ∧
+        ∃ authorization, state.authorization = some authorization ∧
+          evidence.depositId = authorization.depositId ∧
+          evidence.recipient = authorization.recipient ∧
+          evidence.authorizationDigest = authorization.digest) ∧ DepositBacking
+
+theorem exact_mint_finalization_witness : ExactMintFinalization :=
+  ⟨accepted_mint_requires_exact_finalized_success, deposit_backing_witness⟩
+
+def EpochInvalidation : Prop :=
+  (∀ {state : DepositState} {current replacement : Authorization}
+      {origin : AuthorizationOrigin}, state.authorization = some current →
+        commitAuthorization state replacement origin = none) ∧ AuthorizationBinding
+
+theorem epoch_invalidation_witness : EpochInvalidation :=
+  ⟨committed_authorization_cannot_be_reissued, authorization_binding_witness⟩
+
 abbrev WithdrawalEventuallyPaid := Liveness.WithdrawalEventuallyPaid
 theorem withdrawal_eventually_paid_witness : WithdrawalEventuallyPaid :=
   Liveness.committed_withdrawal_eventually_paid
@@ -205,6 +412,21 @@ theorem funded_deposit_eventually_minted_witness : FundedDepositEventuallyMinted
 abbrev ExpiredDepositEventuallyRefunded := Liveness.ExpiredDepositEventuallyRefunded
 theorem expired_deposit_eventually_refunded_witness : ExpiredDepositEventuallyRefunded :=
   Liveness.expired_deposit_eventually_refunded
+
+abbrev FundedDepositEventuallyMintedOrRefunded :=
+  Liveness.FundedDepositEventuallyMintedOrRefunded
+theorem funded_deposit_eventually_minted_or_refunded_witness :
+    FundedDepositEventuallyMintedOrRefunded :=
+  Liveness.funded_deposit_eventually_minted_or_refunded
+
+def NonterminalDepositIndexConsistency : Prop :=
+  ∀ phase : MintAuthorization.DepositPhase,
+    MintAuthorization.nonterminalDepositIndexed phase = true ↔
+      phase ≠ .refunded ∧ phase ≠ .cancelled ∧ phase ≠ .minted
+
+theorem nonterminal_deposit_index_consistency_witness :
+    NonterminalDepositIndexConsistency :=
+  MintAuthorization.nonterminal_deposit_index_matches_nonterminal_phases
 
 abbrev FundingFailureEventuallyCancelled := Liveness.FundingFailureEventuallyCancelled
 theorem funding_failure_eventually_cancelled_witness : FundingFailureEventuallyCancelled :=

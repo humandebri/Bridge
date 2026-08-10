@@ -26,6 +26,7 @@ export const deploymentProfileSchema = z.object({
   deploymentInstanceId: hash.nullable(),
   ledgerCanisterId: z.string().min(1).nullable(),
   indexCanisterId: z.string().min(1).nullable(),
+  snsRootCanisterId: z.string().min(1).nullable().default(null),
   icToken: tokenMetadata.extend({ name: z.string().min(1) }),
   baseToken: tokenMetadata,
   bridgeAddress: address.nullable(),
@@ -139,6 +140,7 @@ export function profileCompleteness(profile: DeploymentProfile): string[] {
   if (!profile.profileCanonicalSha256) missing.push("Canonical profile SHA-256 is missing")
   if (!profile.ledgerCanisterId) missing.push("IC token ledger ID is missing")
   if (!profile.indexCanisterId) missing.push("IC token index ID is missing")
+  if (!profile.testOnly && !profile.snsRootCanisterId) missing.push("KINIC SNS Root ID is missing")
   if (!profile.bridgeAddress) missing.push("Bridge contract address is missing")
   if (!profile.bsnsAddress) missing.push("bSNS contract address is missing")
   if (!profile.timelockAddress) missing.push("Timelock contract address is missing")

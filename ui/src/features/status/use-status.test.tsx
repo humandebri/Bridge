@@ -65,53 +65,10 @@ describe("automatic status queries", () => {
     expect(mocks.validateRuntime).toHaveBeenCalledOnce()
   })
 
-  it("retries one not-ready initial validation and stops after success", async () => {
-    mocks.validateRuntime
-      .mockResolvedValueOnce({ ready: false, blockers: ["Base RPC unavailable"], checkedAt: Date.now() })
-      .mockResolvedValueOnce({ ready: true, blockers: [], checkedAt: Date.now() })
-    const view = renderHook(
-      () => useRuntimeValidation(undefined, { enabled: true, retryNotReadyAfterMs: 100 }),
-      { wrapper: wrapper() },
-    )
-
-    await waitFor(() => expect(view.result.current.isAutoRetryPending).toBe(true))
-    await waitFor(() => expect(mocks.validateRuntime).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(view.result.current.data?.ready).toBe(true))
-    expect(view.result.current.isAutoRetryPending).toBe(false)
-  })
-
-  it("retries a persistent not-ready result only once", async () => {
-    mocks.validateRuntime.mockResolvedValue({ ready: false, blockers: ["Bridge signer differs"], checkedAt: Date.now() })
-    const view = renderHook(
-      () => useRuntimeValidation(undefined, { enabled: true, retryNotReadyAfterMs: 10 }),
-      { wrapper: wrapper() },
-    )
-
-    await waitFor(() => expect(mocks.validateRuntime).toHaveBeenCalledTimes(2))
-    await act(async () => new Promise((resolve) => setTimeout(resolve, 30)))
-    expect(mocks.validateRuntime).toHaveBeenCalledTimes(2)
-    expect(view.result.current.data?.ready).toBe(false)
-    expect(view.result.current.isAutoRetryPending).toBe(false)
-  })
-
-  it("allows one new not-ready retry after the chain changes", async () => {
-    mocks.validateRuntime.mockResolvedValue({ ready: false, blockers: ["RPC unavailable"], checkedAt: Date.now() })
-    const view = renderHook(
-      ({ chainId }) => useRuntimeValidation(chainId, { enabled: true, retryNotReadyAfterMs: 10 }),
-      { wrapper: wrapper(), initialProps: { chainId: 1 } },
-    )
-
-    await waitFor(() => expect(mocks.validateRuntime).toHaveBeenCalledTimes(2))
-    view.rerender({ chainId: 2 })
-    await waitFor(() => expect(mocks.validateRuntime).toHaveBeenCalledTimes(4))
-    await act(async () => new Promise((resolve) => setTimeout(resolve, 30)))
-    expect(mocks.validateRuntime).toHaveBeenCalledTimes(4)
-  })
-
   it("does not treat validation without an observation as heartbeat data", async () => {
     const initialValidation = { ready: true, blockers: [], checkedAt: Date.now() }
     const view = renderHook(
-      () => useRuntimeHeartbeat(undefined, initialValidation, { enabled: true, refetchInterval: 20 }),
+      () => useRuntimeHeartbeat(undefined, initialValidation, { enabled: true }),
       { wrapper: wrapper() },
     )
 
@@ -148,7 +105,7 @@ describe("automatic status queries", () => {
     mocks.validateRuntime.mockResolvedValue(validation)
     const view = renderHook(() => {
       const full = useRuntimeValidation(undefined, { enabled: true })
-      const heartbeat = useRuntimeHeartbeat(undefined, full.data, { enabled: full.data?.ready === true, refetchInterval: 45_000 })
+      const heartbeat = useRuntimeHeartbeat(undefined, full.data, { enabled: full.data?.ready === true })
       return { full, heartbeat }
     }, { wrapper: wrapper() })
 
@@ -178,15 +135,72 @@ describe("automatic status queries", () => {
     expect(client.getQueryData(["bridge-status", deploymentProfile.bridgeCanisterId])).toEqual(status)
   })
 
-  it("pauses while hidden and refreshes on focus and reconnect", async () => {
-    focusManager.setFocused(false)
-    const initialValidation = { ready: true, blockers: [], checkedAt: Date.now() - 1_000 }
+  it("keeps the last successful heartbeat when a refresh raises a communication error", async () => {
+    const validation = {
+      ready: true,
+      blockers: [],
+      checkedAt: Date.now(),
+      snapshot: {
+        serviceFee: 50_000_000n,
+        maxServiceFee: 100_000_000n,
+        perDepositLimit: 10_000_000_000n,
+        minted: 0n,
+        limit: 10_000_000_000n,
+        startedAt: 0n,
+        duration: 60n,
+        depositsPaused: false,
+        withdrawalsPaused: false,
+        bridgeSigner: `0x${"11".repeat(20)}` as const,
+        mintAuthorizationEpoch: 1n,
+        blockTimestamp: 1n,
+      },
+    }
+    mocks.validateRuntimeHeartbeat
+      .mockResolvedValueOnce(validation)
+      .mockRejectedValue(new Error("Base RPC unavailable"))
     const view = renderHook(
-      () => useRuntimeHeartbeat(undefined, initialValidation, { enabled: true, refetchInterval: 20 }),
+      () => {
+        const heartbeat = useRuntimeHeartbeat(undefined, undefined, { enabled: true })
+        return {
+          data: heartbeat.data,
+          error: heartbeat.error,
+          isError: heartbeat.isError,
+          refetch: heartbeat.refetch,
+        }
+      },
       { wrapper: wrapper() },
     )
 
-    await act(async () => new Promise((resolve) => setTimeout(resolve, 30)))
+    await waitFor(() => expect(view.result.current.data).toEqual(validation))
+    await act(async () => { await view.result.current.refetch() })
+
+    await waitFor(() => expect(view.result.current.isError).toBe(true))
+    expect(view.result.current.error).toEqual(new Error("Base RPC unavailable"))
+    expect(view.result.current.data).toEqual(validation)
+  })
+
+  it("keeps confirmed safety blockers as successful heartbeat data", async () => {
+    const blocker = { ready: false, blockers: ["Deposit minting is paused"], checkedAt: Date.now() }
+    mocks.validateRuntimeHeartbeat.mockResolvedValue(blocker)
+    const view = renderHook(
+      () => useRuntimeHeartbeat(undefined, undefined, { enabled: true }),
+      { wrapper: wrapper() },
+    )
+
+    await waitFor(() => expect(view.result.current.isSuccess).toBe(true))
+    expect(view.result.current.isError).toBe(false)
+    expect(view.result.current.data).toEqual(blocker)
+  })
+
+  it("does not poll and refreshes only after focus and reconnect events", async () => {
+    focusManager.setFocused(false)
+    const view = renderHook(
+      () => useRuntimeHeartbeat(undefined, undefined, { enabled: true }),
+      { wrapper: wrapper() },
+    )
+
+    await waitFor(() => expect(view.result.current.isSuccess).toBe(true))
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 60)))
     expect(mocks.validateRuntimeHeartbeat).toHaveBeenCalledOnce()
 
     const callsBeforeFocus = mocks.validateRuntimeHeartbeat.mock.calls.length
@@ -202,13 +216,9 @@ describe("automatic status queries", () => {
   })
 
   it("does not validate automatically when disabled", async () => {
-    const view = renderHook(
-      () => useRuntimeValidation(undefined, { retryNotReadyAfterMs: 10 }),
-      { wrapper: wrapper() },
-    )
+    renderHook(() => useRuntimeValidation(undefined), { wrapper: wrapper() })
     await act(async () => Promise.resolve())
     expect(mocks.validateRuntime).not.toHaveBeenCalled()
-    expect(view.result.current.isAutoRetryPending).toBe(false)
   })
 
   it("loads the Base quote when runtime readiness enables it", async () => {

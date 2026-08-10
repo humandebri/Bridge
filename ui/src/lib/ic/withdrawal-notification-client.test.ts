@@ -5,6 +5,7 @@ import type { DeploymentProfile } from "@/config/profile"
 const mocks = vi.hoisted(() => ({
   createBridgeActor: vi.fn(),
   notifyWithdrawal: vi.fn(),
+  continueWithdrawal: vi.fn(),
 }))
 
 vi.mock("@/lib/ic/bridge", () => ({ createBridgeActor: mocks.createBridgeActor }))
@@ -22,6 +23,9 @@ import {
   NotifyWithdrawalCallError,
   notifyWithdrawalErrorMessage,
   notifyWithdrawalWithBrowserIdentity,
+  continueWithdrawalWithBrowserIdentity,
+  ContinueWithdrawalCallError,
+  unwrapContinueWithdrawalResult,
   unwrapNotifyWithdrawalResult,
   withdrawalNotificationIdentityStorageKey,
 } from "./withdrawal-notification-client"
@@ -39,9 +43,15 @@ function profile(instanceByte: string): Pick<DeploymentProfile, "chainId" | "bri
 beforeEach(() => {
   vi.clearAllMocks()
   browserLocalStorage().clear()
-  mocks.createBridgeActor.mockResolvedValue({ notify_withdrawal: mocks.notifyWithdrawal })
+  mocks.createBridgeActor.mockResolvedValue({
+    notify_withdrawal: mocks.notifyWithdrawal,
+    continue_withdrawal: mocks.continueWithdrawal,
+  })
   mocks.notifyWithdrawal.mockResolvedValue({
     Ok: { Ingested: { finalized_head_block_number: 42n, withdrawal_id: new Uint8Array(32).fill(7) } },
+  })
+  mocks.continueWithdrawal.mockResolvedValue({
+    Ok: { Complete: { state: { Withdrawal: { Paid: null } } } },
   })
 })
 
@@ -138,5 +148,32 @@ describe("withdrawal notification client", () => {
     }
     expect(thrown).toBeInstanceOf(NotifyWithdrawalCallError)
     expect((thrown as NotifyWithdrawalCallError).code).toBe("LedgerFeeExceedsServiceFee")
+  })
+
+  it("continues_one_step_with_the_same_persisted_browser_identity", async () => {
+    const deployment = profile("8")
+    const expectedIdentity = await getWithdrawalNotificationIdentity(deployment)
+    const withdrawalId = new Uint8Array(32).fill(4)
+
+    await expect(continueWithdrawalWithBrowserIdentity(withdrawalId, deployment)).resolves.toHaveProperty("Complete")
+
+    expect(mocks.createBridgeActor).toHaveBeenCalledWith(
+      deployment.icHost,
+      deployment.bridgeCanisterId,
+      expectedIdentity,
+    )
+    expect(mocks.continueWithdrawal).toHaveBeenCalledOnce()
+    expect(mocks.continueWithdrawal).toHaveBeenCalledWith(withdrawalId)
+  })
+
+  it("decodes_typed_continuation_failures", () => {
+    expect(() => unwrapContinueWithdrawalResult({ Err: { InsufficientCycles: null } })).toThrow("enough cycles")
+    try {
+      unwrapContinueWithdrawalResult({ Err: { RateLimited: { retry_after_seconds: 10n } } })
+      throw new Error("expected continuation failure")
+    } catch (error) {
+      expect(error).toBeInstanceOf(ContinueWithdrawalCallError)
+      expect((error as ContinueWithdrawalCallError).code).toBe("RateLimited")
+    }
   })
 })

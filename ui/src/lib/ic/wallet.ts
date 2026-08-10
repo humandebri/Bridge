@@ -6,35 +6,20 @@ import { base64ToUint8Array, uint8ArrayToBase64 } from "@dfinity/utils"
 import type { ApproveParams } from "@icp-sdk/canisters/ledger/icrc"
 import { AnonymousIdentity, Cbor, Certificate, HttpAgent, lookupResultToBuffer, requestIdOf } from "@icp-sdk/core/agent"
 import { Principal } from "@icp-sdk/core/principal"
-import type { _SERVICE, DepositReceipt, DepositView, SettlementActionError, SettlementActionResult } from "@/generated/bridge.did"
+import type { _SERVICE, DepositReceipt, DepositView } from "@/generated/bridge.did"
 import { idlFactory } from "@/generated/bridge.idl"
-import { isDepositPhase, isSettlementActionResult } from "@/lib/settlement-phase"
+import { isDepositPhase } from "@/lib/settlement-phase"
 
 const CALL_TIMEOUT_MS = 120_000
 const OISY_SIGNER_URL = "https://oisy.com/sign"
 const BRIDGE_SERVICE = idlFactory({ IDL: LegacyIDL }) as IDL.ServiceClass
 
-type BridgeWalletMethod = "request_deposit" | "request_deposit_refund" | "continue_withdrawal"
+type BridgeWalletMethod = "request_deposit" | "request_deposit_refund"
 
 export type IcWalletProvider = "oisy" | "plug"
 export interface IcAccount { owner: string; subaccount?: Uint8Array }
 export interface DepositCall { ownerSequence: bigint; baseRecipient: Uint8Array; grossAmount: bigint; maxServiceFee: bigint }
 export interface ApprovalCall { amount: bigint; currentAllowance: bigint; ledgerFee: bigint }
-
-export type SettlementActionErrorCode = SettlementActionError extends infer Variant
-  ? Variant extends Record<string, unknown> ? keyof Variant : never
-  : never
-
-export class SettlementActionCallError extends Error {
-  constructor(
-    readonly code: SettlementActionErrorCode,
-    message: string,
-    readonly retryAt?: number,
-  ) {
-    super(message)
-    this.name = "SettlementActionCallError"
-  }
-}
 
 export interface IcWalletAdapter {
   readonly provider: IcWalletProvider
@@ -46,7 +31,6 @@ export interface IcWalletAdapter {
   approve(call: ApprovalCall): Promise<bigint>
   requestDeposit(call: DepositCall): Promise<DepositReceipt>
   requestDepositRefund(depositId: Uint8Array): Promise<DepositView>
-  continueWithdrawal(withdrawalId: Uint8Array): Promise<SettlementActionResult>
 }
 
 type IcrcCallCanisterRequestParams = { canisterId: string; sender: string; method: string; arg: string; nonce?: string }
@@ -158,14 +142,6 @@ export class OisyAdapter implements IcWalletAdapter {
 
   async requestDepositRefund(depositId: Uint8Array): Promise<DepositView> {
     return unwrapRequestDepositRefundResult(await this.bridgeCall("request_deposit_refund", () => [depositId]))
-  }
-
-  async continueWithdrawal(withdrawalId: Uint8Array): Promise<SettlementActionResult> {
-    return this.continueSettlement("continue_withdrawal", withdrawalId)
-  }
-
-  private async continueSettlement(method: "continue_withdrawal", id: Uint8Array): Promise<SettlementActionResult> {
-    return unwrapSettlementResult(await this.bridgeCall(method, () => [id]))
   }
 
   private async bridgeCall(method: BridgeWalletMethod, createArgs: (account: IcAccount) => unknown[] = () => []): Promise<unknown> {
@@ -291,16 +267,6 @@ export class PlugAdapter implements IcWalletAdapter {
   async requestDepositRefund(depositId: Uint8Array): Promise<DepositView> {
     const actor = await this.bridgeActor()
     return unwrapRequestDepositRefundResult(await actor.request_deposit_refund(depositId))
-  }
-
-  async continueWithdrawal(withdrawalId: Uint8Array): Promise<SettlementActionResult> {
-    return this.continueSettlement("continue_withdrawal", withdrawalId)
-  }
-
-  private async continueSettlement(method: "continue_withdrawal", id: Uint8Array): Promise<SettlementActionResult> {
-    const actor = await this.bridgeActor()
-    const result = await actor[method](id)
-    return unwrapSettlementResult(result)
   }
 
   private async assertConnectedPrincipal(): Promise<IcAccount> {
@@ -459,39 +425,6 @@ export function requestDepositRefundErrorMessage(error: unknown): string {
     return settlementActionErrorMessage(error)
   }
   return `Refund claim failed: ${stringify(error)}`
-}
-
-function unwrapSettlementResult(result: unknown): SettlementActionResult {
-  if (!isObject(result)) throw new Error("Wallet reply has an invalid settlement result")
-  const decoded = result as Record<string, unknown>
-  if (decoded.Err !== undefined) throw settlementActionCallError(decoded.Err)
-  if (decoded.Ok === undefined || !isSettlementActionResult(decoded.Ok)) throw new Error("Wallet reply has an invalid settlement result")
-  return decoded.Ok
-}
-
-function settlementActionCallError(error: unknown): Error {
-  const code = settlementActionErrorCode(error)
-  if (!code) return new Error("Wallet reply has an invalid settlement error")
-  const message = settlementActionErrorMessage(error)
-  const rateLimited: unknown = isObject(error) ? Reflect.get(error, "RateLimited") as unknown : undefined
-  if (code === "RateLimited" && isObject(rateLimited)) {
-    const retryAfter: unknown = Reflect.get(rateLimited, "retry_after_seconds")
-    if (typeof retryAfter === "bigint") return new SettlementActionCallError(code, message, Date.now() + Number(retryAfter) * 1_000)
-  }
-  const automaticProgress: unknown = isObject(error) ? Reflect.get(error, "AutomaticProgressPending") as unknown : undefined
-  if (code === "AutomaticProgressPending" && isObject(automaticProgress)) {
-    const nextRun: unknown = Reflect.get(automaticProgress, "next_run_at_ns")
-    const nextCheck: unknown = Array.isArray(nextRun) ? (nextRun.at(0) as unknown) : undefined
-    if (typeof nextCheck === "bigint") return new SettlementActionCallError(code, message, Number(nextCheck / 1_000_000n))
-  }
-  return new SettlementActionCallError(code, message)
-}
-
-function settlementActionErrorCode(error: unknown): SettlementActionErrorCode | undefined {
-  if (!isObject(error)) return undefined
-  const code = Object.keys(error)[0]
-  if (code && ["AutomaticProgressPending", "InvalidId", "Busy", "WrongState", "NotFound", "Unauthorized", "RateLimited", "StorageFailure", "AnonymousCaller"].includes(code)) return code as SettlementActionErrorCode
-  return undefined
 }
 
 function settlementActionErrorMessage(error: unknown): string {

@@ -92,7 +92,7 @@ async function setup() {
         token_name: "TEST ICRC1",
         decimals: [8],
         minting_account: account(minter),
-        transfer_fee: 10_000n,
+        transfer_fee: 100_000n,
         metadata: [],
         initial_balances: [[account(testOwner), 100_000_000_000n]],
         archive_options: {
@@ -350,6 +350,59 @@ async function setup() {
     await syncObservedHeads()
     return created.transactionHash
   }
+  const prepareRefundableDeposit = async () => {
+    const grossAmount = 100_000_000n
+    const ledgerFee = 100_000n
+    const ownerSequence = await bridge.actor.get_next_deposit_sequence(testOwner)
+    const now = await pic.getTime()
+    const approval = await ledger.icrc2_approve({
+      from_subaccount: [],
+      spender: account(bridge.canisterId),
+      amount: grossAmount + ledgerFee,
+      expected_allowance: [],
+      expires_at: [BigInt(now + 30 * 60 * 1_000) * 1_000_000n],
+      fee: [ledgerFee],
+      memo: [],
+      created_at_time: [],
+    })
+    if ("Err" in approval) throw new Error(`refund fixture approval failed: ${json(approval.Err)}`)
+    await syncObservedHeads()
+    const admitted = await bridge.actor.request_deposit({
+      owner_sequence: ownerSequence,
+      base_recipient: hexToBytes(deployer),
+      from_subaccount: [],
+      gross_amount: grossAmount,
+      max_service_fee: 1_000_000n,
+    })
+    if ("Err" in admitted) throw new Error(`refund fixture deposit failed: ${json(admitted.Err)}`)
+    if (!knownDeposits.some((id) => bytesHex(id) === bytesHex(admitted.Ok.deposit_id))) knownDeposits.push(admitted.Ok.deposit_id)
+    depositSequences.push(ownerSequence.toString())
+
+    let record
+    const signingDeadline = Date.now() + 60_000
+    while (Date.now() < signingDeadline) {
+      record = (await bridge.actor.get_deposit(admitted.Ok.deposit_id))[0]
+      if (record?.mint_authorization[0]?.signature.length === 1) break
+      await delay(250)
+    }
+    const authorization = record?.mint_authorization[0]
+    if (!authorization?.signature.length) throw new Error("refund fixture did not reach a signed Mint Authorization")
+    const latest = await publicClient.getBlock({ blockTag: "latest" })
+    const advanceSeconds = authorization.deadline >= latest.timestamp
+      ? authorization.deadline - latest.timestamp + 1n
+      : 1n
+    await rpc("evm_increaseTime", [Number(advanceSeconds)])
+    await rpc("evm_mine", [])
+    await rpc("anvil_mine", ["0x40"])
+    await syncObservedHeads()
+    const finalized = await publicClient.getBlock({ blockTag: "finalized" })
+    if (finalized.timestamp <= authorization.deadline) throw new Error("refund fixture did not pass the strict finalized deadline")
+    await pic.advanceTime(60_001)
+    return {
+      depositId: bytesHex(admitted.Ok.deposit_id),
+      ownerSequence: ownerSequence.toString(),
+    }
+  }
   await syncObservedHeads()
   const relaySigned = async (artifact) => {
     const raw = bytesHex(artifact.raw_transaction)
@@ -530,8 +583,16 @@ async function setup() {
       if (request.url === "/test/prepare-latest-withdrawal") {
         return send(response, 200, { transactionHash: await prepareLatestWithdrawal() })
       }
+      if (request.url === "/test/prepare-refundable-deposit") {
+        return send(response, 200, await prepareRefundableDeposit())
+      }
       if (request.url === "/test/fail-next-deposit-response") {
         failNextDepositResponse = true
+        return send(response, 200, null)
+      }
+      if (request.url === "/test/set-ledger-available") {
+        if (body.available) await pic.startCanister({ canisterId: ledgerId })
+        else await pic.stopCanister({ canisterId: ledgerId })
         return send(response, 200, null)
       }
       if (request.url === "/test/settle") {
@@ -587,6 +648,16 @@ async function setup() {
       if (request.url === "/test/account") {
         connectedAccount = String(body.owner)
         return send(response, 200, null)
+      }
+      if (request.url === "/test/latest-withdrawal-state") {
+        const id = knownWithdrawals.at(-1)
+        if (!id) throw new Error("test withdrawal is unavailable")
+        const record = (await bridge.actor.get_withdrawal(id))[0]
+        if (!record) throw new Error("test withdrawal record is unavailable")
+        return send(response, 200, {
+          phase: Object.keys(record.state)[0],
+          stopReason: record.last_settlement_stop_reason[0] ?? null,
+        })
       }
       if (request.url === "/test/state") {
         const balance = await publicClient.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "balanceOf", args: [deployer] })

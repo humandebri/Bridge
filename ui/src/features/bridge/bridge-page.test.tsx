@@ -4,7 +4,7 @@ import { BridgeConfirmationDialog, isDepositAuthorizationPending, type BridgeDir
 
 afterEach(cleanup)
 
-function Harness({ direction, approvalNeeded, onConfirm = vi.fn() }: { direction: BridgeDirection; approvalNeeded?: boolean; onConfirm?: () => void }) {
+function Harness({ direction, onConfirm = vi.fn() }: { direction: BridgeDirection; onConfirm?: () => void }) {
   const sendSymbol = direction === "deposit" ? "TICRC1" : "KINIC"
   const receiveSymbol = direction === "deposit" ? "KINIC" : "TICRC1"
   return <BridgeConfirmationDialog
@@ -29,7 +29,6 @@ function Harness({ direction, approvalNeeded, onConfirm = vi.fn() }: { direction
     fee={1n}
     sendSymbol={sendSymbol}
     receiveSymbol={receiveSymbol}
-    approvalNeeded={approvalNeeded}
     pending={false}
     onRetry={vi.fn()}
     onConfirm={onConfirm}
@@ -108,11 +107,12 @@ describe("BridgeConfirmationDialog", () => {
   it("lets a deposit continue after reviewing its wallets and amount", () => {
     render(<Harness direction="deposit" />)
     expect(screen.getByRole("heading", { name: "Review bridge to Base" })).toBeVisible()
-    expect(screen.getByText("Review the transfer and the wallet actions that come next.")).toBeVisible()
+    expect(screen.getByText("Review the transfer details before continuing.")).toBeVisible()
     expect(screen.getByText("10 TICRC1")).toBeVisible()
     expect(screen.getByText("0.00000009 KINIC")).toBeVisible()
     expect(screen.queryByText("Wallets connected")).not.toBeInTheDocument()
     expect(screen.queryByText(/initial pull Ledger fee is never refunded/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Next in your wallets")).not.toBeInTheDocument()
     const confirm = screen.getByRole("button", { name: "Continue to IC wallet" })
     expect(confirm).toBeEnabled()
   })
@@ -122,22 +122,11 @@ describe("BridgeConfirmationDialog", () => {
     expect(screen.getByText("10 KINIC")).toBeVisible()
     expect(screen.getByText("0.00000009 TICRC1")).toBeVisible()
     expect(screen.getByRole("heading", { name: "Review bridge to IC" })).toBeVisible()
-    expect(screen.getAllByRole("listitem").map((step) => step.textContent)).toEqual([
-      "1. Allow the bridge to use KINIC in your Base wallet.",
-      "2. Confirm the withdrawal transaction in your Base wallet.",
-      "3. After Base finality, the browser automatically notifies the Bridge. No IC wallet confirmation is needed for the ledger payout.",
-    ])
+    expect(screen.queryByText("Next in your wallets")).not.toBeInTheDocument()
     const confirm = screen.getByRole("button", { name: "Continue to Base wallet" })
     expect(confirm).toBeDisabled()
     fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge irreversible burn" }))
     expect(confirm).toBeEnabled()
-  })
-
-  it("omits the token access step when the reviewed allowance is already sufficient", () => {
-    render(<Harness direction="deposit" approvalNeeded={false} />)
-
-    expect(screen.queryByText(/Allow the bridge to use TICRC1/)).not.toBeInTheDocument()
-    expect(screen.getByText("Confirm the deposit request in your IC wallet.")).toBeVisible()
   })
 })
 

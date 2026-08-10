@@ -75,6 +75,11 @@ structure UserActionAssumption
   eventuallyActs : ∀ time, readyAt ≤ time →
     (execution.signals time).userActionAvailable = true
 
+structure KeeperActionAssumption
+    (execution : Execution) (readyAt : Nat) where
+  eventuallyActs : ∀ time, readyAt ≤ time →
+    (execution.signals time).userActionAvailable = true
+
 theorem common_enables_without_user
     {execution : Execution} {start : Nat}
     (common : CommonOperationalAssumptions execution start)
@@ -104,6 +109,22 @@ theorem common_enables_with_user
       exact user.eventuallyActs time after⟩,
     admissible time after noOccurrence⟩
 
+theorem common_enables_with_keeper
+    {execution : Execution} {start : Nat}
+    (common : CommonOperationalAssumptions execution start)
+    (keeper : KeeperActionAssumption execution common.readyAt)
+    {event : Event}
+    (admissible : AdmissibleUntilOccurs execution event common.readyAt) :
+    EnabledUntilOccurs execution event true common.readyAt := by
+  intro time after noOccurrence
+  exact ⟨⟨common.schedulerContinues time after, common.timeAdvances time after,
+    common.cyclesAvailable time after, common.storageEventuallyCommits time after,
+    common.externalSystemEventuallyResolves time after,
+    common.notPermanentlyPaused time after, by
+      intro
+      exact keeper.eventuallyActs time after⟩,
+    admissible time after noOccurrence⟩
+
 theorem occurrence_produces_valid_step
     {execution : Execution} {event : Event} {time : Nat}
     (occurs : execution.action time = some event) :
@@ -115,15 +136,16 @@ theorem occurrence_produces_valid_step
 def WithdrawalEventuallyPaid : Prop :=
   ∀ (execution : Execution) (id ledgerFee transferAmount destination start : Nat),
     (common : CommonOperationalAssumptions execution start) →
+    KeeperActionAssumption execution common.readyAt →
     AdmissibleUntilOccurs execution
       (.payout id ledgerFee transferAmount destination) common.readyAt →
     Eventually (ReachesPhase id .paid) execution start
 
 theorem committed_withdrawal_eventually_paid : WithdrawalEventuallyPaid := by
-  intro execution id ledgerFee transferAmount destination start common admissible
+  intro execution id ledgerFee transferAmount destination start common keeper admissible
   obtain ⟨time, after, occurs⟩ := common.schedulerWeakFair
-    (.payout id ledgerFee transferAmount destination) false common.readyAt
-    (common_enables_without_user common admissible)
+    (.payout id ledgerFee transferAmount destination) true common.readyAt
+    (common_enables_with_keeper common keeper admissible)
   have accepted := occurrence_produces_valid_step occurs
   have paid := (step_terminal_event_reaches_phase accepted).2.2.2
     ledgerFee transferAmount destination rfl
@@ -149,14 +171,14 @@ theorem funded_deposit_eventually_minted : FundedDepositEventuallyMinted := by
 def ExpiredDepositEventuallyRefunded : Prop :=
   ∀ (execution : Execution) (id amount start : Nat),
     (common : CommonOperationalAssumptions execution start) →
-    UserActionAssumption execution common.readyAt →
+    KeeperActionAssumption execution common.readyAt →
     AdmissibleUntilOccurs execution (.refund id amount) common.readyAt →
     Eventually (ReachesPhase id .refunded) execution start
 
 theorem expired_deposit_eventually_refunded : ExpiredDepositEventuallyRefunded := by
-  intro execution id amount start common user admissible
+  intro execution id amount start common keeper admissible
   obtain ⟨time, after, occurs⟩ := common.schedulerWeakFair (.refund id amount) true common.readyAt
-    (common_enables_with_user common user admissible)
+    (common_enables_with_keeper common keeper admissible)
   have accepted := occurrence_produces_valid_step occurs
   have refunded := (step_terminal_event_reaches_phase accepted).2.1 amount rfl
   have startBefore : start ≤ time := Nat.le_trans common.readyAfterStart after
@@ -176,5 +198,12 @@ theorem funding_failure_eventually_cancelled : FundingFailureEventuallyCancelled
   have cancelled := (step_terminal_event_reaches_phase accepted).2.2.1 rfl
   have startBefore : start ≤ time := Nat.le_trans common.readyAfterStart after
   exact ⟨time + 1, by omega, cancelled⟩
+
+def FundedDepositEventuallyMintedOrRefunded : Prop :=
+  FundedDepositEventuallyMinted ∧ ExpiredDepositEventuallyRefunded
+
+theorem funded_deposit_eventually_minted_or_refunded :
+    FundedDepositEventuallyMintedOrRefunded :=
+  ⟨funded_deposit_eventually_minted, expired_deposit_eventually_refunded⟩
 
 end BridgeSpec.Liveness

@@ -1,8 +1,9 @@
 import { Ed25519KeyIdentity } from "@dfinity/identity"
-import type { NotifyWithdrawalError, NotifyWithdrawalReceipt } from "@/generated/bridge.did"
+import type { NotifyWithdrawalError, NotifyWithdrawalReceipt, SettlementActionError, SettlementActionResult } from "@/generated/bridge.did"
 import { deploymentProfile, type DeploymentProfile } from "@/config/profile"
 import { browserLocalStorage, withBrowserLock } from "@/lib/browser-lock"
 import { createBridgeActor } from "@/lib/ic/bridge"
+import { isSettlementActionResult } from "@/lib/settlement-phase"
 
 const IDENTITY_STORAGE_PREFIX = "kinic.bridge.withdrawal-notification-identity.v1"
 const sessionIdentities = new Map<string, Ed25519KeyIdentity>()
@@ -10,6 +11,9 @@ const sessionIdentities = new Map<string, Ed25519KeyIdentity>()
 type NotificationDeployment = Pick<DeploymentProfile, "chainId" | "bridgeCanisterId" | "deploymentInstanceId" | "icHost">
 
 export type NotifyWithdrawalErrorCode = NotifyWithdrawalError extends infer Variant
+  ? Variant extends Record<string, unknown> ? keyof Variant : never
+  : never
+export type ContinueWithdrawalErrorCode = SettlementActionError extends infer Variant
   ? Variant extends Record<string, unknown> ? keyof Variant : never
   : never
 
@@ -20,6 +24,13 @@ export class NotifyWithdrawalCallError extends Error {
   ) {
     super(message)
     this.name = "NotifyWithdrawalCallError"
+  }
+}
+
+export class ContinueWithdrawalCallError extends Error {
+  constructor(readonly code: ContinueWithdrawalErrorCode, message: string) {
+    super(message)
+    this.name = "ContinueWithdrawalCallError"
   }
 }
 
@@ -70,6 +81,22 @@ export async function notifyWithdrawalWithBrowserIdentity(
   )
 }
 
+export async function continueWithdrawalWithBrowserIdentity(
+  withdrawalId: Uint8Array,
+  profile: NotificationDeployment = deploymentProfile,
+): Promise<SettlementActionResult> {
+  if (!profile.bridgeCanisterId) throw new Error("Bridge canister ID is unavailable")
+  const identity = await getWithdrawalNotificationIdentity(profile)
+  const withdrawalKey = Array.from(withdrawalId, (value) => value.toString(16).padStart(2, "0")).join("")
+  return withBrowserLock(
+    `kinic-withdrawal-continuation:${profile.bridgeCanisterId}:${withdrawalKey}`,
+    async () => {
+      const actor = await createBridgeActor(profile.icHost, profile.bridgeCanisterId as string, identity)
+      return unwrapContinueWithdrawalResult(await actor.continue_withdrawal(withdrawalId))
+    },
+  )
+}
+
 export function withdrawalNotificationIdentityStorageKey(profile: NotificationDeployment): string {
   return [
     IDENTITY_STORAGE_PREFIX,
@@ -106,6 +133,42 @@ export function unwrapNotifyWithdrawalResult(result: unknown): NotifyWithdrawalR
     throw new Error("Bridge returned an invalid finalized block")
   }
   return receipt as NotifyWithdrawalReceipt
+}
+
+export function unwrapContinueWithdrawalResult(result: unknown): SettlementActionResult {
+  if (!isObject(result)) throw new Error("Bridge returned an invalid withdrawal continuation result")
+  const decoded = result as Record<string, unknown>
+  if (decoded.Err !== undefined) {
+    const error = decoded.Err
+    if (!isObject(error)) throw new Error("Bridge returned an invalid withdrawal continuation error")
+    const key = Object.keys(error)[0]
+    const code = key && [
+      "AnonymousCaller",
+      "InvalidId",
+      "NotFound",
+      "Unauthorized",
+      "Busy",
+      "StorageFailure",
+      "WrongState",
+      "AutomaticProgressPending",
+      "RateLimited",
+      "InsufficientCycles",
+    ].includes(key) ? key as ContinueWithdrawalErrorCode : undefined
+    if (!code) throw new Error("Bridge returned an invalid withdrawal continuation error")
+    throw new ContinueWithdrawalCallError(code, continueWithdrawalErrorMessage(error))
+  }
+  if (decoded.Ok === undefined || !isSettlementActionResult(decoded.Ok)) {
+    throw new Error("Bridge returned an invalid withdrawal continuation result")
+  }
+  return decoded.Ok
+}
+
+function continueWithdrawalErrorMessage(error: object): string {
+  if ("InsufficientCycles" in error) return "The Bridge Canister does not have enough cycles to continue this payout."
+  if ("RateLimited" in error) return "This payout was continued too recently. Try again later."
+  if ("Busy" in error) return "This payout is already being continued."
+  if ("AnonymousCaller" in error) return "The browser continuation identity was not accepted."
+  return `Bridge rejected withdrawal continuation: ${stringify(error)}`
 }
 
 export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): string {

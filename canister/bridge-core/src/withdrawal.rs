@@ -17,7 +17,7 @@ pub enum WithdrawalState {
     Paid {
         attempt: TransferAttempt,
         settlement: Settlement,
-        ledger_block_index: u128,
+        release_ledger_block_index: u128,
         source_hold: Option<HoldId>,
     },
     ReconciliationHold {
@@ -79,7 +79,7 @@ pub enum WithdrawalEvent {
         settlement: Settlement,
     },
     ReleaseSucceeded {
-        ledger_block_index: u128,
+        release_ledger_block_index: u128,
     },
     ReleaseAmbiguous {
         hold_id: HoldId,
@@ -154,6 +154,26 @@ impl WithdrawalRecord {
         use WithdrawalEvent as Event;
         use WithdrawalState as State;
 
+        let current_release = match &self.state {
+            State::Paid {
+                release_ledger_block_index,
+                ..
+            } => Some(*release_ledger_block_index),
+            _ => None,
+        };
+        let ledger_event = match &event {
+            Event::ReleaseSucceeded {
+                release_ledger_block_index,
+            } => (1, *release_ledger_block_index),
+            _ => (0, 0),
+        };
+        let expected_release = crate::withdrawal_ledger_block_transition(
+            current_release,
+            ledger_event.0,
+            ledger_event.1,
+        )
+        .ok_or(CoreError::LedgerBlockConflict)?;
+
         if self.is_idempotent(&event) {
             return Ok(ApplyResult::idempotent());
         }
@@ -197,13 +217,15 @@ impl WithdrawalRecord {
                     attempt,
                     settlement,
                 },
-                Event::ReleaseSucceeded { ledger_block_index },
+                Event::ReleaseSucceeded {
+                    release_ledger_block_index,
+                },
             ) => {
                 self.validate_attempt(attempt, *settlement)?;
                 State::Paid {
                     attempt: attempt.clone(),
                     settlement: *settlement,
-                    ledger_block_index,
+                    release_ledger_block_index,
                     source_hold: None,
                 }
             }
@@ -225,6 +247,19 @@ impl WithdrawalRecord {
                 });
             }
         };
+        let next_release = match &next {
+            State::Paid {
+                release_ledger_block_index,
+                ..
+            } => Some(*release_ledger_block_index),
+            _ => None,
+        };
+        if next_release != expected_release {
+            return Err(CoreError::InvalidTransition {
+                entity: "withdrawal",
+                event: "ledger_block_effect_mismatch",
+            });
+        }
         let effects = crate::withdrawal_transition_effects(
             state_code,
             event_code,
@@ -293,11 +328,13 @@ impl WithdrawalRecord {
             ) => current_attempt == attempt.as_ref() && current_settlement == settlement,
             (
                 State::Paid {
-                    ledger_block_index: current,
+                    release_ledger_block_index: current,
                     ..
                 },
-                Event::ReleaseSucceeded { ledger_block_index },
-            ) => current == ledger_block_index,
+                Event::ReleaseSucceeded {
+                    release_ledger_block_index,
+                },
+            ) => current == release_ledger_block_index,
             (
                 State::ReconciliationHold {
                     hold_id: current, ..

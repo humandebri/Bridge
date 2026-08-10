@@ -107,6 +107,11 @@ theorem canonical_probe_refinement
       canonicalProbeMatches receiptBlock.val snapshotBlock.val := by
   rfl
 
+theorem ledger_block_provenance_refinement (current : Option U128) (block : U128) :
+    ledgerBlockImpl current block =
+      ledgerBlockProvenance (current.map U128.val) block.val := by
+  rfl
+
 theorem payment_refinement
     (withdrawal : Withdrawal) (transfer : LedgerTransfer)
     (bounded : withdrawal.amount ≤ maxU128 ∧ withdrawal.amountOut ≤ maxU128 ∧
@@ -172,9 +177,13 @@ theorem manual_claim_refinement
   rfl
 
 theorem refund_request_identity_refinement
-    (authenticated : Bool) (ownerMatch : Option Bool) :
-    refundRequestIdentityImpl authenticated ownerMatch =
-      decideRefundRequestIdentity authenticated ownerMatch := by
+    (authenticated : Bool) :
+    refundRequestIdentityImpl authenticated =
+      decideRefundRequestIdentity authenticated := by
+  rfl
+
+theorem deposit_nonterminal_index_refinement (state : U16) :
+    depositNonterminalIndexImpl state = depositNonterminalIndexed state.val := by
   rfl
 
 theorem notification_admission_refinement

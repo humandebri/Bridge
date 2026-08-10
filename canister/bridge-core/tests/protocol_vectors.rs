@@ -14,6 +14,7 @@ const SECTIONS: &[&str] = &[
     "lease_cases",
     "manual_claim_cases",
     "refund_request_identity_cases",
+    "deposit_nonterminal_index_cases",
     "notification_admission_cases",
     "lease_lane_cases",
     "funding_attempt_cases",
@@ -21,6 +22,7 @@ const SECTIONS: &[&str] = &[
     "finalization_cases",
     "queue_cases",
     "canonical_probe_cases",
+    "ledger_block_provenance_cases",
 ];
 
 fn vectors() -> Value {

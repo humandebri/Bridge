@@ -85,6 +85,7 @@ pub enum SettlementActionError {
     WrongState,
     AutomaticProgressPending { next_run_at_ns: Option<u64> },
     RateLimited { retry_after_seconds: u64 },
+    InsufficientCycles,
 }
 
 pub(crate) fn stop_reason_text(result: &SettlementActionResult) -> Option<String> {
@@ -119,6 +120,10 @@ fn prepared_release_fee_matches_configured(prepared: u128, configured: u128) -> 
     prepared == configured
 }
 
+fn withdrawal_hold_step_requires_new_call(phase: WithdrawalPhase) -> bool {
+    matches!(phase, WithdrawalPhase::ReleasePending)
+}
+
 fn resolve_reconciliation_success(
     config: &crate::config::BridgeInitArgs,
     target: ReconciliationTarget,
@@ -140,7 +145,7 @@ fn resolve_reconciliation_success(
                         id,
                         hold_id,
                         DepositHoldResolution::FundingSucceeded {
-                            ledger_block_index: block_index,
+                            funding_ledger_block_index: block_index,
                         },
                         Some(&scan_target),
                     ),
@@ -149,7 +154,7 @@ fn resolve_reconciliation_success(
                         id,
                         hold_id,
                         DepositHoldResolution::RefundSucceeded {
-                            ledger_block_index: block_index,
+                            refund_ledger_block_index: block_index,
                         },
                         Some(&scan_target),
                     ),
@@ -159,7 +164,7 @@ fn resolve_reconciliation_success(
                         id,
                         hold_id,
                         WithdrawalHoldResolution::Succeeded {
-                            ledger_block_index: block_index,
+                            release_ledger_block_index: block_index,
                         },
                         Some(&scan_target),
                     ),
@@ -338,7 +343,7 @@ async fn advance_hold(
                     id,
                     hold.id,
                     DepositHoldResolution::FundingSucceeded {
-                        ledger_block_index: block_index,
+                        funding_ledger_block_index: block_index,
                     },
                     None,
                 ),
@@ -347,7 +352,7 @@ async fn advance_hold(
                     id,
                     hold.id,
                     DepositHoldResolution::RefundSucceeded {
-                        ledger_block_index: block_index,
+                        refund_ledger_block_index: block_index,
                     },
                     None,
                 ),
@@ -357,7 +362,7 @@ async fn advance_hold(
                     id,
                     hold.id,
                     WithdrawalHoldResolution::Succeeded {
-                        ledger_block_index: block_index,
+                        release_ledger_block_index: block_index,
                     },
                     None,
                 ),
@@ -645,7 +650,7 @@ pub(crate) async fn advance_deposit(
                                 .ok_or(SettlementActionError::NotFound)?;
                             let result = current
                                 .apply(DepositEvent::FundingSucceeded {
-                                    ledger_block_index: block_index,
+                                    funding_ledger_block_index: block_index,
                                 })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
                             store
@@ -886,7 +891,7 @@ pub(crate) async fn advance_deposit(
                                 .ok_or(SettlementActionError::NotFound)?;
                             let result = current
                                 .apply(DepositEvent::RefundSucceeded {
-                                    ledger_block_index: block_index,
+                                    refund_ledger_block_index: block_index,
                                 })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
                             store
@@ -993,7 +998,7 @@ pub(crate) async fn advance_withdrawal(
                                 .ok_or(SettlementActionError::NotFound)?;
                             current
                                 .apply(WithdrawalEvent::ReleaseSucceeded {
-                                    ledger_block_index: block_index,
+                                    release_ledger_block_index: block_index,
                                 })
                                 .map_err(|_| SettlementActionError::StorageFailure)?;
                             store
@@ -1045,7 +1050,22 @@ pub(crate) async fn advance_withdrawal(
                         .ok_or(SettlementActionError::NotFound)
                 })?;
                 match advance_hold(&config, hold, lease).await? {
-                    HoldAdvance::Continue => continue,
+                    HoldAdvance::Continue => {
+                        let current = STORE.with(|store| {
+                            store
+                                .borrow()
+                                .withdrawal(withdrawal_id)
+                                .map_err(|_| SettlementActionError::StorageFailure)?
+                                .ok_or(SettlementActionError::NotFound)
+                        })?;
+                        let phase = WithdrawalPhase::from(&current.state);
+                        if withdrawal_hold_step_requires_new_call(phase) {
+                            return Ok(SettlementActionResult::ReconciliationProgress {
+                                state: SettlementState::Withdrawal(phase),
+                            });
+                        }
+                        continue;
+                    }
                     HoldAdvance::Progress => {
                         return Ok(SettlementActionResult::ReconciliationProgress { state });
                     }
@@ -1352,5 +1372,15 @@ mod tests {
         assert!(prepared_release_fee_matches_configured(10_000, 10_000));
         assert!(!prepared_release_fee_matches_configured(10_000, 20_000));
         assert!(!prepared_release_fee_matches_configured(20_000, 10_000));
+    }
+
+    #[test]
+    fn complete_absence_stops_after_saving_the_new_release_identity() {
+        assert!(withdrawal_hold_step_requires_new_call(
+            WithdrawalPhase::ReleasePending
+        ));
+        assert!(!withdrawal_hold_step_requires_new_call(
+            WithdrawalPhase::Paid
+        ));
     }
 }

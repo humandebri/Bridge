@@ -319,6 +319,7 @@ pub enum CoreError {
         event: &'static str,
     },
     ConflictingReplay,
+    LedgerBlockConflict,
     PayloadConflict,
     HoldMismatch,
     MissingReconciliationEvidence,

@@ -4,10 +4,10 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-通常の再オープンはstable schema v31、record wire version v27だけを受理する。`post_upgrade`だけは監査済みv30／wire v26を一つのSQLite transactionでv31／wire v27へ変換する。v29以下、未知schema、未知wire、decode不能なDB、未登録migration historyはfail closedで起動を拒否する。
-upgrade検証はcurrent schema v31の再オープンに加え、レビュー済みv30 Wasmが作成したrecord・config・quota・auditを保持するv30→v31経路と、migration失敗時の全rollbackを検証する。
+通常の再オープンと`post_upgrade`はstable schema v32、record wire version v28だけを受理する。v31以下、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否する。
+upgrade検証はcurrent schema v32のrecord・config・quota・auditを保持するsame-Wasm再オープンと、旧schema・wireの拒否を検証する。
 
-`settlement_jobs`が自動・手動進行の正本である。recordとjobは同じSQLite transactionで更新し、外部`await`前に署名dispatchやLedger transfer identityを永続化する。timerは目覚ましにすぎず、lease generationとDB上の状態だけが実行権を決める。
+`settlement_jobs`が実行中・停止中Settlementの正本である。Depositとfee payoutはtimerが自動claimし、Withdrawalは明示的な`continue_withdrawal`だけがmanual claimする。Withdrawal通知時はrecordと固定transfer identityだけをatomic保存し、jobを作らない。外部`await`前に署名dispatchやLedger transfer identityを永続化し、lease generationとDB上の状態だけが実行権を決める。
 
 Mint用Base transaction laneは存在しない。Governance laneはnonce、署名済みgeneration、raw transactionとhashだけを永続化する。Canisterはbroadcast、receipt監視、rebroadcast、自動replacementを行わず、外部relayerが送信後に指定hashのFinalized結果をCanisterへ通知する。
 
@@ -47,7 +47,7 @@ RefundAvailable
 
 RefundPending
   └─ Ledger結果不明 → RefundReconciliationHold
-                         └─ owner再請求で同一transferを照合
+                         └─ 非anonymous callerの再請求で同一transferを照合
 ```
 
 1. `EscrowedUnquoted → AuthorizationPending`では、Finalized Base snapshot、quote、全Authorization field、EIP-712 domain、digest、作成元Finalized block number/hash/timestamp、mint capacity予約、jobを一つのSQLite transactionで保存する。
@@ -56,10 +56,10 @@ RefundPending
 4. `AuthorizationAvailable`では任意Base walletが署名済みpayloadをcontractへ送り、そのwalletがgasを支払う。Canisterは期間中のtransactionやreceiptを追跡しない。
 5. 新規Depositなどで既に取得したBase Finalized snapshotを使い、deadline順indexをcall単位の上限までローカル走査する。`finalized_timestamp > deadline`だけを期限切れとし、等値では予約を保持する。`AuthorizationPending`は`RefundAvailable`、`AuthorizationAvailable`は`RefundAvailable`へ進め、個別`isDepositProcessed`照合は行わない。
 6. backlogが残る場合は未処理予約を保守的に過大計上する。新規受付上限を正確に判定できなければretry可能エラーにし、過少計上しない。新規Depositがなければ予約枠も消費されないため、期限処理timerは設けない。
-7. ownerが`request_deposit_refund`を呼んだ場合だけRefundを進める。認可発行前の`RefundAvailable`はBase outcallなしで`gross - refund ledger fee`を送る。最初のICRC-2 pull feeはWallet負担のまま戻さない。
+7. 任意の非anonymous Principalが`request_deposit_refund`を呼ぶとRefundを進める。宛先、金額、transfer identityは既存recordに固定され、caller入力を受けない。認可発行前の`RefundAvailable`はBase outcallなしで`gross - refund ledger fee`を送る。最初のICRC-2 pull feeはWallet負担のまま戻さない。
 8. 認可発行済みの`RefundAvailable`では、同じcanonical Finalized block hashへruntime identity、signer、epoch、strict deadline、`isDepositProcessed(depositId)`をEIP-1898で束縛する。`processed == false`だけを`gross - charged service fee - refund ledger fee`で返金する。service fee、初回pull fee、refund feeは返さない。
 9. `processed == true`なら、作成元blockから観測Finalized headまでの`DepositMinted`を取得し、件数1、contract、digest、recipient、amount、fee、canonical成功receiptを検証して`Minted`へ進む。event欠落・複数・内容不一致、RPC不一致、Finalized停止、runtime不一致では資金を動かさない。
-10. Ledger結果不明は同一transfer identityを`RefundReconciliationHold`に保持する。timer retryは行わず、ownerの再請求で照合を1 step進める。Duplicateは同一送金の成功として扱い、完全な不存在証拠なしに別identityを発行しない。
+10. Ledger結果不明は同一transfer identityを`RefundReconciliationHold`に保持する。timer retryは行わず、任意の非anonymous callerの再請求で照合を1 step進める。Duplicateは同一送金の成功として扱い、完全な不存在証拠なしに別identityを発行しない。
 11. pause、epoch変更、signer rotationは未期限AuthorizationをContract上で失効させるが、早期返金の根拠にはしない。元のdeadlineとFinalized未処理証拠を必ず通す。
 
 未処理Authorizationはdeadline超過を観測するまでmint window liabilityとして予約する。Deposit admissionはMint Signer ETH、gas price、nonceへ依存しない。cycles floorとsettlement cycle ceilingは署名、明示Refund時のRPC・Ledger処理のため維持する。
@@ -72,22 +72,24 @@ WithdrawalはBase walletが`createWithdrawal`を送り、同一transactionでbSN
 Base Committed
   → notify_withdrawal(transaction_hash)
   → canonical Finalized receipt・event・state・snapshot検証
-  → Observed → ReleasePending → Paid
-                            └→ ReconciliationHold
-                                  ├─ 成功証拠 → Paid
-                                  └─ 完全な不存在証拠 → ReleasePending
+  → Observed → ReleasePending（自動jobなし）
+  → continue_withdrawal（1 call 1 external step）
+       ├─ 成功 → Paid
+       └─ ReconciliationHold
+            ├─ 成功証拠 → Paid
+            └─ 完全な不存在証拠 → 新identityのReleasePending（送金は次回）
 ```
 
-UIはtransaction hashをlocalStorageへ保存し、Finalized eventを検出した後にdeployment-scopedなブラウザ通知Identityから`notify_withdrawal`を1回呼ぶ。通知にIC walletの署名やICRC-21同意取得は使用しない。Canisterはreceipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛する。Ledger結果不明は時間経過だけで失敗扱いにせず、LedgerとIndexの完全なwatermarkで不存在を証明できるまでHoldを維持する。
+UIはtransaction hashをlocalStorageへ保存し、Finalized eventを検出した後にdeployment-scopedなbrowser identityから`notify_withdrawal`を呼び、成功後に同じidentityで`continue_withdrawal`を1回だけ呼ぶ。通知・継続にIC walletの署名やICRC-21同意取得は使用しない。非終端ならHistoryの明示操作で再開する。Canisterはreceipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛する。Ledger結果不明は時間経過だけで失敗扱いにせず、LedgerとIndexの完全なwatermarkで不存在を証明できるまでHoldを維持する。
 
 ## 公開APIと権限
 
 | API | 呼び出し元 | 役割 |
 |---|---|---|
 | `request_deposit` | Deposit owner | Ledger pullとAuthorization作成開始 |
-| `request_deposit_refund` | Deposit owner | claimable amount確認、必要なFinalized照合、Ledger refundまたはhold再照合 |
+| `request_deposit_refund` | 任意の非anonymous Principal | claimable amount確認、必要なFinalized照合、固定Ledger refundまたはhold再照合 |
 | `notify_withdrawal` | 任意の非anonymous Principal | Finalized Withdrawalのpermissionless通知。送金先はBase eventへ束縛 |
-| `continue_withdrawal` | owner、Governance、pause principal | Ledger release・照合の再開 |
+| `continue_withdrawal` | 任意の非anonymous Principal | 固定内容のLedger releaseまたは照合を最大1 external step進める |
 | Base governance prepare/status/replace/confirm | Governance、またはpause/cancelに限りpause principal | 外部relayer向け署名成果物とFinalized確定 |
 | `prepare_next_emergency_base_action` | Governance、pause principal | emergency queueのpause/cancelを順に署名 |
 | `get_deposit` / `get_deposit_by_owner_sequence` | 公開query | Authorization、deadline、signature、状態を照会 |

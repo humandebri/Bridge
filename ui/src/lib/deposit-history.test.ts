@@ -34,6 +34,19 @@ describe("deposit history pagination", () => {
     expect(ids).toHaveLength(21)
     expect(ids.some((id) => id.every((byte) => byte === 1))).toBe(true)
   })
+
+  it("preserves funding attempts that do not yet have a formal deposit view", () => {
+    const pendingFunding = [{ deposit_id: new Uint8Array(32).fill(7), owner_sequence: 101n }]
+    const refreshed = mergeDepositHistoryPage(undefined, [], {
+      nextCursor: null,
+      oldestAvailableCursor: null,
+      historyTruncated: true,
+      pendingFunding,
+    }, "refresh")
+
+    expect(refreshed.pendingFunding).toEqual(pendingFunding)
+    expect(refreshed.items).toEqual([])
+  })
 })
 
 function deposit(sequence: number): DepositView {
@@ -41,6 +54,7 @@ function deposit(sequence: number): DepositView {
     deposit_id: new Uint8Array(32).fill(sequence),
     owner_sequence: BigInt(sequence),
     created_at_ns: BigInt(sequence),
+    funding_ledger_block_index: [BigInt(sequence)],
     gross_amount: 100n,
     quote: [{ net_amount: 90n, service_fee: 10n }],
     refund: [],

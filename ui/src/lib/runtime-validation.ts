@@ -19,6 +19,12 @@ const timelockDelayAbi = [{
 
 export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number; profileFingerprint?: string }
 
+export interface RuntimeRefetchResult<T extends RuntimeValidation> {
+  data?: T
+  error?: unknown
+  isError?: boolean
+}
+
 export interface DeploymentAttestation extends FinalizedRuntimeObservation {
   profileFingerprint: string
 }
@@ -97,9 +103,12 @@ export function requireRuntimeWriteReady(validation?: RuntimeValidation, now = D
 }
 
 export async function refetchRuntimeWriteReady<T extends RuntimeValidation>(
-  refetch: () => Promise<{ data?: T }>,
+  refetch: () => Promise<RuntimeRefetchResult<T>>,
 ): Promise<T & { ready: true }> {
   const result = await refetch()
+  if (result.isError || result.error) {
+    throw result.error instanceof Error ? result.error : new Error("Runtime verification could not be refreshed")
+  }
   requireRuntimeWriteReady(result.data)
   return result.data
 }
@@ -109,12 +118,12 @@ export async function refetchRuntimeAttestedWriteReady<
   THeartbeat extends RuntimeValidation,
 >(
   cachedAttestation: TAttestation | undefined,
-  refetchAttestation: () => Promise<{ data?: TAttestation }>,
-  refetchHeartbeat: () => Promise<{ data?: THeartbeat }>,
+  refetchAttestation: () => Promise<RuntimeRefetchResult<TAttestation>>,
+  refetchHeartbeat: () => Promise<RuntimeRefetchResult<THeartbeat>>,
 ): Promise<THeartbeat & { ready: true }> {
   let attestation = cachedAttestation
   if (runtimeWriteBlocker(attestation)) {
-    attestation = (await refetchAttestation()).data
+    attestation = await refetchRuntimeWriteReady(refetchAttestation)
   }
   requireRuntimeWriteReady(attestation)
   const heartbeat = await refetchRuntimeWriteReady(refetchHeartbeat)
@@ -295,7 +304,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   } catch {
     blockers.push("Index ledger binding is unavailable")
   }
-  if (config.schema_version !== 31) blockers.push(`Unsupported canister schema ${config.schema_version}`)
+  if (config.schema_version !== 32) blockers.push(`Unsupported canister schema ${config.schema_version}`)
   if (ledgerName !== profile.icToken.name || ledgerSymbol !== profile.icToken.symbol || ledgerDecimals !== profile.icToken.decimals) {
     blockers.push(`IC token metadata is not ${profile.icToken.name}/${profile.icToken.symbol}/${profile.icToken.decimals}`)
   }

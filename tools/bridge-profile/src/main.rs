@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 31;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 32;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -1407,6 +1407,7 @@ fn render_release_inputs(
         "deploymentInstanceId": profile.deployment_instance_id,
         "ledgerCanisterId": profile.ledger_canister_id,
         "indexCanisterId": profile.index_canister_id,
+        "snsRootCanisterId": profile.root_canister_id,
         "icToken": { "name": "KINIC", "symbol": "KINIC", "decimals": profile.decimals },
         "baseToken": { "symbol": "KINIC", "decimals": profile.decimals },
         "bridgeAddress": profile.bridge_contract,
@@ -3299,6 +3300,7 @@ mod tests {
         );
         assert_eq!(ui["timelockAddress"], valid_profile().timelock.address);
         assert_eq!(ui["evmRpcCanisterId"], OFFICIAL_EVM_RPC_CANISTER);
+        assert_eq!(ui["snsRootCanisterId"], valid_profile().root_canister_id);
         assert_eq!(
             ui["rpcProviderUrlsSha256"],
             format!("0x{}", hex(&Sha256::digest(b"[]")))

@@ -68,6 +68,11 @@ fn transient_stop(reason: &tasks::SettlementStopReason) -> bool {
     )
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn automatically_dispatches(kind: SettlementJobKind) -> bool {
+    kind != SettlementJobKind::Withdrawal
+}
+
 fn terminal_fee_payout_result(result: &tasks::FeePayoutActionResult) -> bool {
     matches!(
         result,
@@ -448,10 +453,31 @@ async fn dispatch_due() -> Option<u64> {
             return None;
         }
     };
-    if job.kind == SettlementJobKind::FeePayout {
-        let _ = run_claimed_fee_payout(job).await;
-    } else {
-        let _ = run_claimed(job).await;
+    if !automatically_dispatches(job.kind) {
+        if finish(
+            &job,
+            None,
+            job.attempts,
+            Some((
+                "ManualContinuationRequired",
+                "withdrawals are advanced only by explicit frontend calls".into(),
+            )),
+            Some("Manual continuation required".into()),
+        )
+        .is_err()
+        {
+            mark_fault("failed to park an automatically scheduled withdrawal");
+        }
+        return None;
+    }
+    match job.kind {
+        SettlementJobKind::FeePayout => {
+            let _ = run_claimed_fee_payout(job).await;
+        }
+        SettlementJobKind::Deposit => {
+            let _ = run_claimed(job).await;
+        }
+        SettlementJobKind::Withdrawal => unreachable!("manual-only jobs were parked"),
     }
     None
 }
@@ -552,24 +578,34 @@ async fn run_claimed_inner(
     job: SettlementJob,
 ) -> Result<SettlementActionResult, SettlementActionError> {
     let now = ic_cdk::api::time();
-    let retry_interval_seconds = settlement_retry_interval_seconds()?;
     let mut lease = SettlementLease::new(job);
-    // Keep a durable recovery wakeup armed before the first await. If this runner
-    // traps, the leased SQLite job can still be reclaimed after its deadline.
-    arm();
+    if lease.job.kind == SettlementJobKind::Deposit {
+        // Deposit jobs remain automatic and recover expired leases through the timer.
+        arm();
+    }
     let key = match lease.job.kind {
         SettlementJobKind::Deposit => ActionKey::Deposit(lease.job.settlement_id),
         SettlementJobKind::Withdrawal => ActionKey::Withdrawal(lease.job.settlement_id),
         SettlementJobKind::FeePayout => return Err(SettlementActionError::WrongState),
     };
     let Some(_guard) = InFlightGuard::acquire(key) else {
-        finish(
-            &lease.job,
-            Some(now.saturating_add(BUSY_RETRY_NS)),
-            lease.job.attempts,
-            None,
-            None,
-        )?;
+        if lease.job.kind == SettlementJobKind::Withdrawal {
+            finish(
+                &lease.job,
+                None,
+                lease.job.attempts,
+                Some(("ManualContinuationRequired", "withdrawal is busy".into())),
+                Some("Manual continuation required".into()),
+            )?;
+        } else {
+            finish(
+                &lease.job,
+                Some(now.saturating_add(BUSY_RETRY_NS)),
+                lease.job.attempts,
+                None,
+                None,
+            )?;
+        }
         return Err(SettlementActionError::Busy);
     };
     mark_healthy();
@@ -583,64 +619,113 @@ async fn run_claimed_inner(
         SettlementJobKind::FeePayout => return Err(SettlementActionError::WrongState),
     };
     let record_stop_reason = result.as_ref().ok().and_then(tasks::stop_reason_text);
-    let outcome = match &result {
-        Ok(SettlementActionResult::Stopped { reason, .. }) if transient_stop(reason) => finish(
-            &lease.job,
-            Some(transient_retry_at(
-                retry_interval_seconds,
+    let outcome = if lease.job.kind == SettlementJobKind::Withdrawal {
+        finish_manual_withdrawal(&lease.job, &result, record_stop_reason.clone())
+    } else {
+        let retry_interval_seconds = settlement_retry_interval_seconds()?;
+        match &result {
+            Ok(SettlementActionResult::Stopped { reason, .. }) if transient_stop(reason) => finish(
+                &lease.job,
+                Some(transient_retry_at(
+                    retry_interval_seconds,
+                    lease.job.attempts,
+                )),
+                lease.job.attempts.saturating_add(1),
+                None,
+                record_stop_reason.clone(),
+            ),
+            Ok(SettlementActionResult::Stopped { reason, .. }) => finish(
+                &lease.job,
+                None,
                 lease.job.attempts,
-            )),
-            lease.job.attempts.saturating_add(1),
-            None,
-            record_stop_reason.clone(),
-        ),
-        Ok(SettlementActionResult::Stopped { reason, .. }) => finish(
-            &lease.job,
-            None,
-            lease.job.attempts,
-            Some(("SettlementStopped", format!("{reason:?}"))),
-            record_stop_reason.clone(),
-        ),
-        Ok(SettlementActionResult::ReconciliationProgress { .. }) => finish(
-            &lease.job,
-            Some(transient_retry_at(
-                retry_interval_seconds,
+                Some(("SettlementStopped", format!("{reason:?}"))),
+                record_stop_reason.clone(),
+            ),
+            Ok(SettlementActionResult::ReconciliationProgress { .. }) => finish(
+                &lease.job,
+                Some(transient_retry_at(
+                    retry_interval_seconds,
+                    lease.job.attempts,
+                )),
+                lease.job.attempts.saturating_add(1),
+                None,
+                None,
+            ),
+            Ok(SettlementActionResult::Deferred { next_run_at_ns, .. }) => finish(
+                &lease.job,
+                Some(*next_run_at_ns),
                 lease.job.attempts,
-            )),
-            lease.job.attempts.saturating_add(1),
-            None,
-            None,
-        ),
-        Ok(SettlementActionResult::Deferred { next_run_at_ns, .. }) => finish(
-            &lease.job,
-            Some(*next_run_at_ns),
-            lease.job.attempts,
-            None,
-            None,
-        ),
-        Ok(SettlementActionResult::Complete { .. }) => {
-            finish(&lease.job, None, lease.job.attempts, None, None)
+                None,
+                None,
+            ),
+            Ok(SettlementActionResult::Complete { .. }) => {
+                finish(&lease.job, None, lease.job.attempts, None, None)
+            }
+            Err(SettlementActionError::Busy) => finish(
+                &lease.job,
+                Some(ic_cdk::api::time().saturating_add(BUSY_RETRY_NS)),
+                lease.job.attempts,
+                None,
+                None,
+            ),
+            Err(error) => finish(
+                &lease.job,
+                None,
+                lease.job.attempts,
+                Some(("SettlementActionError", format!("{error:?}"))),
+                Some(format!("{error:?}")),
+            ),
         }
-        Err(SettlementActionError::Busy) => finish(
-            &lease.job,
-            Some(ic_cdk::api::time().saturating_add(BUSY_RETRY_NS)),
-            lease.job.attempts,
-            None,
-            None,
-        ),
-        Err(error) => finish(
-            &lease.job,
-            None,
-            lease.job.attempts,
-            Some(("SettlementActionError", format!("{error:?}"))),
-            Some(format!("{error:?}")),
-        ),
     };
     if outcome.is_err() {
         mark_fault("failed to persist settlement job outcome");
         return Err(SettlementActionError::StorageFailure);
     }
     result
+}
+
+fn finish_manual_withdrawal(
+    job: &SettlementJob,
+    result: &Result<SettlementActionResult, SettlementActionError>,
+    record_stop_reason: Option<String>,
+) -> Result<(), SettlementActionError> {
+    match result {
+        Ok(SettlementActionResult::Complete { .. }) => finish(job, None, job.attempts, None, None),
+        Ok(SettlementActionResult::Stopped { reason, .. }) => finish(
+            job,
+            None,
+            job.attempts,
+            Some(("SettlementStopped", format!("{reason:?}"))),
+            record_stop_reason,
+        ),
+        Ok(SettlementActionResult::ReconciliationProgress { .. }) => finish(
+            job,
+            None,
+            job.attempts,
+            Some((
+                "ManualContinuationRequired",
+                "withdrawal reconciliation requires another explicit call".into(),
+            )),
+            Some("Manual continuation required".into()),
+        ),
+        Ok(SettlementActionResult::Deferred { .. }) => finish(
+            job,
+            None,
+            job.attempts,
+            Some((
+                "ManualContinuationRequired",
+                "withdrawal continuation was deferred".into(),
+            )),
+            Some("Manual continuation required".into()),
+        ),
+        Err(error) => finish(
+            job,
+            None,
+            job.attempts,
+            Some(("SettlementActionError", format!("{error:?}"))),
+            Some(format!("{error:?}")),
+        ),
+    }
 }
 
 fn finish(
@@ -698,6 +783,13 @@ mod tests {
             transient_retry_delay_ns(60, u8::MAX),
             MAX_TRANSIENT_RETRY_NS
         );
+    }
+
+    #[test]
+    fn withdrawals_are_not_automatically_dispatched() {
+        assert!(!automatically_dispatches(SettlementJobKind::Withdrawal));
+        assert!(automatically_dispatches(SettlementJobKind::Deposit));
+        assert!(automatically_dispatches(SettlementJobKind::FeePayout));
     }
 
     #[test]

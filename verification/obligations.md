@@ -29,8 +29,8 @@ release対象の閉じたclaim集合、trace theorem、Verus obligation、produc
 | Refund holdは成功証拠または完全な不存在証明なしに新attemptへ進まない | RefundReconciliationHold、exact transfer evidence | Rust reconciliation test、Verus evidence binding・hold phase proof | Ledger/Index/archive scanの完全性 |
 | settlement lease generationはwrapせず、古いleaseは新しいleaseを完了できない | settlement job claim/finish | Rust、Verus generation proof | SQL row selectionとconditional update |
 | Authorization期限照合の手動claimはjobを早く起こせるだけで、Base Finalized期限判定を迂回できない | stable settlement executor manual claim、expiry reconciliation | Rust state/storage/integration、Verus共有predicate | SQLite atomic commit、async callback identity |
-| Ledger Fee超過時はreleaseを作らず、同じObserved recordを停止・再検証する | `notify_withdrawal`、`continue_withdrawal`、runtime guard | Rust、integration、runtime validation | Ledger fee queryの真正性 |
+| 固定Ledger Feeがcharged Service Feeを超える場合はreleaseを作らず、同じObserved recordを停止・再検証する | `notify_withdrawal`、`continue_withdrawal`、固定fee guard | Rust、integration、runtime validation | Ledger Feeが100,000 rawで不変という外部仮定 |
 | WithdrawalはEVM署名・nonce・追加Base transactionを生成しない | adapter operation routing | Rust、integration、ABI selector test | Canister Wasmが検証対象と一致 |
 | serialized Withdrawal通知queue更新は別settlementを失わず、restoreでblockedを解除せず、durable write失敗時もsession copyを保持する | Withdrawal pending confirmation純粋更新 | Lean定理、生成vector、TypeScript consumer、Vitest | Web LocksとlocalStorage意味論 |
 
-EVM RPC provider共謀、各providerの`finalized`意味論、browser storage、wallet、Ledger実装、鍵管理、運用補充、未決済債務のlivenessは証明範囲外である。runtime fee guard検出後のBase withdrawal pause、fee同期、再開承認は運用仮定に置く。
+EVM RPC provider共謀、各providerの`finalized`意味論、browser storage、wallet、Ledger実装、固定Ledger Fee、鍵管理、運用補充、未決済債務のlivenessは証明範囲外である。固定fee guard検出後のBase withdrawal pause、設定確認、再開承認は運用仮定に置く。runtime settlementは`icrc1_fee()`を照会しない。

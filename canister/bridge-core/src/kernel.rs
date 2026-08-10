@@ -93,6 +93,44 @@ macro_rules! replay_body {
     };
 }
 
+macro_rules! deposit_ledger_block_transition_body {
+    ($funding:expr, $refund:expr, $event:expr, $block:expr, $preserve:expr, $funded:expr, $refunded:expr) => {{
+        if $event == $preserve {
+            Some(($funding, $refund))
+        } else if $event == $funded {
+            match $funding {
+                None => Some((Some($block), $refund)),
+                Some(current) if current == $block => Some(($funding, $refund)),
+                Some(_) => None,
+            }
+        } else if $event == $refunded {
+            match ($funding, $refund) {
+                (Some(_), None) => Some(($funding, Some($block))),
+                (Some(_), Some(current)) if current == $block => Some(($funding, $refund)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }};
+}
+
+macro_rules! withdrawal_ledger_block_transition_body {
+    ($release:expr, $event:expr, $block:expr, $preserve:expr, $released:expr) => {{
+        if $event == $preserve {
+            Some($release)
+        } else if $event == $released {
+            match $release {
+                None => Some(Some($block)),
+                Some(current) if current == $block => Some($release),
+                Some(_) => None,
+            }
+        } else {
+            None
+        }
+    }};
+}
+
 macro_rules! refresh_owner_matches_body {
     ($current:expr, $claimant:expr) => {
         match $current {
@@ -161,26 +199,6 @@ macro_rules! runtime_attestation_matches_body {
     };
 }
 
-macro_rules! withdrawal_finalization_decision_body {
-    ($succeeded:expr, $receipt_block:expr, $finalized_block:expr, $retry:expr, $notify:expr, $discard:expr) => {
-        match $finalized_block {
-            None => $retry,
-            Some(finalized) if finalized < $receipt_block => $retry,
-            Some(_) if $succeeded => $notify,
-            Some(_) => $discard,
-        }
-    };
-}
-
-macro_rules! restored_pending_blocked_body {
-    ($existing:expr, $incoming:expr) => {
-        match $existing {
-            Some(blocked) => blocked,
-            None => $incoming,
-        }
-    };
-}
-
 macro_rules! withdrawal_liability_indexed_body {
     ($state:expr, $observed:expr, $release_pending:expr, $reconciliation_hold:expr) => {
         $state == $observed || $state == $release_pending || $state == $reconciliation_hold
@@ -190,6 +208,12 @@ macro_rules! withdrawal_liability_indexed_body {
 macro_rules! reconciliation_hold_indexed_body {
     ($state:expr, $open:expr) => {
         $state == $open
+    };
+}
+
+macro_rules! deposit_nonterminal_indexed_body {
+    ($state:expr, $refunded:expr, $cancelled:expr, $minted:expr) => {
+        $state != $refunded && $state != $cancelled && $state != $minted
     };
 }
 
@@ -305,22 +329,11 @@ macro_rules! manual_claim_decision_body {
 }
 
 macro_rules! refund_request_identity_decision_body {
-    (
-        $authenticated:expr,
-        $owner_match:expr,
-        $allow:expr,
-        $lookup:expr,
-        $anonymous:expr,
-        $mismatch:expr
-    ) => {
+    ($authenticated:expr, $allow:expr, $anonymous:expr) => {
         if !$authenticated {
             $anonymous
         } else {
-            match $owner_match {
-                None => $lookup,
-                Some(true) => $allow,
-                Some(false) => $mismatch,
-            }
+            $allow
         }
     };
 }
@@ -415,9 +428,7 @@ verus! {
     #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
     pub enum RefundRequestIdentityDecision {
         Allow,
-        OwnerLookupRequired,
         AnonymousCaller,
-        OwnerMismatch,
     }
 
     #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
@@ -523,12 +534,6 @@ verus! {
         Reject,
     }
 
-    #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
-    pub enum WithdrawalFinalizationDecision {
-        Retry,
-        Notify,
-        DiscardReverted,
-    }
 }
 
 macro_rules! deposit_refund_body {
@@ -788,6 +793,29 @@ pub const fn replay_matches(same_payload: bool) -> bool {
     replay_body!(same_payload)
 }
 
+/// Applies only ledger-success evidence to the deposit block indexes. Event codes are
+/// preserve=0, funding-success=1, and refund-success=2. `None` is a conflicting replay.
+#[cfg(not(verus_keep_ghost))]
+pub const fn deposit_ledger_block_transition(
+    funding: Option<u128>,
+    refund: Option<u128>,
+    event: u8,
+    block: u128,
+) -> Option<(Option<u128>, Option<u128>)> {
+    deposit_ledger_block_transition_body!(funding, refund, event, block, 0u8, 1u8, 2u8)
+}
+
+/// Applies only ledger-success evidence to the withdrawal release block index.
+/// Event codes are preserve=0 and release-success=1. `None` is a conflicting replay.
+#[cfg(not(verus_keep_ghost))]
+pub const fn withdrawal_ledger_block_transition(
+    release: Option<u128>,
+    event: u8,
+    block: u128,
+) -> Option<Option<u128>> {
+    withdrawal_ledger_block_transition_body!(release, event, block, 0u8, 1u8)
+}
+
 #[cfg(not(verus_keep_ghost))]
 pub const fn refresh_owner_matches(current: Option<u64>, claimant: u64) -> bool {
     refresh_owner_matches_body!(current, claimant)
@@ -876,27 +904,6 @@ pub const fn runtime_attestation_matches(
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub const fn withdrawal_finalization_decision(
-    receipt_succeeded: bool,
-    receipt_block: u64,
-    finalized_block: Option<u64>,
-) -> WithdrawalFinalizationDecision {
-    withdrawal_finalization_decision_body!(
-        receipt_succeeded,
-        receipt_block,
-        finalized_block,
-        WithdrawalFinalizationDecision::Retry,
-        WithdrawalFinalizationDecision::Notify,
-        WithdrawalFinalizationDecision::DiscardReverted
-    )
-}
-
-#[cfg(not(verus_keep_ghost))]
-pub const fn restored_pending_blocked(existing: Option<bool>, incoming: bool) -> bool {
-    restored_pending_blocked_body!(existing, incoming)
-}
-
-#[cfg(not(verus_keep_ghost))]
 pub const fn withdrawal_liability_indexed(state: u8) -> bool {
     withdrawal_liability_indexed_body!(state, 0u8, 1u8, 3u8)
 }
@@ -904,6 +911,11 @@ pub const fn withdrawal_liability_indexed(state: u8) -> bool {
 #[cfg(not(verus_keep_ghost))]
 pub const fn reconciliation_hold_indexed(state: u8) -> bool {
     reconciliation_hold_indexed_body!(state, 0u8)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn deposit_nonterminal_indexed(state: u8) -> bool {
+    deposit_nonterminal_indexed_body!(state, 8u8, 9u8, 10u8)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1186,27 +1198,19 @@ pub const fn manual_claim_allowed(
 verus! {
     pub fn refund_request_identity_decision(
         authenticated: bool,
-        owner_match: Option<bool>,
     ) -> (result: RefundRequestIdentityDecision)
         ensures
             match result {
                 RefundRequestIdentityDecision::Allow =>
-                    authenticated && owner_match == Some(true),
-                RefundRequestIdentityDecision::OwnerLookupRequired =>
-                    authenticated && owner_match == None::<bool>,
+                    authenticated,
                 RefundRequestIdentityDecision::AnonymousCaller =>
                     !authenticated,
-                RefundRequestIdentityDecision::OwnerMismatch =>
-                    authenticated && owner_match == Some(false),
             },
     {
         refund_request_identity_decision_body!(
             authenticated,
-            owner_match,
             RefundRequestIdentityDecision::Allow,
-            RefundRequestIdentityDecision::OwnerLookupRequired,
-            RefundRequestIdentityDecision::AnonymousCaller,
-            RefundRequestIdentityDecision::OwnerMismatch
+            RefundRequestIdentityDecision::AnonymousCaller
         )
     }
 }
@@ -1829,6 +1833,21 @@ verus! {
         replay_body!(same_payload)
     }
 
+    pub open spec fn deposit_ledger_block_transition_spec(
+        funding: Option<int>, refund: Option<int>, event: int, block: int,
+    ) -> Option<(Option<int>, Option<int>)> {
+        let preserve: int = 0; let funded: int = 1; let refunded: int = 2;
+        deposit_ledger_block_transition_body!(
+            funding, refund, event, block, preserve, funded, refunded)
+    }
+
+    pub open spec fn withdrawal_ledger_block_transition_spec(
+        release: Option<int>, event: int, block: int,
+    ) -> Option<Option<int>> {
+        let preserve: int = 0; let released: int = 1;
+        withdrawal_ledger_block_transition_body!(release, event, block, preserve, released)
+    }
+
 
     pub open spec fn refresh_owner_matches_spec(current: Option<int>, claimant: int) -> bool {
         refresh_owner_matches_body!(current, claimant)
@@ -1911,24 +1930,6 @@ verus! {
             observation_present, chain_id_matches, runtime_hash_matches)
     }
 
-    pub open spec fn withdrawal_finalization_decision_spec(
-        receipt_succeeded: bool,
-        receipt_block: int,
-        finalized_block: Option<int>,
-    ) -> int {
-        let retry: int = 0;
-        let notify: int = 1;
-        let discard: int = 2;
-        withdrawal_finalization_decision_body!(
-            receipt_succeeded, receipt_block, finalized_block, retry, notify, discard)
-    }
-
-    pub open spec fn restored_pending_blocked_spec(
-        existing: Option<bool>, incoming: bool,
-    ) -> bool {
-        restored_pending_blocked_body!(existing, incoming)
-    }
-
     pub open spec fn withdrawal_liability_indexed_spec(state: int) -> bool {
         let observed: int = 0;
         let release_pending: int = 1;
@@ -1941,6 +1942,13 @@ verus! {
         reconciliation_hold_indexed_body!(state, open)
     }
 
+    pub open spec fn deposit_nonterminal_indexed_spec(state: int) -> bool {
+        let refunded: int = 8;
+        let cancelled: int = 9;
+        let minted: int = 10;
+        deposit_nonterminal_indexed_body!(state, refunded, cancelled, minted)
+    }
+
     pub open spec fn mint_admission_total_spec(consumed: int, reserved: int, candidate: int) -> Option<int> {
         let max: int = 340282366920938463463374607431768211455;
         mint_admission_total_body!(consumed, reserved, candidate, max)
@@ -1949,11 +1957,6 @@ verus! {
     pub open spec fn payout_allowed_spec(reserve: int, pending: int, amount: int, fee: int) -> bool {
         let max: int = 340282366920938463463374607431768211455;
         payout_allowed_body!(reserve, pending, amount, fee, max)
-    }
-
-    pub open spec fn fee_recipient_rotation_allowed_spec(pending_payout_debit: int) -> bool {
-        let zero: int = 0;
-        fee_recipient_rotation_allowed_body!(pending_payout_debit, zero)
     }
 
     pub open spec fn service_fee_change_allowed_spec(
@@ -1976,22 +1979,6 @@ verus! {
         active_generation: int, outcome_generation: int, active: bool,
     ) -> bool {
         lease_outcome_is_current_body!(active_generation, outcome_generation, active)
-    }
-
-    pub open spec fn hold_retry_allowed_spec(
-        exact_success: bool, complete_absence: bool,
-    ) -> bool {
-        hold_retry_allowed_body!(exact_success, complete_absence)
-    }
-
-    pub open spec fn manual_claim_allowed_spec(
-        scheduled: bool,
-        active: bool,
-        stopped: bool,
-        overdue: bool,
-        expired: bool,
-    ) -> bool {
-        manual_claim_allowed_body!(scheduled, active, stopped, overdue, expired)
     }
 
     pub open spec fn deposit_refund_amount_spec(
@@ -2113,55 +2100,4 @@ verus! {
         else { withdrawal_phase_run_spec(withdrawal_phase_step_spec(state, events[0]), events.drop_first()) }
     }
 
-    pub open spec fn withdrawal_fee_delta_spec(state: int, event: int, fee: int) -> int {
-        if state == 1 && event == 2 { fee } else { 0 }
-    }
-
-    pub open spec fn withdrawal_fee_total_spec(state: int, events: Seq<int>, fee: int) -> int
-        decreases events.len()
-    {
-        if events.len() == 0 { 0 }
-        else {
-            withdrawal_fee_delta_spec(state, events[0], fee)
-                + withdrawal_fee_total_spec(
-                    withdrawal_phase_step_spec(state, events[0]), events.drop_first(), fee)
-        }
-    }
-
-    pub open spec fn asset_backed_spec(
-        escrow: int,
-        base_supply: int,
-        fee_reserve: int,
-        confirmed_unminted_deposits: int,
-        unreleased_withdrawals: int,
-    ) -> bool {
-        asset_backed_body!(
-            escrow,
-            base_supply,
-            fee_reserve,
-            confirmed_unminted_deposits,
-            unreleased_withdrawals
-        )
-    }
-
-    pub open spec fn payout_reserved_spec(fee_reserve: int, pending_payout_debit: int) -> bool {
-        0 <= pending_payout_debit <= fee_reserve
-    }
-
-    pub open spec fn ambiguous_outbound_world_spec(
-        transfer_happened: bool,
-        escrow: int,
-        fee_reserve: int,
-        unreleased: int,
-        amount_out: int,
-        ledger_fee: int,
-        service_fee: int,
-    ) -> (int, int, int) {
-        if transfer_happened {
-            (escrow - amount_out - ledger_fee, fee_reserve + service_fee - ledger_fee,
-                unreleased - amount_out - service_fee)
-        } else {
-            (escrow, fee_reserve, unreleased)
-        }
-    }
 }

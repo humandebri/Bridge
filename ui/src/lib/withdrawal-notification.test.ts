@@ -12,7 +12,7 @@ describe("withdrawal notification presentation", () => {
     })
   })
 
-  it("reports a new notification as scheduled", () => {
+  it("reports that one payout step follows a new notification", () => {
     const receipt: NotifyWithdrawalReceipt = {
       Ingested: {
         finalized_head_block_number: 42n,
@@ -22,7 +22,7 @@ describe("withdrawal notification presentation", () => {
 
     expect(withdrawalNotificationPresentation(receipt)).toEqual({
       tone: "info",
-      message: "Withdrawal is recorded. Processing will continue automatically.",
+      message: "Withdrawal is recorded. One payout step will now be attempted.",
     })
   })
 })

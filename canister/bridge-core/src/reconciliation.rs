@@ -93,13 +93,13 @@ impl ReconciliationHoldRecord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DepositHoldResolution {
     FundingSucceeded {
-        ledger_block_index: u128,
+        funding_ledger_block_index: u128,
     },
     FundingAbsent {
         history_watermark: u128,
     },
     RefundSucceeded {
-        ledger_block_index: u128,
+        refund_ledger_block_index: u128,
     },
     RefundAbsent {
         history_watermark: u128,
@@ -114,7 +114,7 @@ pub enum DepositHoldResolution {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WithdrawalHoldResolution {
     Succeeded {
-        ledger_block_index: u128,
+        release_ledger_block_index: u128,
     },
     Absent {
         history_watermark: u128,
@@ -130,34 +130,34 @@ pub fn resolve_deposit_hold(
     let mut next_hold = hold.clone();
     let mut next_deposit = deposit.clone();
     let (hold_outcome, request_outcome) = match resolution {
-        DepositHoldResolution::FundingSucceeded { ledger_block_index } => {
+        DepositHoldResolution::FundingSucceeded {
+            funding_ledger_block_index,
+        } => {
             if hold.request != RequestReference::DepositFunding(deposit.id)
                 || hold.transfer != deposit.transfer
             {
                 return Err(CoreError::HoldMismatch);
             }
-            let ho = next_hold.resolve_succeeded(ledger_block_index)?;
-            let ro = match deposit.state {
-                DepositState::FundingReconciliationHold { hold_id } if hold_id == hold.id => {
-                    next_deposit.state = DepositState::EscrowedUnquoted { ledger_block_index };
+            let current_funding = deposit.funding_ledger_block_index();
+            let (next_funding, _) = crate::deposit_ledger_block_transition(
+                current_funding,
+                None,
+                1,
+                funding_ledger_block_index,
+            )
+            .ok_or(CoreError::LedgerBlockConflict)?;
+            let next_funding = next_funding.ok_or(CoreError::LedgerBlockConflict)?;
+            let ho = next_hold.resolve_succeeded(next_funding)?;
+            let ro = match &deposit.state {
+                DepositState::FundingReconciliationHold { hold_id } if *hold_id == hold.id => {
+                    next_deposit.state = DepositState::EscrowedUnquoted {
+                        funding_ledger_block_index: next_funding,
+                    };
                     ApplyOutcome::Applied
                 }
-                DepositState::EscrowedUnquoted {
-                    ledger_block_index: current,
+                _ if current_funding == Some(funding_ledger_block_index) => {
+                    ApplyOutcome::Idempotent
                 }
-                | DepositState::AuthorizationPending {
-                    ledger_block_index: current,
-                }
-                | DepositState::AuthorizationAvailable {
-                    ledger_block_index: current,
-                }
-                | DepositState::RefundAvailable {
-                    ledger_block_index: current,
-                    ..
-                }
-                | DepositState::Minted {
-                    ledger_block_index: current,
-                } if current == ledger_block_index => ApplyOutcome::Idempotent,
                 _ => return Err(CoreError::HoldMismatch),
             };
             (ho, ro)
@@ -187,32 +187,59 @@ pub fn resolve_deposit_hold(
             };
             (ho, ro)
         }
-        DepositHoldResolution::RefundSucceeded { ledger_block_index } => {
+        DepositHoldResolution::RefundSucceeded {
+            refund_ledger_block_index,
+        } => {
             if hold.request != RequestReference::DepositRefund(deposit.id) {
                 return Err(CoreError::HoldMismatch);
             }
-            let ho = next_hold.resolve_succeeded(ledger_block_index)?;
+            let current = match &deposit.state {
+                DepositState::RefundReconciliationHold {
+                    funding_ledger_block_index,
+                    ..
+                } => (Some(*funding_ledger_block_index), None),
+                DepositState::Refunded {
+                    funding_ledger_block_index,
+                    refund_ledger_block_index,
+                    ..
+                } => (
+                    Some(*funding_ledger_block_index),
+                    Some(*refund_ledger_block_index),
+                ),
+                _ => (None, None),
+            };
+            let (_, next_refund) = crate::deposit_ledger_block_transition(
+                current.0,
+                current.1,
+                2,
+                refund_ledger_block_index,
+            )
+            .ok_or(CoreError::LedgerBlockConflict)?;
+            let next_refund = next_refund.ok_or(CoreError::LedgerBlockConflict)?;
+            let ho = next_hold.resolve_succeeded(next_refund)?;
             let ro = match &deposit.state {
                 DepositState::RefundReconciliationHold {
                     reason,
+                    funding_ledger_block_index,
                     hold_id,
                     attempt,
                 } if *hold_id == hold.id && hold.transfer == attempt.identity => {
                     next_deposit.state = DepositState::Refunded {
                         reason: *reason,
+                        funding_ledger_block_index: *funding_ledger_block_index,
                         attempt: attempt.clone(),
-                        ledger_block_index,
+                        refund_ledger_block_index: next_refund,
                         source_hold: Some(hold.id),
                     };
                     ApplyOutcome::Applied
                 }
                 DepositState::Refunded {
-                    ledger_block_index: current,
+                    refund_ledger_block_index: current,
                     source_hold: Some(id),
                     attempt,
                     ..
                 } if *id == hold.id
-                    && *current == ledger_block_index
+                    && *current == refund_ledger_block_index
                     && hold.transfer == attempt.identity =>
                 {
                     ApplyOutcome::Idempotent
@@ -232,12 +259,14 @@ pub fn resolve_deposit_hold(
             let ro = match &deposit.state {
                 DepositState::RefundReconciliationHold {
                     reason,
+                    funding_ledger_block_index,
                     hold_id,
                     attempt,
                 } if *hold_id == hold.id && hold.transfer == attempt.identity => {
                     let next_attempt = attempt.retry_after_absence(*next_identity)?;
                     next_deposit.state = DepositState::RefundPending {
                         reason: *reason,
+                        funding_ledger_block_index: *funding_ledger_block_index,
                         attempt: next_attempt,
                     };
                     ApplyOutcome::Applied
@@ -293,8 +322,24 @@ pub fn resolve_withdrawal_hold(
     let mut next_hold = hold.clone();
     let mut next_withdrawal = withdrawal.clone();
     let (hold_outcome, request_outcome, fee_delta) = match resolution {
-        WithdrawalHoldResolution::Succeeded { ledger_block_index } => {
-            let ho = next_hold.resolve_succeeded(ledger_block_index)?;
+        WithdrawalHoldResolution::Succeeded {
+            release_ledger_block_index,
+        } => {
+            let current_release = match &withdrawal.state {
+                WithdrawalState::Paid {
+                    release_ledger_block_index,
+                    ..
+                } => Some(*release_ledger_block_index),
+                _ => None,
+            };
+            let next_release = crate::withdrawal_ledger_block_transition(
+                current_release,
+                1,
+                release_ledger_block_index,
+            )
+            .ok_or(CoreError::LedgerBlockConflict)?
+            .ok_or(CoreError::LedgerBlockConflict)?;
+            let ho = next_hold.resolve_succeeded(next_release)?;
             let ro = match &withdrawal.state {
                 WithdrawalState::ReconciliationHold {
                     attempt,
@@ -304,16 +349,18 @@ pub fn resolve_withdrawal_hold(
                     next_withdrawal.state = WithdrawalState::Paid {
                         attempt: attempt.clone(),
                         settlement: *settlement,
-                        ledger_block_index,
+                        release_ledger_block_index: next_release,
                         source_hold: Some(hold.id),
                     };
                     ApplyOutcome::Applied
                 }
                 WithdrawalState::Paid {
-                    ledger_block_index: current,
+                    release_ledger_block_index: current,
                     source_hold: Some(id),
                     ..
-                } if *id == hold.id && *current == ledger_block_index => ApplyOutcome::Idempotent,
+                } if *id == hold.id && *current == release_ledger_block_index => {
+                    ApplyOutcome::Idempotent
+                }
                 _ => return Err(CoreError::HoldMismatch),
             };
             let fee = if ro == ApplyOutcome::Applied {

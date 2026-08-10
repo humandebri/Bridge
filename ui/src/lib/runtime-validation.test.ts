@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { DeploymentProfile } from "@/config/profile"
 import {
   bridgeSignerBlockers,
+  refetchRuntimeAttestedWriteReady,
   refetchRuntimeWriteReady,
   requireRuntimeWriteReady,
   RUNTIME_VALIDATION_TTL_MS,
@@ -57,6 +58,7 @@ const profile: DeploymentProfile = {
   deploymentInstanceId: `0x${"99".repeat(32)}`,
   ledgerCanisterId: ledgerId,
   indexCanisterId: indexId,
+  snsRootCanisterId: null,
   icToken: { name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 },
   baseToken: { symbol: "KINIC", decimals: 8 },
   bridgeAddress,
@@ -130,7 +132,7 @@ beforeEach(() => {
     deployment_instance_id: Array.from({ length: 32 }, () => 0x99),
     ledger_canister_id: Principal.fromText(configuredLedgerId),
     index_canister_id: Principal.fromText(configuredIndexId),
-    schema_version: 31,
+    schema_version: 32,
     expected_bridge_signer: new Uint8Array(20).fill(0x33),
     evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
     rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
@@ -209,6 +211,26 @@ describe("validateRuntime token bindings", () => {
     expect(runtimeWriteBlocker(cached)).toBeUndefined()
     await expect(refetchRuntimeWriteReady(refetch)).rejects.toThrow("Bridge signer differs from the reviewed profile")
     expect(refetch).toHaveBeenCalledOnce()
+  })
+
+  it("rejects a refetch error even when React Query retains previously ready data", async () => {
+    const cached = { ready: true, blockers: [], checkedAt: Date.now() }
+    const refetch = vi.fn().mockResolvedValue({ data: cached, isError: true, error: new Error("Base RPC unavailable") })
+
+    await expect(refetchRuntimeWriteReady(refetch)).rejects.toThrow("Base RPC unavailable")
+    expect(refetch).toHaveBeenCalledOnce()
+  })
+
+  it("rejects an errored heartbeat after refreshing an expired attestation", async () => {
+    const expired = { ready: true, blockers: [], checkedAt: Date.now() - RUNTIME_VALIDATION_TTL_MS - 1 }
+    const refreshed = { ready: true, blockers: [], checkedAt: Date.now(), profileFingerprint: "profile" }
+    const retainedHeartbeat = { ...refreshed, snapshot: {} }
+
+    await expect(refetchRuntimeAttestedWriteReady(
+      expired,
+      vi.fn().mockResolvedValue({ data: refreshed, isError: false }),
+      vi.fn().mockResolvedValue({ data: retainedHeartbeat, isError: true, error: new Error("Heartbeat unavailable") }),
+    )).rejects.toThrow("Heartbeat unavailable")
   })
 
   it("detects a signer rotation on a later runtime check", async () => {
@@ -304,6 +326,7 @@ describe("validateRuntime token bindings", () => {
       environmentMode: null,
       activationTimelockDelaySeconds: 86_400,
       gateBManifestSha256: "d".repeat(64),
+      snsRootCanisterId: "7jkta-eyaaa-aaaaq-aaarq-cai",
     }
 
     await expect(validateRuntime(productionProfile, productionProfile.chainId)).resolves.toMatchObject({
@@ -344,7 +367,7 @@ describe("validateRuntime token bindings", () => {
       deployment_instance_id: new Uint8Array(32).fill(0x99),
       ledger_canister_id: Principal.fromText(ledgerId),
       index_canister_id: Principal.fromText(indexId),
-      schema_version: 31,
+      schema_version: 32,
       expected_bridge_signer: new Uint8Array(20).fill(0x33),
       evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
       rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
@@ -371,7 +394,7 @@ describe("validateRuntime token bindings", () => {
       deployment_instance_id: new Uint8Array(32).fill(0x99),
       ledger_canister_id: Principal.fromText(ledgerId),
       index_canister_id: Principal.fromText(indexId),
-      schema_version: 31,
+      schema_version: 32,
       expected_bridge_signer: new Uint8Array(20).fill(0x33),
       evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
       rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),

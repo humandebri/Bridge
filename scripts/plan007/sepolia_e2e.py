@@ -21,22 +21,9 @@ CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 31
-OBSOLETE_REPLACEABLE_SCHEMA = 30
-OBSOLETE_REPLACEMENT_POLICY_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "deployments/sepolia-staging/obsolete-replacement-policy.json"
-)
-OBSOLETE_PAUSE_COLLECTOR_PATH = Path(__file__).with_name(
-    "capture-obsolete-pause-evidence.mjs"
-)
-OBSOLETE_REPLACEMENT_POLICY = json.loads(
-    OBSOLETE_REPLACEMENT_POLICY_PATH.read_text(encoding="utf-8")
-)
+CURRENT_STABLE_SCHEMA = 32
 LIVE_PUBLIC_CONFIG_ARTIFACT_KIND = "live-public-config"
 REINSTALL_INSTANCE_CHECK_ARTIFACT_KIND = "reinstall-instance-check"
-OBSOLETE_STATE_DISPOSITION_ARTIFACT_KIND = "obsolete-state-disposition"
-OBSOLETE_PAUSE_EVIDENCE_ARTIFACT_KIND = "obsolete-pause-evidence"
 LIVE_BRIDGE_STATUS_ARTIFACT_KIND = "live-bridge-status"
 LIVE_ACTIVATION_STATUS_ARTIFACT_KIND = "live-activation-status"
 LIVE_CANISTER_STATUS_ARTIFACT_KIND = "live-canister-status"
@@ -44,7 +31,6 @@ LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND = "live-storage-integrity"
 LIVE_LEDGER_BALANCE_ARTIFACT_KIND = "live-ledger-balance"
 CURRENT_SCHEMA_REINSTALL = "current-schema-reinstall"
 CURRENT_SCHEMA_UPGRADE = "current-schema-upgrade"
-OBSOLETE_SCHEMA_UPGRADE = "obsolete-schema-upgrade"
 UPGRADE_STATE_COUNT_FIELDS = {
     "deposits",
     "withdrawals",
@@ -54,16 +40,6 @@ UPGRADE_STATE_COUNT_FIELDS = {
     "reserved_deposit_mint_amount",
     "unpaid_withdrawal_count",
     "unpaid_withdrawal_amount_out",
-}
-OBSOLETE_PAUSE_ACTIONS = {
-    "PauseDepositMints": {
-        "calldata_hex": "0x15415f22",
-        "event_topic": "0x7a8cbbf7de1b70cf6a63059c06484e4a6ca4b28f18ced89f03ea751608fc29a1",
-    },
-    "PauseWithdrawals": {
-        "calldata_hex": "0x56bb54a7",
-        "event_topic": "0x7c82b8b6bc44325506945ff406eeb0f2add5b91cfdd2265e80994967d30a787d",
-    },
 }
 STAGES = (
     "preflight",
@@ -282,18 +258,15 @@ def reinstall_instance_check(
         "schema_version",
         "live PublicConfig",
     )
-    if schema_version not in {CURRENT_STABLE_SCHEMA, OBSOLETE_REPLACEABLE_SCHEMA}:
+    if schema_version != CURRENT_STABLE_SCHEMA:
         fail(
             "staging install check only accepts current schema "
-            f"v{CURRENT_STABLE_SCHEMA} or audited obsolete schema "
-            f"v{OBSOLETE_REPLACEABLE_SCHEMA}"
+            f"v{CURRENT_STABLE_SCHEMA}"
         )
     previous = deployment_instance_hex(
         live_public_config.get("deployment_instance_id"),
         "live PublicConfig deployment_instance_id",
     )
-    if schema_version == OBSOLETE_REPLACEABLE_SCHEMA and previous != next_id:
-        fail("staging upgrade must preserve the live deployment instance ID")
     live_module_hash = require_pattern(
         live_canister_status,
         "module_hash",
@@ -303,37 +276,10 @@ def reinstall_instance_check(
     if live_module_hash == "0x" + "0" * 64:
         fail("live canister status module_hash must be nonzero")
     replacement_mode = (
-        (
-            CURRENT_SCHEMA_UPGRADE
-            if previous == next_id
-            else CURRENT_SCHEMA_REINSTALL
-        )
-        if schema_version == CURRENT_STABLE_SCHEMA
-        else OBSOLETE_SCHEMA_UPGRADE
+        CURRENT_SCHEMA_UPGRADE
+        if previous == next_id
+        else CURRENT_SCHEMA_REINSTALL
     )
-    if replacement_mode == OBSOLETE_SCHEMA_UPGRADE:
-        policy = OBSOLETE_REPLACEMENT_POLICY
-        exact_keys(
-            policy,
-            {
-                "schema_version",
-                "environment",
-                "bridge_canister_id",
-                "live_schema_version",
-                "previous_deployment_instance_id",
-                "module_hash",
-            },
-            "obsolete replacement policy",
-        )
-        if (
-            policy["schema_version"] != 1
-            or policy["environment"] != "sepolia-staging"
-            or bridge_canister_id != policy["bridge_canister_id"]
-            or schema_version != policy["live_schema_version"]
-            or previous != policy["previous_deployment_instance_id"]
-            or live_module_hash != policy["module_hash"]
-        ):
-            fail("obsolete staging upgrade does not match the reviewed replacement policy")
     return {
         "replacement_mode": replacement_mode,
         "live_schema_version": schema_version,
@@ -370,8 +316,6 @@ def normalized_reinstall_check(value: dict[str, Any]) -> dict[str, Any]:
         if schema_version == CURRENT_STABLE_SCHEMA and previous == next_id
         else CURRENT_SCHEMA_REINSTALL
         if schema_version == CURRENT_STABLE_SCHEMA
-        else OBSOLETE_SCHEMA_UPGRADE
-        if schema_version == OBSOLETE_REPLACEABLE_SCHEMA
         else None
     )
     if replacement_mode != expected_mode:
@@ -752,20 +696,7 @@ def validate_preflight(
     )
     if summary_check != expected_check:
         fail("preflight summary does not match the verified reinstall instance check")
-    obsolete_artifact_matches = [
-        artifact
-        for artifact in artifacts
-        if isinstance(artifact, dict)
-        and artifact.get("kind")
-        in {
-            OBSOLETE_STATE_DISPOSITION_ARTIFACT_KIND,
-            OBSOLETE_PAUSE_EVIDENCE_ARTIFACT_KIND,
-        }
-    ]
-    if expected_check["replacement_mode"] in {
-        CURRENT_SCHEMA_UPGRADE,
-        OBSOLETE_SCHEMA_UPGRADE,
-    }:
+    if expected_check["replacement_mode"] == CURRENT_SCHEMA_UPGRADE:
         validate_upgrade_snapshots(artifacts, manifest_path)
         if (
             live_canister_status["controller_principals"]
@@ -778,25 +709,6 @@ def validate_preflight(
             != require_nat(details, "cycles_balance", context)
         ):
             fail("preflight summary differs from the live canister status snapshot")
-    if expected_check["replacement_mode"] == OBSOLETE_SCHEMA_UPGRADE:
-        pause_evidence = required_json_artifact(
-            artifacts,
-            manifest_path,
-            OBSOLETE_PAUSE_EVIDENCE_ARTIFACT_KIND,
-            "preflight",
-        )
-        validate_obsolete_pause_evidence(
-            pause_evidence,
-            binding,
-            expected_check,
-        )
-        if any(
-            artifact.get("kind") == OBSOLETE_STATE_DISPOSITION_ARTIFACT_KIND
-            for artifact in obsolete_artifact_matches
-        ):
-            fail("schema upgrade must not include discarded-state evidence")
-    elif obsolete_artifact_matches:
-        fail("current-schema replacement must not include obsolete replacement artifacts")
 
 
 def validate_install(details: dict[str, Any], binding: dict[str, Any]) -> None:
@@ -1468,12 +1380,6 @@ def main() -> int:
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("manifest", type=Path)
     verify_parser.add_argument("--allow-incomplete", action="store_true")
-    pause_parser = subparsers.add_parser("capture-obsolete-pause")
-    pause_parser.add_argument("capture_config", type=Path)
-    pause_parser.add_argument("output", type=Path)
-    pause_parser.add_argument("frontend_profile", type=Path)
-    pause_parser.add_argument("live_public_config", type=Path)
-    pause_parser.add_argument("live_canister_status", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "init":
@@ -1483,15 +1389,6 @@ def main() -> int:
             record(args.manifest, args.evidence)
             manifest = load_object(args.manifest)
             print(f"recorded {args.evidence}; state={manifest['state']}")
-        elif args.command == "capture-obsolete-pause":
-            capture_obsolete_pause_evidence(
-                args.capture_config,
-                args.output,
-                args.frontend_profile,
-                args.live_public_config,
-                args.live_canister_status,
-            )
-            print(f"captured obsolete pause evidence: {args.output}")
         else:
             manifest = load_object(args.manifest)
             validate_manifest(manifest, args.manifest, require_complete=not args.allow_incomplete, verify_files=True)

@@ -1,56 +1,37 @@
 import { type ReactNode } from "react"
-import { cleanup, render, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Route } from "./status"
 
-const mocks = vi.hoisted(() => {
-  const validationData: {
-    value: {
-      ready: boolean
-      blockers: string[]
-      checkedAt: number
-      status?: { source: string }
-    } | undefined
-  } = { value: { ready: true, blockers: [], checkedAt: 1 } }
-  return {
-    chainId: { value: 84_532 },
-    validationData,
-    validationRefetch: vi.fn(),
-    heartbeatRefetch: vi.fn(),
-    canisterRefetch: vi.fn(),
-  }
-})
+const mocks = vi.hoisted(() => ({
+  heartbeat: {
+    data: undefined as undefined | { ready: boolean; blockers: string[]; checkedAt: number; status?: { source: string } },
+    dataUpdatedAt: 0,
+    isError: false,
+    error: undefined,
+    isFetched: false,
+    isFetching: false,
+  },
+  canister: {
+    data: undefined,
+    dataUpdatedAt: 0,
+    isError: false,
+    error: undefined,
+    isFetching: false,
+  },
+  heartbeatRefetch: vi.fn(),
+  canisterRefetch: vi.fn(),
+}))
 
 vi.mock("@tanstack/react-router", () => ({
   createFileRoute: () => (options: { component: () => ReactNode }) => ({ options }),
 }))
 
-vi.mock("wagmi", () => ({ useChainId: () => mocks.chainId.value }))
+vi.mock("wagmi", () => ({ useChainId: () => 84_532 }))
 
 vi.mock("@/features/status/use-status", () => ({
-  useRuntimeValidation: () => ({
-    data: mocks.validationData.value,
-    dataUpdatedAt: 1,
-    isFetching: false,
-    refetch: mocks.validationRefetch,
-  }),
-  useRuntimeWriteReadiness: (value?: { ready: boolean; checkedAt: number }) => ({
-    ready: value?.ready === true && Date.now() - value.checkedAt <= 60_000,
-  }),
-  useRuntimeHeartbeat: () => ({
-    data: undefined,
-    dataUpdatedAt: 1,
-    isError: false,
-    isFetching: false,
-    refetch: mocks.heartbeatRefetch,
-  }),
-  useBridgeStatus: () => ({
-    data: undefined,
-    dataUpdatedAt: 1,
-    isError: false,
-    isFetching: false,
-    refetch: mocks.canisterRefetch,
-  }),
+  useRuntimeHeartbeat: () => ({ ...mocks.heartbeat, refetch: mocks.heartbeatRefetch }),
+  useBridgeStatus: () => ({ ...mocks.canister, refetch: mocks.canisterRefetch }),
 }))
 
 const StatusPage = Route.options.component!
@@ -59,83 +40,140 @@ describe("StatusPage refresh", () => {
   afterEach(cleanup)
 
   beforeEach(() => {
-    mocks.chainId.value = 84_532
-    mocks.validationData.value = { ready: true, blockers: [], checkedAt: Date.now() }
-    mocks.validationRefetch.mockReset().mockResolvedValue({ data: mocks.validationData.value })
+    Object.assign(mocks.heartbeat, { data: undefined, dataUpdatedAt: 0, isError: false, error: undefined, isFetched: false, isFetching: false })
+    Object.assign(mocks.canister, { data: undefined, dataUpdatedAt: 0, isError: false, error: undefined, isFetching: false })
     mocks.heartbeatRefetch.mockReset().mockResolvedValue({
       data: { ready: true, blockers: [], checkedAt: Date.now(), status: { source: "heartbeat" } },
+      isError: false,
     })
     mocks.canisterRefetch.mockReset().mockResolvedValue({ data: { source: "fallback" } })
   })
 
-  it("does not duplicate Canister status when heartbeat returns it", async () => {
+  it("reports unknown rather than unavailable before live observations exist", () => {
     render(<StatusPage />)
 
-    await waitFor(() => expect(mocks.heartbeatRefetch).toHaveBeenCalledOnce())
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(3)
+    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument()
+    expect(screen.getByText("Live availability is unknown until current status checks succeed.")).toBeVisible()
     expect(mocks.canisterRefetch).not.toHaveBeenCalled()
-    expect(mocks.validationRefetch).not.toHaveBeenCalled()
   })
 
-  it("uses the Canister status fallback when heartbeat returns no status", async () => {
-    mocks.heartbeatRefetch.mockResolvedValue({
-      data: { ready: false, blockers: ["Runtime heartbeat failed"], checkedAt: Date.now() },
+  it("reports unknown when fresh heartbeat observations fail signer verification", async () => {
+    const now = Date.now()
+    Object.assign(mocks.heartbeat, {
+      data: {
+        ready: false,
+        blockers: ["Bridge signer differs from the reviewed profile"],
+        checkedAt: now,
+        finalizedBlock: 100n,
+        finalizedBlockHash: "0x1234",
+        snapshot: {
+          blockTimestamp: 1n,
+          serviceFee: 1n,
+          perDepositLimit: 100n,
+          minted: 0n,
+          limit: 1_000n,
+          depositsPaused: false,
+          withdrawalsPaused: false,
+        },
+        status: { source: "heartbeat" },
+      },
+      dataUpdatedAt: now,
+      isFetched: true,
     })
+    Object.assign(mocks.canister, {
+      data: {
+        deposits_paused: false,
+        counts: { deposits: 0n, withdrawals: 0n },
+        unpaid_withdrawal_count: 0n,
+        unpaid_withdrawal_amount_out: 0n,
+        reserve: {
+          cycles_balance: 100n,
+          required_cycles: 10n,
+          governance_eth_floor_wei: 0n,
+          required_eth_wei: 0n,
+          eth_balance_wei: 0n,
+        },
+      },
+      dataUpdatedAt: now,
+    })
+
+    render(<StatusPage />)
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(3)
+    expect(screen.queryByText("Available")).not.toBeInTheDocument()
+    expect(screen.getByText("Bridge signer differs from the reviewed profile")).toBeVisible()
+  })
+
+  it("loads Canister status automatically when the initial heartbeat fails", async () => {
+    Object.assign(mocks.heartbeat, {
+      isFetched: true,
+      isError: true,
+      error: new Error("Base RPC unavailable"),
+    })
+
     render(<StatusPage />)
 
     await waitFor(() => expect(mocks.canisterRefetch).toHaveBeenCalledOnce())
-    expect(mocks.heartbeatRefetch).toHaveBeenCalledOnce()
-  })
-
-  it("retries full validation without heartbeat when validation has not succeeded", async () => {
-    mocks.validationData.value = { ready: false, blockers: ["Runtime validation failed"], checkedAt: Date.now() }
-    mocks.validationRefetch.mockResolvedValue({ data: mocks.validationData.value })
-    render(<StatusPage />)
-
-    await waitFor(() => expect(mocks.validationRefetch).toHaveBeenCalledOnce())
     expect(mocks.heartbeatRefetch).not.toHaveBeenCalled()
-    expect(mocks.canisterRefetch).toHaveBeenCalledOnce()
   })
 
-  it("retries full validation when the successful result has expired", async () => {
-    mocks.validationData.value = { ready: true, blockers: [], checkedAt: Date.now() - 60_001 }
-    mocks.validationRefetch.mockResolvedValue({
-      data: { ready: true, blockers: [], checkedAt: Date.now(), status: { source: "refreshed-validation" } },
+  it("does not duplicate Canister status included by the initial heartbeat", async () => {
+    Object.assign(mocks.heartbeat, {
+      data: { ready: true, blockers: [], checkedAt: Date.now(), status: { source: "heartbeat" } },
+      dataUpdatedAt: Date.now(),
+      isFetched: true,
     })
 
     render(<StatusPage />)
 
-    await waitFor(() => expect(mocks.validationRefetch).toHaveBeenCalledOnce())
-    expect(mocks.heartbeatRefetch).not.toHaveBeenCalled()
-    expect(mocks.canisterRefetch).not.toHaveBeenCalled()
+    await waitFor(() => expect(mocks.canisterRefetch).not.toHaveBeenCalled())
   })
 
-  it("does not follow a successful full validation with an immediate heartbeat", async () => {
-    mocks.validationData.value = { ready: false, blockers: ["Runtime validation pending"], checkedAt: Date.now() }
-    const completed = { ready: true, blockers: [], checkedAt: Date.now(), status: { source: "full-validation" } }
-    mocks.validationRefetch.mockResolvedValue({ data: completed })
-    const view = render(<StatusPage />)
+  it("loads Canister status when the initial heartbeat has no embedded status", async () => {
+    Object.assign(mocks.heartbeat, {
+      data: { ready: false, blockers: ["Base RPC unavailable"], checkedAt: Date.now() },
+      dataUpdatedAt: Date.now(),
+      isFetched: true,
+    })
 
-    await waitFor(() => expect(mocks.validationRefetch).toHaveBeenCalledOnce())
-    mocks.validationData.value = completed
+    render(<StatusPage />)
+
+    await waitFor(() => expect(mocks.canisterRefetch).toHaveBeenCalledOnce())
+  })
+
+  it("does not repeat the automatic fallback after Canister failure rerenders", async () => {
+    Object.assign(mocks.heartbeat, {
+      isFetched: true,
+      isError: true,
+      error: new Error("Base RPC unavailable"),
+    })
+    const view = render(<StatusPage />)
+    await waitFor(() => expect(mocks.canisterRefetch).toHaveBeenCalledOnce())
+
+    Object.assign(mocks.canister, { isError: true, error: new Error("IC unavailable"), isFetching: false })
     view.rerender(<StatusPage />)
-    expect(mocks.heartbeatRefetch).not.toHaveBeenCalled()
-    expect(mocks.canisterRefetch).not.toHaveBeenCalled()
+
+    await waitFor(() => expect(mocks.canisterRefetch).toHaveBeenCalledOnce())
   })
 
-  it("starts full validation when the connected chain changes", async () => {
-    const view = render(<StatusPage />)
+  it("refreshes only the lightweight heartbeat when it returns Canister status", async () => {
+    render(<StatusPage />)
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
 
     await waitFor(() => expect(mocks.heartbeatRefetch).toHaveBeenCalledOnce())
-
-    mocks.chainId.value = 8_453
-    mocks.validationData.value = undefined
-    mocks.validationRefetch.mockResolvedValue({
-      data: { ready: true, blockers: [], checkedAt: Date.now(), status: { source: "new-chain-validation" } },
-    })
-    view.rerender(<StatusPage />)
-
-    await waitFor(() => expect(mocks.validationRefetch).toHaveBeenCalledOnce())
-    expect(mocks.heartbeatRefetch).toHaveBeenCalledOnce()
     expect(mocks.canisterRefetch).not.toHaveBeenCalled()
+  })
+
+  it("uses the Canister fallback when the heartbeat refresh fails", async () => {
+    mocks.heartbeatRefetch.mockResolvedValue({ data: undefined, isError: true, error: new Error("Base RPC unavailable") })
+    render(<StatusPage />)
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+
+    await waitFor(() => expect(mocks.canisterRefetch).toHaveBeenCalledOnce())
+    expect(mocks.heartbeatRefetch).toHaveBeenCalledOnce()
   })
 })

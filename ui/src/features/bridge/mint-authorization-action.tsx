@@ -33,7 +33,6 @@ import {
 } from "@/lib/pending-confirmations"
 
 const attemptedAutoMintPrompts = new Set<string>()
-const FINALIZED_OBSERVATION_REFRESH_MS = 45_000
 
 export interface MintConfirmation {
   transactionHash: `0x${string}`
@@ -76,10 +75,9 @@ export function MintAuthorizationAction({
   const chainId = useChainId()
   const write = useWriteContract()
   const queryClient = useQueryClient()
-  const runtime = useRuntimeValidation(chainId, { enabled: true, gcTime: Infinity, staleTime: 60_000 })
+  const runtime = useRuntimeValidation(chainId, { enabled: false, gcTime: Infinity, staleTime: 60_000 })
   const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, {
-    enabled: runtime.data?.ready === true,
-    refetchInterval: FINALIZED_OBSERVATION_REFRESH_MS,
+    enabled: true,
   })
   const authorization = record.mint_authorization[0]
   const contract = useMemo(
@@ -340,7 +338,7 @@ export function MintAuthorizationAction({
           {mintBlockedReason && <p className="text-xs font-bold text-[#8a4b08]">{mintBlockedReason}</p>}
           {pending
             ? <p className={`text-xs font-bold ${receiptObservation === "sequencer-success" ? "text-[#176b3a]" : receiptObservation === "sequencer-reverted" ? "text-[#8a4b08]" : "text-[var(--muted)]"}`}>{pendingLabel}</p>
-            : <Button size={compact ? "sm" : "lg"} className={compact ? "" : "mt-3 w-full"} disabled={Boolean(mintBlockedReason) || identityConflict || !address || finalizedTimestamp === undefined || heartbeat.isError || heartbeat.isStale || mint.isPending || write.isPending} onClick={() => {
+            : <Button size={compact ? "sm" : "lg"} className={compact ? "" : "mt-3 w-full"} disabled={Boolean(mintBlockedReason) || identityConflict || !address || mint.isPending || write.isPending} onClick={() => {
                 if (autoPromptKey) attemptedAutoMintPrompts.add(autoPromptKey)
                 mint.mutate()
               }}>

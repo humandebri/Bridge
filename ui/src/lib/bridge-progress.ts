@@ -213,7 +213,7 @@ export function bridgeProgressDetail(record: BridgeProgressRecord): string {
   if (record.phase === "awaiting-base-allowance") return `Allow the bridge to use the ${record.sendSymbol} required for this withdrawal.`
   if (record.phase === "awaiting-base-withdrawal") return `${record.sendAmount} ${record.sendSymbol} will be burned and sent to ${shortDestination(record.destination)}.`
   if (record.phase === "awaiting-ic-notification") return "No wallet action is needed. The browser is submitting the finalized Base withdrawal proof."
-  if (record.phase === "ledger-payout") return "The withdrawal is recorded. The Ledger payout continues automatically."
+  if (record.phase === "ledger-payout") return "The withdrawal is recorded. Open History to continue the payout if it has not completed."
   if (record.direction === "deposit" && record.phase === "base-mint-included" && record.baseTransactionOutcome === "reverted") {
     return "The transaction reverted. Waiting for Base finality before enabling a safe retry."
   }

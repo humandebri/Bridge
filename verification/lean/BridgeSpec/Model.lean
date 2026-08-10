@@ -1,5 +1,13 @@
 namespace BridgeSpec
 
+def depositNonterminalIndexed (state : Nat) : Bool :=
+  state != 8 && state != 9 && state != 10
+
+def ledgerBlockProvenance (current : Option Nat) (block : Nat) : Option (Option Nat) :=
+  match current with
+  | none => some (some block)
+  | some prior => if prior = block then some current else none
+
 structure Account where
   owner : List UInt8
   subaccount : List UInt8
@@ -179,20 +187,13 @@ def manualClaimAllowed
 
 inductive RefundRequestIdentityDecision where
   | allow
-  | ownerLookupRequired
   | anonymousCaller
-  | ownerMismatch
 deriving DecidableEq
 
 def decideRefundRequestIdentity
-    (authenticated : Bool) (ownerMatch : Option Bool) :
+    (authenticated : Bool) :
     RefundRequestIdentityDecision :=
-  if !authenticated then .anonymousCaller
-  else
-    match ownerMatch with
-    | none => .ownerLookupRequired
-    | some true => .allow
-    | some false => .ownerMismatch
+  if authenticated then .allow else .anonymousCaller
 
 structure NotificationIsolationState where
   persistentVerificationCount : Nat

@@ -18,7 +18,7 @@ use icrc_ledger_types::{
 use serde::Serialize;
 
 const LEDGER_CALL_TIMEOUT_SECONDS: u32 = 15;
-pub const KINIC_LEDGER_FEE: Amount = Amount::new(10_000);
+pub const KINIC_LEDGER_FEE: Amount = Amount::new(100_000);
 
 fn ledger_call(canister: Principal, method: &'static str) -> Call<'static, 'static> {
     Call::bounded_wait(canister, method).change_timeout(LEDGER_CALL_TIMEOUT_SECONDS)

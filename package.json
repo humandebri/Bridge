@@ -10,7 +10,7 @@
     "governance-relayer": "node --no-warnings --experimental-strip-types tools/governance-relayer/cli.ts",
     "governance-relayer:test": "node --no-warnings --experimental-strip-types --test tools/governance-relayer/cli.test.ts",
     "governance-relayer:typecheck": "tsc --noEmit --target ES2023 --module ESNext --moduleResolution Bundler --allowImportingTsExtensions --skipLibCheck tools/governance-relayer/cli.ts",
-    "test:e2e": "scripts/build-v30-upgrade-fixture.sh && TMPDIR=${TMPDIR:-/tmp} jest --config integration/jest.config.js --runInBand"
+    "test:e2e": "TMPDIR=${TMPDIR:-/tmp} jest --config integration/jest.config.js --runInBand"
   },
   "devDependencies": {
     "@dfinity/agent": "^3.4.3",

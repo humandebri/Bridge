@@ -5,7 +5,7 @@ import { useChainId } from "wagmi"
 import { formatEther } from "viem"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { useBridgeStatus, useRuntimeHeartbeat, useRuntimeValidation, useRuntimeWriteReadiness } from "@/features/status/use-status"
+import { useBridgeStatus, useRuntimeHeartbeat } from "@/features/status/use-status"
 import { formatTokenAmount } from "@/lib/amounts"
 import { bridgeAvailability, displayCyclesSufficient, STATUS_FRESHNESS_MS, statusDataIsFresh } from "@/lib/bridge-availability"
 
@@ -13,11 +13,8 @@ export const Route = createFileRoute("/status")({ component: StatusPage })
 
 function StatusPage() {
   const chainId = useChainId()
-  const validation = useRuntimeValidation(chainId)
-  const validationReadiness = useRuntimeWriteReadiness(validation.data)
-  const base = useRuntimeHeartbeat(chainId, validation.data)
+  const base = useRuntimeHeartbeat(chainId, undefined, { enabled: true })
   const canister = useBridgeStatus()
-  const runtime = validation.data
   const baseData = base.data?.snapshot && base.data.finalizedBlock !== undefined && base.data.finalizedBlockHash
     ? {
         ...base.data.snapshot,
@@ -28,38 +25,32 @@ function StatusPage() {
     : undefined
   const canisterData = canister.data
   const [now, setNow] = useState(0)
-  const { refetch: refetchValidation } = validation
   const { refetch: refetchBase } = base
   const { refetch: refetchCanister } = canister
-  const initialRefreshChainId = useRef<number | null>(null)
+  const initialHeartbeatHandledForChain = useRef<number | undefined>(undefined)
 
   const refresh = useCallback(() => {
     void (async () => {
-      if (!validationReadiness.ready) {
-        const checked = await refetchValidation()
-        if (checked.data?.ready !== true && !(checked.data && "status" in checked.data && checked.data.status)) {
-          await refetchCanister()
-        }
-        return
-      }
       const checked = await refetchBase()
-      if (!(checked.data && "status" in checked.data && checked.data.status)) {
+      if (checked.isError || !(checked.data && "status" in checked.data && checked.data.status)) {
         await refetchCanister()
       }
     })()
-  }, [refetchBase, refetchCanister, refetchValidation, validationReadiness.ready])
+  }, [refetchBase, refetchCanister])
 
   useEffect(() => {
-    if (initialRefreshChainId.current === chainId) return
-    initialRefreshChainId.current = chainId
-    refresh()
-  }, [chainId, refresh])
+    if (!base.isFetched || initialHeartbeatHandledForChain.current === chainId) return
+    initialHeartbeatHandledForChain.current = chainId
+    if (base.isError || !(base.data && "status" in base.data && base.data.status)) {
+      void refetchCanister()
+    }
+  }, [base.data, base.isError, base.isFetched, chainId, refetchCanister])
 
   useEffect(() => {
-    const timestamps = [runtime?.checkedAt, base.dataUpdatedAt, canister.dataUpdatedAt]
+    const timestamps = [base.dataUpdatedAt, canister.dataUpdatedAt]
       .filter((value): value is number => value !== undefined && value > 0)
     const syncTimeout = window.setTimeout(() => setNow(Date.now()), 0)
-    const expiresAt = timestamps.length === 3 ? Math.min(...timestamps) + STATUS_FRESHNESS_MS + 1 : 0
+    const expiresAt = timestamps.length === 2 ? Math.min(...timestamps) + STATUS_FRESHNESS_MS + 1 : 0
     const remaining = expiresAt - Date.now()
     const expiryTimeout = remaining > 0
       ? window.setTimeout(() => setNow(Date.now()), remaining)
@@ -68,35 +59,38 @@ function StatusPage() {
       window.clearTimeout(syncTimeout)
       if (expiryTimeout !== undefined) window.clearTimeout(expiryTimeout)
     }
-  }, [base.dataUpdatedAt, canister.dataUpdatedAt, runtime?.checkedAt])
+  }, [base.dataUpdatedAt, canister.dataUpdatedAt])
 
   const observationsFresh = statusDataIsFresh({
-    runtimeCheckedAt: runtime?.checkedAt,
     baseUpdatedAt: base.dataUpdatedAt,
     canisterUpdatedAt: canister.dataUpdatedAt,
     now,
-  }) && !base.isError && !canister.isError
+  })
+  const observationsAccepted = observationsFresh
+    && base.data?.ready === true
+    && !base.isError
+    && !canister.isError
   const cyclesSufficient = canisterData
     ? displayCyclesSufficient({
         cyclesBalance: canisterData.reserve.cycles_balance,
         requiredCycles: canisterData.reserve.required_cycles,
       })
     : undefined
-  const { available, toBase, toIc } = bridgeAvailability({
-    runtimeReady: runtime?.ready === true && observationsFresh,
+  const { status, available, toBase, toIc } = bridgeAvailability({
+    observationsAccepted,
     baseStatus: baseData,
     icDepositsPaused: canisterData?.deposits_paused,
     cyclesSufficient,
   })
   const remaining = baseData ? (baseData.limit > baseData.minted ? baseData.limit - baseData.minted : 0n) : undefined
-  const refreshing = validation.isFetching || base.isFetching || canister.isFetching
+  const refreshing = base.isFetching || canister.isFetching
   const lastUpdatedAt = useMemo(() => {
-    const timestamps = [runtime?.checkedAt, base.dataUpdatedAt, canister.dataUpdatedAt]
+    const timestamps = [base.dataUpdatedAt, canister.dataUpdatedAt]
       .filter((value): value is number => value !== undefined && value > 0)
-    return timestamps.length === 3 ? Math.min(...timestamps) : undefined
-  }, [base.dataUpdatedAt, canister.dataUpdatedAt, runtime?.checkedAt])
+    return timestamps.length === 2 ? Math.min(...timestamps) : undefined
+  }, [base.dataUpdatedAt, canister.dataUpdatedAt])
   const errors = [
-    ...(runtime?.ready === false ? runtime.blockers : []),
+    ...(!base.isError && base.data?.ready === false ? base.data.blockers : []),
     base.isError ? errorMessage(base.error, "Base RPC status could not be refreshed") : undefined,
     canister.isError ? errorMessage(canister.error, "IC status could not be refreshed") : undefined,
   ].filter((value): value is string => value !== undefined)
@@ -114,8 +108,8 @@ function StatusPage() {
       </Button>
     </header>
 
-    {(!observationsFresh || errors.length > 0) && <div className="mb-5 rounded-2xl border border-amber-300/60 bg-amber-50 p-4 text-sm text-amber-950">
-      <p className="font-semibold">Availability is fail-closed until fresh status checks succeed.</p>
+    {(!observationsAccepted || errors.length > 0) && <div className="mb-5 rounded-2xl border border-amber-300/60 bg-amber-50 p-4 text-sm text-amber-950">
+      <p className="font-semibold">Live availability is unknown until current status checks succeed.</p>
       {errors.length > 0 && <p className="mt-1 break-words">{errors.join(" · ")}</p>}
       <p className="mt-1 text-amber-900/70">Last updated: {lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleString() : "Never"}</p>
     </div>}
@@ -124,7 +118,7 @@ function StatusPage() {
       <div className="rounded-[20px] bg-black p-6 text-white">
         <div className="flex items-start justify-between gap-4">
           <div><h2 className="text-xl font-bold">Availability</h2><p className="mt-1 text-sm text-white/60">Whether transfers can start right now.</p></div>
-          <Badge tone={available ? "good" : "warn"}>{available ? "Available" : "Unavailable"}</Badge>
+          <Badge tone={available ? "good" : "warn"}>{status}</Badge>
         </div>
         <div className="mt-8 grid grid-cols-2 gap-4"><Metric label="To Base" value={toBase} inverse /><Metric label="To Internet Computer" value={toIc} inverse /></div>
       </div>
@@ -150,13 +144,6 @@ function StatusPage() {
         <Metric label="Governance floor" value={canisterData ? `${formatEther(canisterData.reserve.governance_eth_floor_wei)} ETH` : "—"} />
         <Metric label="Total required" value={canisterData ? `${formatEther(canisterData.reserve.required_eth_wei)} ETH` : "—"} />
         <Metric label="Observed balance" value={canisterData ? `${formatEther(canisterData.reserve.eth_balance_wei)} ETH` : "—"} />
-      </div>
-    </section>
-    <section className="mt-5 rounded-[20px] bg-[var(--panel)] p-6">
-      <h2 className="text-xl font-bold">Withdrawal operations</h2>
-      <div className="mt-5 grid gap-4 sm:grid-cols-2">
-        <Metric label="Oldest unpaid observation" value={canisterData?.oldest_unpaid_withdrawal_observed_at_ns[0] !== undefined ? new Date(Number(canisterData.oldest_unpaid_withdrawal_observed_at_ns[0] / 1_000_000n)).toLocaleString() : "—"} />
-        <Metric label="Ledger stop reasons" value={canisterData?.withdrawal_stop_reasons.join(", ") || "None"} />
       </div>
     </section>
   </div>

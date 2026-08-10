@@ -1,16 +1,18 @@
-import type { DepositView } from "@/generated/bridge.did"
+import type { DepositView, NonterminalDepositRef } from "@/generated/bridge.did"
 
 export interface DepositHistoryData {
   items: DepositView[]
   nextCursor: bigint | null
   oldestAvailableCursor: bigint | null
   historyTruncated: boolean
+  pendingFunding: NonterminalDepositRef[]
 }
 
 interface DepositPage {
   nextCursor: bigint | null
   oldestAvailableCursor: bigint | null
   historyTruncated: boolean
+  pendingFunding?: NonterminalDepositRef[]
 }
 
 export function mergeDepositHistoryPage(previous: DepositHistoryData | undefined, additions: DepositView[], page: DepositPage, mode: "refresh" | "older"): DepositHistoryData {
@@ -24,6 +26,7 @@ export function mergeDepositHistoryPage(previous: DepositHistoryData | undefined
     nextCursor: mode === "refresh" && previous ? previous.nextCursor : page.nextCursor,
     oldestAvailableCursor: page.oldestAvailableCursor ?? previous?.oldestAvailableCursor ?? null,
     historyTruncated: page.historyTruncated || Boolean(previous?.historyTruncated),
+    pendingFunding: page.pendingFunding ?? previous?.pendingFunding ?? [],
   }
 }
 

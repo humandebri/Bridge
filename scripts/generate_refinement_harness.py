@@ -199,17 +199,19 @@ RUST_RENDERERS: dict[str, tuple[str, str]] = {
     ),
     "refund_request_identity_cases": (
         "protocol_refund_request_identity_cases_matches_production",
-        '''        let actual = refund_request_identity_decision(
-            boolean(&case, "authenticated"), optional_bool(&case, "owner_match"),
-        );
+        '''        let actual = refund_request_identity_decision(boolean(&case, "authenticated"));
         let expected = match text(&case, "decision") {
             "allow" => RefundRequestIdentityDecision::Allow,
-            "owner-lookup-required" => RefundRequestIdentityDecision::OwnerLookupRequired,
             "anonymous-caller" => RefundRequestIdentityDecision::AnonymousCaller,
-            "owner-mismatch" => RefundRequestIdentityDecision::OwnerMismatch,
             value => panic!("unknown refund request identity decision: {value}"),
         };
         assert_eq!(actual, expected);''',
+    ),
+    "deposit_nonterminal_index_cases": (
+        "protocol_deposit_nonterminal_index_cases_match_production",
+        '''        assert_eq!(deposit_nonterminal_indexed(
+            short(text(&case, "state")) as u8,
+        ), boolean(&case, "indexed"));''',
     ),
     "notification_admission_cases": (
         "protocol_notification_admission_cases_matches_production",
@@ -263,32 +265,49 @@ RUST_RENDERERS: dict[str, tuple[str, str]] = {
         };
         assert_eq!(actual, expected);''',
     ),
-    "finalization_cases": (
-        "protocol_finalization_cases_matches_rust_decision",
-        '''        let decision = withdrawal_finalization_decision(
-            boolean(&case, "receipt_succeeded"), block(text(&case, "receipt_block")),
-            optional_text(&case, "finalized_block").map(block),
-        );
-        let expected = match text(&case, "decision") {
-            "retry" => WithdrawalFinalizationDecision::Retry,
-            "notify" => WithdrawalFinalizationDecision::Notify,
-            "discard-reverted" => WithdrawalFinalizationDecision::DiscardReverted,
-            value => panic!("unknown finalization decision: {value}"),
-        };
-        assert_eq!(decision, expected);''',
-    ),
-    "queue_cases": (
-        "protocol_queue_cases_matches_rust_decision",
-        '''        assert_eq!(restored_pending_blocked(
-            optional_bool(&case, "existing_blocked"), boolean(&case, "incoming_blocked"),
-        ), boolean(&case, "expected_blocked"));
-        assert_eq!(boolean(&case, "other_blocked"), boolean(&case, "expected_other_blocked"));''',
-    ),
     "canonical_probe_cases": (
         "protocol_canonical_probe_cases_matches_production",
         '''        assert_eq!(canonical_probe_matches(
             block(text(&case, "receipt_block")), block(text(&case, "snapshot_block")),
         ), boolean(&case, "accepted"));''',
+    ),
+    "ledger_block_provenance_cases": (
+        "protocol_ledger_block_provenance_cases_match_production",
+        '''        let funding = optional_text(&case, "funding").map(amount);
+        let refund = optional_text(&case, "refund").map(amount);
+        let release = optional_text(&case, "release").map(amount);
+        let candidate = amount(text(&case, "block"));
+        let accepted = boolean(&case, "accepted");
+        match text(&case, "event") {
+            "preserve" => {
+                let deposit = deposit_ledger_block_transition(funding, refund, 0, candidate);
+                assert_eq!(deposit.is_some(), accepted);
+                assert_eq!(deposit.and_then(|blocks| blocks.0),
+                    optional_text(&case, "next_funding").map(amount));
+                assert_eq!(deposit.and_then(|blocks| blocks.1),
+                    optional_text(&case, "next_refund").map(amount));
+                let withdrawal = withdrawal_ledger_block_transition(release, 0, candidate);
+                assert_eq!(withdrawal.is_some(), accepted);
+                assert_eq!(withdrawal.flatten(),
+                    optional_text(&case, "next_release").map(amount));
+            }
+            "funding" | "refund" => {
+                let event = if text(&case, "event") == "funding" { 1 } else { 2 };
+                let deposit = deposit_ledger_block_transition(funding, refund, event, candidate);
+                assert_eq!(deposit.is_some(), accepted);
+                assert_eq!(deposit.and_then(|blocks| blocks.0),
+                    optional_text(&case, "next_funding").map(amount));
+                assert_eq!(deposit.and_then(|blocks| blocks.1),
+                    optional_text(&case, "next_refund").map(amount));
+            }
+            "release" => {
+                let withdrawal = withdrawal_ledger_block_transition(release, 1, candidate);
+                assert_eq!(withdrawal.is_some(), accepted);
+                assert_eq!(withdrawal.flatten(),
+                    optional_text(&case, "next_release").map(amount));
+            }
+            event => panic!("unknown ledger block event: {event}"),
+        }''',
     ),
 }
 
@@ -408,14 +427,16 @@ for section, (selector, body) in VITEST_RENDERERS.items():
 RUST_PRELUDE = '''// @generated by scripts/generate_refinement_harness.py
 use bridge_core::{
     canonical_probe_matches, committed_quote_matches, deposit_identity_decision,
+    deposit_nonterminal_indexed,
+    deposit_ledger_block_transition,
     fee_recipient_rotation_allowed, funding_attempt_decision, funding_reconciliation_decision,
     hold_retry_allowed, lease_lane_claim_decision, lease_outcome_is_current, manual_claim_allowed,
     notification_admission_allowed, notification_ingestion_allowed, outbound_settlement,
     payout_allowed, payout_debit, refund_request_identity_decision, release_transfer_matches,
-    reserve_admission_preserves_requirement, restored_pending_blocked, service_fee_change_allowed,
-    withdrawal_finalization_decision, Amount, BaseMintSnapshot, DepositIdentityDecision,
+    reserve_admission_preserves_requirement, service_fee_change_allowed, Amount,
+    BaseMintSnapshot, DepositIdentityDecision,
     FundingAttemptDecision, FundingReconciliationDecision, LeaseLaneClaimDecision,
-    RefundRequestIdentityDecision, WithdrawalFinalizationDecision,
+    withdrawal_ledger_block_transition, RefundRequestIdentityDecision,
 };
 use serde_json::Value;
 
@@ -441,10 +462,6 @@ fn optional_text<'a>(case: &'a Value, field: &str) -> Option<&'a str> {
 
 fn boolean(case: &Value, field: &str) -> bool {
     case[field].as_bool().expect("vector field must be a boolean")
-}
-
-fn optional_bool(case: &Value, field: &str) -> Option<bool> {
-    case.get(field).and_then(Value::as_bool)
 }
 
 fn amount(value: &str) -> u128 {

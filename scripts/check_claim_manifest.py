@@ -306,6 +306,20 @@ def build_claim_report() -> dict[str, object]:
             }
         )
 
+    internal_gaps = {
+        result["id"]: [
+            reason
+            for reason in result["unproved_reasons"]
+            if reason == "missing_claim_contract"
+            or reason.startswith("model_only_verus:")
+            or reason.startswith("production_kernel_not_linked:")
+        ]
+        for result in results
+    }
+    internal_gaps = {claim: reasons for claim, reasons in internal_gaps.items() if reasons}
+    if internal_gaps:
+        raise ValueError(f"internal claim evidence gaps: {internal_gaps}")
+
     missing_verus = set(verus_rows) - used_verus
     if missing_verus:
         raise ValueError(

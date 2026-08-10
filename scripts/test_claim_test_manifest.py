@@ -150,15 +150,11 @@ class ClaimTestManifestTests(unittest.TestCase):
         root = Path("/tmp/claim-test-root")
         claim_tests.prepare_test_dependencies(tests, root, runner)
 
-        self.assertEqual(len(commands), 3)
-        self.assertEqual(
-            commands[0],
-            ["bash", str(root / "scripts/build-v30-upgrade-fixture.sh")],
-        )
-        self.assertIn(str(root / "target/test-deployment"), commands[1])
-        self.assertIn("bridge-canister", commands[1])
-        self.assertIn("test-deployment", commands[1])
-        self.assertIn("mock-external", commands[2])
+        self.assertEqual(len(commands), 2)
+        self.assertIn(str(root / "target/test-deployment"), commands[0])
+        self.assertIn("bridge-canister", commands[0])
+        self.assertIn("test-deployment", commands[0])
+        self.assertIn("mock-external", commands[1])
 
     def test_non_jest_dependencies_require_no_build(self) -> None:
         test = claim_tests.ClaimTest(
@@ -172,39 +168,6 @@ class ClaimTestManifestTests(unittest.TestCase):
             self.fail("dependency build should not run without Jest claim tests")
 
         claim_tests.prepare_test_dependencies([test], Path("."), runner)
-
-    def test_v30_fixture_fails_closed_when_reviewed_commit_is_missing(self) -> None:
-        source = (claim_tests.ROOT / "scripts/build-v30-upgrade-fixture.sh").read_text(encoding="utf-8")
-        missing_commit = "0" * 40
-        source = source.replace(
-            'V30_SOURCE_COMMIT="d2eddc9fce7d41d5f84e0c5fba0073ccbbdcdc5f"',
-            f'V30_SOURCE_COMMIT="{missing_commit}"',
-        )
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            script = root / "scripts/build-v30-upgrade-fixture.sh"
-            script.parent.mkdir()
-            script.write_text(source, encoding="utf-8")
-            subprocess.run(
-                ["git", "init"],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            result = subprocess.run(
-                ["bash", str(script)],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(missing_commit, result.stderr)
-        self.assertIn("full repository history", result.stderr)
-        self.assertNotIn("origin", result.stderr)
 
     def test_live_manifest_parses(self) -> None:
         parsed = claim_tests.parse_manifest(

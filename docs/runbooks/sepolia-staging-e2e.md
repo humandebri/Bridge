@@ -8,12 +8,12 @@ Base Sepolia stagingだけは`short-delay-test-only` policyによりactivation d
 ## Test Ledgerのfee
 
 このstagingはKINICではなく、共有test tokenのTICRC1を使用する。
-TICRC1 Ledgerのfeeは`10000` rawであり、KINIC mainnet Ledgerの`100000` rawとは異なる。
+TICRC1 LedgerのfeeもKINIC mainnet Ledgerと同じ`100000` rawに設定する。
 
-現在のstaging Wasmに含まれる`KINIC_LEDGER_FEE = 10000`は、TICRC1へ合わせたtest-only値である。
+staging Wasmを含む全buildで`KINIC_LEDGER_FEE = 100000`を使用する。
 この差は設定driftではなく、stagingとproductionで対象Ledgerが異なるために意図して設けている。
 
-stagingの検証では、Canisterの`get_public_config().ledger_fee`、TICRC1 Ledgerの`icrc1_fee()`、staging profileの値がすべて`10000` rawで一致することを確認する。
+stagingの検証では、Canisterの`get_public_config().ledger_fee`、TICRC1 Ledgerの`icrc1_fee()`、staging profileの値がすべて`100000` rawで一致することを確認する。
 production artifactへこの値を流用せず、KINIC mainnet Ledgerのlive feeと承認済みproduction profileへ定数を同期した別commitからWasmを作成する。
 
 ## 開始条件
@@ -22,7 +22,7 @@ production artifactへこの値を流用せず、KINIC mainnet Ledgerのlive fee
 - `frontend-profile.json`の値を予定値として信用せず、共有test Ledger/Index、staging Bridge、Base Sepoliaのlive値を再読する。
 - ICP identity名、wallet secret、RPC fault controller tokenはリポジトリへ保存しない。
 - Canister install/upgrade/reinstallとcycles投入、Base Sepolia transaction、Cloudflare test UI公開は別々に承認を得る。
-- v30→v31 upgrade前にIC Deposit、Base Deposit Mint、Base Withdrawalをpauseし、Finalized postconditionを記録する。v30で直接resumeされた状態をv31のactivation経路へ持ち込まないためであり、どれか一つでもpauseできない場合は後続を実行しない。
+- install前にIC Deposit、Base Deposit Mint、Base Withdrawalをpauseし、Finalized postconditionを記録する。どれか一つでもpauseできない場合は後続を実行しない。
 
 ## 証跡state machine
 
@@ -55,11 +55,10 @@ preflight
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
 Canister installの前にはlive `public_config` をJSONへ保存し、次のgateを必ず通す。
-現行v31のreinstallではprofileの新IDがlive IDと異なることを要求する。現行v31のupgradeでは
+現行v32のreinstallではprofileの新IDがlive IDと異なることを要求する。現行v32のupgradeでは
 `current-schema-upgrade`としてprofileとliveのinstance ID一致を要求し、upgrade前後のstate count、
-schema v31、instance ID、`storage_integrity_check = ok`を照合する。
-repository-owned `deployments/sepolia-staging/obsolete-replacement-policy.json` に固定したCanister ID・instance ID・module hashのtupleと完全一致する旧v30 stagingだけは`obsolete-schema-upgrade`として受理し、profileとliveのinstance IDが同一であることを要求する。
-v29以下、未知schema、欠落、ゼロ値、tuple不一致はfail closedにする。v30→v31は一つのSQLite transactionでrecord wire、config、quota、auditを移行し、失敗時は全rollbackする。
+schema v32、instance ID、`storage_integrity_check = ok`を照合する。
+v31以下、未知schema、欠落、ゼロ値はfail closedにする。旧schemaを保持したupgradeは行わず、必要なら明示承認されたreinstall手順を別途作成する。
 出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、
 manifest検証でも同じ比較を行う。
 
@@ -77,27 +76,16 @@ preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-
 各artifactを再読し、live設定とmodule hashから比較を再計算してchecker出力および`details`と照合する。
 別のlive取得結果、手編集したchecker出力、manifest外のpathは使用しない。
 
-v30→v31またはv31→v31 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
+v32→v32 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
 
 - `live-bridge-status`: Deposit／reservationを含むcountsと、Withdrawal、pending Ledger operation、reconciliation hold、未払額を保持する。
 - `live-activation-status`: pending Timelock operation数を保持する。
 - `live-canister-status`: module hash、controller principals、cycles balanceを保持する。
 - `live-storage-integrity`: 認可済みcallerによる`storage_integrity_check()`の`ok`結果を保持する。
 - `live-ledger-balance`: Bridge principalのTICRC1 raw balanceを保持する。
-- v30→v31だけは`obsolete-pause-evidence`も保存する。Base Sepolia RPC 3件で取得したchain ID、Finalized head、PauseDepositMints／PauseWithdrawalsのreceipt・target・calldata・event・canonical blockと、ICの`pause_new_deposits`応答・audit sequence・pause後statusを保持する。validatorはBase観測の2-of-3一致を要求する。
-- install stageにはupgrade前後の全count、schema v31、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
+- install stageにはupgrade前後の全count、schema v32、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
 
-`deployments/sepolia-staging/obsolete-pause-capture.template.json`をsecure作業領域へコピーし、3 provider URL、2件のpause transaction hash、pause実行前の次audit sequenceを設定する。次のcapture commandは3 RPCを直接queryし、承認済みIC identityで`pause_new_deposits`を再確認実行した直後に`get_bridge_status`と`get_audit_events`をqueryし、検証済みartifactだけをatomicに出力する。外部mutationを含むため、明示承認を得てから実行する。正式artifactを生成するoffline verifierは提供しないため、自己申告boolean、手書きの成功要約、collectorの標準出力をpreflight artifactとして登録しない。
-
-```sh
-scripts/plan007/staging-e2e-driver.sh capture-obsolete-pause \
-  /secure/work/obsolete-pause-capture.json \
-  /secure/work/live-public-config.json \
-  /secure/work/live-canister-status.json \
-  /secure/work/obsolete-pause-evidence.json
-```
-
-manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は破棄せずmigration後も保持する。
+manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は同一schema upgrade後も保持する。
 
 ```sh
 scripts/plan007/staging-e2e-driver.sh record /secure/work/preflight-evidence.json

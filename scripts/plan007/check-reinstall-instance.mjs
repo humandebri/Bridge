@@ -1,12 +1,9 @@
-import { readFile, readFileSync } from "node:fs"
+import { readFile } from "node:fs"
 import { promisify } from "node:util"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 const readFileAsync = promisify(readFile)
-const policyPath = fileURLToPath(new URL("../../deployments/sepolia-staging/obsolete-replacement-policy.json", import.meta.url))
-export const obsoleteReplacementPolicy = JSON.parse(readFileSync(policyPath, "utf8"))
-
 export function deploymentInstanceHex(value, context) {
   if (typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value) && !/^0x0+$/.test(value)) {
     return value.toLowerCase()
@@ -35,32 +32,17 @@ export function verifyReinstallInstance(profile, livePublicConfig, liveCanisterS
   if (!Number.isInteger(schemaVersion)) {
     throw new Error("live PublicConfig schema_version must be an integer")
   }
-  if (schemaVersion !== 31 && schemaVersion !== 30) {
-    throw new Error("staging install check only accepts current schema v31 or audited obsolete schema v30")
+  if (schemaVersion !== 32) {
+    throw new Error("staging install check only accepts current schema v32")
   }
   const previous = deploymentInstanceHex(
     livePublicConfig?.deployment_instance_id,
     "live PublicConfig deployment_instance_id",
   )
-  if (schemaVersion === 30 && next !== previous) {
-    throw new Error("staging upgrade must preserve the live deployment instance ID")
-  }
   const liveModuleHash = moduleHash(liveCanisterStatus?.module_hash, "live canister status module_hash")
-  const replacementMode = schemaVersion === 31
-    ? next === previous
-      ? "current-schema-upgrade"
-      : "current-schema-reinstall"
-    : "obsolete-schema-upgrade"
-  if (replacementMode === "obsolete-schema-upgrade") {
-    if (
-      profile?.bridgeCanisterId !== obsoleteReplacementPolicy.bridge_canister_id
-      || schemaVersion !== obsoleteReplacementPolicy.live_schema_version
-      || previous !== obsoleteReplacementPolicy.previous_deployment_instance_id
-      || liveModuleHash !== obsoleteReplacementPolicy.module_hash
-    ) {
-      throw new Error("obsolete staging upgrade does not match the reviewed replacement policy")
-    }
-  }
+  const replacementMode = next === previous
+    ? "current-schema-upgrade"
+    : "current-schema-reinstall"
   return {
     replacement_mode: replacementMode,
     live_schema_version: schemaVersion,

@@ -143,7 +143,7 @@ pub fn consent_message(
             utc_offset_minutes: request.user_preferences.metadata.utc_offset_minutes,
         },
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross bridge amount: `{gross}` KINIC\n\nLedger transfer fee: `{ledger_fee}` KINIC\n\nTotal wallet debit: `{total_debit}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the displayed total using an existing ICRC-2 allowance. After the pull, a Base Mint Authorization remains irrevocable for {authorization_minutes} minutes. You need a Base wallet and Base ETH to submit it. Issuing the authorization permanently earns the displayed service fee. The initial pull Ledger fee is not refundable. If the authorization expires unused, no automatic transfer occurs: you must explicitly claim a refund after the Base Finalized timestamp has passed the deadline. The minimum refund after authorization is `{refund_amount}` KINIC after the maximum service fee and a second fixed Ledger fee are deducted.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
+            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross bridge amount: `{gross}` KINIC\n\nLedger transfer fee: `{ledger_fee}` KINIC\n\nTotal wallet debit: `{total_debit}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the displayed total using an existing ICRC-2 allowance. After the pull, a Base Mint Authorization remains irrevocable for {authorization_minutes} minutes. You need a Base wallet and Base ETH to submit it. Issuing the authorization permanently earns the displayed service fee. The initial pull Ledger fee is not refundable. If the authorization expires unused, no automatic transfer occurs: any non-anonymous Principal may advance the refund after the Base Finalized timestamp has passed the deadline. The destination, amount, and Ledger transfer identity remain fixed by this deposit. The minimum refund after authorization is `{refund_amount}` KINIC after the maximum service fee and a second fixed Ledger fee are deducted.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
             owner_sequence = validated.owner_sequence,
             gross = format_e8s(validated.gross_amount),
             ledger_fee = format_e8s(ledger_fee),
@@ -361,20 +361,10 @@ fn deposit_refund_consent_message(
             ),
             "This call continues reconciliation for the same committed refund. It may query the Ledger or submit the displayed transfer only when prior absence is established.",
         ),
-        bridge_core::DepositState::Minted { .. } => (
-            "# Confirm deposit status",
-            "Refund amount: `0` KINIC".to_string(),
-            "This deposit is already minted on Base. This idempotent status check makes no Ledger transfer.",
-        ),
-        bridge_core::DepositState::Refunded { attempt, .. } => (
-            "# Confirm completed IC refund",
-            format!(
-                "Refund already completed: `{}` KINIC\n\nNon-refundable refund Ledger fee: `{}` KINIC",
-                format_e8s(attempt.identity.amount.get()),
-                format_e8s(attempt.identity.fee.get()),
-            ),
-            "This refund is already complete. This idempotent status check makes no new Ledger transfer.",
-        ),
+        bridge_core::DepositState::Minted { .. }
+        | bridge_core::DepositState::Refunded { .. } => {
+            return Err("refund consent is unavailable for a terminal deposit".into());
+        }
         bridge_core::DepositState::FundingPending
         | bridge_core::DepositState::EscrowedUnquoted { .. }
         | bridge_core::DepositState::FundingReconciliationHold { .. }
@@ -546,7 +536,7 @@ mod tests {
         let caller = Principal::management_canister();
         let canister = caller;
         let pending = deposit(DepositState::AuthorizationAvailable {
-            ledger_block_index: 1,
+            funding_ledger_block_index: 1,
         });
         let message =
             deposit_refund_consent_message(caller, canister, [7; 32], &pending, Some(10_000))
@@ -557,6 +547,7 @@ mod tests {
 
         let refunding = deposit(DepositState::RefundPending {
             reason: bridge_core::DepositRefundReason::BasePaused,
+            funding_ledger_block_index: 2,
             attempt: refund_attempt(),
         });
         let message = deposit_refund_consent_message(caller, canister, [7; 32], &refunding, None)
@@ -567,15 +558,21 @@ mod tests {
     }
 
     #[test]
-    fn terminal_refund_consent_is_an_idempotent_status_check() {
+    fn terminal_refund_consent_is_rejected() {
         let caller = Principal::management_canister();
         let minted = deposit(DepositState::Minted {
-            ledger_block_index: 3,
+            funding_ledger_block_index: 3,
         });
-        let message = deposit_refund_consent_message(caller, caller, [7; 32], &minted, None)
-            .expect("minted status consent");
-        assert!(message.contains("already minted on Base"));
-        assert!(message.contains("makes no Ledger transfer"));
+        assert!(deposit_refund_consent_message(caller, caller, [7; 32], &minted, None).is_err());
+
+        let refunded = deposit(DepositState::Refunded {
+            reason: bridge_core::DepositRefundReason::BasePaused,
+            funding_ledger_block_index: 3,
+            attempt: refund_attempt(),
+            refund_ledger_block_index: 4,
+            source_hold: None,
+        });
+        assert!(deposit_refund_consent_message(caller, caller, [7; 32], &refunded, None).is_err());
 
         let unsupported = deposit(DepositState::FundingPending);
         assert!(deposit_refund_consent_message(

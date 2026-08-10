@@ -5,7 +5,7 @@ import { deploymentProfile } from "@/config/profile"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
 import { basePublicClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
+import { continueWithdrawalWithBrowserIdentity, NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
 import {
   readPendingConfirmations,
   removePendingConfirmation,
@@ -188,6 +188,13 @@ async function notifyWithdrawal(
   const canPresentAfterNotification = presentationIsCurrent(progressId, entry)
   const withdrawalId = "Duplicate" in notified ? notified.Duplicate.withdrawal_id : notified.Ingested.withdrawal_id
   await removePendingConfirmation(entry).catch(() => undefined)
+  let continuation: Awaited<ReturnType<typeof continueWithdrawalWithBrowserIdentity>> | undefined
+  let continuationError: unknown
+  try {
+    continuation = await continueWithdrawalWithBrowserIdentity(Uint8Array.from(withdrawalId))
+  } catch (error) {
+    continuationError = error
+  }
   const canPresent = canPresentAfterNotification
     && presentationIsCurrent(progressId, entry)
   if (!canPresent) return
@@ -199,6 +206,18 @@ async function notifyWithdrawal(
   if (presentation.tone === "success") toast.success(presentation.message)
   else if (presentation.tone === "warning") toast.warning(presentation.message)
   else toast.info(presentation.message)
+  if (continuationError) {
+    if (progressId) update(progressId, {
+      phase: "attention",
+      attentionMessage: continuationError instanceof Error ? continuationError.message : "The payout needs another attempt from History.",
+    })
+    toast.warning("The withdrawal was recorded, but the payout needs another attempt from History.")
+  } else if (continuation && !("Complete" in continuation)) {
+    if (progressId) update(progressId, {
+      phase: "attention",
+      attentionMessage: "The payout needs another explicit step from History.",
+    })
+  }
 }
 
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` {
