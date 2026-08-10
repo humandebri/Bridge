@@ -19,7 +19,7 @@ CanisterがFinalized headを取得する際のblock response上限は固定16 Ki
 Canisterが使用するLedger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。
 Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示し、事前検証へ使う。
 
-Canisterが受け入れるLedger feeは全環境で`100000` rawに固定する。staging Ledgerも同じfeeに構成し、activation preflightとruntimeの`BadFee`処理は差異をfail closedにする。
+production Canisterが受け入れるLedger feeは`100000` raw、`test-deployment` featureで作るstaging Canisterは`10000` rawに固定する。activation preflightとruntimeの`BadFee`処理は、buildが選択した固定値との差異をfail closedにする。
 詳しい検証条件は`sepolia-staging-e2e.md`の「Test Ledgerのfee」に記載する。
 
 production artifactへstaging Wasmを流用しない。
@@ -35,7 +35,7 @@ stable schemaはv32、record wireはv28を現行形式とする。`post_upgrade`
 
 schema v32またはwire v28以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
-`get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。固定`KINIC_LEDGER_FEE = 100000 raw`とprepared recordのcharged Service Feeをreview済みprofileに照合した後、任意の非anonymous主体がHistoryから`continue_withdrawal`を実行する。Canisterはruntimeで`icrc1_fee()`を照会せず、固定Ledger Feeがcharged Service Fee以下であることを再検証できた場合だけ、同じrecordからreleaseを開始してguardを解除する。
+`get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。buildが選択した固定`KINIC_LEDGER_FEE`（productionは`100000 raw`、stagingは`10000 raw`）とprepared recordのcharged Service Feeをreview済みprofileに照合した後、任意の非anonymous主体がHistoryから`continue_withdrawal`を実行する。Canisterはruntimeで`icrc1_fee()`を照会せず、固定Ledger Feeがcharged Service Fee以下であることを再検証できた場合だけ、同じrecordからreleaseを開始してguardを解除する。
 現行の開発・staging・production canisterはstable schema v32／record wire v28だけを受理する。これ以外の形式は空stateであってもfail closedとし、migrationや旧Wasm fixtureを現行release判断へ使用しない。state破棄を伴うreinstallは別途明示承認を必要とする。
 SQLite DBやcounterを手作業で変更しない。
 

@@ -8,13 +8,13 @@ Base Sepolia stagingだけは`short-delay-test-only` policyによりactivation d
 ## Test Ledgerのfee
 
 このstagingはKINICではなく、共有test tokenのTICRC1を使用する。
-TICRC1 LedgerのfeeもKINIC mainnet Ledgerと同じ`100000` rawに設定する。
+TICRC1 Ledgerのfeeは`10000` rawである。
 
-staging Wasmを含む全buildで`KINIC_LEDGER_FEE = 100000`を使用する。
-この差は設定driftではなく、stagingとproductionで対象Ledgerが異なるために意図して設けている。
+`test-deployment` featureで作るstaging Wasmは`KINIC_LEDGER_FEE = 10000`を使用し、production Wasmは`100000`を使用する。
+この差は設定driftではなく、stagingとproductionで対象Ledgerが異なるために意図して設けている。staging artifactをproductionへ流用してはならない。
 
-stagingの検証では、Canisterの`get_public_config().ledger_fee`、TICRC1 Ledgerの`icrc1_fee()`、staging profileの値がすべて`100000` rawで一致することを確認する。
-production artifactへこの値を流用せず、KINIC mainnet Ledgerのlive feeと承認済みproduction profileへ定数を同期した別commitからWasmを作成する。
+stagingの検証では、Canisterの`get_public_config().ledger_fee`とTICRC1 Ledgerの`icrc1_fee()`がともに`10000` rawで一致することを確認する。
+production artifactではKINIC mainnet Ledgerのlive fee、固定値`100000`、承認済みproduction profileが一致することを別途検証する。
 
 ## 開始条件
 

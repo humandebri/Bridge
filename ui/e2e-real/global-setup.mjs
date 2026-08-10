@@ -92,7 +92,7 @@ async function setup() {
         token_name: "TEST ICRC1",
         decimals: [8],
         minting_account: account(minter),
-        transfer_fee: 100_000n,
+        transfer_fee: 10_000n,
         metadata: [],
         initial_balances: [[account(testOwner), 100_000_000_000n]],
         archive_options: {
@@ -352,7 +352,7 @@ async function setup() {
   }
   const prepareRefundableDeposit = async () => {
     const grossAmount = 100_000_000n
-    const ledgerFee = 100_000n
+    const ledgerFee = 10_000n
     const ownerSequence = await bridge.actor.get_next_deposit_sequence(testOwner)
     const now = await pic.getTime()
     const approval = await ledger.icrc2_approve({

@@ -12,6 +12,7 @@ import { PocketIc, SubnetStateType } from "@dfinity/pic";
 const root = resolve(__dirname, "..");
 const bridgeWasm = resolve(root, "target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm");
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
+const testLedgerFee = 10_000n;
 
 const mockInit = mockInitFactory({ IDL })[0];
 const bridgeInit = bridgeInitFactory({ IDL })[0];
@@ -314,8 +315,8 @@ describe("Phase 3 PocketIC saga", () => {
   it("rejects gross amounts at or below the fixed refund fee before record, sequence, or ledger use", async () => {
     const { ledger, bridge, runtimePrincipal } = await setup();
     const request = (gross_amount: bigint) => ({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount, max_service_fee: 10n });
-    expect(await (bridge.actor as any).request_deposit(request(100_000n))).toHaveProperty("Err.InvalidRequest");
-    expect(await (bridge.actor as any).request_deposit(request(99_999n))).toHaveProperty("Err.InvalidRequest");
+    expect(await (bridge.actor as any).request_deposit(request(testLedgerFee))).toHaveProperty("Err.InvalidRequest");
+    expect(await (bridge.actor as any).request_deposit(request(testLedgerFee - 1n))).toHaveProperty("Err.InvalidRequest");
     expect(await (bridge.actor as any).get_next_deposit_sequence(runtimePrincipal)).toBe(0n);
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(0);
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
@@ -592,7 +593,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(config.base_chain_id).toBe(8453n);
     expect(config.schema_version).toBe(32);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
-    expect(config.ledger_fee).toBe(100_000n);
+    expect(config.ledger_fee).toBe(testLedgerFee);
     expect(config.notification_rate_limit_window_seconds).toBe(600n);
     expect(config.notification_rate_limit_global).toBe(60);
     expect(config.notification_ingestion_rate_limit_global).toBe(30);
@@ -751,7 +752,7 @@ describe("Phase 3 PocketIC saga", () => {
       .toHaveProperty("Ok.state.RefundProcessing");
     const held: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(phaseName(held[0].state)).toBe("RefundProcessing");
-    expect(held[0].refund[0]).toMatchObject({ amount: 99_999n, ledger_fee: 100_000n, attempt_no: 0n });
+    expect(held[0].refund[0]).toMatchObject({ amount: 189_999n, ledger_fee: testLedgerFee, attempt_no: 0n });
     expect(held[0].refund[0].status).toEqual({ ReconciliationRequired: null });
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(1);
 
@@ -760,7 +761,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).request_deposit_refund(accepted.Ok.deposit_id)).toHaveProperty("Ok.state.Refunded");
     const refunded: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(phaseName(refunded[0].state)).toBe("Refunded");
-    expect(refunded[0].refund[0]).toMatchObject({ amount: 99_999n, ledger_fee: 100_000n, attempt_no: 0n });
+    expect(refunded[0].refund[0]).toMatchObject({ amount: 189_999n, ledger_fee: testLedgerFee, attempt_no: 0n });
     expect(refunded[0].refund[0].status).toEqual({ Completed: null });
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(2);
   });
@@ -780,7 +781,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).request_deposit_refund(accepted.Ok.deposit_id)).toHaveProperty("Ok.state.Refunded");
     const refunded: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(phaseName(refunded[0].state)).toBe("Refunded");
-    expect(refunded[0].refund[0]).toMatchObject({ amount: 99_999n, ledger_fee: 100_000n, attempt_no: 1n });
+    expect(refunded[0].refund[0]).toMatchObject({ amount: 189_999n, ledger_fee: testLedgerFee, attempt_no: 1n });
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(2);
   });
 
@@ -788,20 +789,20 @@ describe("Phase 3 PocketIC saga", () => {
     const { ledger, evm, bridge } = await setup();
     const accepted: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });
     await awaitMintAuthorization(bridge, accepted.Ok.deposit_id);
-    await (ledger.actor as any).set_ledger_fee(120_000n);
+    await (ledger.actor as any).set_ledger_fee(12_000n);
     await (ledger.actor as any).set_refund_ledger_mode([{ BadFee: null }]);
     expect((await expireUnusedAuthorization(bridge, evm, accepted.Ok.deposit_id)).result)
       .toHaveProperty("Ok.state.RefundProcessing");
     const stopped: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
     expect(phaseName(stopped[0].state)).toBe("RefundProcessing");
-    expect(stopped[0].refund[0]).toMatchObject({ amount: 99_999n, ledger_fee: 100_000n, attempt_no: 0n });
+    expect(stopped[0].refund[0]).toMatchObject({ amount: 189_999n, ledger_fee: testLedgerFee, attempt_no: 0n });
     expect(stopped[0].refund[0].status).toEqual({ Sending: null });
     expect(stopped[0].last_settlement_stop_reason[0]).toContain("BadFee");
 
     await (ledger.actor as any).set_refund_ledger_mode([{ Succeed: null }]);
     expect(await (bridge.actor as any).request_deposit_refund(accepted.Ok.deposit_id)).toHaveProperty("Ok.state.Refunded");
     const refunded: any = await (bridge.actor as any).get_deposit(accepted.Ok.deposit_id);
-    expect(refunded[0].refund[0]).toMatchObject({ amount: 99_999n, ledger_fee: 100_000n, attempt_no: 0n });
+    expect(refunded[0].refund[0]).toMatchObject({ amount: 189_999n, ledger_fee: testLedgerFee, attempt_no: 0n });
   });
 
   it("treats a full expired Mint window as having zero effective consumption", async () => {
@@ -1348,16 +1349,16 @@ describe("Phase 3 PocketIC saga", () => {
     await (ledger.actor as any).set_ledger_fee_available(false);
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) })).toHaveProperty("Ok.Ingested");
     const paid: any = await (bridge.actor as any).get_withdrawal(id);
-    expect(paid[0].ledger_fee).toBe(100_000n);
+    expect(paid[0].ledger_fee).toBe(testLedgerFee);
   });
 
   it("fails closed when the charged service fee is below the fixed Ledger fee", async () => {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const id = new Uint8Array(32).fill(0xb7);
-    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 100_000n, max_service_fee: 99_999n, charged_service_fee: 99_999n, amount_out: 1n }]);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 10_000n, max_service_fee: 9_999n, charged_service_fee: 9_999n, amount_out: 1n }]);
 
     const guarded: any = await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) });
-    expect(guarded).toEqual({ Err: { LedgerFeeExceedsServiceFee: { ledger_fee: 100_000n, charged_service_fee: 99_999n } } });
+    expect(guarded).toEqual({ Err: { LedgerFeeExceedsServiceFee: { ledger_fee: testLedgerFee, charged_service_fee: 9_999n } } });
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
     const blocked: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(blocked[0].state)).toBe("Observed");
@@ -1392,7 +1393,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
     const stopped: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(stopped[0].state)).toBe("ReleasePending");
-    expect(stopped[0].ledger_fee).toBe(100_000n);
+    expect(stopped[0].ledger_fee).toBe(testLedgerFee);
     expect(stopped[0].last_settlement_stop_reason[0]).toContain("BadFee");
 
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
@@ -1400,7 +1401,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(2n);
     const paid: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(paid[0].state)).toBe("Paid");
-    expect(paid[0].ledger_fee).toBe(100_000n);
+    expect(paid[0].ledger_fee).toBe(testLedgerFee);
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
   });
 

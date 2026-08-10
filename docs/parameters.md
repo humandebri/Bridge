@@ -42,6 +42,7 @@ service_fee初期値 = 0.5 KINIC
 ```
 
 - KINIC ledger fee: `100000` raw
+- Base Sepolia staging TICRC1 ledger fee: `10000` raw（`test-deployment` buildのみ）
 - `MAX_SERVICE_FEE`: `1000000000` raw（10 KINIC、ledger feeの10000倍）
 - `service_fee`運用初期値: `50000000` raw（0.5 KINIC、ledger feeの500倍）
 
