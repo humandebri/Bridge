@@ -661,9 +661,10 @@ async function setup() {
       }
       if (request.url === "/test/state") {
         const balance = await publicClient.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "balanceOf", args: [deployer] })
-        const [allowance, ledgerBalance, indexBalance, indexLedgerId, indexStatus, nextDepositSequence, bridgeStatus, receiptCalls] = await Promise.all([
+        const [allowance, ledgerBalance, ledgerFee, indexBalance, indexLedgerId, indexStatus, nextDepositSequence, bridgeStatus, receiptCalls] = await Promise.all([
           publicClient.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "allowance", args: [deployer, bridgeAddress] }),
           ledger.icrc1_balance_of(account(testOwner)),
+          ledger.icrc1_fee(),
           index.icrc1_balance_of(account(testOwner)),
           index.ledger_id(),
           index.status(),
@@ -681,6 +682,7 @@ async function setup() {
           bsnsBalance: balance.toString(),
           bsnsAllowance: allowance.toString(),
           ledgerBalance: ledgerBalance.toString(),
+          ledgerFee: ledgerFee.toString(),
           ledgerId: ledgerId.toText(),
           indexBalance: indexBalance.toString(),
           indexLedgerId: indexLedgerId.toText(),
@@ -987,6 +989,7 @@ const ledgerIdl = ({ IDL: I }) => {
   return I.Service({
     icrc2_approve: I.Func([I.Record({ from_subaccount: I.Opt(I.Vec(I.Nat8)), spender: Account, amount: I.Nat, expected_allowance: I.Opt(I.Nat), expires_at: I.Opt(I.Nat64), fee: I.Opt(I.Nat), memo: I.Opt(I.Vec(I.Nat8)), created_at_time: I.Opt(I.Nat64) })], [I.Variant({ Ok: I.Nat, Err: ApproveError })], []),
     icrc1_balance_of: I.Func([Account], [I.Nat], ["query"]),
+    icrc1_fee: I.Func([], [I.Nat], ["query"]),
   })
 }
 

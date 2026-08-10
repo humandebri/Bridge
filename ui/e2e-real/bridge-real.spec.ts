@@ -70,7 +70,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByRole("button", { name: "Bridge to Base" })).toHaveCount(0)
   const afterRecovery = await controlState(request)
   expect(afterRecovery).toMatchObject({ knownDepositCount: 1, depositSequences: ["0"], nextDepositSequence: "1" })
-  expect(BigInt(initial.ledgerBalance) - BigInt(afterRecovery.ledgerBalance)).toBe(200_200_000n)
+  expect(BigInt(initial.ledgerBalance) - BigInt(afterRecovery.ledgerBalance)).toBe(
+    200_000_000n + 2n * BigInt(initial.ledgerFee),
+  )
   await expect.poll(async () => BigInt((await controlState(request)).bsnsBalance), { timeout: 60_000 }).toBe(199_000_000n)
 
   await postControl(request, "/test/settle", {})
@@ -111,7 +113,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
     return state.indexBalance === state.ledgerBalance
   }, { timeout: 30_000 }).toBe(true)
   const afterDeposit = await controlState(request)
-  expect(BigInt(initial.ledgerBalance) - BigInt(afterDeposit.ledgerBalance)).toBe(300_400_000n)
+  expect(BigInt(initial.ledgerBalance) - BigInt(afterDeposit.ledgerBalance)).toBe(
+    300_000_000n + 4n * BigInt(initial.ledgerFee),
+  )
   expect(BigInt(afterDeposit.indexBlocksSynced)).toBeGreaterThanOrEqual(BigInt(initial.indexBlocksSynced) + 4n)
   await openHistory(page)
   await expect(page.getByText("Minted on Base (finalized)").first()).toBeVisible({ timeout: 30_000 })
@@ -292,6 +296,7 @@ interface ControlState {
   bsnsBalance: string
   bsnsAllowance: string
   ledgerBalance: string
+  ledgerFee: string
   ledgerId: string
   indexBalance: string
   indexLedgerId: string
