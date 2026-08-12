@@ -25,3 +25,10 @@
 - A safety-related logic change is not complete until `python3 scripts/check_proof_impact.py`, `python3 scripts/check_claim_manifest.py`, `scripts/ci-local.sh proofs`, and the applicable unit, negative, refinement, and transaction tests pass.
 - The proof receipt must contain a source fingerprint matching the current checkout. Missing stages, stale fingerprints, unregistered safety sources, unregistered fixtures, model-only implementation claims, and production kernels without claim ownership must fail closed.
 - In the final report for a safety-related change, list the affected claims, executed proof stages, and remaining external assumptions.
+
+## Deployment validation efficiency
+
+- Run deployment and staging promotion gates from the current clean checkout by default. Do not create an isolated Git worktree merely to satisfy a clean-tree check; fail before expensive validation when tracked or untracked changes are present.
+- When isolation is explicitly necessary because concurrent build-input changes must be preserved, reuse the existing Cargo target cache, pnpm store, pinned tools, and initialized submodules. Set non-interactive package-manager mode before starting the gate.
+- Reuse a proof receipt only after the repository verifier confirms its source fingerprint, tool versions, submodule revisions, required stages, and completeness against the current checkout. File existence or a matching commit name alone is not sufficient.
+- Before waiting for chain finality, inspect an available transaction receipt for terminal failure. A reverted receipt must stop the driver immediately and must never be reported as a finality timeout.

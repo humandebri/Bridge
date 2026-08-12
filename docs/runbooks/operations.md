@@ -1,8 +1,8 @@
 # Bridge資源補充・緊急停止
 
-## Schema v32 baseline
+## Schema v33 baseline
 
-初回mainnet deployで導入するv32は、`nonterminal_deposit_owner_index`を含む現在のSQLite形状だけを正本とする。同じversion番号を持つそれ以前の開発DBとは互換性を持たず、tableとcounterの欠落はreopen時にfail closedとなる。初回mainnet deploy完了後はこの形状をproduction baselineとして固定し、以後の形状変更はschema番号を上げた明示migrationとして扱う。
+初回mainnet deployで導入するv33は、`nonterminal_deposit_owner_index`を含む現在のSQLite形状だけを正本とする。同じversion番号を持つそれ以前の開発DBとは互換性を持たず、tableとcounterの欠落はreopen時にfail closedとなる。初回mainnet deploy完了後はこの形状をproduction baselineとして固定し、以後の形状変更はschema番号を上げた明示migrationとして扱う。
 
 ## 日常確認
 
@@ -25,7 +25,7 @@ production Canisterが受け入れるLedger feeは`100000` raw、`test-deploymen
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv32、record wireはv28を現行形式とする。`post_upgrade`は現行形式だけを受理し、migration、dual-read、旧wire fallbackは持たない。
+stable schemaはv33、record wireはv28を現行形式とする。`post_upgrade`は現行形式だけを受理し、migration、dual-read、旧wire fallbackは持たない。
 
 ## 保持制限と監査
 
@@ -33,10 +33,10 @@ stable schemaはv32、record wireはv28を現行形式とする。`post_upgrade`
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v32またはwire v28以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
+schema v33またはwire v28以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。buildが選択した固定`KINIC_LEDGER_FEE`（productionは`100000 raw`、stagingは`10000 raw`）とprepared recordのcharged Service Feeをreview済みprofileに照合した後、任意の非anonymous主体がHistoryから`continue_withdrawal`を実行する。Canisterはruntimeで`icrc1_fee()`を照会せず、固定Ledger Feeがcharged Service Fee以下であることを再検証できた場合だけ、同じrecordからreleaseを開始してguardを解除する。
-現行の開発・staging・production canisterはstable schema v32／record wire v28だけを受理する。これ以外の形式は空stateであってもfail closedとし、migrationや旧Wasm fixtureを現行release判断へ使用しない。state破棄を伴うreinstallは別途明示承認を必要とする。
+現行の開発・staging・production canisterはstable schema v33／record wire v28だけを受理する。これ以外の形式は空stateであってもfail closedとし、migrationや旧Wasm fixtureを現行release判断へ使用しない。state破棄を伴うreinstallは別途明示承認を必要とする。
 SQLite DBやcounterを手作業で変更しない。
 
 schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipient、Authorization、失効またはMint確定証拠を一つのstable envelopeへ保存する。pending Ledger、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、primary rowとliability index・集計は一つのSQLite transactionで更新する。
@@ -55,7 +55,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 
 ## ETH・cycles補充
 
-- ETHはGovernance Operator addressだけへ、`governance_eth_floor_wei`を上回るまで運用者が送る。Mint Signerへ補充せず、Deposit admissionやAuthorization発行にETHを要求しない。SNS-token feeの自動交換は行わない。
+- ETHはGovernance Operator addressだけへ補充する。Governance transactionは署名前にSafe/Finalized残高の小さい方がそのtransactionの最大費用以上であることを検査する。Mint Signerへ補充せず、Deposit admissionやAuthorization発行にETHを要求しない。SNS-token feeの自動交換は行わない。
 - cyclesはBridgeの30日floorとfreezing thresholdの両方を満たすことを確認する。
 - permissionlessな`request_deposit`は、cycle reserveと既定60秒windowのglobal 30件・principalあたり3件のquotaを通過してから有料Base preflightを開始する。開始を許可されたattemptはBase検証またはLedger fundingが後で確定失敗してもquotaを消費し、attemptとactive reservationの削除でquotaは戻らない。`RateLimited`と`ReserveUnavailable`の増加を監視し、window reset前に無資金requestを反復しない。
 - permissionlessな`notify_withdrawal`は、既定では600秒あたりglobal 60件まで有料EVM RPCを開始でき、canonical confirmed eventの永続化は別のingestion上限30件で制限する。missing、pending、reverted、不正response、duplicateはingestion枠を消費しない。verification上限は無権限trafficによる消費速度を制限するが正当通知用の枠を予約しないため、Sybil trafficで枯渇したwindowでは正規通知も一時的に遅延し得る。`RateLimited`の増加とcycles減少を監視し、verification上限を最悪時の許容RPC予算以下に設定する。枠枯渇時は追加通知を反復せず、攻撃またはprovider障害としてpause判断を行う。
@@ -105,7 +105,7 @@ npm run governance-relayer -- run --operation-id <id>
 
 `IC_IDENTITY_PEM`はCanisterの認可APIだけに使用し、通常操作ではGovernance identity、緊急pause/cancelではpause identityを指定できる。EVM秘密鍵は用意しない。gasはthreshold Governance Operator EOAが負担する。RPC URL/API keyやPEM内容をログ・shell history・incident evidenceへ記録しない。
 
-stagingを現行schemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認する。schema v32／wire v28以外のcanisterはupgrade対象にせず、現行Wasmを新規installして検証stateを作り直す。rollbackでは最初にrelayerを停止し、同一schemaの対応Wasmとstable snapshotをセットで復元する。
+stagingを現行schemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認する。schema v33／wire v28以外のcanisterはupgrade対象にせず、現行Wasmを新規installして検証stateを作り直す。rollbackでは最初にrelayerを停止し、同一schemaの対応Wasmとstable snapshotをセットで復元する。
 
 本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
 

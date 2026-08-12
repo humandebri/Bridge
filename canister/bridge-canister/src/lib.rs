@@ -54,7 +54,6 @@ pub struct BridgeStatus {
     pub mint_authorization_epoch: u64,
     pub counts: StatusCounts,
     pub last_finalized_base_block: u64,
-    pub last_reserve_observation_ns: u64,
     pub last_finalized_observation_ns: u64,
     pub last_finalized_base_block_hash: Vec<u8>,
     pub observed_bridge_signer: Vec<u8>,
@@ -94,12 +93,8 @@ pub enum SettlementSchedulerHealth {
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReserveStatus {
-    pub eth_balance_wei: u128,
     pub cycles_balance: u128,
-    pub required_eth_wei: u128,
-    pub governance_eth_floor_wei: u128,
     pub required_cycles: u128,
-    pub eth_surplus_wei: u128,
     pub cycles_surplus: u128,
     pub sufficient: bool,
 }
@@ -134,7 +129,6 @@ pub struct PublicConfig {
     pub settlement_retry_interval_seconds: u64,
     pub governance_evm_fee: config::EvmFeePolicy,
     pub governance_replacement: config::GovernanceReplacementPolicy,
-    pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
     pub governance_principal: candid::Principal,
@@ -1048,7 +1042,6 @@ fn get_bridge_status() -> BridgeStatus {
                     "deposit funding reservation count read",
                     store.deposit_funding_reservation_count(),
                 ),
-                progress.last_eth_balance_wei,
                 ic_cdk::api::canister_liquid_cycle_balance(),
             )
             .unwrap_or_else(|_| ic_cdk::trap("reserve arithmetic overflow"));
@@ -1097,7 +1090,6 @@ fn get_bridge_status() -> BridgeStatus {
             last_finalized_base_block: finalized_observation
                 .map(|observation| observation.block_number)
                 .unwrap_or_default(),
-            last_reserve_observation_ns: progress.last_reserve_observation_ns,
             last_finalized_observation_ns: finalized_observation
                 .map(|observation| observation.observed_at_ns)
                 .unwrap_or_default(),
@@ -1111,12 +1103,8 @@ fn get_bridge_status() -> BridgeStatus {
                 .map(|observation| observation.runtime_sha256.to_vec())
                 .unwrap_or_default(),
             reserve: ReserveStatus {
-                eth_balance_wei: reserve.eth_balance_wei,
                 cycles_balance: reserve.cycles_balance,
-                required_eth_wei: reserve.required_eth_wei,
-                governance_eth_floor_wei: config.governance_eth_floor_wei,
                 required_cycles: reserve.required_cycles,
-                eth_surplus_wei: reserve.eth_surplus_wei,
                 cycles_surplus: reserve.cycles_surplus,
                 sufficient: reserve.sufficient,
             },
@@ -1330,7 +1318,6 @@ fn get_public_config() -> PublicConfig {
             settlement_retry_interval_seconds: config.settlement_retry_interval_seconds,
             governance_evm_fee: config.governance_evm_fee,
             governance_replacement: config.governance_replacement,
-            governance_eth_floor_wei: config.governance_eth_floor_wei,
             cycles_floor: config.cycles_floor,
             settlement_cycle_ceiling: config.settlement_cycle_ceiling,
             governance_principal: admin.governance_principal,

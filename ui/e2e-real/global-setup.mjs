@@ -219,7 +219,6 @@ async function setup() {
         max_replacements: 3,
         fee_bump_bps: 1_250,
       },
-      governance_eth_floor_wei: 1n,
       cycles_floor: 1n,
       settlement_cycle_ceiling: 1n,
       governance_principal: testOwner,

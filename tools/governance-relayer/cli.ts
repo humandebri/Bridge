@@ -30,6 +30,7 @@ interface RelayerRpc {
   getTransactionReceipt(args: { hash: Hex }): Promise<{
     blockNumber: bigint
     blockHash: Hex
+    status: "success" | "reverted"
   }>
   getBlock(args: { blockTag: "finalized" } | { blockNumber: bigint }): Promise<{
     number: bigint | null
@@ -241,13 +242,16 @@ async function relay(
   }
 }
 
-async function waitForFinalized(
-  rpc: RelayerRpc,
+export async function waitForFinalized(
+  rpc: Pick<RelayerRpc, "getTransactionReceipt" | "getBlock">,
   hash: Hex,
 ): Promise<void> {
   for (;;) {
     const receipt = await rpc.getTransactionReceipt({ hash }).catch(() => undefined)
     if (receipt) {
+      if (receipt.status === "reverted") {
+        throw new Error(`Transaction reverted: ${hash}`)
+      }
       const finalized = await rpc.getBlock({ blockTag: "finalized" })
       if (finalized.number !== null && receipt.blockNumber <= finalized.number) {
         const canonical = await rpc.getBlock({ blockNumber: receipt.blockNumber })

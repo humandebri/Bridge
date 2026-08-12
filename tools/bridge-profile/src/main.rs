@@ -21,7 +21,7 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 32;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 33;
 const GATE_A_ARTIFACTS: [&str; 4] = [
     "profile.json",
     "monitor-drill.json",
@@ -132,8 +132,6 @@ struct Parameters {
     base_fee_multiplier_bps: u32,
     l1_fee_multiplier_bps: u32,
     #[serde(with = "u128_string")]
-    governance_eth_floor_wei: u128,
-    #[serde(with = "u128_string")]
     cycles_floor: u128,
     #[serde(with = "u128_string")]
     settlement_cycle_ceiling: u128,
@@ -224,8 +222,6 @@ struct Evidence {
     base_fee_per_gas: Vec<u128>,
     priority_fee_per_gas: Vec<u128>,
     l1_fee_upper_bound_wei: Vec<u128>,
-    total_governance_fee_wei: Vec<u128>,
-    governance_transactions_per_reserve_window: u128,
     settlement_cycles: Vec<u128>,
     baseline_cycles_per_day: u128,
     expected_daily_settlements: u128,
@@ -240,7 +236,6 @@ struct DerivedParameters {
     max_fee_per_gas_ceiling: u128,
     max_priority_fee_per_gas_ceiling: u128,
     l1_fee_per_transaction_ceiling_wei: u128,
-    governance_eth_floor_wei: u128,
     cycles_floor: u128,
     settlement_cycle_ceiling: u128,
 }
@@ -371,8 +366,6 @@ struct LivePublicConfig {
     settlement_retry_interval_seconds: u64,
     governance_evm_fee: EvmFeePolicy,
     governance_replacement: GovernanceReplacementPolicy,
-    #[serde(with = "u128_string")]
-    governance_eth_floor_wei: u128,
     #[serde(with = "u128_string")]
     cycles_floor: u128,
     #[serde(with = "u128_string")]
@@ -721,26 +714,22 @@ fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
         || evidence.base_fee_per_gas.len() < 10
         || evidence.priority_fee_per_gas.len() < 10
         || evidence.l1_fee_upper_bound_wei.len() < 10
-        || evidence.total_governance_fee_wei.len() < 10
     {
         return Err(
-            "governance gas, fee, total-fee, and cycle evidence must contain at least 10 samples each".into(),
+            "governance gas, fee, and cycle evidence must contain at least 10 samples each".into(),
         );
     }
     if evidence.ledger_fee == 0
         || evidence.baseline_cycles_per_day == 0
         || evidence.expected_daily_settlements == 0
-        || evidence.governance_transactions_per_reserve_window == 0
         || evidence.governance_gas_used.contains(&0)
         || evidence.settlement_cycles.contains(&0)
         || evidence.base_fee_per_gas.is_empty()
         || evidence.base_fee_per_gas.len() != evidence.priority_fee_per_gas.len()
         || evidence.base_fee_per_gas.len() != evidence.l1_fee_upper_bound_wei.len()
-        || evidence.base_fee_per_gas.len() != evidence.total_governance_fee_wei.len()
         || evidence.base_fee_per_gas.contains(&0)
         || evidence.priority_fee_per_gas.contains(&0)
         || evidence.l1_fee_upper_bound_wei.contains(&0)
-        || evidence.total_governance_fee_wei.contains(&0)
     {
         return Err("measurement evidence values must be positive and fee samples aligned".into());
     }
@@ -775,15 +764,6 @@ fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
     let l1_fee_per_transaction_ceiling_wei = percentile(&evidence.l1_fee_upper_bound_wei, 99, 100)?
         .checked_mul(10)
         .ok_or("L1 fee cap overflow")?;
-    let floor_transactions = if evidence.environment == "base-sepolia" {
-        10
-    } else {
-        evidence.governance_transactions_per_reserve_window
-    };
-    let governance_eth_floor_wei = percentile(&evidence.total_governance_fee_wei, 99, 100)?
-        .checked_mul(floor_transactions)
-        .and_then(|value| value.checked_mul(2))
-        .ok_or("ETH floor overflow")?;
     let settlement_cycles_max = *evidence
         .settlement_cycles
         .iter()
@@ -811,7 +791,6 @@ fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
         max_fee_per_gas_ceiling,
         max_priority_fee_per_gas_ceiling,
         l1_fee_per_transaction_ceiling_wei,
-        governance_eth_floor_wei,
         cycles_floor,
         settlement_cycle_ceiling,
     })
@@ -1206,7 +1185,6 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         || !(10_000..=20_000).contains(&p.gas_limit_multiplier_bps)
         || !(10_000..=100_000).contains(&p.base_fee_multiplier_bps)
         || !(10_000..=30_000).contains(&p.l1_fee_multiplier_bps)
-        || p.governance_eth_floor_wei == 0
         || p.cycles_floor == 0
         || p.settlement_cycle_ceiling == 0
     {
@@ -1367,7 +1345,6 @@ fn render_release_inputs(
             "l1_fee_multiplier_bps": profile.parameters.l1_fee_multiplier_bps,
         },
         "governance_replacement": profile.governance_replacement,
-        "governance_eth_floor_wei": profile.parameters.governance_eth_floor_wei.to_string(),
         "cycles_floor": profile.parameters.cycles_floor.to_string(),
         "settlement_cycle_ceiling": profile.parameters.settlement_cycle_ceiling.to_string(),
         "governance_principal": profile.governance_principal,
@@ -1998,7 +1975,6 @@ fn validate_live_public_config(
         || observed.settlement_retry_interval_seconds != r.settlement_retry_interval_seconds
         || observed.governance_evm_fee != p.governance_evm_fee()
         || observed.governance_replacement != profile.governance_replacement
-        || observed.governance_eth_floor_wei != p.governance_eth_floor_wei
         || observed.cycles_floor != p.cycles_floor
         || observed.settlement_cycle_ceiling != p.settlement_cycle_ceiling
         || observed.governance_principal != profile.governance_principal
@@ -2976,7 +2952,6 @@ mod tests {
                 gas_limit_multiplier_bps: 13_000,
                 base_fee_multiplier_bps: 60_000,
                 l1_fee_multiplier_bps: 15_000,
-                governance_eth_floor_wei: 100_000_000,
                 cycles_floor: 1,
                 settlement_cycle_ceiling: 1,
             },
@@ -3038,7 +3013,6 @@ mod tests {
                 .settlement_retry_interval_seconds,
             governance_evm_fee: profile.parameters.governance_evm_fee(),
             governance_replacement: profile.governance_replacement,
-            governance_eth_floor_wei: profile.parameters.governance_eth_floor_wei,
             cycles_floor: profile.parameters.cycles_floor,
             settlement_cycle_ceiling: profile.parameters.settlement_cycle_ceiling,
             governance_principal: profile.governance_principal.clone(),
@@ -3062,8 +3036,6 @@ mod tests {
             base_fee_per_gas: vec![10; 10],
             priority_fee_per_gas: vec![2; 10],
             l1_fee_upper_bound_wei: vec![5; 10],
-            total_governance_fee_wei: vec![100; 10],
-            governance_transactions_per_reserve_window: 4,
             settlement_cycles: vec![1_000; 10],
             baseline_cycles_per_day: 10_000,
             expected_daily_settlements: 4,
@@ -3073,7 +3045,6 @@ mod tests {
         assert_eq!(result.max_fee_per_gas_ceiling, 200);
         assert_eq!(result.max_priority_fee_per_gas_ceiling, 8);
         assert_eq!(result.l1_fee_per_transaction_ceiling_wei, 50);
-        assert_eq!(result.governance_eth_floor_wei, 800);
         assert_eq!(result.settlement_cycle_ceiling, 1_500);
         assert_eq!(result.cycles_floor, 840_000);
     }
@@ -3090,8 +3061,6 @@ mod tests {
             base_fee_per_gas: vec![10; 10],
             priority_fee_per_gas: vec![2; 10],
             l1_fee_upper_bound_wei: vec![5; 10],
-            total_governance_fee_wei: vec![100; 10],
-            governance_transactions_per_reserve_window: 4,
             settlement_cycles: vec![1_001; 10],
             baseline_cycles_per_day: 10_000,
             expected_daily_settlements: 4,
@@ -3207,8 +3176,6 @@ mod tests {
             &mut Vec::new()
         )
         .is_err());
-        let profile = serde_json::to_value(valid_profile()).unwrap();
-        assert!(profile["parameters"]["governance_eth_floor_wei"].is_string());
     }
 
     #[test]
@@ -3269,7 +3236,6 @@ mod tests {
             "settlement_retry_interval_seconds",
             "governance_evm_fee",
             "governance_replacement",
-            "governance_eth_floor_wei",
             "cycles_floor",
             "settlement_cycle_ceiling",
             "governance_principal",

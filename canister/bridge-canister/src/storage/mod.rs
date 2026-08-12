@@ -234,7 +234,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 32, 28);
+INSERT INTO bridge_metadata VALUES (1, 33, 28);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -369,7 +369,7 @@ const MIGRATIONS: &[Migration] = &[Migration {
 }];
 
 #[cfg(test)]
-const OBSOLETE_SCHEMA_VERSION_V31: u16 = 31;
+const OBSOLETE_SCHEMA_VERSION_V32: u16 = 32;
 #[cfg(test)]
 const OBSOLETE_WIRE_VERSION_V27: u8 = 27;
 
@@ -1644,9 +1644,6 @@ pub enum AuditEventKind {
         previous_sha256: Vec<u8>,
         current_sha256: Vec<u8>,
     },
-    ReserveGateChanged {
-        sufficient: bool,
-    },
     FeePayoutRequested {
         amount: u128,
     },
@@ -1869,7 +1866,6 @@ pub struct DepositReserveToken {
     pub nonterminal_withdrawals: u64,
     pub reserved_deposit_mint_amount: u128,
     pub reserved_deposit_mint_operations: u64,
-    pub observation_generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1890,7 +1886,6 @@ pub enum StorageError {
     DatabaseFailure,
     StaleSnapshotRefresh,
     ReserveUnavailable,
-    StaleReserveObservation,
     QuoteSnapshotMismatch,
     Core(CoreError),
 }
@@ -2525,12 +2520,10 @@ impl StableStore {
 
     pub fn deposit_reserve_token(&self) -> Result<DepositReserveToken, StorageError> {
         let counters = self.counters()?;
-        let progress = self.external_progress()?;
         Ok(DepositReserveToken {
             nonterminal_withdrawals: self.table_count_value("withdrawal_liability_index")?,
             reserved_deposit_mint_amount: counters.reserved_deposit_mint_amount,
             reserved_deposit_mint_operations: counters.reserved_deposit_mint_operations,
-            observation_generation: progress.reserve_observation_generation,
         })
     }
 
@@ -3064,7 +3057,7 @@ impl StableStore {
                     sequence,
                     timestamp_ns: ordinal,
                     caller: Principal::anonymous(),
-                    kind: AuditEventKind::ReserveGateChanged { sufficient: true },
+                    kind: AuditEventKind::DepositsPaused,
                 })
                 .map_err(|_| StorageMaintenanceError::StorageFailure)?,
             ));
@@ -5778,78 +5771,6 @@ impl StableStore {
 
     pub fn set_external_progress(&mut self, value: &ExternalProgress) -> Result<(), StorageError> {
         self.external_progress.set(encode(value)?)
-    }
-
-    pub fn record_reserve_observation(
-        &mut self,
-        eth_balance_wei: u128,
-        observed_at_ns: u64,
-        caller: Principal,
-    ) -> Result<(), StorageError> {
-        let previous_progress = self.external_progress()?;
-        if observed_at_ns < previous_progress.last_reserve_observation_ns {
-            return Err(StorageError::StaleReserveObservation);
-        }
-        let mut progress = previous_progress;
-        progress.last_eth_balance_wei = eth_balance_wei;
-        progress.reserve_sufficient = true;
-        progress.reserve_observation_generation = progress
-            .reserve_observation_generation
-            .checked_add(1)
-            .ok_or(StorageError::CounterOverflow)?;
-        progress.last_reserve_observation_ns = observed_at_ns;
-
-        let previous_counters = self.counters()?;
-        let mut counters = previous_counters;
-        let audit = (!previous_progress.reserve_sufficient)
-            .then(|| {
-                self.prepare_audit_batch(
-                    &mut counters,
-                    caller,
-                    observed_at_ns,
-                    vec![AuditEventKind::ReserveGateChanged { sufficient: true }],
-                )
-            })
-            .transpose()?;
-        let previous_progress_blob = encode(&previous_progress)?;
-        let progress_blob = encode(&progress)?;
-        let previous_counters_blob = encode(&previous_counters)?;
-        let counters_blob = encode(&counters)?;
-        let retention_blob = audit.as_ref().map_or_else(
-            || self.audit_retention.get(),
-            |batch| Ok(batch.retention_blob.clone()),
-        )?;
-        self.handle.update(|connection| {
-            let persisted_progress = connection.query_scalar::<Vec<u8>>(
-                "SELECT external_progress FROM singleton_state WHERE id = 1",
-                params![],
-            )?;
-            let persisted_counters = connection.query_scalar::<Vec<u8>>(
-                "SELECT counters FROM singleton_state WHERE id = 1",
-                params![],
-            )?;
-            if persisted_progress != previous_progress_blob.to_sql_bytes()
-                || persisted_counters != previous_counters_blob.to_sql_bytes()
-            {
-                return Err(DbError::Constraint(
-                    "stale reserve observation state".into(),
-                ));
-            }
-            if let Some(batch) = &audit {
-                commit_audit_batch(connection, batch)?;
-            }
-            connection.execute(
-                "UPDATE singleton_state
-                 SET external_progress = ?1, counters = ?2, audit_retention = ?3
-                 WHERE id = 1",
-                params![
-                    progress_blob.to_sql_bytes(),
-                    counters_blob.to_sql_bytes(),
-                    retention_blob.to_sql_bytes()
-                ],
-            )
-        })?;
-        Ok(())
     }
 
     pub fn put_reconciliation_scan(
@@ -8567,7 +8488,6 @@ mod tests {
                 l1_fee_multiplier_bps: 15_000,
             },
             governance_replacement: crate::config::GovernanceReplacementPolicy::default(),
-            governance_eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
             governance_principal: principal,
@@ -10090,7 +10010,6 @@ mod tests {
             .expect("admit unquoted deposit");
 
         let progress = store.external_progress().expect("progress after admission");
-        assert_eq!(progress.reserve_observation_generation, 0);
         assert_eq!(
             store
                 .counters()
@@ -10423,62 +10342,6 @@ mod tests {
             store.accounting().expect("Mint accounting").fee_reserve,
             quote.service_fee
         );
-    }
-
-    #[test]
-    #[serial]
-    fn reserve_observation_is_atomic_audited_and_reopenable() {
-        let memory = VectorMemory::default();
-        let caller = Principal::self_authenticating([34; 32]);
-        let mut store = StableStore::init(memory.clone()).expect("initialize reserve fixture");
-
-        store
-            .record_reserve_observation(50, 100, caller)
-            .expect("record reserve observation");
-        let first = store.external_progress().expect("first reserve progress");
-        assert_eq!(first.last_eth_balance_wei, 50);
-        assert!(first.reserve_sufficient);
-        assert_eq!(first.reserve_observation_generation, 1);
-        assert_eq!(first.last_reserve_observation_ns, 100);
-        assert!(matches!(
-            store
-                .audit_events(0, 10)
-                .expect("reserve audit")
-                .events
-                .as_slice(),
-            [AuditEvent {
-                caller: event_caller,
-                kind: AuditEventKind::ReserveGateChanged { sufficient: true },
-                ..
-            }] if *event_caller == caller
-        ));
-
-        assert_eq!(
-            store.record_reserve_observation(60, 99, caller),
-            Err(StorageError::StaleReserveObservation)
-        );
-        assert_eq!(
-            store.external_progress().expect("progress after stale"),
-            first
-        );
-        store
-            .record_reserve_observation(60, 101, caller)
-            .expect("refresh sufficient reserve");
-        assert_eq!(
-            store
-                .audit_events(0, 10)
-                .expect("deduplicated reserve audit")
-                .events
-                .len(),
-            1
-        );
-
-        drop(store);
-        let reopened = StableStore::reopen(memory).expect("reopen reserve fixture");
-        let progress = reopened.external_progress().expect("reopened reserve");
-        assert_eq!(progress.last_eth_balance_wei, 60);
-        assert_eq!(progress.reserve_observation_generation, 2);
-        assert_eq!(progress.last_reserve_observation_ns, 101);
     }
 
     #[test]
@@ -10939,7 +10802,7 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 32);
+        assert_eq!(SCHEMA_VERSION, 33);
         assert_eq!(WIRE_VERSION, 28);
     }
 
@@ -10980,15 +10843,15 @@ mod tests {
 
     #[test]
     #[serial]
-    fn pre_change_v32_shape_without_nonterminal_index_fails_closed() {
+    fn damaged_current_schema_without_nonterminal_index_fails_closed() {
         let memory = VectorMemory::default();
-        let store = StableStore::init(memory.clone()).expect("initialize current v32");
+        let store = StableStore::init(memory.clone()).expect("initialize current schema");
         store
             .handle
             .update(|connection| {
                 connection.execute("DROP TABLE nonterminal_deposit_owner_index", params![])
             })
-            .expect("simulate pre-change v32 shape");
+            .expect("simulate damaged current shape");
         drop(store);
         assert_eq!(
             StableStore::reopen(memory).err(),
@@ -11033,16 +10896,16 @@ mod tests {
 
     #[test]
     #[serial]
-    fn obsolete_v31_schema_fails_closed_even_when_empty() {
+    fn obsolete_v32_schema_fails_closed_even_when_empty() {
         let memory = VectorMemory::default();
         let store = StableStore::init(memory.clone()).expect("initialize current schema");
-        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V31);
+        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V32);
         drop(store);
 
         assert!(matches!(
             StableStore::reopen_after_upgrade(memory),
             Err(StorageError::UnsupportedSchemaVersion(version))
-                if version == OBSOLETE_SCHEMA_VERSION_V31
+                if version == OBSOLETE_SCHEMA_VERSION_V32
         ));
     }
 
@@ -11309,7 +11172,6 @@ mod tests {
             per_principal_limit: 3,
         };
         let reserve_policy = bridge_core::ReservePolicy {
-            governance_eth_floor_wei: u128::MAX,
             cycles_floor: 100,
             settlement_cycle_ceiling: 10,
         };
@@ -11411,7 +11273,6 @@ mod tests {
         let cycles = DepositCycleAdmission {
             cycles_balance: 119,
             reserve_policy: bridge_core::ReservePolicy {
-                governance_eth_floor_wei: 1,
                 cycles_floor: 100,
                 settlement_cycle_ceiling: 10,
             },

@@ -90,9 +90,6 @@ describe("StatusPage refresh", () => {
         reserve: {
           cycles_balance: 100n,
           required_cycles: 10n,
-          governance_eth_floor_wei: 0n,
-          required_eth_wei: 0n,
-          eth_balance_wei: 0n,
         },
       },
       dataUpdatedAt: now,

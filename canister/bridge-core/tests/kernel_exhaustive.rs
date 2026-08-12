@@ -7,11 +7,12 @@ use bridge_core::{
     lease_outcome_is_current, manual_claim_decision, mint_admission_total,
     mint_finalization_allowed, next_attempt, outbound_settlement, payout_allowed, payout_debit,
     refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
-    reservation_decision, reserve_admission_preserves_requirement, resources_sufficient,
-    scan_complete, service_fee_change_allowed, settlement_decision, withdrawal_phase_allows,
-    withdrawal_phase_step, withdrawal_transition_effects, DepositEventGuard,
-    DepositTransitionDecision, DepositTransitionInput, FeeRecipientRotationDecision,
-    FundingReconciliationDecision, HoldResolutionDecision, ManualClaimDecision,
+    reservation_decision, reserve_admission_preserves_requirement, scan_complete,
+    service_fee_change_allowed, settlement_decision, transaction_liability_wei,
+    withdrawal_phase_allows, withdrawal_phase_step, withdrawal_transition_effects,
+    DepositEventGuard, DepositTransitionDecision, DepositTransitionInput,
+    FeeRecipientRotationDecision, FundingReconciliationDecision, HoldResolutionDecision,
+    ManualClaimDecision,
 };
 
 #[test]
@@ -54,16 +55,9 @@ fn reserve_boundaries_and_overflow_are_checked() {
     );
     assert_eq!(checked_requirement(u128::MAX, 1, 1), None);
     assert_eq!(checked_requirement(0, u128::MAX, 2), None);
-    for eth_ok in [false, true] {
-        for cycles_ok in [false, true] {
-            let eth = if eth_ok { 10 } else { 9 };
-            let cycles = if cycles_ok { 20 } else { 19 };
-            assert_eq!(
-                resources_sufficient(eth, 10, cycles, 20),
-                eth_ok && cycles_ok
-            );
-        }
-    }
+    assert_eq!(transaction_liability_wei(21_000, 10, 7, 3), Some(210_010));
+    assert_eq!(transaction_liability_wei(1, u128::MAX, 1, 0), None);
+    assert_eq!(transaction_liability_wei(0, 0, u128::MAX, 1), None);
 }
 
 #[test]

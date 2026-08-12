@@ -150,10 +150,19 @@ macro_rules! checked_requirement_body {
     };
 }
 
-macro_rules! resources_sufficient_body {
-    ($eth:expr, $required_eth:expr, $cycles:expr, $required_cycles:expr) => {
-        $eth >= $required_eth && $cycles >= $required_cycles
-    };
+macro_rules! transaction_liability_body {
+    ($gas_limit:expr, $max_fee_per_gas:expr, $l1_fee:expr, $value:expr, $max:expr, $zero:expr) => {{
+        if $value > $max - $l1_fee {
+            None
+        } else {
+            let fixed = $l1_fee + $value;
+            if $gas_limit != $zero && $max_fee_per_gas > ($max - fixed) / $gas_limit {
+                None
+            } else {
+                Some(fixed + $gas_limit * $max_fee_per_gas)
+            }
+        }
+    }};
 }
 
 macro_rules! release_transfer_matches_body {
@@ -839,13 +848,20 @@ pub const fn checked_requirement(floor: u128, unit: u128, count: u128) -> Option
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub const fn resources_sufficient(
-    eth: u128,
-    required_eth: u128,
-    cycles: u128,
-    required_cycles: u128,
-) -> bool {
-    resources_sufficient_body!(eth, required_eth, cycles, required_cycles)
+pub const fn transaction_liability_wei(
+    gas_limit: u128,
+    max_fee_per_gas: u128,
+    l1_fee_upper_bound_wei: u128,
+    transaction_value: u128,
+) -> Option<u128> {
+    transaction_liability_body!(
+        gas_limit,
+        max_fee_per_gas,
+        l1_fee_upper_bound_wei,
+        transaction_value,
+        u128::MAX,
+        0u128
+    )
 }
 
 /// Binds the ICRC transfer identity to the exact release settlement persisted for this attempt.
@@ -1874,8 +1890,15 @@ verus! {
         checked_requirement_body!(floor, unit, count, max, zero)
     }
 
-    pub open spec fn resources_sufficient_spec(eth: int, required_eth: int, cycles: int, required_cycles: int) -> bool {
-        resources_sufficient_body!(eth, required_eth, cycles, required_cycles)
+    pub open spec fn transaction_liability_wei_spec(
+        gas_limit: int,
+        max_fee_per_gas: int,
+        l1_fee_upper_bound_wei: int,
+        transaction_value: int,
+    ) -> Option<int> {
+        let max: int = 340282366920938463463374607431768211455;
+        let zero: int = 0;
+        transaction_liability_body!(gas_limit, max_fee_per_gas, l1_fee_upper_bound_wei, transaction_value, max, zero)
     }
 
     pub open spec fn release_transfer_matches_spec(

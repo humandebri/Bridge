@@ -40,7 +40,6 @@ pub struct BridgeInitArgs {
     pub settlement_retry_interval_seconds: u64,
     pub governance_evm_fee: EvmFeePolicy,
     pub governance_replacement: GovernanceReplacementPolicy,
-    pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
     pub governance_principal: Principal,
@@ -94,7 +93,6 @@ pub(crate) struct ImmutableBridgeConfig {
     pub settlement_retry_interval_seconds: u64,
     pub governance_evm_fee: EvmFeePolicy,
     pub governance_replacement: GovernanceReplacementPolicy,
-    pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
 }
@@ -132,7 +130,6 @@ impl ImmutableBridgeConfig {
             settlement_retry_interval_seconds: value.settlement_retry_interval_seconds,
             governance_evm_fee: value.governance_evm_fee,
             governance_replacement: value.governance_replacement,
-            governance_eth_floor_wei: value.governance_eth_floor_wei,
             cycles_floor: value.cycles_floor,
             settlement_cycle_ceiling: value.settlement_cycle_ceiling,
         }
@@ -170,7 +167,6 @@ impl ImmutableBridgeConfig {
             settlement_retry_interval_seconds: self.settlement_retry_interval_seconds,
             governance_evm_fee: self.governance_evm_fee,
             governance_replacement: self.governance_replacement,
-            governance_eth_floor_wei: self.governance_eth_floor_wei,
             cycles_floor: self.cycles_floor,
             settlement_cycle_ceiling: self.settlement_cycle_ceiling,
             governance_principal,
@@ -308,7 +304,6 @@ impl BridgeInitArgs {
 
     pub const fn reserve_policy(&self) -> bridge_core::ReservePolicy {
         bridge_core::ReservePolicy {
-            governance_eth_floor_wei: self.governance_eth_floor_wei,
             cycles_floor: self.cycles_floor,
             settlement_cycle_ceiling: self.settlement_cycle_ceiling,
         }
@@ -553,7 +548,6 @@ mod tests {
                 l1_fee_multiplier_bps: 15_000,
             },
             governance_replacement: GovernanceReplacementPolicy::default(),
-            governance_eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
             governance_principal: principal,

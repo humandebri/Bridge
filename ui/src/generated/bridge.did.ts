@@ -59,7 +59,6 @@ export type AuditEventKind = { 'PausePrincipalRotated' : null } |
   } |
   { 'DepositsResumed' : null } |
   { 'FeePayoutRequested' : { 'amount' : bigint } } |
-  { 'ReserveGateChanged' : { 'sufficient' : boolean } } |
   {
     'WithdrawalFeeGuardTripped' : {
       'charged_service_fee' : bigint,
@@ -89,7 +88,13 @@ export interface BaseGovernanceConfirmation {
   'receipt_block_number' : bigint,
   'succeeded' : boolean,
 }
-export type BaseGovernanceError = { 'Busy' : { 'operation_id' : bigint } } |
+export type BaseGovernanceError = {
+    'InsufficientGovernanceBalance' : {
+      'observed_wei' : bigint,
+      'required_wei' : bigint,
+    }
+  } |
+  { 'Busy' : { 'operation_id' : bigint } } |
   { 'TransactionNotFinalized' : { 'operation_id' : bigint } } |
   { 'Unauthorized' : null } |
   { 'InvalidArgument' : null } |
@@ -124,7 +129,6 @@ export interface BridgeInitArgs {
   'deposit_rate_limit_per_principal' : number,
   'deployment_instance_id' : Uint8Array | number[],
   'governance_ecdsa_derivation_path' : Array<Uint8Array | number[]>,
-  'governance_eth_floor_wei' : bigint,
   'custom_evm_rpc_urls' : Array<string>,
   'deposit_rate_limit_global' : number,
   'pause_principal' : Principal,
@@ -143,7 +147,6 @@ export interface BridgeStatus {
   'mint_authorization_ttl_seconds' : bigint,
   'mint_authorization_epoch' : bigint,
   'unpaid_withdrawal_amount_out' : bigint,
-  'last_reserve_observation_ns' : bigint,
   'reserve' : ReserveStatus,
   'withdrawal_stop_reasons' : Array<string>,
   'audit_retention_warning' : boolean,
@@ -420,7 +423,6 @@ export interface PublicConfig {
   'deposit_rate_limit_per_principal' : number,
   'deployment_instance_id' : Uint8Array | number[],
   'schema_version' : number,
-  'governance_eth_floor_wei' : bigint,
   'deposit_rate_limit_global' : number,
   'pause_principal' : Principal,
   'governance_principal' : Principal,
@@ -457,12 +459,8 @@ export type RequestDepositRefundError = {
   { 'AnonymousCaller' : null };
 export interface ReserveStatus {
   'cycles_balance' : bigint,
-  'required_eth_wei' : bigint,
-  'eth_surplus_wei' : bigint,
   'cycles_surplus' : bigint,
   'sufficient' : boolean,
-  'eth_balance_wei' : bigint,
-  'governance_eth_floor_wei' : bigint,
   'required_cycles' : bigint,
 }
 export type Result = { 'Ok' : BaseGovernanceConfirmation } |
@@ -479,17 +477,21 @@ export type Result_13 = { 'Ok' : NotifyWithdrawalReceipt } |
   { 'Err' : NotifyWithdrawalError };
 export type Result_14 = { 'Ok' : null } |
   { 'Err' : AdminError };
-export type Result_15 = { 'Ok' : ChecksumRefreshStatus } |
+export type Result_15 = { 'Ok' : SettlementClaimProfile } |
   { 'Err' : StorageMaintenanceError };
-export type Result_16 = { 'Ok' : DepositReceipt } |
+export type Result_16 = { 'Ok' : ChecksumRefreshStatus } |
+  { 'Err' : StorageMaintenanceError };
+export type Result_17 = { 'Ok' : DepositReceipt } |
   { 'Err' : DepositError };
-export type Result_17 = { 'Ok' : DepositView } |
+export type Result_18 = { 'Ok' : DepositView } |
   { 'Err' : RequestDepositRefundError };
-export type Result_18 = { 'Ok' : FeePayoutReceipt } |
+export type Result_19 = { 'Ok' : FeePayoutReceipt } |
   { 'Err' : AdminError };
-export type Result_19 = { 'Ok' : string } |
-  { 'Err' : StorageMaintenanceError };
 export type Result_2 = { 'Ok' : StorageValidationStatus } |
+  { 'Err' : StorageMaintenanceError };
+export type Result_20 = { 'Ok' : number } |
+  { 'Err' : StorageMaintenanceError };
+export type Result_21 = { 'Ok' : string } |
   { 'Err' : StorageMaintenanceError };
 export type Result_3 = { 'Ok' : SettlementActionResult } |
   { 'Err' : SettlementActionError };
@@ -524,6 +526,12 @@ export type SettlementActionResult = {
   { 'Complete' : { 'state' : SettlementState } } |
   { 'ReconciliationProgress' : { 'state' : SettlementState } } |
   { 'Deferred' : { 'state' : SettlementState, 'next_run_at_ns' : bigint } };
+export interface SettlementClaimProfile {
+  'storage_revision_after' : bigint,
+  'instructions' : bigint,
+  'storage_revision_before' : bigint,
+  'outcome' : string,
+}
 export type SettlementSchedulerHealth = { 'Healthy' : null } |
   { 'Degraded' : null } |
   { 'Faulted' : null };
@@ -652,15 +660,21 @@ export interface _SERVICE {
     Result_5
   >,
   'prepare_next_emergency_base_action' : ActorMethod<[], Result_5>,
-  'refresh_storage_checksum' : ActorMethod<[bigint], Result_15>,
-  'request_deposit' : ActorMethod<[DepositArgs], Result_16>,
-  'request_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result_17>,
-  'request_fee_payout' : ActorMethod<[bigint], Result_18>,
+  'profile_due_settlement_claim' : ActorMethod<[], Result_15>,
+  'profile_rejected_manual_settlement_claim' : ActorMethod<
+    [Uint8Array | number[]],
+    Result_15
+  >,
+  'refresh_storage_checksum' : ActorMethod<[bigint], Result_16>,
+  'request_deposit' : ActorMethod<[DepositArgs], Result_17>,
+  'request_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result_18>,
+  'request_fee_payout' : ActorMethod<[bigint], Result_19>,
   'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_14>,
   'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_14>,
   'schedule_activation' : ActorMethod<[], Result_5>,
+  'seed_storage_test_data' : ActorMethod<[bigint, number], Result_20>,
   'start_storage_validation' : ActorMethod<[], Result_2>,
-  'storage_integrity_check' : ActorMethod<[], Result_19>,
+  'storage_integrity_check' : ActorMethod<[], Result_21>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
 export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];

@@ -48,7 +48,6 @@ type AuditEventKind = variant {
   };
   DepositsResumed;
   FeePayoutRequested : record { amount : nat };
-  ReserveGateChanged : record { sufficient : bool };
   WithdrawalFeeGuardTripped : record {
     charged_service_fee : nat;
     ledger_fee : nat;
@@ -80,6 +79,10 @@ type BaseGovernanceConfirmation = record {
   succeeded : bool;
 };
 type BaseGovernanceError = variant {
+  InsufficientGovernanceBalance : record {
+    observed_wei : nat;
+    required_wei : nat;
+  };
   Busy : record { operation_id : nat64 };
   TransactionNotFinalized : record { operation_id : nat64 };
   Unauthorized;
@@ -118,7 +121,6 @@ type BridgeInitArgs = record {
   deposit_rate_limit_per_principal : nat16;
   deployment_instance_id : blob;
   governance_ecdsa_derivation_path : vec blob;
-  governance_eth_floor_wei : nat;
   custom_evm_rpc_urls : vec text;
   deposit_rate_limit_global : nat16;
   pause_principal : principal;
@@ -137,7 +139,6 @@ type BridgeStatus = record {
   mint_authorization_ttl_seconds : nat64;
   mint_authorization_epoch : nat64;
   unpaid_withdrawal_amount_out : nat;
-  last_reserve_observation_ns : nat64;
   reserve : ReserveStatus;
   withdrawal_stop_reasons : vec text;
   audit_retention_warning : bool;
@@ -414,7 +415,6 @@ type PublicConfig = record {
   deposit_rate_limit_per_principal : nat16;
   deployment_instance_id : blob;
   schema_version : nat16;
-  governance_eth_floor_wei : nat;
   deposit_rate_limit_global : nat16;
   pause_principal : principal;
   governance_principal : principal;
@@ -453,12 +453,8 @@ type RequestDepositRefundError = variant {
 };
 type ReserveStatus = record {
   cycles_balance : nat;
-  required_eth_wei : nat;
-  eth_surplus_wei : nat;
   cycles_surplus : nat;
   sufficient : bool;
-  eth_balance_wei : nat;
-  governance_eth_floor_wei : nat;
   required_cycles : nat;
 };
 type Result = variant {
@@ -481,17 +477,22 @@ type Result_13 = variant {
 };
 type Result_14 = variant { Ok; Err : AdminError };
 type Result_15 = variant {
+  Ok : SettlementClaimProfile;
+  Err : StorageMaintenanceError;
+};
+type Result_16 = variant {
   Ok : ChecksumRefreshStatus;
   Err : StorageMaintenanceError;
 };
-type Result_16 = variant { Ok : DepositReceipt; Err : DepositError };
-type Result_17 = variant { Ok : DepositView; Err : RequestDepositRefundError };
-type Result_18 = variant { Ok : FeePayoutReceipt; Err : AdminError };
-type Result_19 = variant { Ok : text; Err : StorageMaintenanceError };
+type Result_17 = variant { Ok : DepositReceipt; Err : DepositError };
+type Result_18 = variant { Ok : DepositView; Err : RequestDepositRefundError };
+type Result_19 = variant { Ok : FeePayoutReceipt; Err : AdminError };
 type Result_2 = variant {
   Ok : StorageValidationStatus;
   Err : StorageMaintenanceError;
 };
+type Result_20 = variant { Ok : nat16; Err : StorageMaintenanceError };
+type Result_21 = variant { Ok : text; Err : StorageMaintenanceError };
 type Result_3 = variant {
   Ok : SettlementActionResult;
   Err : SettlementActionError;
@@ -532,6 +533,12 @@ type SettlementActionResult = variant {
   Complete : record { state : SettlementState };
   ReconciliationProgress : record { state : SettlementState };
   Deferred : record { state : SettlementState; next_run_at_ns : nat64 };
+};
+type SettlementClaimProfile = record {
+  storage_revision_after : nat64;
+  instructions : nat64;
+  storage_revision_before : nat64;
+  outcome : text;
 };
 type SettlementSchedulerHealth = variant { Healthy; Degraded; Faulted };
 type SettlementSchedulerStatus = record {
@@ -649,13 +656,16 @@ service : (BridgeInitArgs) -> {
       PrepareBaseGovernanceReplacementArgs,
     ) -> (Result_5);
   prepare_next_emergency_base_action : () -> (Result_5);
-  refresh_storage_checksum : (nat64) -> (Result_15);
-  request_deposit : (DepositArgs) -> (Result_16);
-  request_deposit_refund : (blob) -> (Result_17);
-  request_fee_payout : (nat) -> (Result_18);
+  profile_due_settlement_claim : () -> (Result_15);
+  profile_rejected_manual_settlement_claim : (blob) -> (Result_15);
+  refresh_storage_checksum : (nat64) -> (Result_16);
+  request_deposit : (DepositArgs) -> (Result_17);
+  request_deposit_refund : (blob) -> (Result_18);
+  request_fee_payout : (nat) -> (Result_19);
   rotate_fee_recipient : (FeeRecipientConfig) -> (Result_14);
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_14);
   schedule_activation : () -> (Result_5);
+  seed_storage_test_data : (nat64, nat16) -> (Result_20);
   start_storage_validation : () -> (Result_2);
-  storage_integrity_check : () -> (Result_19) query;
+  storage_integrity_check : () -> (Result_21) query;
 }

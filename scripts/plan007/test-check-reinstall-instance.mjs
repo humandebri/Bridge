@@ -10,12 +10,12 @@ assert.equal(deploymentInstanceHex(previousBytes, "test"), previousHex)
 assert.deepEqual(
   verifyReinstallInstance(
     { deploymentInstanceId: nextHex },
-    { schema_version: 32, deployment_instance_id: previousBytes },
+    { schema_version: 33, deployment_instance_id: previousBytes },
     currentStatus,
   ),
   {
     replacement_mode: "current-schema-reinstall",
-    live_schema_version: 32,
+    live_schema_version: 33,
     previous_deployment_instance_id: previousHex,
     live_module_hash: currentStatus.module_hash,
     next: nextHex,
@@ -24,12 +24,12 @@ assert.deepEqual(
 assert.deepEqual(
   verifyReinstallInstance(
     { deploymentInstanceId: previousHex },
-    { schema_version: 32, deployment_instance_id: previousBytes },
+    { schema_version: 33, deployment_instance_id: previousBytes },
     currentStatus,
   ),
   {
     replacement_mode: "current-schema-upgrade",
-    live_schema_version: 32,
+    live_schema_version: 33,
     previous_deployment_instance_id: previousHex,
     live_module_hash: currentStatus.module_hash,
     next: previousHex,
@@ -38,12 +38,12 @@ assert.deepEqual(
 assert.deepEqual(
   verifyReinstallInstance(
     { deploymentInstanceId: nextHex },
-    { schema_version: 31, deployment_instance_id: previousBytes },
+    { schema_version: 32, deployment_instance_id: previousBytes },
     currentStatus,
   ),
   {
     replacement_mode: "obsolete-schema-reinstall",
-    live_schema_version: 31,
+    live_schema_version: 32,
     previous_deployment_instance_id: previousHex,
     live_module_hash: currentStatus.module_hash,
     next: nextHex,
@@ -52,25 +52,25 @@ assert.deepEqual(
 assert.throws(
   () => verifyReinstallInstance(
     { deploymentInstanceId: previousHex },
-    { schema_version: 31, deployment_instance_id: previousBytes },
+    { schema_version: 32, deployment_instance_id: previousBytes },
     currentStatus,
   ),
   /distinct deployment instance/,
 )
-for (const schemaVersion of [30, 29, 33]) {
+for (const schemaVersion of [31, 30, 34]) {
   assert.throws(
     () => verifyReinstallInstance(
       { deploymentInstanceId: nextHex },
       { schema_version: schemaVersion, deployment_instance_id: previousBytes },
       currentStatus,
     ),
-    /only accepts current schema v32 or explicitly discarded schema v31/,
+    /only accepts current schema v33 or explicitly discarded schema v32/,
   )
 }
 assert.throws(
   () => verifyReinstallInstance(
     { deploymentInstanceId: nextHex },
-    { schema_version: 32 },
+    { schema_version: 33 },
     currentStatus,
   ),
   /must be a nonzero/,
@@ -78,7 +78,7 @@ assert.throws(
 assert.throws(
   () => verifyReinstallInstance(
     { deploymentInstanceId: nextHex },
-    { schema_version: 32, deployment_instance_id: previousBytes },
+    { schema_version: 33, deployment_instance_id: previousBytes },
     {},
   ),
   /module hash/,
@@ -86,7 +86,7 @@ assert.throws(
 assert.throws(
   () => verifyReinstallInstance(
     { deploymentInstanceId: nextHex },
-    { schema_version: 32, deployment_instance_id: previousBytes },
+    { schema_version: 33, deployment_instance_id: previousBytes },
     { module_hash: `0x${"00".repeat(32)}` },
   ),
   /nonzero/,

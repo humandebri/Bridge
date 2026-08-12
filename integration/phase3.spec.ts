@@ -53,7 +53,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, notification_ingestion_rate_limit_global: 30, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, governance_eth_floor_wei: 1n, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, notification_ingestion_rate_limit_global: 30, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     Object.assign(init, initOverrides);
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(wasmPath), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
@@ -484,6 +484,39 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (bridge.actor as any).get_pending_base_governance_transaction()).Ok).toEqual([]);
   });
 
+  async function governance_affordability_preserves_nonce_and_replacement_generation() {
+    const { bridge, evm, runtimePrincipal } = await setup(false);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    await (evm.actor as any).set_eth_balance(0n);
+
+    const rejected: any = await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null });
+    expect(rejected).toHaveProperty("Err.InsufficientGovernanceBalance.observed_wei", 0n);
+    expect(rejected.Err.InsufficientGovernanceBalance.required_wei).toBeGreaterThan(0n);
+    expect((await (bridge.actor as any).get_pending_base_governance_transaction()).Ok).toEqual([]);
+
+    await (evm.actor as any).set_eth_balance(10_000_000_000_000_000_000n);
+    const prepared: any = await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null });
+    expect(prepared).toHaveProperty("Ok.nonce", 0n);
+    expect(prepared).toHaveProperty("Ok.operation_id", 0n);
+
+    const pendingBefore = await (bridge.actor as any).get_pending_base_governance_transaction();
+    const bumped = (value: bigint) => (value * 11_250n + 9_999n) / 10_000n;
+    await (evm.actor as any).set_eth_balance(0n);
+    const replacement: any = await (bridge.actor as any).prepare_base_governance_replacement({
+      operation_id: prepared.Ok.operation_id,
+      expected_transaction_hash: prepared.Ok.transaction_hash,
+      max_fee_per_gas: bumped(prepared.Ok.max_fee_per_gas),
+      max_priority_fee_per_gas: bumped(prepared.Ok.max_priority_fee_per_gas),
+    });
+    expect(replacement).toHaveProperty("Err.InsufficientGovernanceBalance.observed_wei", 0n);
+    expect(await (bridge.actor as any).get_pending_base_governance_transaction()).toEqual(pendingBefore);
+  }
+
+  it(
+    "rejects unaffordable governance signatures without consuming the nonce or replacement generation",
+    governance_affordability_preserves_nonce_and_replacement_generation,
+  );
+
   async function governance_nonce_uses_configured_chain_without_runtime_probe() {
     const { bridge, evm, runtimePrincipal } = await setup();
     bridge.actor.setPrincipal(runtimePrincipal);
@@ -591,7 +624,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(32);
+    expect(config.schema_version).toBe(33);
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(testLedgerFee);
     expect(config.notification_rate_limit_window_seconds).toBe(600n);
@@ -1990,7 +2023,7 @@ describe("Phase 3 PocketIC saga", () => {
       median(hundredJobInstructions) * 2n,
     );
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(32);
+    expect(before.schema_version).toBe(33);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.retained_audit_events).toBe(10_000n);
     expect(
@@ -2013,7 +2046,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(32);
+    expect(after.schema_version).toBe(33);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(before.settlement_scheduler.scheduled);
     expect(after.settlement_scheduler.leased).toBe(before.settlement_scheduler.leased);

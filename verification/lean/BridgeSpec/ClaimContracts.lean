@@ -54,6 +54,14 @@ theorem governance_nonce_chain_binding_witness : GovernanceNonceChainBinding := 
   exact ControlPlane.governance_nonce_binds_configured_chain
     (ControlPlane.reachable_is_safe reachable)
 
+def GovernanceTransactionAffordability : Prop :=
+  ∀ observedWei requiredWei : Nat,
+    observedWei < requiredWei → ¬requiredWei ≤ observedWei
+
+theorem governance_transaction_affordability_witness : GovernanceTransactionAffordability := by
+  intro observedWei requiredWei insufficient affordable
+  omega
+
 def ActivationPreflight : Prop :=
   ∀ {initialDomain : ControlPlane.InstallDomain} {state : ControlPlane.State},
     ControlPlane.Reachable initialDomain state → state.paused = false →

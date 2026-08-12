@@ -82,6 +82,12 @@ theorem service_fee_claim
       serviceFee ≤ maximumServiceFee := by
   simp [serviceFeeChangeAllowed]
 
+theorem governance_transaction_affordability_claim
+    {observedWei requiredWei : Nat}
+    (insufficient : observedWei < requiredWei) :
+    ¬requiredWei ≤ observedWei := by
+  omega
+
 theorem fee_rotation_claim
     {state next : FeeState} {recipient : Nat}
     (rotated : rotateFeeRecipient state recipient = some next) :

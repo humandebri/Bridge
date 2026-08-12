@@ -924,39 +924,31 @@ fn accounting_is_checked_and_separates_fee_kinds() {
 }
 
 #[test]
-fn settlement_reserve_uses_eth_only_for_governance_and_cycles_for_all_work() {
+fn settlement_reserve_uses_cycles_for_all_work() {
     let policy = ReservePolicy {
-        governance_eth_floor_wei: 100,
         cycles_floor: 200,
         settlement_cycle_ceiling: 30,
     };
     assert_eq!(policy.required_cycles(2, 0, 0), Ok(260));
-    let exact = policy.snapshot(2, 0, 0, 100, 260).expect("exact reserve");
+    let exact = policy.snapshot(2, 0, 0, 260).expect("exact reserve");
     assert!(exact.sufficient);
-    assert_eq!(exact.required_eth_wei, 100);
     assert_eq!(exact.required_cycles, 260);
     assert!(
         !policy
-            .snapshot(2, 0, 0, 99, 260)
-            .expect("low ETH")
-            .sufficient
-    );
-    assert!(
-        !policy
-            .snapshot(2, 0, 0, 100, 259)
+            .snapshot(2, 0, 0, 259)
             .expect("low cycles")
             .sufficient
     );
     let candidate = policy
-        .snapshot(1, 0, 1, 100, 260)
+        .snapshot(1, 0, 1, 260)
         .expect("candidate reservation");
     assert_eq!(candidate.reserved_operation_count, 2);
     let existing_withdrawal = policy
-        .snapshot(1, 0, 0, 100, 230)
+        .snapshot(1, 0, 0, 230)
         .expect("existing withdrawal reserve");
     assert!(existing_withdrawal.sufficient);
     let competing_deposit = policy
-        .snapshot(1, 0, 1, 100, 230)
+        .snapshot(1, 0, 1, 230)
         .expect("competing deposit reserve");
     assert!(!competing_deposit.sufficient);
     assert_eq!(competing_deposit.nonterminal_withdrawals, 1);
@@ -966,7 +958,7 @@ fn settlement_reserve_uses_eth_only_for_governance_and_cycles_for_all_work() {
         ..policy
     };
     assert_eq!(
-        overflow.snapshot(1, 0, 0, u128::MAX, u128::MAX),
+        overflow.snapshot(1, 0, 0, u128::MAX),
         Err(CoreError::ArithmeticOverflow)
     );
 }

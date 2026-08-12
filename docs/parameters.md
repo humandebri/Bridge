@@ -76,7 +76,7 @@ service_fee初期値 = 0.5 KINIC
 以下は Bridge 内部で保証できず、値の妥当性を運用監査で維持する（ADR 0005、0011）。
 
 - gas 価格の上限評価
-- Base governance transactionはCanisterが署名し、外部relayerが送信・Finalized待機・確定通知を行う。自動再送・自動replacementは行わない。運用者が明示要求した場合だけ同一nonce・payloadで最大3回、直前generationから12.5%以上fee bumpし、設定済みceilingを超えないtransactionをCanisterが再署名する。`governance_eth_floor_wei`はGovernance操作のgas使用量・fee実測とreserve window内の想定Governance transaction数だけから導出する。
+- Base governance transactionはCanisterが署名し、外部relayerが送信・Finalized待機・確定通知を行う。自動再送・自動replacementは行わない。運用者が明示要求した場合だけ同一nonce・payloadで最大3回、直前generationから12.5%以上fee bumpし、設定済みceilingを超えないtransactionをCanisterが再署名する。各署名前に`gas_limit × max_fee_per_gas + l1_fee_per_transaction_ceiling_wei + value`をchecked計算し、Safe/Finalized残高の小さい方が不足する場合は状態を変更せず拒否する。
 - EVM RPC 費用と management canister call 費用の上限評価
 - Settlementの一時障害retryはGovernance timerと共有せず、`settlement_retry_interval_seconds`（初期値60秒）を基準に指数backoffし、最大15分とする。
 - 公式EVM RPC Canisterと設定されたquorumがcanonical Finalized chainを正しく返すこと

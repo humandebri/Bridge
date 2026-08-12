@@ -2063,7 +2063,6 @@ mod tests {
                 l1_fee_multiplier_bps: 15_000,
             },
             governance_replacement: crate::config::GovernanceReplacementPolicy::default(),
-            governance_eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
             governance_principal: Principal::from_slice(&[1]),

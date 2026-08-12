@@ -289,11 +289,28 @@ proof fn reserve_requirement_is_monotone(floor: int, unit: int, small: int, larg
     vstd::arithmetic::mul::lemma_mul_inequality(small, large, unit);
 }
 
-proof fn reserve_exact_boundary_and_independent_resources(required_eth: int, required_cycles: int)
-    requires 0 <= required_eth, 0 <= required_cycles
-    ensures kernel::resources_sufficient_spec(required_eth, required_eth, required_cycles, required_cycles),
-        !kernel::resources_sufficient_spec(required_eth - 1, required_eth, required_cycles, required_cycles),
-        !kernel::resources_sufficient_spec(required_eth, required_eth, required_cycles - 1, required_cycles)
+proof fn governance_transaction_liability_is_checked(
+    gas_limit: int,
+    max_fee_per_gas: int,
+    l1_fee: int,
+    value: int,
+)
+    requires 0 <= gas_limit,
+        0 <= max_fee_per_gas,
+        0 <= l1_fee,
+        0 <= value,
+        l1_fee <= 340282366920938463463374607431768211455int,
+        value <= 340282366920938463463374607431768211455int - l1_fee,
+        gas_limit == 0 || max_fee_per_gas <=
+            (340282366920938463463374607431768211455int - (l1_fee + value)) / gas_limit
+    ensures kernel::transaction_liability_wei_spec(gas_limit, max_fee_per_gas, l1_fee, value)
+        == Some(l1_fee + value + gas_limit * max_fee_per_gas),
+        kernel::transaction_liability_wei_spec(
+            1,
+            340282366920938463463374607431768211455int,
+            1,
+            0,
+        ) == None::<int>
 {}
 
 proof fn reserve_overflow_is_rejected()

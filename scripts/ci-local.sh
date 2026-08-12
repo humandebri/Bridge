@@ -843,7 +843,6 @@ run_smoke() {
       max_replacements = 3 : nat8;
       fee_bump_bps = 1_250 : nat16;
     };
-    governance_eth_floor_wei = 1 : nat;
     cycles_floor = 1 : nat;
     settlement_cycle_ceiling = 1 : nat;
     governance_principal = principal \"$smoke_principal\";
