@@ -67,6 +67,24 @@ describe("DepositProgressCoordinator", () => {
     }))
   })
 
+  it("keeps_a_restored_deposit_pending_during_an_IC_query_failure_then_resumes_after_remount", async () => {
+    mocks.getDeposit.mockRejectedValueOnce(new Error("IC query unavailable"))
+    const first = render(<DepositProgressCoordinator />)
+
+    await waitFor(() => expect(mocks.getDeposit).toHaveBeenCalledOnce())
+    expect(mocks.update).not.toHaveBeenCalled()
+    expect(mocks.mintAuthorizationAction).not.toHaveBeenCalled()
+
+    first.unmount()
+    mocks.getDeposit.mockResolvedValue([{ state: { AuthorizationPending: null } }])
+    render(<DepositProgressCoordinator />)
+
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
+      phase: "authorization-generating",
+    }))
+    expect(mocks.mintAuthorizationAction).not.toHaveBeenCalled()
+  })
+
   it("records successful and reverted Base receipts as distinct presentation facts", async () => {
     mocks.getDeposit.mockResolvedValue([{
       state: { AuthorizationAvailable: null },

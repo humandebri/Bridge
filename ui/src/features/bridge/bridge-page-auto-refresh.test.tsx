@@ -577,6 +577,41 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(closeWallet).not.toHaveBeenCalled()
   })
 
+  it("restores_a_prepared_Deposit_without_automatically_reopening_the_IC_wallet", async () => {
+    const requestDeposit = vi.fn()
+    const account = { owner: "aaaaa-aa" }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter: { requestDeposit },
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    mocks.readDepositIntent.mockReturnValue({
+      account,
+      recipient: "0x0000000000000000000000000000000000000002",
+      call: {
+        ownerSequence: 3n,
+        baseRecipient: new Uint8Array(20).fill(2),
+        grossAmount: 200_000_000n,
+        maxServiceFee: 50_000_000n,
+      },
+      state: "prepared",
+    })
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    expect(await screen.findByText("Deposit status unavailable")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Check status" })).toBeEnabled()
+    expect(requestDeposit).not.toHaveBeenCalled()
+    expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
+  })
+
   it("rebuilds global progress when a saved Deposit intent is already accepted", async () => {
     const account = { owner: "aaaaa-aa" }
     const recipient = "0x0000000000000000000000000000000000000002" as const
@@ -620,6 +655,52 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(await screen.findByRole("heading", { name: "Bridge to Base" })).toBeVisible()
     expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base mint transaction")
     expect(mocks.removeDepositIntent).toHaveBeenCalledOnce()
+  })
+
+  it("rejects_a_canonical_Deposit_that_does_not_match_the_saved_intent", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const recipient = "0x0000000000000000000000000000000000000002" as const
+    mocks.useAccount.mockReturnValue({ address: recipient, isConnected: true })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "plug",
+      adapter: {},
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    mocks.readDepositIntent.mockReturnValue({
+      account,
+      recipient,
+      call: {
+        ownerSequence: 3n,
+        baseRecipient: new Uint8Array(20).fill(2),
+        grossAmount: 200_000_000n,
+        maxServiceFee: 50_000_000n,
+      },
+      state: "submitted",
+    })
+    mocks.getNextDepositSequence.mockResolvedValue(4n)
+    mocks.getDepositByOwnerSequence.mockResolvedValue([{
+      state: { AuthorizationPending: null },
+      deposit_id: new Uint8Array(32).fill(7),
+      owner_sequence: 3n,
+      gross_amount: 200_000_001n,
+      max_service_fee: 50_000_000n,
+      base_recipient: new Uint8Array(20).fill(2),
+      from_subaccount: [],
+      quote: [],
+      mint_authorization: [],
+    }])
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    fireEvent.click(await screen.findByRole("button", { name: "Check status" }))
+
+    await waitFor(() => expect(mocks.getDepositByOwnerSequence).toHaveBeenCalledOnce())
+    expect(mocks.getDepositByOwnerSequence.mock.calls[0]?.[1]).toBe(3n)
+    expect(mocks.removeDepositIntent).not.toHaveBeenCalled()
+    expect(screen.queryByRole("button", { name: /Open transfer progress/ })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Check status" })).toBeEnabled()
   })
 
   it("does not replace an unrelated active transfer while recovering a saved Deposit", async () => {

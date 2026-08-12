@@ -121,6 +121,25 @@ def recordPendingQueueWrite (queue : PendingQueue) (durableSucceeded : Bool) : P
 def canonicalProbeMatches (receiptBlock snapshotBlock : Nat) : Bool :=
   receiptBlock = snapshotBlock
 
+def withdrawalFinalizedCheckpoint
+    (first second third : Option Nat) : Option Nat :=
+  match first, second, third with
+  | some a, some b, some c => some (if a ≥ b then if b ≥ c then b else if a ≥ c then c else a
+                                    else if a ≥ c then a else if b ≥ c then c else b)
+  | some a, some b, none
+  | some a, none, some b
+  | none, some a, some b => some (min a b)
+  | _, _, _ => none
+
+def finalizedHeadAttests (head : Option Nat) (checkpoint : Nat) : Prop :=
+  ∃ height, head = some height ∧ checkpoint ≤ height
+
+def twoFinalizedHeadsAttest
+    (first second third : Option Nat) (checkpoint : Nat) : Prop :=
+  (finalizedHeadAttests first checkpoint ∧ finalizedHeadAttests second checkpoint) ∨
+  (finalizedHeadAttests first checkpoint ∧ finalizedHeadAttests third checkpoint) ∨
+  (finalizedHeadAttests second checkpoint ∧ finalizedHeadAttests third checkpoint)
+
 structure DepositAdmission where
   serviceFee : Nat
   maximumServiceFee : Nat

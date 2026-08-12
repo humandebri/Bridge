@@ -346,14 +346,59 @@ fn init(args: config::BridgeInitArgs) {
     scheduler::arm_funding_recovery();
 }
 
-#[ic_cdk::post_upgrade]
-fn post_upgrade() {
-    let store = StableStore::reopen_after_upgrade(DefaultMemoryImpl::default())
-        .unwrap_or_else(|error| ic_cdk::trap(format!("stable state reopen failed: {error}")));
+fn reopen_store_after_upgrade() -> StableStore {
+    StableStore::reopen_after_upgrade(DefaultMemoryImpl::default())
+        .unwrap_or_else(|error| ic_cdk::trap(format!("stable state reopen failed: {error}")))
+}
+
+fn finish_post_upgrade(store: StableStore) {
     install_store(store);
     ensure_supported_schema();
     scheduler::arm();
     scheduler::arm_funding_recovery();
+}
+
+#[cfg(not(feature = "test-deployment"))]
+#[ic_cdk::post_upgrade]
+fn post_upgrade() {
+    finish_post_upgrade(reopen_store_after_upgrade());
+}
+
+#[cfg(feature = "test-deployment")]
+fn decode_staging_upgrade_args(bytes: Vec<u8>) -> config::StagingUpgradeArgs {
+    if bytes == candid::encode_args(()).expect("empty Candid tuple encoding must succeed") {
+        return config::StagingUpgradeArgs::default();
+    }
+    candid::decode_args::<(config::StagingUpgradeArgs,)>(&bytes)
+        .map(|(args,)| args)
+        .unwrap_or_else(|error| {
+            ic_cdk::trap(format!("staging upgrade argument decode failed: {error}"))
+        })
+}
+
+#[cfg(feature = "test-deployment")]
+#[ic_cdk::post_upgrade(decode_with = "decode_staging_upgrade_args")]
+fn post_upgrade(args: config::StagingUpgradeArgs) {
+    let mut store = reopen_store_after_upgrade();
+    if let Some(update) = args.rpc_provider_update {
+        let current = store
+            .config()
+            .unwrap_or_else(|error| {
+                ic_cdk::trap(format!("staging configuration read failed: {error}"))
+            })
+            .unwrap_or_else(|| ic_cdk::trap("missing staging configuration"));
+        if let Some(next) = current
+            .staging_rpc_replacement(&update.custom_evm_rpc_urls)
+            .unwrap_or_else(|error| ic_cdk::trap(error))
+        {
+            store
+                .apply_staging_rpc_replacement(&next)
+                .unwrap_or_else(|error| {
+                    ic_cdk::trap(format!("staging RPC replacement failed: {error}"))
+                });
+        }
+    }
+    finish_post_upgrade(store);
 }
 
 #[ic_cdk::update]
@@ -474,6 +519,7 @@ async fn request_deposit_refund(
             .ok_or(Error::NotFound)
     })?;
     let mut refund_start = None;
+    let mut prepaid_quota = None;
     match state {
         bridge_core::DepositState::Minted { .. } | bridge_core::DepositState::Refunded { .. } => {
             return Err(Error::NotClaimable);
@@ -488,6 +534,7 @@ async fn request_deposit_refund(
                     .map(|authorization| authorization.authorization.deadline)
                     .ok_or(Error::StorageFailure)
             })?;
+            prepaid_quota = Some(reserve_refund_rpc_quota(&config, id, caller)?);
             let (snapshot, _) = api::base_mint_snapshot(&config, ic_cdk::api::time())
                 .await
                 .map_err(|error| match error {
@@ -565,6 +612,7 @@ async fn request_deposit_refund(
                 }
                 let runtime_attested =
                     api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
+                prepaid_quota = Some(reserve_refund_rpc_quota(&config, id, caller)?);
                 let observation = evm_rpc::recovery_observation(
                     &config,
                     evm_rpc::RecoveryTarget::Deposit(id),
@@ -672,10 +720,16 @@ async fn request_deposit_refund(
     drop(guard);
 
     let job = if let Some((deposit, transition)) = refund_start {
-        claim_refund_start(deposit, transition, caller).map_err(map_refund_settlement_error)?
-    } else {
-        claim_job(storage::SettlementJobKind::Deposit, id, caller)
+        claim_refund_start(deposit, transition, caller, prepaid_quota)
             .map_err(map_refund_settlement_error)?
+    } else {
+        claim_job(
+            storage::SettlementJobKind::Deposit,
+            id,
+            caller,
+            prepaid_quota,
+        )
+        .map_err(map_refund_settlement_error)?
     };
     scheduler::run_claimed(job)
         .await
@@ -852,7 +906,7 @@ fn claim_manual_job(
     id: [u8; 32],
     caller: candid::Principal,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
-    claim_job(kind, id, caller)
+    claim_job(kind, id, caller, None)
 }
 
 fn manual_claim_result(
@@ -895,10 +949,39 @@ fn settlement_quota_limits(config: &config::BridgeInitArgs) -> storage::Settleme
     }
 }
 
+fn reserve_refund_rpc_quota(
+    config: &config::BridgeInitArgs,
+    id: [u8; 32],
+    caller: candid::Principal,
+) -> Result<storage::PrepaidQuota, api::RequestDepositRefundError> {
+    use api::RequestDepositRefundError as Error;
+
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .reserve_settlement_quota(
+                storage::SettlementJobKind::Deposit,
+                id,
+                caller,
+                ic_cdk::api::time(),
+                settlement_quota_limits(config),
+            )
+            .map_err(|error| match error {
+                storage::SettlementAdmissionError::RateLimited {
+                    retry_after_seconds,
+                } => Error::RateLimited {
+                    retry_after_seconds,
+                },
+                storage::SettlementAdmissionError::Storage => Error::StorageFailure,
+            })
+    })
+}
+
 fn claim_refund_start(
     deposit: bridge_core::DepositRecord,
     transition: bridge_core::ApplyResult,
     caller: candid::Principal,
+    prepaid_quota: Option<storage::PrepaidQuota>,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -908,14 +991,25 @@ fn claim_refund_start(
             .ok_or(tasks::SettlementActionError::StorageFailure)
     })?;
     let now_ns = ic_cdk::api::time();
-    let context = storage::ManualSettlementClaimContext {
-        kind: storage::SettlementJobKind::Deposit,
-        settlement_id: deposit.id.bytes(),
-        caller,
-        now_ns,
-        lease_until_ns: now_ns.saturating_add(120_000_000_000),
-        overdue_after_ns: 300_000_000_000,
-        limits: settlement_quota_limits(&config),
+    let context = match prepaid_quota {
+        Some(prepaid) => storage::ManualSettlementClaimContext::prepaid(
+            storage::SettlementJobKind::Deposit,
+            deposit.id.bytes(),
+            caller,
+            now_ns,
+            now_ns.saturating_add(120_000_000_000),
+            300_000_000_000,
+            prepaid,
+        ),
+        None => storage::ManualSettlementClaimContext::new(
+            storage::SettlementJobKind::Deposit,
+            deposit.id.bytes(),
+            caller,
+            now_ns,
+            now_ns.saturating_add(120_000_000_000),
+            300_000_000_000,
+            settlement_quota_limits(&config),
+        ),
     };
     STORE.with(|store| {
         store
@@ -939,6 +1033,7 @@ fn claim_job(
     kind: storage::SettlementJobKind,
     id: [u8; 32],
     caller: candid::Principal,
+    prepaid_quota: Option<storage::PrepaidQuota>,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -950,15 +1045,26 @@ fn claim_job(
     STORE.with(|store| {
         let now_ns = ic_cdk::api::time();
         let limits = settlement_quota_limits(&config);
-        let claim = store.borrow_mut().claim_manual_settlement_job(
-            kind,
-            id,
-            caller,
-            now_ns,
-            now_ns.saturating_add(120_000_000_000),
-            300_000_000_000,
-            limits,
-        );
+        let claim = match prepaid_quota {
+            Some(prepaid) => store.borrow_mut().claim_prepaid_manual_settlement_job(
+                kind,
+                id,
+                caller,
+                now_ns,
+                now_ns.saturating_add(120_000_000_000),
+                300_000_000_000,
+                prepaid,
+            ),
+            None => store.borrow_mut().claim_manual_settlement_job(
+                kind,
+                id,
+                caller,
+                now_ns,
+                now_ns.saturating_add(120_000_000_000),
+                300_000_000_000,
+                limits,
+            ),
+        };
         claim
             .map_err(|error| match error {
                 storage::SettlementAdmissionError::RateLimited {
@@ -1525,6 +1631,26 @@ mod candid_tests {
         storage_or_trap, ActionKey, DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard,
         StableStore, NOTIFICATION_CALLER_ADMISSION,
     };
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    fn staging_upgrade_decoder_accepts_legacy_empty_and_rpc_update_args() {
+        let empty = candid::encode_args(()).expect("encode empty upgrade args");
+        assert_eq!(
+            super::decode_staging_upgrade_args(empty),
+            super::config::StagingUpgradeArgs::default()
+        );
+
+        let expected = super::config::StagingUpgradeArgs {
+            rpc_provider_update: Some(super::config::StagingRpcProviderUpdate {
+                custom_evm_rpc_urls: super::config::STAGING_NEW_RPC_URLS
+                    .map(str::to_owned)
+                    .to_vec(),
+            }),
+        };
+        let encoded = candid::encode_args((expected.clone(),)).expect("encode staging args");
+        assert_eq!(super::decode_staging_upgrade_args(encoded), expected);
+    }
 
     #[cfg(not(feature = "test-deployment"))]
     fn normalize(candid: &str) -> String {

@@ -384,8 +384,8 @@ type NotifyWithdrawalError = variant {
 type NotifyWithdrawalReceipt = variant {
   Duplicate : record { withdrawal_id : blob };
   Ingested : record {
-    finalized_head_block_number : nat64;
     withdrawal_id : blob;
+    finalized_checkpoint_block_number : nat64;
   };
 };
 type PrepareBaseGovernanceReplacementArgs = record {

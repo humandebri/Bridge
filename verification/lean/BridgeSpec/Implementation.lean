@@ -148,6 +148,10 @@ def pendingQueueImpl
 def canonicalProbeImpl (receiptBlock snapshotBlock : U64) : Bool :=
   canonicalProbeMatches receiptBlock.val snapshotBlock.val
 
+def withdrawalFinalityCheckpointImpl
+    (first second third : Option U64) : Option Nat :=
+  withdrawalFinalizedCheckpoint (first.map U64.val) (second.map U64.val) (third.map U64.val)
+
 def ledgerBlockImpl (current : Option U128) (block : U128) : Option (Option Nat) :=
   ledgerBlockProvenance (current.map U128.val) block.val
 

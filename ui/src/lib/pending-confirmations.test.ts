@@ -24,7 +24,12 @@ const scope = {
   chainId: deploymentProfile.chainId,
   bridgeAddress: deploymentProfile.bridgeAddress?.toLowerCase() ?? "",
 }
-const awaitingNotification = { status: "awaiting-notification" as const }
+const awaitingNotification = {
+  status: "awaiting-notification" as const,
+  automaticAttemptUsed: false,
+  shortRetryUsed: false,
+  finalityReadvanceUsed: false,
+}
 const mintExpectation = {
   depositId: `0x${"11".repeat(32)}` as const,
   authorizationDigest: `0x${"33".repeat(32)}` as const,
@@ -104,7 +109,7 @@ describe("pending finalized confirmations", () => {
   })
 
   it("fails closed for malformed storage", () => {
-    const key = `kinic.bridge.pending-confirmations.v6:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
+    const key = `kinic.bridge.pending-confirmations.v7:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
     window.localStorage.setItem(key, JSON.stringify([{ ...entry, ...scope, blocked: false, transactionHash: "0x12" }]))
     expect(readPendingConfirmations()).toEqual([])
   })
@@ -113,8 +118,8 @@ describe("pending finalized confirmations", () => {
     await savePendingConfirmation(entry)
     expect(readPendingConfirmations()).toEqual([{ ...entry, ...scope, blocked: false, notification: awaitingNotification }])
 
-    const key = `kinic.bridge.pending-confirmations.v6:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
-    window.localStorage.setItem(key, JSON.stringify({ version: 6, entries: [{
+    const key = `kinic.bridge.pending-confirmations.v7:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
+    window.localStorage.setItem(key, JSON.stringify({ version: 7, entries: [{
       ...entry,
       ...scope,
       chainId: scope.chainId + 1,
@@ -203,6 +208,22 @@ describe("pending finalized confirmations", () => {
     expect(readPendingConfirmations()[0]?.notification).toEqual({ status: "notified", withdrawalId })
     await restorePendingConfirmation(entry)
     expect(readPendingConfirmations()[0]?.notification).toEqual({ status: "notified", withdrawalId })
+  })
+
+  it("refuses_a_conflicting_notified_withdrawal_ID_without_losing_the_saved_ID", async () => {
+    const firstWithdrawalId = `0x${"77".repeat(32)}` as const
+    const conflictingWithdrawalId = `0x${"99".repeat(32)}` as const
+    await savePendingConfirmation(entry)
+    await markPendingConfirmationNotified(entry, firstWithdrawalId)
+
+    await expect(markPendingConfirmationNotified(entry, conflictingWithdrawalId)).rejects.toThrow(
+      "notification ID conflict",
+    )
+
+    expect(readPendingConfirmations()[0]?.notification).toEqual({
+      status: "notified",
+      withdrawalId: firstWithdrawalId,
+    })
   })
 
   it("keeps_the_notified_withdrawal_ID_in_the_session_when_durable_storage_fails", async () => {

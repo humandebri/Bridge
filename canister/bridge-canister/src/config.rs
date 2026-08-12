@@ -2,6 +2,9 @@ use candid::{CandidType, Deserialize, Principal};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
+#[cfg(feature = "test-deployment")]
+use sha2::{Digest, Sha256};
+
 #[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct FeeRecipientConfig {
     pub owner: Principal,
@@ -12,6 +15,31 @@ pub const KINIC_LEDGER_CANISTER_ID: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 pub const KINIC_INDEX_CANISTER_ID: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
 pub const BASE_MAINNET_CHAIN_ID: u64 = 8453;
 pub const OFFICIAL_EVM_RPC_CANISTER_ID: &str = "7hfb6-caaaa-aaaar-qadga-cai";
+
+#[cfg(feature = "test-deployment")]
+pub const BASE_SEPOLIA_CHAIN_ID: u64 = 84_532;
+#[cfg(feature = "test-deployment")]
+pub const STAGING_OLD_RPC_URLS: [&str; 3] = [
+    "https://base-sepolia-rpc.publicnode.com",
+    "https://sepolia.base.org",
+    "https://base-sepolia.gateway.tenderly.co",
+];
+#[cfg(feature = "test-deployment")]
+pub const STAGING_NEW_RPC_URLS: [&str; 3] = [
+    "https://base-sepolia-rpc.publicnode.com",
+    "https://sepolia.base.org",
+    "https://base-sepolia.api.onfinality.io/public",
+];
+#[cfg(feature = "test-deployment")]
+pub const STAGING_OLD_RPC_URLS_SHA256: [u8; 32] = [
+    0xe9, 0xb9, 0xc7, 0x16, 0xde, 0xdf, 0x57, 0x24, 0x5c, 0x75, 0xb8, 0xd8, 0x71, 0x14, 0xb0, 0x65,
+    0xa5, 0x5a, 0x96, 0xbd, 0x0f, 0x7b, 0xd5, 0x66, 0x91, 0x68, 0x37, 0x22, 0xac, 0x57, 0x21, 0xfb,
+];
+#[cfg(feature = "test-deployment")]
+pub const STAGING_NEW_RPC_URLS_SHA256: [u8; 32] = [
+    0x3a, 0xb5, 0x3c, 0x05, 0x32, 0xb8, 0x0b, 0x3f, 0x39, 0xed, 0x07, 0x6f, 0x96, 0x61, 0x79, 0x4c,
+    0x0a, 0x84, 0x7b, 0x0d, 0x2e, 0xba, 0x18, 0x45, 0xb5, 0xc7, 0xe0, 0xed, 0x16, 0x63, 0xed, 0x48,
+];
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeInitArgs {
@@ -45,6 +73,18 @@ pub struct BridgeInitArgs {
     pub governance_principal: Principal,
     pub pause_principal: Principal,
     pub fee_recipient: FeeRecipientConfig,
+}
+
+#[cfg(feature = "test-deployment")]
+#[derive(CandidType, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct StagingUpgradeArgs {
+    pub rpc_provider_update: Option<StagingRpcProviderUpdate>,
+}
+
+#[cfg(feature = "test-deployment")]
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct StagingRpcProviderUpdate {
+    pub custom_evm_rpc_urls: Vec<String>,
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,6 +362,60 @@ impl BridgeInitArgs {
             .try_into()
             .expect("validated Timelock contract")
     }
+
+    #[cfg(feature = "test-deployment")]
+    pub(crate) fn staging_rpc_replacement(
+        &self,
+        requested_urls: &[String],
+    ) -> Result<Option<Self>, &'static str> {
+        if self.base_chain_id != BASE_SEPOLIA_CHAIN_ID {
+            return Err("staging RPC replacement requires Base Sepolia");
+        }
+        if self.evm_rpc_canister_id != official_evm_rpc_canister_id() {
+            return Err("staging RPC replacement requires the official EVM RPC Canister");
+        }
+        if !rpc_urls_match(requested_urls, &STAGING_NEW_RPC_URLS)
+            || rpc_urls_sha256(requested_urls) != STAGING_NEW_RPC_URLS_SHA256
+        {
+            return Err(
+                "staging RPC replacement only accepts the reviewed OnFinality provider set",
+            );
+        }
+        if rpc_urls_match(&self.custom_evm_rpc_urls, &STAGING_NEW_RPC_URLS) {
+            if rpc_urls_sha256(&self.custom_evm_rpc_urls) != STAGING_NEW_RPC_URLS_SHA256 {
+                return Err("staging RPC replacement found an invalid current provider digest");
+            }
+            return Ok(None);
+        }
+        if !rpc_urls_match(&self.custom_evm_rpc_urls, &STAGING_OLD_RPC_URLS)
+            || rpc_urls_sha256(&self.custom_evm_rpc_urls) != STAGING_OLD_RPC_URLS_SHA256
+        {
+            return Err("staging RPC replacement requires the reviewed Tenderly provider set");
+        }
+
+        let mut next = self.clone();
+        next.custom_evm_rpc_urls = requested_urls.to_vec();
+        next.validate()?;
+        Ok(Some(next))
+    }
+}
+
+#[cfg(feature = "test-deployment")]
+fn rpc_urls_match(actual: &[String], expected: &[&str; 3]) -> bool {
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual == expected)
+}
+
+#[cfg(feature = "test-deployment")]
+fn rpc_urls_sha256(urls: &[String]) -> [u8; 32] {
+    let normalized = urls.iter().map(|url| url.trim()).collect::<Vec<_>>();
+    Sha256::digest(
+        serde_json::to_vec(&normalized).expect("staging RPC URL serialization must succeed"),
+    )
+    .into()
 }
 
 pub fn kinic_ledger_canister_id() -> Principal {
@@ -369,10 +463,11 @@ fn credential_free_https(url: &str) -> bool {
     {
         return false;
     }
-    const PUBLIC_PATH_SEGMENTS: [&str; 7] = [
+    const PUBLIC_PATH_SEGMENTS: [&str; 8] = [
         "rpc",
         "v1",
         "v2",
+        "public",
         "ethereum",
         "base",
         "base-mainnet",
@@ -682,5 +777,64 @@ mod tests {
             "https://three.example".into(),
         ];
         assert_eq!(args.validate(), Ok(()));
+    }
+
+    #[cfg(feature = "test-deployment")]
+    fn reviewed_staging_args() -> BridgeInitArgs {
+        let mut args = valid_args();
+        args.base_chain_id = BASE_SEPOLIA_CHAIN_ID;
+        args.custom_evm_rpc_urls = STAGING_OLD_RPC_URLS.map(str::to_owned).to_vec();
+        args
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    fn staging_rpc_replacement_is_fixed_and_idempotent() {
+        let current = reviewed_staging_args();
+        let requested = STAGING_NEW_RPC_URLS.map(str::to_owned).to_vec();
+        let next = current
+            .staging_rpc_replacement(&requested)
+            .expect("reviewed replacement")
+            .expect("configuration changes");
+        assert_eq!(next.custom_evm_rpc_urls, requested);
+        assert_eq!(next.staging_rpc_replacement(&requested), Ok(None));
+        assert_eq!(
+            rpc_urls_sha256(&current.custom_evm_rpc_urls),
+            STAGING_OLD_RPC_URLS_SHA256
+        );
+        assert_eq!(
+            rpc_urls_sha256(&next.custom_evm_rpc_urls),
+            STAGING_NEW_RPC_URLS_SHA256
+        );
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    fn staging_rpc_replacement_rejects_unreviewed_bindings() {
+        let requested = STAGING_NEW_RPC_URLS.map(str::to_owned).to_vec();
+
+        let mut wrong_order = requested.clone();
+        wrong_order.swap(0, 1);
+        assert!(reviewed_staging_args()
+            .staging_rpc_replacement(&wrong_order)
+            .is_err());
+
+        let mut wrong_provider = requested.clone();
+        wrong_provider[2] = "https://three.example".into();
+        assert!(reviewed_staging_args()
+            .staging_rpc_replacement(&wrong_provider)
+            .is_err());
+
+        let mut unknown_current = reviewed_staging_args();
+        unknown_current.custom_evm_rpc_urls[2] = "https://three.example".into();
+        assert!(unknown_current.staging_rpc_replacement(&requested).is_err());
+
+        let mut wrong_chain = reviewed_staging_args();
+        wrong_chain.base_chain_id = BASE_MAINNET_CHAIN_ID;
+        assert!(wrong_chain.staging_rpc_replacement(&requested).is_err());
+
+        let mut wrong_canister = reviewed_staging_args();
+        wrong_canister.evm_rpc_canister_id = Principal::management_canister();
+        assert!(wrong_canister.staging_rpc_replacement(&requested).is_err());
     }
 }

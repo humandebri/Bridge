@@ -1,8 +1,8 @@
 # Bridge資源補充・緊急停止
 
-## Schema v33 baseline
+## Schema v32 baseline
 
-初回mainnet deployで導入するv33は、`nonterminal_deposit_owner_index`を含む現在のSQLite形状だけを正本とする。同じversion番号を持つそれ以前の開発DBとは互換性を持たず、tableとcounterの欠落はreopen時にfail closedとなる。初回mainnet deploy完了後はこの形状をproduction baselineとして固定し、以後の形状変更はschema番号を上げた明示migrationとして扱う。
+初回mainnet deployで導入するv32は、`nonterminal_deposit_owner_index`を含む現在のSQLite形状だけを正本とする。同じversion番号を持つそれ以前の開発DBとは互換性を持たず、tableとcounterの欠落はreopen時にfail closedとなる。初回mainnet deploy完了後はこの形状をproduction baselineとして固定し、以後の形状変更はschema番号を上げた明示migrationとして扱う。
 
 ## 日常確認
 
@@ -25,7 +25,7 @@ production Canisterが受け入れるLedger feeは`100000` raw、`test-deploymen
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv33、record wireはv28を現行形式とする。`post_upgrade`は現行形式だけを受理し、migration、dual-read、旧wire fallbackは持たない。
+stable schemaはv32、record wireはv28を現行形式とする。`post_upgrade`は現行形式だけを受理し、migration、dual-read、旧wire fallbackは持たない。
 
 ## 保持制限と監査
 
@@ -33,10 +33,10 @@ stable schemaはv33、record wireはv28を現行形式とする。`post_upgrade`
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v33またはwire v28以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
+schema v32またはwire v28以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。buildが選択した固定`KINIC_LEDGER_FEE`（productionは`100000 raw`、stagingは`10000 raw`）とprepared recordのcharged Service Feeをreview済みprofileに照合した後、任意の非anonymous主体がHistoryから`continue_withdrawal`を実行する。Canisterはruntimeで`icrc1_fee()`を照会せず、固定Ledger Feeがcharged Service Fee以下であることを再検証できた場合だけ、同じrecordからreleaseを開始してguardを解除する。
-現行の開発・staging・production canisterはstable schema v33／record wire v28だけを受理する。これ以外の形式は空stateであってもfail closedとし、migrationや旧Wasm fixtureを現行release判断へ使用しない。state破棄を伴うreinstallは別途明示承認を必要とする。
+現行の開発・staging・production canisterはstable schema v32／record wire v28だけを受理する。これ以外の形式は空stateであってもfail closedとし、migrationや旧Wasm fixtureを現行release判断へ使用しない。state破棄を伴うreinstallは別途明示承認を必要とする。
 SQLite DBやcounterを手作業で変更しない。
 
 schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipient、Authorization、失効またはMint確定証拠を一つのstable envelopeへ保存する。pending Ledger、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、primary rowとliability index・集計は一つのSQLite transactionで更新する。
@@ -105,7 +105,7 @@ npm run governance-relayer -- run --operation-id <id>
 
 `IC_IDENTITY_PEM`はCanisterの認可APIだけに使用し、通常操作ではGovernance identity、緊急pause/cancelではpause identityを指定できる。EVM秘密鍵は用意しない。gasはthreshold Governance Operator EOAが負担する。RPC URL/API keyやPEM内容をログ・shell history・incident evidenceへ記録しない。
 
-stagingを現行schemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認する。schema v33／wire v28以外のcanisterはupgrade対象にせず、現行Wasmを新規installして検証stateを作り直す。rollbackでは最初にrelayerを停止し、同一schemaの対応Wasmとstable snapshotをセットで復元する。
+stagingを現行schemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認する。schema v32／wire v28以外のcanisterはupgrade対象にせず、現行Wasmを新規installして検証stateを作り直す。rollbackでは最初にrelayerを停止し、同一schemaの対応Wasmとstable snapshotをセットで復元する。
 
 本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
 
@@ -134,7 +134,7 @@ Withdrawal transaction hashはactive deploymentに束縛したpending confirmati
 Deposit mint transaction hashはactive deploymentに束縛して保存する。HistoryはFinalized `DepositMinted` logとCanister DepositをIDで統合し、exact Authorization fieldが一致する成功を復元する。成功後のIC wallet署名やCanister通知はない。
 Depositの不明応答はbrowser storageへ保存しない。`Refresh`でowner sequenceとHistoryを読み、受付済みrecordがあれば状態を表示し、未受付なら同じ次sequenceで再度明示送信する。
 
-Deposit refundは任意の非anonymous Principalが請求できる。refund先、金額、Ledger transfer identity、service fee、固定Ledger Feeは保存済みrecordだけから取得し、callerは変更できない。Withdrawalのstoppedまたは非終端recordには、停止原因の解消後に任意の非anonymous identityから`continue_withdrawal`を一度実行する。UIでは各操作に対応する接続済みIC identityを使用する。別recordのactive lease中は`Busy`、quota超過は`RateLimited`、外部呼出し用cyclesがfloorを割る場合は`InsufficientCycles`を返す。いずれもtimerへ再予約しない。
+Deposit refundは任意の非anonymous Principalが請求できる。refund先、金額、Ledger transfer identity、service fee、固定Ledger Feeは保存済みrecordだけから取得し、callerは変更できない。EVM RPCが必要なrefundは外部検証の開始前に手動Retry quotaを消費し、RPC失敗、`NotClaimable`、競合でも返還しない。Withdrawalのstoppedまたは非終端recordには、停止原因の解消後に任意の非anonymous identityから`continue_withdrawal`を一度実行する。UIでは各操作に対応する接続済みIC identityを使用する。別recordのactive lease中は`Busy`、quota超過は`RateLimited`、外部呼出し用cyclesがfloorを割る場合は`InsufficientCycles`を返す。いずれもtimerへ再予約しない。
 fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行する。
 
 - Governance nonceを確保したoperation: `governance-relayer status`で署名成果物を取得し、同じrawを送信・確定する。必要時だけ明示的replacementを要求する。nonceやstable counterを手作業で変更しない。

@@ -32,18 +32,18 @@ export function verifyReinstallInstance(profile, livePublicConfig, liveCanisterS
   if (!Number.isInteger(schemaVersion)) {
     throw new Error("live PublicConfig schema_version must be an integer")
   }
-  if (![32, 33].includes(schemaVersion)) {
-    throw new Error("staging install check only accepts current schema v33 or explicitly discarded schema v32")
+  if (![31, 32].includes(schemaVersion)) {
+    throw new Error("staging install check only accepts current schema v32 or explicitly discarded schema v31")
   }
   const previous = deploymentInstanceHex(
     livePublicConfig?.deployment_instance_id,
     "live PublicConfig deployment_instance_id",
   )
   const liveModuleHash = moduleHash(liveCanisterStatus?.module_hash, "live canister status module_hash")
-  if (schemaVersion === 32 && next === previous) {
-    throw new Error("obsolete schema v32 reinstall requires a distinct deployment instance ID")
+  if (schemaVersion === 31 && next === previous) {
+    throw new Error("obsolete schema v31 reinstall requires a distinct deployment instance ID")
   }
-  const replacementMode = schemaVersion === 32
+  const replacementMode = schemaVersion === 31
     ? "obsolete-schema-reinstall"
     : next === previous
       ? "current-schema-upgrade"

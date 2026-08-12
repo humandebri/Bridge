@@ -472,6 +472,27 @@ proof fn canonical_probe_accepts_exact_block(receipt_block: int, snapshot_block:
         <==> receipt_block == snapshot_block
 {}
 
+spec fn finalized_head_attests(head: Option<int>, checkpoint: int) -> bool {
+    match head {
+        Some(height) => checkpoint <= height,
+        None => false,
+    }
+}
+
+proof fn withdrawal_finality_quorum_selects_two_provider_checkpoint(
+    first: Option<int>, second: Option<int>, third: Option<int>,
+)
+    ensures match kernel::withdrawal_finalized_checkpoint_spec(first, second, third) {
+        Some(checkpoint) =>
+            (finalized_head_attests(first, checkpoint) && finalized_head_attests(second, checkpoint))
+            || (finalized_head_attests(first, checkpoint) && finalized_head_attests(third, checkpoint))
+            || (finalized_head_attests(second, checkpoint) && finalized_head_attests(third, checkpoint)),
+        None => true,
+    }
+{
+    reveal(finalized_head_attests);
+}
+
 proof fn runtime_attestation_requires_every_config_binding(
     observation_present: bool,
     chain_id_matches: bool,

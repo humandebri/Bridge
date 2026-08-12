@@ -8,14 +8,17 @@ import { createBridgeActor } from "@/lib/ic/bridge"
 import { continueWithdrawalWithBrowserIdentity, NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
 import {
   readPendingConfirmations,
+  markPendingConfirmationNotificationAttempt,
   markPendingConfirmationNotified,
   removePendingConfirmation,
-  setPendingConfirmationBlocked,
+  setPendingConfirmationNotificationFailure,
   type PendingConfirmation,
+  type PendingNotificationFailure,
 } from "@/lib/pending-confirmations"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
 
 export const CONFIRMATION_POLL_MS = 15_000
+export const NOTIFICATION_RETRY_DELAY_MS = 5_000
 
 type PendingWithdrawal = Extract<PendingConfirmation, { kind: "withdrawal" }>
 
@@ -31,6 +34,7 @@ export function SettlementConfirmationCoordinator() {
   const notificationRunsRef = useRef(new Set<string>())
   const observerGenerationRef = useRef(0)
   const update = bridgeProgress.update
+  const setAction = bridgeProgress.setAction
 
   useEffect(() => {
     progressRef.current = bridgeProgress.progress
@@ -55,6 +59,13 @@ export function SettlementConfirmationCoordinator() {
         ? current
         : undefined
     }
+    const recoverableProgressFor = (entry: PendingWithdrawal) => {
+      const current = matchingProgressFor(entry)
+      return current?.phase === "complete" ? undefined : current
+    }
+    const progressForTrigger = (entry: PendingWithdrawal, trigger: "automatic" | "manual") => {
+      return trigger === "manual" ? recoverableProgressFor(entry) : activeProgressFor(entry)
+    }
     const presentationIsCurrent = (progressId: string | undefined, entry: PendingWithdrawal) => {
       return isCurrent() && (progressId === undefined || activeProgressFor(entry)?.id === progressId)
     }
@@ -63,19 +74,37 @@ export function SettlementConfirmationCoordinator() {
       if (!isCurrent() || document.visibilityState !== "visible") return
       const latest = progressRef.current
       const entries = readPendingConfirmations().filter((entry): entry is PendingWithdrawal => {
-        if (entry.kind !== "withdrawal" || entry.blocked) return false
+        if (entry.kind !== "withdrawal") return false
         const ownsLatest = latest?.direction === "withdraw"
           && latest.transactionHash?.toLowerCase() === entry.transactionHash.toLowerCase()
         if (entry.notification.status === "awaiting-notification"
           && ownsLatest
-          && (latest.phase === "complete" || latest.phase === "attention")) return false
+          && latest.phase === "complete") return false
         return true
       })
       for (const entry of entries) {
+        if (entry.notification.status === "awaiting-notification") {
+          const failure = entry.notification.failure
+          if (failure?.disposition === "manual-retry" || failure?.disposition === "terminal") {
+            presentNotificationFailure(entry, failure, recoverableProgressFor(entry)?.id, update, setAction, observeWithdrawal)
+            continue
+          }
+          if (entry.notification.automaticAttemptUsed && !failure) {
+            const interrupted = {
+              code: "Interrupted",
+              message: "The automatic IC notification was interrupted. Retry it explicitly.",
+              disposition: "manual-retry" as const,
+            }
+            void setPendingConfirmationNotificationFailure(entry, interrupted)
+            presentNotificationFailure(entry, interrupted, recoverableProgressFor(entry)?.id, update, setAction, observeWithdrawal)
+            continue
+          }
+          if (matchingProgressFor(entry)?.phase === "attention") continue
+        }
         const transactionKey = entry.transactionHash.toLowerCase()
         if (runningRef.current.has(transactionKey)) continue
         runningRef.current.add(transactionKey)
-        void observeWithdrawal(entry, activeProgressFor(entry)?.id)
+        void observeWithdrawal(entry, activeProgressFor(entry)?.id, "automatic")
           .catch(() => undefined)
           .finally(() => {
             runningRef.current.delete(transactionKey)
@@ -84,7 +113,11 @@ export function SettlementConfirmationCoordinator() {
       }
     }
 
-    const observeWithdrawal = async (entry: PendingWithdrawal, observedProgressId: string | undefined) => {
+    const observeWithdrawal = async (
+      entry: PendingWithdrawal,
+      observedProgressId: string | undefined,
+      trigger: "automatic" | "manual",
+    ) => {
       if (entry.notification.status === "notified") {
         const progress = matchingProgressFor(entry)
         const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
@@ -113,13 +146,13 @@ export function SettlementConfirmationCoordinator() {
       }
       const receipt = await basePublicClient.getTransactionReceipt({ hash: entry.transactionHash })
       if (!isCurrent()) return
-      if (observedProgressId && activeProgressFor(entry)?.id !== observedProgressId) return
-      let latest = activeProgressFor(entry)
+      if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
+      let latest = progressForTrigger(entry, trigger)
       if (receipt.status === "reverted") {
         await removePendingConfirmation(entry)
         if (!isCurrent()) return
-        if (observedProgressId && activeProgressFor(entry)?.id !== observedProgressId) return
-        latest = activeProgressFor(entry)
+        if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
+        latest = progressForTrigger(entry, trigger)
         if (latest) update(latest.id, {
           phase: "attention",
           receiptBlockNumber: receipt.blockNumber.toString(),
@@ -134,13 +167,31 @@ export function SettlementConfirmationCoordinator() {
       })
       const finalized = await basePublicClient.getBlock({ blockTag: "finalized" })
       if (!isCurrent()) return
-      if (observedProgressId && activeProgressFor(entry)?.id !== observedProgressId) return
-      latest = activeProgressFor(entry)
+      if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
+      latest = progressForTrigger(entry, trigger)
       if (finalized.number === null || finalized.number < receipt.blockNumber) {
         if (latest) update(latest.id, {
           phase: "base-withdrawal-finalizing",
           finalizedBlockNumber: finalized.number?.toString(),
         })
+        return
+      }
+
+      const refreshed = readPendingConfirmations().find((candidate) => candidate.kind === "withdrawal"
+        && candidate.transactionHash.toLowerCase() === entry.transactionHash.toLowerCase())
+      if (!refreshed || refreshed.notification.status !== "awaiting-notification") return
+      let attemptKind: "automatic" | "manual" | "finality-readvance"
+      if (trigger === "manual") {
+        attemptKind = "manual"
+      } else if (refreshed.notification.failure?.disposition === "finality-wait") {
+        const previousBlock = refreshed.notification.lastAttemptedFinalizedBlock === undefined
+          ? undefined
+          : BigInt(refreshed.notification.lastAttemptedFinalizedBlock)
+        if (refreshed.notification.finalityReadvanceUsed || previousBlock === undefined || finalized.number <= previousBlock) return
+        attemptKind = "finality-readvance"
+      } else if (!refreshed.notification.automaticAttemptUsed) {
+        attemptKind = "automatic"
+      } else {
         return
       }
       if (latest) update(latest.id, {
@@ -152,17 +203,19 @@ export function SettlementConfirmationCoordinator() {
       if (notificationRunsRef.current.has(transactionKey)) return
       notificationRunsRef.current.add(transactionKey)
       try {
-        await notifyWithdrawal(entry, latest?.id, update, presentationIsCurrent)
+        if (latest && trigger === "manual") setAction(latest.id, undefined)
+        await markPendingConfirmationNotificationAttempt(refreshed, attemptKind, finalized.number).catch(() => undefined)
+        await notifyWithdrawalWithRetry(refreshed, finalized.number, latest?.id, update, presentationIsCurrent, isCurrent)
       } catch (error) {
         if (!isCurrent()) return
-        if (notificationFailureIsTerminal(error)) {
-          await setPendingConfirmationBlocked(entry, true).catch(() => undefined)
-          if (latest && presentationIsCurrent(latest.id, entry)) update(latest.id, {
-            phase: "attention",
-            attentionMessage: error instanceof Error ? error.message : "The finalized withdrawal identity could not be accepted by the IC.",
-          })
-        }
-        throw error
+        const latestEntry = readPendingConfirmations().find((candidate) => candidate.kind === "withdrawal"
+          && candidate.transactionHash.toLowerCase() === entry.transactionHash.toLowerCase())
+        const automaticRetryExhausted = attemptKind === "manual"
+          || attemptKind === "finality-readvance"
+          || (latestEntry?.notification.status === "awaiting-notification" && latestEntry.notification.shortRetryUsed)
+        const failure = notificationFailure(error, automaticRetryExhausted)
+        await setPendingConfirmationNotificationFailure(latestEntry ?? refreshed, failure).catch(() => undefined)
+        presentNotificationFailure(latestEntry ?? refreshed, failure, latest?.id, update, setAction, observeWithdrawal)
       } finally {
         notificationRunsRef.current.delete(transactionKey)
       }
@@ -177,7 +230,7 @@ export function SettlementConfirmationCoordinator() {
       window.clearInterval(interval)
       document.removeEventListener("visibilitychange", tick)
     }
-  }, [update])
+  }, [setAction, update])
 
   return null
 }
@@ -225,6 +278,30 @@ async function notifyWithdrawal(
   }
 }
 
+async function notifyWithdrawalWithRetry(
+  entry: PendingWithdrawal,
+  finalizedBlock: bigint,
+  progressId: string | undefined,
+  update: ReturnType<typeof useBridgeProgress>["update"],
+  presentationIsCurrent: (progressId: string | undefined, entry: PendingWithdrawal) => boolean,
+  isCurrent: () => boolean,
+) {
+  try {
+    return await notifyWithdrawal(entry, progressId, update, presentationIsCurrent)
+  } catch (error) {
+    const current = readPendingConfirmations().find((candidate) => candidate.kind === "withdrawal"
+      && candidate.transactionHash.toLowerCase() === entry.transactionHash.toLowerCase())
+    const canRetry = current?.notification.status === "awaiting-notification"
+      && !current.notification.shortRetryUsed
+      && notificationAllowsShortRetry(error)
+    if (!canRetry) throw error
+    await delay(NOTIFICATION_RETRY_DELAY_MS)
+    if (!isCurrent()) return
+    await markPendingConfirmationNotificationAttempt(current, "short-retry", finalizedBlock).catch(() => undefined)
+    return notifyWithdrawal(current, progressId, update, presentationIsCurrent)
+  }
+}
+
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` {
   return `0x${Array.from(bytes, (value) => Number(value).toString(16).padStart(2, "0")).join("")}`
 }
@@ -233,9 +310,21 @@ function shortAddress(value: string): string {
   return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value
 }
 
-function notificationFailureIsTerminal(error: unknown): boolean {
+function notificationAllowsShortRetry(error: unknown): boolean {
+  return error instanceof NotifyWithdrawalCallError ? error.code === "Busy" : true
+}
+
+function notificationFailure(error: unknown, automaticRetryExhausted: boolean): PendingNotificationFailure {
+  const message = error instanceof Error ? error.message : "The IC notification failed."
   if (error instanceof NotifyWithdrawalCallError) {
-    return [
+    if (error.code === "TransactionNotConfirmed") return {
+      code: error.code,
+      message: automaticRetryExhausted
+        ? "Base finality could not be confirmed within the automatic retry budget. Retry the IC notification explicitly."
+        : message,
+      disposition: automaticRetryExhausted ? "manual-retry" : "finality-wait",
+    }
+    if ([
       "AnonymousCaller",
       "BaseStateMismatch",
       "BridgeSignerMismatch",
@@ -243,8 +332,37 @@ function notificationFailureIsTerminal(error: unknown): boolean {
       "LedgerFeeExceedsServiceFee",
       "TransactionReverted",
       "WithdrawalConflict",
-    ].includes(error.code)
+    ].includes(error.code)) return { code: error.code, message, disposition: "terminal" }
+    return { code: error.code, message, disposition: "manual-retry" }
   }
-  return error instanceof Error
-    && /conflict|reverted|invalid transaction hash|bridge signer mismatch|base state mismatch/i.test(error.message)
+  if (/conflict|reverted|invalid transaction hash|bridge signer mismatch|base state mismatch/i.test(message)) {
+    return { code: "TerminalNotificationError", message, disposition: "terminal" }
+  }
+  return { code: "TransportError", message, disposition: "manual-retry" }
+}
+
+function presentNotificationFailure(
+  entry: PendingWithdrawal,
+  failure: PendingNotificationFailure,
+  progressId: string | undefined,
+  update: ReturnType<typeof useBridgeProgress>["update"],
+  setAction: ReturnType<typeof useBridgeProgress>["setAction"],
+  observeWithdrawal: (entry: PendingWithdrawal, progressId: string | undefined, trigger: "automatic" | "manual") => Promise<void>,
+) {
+  if (!progressId) return
+  if (failure.disposition === "finality-wait") {
+    update(progressId, { phase: "base-withdrawal-finalizing", attentionMessage: undefined })
+    return
+  }
+  update(progressId, { phase: "attention", attentionMessage: failure.message })
+  if (failure.disposition === "manual-retry") {
+    setAction(progressId, {
+      label: "Retry IC notification",
+      run: () => observeWithdrawal(entry, progressId, "manual"),
+    })
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }

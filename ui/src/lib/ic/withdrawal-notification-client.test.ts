@@ -48,7 +48,7 @@ beforeEach(() => {
     continue_withdrawal: mocks.continueWithdrawal,
   })
   mocks.notifyWithdrawal.mockResolvedValue({
-    Ok: { Ingested: { finalized_head_block_number: 42n, withdrawal_id: new Uint8Array(32).fill(7) } },
+    Ok: { Ingested: { finalized_checkpoint_block_number: 42n, withdrawal_id: new Uint8Array(32).fill(7) } },
   })
   mocks.continueWithdrawal.mockResolvedValue({
     Ok: { Complete: { state: { Withdrawal: { Paid: null } } } },
@@ -120,7 +120,7 @@ describe("withdrawal notification client", () => {
     const transactionHash = new Uint8Array(32).fill(9)
 
     await expect(notifyWithdrawalWithBrowserIdentity(transactionHash, deployment)).resolves.toMatchObject({
-      Ingested: { finalized_head_block_number: 42n },
+      Ingested: { finalized_checkpoint_block_number: 42n },
     })
 
     expect(mocks.createBridgeActor).toHaveBeenCalledOnce()

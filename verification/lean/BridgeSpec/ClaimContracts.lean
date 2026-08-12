@@ -359,6 +359,15 @@ theorem canonical_probe_witness : CanonicalProbe :=
   ⟨by intro receiptBlock snapshotBlock; exact Claims.canonical_probe_claim,
     integrated_protocol_reachability_witness⟩
 
+def WithdrawalFinalityQuorum : Prop :=
+  ∀ {first second third : Option Nat} {checkpoint : Nat},
+    withdrawalFinalizedCheckpoint first second third = some checkpoint →
+      twoFinalizedHeadsAttest first second third checkpoint
+
+theorem withdrawal_finality_quorum_witness : WithdrawalFinalityQuorum := by
+  intro first second third checkpoint selected
+  exact Claims.withdrawal_finality_quorum_claim selected
+
 def AuthorizationBinding : Prop :=
   (∀ {state next : DepositState} {authorization : Authorization}
       {origin : AuthorizationOrigin},

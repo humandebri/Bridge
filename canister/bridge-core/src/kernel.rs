@@ -202,6 +202,32 @@ macro_rules! canonical_probe_matches_body {
     };
 }
 
+macro_rules! withdrawal_finalized_checkpoint_body {
+    ($first:expr, $second:expr, $third:expr) => {{
+        match ($first, $second, $third) {
+            (Some(a), Some(b), Some(c)) => Some(if a >= b {
+                if b >= c {
+                    b
+                } else if a >= c {
+                    c
+                } else {
+                    a
+                }
+            } else if a >= c {
+                a
+            } else if b >= c {
+                c
+            } else {
+                b
+            }),
+            (Some(a), Some(b), None) | (Some(a), None, Some(b)) | (None, Some(a), Some(b)) => {
+                Some(if a <= b { a } else { b })
+            }
+            _ => None,
+        }
+    }};
+}
+
 macro_rules! runtime_attestation_matches_body {
     ($observation_present:expr, $chain_id_matches:expr, $runtime_hash_matches:expr) => {
         $observation_present && $chain_id_matches && $runtime_hash_matches
@@ -908,6 +934,16 @@ pub const fn checked_counter_transition(
 #[cfg(not(verus_keep_ghost))]
 pub const fn canonical_probe_matches(receipt_block: u64, snapshot_block: u64) -> bool {
     canonical_probe_matches_body!(receipt_block, snapshot_block)
+}
+
+/// Selects the greatest height attested as finalized by at least two of three providers.
+#[cfg(not(verus_keep_ghost))]
+pub const fn withdrawal_finalized_checkpoint(
+    first: Option<u64>,
+    second: Option<u64>,
+    third: Option<u64>,
+) -> Option<u64> {
+    withdrawal_finalized_checkpoint_body!(first, second, third)
 }
 
 /// Allows reuse of a persisted runtime attestation only when every immutable-config
@@ -1944,6 +1980,14 @@ verus! {
 
     pub open spec fn canonical_probe_matches_spec(receipt_block: int, snapshot_block: int) -> bool {
         canonical_probe_matches_body!(receipt_block, snapshot_block)
+    }
+
+    pub open spec fn withdrawal_finalized_checkpoint_spec(
+        first: Option<int>,
+        second: Option<int>,
+        third: Option<int>,
+    ) -> Option<int> {
+        withdrawal_finalized_checkpoint_body!(first, second, third)
     }
 
     pub open spec fn runtime_attestation_matches_spec(

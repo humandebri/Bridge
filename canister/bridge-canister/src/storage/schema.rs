@@ -1,6 +1,6 @@
 use ic_sqlite_vfs::MemoryId;
 
-pub const SCHEMA_VERSION: u16 = 33;
+pub const SCHEMA_VERSION: u16 = 32;
 pub(super) const WIRE_VERSION: u8 = 28;
 
 pub const RETIRED_STABLE_STRUCTURE_MEMORY_IDS: core::ops::RangeInclusive<u8> = 0..=32;

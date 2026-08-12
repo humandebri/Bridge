@@ -4,8 +4,8 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-通常の再オープンと`post_upgrade`はstable schema v33、record wire version v28だけを受理する。v32以下、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否する。
-upgrade検証はcurrent schema v33のrecord・config・quota・auditを保持するsame-Wasm再オープンと、旧schema・wireの拒否を検証する。
+通常の再オープンと`post_upgrade`はstable schema v32、record wire version v28だけを受理する。v31以下、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否する。
+upgrade検証はcurrent schema v32のrecord・config・quota・auditを保持するsame-Wasm再オープンと、旧schema・wireの拒否を検証する。
 
 `settlement_jobs`が実行中・停止中Settlementの正本である。Depositとfee payoutはtimerが自動claimし、Withdrawalは明示的な`continue_withdrawal`だけがmanual claimする。Withdrawal通知時はrecordと固定transfer identityだけをatomic保存し、jobを作らない。外部`await`前に署名dispatchやLedger transfer identityを永続化し、lease generationとDB上の状態だけが実行権を決める。
 
@@ -80,7 +80,7 @@ Base Committed
             └─ 完全な不存在証拠 → 新identityのReleasePending（送金は次回）
 ```
 
-UIはtransaction hashをlocalStorageへ保存し、Finalized eventを検出した後にdeployment-scopedなbrowser identityから`notify_withdrawal`を呼び、成功後に同じidentityで`continue_withdrawal`を1回だけ呼ぶ。通知・継続にIC walletの署名やICRC-21同意取得は使用しない。非終端ならHistoryの明示操作で再開する。Canisterはreceipt、event、`getWithdrawal`、Bridge snapshotを同じcanonical Finalized block hashへ束縛する。Ledger結果不明は時間経過だけで失敗扱いにせず、LedgerとIndexの完全なwatermarkで不存在を証明できるまでHoldを維持する。
+UIはtransaction hashと通知attempt状態をv7形式でlocalStorageへ保存し、Finalized event検出後の初回だけdeployment-scopedなbrowser identityから`notify_withdrawal`を自動実行する。通信切断または`Busy`の短期再試行は1回、`TransactionNotConfirmed`後のhead進行再通知も1回に制限し、その他の失敗はProgressまたはHistoryの明示操作で再開する。成功後は同じidentityで`continue_withdrawal`を1回だけ呼び、非終端ならHistoryの`Continue payout`へ移る。通知・継続にIC walletの署名やICRC-21同意取得は使用しない。Canisterはreceiptをexact 2-of-3で一致させ、providerのFinalized高さの2番目に大きい値をcheckpointとして選び、その高さのblock hashをexact 2-of-3で再取得する。receiptのcanonical probeを維持し、event、`getWithdrawal`、Bridge snapshotをcheckpoint hashへ束縛する。Ledger結果不明は時間経過だけで失敗扱いにせず、LedgerとIndexの完全なwatermarkで不存在を証明できるまでHoldを維持する。
 
 ## 公開APIと権限
 

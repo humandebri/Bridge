@@ -107,6 +107,12 @@ theorem canonical_probe_refinement
       canonicalProbeMatches receiptBlock.val snapshotBlock.val := by
   rfl
 
+theorem withdrawal_finality_quorum_refinement
+    (first second third : Option U64) :
+    withdrawalFinalityCheckpointImpl first second third =
+      withdrawalFinalizedCheckpoint (first.map U64.val) (second.map U64.val) (third.map U64.val) := by
+  rfl
+
 theorem ledger_block_provenance_refinement (current : Option U128) (block : U128) :
     ledgerBlockImpl current block =
       ledgerBlockProvenance (current.map U128.val) block.val := by

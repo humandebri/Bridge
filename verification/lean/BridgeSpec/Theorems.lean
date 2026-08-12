@@ -142,4 +142,23 @@ theorem canonical_probe_matches_exactly
     canonicalProbeMatches receiptBlock snapshotBlock = true ↔ receiptBlock = snapshotBlock := by
   simp [canonicalProbeMatches]
 
+theorem withdrawal_finality_quorum_selects_two_provider_checkpoint
+    {first second third : Option Nat} {checkpoint : Nat}
+    (selected : withdrawalFinalizedCheckpoint first second third = some checkpoint) :
+    twoFinalizedHeadsAttest first second third checkpoint := by
+  rcases first with _ | first <;> rcases second with _ | second <;>
+    rcases third with _ | third <;>
+    simp [withdrawalFinalizedCheckpoint, twoFinalizedHeadsAttest, finalizedHeadAttests,
+      Nat.min_def] at selected ⊢
+  · split at selected <;> simp_all <;> omega
+  · split at selected <;> simp_all <;> omega
+  · split at selected <;> simp_all <;> omega
+  · split at selected
+    · split at selected
+      · simp_all <;> omega
+      · split at selected <;> simp_all <;> omega
+    · split at selected
+      · simp_all <;> omega
+      · split at selected <;> simp_all <;> omega
+
 end BridgeSpec

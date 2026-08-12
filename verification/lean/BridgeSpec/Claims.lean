@@ -38,6 +38,12 @@ theorem canonical_probe_claim
     canonicalProbeMatches receiptBlock snapshotBlock = true ↔ receiptBlock = snapshotBlock :=
   canonical_probe_matches_exactly
 
+theorem withdrawal_finality_quorum_claim
+    {first second third : Option Nat} {checkpoint : Nat}
+    (selected : withdrawalFinalizedCheckpoint first second third = some checkpoint) :
+    twoFinalizedHeadsAttest first second third checkpoint :=
+  withdrawal_finality_quorum_selects_two_provider_checkpoint selected
+
 theorem payment_claim :
     (∀ {w paid : Withdrawal} {transfer : LedgerTransfer},
       pay w transfer = some paid →

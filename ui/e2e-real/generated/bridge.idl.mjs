@@ -551,8 +551,8 @@ export const idlFactory = ({ IDL }) => {
   const NotifyWithdrawalReceipt = IDL.Variant({
     'Duplicate' : IDL.Record({ 'withdrawal_id' : IDL.Vec(IDL.Nat8) }),
     'Ingested' : IDL.Record({
-      'finalized_head_block_number' : IDL.Nat64,
       'withdrawal_id' : IDL.Vec(IDL.Nat8),
+      'finalized_checkpoint_block_number' : IDL.Nat64,
     }),
   });
   const NotifyWithdrawalError = IDL.Variant({

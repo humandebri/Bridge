@@ -186,7 +186,7 @@ def all_evidence(binding):
         ),
         "canonical_receipt": evidence(
             "canonical_receipt",
-            {"transaction_hash": H32_A, "receipt_block_number": 12, "receipt_block_hash": H32_B, "canonical_block_hash": H32_B, "finalized_head_block_number": 13},
+            {"transaction_hash": H32_A, "receipt_block_number": 12, "receipt_block_hash": H32_B, "canonical_block_hash": H32_B, "finalized_checkpoint_block_number": 13},
         ),
         "single_provider_failure": evidence(
             "single_provider_failure",
@@ -704,7 +704,7 @@ class RehearsalTests(unittest.TestCase):
             {"kind": "bridge", "path": "artifacts/canonical-bridge.json", "sha256": "0" * 64, "bindings": {
                 "transaction_hash": "/transaction_hash", "receipt_block_number": "/receipt_block_number",
                 "receipt_block_hash": "/receipt_block_hash", "canonical_block_hash": "/canonical_block_hash",
-                "finalized_head_block_number": "/finalized_head_block_number",
+                "finalized_checkpoint_block_number": "/finalized_checkpoint_block_number",
             }},
             {"kind": "base", "path": "artifacts/canonical-receipt.json", "sha256": "0" * 64, "bindings": {
                 "transaction_hash": "/transactionHash", "receipt_block_number": "/blockNumber",
@@ -714,7 +714,7 @@ class RehearsalTests(unittest.TestCase):
                 "canonical_block_hash": "/hash",
             }},
             {"kind": "base", "path": "artifacts/canonical-safe.json", "sha256": "0" * 64, "bindings": {
-                "finalized_head_block_number": "/number",
+                "finalized_checkpoint_block_number": "/number",
             }},
             {"kind": "audit", "path": "artifacts/canonical-audit.json", "sha256": "0" * 64, "bindings": {}},
         ]

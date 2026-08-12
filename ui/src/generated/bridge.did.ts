@@ -392,8 +392,8 @@ export type NotifyWithdrawalReceipt = {
   } |
   {
     'Ingested' : {
-      'finalized_head_block_number' : bigint,
       'withdrawal_id' : Uint8Array | number[],
+      'finalized_checkpoint_block_number' : bigint,
     }
   };
 export interface PrepareBaseGovernanceReplacementArgs {

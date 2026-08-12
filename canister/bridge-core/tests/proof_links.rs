@@ -4,7 +4,7 @@ use bridge_core::{
     hold_resolution_decision, lease_lane_claim_decision, lease_outcome_decision,
     manual_claim_decision, notification_admission_allowed, payout_decision,
     release_transfer_matches, reservation_decision, service_fee_change_allowed,
-    settlement_decision,
+    settlement_decision, withdrawal_finalized_checkpoint,
 };
 
 macro_rules! production_link {
@@ -121,4 +121,27 @@ fn phase5_production_links_typecheck() {
         canonical_probe_matches,
         fn(u64, u64) -> bool
     );
+    production_link!(
+        "withdrawal_finality_quorum",
+        "canister/bridge-core/src/kernel.rs#withdrawal_finalized_checkpoint",
+        withdrawal_finalized_checkpoint,
+        fn(Option<u64>, Option<u64>, Option<u64>) -> Option<u64>
+    );
+}
+
+#[test]
+fn withdrawal_finality_quorum_selects_the_greatest_two_provider_checkpoint() {
+    assert_eq!(
+        withdrawal_finalized_checkpoint(Some(100), Some(101), Some(102)),
+        Some(101)
+    );
+    assert_eq!(
+        withdrawal_finalized_checkpoint(Some(102), Some(100), Some(101)),
+        Some(101)
+    );
+    assert_eq!(
+        withdrawal_finalized_checkpoint(Some(100), None, Some(102)),
+        Some(100)
+    );
+    assert_eq!(withdrawal_finalized_checkpoint(Some(102), None, None), None);
 }

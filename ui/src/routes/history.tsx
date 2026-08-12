@@ -43,6 +43,7 @@ import { createBridgeActor } from "@/lib/ic/bridge"
 import { kinicTransactionExplorerUrl } from "@/lib/ic/transaction-explorer"
 import { continueWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
 import {
+  readPendingConfirmations,
   readPendingMint,
   removePendingConfirmation,
 } from "@/lib/pending-confirmations"
@@ -328,7 +329,11 @@ function HistoryPage() {
     try {
       setRetryingHash(item.hash)
       await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
-      const { pending, receipt, withdrawalId } = await notifyHistoryWithdrawal(item)
+      const { pending, receipt, withdrawalId } = await notifyHistoryWithdrawal(
+        item,
+        undefined,
+        withdrawals.data?.lastFinalizedBlock ?? item.blockNumber,
+      )
       toastWithdrawalNotification(receipt)
       try {
         const result = await continueWithdrawalWithBrowserIdentity(withdrawalId)
@@ -648,6 +653,9 @@ function WithdrawalActivityRow({ item, writesEnabled, actioningId, retryingHash,
   const record = item.withdrawal
   const key = record.id?.toString() ?? record.hash
   const terminal = record.canister && isWithdrawalTerminal(record.canister.state)
+  const pendingNotification = readPendingConfirmations().find((entry) => entry.kind === "withdrawal"
+    && entry.transactionHash.toLowerCase() === record.hash.toLowerCase())?.notification
+  const pendingAttempt = pendingNotification?.status === "awaiting-notification" ? pendingNotification : undefined
   const needsAttention = Boolean(record.canister && !terminal)
   const label = !record.canister
     ? "Committed"
@@ -664,9 +672,13 @@ function WithdrawalActivityRow({ item, writesEnabled, actioningId, retryingHash,
       ? <p className="mt-1 text-xs text-[var(--muted)]">Not sent yet</p>
       : <KinicTransactionLink {...kinicTransactions[0]!} />}</div>
     <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{record.amountOut === undefined ? "Amount unavailable" : `${formatTokenAmount(record.amountOut)} KINIC`}</p></div>
-    <div><MobileLabel>Status</MobileLabel><Badge tone={needsAttention ? "warn" : record.canister ? withdrawalPhaseTone(record.canister.state) : "neutral"}>{label}</Badge>{needsAttention && <p className="mt-1 text-xs font-bold text-[#b42318]">Continue from History when ready.</p>}</div>
+    <div><MobileLabel>Status</MobileLabel><Badge tone={needsAttention || pendingAttempt?.failure ? "warn" : record.canister ? withdrawalPhaseTone(record.canister.state) : "neutral"}>{label}</Badge>{needsAttention && <p className="mt-1 text-xs font-bold text-[#b42318]">Continue from History when ready.</p>}{pendingAttempt?.failure && <p className="mt-1 text-xs font-bold text-[#b42318]">{pendingAttempt.failure.message}</p>}</div>
     <div><MobileLabel>Time</MobileLabel><ActivityTime valueNs={item.createdAtNs} /></div>
-    <div><MobileLabel>Next step</MobileLabel>{!record.canister ? <Button size="sm" variant="ghost" disabled={!writesEnabled || retryingHash === record.hash} onClick={() => void onCheckAndNotify(record)}>{retryingHash === record.hash ? "Checking…" : "Check status"}</Button> : !terminal ? <Button size="sm" variant="ghost" disabled={(!writesEnabled && !feeGuardBlocked(record.canister)) || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Continuing…" : "Continue payout"}</Button> : <span className="text-sm text-[var(--muted)]">—</span>}</div>
+    <div><MobileLabel>Next step</MobileLabel>{!record.canister
+      ? pendingAttempt?.failure?.disposition === "terminal"
+        ? <span className="text-sm text-[var(--muted)]">Operator review required</span>
+        : <Button size="sm" variant="ghost" disabled={!writesEnabled || retryingHash === record.hash} onClick={() => void onCheckAndNotify(record)}>{retryingHash === record.hash ? "Checking…" : pendingAttempt?.failure ? "Retry IC notification" : "Check status"}</Button>
+      : !terminal ? <Button size="sm" variant="ghost" disabled={(!writesEnabled && !feeGuardBlocked(record.canister)) || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Continuing…" : "Continue payout"}</Button> : <span className="text-sm text-[var(--muted)]">—</span>}</div>
   </article>
 }
 

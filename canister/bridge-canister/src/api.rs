@@ -243,8 +243,8 @@ pub struct NotifyWithdrawalArgs {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum NotifyWithdrawalReceipt {
     Ingested {
+        finalized_checkpoint_block_number: u64,
         withdrawal_id: Vec<u8>,
-        finalized_head_block_number: u64,
     },
     Duplicate {
         withdrawal_id: Vec<u8>,
@@ -312,7 +312,7 @@ pub async fn notify_withdrawal(
             }
             Err(error) => return Err(map_withdrawal_observation_error(error)),
         };
-    let (observed, snapshot, rpc_audit, stable_observation, finalized_head_block_number) =
+    let (observed, snapshot, rpc_audit, stable_observation, finalized_checkpoint_block_number) =
         match outcome {
             evm_rpc::NotifiedWithdrawalOutcome::Missing => {
                 return Err(NotifyWithdrawalError::TransactionNotFound)
@@ -328,14 +328,14 @@ pub async fn notify_withdrawal(
                 snapshot,
                 rpc_audit,
                 stable_observation,
-                finalized_head_block_number,
+                finalized_checkpoint_block_number,
                 ..
             } => (
                 withdrawal,
                 snapshot,
                 rpc_audit,
                 stable_observation,
-                finalized_head_block_number,
+                finalized_checkpoint_block_number,
             ),
         };
     let expected_signer = cached_signer_address(&config)
@@ -352,7 +352,7 @@ pub async fn notify_withdrawal(
         observed,
         transaction_hash,
         ledger_fee,
-        finalized_head_block_number,
+        finalized_checkpoint_block_number,
         *stable_observation,
         vec![
             rpc_audit_event_kind(&rpc_audit),
@@ -471,7 +471,7 @@ fn ingest_notified_withdrawal(
     observed: evm_rpc::ObservedWithdrawal,
     transaction_hash: [u8; 32],
     ledger_fee: Amount,
-    finalized_head_block_number: u64,
+    finalized_checkpoint_block_number: u64,
     stable_observation: FinalizedObservationRecord,
     rpc_audit: Vec<crate::storage::AuditEventKind>,
     notification_window_seconds: u64,
@@ -519,7 +519,7 @@ fn ingest_notified_withdrawal(
             let mut progress = store
                 .external_progress()
                 .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-            if finalized_head_block_number != stable_observation.block_number {
+            if finalized_checkpoint_block_number != stable_observation.block_number {
                 return Err(NotifyWithdrawalError::BaseStateMismatch);
             }
             progress
@@ -573,7 +573,7 @@ fn ingest_notified_withdrawal(
         let mut progress = store
             .external_progress()
             .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-        if finalized_head_block_number != stable_observation.block_number {
+        if finalized_checkpoint_block_number != stable_observation.block_number {
             return Err(NotifyWithdrawalError::BaseStateMismatch);
         }
         progress
@@ -620,7 +620,7 @@ fn ingest_notified_withdrawal(
             .map_err(notification_commit_error)?;
         Ok(NotifyWithdrawalReceipt::Ingested {
             withdrawal_id: observed.id.to_vec(),
-            finalized_head_block_number,
+            finalized_checkpoint_block_number,
         })
     })
 }

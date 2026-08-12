@@ -55,13 +55,13 @@ preflight
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
 Canister installの前にはlive `public_config` をJSONへ保存し、次のgateを必ず通す。
-現行v33のreinstallではprofileの新IDがlive IDと異なることを要求する。現行v33のupgradeでは
+現行v32のreinstallではprofileの新IDがlive IDと異なることを要求する。現行v32のupgradeでは
 `current-schema-upgrade`としてprofileとliveのinstance ID一致を要求し、upgrade前後のstate count、
-schema v33、instance ID、`storage_integrity_check = ok`を照合する。
+schema v32、instance ID、`storage_integrity_check = ok`を照合する。
 v31以下、未知schema、欠落、ゼロ値はfail closedにする。旧schemaを保持したupgradeは行わない。
-v32は、状態破棄が明示承認され、新しいdeployment instance IDがlive IDと異なり、三つのpause、
+v31は、状態破棄が明示承認され、新しいdeployment instance IDがlive IDと異なり、三つのpause、
 pending Timelockゼロ、state count snapshot、storage integrity、Ledger balanceを同じpreflightへ記録した場合に限り、
-`obsolete-schema-reinstall`としてv33へreinstallできる。install evidenceのmodeは必ず`reinstall`でなければならない。
+`obsolete-schema-reinstall`としてv32へreinstallできる。install evidenceのmodeは必ず`reinstall`でなければならない。
 出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、
 manifest検証でも同じ比較を行う。
 
@@ -79,16 +79,34 @@ preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-
 各artifactを再読し、live設定とmodule hashから比較を再計算してchecker出力および`details`と照合する。
 別のlive取得結果、手編集したchecker出力、manifest外のpathは使用しない。
 
-v33→v33 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
+v32→v32 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
 
 - `live-bridge-status`: Deposit／reservationを含むcountsと、Withdrawal、pending Ledger operation、reconciliation hold、未払額を保持する。
 - `live-activation-status`: pending Timelock operation数を保持する。
 - `live-canister-status`: module hash、controller principals、cycles balanceを保持する。
 - `live-storage-integrity`: 認可済みcallerによる`storage_integrity_check()`の`ok`結果を保持する。
 - `live-ledger-balance`: Bridge principalのTICRC1 raw balanceを保持する。
-- install stageにはupgrade前後の全count、schema v33、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
+- install stageにはupgrade前後の全count、schema v32、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
 
 manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は同一schema upgrade後も保持する。
+
+`test-deployment` Wasmに限り、TenderlyをOnFinalityへ置換する今回専用のupgrade引数を受理する。引数なしの`()`はRPC設定を変更しない。更新指定は次のCandidに固定し、PublicNode、`sepolia.base.org`、OnFinalityの順序を変えない。
+
+```candid
+(
+  record {
+    rpc_provider_update = opt record {
+      custom_evm_rpc_urls = vec {
+        "https://base-sepolia-rpc.publicnode.com";
+        "https://sepolia.base.org";
+        "https://base-sepolia.api.onfinality.io/public";
+      };
+    };
+  },
+)
+```
+
+この更新は旧digest `e9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb`から新digest `3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48`だけを許可する。新設定の同値再実行は成功するが、URL・順序・chain ID・EVM RPC Canister ID・現在digestの不一致はtrapしてupgrade全体をrollbackする。更新後もFinalized水位を保持し、runtime attestation cacheだけを無効化する。production Wasmの`post_upgrade()`は引数なしで、この更新経路を含まない。
 
 ```sh
 scripts/plan007/staging-e2e-driver.sh record /secure/work/preflight-evidence.json

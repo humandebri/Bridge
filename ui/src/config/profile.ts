@@ -101,8 +101,8 @@ const preflightProfile = {
   icHost: "https://icp-api.io",
   baseRpcUrl: "https://base-sepolia-rpc.publicnode.com",
   baseHistoryRpcUrls: [
-    "https://base-sepolia.gateway.tenderly.co",
     "https://sepolia.base.org",
+    "https://base-sepolia.api.onfinality.io/public",
   ],
   chainId: 84532,
   bridgeCanisterId: null,

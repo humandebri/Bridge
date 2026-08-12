@@ -15,7 +15,7 @@ describe("withdrawal notification presentation", () => {
   it("reports that one payout step follows a new notification", () => {
     const receipt: NotifyWithdrawalReceipt = {
       Ingested: {
-        finalized_head_block_number: 42n,
+        finalized_checkpoint_block_number: 42n,
         withdrawal_id: new Uint8Array(32),
       },
     }

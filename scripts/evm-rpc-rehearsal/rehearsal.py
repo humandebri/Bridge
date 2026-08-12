@@ -62,7 +62,7 @@ CROSS_ARTIFACT_BINDINGS = {
     "authorization_mint": {"deposit_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "authorization_digest": {"bridge", "base", "audit"}, "mint_transaction_hash": {"bridge", "base"}, "safe_block_hash": {"bridge", "base"}},
     "withdrawal_release": {"withdrawal_id": {"bridge", "base", "audit"}, "ledger_block_index": {"bridge", "ledger"}, "request_transaction_hash": {"bridge", "base"}, "finalized_block_hash": {"bridge", "base"}},
     "ledger_fee_guard": {"withdrawal_id": {"bridge", "base", "audit"}, "observed_ledger_fee": {"bridge", "ledger"}, "stop_reason": {"bridge", "audit"}, "ledger_call_performed": {"bridge", "audit"}, "withdrawals_paused": {"base", "audit"}, "finalized_block_hash": {"bridge", "base"}},
-    "canonical_receipt": {"transaction_hash": {"bridge", "base"}, "receipt_block_hash": {"bridge", "base"}, "canonical_block_hash": {"bridge", "base"}, "finalized_head_block_number": {"bridge", "base"}},
+    "canonical_receipt": {"transaction_hash": {"bridge", "base"}, "receipt_block_hash": {"bridge", "base"}, "canonical_block_hash": {"bridge", "base"}, "finalized_checkpoint_block_number": {"bridge", "base"}},
     "single_provider_failure": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "bridge_operation_continued": {"bridge", "audit"}},
     "quorum_loss": {"configured_provider_count": {"fault"}, "required_provider_threshold": {"fault"}, "injected_provider_failures": {"fault"}, "fault_injection_reference": {"fault"}, "stop_reason": {"bridge", "audit"}, "ledger_call_performed": {"bridge", "audit"}},
     "authorization_expiry": {"deposit_id": {"bridge", "base", "audit"}, "authorization_digest": {"bridge", "base", "audit"}, "finalized_block_hash": {"bridge", "base"}, "refund_ledger_block_index": {"bridge", "ledger"}},
@@ -1111,17 +1111,17 @@ def validate_details(scenario: str, details: dict[str, Any], binding: dict[str, 
     if scenario == "canonical_receipt":
         exact_keys(
             details,
-            {"transaction_hash", "receipt_block_number", "receipt_block_hash", "canonical_block_hash", "finalized_head_block_number"},
+            {"transaction_hash", "receipt_block_number", "receipt_block_hash", "canonical_block_hash", "finalized_checkpoint_block_number"},
             "canonical_receipt.details",
         )
         for field in ("transaction_hash", "receipt_block_hash", "canonical_block_hash"):
             require_hex(details, field, HEX_32)
         receipt = require_nat(details, "receipt_block_number", positive=True)
-        finalized_head = require_nat(details, "finalized_head_block_number", positive=True)
+        finalized_checkpoint = require_nat(details, "finalized_checkpoint_block_number", positive=True)
         if details["receipt_block_hash"].lower() != details["canonical_block_hash"].lower():
             fail("receipt block hash is not canonical")
-        if finalized_head < receipt:
-            fail("receipt block has not reached the Finalized head")
+        if finalized_checkpoint < receipt:
+            fail("receipt block has not reached the two-provider Finalized checkpoint")
         return
 
     if scenario == "single_provider_failure":

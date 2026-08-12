@@ -80,9 +80,8 @@ after a reload, the user explicitly refreshes History and the owner sequence bef
 Deposit.
 
 After a Base withdrawal reaches the Finalized head, the Bridge page automatically calls
-`notify_withdrawal` with the browser notification identity, without an IC wallet prompt or ICRC-21 consent call. History reconstructs Finalized burns from
-Base events and exposes `Check status` after a reload or notification failure. No
-recovery cursor is persisted in browser storage. The pending confirmation record stores
+`notify_withdrawal` once with the browser notification identity, without an IC wallet prompt or ICRC-21 consent call. A transport failure or `Busy` receives one five-second retry; other retryable failures stop automatic notification and expose `Retry IC notification` in Progress and History. `TransactionNotConfirmed` returns to Finalized-head monitoring and permits one further notification only after the head advances. History reconstructs Finalized burns from
+Base events and exposes the saved failure reason and recovery action after a reload. The v7 pending confirmation record stores
 the Base transaction hash, owner, settlement ID for deposits, and active deployment identifiers in
 `localStorage`; it is scoped to the current Bridge deployment and contains no secret. There is
 intentionally no periodic canister-side discovery fallback, so a withdrawal that is never notified

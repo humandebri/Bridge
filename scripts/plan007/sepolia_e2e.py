@@ -21,7 +21,7 @@ CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 33
+CURRENT_STABLE_SCHEMA = 32
 LIVE_PUBLIC_CONFIG_ARTIFACT_KIND = "live-public-config"
 REINSTALL_INSTANCE_CHECK_ARTIFACT_KIND = "reinstall-instance-check"
 LIVE_BRIDGE_STATUS_ARTIFACT_KIND = "live-bridge-status"
@@ -259,10 +259,10 @@ def reinstall_instance_check(
         "schema_version",
         "live PublicConfig",
     )
-    if schema_version not in {32, CURRENT_STABLE_SCHEMA}:
+    if schema_version not in {31, CURRENT_STABLE_SCHEMA}:
         fail(
             "staging install check only accepts current schema "
-            f"v{CURRENT_STABLE_SCHEMA} or explicitly discarded schema v32"
+            f"v{CURRENT_STABLE_SCHEMA} or explicitly discarded schema v31"
         )
     previous = deployment_instance_hex(
         live_public_config.get("deployment_instance_id"),
@@ -276,11 +276,11 @@ def reinstall_instance_check(
     )
     if live_module_hash == "0x" + "0" * 64:
         fail("live canister status module_hash must be nonzero")
-    if schema_version == 32 and previous == next_id:
-        fail("obsolete schema v32 reinstall requires a distinct deployment instance ID")
+    if schema_version == 31 and previous == next_id:
+        fail("obsolete schema v31 reinstall requires a distinct deployment instance ID")
     replacement_mode = (
         OBSOLETE_SCHEMA_REINSTALL
-        if schema_version == 32
+        if schema_version == 31
         else CURRENT_SCHEMA_UPGRADE
         if previous == next_id
         else CURRENT_SCHEMA_REINSTALL
@@ -322,7 +322,7 @@ def normalized_reinstall_check(value: dict[str, Any]) -> dict[str, Any]:
         else CURRENT_SCHEMA_REINSTALL
         if schema_version == CURRENT_STABLE_SCHEMA
         else OBSOLETE_SCHEMA_REINSTALL
-        if schema_version == 32 and previous != next_id
+        if schema_version == 31 and previous != next_id
         else None
     )
     if replacement_mode != expected_mode:

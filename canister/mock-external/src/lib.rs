@@ -1126,10 +1126,12 @@ fn eth_get_block_by_number(
         (BlockMode::FinalizedInconsistent, BlockTag::Finalized)
         | (BlockMode::CanonicalInconsistent, BlockTag::Number(_)) => {
             let first = mock_block(tag.clone(), false);
-            let second = mock_block(tag, true);
+            let second = mock_block(tag.clone(), true);
+            let third = mock_block(tag, false);
             MultiRpcResult::Inconsistent(vec![
                 (RpcService::Provider(1), Ok(first)),
                 (RpcService::Provider(2), Ok(second)),
+                (RpcService::Provider(3), Ok(third)),
             ])
         }
         (BlockMode::SameHeightDifferentHash, BlockTag::Number(_)) => {

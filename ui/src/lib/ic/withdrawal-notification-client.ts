@@ -129,7 +129,7 @@ export function unwrapNotifyWithdrawalResult(result: unknown): NotifyWithdrawalR
   if (!(withdrawalId instanceof Uint8Array) && !Array.isArray(withdrawalId)) {
     throw new Error("Bridge returned an invalid withdrawal ID")
   }
-  if (receiptKey === "Ingested" && typeof payloadRecord.finalized_head_block_number !== "bigint") {
+  if (receiptKey === "Ingested" && typeof payloadRecord.finalized_checkpoint_block_number !== "bigint") {
     throw new Error("Bridge returned an invalid finalized block")
   }
   return receipt as NotifyWithdrawalReceipt
@@ -175,8 +175,8 @@ export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): stri
   const key = Object.keys(error)[0]
   const messages: Record<string, string> = {
     LedgerFeeExceedsServiceFee: "Withdrawals were stopped because the ledger fee exceeded the charged service fee. Contact the bridge operator before resuming from History.",
-    RpcUnavailable: "Base RPC is unavailable. The notification will be retried while this page remains open.",
-    RpcInconsistent: "Base RPC providers disagreed. The notification will be retried while this page remains open.",
+    RpcUnavailable: "Base RPC is unavailable. Retry the IC notification when the service recovers.",
+    RpcInconsistent: "Base RPC providers disagreed. Automatic notification retries have stopped.",
     InvalidBaseResponse: "Base returned an invalid withdrawal response.",
     TransactionNotFound: "The Base withdrawal transaction was not found.",
     TransactionNotConfirmed: "The Base withdrawal transaction has not reached the finalized head yet.",
@@ -188,7 +188,7 @@ export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): stri
     StorageFailure: "The Bridge could not save the withdrawal.",
     AnonymousCaller: "The browser notification identity was not accepted.",
     Busy: "This withdrawal notification or withdrawal record is already being processed.",
-    RateLimited: "Withdrawal notifications are temporarily rate limited. The notification will be retried later.",
+    RateLimited: "Withdrawal notifications are temporarily rate limited. Retry the IC notification later.",
     InsufficientCycles: "The Bridge Canister does not have enough cycles to process this notification.",
   }
   const message = key === undefined ? undefined : messages[key]

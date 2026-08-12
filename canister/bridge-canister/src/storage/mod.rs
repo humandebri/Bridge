@@ -11,9 +11,11 @@ use admission::{
 pub use admission::{DepositAdmissionOutcome, DepositCycleAdmission, DepositQuotaAdmission};
 pub use schema::{RETIRED_STABLE_STRUCTURE_MEMORY_IDS, SCHEMA_VERSION, SQLITE_MEMORY_ID};
 use schema::{VALIDATION_TABLES, WIRE_VERSION};
+use settlement::settlement_record_key;
 pub(crate) use settlement::{fee_payout_id_from_job, fee_payout_job_id};
 pub use settlement::{
-    SettlementAdmissionError, SettlementJobKind, SettlementLeaseLane, SettlementQuotaLimits,
+    PrepaidQuota, SettlementAdmissionError, SettlementJobKind, SettlementLeaseLane,
+    SettlementQuotaLimits,
 };
 use transaction::*;
 use validation::expect_row_shape;
@@ -234,7 +236,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 33, 28);
+INSERT INTO bridge_metadata VALUES (1, 32, 28);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -369,7 +371,7 @@ const MIGRATIONS: &[Migration] = &[Migration {
 }];
 
 #[cfg(test)]
-const OBSOLETE_SCHEMA_VERSION_V32: u16 = 32;
+const OBSOLETE_SCHEMA_VERSION_V31: u16 = 31;
 #[cfg(test)]
 const OBSOLETE_WIRE_VERSION_V27: u8 = 27;
 
@@ -1330,7 +1332,6 @@ enum ManualClaimTransaction {
     RateLimited(u64),
 }
 
-#[derive(Clone, Copy)]
 pub struct ManualSettlementClaimContext {
     pub kind: SettlementJobKind,
     pub settlement_id: [u8; 32],
@@ -1338,7 +1339,80 @@ pub struct ManualSettlementClaimContext {
     pub now_ns: u64,
     pub lease_until_ns: u64,
     pub overdue_after_ns: u64,
-    pub limits: SettlementQuotaLimits,
+    quota: SettlementClaimQuota,
+}
+
+enum SettlementClaimQuota {
+    Charge(SettlementQuotaLimits),
+    Prepaid(PrepaidQuota),
+    Unmetered,
+}
+
+impl SettlementClaimQuota {
+    fn charges(&self) -> bool {
+        matches!(self, Self::Charge(_))
+    }
+
+    fn into_limits(
+        self,
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
+        caller: Principal,
+    ) -> Result<Option<SettlementQuotaLimits>, SettlementAdmissionError> {
+        match self {
+            Self::Charge(limits) => Ok(Some(limits)),
+            Self::Prepaid(prepaid) => {
+                if prepaid.consume(kind, settlement_id, caller) {
+                    Ok(None)
+                } else {
+                    Err(SettlementAdmissionError::Storage)
+                }
+            }
+            Self::Unmetered => Ok(None),
+        }
+    }
+}
+
+impl ManualSettlementClaimContext {
+    pub fn new(
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
+        caller: Principal,
+        now_ns: u64,
+        lease_until_ns: u64,
+        overdue_after_ns: u64,
+        limits: SettlementQuotaLimits,
+    ) -> Self {
+        Self {
+            kind,
+            settlement_id,
+            caller,
+            now_ns,
+            lease_until_ns,
+            overdue_after_ns,
+            quota: SettlementClaimQuota::Charge(limits),
+        }
+    }
+
+    pub fn prepaid(
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
+        caller: Principal,
+        now_ns: u64,
+        lease_until_ns: u64,
+        overdue_after_ns: u64,
+        prepaid: PrepaidQuota,
+    ) -> Self {
+        Self {
+            kind,
+            settlement_id,
+            caller,
+            now_ns,
+            lease_until_ns,
+            overdue_after_ns,
+            quota: SettlementClaimQuota::Prepaid(prepaid),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1354,9 +1428,7 @@ fn claim_settlement_job_transaction(
     lane: SettlementLeaseLane,
     admission: &mut SettlementAdmissionControl,
 ) -> Result<ManualClaimTransaction, DbError> {
-    let mut record_key = Vec::with_capacity(33);
-    record_key.push(kind.sql() as u8);
-    record_key.extend_from_slice(&settlement_id);
+    let record_key = settlement_record_key(kind, settlement_id);
 
     let target = connection.query_all(
         "SELECT status, next_run_at_ns, attempts, lease_generation, lease_until_ns, lease_lane
@@ -3539,11 +3611,13 @@ impl StableStore {
 
     pub fn reserve_settlement_quota(
         &mut self,
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
         caller: Principal,
-        record_key: Vec<u8>,
         now_ns: u64,
         limits: SettlementQuotaLimits,
-    ) -> Result<(), SettlementAdmissionError> {
+    ) -> Result<PrepaidQuota, SettlementAdmissionError> {
+        let record_key = settlement_record_key(kind, settlement_id);
         let window_ns = limits.window_seconds.saturating_mul(1_000_000_000);
         let window_id = now_ns / window_ns;
         let admission_blob = self
@@ -3622,7 +3696,7 @@ impl StableStore {
         self.settlement_admission
             .set(encode(&admission).map_err(|_| SettlementAdmissionError::Storage)?)
             .map_err(|_| SettlementAdmissionError::Storage)?;
-        Ok(())
+        Ok(PrepaidQuota::new(kind, settlement_id, caller))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3636,44 +3710,39 @@ impl StableStore {
         overdue_after_ns: u64,
         limits: SettlementQuotaLimits,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
-        let admission_blob = self
-            .settlement_admission
-            .get()
-            .map_err(|_| SettlementAdmissionError::Storage)?;
-        let mut admission = decode::<SettlementAdmissionControl>(&admission_blob)
-            .map_err(|_| SettlementAdmissionError::Storage)?;
-        let context = ManualSettlementClaimContext {
+        self.claim_settlement_job_with_mode(
             kind,
             settlement_id,
             caller,
             now_ns,
             lease_until_ns,
             overdue_after_ns,
-            limits,
-        };
-        let outcome = self
-            .handle
-            .update_effect(|connection| {
-                let outcome = claim_settlement_job_transaction(
-                    connection,
-                    context.kind,
-                    context.settlement_id,
-                    context.caller,
-                    context.now_ns,
-                    context.lease_until_ns,
-                    context.overdue_after_ns,
-                    Some(context.limits),
-                    SettlementLeaseLane::PublicManual,
-                    &mut admission,
-                )?;
-                Ok(if matches!(outcome, ManualClaimTransaction::Claimed(_)) {
-                    TransactionEffect::Changed(outcome)
-                } else {
-                    TransactionEffect::Unchanged(outcome)
-                })
-            })
-            .map_err(|_| SettlementAdmissionError::Storage)?;
-        Self::manual_claim_outcome(outcome)
+            SettlementClaimQuota::Charge(limits),
+            SettlementLeaseLane::PublicManual,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_prepaid_manual_settlement_job(
+        &mut self,
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
+        caller: Principal,
+        now_ns: u64,
+        lease_until_ns: u64,
+        overdue_after_ns: u64,
+        prepaid: PrepaidQuota,
+    ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
+        self.claim_settlement_job_with_mode(
+            kind,
+            settlement_id,
+            caller,
+            now_ns,
+            lease_until_ns,
+            overdue_after_ns,
+            SettlementClaimQuota::Prepaid(prepaid),
+            SettlementLeaseLane::PublicManual,
+        )
     }
 
     fn manual_claim_outcome(
@@ -3710,7 +3779,7 @@ impl StableStore {
             now_ns,
             lease_until_ns,
             overdue_after_ns,
-            None,
+            SettlementClaimQuota::Unmetered,
             SettlementLeaseLane::GovernanceRecovery,
         )
     }
@@ -3723,9 +3792,10 @@ impl StableStore {
         now_ns: u64,
         lease_until_ns: u64,
         overdue_after_ns: u64,
-        limits: Option<SettlementQuotaLimits>,
+        quota: SettlementClaimQuota,
         lane: SettlementLeaseLane,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
+        let limits = quota.into_limits(kind, settlement_id, caller)?;
         let mut admission = if limits.is_some() {
             let admission_blob = self
                 .settlement_admission
@@ -5033,6 +5103,18 @@ impl StableStore {
         }
     }
 
+    #[cfg(feature = "test-deployment")]
+    pub fn apply_staging_rpc_replacement(
+        &mut self,
+        value: &BridgeInitArgs,
+    ) -> Result<(), StorageError> {
+        let next = ImmutableBridgeConfig::from_init(value);
+        self.config.set(encode(&Some(next))?)?;
+        let mut progress = self.external_progress()?;
+        progress.finalized_observation = None;
+        self.set_external_progress(&progress)
+    }
+
     pub fn initialize_admin(&mut self, config: &BridgeInitArgs) -> Result<(), StorageError> {
         if decode::<Option<AdminState>>(&self.admin_state.get()?)?.is_some() {
             return Ok(());
@@ -6055,19 +6137,23 @@ impl StableStore {
             .map(|deadline| deposit_authorization_deadline_index_key(deadline, value.id.bytes()))
             .transpose()?;
         let previous_blob = previous_stored.as_ref().map(encode).transpose()?;
-        let mut settlement_admission = manual_claim
-            .map(|_| {
-                self.settlement_admission
-                    .get()
-                    .map_err(|_| StorageError::DatabaseFailure)
-                    .and_then(|blob| decode::<SettlementAdmissionControl>(&blob))
-            })
-            .transpose()?;
+        let mut settlement_admission = if manual_claim
+            .as_ref()
+            .is_some_and(|context| context.quota.charges())
+        {
+            self.settlement_admission
+                .get()
+                .map_err(|_| StorageError::DatabaseFailure)
+                .and_then(|blob| decode::<SettlementAdmissionControl>(&blob))?
+        } else {
+            SettlementAdmissionControl::default()
+        };
         let claim_outcome = self.handle.update_effect(|connection| {
             let claim_outcome = if let Some(context) = manual_claim {
-                let admission = settlement_admission
-                    .as_mut()
-                    .ok_or_else(|| DbError::Constraint("missing settlement admission".into()))?;
+                let limits = context
+                    .quota
+                    .into_limits(context.kind, context.settlement_id, context.caller)
+                    .map_err(|_| DbError::Constraint("invalid prepaid settlement quota".into()))?;
                 let outcome = claim_settlement_job_transaction(
                     connection,
                     context.kind,
@@ -6076,9 +6162,9 @@ impl StableStore {
                     context.now_ns,
                     context.lease_until_ns,
                     context.overdue_after_ns,
-                    Some(context.limits),
+                    limits,
                     SettlementLeaseLane::PublicManual,
-                    admission,
+                    &mut settlement_admission,
                 )?;
                 if !matches!(outcome, ManualClaimTransaction::Claimed(_)) {
                     return Ok(TransactionEffect::Unchanged(Some(outcome)));
@@ -10802,7 +10888,7 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 33);
+        assert_eq!(SCHEMA_VERSION, 32);
         assert_eq!(WIRE_VERSION, 28);
     }
 
@@ -10896,17 +10982,186 @@ mod tests {
 
     #[test]
     #[serial]
-    fn obsolete_v32_schema_fails_closed_even_when_empty() {
+    fn obsolete_v31_schema_fails_closed_even_when_empty() {
         let memory = VectorMemory::default();
         let store = StableStore::init(memory.clone()).expect("initialize current schema");
-        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V32);
+        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V31);
         drop(store);
 
         assert!(matches!(
             StableStore::reopen_after_upgrade(memory),
             Err(StorageError::UnsupportedSchemaVersion(version))
-                if version == OBSOLETE_SCHEMA_VERSION_V32
+                if version == OBSOLETE_SCHEMA_VERSION_V31
         ));
+    }
+
+    #[test]
+    #[serial]
+    fn live_v32_cbor_with_retired_fields_reopens_config_progress_deposit_and_audit() {
+        #[derive(Serialize)]
+        struct LiveV32ImmutableConfig<'a> {
+            #[serde(flatten)]
+            current: &'a ImmutableBridgeConfig,
+            governance_eth_floor_wei: u128,
+        }
+
+        #[derive(Serialize)]
+        struct LiveV32ExternalProgress<'a> {
+            #[serde(flatten)]
+            current: &'a ExternalProgress,
+            last_eth_balance_wei: u128,
+            reserve_sufficient: bool,
+            reserve_observation_generation: u64,
+            last_reserve_observation_ns: u64,
+        }
+
+        let memory = VectorMemory::default();
+        let expected_config = config();
+        let mut store = StableStore::init_configured(memory.clone(), &expected_config)
+            .expect("initialize live v32 fixture");
+        let expected_deposit = deposit();
+        store
+            .put_deposit(&expected_deposit)
+            .expect("persist fixture deposit");
+        store
+            .append_audit_event_at(
+                Principal::self_authenticating([8; 32]),
+                AuditEventKind::DepositsPaused,
+                1_000,
+            )
+            .expect("persist fixture audit");
+        let expected_progress = ExternalProgress {
+            last_finalized_base_block: 45_155_198,
+            last_finalized_observation_ns: 1_786_080_004_911_993_512,
+            finalized_observation: Some(bridge_core::FinalizedObservationRecord {
+                chain_id: 84_532,
+                block_number: 45_155_198,
+                block_hash: [0x77; 32],
+                observed_at_ns: 1_786_080_004_911_993_512,
+                bridge_signer: [0x0b; 20],
+                runtime_sha256: [0x93; 32],
+            }),
+        };
+        let immutable = ImmutableBridgeConfig::from_init(&expected_config);
+        let config_blob = encode(&Some(LiveV32ImmutableConfig {
+            current: &immutable,
+            governance_eth_floor_wei: 10_000_000_000_000_000,
+        }))
+        .expect("encode live v32 config");
+        let progress_blob = encode(&LiveV32ExternalProgress {
+            current: &expected_progress,
+            last_eth_balance_wei: 19_433_605_485_256_720,
+            reserve_sufficient: true,
+            reserve_observation_generation: 7,
+            last_reserve_observation_ns: 1_785_920_381_347_296_085,
+        })
+        .expect("encode live v32 progress");
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET config = ?1, external_progress = ?2 WHERE id = 1",
+                    params![config_blob.to_sql_bytes(), progress_blob.to_sql_bytes()],
+                )
+            })
+            .expect("install live v32 CBOR fixture");
+        drop(store);
+
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("reopen live v32 fixture");
+        assert_eq!(reopened.config().expect("config"), Some(expected_config));
+        assert_eq!(
+            reopened.external_progress().expect("external progress"),
+            expected_progress
+        );
+        assert_eq!(
+            reopened
+                .deposit(expected_deposit.id.bytes())
+                .expect("deposit"),
+            Some(expected_deposit)
+        );
+        assert_eq!(
+            reopened
+                .status_counts()
+                .expect("counts")
+                .retained_audit_events,
+            1
+        );
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn staging_rpc_replacement_preserves_state_and_invalidates_runtime_attestation() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.base_chain_id = crate::config::BASE_SEPOLIA_CHAIN_ID;
+        initial.evm_rpc_canister_id = crate::config::official_evm_rpc_canister_id();
+        initial.custom_evm_rpc_urls = crate::config::STAGING_OLD_RPC_URLS
+            .map(str::to_owned)
+            .to_vec();
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize staging state");
+        let expected_deposit = deposit();
+        store
+            .put_deposit(&expected_deposit)
+            .expect("persist staging deposit");
+        store
+            .append_audit_event_at(
+                Principal::self_authenticating([8; 32]),
+                AuditEventKind::DepositsPaused,
+                1_000,
+            )
+            .expect("persist staging audit");
+        let progress = ExternalProgress {
+            last_finalized_base_block: 100,
+            last_finalized_observation_ns: 200,
+            finalized_observation: Some(bridge_core::FinalizedObservationRecord {
+                chain_id: crate::config::BASE_SEPOLIA_CHAIN_ID,
+                block_number: 100,
+                block_hash: [1; 32],
+                observed_at_ns: 200,
+                bridge_signer: [2; 20],
+                runtime_sha256: [3; 32],
+            }),
+        };
+        store
+            .set_external_progress(&progress)
+            .expect("cache runtime attestation");
+        let counts_before = store.status_counts().expect("counts before");
+        let instance_before = initial.deployment_instance_id.clone();
+        let requested = crate::config::STAGING_NEW_RPC_URLS
+            .map(str::to_owned)
+            .to_vec();
+        let next = initial
+            .staging_rpc_replacement(&requested)
+            .expect("reviewed replacement")
+            .expect("replacement changes config");
+        store
+            .apply_staging_rpc_replacement(&next)
+            .expect("apply replacement");
+        drop(store);
+
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("reopen staging state");
+        let updated = reopened.config().expect("config").expect("configured");
+        assert_eq!(updated.custom_evm_rpc_urls, requested);
+        assert_eq!(updated.deployment_instance_id, instance_before);
+        assert_eq!(
+            reopened.status_counts().expect("counts after"),
+            counts_before
+        );
+        assert_eq!(
+            reopened
+                .deposit(expected_deposit.id.bytes())
+                .expect("deposit"),
+            Some(expected_deposit)
+        );
+        assert_eq!(
+            reopened.external_progress().expect("progress"),
+            ExternalProgress {
+                finalized_observation: None,
+                ..progress
+            }
+        );
     }
 
     #[test]
@@ -12256,15 +12511,15 @@ mod tests {
                 )
             })
             .expect("scheduled automatic job");
-        let context = ManualSettlementClaimContext {
-            kind: SettlementJobKind::Deposit,
-            settlement_id: before.id.bytes(),
+        let context = ManualSettlementClaimContext::new(
+            SettlementJobKind::Deposit,
+            before.id.bytes(),
             caller,
-            now_ns: 0,
-            lease_until_ns: 120,
-            overdue_after_ns: 300,
+            0,
+            120,
+            300,
             limits,
-        };
+        );
         let revision_before = storage_revision(&store);
         assert!(matches!(
             store
@@ -12326,20 +12581,21 @@ mod tests {
                 expiry_evidence: None,
             })
             .expect("prepare refund");
-        let context = ManualSettlementClaimContext {
-            kind: SettlementJobKind::Deposit,
-            settlement_id: record.id.bytes(),
-            caller: Principal::self_authenticating([93; 32]),
-            now_ns: 2,
-            lease_until_ns: 122,
-            overdue_after_ns: 300,
-            limits: SettlementQuotaLimits {
+        let settlement_id = record.id.bytes();
+        let context = ManualSettlementClaimContext::new(
+            SettlementJobKind::Deposit,
+            settlement_id,
+            Principal::self_authenticating([93; 32]),
+            2,
+            122,
+            300,
+            SettlementQuotaLimits {
                 window_seconds: 60,
                 global: 10,
                 per_principal: 10,
                 per_record: 10,
             },
-        };
+        );
         let revision_before = storage_revision(&store);
         let ManualSettlementClaim::Claimed(job) = store
             .put_deposit_transition_and_claim_manual_job(&record, transition, context)
@@ -12375,7 +12631,7 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .settlement_job(SettlementJobKind::Deposit, context.settlement_id)
+                .settlement_job(SettlementJobKind::Deposit, settlement_id)
                 .expect("reopened job"),
             Some(job)
         );
@@ -12425,20 +12681,21 @@ mod tests {
                     expiry_evidence: None,
                 })
                 .expect("prepare refund");
-            let context = ManualSettlementClaimContext {
-                kind: SettlementJobKind::Deposit,
-                settlement_id: before.id.bytes(),
-                caller: Principal::self_authenticating([92; 32]),
-                now_ns: 1,
-                lease_until_ns: 121,
-                overdue_after_ns: 300,
-                limits: SettlementQuotaLimits {
+            let settlement_id = before.id.bytes();
+            let context = ManualSettlementClaimContext::new(
+                SettlementJobKind::Deposit,
+                settlement_id,
+                Principal::self_authenticating([92; 32]),
+                1,
+                121,
+                300,
+                SettlementQuotaLimits {
                     window_seconds: 60,
                     global: 10,
                     per_principal: 10,
                     per_record: 10,
                 },
-            };
+            );
             let revision_before = storage_revision(&store);
             set_record_write_failpoint(Some(failpoint));
             assert!(store
@@ -12451,7 +12708,7 @@ mod tests {
                 Some(before.clone())
             );
             assert!(store
-                .settlement_job(SettlementJobKind::Deposit, context.settlement_id)
+                .settlement_job(SettlementJobKind::Deposit, settlement_id)
                 .expect("job")
                 .is_none());
             let admission = decode::<SettlementAdmissionControl>(
@@ -12469,7 +12726,7 @@ mod tests {
                 "{failpoint:?}"
             );
             assert!(reopened
-                .settlement_job(SettlementJobKind::Deposit, context.settlement_id)
+                .settlement_job(SettlementJobKind::Deposit, settlement_id)
                 .expect("reopened job")
                 .is_none());
             assert_eq!(
@@ -12707,6 +12964,8 @@ mod tests {
     fn settlement_quota_enforces_each_boundary_and_resets_window() {
         let caller = Principal::self_authenticating([41; 32]);
         let other = Principal::self_authenticating([42; 32]);
+        let first_id = [1; 32];
+        let second_id = [2; 32];
         let limits = |global, per_principal, per_record| SettlementQuotaLimits {
             window_seconds: 60,
             global,
@@ -12716,33 +12975,174 @@ mod tests {
 
         let mut per_record = StableStore::init(VectorMemory::default()).expect("record store");
         per_record
-            .reserve_settlement_quota(caller, vec![1], 1, limits(10, 10, 1))
+            .reserve_settlement_quota(
+                SettlementJobKind::Deposit,
+                first_id,
+                caller,
+                1,
+                limits(10, 10, 1),
+            )
             .expect("first record attempt");
         assert!(matches!(
-            per_record.reserve_settlement_quota(caller, vec![1], 2, limits(10, 10, 1)),
+            per_record.reserve_settlement_quota(
+                SettlementJobKind::Deposit,
+                first_id,
+                caller,
+                2,
+                limits(10, 10, 1),
+            ),
             Err(SettlementAdmissionError::RateLimited { .. })
         ));
 
         let mut per_caller = StableStore::init(VectorMemory::default()).expect("caller store");
         per_caller
-            .reserve_settlement_quota(caller, vec![1], 1, limits(10, 1, 10))
+            .reserve_settlement_quota(
+                SettlementJobKind::Deposit,
+                first_id,
+                caller,
+                1,
+                limits(10, 1, 10),
+            )
             .expect("first caller attempt");
         assert!(matches!(
-            per_caller.reserve_settlement_quota(caller, vec![2], 2, limits(10, 1, 10)),
+            per_caller.reserve_settlement_quota(
+                SettlementJobKind::Deposit,
+                second_id,
+                caller,
+                2,
+                limits(10, 1, 10),
+            ),
             Err(SettlementAdmissionError::RateLimited { .. })
         ));
 
         let mut global = StableStore::init(VectorMemory::default()).expect("global store");
         global
-            .reserve_settlement_quota(caller, vec![1], 1, limits(1, 1, 1))
+            .reserve_settlement_quota(
+                SettlementJobKind::Deposit,
+                first_id,
+                caller,
+                1,
+                limits(1, 1, 1),
+            )
             .expect("first global attempt");
         assert!(matches!(
-            global.reserve_settlement_quota(other, vec![2], 2, limits(1, 1, 1)),
+            global.reserve_settlement_quota(
+                SettlementJobKind::Deposit,
+                second_id,
+                other,
+                2,
+                limits(1, 1, 1),
+            ),
             Err(SettlementAdmissionError::RateLimited { .. })
         ));
         global
-            .reserve_settlement_quota(other, vec![2], 60_000_000_000, limits(1, 1, 1))
+            .reserve_settlement_quota(
+                SettlementJobKind::Deposit,
+                second_id,
+                other,
+                60_000_000_000,
+                limits(1, 1, 1),
+            )
             .expect("new window resets all quotas");
+    }
+
+    #[test]
+    #[serial]
+    fn prepaid_settlement_quota_is_consumed_once_and_survives_reopen() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        let caller = Principal::self_authenticating([43; 32]);
+        let settlement_id = [7; 32];
+        let limits = SettlementQuotaLimits {
+            window_seconds: 60,
+            global: 1,
+            per_principal: 1,
+            per_record: 1,
+        };
+        let prepaid = store
+            .reserve_settlement_quota(SettlementJobKind::Deposit, settlement_id, caller, 1, limits)
+            .expect("prepay settlement quota");
+
+        assert!(matches!(
+            store
+                .claim_prepaid_manual_settlement_job(
+                    SettlementJobKind::Deposit,
+                    settlement_id,
+                    caller,
+                    2,
+                    122,
+                    300,
+                    prepaid,
+                )
+                .expect("claim with prepaid quota"),
+            ManualSettlementClaim::Claimed(_)
+        ));
+        let admission = decode::<SettlementAdmissionControl>(
+            &store.settlement_admission.get().expect("admission"),
+        )
+        .expect("decode admission");
+        assert_eq!(admission.global_count, 1);
+        assert_eq!(admission.caller_counts[0].count, 1);
+        assert_eq!(admission.record_counts[0].count, 1);
+
+        drop(store);
+        let mut reopened = StableStore::reopen(memory).expect("reopen prepaid quota");
+        let reopened_admission = decode::<SettlementAdmissionControl>(
+            &reopened
+                .settlement_admission
+                .get()
+                .expect("reopened admission"),
+        )
+        .expect("decode reopened admission");
+        assert_eq!(reopened_admission, admission);
+        assert!(matches!(
+            reopened.reserve_settlement_quota(
+                SettlementJobKind::Deposit,
+                [8; 32],
+                Principal::self_authenticating([44; 32]),
+                3,
+                limits,
+            ),
+            Err(SettlementAdmissionError::RateLimited { .. })
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn prepaid_settlement_quota_rejects_a_different_claim_target() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        let caller = Principal::self_authenticating([45; 32]);
+        let prepaid = store
+            .reserve_settlement_quota(
+                SettlementJobKind::Deposit,
+                [9; 32],
+                caller,
+                1,
+                SettlementQuotaLimits {
+                    window_seconds: 60,
+                    global: 10,
+                    per_principal: 10,
+                    per_record: 10,
+                },
+            )
+            .expect("prepay settlement quota");
+
+        assert_eq!(
+            store.claim_prepaid_manual_settlement_job(
+                SettlementJobKind::Deposit,
+                [10; 32],
+                caller,
+                2,
+                122,
+                300,
+                prepaid,
+            ),
+            Err(SettlementAdmissionError::Storage)
+        );
+        assert!(store
+            .settlement_job(SettlementJobKind::Deposit, [10; 32])
+            .expect("mismatched job lookup")
+            .is_none());
     }
 
     #[test]

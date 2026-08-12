@@ -33,7 +33,7 @@ Verus/Rust/LLVM、Lean kernel、Solidity SMTChecker、Wasm compilerはtrusted co
 
 Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_step_preserves_safe`が受理された各生遷移について安全性を直接証明し、有限trace定理はそのlemmaから帰納する。canonical・Ledger certificateは対象identityを含むが、その履歴やRPC情報の真正性は外部仮定である。
 
-schema v33再オープンとwire v28をRust transaction testとsame-Wasm PocketIC testで検証する。migration、dual-read、fallbackは提供せず、v32以下・未知schema・未知wireはfail closedにする。
+schema v32再オープンとwire v28をRust transaction testとsame-Wasm PocketIC testで検証する。migration、dual-read、fallbackは提供せず、v31以下・未知schema・未知wireはfail closedにする。
 
 ## Release proof gate
 
