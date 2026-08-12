@@ -165,6 +165,7 @@ run_no_automatic_execution_guards() {
     --glob '!browser-lock.test.ts' \
     --glob '!settlement-confirmation-coordinator.tsx' \
     --glob '!settlement-confirmation-coordinator.test.tsx' \
+    --glob '!settlement-confirmation-recovery.test.tsx' \
     --glob '!risk-acknowledgement.tsx' \
     --glob '!risk-acknowledgement.test.tsx'; then
     echo "browser storage is used outside the reviewed recovery modules" >&2
