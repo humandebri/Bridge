@@ -35,14 +35,36 @@ assert.deepEqual(
     next: previousHex,
   },
 )
-for (const schemaVersion of [31, 30, 29, 33]) {
+assert.deepEqual(
+  verifyReinstallInstance(
+    { deploymentInstanceId: nextHex },
+    { schema_version: 31, deployment_instance_id: previousBytes },
+    currentStatus,
+  ),
+  {
+    replacement_mode: "obsolete-schema-reinstall",
+    live_schema_version: 31,
+    previous_deployment_instance_id: previousHex,
+    live_module_hash: currentStatus.module_hash,
+    next: nextHex,
+  },
+)
+assert.throws(
+  () => verifyReinstallInstance(
+    { deploymentInstanceId: previousHex },
+    { schema_version: 31, deployment_instance_id: previousBytes },
+    currentStatus,
+  ),
+  /distinct deployment instance/,
+)
+for (const schemaVersion of [30, 29, 33]) {
   assert.throws(
     () => verifyReinstallInstance(
       { deploymentInstanceId: nextHex },
       { schema_version: schemaVersion, deployment_instance_id: previousBytes },
       currentStatus,
     ),
-    /only accepts current schema v32/,
+    /only accepts current schema v32 or explicitly discarded schema v31/,
   )
 }
 assert.throws(

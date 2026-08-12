@@ -31,6 +31,7 @@ LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND = "live-storage-integrity"
 LIVE_LEDGER_BALANCE_ARTIFACT_KIND = "live-ledger-balance"
 CURRENT_SCHEMA_REINSTALL = "current-schema-reinstall"
 CURRENT_SCHEMA_UPGRADE = "current-schema-upgrade"
+OBSOLETE_SCHEMA_REINSTALL = "obsolete-schema-reinstall"
 UPGRADE_STATE_COUNT_FIELDS = {
     "deposits",
     "withdrawals",
@@ -258,10 +259,10 @@ def reinstall_instance_check(
         "schema_version",
         "live PublicConfig",
     )
-    if schema_version != CURRENT_STABLE_SCHEMA:
+    if schema_version not in {31, CURRENT_STABLE_SCHEMA}:
         fail(
             "staging install check only accepts current schema "
-            f"v{CURRENT_STABLE_SCHEMA}"
+            f"v{CURRENT_STABLE_SCHEMA} or explicitly discarded schema v31"
         )
     previous = deployment_instance_hex(
         live_public_config.get("deployment_instance_id"),
@@ -275,8 +276,12 @@ def reinstall_instance_check(
     )
     if live_module_hash == "0x" + "0" * 64:
         fail("live canister status module_hash must be nonzero")
+    if schema_version == 31 and previous == next_id:
+        fail("obsolete schema v31 reinstall requires a distinct deployment instance ID")
     replacement_mode = (
-        CURRENT_SCHEMA_UPGRADE
+        OBSOLETE_SCHEMA_REINSTALL
+        if schema_version == 31
+        else CURRENT_SCHEMA_UPGRADE
         if previous == next_id
         else CURRENT_SCHEMA_REINSTALL
     )
@@ -316,6 +321,8 @@ def normalized_reinstall_check(value: dict[str, Any]) -> dict[str, Any]:
         if schema_version == CURRENT_STABLE_SCHEMA and previous == next_id
         else CURRENT_SCHEMA_REINSTALL
         if schema_version == CURRENT_STABLE_SCHEMA
+        else OBSOLETE_SCHEMA_REINSTALL
+        if schema_version == 31 and previous != next_id
         else None
     )
     if replacement_mode != expected_mode:
@@ -696,7 +703,10 @@ def validate_preflight(
     )
     if summary_check != expected_check:
         fail("preflight summary does not match the verified reinstall instance check")
-    if expected_check["replacement_mode"] == CURRENT_SCHEMA_UPGRADE:
+    if expected_check["replacement_mode"] in {
+        CURRENT_SCHEMA_UPGRADE,
+        OBSOLETE_SCHEMA_REINSTALL,
+    }:
         validate_upgrade_snapshots(artifacts, manifest_path)
         if (
             live_canister_status["controller_principals"]
@@ -1167,6 +1177,15 @@ def validate_manifest(manifest: dict[str, Any], path: Path, *, require_complete:
             fail("manifest cannot skip an earlier stage")
         validate_stage(stage, evidence, path, binding, verify_files)
         completed.append(stage)
+    preflight = stages["preflight"]
+    install = stages["install"]
+    if preflight is not None and install is not None:
+        replacement_mode = preflight["details"]["replacement_mode"]
+        expected_install_mode = (
+            "upgrade" if replacement_mode == CURRENT_SCHEMA_UPGRADE else "reinstall"
+        )
+        if install["details"]["install_mode"] != expected_install_mode:
+            fail("install mode does not match the preflight replacement mode")
     expected_state = manifest_state(completed)
     expected_complete = len(completed) == len(STAGES)
     if manifest["state"] != expected_state or manifest["complete"] is not expected_complete:
@@ -1292,6 +1311,13 @@ def record(manifest_path: Path, evidence_path: Path) -> None:
     if stage != expected:
         fail(f"expected stage {expected}, received {stage}")
     validate_stage(stage, evidence, manifest_path, validate_binding(manifest["binding"]), verify_files=True)
+    if stage == "install":
+        replacement_mode = manifest["stages"]["preflight"]["details"]["replacement_mode"]
+        expected_install_mode = (
+            "upgrade" if replacement_mode == CURRENT_SCHEMA_UPGRADE else "reinstall"
+        )
+        if evidence["details"]["install_mode"] != expected_install_mode:
+            fail("install mode does not match the preflight replacement mode")
     manifest["stages"][stage] = evidence
     manifest["updated_at"] = now()
     next_stage = next((name for name in STAGES if manifest["stages"][name] is None), None)

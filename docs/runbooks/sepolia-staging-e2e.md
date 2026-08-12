@@ -58,7 +58,10 @@ Canister installの前にはlive `public_config` をJSONへ保存し、次のgat
 現行v32のreinstallではprofileの新IDがlive IDと異なることを要求する。現行v32のupgradeでは
 `current-schema-upgrade`としてprofileとliveのinstance ID一致を要求し、upgrade前後のstate count、
 schema v32、instance ID、`storage_integrity_check = ok`を照合する。
-v31以下、未知schema、欠落、ゼロ値はfail closedにする。旧schemaを保持したupgradeは行わず、必要なら明示承認されたreinstall手順を別途作成する。
+v30以下、未知schema、欠落、ゼロ値はfail closedにする。旧schemaを保持したupgradeは行わない。
+v31は、状態破棄が明示承認され、新しいdeployment instance IDがlive IDと異なり、三つのpause、
+pending Timelockゼロ、state count snapshot、storage integrity、Ledger balanceを同じpreflightへ記録した場合に限り、
+`obsolete-schema-reinstall`としてv32へreinstallできる。install evidenceのmodeは必ず`reinstall`でなければならない。
 出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、
 manifest検証でも同じ比較を行う。
 

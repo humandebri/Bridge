@@ -328,6 +328,27 @@ class SepoliaE2ETests(unittest.TestCase):
         self.add_upgrade_snapshots(artifacts)
         return artifacts
 
+    def obsolete_v31_reinstall_artifacts(self) -> list[dict[str, str]]:
+        live = {
+            "schema_version": 31,
+            "deployment_instance_id": [17] * 32,
+        }
+        check = {
+            "replacement_mode": "obsolete-schema-reinstall",
+            "live_schema_version": 31,
+            "previous_deployment_instance_id": TX,
+            "live_module_hash": TX,
+            "next": PROFILE_INSTANCE,
+        }
+        status = {
+            "module_hash": TX,
+            "controller_principals": ["aaaaa-aa"],
+            "cycles_balance": 1,
+        }
+        artifacts = self.reinstall_artifacts(live, check, status)
+        self.add_upgrade_snapshots(artifacts)
+        return artifacts
+
     def details(self, stage: str) -> dict[str, object]:
         if stage == "preflight":
             return {
@@ -573,6 +594,7 @@ class SepoliaE2ETests(unittest.TestCase):
         schema_text = schema_path.read_text(encoding="utf-8")
         self.assertNotIn("obsolete-state-disposition", schema_text)
         self.assertIn("current-schema-upgrade", schema_text)
+        self.assertIn("obsolete-schema-reinstall", schema_text)
         self.assertNotIn("obsolete-schema-upgrade", schema_text)
         self.assertNotIn("obsolete-pause-evidence", schema_text)
 
@@ -635,6 +657,44 @@ class SepoliaE2ETests(unittest.TestCase):
                         missing,
                         self.manifest,
                     )
+
+    def test_explicit_v31_reinstall_requires_distinct_instance_and_discard_snapshots(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        details = self.details("preflight")
+        details.update(
+            {
+                "replacement_mode": "obsolete-schema-reinstall",
+                "live_schema_version": 31,
+                "previous_deployment_instance_id": TX,
+            }
+        )
+        artifacts = self.obsolete_v31_reinstall_artifacts()
+        sepolia_e2e.validate_preflight(details, binding, artifacts, self.manifest)
+        for kind in (
+            sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
+            sepolia_e2e.LIVE_ACTIVATION_STATUS_ARTIFACT_KIND,
+            sepolia_e2e.LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND,
+            sepolia_e2e.LIVE_LEDGER_BALANCE_ARTIFACT_KIND,
+        ):
+            with self.subTest(kind=kind):
+                missing = [artifact for artifact in artifacts if artifact["kind"] != kind]
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exactly one"):
+                    sepolia_e2e.validate_preflight(
+                        details,
+                        binding,
+                        missing,
+                        self.manifest,
+                    )
+
+    def test_install_mode_must_match_preflight_replacement_mode(self) -> None:
+        sepolia_e2e.record(self.manifest, self.evidence("preflight"))
+        sepolia_e2e.record(self.manifest, self.evidence("contracts"))
+        install_evidence = json.loads(self.evidence("install").read_text(encoding="utf-8"))
+        install_evidence["details"]["install_mode"] = "install"
+        path = self.root / "invalid-install-evidence.json"
+        path.write_text(json.dumps(install_evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not match"):
+            sepolia_e2e.record(self.manifest, path)
 
     def test_preflight_requires_unique_reinstall_artifacts(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]

@@ -177,7 +177,9 @@
                   "details": {
                     "type": "object",
                     "properties": {
-                      "replacement_mode": { "const": "current-schema-upgrade" }
+                      "replacement_mode": {
+                        "enum": ["current-schema-upgrade", "obsolete-schema-reinstall"]
+                      }
                     },
                     "required": ["replacement_mode"]
                   }
