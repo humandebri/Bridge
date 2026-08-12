@@ -4,6 +4,7 @@
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -121,6 +122,7 @@ class CiModeTests(unittest.TestCase):
                 text=True,
             )
 
+    @unittest.skipUnless(shutil.which("rg"), "rg is installed after trusted classification")
     def test_threshold_signing_guard_allows_the_transition_from_zero_to_one_call(self) -> None:
         zero_calls = self.run_automatic_execution_guard("fn signer() {}\n")
         self.assertEqual(zero_calls.returncode, 0, zero_calls.stderr)
@@ -130,6 +132,7 @@ class CiModeTests(unittest.TestCase):
         )
         self.assertEqual(reviewed_call.returncode, 0, reviewed_call.stderr)
 
+    @unittest.skipUnless(shutil.which("rg"), "rg is installed after trusted classification")
     def test_threshold_signing_guard_rejects_unreviewed_unbounded_calls(self) -> None:
         cases = {
             "multiple": (
