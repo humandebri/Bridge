@@ -135,10 +135,15 @@ run_versions() {
 }
 
 run_no_automatic_execution_guards() {
-  if rg -n '\b(unbounded_wait|set_timer_interval|heartbeat)\b' \
+  if rg -n '\b(set_timer_interval|heartbeat)\b' \
+    "$ROOT/canister/bridge-canister/src"; then
+    echo "recurring canister execution path found" >&2
+    return 1
+  fi
+  if rg -n '\bunbounded_wait\b' \
     "$ROOT/canister/bridge-canister/src" \
     --glob '!signer.rs'; then
-    echo "unbounded or recurring canister execution path found" >&2
+    echo "unbounded canister execution path found" >&2
     return 1
   fi
   local signer_unbounded_count

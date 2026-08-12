@@ -149,6 +149,14 @@ class CiModeTests(unittest.TestCase):
                 "fn signer() {}\n",
                 'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa")\n',
             ),
+            "signer heartbeat": (
+                "fn heartbeat() {}\n",
+                "",
+            ),
+            "signer recurring timer": (
+                "fn signer() { set_timer_interval(); }\n",
+                "",
+            ),
         }
         for name, (signer_source, additional_source) in cases.items():
             with self.subTest(name=name):
