@@ -135,9 +135,30 @@ run_versions() {
 }
 
 run_no_automatic_execution_guards() {
-  if rg -n '\b(unbounded_wait|set_timer_interval|heartbeat)\b' \
+  if rg -n '\b(set_timer_interval|heartbeat)\b' \
     "$ROOT/canister/bridge-canister/src"; then
-    echo "unbounded or recurring canister execution path found" >&2
+    echo "recurring canister execution path found" >&2
+    return 1
+  fi
+  if rg -n '\bunbounded_wait\b' \
+    "$ROOT/canister/bridge-canister/src" \
+    --glob '!signer.rs'; then
+    echo "unbounded canister execution path found" >&2
+    return 1
+  fi
+  local signer_unbounded_count
+  signer_unbounded_count="$(
+    rg -o '\bunbounded_wait\b' "$ROOT/canister/bridge-canister/src/signer.rs" \
+      | wc -l \
+      | tr -d ' ' \
+      || true
+  )"
+  if [[ "$signer_unbounded_count" != "0" ]] \
+    && { [[ "$signer_unbounded_count" != "1" ]] \
+      || ! rg -q \
+        '^[[:space:]]*Call::unbounded_wait\(Principal::management_canister\(\), "sign_with_ecdsa"\)[[:space:]]*$' \
+        "$ROOT/canister/bridge-canister/src/signer.rs"; }; then
+    echo "threshold signing may contain only the reviewed unbounded management call" >&2
     return 1
   fi
   if rg -n '\bset_timer\b' \
