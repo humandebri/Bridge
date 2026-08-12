@@ -73,7 +73,9 @@ pub enum BaseGovernanceError {
         observed_wei: u128,
         required_wei: u128,
     },
-    SigningUnavailable,
+    SigningUnavailable {
+        class: signer::SigningFailureClass,
+    },
     TransactionNotFinalized {
         operation_id: u64,
     },
@@ -366,7 +368,7 @@ pub async fn prepare_replacement(
     require_transaction_authorization(caller, &transaction.kind)?;
     let raw = signer::sign_governance(&transaction.envelope, &config)
         .await
-        .map_err(|_| BaseGovernanceError::SigningUnavailable)?;
+        .map_err(signing_failure)?;
     require_transaction_authorization(caller, &transaction.kind)?;
     let current_pending = pending_transaction(args.operation_id)?;
     if current_pending.envelope.signed_transactions.last() != Some(current)
@@ -655,7 +657,7 @@ async fn sign_prepared(
     }
     let raw = signer::sign_governance(&transaction.envelope, config)
         .await
-        .map_err(|_| BaseGovernanceError::SigningUnavailable)?;
+        .map_err(signing_failure)?;
     require_transaction_authorization(caller, &transaction.kind)?;
     if pending_transaction(transaction.id)? != transaction {
         return Err(BaseGovernanceError::StorageFailure);
@@ -864,7 +866,7 @@ fn signed_view(
         .envelope
         .signed_transactions
         .last()
-        .ok_or(BaseGovernanceError::SigningUnavailable)?;
+        .ok_or(BaseGovernanceError::StorageFailure)?;
     Ok(SignedBaseGovernanceTransaction {
         operation_id: transaction.id,
         kind: kind_view(&transaction.kind),
@@ -881,6 +883,14 @@ fn signed_view(
         generation: signed.generation,
         signed_at_ns: signed.signed_at_ns,
     })
+}
+
+fn signing_failure(error: signer::SignerError) -> BaseGovernanceError {
+    let class = error.class();
+    // Deployment policy keeps canister logs controller-visible; the public Candid error contains
+    // only the stable class and never the management reject detail.
+    ic_cdk::println!("governance threshold signing failed: {error}");
+    BaseGovernanceError::SigningUnavailable { class }
 }
 
 fn kind_view(kind: &storage::GovernanceTransactionKind) -> BaseGovernanceOperationKind {

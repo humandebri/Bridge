@@ -150,6 +150,21 @@ macro_rules! checked_requirement_body {
     };
 }
 
+macro_rules! signing_cycle_requirement_body {
+    ($required_reserve:expr, $signing_cost:expr, $call_margin:expr, $max:expr) => {{
+        if $signing_cost > $max - $required_reserve {
+            None
+        } else {
+            let reserve_and_signing = $required_reserve + $signing_cost;
+            if $call_margin > $max - reserve_and_signing {
+                None
+            } else {
+                Some(reserve_and_signing + $call_margin)
+            }
+        }
+    }};
+}
+
 macro_rules! transaction_liability_body {
     ($gas_limit:expr, $max_fee_per_gas:expr, $l1_fee:expr, $value:expr, $max:expr, $zero:expr) => {{
         if $value > $max - $l1_fee {
@@ -871,6 +886,17 @@ pub const fn lease_generation_next(current: u64) -> Option<u64> {
 #[cfg(not(verus_keep_ghost))]
 pub const fn checked_requirement(floor: u128, unit: u128, count: u128) -> Option<u128> {
     checked_requirement_body!(floor, unit, count, u128::MAX, 0u128)
+}
+
+/// Returns the minimum liquid-cycle balance required before a paid threshold-signing call.
+/// `None` rejects arithmetic overflow rather than weakening the reserve.
+#[cfg(not(verus_keep_ghost))]
+pub const fn signing_cycle_requirement(
+    required_reserve: u128,
+    signing_cost: u128,
+    call_margin: u128,
+) -> Option<u128> {
+    signing_cycle_requirement_body!(required_reserve, signing_cost, call_margin, u128::MAX)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1924,6 +1950,15 @@ verus! {
         let max: int = 340282366920938463463374607431768211455;
         let zero: int = 0;
         checked_requirement_body!(floor, unit, count, max, zero)
+    }
+
+    pub open spec fn signing_cycle_requirement_spec(
+        required_reserve: int,
+        signing_cost: int,
+        call_margin: int,
+    ) -> Option<int> {
+        let max: int = 340282366920938463463374607431768211455;
+        signing_cycle_requirement_body!(required_reserve, signing_cost, call_margin, max)
     }
 
     pub open spec fn transaction_liability_wei_spec(

@@ -313,6 +313,31 @@ proof fn governance_transaction_liability_is_checked(
         ) == None::<int>
 {}
 
+proof fn signing_cycle_requirement_preserves_reserve(
+    required_reserve: int,
+    signing_cost: int,
+    call_margin: int,
+    liquid: int,
+    charged: int,
+)
+    requires 0 <= required_reserve,
+        0 <= signing_cost,
+        0 <= call_margin,
+        0 <= charged,
+        required_reserve <= 340282366920938463463374607431768211455int,
+        signing_cost <= 340282366920938463463374607431768211455int - required_reserve,
+        call_margin <= 340282366920938463463374607431768211455int
+            - (required_reserve + signing_cost),
+        required_reserve + signing_cost + call_margin <= liquid,
+        charged <= signing_cost + call_margin
+    ensures kernel::signing_cycle_requirement_spec(
+            required_reserve,
+            signing_cost,
+            call_margin,
+        ) == Some(required_reserve + signing_cost + call_margin),
+        required_reserve <= liquid - charged
+{}
+
 proof fn reserve_overflow_is_rejected()
     ensures kernel::checked_requirement_spec(340282366920938463463374607431768211455int, 1, 1) == None::<int>
 {}

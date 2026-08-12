@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto"
 import test from "node:test"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
-import { identityFromPem, waitForFinalized } from "./cli.ts"
+import { canisterErrorMessage, identityFromPem, unwrap, waitForFinalized } from "./cli.ts"
 
 test("loads an Ed25519 PKCS#8 identity exported by icp-cli", () => {
   const { privateKey } = generateKeyPairSync("ed25519")
@@ -48,4 +48,15 @@ test("stops immediately when a governance transaction reverted", async () => {
     new RegExp(`Transaction reverted: ${hash}`),
   )
   assert.equal(blockReads, 0)
+})
+
+test("reports a safe signing class without automatically retrying", () => {
+  assert.throws(
+    () => unwrap({ Err: { SigningUnavailable: { class: { InsufficientCycles: null } } } }),
+    /Threshold signing unavailable \(InsufficientCycles\).*No automatic retry.*Top up/,
+  )
+  assert.match(
+    canisterErrorMessage({ SigningUnavailable: { class: { RecoveryMismatch: null } } }),
+    /Do not retry; inspect the canister state and controller-only logs/,
+  )
 })

@@ -300,9 +300,32 @@ export function parseOptions(args: string[]): Options {
   return options
 }
 
-function unwrap<T, E>(result: { Ok: T } | { Err: E }): T {
-  if ("Err" in result) throw new Error(`Canister rejected request: ${JSON.stringify(jsonValue(result.Err))}`)
+export function unwrap<T, E>(result: { Ok: T } | { Err: E }): T {
+  if ("Err" in result) throw new Error(canisterErrorMessage(result.Err))
   return result.Ok
+}
+
+export function canisterErrorMessage(error: unknown): string {
+  const failureClass = signingFailureClass(error)
+  if (!failureClass) {
+    return `Canister rejected request: ${JSON.stringify(jsonValue(error))}`
+  }
+  const advice = failureClass === "InsufficientCycles"
+    ? "Top up the canister and verify its reserve before an explicit retry."
+    : ["InvalidPublicKey", "InvalidSignature", "RecoveryMismatch", "Storage", "ResponseDecode"]
+        .includes(failureClass)
+      ? "Do not retry; inspect the canister state and controller-only logs."
+      : "Verify chain-key service health before an explicit retry."
+  return `Threshold signing unavailable (${failureClass}). No automatic retry was performed. ${advice}`
+}
+
+function signingFailureClass(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("SigningUnavailable" in error)) return undefined
+  const unavailable = (error as { SigningUnavailable?: unknown }).SigningUnavailable
+  if (!unavailable || typeof unavailable !== "object" || !("class" in unavailable)) return undefined
+  const failureClass = (unavailable as { class?: unknown }).class
+  if (!failureClass || typeof failureClass !== "object") return undefined
+  return Object.keys(failureClass)[0]
 }
 
 function requiredEnv(name: string): string {

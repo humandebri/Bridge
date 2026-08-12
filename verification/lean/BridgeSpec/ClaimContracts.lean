@@ -62,6 +62,15 @@ theorem governance_transaction_affordability_witness : GovernanceTransactionAffo
   intro observedWei requiredWei insufficient affordable
   omega
 
+def SigningCycleReserve : Prop :=
+  ∀ liquid reserve signingCost callMargin charged : Nat,
+    reserve + signingCost + callMargin ≤ liquid →
+      charged ≤ signingCost + callMargin → reserve ≤ liquid - charged
+
+theorem signing_cycle_reserve_witness : SigningCycleReserve := by
+  intro liquid reserve signingCost callMargin charged budget chargeBound
+  omega
+
 def ActivationPreflight : Prop :=
   ∀ {initialDomain : ControlPlane.InstallDomain} {state : ControlPlane.State},
     ControlPlane.Reachable initialDomain state → state.paused = false →

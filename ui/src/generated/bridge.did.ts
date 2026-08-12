@@ -102,7 +102,7 @@ export type BaseGovernanceError = {
   { 'StorageFailure' : null } |
   { 'ObservationUnavailable' : null } |
   { 'ReplacementLimitReached' : { 'operation_id' : bigint } } |
-  { 'SigningUnavailable' : null };
+  { 'SigningUnavailable' : { 'class' : SigningFailureClass } };
 export type BaseGovernanceOperationKind = { 'PauseDepositMints' : null } |
   { 'CancelTimelock' : { 'operation_id' : Uint8Array | number[] } } |
   { 'SetServiceFee' : { 'value' : bigint } } |
@@ -563,6 +563,15 @@ export interface SignedBaseGovernanceTransaction {
   'nonce' : bigint,
   'gas_limit' : bigint,
 }
+export type SigningFailureClass = { 'CallFailed' : null } |
+  { 'Storage' : null } |
+  { 'InvalidSignature' : null } |
+  { 'CostUnavailable' : null } |
+  { 'InsufficientCycles' : null } |
+  { 'ResponseDecode' : null } |
+  { 'InvalidPublicKey' : null } |
+  { 'CallRejected' : null } |
+  { 'RecoveryMismatch' : null };
 export interface StatusCounts {
   'retained_audit_events' : bigint,
   'reconciliation_holds' : bigint,

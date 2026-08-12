@@ -8,11 +8,11 @@ use bridge_core::{
     mint_finalization_allowed, next_attempt, outbound_settlement, payout_allowed, payout_debit,
     refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
     reservation_decision, reserve_admission_preserves_requirement, scan_complete,
-    service_fee_change_allowed, settlement_decision, transaction_liability_wei,
-    withdrawal_phase_allows, withdrawal_phase_step, withdrawal_transition_effects,
-    DepositEventGuard, DepositTransitionDecision, DepositTransitionInput,
-    FeeRecipientRotationDecision, FundingReconciliationDecision, HoldResolutionDecision,
-    ManualClaimDecision,
+    service_fee_change_allowed, settlement_decision, signing_cycle_requirement,
+    transaction_liability_wei, withdrawal_phase_allows, withdrawal_phase_step,
+    withdrawal_transition_effects, DepositEventGuard, DepositTransitionDecision,
+    DepositTransitionInput, FeeRecipientRotationDecision, FundingReconciliationDecision,
+    HoldResolutionDecision, ManualClaimDecision,
 };
 
 #[test]
@@ -58,6 +58,13 @@ fn reserve_boundaries_and_overflow_are_checked() {
     assert_eq!(transaction_liability_wei(21_000, 10, 7, 3), Some(210_010));
     assert_eq!(transaction_liability_wei(1, u128::MAX, 1, 0), None);
     assert_eq!(transaction_liability_wei(0, 0, u128::MAX, 1), None);
+}
+
+#[test]
+fn signing_cycle_requirement_is_fail_closed() {
+    assert_eq!(signing_cycle_requirement(100, 40, 10), Some(150));
+    assert_eq!(signing_cycle_requirement(u128::MAX, 1, 0), None);
+    assert_eq!(signing_cycle_requirement(u128::MAX - 1, 1, 1), None);
 }
 
 #[test]

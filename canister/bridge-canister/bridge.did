@@ -91,7 +91,7 @@ type BaseGovernanceError = variant {
   StorageFailure;
   ObservationUnavailable;
   ReplacementLimitReached : record { operation_id : nat64 };
-  SigningUnavailable;
+  SigningUnavailable : record { class : SigningFailureClass };
 };
 type BaseGovernanceOperationKind = variant {
   PauseDepositMints;
@@ -571,6 +571,17 @@ type SignedBaseGovernanceTransaction = record {
   chain_id : nat64;
   nonce : nat64;
   gas_limit : nat;
+};
+type SigningFailureClass = variant {
+  CallFailed;
+  Storage;
+  InvalidSignature;
+  CostUnavailable;
+  InsufficientCycles;
+  ResponseDecode;
+  InvalidPublicKey;
+  CallRejected;
+  RecoveryMismatch;
 };
 type StatusCounts = record {
   retained_audit_events : nat64;

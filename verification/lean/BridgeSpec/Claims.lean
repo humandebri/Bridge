@@ -94,6 +94,13 @@ theorem governance_transaction_affordability_claim
     ¬requiredWei ≤ observedWei := by
   omega
 
+theorem signing_cycle_reserve_claim
+    {liquid reserve signingCost callMargin charged : Nat}
+    (budget : reserve + signingCost + callMargin ≤ liquid)
+    (chargeBound : charged ≤ signingCost + callMargin) :
+    reserve ≤ liquid - charged := by
+  omega
+
 theorem fee_rotation_claim
     {state next : FeeState} {recipient : Nat}
     (rotated : rotateFeeRecipient state recipient = some next) :

@@ -60,6 +60,17 @@ export const idlFactory = ({ IDL }) => {
     'receipt_block_number' : IDL.Nat64,
     'succeeded' : IDL.Bool,
   });
+  const SigningFailureClass = IDL.Variant({
+    'CallFailed' : IDL.Null,
+    'Storage' : IDL.Null,
+    'InvalidSignature' : IDL.Null,
+    'CostUnavailable' : IDL.Null,
+    'InsufficientCycles' : IDL.Null,
+    'ResponseDecode' : IDL.Null,
+    'InvalidPublicKey' : IDL.Null,
+    'CallRejected' : IDL.Null,
+    'RecoveryMismatch' : IDL.Null,
+  });
   const BaseGovernanceError = IDL.Variant({
     'InsufficientGovernanceBalance' : IDL.Record({
       'observed_wei' : IDL.Nat,
@@ -73,7 +84,7 @@ export const idlFactory = ({ IDL }) => {
     'StorageFailure' : IDL.Null,
     'ObservationUnavailable' : IDL.Null,
     'ReplacementLimitReached' : IDL.Record({ 'operation_id' : IDL.Nat64 }),
-    'SigningUnavailable' : IDL.Null,
+    'SigningUnavailable' : IDL.Record({ 'class' : SigningFailureClass }),
   });
   const Result = IDL.Variant({
     'Ok' : BaseGovernanceConfirmation,
