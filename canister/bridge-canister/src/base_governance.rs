@@ -1030,13 +1030,17 @@ fn encode_action(
     action: GovernanceAction,
     governance_operation_id: u64,
 ) -> Result<(storage::GovernanceTransactionKind, [u8; 20], Vec<u8>), BaseGovernanceError> {
-    let (bridge, timelock) = STORE.with(|store| {
+    let (bridge, timelock, deployment_instance_id) = STORE.with(|store| {
         let config = store
             .borrow()
             .config()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .ok_or(BaseGovernanceError::StorageFailure)?;
-        Ok::<_, BaseGovernanceError>((config.contract_array(), config.timelock_array()))
+        Ok::<_, BaseGovernanceError>((
+            config.contract_array(),
+            config.timelock_array(),
+            hash32(&config.deployment_instance_id)?,
+        ))
     })?;
     match action {
         GovernanceAction::PauseDepositMints => Ok((
@@ -1078,7 +1082,7 @@ fn encode_action(
             ))
         }
         GovernanceAction::ScheduleActivation => {
-            let salt = activation_salt(governance_operation_id);
+            let salt = activation_salt(deployment_instance_id, governance_operation_id);
             let operation_id = activation_operation_id(bridge, salt);
             Ok((
                 storage::GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
@@ -1124,8 +1128,9 @@ fn activation_payloads() -> [Vec<u8>; 2] {
     ]
 }
 
-fn activation_salt(governance_operation_id: u64) -> [u8; 32] {
-    let mut input = b"KINIC_BRIDGE_ACTIVATION_V1".to_vec();
+fn activation_salt(deployment_instance_id: [u8; 32], governance_operation_id: u64) -> [u8; 32] {
+    let mut input = b"KINIC_BRIDGE_ACTIVATION_V2".to_vec();
+    input.extend_from_slice(&deployment_instance_id);
     input.extend_from_slice(&governance_operation_id.to_be_bytes());
     keccak(&input)
 }
@@ -1244,7 +1249,7 @@ mod tests {
     #[test]
     fn activation_calldata_is_stable() {
         let bridge = [7; 20];
-        let salt = activation_salt(9);
+        let salt = activation_salt([3; 32], 9);
         assert_eq!(
             &schedule_activation_calldata(bridge, salt)[..4],
             selector("scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)")
@@ -1259,6 +1264,14 @@ mod tests {
         assert_eq!(ACTIVATION_TIMELOCK_DELAY_SECONDS, 300);
         assert_ne!(activation_operation_id(bridge, salt), [0; 32]);
         assert_eq!(word_u128(42)[31], 42);
+    }
+
+    #[test]
+    fn activation_salt_is_namespaced_by_deployment_instance() {
+        let first = activation_salt([1; 32], 1);
+        assert_eq!(first, activation_salt([1; 32], 1));
+        assert_ne!(first, activation_salt([2; 32], 1));
+        assert_ne!(first, activation_salt([1; 32], 2));
     }
 
     #[test]

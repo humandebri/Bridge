@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "environment": "sepolia-staging",
+  "observed_at": "2026-08-12T01:16:22Z",
+  "source_commit": "dd0cbdb1a39ad7d79f96897b7f237db9b61d63f6",
+  "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "deployment_instance_id": "0x6a6808e8af7292feaa4c8252171acd1863352a541e8373d4b96171104f7cc22a",
+  "base_chain_id": 84532,
+  "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
+  "schedule_transaction_hash": "0xbe9f9674149e06a1e0ec923975af4afc820ea3eeead0a1332b2543f3c8a19bf2",
+  "receipt": {
+    "block_number": 45364109,
+    "block_hash": "0xc32f6ed65bb29f3b9a5cb91e473e093bb304ddfeac5a6179e88ec01f68351254",
+    "status": "reverted"
+  },
+  "canister_governance_operation_id": 0,
+  "governance_nonce": 15,
+  "activation_salt": "0x9f305d4eddbb2a34e942e49c8f0a23f47be1a4d5b98b19d09a9328f954e76354",
+  "timelock_operation_id": "0x8f3aabd0b6b321ded3acb0db004a915c1492795a461e1c258d3094fc85f91f0c",
+  "timelock_operation_state": "done-before-schedule",
+  "base_deposits_paused": true,
+  "base_withdrawals_paused": true,
+  "canister_deposits_paused": true,
+  "cause": "The reinstalled canister reset its governance operation counter, while activation_salt was derived only from that counter. The resulting salt reused a completed operation already stored in the persistent Base Timelock.",
+  "disposition": "No activation was accepted. Keep both bridges paused, namespace activation salts by deployment_instance_id, reinstall the empty staging canister with the corrected Wasm, and restart staging evidence from preflight."
+}
