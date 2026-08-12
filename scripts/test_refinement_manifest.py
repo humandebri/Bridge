@@ -103,6 +103,42 @@ class RefinementManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "did not pass exactly once"):
             refinement.execute_consumer(consumer, Path("."), runner)
 
+    def test_json_consumer_retries_one_empty_success(self) -> None:
+        consumer = refinement.Consumer(
+            "example_cases", "example", "exampleImpl", "example_refinement", "vitest",
+            "ui/generated/example.test.ts", "protocol_example_cases_matches_production",
+        )
+        calls = 0
+
+        def runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return subprocess.CompletedProcess([], 0, "", "")
+            return subprocess.CompletedProcess(
+                [],
+                0,
+                '{"numPassedTests":1,"testResults":[{"assertionResults":['
+                '{"title":"protocol_example_cases_matches_production",'
+                '"status":"passed"}]}]}',
+                "",
+            )
+
+        refinement.execute_consumer(consumer, Path("."), runner)
+        self.assertEqual(calls, 2)
+
+    def test_json_consumer_rejects_repeated_empty_success(self) -> None:
+        consumer = refinement.Consumer(
+            "example_cases", "example", "exampleImpl", "example_refinement", "vitest",
+            "ui/generated/example.test.ts", "protocol_example_cases_matches_production",
+        )
+
+        def runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with self.assertRaisesRegex(ValueError, "produced no JSON"):
+            refinement.execute_consumer(consumer, Path("."), runner)
+
     def test_generator_emits_tracked_language_test_sources(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
