@@ -1,15 +1,39 @@
 {
-  "schema_version": 31,
-  "deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
-  "chain_id": 84532,
-  "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
-  "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
-  "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
-  "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
-  "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
-  "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
-  "expected_bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
-  "governance_operator": "0x64639cb99ae61436cb1d66d775283f757e436479",
-  "canister_deposits_paused": true,
-  "storage_integrity": "ok"
+  "observed_at": "2026-08-12T00:45:11.471Z",
+  "values": {
+    "schema_version": 32,
+    "deployment_instance_id": "0x6a6808e8af7292feaa4c8252171acd1863352a541e8373d4b96171104f7cc22a",
+    "chain_id": 84532,
+    "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+    "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+    "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+    "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+    "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+    "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
+    "expected_bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+    "governance_operator": "0x64639cb99ae61436cb1d66d775283f757e436479",
+    "rpc_provider_urls_sha256": "0xe9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb",
+    "canister_deposits_paused": true,
+    "storage_integrity": "ok"
+  },
+  "public_config": {
+    "response_bytes": "4449444c056c22d0d19b237ad9edba2b01bfebc98a017acea3e6be017de0d5dae1017ac9fe97ef0178c6c18e800202e6e3a3c3027892efe7c3027ad292c1d00278c7f18c800378c8b98bd30301e092f88e04039fc280ae0478dd80f6bf0478f7d7ab88057af6f7c3b40568ea848bcc057acb94e5d70701bad3a7f5077ae5c09da7087dc5e9b4ad097ae5e1a4890a6891e4d7ee0a68f0e2cb820b7dc6fcbf9f0b68dd9edff60b68d2d8b6e80c78f5f3fcf00c04a1eb80810e019db0b5aa0e01f9a987d30e01daebd8f20e7deeffe8f50e016d7b6c08e382f2aa017dd5b8e9c00578d3a397cb077ddce3a5f8087dfa9bc0ed0c79d1e7d5d70d79aea7b1d70e79e19298830f7d6c02b3b0dac30368ad86ca8305016c02b58ee6b3067a9ca4afe50c7b01003c00140b35a70028a546b4983b11724c165a060f4acf01060080e497d0120300201c000000000000808084fea6dee1115a00000000000000a0c21e8094ebdc03983a0000c832000060ea000080c8afa02501000000000000003c003c00000000000000344a01000000000014722733d0fffd634abd828bf1f9bbedca55c7e004010a0000000000b01371010100580200000000000058020000000000001e00010a00000000023000cc01010300206a6808e8af7292feaa4c8252171acd1863352a541e8373d4b96171104f7cc22a2000808084fea6dee1111e00011de83e09d1d44669ab10af219be8f243d3fd011fd78f0d609b101f32f902011df0f58169cbf53e18d14b51d0b2a3d9bbc803ecbeafec059f1ea05d6202904e010a00000000010083240101010a000000000120cda001013c00000000000000e204031464639cb99ae61436cb1d66d775283f757e4364792093284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da9914e808780d5f91fdf33f46e9d2f798c71b0c2e01688090dfc04a20e9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb",
+    "response_text": null,
+    "response_candid": "(\n  record {\n    settlement_rate_limit_global = 60 : nat16;\n    expected_bridge_signer = blob \"\\0b\\35\\a7\\00\\28\\a5\\46\\b4\\98\\3b\\11\\72\\4c\\16\\5a\\06\\0f\\4a\\cf\\01\";\n    settlement_rate_limit_per_principal = 6 : nat16;\n    settlement_cycle_ceiling = 5_000_000_000 : nat;\n    settlement_rate_limit_per_record = 3 : nat16;\n    mint_authorization_ttl_seconds = 7_200 : nat64;\n    governance_evm_fee = record {\n      l1_fee_per_transaction_ceiling_wei = 10_000_000_000_000_000 : nat;\n      quote_validity_seconds = 90 : nat64;\n      gas_limit_ceiling = 500_000 : nat;\n      max_priority_fee_per_gas_ceiling = 1_000_000_000 : nat;\n      l1_fee_multiplier_bps = 15_000 : nat32;\n      gas_limit_multiplier_bps = 13_000 : nat32;\n      base_fee_multiplier_bps = 60_000 : nat32;\n      max_fee_per_gas_ceiling = 10_000_000_000 : nat;\n    };\n    mint_authorization_epoch = 1 : nat64;\n    notification_rate_limit_global = 60 : nat16;\n    deposit_rate_limit_window_seconds = 60 : nat64;\n    base_chain_id = 84_532 : nat64;\n    bridge_contract = blob \"\\72\\27\\33\\d0\\ff\\fd\\63\\4a\\bd\\82\\8b\\f1\\f9\\bb\\ed\\ca\\55\\c7\\e0\\04\";\n    fee_recipient = record {\n      owner = principal \"rlhjx-iyaaa-aaaaf-qcnyq-cai\";\n      subaccount = blob \"\";\n    };\n    notification_rate_limit_window_seconds = 600 : nat64;\n    settlement_rate_limit_window_seconds = 600 : nat64;\n    notification_ingestion_rate_limit_global = 30 : nat16;\n    evm_rpc_canister_id = principal \"7hfb6-caaaa-aaaar-qadga-cai\";\n    deposit_rate_limit_per_principal = 3 : nat16;\n    deployment_instance_id = blob \"\\6a\\68\\08\\e8\\af\\72\\92\\fe\\aa\\4c\\82\\52\\17\\1a\\cd\\18\\63\\35\\2a\\54\\1e\\83\\73\\d4\\b9\\61\\71\\10\\4f\\7c\\c2\\2a\";\n    schema_version = 32 : nat16;\n    governance_eth_floor_wei = 10_000_000_000_000_000 : nat;\n    deposit_rate_limit_global = 30 : nat16;\n    pause_principal = principal \"lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe\";\n    governance_principal = principal \"o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae\";\n    ledger_fee = 10_000 : nat;\n    index_canister_id = principal \"qzre3-3iaaa-aaaai-aqmsa-cai\";\n    ledger_canister_id = principal \"3jkp5-oyaaa-aaaaj-azwqa-cai\";\n    settlement_retry_interval_seconds = 60 : nat64;\n    governance_replacement = record {\n      fee_bump_bps = 1_250 : nat16;\n      max_replacements = 3 : nat8;\n    };\n    governance_operator = blob \"\\64\\63\\9c\\b9\\9a\\e6\\14\\36\\cb\\1d\\66\\d7\\75\\28\\3f\\75\\7e\\43\\64\\79\";\n    expected_bridge_runtime_sha256 = blob \"\\93\\28\\44\\13\\d1\\55\\15\\a8\\b7\\85\\aa\\69\\e5\\89\\63\\b9\\e0\\1f\\4b\\ae\\dc\\46\\e5\\c8\\f6\\17\\38\\25\\10\\40\\da\\99\";\n    timelock_contract = blob \"\\e8\\08\\78\\0d\\5f\\91\\fd\\f3\\3f\\46\\e9\\d2\\f7\\98\\c7\\1b\\0c\\2e\\01\\68\";\n    cycles_floor = 20_000_000_000 : nat;\n    rpc_provider_urls_sha256 = blob \"\\e9\\b9\\c7\\16\\de\\df\\57\\24\\5c\\75\\b8\\d8\\71\\14\\b0\\65\\a5\\5a\\96\\bd\\0f\\7b\\d5\\66\\91\\68\\37\\22\\ac\\57\\21\\fb\";\n  },\n)"
+  },
+  "bridge_status": {
+    "response_bytes": "4449444c0a6c169fa89a5778edb4d4aa0101c9fe97ef0178e6e3a3c3027897e4df95037da4f2b3b70578bcfca1860602fcf990d6060397b2d5db067e98ff84f3067ebad3a7f5077aada3b8950804dab3d3aa0978c3d09bef0a7e81bab89d0b78e9c0cdc50b04cad1d6d40c05c4e1e3e30c06d09da3950d01e5d7d8dc0e078cd6f5eb0e04eef091c80f056e7d6c08aac1e2477d95aae7627da0a0f0f4037df8e8e3ca047ddeb7a1ba067ed2faaafc067de5c09da7087dad9e91da0f7d6d716d7b6e786c09b894dbc70278b8cdb9d40378a7ffe6810578dac6acba0778debccc9d0978d5aecbeb0b78b1a0a8f50c789dfa89aa0e7de2abaae60e786c088ed8d74378ad84c94b78a5bfa9ab0278dde2f6f303058da4879b0478cab9e3b309788faaa1bc0d089cd198e80f096e716b03bd90baad037f8ec4e1e10a7fa181e7e80c7f0100000000000000000000201c00000000000001000000000000000000000000000000008b80f18ff209808084fea6dee111008bf091cfa7090000808084fea6dee1118090dfc04a00000120000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "response_text": null,
+    "response_candid": "(\n  record {\n    unpaid_withdrawal_count = 0 : nat64;\n    withdrawal_fee_guard_ledger_fee = null;\n    mint_authorization_ttl_seconds = 7_200 : nat64;\n    mint_authorization_epoch = 1 : nat64;\n    unpaid_withdrawal_amount_out = 0 : nat;\n    last_reserve_observation_ns = 0 : nat64;\n    reserve = record {\n      cycles_balance = 339_872_595_979 : nat;\n      required_eth_wei = 10_000_000_000_000_000 : nat;\n      eth_surplus_wei = 0 : nat;\n      cycles_surplus = 319_872_595_979 : nat;\n      sufficient = false;\n      eth_balance_wei = 0 : nat;\n      governance_eth_floor_wei = 10_000_000_000_000_000 : nat;\n      required_cycles = 20_000_000_000 : nat;\n    };\n    withdrawal_stop_reasons = vec {};\n    audit_retention_warning = false;\n    deposits_paused = true;\n    schema_version = 32 : nat16;\n    observed_bridge_runtime_sha256 = blob \"\";\n    last_finalized_observation_ns = 0 : nat64;\n    withdrawal_fee_guard_active = false;\n    last_finalized_base_block = 0 : nat64;\n    observed_bridge_signer = blob \"\";\n    oldest_unpaid_withdrawal_observed_at_ns = null;\n    counts = record {\n      retained_audit_events = 0 : nat64;\n      reconciliation_holds = 0 : nat64;\n      retained_deposit_index_entries = 0 : nat64;\n      pending_ledger_operations = 0 : nat64;\n      withdrawals = 0 : nat64;\n      deposits = 0 : nat64;\n      reserved_deposit_mint_operations = 0 : nat64;\n      reserved_deposit_mint_amount = 0 : nat;\n      pruned_audit_events = 0 : nat64;\n    };\n    withdrawal_fee_guard_charged_service_fee = null;\n    settlement_scheduler = record {\n      last_dispatcher_run_at_ns = 0 : nat64;\n      scheduled = 0 : nat64;\n      expired = 0 : nat64;\n      next_wakeup_at_ns = null;\n      stopped = 0 : nat64;\n      leased = 0 : nat64;\n      last_internal_error = null;\n      health = variant { Healthy };\n    };\n    last_finalized_base_block_hash = blob \"\";\n    last_audit_sequence = null;\n  },\n)"
+  },
+  "storage_integrity": {
+    "response_bytes": "4449444c036b02bc8a0171c5fed201016b058386e493057fd4b4c59a097ff4b895a40b02eff489f80c7f8ea994d50f7f6c01c7ebc4d00971010000026f6b",
+    "response_text": null,
+    "response_candid": "(variant { Ok = \"ok\" })"
+  },
+  "activation_status": {
+    "response_bytes": "4449444c076b02bc8a0101c5fed201056c0288ada2e7020298ff84f3067e6e036c029685b6e20404b380e78f06046d7b6b09d982e5df0206d1b8edb50306d4b4c59a097ff4b895a40b7fa1d6a8eb0b06eff489f80c7fa4eaddb30d7fe99eb2c80f06abefd5e00f7f6c01b380e78f06780100000001",
+    "response_text": null,
+    "response_candid": "(\n  variant {\n    Ok = record { pending_timelock_operation = null; deposits_paused = true }\n  },\n)"
+  }
 }

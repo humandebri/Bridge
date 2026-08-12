@@ -1,12 +1,12 @@
 {
   "schema_version": 7,
   "stage": "contracts",
-  "observed_at": "2026-08-12T00:38:11.095Z",
-  "source_commit": "dd0cbdb1a39ad7d79f96897b7f237db9b61d63f6",
+  "observed_at": "2026-08-05T08:23:05Z",
+  "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
   "artifacts": [
     {
       "path": "artifacts/contracts-live.json",
-      "sha256": "6dd9709d47aa31fa7ce761b9d5d9d546e08145f5d9d6591f6637947ae1a38476",
+      "sha256": "14ce5df486c3f339a2716166fa784381b16de7af8b5973d46bd486b6f90223ca",
       "kind": "raw"
     }
   ],

@@ -1,0 +1,42 @@
+{
+  "schema_version": 7,
+  "stage": "preflight",
+  "observed_at": "2026-08-05T08:20:38Z",
+  "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
+  "artifacts": [
+    {"path": "artifacts/live-public-config.json", "sha256": "e92885a96f73267ec19f36dc1e4910d344168fcf4a90bbd3c60b4ce2c306134f", "kind": "live-public-config"},
+    {"path": "artifacts/reinstall-instance-check.json", "sha256": "2deefb07a9cfac0d29eb325c81cb43ac859c8f02031df7b2374beab43e4203de", "kind": "reinstall-instance-check"},
+    {"path": "artifacts/live-canister-status.json", "sha256": "9634e061a292597ca975bc98707d963e8761c1ac65eff5a35eeaaf617b604861", "kind": "live-canister-status"},
+    {"path": "artifacts/live-bridge-status.json", "sha256": "c262296c5c9d7a2155338c5eb9ef5bfa4f8a610e0f5cb7fd032fb174743e6215", "kind": "live-bridge-status"},
+    {"path": "artifacts/live-activation-status.json", "sha256": "45337fadaa22f07c941b7493cf49832944bec6527a40fd87b6be1bd18882a848", "kind": "live-activation-status"},
+    {"path": "artifacts/live-storage-integrity.json", "sha256": "a0dc537f108d6a486c9ae6289236224929ffb224403bed4bafea854f309732a6", "kind": "live-storage-integrity"},
+    {"path": "artifacts/live-ledger-balance.json", "sha256": "c5dc44dc23c9b5bed8459fcf4202a3c35d30160ea5f250ac818214641ed8064e", "kind": "live-ledger-balance"}
+  ],
+  "details": {
+    "chain_id": 84532,
+    "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+    "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+    "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+    "ledger_symbol": "TICRC1",
+    "ledger_decimals": 8,
+    "ledger_fee": 10000,
+    "index_ledger_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+    "controller_principals": [
+      "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+      "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
+    ],
+    "cycles_balance": 808148878982,
+    "base_deposits_paused": true,
+    "base_withdrawals_paused": true,
+    "canister_deposits_paused": true,
+    "configured_rpc_url_sha256": [
+      "a30ce743ddc719cd42638750cfdc375ae936209f7ba24268b4b2eb533494616f",
+      "5916966ddb71dda2015e9e4991f67d0df96798966b5b2e0deb8ef43405d39e2e",
+      "6dbd0deb51a5f497d7eb0587c807d9939346d9fdad6e53538bb87f61b8819b49"
+    ],
+    "replacement_mode": "current-schema-upgrade",
+    "live_schema_version": 31,
+    "previous_deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48"
+  }
+}

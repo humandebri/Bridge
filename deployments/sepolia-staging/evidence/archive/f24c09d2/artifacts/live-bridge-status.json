@@ -1,10 +1,10 @@
 {
-  "deposits": 6,
-  "withdrawals": 2,
+  "deposits": 4,
+  "withdrawals": 0,
   "pending_ledger_operations": 0,
   "reconciliation_holds": 0,
   "reserved_deposit_mint_operations": 1,
-  "reserved_deposit_mint_amount": 950000000,
+  "reserved_deposit_mint_amount": 1000000000,
   "unpaid_withdrawal_count": 0,
   "unpaid_withdrawal_amount_out": 0
 }

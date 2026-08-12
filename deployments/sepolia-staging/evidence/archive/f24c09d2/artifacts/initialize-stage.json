@@ -1,18 +1,18 @@
 {
   "schema_version": 7,
   "stage": "initialize",
-  "observed_at": "2026-08-12T00:45:11.472Z",
-  "source_commit": "dd0cbdb1a39ad7d79f96897b7f237db9b61d63f6",
+  "observed_at": "2026-08-05T08:25:26Z",
+  "source_commit": "f24c09d20e030b40162e1aa68bf604061312034e",
   "artifacts": [
     {
       "path": "artifacts/initialize-live.json",
-      "sha256": "0b5884033db4abf840f14b39ab6eb18d618f9cfadd72ddd82d39ecda93b6e907",
+      "sha256": "cba9f00ddf32dfdb0e23b3667738b81ae2dba361ec007ec860093639c4f4f593",
       "kind": "raw"
     }
   ],
   "details": {
-    "schema_version": 32,
-    "deployment_instance_id": "0x6a6808e8af7292feaa4c8252171acd1863352a541e8373d4b96171104f7cc22a",
+    "schema_version": 31,
+    "deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
     "chain_id": 84532,
     "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
     "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
