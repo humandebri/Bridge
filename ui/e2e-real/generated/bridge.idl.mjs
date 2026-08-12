@@ -593,23 +593,13 @@ export const idlFactory = ({ IDL }) => {
     'max_fee_per_gas' : IDL.Nat,
     'expected_transaction_hash' : IDL.Vec(IDL.Nat8),
   });
-  const SettlementClaimProfile = IDL.Record({
-    'storage_revision_after' : IDL.Nat64,
-    'instructions' : IDL.Nat64,
-    'storage_revision_before' : IDL.Nat64,
-    'outcome' : IDL.Text,
-  });
-  const Result_15 = IDL.Variant({
-    'Ok' : SettlementClaimProfile,
-    'Err' : StorageMaintenanceError,
-  });
   const ChecksumRefreshStatus = IDL.Record({
     'scanned_bytes' : IDL.Nat64,
     'db_size' : IDL.Nat64,
     'complete' : IDL.Bool,
     'checksum' : IDL.Nat64,
   });
-  const Result_16 = IDL.Variant({
+  const Result_15 = IDL.Variant({
     'Ok' : ChecksumRefreshStatus,
     'Err' : StorageMaintenanceError,
   });
@@ -649,7 +639,7 @@ export const idlFactory = ({ IDL }) => {
       'retry_after_seconds' : IDL.Nat64,
     }),
   });
-  const Result_17 = IDL.Variant({
+  const Result_16 = IDL.Variant({
     'Ok' : DepositReceipt,
     'Err' : DepositError,
   });
@@ -670,7 +660,7 @@ export const idlFactory = ({ IDL }) => {
     'FinalityUnavailable' : IDL.Null,
     'AnonymousCaller' : IDL.Null,
   });
-  const Result_18 = IDL.Variant({
+  const Result_17 = IDL.Variant({
     'Ok' : DepositView,
     'Err' : RequestDepositRefundError,
   });
@@ -679,18 +669,14 @@ export const idlFactory = ({ IDL }) => {
     'state' : FeePayoutState,
     'amount' : IDL.Nat,
   });
-  const Result_19 = IDL.Variant({
+  const Result_18 = IDL.Variant({
     'Ok' : FeePayoutReceipt,
     'Err' : AdminError,
   });
   const RotatePausePrincipalArgs = IDL.Record({
     'pause_principal' : IDL.Principal,
   });
-  const Result_20 = IDL.Variant({
-    'Ok' : IDL.Nat16,
-    'Err' : StorageMaintenanceError,
-  });
-  const Result_21 = IDL.Variant({
+  const Result_19 = IDL.Variant({
     'Ok' : IDL.Text,
     'Err' : StorageMaintenanceError,
   });
@@ -773,16 +759,10 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'prepare_next_emergency_base_action' : IDL.Func([], [Result_5], []),
-    'profile_due_settlement_claim' : IDL.Func([], [Result_15], []),
-    'profile_rejected_manual_settlement_claim' : IDL.Func(
-        [IDL.Vec(IDL.Nat8)],
-        [Result_15],
-        [],
-      ),
-    'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_16], []),
-    'request_deposit' : IDL.Func([DepositArgs], [Result_17], []),
-    'request_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_18], []),
-    'request_fee_payout' : IDL.Func([IDL.Nat], [Result_19], []),
+    'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_15], []),
+    'request_deposit' : IDL.Func([DepositArgs], [Result_16], []),
+    'request_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_17], []),
+    'request_fee_payout' : IDL.Func([IDL.Nat], [Result_18], []),
     'rotate_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_14], []),
     'rotate_pause_principal' : IDL.Func(
         [RotatePausePrincipalArgs],
@@ -790,13 +770,8 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'schedule_activation' : IDL.Func([], [Result_5], []),
-    'seed_storage_test_data' : IDL.Func(
-        [IDL.Nat64, IDL.Nat16],
-        [Result_20],
-        [],
-      ),
     'start_storage_validation' : IDL.Func([], [Result_2], []),
-    'storage_integrity_check' : IDL.Func([], [Result_21], ['query']),
+    'storage_integrity_check' : IDL.Func([], [Result_19], ['query']),
   });
 };
 export const init = ({ IDL }) => {
