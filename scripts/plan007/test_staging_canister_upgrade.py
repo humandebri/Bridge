@@ -102,7 +102,7 @@ module = os.environ.get("MOCK_MODULE", after_module if applied else policy["befo
 def blob(value): return ''.join('\\' + value[i:i+2] for i in range(0, len(value), 2))
 if args[:2] == ["canister", "install"]:
     (state / "install.json").write_text(json.dumps(args))
-    if os.environ.get("MOCK_INSTALL_FAIL") == "1" or os.environ.get("MOCK_POST_COUNT_DRIFT") == "1": raise SystemExit(1)
+    if os.environ.get("MOCK_INSTALL_FAIL") == "1": raise SystemExit(1)
     (state / "applied").touch(); raise SystemExit(0)
 if args[:2] == ["canister", "metadata"]:
     print(json.dumps({"value": "service : {}"})); raise SystemExit(0)
@@ -206,12 +206,12 @@ print(json.dumps({"response_candid": candid}))
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.base / "result.json").exists())
 
-        self.install_record.unlink(missing_ok=True)
-        (self.state / "applied").unlink(missing_ok=True)
+    def test_postcondition_mismatch_does_not_write_success_evidence(self) -> None:
         result = self.run_driver("--execute", MOCK_POST_COUNT_DRIFT="1")
         self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.install_record.exists())
+        self.assertTrue((self.state / "applied").exists())
         self.assertFalse((self.base / "result.json").exists())
-        self.assertFalse((self.state / "applied").exists())
 
     def test_policy_rejects_invalid_status_count_types_and_ranges(self) -> None:
         policy_path = self.repo / POLICY_PATH
