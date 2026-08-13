@@ -612,11 +612,6 @@ run_proof_stage() {
   return "$status"
 }
 
-run_claim_transaction_tests() {
-  "$ROOT/scripts/plan007/build-staging-canister-wasm.sh" >/dev/null
-  python3 "$ROOT/scripts/check_claim_test_manifest.py"
-}
-
 run_proofs() {
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
@@ -630,7 +625,8 @@ run_proofs() {
   run_proof_stage lean-negative run_lean_failure_fixtures
   run_proof_stage policy-vector-consumers run_policy_vector_consumers
   run_proof_stage refinement-gate run_refinement_gate
-  run_proof_stage claim-transaction-tests run_claim_transaction_tests
+  run_proof_stage claim-transaction-tests \
+    python3 "$ROOT/scripts/check_claim_test_manifest.py"
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt

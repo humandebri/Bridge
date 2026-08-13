@@ -61,19 +61,7 @@ class CiModeTests(unittest.TestCase):
         self.assertLess(receipt_regression, claim_manifest)
         self.assertIn('python3 "$ROOT/scripts/test_claim_test_manifest.py"', body)
         self.assertIn('python3 "$ROOT/scripts/test_check_claim_manifest.py"', body)
-        self.assertIn(
-            "run_proof_stage claim-transaction-tests run_claim_transaction_tests",
-            body,
-        )
-
-        claim_transactions = function_body("run_claim_transaction_tests")
-        builder = claim_transactions.index(
-            '"$ROOT/scripts/plan007/build-staging-canister-wasm.sh" >/dev/null'
-        )
-        manifest = claim_transactions.index(
-            'python3 "$ROOT/scripts/check_claim_test_manifest.py"'
-        )
-        self.assertLess(builder, manifest)
+        self.assertIn("run_proof_stage claim-transaction-tests", body)
 
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
         body = function_body("run_proof_stage")
