@@ -110,7 +110,23 @@ run_step() {
   return "$status"
 }
 
+verify_no_npm_lockfiles() {
+  local lockfile
+
+  for lockfile in \
+    "$ROOT/package-lock.json" \
+    "$ROOT/npm-shrinkwrap.json" \
+    "$ROOT/ui/package-lock.json" \
+    "$ROOT/ui/npm-shrinkwrap.json"; do
+    if [[ -e "$lockfile" ]]; then
+      echo "npm lockfile is forbidden; use pnpm-lock.yaml: $lockfile" >&2
+      return 1
+    fi
+  done
+}
+
 run_versions() {
+  verify_no_npm_lockfiles
   "$ROOT/scripts/check_tool_versions.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
   verify_no_obsolete_withdrawal_terms \
@@ -128,38 +144,111 @@ run_versions() {
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
+  python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
   node "$ROOT/scripts/plan007/test-capture-obsolete-pause-evidence.mjs"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
     "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
 }
 
+verify_tecdsa_wrapper_dependency() {
+  python3 - "$ROOT" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+root = Path(sys.argv[1])
+expected_version = "=0.1.1"
+expected_source = "registry+https://github.com/rust-lang/crates.io-index"
+expected_checksum = "92c1319a274caebf0ab70ab826b8905c29e8563498289356b9a59464f2a85c56"
+
+with (root / "Cargo.toml").open("rb") as source:
+    workspace = tomllib.load(source)
+dependency = workspace.get("workspace", {}).get("dependencies", {}).get(
+    "ic-cdk-management-canister"
+)
+if dependency != expected_version:
+    raise SystemExit("workspace must pin ic-cdk-management-canister = \"=0.1.1\"")
+
+patches = workspace.get("patch", {})
+for registry, entries in patches.items():
+    if not isinstance(entries, dict):
+        continue
+    for name, value in entries.items():
+        package = value.get("package") if isinstance(value, dict) else None
+        if name == "ic-cdk-management-canister" or package == "ic-cdk-management-canister":
+            raise SystemExit(f"tECDSA wrapper dependency must not be patched through {registry}")
+
+with (root / "canister" / "bridge-canister" / "Cargo.toml").open("rb") as source:
+    canister = tomllib.load(source)
+if canister.get("dependencies", {}).get("ic-cdk-management-canister") != {
+    "workspace": True
+}:
+    raise SystemExit("bridge-canister must use the pinned workspace tECDSA wrapper")
+
+with (root / "Cargo.lock").open("rb") as source:
+    lockfile = tomllib.load(source)
+packages = [
+    package
+    for package in lockfile.get("package", [])
+    if package.get("name") == "ic-cdk-management-canister"
+]
+if len(packages) != 1:
+    raise SystemExit("Cargo.lock must contain exactly one tECDSA wrapper package")
+package = packages[0]
+if (
+    package.get("version") != expected_version.removeprefix("=")
+    or package.get("source") != expected_source
+    or package.get("checksum") != expected_checksum
+):
+    raise SystemExit("Cargo.lock does not bind the reviewed tECDSA wrapper artifact")
+PY
+}
+
 run_no_automatic_execution_guards() {
+  verify_tecdsa_wrapper_dependency
   if rg -n '\b(set_timer_interval|heartbeat)\b' \
     "$ROOT/canister/bridge-canister/src"; then
     echo "recurring canister execution path found" >&2
     return 1
   fi
-  if (
-    cd "$ROOT/canister/bridge-canister/src"
-    rg -n '\bunbounded_wait\b' . --glob '!/signer.rs'
-  ); then
+  if rg -n '\bunbounded_wait\b' \
+    "$ROOT/canister/bridge-canister/src" --glob '*.rs'; then
     echo "unbounded canister execution path found" >&2
     return 1
   fi
-  local signer_unbounded_count
-  signer_unbounded_count="$(
-    rg -o '\bunbounded_wait\b' "$ROOT/canister/bridge-canister/src/signer.rs" \
+  if rg -n '\bextern\b' \
+    "$ROOT/canister/bridge-canister/src" --glob '*.rs'; then
+    echo "extern declarations may rebind the reviewed tECDSA wrapper" >&2
+    return 1
+  fi
+  local signing_reference_count
+  local signing_method_string_count
+  signing_reference_count="$(
+    rg -o '\bsign_with_ecdsa\b' \
+      "$ROOT/canister/bridge-canister/src" --glob '*.rs' \
       | wc -l \
       | tr -d ' ' \
       || true
   )"
-  if [[ "$signer_unbounded_count" != "0" ]] \
-    && { [[ "$signer_unbounded_count" != "1" ]] \
+  signing_method_string_count="$(
+    rg -o '"sign_with_ecdsa"' \
+      "$ROOT/canister/bridge-canister/src" --glob '*.rs' \
+      | wc -l \
+      | tr -d ' ' \
+      || true
+  )"
+  if (( signing_method_string_count > signing_reference_count )); then
+    echo "threshold signing reference count is inconsistent" >&2
+    return 1
+  fi
+  signing_reference_count=$((signing_reference_count - signing_method_string_count))
+  if [[ "$signing_reference_count" != "0" ]] \
+    && { [[ "$signing_reference_count" != "1" ]] \
       || ! rg -q \
-        '^[[:space:]]*Call::unbounded_wait\(::candid::Principal::management_canister\(\), "sign_with_ecdsa"\)[[:space:]]*$' \
+        '^[[:space:]]*::ic_cdk_management_canister::sign_with_ecdsa\(sign_args\)[[:space:]]*$' \
         "$ROOT/canister/bridge-canister/src/signer.rs"; }; then
-    echo "threshold signing may contain only the reviewed unbounded management call" >&2
+    echo "threshold signing may contain only one fully qualified reviewed wrapper call" >&2
     return 1
   fi
   if rg -n '\bset_timer\b' \
