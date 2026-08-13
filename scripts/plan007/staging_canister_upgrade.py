@@ -195,10 +195,9 @@ def verify_snapshot(snapshot_value: dict[str, Any], policy: dict[str, Any], *, p
 
 def live_metadata(policy: dict[str, Any], identity: str, name: str) -> str | None:
     command = [
-        "icp", "canister", "metadata", policy["canister_name"], "candid:service", "--json",
+        "icp", "canister", "metadata", policy["canister_name"], name, "--json",
         *icp_base(policy, identity),
     ]
-    command[4] = name
     result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
     if result.returncode:
         return None
