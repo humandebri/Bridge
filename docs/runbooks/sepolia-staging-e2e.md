@@ -134,19 +134,32 @@ state countと固定guard version `1`をupgrade引数にも含め、test-deploym
 ```sh
 BRIDGE_STAGING_IDENTITY=<identity> \
   scripts/plan007/staging-canister-upgrade.sh \
-    --wasm "$(pwd)/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
     --evidence /secure/work/staging-rpc-replacement.json
 
 # preflight結果とpolicyを別レビューし、Canister upgradeの明示承認後だけ実行する。
 BRIDGE_STAGING_IDENTITY=<identity> \
   scripts/plan007/staging-canister-upgrade.sh --execute \
-    --wasm "$(pwd)/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
     --evidence /secure/work/staging-rpc-replacement.json
 ```
 
 driverは`icp deploy`や暗黙buildを使用しない。成功または適用済みpostconditionをすべて確認した場合だけ
 evidenceをatomicに確定する。install失敗またはpostcondition不一致では再実行せず、CLI出力と未確定artifactを
 保全して原因をreviewする。過去のarchive evidenceは変更しない。
+
+module hashがpolicyに固定されたmetadata欠落Wasmと一致し、RPC digest、schema、instance、state count、
+storage integrityがすべて更新後の値と一致する場合に限り、次の明示flagで公開Candid metadataを修復できる。
+通常の置換・適用済み経路へこのflagを使用してはならない。
+
+```sh
+BRIDGE_STAGING_IDENTITY=<identity> \
+  scripts/plan007/staging-canister-upgrade.sh --repair-missing-candid-metadata \
+    --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
+    --evidence /secure/work/staging-candid-metadata-repair.json
+
+# preflight結果を別レビューし、明示承認後だけ --execute を追加する。
+```
 
 ```sh
 scripts/plan007/staging-e2e-driver.sh record /secure/work/preflight-evidence.json

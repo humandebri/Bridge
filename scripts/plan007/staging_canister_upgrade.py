@@ -76,12 +76,15 @@ def validate_policy(policy: dict[str, Any]) -> None:
     required = {
         "schema_version", "environment", "canister_name", "canister_id",
         "stable_schema_version", "deployment_instance_id", "base_chain_id",
-        "evm_rpc_canister_id", "before_module_sha256", "before_rpc_urls",
+        "evm_rpc_canister_id", "before_module_sha256", "metadata_missing_module_sha256", "before_rpc_urls",
         "before_rpc_urls_sha256", "after_rpc_urls", "after_rpc_urls_sha256",
         "status_counts",
     }
-    if set(policy) != required or policy["schema_version"] != 1:
+    if set(policy) != required or policy["schema_version"] != 2:
         fail("RPC replacement policy has an unsupported shape")
+    for field in ("before_module_sha256", "metadata_missing_module_sha256"):
+        if not isinstance(policy[field], str) or not re.fullmatch(r"[0-9a-f]{64}", policy[field]):
+            fail(f"policy {field} must be a lowercase SHA-256 digest")
     for side in ("before", "after"):
         urls = policy[f"{side}_rpc_urls"]
         if not isinstance(urls, list) or len(urls) != 3 or len(set(urls)) != 3:
@@ -179,6 +182,9 @@ def verify_snapshot(snapshot_value: dict[str, Any], policy: dict[str, Any], *, p
     if phase == "before":
         expected["module_sha256"] = policy["before_module_sha256"]
         expected["rpc_provider_urls_sha256"] = policy["before_rpc_urls_sha256"]
+    elif phase == "metadata-missing":
+        expected["module_sha256"] = policy["metadata_missing_module_sha256"]
+        expected["rpc_provider_urls_sha256"] = policy["after_rpc_urls_sha256"]
     else:
         expected["module_sha256"] = wasm_hash
         expected["rpc_provider_urls_sha256"] = policy["after_rpc_urls_sha256"]
@@ -187,24 +193,62 @@ def verify_snapshot(snapshot_value: dict[str, Any], policy: dict[str, Any], *, p
             fail(f"{phase} snapshot {field} does not match the reviewed policy")
 
 
-def live_candid(policy: dict[str, Any], identity: str) -> str:
-    payload = json.loads(run([
+def live_metadata(policy: dict[str, Any], identity: str, name: str) -> str | None:
+    command = [
         "icp", "canister", "metadata", policy["canister_name"], "candid:service", "--json",
         *icp_base(policy, identity),
-    ]))
+    ]
+    command[4] = name
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+    if result.returncode:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        fail(f"live canister returned invalid {name} metadata JSON")
     value = payload.get("value")
-    if not isinstance(value, str) or "service" not in value:
-        fail("live canister did not expose candid:service metadata")
+    if not isinstance(value, str):
+        fail(f"live canister returned invalid {name} metadata")
     return value
 
 
-def verify_candid_compatibility(policy: dict[str, Any], identity: str, did: Path) -> str:
-    value = live_candid(policy, identity)
+def verify_candid_compatibility(policy: dict[str, Any], identity: str, did: Path) -> str | None:
+    value = live_metadata(policy, identity, "candid:service")
+    if value is None:
+        return None
     with tempfile.NamedTemporaryFile("w", suffix=".did", encoding="utf-8") as previous:
         previous.write(value)
         previous.flush()
         run(["didc", "check", str(did), previous.name])
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def verify_candidate_metadata(wasm: Path, did: Path) -> None:
+    sections = run(["ic-wasm", str(wasm), "metadata"]).splitlines()
+    if sections.count("icp:public candid:service") != 1:
+        fail("explicit Wasm must contain one public candid:service metadata section")
+    if sections.count("icp:private kinic:deployment") != 1:
+        fail("explicit Wasm must contain one private kinic:deployment metadata section")
+    candid = run(["ic-wasm", str(wasm), "metadata", "candid:service"]).removesuffix("\n")
+    if candid.encode() != did.read_bytes():
+        fail("explicit Wasm Candid metadata does not match the checked-in interface")
+    if run(["ic-wasm", str(wasm), "metadata", "kinic:deployment"]).strip() != "test-deployment":
+        fail("explicit Wasm deployment metadata is invalid")
+
+
+def verify_live_metadata(policy: dict[str, Any], identity: str, did: Path) -> str:
+    candid = live_metadata(policy, identity, "candid:service")
+    if candid is None:
+        fail("live canister did not expose candid:service metadata")
+    with tempfile.NamedTemporaryFile("w", suffix=".did", encoding="utf-8") as live:
+        live.write(candid)
+        live.flush()
+        run(["didc", "check", str(did), live.name])
+    if candid.encode() != did.read_bytes():
+        fail("live canister Candid metadata does not match the checked-in interface")
+    if live_metadata(policy, identity, "kinic:deployment") != "test-deployment":
+        fail("live canister deployment metadata is invalid")
+    return hashlib.sha256(candid.encode()).hexdigest()
 
 
 def verify_provider_chains(policy: dict[str, Any]) -> None:
@@ -243,6 +287,7 @@ def write_evidence(path: Path, value: dict[str, Any]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--repair-missing-candid-metadata", action="store_true")
     parser.add_argument("--wasm", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     return parser.parse_args()
@@ -253,7 +298,7 @@ def main() -> None:
     identity = os.environ.get("BRIDGE_STAGING_IDENTITY")
     if not identity:
         fail("BRIDGE_STAGING_IDENTITY is required")
-    for tool in ("cast", "didc", "git", "icp"):
+    for tool in ("cast", "didc", "git", "ic-wasm", "icp"):
         if shutil.which(tool) is None:
             fail(f"{tool} is required")
     wasm = args.wasm.resolve()
@@ -283,19 +328,42 @@ def main() -> None:
     head = verify_clean_evidence(wasm, DEFAULT_DID, local_evidence)
     wasm_hash = sha256(wasm)
     did_hash = sha256(DEFAULT_DID)
-    candid_hash = verify_candid_compatibility(policy, identity, DEFAULT_DID)
+    verify_candidate_metadata(wasm, DEFAULT_DID)
     before = snapshot(policy, identity, DEFAULT_DID)
     digest = before["rpc_provider_urls_sha256"]
-    if digest == policy["after_rpc_urls_sha256"]:
+    repair = (
+        digest == policy["after_rpc_urls_sha256"]
+        and before["module_sha256"] == policy["metadata_missing_module_sha256"]
+    )
+    if repair:
+        if not args.repair_missing_candid_metadata:
+            fail("known metadata-missing staging module requires the explicit repair flag")
+        verify_snapshot(before, policy, phase="metadata-missing", wasm_hash=wasm_hash)
+        candid_hash = verify_candid_compatibility(policy, identity, DEFAULT_DID)
+        if candid_hash is not None:
+            fail("metadata repair is allowed only when live candid:service metadata is absent")
+        verify_provider_chains(policy)
+        if not args.execute:
+            print(json.dumps({"result": "metadata-repair-preflight-passed", "before": before}, sort_keys=True))
+            return
+        install(policy, identity, wasm)
+        after = snapshot(policy, identity, DEFAULT_DID)
+        verify_snapshot(after, policy, phase="after", wasm_hash=wasm_hash)
+        after_candid_hash = verify_live_metadata(policy, identity, DEFAULT_DID)
+        result = "metadata-repaired"
+    elif digest == policy["after_rpc_urls_sha256"]:
         verify_snapshot(before, policy, phase="after", wasm_hash=wasm_hash)
+        candid_hash = verify_live_metadata(policy, identity, DEFAULT_DID)
         verify_provider_chains(policy)
         if not args.execute:
             print(json.dumps({"result": "preflight-passed", "before": before}, sort_keys=True))
             return
         result = "already-applied"
         after = before
+        after_candid_hash = candid_hash
     else:
         verify_snapshot(before, policy, phase="before", wasm_hash=wasm_hash)
+        candid_hash = verify_live_metadata(policy, identity, DEFAULT_DID)
         verify_provider_chains(policy)
         if not args.execute:
             print(json.dumps({"result": "preflight-passed", "before": before}, sort_keys=True))
@@ -303,6 +371,7 @@ def main() -> None:
         install(policy, identity, wasm)
         after = snapshot(policy, identity, DEFAULT_DID)
         verify_snapshot(after, policy, phase="after", wasm_hash=wasm_hash)
+        after_candid_hash = verify_live_metadata(policy, identity, DEFAULT_DID)
         result = "upgraded"
     evidence = {
         "schema_version": 1,
@@ -313,6 +382,7 @@ def main() -> None:
         "wasm_sha256": wasm_hash,
         "candid_sha256": did_hash,
         "live_candid_sha256_before": candid_hash,
+        "live_candid_sha256_after": after_candid_hash,
         "policy_sha256": sha256(DEFAULT_POLICY),
         "before": before,
         "after": after,

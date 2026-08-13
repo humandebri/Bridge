@@ -10,7 +10,7 @@ import { idlFactory as mockIdl, init as mockInitFactory } from "./generated/mock
 import { PocketIc, SubnetStateType } from "@dfinity/pic";
 
 const root = resolve(__dirname, "..");
-const bridgeWasm = resolve(root, "target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm");
+const bridgeWasm = resolve(root, "target/test-deployment/staging/bridge_canister.wasm");
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
 const testLedgerFee = 10_000n;
 

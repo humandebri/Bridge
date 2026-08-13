@@ -63,7 +63,7 @@ export async function generateLocalEvidence(root = defaultRoot) {
     deployment_instance_id: bytesHex(upgrade.after.public_config.deployment_instance_id),
     created_at: new Date().toISOString(),
     source_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
-    bridge_wasm_sha256: await digest(root, "target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm"),
+    bridge_wasm_sha256: await digest(root, "target/test-deployment/staging/bridge_canister.wasm"),
     bridge_runtime_template_sha256: await runtimeTemplateSha256FromFile(
       path.join(root, "contracts/out-staging/Bridge.sol/Bridge.json"),
     ),

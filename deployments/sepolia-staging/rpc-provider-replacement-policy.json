@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "environment": "sepolia-staging",
   "canister_name": "bridge-sepolia",
   "canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
@@ -8,6 +8,7 @@
   "base_chain_id": 84532,
   "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
   "before_module_sha256": "da0b90b9464cf7f53ae84547a7720d1bd541944b42dbc64dd5a2bb416a5886ab",
+  "metadata_missing_module_sha256": "f2388e5bed87a69a27e48469de864933f7577166fd1bafd4b82a842081303834",
   "before_rpc_urls": [
     "https://base-sepolia-rpc.publicnode.com",
     "https://sepolia.base.org",

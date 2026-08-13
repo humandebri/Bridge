@@ -89,6 +89,19 @@ class StagingUpgradeDriverTests(unittest.TestCase):
     def write_tools(self) -> None:
         self.write_executable("cast", "#!/bin/sh\n[ \"${MOCK_CHAIN_FAIL:-0}\" = 0 ] || exit 1\necho \"${MOCK_CHAIN_ID:-84532}\"\n")
         self.write_executable("didc", "#!/bin/sh\n[ \"${MOCK_DIDC_FAIL:-0}\" = 0 ] || exit 1\n")
+        self.write_executable("ic-wasm", r'''#!/usr/bin/env python3
+import os, pathlib, sys
+args = sys.argv[1:]
+if args[-1] == "metadata":
+    sections = ["icp:private kinic:deployment"] if os.environ.get("MOCK_CANDID_SECTION_MISSING") == "1" else ["icp:public candid:service", "icp:private kinic:deployment"]
+    print("\n".join(sections))
+elif args[-2:] == ["metadata", "candid:service"]:
+    print(pathlib.Path(os.environ["MOCK_DID"]).read_text())
+elif args[-2:] == ["metadata", "kinic:deployment"]:
+    print(os.environ.get("MOCK_CANDID_DEPLOYMENT", "test-deployment"))
+else:
+    raise SystemExit(2)
+''')
         self.write_executable("icp", r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
@@ -98,14 +111,23 @@ after_module = os.environ["MOCK_AFTER_MODULE"]
 applied = (state / "applied").exists() or os.environ.get("MOCK_ALREADY_APPLIED") == "1"
 digest = policy["after_rpc_urls_sha256"] if applied else policy["before_rpc_urls_sha256"]
 digest = os.environ.get("MOCK_DIGEST", digest)
-module = os.environ.get("MOCK_MODULE", after_module if applied else policy["before_module_sha256"])
+module = after_module if (state / "metadata-repaired").exists() else os.environ.get(
+    "MOCK_MODULE", after_module if applied else policy["before_module_sha256"]
+)
 def blob(value): return ''.join('\\' + value[i:i+2] for i in range(0, len(value), 2))
 if args[:2] == ["canister", "install"]:
     (state / "install.json").write_text(json.dumps(args))
     if os.environ.get("MOCK_INSTALL_FAIL") == "1": raise SystemExit(1)
-    (state / "applied").touch(); raise SystemExit(0)
+    (state / "applied").touch(); (state / "metadata-repaired").touch(); raise SystemExit(0)
 if args[:2] == ["canister", "metadata"]:
-    print(json.dumps({"value": "service : {}"})); raise SystemExit(0)
+    name = args[3]
+    if name == "candid:service":
+        if os.environ.get("MOCK_METADATA_MISSING") == "1" and not (state / "metadata-repaired").exists():
+            raise SystemExit(1)
+        print(json.dumps({"value": pathlib.Path(os.environ["MOCK_DID"]).read_text()})); raise SystemExit(0)
+    if name == "kinic:deployment":
+        print(json.dumps({"value": os.environ.get("MOCK_LIVE_DEPLOYMENT", "test-deployment")})); raise SystemExit(0)
+    raise SystemExit(2)
 if args[:2] == ["canister", "status"]:
     if "--id-only" in args: print(os.environ.get("MOCK_CANISTER_ID", policy["canister_id"])); raise SystemExit(0)
     print(json.dumps({"module_hash": module})); raise SystemExit(0)
@@ -137,6 +159,7 @@ print(json.dumps({"response_candid": candid}))
             "MOCK_STATE": str(self.state),
             "MOCK_POLICY": str(self.repo / POLICY_PATH),
             "MOCK_AFTER_MODULE": self.after_module,
+            "MOCK_DID": str(self.did),
         })
         environment.update(changes)
         return subprocess.run([
@@ -179,6 +202,83 @@ print(json.dumps({"response_candid": candid}))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.install_record.exists())
         self.assertEqual(json.loads((self.base / "result.json").read_text())["result"], "already-applied")
+
+    def test_known_missing_metadata_requires_explicit_repair(self) -> None:
+        missing_module = str(self.policy()["metadata_missing_module_sha256"])
+        rejected = self.run_driver(
+            MOCK_ALREADY_APPLIED="1", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1"
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertFalse(self.install_record.exists())
+
+        preflight = self.run_driver(
+            "--repair-missing-candid-metadata",
+            MOCK_ALREADY_APPLIED="1", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1",
+        )
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        self.assertIn("metadata-repair-preflight-passed", preflight.stdout)
+        self.assertFalse(self.install_record.exists())
+
+        repaired = self.run_driver(
+            "--repair-missing-candid-metadata", "--execute",
+            MOCK_ALREADY_APPLIED="1", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1",
+        )
+        self.assertEqual(repaired.returncode, 0, repaired.stderr)
+        evidence = json.loads((self.base / "result.json").read_text())
+        self.assertEqual(evidence["result"], "metadata-repaired")
+        self.assertEqual(evidence["before"]["module_sha256"], missing_module)
+        self.assertEqual(evidence["after"]["module_sha256"], self.after_module)
+        self.assertEqual(evidence["live_candid_sha256_after"], evidence["candid_sha256"])
+
+    def test_metadata_repair_rejects_present_metadata_and_unknown_module(self) -> None:
+        missing_module = str(self.policy()["metadata_missing_module_sha256"])
+        present = self.run_driver(
+            "--repair-missing-candid-metadata", "--execute",
+            MOCK_ALREADY_APPLIED="1", MOCK_MODULE=missing_module,
+        )
+        self.assertNotEqual(present.returncode, 0)
+        self.assertFalse(self.install_record.exists())
+
+        unknown = self.run_driver(
+            "--repair-missing-candid-metadata", "--execute",
+            MOCK_ALREADY_APPLIED="1", MOCK_MODULE="11" * 32, MOCK_METADATA_MISSING="1",
+        )
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertFalse(self.install_record.exists())
+
+    def test_metadata_repair_rejects_snapshot_drift_before_install(self) -> None:
+        missing_module = str(self.policy()["metadata_missing_module_sha256"])
+        cases = {
+            "canister ID": {"MOCK_CANISTER_ID": "aaaaa-aa"},
+            "schema": {"MOCK_SCHEMA": "31"},
+            "instance": {"MOCK_INSTANCE": "0x" + "11" * 32},
+            "configured chain": {"MOCK_PUBLIC_CHAIN": "1"},
+            "EVM RPC canister": {"MOCK_EVM_CANISTER": "aaaaa-aa"},
+            "RPC digest": {"MOCK_DIGEST": "22" * 32},
+            "status count": {"MOCK_COUNT_DRIFT": "1"},
+            "storage integrity": {"MOCK_INTEGRITY_FAIL": "1"},
+            "provider chain": {"MOCK_CHAIN_ID": "1"},
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                result = self.run_driver(
+                    "--repair-missing-candid-metadata", "--execute",
+                    MOCK_ALREADY_APPLIED="1", MOCK_MODULE=missing_module,
+                    MOCK_METADATA_MISSING="1", **changes,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.install_record.exists())
+
+    def test_candidate_metadata_is_validated_before_live_calls(self) -> None:
+        cases = {
+            "missing Candid section": {"MOCK_CANDID_SECTION_MISSING": "1"},
+            "wrong deployment tag": {"MOCK_CANDID_DEPLOYMENT": "production"},
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                result = self.run_driver("--execute", **changes)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.install_record.exists())
 
     def test_preconditions_fail_before_install(self) -> None:
         cases = {

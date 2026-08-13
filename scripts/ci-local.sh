@@ -150,6 +150,7 @@ run_versions() {
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
   node "$ROOT/scripts/plan007/test-check-reinstall-instance.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
+  python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
   python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
   node "$ROOT/scripts/plan007/test-capture-obsolete-pause-evidence.mjs"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
@@ -302,13 +303,7 @@ run_rust_integration() {
     --target wasm32-unknown-unknown \
     --release \
     -p bridge-canister
-  CARGO_TARGET_DIR="$ROOT/target/test-deployment" cargo build \
-    --locked \
-    --manifest-path "$ROOT/Cargo.toml" \
-    --target wasm32-unknown-unknown \
-    --release \
-    -p bridge-canister \
-    --features test-deployment
+  "$ROOT/scripts/plan007/build-staging-canister-wasm.sh" >/dev/null
   cargo build \
     --locked \
     --manifest-path "$ROOT/Cargo.toml" \
@@ -971,7 +966,7 @@ run_smoke() {
     -e local \
     --mode "$ICP_TEST_CANISTER_INSTALL_MODE" \
     --yes \
-    --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --wasm "$ROOT/target/test-deployment/staging/bridge_canister.wasm" \
     --args "$bridge_init_args" \
     --project-root-override "$ROOT"
   icp canister status bridge-canister -e local --json \
@@ -1032,7 +1027,7 @@ for field, (value, candid_type) in expected.items():
   icp canister install bridge-canister \
     -e local \
     --mode upgrade \
-    --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --wasm "$ROOT/target/test-deployment/staging/bridge_canister.wasm" \
     --project-root-override "$ROOT"
   icp canister call bridge-canister get_public_config '()' \
     -e local --query --json \
