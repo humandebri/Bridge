@@ -45,7 +45,7 @@ import {
   removePendingConfirmation,
   savePendingConfirmation,
 } from "@/lib/pending-confirmations"
-import { SettlementConfirmationCoordinator } from "./settlement-confirmation-coordinator"
+import { SettlementConfirmationCoordinator } from "../settlement-confirmation-coordinator"
 
 const transactionHash = `0x${"33".repeat(32)}` as const
 const withdrawalId = `0x${"07".repeat(32)}` as const
