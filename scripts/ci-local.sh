@@ -140,9 +140,10 @@ run_no_automatic_execution_guards() {
     echo "recurring canister execution path found" >&2
     return 1
   fi
-  if rg -n '\bunbounded_wait\b' \
-    "$ROOT/canister/bridge-canister/src" \
-    --glob '!signer.rs'; then
+  if (
+    cd "$ROOT/canister/bridge-canister/src"
+    rg -n '\bunbounded_wait\b' . --glob '!/signer.rs'
+  ); then
     echo "unbounded canister execution path found" >&2
     return 1
   fi
@@ -156,7 +157,7 @@ run_no_automatic_execution_guards() {
   if [[ "$signer_unbounded_count" != "0" ]] \
     && { [[ "$signer_unbounded_count" != "1" ]] \
       || ! rg -q \
-        '^[[:space:]]*Call::unbounded_wait\(Principal::management_canister\(\), "sign_with_ecdsa"\)[[:space:]]*$' \
+        '^[[:space:]]*Call::unbounded_wait\(::candid::Principal::management_canister\(\), "sign_with_ecdsa"\)[[:space:]]*$' \
         "$ROOT/canister/bridge-canister/src/signer.rs"; }; then
     echo "threshold signing may contain only the reviewed unbounded management call" >&2
     return 1

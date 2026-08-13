@@ -26,6 +26,11 @@ class TrustedPrGateTests(unittest.TestCase):
             workflow.index("ref: ${{ github.event.pull_request.base.ref }}"),
             workflow.index("python3 scripts/ci_changed_areas.py"),
         )
+        self.assertIn("sudo apt-get install --yes ripgrep", workflow)
+        self.assertLess(
+            workflow.index("sudo apt-get install --yes ripgrep"),
+            workflow.index("python3 scripts/test_ci_modes.py"),
+        )
 
     def test_untrusted_jobs_are_read_only_and_sha_pinned(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

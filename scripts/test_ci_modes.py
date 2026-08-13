@@ -92,6 +92,7 @@ class CiModeTests(unittest.TestCase):
         signer_source: str,
         *,
         additional_source: str = "",
+        additional_source_path: str = "other.rs",
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -99,7 +100,9 @@ class CiModeTests(unittest.TestCase):
             canister_source.mkdir(parents=True)
             (canister_source / "signer.rs").write_text(signer_source, encoding="utf-8")
             if additional_source:
-                (canister_source / "other.rs").write_text(
+                additional_path = canister_source / additional_source_path
+                additional_path.parent.mkdir(parents=True, exist_ok=True)
+                additional_path.write_text(
                     additional_source,
                     encoding="utf-8",
                 )
@@ -126,43 +129,72 @@ class CiModeTests(unittest.TestCase):
         self.assertEqual(zero_calls.returncode, 0, zero_calls.stderr)
 
         reviewed_call = self.run_automatic_execution_guard(
-            'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa")\n'
+            'Call::unbounded_wait(::candid::Principal::management_canister(), '
+            '"sign_with_ecdsa")\n'
         )
         self.assertEqual(reviewed_call.returncode, 0, reviewed_call.stderr)
 
     def test_threshold_signing_guard_rejects_unreviewed_unbounded_calls(self) -> None:
         cases = {
             "multiple": (
-                'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa"); '
-                'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa");\n',
+                'Call::unbounded_wait(::candid::Principal::management_canister(), '
+                '"sign_with_ecdsa"); '
+                'Call::unbounded_wait(::candid::Principal::management_canister(), '
+                '"sign_with_ecdsa");\n',
                 "",
+                "other.rs",
             ),
             "other method": (
-                'Call::unbounded_wait(Principal::management_canister(), "raw_rand")\n',
+                'Call::unbounded_wait(::candid::Principal::management_canister(), "raw_rand")\n',
                 "",
+                "other.rs",
             ),
             "other canister": (
                 'Call::unbounded_wait(other_canister, "sign_with_ecdsa")\n',
                 "",
+                "other.rs",
             ),
             "other source": (
                 "fn signer() {}\n",
+                'Call::unbounded_wait(::candid::Principal::management_canister(), '
+                '"sign_with_ecdsa")\n',
+                "other.rs",
+            ),
+            "nested signer source": (
+                "fn signer() {}\n",
+                'Call::unbounded_wait(::candid::Principal::management_canister(), '
+                '"sign_with_ecdsa")\n',
+                "nested/signer.rs",
+            ),
+            "unqualified principal": (
                 'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa")\n',
+                "",
+                "other.rs",
+            ),
+            "shadowed principal": (
+                "struct Principal;\n"
+                "impl Principal { fn management_canister() {} }\n"
+                'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa")\n',
+                "",
+                "other.rs",
             ),
             "signer heartbeat": (
                 "fn heartbeat() {}\n",
                 "",
+                "other.rs",
             ),
             "signer recurring timer": (
                 "fn signer() { set_timer_interval(); }\n",
                 "",
+                "other.rs",
             ),
         }
-        for name, (signer_source, additional_source) in cases.items():
+        for name, (signer_source, additional_source, additional_source_path) in cases.items():
             with self.subTest(name=name):
                 result = self.run_automatic_execution_guard(
                     signer_source,
                     additional_source=additional_source,
+                    additional_source_path=additional_source_path,
                 )
                 self.assertNotEqual(result.returncode, 0, result.stderr)
 

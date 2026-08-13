@@ -46,6 +46,10 @@ jobs:
         run: |
           git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" |
             python3 scripts/ci_changed_areas.py --null --github-output "$GITHUB_OUTPUT"
+      - name: Install trusted classifier dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
       - name: Validate trusted classifier
         run: |
           python3 scripts/test_ci_changed_areas.py
