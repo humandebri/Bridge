@@ -159,7 +159,10 @@ class CiModeTests(unittest.TestCase):
             )
 
     def test_threshold_signing_guard_allows_the_transition_from_zero_to_one_call(self) -> None:
-        zero_calls = self.run_automatic_execution_guard("fn signer() {}\n")
+        zero_calls = self.run_automatic_execution_guard(
+            'let operation = "sign_with_ecdsa";\n'
+            'bounded_management_call("sign_with_ecdsa", &(sign_args,));\n'
+        )
         self.assertEqual(zero_calls.returncode, 0, zero_calls.stderr)
 
         reviewed_call = self.run_automatic_execution_guard(
@@ -203,6 +206,26 @@ class CiModeTests(unittest.TestCase):
             "shadowed dependency": (
                 "extern crate replacement as ic_cdk_management_canister;\n"
                 "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n",
+                "",
+                "other.rs",
+            ),
+            "aliased wrapper import": (
+                "use ic_cdk_management_canister::sign_with_ecdsa as sign;\n"
+                "sign(sign_args);\n",
+                "",
+                "other.rs",
+            ),
+            "grouped aliased wrapper import": (
+                "use ic_cdk_management_canister::{\n"
+                "    sign_with_ecdsa as sign,\n"
+                "};\n"
+                "sign(sign_args);\n",
+                "",
+                "other.rs",
+            ),
+            "wrapper function value": (
+                "let sign = ::ic_cdk_management_canister::sign_with_ecdsa;\n"
+                "sign(sign_args);\n",
                 "",
                 "other.rs",
             ),

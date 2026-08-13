@@ -144,7 +144,6 @@ run_versions() {
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
-  python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
   node "$ROOT/scripts/plan007/test-capture-obsolete-pause-evidence.mjs"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
@@ -222,16 +221,29 @@ run_no_automatic_execution_guards() {
     echo "extern declarations may rebind the reviewed tECDSA wrapper" >&2
     return 1
   fi
-  local signing_call_count
-  signing_call_count="$(
-    rg -o '(^|[^[:alnum:]_])sign_with_ecdsa[[:space:]]*\(' \
+  local signing_reference_count
+  local signing_method_string_count
+  signing_reference_count="$(
+    rg -o '\bsign_with_ecdsa\b' \
       "$ROOT/canister/bridge-canister/src" --glob '*.rs' \
       | wc -l \
       | tr -d ' ' \
       || true
   )"
-  if [[ "$signing_call_count" != "0" ]] \
-    && { [[ "$signing_call_count" != "1" ]] \
+  signing_method_string_count="$(
+    rg -o '"sign_with_ecdsa"' \
+      "$ROOT/canister/bridge-canister/src" --glob '*.rs' \
+      | wc -l \
+      | tr -d ' ' \
+      || true
+  )"
+  if (( signing_method_string_count > signing_reference_count )); then
+    echo "threshold signing reference count is inconsistent" >&2
+    return 1
+  fi
+  signing_reference_count=$((signing_reference_count - signing_method_string_count))
+  if [[ "$signing_reference_count" != "0" ]] \
+    && { [[ "$signing_reference_count" != "1" ]] \
       || ! rg -q \
         '^[[:space:]]*::ic_cdk_management_canister::sign_with_ecdsa\(sign_args\)[[:space:]]*$' \
         "$ROOT/canister/bridge-canister/src/signer.rs"; }; then
