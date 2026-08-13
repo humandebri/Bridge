@@ -1,3 +1,7 @@
+overrides:
+  # Security override until @istanbuljs/load-nyc-config excludes vulnerable js-yaml releases.
+  js-yaml: 3.15.1
+
 allowBuilds:
   '@dfinity/pic': true
   '@swc/core': true

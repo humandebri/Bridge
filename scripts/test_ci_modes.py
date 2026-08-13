@@ -86,14 +86,48 @@ class CiModeTests(unittest.TestCase):
         signer_source: str,
         *,
         additional_source: str = "",
+        additional_source_path: str = "other.rs",
+        workspace_dependency: str = '"=0.1.1"',
+        canister_dependency: str = "{ workspace = true }",
+        lock_version: str = "0.1.1",
+        lock_source: str = "registry+https://github.com/rust-lang/crates.io-index",
+        lock_checksum: str = "92c1319a274caebf0ab70ab826b8905c29e8563498289356b9a59464f2a85c56",
+        workspace_suffix: str = "",
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             canister_source = root / "canister" / "bridge-canister" / "src"
             canister_source.mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                "[workspace]\n"
+                "members = [\"canister/bridge-canister\"]\n"
+                "[workspace.dependencies]\n"
+                f"ic-cdk-management-canister = {workspace_dependency}\n"
+                f"{workspace_suffix}",
+                encoding="utf-8",
+            )
+            (canister_source.parent / "Cargo.toml").write_text(
+                "[package]\n"
+                'name = "bridge-canister"\n'
+                'version = "0.1.0"\n'
+                "[dependencies]\n"
+                f"ic-cdk-management-canister = {canister_dependency}\n",
+                encoding="utf-8",
+            )
+            (root / "Cargo.lock").write_text(
+                "version = 4\n\n"
+                "[[package]]\n"
+                'name = "ic-cdk-management-canister"\n'
+                f'version = "{lock_version}"\n'
+                f'source = "{lock_source}"\n'
+                f'checksum = "{lock_checksum}"\n',
+                encoding="utf-8",
+            )
             (canister_source / "signer.rs").write_text(signer_source, encoding="utf-8")
             if additional_source:
-                (canister_source / "other.rs").write_text(
+                additional_path = canister_source / additional_source_path
+                additional_path.parent.mkdir(parents=True, exist_ok=True)
+                additional_path.write_text(
                     additional_source,
                     encoding="utf-8",
                 )
@@ -102,6 +136,9 @@ class CiModeTests(unittest.TestCase):
             (root / "ui" / "src").mkdir(parents=True)
             script = (
                 "set -euo pipefail\n"
+                "verify_tecdsa_wrapper_dependency() {\n"
+                f"{function_body('verify_tecdsa_wrapper_dependency')}"
+                "}\n"
                 "run_no_automatic_execution_guards() {\n"
                 f"{function_body('run_no_automatic_execution_guards')}"
                 "}\n"
@@ -120,45 +157,123 @@ class CiModeTests(unittest.TestCase):
         self.assertNotEqual(zero_calls.returncode, 0, zero_calls.stderr)
 
         reviewed_call = self.run_automatic_execution_guard(
-            'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa")\n'
+            "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n"
         )
         self.assertEqual(reviewed_call.returncode, 0, reviewed_call.stderr)
 
-    def test_threshold_signing_guard_rejects_unreviewed_unbounded_calls(self) -> None:
+    def test_threshold_signing_guard_rejects_unreviewed_calls(self) -> None:
         cases = {
             "multiple": (
-                'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa"); '
-                'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa");\n',
+                "::ic_cdk_management_canister::sign_with_ecdsa(sign_args);\n"
+                "::ic_cdk_management_canister::sign_with_ecdsa(sign_args);\n",
                 "",
+                "other.rs",
             ),
-            "other method": (
-                'Call::unbounded_wait(Principal::management_canister(), "raw_rand")\n',
+            "raw unbounded": (
+                '::ic_cdk::call::Call::unbounded_wait(target, "raw_rand")\n',
                 "",
+                "other.rs",
             ),
-            "other canister": (
-                'Call::unbounded_wait(other_canister, "sign_with_ecdsa")\n',
+            "unqualified wrapper": (
+                "sign_with_ecdsa(sign_args)\n",
                 "",
+                "other.rs",
             ),
             "other source": (
                 "fn signer() {}\n",
-                'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa")\n',
+                "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n",
+                "other.rs",
+            ),
+            "nested signer source": (
+                "fn signer() {}\n",
+                "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n",
+                "nested/signer.rs",
+            ),
+            "unformatted reviewed call": (
+                "let result = ::ic_cdk_management_canister::sign_with_ecdsa(sign_args);\n",
+                "",
+                "other.rs",
+            ),
+            "shadowed dependency": (
+                "extern crate replacement as ic_cdk_management_canister;\n"
+                "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n",
+                "",
+                "other.rs",
+            ),
+            "aliased wrapper import": (
+                "use ic_cdk_management_canister::sign_with_ecdsa as sign;\n"
+                "sign(sign_args);\n",
+                "",
+                "other.rs",
+            ),
+            "grouped aliased wrapper import": (
+                "use ic_cdk_management_canister::{\n"
+                "    sign_with_ecdsa as sign,\n"
+                "};\n"
+                "sign(sign_args);\n",
+                "",
+                "other.rs",
+            ),
+            "wrapper function value": (
+                "let sign = ::ic_cdk_management_canister::sign_with_ecdsa;\n"
+                "sign(sign_args);\n",
+                "",
+                "other.rs",
             ),
             "signer heartbeat": (
                 "fn heartbeat() {}\n",
                 "",
+                "other.rs",
             ),
             "signer recurring timer": (
                 "fn signer() { set_timer_interval(); }\n",
                 "",
+                "other.rs",
             ),
         }
-        for name, (signer_source, additional_source) in cases.items():
+        for name, (signer_source, additional_source, additional_source_path) in cases.items():
             with self.subTest(name=name):
                 result = self.run_automatic_execution_guard(
                     signer_source,
                     additional_source=additional_source,
+                    additional_source_path=additional_source_path,
                 )
                 self.assertNotEqual(result.returncode, 0, result.stderr)
+
+    def test_threshold_signing_guard_rejects_wrapper_supply_chain_changes(self) -> None:
+        reviewed = "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n"
+        cases = {
+            "workspace path": {"workspace_dependency": '{ path = "vendor/wrapper" }'},
+            "workspace rename": {
+                "workspace_dependency": '{ version = "=0.1.1", package = "replacement" }'
+            },
+            "canister path": {"canister_dependency": '{ path = "../../replacement" }'},
+            "lock version": {"lock_version": "0.1.2"},
+            "lock source": {"lock_source": "git+https://example.invalid/wrapper"},
+            "lock checksum": {"lock_checksum": "0" * 64},
+            "workspace patch": {
+                "workspace_suffix": (
+                    "\n[patch.crates-io]\n"
+                    'ic-cdk-management-canister = { path = "vendor/wrapper" }\n'
+                )
+            },
+        }
+        for name, overrides in cases.items():
+            with self.subTest(name=name):
+                result = self.run_automatic_execution_guard(reviewed, **overrides)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+
+    def test_versions_rejects_npm_lockfiles(self) -> None:
+        body = function_body("run_versions")
+        self.assertLess(body.index("  verify_no_npm_lockfiles\n"), body.index("check_tool_versions.sh"))
+        guard = function_body("verify_no_npm_lockfiles")
+        for relative_path in (
+            "package-lock.json",
+            "npm-shrinkwrap.json",
+            "ui/package-lock.json",
+            "ui/npm-shrinkwrap.json",
+        ):
+            self.assertIn(relative_path, guard)
 
 
 if __name__ == "__main__":

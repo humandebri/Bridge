@@ -4,7 +4,7 @@ use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use ic_cdk::call::Call;
 use ic_cdk_management_canister::{
     cost_sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, EcdsaPublicKeyResult,
-    SignWithEcdsaArgs, SignWithEcdsaResult,
+    SignCallError, SignWithEcdsaArgs,
 };
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use serde::de::DeserializeOwned;
@@ -250,21 +250,33 @@ async fn threshold_signature(
             detail: format!("available={available} required={required_balance}"),
         });
     }
-    Ok(
-        Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa")
-            .with_args(&(sign_args,))
-            .with_cycles(cycles)
+    let result = {
+        ::ic_cdk_management_canister::sign_with_ecdsa(sign_args)
             .await
-            .map_err(|error| management_error("sign_with_ecdsa", error.into()))?
-            .candid::<SignWithEcdsaResult>()
-            .map_err(|error| {
-                management_error(
-                    "sign_with_ecdsa",
-                    ic_cdk::call::Error::CandidDecodeFailed(error),
-                )
-            })?
-            .signature,
-    )
+            .map_err(signing_call_error)?
+    };
+    Ok(result.signature)
+}
+
+fn signing_call_error(error: SignCallError) -> SignerError {
+    let class = match &error {
+        SignCallError::SignCostError(_) => SigningFailureClass::CostUnavailable,
+        SignCallError::CallFailed(ic_cdk::call::CallFailed::InsufficientLiquidCycleBalance(_)) => {
+            SigningFailureClass::InsufficientCycles
+        }
+        SignCallError::CallFailed(ic_cdk::call::CallFailed::CallPerformFailed(_)) => {
+            SigningFailureClass::CallFailed
+        }
+        SignCallError::CallFailed(ic_cdk::call::CallFailed::CallRejected(_)) => {
+            SigningFailureClass::CallRejected
+        }
+        SignCallError::CandidDecodeFailed(_) => SigningFailureClass::ResponseDecode,
+    };
+    SignerError::ManagementCall {
+        operation: "sign_with_ecdsa",
+        class,
+        detail: format!("{error:?}"),
+    }
 }
 
 fn signing_storage_error(error: impl std::fmt::Display) -> SignerError {
