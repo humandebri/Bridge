@@ -144,6 +144,7 @@ run_versions() {
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
+  python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
   node "$ROOT/scripts/plan007/test-capture-obsolete-pause-evidence.mjs"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
