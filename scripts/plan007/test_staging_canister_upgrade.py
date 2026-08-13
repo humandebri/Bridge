@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the fail-closed Base Sepolia staging upgrade driver."""
+"""Regression tests for the fail-closed staging RPC replacement driver."""
 
 from __future__ import annotations
 
@@ -12,213 +12,203 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "plan007" / "staging-canister-upgrade.sh"
-CHAIN_ID = 84532
-OLD_DIGEST = "e9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb"
-NEW_DIGEST = "3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48"
-OLD_URLS = [
-    "https://base-sepolia-rpc.publicnode.com",
-    "https://base-sepolia.gateway.tenderly.co",
-    "https://sepolia.base.org",
-]
-NEW_URLS = [
-    "https://base-sepolia-rpc.publicnode.com",
-    "https://sepolia.base.org",
-    "https://base-sepolia.api.onfinality.io/public",
-]
+SCRIPT_FILES = (
+    "scripts/plan007/staging-canister-upgrade.sh",
+    "scripts/plan007/staging_canister_upgrade.py",
+    "scripts/plan007/candid_values.py",
+)
+POLICY_PATH = "deployments/sepolia-staging/rpc-provider-replacement-policy.json"
 
 
-def rpc_digest(urls: list[str]) -> str:
-    encoded = json.dumps(urls, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-class StagingCanisterUpgradeTests(unittest.TestCase):
+class StagingUpgradeDriverTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name)
-        script_directory = self.root / "scripts" / "plan007"
-        script_directory.mkdir(parents=True)
-        shutil.copy2(SCRIPT, script_directory / SCRIPT.name)
-        canister_directory = self.root / "canister" / "bridge-canister"
-        canister_directory.mkdir(parents=True)
-        (canister_directory / "bridge.did").write_text("service : {}\n", encoding="utf-8")
-        (self.root / "deployments" / "sepolia-staging").mkdir(parents=True)
-        self.bin = self.root / "bin"
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.repo = self.base / "repo"
+        self.state = self.base / "state"
+        self.repo.mkdir()
+        self.state.mkdir()
+        for relative in SCRIPT_FILES + (POLICY_PATH,):
+            destination = self.repo / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, destination)
+        (self.repo / "canister/bridge-canister").mkdir(parents=True)
+        self.did = self.repo / "canister/bridge-canister/bridge.did"
+        self.did.write_text("service : {}\n", encoding="utf-8")
+        policy = self.policy()
+        staging = self.repo / "deployments/sepolia-staging"
+        (staging / "evidence").mkdir(parents=True, exist_ok=True)
+        (staging / "frontend-profile.json").write_text(json.dumps({
+            "environment": policy["environment"],
+            "bridgeCanisterId": policy["canister_id"],
+            "deploymentInstanceId": policy["deployment_instance_id"],
+            "chainId": policy["base_chain_id"],
+            "evmRpcCanisterId": policy["evm_rpc_canister_id"],
+            "baseRpcUrl": policy["after_rpc_urls"][0],
+            "baseHistoryRpcUrls": policy["after_rpc_urls"][1:],
+            "rpcProviderUrlsSha256": "0x" + policy["after_rpc_urls_sha256"],
+        }), encoding="utf-8")
+        self.wasm = self.base / "reviewed.wasm"
+        self.wasm.write_bytes(b"reviewed staging wasm")
+        self.after_module = hashlib.sha256(self.wasm.read_bytes()).hexdigest()
+        self.bin = self.base / "bin"
         self.bin.mkdir()
-        self.cast_state = self.root / "cast-state"
-        self.icp_state = self.root / "icp-state"
-        self.deploy_record = self.root / "deploy.json"
-        self.write_executable(
-            "cast",
-            """#!/usr/bin/env python3
-import os
-from pathlib import Path
-import sys
-
-state = Path(os.environ["MOCK_CAST_STATE"])
-count = int(state.read_text() or "0") if state.exists() else 0
-state.write_text(str(count + 1))
-if os.environ.get("MOCK_CAST_FAIL_AT") == str(count):
-    raise SystemExit(1)
-print(os.environ.get("MOCK_WRONG_CHAIN_AT") == str(count) and "1" or "84532")
-""",
-        )
-        self.write_executable(
-            "icp",
-            """#!/usr/bin/env python3
-import json
-import os
-from pathlib import Path
-import sys
-
-args = sys.argv[1:]
-if args and args[0] == "deploy":
-    Path(os.environ["MOCK_DEPLOY_RECORD"]).write_text(json.dumps(args))
-    if os.environ.get("MOCK_DEPLOY_FAIL") == "1":
-        raise SystemExit(1)
-    raise SystemExit(0)
-if args[:2] != ["canister", "call"]:
-    raise SystemExit(2)
-state = Path(os.environ["MOCK_ICP_STATE"])
-count = int(state.read_text() or "0") if state.exists() else 0
-state.write_text(str(count + 1))
-digests = os.environ["MOCK_LIVE_DIGESTS"].split(",")
-digest = digests[min(count, len(digests) - 1)]
-blob = "".join("\\\\" + digest[index:index + 2] for index in range(0, len(digest), 2))
-print(json.dumps({"response_candid": f'record {{ rpc_provider_urls_sha256 = blob "{blob}" }}'}))
-""",
-        )
-        self.write_profile(NEW_URLS)
+        self.install_record = self.state / "install.json"
+        self.write_tools()
+        self.git("init", "-q")
+        self.git("config", "user.email", "test@example.invalid")
+        self.git("config", "user.name", "Test")
+        self.git("add", ".")
+        self.git("commit", "-qm", "code")
+        source = self.git("rev-parse", "HEAD").stdout.strip()
+        local_e2e = {
+            "source_commit": source,
+            "bridge_wasm_sha256": self.after_module,
+            "candid_sha256": hashlib.sha256(self.did.read_bytes()).hexdigest(),
+        }
+        (staging / "evidence/local-e2e.json").write_text(json.dumps(local_e2e), encoding="utf-8")
+        self.git("add", "deployments/sepolia-staging/evidence/local-e2e.json")
+        self.git("commit", "-qm", "evidence")
 
     def tearDown(self) -> None:
-        self.temporary_directory.cleanup()
+        self.temporary.cleanup()
+
+    def git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", *args], cwd=self.repo, text=True, capture_output=True, check=True)
+
+    def policy(self) -> dict[str, object]:
+        return json.loads((self.repo / POLICY_PATH).read_text(encoding="utf-8"))
 
     def write_executable(self, name: str, source: str) -> None:
         path = self.bin / name
         path.write_text(source, encoding="utf-8")
         path.chmod(0o755)
 
-    def write_profile(
-        self,
-        urls: list[str],
-        *,
-        chain_id: int = CHAIN_ID,
-        digest: str | None = None,
-        environment: str = "sepolia-staging",
-    ) -> None:
-        value = {
-            "environment": environment,
-            "chainId": chain_id,
-            "baseRpcUrl": urls[0],
-            "baseHistoryRpcUrls": urls[1:],
-            "rpcProviderUrlsSha256": f"0x{digest or rpc_digest(urls)}",
+    def write_tools(self) -> None:
+        self.write_executable("cast", "#!/bin/sh\n[ \"${MOCK_CHAIN_FAIL:-0}\" = 0 ] || exit 1\necho \"${MOCK_CHAIN_ID:-84532}\"\n")
+        self.write_executable("didc", "#!/bin/sh\n[ \"${MOCK_DIDC_FAIL:-0}\" = 0 ] || exit 1\n")
+        self.write_executable("icp", r"""#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+state = pathlib.Path(os.environ["MOCK_STATE"])
+policy = json.loads(pathlib.Path(os.environ["MOCK_POLICY"]).read_text())
+after_module = os.environ["MOCK_AFTER_MODULE"]
+applied = (state / "applied").exists() or os.environ.get("MOCK_ALREADY_APPLIED") == "1"
+digest = policy["after_rpc_urls_sha256"] if applied else policy["before_rpc_urls_sha256"]
+digest = os.environ.get("MOCK_DIGEST", digest)
+module = os.environ.get("MOCK_MODULE", after_module if applied else policy["before_module_sha256"])
+def blob(value): return ''.join('\\' + value[i:i+2] for i in range(0, len(value), 2))
+if args[:2] == ["canister", "install"]:
+    (state / "install.json").write_text(json.dumps(args))
+    if os.environ.get("MOCK_INSTALL_FAIL") == "1": raise SystemExit(1)
+    (state / "applied").touch(); raise SystemExit(0)
+if args[:2] == ["canister", "metadata"]:
+    print(json.dumps({"value": "service : {}"})); raise SystemExit(0)
+if args[:2] == ["canister", "status"]:
+    if "--id-only" in args: print(os.environ.get("MOCK_CANISTER_ID", policy["canister_id"])); raise SystemExit(0)
+    print(json.dumps({"module_hash": module})); raise SystemExit(0)
+if args[:2] != ["canister", "call"]: raise SystemExit(2)
+method = args[3]
+if method == "get_public_config":
+    schema = os.environ.get("MOCK_SCHEMA", "32")
+    instance = os.environ.get("MOCK_INSTANCE", policy["deployment_instance_id"])[2:]
+    chain = os.environ.get("MOCK_PUBLIC_CHAIN", str(policy["base_chain_id"]))
+    evm = os.environ.get("MOCK_EVM_CANISTER", policy["evm_rpc_canister_id"])
+    candid = f'''record {{ schema_version = {schema} : nat16; deployment_instance_id = blob "{blob(instance)}"; base_chain_id = {chain} : nat64; evm_rpc_canister_id = principal "{evm}"; rpc_provider_urls_sha256 = blob "{blob(digest)}" }}'''
+elif method == "get_bridge_status":
+    counts = dict(policy["status_counts"])
+    if os.environ.get("MOCK_COUNT_DRIFT") == "1" or (applied and os.environ.get("MOCK_POST_COUNT_DRIFT") == "1"): counts["deposits"] += 1
+    candid = 'record { ' + '; '.join(f'{key} = {value} : nat64' for key, value in counts.items()) + ' }'
+elif method == "storage_integrity_check":
+    candid = 'variant { Err = variant { StorageFailure } }' if os.environ.get("MOCK_INTEGRITY_FAIL") == "1" else 'variant { Ok = "ok" }'
+else: raise SystemExit(2)
+print(json.dumps({"response_candid": candid}))
+""")
+
+    def run_driver(self, *extra: str, **changes: str) -> subprocess.CompletedProcess[str]:
+        evidence = self.base / "result.json"
+        environment = os.environ.copy()
+        environment.update({
+            "PATH": f"{self.bin}{os.pathsep}{environment['PATH']}",
+            "BRIDGE_STAGING_IDENTITY": "reviewed-controller",
+            "MOCK_STATE": str(self.state),
+            "MOCK_POLICY": str(self.repo / POLICY_PATH),
+            "MOCK_AFTER_MODULE": self.after_module,
+        })
+        environment.update(changes)
+        return subprocess.run([
+            "bash", str(self.repo / SCRIPT_FILES[0]), "--wasm", str(self.wasm),
+            "--evidence", str(evidence), *extra,
+        ], cwd=self.repo, env=environment, text=True, capture_output=True, check=False)
+
+    def test_preflight_is_read_only(self) -> None:
+        result = self.run_driver()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("preflight-passed", result.stdout)
+        self.assertFalse(self.install_record.exists())
+        self.assertFalse((self.base / "result.json").exists())
+
+    def test_execute_uses_explicit_wasm_and_writes_verified_evidence(self) -> None:
+        result = self.run_driver("--execute")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        command = json.loads(self.install_record.read_text())
+        self.assertNotIn("deploy", command)
+        self.assertEqual(command[command.index("--wasm") + 1], str(self.wasm.resolve()))
+        evidence = json.loads((self.base / "result.json").read_text())
+        self.assertEqual(evidence["result"], "upgraded")
+        self.assertEqual(evidence["before"]["status_counts"], evidence["after"]["status_counts"])
+
+    def test_already_applied_is_idempotent(self) -> None:
+        preflight = self.run_driver(MOCK_ALREADY_APPLIED="1")
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        self.assertIn("preflight-passed", preflight.stdout)
+        self.assertFalse(self.install_record.exists())
+        self.assertFalse((self.base / "result.json").exists())
+
+        result = self.run_driver("--execute", MOCK_ALREADY_APPLIED="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.install_record.exists())
+        self.assertEqual(json.loads((self.base / "result.json").read_text())["result"], "already-applied")
+
+    def test_preconditions_fail_before_install(self) -> None:
+        cases = {
+            "wrong chain": {"MOCK_CHAIN_ID": "1"},
+            "chain failure": {"MOCK_CHAIN_FAIL": "1"},
+            "Candid incompatibility": {"MOCK_DIDC_FAIL": "1"},
+            "canister ID drift": {"MOCK_CANISTER_ID": "aaaaa-aa"},
+            "schema drift": {"MOCK_SCHEMA": "31"},
+            "instance drift": {"MOCK_INSTANCE": "0x" + "11" * 32},
+            "configured chain drift": {"MOCK_PUBLIC_CHAIN": "1"},
+            "EVM RPC Canister drift": {"MOCK_EVM_CANISTER": "aaaaa-aa"},
+            "module drift": {"MOCK_MODULE": "11" * 32},
+            "RPC digest drift": {"MOCK_DIGEST": "22" * 32},
+            "count drift": {"MOCK_COUNT_DRIFT": "1"},
+            "integrity failure": {"MOCK_INTEGRITY_FAIL": "1"},
         }
-        profile = self.root / "deployments" / "sepolia-staging" / "frontend-profile.json"
-        profile.write_text(json.dumps(value), encoding="utf-8")
-
-    def run_driver(
-        self,
-        *arguments: str,
-        identity: str | None = "reviewed-staging-operator",
-        live_digests: tuple[str, ...] = (OLD_DIGEST, NEW_DIGEST),
-        environment: dict[str, str] | None = None,
-    ) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
-        env.update(
-            {
-                "PATH": f"{self.bin}{os.pathsep}{env['PATH']}",
-                "MOCK_CAST_STATE": str(self.cast_state),
-                "MOCK_ICP_STATE": str(self.icp_state),
-                "MOCK_DEPLOY_RECORD": str(self.deploy_record),
-                "MOCK_LIVE_DIGESTS": ",".join(live_digests),
-            }
-        )
-        if identity is None:
-            env.pop("BRIDGE_STAGING_IDENTITY", None)
-        else:
-            env["BRIDGE_STAGING_IDENTITY"] = identity
-        if environment:
-            env.update(environment)
-        return subprocess.run(
-            ["bash", str(self.root / "scripts" / "plan007" / SCRIPT.name), *arguments],
-            text=True,
-            capture_output=True,
-            check=False,
-            env=env,
-        )
-
-    def test_reviewed_url_sets_have_the_expected_digests(self) -> None:
-        self.assertEqual(rpc_digest(NEW_URLS), NEW_DIGEST)
-
-    def test_requires_execute_identity_and_tools(self) -> None:
-        self.assertEqual(self.run_driver().returncode, 2)
-        self.assertEqual(self.run_driver("--execute", identity=None).returncode, 2)
-        (self.bin / "cast").unlink()
-        result = self.run_driver(
-            "--execute", environment={"PATH": f"{self.bin}:/usr/bin:/bin"}
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("cast is required", result.stderr)
-
-    def test_rejects_unreviewed_profile_binding_before_live_calls(self) -> None:
-        self.write_profile(OLD_URLS, digest=OLD_DIGEST)
-        result = self.run_driver("--execute")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("does not bind its configured URLs", result.stderr)
-        self.assertFalse(self.icp_state.exists())
-
-        self.write_profile(NEW_URLS, digest="0" * 64)
-        result = self.run_driver("--execute")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("does not bind its configured URLs", result.stderr)
-
-    def test_rejects_rpc_failure_or_wrong_chain_before_live_calls(self) -> None:
-        for variable in ("MOCK_CAST_FAIL_AT", "MOCK_WRONG_CHAIN_AT"):
-            with self.subTest(variable=variable):
-                self.cast_state.unlink(missing_ok=True)
-                result = self.run_driver("--execute", environment={variable: "1"})
+        for name, environment in cases.items():
+            with self.subTest(name=name):
+                result = self.run_driver("--execute", **environment)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.icp_state.exists())
+                self.assertFalse(self.install_record.exists())
 
-    def test_rejects_an_unreviewed_live_digest(self) -> None:
-        result = self.run_driver("--execute", live_digests=("1" * 64,))
+    def test_install_failure_does_not_write_success_evidence(self) -> None:
+        result = self.run_driver("--execute", MOCK_INSTALL_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("refusing upgrade from unreviewed live RPC digest", result.stderr)
-        self.assertFalse(self.deploy_record.exists())
+        self.assertFalse((self.base / "result.json").exists())
 
-    def test_upgrades_old_digest_and_verifies_the_new_digest(self) -> None:
-        result = self.run_driver("--execute")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        deploy = json.loads(self.deploy_record.read_text(encoding="utf-8"))
-        self.assertIn("--mode", deploy)
-        self.assertEqual(deploy[deploy.index("--mode") + 1], "upgrade")
-        candid = deploy[deploy.index("--args") + 1]
-        for url in NEW_URLS:
-            self.assertIn(json.dumps(url), candid)
-        self.assertIn(f"RPC digest {NEW_DIGEST}", result.stdout)
+        self.install_record.unlink(missing_ok=True)
+        (self.state / "applied").unlink(missing_ok=True)
+        result = self.run_driver("--execute", MOCK_POST_COUNT_DRIFT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.base / "result.json").exists())
 
-    def test_already_applied_digest_skips_deploy_after_chain_checks(self) -> None:
-        result = self.run_driver("--execute", live_digests=(NEW_DIGEST,))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.cast_state.read_text(encoding="utf-8"), "3")
-        self.assertFalse(self.deploy_record.exists())
-        self.assertIn("already uses the reviewed RPC digest", result.stdout)
-
-    def test_deploy_failure_and_post_upgrade_mismatch_fail_closed(self) -> None:
-        failed = self.run_driver("--execute", environment={"MOCK_DEPLOY_FAIL": "1"})
-        self.assertNotEqual(failed.returncode, 0)
-
-        self.icp_state.unlink(missing_ok=True)
-        self.cast_state.unlink(missing_ok=True)
-        self.deploy_record.unlink(missing_ok=True)
-        mismatched = self.run_driver(
-            "--execute", live_digests=(OLD_DIGEST, OLD_DIGEST)
-        )
-        self.assertNotEqual(mismatched.returncode, 0)
-        self.assertIn("without activating the reviewed OnFinality RPC digest", mismatched.stderr)
+    def test_dirty_checkout_and_wasm_mismatch_fail_closed(self) -> None:
+        (self.repo / "dirty").write_text("x")
+        self.assertNotEqual(self.run_driver().returncode, 0)
+        (self.repo / "dirty").unlink()
+        self.wasm.write_bytes(b"different")
+        self.assertNotEqual(self.run_driver().returncode, 0)
 
 
 if __name__ == "__main__":

@@ -108,6 +108,30 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
 
 この更新は旧digest `e9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb`から新digest `3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48`だけを許可する。新設定の同値再実行は成功するが、URL・順序・chain ID・EVM RPC Canister ID・現在digestの不一致はtrapしてupgrade全体をrollbackする。更新後もFinalized水位を保持し、runtime attestation cacheだけを無効化する。production Wasmの`post_upgrade()`は引数なしで、この更新経路を含まない。
 
+PR #11の新profileを含むclean checkoutから、repository-owned
+`rpc-provider-replacement-policy.json`に固定したCanister ID、schema v32、instance ID、変更前module hash、
+state count、旧・新RPC順序とdigestをreviewする。driverは`local-e2e.json`のsource commitとWasm／Candid hash、
+live Candid互換性、認証済み`storage_integrity_check`、固定順序3 endpointのchain IDを照合する。
+通常実行はread-only preflightだけを行い、`--execute`を追加した別承認の呼出しだけが明示Wasmをinstallする。
+到達不能、不正応答、binding不一致、state driftはinstall前にfail closedとする。
+
+```sh
+BRIDGE_STAGING_IDENTITY=<identity> \
+  scripts/plan007/staging-canister-upgrade.sh \
+    --wasm "$(pwd)/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --evidence /secure/work/staging-rpc-replacement.json
+
+# preflight結果とpolicyを別レビューし、Canister upgradeの明示承認後だけ実行する。
+BRIDGE_STAGING_IDENTITY=<identity> \
+  scripts/plan007/staging-canister-upgrade.sh --execute \
+    --wasm "$(pwd)/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --evidence /secure/work/staging-rpc-replacement.json
+```
+
+driverは`icp deploy`や暗黙buildを使用しない。成功または適用済みpostconditionをすべて確認した場合だけ
+evidenceをatomicに確定する。install失敗またはpostcondition不一致では再実行せず、CLI出力と未確定artifactを
+保全して原因をreviewする。過去のarchive evidenceは変更しない。
+
 ```sh
 scripts/plan007/staging-e2e-driver.sh record /secure/work/preflight-evidence.json
 scripts/plan007/staging-e2e-driver.sh status
