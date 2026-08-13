@@ -33,6 +33,8 @@ COUNT_FIELDS = (
     "reserved_deposit_mint_amount",
     "pruned_audit_events",
 )
+U64_MAX = (1 << 64) - 1
+U128_MAX = (1 << 128) - 1
 
 
 def fail(message: str) -> None:
@@ -86,8 +88,14 @@ def validate_policy(policy: dict[str, Any]) -> None:
             fail(f"policy {side} RPC list must contain three distinct URLs")
         if rpc_digest(urls) != policy[f"{side}_rpc_urls_sha256"]:
             fail(f"policy {side} RPC digest does not bind its ordered URL list")
-    if set(policy["status_counts"]) != set(COUNT_FIELDS):
+    counts = policy["status_counts"]
+    if not isinstance(counts, dict) or set(counts) != set(COUNT_FIELDS):
         fail("policy status_counts has an unsupported shape")
+    for field in COUNT_FIELDS:
+        value = counts[field]
+        maximum = U128_MAX if field == "reserved_deposit_mint_amount" else U64_MAX
+        if type(value) is not int or value < 0 or value > maximum:
+            fail(f"policy status_counts.{field} is outside its Candid natural range")
 
 
 def verify_clean_evidence(wasm: Path, did: Path, evidence: dict[str, Any]) -> str:
@@ -208,7 +216,17 @@ def verify_provider_chains(policy: dict[str, Any]) -> None:
 
 def install(policy: dict[str, Any], identity: str, wasm: Path) -> None:
     urls = "; ".join(json.dumps(url) for url in policy["after_rpc_urls"])
-    args = f"(record {{ rpc_provider_update = opt record {{ custom_evm_rpc_urls = vec {{ {urls} }} }} }})"
+    counts = policy["status_counts"]
+    count_fields = "; ".join(
+        f"{field} = {counts[field]} : {'nat' if field == 'reserved_deposit_mint_amount' else 'nat64'}"
+        for field in COUNT_FIELDS
+    )
+    args = (
+        "(record { status_counts_guard_version = 1 : nat8; rpc_provider_update = opt record { "
+        f"custom_evm_rpc_urls = vec {{ {urls} }}; "
+        f"expected_status_counts = record {{ {count_fields} }}"
+        " } })"
+    )
     run([
         "icp", "canister", "install", policy["canister_name"], "--mode", "upgrade",
         "--wasm", str(wasm), "--args", args, "--yes", *icp_base(policy, identity),

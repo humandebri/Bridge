@@ -124,6 +124,28 @@ class ClaimTestManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "did not pass exactly once"):
             claim_tests.execute_test(test, Path("."), runner)
 
+    def test_test_deployment_runner_enables_the_feature(self) -> None:
+        test = claim_tests.ClaimTest(
+            "rust-canister-test-deployment",
+            "canister/bridge-canister/src/example.rs",
+            "exact_test",
+            "exact_test",
+        )
+        commands: list[list[str]] = []
+
+        def runner(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(
+                command, 0, "test module::exact_test ... ok\n", ""
+            )
+
+        claim_tests.execute_test(test, Path("."), runner)
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--features", commands[0])
+        self.assertIn("test-deployment", commands[0])
+
     def test_jest_dependencies_are_built_once_before_execution(self) -> None:
         tests = [
             claim_tests.ClaimTest(

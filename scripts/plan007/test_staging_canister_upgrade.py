@@ -37,6 +37,7 @@ class StagingUpgradeDriverTests(unittest.TestCase):
         self.did = self.repo / "canister/bridge-canister/bridge.did"
         self.did.write_text("service : {}\n", encoding="utf-8")
         policy = self.policy()
+        self.valid_policy = policy
         staging = self.repo / "deployments/sepolia-staging"
         (staging / "evidence").mkdir(parents=True, exist_ok=True)
         (staging / "frontend-profile.json").write_text(json.dumps({
@@ -101,7 +102,7 @@ module = os.environ.get("MOCK_MODULE", after_module if applied else policy["befo
 def blob(value): return ''.join('\\' + value[i:i+2] for i in range(0, len(value), 2))
 if args[:2] == ["canister", "install"]:
     (state / "install.json").write_text(json.dumps(args))
-    if os.environ.get("MOCK_INSTALL_FAIL") == "1": raise SystemExit(1)
+    if os.environ.get("MOCK_INSTALL_FAIL") == "1" or os.environ.get("MOCK_POST_COUNT_DRIFT") == "1": raise SystemExit(1)
     (state / "applied").touch(); raise SystemExit(0)
 if args[:2] == ["canister", "metadata"]:
     print(json.dumps({"value": "service : {}"})); raise SystemExit(0)
@@ -132,6 +133,7 @@ print(json.dumps({"response_candid": candid}))
         environment.update({
             "PATH": f"{self.bin}{os.pathsep}{environment['PATH']}",
             "BRIDGE_STAGING_IDENTITY": "reviewed-controller",
+            "GIT_CONFIG_GLOBAL": os.devnull,
             "MOCK_STATE": str(self.state),
             "MOCK_POLICY": str(self.repo / POLICY_PATH),
             "MOCK_AFTER_MODULE": self.after_module,
@@ -148,6 +150,7 @@ print(json.dumps({"response_candid": candid}))
         self.assertIn("preflight-passed", result.stdout)
         self.assertFalse(self.install_record.exists())
         self.assertFalse((self.base / "result.json").exists())
+        self.assertFalse((self.repo / "scripts/plan007/__pycache__").exists())
 
     def test_execute_uses_explicit_wasm_and_writes_verified_evidence(self) -> None:
         result = self.run_driver("--execute")
@@ -155,6 +158,12 @@ print(json.dumps({"response_candid": candid}))
         command = json.loads(self.install_record.read_text())
         self.assertNotIn("deploy", command)
         self.assertEqual(command[command.index("--wasm") + 1], str(self.wasm.resolve()))
+        candid_args = command[command.index("--args") + 1]
+        self.assertIn("expected_status_counts = record", candid_args)
+        self.assertIn("status_counts_guard_version = 1 : nat8", candid_args)
+        for field, value in self.policy()["status_counts"].items():
+            annotation = "nat" if field == "reserved_deposit_mint_amount" else "nat64"
+            self.assertIn(f"{field} = {value} : {annotation}", candid_args)
         evidence = json.loads((self.base / "result.json").read_text())
         self.assertEqual(evidence["result"], "upgraded")
         self.assertEqual(evidence["before"]["status_counts"], evidence["after"]["status_counts"])
@@ -202,6 +211,35 @@ print(json.dumps({"response_candid": candid}))
         result = self.run_driver("--execute", MOCK_POST_COUNT_DRIFT="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.base / "result.json").exists())
+        self.assertFalse((self.state / "applied").exists())
+
+    def test_policy_rejects_invalid_status_count_types_and_ranges(self) -> None:
+        policy_path = self.repo / POLICY_PATH
+        cases = (
+            ("bool", True),
+            ("negative", -1),
+            ("u64 overflow", 1 << 64),
+            ("u128 overflow", 1 << 128),
+        )
+        for name, value in cases:
+            with self.subTest(name=name):
+                policy = json.loads(json.dumps(self.valid_policy))
+                field = "reserved_deposit_mint_amount" if name == "u128 overflow" else "deposits"
+                policy["status_counts"][field] = value
+                policy_path.write_text(json.dumps(policy), encoding="utf-8")
+                self.git("add", POLICY_PATH)
+                self.git("commit", "-qm", f"invalid {name}")
+                result = self.run_driver("--execute")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.install_record.exists())
+
+        policy = json.loads(json.dumps(self.valid_policy))
+        del policy["status_counts"]["deposits"]
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
+        self.git("add", POLICY_PATH)
+        self.git("commit", "-qm", "missing count")
+        self.assertNotEqual(self.run_driver("--execute").returncode, 0)
+        self.assertFalse(self.install_record.exists())
 
     def test_dirty_checkout_and_wasm_mismatch_fail_closed(self) -> None:
         (self.repo / "dirty").write_text("x")

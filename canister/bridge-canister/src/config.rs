@@ -76,15 +76,41 @@ pub struct BridgeInitArgs {
 }
 
 #[cfg(feature = "test-deployment")]
-#[derive(CandidType, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct StagingUpgradeArgs {
+    pub status_counts_guard_version: u8,
     pub rpc_provider_update: Option<StagingRpcProviderUpdate>,
+}
+
+#[cfg(feature = "test-deployment")]
+impl Default for StagingUpgradeArgs {
+    fn default() -> Self {
+        Self {
+            status_counts_guard_version: 1,
+            rpc_provider_update: None,
+        }
+    }
 }
 
 #[cfg(feature = "test-deployment")]
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct StagingRpcProviderUpdate {
     pub custom_evm_rpc_urls: Vec<String>,
+    pub expected_status_counts: StagingExpectedStatusCounts,
+}
+
+#[cfg(feature = "test-deployment")]
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StagingExpectedStatusCounts {
+    pub retained_audit_events: u64,
+    pub reconciliation_holds: u64,
+    pub retained_deposit_index_entries: u64,
+    pub pending_ledger_operations: u64,
+    pub withdrawals: u64,
+    pub deposits: u64,
+    pub reserved_deposit_mint_operations: u64,
+    pub reserved_deposit_mint_amount: u128,
+    pub pruned_audit_events: u64,
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]

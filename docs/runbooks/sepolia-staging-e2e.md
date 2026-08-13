@@ -95,11 +95,23 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
 ```candid
 (
   record {
+    status_counts_guard_version = 1 : nat8;
     rpc_provider_update = opt record {
       custom_evm_rpc_urls = vec {
         "https://base-sepolia-rpc.publicnode.com";
         "https://sepolia.base.org";
         "https://base-sepolia.api.onfinality.io/public";
+      };
+      expected_status_counts = record {
+        retained_audit_events = 15 : nat64;
+        reconciliation_holds = 0 : nat64;
+        retained_deposit_index_entries = 1 : nat64;
+        pending_ledger_operations = 0 : nat64;
+        withdrawals = 1 : nat64;
+        deposits = 1 : nat64;
+        reserved_deposit_mint_operations = 1 : nat64;
+        reserved_deposit_mint_amount = 1_050_000_000 : nat;
+        pruned_audit_events = 0 : nat64;
       };
     };
   },
@@ -113,7 +125,11 @@ PR #11の新profileを含むclean checkoutから、repository-owned
 state count、旧・新RPC順序とdigestをreviewする。driverは`local-e2e.json`のsource commitとWasm／Candid hash、
 live Candid互換性、認証済み`storage_integrity_check`、固定順序3 endpointのchain IDを照合する。
 通常実行はread-only preflightだけを行い、`--execute`を追加した別承認の呼出しだけが明示Wasmをinstallする。
-到達不能、不正応答、binding不一致、state driftはinstall前にfail closedとする。
+到達不能、不正応答、binding不一致、state driftはRPC置換の適用前にfail closedとする。
+Python driverのsnapshot照合は、operatorへ早期にdriftを示す事前診断である。`--execute`では同じreview済み
+state countと固定guard version `1`をupgrade引数にも含め、test-deployment Wasmの`post_upgrade()`がstable stateを再openした直後、
+設定またはruntime attestationを書き換える前に全countを再照合する。preflight後にstateが変わった場合は
+`post_upgrade()`がtrapし、RPC置換を含むupgrade全体をrollbackする。
 
 ```sh
 BRIDGE_STAGING_IDENTITY=<identity> \

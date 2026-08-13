@@ -377,27 +377,43 @@ fn decode_staging_upgrade_args(bytes: Vec<u8>) -> config::StagingUpgradeArgs {
 }
 
 #[cfg(feature = "test-deployment")]
+fn apply_staging_rpc_provider_update(
+    store: &mut StableStore,
+    args: &config::StagingUpgradeArgs,
+) -> Result<(), String> {
+    if args.status_counts_guard_version != 1 {
+        return Err("unsupported staging status count guard version".into());
+    }
+    let Some(update) = args.rpc_provider_update.as_ref() else {
+        return Ok(());
+    };
+    let counts = store
+        .status_counts()
+        .map_err(|error| format!("staging status count read failed: {error}"))?;
+    if !counts.matches_staging_expected_status_counts(&update.expected_status_counts) {
+        return Err("staging status counts do not match the reviewed policy".into());
+    }
+    let current = store
+        .config()
+        .map_err(|error| format!("staging configuration read failed: {error}"))?
+        .ok_or_else(|| "missing staging configuration".to_owned())?;
+    if let Some(next) = current
+        .staging_rpc_replacement(&update.custom_evm_rpc_urls)
+        .map_err(str::to_owned)?
+    {
+        store
+            .apply_staging_rpc_replacement(&next)
+            .map_err(|error| format!("staging RPC replacement failed: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "test-deployment")]
 #[ic_cdk::post_upgrade(decode_with = "decode_staging_upgrade_args")]
 fn post_upgrade(args: config::StagingUpgradeArgs) {
     let mut store = reopen_store_after_upgrade();
-    if let Some(update) = args.rpc_provider_update {
-        let current = store
-            .config()
-            .unwrap_or_else(|error| {
-                ic_cdk::trap(format!("staging configuration read failed: {error}"))
-            })
-            .unwrap_or_else(|| ic_cdk::trap("missing staging configuration"));
-        if let Some(next) = current
-            .staging_rpc_replacement(&update.custom_evm_rpc_urls)
-            .unwrap_or_else(|error| ic_cdk::trap(error))
-        {
-            store
-                .apply_staging_rpc_replacement(&next)
-                .unwrap_or_else(|error| {
-                    ic_cdk::trap(format!("staging RPC replacement failed: {error}"))
-                });
-        }
-    }
+    apply_staging_rpc_provider_update(&mut store, &args)
+        .unwrap_or_else(|error| ic_cdk::trap(error));
     finish_post_upgrade(store);
 }
 
@@ -1634,7 +1650,7 @@ mod candid_tests {
 
     #[cfg(feature = "test-deployment")]
     #[test]
-    fn staging_upgrade_decoder_accepts_legacy_empty_and_rpc_update_args() {
+    fn staging_upgrade_decoder_accepts_empty_and_guarded_rpc_update_args() {
         let empty = candid::encode_args(()).expect("encode empty upgrade args");
         assert_eq!(
             super::decode_staging_upgrade_args(empty),
@@ -1642,14 +1658,50 @@ mod candid_tests {
         );
 
         let expected = super::config::StagingUpgradeArgs {
+            status_counts_guard_version: 1,
             rpc_provider_update: Some(super::config::StagingRpcProviderUpdate {
                 custom_evm_rpc_urls: super::config::STAGING_NEW_RPC_URLS
                     .map(str::to_owned)
                     .to_vec(),
+                expected_status_counts: super::config::StagingExpectedStatusCounts {
+                    retained_audit_events: 1,
+                    reconciliation_holds: 2,
+                    retained_deposit_index_entries: 3,
+                    pending_ledger_operations: 4,
+                    withdrawals: 5,
+                    deposits: 6,
+                    reserved_deposit_mint_operations: 7,
+                    reserved_deposit_mint_amount: 8,
+                    pruned_audit_events: 9,
+                },
             }),
         };
         let encoded = candid::encode_args((expected.clone(),)).expect("encode staging args");
         assert_eq!(super::decode_staging_upgrade_args(encoded), expected);
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    fn staging_upgrade_decoder_rejects_unguarded_rpc_update_args() {
+        #[derive(candid::CandidType)]
+        struct UnguardedUpgradeArgs {
+            rpc_provider_update: Option<UnguardedRpcProviderUpdate>,
+        }
+
+        #[derive(candid::CandidType)]
+        struct UnguardedRpcProviderUpdate {
+            custom_evm_rpc_urls: Vec<String>,
+        }
+
+        let encoded = candid::encode_args((UnguardedUpgradeArgs {
+            rpc_provider_update: Some(UnguardedRpcProviderUpdate {
+                custom_evm_rpc_urls: super::config::STAGING_NEW_RPC_URLS
+                    .map(str::to_owned)
+                    .to_vec(),
+            }),
+        },))
+        .expect("encode unguarded staging args");
+        assert!(candid::decode_args::<(super::config::StagingUpgradeArgs,)>(&encoded).is_err());
     }
 
     #[cfg(not(feature = "test-deployment"))]

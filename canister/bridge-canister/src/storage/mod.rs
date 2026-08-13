@@ -1793,6 +1793,39 @@ pub struct StorageCounts {
     pub retained_deposit_index_entries: u64,
 }
 
+#[cfg(feature = "test-deployment")]
+impl StorageCounts {
+    pub(crate) fn matches_staging_expected_status_counts(
+        &self,
+        expected: &crate::config::StagingExpectedStatusCounts,
+    ) -> bool {
+        self.retained_audit_events == expected.retained_audit_events
+            && self.reconciliation_holds == expected.reconciliation_holds
+            && self.retained_deposit_index_entries == expected.retained_deposit_index_entries
+            && self.pending_ledger_operations == expected.pending_ledger_operations
+            && self.withdrawals == expected.withdrawals
+            && self.deposits == expected.deposits
+            && self.reserved_deposit_mint_operations == expected.reserved_deposit_mint_operations
+            && self.reserved_deposit_mint_amount == expected.reserved_deposit_mint_amount
+            && self.pruned_audit_events == expected.pruned_audit_events
+    }
+
+    #[cfg(test)]
+    fn staging_expected_status_counts(&self) -> crate::config::StagingExpectedStatusCounts {
+        crate::config::StagingExpectedStatusCounts {
+            retained_audit_events: self.retained_audit_events,
+            reconciliation_holds: self.reconciliation_holds,
+            retained_deposit_index_entries: self.retained_deposit_index_entries,
+            pending_ledger_operations: self.pending_ledger_operations,
+            withdrawals: self.withdrawals,
+            deposits: self.deposits,
+            reserved_deposit_mint_operations: self.reserved_deposit_mint_operations,
+            reserved_deposit_mint_amount: self.reserved_deposit_mint_amount,
+            pruned_audit_events: self.pruned_audit_events,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WithdrawalLiabilitySummary {
     pub count: u64,
@@ -11132,13 +11165,17 @@ mod tests {
         let requested = crate::config::STAGING_NEW_RPC_URLS
             .map(str::to_owned)
             .to_vec();
-        let next = initial
-            .staging_rpc_replacement(&requested)
-            .expect("reviewed replacement")
-            .expect("replacement changes config");
-        store
-            .apply_staging_rpc_replacement(&next)
-            .expect("apply replacement");
+        let args = crate::config::StagingUpgradeArgs {
+            status_counts_guard_version: 1,
+            rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
+                custom_evm_rpc_urls: requested.clone(),
+                expected_status_counts: counts_before.staging_expected_status_counts(),
+            }),
+        };
+        crate::apply_staging_rpc_provider_update(&mut store, &args)
+            .expect("apply reviewed replacement");
+        crate::apply_staging_rpc_provider_update(&mut store, &args)
+            .expect("repeat reviewed replacement");
         drop(store);
 
         let reopened = StableStore::reopen_after_upgrade(memory).expect("reopen staging state");
@@ -11162,6 +11199,95 @@ mod tests {
                 ..progress
             }
         );
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn staging_rpc_replacement_rejects_status_count_drift_without_mutation() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.base_chain_id = crate::config::BASE_SEPOLIA_CHAIN_ID;
+        initial.evm_rpc_canister_id = crate::config::official_evm_rpc_canister_id();
+        initial.custom_evm_rpc_urls = crate::config::STAGING_OLD_RPC_URLS
+            .map(str::to_owned)
+            .to_vec();
+        let mut store =
+            StableStore::init_configured(memory, &initial).expect("initialize staging state");
+        let progress = ExternalProgress {
+            last_finalized_base_block: 100,
+            last_finalized_observation_ns: 200,
+            finalized_observation: Some(bridge_core::FinalizedObservationRecord {
+                chain_id: crate::config::BASE_SEPOLIA_CHAIN_ID,
+                block_number: 100,
+                block_hash: [1; 32],
+                observed_at_ns: 200,
+                bridge_signer: [2; 20],
+                runtime_sha256: [3; 32],
+            }),
+        };
+        store
+            .set_external_progress(&progress)
+            .expect("cache runtime attestation");
+        let counts = store.status_counts().expect("status counts");
+        let expected = counts.staging_expected_status_counts();
+
+        macro_rules! assert_mismatch {
+            ($field:ident) => {{
+                let mut changed = expected;
+                changed.$field += 1;
+                assert!(!counts.matches_staging_expected_status_counts(&changed));
+            }};
+        }
+        assert_mismatch!(retained_audit_events);
+        assert_mismatch!(reconciliation_holds);
+        assert_mismatch!(retained_deposit_index_entries);
+        assert_mismatch!(pending_ledger_operations);
+        assert_mismatch!(withdrawals);
+        assert_mismatch!(deposits);
+        assert_mismatch!(reserved_deposit_mint_operations);
+        assert_mismatch!(reserved_deposit_mint_amount);
+        assert_mismatch!(pruned_audit_events);
+
+        let mut drifted = expected;
+        drifted.deposits += 1;
+        let args = crate::config::StagingUpgradeArgs {
+            status_counts_guard_version: 1,
+            rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
+                custom_evm_rpc_urls: crate::config::STAGING_NEW_RPC_URLS
+                    .map(str::to_owned)
+                    .to_vec(),
+                expected_status_counts: drifted,
+            }),
+        };
+        assert_eq!(
+            crate::apply_staging_rpc_provider_update(&mut store, &args),
+            Err("staging status counts do not match the reviewed policy".into())
+        );
+        assert_eq!(store.config().expect("config"), Some(initial.clone()));
+        assert_eq!(store.external_progress().expect("progress"), progress);
+
+        let unguarded = crate::config::StagingUpgradeArgs {
+            status_counts_guard_version: 0,
+            ..args
+        };
+        assert_eq!(
+            crate::apply_staging_rpc_provider_update(&mut store, &unguarded),
+            Err("unsupported staging status count guard version".into())
+        );
+        assert_eq!(store.config().expect("config"), Some(initial.clone()));
+        assert_eq!(store.external_progress().expect("progress"), progress);
+
+        let empty_unguarded = crate::config::StagingUpgradeArgs {
+            status_counts_guard_version: 0,
+            rpc_provider_update: None,
+        };
+        assert_eq!(
+            crate::apply_staging_rpc_provider_update(&mut store, &empty_unguarded),
+            Err("unsupported staging status count guard version".into())
+        );
+        assert_eq!(store.config().expect("config"), Some(initial));
+        assert_eq!(store.external_progress().expect("progress"), progress);
     }
 
     #[test]
