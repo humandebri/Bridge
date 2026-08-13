@@ -18,7 +18,6 @@ class StagingWasmArtifactTests(unittest.TestCase):
 
     def test_deployment_consumers_never_use_the_raw_cargo_artifact(self) -> None:
         consumers = (
-            "scripts/ci-local.sh",
             "scripts/plan007/generate-local-e2e.mjs",
             "integration/phase3.spec.ts",
             "docs/runbooks/sepolia-staging-e2e.md",
@@ -28,6 +27,12 @@ class StagingWasmArtifactTests(unittest.TestCase):
                 source = (ROOT / relative).read_text(encoding="utf-8")
                 self.assertIn(CANONICAL, source)
                 self.assertNotIn(RAW, source)
+
+    def test_full_integration_entrypoint_builds_metadata_wasm_first(self) -> None:
+        package = (ROOT / "package.json").read_text(encoding="utf-8")
+        builder = package.index("scripts/plan007/build-staging-canister-wasm.sh")
+        jest = package.index("jest --config integration/jest.config.js")
+        self.assertLess(builder, jest)
 
 
 if __name__ == "__main__":

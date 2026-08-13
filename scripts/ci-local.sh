@@ -303,7 +303,6 @@ run_rust_integration() {
     --target wasm32-unknown-unknown \
     --release \
     -p bridge-canister
-  "$ROOT/scripts/plan007/build-staging-canister-wasm.sh" >/dev/null
   cargo build \
     --locked \
     --manifest-path "$ROOT/Cargo.toml" \
