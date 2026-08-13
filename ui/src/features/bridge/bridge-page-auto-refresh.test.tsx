@@ -19,11 +19,17 @@ const mocks = vi.hoisted(() => ({
   readDepositIntent: vi.fn(),
   runtimeWriteReadiness: vi.fn(),
   runtimeRefetch: vi.fn(),
-  runtimeAutoRetryPending: vi.fn<() => boolean>(),
+  heartbeatIsError: { value: false },
+  heartbeatIsFetching: { value: false },
+  heartbeatDepositsPaused: { value: false },
+  heartbeatWithdrawalsPaused: { value: false },
   baseRefetch: vi.fn(),
+  writeContractAsync: vi.fn(),
+  savePendingConfirmation: vi.fn(),
   getDepositByOwnerSequence: vi.fn(),
   removeDepositIntent: vi.fn(),
   saveDepositIntent: vi.fn(),
+  requireWalletSnapshot: vi.fn(),
   runtimeValidation: { value: { ready: true, blockers: [] as string[], checkedAt: 0 } },
 }))
 
@@ -31,7 +37,7 @@ vi.mock("wagmi", () => ({
   useAccount: mocks.useAccount,
   useChainId: () => 84_532,
   useConnectorClient: () => ({ data: undefined }),
-  useWriteContract: () => ({ isPending: false, writeContractAsync: vi.fn() }),
+  useWriteContract: () => ({ isPending: false, writeContractAsync: mocks.writeContractAsync }),
 }))
 
 vi.mock("@tanstack/react-router", () => ({
@@ -41,7 +47,7 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("@/features/wallet/ic-wallet-provider", () => ({ useIcWallet: mocks.useIcWallet }))
 vi.mock("@/features/wallet/wallet-controls", () => ({ useWalletDialog: () => ({ openFor: vi.fn() }) }))
 vi.mock("@/features/status/use-status", () => ({
-  useRuntimeValidation: () => ({ data: mocks.runtimeValidation.value, isAutoRetryPending: mocks.runtimeAutoRetryPending(), isFetching: false, refetch: mocks.runtimeRefetch }),
+  useRuntimeValidation: () => ({ data: mocks.runtimeValidation.value, isFetching: false, refetch: mocks.runtimeRefetch }),
   useRuntimeHeartbeat: () => ({
     data: {
       ready: true,
@@ -55,14 +61,15 @@ vi.mock("@/features/status/use-status", () => ({
         limit: 15_000_000_000_000n,
         startedAt: 0n,
         duration: 86_400n,
-        depositsPaused: false,
-        withdrawalsPaused: false,
+        depositsPaused: mocks.heartbeatDepositsPaused.value,
+        withdrawalsPaused: mocks.heartbeatWithdrawalsPaused.value,
         bridgeSigner: "0x0000000000000000000000000000000000000001",
         mintAuthorizationEpoch: 1n,
         blockTimestamp: 1_000n,
       },
     },
-    isFetching: false,
+    isError: mocks.heartbeatIsError.value,
+    isFetching: mocks.heartbeatIsFetching.value,
     refetch: mocks.baseRefetch,
   }),
   finalizedObservationQuote: (observation: { snapshot?: unknown }) => observation?.snapshot,
@@ -95,6 +102,10 @@ vi.mock("@/lib/deposit-intents", () => ({
   saveDepositIntent: mocks.saveDepositIntent,
 }))
 
+vi.mock("@/lib/pending-confirmations", () => ({
+  savePendingConfirmation: mocks.savePendingConfirmation,
+}))
+
 vi.mock("@/lib/browser-lock", async (importOriginal) => ({
   ...await importOriginal<typeof BrowserLockModule>(),
   withBrowserLock: (_name: string, action: () => unknown) => action(),
@@ -105,7 +116,7 @@ vi.mock("@/lib/wallet-snapshot", () => ({
     address: "0x0000000000000000000000000000000000000002",
     chainId: 84_532,
   }),
-  requireWalletSnapshot: vi.fn(),
+  requireWalletSnapshot: mocks.requireWalletSnapshot,
   sameIcAccount: vi.fn().mockReturnValue(true),
 }))
 
@@ -129,13 +140,16 @@ describe("BridgePage automatic wallet refresh", () => {
       disconnect: vi.fn(),
     })
     mocks.getNextDepositSequence.mockReset().mockResolvedValue(3n)
-    mocks.getPublicConfig.mockReset().mockResolvedValue({ ledger_fee: 10_000n })
+    mocks.getPublicConfig.mockReset().mockResolvedValue({ ledger_fee: 100_000n })
     mocks.ledgerBalance.mockReset().mockResolvedValue(1_000_000_000n)
     mocks.ledgerAllowance.mockReset().mockResolvedValue({ allowance: 0n })
     mocks.bsnsBalance.mockReset().mockResolvedValue(1_000_000_000n)
     mocks.readDepositIntent.mockReset().mockReturnValue(undefined)
     mocks.runtimeWriteReadiness.mockReset().mockReturnValue({ ready: true, reason: undefined })
-    mocks.runtimeAutoRetryPending.mockReset().mockReturnValue(false)
+    mocks.heartbeatIsError.value = false
+    mocks.heartbeatIsFetching.value = false
+    mocks.heartbeatDepositsPaused.value = false
+    mocks.heartbeatWithdrawalsPaused.value = false
     mocks.runtimeValidation.value = { ready: true, blockers: [], checkedAt: Date.now() }
     mocks.runtimeRefetch.mockReset().mockResolvedValue({
       data: { ready: true, blockers: [], checkedAt: Date.now() },
@@ -163,6 +177,9 @@ describe("BridgePage automatic wallet refresh", () => {
       isError: false,
       isStale: false,
     })
+    mocks.writeContractAsync.mockReset().mockResolvedValue(`0x${"77".repeat(32)}`)
+    mocks.savePendingConfirmation.mockReset().mockResolvedValue(undefined)
+    mocks.requireWalletSnapshot.mockReset()
     mocks.getDepositByOwnerSequence.mockReset().mockResolvedValue([{
       state: { AuthorizationPending: null },
     }])
@@ -179,15 +196,30 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(mocks.runtimeRefetch).not.toHaveBeenCalled()
   })
 
-  it("retries only full runtime validation when it has not succeeded", async () => {
+  it("manual refresh stays lightweight when full runtime validation has not succeeded", async () => {
     mocks.runtimeValidation.value = { ready: false, blockers: ["Runtime validation failed"], checkedAt: Date.now() }
     mocks.runtimeWriteReadiness.mockReturnValue({ ready: false, reason: "Runtime validation failed" })
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
 
+    await waitFor(() => expect(mocks.baseRefetch).toHaveBeenCalledOnce())
+    expect(mocks.runtimeRefetch).not.toHaveBeenCalled()
+  })
+
+  it("refreshes expired full runtime validation only after review starts", async () => {
+    mocks.runtimeValidation.value = { ready: true, blockers: [], checkedAt: Date.now() - 60_001 }
+    const account = { owner: "aaaaa-aa" }
+    mocks.useAccount.mockReturnValue({ address: "0x0000000000000000000000000000000000000002", isConnected: true })
+    mocks.useIcWallet.mockReturnValue({ account, provider: "oisy", adapter: { getAccount: vi.fn().mockResolvedValue(account) }, connect: vi.fn(), disconnect: vi.fn() })
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
+
     await waitFor(() => expect(mocks.runtimeRefetch).toHaveBeenCalledOnce())
-    expect(mocks.baseRefetch).not.toHaveBeenCalled()
+    expect(screen.getByRole("heading", { name: "Review bridge to Base" })).toBeVisible()
   })
 
   it("loads IC balance, allowance, and sequence when an IC wallet appears later", async () => {
@@ -238,24 +270,47 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(screen.getByText("Balance 10 TICRC1")).toBeInTheDocument()
   })
 
-  it("keeps the fail-closed availability check in progress while the initial retry is pending", () => {
+  it("treats stale live status as non-blocking and does not report an outage", () => {
     mocks.runtimeWriteReadiness.mockReturnValue({ ready: false, reason: "Runtime validation failed" })
-    mocks.runtimeAutoRetryPending.mockReturnValue(true)
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
 
-    expect(screen.getByText("Checking availability…")).toBeVisible()
+    expect(screen.getByText("Live status is not confirmed. Current conditions will be checked before continuing.")).toBeVisible()
     expect(screen.queryByText("Bridge is temporarily unavailable. Try Refresh.")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Refreshing…" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled()
   })
 
-  it("restores the unavailable warning and manual refresh after the initial retry finishes", () => {
-    mocks.runtimeWriteReadiness.mockReturnValue({ ready: false, reason: "Runtime validation failed" })
+  it("reports an RPC refresh error as unknown while keeping the last known fee", () => {
+    mocks.heartbeatIsError.value = true
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
 
-    expect(screen.getByText("Bridge is temporarily unavailable. Try Refresh.")).toBeVisible()
+    expect(screen.getByText("Live status could not be refreshed. Current conditions will be checked before continuing.")).toBeVisible()
+    expect(screen.getByText("Last known bridge fee")).toBeVisible()
+    expect(screen.getByText("0.5 TICRC1")).toBeVisible()
     expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled()
+  })
+
+  it("blocks the entry point only when a fresh heartbeat confirms the selected direction is paused", () => {
+    const account = { owner: "aaaaa-aa" }
+    mocks.heartbeatDepositsPaused.value = true
+    mocks.useAccount.mockReturnValue({ address: "0x0000000000000000000000000000000000000002", isConnected: true })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter: {
+        prepare: vi.fn().mockResolvedValue(() => Promise.resolve()),
+        getAccount: vi.fn().mockResolvedValue(account),
+      },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+
+    expect(screen.getByRole("button", { name: "Bridge to Base" })).toBeDisabled()
+    expect(screen.getByText("Next: Deposits are paused on Base")).toBeVisible()
   })
 
   it("runs withdrawal preflight checks before exposing irreversible confirmation", async () => {
@@ -267,7 +322,10 @@ describe("BridgePage automatic wallet refresh", () => {
     mocks.useIcWallet.mockReturnValue({
       account,
       provider: "oisy",
-      adapter: { getAccount: vi.fn().mockResolvedValue(account) },
+      adapter: {
+        prepare: vi.fn().mockResolvedValue(() => Promise.resolve()),
+        getAccount: vi.fn().mockResolvedValue(account),
+      },
       connecting: undefined,
       connect: vi.fn(),
       disconnect: vi.fn(),
@@ -279,12 +337,96 @@ describe("BridgePage automatic wallet refresh", () => {
     fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
 
     expect(screen.getByRole("heading", { name: "Review bridge to IC" })).toBeVisible()
-    expect(await screen.findByText("Review the transfer and the wallet actions that come next.")).toBeVisible()
+    expect(await screen.findByText("Review the transfer details before continuing.")).toBeVisible()
     expect(screen.queryByText("Wallets connected")).not.toBeInTheDocument()
     expect(screen.queryByText("Transfer availability checked")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Continue to Base wallet" })).toBeDisabled()
     fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge irreversible burn" }))
     expect(screen.getByRole("button", { name: "Continue to Base wallet" })).toBeEnabled()
+  })
+
+  it("submits the reviewed IC destination without reopening OISY", async () => {
+    const account = { owner: "2vxsx-fae", subaccount: new Uint8Array(32).fill(0x55) }
+    const events: string[] = []
+    const close = vi.fn().mockResolvedValue(undefined)
+    const prepare = vi.fn(() => {
+      events.push("prepare")
+      return Promise.resolve(close)
+    })
+    const getAccount = vi.fn(() => {
+      events.push("getAccount")
+      return Promise.resolve({ owner: account.owner, subaccount: account.subaccount.slice() })
+    })
+    mocks.writeContractAsync.mockImplementation(() => {
+      events.push("baseWrite")
+      return Promise.resolve(`0x${"77".repeat(32)}`)
+    })
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter: { prepare, getAccount },
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+
+    render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
+    const acknowledgment = await screen.findByRole("checkbox", { name: "Acknowledge irreversible burn" })
+    fireEvent.click(acknowledgment)
+    fireEvent.click(screen.getByRole("button", { name: "Continue to Base wallet" }))
+
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("IC destination verification")
+    await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())
+    expect(screen.getByText("Base token approval").parentElement).toHaveTextContent("Not required")
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base withdrawal transaction")
+    expect(prepare).toHaveBeenCalledOnce()
+    expect(close).toHaveBeenCalledOnce()
+    expect(events.indexOf("getAccount")).toBeLessThan(events.indexOf("baseWrite"))
+    expect(mocks.writeContractAsync).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: "createWithdrawal",
+      args: [200_000_000n, 50_000_000n, "0x04", `0x${"55".repeat(32)}`],
+    }))
+    await waitFor(() => expect(mocks.savePendingConfirmation).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "withdrawal",
+      owner: account.owner,
+    })))
+  })
+
+  it("rejects_a_changed_OISY_account_before_reviewing_the_irreversible_destination", async () => {
+    const remembered = { owner: "aaaaa-aa" }
+    const prepare = vi.fn().mockRejectedValue(new Error("OISY account changed; reconnect and review the transaction"))
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account: remembered,
+      provider: "oisy",
+      adapter: {
+        prepare,
+        getAccount: vi.fn().mockResolvedValue({ owner: "2vxsx-fae" }),
+      },
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+
+    render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
+
+    expect(await screen.findByText("OISY account changed; reconnect and review the transaction")).toBeVisible()
+    expect(screen.queryByRole("button", { name: "Continue to Base wallet" })).not.toBeInTheDocument()
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+    expect(prepare).toHaveBeenCalledOnce()
   })
 
   it("shows a failed preflight check and restarts all checks on retry", async () => {
@@ -296,7 +438,10 @@ describe("BridgePage automatic wallet refresh", () => {
     mocks.useIcWallet.mockReturnValue({
       account,
       provider: "oisy",
-      adapter: { getAccount: vi.fn().mockResolvedValue(account) },
+      adapter: {
+        prepare: vi.fn().mockResolvedValue(() => Promise.resolve()),
+        getAccount: vi.fn().mockResolvedValue(account),
+      },
       connecting: undefined,
       connect: vi.fn(),
       disconnect: vi.fn(),
@@ -310,7 +455,7 @@ describe("BridgePage automatic wallet refresh", () => {
 
     expect(await screen.findByText("Bridge configuration could not be verified")).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))
-    expect(await screen.findByText("Review the transfer and the wallet actions that come next.")).toBeVisible()
+    expect(await screen.findByText("Review the transfer details before continuing.")).toBeVisible()
     expect(mocks.baseRefetch).toHaveBeenCalledTimes(2)
   })
 
@@ -343,7 +488,10 @@ describe("BridgePage automatic wallet refresh", () => {
     mocks.useIcWallet.mockReturnValue({
       account,
       provider: "oisy",
-      adapter: { getAccount: vi.fn().mockResolvedValue(account) },
+      adapter: {
+        prepare: vi.fn().mockResolvedValue(() => Promise.resolve()),
+        getAccount: vi.fn().mockResolvedValue(account),
+      },
       connecting: undefined,
       connect: vi.fn(),
       disconnect: vi.fn(),
@@ -425,8 +573,43 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(prepare).toHaveBeenCalledOnce()
 
     await waitFor(() => expect(requestDeposit).toHaveBeenCalledOnce())
-    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("IC wallet")
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("IC deposit transaction")
     expect(closeWallet).not.toHaveBeenCalled()
+  })
+
+  it("restores_a_prepared_Deposit_without_automatically_reopening_the_IC_wallet", async () => {
+    const requestDeposit = vi.fn()
+    const account = { owner: "aaaaa-aa" }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter: { requestDeposit },
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    mocks.readDepositIntent.mockReturnValue({
+      account,
+      recipient: "0x0000000000000000000000000000000000000002",
+      call: {
+        ownerSequence: 3n,
+        baseRecipient: new Uint8Array(20).fill(2),
+        grossAmount: 200_000_000n,
+        maxServiceFee: 50_000_000n,
+      },
+      state: "prepared",
+    })
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    expect(await screen.findByText("Deposit status unavailable")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Check status" })).toBeEnabled()
+    expect(requestDeposit).not.toHaveBeenCalled()
+    expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
   })
 
   it("rebuilds global progress when a saved Deposit intent is already accepted", async () => {
@@ -470,8 +653,54 @@ describe("BridgePage automatic wallet refresh", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Check status" }))
 
     expect(await screen.findByRole("heading", { name: "Bridge to Base" })).toBeVisible()
-    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Bridge authorization")
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base mint transaction")
     expect(mocks.removeDepositIntent).toHaveBeenCalledOnce()
+  })
+
+  it("rejects_a_canonical_Deposit_that_does_not_match_the_saved_intent", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const recipient = "0x0000000000000000000000000000000000000002" as const
+    mocks.useAccount.mockReturnValue({ address: recipient, isConnected: true })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "plug",
+      adapter: {},
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    mocks.readDepositIntent.mockReturnValue({
+      account,
+      recipient,
+      call: {
+        ownerSequence: 3n,
+        baseRecipient: new Uint8Array(20).fill(2),
+        grossAmount: 200_000_000n,
+        maxServiceFee: 50_000_000n,
+      },
+      state: "submitted",
+    })
+    mocks.getNextDepositSequence.mockResolvedValue(4n)
+    mocks.getDepositByOwnerSequence.mockResolvedValue([{
+      state: { AuthorizationPending: null },
+      deposit_id: new Uint8Array(32).fill(7),
+      owner_sequence: 3n,
+      gross_amount: 200_000_001n,
+      max_service_fee: 50_000_000n,
+      base_recipient: new Uint8Array(20).fill(2),
+      from_subaccount: [],
+      quote: [],
+      mint_authorization: [],
+    }])
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    fireEvent.click(await screen.findByRole("button", { name: "Check status" }))
+
+    await waitFor(() => expect(mocks.getDepositByOwnerSequence).toHaveBeenCalledOnce())
+    expect(mocks.getDepositByOwnerSequence.mock.calls[0]?.[1]).toBe(3n)
+    expect(mocks.removeDepositIntent).not.toHaveBeenCalled()
+    expect(screen.queryByRole("button", { name: /Open transfer progress/ })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Check status" })).toBeEnabled()
   })
 
   it("does not replace an unrelated active transfer while recovering a saved Deposit", async () => {

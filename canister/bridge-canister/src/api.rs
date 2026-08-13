@@ -42,6 +42,18 @@ pub struct DepositIdPage {
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct NonterminalDepositRef {
+    pub deposit_id: Vec<u8>,
+    pub owner_sequence: u64,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct NonterminalDepositRefPage {
+    pub deposits: Vec<NonterminalDepositRef>,
+    pub next_cursor: Option<u64>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum ListDepositIdsError {
     InvalidLimit,
 }
@@ -84,6 +96,7 @@ pub struct DepositView {
     pub deposit_id: Vec<u8>,
     pub owner_sequence: u64,
     pub created_at_ns: u64,
+    pub funding_ledger_block_index: Option<Nat>,
     pub gross_amount: Nat,
     pub quote: Option<DepositQuoteView>,
     pub refund: Option<DepositRefundView>,
@@ -102,7 +115,6 @@ pub enum RequestDepositRefundError {
     AnonymousCaller,
     InvalidDepositId,
     NotFound,
-    OwnerMismatch,
     NotClaimable,
     FinalityUnavailable,
     RpcInconsistent,
@@ -170,7 +182,7 @@ pub struct DepositRefundView {
     pub amount: Nat,
     pub ledger_fee: Nat,
     pub attempt_no: u64,
-    pub block_index: Option<Nat>,
+    pub refund_ledger_block_index: Option<Nat>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,9 +200,9 @@ pub struct WithdrawalView {
     pub charged_service_fee: Nat,
     pub amount_out: Nat,
     pub ledger_fee: Nat,
+    pub release_ledger_block_index: Option<Nat>,
     pub state: WithdrawalPhase,
     pub last_settlement_stop_reason: Option<String>,
-    pub automatic_progress: Option<AutomaticProgressView>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,8 +243,8 @@ pub struct NotifyWithdrawalArgs {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum NotifyWithdrawalReceipt {
     Ingested {
+        finalized_checkpoint_block_number: u64,
         withdrawal_id: Vec<u8>,
-        finalized_head_block_number: u64,
     },
     Duplicate {
         withdrawal_id: Vec<u8>,
@@ -300,7 +312,7 @@ pub async fn notify_withdrawal(
             }
             Err(error) => return Err(map_withdrawal_observation_error(error)),
         };
-    let (observed, snapshot, rpc_audit, stable_observation, finalized_head_block_number) =
+    let (observed, snapshot, rpc_audit, stable_observation, finalized_checkpoint_block_number) =
         match outcome {
             evm_rpc::NotifiedWithdrawalOutcome::Missing => {
                 return Err(NotifyWithdrawalError::TransactionNotFound)
@@ -316,14 +328,14 @@ pub async fn notify_withdrawal(
                 snapshot,
                 rpc_audit,
                 stable_observation,
-                finalized_head_block_number,
+                finalized_checkpoint_block_number,
                 ..
             } => (
                 withdrawal,
                 snapshot,
                 rpc_audit,
                 stable_observation,
-                finalized_head_block_number,
+                finalized_checkpoint_block_number,
             ),
         };
     let expected_signer = cached_signer_address(&config)
@@ -340,7 +352,7 @@ pub async fn notify_withdrawal(
         observed,
         transaction_hash,
         ledger_fee,
-        finalized_head_block_number,
+        finalized_checkpoint_block_number,
         *stable_observation,
         vec![
             rpc_audit_event_kind(&rpc_audit),
@@ -459,7 +471,7 @@ fn ingest_notified_withdrawal(
     observed: evm_rpc::ObservedWithdrawal,
     transaction_hash: [u8; 32],
     ledger_fee: Amount,
-    finalized_head_block_number: u64,
+    finalized_checkpoint_block_number: u64,
     stable_observation: FinalizedObservationRecord,
     rpc_audit: Vec<crate::storage::AuditEventKind>,
     notification_window_seconds: u64,
@@ -507,7 +519,7 @@ fn ingest_notified_withdrawal(
             let mut progress = store
                 .external_progress()
                 .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-            if finalized_head_block_number != stable_observation.block_number {
+            if finalized_checkpoint_block_number != stable_observation.block_number {
                 return Err(NotifyWithdrawalError::BaseStateMismatch);
             }
             progress
@@ -561,7 +573,7 @@ fn ingest_notified_withdrawal(
         let mut progress = store
             .external_progress()
             .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-        if finalized_head_block_number != stable_observation.block_number {
+        if finalized_checkpoint_block_number != stable_observation.block_number {
             return Err(NotifyWithdrawalError::BaseStateMismatch);
         }
         progress
@@ -608,7 +620,7 @@ fn ingest_notified_withdrawal(
             .map_err(notification_commit_error)?;
         Ok(NotifyWithdrawalReceipt::Ingested {
             withdrawal_id: observed.id.to_vec(),
-            finalized_head_block_number,
+            finalized_checkpoint_block_number,
         })
     })
 }
@@ -996,7 +1008,7 @@ pub(crate) fn promote_funding_success(
     .map_err(|error| DepositError::Rejected(format!("{error:?}")))?;
     let result = record
         .apply(DepositEvent::FundingSucceeded {
-            ledger_block_index: block_index,
+            funding_ledger_block_index: block_index,
         })
         .map_err(|_| DepositError::StorageFailure)?;
     if result.deposit_effects != Some(bridge_core::DepositAccountingEffects::ZERO) {
@@ -1321,6 +1333,33 @@ pub fn list_deposit_ids(args: ListDepositIdsArgs) -> Result<DepositIdPage, ListD
             next_cursor: page.next_cursor,
             oldest_available_cursor: page.oldest_available_cursor,
             history_truncated: page.history_truncated,
+        })
+    })
+}
+
+pub fn list_nonterminal_deposit_refs(
+    args: ListDepositIdsArgs,
+) -> Result<NonterminalDepositRefPage, ListDepositIdsError> {
+    if !(1..=100).contains(&args.limit) {
+        return Err(ListDepositIdsError::InvalidLimit);
+    }
+    STORE.with(|store| {
+        let page = store
+            .borrow()
+            .list_nonterminal_deposit_refs(args.owner, args.before_cursor, args.limit)
+            .unwrap_or_else(|error| {
+                ic_cdk::trap(format!("nonterminal deposit index read failed: {error}"))
+            });
+        Ok(NonterminalDepositRefPage {
+            deposits: page
+                .deposits
+                .into_iter()
+                .map(|deposit| NonterminalDepositRef {
+                    deposit_id: deposit.deposit_id.to_vec(),
+                    owner_sequence: deposit.owner_sequence,
+                })
+                .collect(),
+            next_cursor: page.next_cursor,
         })
     })
 }
@@ -1772,6 +1811,7 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
             deposit_id: id.to_vec(),
             owner_sequence: intent.owner_sequence,
             created_at_ns: deposit_created_at_ns(&record),
+            funding_ledger_block_index: deposit_funding_ledger_block_index(&record),
             gross_amount: Nat::from(record.gross_amount.get()),
             quote: record.quote.map(|quote| DepositQuoteView {
                 service_fee: Nat::from(quote.service_fee.get()),
@@ -1841,11 +1881,48 @@ fn deposit_created_at_ns(record: &DepositRecord) -> u64 {
     record.transfer.created_at_time_ns
 }
 
-fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
-    let (reason, status, attempt, block_index) = match &record.state {
-        DepositState::RefundPending { reason, attempt } => {
-            (*reason, DepositRefundStatusView::Sending, attempt, None)
+fn deposit_funding_ledger_block_index(record: &DepositRecord) -> Option<Nat> {
+    let block_index = match &record.state {
+        DepositState::EscrowedUnquoted {
+            funding_ledger_block_index,
         }
+        | DepositState::AuthorizationPending {
+            funding_ledger_block_index,
+        }
+        | DepositState::AuthorizationAvailable {
+            funding_ledger_block_index,
+        }
+        | DepositState::RefundAvailable {
+            funding_ledger_block_index,
+            ..
+        }
+        | DepositState::Minted {
+            funding_ledger_block_index,
+        }
+        | DepositState::RefundPending {
+            funding_ledger_block_index,
+            ..
+        }
+        | DepositState::RefundReconciliationHold {
+            funding_ledger_block_index,
+            ..
+        }
+        | DepositState::Refunded {
+            funding_ledger_block_index,
+            ..
+        } => *funding_ledger_block_index,
+        DepositState::FundingPending
+        | DepositState::FundingReconciliationHold { .. }
+        | DepositState::Cancelled { .. } => return None,
+    };
+    Some(Nat::from(block_index))
+}
+
+fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
+    let (reason, status, attempt, refund_ledger_block_index) = match &record.state {
+        DepositState::RefundPending {
+            reason, attempt, ..
+        } => (*reason, DepositRefundStatusView::Sending, attempt, None),
         DepositState::RefundReconciliationHold {
             reason, attempt, ..
         } => (
@@ -1857,13 +1934,13 @@ fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
         DepositState::Refunded {
             reason,
             attempt,
-            ledger_block_index,
+            refund_ledger_block_index,
             ..
         } => (
             *reason,
             DepositRefundStatusView::Completed,
             attempt,
-            Some(Nat::from(*ledger_block_index)),
+            Some(Nat::from(*refund_ledger_block_index)),
         ),
         _ => return None,
     };
@@ -1873,8 +1950,20 @@ fn deposit_refund_view(record: &DepositRecord) -> Option<DepositRefundView> {
         amount: Nat::from(attempt.identity.amount.get()),
         ledger_fee: Nat::from(attempt.identity.fee.get()),
         attempt_no: attempt.attempt_no,
-        block_index,
+        refund_ledger_block_index,
     })
+}
+
+fn withdrawal_release_ledger_block_index(record: &WithdrawalRecord) -> Option<Nat> {
+    match &record.state {
+        WithdrawalState::Paid {
+            release_ledger_block_index,
+            ..
+        } => Some(Nat::from(*release_ledger_block_index)),
+        WithdrawalState::Observed
+        | WithdrawalState::ReleasePending { .. }
+        | WithdrawalState::ReconciliationHold { .. } => None,
+    }
 }
 
 pub fn get_deposit_by_owner_sequence(owner: Principal, owner_sequence: u64) -> Option<DepositView> {
@@ -1889,11 +1978,6 @@ pub fn get_withdrawal(id: Vec<u8>) -> Option<WithdrawalView> {
     STORE.with(|store| {
         let record = storage_or_trap("withdrawal read", store.borrow().withdrawal(id))?;
         let state = WithdrawalPhase::from(&record.state);
-        let borrowed = store.borrow();
-        let job = storage_or_trap(
-            "settlement job read",
-            borrowed.settlement_job(crate::storage::SettlementJobKind::Withdrawal, id),
-        );
         Some(WithdrawalView {
             withdrawal_id: id.to_vec(),
             amount: Nat::from(record.amount.get()),
@@ -1908,9 +1992,9 @@ pub fn get_withdrawal(id: Vec<u8>) -> Option<WithdrawalView> {
                     settlement.ledger_fee.get()
                 }
             }),
+            release_ledger_block_index: withdrawal_release_ledger_block_index(&record),
             state,
             last_settlement_stop_reason: record.last_settlement_stop_reason,
-            automatic_progress: automatic_progress(job),
         })
     })
 }
@@ -2039,7 +2123,7 @@ mod tests {
     fn deposit_view_time_uses_the_original_request_time() {
         let from = Account::new(vec![1], [0; 32]).expect("valid source");
         let to = Account::new(vec![2], [0; 32]).expect("valid destination");
-        let record = DepositRecord::accept(DepositRequest {
+        let mut record = DepositRecord::accept(DepositRequest {
             id: DepositId::new([3; 32]),
             payload_hash: [4; 32],
             gross_amount: Amount::new(100),
@@ -2058,5 +2142,72 @@ mod tests {
         .expect("valid deposit");
 
         assert_eq!(deposit_created_at_ns(&record), 123_456);
+
+        let attempt = TransferAttempt {
+            attempt_no: 0,
+            identity: record.transfer.clone(),
+        };
+        record.state = DepositState::Refunded {
+            reason: DepositRefundReason::BasePaused,
+            funding_ledger_block_index: 77,
+            attempt,
+            refund_ledger_block_index: 88,
+            source_hold: None,
+        };
+        assert_eq!(
+            deposit_funding_ledger_block_index(&record),
+            Some(Nat::from(77_u8))
+        );
+        assert_eq!(
+            deposit_refund_view(&record)
+                .expect("refunded view")
+                .refund_ledger_block_index,
+            Some(Nat::from(88_u8))
+        );
+    }
+
+    #[test]
+    fn withdrawal_view_exposes_only_a_confirmed_release_block() {
+        let mut record = WithdrawalRecord::observed(
+            WithdrawalId::new([1; 32]),
+            [2; 20],
+            vec![3],
+            [0; 32],
+            [4; 32],
+            Amount::new(100),
+            Amount::new(10),
+            Amount::new(10),
+            Amount::new(90),
+            5,
+        )
+        .expect("valid withdrawal");
+        assert_eq!(withdrawal_release_ledger_block_index(&record), None);
+
+        record.state = WithdrawalState::Paid {
+            attempt: TransferAttempt {
+                attempt_no: 0,
+                identity: LedgerTransferIdentity {
+                    operation: LedgerOperation::ReleaseWithdrawal,
+                    created_at_time_ns: 6,
+                    memo: [7; 32],
+                    amount: Amount::new(90),
+                    fee: Amount::new(1),
+                    from: Account::new(vec![8], [0; 32]).expect("source"),
+                    to: Account::new(vec![9], [0; 32]).expect("destination"),
+                    spender: None,
+                },
+            },
+            settlement: Settlement {
+                amount_out: Amount::new(90),
+                service_fee: Amount::new(10),
+                ledger_fee: Amount::new(1),
+            },
+            release_ledger_block_index: 99,
+            source_hold: None,
+        };
+        assert_eq!(
+            withdrawal_release_ledger_block_index(&record),
+            Some(Nat::from(99_u8))
+        );
     }
 }

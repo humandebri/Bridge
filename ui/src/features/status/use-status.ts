@@ -1,9 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useEffect, useReducer, useRef, useState } from "react"
+import { useEffect, useReducer } from "react"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { finalizedHeadTimestampBlocker, RUNTIME_VALIDATION_TTL_MS, runtimeProfileFingerprint, runtimeWriteBlocker, validateRuntime, validateRuntimeHeartbeat, type FinalizedRuntimeObservation, type RuntimeValidation } from "@/lib/runtime-validation"
+import { RUNTIME_VALIDATION_TTL_MS, runtimeProfileFingerprint, runtimeWriteBlocker, validateRuntime, validateRuntimeHeartbeat, type FinalizedRuntimeObservation, type RuntimeValidation } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 
 interface AutomaticQueryOptions {
@@ -13,16 +13,13 @@ interface AutomaticQueryOptions {
   staleTime?: number
 }
 
-interface RuntimeValidationQueryOptions extends AutomaticQueryOptions {
-  retryNotReadyAfterMs?: number
-}
+type RuntimeHeartbeatQueryOptions = Omit<AutomaticQueryOptions, "refetchInterval">
 
-export function useRuntimeValidation(chainId?: number, options: RuntimeValidationQueryOptions = {}) {
+export function useRuntimeValidation(chainId?: number, options: AutomaticQueryOptions = {}) {
   const queryClient = useQueryClient()
   const {
     enabled = false,
     gcTime = Number.POSITIVE_INFINITY,
-    retryNotReadyAfterMs,
     staleTime = RUNTIME_VALIDATION_TTL_MS,
   } = options
   const query = useQuery({
@@ -52,64 +49,34 @@ export function useRuntimeValidation(chainId?: number, options: RuntimeValidatio
     gcTime,
     staleTime,
   })
-  const retryKey = chainId?.toString() ?? "no-chain"
-  const attemptedRetryKey = useRef<string | undefined>(undefined)
-  const [pendingRetryKey, setPendingRetryKey] = useState<string>()
-  const { data, isFetching, refetch } = query
-
-  useEffect(() => {
-    if (!enabled
-      || retryNotReadyAfterMs === undefined
-      || data?.ready !== false
-      || isFetching
-      || attemptedRetryKey.current === retryKey) return
-
-    setPendingRetryKey(retryKey)
-    const timeout = window.setTimeout(() => {
-      attemptedRetryKey.current = retryKey
-      void refetch().finally(() => {
-        setPendingRetryKey((current) => current === retryKey ? undefined : current)
-      })
-    }, retryNotReadyAfterMs)
-    return () => window.clearTimeout(timeout)
-  }, [data?.ready, enabled, isFetching, refetch, retryKey, retryNotReadyAfterMs])
-
-  return {
-    ...query,
-    isAutoRetryPending: pendingRetryKey === retryKey && data?.ready === false,
-  }
+  return query
 }
 
-export function useRuntimeHeartbeat(chainId: number | undefined, initialValidation: RuntimeValidation | undefined, options: AutomaticQueryOptions = {}) {
+export function useRuntimeHeartbeat(chainId: number | undefined, initialValidation: RuntimeValidation | undefined, options: RuntimeHeartbeatQueryOptions = {}) {
   const queryClient = useQueryClient()
-  const { enabled = false, refetchInterval } = options
+  const { enabled = false, staleTime = RUNTIME_VALIDATION_TTL_MS } = options
   const candidate: FinalizedRuntimeObservation | undefined = initialValidation
   const initialData = candidate?.ready && candidate.snapshot ? candidate : undefined
   return useQuery({
     queryKey: ["runtime-heartbeat", runtimeProfileFingerprint(deploymentProfile), chainId],
     queryFn: async () => {
-      try {
-        const validation = await validateRuntimeHeartbeat(deploymentProfile, chainId)
-        if (validation.status) {
-          queryClient.setQueryData(
-            ["bridge-status", deploymentProfile.bridgeCanisterId],
-            validation.status,
-            { updatedAt: validation.checkedAt },
-          )
-        }
-        return validation
+      const validation = await validateRuntimeHeartbeat(deploymentProfile, chainId)
+      if (validation.status) {
+        queryClient.setQueryData(
+          ["bridge-status", deploymentProfile.bridgeCanisterId],
+          validation.status,
+          { updatedAt: validation.checkedAt },
+        )
       }
-      catch (error) { return { ready: false, checkedAt: Date.now(), blockers: [error instanceof Error ? error.message : "Runtime heartbeat failed"] } }
+      return validation
     },
     enabled,
     initialData,
     initialDataUpdatedAt: initialData?.checkedAt,
-    staleTime: refetchInterval,
+    staleTime,
     refetchOnMount: initialData ? false : undefined,
-    refetchInterval,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: refetchInterval !== undefined,
-    refetchOnReconnect: refetchInterval !== undefined,
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
   })
 }
 
@@ -156,34 +123,6 @@ export function useCurrentBaseQuote(options: AutomaticQueryOptions = {}) {
       const address = deploymentProfile.bridgeAddress as `0x${string}`
       const snapshot = await client.readContract({ address, abi: bridgeAbi, functionName: "bridgeSnapshot" })
       return bridgeSnapshotView(snapshot)
-    },
-  })
-}
-
-export function useConfirmedBaseStatus() {
-  return useQuery({
-    queryKey: ["base-status-finalized", deploymentProfile.bridgeAddress],
-    enabled: false,
-    queryFn: async () => {
-      const client = basePublicClient
-      const address = deploymentProfile.bridgeAddress as `0x${string}`
-      const finalized = await client.getBlock({ blockTag: "finalized" })
-      if (finalized.number === null || finalized.hash === null) throw new Error("Finalized Base block number or hash is unavailable")
-      const timestampBlocker = finalizedHeadTimestampBlocker(finalized.timestamp)
-      if (timestampBlocker) throw new Error(timestampBlocker)
-      const snapshot = await client.readContract({
-        address,
-        abi: bridgeAbi,
-        functionName: "bridgeSnapshot",
-        blockHash: finalized.hash,
-        requireCanonical: true,
-      })
-      return {
-        ...bridgeSnapshotView(snapshot),
-        observedBlock: finalized.number,
-        observedBlockHash: finalized.hash,
-        observedTimestamp: snapshot.blockTimestamp,
-      }
     },
   })
 }

@@ -29,4 +29,13 @@ describe("createIcAgent", () => {
     await createIcAgent("https://icp-api.io")
     expect(mocks.fetchRootKey).not.toHaveBeenCalled()
   })
+
+  it("passes a caller identity to the agent", async () => {
+    const identity = { transformRequest: vi.fn(), getPrincipal: vi.fn() }
+    mocks.isLocal.mockReturnValue(false)
+
+    await createIcAgent("https://icp-api.io", identity)
+
+    expect(mocks.createSync).toHaveBeenCalledWith({ host: "https://icp-api.io", identity })
+  })
 })

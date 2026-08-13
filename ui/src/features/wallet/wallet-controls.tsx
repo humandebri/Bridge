@@ -74,7 +74,7 @@ function isWalletConnect(connector: Connector): boolean {
 }
 
 function isMetaMask(connector: Connector): boolean {
-  return connector.id === "metaMaskSDK" || connector.id === "metaMask" || connector.id === "io.metamask" || connector.type === "metaMask"
+  return connector.id === "io.metamask"
 }
 
 function isCoinbaseWallet(connector: Connector): boolean {
@@ -170,7 +170,7 @@ function WalletDialog() {
           {connectors.map((nextConnector) => <WalletOption
             key={nextConnector.uid}
             name={isGenericInjected(nextConnector) ? "Browser wallet" : nextConnector.name}
-            description={isWalletConnect(nextConnector) ? "Scan with a mobile wallet" : isCoinbaseWallet(nextConnector) ? "Coinbase app or smart wallet" : isMetaMask(nextConnector) ? "Browser extension or mobile wallet" : isGenericInjected(nextConnector) ? "Use an installed extension" : "Detected in this browser"}
+            description={isWalletConnect(nextConnector) ? "Scan with a mobile wallet" : isCoinbaseWallet(nextConnector) ? "Coinbase app or smart wallet" : isMetaMask(nextConnector) ? "Browser extension" : isGenericInjected(nextConnector) ? "Use an installed extension" : "Detected in this browser"}
             icon={connectorIcon(nextConnector)}
             walletConnect={isWalletConnect(nextConnector)}
             side="base"

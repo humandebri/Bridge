@@ -1,0 +1,59 @@
+{
+  "observed_at": "2026-08-12T00:44:03.363Z",
+  "canister_status": {
+    "id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "status": "Running",
+    "settings": {
+      "controllers": [
+        "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+        "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
+      ],
+      "compute_allocation": "0",
+      "memory_allocation": "0",
+      "freezing_threshold": "2_592_000",
+      "reserved_cycles_limit": "5_000_000_000_000",
+      "wasm_memory_limit": "3_221_225_472",
+      "wasm_memory_threshold": "0",
+      "log_memory_limit": "1_048_576",
+      "log_visibility": {
+        "type": "Controllers"
+      },
+      "environment_variables": [
+        {
+          "name": "PUBLIC_CANISTER_ID:bridge-sepolia",
+          "value": "rlhjx-iyaaa-aaaaf-qcnyq-cai"
+        },
+        {
+          "name": "PUBLIC_CANISTER_ID:index-sepolia",
+          "value": "qzre3-3iaaa-aaaai-aqmsa-cai"
+        },
+        {
+          "name": "PUBLIC_CANISTER_ID:ledger-sepolia",
+          "value": "3jkp5-oyaaa-aaaaj-azwqa-cai"
+        }
+      ]
+    },
+    "module_hash": "0xa24d9095b5b436e753f79596c0e8b6ead01544c56cd5c58d309f0ae820298bf1",
+    "memory_size": "18_642_569",
+    "cycles": "380_108_134_836",
+    "reserved_cycles": "0",
+    "idle_cycles_burned_per_day": "1_340_281_114",
+    "query_stats": {
+      "num_calls_total": "324_103",
+      "num_instructions_total": "476_913_720_140",
+      "request_payload_bytes_total": "351_760_084",
+      "response_payload_bytes_total": "3_470_798_084"
+    }
+  },
+  "bridge_status": {
+    "response_bytes": "4449444c0a6c169fa89a5778edb4d4aa0101c9fe97ef0178e6e3a3c3027897e4df95037da4f2b3b70578bcfca1860602fcf990d6060397b2d5db067e98ff84f3067ebad3a7f5077aada3b8950804dab3d3aa0978c3d09bef0a7e81bab89d0b78e9c0cdc50b04cad1d6d40c05c4e1e3e30c06d09da3950d01e5d7d8dc0e078cd6f5eb0e04eef091c80f056e7d6c08aac1e2477d95aae7627da0a0f0f4037df8e8e3ca047ddeb7a1ba067ed2faaafc067de5c09da7087dad9e91da0f7d6d716d7b6e786c09b894dbc70278b8cdb9d40378a7ffe6810578dac6acba0778debccc9d0978d5aecbeb0b78b1a0a8f50c789dfa89aa0e7de2abaae60e786c088ed8d74378ad84c94b78a5bfa9ab0278dde2f6f303058da4879b0478cab9e3b309788faaa1bc0d089cd198e80f096e716b03bd90baad037f8ec4e1e10a7fa181e7e80c7f0100000000000000000000201c0000000000000100000000000000000000000000000000a8b1e79cf209808084fea6dee11100a8a188dca7090000808084fea6dee1118090dfc04a00000120000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "response_text": null,
+    "response_candid": "(\n  record {\n    unpaid_withdrawal_count = 0 : nat64;\n    withdrawal_fee_guard_ledger_fee = null;\n    mint_authorization_ttl_seconds = 7_200 : nat64;\n    mint_authorization_epoch = 1 : nat64;\n    unpaid_withdrawal_amount_out = 0 : nat;\n    last_reserve_observation_ns = 0 : nat64;\n    reserve = record {\n      cycles_balance = 339_899_701_416 : nat;\n      required_eth_wei = 10_000_000_000_000_000 : nat;\n      eth_surplus_wei = 0 : nat;\n      cycles_surplus = 319_899_701_416 : nat;\n      sufficient = false;\n      eth_balance_wei = 0 : nat;\n      governance_eth_floor_wei = 10_000_000_000_000_000 : nat;\n      required_cycles = 20_000_000_000 : nat;\n    };\n    withdrawal_stop_reasons = vec {};\n    audit_retention_warning = false;\n    deposits_paused = true;\n    schema_version = 32 : nat16;\n    observed_bridge_runtime_sha256 = blob \"\";\n    last_finalized_observation_ns = 0 : nat64;\n    withdrawal_fee_guard_active = false;\n    last_finalized_base_block = 0 : nat64;\n    observed_bridge_signer = blob \"\";\n    oldest_unpaid_withdrawal_observed_at_ns = null;\n    counts = record {\n      retained_audit_events = 0 : nat64;\n      reconciliation_holds = 0 : nat64;\n      retained_deposit_index_entries = 0 : nat64;\n      pending_ledger_operations = 0 : nat64;\n      withdrawals = 0 : nat64;\n      deposits = 0 : nat64;\n      reserved_deposit_mint_operations = 0 : nat64;\n      reserved_deposit_mint_amount = 0 : nat;\n      pruned_audit_events = 0 : nat64;\n    };\n    withdrawal_fee_guard_charged_service_fee = null;\n    settlement_scheduler = record {\n      last_dispatcher_run_at_ns = 0 : nat64;\n      scheduled = 0 : nat64;\n      expired = 0 : nat64;\n      next_wakeup_at_ns = null;\n      stopped = 0 : nat64;\n      leased = 0 : nat64;\n      last_internal_error = null;\n      health = variant { Healthy };\n    };\n    last_finalized_base_block_hash = blob \"\";\n    last_audit_sequence = null;\n  },\n)"
+  },
+  "storage_integrity": {
+    "response_bytes": "4449444c036b02bc8a0171c5fed201016b058386e493057fd4b4c59a097ff4b895a40b02eff489f80c7f8ea994d50f7f6c01c7ebc4d00971010000026f6b",
+    "response_text": null,
+    "response_candid": "(variant { Ok = \"ok\" })"
+  },
+  "public_config_initialized": false
+}

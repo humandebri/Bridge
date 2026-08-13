@@ -60,6 +60,7 @@ cleanup_runtime() {
     echo "local CI cleanup was incomplete; retained snapshots and current state require manual inspection" >&2
     return 1
   fi
+  return 0
 }
 
 cleanup() {
@@ -128,7 +129,10 @@ verify_no_npm_lockfiles() {
 run_versions() {
   verify_no_npm_lockfiles
   "$ROOT/scripts/check_tool_versions.sh"
+  "$ROOT/scripts/test_tool_version_gate.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
+  python3 "$ROOT/scripts/check_no_obsolete_release_dependencies.py"
+  python3 "$ROOT/scripts/test_no_obsolete_release_dependencies.py"
   verify_no_obsolete_withdrawal_terms \
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
@@ -144,6 +148,8 @@ run_versions() {
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
+  node "$ROOT/scripts/plan007/test-check-reinstall-instance.mjs"
+  python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
   node "$ROOT/scripts/plan007/test-capture-obsolete-pause-evidence.mjs"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
@@ -243,12 +249,11 @@ run_no_automatic_execution_guards() {
     return 1
   fi
   signing_reference_count=$((signing_reference_count - signing_method_string_count))
-  if [[ "$signing_reference_count" != "0" ]] \
-    && { [[ "$signing_reference_count" != "1" ]] \
-      || ! rg -q \
-        '^[[:space:]]*::ic_cdk_management_canister::sign_with_ecdsa\(sign_args\)[[:space:]]*$' \
-        "$ROOT/canister/bridge-canister/src/signer.rs"; }; then
-    echo "threshold signing may contain only one fully qualified reviewed wrapper call" >&2
+  if [[ "$signing_reference_count" != "1" ]] \
+    || ! rg -q \
+      '^[[:space:]]*::ic_cdk_management_canister::sign_with_ecdsa\(sign_args\)[[:space:]]*$' \
+      "$ROOT/canister/bridge-canister/src/signer.rs"; then
+    echo "threshold signing must contain exactly one fully qualified reviewed wrapper call" >&2
     return 1
   fi
   if rg -n '\bset_timer\b' \
@@ -271,6 +276,7 @@ run_no_automatic_execution_guards() {
     --glob '!browser-lock.test.ts' \
     --glob '!settlement-confirmation-coordinator.tsx' \
     --glob '!settlement-confirmation-coordinator.test.tsx' \
+    --glob '!settlement-confirmation-recovery.test.tsx' \
     --glob '!risk-acknowledgement.tsx' \
     --glob '!risk-acknowledgement.test.tsx'; then
     echo "browser storage is used outside the reviewed recovery modules" >&2
@@ -315,6 +321,8 @@ run_rust_integration() {
     echo "node_modules is missing; run pnpm install --frozen-lockfile before checks" >&2
     return 1
   fi
+  pnpm --dir "$ROOT" run governance-relayer:test
+  pnpm --dir "$ROOT" run governance-relayer:typecheck
   pnpm --dir "$ROOT" run test:e2e
   python3 "$ROOT/scripts/test_prepare_local_network.py"
   bash "$ROOT/scripts/test_ci_local_safety.sh"
@@ -401,6 +409,8 @@ run_verus() {
   local proof_name
   local expected_fixture
   local production_path
+  local production_source
+  local -a production_sources
   local verus_version
 
   verus_version="$(verus --version 2>&1)"
@@ -440,10 +450,17 @@ run_verus() {
           echo "shared Verus kernel is missing: $kernel_name" >&2
           return 1
         }
-        rg -q "\b${kernel_name}\b" "$ROOT/$production_path" || {
-          echo "shared Verus kernel is not referenced by production path: $kernel_name -> $production_path" >&2
-          return 1
-        }
+        IFS=';' read -r -a production_sources <<<"$production_path"
+        for production_source in "${production_sources[@]}"; do
+          [[ -n "$production_source" ]] || {
+            echo "shared Verus kernel has an empty production path: $kernel_name" >&2
+            return 1
+          }
+          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
+            echo "shared Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
+            return 1
+          }
+        done
         ;;
       executable)
         rg -q "^fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
@@ -462,6 +479,17 @@ run_verus() {
           echo "Verus executable kernel is missing: $kernel_name" >&2
           return 1
         }
+        IFS=';' read -r -a production_sources <<<"$production_path"
+        for production_source in "${production_sources[@]}"; do
+          [[ -n "$production_source" ]] || {
+            echo "executable Verus kernel has an empty production path: $kernel_name" >&2
+            return 1
+          }
+          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
+            echo "executable Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
+            return 1
+          }
+        done
         ;;
       model)
         rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
@@ -559,6 +587,8 @@ run_policy_vector_consumers() {
 }
 
 run_refinement_gate() {
+  python3 "$ROOT/scripts/test_transition_manifest.py" || return
+  python3 "$ROOT/scripts/check_transition_manifest.py" || return
   python3 "$ROOT/scripts/test_reproducible_artifacts.py" || return
   python3 "$ROOT/scripts/test_refinement_manifest.py" || return
   python3 "$ROOT/scripts/generate_refinement_harness.py" --check || return
@@ -788,7 +818,7 @@ prepare_smoke_canister_state() {
 restore_smoke_canister_state() {
   local restore_failed=0 restored=0
   if [[ "$ICP_SMOKE_STATE_PREPARED" -eq 0 ]]; then
-    return
+    return 0
   fi
   if [[ "$ICP_TEST_CANISTER_CREATED" -eq 1 ]]; then
     icp canister stop bridge-canister -e local --project-root-override "$ROOT" >/dev/null 2>&1 || true
@@ -925,7 +955,6 @@ run_smoke() {
       max_replacements = 3 : nat8;
       fee_bump_bps = 1_250 : nat16;
     };
-    governance_eth_floor_wei = 1 : nat;
     cycles_floor = 1 : nat;
     settlement_cycle_ceiling = 1 : nat;
     governance_principal = principal \"$smoke_principal\";
@@ -1396,15 +1425,6 @@ for field, (value, candid_type) in stable_fields.items():
     "$(cast call "$bridge_address" "withdrawalsPaused()(bool)" --rpc-url http://127.0.0.1:8545)" \
     "true"
   echo "Bridge-created bSNS deployed at $bsns_address" >&2
-}
-
-run_checks() {
-  run_versions
-  run_rust
-  run_contracts
-  run_proofs
-  run_ui
-  run_icp_build
 }
 
 run_real() {

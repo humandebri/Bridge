@@ -64,13 +64,27 @@ pub enum BaseGovernanceOperationKind {
 pub enum BaseGovernanceError {
     Unauthorized,
     InvalidArgument,
-    Busy { operation_id: u64 },
+    Busy {
+        operation_id: u64,
+    },
     StorageFailure,
     ObservationUnavailable,
-    SigningUnavailable,
-    TransactionNotFinalized { operation_id: u64 },
-    TransactionReverted { operation_id: u64 },
-    ReplacementLimitReached { operation_id: u64 },
+    InsufficientGovernanceBalance {
+        observed_wei: u128,
+        required_wei: u128,
+    },
+    SigningUnavailable {
+        class: signer::SigningFailureClass,
+    },
+    TransactionNotFinalized {
+        operation_id: u64,
+    },
+    TransactionReverted {
+        operation_id: u64,
+    },
+    ReplacementLimitReached {
+        operation_id: u64,
+    },
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -192,30 +206,33 @@ pub async fn prepare(
         }
         return resume_pending(caller, &config, pending, operator).await;
     }
-    if !initialized {
-        let nonce = evm_rpc::transaction_count(&config, operator)
-            .await
-            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-        require_action_authorization(caller, &action)?;
-        STORE.with(|store| {
-            store
-                .borrow_mut()
-                .initialize_governance_nonce(nonce)
-                .map_err(|_| BaseGovernanceError::StorageFailure)
-        })?;
-    }
-    let (_, nonce, id, pending) = governance_lane()?;
+    let observed_nonce = if !initialized {
+        Some(
+            evm_rpc::transaction_count(&config, operator)
+                .await
+                .map_err(|_| BaseGovernanceError::ObservationUnavailable)?,
+        )
+    } else {
+        None
+    };
+    require_action_authorization(caller, &action)?;
+    let (initialized, stored_nonce, id, pending) = governance_lane()?;
     if let Some(pending) = pending {
         require_transaction_authorization(caller, &pending.kind)?;
         return Err(BaseGovernanceError::Busy {
             operation_id: pending.id,
         });
     }
+    let nonce = if initialized {
+        stored_nonce
+    } else {
+        observed_nonce.ok_or(BaseGovernanceError::StorageFailure)?
+    };
     if matches!(
         action,
         GovernanceAction::ScheduleActivation | GovernanceAction::ExecuteActivation
     ) {
-        activation_preflight(&config, caller).await?;
+        activation_preflight(&config).await?;
         require_action_authorization(caller, &action)?;
     }
     let (kind, target, calldata) = encode_action(action, id)?;
@@ -249,6 +266,16 @@ pub async fn prepare(
         envelope,
         state: storage::GovernanceTransactionState::Prepared,
     };
+    require_affordable(&config, operator, &transaction.envelope).await?;
+    require_transaction_authorization(caller, &transaction.kind)?;
+    if !initialized {
+        STORE.with(|store| {
+            store
+                .borrow_mut()
+                .initialize_governance_nonce(nonce)
+                .map_err(|_| BaseGovernanceError::StorageFailure)
+        })?;
+    }
     STORE.with(|store| {
         store
             .borrow_mut()
@@ -337,9 +364,11 @@ pub async fn prepare_replacement(
     }
     transaction.envelope.max_fee_per_gas = max_fee_per_gas;
     transaction.envelope.max_priority_fee_per_gas = max_priority_fee_per_gas;
+    require_affordable(&config, operator, &transaction.envelope).await?;
+    require_transaction_authorization(caller, &transaction.kind)?;
     let raw = signer::sign_governance(&transaction.envelope, &config)
         .await
-        .map_err(|_| BaseGovernanceError::SigningUnavailable)?;
+        .map_err(signing_failure)?;
     require_transaction_authorization(caller, &transaction.kind)?;
     let current_pending = pending_transaction(args.operation_id)?;
     if current_pending.envelope.signed_transactions.last() != Some(current)
@@ -608,7 +637,11 @@ async fn resume_pending(
 ) -> Result<SignedBaseGovernanceTransaction, BaseGovernanceError> {
     require_transaction_authorization(caller, &transaction.kind)?;
     match pending_signature_action(&transaction)? {
-        PendingSignatureAction::Sign => sign_prepared(caller, config, transaction, operator).await,
+        PendingSignatureAction::Sign => {
+            require_affordable(config, operator, &transaction.envelope).await?;
+            require_transaction_authorization(caller, &transaction.kind)?;
+            sign_prepared(caller, config, transaction, operator).await
+        }
         PendingSignatureAction::ReturnSigned => signed_view(&transaction, operator),
     }
 }
@@ -624,7 +657,7 @@ async fn sign_prepared(
     }
     let raw = signer::sign_governance(&transaction.envelope, config)
         .await
-        .map_err(|_| BaseGovernanceError::SigningUnavailable)?;
+        .map_err(signing_failure)?;
     require_transaction_authorization(caller, &transaction.kind)?;
     if pending_transaction(transaction.id)? != transaction {
         return Err(BaseGovernanceError::StorageFailure);
@@ -664,12 +697,8 @@ async fn sign_prepared(
 
 async fn activation_preflight(
     config: &crate::config::BridgeInitArgs,
-    caller: Principal,
 ) -> Result<(), BaseGovernanceError> {
     let expected_bridge_signer = crate::api::cached_signer_address(config)
-        .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let governance_operator = crate::api::cached_governance_operator_address(config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     let runtime_attested =
@@ -679,12 +708,6 @@ async fn activation_preflight(
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     crate::api::cache_runtime_attestation(config, &observed)
         .map_err(|_| BaseGovernanceError::StorageFailure)?;
-    let (finalized_eth, safe_eth) = futures::join!(
-        evm_rpc::signer_eth_balance_at(config, governance_operator, observed.finalized),
-        evm_rpc::signer_eth_balance_safe(config, governance_operator)
-    );
-    let finalized_eth = finalized_eth.map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let safe_eth = safe_eth.map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     if !activation_base_preflight_matches(
         observed.snapshot.bridge_signer,
         expected_bridge_signer,
@@ -693,36 +716,56 @@ async fn activation_preflight(
     ) {
         return Err(BaseGovernanceError::ObservationUnavailable);
     }
-    let observed_eth = finalized_eth.min(safe_eth);
-    let observed_at_ns = ic_cdk::api::time();
     STORE.with(|store| {
-        let mut store = store.borrow_mut();
+        let store = store.borrow();
         let locally_paused = store
             .admin_state()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .deposits_paused;
-        let nonterminal_withdrawals = store
-            .nonterminal_withdrawal_count()
-            .map_err(|_| BaseGovernanceError::StorageFailure)?;
-        let nonterminal_deposits = store
-            .nonterminal_deposit_count()
-            .map_err(|_| BaseGovernanceError::StorageFailure)?;
-        let reserve = config
-            .reserve_policy()
-            .snapshot(
-                nonterminal_withdrawals,
-                nonterminal_deposits,
-                0,
-                observed_eth,
-                ic_cdk::api::canister_liquid_cycle_balance(),
-            )
-            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-        if !locally_paused || !reserve.sufficient {
+        if !locally_paused {
             return Err(BaseGovernanceError::ObservationUnavailable);
         }
-        store
-            .record_reserve_observation(observed_eth, observed_at_ns, caller)
-            .map_err(|_| BaseGovernanceError::StorageFailure)
+        Ok(())
+    })
+}
+
+async fn require_affordable(
+    config: &crate::config::BridgeInitArgs,
+    governance_operator: [u8; 20],
+    envelope: &GovernanceTransactionEnvelope,
+) -> Result<(), BaseGovernanceError> {
+    let required_wei = bridge_core::transaction_liability_wei(
+        envelope.gas_limit,
+        envelope.max_fee_per_gas,
+        config.governance_evm_fee.l1_fee_per_transaction_ceiling_wei,
+        0,
+    )
+    .ok_or(BaseGovernanceError::StorageFailure)?;
+    let finalized = evm_rpc::finalized_observation(config)
+        .await
+        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let (finalized_balance, safe_balance) = futures::join!(
+        evm_rpc::signer_eth_balance_at(config, governance_operator, finalized),
+        evm_rpc::signer_eth_balance_safe(config, governance_operator)
+    );
+    let observed_wei = conservative_observed_balance(
+        finalized_balance.map_err(|_| BaseGovernanceError::ObservationUnavailable)?,
+        safe_balance.map_err(|_| BaseGovernanceError::ObservationUnavailable)?,
+    );
+    if let Some(error) = affordability_error(observed_wei, required_wei) {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn conservative_observed_balance(finalized_wei: u128, safe_wei: u128) -> u128 {
+    finalized_wei.min(safe_wei)
+}
+
+fn affordability_error(observed_wei: u128, required_wei: u128) -> Option<BaseGovernanceError> {
+    (observed_wei < required_wei).then_some(BaseGovernanceError::InsufficientGovernanceBalance {
+        observed_wei,
+        required_wei,
     })
 }
 
@@ -823,7 +866,7 @@ fn signed_view(
         .envelope
         .signed_transactions
         .last()
-        .ok_or(BaseGovernanceError::SigningUnavailable)?;
+        .ok_or(BaseGovernanceError::StorageFailure)?;
     Ok(SignedBaseGovernanceTransaction {
         operation_id: transaction.id,
         kind: kind_view(&transaction.kind),
@@ -840,6 +883,14 @@ fn signed_view(
         generation: signed.generation,
         signed_at_ns: signed.signed_at_ns,
     })
+}
+
+fn signing_failure(error: signer::SignerError) -> BaseGovernanceError {
+    let class = error.class();
+    // Deployment policy keeps canister logs controller-visible; the public Candid error contains
+    // only the stable class and never the management reject detail.
+    ic_cdk::println!("governance threshold signing failed: {error}");
+    BaseGovernanceError::SigningUnavailable { class }
 }
 
 fn kind_view(kind: &storage::GovernanceTransactionKind) -> BaseGovernanceOperationKind {
@@ -1030,13 +1081,17 @@ fn encode_action(
     action: GovernanceAction,
     governance_operation_id: u64,
 ) -> Result<(storage::GovernanceTransactionKind, [u8; 20], Vec<u8>), BaseGovernanceError> {
-    let (bridge, timelock) = STORE.with(|store| {
+    let (bridge, timelock, deployment_instance_id) = STORE.with(|store| {
         let config = store
             .borrow()
             .config()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .ok_or(BaseGovernanceError::StorageFailure)?;
-        Ok::<_, BaseGovernanceError>((config.contract_array(), config.timelock_array()))
+        Ok::<_, BaseGovernanceError>((
+            config.contract_array(),
+            config.timelock_array(),
+            hash32(&config.deployment_instance_id)?,
+        ))
     })?;
     match action {
         GovernanceAction::PauseDepositMints => Ok((
@@ -1078,7 +1133,7 @@ fn encode_action(
             ))
         }
         GovernanceAction::ScheduleActivation => {
-            let salt = activation_salt(governance_operation_id);
+            let salt = activation_salt(deployment_instance_id, governance_operation_id);
             let operation_id = activation_operation_id(bridge, salt);
             Ok((
                 storage::GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
@@ -1124,8 +1179,9 @@ fn activation_payloads() -> [Vec<u8>; 2] {
     ]
 }
 
-fn activation_salt(governance_operation_id: u64) -> [u8; 32] {
-    let mut input = b"KINIC_BRIDGE_ACTIVATION_V1".to_vec();
+fn activation_salt(deployment_instance_id: [u8; 32], governance_operation_id: u64) -> [u8; 32] {
+    let mut input = b"KINIC_BRIDGE_ACTIVATION_V2".to_vec();
+    input.extend_from_slice(&deployment_instance_id);
     input.extend_from_slice(&governance_operation_id.to_be_bytes());
     keccak(&input)
 }
@@ -1220,9 +1276,10 @@ fn keccak(value: &[u8]) -> [u8; 32] {
 mod tests {
     use super::{
         action_authorized, activation_base_preflight_matches, activation_operation_id,
-        activation_postcondition_matches, activation_salt, execute_activation_calldata,
-        initial_fee, minimum_fee_bump, pending_signature_action, schedule_activation_calldata,
-        selector, transaction_authorized, word_u128, GovernanceAction, PendingSignatureAction,
+        activation_postcondition_matches, activation_salt, affordability_error,
+        conservative_observed_balance, execute_activation_calldata, initial_fee, minimum_fee_bump,
+        pending_signature_action, schedule_activation_calldata, selector, transaction_authorized,
+        word_u128, BaseGovernanceError, GovernanceAction, PendingSignatureAction,
         ACTIVATION_TIMELOCK_DELAY_SECONDS,
     };
     use crate::storage::{
@@ -1244,7 +1301,7 @@ mod tests {
     #[test]
     fn activation_calldata_is_stable() {
         let bridge = [7; 20];
-        let salt = activation_salt(9);
+        let salt = activation_salt([3; 32], 9);
         assert_eq!(
             &schedule_activation_calldata(bridge, salt)[..4],
             selector("scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)")
@@ -1259,6 +1316,47 @@ mod tests {
         assert_eq!(ACTIVATION_TIMELOCK_DELAY_SECONDS, 300);
         assert_ne!(activation_operation_id(bridge, salt), [0; 32]);
         assert_eq!(word_u128(42)[31], 42);
+    }
+
+    #[test]
+    fn governance_affordability_uses_conservative_balance_and_exact_boundary() {
+        assert_eq!(conservative_observed_balance(11, 10), 10);
+        assert_eq!(conservative_observed_balance(9, 10), 9);
+        assert_eq!(affordability_error(10, 10), None);
+        assert_eq!(
+            affordability_error(9, 10),
+            Some(BaseGovernanceError::InsufficientGovernanceBalance {
+                observed_wei: 9,
+                required_wei: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn prepared_resume_affordability_rejection_preserves_transaction() {
+        let transaction = governance_transaction();
+        let before = transaction.clone();
+
+        assert_eq!(
+            pending_signature_action(&transaction),
+            Ok(PendingSignatureAction::Sign)
+        );
+        assert_eq!(
+            affordability_error(9, 10),
+            Some(BaseGovernanceError::InsufficientGovernanceBalance {
+                observed_wei: 9,
+                required_wei: 10,
+            })
+        );
+        assert_eq!(transaction, before);
+    }
+
+    #[test]
+    fn activation_salt_is_namespaced_by_deployment_instance() {
+        let first = activation_salt([1; 32], 1);
+        assert_eq!(first, activation_salt([1; 32], 1));
+        assert_ne!(first, activation_salt([2; 32], 1));
+        assert_ne!(first, activation_salt([1; 32], 2));
     }
 
     #[test]

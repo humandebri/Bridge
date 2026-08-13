@@ -17,19 +17,6 @@ fn authorized(state: &AdminState, caller: Principal, action: u8) -> bool {
     )
 }
 
-pub(crate) fn can_advance_settlement(caller: Principal) -> Result<bool, AdminError> {
-    if caller == Principal::anonymous() {
-        return Ok(false);
-    }
-    STORE.with(|store| {
-        let state = store
-            .borrow()
-            .admin_state()
-            .map_err(|_| AdminError::StorageFailure)?;
-        Ok(state.governance_principal == caller || state.pause_principal == caller)
-    })
-}
-
 pub(crate) fn is_governance(caller: Principal) -> Result<bool, AdminError> {
     if caller == Principal::anonymous() {
         return Ok(false);

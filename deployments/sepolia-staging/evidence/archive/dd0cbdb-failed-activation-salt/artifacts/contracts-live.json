@@ -1,0 +1,62 @@
+{
+  "observed_at": "2026-08-12T00:38:11.085Z",
+  "deployment_transaction_hash": "0x8862d8746295643efc8730fb11a9034af858a07862441fb144b77a164b674d35",
+  "deployment_block": 44770225,
+  "deployment_receipt": {
+    "type": "0x2",
+    "status": "0x1",
+    "cumulativeGasUsed": "0x69207a",
+    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "logs": [],
+    "transactionHash": "0x8862d8746295643efc8730fb11a9034af858a07862441fb144b77a164b674d35",
+    "from": "0x7f4743128368cded5413e8c42c9bd689ea64d192",
+    "to": null,
+    "contractAddress": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+    "gasUsed": "0x392cc9",
+    "effectiveGasPrice": "0x5b8d80",
+    "blockHash": "0x4b75d1be0812d8ed1a00926d7019347f84c19582940e11950820e46b0ab80844",
+    "blockNumber": "0x2ab23b1",
+    "transactionIndex": "0x10",
+    "blobGasUsed": "0x4e2e40",
+    "l1Fee": "0xc4261bbe98",
+    "l1GasPrice": "0x4a733743",
+    "l1GasUsed": "0x2ce09",
+    "l1BlobBaseFee": "0x4a2e58f",
+    "l1BaseFeeScalar": "0x44d",
+    "l1BlobBaseFeeScalar": "0xa118b",
+    "daFootprintGasScalar": "0x1be"
+  },
+  "deployer": "0x7f4743128368cded5413e8c42c9bd689ea64d192",
+  "deployer_timelock_roles": {
+    "default_admin_role": false,
+    "proposer_role": false,
+    "executor_role": false,
+    "canceller_role": false
+  },
+  "bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+  "runtime_administrator": "0x64639cb99ae61436cb1d66d775283f757e436479",
+  "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
+  "bsns_address": "0x265e6b05a2f6bda29f464d70867a37acde3ccde8",
+  "bridge_runtime_template_sha256": "0x4be5b6884d6293924865c2d2f669d1e8de7f285be74c12506ffb0e3c63bfb5a0",
+  "bsns_runtime_template_sha256": "0x10be95adefd5f76cf8d1f8dd137247dc9371d81335a793984dc88d2aa20955ac",
+  "provider_observations": [
+    {
+      "provider_url_sha256": "a30ce743ddc719cd42638750cfdc375ae936209f7ba24268b4b2eb533494616f",
+      "chain_id": 84532,
+      "bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+      "bsns_runtime_sha256": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b"
+    },
+    {
+      "provider_url_sha256": "5916966ddb71dda2015e9e4991f67d0df96798966b5b2e0deb8ef43405d39e2e",
+      "chain_id": 84532,
+      "bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+      "bsns_runtime_sha256": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b"
+    },
+    {
+      "provider_url_sha256": "6dbd0deb51a5f497d7eb0587c807d9939346d9fdad6e53538bb87f61b8819b49",
+      "chain_id": 84532,
+      "bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+      "bsns_runtime_sha256": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b"
+    }
+  ]
+}

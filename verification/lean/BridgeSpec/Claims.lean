@@ -38,6 +38,12 @@ theorem canonical_probe_claim
     canonicalProbeMatches receiptBlock snapshotBlock = true ↔ receiptBlock = snapshotBlock :=
   canonical_probe_matches_exactly
 
+theorem withdrawal_finality_quorum_claim
+    {first second third : Option Nat} {checkpoint : Nat}
+    (selected : withdrawalFinalizedCheckpoint first second third = some checkpoint) :
+    twoFinalizedHeadsAttest first second third checkpoint :=
+  withdrawal_finality_quorum_selects_two_provider_checkpoint selected
+
 theorem payment_claim :
     (∀ {w paid : Withdrawal} {transfer : LedgerTransfer},
       pay w transfer = some paid →
@@ -81,6 +87,19 @@ theorem service_fee_claim
     serviceFeeChangeAllowed serviceFee maximumServiceFee = true ↔
       serviceFee ≤ maximumServiceFee := by
   simp [serviceFeeChangeAllowed]
+
+theorem governance_transaction_affordability_claim
+    {observedWei requiredWei : Nat}
+    (insufficient : observedWei < requiredWei) :
+    ¬requiredWei ≤ observedWei := by
+  omega
+
+theorem signing_cycle_reserve_claim
+    {liquid reserve signingCost callMargin charged : Nat}
+    (budget : reserve + signingCost + callMargin ≤ liquid)
+    (chargeBound : charged ≤ signingCost + callMargin) :
+    reserve ≤ liquid - charged := by
+  omega
 
 theorem fee_rotation_claim
     {state next : FeeState} {recipient : Nat}

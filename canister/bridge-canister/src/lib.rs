@@ -54,7 +54,6 @@ pub struct BridgeStatus {
     pub mint_authorization_epoch: u64,
     pub counts: StatusCounts,
     pub last_finalized_base_block: u64,
-    pub last_reserve_observation_ns: u64,
     pub last_finalized_observation_ns: u64,
     pub last_finalized_base_block_hash: Vec<u8>,
     pub observed_bridge_signer: Vec<u8>,
@@ -70,6 +69,7 @@ pub struct BridgeStatus {
     pub unpaid_withdrawal_amount_out: u128,
     pub oldest_unpaid_withdrawal_observed_at_ns: Option<u64>,
     pub withdrawal_stop_reasons: Vec<String>,
+    pub audit_retention_warning: bool,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -93,12 +93,8 @@ pub enum SettlementSchedulerHealth {
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReserveStatus {
-    pub eth_balance_wei: u128,
     pub cycles_balance: u128,
-    pub required_eth_wei: u128,
-    pub governance_eth_floor_wei: u128,
     pub required_cycles: u128,
-    pub eth_surplus_wei: u128,
     pub cycles_surplus: u128,
     pub sufficient: bool,
 }
@@ -133,7 +129,6 @@ pub struct PublicConfig {
     pub settlement_retry_interval_seconds: u64,
     pub governance_evm_fee: config::EvmFeePolicy,
     pub governance_replacement: config::GovernanceReplacementPolicy,
-    pub governance_eth_floor_wei: u128,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
     pub governance_principal: candid::Principal,
@@ -351,14 +346,75 @@ fn init(args: config::BridgeInitArgs) {
     scheduler::arm_funding_recovery();
 }
 
-#[ic_cdk::post_upgrade]
-fn post_upgrade() {
-    let store = StableStore::reopen_after_upgrade(DefaultMemoryImpl::default())
-        .unwrap_or_else(|error| ic_cdk::trap(format!("stable state reopen failed: {error}")));
+fn reopen_store_after_upgrade() -> StableStore {
+    StableStore::reopen_after_upgrade(DefaultMemoryImpl::default())
+        .unwrap_or_else(|error| ic_cdk::trap(format!("stable state reopen failed: {error}")))
+}
+
+fn finish_post_upgrade(store: StableStore) {
     install_store(store);
     ensure_supported_schema();
     scheduler::arm();
     scheduler::arm_funding_recovery();
+}
+
+#[cfg(not(feature = "test-deployment"))]
+#[ic_cdk::post_upgrade]
+fn post_upgrade() {
+    finish_post_upgrade(reopen_store_after_upgrade());
+}
+
+#[cfg(feature = "test-deployment")]
+fn decode_staging_upgrade_args(bytes: Vec<u8>) -> config::StagingUpgradeArgs {
+    if bytes == candid::encode_args(()).expect("empty Candid tuple encoding must succeed") {
+        return config::StagingUpgradeArgs::default();
+    }
+    candid::decode_args::<(config::StagingUpgradeArgs,)>(&bytes)
+        .map(|(args,)| args)
+        .unwrap_or_else(|error| {
+            ic_cdk::trap(format!("staging upgrade argument decode failed: {error}"))
+        })
+}
+
+#[cfg(feature = "test-deployment")]
+fn apply_staging_rpc_provider_update(
+    store: &mut StableStore,
+    args: &config::StagingUpgradeArgs,
+) -> Result<(), String> {
+    if args.status_counts_guard_version != 1 {
+        return Err("unsupported staging status count guard version".into());
+    }
+    let Some(update) = args.rpc_provider_update.as_ref() else {
+        return Ok(());
+    };
+    let counts = store
+        .status_counts()
+        .map_err(|error| format!("staging status count read failed: {error}"))?;
+    if !counts.matches_staging_expected_status_counts(&update.expected_status_counts) {
+        return Err("staging status counts do not match the reviewed policy".into());
+    }
+    let current = store
+        .config()
+        .map_err(|error| format!("staging configuration read failed: {error}"))?
+        .ok_or_else(|| "missing staging configuration".to_owned())?;
+    if let Some(next) = current
+        .staging_rpc_replacement(&update.custom_evm_rpc_urls)
+        .map_err(str::to_owned)?
+    {
+        store
+            .apply_staging_rpc_replacement(&next)
+            .map_err(|error| format!("staging RPC replacement failed: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "test-deployment")]
+#[ic_cdk::post_upgrade(decode_with = "decode_staging_upgrade_args")]
+fn post_upgrade(args: config::StagingUpgradeArgs) {
+    let mut store = reopen_store_after_upgrade();
+    apply_staging_rpc_provider_update(&mut store, &args)
+        .unwrap_or_else(|error| ic_cdk::trap(error));
+    finish_post_upgrade(store);
 }
 
 #[ic_cdk::update]
@@ -442,41 +498,16 @@ async fn request_deposit_refund(
     use api::RequestDepositRefundError as Error;
 
     let caller = ic_cdk::api::msg_caller();
-    match bridge_core::refund_request_identity_decision(
-        caller != candid::Principal::anonymous(),
-        None,
-    ) {
-        bridge_core::RefundRequestIdentityDecision::OwnerLookupRequired => {}
+    match bridge_core::refund_request_identity_decision(caller != candid::Principal::anonymous()) {
+        bridge_core::RefundRequestIdentityDecision::Allow => {}
         bridge_core::RefundRequestIdentityDecision::AnonymousCaller => {
             return Err(Error::AnonymousCaller);
-        }
-        bridge_core::RefundRequestIdentityDecision::Allow
-        | bridge_core::RefundRequestIdentityDecision::OwnerMismatch => {
-            return Err(Error::StorageFailure);
         }
     }
     let id: [u8; 32] = deposit_id
         .as_slice()
         .try_into()
         .map_err(|_| Error::InvalidDepositId)?;
-    let owned = STORE.with(|store| {
-        store
-            .borrow()
-            .deposit_intent(id)
-            .map_err(|_| Error::StorageFailure)?
-            .map(|intent| intent.caller == caller.as_slice())
-            .ok_or(Error::NotFound)
-    })?;
-    match bridge_core::refund_request_identity_decision(true, Some(owned)) {
-        bridge_core::RefundRequestIdentityDecision::Allow => {}
-        bridge_core::RefundRequestIdentityDecision::OwnerMismatch => {
-            return Err(Error::OwnerMismatch);
-        }
-        bridge_core::RefundRequestIdentityDecision::OwnerLookupRequired
-        | bridge_core::RefundRequestIdentityDecision::AnonymousCaller => {
-            return Err(Error::StorageFailure);
-        }
-    }
     let config = STORE.with(|store| {
         store
             .borrow()
@@ -504,9 +535,10 @@ async fn request_deposit_refund(
             .ok_or(Error::NotFound)
     })?;
     let mut refund_start = None;
+    let mut prepaid_quota = None;
     match state {
         bridge_core::DepositState::Minted { .. } | bridge_core::DepositState::Refunded { .. } => {
-            return api::get_deposit(id.to_vec()).ok_or(Error::StorageFailure);
+            return Err(Error::NotClaimable);
         }
         bridge_core::DepositState::AuthorizationPending { .. } => {
             let deadline = STORE.with(|store| {
@@ -518,6 +550,7 @@ async fn request_deposit_refund(
                     .map(|authorization| authorization.authorization.deadline)
                     .ok_or(Error::StorageFailure)
             })?;
+            prepaid_quota = Some(reserve_refund_rpc_quota(&config, id, caller)?);
             let (snapshot, _) = api::base_mint_snapshot(&config, ic_cdk::api::time())
                 .await
                 .map_err(|error| match error {
@@ -595,6 +628,7 @@ async fn request_deposit_refund(
                 }
                 let runtime_attested =
                     api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
+                prepaid_quota = Some(reserve_refund_rpc_quota(&config, id, caller)?);
                 let observation = evm_rpc::recovery_observation(
                     &config,
                     evm_rpc::RecoveryTarget::Deposit(id),
@@ -690,7 +724,7 @@ async fn request_deposit_refund(
                                 .put_deposit_transition(&deposit, result)
                                 .map_err(|_| Error::StorageFailure)
                         })?;
-                        return api::get_deposit(id.to_vec()).ok_or(Error::StorageFailure);
+                        return Err(Error::NotClaimable);
                     }
                 }
             }
@@ -702,10 +736,16 @@ async fn request_deposit_refund(
     drop(guard);
 
     let job = if let Some((deposit, transition)) = refund_start {
-        claim_refund_start(deposit, transition, caller).map_err(map_refund_settlement_error)?
-    } else {
-        claim_job(storage::SettlementJobKind::Deposit, id, caller)
+        claim_refund_start(deposit, transition, caller, prepaid_quota)
             .map_err(map_refund_settlement_error)?
+    } else {
+        claim_job(
+            storage::SettlementJobKind::Deposit,
+            id,
+            caller,
+            prepaid_quota,
+        )
+        .map_err(map_refund_settlement_error)?
     };
     scheduler::run_claimed(job)
         .await
@@ -726,6 +766,13 @@ fn list_deposit_ids(
     args: api::ListDepositIdsArgs,
 ) -> Result<api::DepositIdPage, api::ListDepositIdsError> {
     api::list_deposit_ids(args)
+}
+
+#[ic_cdk::query]
+fn list_nonterminal_deposit_refs(
+    args: api::ListDepositIdsArgs,
+) -> Result<api::NonterminalDepositRefPage, api::ListDepositIdsError> {
+    api::list_nonterminal_deposit_refs(args)
 }
 
 #[ic_cdk::query]
@@ -807,7 +854,6 @@ async fn notify_withdrawal(
         api::NotifyWithdrawalReceipt::Duplicate { .. } => return Ok(receipt),
     }
     drop(notification_guard);
-    scheduler::arm();
     Ok(receipt)
 }
 
@@ -815,25 +861,8 @@ fn has_external_call_cycle_budget(current: u128, floor: u128, call_ceiling: u128
     current > floor.saturating_add(call_ceiling)
 }
 
-fn can_advance_withdrawal(
-    caller: candid::Principal,
-    id: [u8; 32],
-) -> Result<bool, tasks::SettlementActionError> {
-    if caller == candid::Principal::anonymous() {
-        return Err(tasks::SettlementActionError::AnonymousCaller);
-    }
-    let owned = STORE.with(|store| {
-        store
-            .borrow()
-            .withdrawal(id)
-            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
-            .map(|record| record.owner == caller.as_slice())
-            .ok_or(tasks::SettlementActionError::NotFound)
-    })?;
-    if owned {
-        return Ok(true);
-    }
-    admin::can_advance_settlement(caller).map_err(|_| tasks::SettlementActionError::StorageFailure)
+fn can_continue_withdrawal(caller: candid::Principal) -> bool {
+    caller != candid::Principal::anonymous()
 }
 
 #[ic_cdk::update]
@@ -845,8 +874,8 @@ async fn continue_withdrawal(
         .try_into()
         .map_err(|_| tasks::SettlementActionError::InvalidId)?;
     let caller = ic_cdk::api::msg_caller();
-    if !can_advance_withdrawal(caller, id)? {
-        return Err(tasks::SettlementActionError::Unauthorized);
+    if !can_continue_withdrawal(caller) {
+        return Err(tasks::SettlementActionError::AnonymousCaller);
     }
     let Some(guard) = InFlightGuard::acquire(ActionKey::Withdrawal(id)) else {
         return Err(tasks::SettlementActionError::Busy);
@@ -869,11 +898,23 @@ async fn continue_withdrawal(
     if let Some(state) = terminal_state {
         return Ok(tasks::SettlementActionResult::Complete { state });
     }
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+            .ok_or(tasks::SettlementActionError::StorageFailure)
+    })?;
+    if !has_external_call_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.cycles_floor,
+        config.settlement_cycle_ceiling,
+    ) {
+        return Err(tasks::SettlementActionError::InsufficientCycles);
+    }
     drop(guard);
     let job = claim_manual_job(storage::SettlementJobKind::Withdrawal, id, caller)?;
-    let result = scheduler::run_claimed(job).await?;
-    scheduler::arm();
-    Ok(result)
+    scheduler::run_claimed(job).await
 }
 
 fn claim_manual_job(
@@ -881,7 +922,7 @@ fn claim_manual_job(
     id: [u8; 32],
     caller: candid::Principal,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
-    claim_job(kind, id, caller)
+    claim_job(kind, id, caller, None)
 }
 
 fn manual_claim_result(
@@ -910,6 +951,7 @@ fn map_refund_settlement_error(
         } => Error::RateLimited {
             retry_after_seconds,
         },
+        tasks::SettlementActionError::InsufficientCycles => Error::InsufficientCycles,
         _ => Error::StorageFailure,
     }
 }
@@ -923,10 +965,39 @@ fn settlement_quota_limits(config: &config::BridgeInitArgs) -> storage::Settleme
     }
 }
 
+fn reserve_refund_rpc_quota(
+    config: &config::BridgeInitArgs,
+    id: [u8; 32],
+    caller: candid::Principal,
+) -> Result<storage::PrepaidQuota, api::RequestDepositRefundError> {
+    use api::RequestDepositRefundError as Error;
+
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .reserve_settlement_quota(
+                storage::SettlementJobKind::Deposit,
+                id,
+                caller,
+                ic_cdk::api::time(),
+                settlement_quota_limits(config),
+            )
+            .map_err(|error| match error {
+                storage::SettlementAdmissionError::RateLimited {
+                    retry_after_seconds,
+                } => Error::RateLimited {
+                    retry_after_seconds,
+                },
+                storage::SettlementAdmissionError::Storage => Error::StorageFailure,
+            })
+    })
+}
+
 fn claim_refund_start(
     deposit: bridge_core::DepositRecord,
     transition: bridge_core::ApplyResult,
     caller: candid::Principal,
+    prepaid_quota: Option<storage::PrepaidQuota>,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -936,14 +1007,25 @@ fn claim_refund_start(
             .ok_or(tasks::SettlementActionError::StorageFailure)
     })?;
     let now_ns = ic_cdk::api::time();
-    let context = storage::ManualSettlementClaimContext {
-        kind: storage::SettlementJobKind::Deposit,
-        settlement_id: deposit.id.bytes(),
-        caller,
-        now_ns,
-        lease_until_ns: now_ns.saturating_add(120_000_000_000),
-        overdue_after_ns: 300_000_000_000,
-        limits: settlement_quota_limits(&config),
+    let context = match prepaid_quota {
+        Some(prepaid) => storage::ManualSettlementClaimContext::prepaid(
+            storage::SettlementJobKind::Deposit,
+            deposit.id.bytes(),
+            caller,
+            now_ns,
+            now_ns.saturating_add(120_000_000_000),
+            300_000_000_000,
+            prepaid,
+        ),
+        None => storage::ManualSettlementClaimContext::new(
+            storage::SettlementJobKind::Deposit,
+            deposit.id.bytes(),
+            caller,
+            now_ns,
+            now_ns.saturating_add(120_000_000_000),
+            300_000_000_000,
+            settlement_quota_limits(&config),
+        ),
     };
     STORE.with(|store| {
         store
@@ -967,6 +1049,7 @@ fn claim_job(
     kind: storage::SettlementJobKind,
     id: [u8; 32],
     caller: candid::Principal,
+    prepaid_quota: Option<storage::PrepaidQuota>,
 ) -> Result<storage::SettlementJob, tasks::SettlementActionError> {
     let config = STORE.with(|store| {
         store
@@ -978,15 +1061,26 @@ fn claim_job(
     STORE.with(|store| {
         let now_ns = ic_cdk::api::time();
         let limits = settlement_quota_limits(&config);
-        let claim = store.borrow_mut().claim_manual_settlement_job(
-            kind,
-            id,
-            caller,
-            now_ns,
-            now_ns.saturating_add(120_000_000_000),
-            300_000_000_000,
-            limits,
-        );
+        let claim = match prepaid_quota {
+            Some(prepaid) => store.borrow_mut().claim_prepaid_manual_settlement_job(
+                kind,
+                id,
+                caller,
+                now_ns,
+                now_ns.saturating_add(120_000_000_000),
+                300_000_000_000,
+                prepaid,
+            ),
+            None => store.borrow_mut().claim_manual_settlement_job(
+                kind,
+                id,
+                caller,
+                now_ns,
+                now_ns.saturating_add(120_000_000_000),
+                300_000_000_000,
+                limits,
+            ),
+        };
         claim
             .map_err(|error| match error {
                 storage::SettlementAdmissionError::RateLimited {
@@ -1070,7 +1164,6 @@ fn get_bridge_status() -> BridgeStatus {
                     "deposit funding reservation count read",
                     store.deposit_funding_reservation_count(),
                 ),
-                progress.last_eth_balance_wei,
                 ic_cdk::api::canister_liquid_cycle_balance(),
             )
             .unwrap_or_else(|_| ic_cdk::trap("reserve arithmetic overflow"));
@@ -1115,10 +1208,10 @@ fn get_bridge_status() -> BridgeStatus {
                 pruned_audit_events: counts.pruned_audit_events,
                 retained_deposit_index_entries: counts.retained_deposit_index_entries,
             },
+            audit_retention_warning: storage::audit_retention_warning(counts.retained_audit_events),
             last_finalized_base_block: finalized_observation
                 .map(|observation| observation.block_number)
                 .unwrap_or_default(),
-            last_reserve_observation_ns: progress.last_reserve_observation_ns,
             last_finalized_observation_ns: finalized_observation
                 .map(|observation| observation.observed_at_ns)
                 .unwrap_or_default(),
@@ -1132,12 +1225,8 @@ fn get_bridge_status() -> BridgeStatus {
                 .map(|observation| observation.runtime_sha256.to_vec())
                 .unwrap_or_default(),
             reserve: ReserveStatus {
-                eth_balance_wei: reserve.eth_balance_wei,
                 cycles_balance: reserve.cycles_balance,
-                required_eth_wei: reserve.required_eth_wei,
-                governance_eth_floor_wei: config.governance_eth_floor_wei,
                 required_cycles: reserve.required_cycles,
-                eth_surplus_wei: reserve.eth_surplus_wei,
                 cycles_surplus: reserve.cycles_surplus,
                 sufficient: reserve.sufficient,
             },
@@ -1351,7 +1440,6 @@ fn get_public_config() -> PublicConfig {
             settlement_retry_interval_seconds: config.settlement_retry_interval_seconds,
             governance_evm_fee: config.governance_evm_fee,
             governance_replacement: config.governance_replacement,
-            governance_eth_floor_wei: config.governance_eth_floor_wei,
             cycles_floor: config.cycles_floor,
             settlement_cycle_ceiling: config.settlement_cycle_ceiling,
             governance_principal: admin.governance_principal,
@@ -1555,10 +1643,66 @@ pub fn generated_candid_interface() -> String {
 #[cfg(test)]
 mod candid_tests {
     use super::{
-        has_external_call_cycle_budget, storage::StorageError, storage_or_trap, ActionKey,
-        DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
-        NOTIFICATION_CALLER_ADMISSION,
+        can_continue_withdrawal, has_external_call_cycle_budget, storage::StorageError,
+        storage_or_trap, ActionKey, DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard,
+        StableStore, NOTIFICATION_CALLER_ADMISSION,
     };
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    fn staging_upgrade_decoder_accepts_empty_and_guarded_rpc_update_args() {
+        let empty = candid::encode_args(()).expect("encode empty upgrade args");
+        assert_eq!(
+            super::decode_staging_upgrade_args(empty),
+            super::config::StagingUpgradeArgs::default()
+        );
+
+        let expected = super::config::StagingUpgradeArgs {
+            status_counts_guard_version: 1,
+            rpc_provider_update: Some(super::config::StagingRpcProviderUpdate {
+                custom_evm_rpc_urls: super::config::STAGING_NEW_RPC_URLS
+                    .map(str::to_owned)
+                    .to_vec(),
+                expected_status_counts: super::config::StagingExpectedStatusCounts {
+                    retained_audit_events: 1,
+                    reconciliation_holds: 2,
+                    retained_deposit_index_entries: 3,
+                    pending_ledger_operations: 4,
+                    withdrawals: 5,
+                    deposits: 6,
+                    reserved_deposit_mint_operations: 7,
+                    reserved_deposit_mint_amount: 8,
+                    pruned_audit_events: 9,
+                },
+            }),
+        };
+        let encoded = candid::encode_args((expected.clone(),)).expect("encode staging args");
+        assert_eq!(super::decode_staging_upgrade_args(encoded), expected);
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    fn staging_upgrade_decoder_rejects_unguarded_rpc_update_args() {
+        #[derive(candid::CandidType)]
+        struct UnguardedUpgradeArgs {
+            rpc_provider_update: Option<UnguardedRpcProviderUpdate>,
+        }
+
+        #[derive(candid::CandidType)]
+        struct UnguardedRpcProviderUpdate {
+            custom_evm_rpc_urls: Vec<String>,
+        }
+
+        let encoded = candid::encode_args((UnguardedUpgradeArgs {
+            rpc_provider_update: Some(UnguardedRpcProviderUpdate {
+                custom_evm_rpc_urls: super::config::STAGING_NEW_RPC_URLS
+                    .map(str::to_owned)
+                    .to_vec(),
+            }),
+        },))
+        .expect("encode unguarded staging args");
+        assert!(candid::decode_args::<(super::config::StagingUpgradeArgs,)>(&encoded).is_err());
+    }
 
     #[cfg(not(feature = "test-deployment"))]
     fn normalize(candid: &str) -> String {
@@ -1616,23 +1760,23 @@ mod candid_tests {
     }
 
     #[test]
-    fn refund_request_identity_decision_preserves_endpoint_error_order() {
+    fn withdrawal_continuation_rejects_only_anonymous_callers() {
+        assert!(!can_continue_withdrawal(candid::Principal::anonymous()));
+        assert!(can_continue_withdrawal(
+            candid::Principal::self_authenticating([1; 32])
+        ));
+    }
+
+    #[test]
+    fn refund_request_identity_decision_accepts_any_authenticated_caller() {
         use bridge_core::RefundRequestIdentityDecision as Decision;
 
         assert_eq!(
-            bridge_core::refund_request_identity_decision(false, None),
+            bridge_core::refund_request_identity_decision(false),
             Decision::AnonymousCaller
         );
         assert_eq!(
-            bridge_core::refund_request_identity_decision(true, None),
-            Decision::OwnerLookupRequired
-        );
-        assert_eq!(
-            bridge_core::refund_request_identity_decision(true, Some(false)),
-            Decision::OwnerMismatch
-        );
-        assert_eq!(
-            bridge_core::refund_request_identity_decision(true, Some(true)),
+            bridge_core::refund_request_identity_decision(true),
             Decision::Allow
         );
     }

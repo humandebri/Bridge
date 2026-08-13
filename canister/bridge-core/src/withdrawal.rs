@@ -17,7 +17,7 @@ pub enum WithdrawalState {
     Paid {
         attempt: TransferAttempt,
         settlement: Settlement,
-        ledger_block_index: u128,
+        release_ledger_block_index: u128,
         source_hold: Option<HoldId>,
     },
     ReconciliationHold {
@@ -79,7 +79,7 @@ pub enum WithdrawalEvent {
         settlement: Settlement,
     },
     ReleaseSucceeded {
-        ledger_block_index: u128,
+        release_ledger_block_index: u128,
     },
     ReleaseAmbiguous {
         hold_id: HoldId,
@@ -154,18 +154,51 @@ impl WithdrawalRecord {
         use WithdrawalEvent as Event;
         use WithdrawalState as State;
 
+        let current_release = match &self.state {
+            State::Paid {
+                release_ledger_block_index,
+                ..
+            } => Some(*release_ledger_block_index),
+            _ => None,
+        };
+        let ledger_event = match &event {
+            Event::ReleaseSucceeded {
+                release_ledger_block_index,
+            } => (1, *release_ledger_block_index),
+            _ => (0, 0),
+        };
+        let expected_release = crate::withdrawal_ledger_block_transition(
+            current_release,
+            ledger_event.0,
+            ledger_event.1,
+        )
+        .ok_or(CoreError::LedgerBlockConflict)?;
+
         if self.is_idempotent(&event) {
             return Ok(ApplyResult::idempotent());
         }
 
-        if !crate::withdrawal_phase_allows(self.state.phase_code(), event.phase_code()) {
+        let state_code = self.state.phase_code();
+        let event_code = event.phase_code();
+        if !crate::withdrawal_phase_allows(state_code, event_code) {
             return Err(CoreError::InvalidTransition {
                 entity: "withdrawal",
                 event: event.name(),
             });
         }
 
-        let (next, fee_delta) = match (&self.state, event) {
+        let settlement_for_effects = match (&self.state, &event) {
+            (_, Event::StartRelease { settlement, .. }) => *settlement,
+            (State::ReleasePending { settlement, .. }, _)
+            | (State::ReconciliationHold { settlement, .. }, _) => *settlement,
+            _ => Settlement {
+                amount_out: Amount::ZERO,
+                service_fee: Amount::ZERO,
+                ledger_fee: Amount::ZERO,
+            },
+        };
+
+        let next = match (&self.state, event) {
             (
                 State::Observed,
                 Event::StartRelease {
@@ -174,31 +207,27 @@ impl WithdrawalRecord {
                 },
             ) => {
                 self.validate_attempt(&attempt, settlement)?;
-                (
-                    State::ReleasePending {
-                        attempt: *attempt,
-                        settlement,
-                    },
-                    Amount::ZERO,
-                )
+                State::ReleasePending {
+                    attempt: *attempt,
+                    settlement,
+                }
             }
             (
                 State::ReleasePending {
                     attempt,
                     settlement,
                 },
-                Event::ReleaseSucceeded { ledger_block_index },
+                Event::ReleaseSucceeded {
+                    release_ledger_block_index,
+                },
             ) => {
                 self.validate_attempt(attempt, *settlement)?;
-                (
-                    State::Paid {
-                        attempt: attempt.clone(),
-                        settlement: *settlement,
-                        ledger_block_index,
-                        source_hold: None,
-                    },
-                    settlement.net_service_fee()?,
-                )
+                State::Paid {
+                    attempt: attempt.clone(),
+                    settlement: *settlement,
+                    release_ledger_block_index,
+                    source_hold: None,
+                }
             }
             (
                 State::ReleasePending {
@@ -206,14 +235,11 @@ impl WithdrawalRecord {
                     settlement,
                 },
                 Event::ReleaseAmbiguous { hold_id },
-            ) => (
-                State::ReconciliationHold {
-                    hold_id,
-                    attempt: attempt.clone(),
-                    settlement: *settlement,
-                },
-                Amount::ZERO,
-            ),
+            ) => State::ReconciliationHold {
+                hold_id,
+                attempt: attempt.clone(),
+                settlement: *settlement,
+            },
             (_, other) => {
                 return Err(CoreError::InvalidTransition {
                     entity: "withdrawal",
@@ -221,6 +247,32 @@ impl WithdrawalRecord {
                 });
             }
         };
+        let next_release = match &next {
+            State::Paid {
+                release_ledger_block_index,
+                ..
+            } => Some(*release_ledger_block_index),
+            _ => None,
+        };
+        if next_release != expected_release {
+            return Err(CoreError::InvalidTransition {
+                entity: "withdrawal",
+                event: "ledger_block_effect_mismatch",
+            });
+        }
+        let effects = crate::withdrawal_transition_effects(
+            state_code,
+            event_code,
+            settlement_for_effects.amount_out.get(),
+            settlement_for_effects.ledger_fee.get(),
+            settlement_for_effects.service_fee.get(),
+        )
+        .ok_or(CoreError::InvalidTransition {
+            entity: "withdrawal",
+            event: "effect_mismatch",
+        })?;
+        debug_assert_eq!(next.phase_code(), effects.0);
+        let fee_delta = Amount::new(effects.2);
         self.state = next;
         Ok(ApplyResult::applied(fee_delta))
     }
@@ -276,11 +328,13 @@ impl WithdrawalRecord {
             ) => current_attempt == attempt.as_ref() && current_settlement == settlement,
             (
                 State::Paid {
-                    ledger_block_index: current,
+                    release_ledger_block_index: current,
                     ..
                 },
-                Event::ReleaseSucceeded { ledger_block_index },
-            ) => current == ledger_block_index,
+                Event::ReleaseSucceeded {
+                    release_ledger_block_index,
+                },
+            ) => current == release_ledger_block_index,
             (
                 State::ReconciliationHold {
                     hold_id: current, ..

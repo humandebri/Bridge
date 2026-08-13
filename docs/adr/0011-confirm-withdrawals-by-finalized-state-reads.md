@@ -4,6 +4,6 @@ status: accepted
 
 # Withdrawalをブラウザ通知と同期一回検証で取り込む
 
-ブラウザはFinalizedな`WithdrawalCommitted` eventを発見し、認証付き`notify_withdrawal`へtransaction hashを送る。Canisterは同じcanonical Finalized block hashへreceipt、event、`getWithdrawal`、Bridge snapshotを束縛し、固定quoteとIC Accountの完全一致を検証してからLedger送金を開始する。
+ブラウザはFinalizedな`WithdrawalCommitted` eventを発見し、deployment単位で永続化した通知専用Identityから`notify_withdrawal`へtransaction hashを送る。Canisterはreceiptをexact 2-of-3で一致させ、3 providerのFinalized高さから2番目に大きい値をcheckpointとして選ぶ。その高さのblock hashをexact 2-of-3で再取得し、receipt blockのcanonical probeを行ったうえで、event、`getWithdrawal`、Bridge snapshotをcheckpoint hashへ束縛し、固定quoteとIC Accountの完全一致を検証してからLedger送金を開始する。
 
-定期的な全block discoveryは行わない。通知失敗時はHistoryの`Check and notify`から再実行する。通知権限はevent owner、Governance、pause administratorに限定する。Finalized headやcanonical hashが2-of-3で収束しない場合は停止し、Safeへfallbackしない。
+定期的な全block discoveryは行わない。ブラウザの15秒Finalized監視は維持するが、通知の自動実行は初回、通信切断または`Busy`の短期再試行1回、`TransactionNotConfirmed`後にheadが進んだ場合の追加1回に限定する。その後は保存済みtransaction hashと失敗理由をProgressまたはHistoryへ復元し、`Retry IC notification`から明示再実行する。通知は任意の非anonymous Principalが実行でき、callerは送金先やamountを変更できない。成功providerが2未満、選択checkpointのcanonical hashが2-of-3で収束しない、receiptまたはstateが不一致の場合は停止し、Safeへfallbackしない。

@@ -464,7 +464,7 @@ public_config={
  'settlement_retry_interval_seconds':num(one('settlement_retry_interval_seconds')),
  'governance_evm_fee':{k:(str(num(v)) if k in ('gas_limit_ceiling','max_fee_per_gas_ceiling','max_priority_fee_per_gas_ceiling','l1_fee_per_transaction_ceiling_wei') else num(v)) for k,v in governance_evm_fee.items()},
  'governance_replacement':{k:num(v) for k,v in governance_replacement.items()},
- 'governance_eth_floor_wei':str(num(one('governance_eth_floor_wei'))),'cycles_floor':str(num(one('cycles_floor'))),
+ 'cycles_floor':str(num(one('cycles_floor'))),
  'settlement_cycle_ceiling':str(num(one('settlement_cycle_ceiling'))),'governance_principal':str(one('governance_principal')),
  'pause_principal':str(one('pause_principal')),'fee_recipient':{'owner':str(fee_recipient.get('owner','')),
  'subaccount_hex':bytes(subaccount).hex() if isinstance(subaccount,list) else str(subaccount).lower().removeprefix('0x')}}

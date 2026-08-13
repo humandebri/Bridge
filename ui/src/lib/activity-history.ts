@@ -1,4 +1,5 @@
 import type { DepositView, WithdrawalView } from "@/generated/bridge.did"
+import type { WithdrawalDestinationAccount } from "@/lib/withdrawal-history"
 
 export type ActivityFilter = "all" | "to-base" | "to-ic"
 export type ActivityDirection = Exclude<ActivityFilter, "all">
@@ -11,6 +12,7 @@ export interface WithdrawalHistoryItem {
   blockNumber: bigint
   logIndex: number
   createdAtNs: bigint
+  destinationAccount: WithdrawalDestinationAccount
   canister?: WithdrawalView
 }
 

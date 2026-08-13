@@ -11,15 +11,35 @@ interface PendingConfirmationBase {
   bridgeAddress: string
 }
 
+export type PendingNotificationDisposition = "finality-wait" | "manual-retry" | "terminal"
+
+export interface PendingNotificationFailure {
+  code: string
+  message: string
+  disposition: PendingNotificationDisposition
+}
+
+export interface PendingNotificationAttemptState {
+  status: "awaiting-notification"
+  automaticAttemptUsed: boolean
+  shortRetryUsed: boolean
+  finalityReadvanceUsed: boolean
+  lastAttemptedFinalizedBlock?: string
+  failure?: PendingNotificationFailure
+}
+
 export interface PendingWithdrawalConfirmation extends PendingConfirmationBase {
   kind: "withdrawal"
+  notification:
+    | PendingNotificationAttemptState
+    | { status: "notified"; withdrawalId: Hex }
 }
 
 export type PendingConfirmation = PendingWithdrawalConfirmation
 export type PendingConfirmationInput =
-  Omit<PendingWithdrawalConfirmation, "blocked" | "bridgeCanisterId" | "chainId" | "bridgeAddress"> & { blocked?: boolean }
+  Omit<PendingWithdrawalConfirmation, "blocked" | "bridgeCanisterId" | "chainId" | "bridgeAddress" | "notification"> & { blocked?: boolean }
 
-const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v5"
+const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v7"
 let sessionQueue: PendingConfirmation[] | undefined
 export const PENDING_CONFIRMATIONS_CHANGED = "kinic-pending-confirmations-changed"
 
@@ -119,15 +139,42 @@ export function readPendingConfirmations(): PendingConfirmation[] {
 
 export async function savePendingConfirmation(value: PendingConfirmationInput): Promise<void> {
   await update((next) => {
-    const entry = { ...value, blocked: value.blocked ?? false, ...activeDeployment() }
+    const entry: PendingConfirmation = {
+      ...value,
+      blocked: value.blocked ?? false,
+      notification: initialNotificationAttemptState(),
+      ...activeDeployment(),
+    }
     return upsertPendingConfirmation(next, entry, false)
   })
 }
 
 export async function restorePendingConfirmation(value: PendingConfirmationInput): Promise<void> {
   await update((next) => {
-    const entry = { ...value, blocked: value.blocked ?? false, ...activeDeployment() }
+    const entry: PendingConfirmation = {
+      ...value,
+      blocked: value.blocked ?? false,
+      notification: initialNotificationAttemptState(),
+      ...activeDeployment(),
+    }
     return upsertPendingConfirmation(next, entry, true)
+  })
+}
+
+export async function ensurePendingWithdrawalConfirmation(value: PendingConfirmationInput): Promise<void> {
+  await update((next) => {
+    const key = pendingConfirmationKey(value)
+    const existing = next.find((item) => pendingConfirmationKey(item) === key)
+    if (existing) {
+      if (existing.owner !== value.owner) throw new Error("Pending withdrawal destination owner conflict")
+      return next
+    }
+    return [...next, {
+      ...value,
+      blocked: value.blocked ?? false,
+      notification: initialNotificationAttemptState(),
+      ...activeDeployment(),
+    }]
   })
 }
 
@@ -142,6 +189,60 @@ export async function setPendingConfirmationBlocked(
 ): Promise<void> {
   const key = pendingConfirmationKey(value)
   await update((next) => next.map((item) => pendingConfirmationKey(item) === key ? { ...item, blocked } : item))
+}
+
+export async function markPendingConfirmationNotificationAttempt(
+  value: PendingConfirmation | PendingConfirmationInput,
+  kind: "automatic" | "short-retry" | "finality-readvance" | "manual",
+  finalizedBlock: bigint,
+): Promise<void> {
+  await updatePendingNotification(value, (notification) => ({
+    ...notification,
+    automaticAttemptUsed: notification.automaticAttemptUsed || kind === "automatic",
+    shortRetryUsed: kind === "manual" ? false : notification.shortRetryUsed || kind === "short-retry",
+    finalityReadvanceUsed: notification.finalityReadvanceUsed || kind === "finality-readvance",
+    lastAttemptedFinalizedBlock: finalizedBlock.toString(),
+    failure: undefined,
+  }))
+}
+
+export async function setPendingConfirmationNotificationFailure(
+  value: PendingConfirmation | PendingConfirmationInput,
+  failure: PendingNotificationFailure,
+): Promise<void> {
+  await updatePendingNotification(value, (notification) => ({ ...notification, failure }))
+}
+
+async function updatePendingNotification(
+  value: PendingConfirmation | PendingConfirmationInput,
+  change: (notification: PendingNotificationAttemptState) => PendingNotificationAttemptState,
+): Promise<void> {
+  const key = pendingConfirmationKey(value)
+  await update((next) => next.map((item) => {
+    if (pendingConfirmationKey(item) !== key || item.notification.status !== "awaiting-notification") return item
+    return { ...item, blocked: false, notification: change(item.notification) }
+  }))
+}
+
+export async function markPendingConfirmationNotified(
+  value: PendingConfirmation | PendingConfirmationInput,
+  withdrawalId: Hex,
+): Promise<void> {
+  const key = pendingConfirmationKey(value)
+  await update((next) => {
+    let found = false
+    const values = next.map((item) => {
+      if (pendingConfirmationKey(item) !== key) return item
+      found = true
+      if (item.notification.status === "notified"
+        && item.notification.withdrawalId.toLowerCase() !== withdrawalId.toLowerCase()) {
+        throw new Error("Pending withdrawal notification ID conflict")
+      }
+      return { ...item, notification: { status: "notified" as const, withdrawalId } }
+    })
+    if (!found) throw new Error("Pending withdrawal notification record is missing")
+    return values
+  })
 }
 
 function activeDeployment() {
@@ -165,7 +266,7 @@ async function update(change: (values: PendingConfirmation[]) => PendingConfirma
     const values = change(readPendingConfirmations())
     sessionQueue = values
     try {
-      window.localStorage.setItem(key, JSON.stringify({ version: 5, entries: values }))
+      window.localStorage.setItem(key, JSON.stringify({ version: 7, entries: values }))
       sessionQueue = undefined
     } finally {
       window.dispatchEvent(new Event(PENDING_CONFIRMATIONS_CHANGED))
@@ -187,13 +288,40 @@ function isPendingConfirmation(value: unknown): value is PendingConfirmation {
     && typeof item.bridgeCanisterId === "string"
     && typeof item.chainId === "number"
     && typeof item.bridgeAddress === "string"
-  return common && item.kind === "withdrawal"
+  if (!common || item.kind !== "withdrawal" || !item.notification || typeof item.notification !== "object") return false
+  const notification = item.notification as Record<string, unknown>
+  return notification.status === "awaiting-notification"
+      && typeof notification.automaticAttemptUsed === "boolean"
+      && typeof notification.shortRetryUsed === "boolean"
+      && typeof notification.finalityReadvanceUsed === "boolean"
+      && (notification.lastAttemptedFinalizedBlock === undefined || typeof notification.lastAttemptedFinalizedBlock === "string" && /^\d+$/.test(notification.lastAttemptedFinalizedBlock))
+      && (notification.failure === undefined || isPendingNotificationFailure(notification.failure))
+    || notification.status === "notified"
+      && typeof notification.withdrawalId === "string"
+      && /^0x[0-9a-fA-F]{64}$/.test(notification.withdrawalId)
 }
 
-function isStoredQueue(value: unknown): value is { version: 5; entries: unknown[] } {
+function isStoredQueue(value: unknown): value is { version: 7; entries: unknown[] } {
   if (typeof value !== "object" || value === null) return false
   const queue = value as Record<string, unknown>
-  return queue.version === 5 && Array.isArray(queue.entries)
+  return queue.version === 7 && Array.isArray(queue.entries)
+}
+
+function initialNotificationAttemptState(): PendingNotificationAttemptState {
+  return {
+    status: "awaiting-notification",
+    automaticAttemptUsed: false,
+    shortRetryUsed: false,
+    finalityReadvanceUsed: false,
+  }
+}
+
+function isPendingNotificationFailure(value: unknown): value is PendingNotificationFailure {
+  if (!value || typeof value !== "object") return false
+  const failure = value as Record<string, unknown>
+  return typeof failure.code === "string"
+    && typeof failure.message === "string"
+    && ["finality-wait", "manual-retry", "terminal"].includes(String(failure.disposition))
 }
 
 export function upsertPendingConfirmation(
@@ -205,6 +333,13 @@ export function upsertPendingConfirmation(
   const key = pendingConfirmationKey(entry)
   const index = next.findIndex((item) => pendingConfirmationKey(item) === key)
   if (index === -1) next.push(entry)
-  else next[index] = preserveExistingBlocked ? { ...entry, blocked: next[index]!.blocked } : entry
+  else {
+    const existing = next[index]!
+    next[index] = {
+      ...entry,
+      blocked: preserveExistingBlocked ? existing.blocked : entry.blocked,
+      notification: existing.notification,
+    }
+  }
   return next
 }

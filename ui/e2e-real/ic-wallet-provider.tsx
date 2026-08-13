@@ -1,11 +1,14 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
-import type { DepositPhase, DepositReceipt, DepositView, NotifyWithdrawalReceipt, SettlementActionResult } from "@/generated/bridge.did"
+import type { DepositPhase, DepositReceipt, DepositView, SettlementActionResult } from "@/generated/bridge.did"
+import { clearIcHistoryOwner, loadIcHistoryOwner, saveIcHistoryOwner } from "@/lib/ic-history-owner"
 import type { ApprovalCall, DepositCall, IcAccount, IcWalletAdapter, IcWalletProvider } from "@/lib/ic/wallet"
 
 const CONTROL = "http://127.0.0.1:43119"
 
 interface IcWalletState {
   account?: IcAccount
+  historyAccount?: IcAccount
+  historyProvider?: IcWalletProvider
   provider?: IcWalletProvider
   adapter?: IcWalletAdapter
   connecting?: IcWalletProvider
@@ -44,37 +47,52 @@ class HarnessWalletAdapter implements IcWalletAdapter {
   requestDepositRefund(depositId: Uint8Array) {
     return request<DepositView>("/ic/request-deposit-refund", { id: hex(depositId) }, (value) => value as DepositView)
   }
-  notifyWithdrawal(transactionHash: Uint8Array) {
-    return request<NotifyWithdrawalReceipt>("/ic/notify", { transactionHash: hex(transactionHash) }, (value) => {
-      const receipt = value as { Ingested?: { finalized_head_block_number: string; withdrawal_id: string }; Duplicate?: { withdrawal_id: string } }
-      if (receipt.Ingested) return { Ingested: { finalized_head_block_number: BigInt(receipt.Ingested.finalized_head_block_number), withdrawal_id: bytes(receipt.Ingested.withdrawal_id) } }
-      if (receipt.Duplicate) return { Duplicate: { withdrawal_id: bytes(receipt.Duplicate.withdrawal_id) } }
-      throw new Error("Harness returned an invalid notification receipt")
-    })
-  }
   continueWithdrawal(withdrawalId: Uint8Array) { return request<SettlementActionResult>("/ic/continue-withdrawal", { id: hex(withdrawalId) }) }
 }
 
 export function IcWalletProviderRoot({ children }: { children: ReactNode }) {
-  const [account, setAccount] = useState<IcAccount>()
-  const [provider, setProvider] = useState<IcWalletProvider>()
-  const [adapter, setAdapter] = useState<IcWalletAdapter>()
+  const [rememberedOwner] = useState(loadIcHistoryOwner)
+  const [restoredWallet] = useState(() => restoreWallet(rememberedOwner))
+  const [account, setAccount] = useState<IcAccount | undefined>(restoredWallet?.account)
+  const [historyAccount, setHistoryAccount] = useState<IcAccount | undefined>(rememberedOwner?.account)
+  const [historyProvider, setHistoryProvider] = useState<IcWalletProvider | undefined>(rememberedOwner?.provider)
+  const [provider, setProvider] = useState<IcWalletProvider | undefined>(restoredWallet?.provider)
+  const [adapter, setAdapter] = useState<IcWalletAdapter | undefined>(restoredWallet?.adapter)
   const [connecting, setConnecting] = useState<IcWalletProvider>()
   const connect = useCallback(async (nextProvider: IcWalletProvider) => {
     setConnecting(nextProvider)
     try {
       const next = new HarnessWalletAdapter(nextProvider)
-      setAccount(await next.connect())
+      const nextAccount = await next.connect()
+      setAccount(nextAccount)
       setAdapter(next)
       setProvider(nextProvider)
+      setHistoryAccount(nextAccount)
+      setHistoryProvider(nextProvider)
+      saveIcHistoryOwner({ account: nextAccount, provider: nextProvider })
     } finally { setConnecting(undefined) }
   }, [])
   const disconnect = useCallback(async () => {
-    await adapter?.disconnect()
     setAccount(undefined); setAdapter(undefined); setProvider(undefined)
+    setHistoryAccount(undefined); setHistoryProvider(undefined)
+    clearIcHistoryOwner()
+    await adapter?.disconnect()
   }, [adapter])
-  const value = useMemo(() => ({ account, provider, adapter, connecting, connect, disconnect }), [account, provider, adapter, connecting, connect, disconnect])
+  const value = useMemo(
+    () => ({ account, historyAccount, historyProvider, provider, adapter, connecting, connect, disconnect }),
+    [account, historyAccount, historyProvider, provider, adapter, connecting, connect, disconnect],
+  )
   return <Context.Provider value={value}>{children}</Context.Provider>
+}
+
+function restoreWallet(owner: ReturnType<typeof loadIcHistoryOwner>): {
+  account: IcAccount
+  provider: IcWalletProvider
+  adapter: IcWalletAdapter
+} | undefined {
+  if (!owner) return undefined
+  const account = { owner: owner.account.owner, subaccount: owner.account.subaccount?.slice() }
+  return { account, provider: owner.provider, adapter: new HarnessWalletAdapter(owner.provider) }
 }
 
 export function useIcWallet(): IcWalletState {

@@ -146,17 +146,17 @@ function candidNat(candid, field, context) {
 }
 
 function candidBlob32(candid, field, context) {
-  const vector = candid.match(new RegExp(`\\b${field}\\s*=\\s*vec\\s*\\{([^}]*)\\}`, "s"))
-  const blob = candid.match(new RegExp(`\\b${field}\\s*=\\s*blob\\s*"([^"]*)"`, "s"))
-  const bytes = vector
-    ? [...vector[1].matchAll(/(\d+)\s*:\s*nat8/g)].map((item) => Number(item[1]))
-    : blob
-      ? [...blob[1].matchAll(/\\([0-9a-fA-F]{2})/g)].map((item) => Number.parseInt(item[1], 16))
-      : []
-  if (bytes.length !== 32 || bytes.every((byte) => byte === 0) || bytes.some((byte) => byte < 0 || byte > 255)) {
-    fail(`${context} ${field} is not a nonzero 32-byte value`)
+  try {
+    const value = execFileSync(
+      "python3",
+      [path.join(root, "scripts/plan007/candid_values.py"), "blob32", field],
+      { encoding: "utf8", input: candid },
+    ).trim()
+    if (/^0x0+$/.test(value)) fail(`${context} ${field} must be nonzero`)
+    return value
+  } catch (error) {
+    fail(`${context} ${field} is not a nonzero 32-byte value: ${error.message}`)
   }
-  return `0x${Buffer.from(bytes).toString("hex")}`
 }
 
 function moduleHash(value) {

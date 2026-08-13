@@ -1,4 +1,5 @@
 import BridgeSpec.Model
+import BridgeSpec.LedgerBlockProvenance
 
 namespace BridgeSpec.Implementation
 
@@ -7,6 +8,7 @@ open BridgeSpec
 def maxU128 : Nat := 2 ^ 128 - 1
 def maxU64 : Nat := 2 ^ 64 - 1
 def maxU16 : Nat := 2 ^ 16 - 1
+def maxU8 : Nat := 2 ^ 8 - 1
 
 structure U128 where
   val : Nat
@@ -21,6 +23,11 @@ deriving DecidableEq
 structure U16 where
   val : Nat
   bounded : val ≤ maxU16
+deriving DecidableEq
+
+structure U8 where
+  val : Nat
+  bounded : val ≤ maxU8
 deriving DecidableEq
 
 def checkedAdd128 (left right : Nat) : Option Nat :=
@@ -103,9 +110,12 @@ def manualClaimImpl
   manualClaimAllowed scheduled active stopped overdue expired
 
 def refundRequestIdentityImpl
-    (authenticated : Bool) (ownerMatch : Option Bool) :
+    (authenticated : Bool) :
     RefundRequestIdentityDecision :=
-  decideRefundRequestIdentity authenticated ownerMatch
+  decideRefundRequestIdentity authenticated
+
+def depositNonterminalIndexImpl (state : U16) : Bool :=
+  depositNonterminalIndexed state.val
 
 def notificationAdmissionImpl
     (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : U16) :
@@ -137,5 +147,12 @@ def pendingQueueImpl
 
 def canonicalProbeImpl (receiptBlock snapshotBlock : U64) : Bool :=
   canonicalProbeMatches receiptBlock.val snapshotBlock.val
+
+def withdrawalFinalityCheckpointImpl
+    (first second third : Option U64) : Option Nat :=
+  withdrawalFinalizedCheckpoint (first.map U64.val) (second.map U64.val) (third.map U64.val)
+
+def ledgerBlockImpl (current : Option U128) (block : U128) : Option (Option Nat) :=
+  ledgerBlockProvenance (current.map U128.val) block.val
 
 end BridgeSpec.Implementation

@@ -9,7 +9,7 @@ import { IDL } from "@dfinity/candid"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Principal } from "@dfinity/principal"
 import { PocketIc, PocketIcServer, SubnetStateType } from "@dfinity/pic"
-import { createPublicClient, decodeEventLog, hexToBytes, http, keccak256, numberToHex, recoverTransactionAddress, sha256 } from "viem"
+import { createPublicClient, hexToBytes, http, keccak256, numberToHex, recoverTransactionAddress, sha256 } from "viem"
 import { publicKeyToAddress } from "viem/accounts"
 import { idlFactory as bridgeIdl, init as bridgeInitFactory } from "./generated/bridge.idl.mjs"
 import { idlFactory as mockIdl, init as mockInitFactory } from "./generated/mock-external.idl.mjs"
@@ -219,7 +219,6 @@ async function setup() {
         max_replacements: 3,
         fee_bump_bps: 1_250,
       },
-      governance_eth_floor_wei: 1n,
       cycles_floor: 1n,
       settlement_cycle_ceiling: 1n,
       governance_principal: testOwner,
@@ -289,8 +288,6 @@ async function setup() {
   })
 
   let relayedBroadcasts = 0
-  let notifyCalls = 0
-  let failNextNotification = false
   let failNextDepositResponse = false
   let connectedAccount = testOwner.toText()
   const knownDeposits = []
@@ -320,6 +317,90 @@ async function setup() {
       mock.actor.set_withdrawals_paused(snapshot.withdrawalsPaused),
       mock.actor.set_mint_authorization_epoch(snapshot.mintAuthorizationEpoch),
     ])
+  }
+  const prepareLatestWithdrawal = async () => {
+    const logs = await publicClient.getContractEvents({
+      address: bridgeAddress,
+      abi: bridgeAbi,
+      eventName: "WithdrawalCommitted",
+      fromBlock: deploymentBlock,
+    })
+    const created = logs.at(-1)
+    if (!created?.transactionHash) throw new Error("WithdrawalCommitted log is unavailable")
+    const receipt = await publicClient.getTransactionReceipt({ hash: created.transactionHash })
+    await mock.actor.set_withdrawal([{
+      id: hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 })),
+      owner: hexToBytes(created.args.owner),
+      subaccount: hexToBytes(created.args.subaccount),
+      amount: created.args.amount,
+      max_service_fee: created.args.maxServiceFee,
+      charged_service_fee: created.args.chargedServiceFee,
+      amount_out: created.args.amountOut,
+    }])
+    const observed = await mock.actor.set_observed_transaction(
+      hexToBytes(created.transactionHash),
+      hexToBytes(bridgeAddress),
+      hexToBytes(created.args.requester),
+      Number(receipt.blockNumber),
+    )
+    if ("Err" in observed) throw new Error(observed.Err)
+    const withdrawalId = hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 }))
+    if (!knownWithdrawals.some((id) => bytesHex(id) === bytesHex(withdrawalId))) knownWithdrawals.push(withdrawalId)
+    await syncObservedHeads()
+    return created.transactionHash
+  }
+  const prepareRefundableDeposit = async () => {
+    const grossAmount = 100_000_000n
+    const ledgerFee = 10_000n
+    const ownerSequence = await bridge.actor.get_next_deposit_sequence(testOwner)
+    const now = await pic.getTime()
+    const approval = await ledger.icrc2_approve({
+      from_subaccount: [],
+      spender: account(bridge.canisterId),
+      amount: grossAmount + ledgerFee,
+      expected_allowance: [],
+      expires_at: [BigInt(now + 30 * 60 * 1_000) * 1_000_000n],
+      fee: [ledgerFee],
+      memo: [],
+      created_at_time: [],
+    })
+    if ("Err" in approval) throw new Error(`refund fixture approval failed: ${json(approval.Err)}`)
+    await syncObservedHeads()
+    const admitted = await bridge.actor.request_deposit({
+      owner_sequence: ownerSequence,
+      base_recipient: hexToBytes(deployer),
+      from_subaccount: [],
+      gross_amount: grossAmount,
+      max_service_fee: 1_000_000n,
+    })
+    if ("Err" in admitted) throw new Error(`refund fixture deposit failed: ${json(admitted.Err)}`)
+    if (!knownDeposits.some((id) => bytesHex(id) === bytesHex(admitted.Ok.deposit_id))) knownDeposits.push(admitted.Ok.deposit_id)
+    depositSequences.push(ownerSequence.toString())
+
+    let record
+    const signingDeadline = Date.now() + 60_000
+    while (Date.now() < signingDeadline) {
+      record = (await bridge.actor.get_deposit(admitted.Ok.deposit_id))[0]
+      if (record?.mint_authorization[0]?.signature.length === 1) break
+      await delay(250)
+    }
+    const authorization = record?.mint_authorization[0]
+    if (!authorization?.signature.length) throw new Error("refund fixture did not reach a signed Mint Authorization")
+    const latest = await publicClient.getBlock({ blockTag: "latest" })
+    const advanceSeconds = authorization.deadline >= latest.timestamp
+      ? authorization.deadline - latest.timestamp + 1n
+      : 1n
+    await rpc("evm_increaseTime", [Number(advanceSeconds)])
+    await rpc("evm_mine", [])
+    await rpc("anvil_mine", ["0x40"])
+    await syncObservedHeads()
+    const finalized = await publicClient.getBlock({ blockTag: "finalized" })
+    if (finalized.timestamp <= authorization.deadline) throw new Error("refund fixture did not pass the strict finalized deadline")
+    await pic.advanceTime(60_001)
+    return {
+      depositId: bytesHex(admitted.Ok.deposit_id),
+      ownerSequence: ownerSequence.toString(),
+    }
   }
   await syncObservedHeads()
   const relaySigned = async (artifact) => {
@@ -493,41 +574,24 @@ async function setup() {
         if ("Err" in result) throw new Error(`refund claim rejected: ${json(result.Err)}`)
         return send(response, 200, result.Ok)
       }
-      if (request.url === "/ic/notify") {
-        notifyCalls += 1
-        if (failNextNotification) {
-          failNextNotification = false
-          return send(response, 503, { error: "Injected notification failure" })
-        }
-        if (connectedAccount !== testOwner.toText()) throw new Error("test IC account changed")
-        const transactionHash = body.transactionHash
-        const receipt = await publicClient.getTransactionReceipt({ hash: transactionHash })
-        const created = receipt.logs.map((log) => {
-          try { return decodeEventLog({ abi: bridgeAbi, eventName: "WithdrawalCommitted", data: log.data, topics: log.topics }) } catch { return undefined }
-        }).find(Boolean)
-        if (!created) throw new Error("WithdrawalCommitted log is missing from the Anvil receipt")
-        await mock.actor.set_withdrawal([{ id: hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 })), owner: hexToBytes(created.args.owner), subaccount: hexToBytes(created.args.subaccount), amount: created.args.amount, max_service_fee: created.args.maxServiceFee, charged_service_fee: created.args.chargedServiceFee, amount_out: created.args.amountOut }])
-        const observed = await mock.actor.set_observed_transaction(hexToBytes(transactionHash), hexToBytes(bridgeAddress), hexToBytes(created.args.requester), Number(receipt.blockNumber))
-        if ("Err" in observed) throw new Error(observed.Err)
-        await syncObservedHeads()
-        const result = await bridge.actor.notify_withdrawal({ transaction_hash: hexToBytes(transactionHash) })
-        if ("Err" in result) throw new Error(`withdrawal notification rejected: ${json(result.Err)}`)
-        const withdrawalId = "Ingested" in result.Ok ? result.Ok.Ingested.withdrawal_id : result.Ok.Duplicate.withdrawal_id
-        if (!knownWithdrawals.some((id) => bytesHex(id) === bytesHex(withdrawalId))) knownWithdrawals.push(withdrawalId)
-        if ("Ingested" in result.Ok) return send(response, 200, { Ingested: { finalized_head_block_number: result.Ok.Ingested.finalized_head_block_number.toString(), withdrawal_id: bytesHex(result.Ok.Ingested.withdrawal_id) } })
-        return send(response, 200, { Duplicate: { withdrawal_id: bytesHex(result.Ok.Duplicate.withdrawal_id) } })
-      }
       if (request.url === "/ic/continue-withdrawal") {
         const result = await bridge.actor.continue_withdrawal(hexToBytes(body.id))
         if ("Err" in result) throw new Error(`withdrawal continuation rejected: ${json(result.Err)}`)
         return send(response, 200, settlementJson(result.Ok))
       }
-      if (request.url === "/test/fail-next-notification") {
-        failNextNotification = true
-        return send(response, 200, null)
+      if (request.url === "/test/prepare-latest-withdrawal") {
+        return send(response, 200, { transactionHash: await prepareLatestWithdrawal() })
+      }
+      if (request.url === "/test/prepare-refundable-deposit") {
+        return send(response, 200, await prepareRefundableDeposit())
       }
       if (request.url === "/test/fail-next-deposit-response") {
         failNextDepositResponse = true
+        return send(response, 200, null)
+      }
+      if (request.url === "/test/set-ledger-available") {
+        if (body.available) await pic.startCanister({ canisterId: ledgerId })
+        else await pic.stopCanister({ canisterId: ledgerId })
         return send(response, 200, null)
       }
       if (request.url === "/test/settle") {
@@ -584,25 +648,40 @@ async function setup() {
         connectedAccount = String(body.owner)
         return send(response, 200, null)
       }
+      if (request.url === "/test/latest-withdrawal-state") {
+        const id = knownWithdrawals.at(-1)
+        if (!id) throw new Error("test withdrawal is unavailable")
+        const record = (await bridge.actor.get_withdrawal(id))[0]
+        if (!record) throw new Error("test withdrawal record is unavailable")
+        return send(response, 200, {
+          phase: Object.keys(record.state)[0],
+          stopReason: record.last_settlement_stop_reason[0] ?? null,
+        })
+      }
       if (request.url === "/test/state") {
         const balance = await publicClient.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "balanceOf", args: [deployer] })
-        const [allowance, ledgerBalance, indexBalance, indexLedgerId, indexStatus, nextDepositSequence] = await Promise.all([
+        const [allowance, ledgerBalance, ledgerFee, indexBalance, indexLedgerId, indexStatus, nextDepositSequence, bridgeStatus, receiptCalls] = await Promise.all([
           publicClient.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "allowance", args: [deployer, bridgeAddress] }),
           ledger.icrc1_balance_of(account(testOwner)),
+          ledger.icrc1_fee(),
           index.icrc1_balance_of(account(testOwner)),
           index.ledger_id(),
           index.status(),
           bridge.actor.get_next_deposit_sequence(testOwner),
+          bridge.actor.get_bridge_status(),
+          mock.actor.receipt_call_count(),
         ])
         return send(response, 200, {
           broadcasts: relayedBroadcasts,
-          notifyCalls,
+          withdrawalCount: bridgeStatus.counts.withdrawals.toString(),
+          receiptCalls: receiptCalls.toString(),
           knownDepositCount: knownDeposits.length,
           depositSequences,
           nextDepositSequence: nextDepositSequence.toString(),
           bsnsBalance: balance.toString(),
           bsnsAllowance: allowance.toString(),
           ledgerBalance: ledgerBalance.toString(),
+          ledgerFee: ledgerFee.toString(),
           ledgerId: ledgerId.toText(),
           indexBalance: indexBalance.toString(),
           indexLedgerId: indexLedgerId.toText(),
@@ -909,6 +988,7 @@ const ledgerIdl = ({ IDL: I }) => {
   return I.Service({
     icrc2_approve: I.Func([I.Record({ from_subaccount: I.Opt(I.Vec(I.Nat8)), spender: Account, amount: I.Nat, expected_allowance: I.Opt(I.Nat), expires_at: I.Opt(I.Nat64), fee: I.Opt(I.Nat), memo: I.Opt(I.Vec(I.Nat8)), created_at_time: I.Opt(I.Nat64) })], [I.Variant({ Ok: I.Nat, Err: ApproveError })], []),
     icrc1_balance_of: I.Func([Account], [I.Nat], ["query"]),
+    icrc1_fee: I.Func([], [I.Nat], ["query"]),
   })
 }
 

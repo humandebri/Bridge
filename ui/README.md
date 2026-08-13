@@ -39,11 +39,14 @@ The deployment profile has no manual read-only flag or origin allowlist. Control
 when the profile is complete and runtime verification passes. The CSP limits browser connections,
 but it is not canister authorization: direct canister calls remain possible.
 
-OISY Wallet and Plug are the only supported IC wallets. MetaMask is always offered for Base,
-other Base wallets are discovered through EIP-6963, and Plug is excluded from the Base wallet list.
+OISY Wallet and Plug are the only supported IC wallets. MetaMask and other Base browser extensions
+are discovered through EIP-6963, and Plug is excluded from the Base wallet list.
 A production build also exposes WalletConnect when `VITE_WALLETCONNECT_PROJECT_ID` is configured.
 The WalletConnect project must allowlist every deployed UI origin. Internet Identity
-and delegated browser identities are not used. Deposit history is read from the public canister index; anyone who knows
+and delegated wallet identities are not used. The selected IC account is restored after a reload for
+display and read-only access, but no signing authority is persisted: OISY reopens on the next explicit
+wallet action. A withdrawal uses the IC recipient shown in its review dialog without reopening OISY before the Base transaction. After Base finality, the UI sends one `notify_withdrawal` update from a deployment-scoped Ed25519 browser identity; that identity can only consume the permissionless notification quota and has no owner, refund, or settlement authority. Restored
+Plug requires an explicit first action and checks its current Principal before any write. Deposit history is read from the public canister index; anyone who knows
 an owner Principal can enumerate its deposit IDs and correlate them with the Base recipients in
 the corresponding deposit records. Withdrawal History scans Finalized Base logs in 5,000-block
 chunks, with at most four RPC requests per refresh or manual `Scan older` action. The resumable
@@ -58,8 +61,11 @@ as authoritative. It requires the observed chain ID, Bridge signer, and runtime 
 reviewed profile, verifies that the observed block is no newer than the browser RPC's Finalized head, and
 binds every Base contract state and bytecode read to that canonical hash with EIP-1898. The
 browser's single-RPC result is supplemental; it cannot make the form writable without the Canister
-observation. The update endpoint is globally rate-limited and single-flight so the first write after
-deployment can establish an observation without turning refresh into an unbounded RPC path.
+observation. The browser requires a Finalized block number and hash on the configured chain, but
+does not use the block timestamp as a write-readiness gate. Deposit safety is revalidated by the
+Canister's quorum-backed observation, and Withdrawal safety is enforced by the Base contract at
+execution time. The update endpoint is globally rate-limited and single-flight so the first write
+after deployment can establish an observation without turning refresh into an unbounded RPC path.
 The open Bridge form performs the complete deployment validation once, then refreshes only the
 Finalized head, fee guard, reviewed signer, current terms, and connected-wallet balances every
 45 seconds while the tab is visible. Focus and reconnect trigger the same lightweight refresh.
@@ -74,9 +80,8 @@ after a reload, the user explicitly refreshes History and the owner sequence bef
 Deposit.
 
 After a Base withdrawal reaches the Finalized head, the Bridge page automatically calls
-`notify_withdrawal` with the connected IC wallet. History reconstructs Finalized burns from
-Base events and exposes `Check and notify` after a wallet rejection, reload, or RPC failure. No
-recovery cursor is persisted in browser storage. The pending confirmation record stores
+`notify_withdrawal` once with the browser notification identity, without an IC wallet prompt or ICRC-21 consent call. A transport failure or `Busy` receives one five-second retry; other retryable failures stop automatic notification and expose `Retry IC notification` in Progress and History. `TransactionNotConfirmed` returns to Finalized-head monitoring and permits one further notification only after the head advances. History reconstructs Finalized burns from
+Base events and exposes the saved failure reason and recovery action after a reload. The v7 pending confirmation record stores
 the Base transaction hash, owner, settlement ID for deposits, and active deployment identifiers in
 `localStorage`; it is scoped to the current Bridge deployment and contains no secret. There is
 intentionally no periodic canister-side discovery fallback, so a withdrawal that is never notified

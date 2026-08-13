@@ -148,10 +148,6 @@ pub struct FinalizedObservationRecord {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExternalProgress {
     pub last_finalized_base_block: u64,
-    pub last_eth_balance_wei: u128,
-    pub reserve_sufficient: bool,
-    pub reserve_observation_generation: u64,
-    pub last_reserve_observation_ns: u64,
     pub last_finalized_observation_ns: u64,
     pub finalized_observation: Option<FinalizedObservationRecord>,
 }

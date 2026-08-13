@@ -39,6 +39,81 @@ pub open spec fn deposit_identity_decision_view(
     }
 }
 
+proof fn deposit_ledger_block_transition_preserves_and_rejects_conflict(
+    prior: int, different: int,
+)
+    requires prior != different,
+    ensures
+        kernel::deposit_ledger_block_transition_spec(Some(prior), None, 0, 0)
+            == Some((Some(prior), Option::<int>::None)),
+        kernel::deposit_ledger_block_transition_spec(None, None, 1, prior)
+            == Some((Some(prior), Option::<int>::None)),
+        kernel::deposit_ledger_block_transition_spec(Some(prior), None, 1, prior)
+            == Some((Some(prior), Option::<int>::None)),
+        kernel::deposit_ledger_block_transition_spec(Some(prior), None, 1, different)
+            == Option::<(Option<int>, Option<int>)>::None,
+        kernel::deposit_ledger_block_transition_spec(None, None, 2, prior)
+            == Option::<(Option<int>, Option<int>)>::None,
+        kernel::deposit_ledger_block_transition_spec(Some(prior), None, 2, prior)
+            == Some((Some(prior), Some(prior))),
+        kernel::deposit_ledger_block_transition_spec(Some(prior), Some(prior), 2, prior)
+            == Some((Some(prior), Some(prior))),
+        kernel::deposit_ledger_block_transition_spec(Some(prior), Some(prior), 2, different)
+            == Option::<(Option<int>, Option<int>)>::None,
+{}
+
+proof fn withdrawal_ledger_block_transition_preserves_and_rejects_conflict(
+    prior: int, different: int,
+)
+    requires prior != different,
+    ensures
+        kernel::withdrawal_ledger_block_transition_spec(Some(prior), 0, 0)
+            == Some(Some(prior)),
+        kernel::withdrawal_ledger_block_transition_spec(None, 1, prior)
+            == Some(Some(prior)),
+        kernel::withdrawal_ledger_block_transition_spec(Some(prior), 1, prior)
+            == Some(Some(prior)),
+        kernel::withdrawal_ledger_block_transition_spec(Some(prior), 1, different)
+            == Option::<Option<int>>::None,
+{}
+
+pub open spec fn deposit_transition_decision_effects_valid(
+    input: kernel::DepositTransitionInput,
+    result: kernel::DepositTransitionDecision,
+) -> bool {
+    match result {
+        kernel::DepositTransitionDecision::Idempotent => input.same_payload,
+        kernel::DepositTransitionDecision::Reject => !input.same_payload,
+        kernel::DepositTransitionDecision::Apply(effects) =>
+            !input.same_payload
+            && kernel::deposit_transition_spec(input.state as int, input.event as int)
+                == Some(effects.next_state as int)
+            && effects.reservation_active
+                == kernel::deposit_reservation_active_spec(effects.next_state as int)
+            && effects.release_reservation
+                == (kernel::deposit_reservation_active_spec(input.state as int)
+                    && !kernel::deposit_reservation_active_spec(effects.next_state as int))
+            && effects.charge_service_fee
+                == kernel::deposit_charge_service_fee_spec(
+                    input.state as int, input.event as int)
+            && (
+                effects.reservation_after as int,
+                effects.reservation_add as int,
+                effects.reservation_release as int,
+                effects.fee_credit as int,
+                effects.pending_liability_debit as int,
+                effects.escrow_debit as int,
+                effects.mint_supply_increase as int,
+            ) == kernel::deposit_numeric_effects_spec(
+                input.state as int,
+                input.event as int,
+                input.gross_amount as int,
+                input.net_amount as int,
+                input.service_fee as int,
+                input.reserved_amount as int),
+    }
+}
+
 pub open spec fn reservation_decision_view(
     result: Option<kernel::ReservationDecision>,
 ) -> Option<(int, int)> {
@@ -97,9 +172,7 @@ pub open spec fn refund_request_identity_decision_view(
 ) -> int {
     match result {
         kernel::RefundRequestIdentityDecision::Allow => 0,
-        kernel::RefundRequestIdentityDecision::OwnerLookupRequired => 1,
-        kernel::RefundRequestIdentityDecision::AnonymousCaller => 2,
-        kernel::RefundRequestIdentityDecision::OwnerMismatch => 3,
+        kernel::RefundRequestIdentityDecision::AnonymousCaller => 1,
     }
 }
 
@@ -216,11 +289,53 @@ proof fn reserve_requirement_is_monotone(floor: int, unit: int, small: int, larg
     vstd::arithmetic::mul::lemma_mul_inequality(small, large, unit);
 }
 
-proof fn reserve_exact_boundary_and_independent_resources(required_eth: int, required_cycles: int)
-    requires 0 <= required_eth, 0 <= required_cycles
-    ensures kernel::resources_sufficient_spec(required_eth, required_eth, required_cycles, required_cycles),
-        !kernel::resources_sufficient_spec(required_eth - 1, required_eth, required_cycles, required_cycles),
-        !kernel::resources_sufficient_spec(required_eth, required_eth, required_cycles - 1, required_cycles)
+proof fn governance_transaction_liability_is_checked(
+    gas_limit: int,
+    max_fee_per_gas: int,
+    l1_fee: int,
+    value: int,
+)
+    requires 0 <= gas_limit,
+        0 <= max_fee_per_gas,
+        0 <= l1_fee,
+        0 <= value,
+        l1_fee <= 340282366920938463463374607431768211455int,
+        value <= 340282366920938463463374607431768211455int - l1_fee,
+        gas_limit == 0 || max_fee_per_gas <=
+            (340282366920938463463374607431768211455int - (l1_fee + value)) / gas_limit
+    ensures kernel::transaction_liability_wei_spec(gas_limit, max_fee_per_gas, l1_fee, value)
+        == Some(l1_fee + value + gas_limit * max_fee_per_gas),
+        kernel::transaction_liability_wei_spec(
+            1,
+            340282366920938463463374607431768211455int,
+            1,
+            0,
+        ) == None::<int>
+{}
+
+proof fn signing_cycle_requirement_preserves_reserve(
+    required_reserve: int,
+    signing_cost: int,
+    call_margin: int,
+    liquid: int,
+    charged: int,
+)
+    requires 0 <= required_reserve,
+        0 <= signing_cost,
+        0 <= call_margin,
+        0 <= charged,
+        required_reserve <= 340282366920938463463374607431768211455int,
+        signing_cost <= 340282366920938463463374607431768211455int - required_reserve,
+        call_margin <= 340282366920938463463374607431768211455int
+            - (required_reserve + signing_cost),
+        required_reserve + signing_cost + call_margin <= liquid,
+        charged <= signing_cost + call_margin
+    ensures kernel::signing_cycle_requirement_spec(
+            required_reserve,
+            signing_cost,
+            call_margin,
+        ) == Some(required_reserve + signing_cost + call_margin),
+        required_reserve <= liquid - charged
 {}
 
 proof fn reserve_overflow_is_rejected()
@@ -382,6 +497,27 @@ proof fn canonical_probe_accepts_exact_block(receipt_block: int, snapshot_block:
         <==> receipt_block == snapshot_block
 {}
 
+spec fn finalized_head_attests(head: Option<int>, checkpoint: int) -> bool {
+    match head {
+        Some(height) => checkpoint <= height,
+        None => false,
+    }
+}
+
+proof fn withdrawal_finality_quorum_selects_two_provider_checkpoint(
+    first: Option<int>, second: Option<int>, third: Option<int>,
+)
+    ensures match kernel::withdrawal_finalized_checkpoint_spec(first, second, third) {
+        Some(checkpoint) =>
+            (finalized_head_attests(first, checkpoint) && finalized_head_attests(second, checkpoint))
+            || (finalized_head_attests(first, checkpoint) && finalized_head_attests(third, checkpoint))
+            || (finalized_head_attests(second, checkpoint) && finalized_head_attests(third, checkpoint)),
+        None => true,
+    }
+{
+    reveal(finalized_head_attests);
+}
+
 proof fn runtime_attestation_requires_every_config_binding(
     observation_present: bool,
     chain_id_matches: bool,
@@ -392,32 +528,6 @@ proof fn runtime_attestation_requires_every_config_binding(
             <==> observation_present && chain_id_matches && runtime_hash_matches
 {}
 
-proof fn withdrawal_finalization_decision_is_fail_closed(
-    receipt_succeeded: bool,
-    receipt_block: int,
-    finalized_block: Option<int>,
-)
-    ensures kernel::withdrawal_finalization_decision_spec(
-        receipt_succeeded, receipt_block, finalized_block)
-        == match finalized_block {
-            None => 0int,
-            Some(finalized) if finalized < receipt_block => 0int,
-            Some(_) if receipt_succeeded => 1int,
-            Some(_) => 2int,
-        }
-{}
-
-proof fn pending_queue_restore_preserves_existing_block(
-    existing_blocked: Option<bool>,
-    incoming_blocked: bool,
-)
-    ensures kernel::restored_pending_blocked_spec(existing_blocked, incoming_blocked)
-        == match existing_blocked {
-            Some(blocked) => blocked,
-            None => incoming_blocked,
-        }
-{}
-
 proof fn withdrawal_liability_index_matches_nonterminal_phases(state: int)
     ensures kernel::withdrawal_liability_indexed_spec(state)
         <==> state == 0 || state == 1 || state == 3
@@ -425,6 +535,11 @@ proof fn withdrawal_liability_index_matches_nonterminal_phases(state: int)
 
 proof fn reconciliation_hold_index_matches_open_phase(state: int)
     ensures kernel::reconciliation_hold_indexed_spec(state) <==> state == 0
+{}
+
+proof fn deposit_nonterminal_index_matches_nonterminal_phases(state: int)
+    ensures kernel::deposit_nonterminal_indexed_spec(state)
+        <==> state != 8 && state != 9 && state != 10
 {}
 
 proof fn mint_admission_counts_consumed_reserved_and_candidate(
@@ -448,11 +563,6 @@ proof fn payout_includes_fee_and_cannot_exceed_reserve(reserve: int, pending: in
         <==> amount + fee <= reserve - pending,
         kernel::payout_debit_spec(true, amount, fee) == Some(amount + fee),
         kernel::payout_debit_spec(false, amount, fee) == Some(0int)
-{}
-
-proof fn fee_recipient_rotation_requires_no_pending_payout(pending: int)
-    requires 0 <= pending
-    ensures kernel::fee_recipient_rotation_allowed_spec(pending) <==> pending == 0
 {}
 
 fn fee_recipient_rotation_decision_is_fail_closed(
@@ -494,10 +604,6 @@ proof fn stale_or_inactive_lease_outcome_is_rejected(
         <==> active && active_generation == outcome_generation
 {}
 
-proof fn hold_requires_success_or_complete_absence(success: bool, absence: bool)
-    ensures kernel::hold_retry_allowed_spec(success, absence) <==> success || absence
-{}
-
 fn hold_resolution_decision_classifies_evidence(
     success: bool, absence: bool,
 ) -> (result: kernel::HoldResolutionDecision)
@@ -509,19 +615,6 @@ fn hold_resolution_decision_classifies_evidence(
     kernel::hold_resolution_decision(success, absence)
 }
 
-proof fn manual_claim_cannot_bypass_active_schedule(
-    scheduled: bool,
-    active: bool,
-    stopped: bool,
-    overdue: bool,
-    expired: bool,
-)
-    ensures kernel::manual_claim_allowed_spec(
-        scheduled, active, stopped, overdue, expired)
-        <==> (!active || expired)
-            && (!scheduled || stopped || overdue || expired)
-{}
-
 fn manual_claim_decision_matches_shared_guard(
     scheduled: bool,
     active: bool,
@@ -530,28 +623,23 @@ fn manual_claim_decision_matches_shared_guard(
     expired: bool,
 ) -> (result: kernel::ManualClaimDecision)
     ensures manual_claim_decision_view(result) == 0
-        <==> kernel::manual_claim_allowed_spec(
-            scheduled, active, stopped, overdue, expired),
+        <==> (!active || expired)
+            && (!scheduled || stopped || overdue || expired),
 {
     kernel::manual_claim_decision(
         scheduled, active, stopped, overdue, expired)
 }
 
-fn refund_request_requires_authenticated_owner(
+fn refund_request_requires_authenticated_caller(
     authenticated: bool,
-    owner_match: Option<bool>,
 ) -> (result: kernel::RefundRequestIdentityDecision)
     ensures
         refund_request_identity_decision_view(result) == 0
-            <==> authenticated && owner_match == Some(true),
+            <==> authenticated,
         refund_request_identity_decision_view(result) == 1
-            <==> authenticated && owner_match == None::<bool>,
-        refund_request_identity_decision_view(result) == 2
             <==> !authenticated,
-        refund_request_identity_decision_view(result) == 3
-            <==> authenticated && owner_match == Some(false),
 {
-    kernel::refund_request_identity_decision(authenticated, owner_match)
+    kernel::refund_request_identity_decision(authenticated)
 }
 
 fn notification_admission_checks_global_and_caller_windows(
@@ -717,6 +805,71 @@ proof fn deposit_numeric_effects_match_every_economic_transition(
             == (0int, 0int, reserved, 0int, 0int, 0int, 0int)
 {}
 
+fn deposit_transition_effects_match_every_economic_transition(
+    state: u8, event: u8, gross: u128, net: u128, fee: u128, reserved: u128,
+) -> (result: (u128, u128, u128, u128, u128, u128, u128))
+    ensures
+        state == 1 && event == 3 ==> result ==
+            (net, net, 0u128, 0u128, 0u128, 0u128, 0u128),
+        state == 2 && event == 5 ==> result ==
+            (reserved, 0u128, 0u128, fee, fee, 0u128, 0u128),
+        state == 3 && event == 4 ==> result ==
+            (0u128, 0u128, reserved, 0u128, 0u128, 0u128, 0u128),
+        state == 4 && event == 6 && net != 0 ==> result ==
+            (0u128, 0u128, 0u128, 0u128, net, 0u128, net),
+        state == 6 && event == 8 && net == 0 ==>
+            result == (0u128, 0u128, 0u128, 0u128, gross, gross, 0u128),
+        state == 6 && event == 8 && net != 0 ==>
+            result == (0u128, 0u128, 0u128, 0u128, net, net, 0u128),
+        state == 2 && event == 4 ==> result ==
+            (0u128, 0u128, reserved, 0u128, 0u128, 0u128, 0u128),
+{
+    kernel::deposit_transition_effects(state, event, gross, net, fee, reserved)
+}
+
+fn deposit_transition_decision_applies_verified_effects(
+    input: kernel::DepositTransitionInput,
+) -> (result: kernel::DepositTransitionDecision)
+    ensures deposit_transition_decision_effects_valid(input, result),
+{
+    kernel::deposit_transition_decision(input)
+}
+
+fn withdrawal_transition_effects_cover_release_and_hold_resolutions(
+    amount_out: u128, ledger_fee: u128, service_fee: u128,
+) -> (result: (
+    Option<(u8, u128, u128, u128)>,
+    Option<(u8, u128, u128, u128)>,
+    Option<(u8, u128, u128, u128)>,
+))
+    requires
+        ledger_fee <= service_fee,
+        amount_out as int + service_fee as int
+            <= 340282366920938463463374607431768211455int,
+    ensures
+        result.0 == Some((
+            2u8,
+            (amount_out as int + ledger_fee as int) as u128,
+            (service_fee as int - ledger_fee as int) as u128,
+            (amount_out as int + service_fee as int) as u128,
+        )),
+        result.1 == Some((
+            2u8,
+            (amount_out as int + ledger_fee as int) as u128,
+            (service_fee as int - ledger_fee as int) as u128,
+            (amount_out as int + service_fee as int) as u128,
+        )),
+        result.2 == Some((1u8, 0u128, 0u128, 0u128)),
+{
+    assert(amount_out <= u128::MAX - ledger_fee);
+    assert(amount_out <= u128::MAX - service_fee);
+    (
+        kernel::withdrawal_transition_effects(1, 2, amount_out, ledger_fee, service_fee),
+        kernel::withdrawal_transition_effects(3, 4, amount_out, ledger_fee, service_fee),
+        kernel::withdrawal_transition_effects(3, 5, amount_out, ledger_fee, service_fee),
+    )
+}
+
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
     requires state == 2
     ensures kernel::withdrawal_phase_run_spec(state, events) == state
@@ -748,103 +901,6 @@ proof fn refund_retry_requires_matching_evidence(request: bool, hold: bool, tran
     ensures !kernel::evidence_matches_spec(request, hold, transfer, open_or_retry, false)
 {}
 
-proof fn withdrawal_fee_delta_occurs_only_on_release(state: int, event: int, fee: int)
-    ensures kernel::withdrawal_fee_delta_spec(state, event, fee)
-        == if state == 1 && event == 2 { fee } else { 0 }
-{}
-
-proof fn withdrawal_post_transfer_never_charges(state: int, events: Seq<int>, fee: int)
-    requires state == 2,
-        0 <= fee
-    ensures kernel::withdrawal_fee_total_spec(state, events, fee) == 0
-    decreases events.len()
-{
-    if events.len() > 0 {
-        let next = kernel::withdrawal_phase_step_spec(state, events[0]);
-        assert(kernel::withdrawal_fee_delta_spec(state, events[0], fee) == 0);
-        assert(next == 2);
-        withdrawal_post_transfer_never_charges(next, events.drop_first(), fee);
-    }
-}
-
-proof fn withdrawal_fee_is_charged_at_most_once(state: int, events: Seq<int>, fee: int)
-    requires 0 <= state <= 3, 0 <= fee
-    ensures 0 <= kernel::withdrawal_fee_total_spec(state, events, fee) <= fee
-    decreases events.len()
-{
-    if events.len() > 0 {
-        let event = events[0];
-        let next = kernel::withdrawal_phase_step_spec(state, event);
-        if state == 1 && event == 2 {
-            withdrawal_post_transfer_never_charges(2, events.drop_first(), fee);
-        } else {
-            assert(0 <= next <= 3);
-            withdrawal_fee_is_charged_at_most_once(next, events.drop_first(), fee);
-        }
-    }
-}
-
-proof fn deposit_mint_preserves_one_to_one_backing(
-    escrow: int, supply: int, fees: int, unminted: int, unreleased: int,
-    gross: int, net: int, service_fee: int,
-)
-    requires kernel::asset_backed_spec(escrow, supply, fees, unminted, unreleased),
-        0 <= service_fee, 0 <= net, gross == net + service_fee, gross <= unminted
-    ensures kernel::asset_backed_spec(
-        escrow, supply + net, fees + service_fee, unminted - gross, unreleased)
-{}
-
-proof fn withdrawal_observation_preserves_one_to_one_backing(
-    escrow: int, supply: int, fees: int, unminted: int, unreleased: int, amount: int,
-)
-    requires kernel::asset_backed_spec(escrow, supply, fees, unminted, unreleased),
-        0 <= amount <= supply
-    ensures kernel::asset_backed_spec(
-        escrow, supply - amount, fees, unminted, unreleased + amount)
-{}
-
-proof fn withdrawal_release_preserves_one_to_one_backing(
-    escrow: int, supply: int, fees: int, unminted: int, unreleased: int,
-    amount_out: int, ledger_fee: int, service_fee: int,
-)
-    requires kernel::asset_backed_spec(escrow, supply, fees, unminted, unreleased),
-        0 <= amount_out, 0 <= ledger_fee, 0 <= service_fee,
-        ledger_fee <= service_fee,
-        amount_out + service_fee <= unreleased
-    ensures kernel::asset_backed_spec(
-        escrow - amount_out - ledger_fee, supply, fees + service_fee - ledger_fee, unminted,
-        unreleased - amount_out - service_fee)
-{}
-
-proof fn fee_payout_preserves_one_to_one_backing(
-    escrow: int, supply: int, fees: int, unminted: int, unreleased: int, debit: int,
-)
-    requires kernel::asset_backed_spec(escrow, supply, fees, unminted, unreleased),
-        0 <= debit <= fees
-    ensures kernel::asset_backed_spec(
-        escrow - debit, supply, fees - debit, unminted, unreleased)
-{}
-
-proof fn pending_payout_is_bounded_by_confirmed_fees(fees: int, pending: int)
-    requires 0 <= pending <= fees
-    ensures kernel::payout_reserved_spec(fees, pending)
-{}
-
-proof fn ambiguous_outbound_resolution_preserves_a_possible_world(
-    happened: bool, escrow: int, supply: int, fees: int, unminted: int, unreleased: int,
-    amount_out: int, ledger_fee: int, service_fee: int,
-)
-    requires kernel::asset_backed_spec(escrow, supply, fees, unminted, unreleased),
-        0 <= amount_out, 0 <= ledger_fee, 0 <= service_fee,
-        ledger_fee <= service_fee,
-        amount_out + service_fee <= unreleased,
-        amount_out + ledger_fee <= escrow
-    ensures ({
-        let resolved = kernel::ambiguous_outbound_world_spec(
-            happened, escrow, fees, unreleased, amount_out, ledger_fee, service_fee);
-        kernel::asset_backed_spec(resolved.0, supply, resolved.1, unminted, resolved.2)
-    })
-{}
 }
 
 fn main() {}

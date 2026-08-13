@@ -194,6 +194,26 @@ def run_command(
     return result
 
 
+def run_json_command(
+    command: Sequence[str],
+    root: Path,
+    runner: CommandRunner = subprocess.run,
+) -> subprocess.CompletedProcess[str]:
+    result = run_command(command, root, runner)
+    if result.stdout.strip():
+        return result
+
+    # Vitest can occasionally exit successfully before its JSON reporter flushes
+    # when invoked after the preceding refinement consumers. Retry once, while
+    # still failing closed if no machine-readable evidence is produced.
+    retry = run_command(command, root, runner)
+    if not retry.stdout.strip():
+        raise ValueError(
+            f"refinement consumer produced no JSON: {' '.join(command)}"
+        )
+    return retry
+
+
 def validate_generated_selector_ownership(
     consumers: list[Consumer],
     root: Path = ROOT,
@@ -257,7 +277,7 @@ def execute_consumer(
             match_path = target.relative_to("contracts").as_posix()
         except ValueError as error:
             raise ValueError(f"Foundry consumer is outside contracts: {consumer.target}") from error
-        result = run_command(
+        result = run_json_command(
             [
                 "forge",
                 "test",
@@ -292,7 +312,7 @@ def execute_consumer(
             test_path = target.relative_to("ui").as_posix()
         except ValueError as error:
             raise ValueError(f"Vitest consumer is outside ui: {consumer.target}") from error
-        result = run_command(
+        result = run_json_command(
             [
                 "pnpm",
                 "--dir",

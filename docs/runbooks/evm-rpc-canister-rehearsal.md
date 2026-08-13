@@ -141,7 +141,7 @@ asset flowとして次の4件を実行し、各transactionをFinalized headま�
 
 1. `authorization_mint`: Deposit ID、Ledger block、Authorization digest、Base walletのmint transaction、exact event、Finalized block/hash
 2. `withdrawal_release`: user `approve`、user `createWithdrawal`のFinalized block/hash、固定quote、ICRC transfer block、追加Base transactionがないこと
-3. `ledger_fee_guard`: 観測Ledger feeがcharged Service Feeを超えたときtransfer前に停止し、Base Withdrawalをpauseする。cancel、refund、別transfer identityを作らない
+3. `ledger_fee_guard`: 固定`KINIC_LEDGER_FEE = 100000 raw`がcharged Service Feeを超えたときtransfer前に停止し、Base Withdrawalをpauseする。runtimeで`icrc1_fee()`を照会せず、cancel、refund、別transfer identityを作らない
 4. `canonical_receipt`: receipt block number/hash、receipt hashへのEIP-1898 `bridgeSnapshot()` probe、Finalized head
 
 failure scenarioとして次の4件をtest-only設定で実行する。

@@ -68,7 +68,7 @@ mod tests {
     fn public_phase_variants_are_stable() {
         assert_eq!(
             DepositPhase::from(&DepositState::EscrowedUnquoted {
-                ledger_block_index: 1,
+                funding_ledger_block_index: 1,
             }),
             DepositPhase::EscrowedUnquoted
         );

@@ -3,9 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { DeploymentProfile } from "@/config/profile"
 import {
   bridgeSignerBlockers,
-  FINALIZED_HEAD_FUTURE_SKEW_MS,
-  FINALIZED_HEAD_MAX_AGE_MS,
-  finalizedHeadTimestampBlocker,
+  refetchRuntimeAttestedWriteReady,
   refetchRuntimeWriteReady,
   requireRuntimeWriteReady,
   RUNTIME_VALIDATION_TTL_MS,
@@ -41,8 +39,8 @@ const bridgeHash = `0x${"aa".repeat(32)}` as const
 const bsnsHash = `0x${"bb".repeat(32)}` as const
 const expectedSigner = `0x${"33".repeat(20)}` as const
 const finalizedHash = `0x${"44".repeat(32)}` as const
-const ledgerId = "3jkp5-oyaaa-aaaaj-azwqa-cai"
-const indexId = "qzre3-3iaaa-aaaai-aqmsa-cai"
+const ledgerId = Principal.selfAuthenticating(new Uint8Array(32).fill(0x11)).toText()
+const indexId = Principal.selfAuthenticating(new Uint8Array(32).fill(0x22)).toText()
 
 const profile: DeploymentProfile = {
   environment: "test",
@@ -60,6 +58,7 @@ const profile: DeploymentProfile = {
   deploymentInstanceId: `0x${"99".repeat(32)}`,
   ledgerCanisterId: ledgerId,
   indexCanisterId: indexId,
+  snsRootCanisterId: null,
   icToken: { name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 },
   baseToken: { symbol: "KINIC", decimals: 8 },
   bridgeAddress,
@@ -133,7 +132,7 @@ beforeEach(() => {
     deployment_instance_id: Array.from({ length: 32 }, () => 0x99),
     ledger_canister_id: Principal.fromText(configuredLedgerId),
     index_canister_id: Principal.fromText(configuredIndexId),
-    schema_version: 31,
+    schema_version: 32,
     expected_bridge_signer: new Uint8Array(20).fill(0x33),
     evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
     rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
@@ -154,28 +153,39 @@ beforeEach(() => {
 })
 
 describe("validateRuntime token bindings", () => {
-  it("accepts only a recent finalized Base timestamp within the browser clock skew", () => {
-    const now = 2_000_000_000_000
-    const nowSeconds = BigInt(now / 1_000)
-    expect(finalizedHeadTimestampBlocker(nowSeconds, now)).toBeUndefined()
-    expect(finalizedHeadTimestampBlocker(nowSeconds - BigInt(FINALIZED_HEAD_MAX_AGE_MS / 1_000), now)).toBeUndefined()
-    expect(finalizedHeadTimestampBlocker(nowSeconds - BigInt(FINALIZED_HEAD_MAX_AGE_MS / 1_000) - 1n, now)).toBe("Finalized Base head is stale")
-    expect(finalizedHeadTimestampBlocker(nowSeconds + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS / 1_000), now)).toBeUndefined()
-    expect(finalizedHeadTimestampBlocker(nowSeconds + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS / 1_000) + 1n, now)).toBe("Finalized Base block timestamp is ahead of the browser clock")
-    expect(finalizedHeadTimestampBlocker(0n, now)).toBe("Finalized Base block timestamp is unavailable")
-    expect(finalizedHeadTimestampBlocker(undefined, now)).toBe("Finalized Base block timestamp is unavailable")
-  })
-
-  it("rejects a stale finalized head before pinned contract reads", async () => {
+  it.each([
+    ["stale", BigInt(Math.floor(Date.now() / 1_000)) - 86_400n],
+    ["missing", undefined],
+    ["ahead of the browser clock", BigInt(Math.floor(Date.now() / 1_000)) + 86_400n],
+  ])("does not use a %s finalized timestamp as a write-readiness gate", async (_label, timestamp) => {
     getBlockMock.mockResolvedValue({
       number: 12n,
       hash: finalizedHash,
-      timestamp: BigInt(Math.floor((Date.now() - FINALIZED_HEAD_MAX_AGE_MS) / 1_000)) - 1n,
+      timestamp,
     })
+
+    await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
+    expect(getCodeMock).toHaveBeenCalled()
+    expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({
+      blockHash: finalizedHash,
+      requireCanonical: true,
+    }))
+  })
+
+  it.each([
+    ["number", null, finalizedHash],
+    ["hash", 12n, null],
+  ])("still rejects a Finalized block without a %s", async (_label, number, hash) => {
+    getBlockMock.mockResolvedValue({ number, hash, timestamp: BigInt(Math.floor(Date.now() / 1_000)) })
 
     await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({
       ready: false,
-      blockers: ["Finalized Base head is stale"],
+      blockers: ["Finalized Base block number or hash is unavailable"],
+    })
+    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
+      ready: false,
+      blockers: ["Finalized Base block number or hash is unavailable"],
     })
     expect(getCodeMock).not.toHaveBeenCalled()
     expect(readContractMock).not.toHaveBeenCalled()
@@ -201,6 +211,26 @@ describe("validateRuntime token bindings", () => {
     expect(runtimeWriteBlocker(cached)).toBeUndefined()
     await expect(refetchRuntimeWriteReady(refetch)).rejects.toThrow("Bridge signer differs from the reviewed profile")
     expect(refetch).toHaveBeenCalledOnce()
+  })
+
+  it("rejects a refetch error even when React Query retains previously ready data", async () => {
+    const cached = { ready: true, blockers: [], checkedAt: Date.now() }
+    const refetch = vi.fn().mockResolvedValue({ data: cached, isError: true, error: new Error("Base RPC unavailable") })
+
+    await expect(refetchRuntimeWriteReady(refetch)).rejects.toThrow("Base RPC unavailable")
+    expect(refetch).toHaveBeenCalledOnce()
+  })
+
+  it("rejects an errored heartbeat after refreshing an expired attestation", async () => {
+    const expired = { ready: true, blockers: [], checkedAt: Date.now() - RUNTIME_VALIDATION_TTL_MS - 1 }
+    const refreshed = { ready: true, blockers: [], checkedAt: Date.now(), profileFingerprint: "profile" }
+    const retainedHeartbeat = { ...refreshed, snapshot: {} }
+
+    await expect(refetchRuntimeAttestedWriteReady(
+      expired,
+      vi.fn().mockResolvedValue({ data: refreshed, isError: false }),
+      vi.fn().mockResolvedValue({ data: retainedHeartbeat, isError: true, error: new Error("Heartbeat unavailable") }),
+    )).rejects.toThrow("Heartbeat unavailable")
   })
 
   it("detects a signer rotation on a later runtime check", async () => {
@@ -296,6 +326,7 @@ describe("validateRuntime token bindings", () => {
       environmentMode: null,
       activationTimelockDelaySeconds: 86_400,
       gateBManifestSha256: "d".repeat(64),
+      snsRootCanisterId: "7jkta-eyaaa-aaaaq-aaarq-cai",
     }
 
     await expect(validateRuntime(productionProfile, productionProfile.chainId)).resolves.toMatchObject({
@@ -336,7 +367,7 @@ describe("validateRuntime token bindings", () => {
       deployment_instance_id: new Uint8Array(32).fill(0x99),
       ledger_canister_id: Principal.fromText(ledgerId),
       index_canister_id: Principal.fromText(indexId),
-      schema_version: 31,
+      schema_version: 32,
       expected_bridge_signer: new Uint8Array(20).fill(0x33),
       evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
       rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
@@ -363,7 +394,7 @@ describe("validateRuntime token bindings", () => {
       deployment_instance_id: new Uint8Array(32).fill(0x99),
       ledger_canister_id: Principal.fromText(ledgerId),
       index_canister_id: Principal.fromText(indexId),
-      schema_version: 31,
+      schema_version: 32,
       expected_bridge_signer: new Uint8Array(20).fill(0x33),
       evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
       rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),

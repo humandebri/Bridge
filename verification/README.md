@@ -15,6 +15,8 @@ CIは許可済みのRust、Foundry、Vitest runnerだけを使用し、manifest�
 
 Withdrawalの検証対象は、Base上の不可逆な`Committed` burnとCanister上の未決済債務である。Base refund、release acknowledgement、Withdrawal用EVM operationはモデルに存在しない。
 
+Withdrawal livenessはschedulerだけでは主張しない。債務と固定支払内容を安全に保持したうえで、任意の非anonymous主体が必要回数の`continue_withdrawal`を最終的に呼ぶという外部仮定の下で`Paid`へ到達する。
+
 - Foundryはfee driftのburn前revert、固定quote、atomic burn、処理済みDeposit IDのreplay拒否を検査し、ABI snapshotはWithdrawal専用のrefund/remint selectorが存在しないことを検査する。
 - settlement、deposit admission、deposit identity preflight、reservation、fee recipient rotation、fee payout、hold resolution、lease outcome、manual claimのtyped decisionはCargoとVerusが同じ実行関数本体を使用し、Verusが結果variant、全delta fieldと境界拒否を直接検査する。manifest上の`shared`義務はCargo式とVerus specで式macroを共有するpredicate proofであり、実行関数全体のproofとは呼ばない。
 - `bridge-core/src/kernel.rs`はさらにsnapshot refresh owner、reserve observation token、settlement lease generation、canonical probe block一致、Withdrawal・reconciliation holdの派生index分類をproductionと共有し、Verusで各predicateを検査する。
@@ -27,11 +29,11 @@ Bridge SignerはEIP-712 Mint Authorizationへ署名する。侵害されたSigne
 EIP-1898 `requireCanonical`の正しさ、EVM rollbackとEIP-1153 transient storage lifetime、ABI decoder、Web Locks、browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityとSQL row selectionは外部仮定である。形式証明の対象は、decode後のblock一致、enumから派生indexへの分類、成功したbrowser storage更新後のqueue状態までである。
 Bridge runtimeの不変性は外部仮定である。保存済み観測をwarm attestationとして再利用できる条件はproduction-shared predicateとVerusで検査し、cold成功後の永続化、経路間再利用、upgrade/reinstall境界はRustとPocketIC transaction testで検査する。
 Verus/Rust/LLVM、Lean kernel、Solidity SMTChecker、Wasm compilerはtrusted computing baseであり、source-level proofをWasm binary verificationとは呼ばない。
-Ledger Fee超過はruntime guardでrelease前に停止し、Base withdrawal pauseとfee同期後に同じrecordを再検証する。
+固定100,000 rawのLedger Feeがcharged Service Feeを超える場合は固定fee guardでrelease前に停止し、Base withdrawal pauseと設定確認後に同じrecordを再検証する。Ledger Feeの不変性は外部仮定であり、runtime settlementは`icrc1_fee()`を照会しない。
 
 Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_step_preserves_safe`が受理された各生遷移について安全性を直接証明し、有限trace定理はそのlemmaから帰納する。canonical・Ledger certificateは対象identityを含むが、その履歴やRPC情報の真正性は外部仮定である。
 
-schema v31再オープンとwire v27に加え、監査済みv30／wire 26からの一方向migrationをRust transaction testと旧Wasm→新Wasm PocketIC testで検証する。migrationは成功時に全recordを同時commitし、失敗時は全rollbackする。dual-readやfallbackは提供せず、v29以下・未知schema・未知wireはfail closedにする。
+schema v32再オープンとwire v28をRust transaction testとsame-Wasm PocketIC testで検証する。migration、dual-read、fallbackは提供せず、v31以下・未知schema・未知wireはfail closedにする。
 
 ## Release proof gate
 

@@ -18,6 +18,9 @@ use icrc_ledger_types::{
 use serde::Serialize;
 
 const LEDGER_CALL_TIMEOUT_SECONDS: u32 = 15;
+#[cfg(not(feature = "test-deployment"))]
+pub const KINIC_LEDGER_FEE: Amount = Amount::new(100_000);
+#[cfg(feature = "test-deployment")]
 pub const KINIC_LEDGER_FEE: Amount = Amount::new(10_000);
 
 fn ledger_call(canister: Principal, method: &'static str) -> Call<'static, 'static> {
@@ -643,6 +646,14 @@ mod tests {
             ),
             Some(1)
         );
+    }
+
+    #[test]
+    fn build_uses_the_reviewed_environment_ledger_fee() {
+        #[cfg(not(feature = "test-deployment"))]
+        assert_eq!(KINIC_LEDGER_FEE.get(), 100_000);
+        #[cfg(feature = "test-deployment")]
+        assert_eq!(KINIC_LEDGER_FEE.get(), 10_000);
     }
 
     #[test]

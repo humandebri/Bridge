@@ -4,13 +4,13 @@ use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use ic_cdk::call::Call;
 use ic_cdk_management_canister::{
     cost_sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, EcdsaPublicKeyResult,
-    SignWithEcdsaArgs, SignWithEcdsaResult,
+    SignCallError, SignWithEcdsaArgs,
 };
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use serde::de::DeserializeOwned;
 use tiny_keccak::{Hasher, Keccak};
 
-const SIGNING_CALL_TIMEOUT_SECONDS: u32 = 60;
+const PUBLIC_KEY_CALL_TIMEOUT_SECONDS: u32 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignerRole {
@@ -18,16 +18,40 @@ pub enum SignerRole {
     Governance,
 }
 
+#[derive(CandidType, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SigningFailureClass {
+    InsufficientCycles,
+    CostUnavailable,
+    CallRejected,
+    CallFailed,
+    ResponseDecode,
+    InvalidPublicKey,
+    InvalidSignature,
+    RecoveryMismatch,
+    Storage,
+}
+
 #[derive(Debug)]
 pub enum SignerError {
     ManagementCall {
         operation: &'static str,
-        class: &'static str,
+        class: SigningFailureClass,
         detail: String,
     },
     InvalidPublicKey,
     InvalidSignature,
     RecoveryFailed,
+}
+
+impl SignerError {
+    pub fn class(&self) -> SigningFailureClass {
+        match self {
+            Self::ManagementCall { class, .. } => *class,
+            Self::InvalidPublicKey => SigningFailureClass::InvalidPublicKey,
+            Self::InvalidSignature => SigningFailureClass::InvalidSignature,
+            Self::RecoveryFailed => SigningFailureClass::RecoveryMismatch,
+        }
+    }
 }
 
 impl std::fmt::Display for SignerError {
@@ -37,7 +61,7 @@ impl std::fmt::Display for SignerError {
                 operation,
                 class,
                 detail,
-            } => write!(formatter, "{operation} {class}: {detail}"),
+            } => write!(formatter, "{operation} {class:?}: {detail}"),
             Self::InvalidPublicKey => formatter.write_str("invalid public key"),
             Self::InvalidSignature => formatter.write_str("invalid signature"),
             Self::RecoveryFailed => formatter.write_str("signature recovery failed"),
@@ -47,10 +71,12 @@ impl std::fmt::Display for SignerError {
 
 fn management_error(operation: &'static str, error: ic_cdk::call::Error) -> SignerError {
     let class = match &error {
-        ic_cdk::call::Error::InsufficientLiquidCycleBalance(_) => "insufficient_cycles",
-        ic_cdk::call::Error::CallPerformFailed(_) => "call_perform",
-        ic_cdk::call::Error::CallRejected(_) => "rejected_or_timeout",
-        ic_cdk::call::Error::CandidDecodeFailed(_) => "candid_decode",
+        ic_cdk::call::Error::InsufficientLiquidCycleBalance(_) => {
+            SigningFailureClass::InsufficientCycles
+        }
+        ic_cdk::call::Error::CallPerformFailed(_) => SigningFailureClass::CallFailed,
+        ic_cdk::call::Error::CallRejected(_) => SigningFailureClass::CallRejected,
+        ic_cdk::call::Error::CandidDecodeFailed(_) => SigningFailureClass::ResponseDecode,
     };
     SignerError::ManagementCall {
         operation,
@@ -69,7 +95,7 @@ where
     R: CandidType + DeserializeOwned,
 {
     Call::bounded_wait(Principal::management_canister(), operation)
-        .change_timeout(SIGNING_CALL_TIMEOUT_SECONDS)
+        .change_timeout(PUBLIC_KEY_CALL_TIMEOUT_SECONDS)
         .with_args(args)
         .with_cycles(cycles)
         .await
@@ -101,7 +127,7 @@ pub async fn sign_mint_authorization_digest(
         derivation_path: derivation_path(config, SignerRole::Mint).to_vec(),
         key_id,
     };
-    let raw_signature = threshold_signature(&sign_args).await?;
+    let raw_signature = threshold_signature(&sign_args, config).await?;
     canonical_ethereum_signature(digest, &public_key, &raw_signature)
 }
 
@@ -122,7 +148,7 @@ async fn sign_for_role(
         derivation_path: derivation_path(config, role).to_vec(),
         key_id,
     };
-    let raw_signature = threshold_signature(&sign_args).await?;
+    let raw_signature = threshold_signature(&sign_args, config).await?;
     assemble_signed(envelope, signing_hash, &public_key, &raw_signature)
 }
 
@@ -139,7 +165,7 @@ async fn signer_public_key(
             })
             .map_err(|error| SignerError::ManagementCall {
                 operation: "read_cached_ecdsa_public_key",
-                class: "storage",
+                class: SigningFailureClass::Storage,
                 detail: error.to_string(),
             })? {
             Some(public_key) => public_key,
@@ -169,7 +195,7 @@ async fn signer_public_key(
                     })
                     .map_err(|error| SignerError::ManagementCall {
                         operation: "cache_ecdsa_public_key",
-                        class: "storage",
+                        class: SigningFailureClass::Storage,
                         detail: error.to_string(),
                     })?
             }
@@ -177,17 +203,88 @@ async fn signer_public_key(
     )
 }
 
-async fn threshold_signature(sign_args: &SignWithEcdsaArgs) -> Result<Vec<u8>, SignerError> {
+async fn threshold_signature(
+    sign_args: &SignWithEcdsaArgs,
+    config: &BridgeInitArgs,
+) -> Result<Vec<u8>, SignerError> {
     let cycles = cost_sign_with_ecdsa(sign_args).map_err(|error| SignerError::ManagementCall {
         operation: "sign_with_ecdsa",
-        class: "sign_cost",
+        class: SigningFailureClass::CostUnavailable,
         detail: format!("{error:?}"),
     })?;
-    Ok(
-        bounded_management_call::<_, SignWithEcdsaResult>("sign_with_ecdsa", &(sign_args,), cycles)
-            .await?
-            .signature,
+    let required_reserve = STORE.with(|store| {
+        let store = store.borrow();
+        let nonterminal_withdrawals = store
+            .nonterminal_withdrawal_count()
+            .map_err(signing_storage_error)?;
+        let nonterminal_deposits = store
+            .nonterminal_deposit_count()
+            .map_err(signing_storage_error)?;
+        let reserved_deposits = store
+            .deposit_funding_reservation_count()
+            .map_err(signing_storage_error)?;
+        config
+            .reserve_policy()
+            .required_cycles(
+                nonterminal_withdrawals,
+                nonterminal_deposits,
+                reserved_deposits,
+            )
+            .map_err(signing_storage_error)
+    })?;
+    let required_balance = bridge_core::signing_cycle_requirement(
+        required_reserve,
+        cycles,
+        config.settlement_cycle_ceiling,
     )
+    .ok_or_else(|| SignerError::ManagementCall {
+        operation: "sign_with_ecdsa",
+        class: SigningFailureClass::InsufficientCycles,
+        detail: "signing cycle requirement overflow".to_string(),
+    })?;
+    let available = ic_cdk::api::canister_liquid_cycle_balance();
+    if available < required_balance {
+        return Err(SignerError::ManagementCall {
+            operation: "sign_with_ecdsa",
+            class: SigningFailureClass::InsufficientCycles,
+            detail: format!("available={available} required={required_balance}"),
+        });
+    }
+    let result = {
+        ::ic_cdk_management_canister::sign_with_ecdsa(sign_args)
+            .await
+            .map_err(signing_call_error)?
+    };
+    Ok(result.signature)
+}
+
+fn signing_call_error(error: SignCallError) -> SignerError {
+    let class = match &error {
+        SignCallError::SignCostError(_) => SigningFailureClass::CostUnavailable,
+        SignCallError::CallFailed(ic_cdk::call::CallFailed::InsufficientLiquidCycleBalance(_)) => {
+            SigningFailureClass::InsufficientCycles
+        }
+        SignCallError::CallFailed(ic_cdk::call::CallFailed::CallPerformFailed(_)) => {
+            SigningFailureClass::CallFailed
+        }
+        SignCallError::CallFailed(ic_cdk::call::CallFailed::CallRejected(_)) => {
+            SigningFailureClass::CallRejected
+        }
+        SignCallError::CandidDecodeFailed(_) => SigningFailureClass::ResponseDecode,
+    };
+    SignerError::ManagementCall {
+        operation: "sign_with_ecdsa",
+        class,
+        detail: format!("{error:?}"),
+    }
+}
+
+fn signing_storage_error(error: impl std::fmt::Display) -> SignerError {
+    SignerError::ManagementCall {
+        operation: "sign_with_ecdsa_budget",
+        class: SigningFailureClass::Storage,
+        detail: error.to_string(),
+    }
 }
 
 pub async fn ethereum_address(config: &BridgeInitArgs) -> Result<[u8; 20], SignerError> {
@@ -397,8 +494,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn threshold_signing_uses_the_fixed_sixty_second_bound() {
-        assert_eq!(SIGNING_CALL_TIMEOUT_SECONDS, 60);
+    fn public_key_lookup_keeps_the_fixed_sixty_second_bound() {
+        assert_eq!(PUBLIC_KEY_CALL_TIMEOUT_SECONDS, 60);
+    }
+
+    #[test]
+    fn signer_errors_expose_only_the_safe_failure_class() {
+        assert_eq!(
+            SignerError::InvalidPublicKey.class(),
+            SigningFailureClass::InvalidPublicKey
+        );
+        assert_eq!(
+            SignerError::InvalidSignature.class(),
+            SigningFailureClass::InvalidSignature
+        );
+        assert_eq!(
+            SignerError::RecoveryFailed.class(),
+            SigningFailureClass::RecoveryMismatch
+        );
     }
     use bridge_core::GovernanceOperationId;
 

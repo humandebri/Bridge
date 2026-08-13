@@ -27,7 +27,11 @@ def main() -> int:
     lean_dir = ROOT / "verification" / "lean" / "fail"
     lean_source = "\n".join(
         (ROOT / "verification" / "lean" / "BridgeSpec" / name).read_text(encoding="utf-8")
-        for name in ("DepositAuthorization.lean", "Protocol.lean")
+        for name in (
+            "DepositAuthorization.lean",
+            "LedgerBlockProvenance.lean",
+            "Protocol.lean",
+        )
     )
     lean_rows = rows(ROOT / "verification" / "lean" / "deposit-failure-manifest.tsv", 3)
     seen_pairs: set[tuple[str, str]] = set()

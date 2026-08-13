@@ -93,6 +93,44 @@ macro_rules! replay_body {
     };
 }
 
+macro_rules! deposit_ledger_block_transition_body {
+    ($funding:expr, $refund:expr, $event:expr, $block:expr, $preserve:expr, $funded:expr, $refunded:expr) => {{
+        if $event == $preserve {
+            Some(($funding, $refund))
+        } else if $event == $funded {
+            match $funding {
+                None => Some((Some($block), $refund)),
+                Some(current) if current == $block => Some(($funding, $refund)),
+                Some(_) => None,
+            }
+        } else if $event == $refunded {
+            match ($funding, $refund) {
+                (Some(_), None) => Some(($funding, Some($block))),
+                (Some(_), Some(current)) if current == $block => Some(($funding, $refund)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }};
+}
+
+macro_rules! withdrawal_ledger_block_transition_body {
+    ($release:expr, $event:expr, $block:expr, $preserve:expr, $released:expr) => {{
+        if $event == $preserve {
+            Some($release)
+        } else if $event == $released {
+            match $release {
+                None => Some(Some($block)),
+                Some(current) if current == $block => Some($release),
+                Some(_) => None,
+            }
+        } else {
+            None
+        }
+    }};
+}
+
 macro_rules! refresh_owner_matches_body {
     ($current:expr, $claimant:expr) => {
         match $current {
@@ -112,10 +150,34 @@ macro_rules! checked_requirement_body {
     };
 }
 
-macro_rules! resources_sufficient_body {
-    ($eth:expr, $required_eth:expr, $cycles:expr, $required_cycles:expr) => {
-        $eth >= $required_eth && $cycles >= $required_cycles
-    };
+macro_rules! signing_cycle_requirement_body {
+    ($required_reserve:expr, $signing_cost:expr, $call_margin:expr, $max:expr) => {{
+        if $signing_cost > $max - $required_reserve {
+            None
+        } else {
+            let reserve_and_signing = $required_reserve + $signing_cost;
+            if $call_margin > $max - reserve_and_signing {
+                None
+            } else {
+                Some(reserve_and_signing + $call_margin)
+            }
+        }
+    }};
+}
+
+macro_rules! transaction_liability_body {
+    ($gas_limit:expr, $max_fee_per_gas:expr, $l1_fee:expr, $value:expr, $max:expr, $zero:expr) => {{
+        if $value > $max - $l1_fee {
+            None
+        } else {
+            let fixed = $l1_fee + $value;
+            if $gas_limit != $zero && $max_fee_per_gas > ($max - fixed) / $gas_limit {
+                None
+            } else {
+                Some(fixed + $gas_limit * $max_fee_per_gas)
+            }
+        }
+    }};
 }
 
 macro_rules! release_transfer_matches_body {
@@ -155,29 +217,35 @@ macro_rules! canonical_probe_matches_body {
     };
 }
 
+macro_rules! withdrawal_finalized_checkpoint_body {
+    ($first:expr, $second:expr, $third:expr) => {{
+        match ($first, $second, $third) {
+            (Some(a), Some(b), Some(c)) => Some(if a >= b {
+                if b >= c {
+                    b
+                } else if a >= c {
+                    c
+                } else {
+                    a
+                }
+            } else if a >= c {
+                a
+            } else if b >= c {
+                c
+            } else {
+                b
+            }),
+            (Some(a), Some(b), None) | (Some(a), None, Some(b)) | (None, Some(a), Some(b)) => {
+                Some(if a <= b { a } else { b })
+            }
+            _ => None,
+        }
+    }};
+}
+
 macro_rules! runtime_attestation_matches_body {
     ($observation_present:expr, $chain_id_matches:expr, $runtime_hash_matches:expr) => {
         $observation_present && $chain_id_matches && $runtime_hash_matches
-    };
-}
-
-macro_rules! withdrawal_finalization_decision_body {
-    ($succeeded:expr, $receipt_block:expr, $finalized_block:expr, $retry:expr, $notify:expr, $discard:expr) => {
-        match $finalized_block {
-            None => $retry,
-            Some(finalized) if finalized < $receipt_block => $retry,
-            Some(_) if $succeeded => $notify,
-            Some(_) => $discard,
-        }
-    };
-}
-
-macro_rules! restored_pending_blocked_body {
-    ($existing:expr, $incoming:expr) => {
-        match $existing {
-            Some(blocked) => blocked,
-            None => $incoming,
-        }
     };
 }
 
@@ -190,6 +258,12 @@ macro_rules! withdrawal_liability_indexed_body {
 macro_rules! reconciliation_hold_indexed_body {
     ($state:expr, $open:expr) => {
         $state == $open
+    };
+}
+
+macro_rules! deposit_nonterminal_indexed_body {
+    ($state:expr, $refunded:expr, $cancelled:expr, $minted:expr) => {
+        $state != $refunded && $state != $cancelled && $state != $minted
     };
 }
 
@@ -305,22 +379,11 @@ macro_rules! manual_claim_decision_body {
 }
 
 macro_rules! refund_request_identity_decision_body {
-    (
-        $authenticated:expr,
-        $owner_match:expr,
-        $allow:expr,
-        $lookup:expr,
-        $anonymous:expr,
-        $mismatch:expr
-    ) => {
+    ($authenticated:expr, $allow:expr, $anonymous:expr) => {
         if !$authenticated {
             $anonymous
         } else {
-            match $owner_match {
-                None => $lookup,
-                Some(true) => $allow,
-                Some(false) => $mismatch,
-            }
+            $allow
         }
     };
 }
@@ -415,9 +478,7 @@ verus! {
     #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
     pub enum RefundRequestIdentityDecision {
         Allow,
-        OwnerLookupRequired,
         AnonymousCaller,
-        OwnerMismatch,
     }
 
     #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
@@ -523,12 +584,6 @@ verus! {
         Reject,
     }
 
-    #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
-    pub enum WithdrawalFinalizationDecision {
-        Retry,
-        Notify,
-        DiscardReverted,
-    }
 }
 
 macro_rules! deposit_refund_body {
@@ -706,6 +761,46 @@ macro_rules! withdrawal_step_body {
     }};
 }
 
+macro_rules! withdrawal_transition_effects_body {
+    (
+        $state:expr, $event:expr, $amount_out:expr, $ledger_fee:expr, $service_fee:expr,
+        $max:expr, $zero_state:expr, $release_pending:expr, $paid:expr, $hold:expr,
+        $start:expr, $retry:expr, $succeeded:expr, $ambiguous:expr, $hold_succeeded:expr,
+        $hold_absent:expr, $amount_zero:expr
+    ) => {{
+        let next = withdrawal_step_body!(
+            $state,
+            $event,
+            $zero_state,
+            $release_pending,
+            $paid,
+            $hold,
+            $hold_succeeded,
+            $hold_absent
+        );
+        if next == $state && !($state == $release_pending && $event == $retry) {
+            None
+        } else if ($state == $release_pending && $event == $succeeded)
+            || ($state == $hold && $event == $hold_succeeded)
+        {
+            match outbound_settlement_body!($amount_out, $ledger_fee, $service_fee, $max) {
+                None => None,
+                Some((escrow_debit, reserve_credit, liability_debit)) => {
+                    Some((next, escrow_debit, reserve_credit, liability_debit))
+                }
+            }
+        } else if ($state == $zero_state && $event == $start)
+            || ($state == $release_pending && $event == $ambiguous)
+            || ($state == $hold && $event == $hold_absent)
+            || ($state == $release_pending && $event == $retry)
+        {
+            Some((next, $amount_zero, $amount_zero, $amount_zero))
+        } else {
+            None
+        }
+    }};
+}
+
 #[cfg(verus_keep_ghost)]
 macro_rules! asset_backed_body {
     ($escrow:expr, $supply:expr, $fees:expr, $unminted:expr, $unreleased:expr) => {
@@ -750,6 +845,29 @@ pub const fn replay_matches(same_payload: bool) -> bool {
     replay_body!(same_payload)
 }
 
+/// Applies only ledger-success evidence to the deposit block indexes. Event codes are
+/// preserve=0, funding-success=1, and refund-success=2. `None` is a conflicting replay.
+#[cfg(not(verus_keep_ghost))]
+pub const fn deposit_ledger_block_transition(
+    funding: Option<u128>,
+    refund: Option<u128>,
+    event: u8,
+    block: u128,
+) -> Option<(Option<u128>, Option<u128>)> {
+    deposit_ledger_block_transition_body!(funding, refund, event, block, 0u8, 1u8, 2u8)
+}
+
+/// Applies only ledger-success evidence to the withdrawal release block index.
+/// Event codes are preserve=0 and release-success=1. `None` is a conflicting replay.
+#[cfg(not(verus_keep_ghost))]
+pub const fn withdrawal_ledger_block_transition(
+    release: Option<u128>,
+    event: u8,
+    block: u128,
+) -> Option<Option<u128>> {
+    withdrawal_ledger_block_transition_body!(release, event, block, 0u8, 1u8)
+}
+
 #[cfg(not(verus_keep_ghost))]
 pub const fn refresh_owner_matches(current: Option<u64>, claimant: u64) -> bool {
     refresh_owner_matches_body!(current, claimant)
@@ -770,14 +888,32 @@ pub const fn checked_requirement(floor: u128, unit: u128, count: u128) -> Option
     checked_requirement_body!(floor, unit, count, u128::MAX, 0u128)
 }
 
+/// Returns the minimum liquid-cycle balance required before a paid threshold-signing call.
+/// `None` rejects arithmetic overflow rather than weakening the reserve.
 #[cfg(not(verus_keep_ghost))]
-pub const fn resources_sufficient(
-    eth: u128,
-    required_eth: u128,
-    cycles: u128,
-    required_cycles: u128,
-) -> bool {
-    resources_sufficient_body!(eth, required_eth, cycles, required_cycles)
+pub const fn signing_cycle_requirement(
+    required_reserve: u128,
+    signing_cost: u128,
+    call_margin: u128,
+) -> Option<u128> {
+    signing_cycle_requirement_body!(required_reserve, signing_cost, call_margin, u128::MAX)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn transaction_liability_wei(
+    gas_limit: u128,
+    max_fee_per_gas: u128,
+    l1_fee_upper_bound_wei: u128,
+    transaction_value: u128,
+) -> Option<u128> {
+    transaction_liability_body!(
+        gas_limit,
+        max_fee_per_gas,
+        l1_fee_upper_bound_wei,
+        transaction_value,
+        u128::MAX,
+        0u128
+    )
 }
 
 /// Binds the ICRC transfer identity to the exact release settlement persisted for this attempt.
@@ -826,6 +962,16 @@ pub const fn canonical_probe_matches(receipt_block: u64, snapshot_block: u64) ->
     canonical_probe_matches_body!(receipt_block, snapshot_block)
 }
 
+/// Selects the greatest height attested as finalized by at least two of three providers.
+#[cfg(not(verus_keep_ghost))]
+pub const fn withdrawal_finalized_checkpoint(
+    first: Option<u64>,
+    second: Option<u64>,
+    third: Option<u64>,
+) -> Option<u64> {
+    withdrawal_finalized_checkpoint_body!(first, second, third)
+}
+
 /// Allows reuse of a persisted runtime attestation only when every immutable-config
 /// binding is present and matches exactly.
 #[cfg(not(verus_keep_ghost))]
@@ -838,27 +984,6 @@ pub const fn runtime_attestation_matches(
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub const fn withdrawal_finalization_decision(
-    receipt_succeeded: bool,
-    receipt_block: u64,
-    finalized_block: Option<u64>,
-) -> WithdrawalFinalizationDecision {
-    withdrawal_finalization_decision_body!(
-        receipt_succeeded,
-        receipt_block,
-        finalized_block,
-        WithdrawalFinalizationDecision::Retry,
-        WithdrawalFinalizationDecision::Notify,
-        WithdrawalFinalizationDecision::DiscardReverted
-    )
-}
-
-#[cfg(not(verus_keep_ghost))]
-pub const fn restored_pending_blocked(existing: Option<bool>, incoming: bool) -> bool {
-    restored_pending_blocked_body!(existing, incoming)
-}
-
-#[cfg(not(verus_keep_ghost))]
 pub const fn withdrawal_liability_indexed(state: u8) -> bool {
     withdrawal_liability_indexed_body!(state, 0u8, 1u8, 3u8)
 }
@@ -866,6 +991,11 @@ pub const fn withdrawal_liability_indexed(state: u8) -> bool {
 #[cfg(not(verus_keep_ghost))]
 pub const fn reconciliation_hold_indexed(state: u8) -> bool {
     reconciliation_hold_indexed_body!(state, 0u8)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn deposit_nonterminal_indexed(state: u8) -> bool {
+    deposit_nonterminal_indexed_body!(state, 8u8, 9u8, 10u8)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1148,27 +1278,19 @@ pub const fn manual_claim_allowed(
 verus! {
     pub fn refund_request_identity_decision(
         authenticated: bool,
-        owner_match: Option<bool>,
     ) -> (result: RefundRequestIdentityDecision)
         ensures
             match result {
                 RefundRequestIdentityDecision::Allow =>
-                    authenticated && owner_match == Some(true),
-                RefundRequestIdentityDecision::OwnerLookupRequired =>
-                    authenticated && owner_match == None::<bool>,
+                    authenticated,
                 RefundRequestIdentityDecision::AnonymousCaller =>
                     !authenticated,
-                RefundRequestIdentityDecision::OwnerMismatch =>
-                    authenticated && owner_match == Some(false),
             },
     {
         refund_request_identity_decision_body!(
             authenticated,
-            owner_match,
             RefundRequestIdentityDecision::Allow,
-            RefundRequestIdentityDecision::OwnerLookupRequired,
-            RefundRequestIdentityDecision::AnonymousCaller,
-            RefundRequestIdentityDecision::OwnerMismatch
+            RefundRequestIdentityDecision::AnonymousCaller
         )
     }
 }
@@ -1344,14 +1466,12 @@ pub const fn audit_next(current: u64) -> Option<u64> {
     next_attempt_body!(current, u64::MAX, 1u64)
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn deposit_transition(state: u8, event: u8) -> Option<u8> {
     deposit_transition_body!(
         state, event, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn authorization_commit_allowed(
     identity_matches: bool,
     amounts_match: bool,
@@ -1385,7 +1505,6 @@ pub const fn expiry_refund_allowed(
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn mint_finalization_allowed(
     binding_matches: bool,
     receipt_succeeded: bool,
@@ -1400,7 +1519,6 @@ pub const fn mint_finalization_allowed(
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn signature_install_allowed(
     signature_dispatched: bool,
     signature_absent: bool,
@@ -1413,24 +1531,20 @@ pub const fn signature_install_allowed(
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn refund_start_allowed(attempt_matches: bool, policy_matches: bool) -> bool {
     refund_start_allowed_body!(attempt_matches, policy_matches)
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn deposit_reservation_active(state: u8) -> bool {
     deposit_reservation_active_body!(state, 2u8, 3u8)
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn deposit_charge_service_fee(state: u8, event: u8) -> bool {
     deposit_charge_fee_body!(state, event, 2u8, 5u8)
 }
 
-#[cfg(not(verus_keep_ghost))]
 pub const fn deposit_releases_reservation(state: u8, event: u8) -> bool {
-    match deposit_transition(state, event) {
+    match self::deposit_transition(state, event) {
         None => false,
         Some(next) => deposit_reservation_active(state) && !deposit_reservation_active(next),
     }
@@ -1468,8 +1582,46 @@ pub const fn deposit_numeric_effects(
     )
 }
 
-#[cfg(not(verus_keep_ghost))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+verus! {
+    pub fn deposit_transition_effects(
+        state: u8,
+        event: u8,
+        gross_amount: u128,
+        net_amount: u128,
+        service_fee: u128,
+        reserved_amount: u128,
+    ) -> (result: (u128, u128, u128, u128, u128, u128, u128))
+        ensures result == deposit_numeric_effects_body!(
+            state, event, gross_amount, net_amount, service_fee, reserved_amount,
+            0u128, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8),
+    {
+        deposit_numeric_effects_body!(
+            state,
+            event,
+            gross_amount,
+            net_amount,
+            service_fee,
+            reserved_amount,
+            0u128,
+            0u8,
+            1u8,
+            2u8,
+            3u8,
+            4u8,
+            5u8,
+            6u8,
+            7u8,
+            8u8,
+            9u8,
+            10u8,
+            11u8
+        )
+    }
+}
+
+verus! {
+#[derive(Clone, Copy)]
+#[cfg_attr(not(verus_keep_ghost), derive(Debug, PartialEq, Eq))]
 pub enum DepositEventGuard {
     Funding,
     CommitAuthorization {
@@ -1501,7 +1653,6 @@ pub enum DepositEventGuard {
     RefundResult,
 }
 
-#[cfg(not(verus_keep_ghost))]
 impl DepositEventGuard {
     pub const fn matches_event(self, event: u8) -> bool {
         match self {
@@ -1525,41 +1676,42 @@ impl DepositEventGuard {
                 canonical_domain_strings,
                 deadline_valid,
                 pristine,
-            } => authorization_commit_allowed(
+            } => authorization_commit_allowed_body!(
                 fixed_fields_match,
                 quote_valid,
                 canonical_domain_strings,
                 fixed_fields_match,
                 pristine,
-                deadline_valid,
+                deadline_valid
             ),
             Self::InstallSignature {
                 dispatched,
                 signature_absent,
                 signature_length_valid,
-            } => signature_install_allowed(dispatched, signature_absent, signature_length_valid),
+            } => signature_install_allowed_body!(
+                dispatched, signature_absent, signature_length_valid),
             Self::MintFinalization {
                 fixed_fields_match,
                 receipt_succeeded,
                 receipt_block,
                 finalized_block,
                 audit_complete,
-            } => mint_finalization_allowed(
-                fixed_fields_match && audit_complete,
+            } => mint_finalization_allowed_body!(
+                (fixed_fields_match && audit_complete),
                 receipt_succeeded,
                 receipt_block,
-                finalized_block,
+                finalized_block
             ),
             Self::StartRefund {
                 attempt_matches,
                 policy_matches,
-            } => refund_start_allowed(attempt_matches, policy_matches),
+            } => refund_start_allowed_body!(attempt_matches, policy_matches),
         }
     }
 }
 
-#[cfg(not(verus_keep_ghost))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
+#[cfg_attr(not(verus_keep_ghost), derive(Debug, PartialEq, Eq))]
 pub struct DepositTransitionInput {
     pub state: u8,
     pub event: u8,
@@ -1571,8 +1723,8 @@ pub struct DepositTransitionInput {
     pub reserved_amount: u128,
 }
 
-#[cfg(not(verus_keep_ghost))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
+#[cfg_attr(not(verus_keep_ghost), derive(Debug, PartialEq, Eq))]
 pub struct DepositEffects {
     pub next_state: u8,
     pub reservation_active: bool,
@@ -1587,59 +1739,101 @@ pub struct DepositEffects {
     pub mint_supply_increase: u128,
 }
 
-#[cfg(not(verus_keep_ghost))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
+#[cfg_attr(not(verus_keep_ghost), derive(Debug, PartialEq, Eq))]
 pub enum DepositTransitionDecision {
     Idempotent,
     Apply(DepositEffects),
     Reject,
 }
+}
 
-#[cfg(not(verus_keep_ghost))]
-pub const fn deposit_transition_decision(
-    input: DepositTransitionInput,
-) -> DepositTransitionDecision {
-    if input.same_payload {
-        return DepositTransitionDecision::Idempotent;
-    }
-    if !input.guard.matches_event(input.event) || !input.guard.accepts() {
-        return DepositTransitionDecision::Reject;
-    }
-    match deposit_transition(input.state, input.event) {
-        None => DepositTransitionDecision::Reject,
-        Some(next_state) => {
-            let after_reserved = deposit_reservation_active(next_state);
-            let release_reservation = deposit_releases_reservation(input.state, input.event);
-            let charge_service_fee = deposit_charge_service_fee(input.state, input.event);
-            let (
-                reservation_after,
-                reservation_add,
-                reservation_release,
-                fee_credit,
-                pending_liability_debit,
-                escrow_debit,
-                mint_supply_increase,
-            ) = deposit_numeric_effects(
-                input.state,
-                input.event,
-                input.gross_amount,
-                input.net_amount,
-                input.service_fee,
-                input.reserved_amount,
-            );
-            DepositTransitionDecision::Apply(DepositEffects {
-                next_state,
-                reservation_active: after_reserved,
-                release_reservation,
-                charge_service_fee,
-                reservation_after,
-                reservation_add,
-                reservation_release,
-                fee_credit,
-                pending_liability_debit,
-                escrow_debit,
-                mint_supply_increase,
-            })
+verus! {
+    pub fn deposit_transition_decision(
+        input: DepositTransitionInput,
+    ) -> (result: DepositTransitionDecision)
+        ensures ((match result {
+                DepositTransitionDecision::Idempotent => true,
+                _ => false,
+            }) == input.same_payload)
+            && (match result {
+                DepositTransitionDecision::Apply(effects) =>
+                    deposit_transition_body!(
+                        input.state, input.event,
+                        0u8, 1u8, 2u8, 3u8, 4u8, 5u8,
+                        6u8, 7u8, 8u8, 9u8, 10u8, 11u8)
+                        == Some(effects.next_state)
+                    && effects.reservation_active
+                        == deposit_reservation_active_body!(effects.next_state, 2u8, 3u8)
+                    && effects.release_reservation
+                        == (deposit_reservation_active_body!(input.state, 2u8, 3u8)
+                            && !deposit_reservation_active_body!(effects.next_state, 2u8, 3u8))
+                    && effects.charge_service_fee
+                        == deposit_charge_fee_body!(input.state, input.event, 2u8, 5u8)
+                    && (
+                        effects.reservation_after,
+                        effects.reservation_add,
+                        effects.reservation_release,
+                        effects.fee_credit,
+                        effects.pending_liability_debit,
+                        effects.escrow_debit,
+                        effects.mint_supply_increase,
+                    ) == deposit_numeric_effects_body!(
+                        input.state, input.event, input.gross_amount, input.net_amount,
+                        input.service_fee, input.reserved_amount,
+                        0u128, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8,
+                        6u8, 7u8, 8u8, 9u8, 10u8, 11u8),
+                _ => true,
+            }),
+    {
+        if input.same_payload {
+            return DepositTransitionDecision::Idempotent;
+        }
+        if !input.guard.matches_event(input.event) || !input.guard.accepts() {
+            return DepositTransitionDecision::Reject;
+        }
+        match deposit_transition_body!(
+            input.state, input.event,
+            0u8, 1u8, 2u8, 3u8, 4u8, 5u8,
+            6u8, 7u8, 8u8, 9u8, 10u8, 11u8) {
+            None => DepositTransitionDecision::Reject,
+            Some(next_state) => {
+                let after_reserved = deposit_reservation_active_body!(next_state, 2u8, 3u8);
+                let release_reservation =
+                    deposit_reservation_active_body!(input.state, 2u8, 3u8)
+                    && !after_reserved;
+                let charge_service_fee =
+                    deposit_charge_fee_body!(input.state, input.event, 2u8, 5u8);
+                let (
+                    reservation_after,
+                    reservation_add,
+                    reservation_release,
+                    fee_credit,
+                    pending_liability_debit,
+                    escrow_debit,
+                    mint_supply_increase,
+                ) = self::deposit_transition_effects(
+                    input.state,
+                    input.event,
+                    input.gross_amount,
+                    input.net_amount,
+                    input.service_fee,
+                    input.reserved_amount,
+                );
+                DepositTransitionDecision::Apply(DepositEffects {
+                    next_state,
+                    reservation_active: after_reserved,
+                    release_reservation,
+                    charge_service_fee,
+                    reservation_after,
+                    reservation_add,
+                    reservation_release,
+                    fee_credit,
+                    pending_liability_debit,
+                    escrow_debit,
+                    mint_supply_increase,
+                })
+            }
         }
     }
 }
@@ -1653,6 +1847,40 @@ pub const fn withdrawal_phase_step(state: u8, event: u8) -> u8 {
 #[cfg(not(verus_keep_ghost))]
 pub const fn withdrawal_phase_allows(state: u8, event: u8) -> bool {
     withdrawal_phase_step(state, event) != state || (state == 1 && event == 1)
+}
+
+verus! {
+    pub fn withdrawal_transition_effects(
+        state: u8,
+        event: u8,
+        amount_out: u128,
+        ledger_fee: u128,
+        service_fee: u128,
+    ) -> (result: Option<(u8, u128, u128, u128)>)
+        ensures result == withdrawal_transition_effects_body!(
+            state, event, amount_out, ledger_fee, service_fee, u128::MAX,
+            0u8, 1u8, 2u8, 3u8, 0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 0u128),
+    {
+        withdrawal_transition_effects_body!(
+            state,
+            event,
+            amount_out,
+            ledger_fee,
+            service_fee,
+            u128::MAX,
+            0u8,
+            1u8,
+            2u8,
+            3u8,
+            0u8,
+            1u8,
+            2u8,
+            3u8,
+            4u8,
+            5u8,
+            0u128
+        )
+    }
 }
 
 #[cfg(verus_keep_ghost)]
@@ -1685,6 +1913,21 @@ verus! {
         replay_body!(same_payload)
     }
 
+    pub open spec fn deposit_ledger_block_transition_spec(
+        funding: Option<int>, refund: Option<int>, event: int, block: int,
+    ) -> Option<(Option<int>, Option<int>)> {
+        let preserve: int = 0; let funded: int = 1; let refunded: int = 2;
+        deposit_ledger_block_transition_body!(
+            funding, refund, event, block, preserve, funded, refunded)
+    }
+
+    pub open spec fn withdrawal_ledger_block_transition_spec(
+        release: Option<int>, event: int, block: int,
+    ) -> Option<Option<int>> {
+        let preserve: int = 0; let released: int = 1;
+        withdrawal_ledger_block_transition_body!(release, event, block, preserve, released)
+    }
+
 
     pub open spec fn refresh_owner_matches_spec(current: Option<int>, claimant: int) -> bool {
         refresh_owner_matches_body!(current, claimant)
@@ -1709,8 +1952,24 @@ verus! {
         checked_requirement_body!(floor, unit, count, max, zero)
     }
 
-    pub open spec fn resources_sufficient_spec(eth: int, required_eth: int, cycles: int, required_cycles: int) -> bool {
-        resources_sufficient_body!(eth, required_eth, cycles, required_cycles)
+    pub open spec fn signing_cycle_requirement_spec(
+        required_reserve: int,
+        signing_cost: int,
+        call_margin: int,
+    ) -> Option<int> {
+        let max: int = 340282366920938463463374607431768211455;
+        signing_cycle_requirement_body!(required_reserve, signing_cost, call_margin, max)
+    }
+
+    pub open spec fn transaction_liability_wei_spec(
+        gas_limit: int,
+        max_fee_per_gas: int,
+        l1_fee_upper_bound_wei: int,
+        transaction_value: int,
+    ) -> Option<int> {
+        let max: int = 340282366920938463463374607431768211455;
+        let zero: int = 0;
+        transaction_liability_body!(gas_limit, max_fee_per_gas, l1_fee_upper_bound_wei, transaction_value, max, zero)
     }
 
     pub open spec fn release_transfer_matches_spec(
@@ -1758,6 +2017,14 @@ verus! {
         canonical_probe_matches_body!(receipt_block, snapshot_block)
     }
 
+    pub open spec fn withdrawal_finalized_checkpoint_spec(
+        first: Option<int>,
+        second: Option<int>,
+        third: Option<int>,
+    ) -> Option<int> {
+        withdrawal_finalized_checkpoint_body!(first, second, third)
+    }
+
     pub open spec fn runtime_attestation_matches_spec(
         observation_present: bool,
         chain_id_matches: bool,
@@ -1765,24 +2032,6 @@ verus! {
     ) -> bool {
         runtime_attestation_matches_body!(
             observation_present, chain_id_matches, runtime_hash_matches)
-    }
-
-    pub open spec fn withdrawal_finalization_decision_spec(
-        receipt_succeeded: bool,
-        receipt_block: int,
-        finalized_block: Option<int>,
-    ) -> int {
-        let retry: int = 0;
-        let notify: int = 1;
-        let discard: int = 2;
-        withdrawal_finalization_decision_body!(
-            receipt_succeeded, receipt_block, finalized_block, retry, notify, discard)
-    }
-
-    pub open spec fn restored_pending_blocked_spec(
-        existing: Option<bool>, incoming: bool,
-    ) -> bool {
-        restored_pending_blocked_body!(existing, incoming)
     }
 
     pub open spec fn withdrawal_liability_indexed_spec(state: int) -> bool {
@@ -1797,6 +2046,13 @@ verus! {
         reconciliation_hold_indexed_body!(state, open)
     }
 
+    pub open spec fn deposit_nonterminal_indexed_spec(state: int) -> bool {
+        let refunded: int = 8;
+        let cancelled: int = 9;
+        let minted: int = 10;
+        deposit_nonterminal_indexed_body!(state, refunded, cancelled, minted)
+    }
+
     pub open spec fn mint_admission_total_spec(consumed: int, reserved: int, candidate: int) -> Option<int> {
         let max: int = 340282366920938463463374607431768211455;
         mint_admission_total_body!(consumed, reserved, candidate, max)
@@ -1805,11 +2061,6 @@ verus! {
     pub open spec fn payout_allowed_spec(reserve: int, pending: int, amount: int, fee: int) -> bool {
         let max: int = 340282366920938463463374607431768211455;
         payout_allowed_body!(reserve, pending, amount, fee, max)
-    }
-
-    pub open spec fn fee_recipient_rotation_allowed_spec(pending_payout_debit: int) -> bool {
-        let zero: int = 0;
-        fee_recipient_rotation_allowed_body!(pending_payout_debit, zero)
     }
 
     pub open spec fn service_fee_change_allowed_spec(
@@ -1832,22 +2083,6 @@ verus! {
         active_generation: int, outcome_generation: int, active: bool,
     ) -> bool {
         lease_outcome_is_current_body!(active_generation, outcome_generation, active)
-    }
-
-    pub open spec fn hold_retry_allowed_spec(
-        exact_success: bool, complete_absence: bool,
-    ) -> bool {
-        hold_retry_allowed_body!(exact_success, complete_absence)
-    }
-
-    pub open spec fn manual_claim_allowed_spec(
-        scheduled: bool,
-        active: bool,
-        stopped: bool,
-        overdue: bool,
-        expired: bool,
-    ) -> bool {
-        manual_claim_allowed_body!(scheduled, active, stopped, overdue, expired)
     }
 
     pub open spec fn deposit_refund_amount_spec(
@@ -1969,55 +2204,4 @@ verus! {
         else { withdrawal_phase_run_spec(withdrawal_phase_step_spec(state, events[0]), events.drop_first()) }
     }
 
-    pub open spec fn withdrawal_fee_delta_spec(state: int, event: int, fee: int) -> int {
-        if state == 1 && event == 2 { fee } else { 0 }
-    }
-
-    pub open spec fn withdrawal_fee_total_spec(state: int, events: Seq<int>, fee: int) -> int
-        decreases events.len()
-    {
-        if events.len() == 0 { 0 }
-        else {
-            withdrawal_fee_delta_spec(state, events[0], fee)
-                + withdrawal_fee_total_spec(
-                    withdrawal_phase_step_spec(state, events[0]), events.drop_first(), fee)
-        }
-    }
-
-    pub open spec fn asset_backed_spec(
-        escrow: int,
-        base_supply: int,
-        fee_reserve: int,
-        confirmed_unminted_deposits: int,
-        unreleased_withdrawals: int,
-    ) -> bool {
-        asset_backed_body!(
-            escrow,
-            base_supply,
-            fee_reserve,
-            confirmed_unminted_deposits,
-            unreleased_withdrawals
-        )
-    }
-
-    pub open spec fn payout_reserved_spec(fee_reserve: int, pending_payout_debit: int) -> bool {
-        0 <= pending_payout_debit <= fee_reserve
-    }
-
-    pub open spec fn ambiguous_outbound_world_spec(
-        transfer_happened: bool,
-        escrow: int,
-        fee_reserve: int,
-        unreleased: int,
-        amount_out: int,
-        ledger_fee: int,
-        service_fee: int,
-    ) -> (int, int, int) {
-        if transfer_happened {
-            (escrow - amount_out - ledger_fee, fee_reserve + service_fee - ledger_fee,
-                unreleased - amount_out - service_fee)
-        } else {
-            (escrow, fee_reserve, unreleased)
-        }
-    }
 }

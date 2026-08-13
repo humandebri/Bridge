@@ -59,37 +59,40 @@ pub enum DepositRefundReason {
 pub enum DepositState {
     FundingPending,
     EscrowedUnquoted {
-        ledger_block_index: u128,
+        funding_ledger_block_index: u128,
     },
     AuthorizationPending {
-        ledger_block_index: u128,
+        funding_ledger_block_index: u128,
     },
     AuthorizationAvailable {
-        ledger_block_index: u128,
+        funding_ledger_block_index: u128,
     },
     RefundAvailable {
         reason: DepositRefundReason,
-        ledger_block_index: u128,
+        funding_ledger_block_index: u128,
     },
     Minted {
-        ledger_block_index: u128,
+        funding_ledger_block_index: u128,
     },
     FundingReconciliationHold {
         hold_id: HoldId,
     },
     RefundPending {
         reason: DepositRefundReason,
+        funding_ledger_block_index: u128,
         attempt: TransferAttempt,
     },
     RefundReconciliationHold {
         reason: DepositRefundReason,
+        funding_ledger_block_index: u128,
         hold_id: HoldId,
         attempt: TransferAttempt,
     },
     Refunded {
         reason: DepositRefundReason,
+        funding_ledger_block_index: u128,
         attempt: TransferAttempt,
-        ledger_block_index: u128,
+        refund_ledger_block_index: u128,
         source_hold: Option<HoldId>,
     },
     Cancelled {
@@ -102,7 +105,7 @@ pub enum DepositState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DepositEvent {
     FundingSucceeded {
-        ledger_block_index: u128,
+        funding_ledger_block_index: u128,
     },
     FundingAmbiguous {
         hold_id: HoldId,
@@ -130,7 +133,7 @@ pub enum DepositEvent {
         expiry_evidence: Option<Box<MintExpiryEvidence>>,
     },
     RefundSucceeded {
-        ledger_block_index: u128,
+        refund_ledger_block_index: u128,
     },
     RefundAmbiguous {
         hold_id: HoldId,
@@ -206,6 +209,24 @@ impl DepositRecord {
         use DepositEvent as Event;
         use DepositState as State;
 
+        let current_ledger_blocks = self.ledger_blocks();
+        let ledger_event = match &event {
+            Event::FundingSucceeded {
+                funding_ledger_block_index,
+            } => (1, *funding_ledger_block_index),
+            Event::RefundSucceeded {
+                refund_ledger_block_index,
+            } => (2, *refund_ledger_block_index),
+            _ => (0, 0),
+        };
+        let expected_ledger_blocks = crate::deposit_ledger_block_transition(
+            current_ledger_blocks.0,
+            current_ledger_blocks.1,
+            ledger_event.0,
+            ledger_event.1,
+        )
+        .ok_or(CoreError::LedgerBlockConflict)?;
+
         let (guard, guard_error) = self.transition_guard(&event);
         let transition_quote = match (&event, self.quote) {
             (Event::CommitAuthorization { quote, .. }, _) => Some(*quote),
@@ -256,8 +277,15 @@ impl DepositRecord {
             next_expiry_evidence,
             fee_delta,
         ) = match (&self.state, event) {
-            (State::FundingPending, Event::FundingSucceeded { ledger_block_index }) => (
-                State::EscrowedUnquoted { ledger_block_index },
+            (
+                State::FundingPending,
+                Event::FundingSucceeded {
+                    funding_ledger_block_index,
+                },
+            ) => (
+                State::EscrowedUnquoted {
+                    funding_ledger_block_index,
+                },
                 None,
                 None,
                 None,
@@ -285,14 +313,16 @@ impl DepositRecord {
                 Amount::ZERO,
             ),
             (
-                State::EscrowedUnquoted { ledger_block_index },
+                State::EscrowedUnquoted {
+                    funding_ledger_block_index,
+                },
                 Event::CommitAuthorization {
                     quote,
                     authorization,
                 },
             ) => (
                 State::AuthorizationPending {
-                    ledger_block_index: *ledger_block_index,
+                    funding_ledger_block_index: *funding_ledger_block_index,
                 },
                 Some(quote),
                 Some(*authorization),
@@ -301,7 +331,9 @@ impl DepositRecord {
                 Amount::ZERO,
             ),
             (
-                State::AuthorizationPending { ledger_block_index },
+                State::AuthorizationPending {
+                    funding_ledger_block_index,
+                },
                 Event::AuthorizationSigned { signature },
             ) => {
                 let mut authorization =
@@ -314,7 +346,7 @@ impl DepositRecord {
                 authorization.signature = Some(signature);
                 (
                     State::AuthorizationAvailable {
-                        ledger_block_index: *ledger_block_index,
+                        funding_ledger_block_index: *funding_ledger_block_index,
                     },
                     self.quote,
                     Some(authorization),
@@ -324,8 +356,12 @@ impl DepositRecord {
                 )
             }
             (
-                State::EscrowedUnquoted { ledger_block_index }
-                | State::AuthorizationPending { ledger_block_index },
+                State::EscrowedUnquoted {
+                    funding_ledger_block_index,
+                }
+                | State::AuthorizationPending {
+                    funding_ledger_block_index,
+                },
                 Event::MarkRefundAvailable {
                     reason,
                     finalized_timestamp: _,
@@ -333,7 +369,7 @@ impl DepositRecord {
             ) => (
                 State::RefundAvailable {
                     reason,
-                    ledger_block_index: *ledger_block_index,
+                    funding_ledger_block_index: *funding_ledger_block_index,
                 },
                 self.quote,
                 self.mint_authorization.clone(),
@@ -342,7 +378,9 @@ impl DepositRecord {
                 Amount::ZERO,
             ),
             (
-                State::AuthorizationAvailable { ledger_block_index },
+                State::AuthorizationAvailable {
+                    funding_ledger_block_index,
+                },
                 Event::MarkRefundAvailable {
                     reason,
                     finalized_timestamp: _,
@@ -350,7 +388,7 @@ impl DepositRecord {
             ) => (
                 State::RefundAvailable {
                     reason,
-                    ledger_block_index: *ledger_block_index,
+                    funding_ledger_block_index: *funding_ledger_block_index,
                 },
                 self.quote,
                 self.mint_authorization.clone(),
@@ -360,12 +398,13 @@ impl DepositRecord {
             ),
             (
                 State::RefundAvailable {
-                    ledger_block_index, ..
+                    funding_ledger_block_index,
+                    ..
                 },
                 Event::MintReconciled { evidence },
             ) => (
                 State::Minted {
-                    ledger_block_index: *ledger_block_index,
+                    funding_ledger_block_index: *funding_ledger_block_index,
                 },
                 self.quote,
                 self.mint_authorization.clone(),
@@ -374,7 +413,10 @@ impl DepositRecord {
                 Amount::ZERO,
             ),
             (
-                State::RefundAvailable { .. },
+                State::RefundAvailable {
+                    funding_ledger_block_index,
+                    ..
+                },
                 Event::StartRefund {
                     reason,
                     attempt,
@@ -383,6 +425,7 @@ impl DepositRecord {
             ) => (
                 State::RefundPending {
                     reason,
+                    funding_ledger_block_index: *funding_ledger_block_index,
                     attempt: *attempt,
                 },
                 self.quote,
@@ -392,13 +435,20 @@ impl DepositRecord {
                 Amount::ZERO,
             ),
             (
-                State::RefundPending { reason, attempt },
-                Event::RefundSucceeded { ledger_block_index },
+                State::RefundPending {
+                    reason,
+                    funding_ledger_block_index,
+                    attempt,
+                },
+                Event::RefundSucceeded {
+                    refund_ledger_block_index,
+                },
             ) => (
                 State::Refunded {
                     reason: *reason,
+                    funding_ledger_block_index: *funding_ledger_block_index,
                     attempt: attempt.clone(),
-                    ledger_block_index,
+                    refund_ledger_block_index,
                     source_hold: None,
                 },
                 self.quote,
@@ -407,9 +457,17 @@ impl DepositRecord {
                 self.mint_expiry_evidence.clone(),
                 Amount::ZERO,
             ),
-            (State::RefundPending { reason, attempt }, Event::RefundAmbiguous { hold_id }) => (
+            (
+                State::RefundPending {
+                    reason,
+                    funding_ledger_block_index,
+                    attempt,
+                },
+                Event::RefundAmbiguous { hold_id },
+            ) => (
                 State::RefundReconciliationHold {
                     reason: *reason,
+                    funding_ledger_block_index: *funding_ledger_block_index,
                     hold_id,
                     attempt: attempt.clone(),
                 },
@@ -426,6 +484,12 @@ impl DepositRecord {
                 });
             }
         };
+        if Self::state_ledger_blocks(&next_state) != expected_ledger_blocks {
+            return Err(CoreError::InvalidTransition {
+                entity: "deposit",
+                event: "ledger_block_effect_mismatch",
+            });
+        }
         let next_state_code = next_state.code();
         let next_reservation_active = crate::deposit_reservation_active(next_state_code);
         if next_state_code != expected_effects.next_state
@@ -467,6 +531,55 @@ impl DepositRecord {
                 mint_supply_increase: Amount::new(expected_effects.mint_supply_increase),
             },
         ))
+    }
+
+    pub(crate) fn funding_ledger_block_index(&self) -> Option<u128> {
+        self.ledger_blocks().0
+    }
+
+    fn ledger_blocks(&self) -> (Option<u128>, Option<u128>) {
+        Self::state_ledger_blocks(&self.state)
+    }
+
+    fn state_ledger_blocks(state: &DepositState) -> (Option<u128>, Option<u128>) {
+        use DepositState as State;
+        match state {
+            State::EscrowedUnquoted {
+                funding_ledger_block_index,
+            }
+            | State::AuthorizationPending {
+                funding_ledger_block_index,
+            }
+            | State::AuthorizationAvailable {
+                funding_ledger_block_index,
+            }
+            | State::RefundAvailable {
+                funding_ledger_block_index,
+                ..
+            }
+            | State::Minted {
+                funding_ledger_block_index,
+            }
+            | State::RefundPending {
+                funding_ledger_block_index,
+                ..
+            }
+            | State::RefundReconciliationHold {
+                funding_ledger_block_index,
+                ..
+            } => (Some(*funding_ledger_block_index), None),
+            State::Refunded {
+                funding_ledger_block_index,
+                refund_ledger_block_index,
+                ..
+            } => (
+                Some(*funding_ledger_block_index),
+                Some(*refund_ledger_block_index),
+            ),
+            State::FundingPending
+            | State::FundingReconciliationHold { .. }
+            | State::Cancelled { .. } => (None, None),
+        }
     }
 
     fn transition_guard(
@@ -700,13 +813,13 @@ impl DepositRecord {
     fn is_idempotent(&self, event: &DepositEvent) -> bool {
         use DepositEvent as Event;
         use DepositState as State;
+        if let Event::FundingSucceeded {
+            funding_ledger_block_index,
+        } = event
+        {
+            return self.funding_ledger_block_index() == Some(*funding_ledger_block_index);
+        }
         match (&self.state, event) {
-            (
-                State::EscrowedUnquoted {
-                    ledger_block_index: current,
-                },
-                Event::FundingSucceeded { ledger_block_index },
-            ) => *current == *ledger_block_index,
             (
                 State::FundingReconciliationHold { hold_id: current },
                 Event::FundingAmbiguous { hold_id },
@@ -751,6 +864,7 @@ impl DepositRecord {
                 State::RefundPending {
                     reason: current_reason,
                     attempt: current_attempt,
+                    ..
                 },
                 Event::StartRefund {
                     reason,
@@ -764,12 +878,14 @@ impl DepositRecord {
             }
             (
                 State::Refunded {
-                    ledger_block_index: current,
+                    refund_ledger_block_index: current,
                     source_hold: None,
                     ..
                 },
-                Event::RefundSucceeded { ledger_block_index },
-            ) => *current == *ledger_block_index,
+                Event::RefundSucceeded {
+                    refund_ledger_block_index,
+                },
+            ) => *current == *refund_ledger_block_index,
             (
                 State::RefundReconciliationHold {
                     hold_id: current, ..
@@ -782,7 +898,7 @@ impl DepositRecord {
 }
 
 impl DepositEvent {
-    const fn code(&self) -> u8 {
+    pub const fn code(&self) -> u8 {
         match self {
             Self::FundingSucceeded { .. } => 0,
             Self::FundingAmbiguous { .. } => 1,
@@ -814,7 +930,7 @@ impl DepositEvent {
 }
 
 impl DepositState {
-    const fn code(&self) -> u8 {
+    pub const fn code(&self) -> u8 {
         match self {
             Self::FundingPending => 0,
             Self::EscrowedUnquoted { .. } => 1,

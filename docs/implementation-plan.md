@@ -12,7 +12,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v31、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
+Bridge canisterはstable schema v32、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
 Plan 005は10回・7日の本番パラメータ外部計測と単一emergency pause経路演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、主要5 scenarioのGate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
 
 ## 全体構成
@@ -122,24 +122,24 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorizationを追加し、現行stable schemaはv31である。
+後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorizationを追加し、現行stable schemaはv32である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
 - KINICトークン専用とし、state とデプロイ構成から token ID による分岐を排除する。
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
-- stable schema変更は登録済み一方向migration、旧Wasm→新Wasm保持試験、失敗rollback試験を必須とする。現在はv30→v31だけを受理し、未知versionはfail closedとする。
-- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v31・record wire v27とする。
+- 本番初回deployまではstable schemaを直接置換し、migration、dual-read、fallbackを追加しない。現行version以外はfail closedとする。
+- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v32・record wire v28とする。
 - Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
 - Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
 
 ### 2-2. Deposit フロー（ADR 0001、0004、0005）
 
-1. 受付時はlocal pause、入力、`gross_amount > 10_000`を検査し、有料Base preflightより前に、正式Depositと分離したbounded funding attemptへ固定transfer identity、消費済みquota、active reservationを保存してcycle reserveを確認する。
+1. 受付時はlocal pause、入力、`gross_amount > 100_000`を検査し、有料Base preflightより前に、正式Depositと分離したbounded funding attemptへ固定transfer identity、消費済みquota、active reservationを保存してcycle reserveを確認する。
 2. admission成功後だけfresh Base preflightを行い、同じupdate callでICRC-2 pullを実行する。成功または`Duplicate`だけを正式Depositへ昇格する。BaseまたはLedgerの確定的失敗はattemptとactive reservationを削除するがquotaは戻さず、曖昧・callback消失は同じidentityでreconciliationする。
 3. freshな観測でquoteとmint予約を原子的に確定する。観測不能・不一致・stale observationでは返金せず再観測する。
-4. 認可発行前のBase pause、fee拒否、上限超過では`RefundAvailable`にし、ownerの明示請求時だけ元accountへ`gross_amount - 10_000`を送る。認可発行後はstrict deadlineとcanonical未処理証拠を確認し、`gross_amount - charged_service_fee - 10_000`を送る。初回pull fee、確定service fee、refund Ledger feeは返さない。曖昧結果はRefund Reconciliation Holdへ移し、ownerの再請求で照合する。
+4. 認可発行前のBase pause、fee拒否、上限超過では`RefundAvailable`にし、任意の非anonymous callerの明示請求時にrecord固定の元accountへ`gross_amount - 100_000`を送る。認可発行後はstrict deadlineとcanonical未処理証拠を確認し、`gross_amount - charged_service_fee - 100_000`を送る。初回pull fee、確定service fee、refund Ledger feeは返さない。曖昧結果はRefund Reconciliation Holdへ移し、任意の非anonymous callerの再請求で照合する。
 5. Mint Authorization署名の保存時だけService Feeをfee reserveへ一度計上する。Base mint成否でこのfeeを戻さず、fee payoutは確定済みreserveだけを使用する。
 
 ### 2-3. Withdrawal フロー（ADR 0004、0011、0018）

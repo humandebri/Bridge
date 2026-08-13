@@ -177,7 +177,9 @@
                   "details": {
                     "type": "object",
                     "properties": {
-                      "replacement_mode": { "const": "current-schema-upgrade" }
+                      "replacement_mode": {
+                        "enum": ["current-schema-upgrade", "obsolete-schema-reinstall"]
+                      }
                     },
                     "required": ["replacement_mode"]
                   }
@@ -227,38 +229,6 @@
                     ]
                   }
                 }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "stage": { "const": "preflight" },
-                  "details": {
-                    "type": "object",
-                    "properties": {
-                      "replacement_mode": { "const": "obsolete-schema-upgrade" }
-                    },
-                    "required": ["replacement_mode"]
-                  }
-                },
-                "required": ["stage", "details"]
-              },
-              "then": {
-                "allOf": [
-                  {
-                    "properties": {
-                      "artifacts": {
-                        "contains": {
-                          "type": "object",
-                          "properties": { "kind": { "const": "obsolete-pause-evidence" } },
-                          "required": ["kind"]
-                        },
-                        "minContains": 1,
-                        "maxContains": 1
-                      }
-                    }
-                  }
-                ]
               }
             }
           ]

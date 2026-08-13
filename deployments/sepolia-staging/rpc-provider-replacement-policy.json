@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "environment": "sepolia-staging",
+  "canister_name": "bridge-sepolia",
+  "canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "stable_schema_version": 32,
+  "deployment_instance_id": "0x2c344ca868267bc19791a2e1a966c210eef545945b3879223d3cb6c1255d789b",
+  "base_chain_id": 84532,
+  "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+  "before_module_sha256": "da0b90b9464cf7f53ae84547a7720d1bd541944b42dbc64dd5a2bb416a5886ab",
+  "before_rpc_urls": [
+    "https://base-sepolia-rpc.publicnode.com",
+    "https://sepolia.base.org",
+    "https://base-sepolia.gateway.tenderly.co"
+  ],
+  "before_rpc_urls_sha256": "e9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb",
+  "after_rpc_urls": [
+    "https://base-sepolia-rpc.publicnode.com",
+    "https://sepolia.base.org",
+    "https://base-sepolia.api.onfinality.io/public"
+  ],
+  "after_rpc_urls_sha256": "3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48",
+  "status_counts": {
+    "retained_audit_events": 15,
+    "reconciliation_holds": 0,
+    "retained_deposit_index_entries": 1,
+    "pending_ledger_operations": 0,
+    "withdrawals": 1,
+    "deposits": 1,
+    "reserved_deposit_mint_operations": 1,
+    "reserved_deposit_mint_amount": 1050000000,
+    "pruned_audit_events": 0
+  }
+}

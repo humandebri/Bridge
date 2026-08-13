@@ -89,6 +89,38 @@ def depositIdentityCase (processed : Bool) : String :=
   "{" ++ field "processed" (boolJson processed) ++ "," ++
     field "decision" (quoted (depositIdentityDecisionName (decideDepositIdentity processed))) ++ "}"
 
+def optionNatJson (value : Option Nat) : String :=
+  value.map (quoted ∘ toString) |>.getD "null"
+
+def ledgerEventName : LedgerBlockProvenance.Event → String
+  | .preserve => "preserve"
+  | .fundingSucceeded _ => "funding"
+  | .refundSucceeded _ => "refund"
+  | .releaseSucceeded _ => "release"
+
+def ledgerEventBlock : LedgerBlockProvenance.Event → Nat
+  | .preserve => 0
+  | .fundingSucceeded block
+  | .refundSucceeded block
+  | .releaseSucceeded block => block
+
+def ledgerBlockCase
+    (funding refund release : Option Nat) (event : LedgerBlockProvenance.Event) : String :=
+  let state : LedgerBlockProvenance.State := { funding, refund, release }
+  let result := LedgerBlockProvenance.step state event
+  let nextFunding := result.bind (·.funding)
+  let nextRefund := result.bind (·.refund)
+  let nextRelease := result.bind (·.release)
+  "{" ++ field "funding" (optionNatJson funding) ++ "," ++
+    field "refund" (optionNatJson refund) ++ "," ++
+    field "release" (optionNatJson release) ++ "," ++
+    stringField "event" (ledgerEventName event) ++ "," ++
+    natField "block" (ledgerEventBlock event) ++ "," ++
+    field "accepted" (boolJson result.isSome) ++ "," ++
+    field "next_funding" (optionNatJson nextFunding) ++ "," ++
+    field "next_refund" (optionNatJson nextRefund) ++ "," ++
+    field "next_release" (optionNatJson nextRelease) ++ "}"
+
 def reservationCase
     (beforeReserved beforeCandidate afterReserved afterCandidate : Nat) : String :=
   let committed := commitMintReservation beforeReserved beforeCandidate
@@ -148,20 +180,17 @@ def manualClaimCase
 
 def refundRequestIdentityDecisionName : RefundRequestIdentityDecision → String
   | .allow => "allow"
-  | .ownerLookupRequired => "owner-lookup-required"
   | .anonymousCaller => "anonymous-caller"
-  | .ownerMismatch => "owner-mismatch"
 
-def refundRequestIdentityCase
-    (authenticated : Bool) (ownerMatch : Option Bool) : String :=
-  let ownerMatchJson := match ownerMatch with
-    | none => "null"
-    | some value => boolJson value
+def refundRequestIdentityCase (authenticated : Bool) : String :=
   "{" ++ field "authenticated" (boolJson authenticated) ++ "," ++
-    field "owner_match" ownerMatchJson ++ "," ++
     stringField "decision"
       (refundRequestIdentityDecisionName
-        (decideRefundRequestIdentity authenticated ownerMatch)) ++ "}"
+        (decideRefundRequestIdentity authenticated)) ++ "}"
+
+def depositNonterminalIndexCase (state : Nat) : String :=
+  "{" ++ natField "state" state ++ "," ++
+    field "indexed" (boolJson (depositNonterminalIndexed state)) ++ "}"
 
 def notificationAdmissionCase
     (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : Nat) : String :=
@@ -299,11 +328,9 @@ def document : String :=
     manualClaimCase false false true false false,
     manualClaimCase false false false false false]
   let refundRequestIdentities := [
-    refundRequestIdentityCase false none,
-    refundRequestIdentityCase false (some true),
-    refundRequestIdentityCase true none,
-    refundRequestIdentityCase true (some false),
-    refundRequestIdentityCase true (some true)]
+    refundRequestIdentityCase false,
+    refundRequestIdentityCase true]
+  let depositNonterminalIndexes := (List.range 11).map depositNonterminalIndexCase
   let notificationAdmissions := [
     notificationAdmissionCase 0 0 48 6 0 24,
     notificationAdmissionCase 47 5 48 6 23 24,
@@ -336,6 +363,18 @@ def document : String :=
     queueCase (some true) false true]
   let probes := [canonicalProbeCase 0 0, canonicalProbeCase 42 42,
     canonicalProbeCase 42 43, canonicalProbeCase 18446744073709551615 18446744073709551615]
+  let ledgerBlocks := [
+    ledgerBlockCase (some 7) (some 8) (some 9) .preserve,
+    ledgerBlockCase none none none (.fundingSucceeded 7),
+    ledgerBlockCase (some 7) none none (.fundingSucceeded 7),
+    ledgerBlockCase (some 7) none none (.fundingSucceeded 8),
+    ledgerBlockCase none none none (.refundSucceeded 8),
+    ledgerBlockCase (some 7) none none (.refundSucceeded 8),
+    ledgerBlockCase (some 7) (some 8) none (.refundSucceeded 8),
+    ledgerBlockCase (some 7) (some 8) none (.refundSucceeded 9),
+    ledgerBlockCase none none none (.releaseSucceeded 9),
+    ledgerBlockCase none none (some 9) (.releaseSucceeded 9),
+    ledgerBlockCase none none (some 9) (.releaseSucceeded 10)]
   "{" ++ field "schema_version" "3" ++ "," ++
     jsonSection "quote" quotes ++ "," ++ jsonSection "settlement" settlements ++ "," ++
     jsonSection "payment" payments ++ "," ++ jsonSection "deposit_admission" deposits ++ "," ++
@@ -347,11 +386,13 @@ def document : String :=
     jsonSection "hold" holds ++ "," ++ jsonSection "lease" leases ++ "," ++
     jsonSection "manual_claim" manualClaims ++ "," ++
     jsonSection "refund_request_identity" refundRequestIdentities ++ "," ++
+    jsonSection "deposit_nonterminal_index" depositNonterminalIndexes ++ "," ++
     jsonSection "notification_admission" notificationAdmissions ++ "," ++
     jsonSection "lease_lane" leaseLanes ++ "," ++
     jsonSection "funding_attempt" fundingAttempts ++ "," ++
     jsonSection "funding_reconciliation" fundingReconciliations ++ "," ++
     jsonSection "finalization" finalizations ++ "," ++ jsonSection "queue" queues ++ "," ++
-    jsonSection "canonical_probe" probes ++ "}\n"
+    jsonSection "canonical_probe" probes ++ "," ++
+    jsonSection "ledger_block_provenance" ledgerBlocks ++ "}\n"
 
 end BridgeSpec.Vectors

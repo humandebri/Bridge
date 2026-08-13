@@ -35,7 +35,6 @@ const injected = connector({ id: "injected", uid: "generic", name: "Injected", t
 const coinbase = connector({ id: "coinbaseWalletSDK", uid: "coinbase", name: "Coinbase Wallet", type: "coinbaseWallet" })
 const rabby = connector({ id: "io.rabby", uid: "rabby", name: "Rabby Wallet", type: "injected", icon: "data:image/png;base64,AA==" })
 const metamask = connector({ id: "io.metamask", uid: "metamask", name: "MetaMask", type: "injected" })
-const metamaskSdk = connector({ id: "metaMaskSDK", uid: "metamask-sdk", name: "MetaMask", type: "metaMask" })
 const plugEvm = connector({ id: "com.plugwallet", uid: "plug-evm", name: "Plug", type: "injected" })
 const walletConnect = connector({ id: "walletConnect", uid: "wallet-connect", name: "WalletConnect", type: "walletConnect" })
 
@@ -71,7 +70,7 @@ describe("wallet controls", () => {
   })
 
   it("never exposes Plug or a generic connector that may resolve to Plug on Base", () => {
-    expect(visibleEvmConnectors([plugEvm, injected, metamaskSdk, walletConnect]).map((item) => item.name)).toEqual([
+    expect(visibleEvmConnectors([plugEvm, injected, metamask, walletConnect]).map((item) => item.name)).toEqual([
       "MetaMask",
       "WalletConnect",
     ])

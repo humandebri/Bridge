@@ -14,6 +14,36 @@ pub struct SettlementQuotaLimits {
     pub per_record: u16,
 }
 
+#[derive(Debug)]
+pub struct PrepaidQuota {
+    kind: SettlementJobKind,
+    settlement_id: [u8; 32],
+    caller: candid::Principal,
+}
+
+impl PrepaidQuota {
+    pub(super) fn new(
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
+        caller: candid::Principal,
+    ) -> Self {
+        Self {
+            kind,
+            settlement_id,
+            caller,
+        }
+    }
+
+    pub(super) fn consume(
+        self,
+        kind: SettlementJobKind,
+        settlement_id: [u8; 32],
+        caller: candid::Principal,
+    ) -> bool {
+        self.kind == kind && self.settlement_id == settlement_id && self.caller == caller
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SettlementJobKind {
     Deposit,
@@ -62,6 +92,13 @@ impl SettlementJobKind {
             Self::FeePayout => 2,
         }
     }
+}
+
+pub(super) fn settlement_record_key(kind: SettlementJobKind, settlement_id: [u8; 32]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(33);
+    key.push(kind.sql() as u8);
+    key.extend_from_slice(&settlement_id);
+    key
 }
 
 pub(crate) fn fee_payout_job_id(id: u64) -> [u8; 32] {

@@ -6,13 +6,13 @@
 
 | コンポーネント | 役割 |
 |---|---|
-| IC wallet | ICRC-2 approve、`request_deposit`、`request_deposit_refund`、`notify_withdrawal` |
+| IC wallet | ICRC-2 approve、`request_deposit`、`request_deposit_refund` |
 | Base wallet | Mint Authorization送信時のgas支払い、Withdrawalのapprove・burn transaction |
-| Bridge Canister | SQLite schema v31、Ledger操作、EIP-712署名、Finalized照合、Governance transaction署名 |
+| Bridge Canister | SQLite schema v32、Ledger操作、EIP-712署名、Finalized照合、Governance transaction署名 |
 | Ledger / Index | Deposit pull、refund、Withdrawal release、履歴照合 |
 | EVM RPC Canister | provider quorumによるcanonical Finalized観測 |
 | Base Bridge / bSNS | 署名検証付きDeposit mint、atomic Withdrawal burn |
-| Browser UI | runtime・Authorization検証、Base transaction送信、状態表示 |
+| Browser UI | runtime・Authorization検証、Base transaction送信、browser identityからのWithdrawal通知・1-step継続、状態表示 |
 
 ## 全体フロー
 
@@ -29,7 +29,7 @@ flowchart TB
     D5 --> D9["Finalized timestampがdeadline超過"]
     D9 --> D10["Canister: 予約だけをローカル解放"]
     D10 --> D11["RefundAvailable"]
-    D11 -->|"ownerがrequest_deposit_refund"| D12["canonical Finalized照合"]
+    D11 -->|"非anonymous callerがrequest_deposit_refund"| D12["canonical Finalized照合"]
     D12 -->|"processed + exact event/receipt"| D13["Minted"]
     D12 -->|"unprocessed"| D14["Ledger refund"]
     D12 -.->|"RPC/event不一致"| D15["fail closed"]
@@ -38,10 +38,11 @@ flowchart TB
   subgraph Withdrawal["Withdrawal: Base → ICP"]
     W1["Base wallet: approve"] --> W2["createWithdrawal"]
     W2 --> W3["transferFrom + burn + Committed"]
-    W3 --> W4["IC wallet: notify_withdrawal"]
+    W3 --> W4["Browser notification Identity: notify_withdrawal"]
     W4 --> W5["Canister: canonical Finalized検証"]
-    W5 --> W6["Ledger release"]
-    W6 --> W7["Paid"]
+    W5 --> W6["ReleasePendingを保存"]
+    W6 -->|"UI: continue_withdrawal 1回"| W7["Ledger releaseまたは照合を1 step"]
+    W7 --> W8["Paidまたは明示再開待ち"]
   end
 ```
 
@@ -56,16 +57,18 @@ flowchart TB
 7. Base transaction送信後、UIはreceiptと`DepositMinted` eventを`Submitted`、`Confirmed`、`Finalized`まで追跡する。成功receiptを確認した時点でBridge to Baseモーダルは完了し、ユーザーは閉じてよい。Finalized確認はHistoryで継続し、finality前は`Mint submitted`、exact digest、recipient、gross amount、service fee、mint amountが一致するcanonical成功だけを`Minted on Base (finalized)`として表示する。成功時のIC wallet署名は要求しない。reload後もCanisterのDepositとFinalized Base logをDeposit IDで統合して復元する。
 8. deadlineまでは同じAuthorizationで再試行できる。Base receiptがrevertした場合はpending hashを削除し、deadline内かつ未処理なら再送できる。
 9. 新規Depositなどが取得したBase Finalized snapshotのtimestampがdeadlineを超えたとき、Canisterはdeadline順indexを上限付きで走査し、個別Base照合なしでmint予約を解放する。`timestamp == deadline`ではContractがMintを受理できるため解放しない。backlogが残る間は予約を過大計上し、新規受付の正確な判定ができなければretry可能エラーにする。Depositごとのtimerは持たない。
-10. RefundはownerがIC walletから`request_deposit_refund(deposit_id)`を明示実行したときだけ進む。認可発行前の`RefundAvailable`はBase outcallなしで返金する。認可発行後の`RefundAvailable`は、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を検証し、未処理なら返金、処理済みならexact event/receiptを保存して`Minted`にする。RPC不一致、event欠落・複数・digest不一致では資金を動かさない。
-11. Refund額は認可発行前なら`gross - refund ledger fee`、発行後なら`gross - charged service fee - refund ledger fee`である。最初のICRC-2 pull fee、確定済みservice fee、refund transfer feeは返さない。曖昧なLedger結果は同じtransfer identityの`RefundReconciliationHold`に保存し、ownerの再請求でだけ照合を再開する。
+10. Refundは任意の非anonymous Principalが`request_deposit_refund(deposit_id)`を明示実行したときに進む。callerは宛先・金額・transfer identityを指定できず、すべて既存recordから取得する。認可発行前の`RefundAvailable`はBase outcallなしで返金する。認可発行後は、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を検証し、未処理なら返金、処理済みならexact event/receiptを保存して`Minted`にする。RPC不一致、event欠落・複数・digest不一致では資金を動かさない。
+11. Refund額は認可発行前なら`gross - refund ledger fee`、発行後なら`gross - charged service fee - refund ledger fee`である。最初のICRC-2 pull fee、確定済みservice fee、refund transfer feeは返さない。曖昧なLedger結果は同じtransfer identityの`RefundReconciliationHold`に保存し、任意の非anonymous callerによる再請求で照合を再開する。
 
 ## Withdrawal
 
 1. UIはBase wallet、送付先IC Account、Service Fee、bSNS残高、chain/runtimeを再検証し、必要額をBridgeへapproveする。
 2. Base walletが`createWithdrawal`を送る。Contractは同じtransactionで`transferFrom`、burn、固定quoteを持つ`Committed` record、`WithdrawalCommitted` eventを原子的に作る。
-3. UIはtransaction hashをlocalStorageへ保存し、Finalized receiptを検出した後にIC walletから`notify_withdrawal`を呼ぶ。
-4. Canisterはreceipt、event、Withdrawal state、Bridge snapshotを同じcanonical Finalized block hashへ束縛してquorum検証する。
-5. 検証後、固定`amountOut`をLedgerで送る。結果不明はReconciliation Holdへ入り、Ledger・Indexの完全な不存在証拠なしに別identityを送らない。
+3. UIはtransaction hashと通知attempt状態をv7形式でlocalStorageへ保存し、Finalized receiptを検出した最初の1回だけ、deployment-scopedなbrowser identityから`notify_withdrawal`を自動実行する。通信切断または`Busy`は5秒後に1回だけ再試行し、`TransactionNotConfirmed`はbrowser Finalized headが進んだ場合に限り追加1回を許す。それ以外のretry可能失敗はProgressまたはHistoryの`Retry IC notification`から明示再開する。IC wallet確認とICRC-21同意取得は行わない。
+4. `notify_withdrawal`ではreceiptをexact 2-of-3で一致させる。各providerのFinalized高さは完全一致を要求せず、成功高さの2番目に大きい値を2-provider checkpointとして選ぶ。その高さのblock hashをexact 2-of-3で再取得し、receipt block hashのcanonical probeを維持したうえで、Withdrawal state、Bridge snapshot、signer/runtime確認をcheckpoint hashへ固定する。成功providerが2未満なら`RpcUnavailable`、checkpointがreceiptより前なら`TransactionNotConfirmed`、checkpoint hash不一致なら`RpcInconsistent`として停止する。
+5. Canisterは検証後、固定`amountOut`、宛先、transfer identityを`ReleasePending`として保存するだけでLedgerを呼ばない。通知成功後、UIが同じbrowser identityで`continue_withdrawal`を1回呼ぶ。
+6. 1回の継続はLedger送金または履歴照合を最大1 external stepだけ進める。非終端なら自動反復せずHistoryに「Continue payout」を表示する。完全な不存在を証明して新identityを保存した場合も、その送金は次の明示呼出しで行う。
+7. Base eventとCanister stable recordを正本にするため、ブラウザを閉じてもHistoryから復元できる。browser identityを失っても別の非anonymous identityで再開できる。債務はPaidまで無期限保持し、送金先・金額の変更、取消、Base再発行は許可しない。
 
 WithdrawalにCanister発Base transaction、Base refund、release acknowledgement、cancelは存在しない。
 

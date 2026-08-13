@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+from claim_manifest import parse_claim_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 CLAIMS = ROOT / "verification" / "claims.tsv"
@@ -31,10 +32,8 @@ CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 def claim_test_links(claims_text: str) -> set[tuple[str, str]]:
     links: set[tuple[str, str]] = set()
-    for number, line in enumerate(claims_text.splitlines(), 1):
-        fields = line.split("\t")
-        if len(fields) != 11:
-            raise ValueError(f"invalid claim row {number}")
+    manifest = parse_claim_manifest(claims_text)
+    for fields in manifest.rows:
         for link in fields[8].split(";"):
             if link.count("#") != 1:
                 raise ValueError(f"invalid claim transaction test: {link}")
@@ -50,7 +49,7 @@ def runner_accepts(test: ClaimTest) -> bool:
             and test.target.endswith(".rs")
         )
         or (
-            test.runner == "rust-canister"
+            test.runner in {"rust-canister", "rust-canister-test-deployment"}
             and test.target.startswith("canister/bridge-canister/src/")
             and test.target.endswith(".rs")
         )
@@ -147,12 +146,6 @@ def prepare_test_dependencies(
 ) -> None:
     if not any(test.runner == "jest" for test in tests):
         return
-    # The Jest claim set exercises the reviewed deployed staging v30 predecessor upgrade.
-    run_command(
-        ["bash", str(root / "scripts/build-v30-upgrade-fixture.sh")],
-        root,
-        runner,
-    )
     run_command(
         [
             "cargo",
@@ -219,9 +212,13 @@ def execute_test(
             re.findall(expected, output, re.MULTILINE)
         ) != 1:
             raise ValueError(f"Rust claim test did not pass exactly once: {test.selector}")
-    elif test.runner == "rust-canister":
+    elif test.runner in {"rust-canister", "rust-canister-test-deployment"}:
+        command = ["cargo", "test", "--locked", "-p", "bridge-canister"]
+        if test.runner == "rust-canister-test-deployment":
+            command.extend(["--features", "test-deployment"])
+        command.append(test.selector)
         result = run_command(
-            ["cargo", "test", "--locked", "-p", "bridge-canister", test.selector],
+            command,
             root,
             runner,
         )

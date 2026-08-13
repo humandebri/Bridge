@@ -18,6 +18,22 @@ output_has_matching_line() {
   rg -q -- "$pattern" <<<"$output"
 }
 
+verify_no_npm_lockfiles() {
+  local root="$1"
+  local lockfile
+
+  for lockfile in \
+    "$root/package-lock.json" \
+    "$root/npm-shrinkwrap.json" \
+    "$root/ui/package-lock.json" \
+    "$root/ui/npm-shrinkwrap.json"; do
+    if [[ -e "$lockfile" ]]; then
+      echo "npm lockfile is forbidden; use pnpm-lock.yaml: $lockfile" >&2
+      return 1
+    fi
+  done
+}
+
 smt_output_has_counterexample() {
   local output="$1"
 

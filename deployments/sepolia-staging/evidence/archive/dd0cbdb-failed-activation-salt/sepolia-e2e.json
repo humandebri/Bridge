@@ -1,0 +1,192 @@
+{
+  "binding": {
+    "activation_timelock_delay_seconds": 300,
+    "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+    "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+    "bridge_runtime_template_sha256": "0x4be5b6884d6293924865c2d2f669d1e8de7f285be74c12506ffb0e3c63bfb5a0",
+    "bridge_wasm_sha256": "a24d9095b5b436e753f79596c0e8b6ead01544c56cd5c58d309f0ae820298bf1",
+    "bsns_address": "0x265e6b05a2f6bda29f464d70867a37acde3ccde8",
+    "bsns_runtime_sha256": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b",
+    "bsns_runtime_template_sha256": "0x10be95adefd5f76cf8d1f8dd137247dc9371d81335a793984dc88d2aa20955ac",
+    "chain_id": 84532,
+    "deployment_instance_id": "0x6a6808e8af7292feaa4c8252171acd1863352a541e8373d4b96171104f7cc22a",
+    "environment_mode": "short-delay-test-only",
+    "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+    "frontend_profile_sha256": "b85eb2df43914c061c33bf489672ce98c3cb30bb5944a907a271d74028d08e17",
+    "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+    "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+    "local_e2e_sha256": "2976f94680e6c217ff76923adfda6adfcec1c3f47a1f8d62c84939c0f1efd2d5",
+    "source_commit": "dd0cbdb1a39ad7d79f96897b7f237db9b61d63f6",
+    "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
+  },
+  "complete": false,
+  "created_at": "2026-08-12T00:43:05.985039Z",
+  "kind": "kinic-bridge-sepolia-staging-e2e",
+  "schema_version": 7,
+  "stages": {
+    "activation_execute": null,
+    "activation_schedule": null,
+    "contracts": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/contracts-live.json",
+          "sha256": "6dd9709d47aa31fa7ce761b9d5d9d546e08145f5d9d6591f6637947ae1a38476"
+        }
+      ],
+      "details": {
+        "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+        "bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+        "bridge_runtime_template_sha256": "0x4be5b6884d6293924865c2d2f669d1e8de7f285be74c12506ffb0e3c63bfb5a0",
+        "bsns_address": "0x265e6b05a2f6bda29f464d70867a37acde3ccde8",
+        "bsns_runtime_sha256": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b",
+        "bsns_runtime_template_sha256": "0x10be95adefd5f76cf8d1f8dd137247dc9371d81335a793984dc88d2aa20955ac",
+        "deployer_roles_zero": true,
+        "deployment_block": 44770225,
+        "deployment_transaction_hashes": [
+          "0x8862d8746295643efc8730fb11a9034af858a07862441fb144b77a164b674d35"
+        ],
+        "governance_operator": "0x64639cb99ae61436cb1d66d775283f757e436479",
+        "mint_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+        "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
+      },
+      "observed_at": "2026-08-12T00:38:11.095Z",
+      "schema_version": 7,
+      "source_commit": "dd0cbdb1a39ad7d79f96897b7f237db9b61d63f6",
+      "stage": "contracts"
+    },
+    "final_pause": null,
+    "frontend_publish": null,
+    "initialize": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/initialize-live.json",
+          "sha256": "0b5884033db4abf840f14b39ab6eb18d618f9cfadd72ddd82d39ecda93b6e907"
+        }
+      ],
+      "details": {
+        "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+        "canister_deposits_paused": true,
+        "chain_id": 84532,
+        "deployment_instance_id": "0x6a6808e8af7292feaa4c8252171acd1863352a541e8373d4b96171104f7cc22a",
+        "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+        "expected_bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+        "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+        "governance_operator": "0x64639cb99ae61436cb1d66d775283f757e436479",
+        "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+        "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+        "schema_version": 32,
+        "storage_integrity": "ok",
+        "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168"
+      },
+      "observed_at": "2026-08-12T00:45:11.472Z",
+      "schema_version": 7,
+      "source_commit": "dd0cbdb1a39ad7d79f96897b7f237db9b61d63f6",
+      "stage": "initialize"
+    },
+    "install": {
+      "artifacts": [
+        {
+          "kind": "raw",
+          "path": "artifacts/install-live.json",
+          "sha256": "df10973247e1cfcec4285df931568fb51afd4c4ca6ff0a64a29f5d4e62534bb2"
+        }
+      ],
+      "details": {
+        "controller_principals": [
+          "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+          "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
+        ],
+        "cycles_balance": 380108134836,
+        "install_mode": "reinstall",
+        "module_sha256": "a24d9095b5b436e753f79596c0e8b6ead01544c56cd5c58d309f0ae820298bf1"
+      },
+      "observed_at": "2026-08-12T00:44:03.365Z",
+      "schema_version": 7,
+      "source_commit": "dd0cbdb1a39ad7d79f96897b7f237db9b61d63f6",
+      "stage": "install"
+    },
+    "preflight": {
+      "artifacts": [
+        {
+          "kind": "live-public-config",
+          "path": "artifacts/live-public-config.json",
+          "sha256": "e92885a96f73267ec19f36dc1e4910d344168fcf4a90bbd3c60b4ce2c306134f"
+        },
+        {
+          "kind": "live-canister-status",
+          "path": "artifacts/live-canister-status.json",
+          "sha256": "599039324e0263939b622af7ad8485b6923d6a63f81606702cb2942a820827dc"
+        },
+        {
+          "kind": "live-bridge-status",
+          "path": "artifacts/live-bridge-status.json",
+          "sha256": "826b6f5dd3f3a5a1e96dad87c4130aed3fe22450a60d1eba7d3973cefd58cc65"
+        },
+        {
+          "kind": "live-activation-status",
+          "path": "artifacts/live-activation-status.json",
+          "sha256": "45337fadaa22f07c941b7493cf49832944bec6527a40fd87b6be1bd18882a848"
+        },
+        {
+          "kind": "live-storage-integrity",
+          "path": "artifacts/live-storage-integrity.json",
+          "sha256": "a0dc537f108d6a486c9ae6289236224929ffb224403bed4bafea854f309732a6"
+        },
+        {
+          "kind": "live-ledger-balance",
+          "path": "artifacts/live-ledger-balance.json",
+          "sha256": "e287af5155d183f7ba8357e3ea66c09b4c68b3d114d0f064cb1a077d6e02771f"
+        },
+        {
+          "kind": "reinstall-instance-check",
+          "path": "artifacts/reinstall-instance-check.json",
+          "sha256": "974413857939d19362b88c20ae7f294f32b245591b9c2c715298fd55d05cf319"
+        },
+        {
+          "kind": "raw",
+          "path": "artifacts/preflight-live.json",
+          "sha256": "4258bd24b391b441f3d2046dfe542894a3219b1f7d3b134b577f3f499db8bb85"
+        }
+      ],
+      "details": {
+        "base_deposits_paused": true,
+        "base_withdrawals_paused": true,
+        "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+        "canister_deposits_paused": true,
+        "chain_id": 84532,
+        "configured_rpc_url_sha256": [
+          "a30ce743ddc719cd42638750cfdc375ae936209f7ba24268b4b2eb533494616f",
+          "5916966ddb71dda2015e9e4991f67d0df96798966b5b2e0deb8ef43405d39e2e",
+          "6dbd0deb51a5f497d7eb0587c807d9939346d9fdad6e53538bb87f61b8819b49"
+        ],
+        "controller_principals": [
+          "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+          "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
+        ],
+        "cycles_balance": 446994444395,
+        "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+        "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+        "index_ledger_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+        "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+        "ledger_decimals": 8,
+        "ledger_fee": 10000,
+        "ledger_symbol": "TICRC1",
+        "live_schema_version": 31,
+        "previous_deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+        "replacement_mode": "obsolete-schema-reinstall"
+      },
+      "observed_at": "2026-08-12T00:34:51.482Z",
+      "schema_version": 7,
+      "source_commit": "dd0cbdb1a39ad7d79f96897b7f237db9b61d63f6",
+      "stage": "preflight"
+    },
+    "rpc_rehearsal": null,
+    "smoke_e2e": null,
+    "wallet_e2e": null
+  },
+  "state": "AWAITING_ACTIVATION_SCHEDULE",
+  "updated_at": "2026-08-12T00:45:14.898294Z"
+}

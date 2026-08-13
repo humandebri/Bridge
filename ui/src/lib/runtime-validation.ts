@@ -19,6 +19,12 @@ const timelockDelayAbi = [{
 
 export interface RuntimeValidation { ready: boolean; blockers: string[]; checkedAt: number; profileFingerprint?: string }
 
+export interface RuntimeRefetchResult<T extends RuntimeValidation> {
+  data?: T
+  error?: unknown
+  isError?: boolean
+}
+
 export interface DeploymentAttestation extends FinalizedRuntimeObservation {
   profileFingerprint: string
 }
@@ -49,8 +55,6 @@ export interface FinalizedRuntimeObservation extends RuntimeValidation {
 }
 
 export const RUNTIME_VALIDATION_TTL_MS = 60_000
-export const FINALIZED_HEAD_MAX_AGE_MS = 45 * 60_000
-export const FINALIZED_HEAD_FUTURE_SKEW_MS = 60_000
 
 export function runtimeProfileFingerprint(profile: DeploymentProfile): string {
   return [
@@ -84,21 +88,6 @@ export function runtimeProfileFingerprint(profile: DeploymentProfile): string {
   ].join(":").toLowerCase()
 }
 
-export function finalizedHeadTimestampBlocker(timestamp?: bigint, now = Date.now()): string | undefined {
-  if (timestamp === undefined || timestamp <= 0n || !Number.isSafeInteger(now) || now < 0) {
-    return "Finalized Base block timestamp is unavailable"
-  }
-  const observedAtMs = timestamp * 1_000n
-  const nowMs = BigInt(now)
-  if (observedAtMs > nowMs + BigInt(FINALIZED_HEAD_FUTURE_SKEW_MS)) {
-    return "Finalized Base block timestamp is ahead of the browser clock"
-  }
-  if (nowMs - observedAtMs > BigInt(FINALIZED_HEAD_MAX_AGE_MS)) {
-    return "Finalized Base head is stale"
-  }
-  return undefined
-}
-
 export function runtimeWriteBlocker(validation?: RuntimeValidation, now = Date.now()): string | undefined {
   if (!validation) return "Refresh to verify the reviewed deployment before continuing."
   if (!validation.ready) return validation.blockers[0] ?? "Runtime verification has not passed"
@@ -114,9 +103,12 @@ export function requireRuntimeWriteReady(validation?: RuntimeValidation, now = D
 }
 
 export async function refetchRuntimeWriteReady<T extends RuntimeValidation>(
-  refetch: () => Promise<{ data?: T }>,
+  refetch: () => Promise<RuntimeRefetchResult<T>>,
 ): Promise<T & { ready: true }> {
   const result = await refetch()
+  if (result.isError || result.error) {
+    throw result.error instanceof Error ? result.error : new Error("Runtime verification could not be refreshed")
+  }
   requireRuntimeWriteReady(result.data)
   return result.data
 }
@@ -126,12 +118,12 @@ export async function refetchRuntimeAttestedWriteReady<
   THeartbeat extends RuntimeValidation,
 >(
   cachedAttestation: TAttestation | undefined,
-  refetchAttestation: () => Promise<{ data?: TAttestation }>,
-  refetchHeartbeat: () => Promise<{ data?: THeartbeat }>,
+  refetchAttestation: () => Promise<RuntimeRefetchResult<TAttestation>>,
+  refetchHeartbeat: () => Promise<RuntimeRefetchResult<THeartbeat>>,
 ): Promise<THeartbeat & { ready: true }> {
   let attestation = cachedAttestation
   if (runtimeWriteBlocker(attestation)) {
-    attestation = (await refetchAttestation()).data
+    attestation = await refetchRuntimeWriteReady(refetchAttestation)
   }
   requireRuntimeWriteReady(attestation)
   const heartbeat = await refetchRuntimeWriteReady(refetchHeartbeat)
@@ -160,8 +152,6 @@ export async function validateRuntimeHeartbeat(profile: DeploymentProfile, conne
   if (status.withdrawal_fee_guard_active) blockers.push("Withdrawal fee guard is active; pause Base withdrawals and reconcile fees")
   if (localChainId !== profile.chainId) blockers.push(`Base RPC is on chain ${localChainId}; expected ${profile.chainId}`)
   if (localFinalized.number === null || localFinalized.hash === null) blockers.push("Finalized Base block number or hash is unavailable")
-  const timestampBlocker = finalizedHeadTimestampBlocker(localFinalized.timestamp)
-  if (timestampBlocker) blockers.push(timestampBlocker)
   if (blockers.length > 0) {
     return {
       ready: false,
@@ -260,8 +250,6 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (status.withdrawal_fee_guard_active) blockers.push("Withdrawal fee guard is active; pause Base withdrawals and reconcile fees")
   if (localChainId !== profile.chainId) blockers.push(`Base RPC is on chain ${localChainId}; expected ${profile.chainId}`)
   if (localFinalized.number === null || localFinalized.hash === null) blockers.push("Finalized Base block number or hash is unavailable")
-  const timestampBlocker = finalizedHeadTimestampBlocker(localFinalized.timestamp)
-  if (timestampBlocker) blockers.push(timestampBlocker)
   if (blockers.length > 0) return { ready: false, blockers, checkedAt: Date.now(), profileFingerprint }
 
   const finalizedHash = localFinalized.hash
@@ -316,7 +304,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   } catch {
     blockers.push("Index ledger binding is unavailable")
   }
-  if (config.schema_version !== 31) blockers.push(`Unsupported canister schema ${config.schema_version}`)
+  if (config.schema_version !== 32) blockers.push(`Unsupported canister schema ${config.schema_version}`)
   if (ledgerName !== profile.icToken.name || ledgerSymbol !== profile.icToken.symbol || ledgerDecimals !== profile.icToken.decimals) {
     blockers.push(`IC token metadata is not ${profile.icToken.name}/${profile.icToken.symbol}/${profile.icToken.decimals}`)
   }

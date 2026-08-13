@@ -12,6 +12,7 @@ import {
   removeLatestBridgeProgress,
   saveLatestBridgeProgress,
   type BridgeProgressRecord,
+  withdrawalFinalityProgress,
 } from "@/lib/bridge-progress"
 
 interface ProgressAction {
@@ -67,7 +68,11 @@ export function BridgeProgressProvider({ children }: { children: ReactNode }) {
       if (!current || current.id !== id) return current
       const unchanged = Object.entries(patch).every(([key, value]) => current[key as keyof BridgeProgressRecord] === value)
       if (unchanged) return current
-      const next = { ...current, ...patch, updatedAt: Date.now() }
+      const nextPhase = patch.phase ?? current.phase
+      const attentionPhase = nextPhase === "attention"
+        ? patch.attentionPhase ?? (current.phase === "attention" ? current.attentionPhase : current.phase === "complete" ? undefined : current.phase)
+        : undefined
+      const next = { ...current, ...patch, attentionPhase, updatedAt: Date.now() }
       saveLatestBridgeProgress(next)
       progressRef.current = next
       return next
@@ -125,6 +130,7 @@ function ProgressDialog({ progress, action, onMinimize, onDismiss }: { progress:
   const dismissible = canonicalTerminal || depositTransactionComplete
   const handleOutsidePointerDown = dismissible ? onDismiss : onMinimize
   const steps = bridgeProgressSteps(progress)
+  const finalityProgress = withdrawalFinalityProgress(progress)
   return <Dialog open onOpenChange={(open) => { if (!open && dismissible) onDismiss() }}>
     <DialogContent
       dismissible={dismissible}
@@ -150,12 +156,24 @@ function ProgressDialog({ progress, action, onMinimize, onDismiss }: { progress:
         <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{bridgeProgressDetail(progress)}</p>
       </div>}
       <ol className="mt-5 space-y-1" aria-label="Transfer progress">
-        {steps.map((step, index) => <li key={step.label} aria-current={step.status === "current" ? "step" : undefined} aria-label={depositTransactionComplete && step.label === "Base transaction" ? "Base transaction complete" : undefined} className="relative flex min-h-11 items-start gap-3">
+        {steps.map((step, index) => <li key={step.label} aria-current={step.status === "current" ? "step" : undefined} aria-label={depositTransactionComplete && step.label === "Base mint transaction" ? "Base mint transaction complete" : undefined} className="relative flex min-h-11 items-start gap-3">
           {index < steps.length - 1 && <span aria-hidden="true" className="absolute left-[15px] top-8 h-[calc(100%-1rem)] w-px bg-[var(--line)]" />}
           <span className={`relative z-10 grid size-8 shrink-0 place-items-center rounded-full border ${step.status === "complete" ? "border-[#9ed8b3] bg-[#eaf8ef] text-[#157347]" : step.status === "current" ? "border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink)]" : "border-[var(--line)] bg-white text-[var(--muted)]"}`}>
             {step.status === "complete" ? <Check className="size-4" /> : step.status === "current" ? <LoaderCircle className="size-4 animate-spin" /> : <Circle className="size-3" />}
           </span>
-          <span className={`pt-1 text-sm font-bold ${step.status === "waiting" ? "text-[var(--muted)]" : "text-black"}`}>{step.label}</span>
+          <span className={`min-w-0 pt-1 text-sm font-bold ${step.status === "waiting" ? "text-[var(--muted)]" : "text-black"}`}>
+            <span className="block">{step.label}</span>
+            {step.note && <span className="mt-0.5 block text-xs font-normal leading-5 text-[var(--muted)]">{step.note}</span>}
+            {step.label === "Base finality" && step.status === "current" && <span className="mt-1 block text-xs font-normal leading-5 text-[var(--muted)]">
+              <span className="block">Usually takes about 20 minutes.</span>
+              {finalityProgress
+                ? <>
+                    <span className="block">Finalized block #{finalityProgress.finalizedBlockNumber} / Target block #{finalityProgress.targetBlockNumber}</span>
+                    <span className="block">{finalityProgress.remainingBlocks} blocks remaining</span>
+                  </>
+                : <span className="block">Checking finalized block…</span>}
+            </span>}
+          </span>
         </li>)}
       </ol>
       <DialogFooter>

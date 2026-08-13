@@ -1,6 +1,8 @@
 use crate::config::BridgeInitArgs;
 use async_trait::async_trait;
-use bridge_core::{Amount, BaseMintSnapshot, FinalizedObservationRecord};
+use bridge_core::{
+    withdrawal_finalized_checkpoint, Amount, BaseMintSnapshot, FinalizedObservationRecord,
+};
 use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use evm_rpc_client::{CandidResponseConverter, EvmRpcClient, NoRetry};
 use evm_rpc_types::{
@@ -212,7 +214,7 @@ pub enum NotifiedWithdrawalOutcome {
     },
     Reverted {
         receipt_block_number: u64,
-        finalized_head_block_number: u64,
+        finalized_checkpoint_block_number: u64,
     },
     Confirmed {
         withdrawal: ObservedWithdrawal,
@@ -220,7 +222,7 @@ pub enum NotifiedWithdrawalOutcome {
         rpc_audit: Box<RpcAuditEvidence>,
         stable_observation: Box<FinalizedObservationRecord>,
         receipt_block_number: u64,
-        finalized_head_block_number: u64,
+        finalized_checkpoint_block_number: u64,
     },
 }
 
@@ -1152,6 +1154,87 @@ async fn canonical_finalized_receipt(
     canonical_finalized_receipt_with_hash(args, hash, transaction_hash, finalized?, receipt?).await
 }
 
+async fn canonical_semantically_finalized_withdrawal_receipt(
+    args: &BridgeInitArgs,
+    transaction_hash: [u8; 32],
+) -> Result<CanonicalFinalizedReceiptOutcome, ObservationError> {
+    let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    let receipt = match client(args)
+        .get_transaction_receipt(hash.clone())
+        .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
+        .try_send()
+        .await
+        .map_err(|_| ObservationError::Rpc)?
+    {
+        MultiRpcResult::Consistent(Ok(receipt)) => receipt,
+        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
+    };
+    let Some(receipt) = receipt else {
+        return Ok(CanonicalFinalizedReceiptOutcome::Missing);
+    };
+    if receipt.transaction_hash != hash {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let finalized = withdrawal_finalized_observation(args).await?;
+    canonical_finalized_receipt_with_hash(args, hash, transaction_hash, finalized, Some(receipt))
+        .await
+}
+
+async fn withdrawal_finalized_observation(
+    args: &BridgeInitArgs,
+) -> Result<FinalizedObservation, ObservationError> {
+    let result = client(args)
+        .get_block_by_number(BlockTag::Finalized)
+        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+        .try_send()
+        .await
+        .map_err(|_| ObservationError::Rpc)?;
+    let checkpoint = match result {
+        MultiRpcResult::Consistent(Ok(block)) => {
+            u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?
+        }
+        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => {
+            let mut block_numbers = [None, None, None];
+            for (index, (_, result)) in results.into_iter().take(3).enumerate() {
+                if let Ok(block) = result {
+                    block_numbers[index] = Some(block.number);
+                }
+            }
+            withdrawal_finalized_checkpoint_from_provider_numbers(block_numbers)?
+        }
+    };
+    let block = match client(args)
+        .get_block_by_number(BlockTag::Number(Nat256::from(checkpoint)))
+        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+        .try_send()
+        .await
+        .map_err(|_| ObservationError::Rpc)?
+    {
+        MultiRpcResult::Consistent(Ok(block)) => block,
+        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
+    };
+    let block_number = u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?;
+    if block_number != checkpoint {
+        return Err(ObservationError::InvalidResponse);
+    }
+    Ok(FinalizedObservation {
+        block_number,
+        block_hash: *block.hash.as_array(),
+        observed_at_ns: ic_cdk::api::time(),
+    })
+}
+
+fn withdrawal_finalized_checkpoint_from_provider_numbers(
+    block_numbers: [Option<Nat256>; 3],
+) -> Result<u64, ObservationError> {
+    let heights = block_numbers.map(|number| number.and_then(|value| u64::try_from(value).ok()));
+    withdrawal_finalized_checkpoint(heights[0], heights[1], heights[2]).ok_or(ObservationError::Rpc)
+}
+
 async fn canonical_finalized_receipt_at(
     args: &BridgeInitArgs,
     transaction_hash: [u8; 32],
@@ -1349,7 +1432,7 @@ pub async fn notified_withdrawal_outcome(
     let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
         .map_err(|_| ObservationError::InvalidResponse)?;
     let (receipt, finalized_observation, _receipt_observation) =
-        match canonical_finalized_receipt(args, transaction_hash).await? {
+        match canonical_semantically_finalized_withdrawal_receipt(args, transaction_hash).await? {
             CanonicalFinalizedReceiptOutcome::Missing => {
                 return Ok(NotifiedWithdrawalOutcome::Missing);
             }
@@ -1372,7 +1455,7 @@ pub async fn notified_withdrawal_outcome(
         Some(status) if status == Nat256::from(0u64) => {
             return Ok(NotifiedWithdrawalOutcome::Reverted {
                 receipt_block_number,
-                finalized_head_block_number: finalized_observation.block_number,
+                finalized_checkpoint_block_number: finalized_observation.block_number,
             });
         }
         Some(status) if status == Nat256::from(1u64) => {}
@@ -1440,7 +1523,7 @@ pub async fn notified_withdrawal_outcome(
         rpc_audit: Box::new(rpc_audit),
         stable_observation,
         receipt_block_number,
-        finalized_head_block_number: finalized_observation.block_number,
+        finalized_checkpoint_block_number: finalized_observation.block_number,
     })
 }
 
@@ -1712,6 +1795,48 @@ mod tests {
         assert_eq!(
             parse_u128("0x100000000000000000000000000000000"),
             Err(ObservationError::Overflow)
+        );
+    }
+
+    #[test]
+    fn withdrawal_finality_quorum_ignores_one_overflowing_provider_height() {
+        let overflow = Nat256::from(u128::from(u64::MAX) + 1);
+
+        for block_numbers in [
+            [
+                Some(Nat256::from(100u64)),
+                Some(Nat256::from(102u64)),
+                Some(overflow.clone()),
+            ],
+            [
+                Some(overflow.clone()),
+                Some(Nat256::from(102u64)),
+                Some(Nat256::from(100u64)),
+            ],
+            [
+                Some(Nat256::from(102u64)),
+                Some(overflow),
+                Some(Nat256::from(100u64)),
+            ],
+        ] {
+            assert_eq!(
+                withdrawal_finalized_checkpoint_from_provider_numbers(block_numbers),
+                Ok(100)
+            );
+        }
+    }
+
+    #[test]
+    fn withdrawal_finality_quorum_rejects_fewer_than_two_valid_provider_heights() {
+        let overflow = Nat256::from(u128::from(u64::MAX) + 1);
+
+        assert_eq!(
+            withdrawal_finalized_checkpoint_from_provider_numbers([
+                Some(Nat256::from(100u64)),
+                Some(overflow),
+                None,
+            ]),
+            Err(ObservationError::Rpc)
         );
     }
 
@@ -2063,7 +2188,6 @@ mod tests {
                 l1_fee_multiplier_bps: 15_000,
             },
             governance_replacement: crate::config::GovernanceReplacementPolicy::default(),
-            governance_eth_floor_wei: 1,
             cycles_floor: 1,
             settlement_cycle_ceiling: 1,
             governance_principal: Principal::from_slice(&[1]),

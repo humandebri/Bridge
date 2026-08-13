@@ -26,6 +26,12 @@
       "selector": "protocol_deposit_identity_cases_matches_production"
     },
     {
+      "section": "deposit_nonterminal_index_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_deposit_nonterminal_index_cases_match_production"
+    },
+    {
       "section": "fee_payout_cases",
       "runner": "rust",
       "target": "canister/bridge-core/tests/generated_refinement.rs",
@@ -36,12 +42,6 @@
       "runner": "rust",
       "target": "canister/bridge-core/tests/generated_refinement.rs",
       "selector": "protocol_fee_rotation_cases_matches_production"
-    },
-    {
-      "section": "finalization_cases",
-      "runner": "rust",
-      "target": "canister/bridge-core/tests/generated_refinement.rs",
-      "selector": "protocol_finalization_cases_matches_rust_decision"
     },
     {
       "section": "finalization_cases",
@@ -80,6 +80,12 @@
       "selector": "protocol_lease_lane_cases_matches_production"
     },
     {
+      "section": "ledger_block_provenance_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_ledger_block_provenance_cases_match_production"
+    },
+    {
       "section": "manual_claim_cases",
       "runner": "rust",
       "target": "canister/bridge-core/tests/generated_refinement.rs",
@@ -96,12 +102,6 @@
       "runner": "rust",
       "target": "canister/bridge-core/tests/generated_refinement.rs",
       "selector": "protocol_payment_cases_matches_production"
-    },
-    {
-      "section": "queue_cases",
-      "runner": "rust",
-      "target": "canister/bridge-core/tests/generated_refinement.rs",
-      "selector": "protocol_queue_cases_matches_rust_decision"
     },
     {
       "section": "queue_cases",

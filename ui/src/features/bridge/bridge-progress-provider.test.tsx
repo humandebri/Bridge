@@ -50,7 +50,36 @@ function Harness() {
       receiptBlockNumber: "123",
       baseTransactionOutcome: "success",
     })}>Base included</button>
+    <button type="button" onClick={() => progress.start({
+      direction: "withdraw",
+      phase: "base-withdrawal-finalizing",
+      source: "0x0000000000000000000000000000000000000002",
+      destination: "aaaaa-aa",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "KINIC",
+      receiveSymbol: "TICRC1",
+      receiptBlockNumber: "45115968",
+      finalizedBlockNumber: "45115603",
+      withdrawal: { owner: "aaaaa-aa" },
+    })}>Start finality</button>
+    <button type="button" onClick={() => progress.start({
+      direction: "withdraw",
+      phase: "awaiting-base-withdrawal",
+      tokenApproval: "not-required",
+      source: "0x0000000000000000000000000000000000000002",
+      destination: "aaaaa-aa",
+      sendAmount: "2",
+      receiveAmount: "1.5",
+      sendSymbol: "KINIC",
+      receiveSymbol: "TICRC1",
+      withdrawal: { owner: "aaaaa-aa" },
+    })}>Start withdrawal</button>
+    <button type="button" onClick={() => progress.progress && progress.update(progress.progress.id, { phase: "attention", attentionMessage: "Withdrawal failed." })}>Fail</button>
+    <button type="button" onClick={() => progress.progress && progress.update(progress.progress.id, { phase: "attention", attentionMessage: "Withdrawal still needs attention." })}>Fail again</button>
+    <button type="button" onClick={() => progress.progress && progress.update(progress.progress.id, { phase: "awaiting-base-withdrawal" })}>Resume</button>
     <button type="button" onClick={() => progress.progress && progress.setAction(progress.progress.id, { label: "Retry transfer", run: () => undefined })}>Register action</button>
+    <output data-testid="attention-phase">{progress.progress?.attentionPhase ?? "none"}</output>
     {startError && <p>{startError}</p>}
   </div>
 }
@@ -78,7 +107,7 @@ describe("BridgeProgressProvider", () => {
     fireEvent.click(screen.getByRole("button", { name: /Open transfer progress/ }))
 
     fireEvent.click(screen.getByRole("button", { name: "Complete", hidden: true }))
-    expect(screen.getByText("Base transaction")).toBeVisible()
+    expect(screen.getByText("Base mint transaction")).toBeVisible()
     expect(screen.queryByText("Base finality")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Close" })).toBeEnabled()
   })
@@ -94,7 +123,7 @@ describe("BridgeProgressProvider", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
     expect(screen.queryByText("Finality will be reflected in History.")).not.toBeInTheDocument()
     expect(screen.getAllByRole("listitem")).toHaveLength(4)
-    expect(screen.getByRole("listitem", { name: "Base transaction complete" })).toBeVisible()
+    expect(screen.getByRole("listitem", { name: "Base mint transaction complete" })).toBeVisible()
     expect(screen.queryByText("Base finality")).not.toBeInTheDocument()
     expect(screen.queryByText("Complete", { selector: "li *" })).not.toBeInTheDocument()
 
@@ -126,6 +155,62 @@ describe("BridgeProgressProvider", () => {
     const bar = await screen.findByRole("button", { name: /Open transfer progress/ })
     expect(bar).toHaveTextContent("Waiting for the Base transaction")
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("shows Withdrawal finality timing and exact block progress in the modal", () => {
+    render(<BridgeProgressProvider><Harness /></BridgeProgressProvider>)
+    fireEvent.click(screen.getByRole("button", { name: "Start finality" }))
+
+    expect(screen.getByText("Usually takes about 20 minutes.")).toBeVisible()
+    expect(screen.getByText("Finalized block #45,115,603 / Target block #45,115,968")).toBeVisible()
+    expect(screen.getByText("365 blocks remaining")).toBeVisible()
+  })
+
+  it("shows an unnecessary approval and keeps repeated attention on the failed transaction step after reload", () => {
+    const view = render(<BridgeProgressProvider><Harness /></BridgeProgressProvider>)
+    fireEvent.click(screen.getByRole("button", { name: "Start withdrawal" }))
+
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base withdrawal transaction")
+    expect(screen.getByText("Base token approval").parentElement).toHaveTextContent("Not required")
+
+    fireEvent.click(screen.getByRole("button", { name: "Fail", hidden: true }))
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base withdrawal transaction")
+    expect(screen.getByRole("alert")).toHaveTextContent("Withdrawal failed.")
+    expect(screen.getByTestId("attention-phase")).toHaveTextContent("awaiting-base-withdrawal")
+
+    fireEvent.click(screen.getByRole("button", { name: "Fail again", hidden: true }))
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base withdrawal transaction")
+    expect(screen.getByRole("alert")).toHaveTextContent("Withdrawal still needs attention.")
+    expect(screen.getByTestId("attention-phase")).toHaveTextContent("awaiting-base-withdrawal")
+
+    view.unmount()
+    render(<BridgeProgressProvider><div>Route content</div></BridgeProgressProvider>)
+    fireEvent.click(screen.getByRole("button", { name: /Open transfer progress/ }))
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Base withdrawal transaction")
+    expect(screen.getByRole("alert")).toHaveTextContent("Withdrawal still needs attention.")
+  })
+
+  it("clears the attention source after resuming an active phase", () => {
+    render(<BridgeProgressProvider><Harness /></BridgeProgressProvider>)
+    fireEvent.click(screen.getByRole("button", { name: "Start withdrawal" }))
+    fireEvent.click(screen.getByRole("button", { name: "Fail", hidden: true }))
+    expect(screen.getByTestId("attention-phase")).toHaveTextContent("awaiting-base-withdrawal")
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume", hidden: true }))
+    expect(screen.getByTestId("attention-phase")).toHaveTextContent("none")
+  })
+
+  it("renders the terminal Withdrawal step with a check instead of a spinner", () => {
+    render(<BridgeProgressProvider><Harness /></BridgeProgressProvider>)
+    fireEvent.click(screen.getByRole("button", { name: "Start withdrawal" }))
+    fireEvent.click(screen.getByRole("button", { name: "Complete", hidden: true }))
+
+    const completeStep = screen.getByText("Complete", { selector: "li *" }).closest("li")
+    expect(completeStep).not.toHaveAttribute("aria-current")
+    expect(completeStep?.querySelector(".lucide-check")).toBeVisible()
+    expect(completeStep?.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
+    expect(screen.queryByRole("listitem", { current: "step" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled()
   })
 
   it("does not replace an active transfer with a newly started one", () => {

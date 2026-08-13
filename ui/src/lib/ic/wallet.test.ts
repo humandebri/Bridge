@@ -1,12 +1,13 @@
 import { IDL } from "@dfinity/candid"
-import { describe, expect, it, vi } from "vitest"
+import { Principal } from "@dfinity/principal"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { idlFactory } from "@/generated/bridge.idl"
-import { decodeDepositReply, decodeNotifyWithdrawalReply, NotifyWithdrawalCallError, notifyWithdrawalErrorMessage, OisyAdapter, requestDepositRefundErrorMessage } from "./wallet"
+import { decodeDepositReply, OisyAdapter, PlugAdapter, requestDepositRefundErrorMessage } from "./wallet"
 
 // didc's runtime JS intentionally has no static return type; the checked-in TS binding is the typed contract.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const bridgeService: IDL.ServiceClass = idlFactory({ IDL })
-function resultType(method: "request_deposit" | "notify_withdrawal") {
+function resultType(method: "request_deposit") {
   const codec = (bridgeService._fields as Array<[string, IDL.FuncClass]>).find(([name]) => name === method)?.[1]
   if (!codec) throw new Error(`Missing generated codec for ${method}`)
   const result = codec.retTypes[0]
@@ -63,9 +64,9 @@ describe("OISY deposit reply decoding", () => {
 
 describe("OISY popup lifecycle", () => {
   const owner = "aaaaa-aa"
-  const createWallet = (currentOwner = owner) => ({
+  const createWallet = (currentOwner = owner, subaccount?: string) => ({
     requestPermissionsNotGranted: vi.fn().mockResolvedValue({ allPermissionsGranted: true }),
-    accounts: vi.fn().mockResolvedValue([{ owner: currentOwner }]),
+    accounts: vi.fn().mockResolvedValue([{ owner: currentOwner, subaccount }]),
     approve: vi.fn().mockResolvedValue(7n),
     callCanister: vi.fn(),
     disconnect: vi.fn().mockResolvedValue(undefined),
@@ -80,6 +81,46 @@ describe("OISY popup lifecycle", () => {
     await expect(adapter.getAccount()).resolves.toEqual({ owner })
 
     expect(connectWallet).toHaveBeenCalledOnce()
+    expect(wallet.disconnect).toHaveBeenCalledOnce()
+  })
+
+  it("restores the expected account without opening OISY and validates it on prepare", async () => {
+    const wallet = createWallet()
+    const connectWallet = vi.fn().mockResolvedValue(wallet)
+    const adapter = new OisyAdapter("https://icp-api.io", owner, owner, connectWallet, { owner })
+
+    await expect(adapter.getAccount()).resolves.toEqual({ owner })
+    expect(connectWallet).not.toHaveBeenCalled()
+
+    const close = await adapter.prepare()
+    expect(connectWallet).toHaveBeenCalledOnce()
+    await close()
+    expect(wallet.disconnect).toHaveBeenCalledOnce()
+  })
+
+  it("rejects_a_changed_restored_OISY_account_before_an_action", async () => {
+    const wallet = createWallet("2vxsx-fae")
+    const connectWallet = vi.fn().mockResolvedValue(wallet)
+    const adapter = new OisyAdapter("https://icp-api.io", owner, owner, connectWallet, { owner })
+
+    await expect(adapter.prepare()).rejects.toThrow("OISY account changed")
+    expect(wallet.approve).not.toHaveBeenCalled()
+    expect(wallet.callCanister).not.toHaveBeenCalled()
+    expect(wallet.disconnect).toHaveBeenCalledOnce()
+  })
+
+  it("rejects a changed restored OISY subaccount before an action", async () => {
+    const expectedSubaccount = new Uint8Array(32).fill(1)
+    const wallet = createWallet(owner, `0x${"02".repeat(32)}`)
+    const connectWallet = vi.fn().mockResolvedValue(wallet)
+    const adapter = new OisyAdapter("https://icp-api.io", owner, owner, connectWallet, {
+      owner,
+      subaccount: expectedSubaccount,
+    })
+
+    await expect(adapter.prepare()).rejects.toThrow("OISY account changed")
+    expect(wallet.approve).not.toHaveBeenCalled()
+    expect(wallet.callCanister).not.toHaveBeenCalled()
     expect(wallet.disconnect).toHaveBeenCalledOnce()
   })
 
@@ -118,46 +159,82 @@ describe("OISY popup lifecycle", () => {
   })
 })
 
-describe("withdrawal notification errors", () => {
-  it("renders actionable RPC and rate-limit failures", () => {
-    expect(notifyWithdrawalErrorMessage({ RpcInconsistent: null })).toContain("providers disagreed")
+describe("Plug restored account validation", () => {
+  afterEach(() => {
+    Object.defineProperty(window, "ic", { configurable: true, value: undefined })
   })
 
-  it("decodes the confirmed-head receipt shape used by the public Candid", () => {
-    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Ok: { Ingested: { finalized_head_block_number: 42n, withdrawal_id: new Uint8Array(32).fill(7) } } }]))
-
-    expect(decodeNotifyWithdrawalReply(reply)).toMatchObject({ Ingested: { finalized_head_block_number: 42n } })
-  })
-
-  it.each(["BaseStateMismatch", "BridgeSignerMismatch"] as const)("decodes %s as a normal bridge rejection", (variant) => {
-    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Err: { [variant]: null } }]))
-
-    expect(() => decodeNotifyWithdrawalReply(reply)).toThrow(variant === "BaseStateMismatch" ? "state does not match" : "signer does not match")
-  })
-
-  it.each(["RateLimited", "InsufficientCycles"] as const)("decodes %s as a normal bridge rejection", (variant) => {
-    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{ Err: { [variant]: null } }]))
-
-    expect(() => decodeNotifyWithdrawalReply(reply)).toThrow(variant === "RateLimited" ? "rate limited" : "enough cycles")
-  })
-
-  it("decodes the fee guard as an actionable bridge rejection", () => {
-    const reply = new Uint8Array(IDL.encode([resultType("notify_withdrawal")], [{
-      Err: { LedgerFeeExceedsServiceFee: { charged_service_fee: 10n, ledger_fee: 11n } },
-    }]))
-
-    let thrown: unknown
-    try {
-      decodeNotifyWithdrawalReply(reply)
-    } catch (error) {
-      thrown = error
+  function installPlug(owner: string, options: { connected?: boolean; withAgent?: boolean } = {}) {
+    const plug = {
+      isConnected: vi.fn().mockResolvedValue(options.connected ?? true),
+      requestConnect: vi.fn().mockResolvedValue(true),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+      agent: options.withAgent === false
+        ? undefined
+        : { getPrincipal: vi.fn().mockResolvedValue(Principal.fromText(owner)) },
+      createActor: vi.fn(),
     }
-    expect(thrown).toBeInstanceOf(NotifyWithdrawalCallError)
-    expect((thrown as NotifyWithdrawalCallError).code).toBe("LedgerFeeExceedsServiceFee")
-    expect((thrown as Error).message).toContain("ledger fee exceeded")
-    expect((thrown as Error).message).toContain("Contact the bridge operator")
-    expect((thrown as Error).message).not.toContain("will be retried")
-    expect((thrown as Error).message).not.toContain("invalid withdrawal notification error")
+    Object.defineProperty(window, "ic", { configurable: true, value: { plug } })
+    return plug
+  }
+
+  it("uses a restored Plug account without requesting a new connection", async () => {
+    const plug = installPlug("aaaaa-aa")
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", { owner: "aaaaa-aa" })
+
+    expect(adapter.requiresUserGesture).toBe(true)
+    await expect(adapter.getAccount()).resolves.toEqual({ owner: "aaaaa-aa" })
+    expect(plug.requestConnect).not.toHaveBeenCalled()
+
+    await adapter.prepare()
+    expect(adapter.requiresUserGesture).toBe(false)
+    expect(plug.isConnected).toHaveBeenCalledOnce()
+    expect(plug.requestConnect).not.toHaveBeenCalled()
   })
 
+  it("reconnects a restored Plug session before clearing the user gesture", async () => {
+    const plug = installPlug("aaaaa-aa", { connected: false })
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", { owner: "aaaaa-aa" })
+
+    await adapter.prepare()
+
+    expect(plug.requestConnect).toHaveBeenCalledWith({
+      whitelist: ["aaaaa-aa", "aaaaa-aa"],
+      host: "https://icp-api.io",
+    })
+    expect(adapter.requiresUserGesture).toBe(false)
+  })
+
+  it("reconnects when Plug reports a session without an Agent", async () => {
+    const plug = installPlug("aaaaa-aa", { withAgent: false })
+    plug.requestConnect.mockImplementation(() => {
+      plug.agent = { getPrincipal: vi.fn().mockResolvedValue(Principal.fromText("aaaaa-aa")) }
+      return Promise.resolve(true)
+    })
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", { owner: "aaaaa-aa" })
+
+    await adapter.prepare()
+
+    expect(plug.requestConnect).toHaveBeenCalledOnce()
+    expect(adapter.requiresUserGesture).toBe(false)
+  })
+
+  it("keeps the user gesture requirement when reconnect is rejected", async () => {
+    const plug = installPlug("aaaaa-aa", { connected: false })
+    plug.requestConnect.mockResolvedValue(false)
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", { owner: "aaaaa-aa" })
+
+    await expect(adapter.prepare()).rejects.toThrow("Plug connection was rejected")
+    expect(adapter.requiresUserGesture).toBe(true)
+  })
+
+  it("rejects a changed Plug principal before creating an actor", async () => {
+    const plug = installPlug("2vxsx-fae")
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", { owner: "aaaaa-aa" })
+
+    await expect(adapter.getAccount()).rejects.toThrow("Plug account changed")
+    expect(plug.createActor).not.toHaveBeenCalled()
+    await expect(adapter.prepare()).rejects.toThrow("Plug account changed")
+    expect(adapter.requiresUserGesture).toBe(true)
+  })
 })

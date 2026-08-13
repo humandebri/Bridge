@@ -77,6 +77,16 @@ structure DepositState where
   leaseGeneration : Nat := 0
 deriving DecidableEq
 
+def nonterminalDepositIndexed : DepositPhase → Bool
+  | .refunded | .cancelled | .minted => false
+  | _ => true
+
+theorem nonterminal_deposit_index_matches_nonterminal_phases
+    (phase : DepositPhase) :
+    nonterminalDepositIndexed phase = true ↔
+      phase ≠ .refunded ∧ phase ≠ .cancelled ∧ phase ≠ .minted := by
+  cases phase <;> decide
+
 def Backed (state : DepositState) : Prop :=
   state.escrow =
     state.baseSupply + state.feeReserve + state.pendingDepositLiability
@@ -173,10 +183,10 @@ def startExpiredRefund
       else none
 
 def requestExpiredRefund
-    (authenticated : Bool) (ownerMatch : Option Bool)
+    (authenticated : Bool)
     (state : DepositState) (origin : AuthorizationOrigin)
     (evidence : ExpiryEvidence) : Option DepositState :=
-  if decideRefundRequestIdentity authenticated ownerMatch =
+  if decideRefundRequestIdentity authenticated =
       RefundRequestIdentityDecision.allow then
     startExpiredRefund state origin evidence
   else none
@@ -339,13 +349,13 @@ theorem refund_request_cannot_bypass_finalized_evidence
         evidence.finalizedTimestamp > authorization.deadline :=
   accepted_expiry_refund_requires_finalized_unprocessed_expiry accepted
 
-theorem accepted_refund_request_requires_authenticated_owner_and_finalized_absence
-    {authenticated : Bool} {ownerMatch : Option Bool}
+theorem accepted_refund_request_requires_authentication_and_finalized_absence
+    {authenticated : Bool}
     {state next : DepositState} {origin : AuthorizationOrigin}
     {evidence : ExpiryEvidence}
     (accepted :
-      requestExpiredRefund authenticated ownerMatch state origin evidence = some next) :
-    authenticated = true ∧ ownerMatch = some true ∧
+      requestExpiredRefund authenticated state origin evidence = some next) :
+    authenticated = true ∧
       evidence.depositProcessed = false ∧
       ∃ authorization, state.authorization = some authorization ∧
         evidence.depositId = authorization.depositId ∧
@@ -354,11 +364,9 @@ theorem accepted_refund_request_requires_authenticated_owner_and_finalized_absen
   unfold requestExpiredRefund at accepted
   split at accepted
   next identityAllowed =>
-    have identity : authenticated = true ∧ ownerMatch = some true := by
-      cases authenticated <;> cases ownerMatch <;>
-        simp [decideRefundRequestIdentity] at identityAllowed ⊢
-      next value => cases value <;> simp_all
-    exact ⟨identity.1, identity.2,
+    have identity : authenticated = true := by
+      cases authenticated <;> simp [decideRefundRequestIdentity] at identityAllowed ⊢
+    exact ⟨identity,
       accepted_expiry_refund_requires_finalized_unprocessed_expiry accepted⟩
   next => simp at accepted
 

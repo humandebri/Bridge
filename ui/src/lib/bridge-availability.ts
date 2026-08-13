@@ -1,20 +1,21 @@
-export type TransferAvailability = "Available" | "Paused" | "Unavailable"
+export type TransferAvailability = "Available" | "Paused" | "Unavailable" | "Unknown"
 
 export interface BridgeAvailability {
+  status: TransferAvailability
   available: boolean
   toBase: TransferAvailability
   toIc: TransferAvailability
 }
 
 export function bridgeAvailability(input: {
-  runtimeReady: boolean
+  observationsAccepted: boolean
   baseStatus?: { depositsPaused: boolean; withdrawalsPaused: boolean }
   icDepositsPaused?: boolean
   cyclesSufficient?: boolean
 }): BridgeAvailability {
   const { baseStatus, icDepositsPaused, cyclesSufficient } = input
-  if (!input.runtimeReady || baseStatus === undefined || icDepositsPaused === undefined || cyclesSufficient === undefined) {
-    return { available: false, toBase: "Unavailable", toIc: "Unavailable" }
+  if (!input.observationsAccepted || baseStatus === undefined || icDepositsPaused === undefined || cyclesSufficient === undefined) {
+    return { status: "Unknown", available: false, toBase: "Unknown", toIc: "Unknown" }
   }
 
   const toBase = baseStatus.depositsPaused || icDepositsPaused
@@ -27,19 +28,24 @@ export function bridgeAvailability(input: {
     : cyclesSufficient
       ? "Available"
       : "Unavailable"
-  return { available: toBase === "Available" || toIc === "Available", toBase, toIc }
+  const available = toBase === "Available" || toIc === "Available"
+  const status = available
+    ? "Available"
+    : toBase === "Paused" && toIc === "Paused"
+      ? "Paused"
+      : "Unavailable"
+  return { status, available, toBase, toIc }
 }
 
 export const STATUS_FRESHNESS_MS = 60_000
 
 export function statusDataIsFresh(input: {
-  runtimeCheckedAt?: number
   baseUpdatedAt?: number
   canisterUpdatedAt?: number
   now?: number
 }): boolean {
   const now = input.now ?? Date.now()
-  return [input.runtimeCheckedAt, input.baseUpdatedAt, input.canisterUpdatedAt].every(
+  return [input.baseUpdatedAt, input.canisterUpdatedAt].every(
     (timestamp) => timestamp !== undefined && timestamp > 0 && timestamp <= now && now - timestamp <= STATUS_FRESHNESS_MS,
   )
 }

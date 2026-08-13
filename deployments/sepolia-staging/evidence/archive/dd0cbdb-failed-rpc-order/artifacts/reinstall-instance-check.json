@@ -1,0 +1,7 @@
+{
+  "replacement_mode": "obsolete-schema-reinstall",
+  "live_schema_version": 31,
+  "previous_deployment_instance_id": "0x9165e6a6ae843b22e8c28ea3491c572173f725ecd250b78b42f9662f3c386f48",
+  "live_module_hash": "0x53a44aa8e4c97a1f21416af0c4e5383947de6816b8d714bf0785b8d4f49a5c1a",
+  "next": "0x6a6808e8af7292feaa4c8252171acd1863352a541e8373d4b96171104f7cc22a"
+}

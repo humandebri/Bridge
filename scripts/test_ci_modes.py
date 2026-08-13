@@ -52,12 +52,6 @@ class CiModeTests(unittest.TestCase):
         self.assert_calls("run_contracts", ["run_contracts_fast", "run_contracts_coverage"])
         self.assert_calls("run_ui", ["run_ui_fast", "run_ui_e2e"])
 
-    def test_complete_checks_keep_all_component_aggregates(self) -> None:
-        self.assert_calls(
-            "run_checks",
-            ["run_versions", "run_rust", "run_contracts", "run_proofs", "run_ui", "run_icp_build"],
-        )
-
     def test_proofs_use_independent_claim_stages(self) -> None:
         body = function_body("run_proofs")
         receipt_regression = body.index('python3 "$ROOT/scripts/test_write_proof_receipt.py"')
@@ -158,12 +152,9 @@ class CiModeTests(unittest.TestCase):
                 text=True,
             )
 
-    def test_threshold_signing_guard_allows_the_transition_from_zero_to_one_call(self) -> None:
-        zero_calls = self.run_automatic_execution_guard(
-            'let operation = "sign_with_ecdsa";\n'
-            'bounded_management_call("sign_with_ecdsa", &(sign_args,));\n'
-        )
-        self.assertEqual(zero_calls.returncode, 0, zero_calls.stderr)
+    def test_threshold_signing_guard_requires_the_reviewed_call(self) -> None:
+        zero_calls = self.run_automatic_execution_guard("fn signer() {}\n")
+        self.assertNotEqual(zero_calls.returncode, 0, zero_calls.stderr)
 
         reviewed_call = self.run_automatic_execution_guard(
             "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n"

@@ -1,0 +1,28 @@
+{
+  "schema_version": 7,
+  "stage": "initialize",
+  "observed_at": "2026-08-12T00:45:11.472Z",
+  "source_commit": "dd0cbdb1a39ad7d79f96897b7f237db9b61d63f6",
+  "artifacts": [
+    {
+      "path": "artifacts/initialize-live.json",
+      "sha256": "0b5884033db4abf840f14b39ab6eb18d618f9cfadd72ddd82d39ecda93b6e907",
+      "kind": "raw"
+    }
+  ],
+  "details": {
+    "schema_version": 32,
+    "deployment_instance_id": "0x6a6808e8af7292feaa4c8252171acd1863352a541e8373d4b96171104f7cc22a",
+    "chain_id": 84532,
+    "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+    "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+    "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+    "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+    "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+    "timelock_address": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
+    "expected_bridge_runtime_sha256": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
+    "governance_operator": "0x64639cb99ae61436cb1d66d775283f757e436479",
+    "canister_deposits_paused": true,
+    "storage_integrity": "ok"
+  }
+}

@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
+from claim_manifest import lean_contract_check_source, parse_claim_manifest
 from proof_fingerprint import source_fingerprint
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
 REPORT = ROOT / "verification" / "output" / "claim-report.json"
-CLAIM_REPORT_SCHEMA = 2
+CLAIM_REPORT_SCHEMA = 3
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REQUIRED_SCALAR_CALLS = (
     "deadlineAccepts(",
@@ -101,8 +104,37 @@ def check_solidity_wrapper_refinement() -> None:
         raise ValueError(f"Bridge mint wrapper does not apply one exact transition: {missing}")
 
 
+def check_lean_claim_contracts(manifest_text: str) -> None:
+    manifest = parse_claim_manifest(manifest_text)
+    source = lean_contract_check_source(manifest)
+    build = subprocess.run(
+        ["lake", "build", "BridgeSpec.ClaimContracts"],
+        cwd=ROOT / "verification" / "lean",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if build.returncode != 0:
+        raise ValueError(f"Lean claim contract build failed:\n{build.stdout}{build.stderr}")
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lean", encoding="utf-8") as check:
+        check.write(source)
+        check.flush()
+        result = subprocess.run(
+            ["lake", "env", "lean", check.name],
+            cwd=ROOT / "verification" / "lean",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if result.returncode != 0:
+        raise ValueError(f"Lean claim contract check failed:\n{result.stdout}{result.stderr}")
+
+
 def build_claim_report() -> dict[str, object]:
     check_solidity_wrapper_refinement()
+    manifest_text = MANIFEST.read_text(encoding="utf-8")
+    manifest = parse_claim_manifest(manifest_text)
+    check_lean_claim_contracts(manifest_text)
     lean_source = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted((ROOT / "verification" / "lean" / "BridgeSpec").glob("*.lean"))
@@ -151,16 +183,7 @@ def build_claim_report() -> dict[str, object]:
         if line
     }
 
-    rows = [
-        line.split("\t")
-        for line in MANIFEST.read_text(encoding="utf-8").splitlines()
-        if line
-    ]
-    if any(len(row) != 11 or not all(row) for row in rows):
-        raise ValueError("unified claim manifest rows must have 11 non-empty columns")
-    claim_ids = [row[1] for row in rows]
-    if len(claim_ids) != len(set(claim_ids)):
-        raise ValueError("duplicate unified claim id")
+    rows = manifest.rows
 
     used_verus: set[str] = set()
     results: list[dict[str, object]] = []
@@ -177,7 +200,7 @@ def build_claim_report() -> dict[str, object]:
         assumption_ids,
         vectors,
     ) in rows:
-        if kind not in {"protocol", "mint"} or not IDENTIFIER.fullmatch(claim_id):
+        if kind not in {"protocol", "mint", "liveness"} or not IDENTIFIER.fullmatch(claim_id):
             raise ValueError(f"invalid typed claim: {kind}/{claim_id}")
         theorem_names = (
             items(abstract_theorems)
@@ -238,6 +261,22 @@ def build_claim_report() -> dict[str, object]:
             else "refinement-tested"
         )
         evidence = {
+            "proof": (
+                "proved" if manifest.contracts[claim_id].is_proved else "unproved"
+            ),
+            "implementation": (
+                "implementation-proved"
+                if kernel_strength == "implementation-proved"
+                else "unproved"
+            ),
+            "tests": "tested" if tests else "unproved",
+            "assumptions": (
+                "assumed" if items(assumption_ids) else "not-applicable"
+            ),
+            "contract": (
+                "proved" if manifest.contracts[claim_id].is_proved else "unproved"
+            ),
+            "proof_class": manifest.contracts[claim_id].proof_class,
             "abstract": abstract_evidence_status(abstract_theorems),
             "production_kernel": "ownership-registered",
             "smt_scalar": "implementation-proved" if smt_links else "not-applicable",
@@ -246,6 +285,8 @@ def build_claim_report() -> dict[str, object]:
             "external": "assumed" if items(assumption_ids) else "not-applicable",
         }
         reasons: list[str] = []
+        if not manifest.contracts[claim_id].is_proved:
+            reasons.append("missing_claim_contract")
         if model_only:
             reasons.append("model_only_verus:" + ",".join(sorted(model_only)))
         if unreferenced_kernels:
@@ -264,6 +305,20 @@ def build_claim_report() -> dict[str, object]:
                 "unproved_reasons": reasons,
             }
         )
+
+    internal_gaps = {
+        result["id"]: [
+            reason
+            for reason in result["unproved_reasons"]
+            if reason == "missing_claim_contract"
+            or reason.startswith("model_only_verus:")
+            or reason.startswith("production_kernel_not_linked:")
+        ]
+        for result in results
+    }
+    internal_gaps = {claim: reasons for claim, reasons in internal_gaps.items() if reasons}
+    if internal_gaps:
+        raise ValueError(f"internal claim evidence gaps: {internal_gaps}")
 
     missing_verus = set(verus_rows) - used_verus
     if missing_verus:
