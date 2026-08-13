@@ -129,23 +129,32 @@ class CiModeTests(unittest.TestCase):
         self.assertEqual(zero_calls.returncode, 0, zero_calls.stderr)
 
         reviewed_call = self.run_automatic_execution_guard(
-            'Call::unbounded_wait(::candid::Principal::management_canister(), '
-            '"sign_with_ecdsa")\n'
+            "Call::unbounded_wait(\n"
+            "    ::candid::Principal::management_canister(),\n"
+            '    "sign_with_ecdsa",\n'
+            ")\n"
         )
         self.assertEqual(reviewed_call.returncode, 0, reviewed_call.stderr)
 
     def test_threshold_signing_guard_rejects_unreviewed_unbounded_calls(self) -> None:
         cases = {
             "multiple": (
-                'Call::unbounded_wait(::candid::Principal::management_canister(), '
-                '"sign_with_ecdsa"); '
-                'Call::unbounded_wait(::candid::Principal::management_canister(), '
-                '"sign_with_ecdsa");\n',
+                "Call::unbounded_wait(\n"
+                "    ::candid::Principal::management_canister(),\n"
+                '    "sign_with_ecdsa",\n'
+                ");\n"
+                "Call::unbounded_wait(\n"
+                "    ::candid::Principal::management_canister(),\n"
+                '    "sign_with_ecdsa",\n'
+                ");\n",
                 "",
                 "other.rs",
             ),
             "other method": (
-                'Call::unbounded_wait(::candid::Principal::management_canister(), "raw_rand")\n',
+                "Call::unbounded_wait(\n"
+                "    ::candid::Principal::management_canister(),\n"
+                '    "raw_rand",\n'
+                ")\n",
                 "",
                 "other.rs",
             ),
@@ -156,25 +165,41 @@ class CiModeTests(unittest.TestCase):
             ),
             "other source": (
                 "fn signer() {}\n",
-                'Call::unbounded_wait(::candid::Principal::management_canister(), '
-                '"sign_with_ecdsa")\n',
+                "Call::unbounded_wait(\n"
+                "    ::candid::Principal::management_canister(),\n"
+                '    "sign_with_ecdsa",\n'
+                ")\n",
                 "other.rs",
             ),
             "nested signer source": (
                 "fn signer() {}\n",
-                'Call::unbounded_wait(::candid::Principal::management_canister(), '
-                '"sign_with_ecdsa")\n',
+                "Call::unbounded_wait(\n"
+                "    ::candid::Principal::management_canister(),\n"
+                '    "sign_with_ecdsa",\n'
+                ")\n",
                 "nested/signer.rs",
             ),
             "unqualified principal": (
-                'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa")\n',
+                "Call::unbounded_wait(\n"
+                "    Principal::management_canister(),\n"
+                '    "sign_with_ecdsa",\n'
+                ")\n",
+                "",
+                "other.rs",
+            ),
+            "unformatted reviewed call": (
+                'Call::unbounded_wait(::candid::Principal::management_canister(), '
+                '"sign_with_ecdsa")\n',
                 "",
                 "other.rs",
             ),
             "shadowed principal": (
                 "struct Principal;\n"
                 "impl Principal { fn management_canister() {} }\n"
-                'Call::unbounded_wait(Principal::management_canister(), "sign_with_ecdsa")\n',
+                "Call::unbounded_wait(\n"
+                "    Principal::management_canister(),\n"
+                '    "sign_with_ecdsa",\n'
+                ")\n",
                 "",
                 "other.rs",
             ),

@@ -156,8 +156,8 @@ run_no_automatic_execution_guards() {
   )"
   if [[ "$signer_unbounded_count" != "0" ]] \
     && { [[ "$signer_unbounded_count" != "1" ]] \
-      || ! rg -q \
-        '^[[:space:]]*Call::unbounded_wait\(::candid::Principal::management_canister\(\), "sign_with_ecdsa"\)[[:space:]]*$' \
+      || ! rg -U -q \
+        '^[[:space:]]*Call::unbounded_wait\(\n[[:space:]]*::candid::Principal::management_canister\(\),\n[[:space:]]*"sign_with_ecdsa",\n[[:space:]]*\)[[:space:]]*$' \
         "$ROOT/canister/bridge-canister/src/signer.rs"; }; then
     echo "threshold signing may contain only the reviewed unbounded management call" >&2
     return 1
