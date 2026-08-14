@@ -17,6 +17,7 @@ SCRIPT_FILES = (
     "scripts/plan007/staging-canister-upgrade.sh",
     "scripts/plan007/staging_canister_upgrade.py",
     "scripts/plan007/candid_values.py",
+    "scripts/plan007/read-public-canister-metadata.mjs",
 )
 POLICY_PATH = "deployments/sepolia-staging/rpc-provider-replacement-policy.json"
 
@@ -46,6 +47,7 @@ class StagingUpgradeDriverTests(unittest.TestCase):
             "deploymentInstanceId": policy["deployment_instance_id"],
             "chainId": policy["base_chain_id"],
             "evmRpcCanisterId": policy["evm_rpc_canister_id"],
+            "icHost": "https://icp-api.io",
             "baseRpcUrl": policy["after_rpc_urls"][0],
             "baseHistoryRpcUrls": policy["after_rpc_urls"][1:],
             "rpcProviderUrlsSha256": "0x" + policy["after_rpc_urls_sha256"],
@@ -89,6 +91,23 @@ class StagingUpgradeDriverTests(unittest.TestCase):
     def write_tools(self) -> None:
         self.write_executable("cast", "#!/bin/sh\n[ \"${MOCK_CHAIN_FAIL:-0}\" = 0 ] || exit 1\necho \"${MOCK_CHAIN_ID:-84532}\"\n")
         self.write_executable("didc", "#!/bin/sh\n[ \"${MOCK_DIDC_FAIL:-0}\" = 0 ] || exit 1\n")
+        self.write_executable("node", r'''#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+state = pathlib.Path(os.environ["MOCK_STATE"])
+if len(args) != 4 or args[1] != "https://icp-api.io" or args[3] != "candid:service":
+    raise SystemExit(2)
+if os.environ.get("MOCK_PUBLIC_METADATA_FAIL") == "1":
+    print("certified metadata lookup failed", file=sys.stderr)
+    raise SystemExit(1)
+if "MOCK_PUBLIC_METADATA_JSON" in os.environ:
+    print(os.environ["MOCK_PUBLIC_METADATA_JSON"])
+    raise SystemExit(0)
+if os.environ.get("MOCK_METADATA_MISSING") == "1" and not (state / "metadata-repaired").exists():
+    print(json.dumps({"status": "absent"}))
+    raise SystemExit(0)
+print(json.dumps({"status": "present", "value": pathlib.Path(os.environ["MOCK_DID"]).read_text()}))
+''')
         self.write_executable("ic-wasm", r'''#!/usr/bin/env python3
 import os, pathlib, sys
 args = sys.argv[1:]
@@ -121,11 +140,8 @@ if args[:2] == ["canister", "install"]:
     (state / "applied").touch(); (state / "metadata-repaired").touch(); raise SystemExit(0)
 if args[:2] == ["canister", "metadata"]:
     name = args[3]
-    if name == "candid:service":
-        if os.environ.get("MOCK_METADATA_MISSING") == "1" and not (state / "metadata-repaired").exists():
-            raise SystemExit(1)
-        print(json.dumps({"value": pathlib.Path(os.environ["MOCK_DID"]).read_text()})); raise SystemExit(0)
     if name == "kinic:deployment":
+        if os.environ.get("MOCK_PRIVATE_METADATA_FAIL") == "1": raise SystemExit(1)
         print(json.dumps({"value": os.environ.get("MOCK_LIVE_DEPLOYMENT", "test-deployment")})); raise SystemExit(0)
     raise SystemExit(2)
 if args[:2] == ["canister", "status"]:
@@ -246,6 +262,27 @@ print(json.dumps({"response_candid": candid}))
         self.assertNotEqual(unknown.returncode, 0)
         self.assertFalse(self.install_record.exists())
 
+    def test_metadata_repair_rejects_lookup_failures_before_install(self) -> None:
+        missing_module = str(self.policy()["metadata_missing_module_sha256"])
+        cases = {
+            "reader failure": {"MOCK_PUBLIC_METADATA_FAIL": "1"},
+            "invalid JSON": {"MOCK_PUBLIC_METADATA_JSON": "not-json"},
+            "unknown status": {"MOCK_PUBLIC_METADATA_JSON": json.dumps({"status": "unknown"})},
+            "present without value": {
+                "MOCK_PUBLIC_METADATA_JSON": json.dumps({"status": "present"})
+            },
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                result = self.run_driver(
+                    "--repair-missing-candid-metadata", "--execute",
+                    MOCK_ALREADY_APPLIED="1", MOCK_MODULE=missing_module,
+                    MOCK_METADATA_MISSING="1", **changes,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.install_record.exists())
+                self.assertFalse((self.base / "result.json").exists())
+
     def test_metadata_repair_rejects_snapshot_drift_before_install(self) -> None:
         missing_module = str(self.policy()["metadata_missing_module_sha256"])
         cases = {
@@ -280,6 +317,18 @@ print(json.dumps({"response_candid": candid}))
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.install_record.exists())
 
+    def test_unreviewed_ic_host_is_rejected_before_live_calls(self) -> None:
+        profile_path = self.repo / "deployments/sepolia-staging/frontend-profile.json"
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        profile["icHost"] = "https://example.invalid"
+        profile_path.write_text(json.dumps(profile), encoding="utf-8")
+        self.git("add", "deployments/sepolia-staging/frontend-profile.json")
+        self.git("commit", "-qm", "unreviewed IC host")
+
+        result = self.run_driver("--execute")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.install_record.exists())
+
     def test_preconditions_fail_before_install(self) -> None:
         cases = {
             "wrong chain": {"MOCK_CHAIN_ID": "1"},
@@ -294,6 +343,7 @@ print(json.dumps({"response_candid": candid}))
             "RPC digest drift": {"MOCK_DIGEST": "22" * 32},
             "count drift": {"MOCK_COUNT_DRIFT": "1"},
             "integrity failure": {"MOCK_INTEGRITY_FAIL": "1"},
+            "private metadata failure": {"MOCK_PRIVATE_METADATA_FAIL": "1"},
         }
         for name, environment in cases.items():
             with self.subTest(name=name):

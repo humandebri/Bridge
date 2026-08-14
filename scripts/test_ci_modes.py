@@ -65,7 +65,15 @@ class CiModeTests(unittest.TestCase):
 
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
         body = function_body("run_proof_stage")
-        self.assertIn('  (\n    set -e\n    "$@"\n  )\n', body)
+        before = body.index('proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"')
+        command = body.index('    "$@"')
+        after = body.index(
+            'proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"', before + 1
+        )
+        pass_record = body.index("    stage_status=pass")
+        self.assertLess(before, command)
+        self.assertLess(command, after)
+        self.assertLess(after, pass_record)
         refinement = function_body("run_refinement_gate")
         commands = [line.strip() for line in refinement.splitlines() if line.strip()]
         self.assertTrue(all(command.endswith("|| return") for command in commands[:-1]))

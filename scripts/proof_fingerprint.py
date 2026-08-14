@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -89,3 +91,62 @@ def source_fingerprint(repo_root: Path = ROOT, manifest: Any | None = None) -> d
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return {"algorithm": "sha256", "digest": digest.hexdigest(), "input_count": len(inputs)}
+
+
+def validate_fingerprint(value: object) -> dict[str, object]:
+    if (
+        not isinstance(value, dict)
+        or value.get("algorithm") != "sha256"
+        or not isinstance(value.get("digest"), str)
+        or len(value["digest"]) != 64
+        or any(character not in "0123456789abcdef" for character in value["digest"])
+        or type(value.get("input_count")) is not int
+        or value["input_count"] <= 0
+    ):
+        raise ValueError("proof source fingerprint has an invalid shape")
+    return value
+
+
+def load_fingerprint(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"proof source fingerprint is unreadable: {path}") from error
+    return validate_fingerprint(value)
+
+
+def write_fingerprint(path: Path, repo_root: Path = ROOT) -> dict[str, object]:
+    value = source_fingerprint(repo_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+    return value
+
+
+def check_fingerprint(path: Path, repo_root: Path = ROOT) -> dict[str, object]:
+    expected = load_fingerprint(path)
+    actual = source_fingerprint(repo_root)
+    if actual != expected:
+        raise ValueError("proof inputs changed after the proof run started")
+    return expected
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--write", type=Path, metavar="PATH")
+    action.add_argument("--check", type=Path, metavar="PATH")
+    args = parser.parse_args()
+    try:
+        value = (
+            write_fingerprint(args.write)
+            if args.write is not None
+            else check_fingerprint(args.check)
+        )
+    except ValueError as error:
+        parser.exit(1, f"{error}\n")
+    print(json.dumps(value, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

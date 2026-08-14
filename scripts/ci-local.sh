@@ -149,6 +149,7 @@ run_versions() {
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
   node "$ROOT/scripts/plan007/test-check-reinstall-instance.mjs"
+  node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
   python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
@@ -594,27 +595,35 @@ run_proof_stage() {
   local stage="$1"
   shift
   local status
+  local stage_status
   set +e
   (
     set -e
+    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
     "$@"
+    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
   )
   status=$?
   set -e
   if [[ "$status" -eq 0 ]]; then
-    printf '%s\tpass\n' "$stage" >>"$PROOF_STAGE_RECEIPT"
+    stage_status=pass
   else
-    printf '%s\tfail\n' "$stage" >>"$PROOF_STAGE_RECEIPT"
+    stage_status=fail
   fi
+  printf '%s\t%s\t' "$stage" "$stage_status" >>"$PROOF_STAGE_RECEIPT"
+  tr -d '\n' <"$PROOF_SOURCE_BASELINE" >>"$PROOF_STAGE_RECEIPT"
+  printf '\n' >>"$PROOF_STAGE_RECEIPT"
   python3 "$ROOT/scripts/write_proof_receipt.py" \
-    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
+    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"
   return "$status"
 }
 
 run_proofs() {
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
+  PROOF_SOURCE_BASELINE="$TMP_ROOT/proof-source-fingerprint.json"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
+  python3 "$ROOT/scripts/proof_fingerprint.py" --write "$PROOF_SOURCE_BASELINE" >/dev/null
   python3 "$ROOT/scripts/test_write_proof_receipt.py"
   python3 "$ROOT/scripts/test_claim_test_manifest.py"
   python3 "$ROOT/scripts/test_check_claim_manifest.py"
