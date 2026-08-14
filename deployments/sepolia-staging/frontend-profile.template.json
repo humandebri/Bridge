@@ -16,6 +16,7 @@
   "chainId": 84532,
   "bridgeCanisterId": "REPLACE_WITH_TEST_BRIDGE_CANISTER_ID",
   "deploymentInstanceId": "REPLACE_WITH_0X_32_BYTE_DEPLOYMENT_INSTANCE_ID",
+  "minimumWithdrawalId": "REPLACE_WITH_0X_32_BYTE_MINIMUM_WITHDRAWAL_ID",
   "ledgerCanisterId": "REPLACE_WITH_TEST_LEDGER_CANISTER_ID",
   "indexCanisterId": "REPLACE_WITH_TEST_INDEX_CANISTER_ID",
   "icToken": { "name": "TEST KINIC", "symbol": "TEST KINIC", "decimals": 8 },

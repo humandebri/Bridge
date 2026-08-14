@@ -331,6 +331,7 @@ function notificationFailure(error: unknown, automaticRetryExhausted: boolean): 
       "InvalidTransactionHash",
       "LedgerFeeExceedsServiceFee",
       "TransactionReverted",
+      "WithdrawalBeforeAdmissionBoundary",
       "WithdrawalConflict",
     ].includes(error.code)) return { code: error.code, message, disposition: "terminal" }
     return { code: error.code, message, disposition: "manual-retry" }

@@ -21,7 +21,7 @@ production artifactではKINIC mainnet Ledgerのlive fee、固定値`100000`、�
 - clean commitで`scripts/plan007-local-gate.sh`を実行し、現行commitの`local-e2e.json`を発行する。
 - `frontend-profile.json`の値を予定値として信用せず、共有test Ledger/Index、staging Bridge、Base Sepoliaのlive値を再読する。
 - ICP identity名、wallet secret、RPC fault controller tokenはリポジトリへ保存しない。
-- Canister install/upgrade/reinstallとcycles投入、Base Sepolia transaction、Cloudflare test UI公開は別々に承認を得る。
+- Canisterの初回installと同一instance upgrade、cycles投入、Base Sepolia transaction、Cloudflare test UI公開は別々に承認を得る。初期化済みCanisterのreinstallは行わない。
 - install前にIC Deposit、Base Deposit Mint、Base Withdrawalをpauseし、Finalized postconditionを記録する。どれか一つでもpauseできない場合は後続を実行しない。
 
 ## 証跡state machine
@@ -54,30 +54,44 @@ preflight
 各stageは、操作後に取得したraw artifact、artifact SHA-256、source commit、観測値だけをstage evidenceへ記録する。
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
-Canister installの前にはlive `public_config` をJSONへ保存し、次のgateを必ず通す。
-現行v32のreinstallではprofileの新IDがlive IDと異なることを要求する。現行v32のupgradeでは
-`current-schema-upgrade`としてprofileとliveのinstance ID一致を要求し、upgrade前後のstate count、
-schema v32、instance ID、`storage_integrity_check = ok`を照合する。
-v31以下、未知schema、欠落、ゼロ値はfail closedにする。旧schemaを保持したupgradeは行わない。
-v31は、状態破棄が明示承認され、新しいdeployment instance IDがlive IDと異なり、三つのpause、
-pending Timelockゼロ、state count snapshot、storage integrity、Ledger balanceを同じpreflightへ記録した場合に限り、
-`obsolete-schema-reinstall`としてv32へreinstallできる。install evidenceのmodeは必ず`reinstall`でなければならない。
-出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、
-manifest検証でも同じ比較を行う。
+Canister upgradeの前にはlive `public_config` をJSONへ保存し、次のgateを必ず通す。
+現行v32の同一instance upgradeだけを`current-schema-upgrade`として受理し、upgrade前後のstate count、
+schema v32、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、v31以下、
+未知schema、欠落、ゼロ値はfail closedにする。新規Canisterへの初回installだけはこのupgrade gateの対象外である。
+出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、manifest検証でも同じ比較を行う。
 
 ```sh
-scripts/plan007/staging-e2e-driver.sh check-reinstall-instance \
+scripts/plan007/staging-e2e-driver.sh check-upgrade-instance \
   /secure/work/live-public-config.json \
   /secure/work/live-canister-status.json \
-  > /secure/work/reinstall-instance-check.json
+  > /secure/work/upgrade-instance-check.json
 ```
 
 checkerへ渡した `live-public-config.json`、`live-canister-status.json` と、その標準出力
-`reinstall-instance-check.json` を変更せずmanifestディレクトリ配下へコピーする。
+`upgrade-instance-check.json` を変更せずmanifestディレクトリ配下へコピーする。
 preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-config`、`live-canister-status` と
-`reinstall-instance-check` を付け、コピー後のSHA-256を記録する。manifest validatorは
+`upgrade-instance-check` を付け、コピー後のSHA-256を記録する。manifest validatorは
 各artifactを再読し、live設定とmodule hashから比較を再計算してchecker出力および`details`と照合する。
 別のlive取得結果、手編集したchecker出力、manifest外のpathは使用しない。
+
+履歴を失った空のstaging stateを同じBase Bridgeへ復旧するときは、Base Withdrawalをpauseしたまま、
+固定した3 RPCから同一のcanonical Finalized checkpointに対する`nextWithdrawalId()`を取得する。
+その値を「まだ一度も発行されていない最初のID」として、inclusiveな`minimum_withdrawal_id`へ一度だけ設定する。
+
+```sh
+scripts/plan007/staging-e2e-driver.sh capture-withdrawal-boundary \
+  /secure/work/withdrawal-boundary-capture.json \
+  > /secure/work/withdrawal-admission-boundary.json
+```
+
+capture configは`schema_version = 1`と、credentialを含まない相異なる3件の`rpc_urls`だけを持つ。
+`rpc_urls`はfrontend profileの`baseRpcUrl`、続いて`baseHistoryRpcUrls`の順序付き3件と完全一致させる。
+artifactは全providerのchain ID、EIP-1898 canonical block hash、pause状態、`nextWithdrawalId`を記録し、
+2-of-3が同一block hashと境界値へ一致しなければ失敗する。preflight、upgrade引数、upgrade後PublicConfig、
+frontend profileは同じ境界値をhashで束縛する。境界未満の古いIDはcanonical eventであってもrecord作成、
+Ledger call、liability変更より前に拒否する。境界以上だけを受理し、境界はupgrade後に変更できない。
+Base Withdrawalをpauseした状態でpreflight直前にcaptureし、5分以内にpreflightを記録する。capture開始前から
+upgrade完了までBase Withdrawalを再開してはならず、古いartifact、未来時刻、provider順序の不一致は拒否する。
 
 v32→v32 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
 

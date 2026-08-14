@@ -2157,6 +2157,7 @@ mod tests {
             expected_bridge_runtime_sha256: vec![0x55; 32],
             timelock_contract: vec![0x43; 20],
             deployment_instance_id: vec![0x44; 32],
+            minimum_withdrawal_id: [vec![0; 31], vec![1]].concat(),
             base_chain_id: 8453,
             custom_evm_rpc_urls: vec![
                 "https://rpc-1.example".to_owned(),

@@ -25,6 +25,12 @@ theorem withdrawal_finalization_claim
     receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock :=
   withdrawal_notify_requires_finalized_success accepted
 
+theorem withdrawal_admission_boundary_claim
+    {observed minimum : Nat}
+    (accepted : withdrawalIdAdmissible observed minimum = true) :
+    minimum != 0 ∧ minimum ≤ observed :=
+  withdrawal_id_admission_requires_nonzero_inclusive_boundary accepted
+
 theorem pending_queue_claim
     {queue : PendingQueue} {existing incoming : PendingQueueEntry}
     (blocked : existing.blocked = true)

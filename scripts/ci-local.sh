@@ -148,12 +148,12 @@ run_versions() {
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
-  node "$ROOT/scripts/plan007/test-check-reinstall-instance.mjs"
+  node "$ROOT/scripts/plan007/test-check-upgrade-instance.mjs"
+  node "$ROOT/scripts/plan007/test-capture-withdrawal-boundary.mjs"
   node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
   python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
-  node "$ROOT/scripts/plan007/test-capture-obsolete-pause-evidence.mjs"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
     "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
@@ -930,6 +930,7 @@ run_smoke() {
     expected_bridge_runtime_sha256 = blob \"\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\";
     timelock_contract = blob \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\";
     deployment_instance_id = blob \"\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\";
+    minimum_withdrawal_id = blob \"\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\01\";
     ecdsa_key_name = \"dfx_test_key\";
     ecdsa_derivation_path = vec {};
     governance_ecdsa_derivation_path = vec { blob \"governance-operator\" };

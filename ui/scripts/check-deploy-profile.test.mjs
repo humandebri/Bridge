@@ -26,6 +26,7 @@ function fixture(profileOverrides = {}) {
     icHost: "https://icp-api.io", baseRpcUrl: "https://rpc.example", chainId: 8453,
     bridgeCanisterId: "aaaaa-aa", ledgerCanisterId: "aaaaa-aa", indexCanisterId: "aaaaa-aa",
     deploymentInstanceId: `0x${"99".repeat(32)}`,
+    minimumWithdrawalId: `0x${"00".repeat(31)}01`,
     icToken: { name: "KINIC", symbol: "KINIC", decimals: 8 }, baseToken: { symbol: "KINIC", decimals: 8 },
     bridgeAddress: `0x${"11".repeat(20)}`, bsnsAddress: `0x${"22".repeat(20)}`,
     timelockAddress: `0x${"77".repeat(20)}`,

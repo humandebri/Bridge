@@ -53,7 +53,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, notification_ingestion_rate_limit_global: 30, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, notification_ingestion_rate_limit_global: 30, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     Object.assign(init, initOverrides);
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(wasmPath), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
@@ -1137,6 +1137,50 @@ describe("Phase 3 PocketIC saga", () => {
     const broadcasts = await (evm.actor as any).broadcast_transactions();
     expect(broadcasts).toHaveLength(0);
   });
+
+  async function rejects_a_pre_boundary_withdrawal_before_state_or_Ledger_effects_and_accepts_the_boundary() {
+    const minimum = new Uint8Array([...new Uint8Array(31), 6]);
+    const { ledger, evm, bridge, runtimePrincipal } = await setup(true, {
+      minimum_withdrawal_id: minimum,
+    });
+    const withdrawal = (id: Uint8Array) => [{
+      id,
+      owner: runtimePrincipal.toUint8Array(),
+      subaccount: new Uint8Array(32),
+      amount: 1_000_000n,
+      max_service_fee: 100_000n,
+      charged_service_fee: 100_000n,
+      amount_out: 900_000n,
+    }];
+    const oldId = new Uint8Array([...new Uint8Array(31), 5]);
+    await (evm.actor as any).set_withdrawal(withdrawal(oldId));
+
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(9),
+    })).toEqual({
+      Err: {
+        WithdrawalBeforeAdmissionBoundary: {
+          observed_withdrawal_id: oldId,
+          minimum_withdrawal_id: minimum,
+        },
+      },
+    });
+    expect((await (bridge.actor as any).get_bridge_status()).counts.withdrawals).toBe(0n);
+    expect(await (bridge.actor as any).get_withdrawal(oldId)).toEqual([]);
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
+
+    await (evm.actor as any).set_withdrawal(withdrawal(minimum));
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(9),
+    })).toHaveProperty("Ok.Ingested");
+    expect((await (bridge.actor as any).get_bridge_status()).counts.withdrawals).toBe(1n);
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
+  }
+
+  it(
+    "rejects a pre-boundary withdrawal before state or Ledger effects and accepts the boundary",
+    rejects_a_pre_boundary_withdrawal_before_state_or_Ledger_effects_and_accepts_the_boundary,
+  );
 
   it("charges ingestion quota only when the validated withdrawal is committed", async () => {
     const { evm, bridge, runtimePrincipal } = await setup(true, {

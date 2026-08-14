@@ -5148,6 +5148,36 @@ impl StableStore {
         self.set_external_progress(&progress)
     }
 
+    #[cfg(feature = "test-deployment")]
+    pub fn set_staging_minimum_withdrawal_id_once(
+        &mut self,
+        minimum_withdrawal_id: &[u8],
+    ) -> Result<(), StorageError> {
+        if minimum_withdrawal_id.len() != 32 || minimum_withdrawal_id.iter().all(|byte| *byte == 0)
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        let mut config = decode::<Option<ImmutableBridgeConfig>>(&self.config.get()?)?
+            .ok_or(StorageError::RecordNotFound)?;
+        if config.minimum_withdrawal_id == minimum_withdrawal_id {
+            return Ok(());
+        }
+        if config.minimum_withdrawal_id.iter().any(|byte| *byte != 0) {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        let counts = self.status_counts()?;
+        let liabilities = self.withdrawal_liability_summary()?;
+        if counts.withdrawals != 0
+            || counts.pending_ledger_operations != 0
+            || liabilities.count != 0
+            || liabilities.amount_out != 0
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        config.minimum_withdrawal_id = minimum_withdrawal_id.to_vec();
+        self.config.set(encode(&Some(config))?)
+    }
+
     pub fn initialize_admin(&mut self, config: &BridgeInitArgs) -> Result<(), StorageError> {
         if decode::<Option<AdminState>>(&self.admin_state.get()?)?.is_some() {
             return Ok(());
@@ -8582,6 +8612,7 @@ mod tests {
             expected_bridge_runtime_sha256: vec![4; 32],
             timelock_contract: vec![2; 20],
             deployment_instance_id: vec![3; 32],
+            minimum_withdrawal_id: [vec![0; 31], vec![1]].concat(),
             ecdsa_key_name: "test_key".into(),
             ecdsa_derivation_path: vec![],
             governance_ecdsa_derivation_path: vec![b"governance-operator".to_vec()],
@@ -11124,6 +11155,56 @@ mod tests {
     #[cfg(feature = "test-deployment")]
     #[test]
     #[serial]
+    fn staging_withdrawal_boundary_is_one_time_and_requires_empty_liabilities() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.minimum_withdrawal_id = vec![0; 32];
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize pre-boundary staging state");
+        let minimum = [vec![0; 31], vec![3]].concat();
+
+        store
+            .set_staging_minimum_withdrawal_id_once(&minimum)
+            .expect("set reviewed boundary");
+        store
+            .set_staging_minimum_withdrawal_id_once(&minimum)
+            .expect("repeat identical boundary");
+        assert_eq!(
+            store
+                .config()
+                .expect("config")
+                .expect("configured")
+                .minimum_withdrawal_id,
+            minimum
+        );
+        assert_eq!(
+            store.set_staging_minimum_withdrawal_id_once(&[4; 32]),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        );
+        store
+            .put_withdrawal(&withdrawal())
+            .expect("seed post-boundary withdrawal");
+        store
+            .set_staging_minimum_withdrawal_id_once(&minimum)
+            .expect("identical boundary remains idempotent after use");
+
+        let blocked_memory = VectorMemory::default();
+        let mut blocked_config = config();
+        blocked_config.minimum_withdrawal_id = vec![0; 32];
+        let mut blocked = StableStore::init_configured(blocked_memory, &blocked_config)
+            .expect("initialize blocked staging state");
+        blocked
+            .put_withdrawal(&withdrawal())
+            .expect("seed withdrawal");
+        assert_eq!(
+            blocked.set_staging_minimum_withdrawal_id_once(&minimum),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        );
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
     fn staging_rpc_replacement_preserves_state_and_invalidates_runtime_attestation() {
         let memory = VectorMemory::default();
         let mut initial = config();
@@ -11167,6 +11248,7 @@ mod tests {
             .to_vec();
         let args = crate::config::StagingUpgradeArgs {
             status_counts_guard_version: 1,
+            minimum_withdrawal_id: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
                 custom_evm_rpc_urls: requested.clone(),
                 expected_status_counts: counts_before.staging_expected_status_counts(),
@@ -11253,6 +11335,7 @@ mod tests {
         drifted.deposits += 1;
         let args = crate::config::StagingUpgradeArgs {
             status_counts_guard_version: 1,
+            minimum_withdrawal_id: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
                 custom_evm_rpc_urls: crate::config::STAGING_NEW_RPC_URLS
                     .map(str::to_owned)
@@ -11281,6 +11364,7 @@ mod tests {
         let empty_unguarded = crate::config::StagingUpgradeArgs {
             status_counts_guard_version: 0,
             rpc_provider_update: None,
+            minimum_withdrawal_id: None,
         };
         assert_eq!(
             crate::apply_staging_rpc_provider_update(&mut store, &empty_unguarded),

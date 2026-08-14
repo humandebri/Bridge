@@ -96,6 +96,9 @@ def decideWithdrawalFinalization
       if finalized < receiptBlock then .retry
       else if receiptSucceeded then .notify else .discardReverted
 
+def withdrawalIdAdmissible (observed minimum : Nat) : Bool :=
+  minimum != 0 && minimum ≤ observed
+
 structure PendingQueueEntry where
   key : Nat
   owner : Nat

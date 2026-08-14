@@ -348,6 +348,14 @@ theorem withdrawal_finalization_witness : WithdrawalFinalization := by
   · intro receiptSucceeded receiptBlock
     rfl
 
+def WithdrawalAdmissionBoundary : Prop :=
+  ∀ {observed minimum : Nat},
+    withdrawalIdAdmissible observed minimum = true →
+      minimum != 0 ∧ minimum ≤ observed
+
+theorem withdrawal_admission_boundary_witness : WithdrawalAdmissionBoundary :=
+  Claims.withdrawal_admission_boundary_claim
+
 def PendingQueue : Prop :=
   (∀ {queue : BridgeSpec.PendingQueue} {existing incoming : PendingQueueEntry},
       existing.blocked = true → queue incoming.key = some existing →

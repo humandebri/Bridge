@@ -268,6 +268,10 @@ pub enum NotifyWithdrawalError {
     WithdrawalConflict,
     BaseStateMismatch,
     BridgeSignerMismatch,
+    WithdrawalBeforeAdmissionBoundary {
+        observed_withdrawal_id: Vec<u8>,
+        minimum_withdrawal_id: Vec<u8>,
+    },
     StorageFailure,
     Busy,
     RateLimited,
@@ -338,6 +342,12 @@ pub async fn notify_withdrawal(
                 finalized_checkpoint_block_number,
             ),
         };
+    if !bridge_core::withdrawal_id_is_admissible(&observed.id, &config.minimum_withdrawal_id) {
+        return Err(NotifyWithdrawalError::WithdrawalBeforeAdmissionBoundary {
+            observed_withdrawal_id: observed.id.to_vec(),
+            minimum_withdrawal_id: config.minimum_withdrawal_id,
+        });
+    }
     let expected_signer = cached_signer_address(&config)
         .await
         .map_err(|_| NotifyWithdrawalError::StorageFailure)?;

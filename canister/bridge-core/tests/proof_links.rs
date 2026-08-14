@@ -4,7 +4,7 @@ use bridge_core::{
     hold_resolution_decision, lease_lane_claim_decision, lease_outcome_decision,
     manual_claim_decision, notification_admission_allowed, payout_decision,
     release_transfer_matches, reservation_decision, service_fee_change_allowed,
-    settlement_decision, withdrawal_finalized_checkpoint,
+    settlement_decision, withdrawal_finalized_checkpoint, withdrawal_id_is_admissible,
 };
 
 macro_rules! production_link {
@@ -17,6 +17,12 @@ macro_rules! production_link {
 
 #[test]
 fn phase5_production_links_typecheck() {
+    production_link!(
+        "withdrawal_admission_boundary",
+        "canister/bridge-core/src/kernel.rs#withdrawal_id_is_admissible",
+        withdrawal_id_is_admissible,
+        fn(&[u8; 32], &[u8]) -> bool
+    );
     production_link!(
         "committed_quote",
         "canister/bridge-core/src/kernel.rs#committed_quote_matches",
@@ -127,6 +133,23 @@ fn phase5_production_links_typecheck() {
         withdrawal_finalized_checkpoint,
         fn(Option<u64>, Option<u64>, Option<u64>) -> Option<u64>
     );
+}
+
+#[test]
+fn withdrawal_admission_boundary_uses_the_full_big_endian_uint256() {
+    let mut minimum = [0u8; 32];
+    minimum[15] = 1;
+    let mut below = minimum;
+    below[15] = 0;
+    below[31] = u8::MAX;
+    let mut above = minimum;
+    above[31] = 1;
+
+    assert!(!withdrawal_id_is_admissible(&below, &minimum));
+    assert!(withdrawal_id_is_admissible(&minimum, &minimum));
+    assert!(withdrawal_id_is_admissible(&above, &minimum));
+    assert!(!withdrawal_id_is_admissible(&minimum, &[0; 32]));
+    assert!(!withdrawal_id_is_admissible(&minimum, &[1; 31]));
 }
 
 #[test]

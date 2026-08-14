@@ -110,6 +110,7 @@ function historyNotificationFailure(error: unknown): PendingNotificationFailure 
     "InvalidTransactionHash",
     "LedgerFeeExceedsServiceFee",
     "TransactionReverted",
+    "WithdrawalBeforeAdmissionBoundary",
     "WithdrawalConflict",
   ].includes(error.code)) return { code: error.code, message, disposition: "terminal" }
   return { code: error.code, message, disposition: "manual-retry" }

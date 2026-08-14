@@ -59,6 +59,7 @@ struct Profile {
     bridge_contract: String,
     bsns_contract: String,
     deployment_instance_id: String,
+    minimum_withdrawal_id: String,
     deployment_block: u64,
     expected_bridge_signer: String,
     bridge_canister_wasm_sha256: String,
@@ -346,6 +347,7 @@ struct LivePublicConfig {
     bridge_contract: String,
     timelock_contract: String,
     deployment_instance_id: String,
+    minimum_withdrawal_id: String,
     ledger_canister_id: String,
     index_canister_id: String,
     schema_version: u16,
@@ -1026,11 +1028,12 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         return Err("profile must bind the official EVM RPC canister ID".into());
     }
     if !valid_nonzero_hash32(&profile.deployment_instance_id)
+        || !valid_nonzero_hash32(&profile.minimum_withdrawal_id)
         || !valid_sha256(&profile.bridge_canister_wasm_sha256)
         || !valid_sha256(&profile.bridge_runtime_bytecode_sha256)
         || !valid_sha256(&profile.bsns_runtime_bytecode_sha256)
     {
-        return Err("profile must bind a deployment instance ID and Bridge artifact hashes".into());
+        return Err("profile must bind a deployment instance ID, minimum withdrawal ID, and Bridge artifact hashes".into());
     }
     if profile.environment == "mainnet-candidate"
         && (profile.test_assets_only
@@ -1320,6 +1323,7 @@ fn render_release_inputs(
         "expected_bridge_runtime_sha256_hex": profile.bridge_runtime_bytecode_sha256,
         "timelock_contract_hex": profile.timelock.address.trim_start_matches("0x"),
         "deployment_instance_id_hex": profile.deployment_instance_id.trim_start_matches("0x"),
+        "minimum_withdrawal_id_hex": profile.minimum_withdrawal_id.trim_start_matches("0x"),
         "ecdsa_key_name": profile.ecdsa_key_name,
         "ecdsa_derivation_path_utf8": profile.ecdsa_derivation_path,
         "governance_ecdsa_derivation_path_utf8": profile.governance_ecdsa_derivation_path,
@@ -1382,6 +1386,7 @@ fn render_release_inputs(
         "chainId": profile.chain_id,
         "bridgeCanisterId": profile.bridge_canister_id,
         "deploymentInstanceId": profile.deployment_instance_id,
+        "minimumWithdrawalId": profile.minimum_withdrawal_id,
         "ledgerCanisterId": profile.ledger_canister_id,
         "indexCanisterId": profile.index_canister_id,
         "snsRootCanisterId": profile.root_canister_id,
@@ -1949,6 +1954,9 @@ fn validate_live_public_config(
         || !observed
             .deployment_instance_id
             .eq_ignore_ascii_case(&profile.deployment_instance_id)
+        || !observed
+            .minimum_withdrawal_id
+            .eq_ignore_ascii_case(&profile.minimum_withdrawal_id)
         || observed.ledger_canister_id != profile.ledger_canister_id
         || observed.index_canister_id != profile.index_canister_id
         || observed.schema_version != profile.canister_schema_version
@@ -2877,9 +2885,13 @@ mod tests {
     }
 
     #[test]
-    fn deployment_instance_id_must_be_nonzero() {
+    fn deployment_and_withdrawal_boundary_ids_must_be_nonzero() {
         assert!(valid_nonzero_hash32(&format!("0x{}", "11".repeat(32))));
         assert!(!valid_nonzero_hash32(&format!("0x{}", "00".repeat(32))));
+
+        let mut profile = valid_profile();
+        profile.minimum_withdrawal_id = format!("0x{}", "00".repeat(32));
+        assert!(validate_profile(&profile, true).is_err());
     }
 
     fn valid_profile() -> Profile {
@@ -2900,6 +2912,7 @@ mod tests {
             bridge_contract: address(1),
             bsns_contract: address(8),
             deployment_instance_id: format!("0x{}", "11".repeat(32)),
+            minimum_withdrawal_id: format!("0x{}01", "00".repeat(31)),
             deployment_block: 1,
             expected_bridge_signer: address(2),
             bridge_canister_wasm_sha256: "3".repeat(64),
@@ -2989,6 +3002,7 @@ mod tests {
             bridge_contract: profile.bridge_contract.clone(),
             timelock_contract: profile.timelock.address.clone(),
             deployment_instance_id: profile.deployment_instance_id.clone(),
+            minimum_withdrawal_id: profile.minimum_withdrawal_id.clone(),
             ledger_canister_id: profile.ledger_canister_id.clone(),
             index_canister_id: profile.index_canister_id.clone(),
             schema_version: profile.canister_schema_version,
@@ -3220,6 +3234,7 @@ mod tests {
             "expected_bridge_runtime_sha256_hex",
             "timelock_contract_hex",
             "deployment_instance_id_hex",
+            "minimum_withdrawal_id_hex",
             "ecdsa_key_name",
             "ecdsa_derivation_path_utf8",
             "governance_ecdsa_derivation_path_utf8",

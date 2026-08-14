@@ -10,7 +10,7 @@ import os
 import re
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,15 +23,14 @@ ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
 CURRENT_STABLE_SCHEMA = 32
 LIVE_PUBLIC_CONFIG_ARTIFACT_KIND = "live-public-config"
-REINSTALL_INSTANCE_CHECK_ARTIFACT_KIND = "reinstall-instance-check"
+UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND = "upgrade-instance-check"
+WITHDRAWAL_BOUNDARY_ARTIFACT_KIND = "withdrawal-admission-boundary"
 LIVE_BRIDGE_STATUS_ARTIFACT_KIND = "live-bridge-status"
 LIVE_ACTIVATION_STATUS_ARTIFACT_KIND = "live-activation-status"
 LIVE_CANISTER_STATUS_ARTIFACT_KIND = "live-canister-status"
 LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND = "live-storage-integrity"
 LIVE_LEDGER_BALANCE_ARTIFACT_KIND = "live-ledger-balance"
-CURRENT_SCHEMA_REINSTALL = "current-schema-reinstall"
 CURRENT_SCHEMA_UPGRADE = "current-schema-upgrade"
-OBSOLETE_SCHEMA_REINSTALL = "obsolete-schema-reinstall"
 UPGRADE_STATE_COUNT_FIELDS = {
     "deposits",
     "withdrawals",
@@ -244,7 +243,7 @@ def required_json_artifact(
     return load_object(target)
 
 
-def reinstall_instance_check(
+def upgrade_instance_check(
     next_deployment_instance_id: Any,
     live_public_config: dict[str, Any],
     live_canister_status: dict[str, Any],
@@ -259,11 +258,8 @@ def reinstall_instance_check(
         "schema_version",
         "live PublicConfig",
     )
-    if schema_version not in {31, CURRENT_STABLE_SCHEMA}:
-        fail(
-            "staging install check only accepts current schema "
-            f"v{CURRENT_STABLE_SCHEMA} or explicitly discarded schema v31"
-        )
+    if schema_version != CURRENT_STABLE_SCHEMA:
+        fail(f"staging upgrade requires current stable schema v{CURRENT_STABLE_SCHEMA}")
     previous = deployment_instance_hex(
         live_public_config.get("deployment_instance_id"),
         "live PublicConfig deployment_instance_id",
@@ -276,17 +272,10 @@ def reinstall_instance_check(
     )
     if live_module_hash == "0x" + "0" * 64:
         fail("live canister status module_hash must be nonzero")
-    if schema_version == 31 and previous == next_id:
-        fail("obsolete schema v31 reinstall requires a distinct deployment instance ID")
-    replacement_mode = (
-        OBSOLETE_SCHEMA_REINSTALL
-        if schema_version == 31
-        else CURRENT_SCHEMA_UPGRADE
-        if previous == next_id
-        else CURRENT_SCHEMA_REINSTALL
-    )
+    if previous != next_id:
+        fail("reinstall is prohibited: staging upgrade must preserve the deployment instance ID")
     return {
-        "replacement_mode": replacement_mode,
+        "replacement_mode": CURRENT_SCHEMA_UPGRADE,
         "live_schema_version": schema_version,
         "previous_deployment_instance_id": previous,
         "live_module_hash": live_module_hash,
@@ -294,8 +283,8 @@ def reinstall_instance_check(
     }
 
 
-def normalized_reinstall_check(value: dict[str, Any]) -> dict[str, Any]:
-    context = "reinstall instance check"
+def normalized_upgrade_check(value: dict[str, Any]) -> dict[str, Any]:
+    context = "upgrade instance check"
     exact_keys(
         value,
         {
@@ -309,24 +298,15 @@ def normalized_reinstall_check(value: dict[str, Any]) -> dict[str, Any]:
     )
     schema_version = require_nat(value, "live_schema_version", context)
     replacement_mode = require_string(value, "replacement_mode", context)
-    previous_value = value["previous_deployment_instance_id"]
-    previous = (
-        None
-        if previous_value is None
-        else deployment_instance_hex(previous_value, f"{context} previous_deployment_instance_id")
+    previous = deployment_instance_hex(
+        value["previous_deployment_instance_id"],
+        f"{context} previous_deployment_instance_id",
     )
     next_id = deployment_instance_hex(value["next"], f"{context} next")
-    expected_mode = (
-        CURRENT_SCHEMA_UPGRADE
-        if schema_version == CURRENT_STABLE_SCHEMA and previous == next_id
-        else CURRENT_SCHEMA_REINSTALL
-        if schema_version == CURRENT_STABLE_SCHEMA
-        else OBSOLETE_SCHEMA_REINSTALL
-        if schema_version == 31 and previous != next_id
-        else None
-    )
-    if replacement_mode != expected_mode:
-        fail(f"{context} replacement_mode does not match schema and deployment instance IDs")
+    if schema_version != CURRENT_STABLE_SCHEMA or previous != next_id:
+        fail(f"{context} must preserve the current schema and deployment instance ID")
+    if replacement_mode != CURRENT_SCHEMA_UPGRADE:
+        fail(f"{context} replacement_mode must be {CURRENT_SCHEMA_UPGRADE}")
     return {
         "replacement_mode": replacement_mode,
         "live_schema_version": schema_version,
@@ -341,229 +321,66 @@ def normalized_reinstall_check(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def validate_obsolete_pause_evidence(
+def validate_withdrawal_boundary(
     value: dict[str, Any],
     binding: dict[str, Any],
-    expected_check: dict[str, Any],
-) -> None:
-    context = "obsolete pause evidence"
-    exact_keys(
-        value,
-        {
-            "schema_version",
-            "environment",
-            "capture_id",
-            "capture_started_at",
-            "observed_at",
-            "bridge_canister_id",
-            "chain_id",
-            "bridge_address",
-            "providers",
-            "ic_pause",
-            "ic_live",
-            "complete",
-        },
-        context,
+    preflight_observed_at: str,
+    configured_provider_digests: list[str],
+) -> str:
+    context = "withdrawal admission boundary"
+    exact_keys(value, {
+        "schema_version", "kind", "observed_at", "chain_id", "bridge_address",
+        "finalized_checkpoint_block_number", "finalized_checkpoint_block_hash",
+        "withdrawals_paused", "minimum_withdrawal_id", "providers",
+    }, context)
+    if value["schema_version"] != 1 or value["kind"] != WITHDRAWAL_BOUNDARY_ARTIFACT_KIND:
+        fail(f"{context} has an unsupported schema or kind")
+    boundary_observed_at = validate_timestamp(
+        require_string(value, "observed_at", context),
+        f"{context}.observed_at",
     )
-    if value["schema_version"] != 2 or value["environment"] != "sepolia-staging":
-        fail(f"{context} must be a schema v2 Sepolia staging record")
-    capture_id = require_string(value, "capture_id", context)
-    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", capture_id):
-        fail(f"{context}.capture_id must be a UUIDv4")
-    started_at = validate_timestamp(require_string(value, "capture_started_at", context), f"{context}.capture_started_at")
-    completed_at = validate_timestamp(require_string(value, "observed_at", context), f"{context}.observed_at")
-    if completed_at < started_at or (completed_at - started_at).total_seconds() > 300:
-        fail(f"{context} capture must complete within five minutes")
-    if (completed_at - datetime.now(timezone.utc)).total_seconds() > 60:
-        fail(f"{context} capture timestamp is too far in the future")
-    ic_live = value["ic_live"]
-    if not isinstance(ic_live, dict):
-        fail(f"{context}.ic_live must be an object")
-    exact_keys(
-        ic_live,
-        {"observed_at", "live_schema_version", "previous_deployment_instance_id", "live_module_hash", "status_deposits_paused"},
-        f"{context}.ic_live",
-    )
-    ic_live_at = validate_timestamp(require_string(ic_live, "observed_at", f"{context}.ic_live"), f"{context}.ic_live.observed_at")
-    if ic_live_at < started_at or ic_live_at > completed_at or (completed_at - ic_live_at).total_seconds() > 60:
-        fail(f"{context}.ic_live must be observed in the final capture minute")
-    if (
-        value["bridge_canister_id"] != binding["bridge_canister_id"]
-        or require_nat(value, "chain_id", context) != CHAIN_ID
-        or require_nat(ic_live, "live_schema_version", f"{context}.ic_live")
-        != expected_check["live_schema_version"]
-        or deployment_instance_hex(
-            ic_live["previous_deployment_instance_id"],
-            f"{context}.ic_live.previous_deployment_instance_id",
-        )
-        != expected_check["previous_deployment_instance_id"]
-        or require_pattern(ic_live, "live_module_hash", EVM_HASH, f"{context}.ic_live")
-        != expected_check["live_module_hash"]
-        or ic_live["status_deposits_paused"] is not True
-        or require_string(value, "bridge_address", context).lower()
-        != str(binding["bridge_address"]).lower()
-        or value["complete"] is not True
-    ):
-        fail(f"{context} differs from the reviewed replacement binding")
-
+    preflight_at = validate_timestamp(preflight_observed_at, "preflight.observed_at")
+    boundary_age = preflight_at - boundary_observed_at
+    if boundary_age < timedelta(0) or boundary_age > timedelta(minutes=5):
+        fail(f"{context} must be observed no more than five minutes before preflight")
+    if require_nat(value, "chain_id", context) != binding["chain_id"]:
+        fail(f"{context} chain ID differs from the binding")
+    if require_pattern(value, "bridge_address", EVM_ADDRESS, context).lower() != binding["bridge_address"].lower():
+        fail(f"{context} Bridge address differs from the binding")
+    require_nat(value, "finalized_checkpoint_block_number", context)
+    checkpoint_hash = require_pattern(value, "finalized_checkpoint_block_hash", EVM_HASH, context)
+    require_bool(value, "withdrawals_paused", True, context)
+    minimum = require_deployment_instance_id(value, "minimum_withdrawal_id", context)
     providers = value["providers"]
     if not isinstance(providers, list) or len(providers) != 3:
         fail(f"{context} requires exactly three provider observations")
-    provider_digests: set[str] = set()
-    provider_observed_at: list[datetime] = []
-    heads: list[tuple[int, str]] = []
-    normalized_actions: list[dict[str, tuple[Any, ...]]] = []
-    action_fields = {
-        "kind",
-        "transaction_hash",
-        "block_number",
-        "block_hash",
-        "receipt_status",
-        "target",
-        "calldata_hex",
-        "event_topic",
-        "event_observed",
-        "canonical_probe_succeeded",
-    }
+    agreeing = 0
+    digests: list[str] = []
     for index, provider in enumerate(providers):
         provider_context = f"{context}.providers[{index}]"
         if not isinstance(provider, dict):
             fail(f"{provider_context} must be an object")
-        exact_keys(
-            provider,
-            {
-                "provider_url_sha256",
-                "chain_id",
-                "finalized_block_number",
-                "finalized_block_hash",
-                "actions",
-                "observed_at",
-            },
-            provider_context,
-        )
-        provider_digest = require_pattern(
-            provider,
-            "provider_url_sha256",
-            SHA256,
-            provider_context,
-        )
-        provider_digests.add(provider_digest)
-        provider_at = validate_timestamp(require_string(provider, "observed_at", provider_context), f"{provider_context}.observed_at")
-        if provider_at < started_at or provider_at > completed_at:
-            fail(f"{provider_context} timestamp is outside the capture window")
-        provider_observed_at.append(provider_at)
-        if require_nat(provider, "chain_id", provider_context) != CHAIN_ID:
-            fail(f"{provider_context} observed the wrong chain")
-        finalized_number = require_nat(
-            provider,
-            "finalized_block_number",
-            provider_context,
-        )
-        finalized_hash = require_pattern(
-            provider,
-            "finalized_block_hash",
-            EVM_HASH,
-            provider_context,
-        )
-        heads.append((finalized_number, finalized_hash))
-        actions = provider["actions"]
-        if not isinstance(actions, list) or len(actions) != len(OBSOLETE_PAUSE_ACTIONS):
-            fail(f"{provider_context} must contain both Base pause actions")
-        normalized: dict[str, tuple[Any, ...]] = {}
-        for action in actions:
-            if not isinstance(action, dict):
-                fail(f"{provider_context}.actions must contain objects")
-            exact_keys(action, action_fields, f"{provider_context}.action")
-            kind = require_string(action, "kind", f"{provider_context}.action")
-            expected = OBSOLETE_PAUSE_ACTIONS.get(kind)
-            if expected is None or kind in normalized:
-                fail(f"{provider_context} has an unknown or duplicate pause action")
-            transaction_hash = require_pattern(
-                action,
-                "transaction_hash",
-                EVM_HASH,
-                f"{provider_context}.{kind}",
-            )
-            block_number = require_nat(
-                action,
-                "block_number",
-                f"{provider_context}.{kind}",
-            )
-            block_hash = require_pattern(
-                action,
-                "block_hash",
-                EVM_HASH,
-                f"{provider_context}.{kind}",
-            )
-            target = require_string(action, "target", f"{provider_context}.{kind}").lower()
-            if (
-                require_nat(action, "receipt_status", f"{provider_context}.{kind}") != 1
-                or block_number > finalized_number
-                or target != str(binding["bridge_address"]).lower()
-                or action["calldata_hex"].lower() != expected["calldata_hex"]
-                or action["event_topic"].lower() != expected["event_topic"]
-                or action["event_observed"] is not True
-                or action["canonical_probe_succeeded"] is not True
-            ):
-                fail(f"{provider_context}.{kind} is not a canonical successful pause")
-            normalized[kind] = (
-                transaction_hash,
-                block_number,
-                block_hash,
-                target,
-                action["calldata_hex"].lower(),
-                action["event_topic"].lower(),
-            )
-        normalized_actions.append(normalized)
-    if len(provider_digests) != 3:
-        fail(f"{context} requires three distinct provider URL digests")
-    head_winner = max(set(heads), key=heads.count)
-    eligible = [index for index, head in enumerate(heads) if head == head_winner]
-    if len(eligible) < 2:
-        fail(f"{context} Finalized head has no 2-of-3 agreement")
-    for kind in OBSOLETE_PAUSE_ACTIONS:
-        observations = [normalized_actions[index][kind] for index in eligible]
-        if max(observations.count(item) for item in set(observations)) < 2:
-            fail(f"{context} {kind} has no 2-of-3 canonical agreement")
-
-    ic_pause = value["ic_pause"]
-    if not isinstance(ic_pause, dict):
-        fail(f"{context}.ic_pause must be an object")
-    exact_keys(
-        ic_pause,
-        {
-            "method",
-            "response",
-            "audit_sequence",
-            "audit_kind",
-            "audit_caller",
-            "status_deposits_paused",
-            "status_last_audit_sequence",
-            "observed_at",
-        },
-        f"{context}.ic_pause",
-    )
-    audit_sequence = require_nat(ic_pause, "audit_sequence", f"{context}.ic_pause")
-    ic_pause_at = validate_timestamp(require_string(ic_pause, "observed_at", f"{context}.ic_pause"), f"{context}.ic_pause.observed_at")
-    if ic_pause_at < started_at or ic_pause_at > ic_live_at or (ic_live_at - ic_pause_at).total_seconds() > 60:
-        fail(f"{context} IC pause and live observations must be within one minute")
-    observation_times = [*provider_observed_at, ic_pause_at, ic_live_at]
-    if (max(observation_times) - min(observation_times)).total_seconds() > 60:
-        fail(f"{context} observations must be captured within one minute")
-    if (
-        ic_pause["method"] != "pause_new_deposits"
-        or ic_pause["response"] != "Ok"
-        or ic_pause["audit_kind"] not in {"DepositsPaused", "DepositsPauseRepeated"}
-        or not PRINCIPAL.fullmatch(str(ic_pause["audit_caller"]))
-        or ic_pause["status_deposits_paused"] is not True
-        or require_nat(
-            ic_pause,
-            "status_last_audit_sequence",
-            f"{context}.ic_pause",
-        )
-        != audit_sequence
-    ):
-        fail(f"{context} IC pause response, audit, and status do not agree")
+        exact_keys(provider, {
+            "provider_url_sha256", "checkpoint_block_number", "checkpoint_block_hash",
+            "withdrawals_paused", "minimum_withdrawal_id",
+        }, provider_context)
+        digests.append(require_pattern(provider, "provider_url_sha256", SHA256, provider_context))
+        require_bool(provider, "withdrawals_paused", True, provider_context)
+        provider_minimum = require_deployment_instance_id(provider, "minimum_withdrawal_id", provider_context)
+        if (
+            require_nat(provider, "checkpoint_block_number", provider_context)
+            == value["finalized_checkpoint_block_number"]
+            and require_pattern(provider, "checkpoint_block_hash", EVM_HASH, provider_context) == checkpoint_hash
+            and provider_minimum == minimum
+        ):
+            agreeing += 1
+    if digests != configured_provider_digests:
+        fail(f"{context} provider order differs from the configured RPC providers")
+    if len(set(digests)) != 3 or agreeing < 2:
+        fail(f"{context} does not contain a two-provider canonical quorum")
+    if minimum != binding["minimum_withdrawal_id"]:
+        fail(f"{context} minimum withdrawal ID differs from the reviewed binding")
+    return minimum
 
 
 def validate_upgrade_snapshots(
@@ -619,6 +436,7 @@ def validate_preflight(
     binding: dict[str, Any],
     artifacts: Any,
     manifest_path: Path,
+    preflight_observed_at: str,
 ) -> None:
     context = "preflight.details"
     exact_keys(
@@ -642,6 +460,7 @@ def validate_preflight(
             "replacement_mode",
             "live_schema_version",
             "previous_deployment_instance_id",
+            "minimum_withdrawal_id",
         },
         context,
     )
@@ -673,7 +492,7 @@ def validate_preflight(
     recorded_check = required_json_artifact(
         artifacts,
         manifest_path,
-        REINSTALL_INSTANCE_CHECK_ARTIFACT_KIND,
+        UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND,
         "preflight",
     )
     live_canister_status = required_json_artifact(
@@ -682,15 +501,29 @@ def validate_preflight(
         LIVE_CANISTER_STATUS_ARTIFACT_KIND,
         "preflight",
     )
-    expected_check = reinstall_instance_check(
+    boundary = required_json_artifact(
+        artifacts,
+        manifest_path,
+        WITHDRAWAL_BOUNDARY_ARTIFACT_KIND,
+        "preflight",
+    )
+    minimum_withdrawal_id = validate_withdrawal_boundary(
+        boundary,
+        binding,
+        preflight_observed_at,
+        urls,
+    )
+    if deployment_instance_hex(details["minimum_withdrawal_id"], f"{context}.minimum_withdrawal_id") != minimum_withdrawal_id:
+        fail("preflight summary differs from the withdrawal admission boundary")
+    expected_check = upgrade_instance_check(
         binding["deployment_instance_id"],
         live_public_config,
         live_canister_status,
         binding["bridge_canister_id"],
     )
-    if normalized_reinstall_check(recorded_check) != expected_check:
-        fail("reinstall instance check does not match the live PublicConfig and reviewed binding")
-    summary_check = normalized_reinstall_check(
+    if normalized_upgrade_check(recorded_check) != expected_check:
+        fail("upgrade instance check does not match the live PublicConfig and reviewed binding")
+    summary_check = normalized_upgrade_check(
         {
             "replacement_mode": details["replacement_mode"],
             "live_schema_version": details["live_schema_version"],
@@ -702,23 +535,15 @@ def validate_preflight(
         }
     )
     if summary_check != expected_check:
-        fail("preflight summary does not match the verified reinstall instance check")
-    if expected_check["replacement_mode"] in {
-        CURRENT_SCHEMA_UPGRADE,
-        OBSOLETE_SCHEMA_REINSTALL,
-    }:
-        validate_upgrade_snapshots(artifacts, manifest_path)
-        if (
-            live_canister_status["controller_principals"]
-            != details["controller_principals"]
-            or require_nat(
-                live_canister_status,
-                "cycles_balance",
-                "live canister status",
-            )
-            != require_nat(details, "cycles_balance", context)
-        ):
-            fail("preflight summary differs from the live canister status snapshot")
+        fail("preflight summary does not match the verified upgrade instance check")
+    validate_upgrade_snapshots(artifacts, manifest_path)
+    if (
+        live_canister_status["controller_principals"]
+        != details["controller_principals"]
+        or require_nat(live_canister_status, "cycles_balance", "live canister status")
+        != require_nat(details, "cycles_balance", context)
+    ):
+        fail("preflight summary differs from the live canister status snapshot")
 
 
 def validate_install(details: dict[str, Any], binding: dict[str, Any]) -> None:
@@ -729,16 +554,13 @@ def validate_install(details: dict[str, Any], binding: dict[str, Any]) -> None:
         "state_counts_after",
         "schema_version_after",
         "deployment_instance_id_after",
+        "minimum_withdrawal_id_after",
         "storage_integrity_after",
     }
     install_mode = require_string(details, "install_mode", context)
-    exact_keys(
-        details,
-        base_fields | upgrade_fields if install_mode == "upgrade" else base_fields,
-        context,
-    )
-    if details["install_mode"] not in {"install", "upgrade", "reinstall"}:
-        fail("staging install_mode must be install, upgrade, or reinstall")
+    if install_mode != "upgrade":
+        fail("Plan 007 permits only a current-schema same-instance upgrade")
+    exact_keys(details, base_fields | upgrade_fields, context)
     if details["module_sha256"] != binding["bridge_wasm_sha256"]:
         fail("installed Bridge module does not match local promotion evidence")
     if require_nat(details, "cycles_balance", context) <= 0:
@@ -768,6 +590,12 @@ def validate_install(details: dict[str, Any], binding: dict[str, Any]) -> None:
             != binding["deployment_instance_id"]
         ):
             fail("upgrade changed the deployment instance ID")
+        if require_deployment_instance_id(
+            details,
+            "minimum_withdrawal_id_after",
+            context,
+        ) != binding["minimum_withdrawal_id"]:
+            fail("upgrade installed the wrong minimum withdrawal ID")
         if details["storage_integrity_after"] != "ok":
             fail("upgrade storage integrity check did not return ok")
 
@@ -779,6 +607,7 @@ def validate_initialize(details: dict[str, Any], binding: dict[str, Any]) -> Non
         {
             "schema_version",
             "deployment_instance_id",
+            "minimum_withdrawal_id",
             "chain_id",
             "ledger_canister_id",
             "index_canister_id",
@@ -797,6 +626,8 @@ def validate_initialize(details: dict[str, Any], binding: dict[str, Any]) -> Non
         fail(f"staging must initialize current stable schema v{CURRENT_STABLE_SCHEMA}")
     if require_deployment_instance_id(details, "deployment_instance_id", context) != binding["deployment_instance_id"]:
         fail("initialized deployment instance ID differs from the reviewed binding")
+    if require_deployment_instance_id(details, "minimum_withdrawal_id", context) != binding["minimum_withdrawal_id"]:
+        fail("initialized minimum withdrawal ID differs from the reviewed binding")
     if details["chain_id"] != binding["chain_id"]:
         fail("initialized Bridge has the wrong chain ID")
     for field in ("bridge_address", "timelock_address", "expected_bridge_signer"):
@@ -1104,6 +935,7 @@ def validate_binding(binding: Any) -> dict[str, Any]:
         "environment_mode",
         "activation_timelock_delay_seconds",
         "deployment_instance_id",
+        "minimum_withdrawal_id",
         "chain_id",
         "bridge_address",
         "bsns_address",
@@ -1119,6 +951,7 @@ def validate_binding(binding: Any) -> dict[str, Any]:
     for field in ("bridge_runtime_template_sha256", "bsns_runtime_template_sha256"):
         require_pattern(binding, field, EVM_HASH, "binding")
     require_deployment_instance_id(binding, "deployment_instance_id", "binding")
+    require_deployment_instance_id(binding, "minimum_withdrawal_id", "binding")
     if require_nat(binding, "chain_id", "binding") != CHAIN_ID:
         fail("binding has the wrong chain ID")
     for field in ("bridge_address", "bsns_address", "timelock_address", "expected_bridge_signer"):
@@ -1142,14 +975,21 @@ def validate_stage(stage: str, evidence: Any, manifest_path: Path, binding: dict
         fail(f"{stage} evidence has the wrong schema or stage")
     if evidence["source_commit"] != binding["source_commit"]:
         fail(f"{stage} evidence is not bound to the reviewed source commit")
-    validate_timestamp(require_string(evidence, "observed_at", f"{stage} evidence"), f"{stage}.observed_at")
+    stage_observed_at = require_string(evidence, "observed_at", f"{stage} evidence")
+    validate_timestamp(stage_observed_at, f"{stage}.observed_at")
     validate_artifacts(evidence["artifacts"], manifest_path, stage, verify_files)
     details = evidence["details"]
     if not isinstance(details, dict):
         fail(f"{stage}.details must be an object")
     validator = VALIDATORS[stage]
     if stage == "preflight":
-        validator(details, binding, evidence["artifacts"], manifest_path)
+        validator(
+            details,
+            binding,
+            evidence["artifacts"],
+            manifest_path,
+            stage_observed_at,
+        )
     elif stage in {"install", "initialize", "contracts", "frontend_publish"}:
         validator(details, binding)
     else:
@@ -1181,9 +1021,7 @@ def validate_manifest(manifest: dict[str, Any], path: Path, *, require_complete:
     install = stages["install"]
     if preflight is not None and install is not None:
         replacement_mode = preflight["details"]["replacement_mode"]
-        expected_install_mode = (
-            "upgrade" if replacement_mode == CURRENT_SCHEMA_UPGRADE else "reinstall"
-        )
+        expected_install_mode = "upgrade"
         if install["details"]["install_mode"] != expected_install_mode:
             fail("install mode does not match the preflight replacement mode")
     expected_state = manifest_state(completed)
@@ -1277,6 +1115,7 @@ def initialize(output: Path, local_evidence_path: Path, profile_path: Path, repo
         "environment_mode": local.get("environment_mode"),
         "activation_timelock_delay_seconds": local.get("activation_timelock_delay_seconds"),
         "deployment_instance_id": profile.get("deploymentInstanceId"),
+        "minimum_withdrawal_id": profile.get("minimumWithdrawalId"),
         "chain_id": profile.get("chainId"),
         "bridge_address": profile.get("bridgeAddress"),
         "bsns_address": profile.get("bsnsAddress"),
@@ -1313,9 +1152,7 @@ def record(manifest_path: Path, evidence_path: Path) -> None:
     validate_stage(stage, evidence, manifest_path, validate_binding(manifest["binding"]), verify_files=True)
     if stage == "install":
         replacement_mode = manifest["stages"]["preflight"]["details"]["replacement_mode"]
-        expected_install_mode = (
-            "upgrade" if replacement_mode == CURRENT_SCHEMA_UPGRADE else "reinstall"
-        )
+        expected_install_mode = "upgrade"
         if evidence["details"]["install_mode"] != expected_install_mode:
             fail("install mode does not match the preflight replacement mode")
     manifest["stages"][stage] = evidence
@@ -1325,71 +1162,6 @@ def record(manifest_path: Path, evidence_path: Path) -> None:
     completed = [stage for stage in STAGES if manifest["stages"][stage] is not None]
     manifest["state"] = manifest_state(completed)
     write_object(manifest_path, manifest)
-
-
-def capture_obsolete_pause_evidence(
-    capture_config_path: Path,
-    output_path: Path,
-    profile_path: Path,
-    live_public_config_path: Path,
-    live_canister_status_path: Path,
-    run_collector: Any = subprocess.run,
-) -> None:
-    if output_path.exists():
-        fail(f"refusing to overwrite existing pause evidence: {output_path}")
-    profile = load_object(profile_path)
-    live_public_config = load_object(live_public_config_path)
-    live_canister_status = load_object(live_canister_status_path)
-    command = [
-        "node",
-        str(OBSOLETE_PAUSE_COLLECTOR_PATH),
-        str(profile_path),
-        str(capture_config_path),
-    ]
-    try:
-        completed = run_collector(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as error:
-        status = getattr(error, "returncode", "unavailable")
-        fail(f"live pause collector failed with exit status {status}")
-    try:
-        value = json.loads(completed.stdout)
-    except (AttributeError, json.JSONDecodeError) as error:
-        fail(f"live pause collector returned invalid JSON: {error}")
-    if not isinstance(value, dict):
-        fail("live pause collector must return a JSON object")
-    binding = {
-        "bridge_canister_id": profile.get("bridgeCanisterId"),
-        "bridge_address": profile.get("bridgeAddress"),
-    }
-    ic_live = value.get("ic_live")
-    if not isinstance(ic_live, dict):
-        fail("live pause collector did not return post-pause IC observations")
-    expected_check = reinstall_instance_check(
-        profile.get("deploymentInstanceId"),
-        {
-            "schema_version": ic_live.get("live_schema_version"),
-            "deployment_instance_id": ic_live.get("previous_deployment_instance_id"),
-        },
-        {"module_hash": ic_live.get("live_module_hash")},
-        str(profile.get("bridgeCanisterId")),
-    )
-    if expected_check["replacement_mode"] != OBSOLETE_SCHEMA_UPGRADE:
-        fail("obsolete pause evidence is only valid for the reviewed v30 upgrade")
-    validate_obsolete_pause_evidence(value, binding, expected_check)
-    preflight_check = reinstall_instance_check(
-        profile.get("deploymentInstanceId"),
-        live_public_config,
-        live_canister_status,
-        str(profile.get("bridgeCanisterId")),
-    )
-    if preflight_check != expected_check:
-        fail("post-pause IC observations differ from the reviewed preflight snapshots")
-    write_new_object_atomically(output_path, value)
 
 
 def main() -> int:

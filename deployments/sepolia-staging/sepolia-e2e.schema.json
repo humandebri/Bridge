@@ -41,6 +41,7 @@
         ,"environment_mode"
         ,"activation_timelock_delay_seconds"
         ,"deployment_instance_id"
+        ,"minimum_withdrawal_id"
       ],
       "properties": {
         "source_commit": { "$ref": "#/$defs/gitCommit" },
@@ -55,6 +56,7 @@
         ,"environment_mode": { "const": "short-delay-test-only" }
         ,"activation_timelock_delay_seconds": { "const": 300 }
         ,"deployment_instance_id": { "$ref": "#/$defs/evmHash" }
+        ,"minimum_withdrawal_id": { "$ref": "#/$defs/evmHash" }
       }
     },
     "stages": {
@@ -159,7 +161,16 @@
                       {
                         "contains": {
                           "type": "object",
-                          "properties": { "kind": { "const": "reinstall-instance-check" } },
+                          "properties": { "kind": { "const": "upgrade-instance-check" } },
+                          "required": ["kind"]
+                        },
+                        "minContains": 1,
+                        "maxContains": 1
+                      },
+                      {
+                        "contains": {
+                          "type": "object",
+                          "properties": { "kind": { "const": "withdrawal-admission-boundary" } },
                           "required": ["kind"]
                         },
                         "minContains": 1,
@@ -178,7 +189,7 @@
                     "type": "object",
                     "properties": {
                       "replacement_mode": {
-                        "enum": ["current-schema-upgrade", "obsolete-schema-reinstall"]
+                        "const": "current-schema-upgrade"
                       }
                     },
                     "required": ["replacement_mode"]

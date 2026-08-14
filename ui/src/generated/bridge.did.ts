@@ -130,6 +130,7 @@ export interface BridgeInitArgs {
   'deployment_instance_id' : Uint8Array | number[],
   'governance_ecdsa_derivation_path' : Array<Uint8Array | number[]>,
   'custom_evm_rpc_urls' : Array<string>,
+  'minimum_withdrawal_id' : Uint8Array | number[],
   'deposit_rate_limit_global' : number,
   'pause_principal' : Principal,
   'governance_principal' : Principal,
@@ -381,6 +382,12 @@ export type NotifyWithdrawalError = {
   { 'RateLimited' : null } |
   { 'InvalidTransactionHash' : null } |
   { 'TransactionReverted' : null } |
+  {
+    'WithdrawalBeforeAdmissionBoundary' : {
+      'observed_withdrawal_id' : Uint8Array | number[],
+      'minimum_withdrawal_id' : Uint8Array | number[],
+    }
+  } |
   { 'StorageFailure' : null } |
   { 'BaseStateMismatch' : null } |
   { 'TransactionNotFound' : null } |
@@ -423,6 +430,7 @@ export interface PublicConfig {
   'deposit_rate_limit_per_principal' : number,
   'deployment_instance_id' : Uint8Array | number[],
   'schema_version' : number,
+  'minimum_withdrawal_id' : Uint8Array | number[],
   'deposit_rate_limit_global' : number,
   'pause_principal' : Principal,
   'governance_principal' : Principal,

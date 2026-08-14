@@ -228,7 +228,10 @@ describe("SettlementConfirmationCoordinator", () => {
 
   it("terminal_notification_failure_blocks_the_pending_observer_without_reopening_attention", async () => {
     mocks.getBlock.mockResolvedValue({ number: 10n })
-    mocks.notifyWithdrawal.mockRejectedValue(new NotifyWithdrawalCallError("WithdrawalConflict", "Withdrawal identity conflict"))
+    mocks.notifyWithdrawal.mockRejectedValue(new NotifyWithdrawalCallError(
+      "WithdrawalBeforeAdmissionBoundary",
+      "Withdrawal predates the admission boundary",
+    ))
     const view = render(<SettlementConfirmationCoordinator />)
 
     await waitFor(() => expect(mocks.setFailure).toHaveBeenCalled())

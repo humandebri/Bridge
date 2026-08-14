@@ -52,6 +52,7 @@ pub struct BridgeInitArgs {
     pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
     pub deployment_instance_id: Vec<u8>,
+    pub minimum_withdrawal_id: Vec<u8>,
     pub ecdsa_key_name: String,
     pub ecdsa_derivation_path: Vec<Vec<u8>>,
     pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
@@ -80,6 +81,7 @@ pub struct BridgeInitArgs {
 pub struct StagingUpgradeArgs {
     pub status_counts_guard_version: u8,
     pub rpc_provider_update: Option<StagingRpcProviderUpdate>,
+    pub minimum_withdrawal_id: Option<Vec<u8>>,
 }
 
 #[cfg(feature = "test-deployment")]
@@ -88,6 +90,7 @@ impl Default for StagingUpgradeArgs {
         Self {
             status_counts_guard_version: 1,
             rpc_provider_update: None,
+            minimum_withdrawal_id: None,
         }
     }
 }
@@ -142,6 +145,8 @@ pub(crate) struct ImmutableBridgeConfig {
     pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
     pub deployment_instance_id: Vec<u8>,
+    #[serde(default = "unset_minimum_withdrawal_id")]
+    pub minimum_withdrawal_id: Vec<u8>,
     pub ecdsa_key_name: String,
     pub ecdsa_derivation_path: Vec<Vec<u8>>,
     pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
@@ -167,6 +172,10 @@ const fn default_notification_ingestion_rate_limit_global() -> u16 {
     30
 }
 
+fn unset_minimum_withdrawal_id() -> Vec<u8> {
+    vec![0; 32]
+}
+
 impl ImmutableBridgeConfig {
     pub(crate) fn from_init(value: &BridgeInitArgs) -> Self {
         Self {
@@ -179,6 +188,7 @@ impl ImmutableBridgeConfig {
             expected_bridge_runtime_sha256: value.expected_bridge_runtime_sha256.clone(),
             timelock_contract: value.timelock_contract.clone(),
             deployment_instance_id: value.deployment_instance_id.clone(),
+            minimum_withdrawal_id: value.minimum_withdrawal_id.clone(),
             ecdsa_key_name: value.ecdsa_key_name.clone(),
             ecdsa_derivation_path: value.ecdsa_derivation_path.clone(),
             governance_ecdsa_derivation_path: value.governance_ecdsa_derivation_path.clone(),
@@ -217,6 +227,7 @@ impl ImmutableBridgeConfig {
             expected_bridge_runtime_sha256: self.expected_bridge_runtime_sha256,
             timelock_contract: self.timelock_contract,
             deployment_instance_id: self.deployment_instance_id,
+            minimum_withdrawal_id: self.minimum_withdrawal_id,
             ecdsa_key_name: self.ecdsa_key_name,
             ecdsa_derivation_path: self.ecdsa_derivation_path,
             governance_ecdsa_derivation_path: self.governance_ecdsa_derivation_path,
@@ -257,19 +268,21 @@ impl BridgeInitArgs {
             || self.expected_bridge_runtime_sha256.len() != 32
             || self.timelock_contract.len() != 20
             || self.deployment_instance_id.len() != 32
+            || self.minimum_withdrawal_id.len() != 32
         {
-            return Err("bridge and Timelock contracts must be 20 bytes and deployment instance ID must be 32 bytes");
+            return Err("bridge and Timelock contracts must be 20 bytes; deployment instance ID and minimum withdrawal ID must be 32 bytes");
         }
         if self.bridge_contract.iter().all(|byte| *byte == 0)
             || self.timelock_contract.iter().all(|byte| *byte == 0)
             || self.deployment_instance_id.iter().all(|byte| *byte == 0)
+            || self.minimum_withdrawal_id.iter().all(|byte| *byte == 0)
             || self
                 .expected_bridge_runtime_sha256
                 .iter()
                 .all(|byte| *byte == 0)
             || self.bridge_contract == self.timelock_contract
         {
-            return Err("bridge, Timelock, and deployment instance ID must be nonzero, with distinct contracts");
+            return Err("bridge, Timelock, deployment instance ID, minimum withdrawal ID, and runtime hash must be nonzero, with distinct contracts");
         }
         if self.base_chain_id == 0
             || self.ecdsa_key_name.is_empty()
@@ -644,6 +657,7 @@ mod tests {
             expected_bridge_runtime_sha256: vec![4; 32],
             timelock_contract: vec![2; 20],
             deployment_instance_id: vec![3; 32],
+            minimum_withdrawal_id: [vec![0; 31], vec![1]].concat(),
             ecdsa_key_name: "key_1".into(),
             ecdsa_derivation_path: vec![],
             governance_ecdsa_derivation_path: vec![b"governance-operator".to_vec()],
@@ -678,6 +692,16 @@ mod tests {
                 subaccount: vec![],
             },
         }
+    }
+
+    #[test]
+    fn withdrawal_admission_boundary_must_be_a_nonzero_uint256() {
+        let mut args = valid_args();
+        args.minimum_withdrawal_id = vec![0; 32];
+        assert!(args.validate().is_err());
+
+        args.minimum_withdrawal_id = vec![1; 31];
+        assert!(args.validate().is_err());
     }
 
     #[cfg(not(feature = "test-deployment"))]

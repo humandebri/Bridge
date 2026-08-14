@@ -106,6 +106,7 @@ pub struct PublicConfig {
     pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
     pub deployment_instance_id: Vec<u8>,
+    pub minimum_withdrawal_id: Vec<u8>,
     pub ledger_canister_id: candid::Principal,
     pub ledger_fee: u128,
     pub index_canister_id: candid::Principal,
@@ -354,6 +355,18 @@ fn reopen_store_after_upgrade() -> StableStore {
 fn finish_post_upgrade(store: StableStore) {
     install_store(store);
     ensure_supported_schema();
+    STORE.with(|store| {
+        let config = store
+            .borrow()
+            .config()
+            .unwrap_or_else(|error| {
+                ic_cdk::trap(format!("stable configuration read failed: {error}"))
+            })
+            .unwrap_or_else(|| ic_cdk::trap("missing stable configuration"));
+        config
+            .validate()
+            .unwrap_or_else(|error| ic_cdk::trap(format!("invalid stable configuration: {error}")));
+    });
     scheduler::arm();
     scheduler::arm_funding_recovery();
 }
@@ -383,6 +396,11 @@ fn apply_staging_rpc_provider_update(
 ) -> Result<(), String> {
     if args.status_counts_guard_version != 1 {
         return Err("unsupported staging status count guard version".into());
+    }
+    if let Some(minimum_withdrawal_id) = args.minimum_withdrawal_id.as_ref() {
+        store
+            .set_staging_minimum_withdrawal_id_once(minimum_withdrawal_id)
+            .map_err(|error| format!("staging withdrawal admission boundary failed: {error}"))?;
     }
     let Some(update) = args.rpc_provider_update.as_ref() else {
         return Ok(());
@@ -1413,6 +1431,7 @@ fn get_public_config() -> PublicConfig {
             expected_bridge_runtime_sha256: config.expected_bridge_runtime_sha256,
             timelock_contract: config.timelock_contract,
             deployment_instance_id: config.deployment_instance_id,
+            minimum_withdrawal_id: config.minimum_withdrawal_id,
             ledger_canister_id: config.ledger_canister_id,
             ledger_fee: ledger::KINIC_LEDGER_FEE.get(),
             index_canister_id: config.index_canister_id,
@@ -1659,6 +1678,7 @@ mod candid_tests {
 
         let expected = super::config::StagingUpgradeArgs {
             status_counts_guard_version: 1,
+            minimum_withdrawal_id: None,
             rpc_provider_update: Some(super::config::StagingRpcProviderUpdate {
                 custom_evm_rpc_urls: super::config::STAGING_NEW_RPC_URLS
                     .map(str::to_owned)

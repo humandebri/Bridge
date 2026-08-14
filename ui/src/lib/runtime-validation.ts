@@ -292,6 +292,8 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
   if (configuredTimelock.toLowerCase() !== timelockAddress.toLowerCase()) blockers.push("Canister Timelock contract differs from the profile")
   const configuredDeploymentInstance = `0x${Array.from(config.deployment_instance_id, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
   if (configuredDeploymentInstance.toLowerCase() !== profile.deploymentInstanceId?.toLowerCase()) blockers.push("Canister deployment instance differs from the profile")
+  const configuredMinimumWithdrawalId = `0x${Array.from(config.minimum_withdrawal_id, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
+  if (configuredMinimumWithdrawalId.toLowerCase() !== profile.minimumWithdrawalId?.toLowerCase()) blockers.push("Canister minimum withdrawal ID differs from the profile")
   if (config.ledger_canister_id.toText() !== profile.ledgerCanisterId) blockers.push("Canister ledger differs from the profile")
   if (config.index_canister_id.toText() !== profile.indexCanisterId) blockers.push("Canister index differs from the profile")
   if (config.evm_rpc_canister_id.toText() !== profile.evmRpcCanisterId) blockers.push("Canister EVM RPC ID differs from the profile")

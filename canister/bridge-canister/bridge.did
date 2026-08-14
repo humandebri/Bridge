@@ -120,6 +120,7 @@ type BridgeInitArgs = record {
   evm_rpc_canister_id : principal;
   deposit_rate_limit_per_principal : nat16;
   deployment_instance_id : blob;
+  minimum_withdrawal_id : blob;
   governance_ecdsa_derivation_path : vec blob;
   custom_evm_rpc_urls : vec text;
   deposit_rate_limit_global : nat16;
@@ -380,6 +381,10 @@ type NotifyWithdrawalError = variant {
   BridgeSignerMismatch;
   AnonymousCaller;
   InvalidBaseResponse;
+  WithdrawalBeforeAdmissionBoundary : record {
+    observed_withdrawal_id : blob;
+    minimum_withdrawal_id : blob;
+  };
 };
 type NotifyWithdrawalReceipt = variant {
   Duplicate : record { withdrawal_id : blob };
@@ -414,6 +419,7 @@ type PublicConfig = record {
   evm_rpc_canister_id : principal;
   deposit_rate_limit_per_principal : nat16;
   deployment_instance_id : blob;
+  minimum_withdrawal_id : blob;
   schema_version : nat16;
   deposit_rate_limit_global : nat16;
   pause_principal : principal;

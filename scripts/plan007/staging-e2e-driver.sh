@@ -46,22 +46,22 @@ case "$MODE" in
     export PATH="$ROOT/scripts/plan007:$PATH"
     python3 "$RPC_RECORDER" capture-fault "$2" "$3" "$4" "$5" "$6" -- evm-rpc-fault-injector
     ;;
-  check-reinstall-instance)
+  check-upgrade-instance)
     [[ "$#" -eq 3 ]] || {
-      echo "usage: $0 check-reinstall-instance <live-public-config.json> <live-canister-status.json>" >&2
+      echo "usage: $0 check-upgrade-instance <live-public-config.json> <live-canister-status.json>" >&2
       exit 2
     }
-    node "$ROOT/scripts/plan007/check-reinstall-instance.mjs" "$PROFILE" "$2" "$3"
+    node "$ROOT/scripts/plan007/check-upgrade-instance.mjs" "$PROFILE" "$2" "$3"
     ;;
-  capture-obsolete-pause)
-    [[ "$#" -eq 5 ]] || {
-      echo "usage: $0 capture-obsolete-pause <capture-config.json> <live-public-config.json> <live-canister-status.json> <output.json>" >&2
+  capture-withdrawal-boundary)
+    [[ "$#" -eq 2 ]] || {
+      echo "usage: $0 capture-withdrawal-boundary <capture-config.json>" >&2
       exit 2
     }
-    python3 "$RECORDER" capture-obsolete-pause "$2" "$5" "$PROFILE" "$3" "$4"
+    node "$ROOT/scripts/plan007/capture-withdrawal-boundary.mjs" "$PROFILE" "$2"
     ;;
   *)
-    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault|check-reinstall-instance|capture-obsolete-pause}" >&2
+    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault|check-upgrade-instance|capture-withdrawal-boundary}" >&2
     exit 2
     ;;
 esac

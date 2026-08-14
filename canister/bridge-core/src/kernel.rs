@@ -962,6 +962,13 @@ pub const fn canonical_probe_matches(receipt_block: u64, snapshot_block: u64) ->
     canonical_probe_matches_body!(receipt_block, snapshot_block)
 }
 
+/// Accepts only Base withdrawal IDs at or above the immutable deployment boundary.
+/// Both values use the contract's 32-byte big-endian uint256 representation.
+#[cfg(not(verus_keep_ghost))]
+pub fn withdrawal_id_is_admissible(observed: &[u8; 32], minimum: &[u8]) -> bool {
+    minimum.len() == 32 && minimum.iter().any(|byte| *byte != 0) && observed.as_slice() >= minimum
+}
+
 /// Selects the greatest height attested as finalized by at least two of three providers.
 #[cfg(not(verus_keep_ghost))]
 pub const fn withdrawal_finalized_checkpoint(
