@@ -4,8 +4,9 @@ use bridge_core::{
     deposit_ledger_block_transition, deposit_nonterminal_indexed, fee_recipient_rotation_allowed,
     funding_attempt_decision, funding_reconciliation_decision, hold_retry_allowed,
     lease_lane_claim_decision, lease_outcome_is_current, manual_claim_allowed,
-    notification_admission_allowed, notification_ingestion_allowed, outbound_settlement,
-    payout_allowed, payout_debit, refund_request_identity_decision, release_transfer_matches,
+    notification_admission_allowed, notification_failure_cooldown_active,
+    notification_ingestion_allowed, outbound_settlement, payout_allowed, payout_debit,
+    refund_request_identity_decision, release_transfer_matches,
     reserve_admission_preserves_requirement, service_fee_change_allowed,
     withdrawal_ledger_block_transition, Amount, BaseMintSnapshot, DepositIdentityDecision,
     FundingAttemptDecision, FundingReconciliationDecision, LeaseLaneClaimDecision,
@@ -345,6 +346,14 @@ fn protocol_notification_admission_cases_matches_production() {
                 short(text(&case, "ingestion_limit")),
             ),
             boolean(&case, "ingestion_allowed")
+        );
+        assert_eq!(
+            notification_failure_cooldown_active(
+                boolean(&case, "hash_matches"),
+                block(text(&case, "now_ns")),
+                block(text(&case, "retry_after_ns")),
+            ),
+            boolean(&case, "cooldown_active")
         );
     }
 }

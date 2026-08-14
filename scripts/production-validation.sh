@@ -95,6 +95,59 @@ finally:
 PY
 }
 
+# Copy one self-consistent, hash-verified view of a release bundle into a private
+# directory. Every source file is opened without following symlinks and read from
+# that descriptor exactly once, so later path swaps cannot change the approved plan.
+production_freeze_bundle() {
+  local source="$1" destination="$2"
+  [[ -d "$source" && ! -L "$source" && -d "$destination" && ! -L "$destination" ]] || {
+    echo "release bundle freeze requires ordinary directories" >&2; return 1;
+  }
+  python3 - "$source" "$destination" <<'PY'
+import hashlib,json,os,re,stat,sys
+source,destination=sys.argv[1:]
+directory=os.open(source,os.O_RDONLY|os.O_DIRECTORY)
+def read_regular(name,limit):
+ if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',name): raise SystemExit(f'unsafe release artifact path: {name}')
+ fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory)
+ try:
+  info=os.fstat(fd)
+  if not stat.S_ISREG(info.st_mode) or info.st_size>limit: raise SystemExit(f'invalid release artifact: {name}')
+  chunks=[]; remaining=limit+1
+  while remaining:
+   chunk=os.read(fd,min(1024*1024,remaining))
+   if not chunk: break
+   chunks.append(chunk); remaining-=len(chunk)
+  value=b''.join(chunks)
+  if len(value)>limit: raise SystemExit(f'release artifact exceeds size limit: {name}')
+  return value
+ finally: os.close(fd)
+try:
+ manifest_bytes=read_regular('release-manifest.json',4*1024*1024)
+ manifest=json.loads(manifest_bytes)
+ artifacts=manifest.get('artifacts')
+ if not isinstance(artifacts,list): raise SystemExit('release manifest artifacts are missing')
+ files={'release-manifest.json':manifest_bytes}
+ for entry in artifacts:
+  if not isinstance(entry,dict) or set(entry)!={'path','sha256'}: raise SystemExit('invalid release artifact entry')
+  name=entry['path']; expected=entry['sha256']
+  if name in files or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-fA-F]{64}',expected): raise SystemExit(f'invalid duplicate release artifact: {name}')
+  value=read_regular(name,256*1024*1024)
+  if hashlib.sha256(value).hexdigest().lower()!=expected.lower(): raise SystemExit(f'release artifact hash mismatch while freezing: {name}')
+  files[name]=value
+ for name,value in files.items():
+  fd=os.open(os.path.join(destination,name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+  try:
+   os.write(fd,value); os.fsync(fd)
+  finally: os.close(fd)
+ destination_fd=os.open(destination,os.O_RDONLY|os.O_DIRECTORY)
+ try: os.fsync(destination_fd)
+ finally: os.close(destination_fd)
+ os.chmod(destination,0o500)
+finally: os.close(directory)
+PY
+}
+
 production_validate_gate() {
   local mode="$1" bundle="$2" expected_hash="$3"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree

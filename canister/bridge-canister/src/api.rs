@@ -1699,11 +1699,17 @@ async fn fresh_deposit_preflight(
         expected_signer,
     )?;
     let reserved_mint_amount = STORE.with(|store| {
-        store
-            .borrow()
+        let store = store.borrow();
+        let committed = store
             .counters()
             .map(|counters| counters.reserved_deposit_mint_amount)
-            .map_err(|_| DepositError::StorageFailure)
+            .map_err(|_| DepositError::StorageFailure)?;
+        let funding = store
+            .deposit_funding_reserved_mint_amount_excluding(deposit_id)
+            .map_err(|_| DepositError::StorageFailure)?;
+        committed
+            .checked_add(funding)
+            .ok_or(DepositError::StorageFailure)
     })?;
     cached_deposit_preflight(
         mint_snapshot,

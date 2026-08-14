@@ -78,6 +78,7 @@ pub(super) fn consume_deposit_quota_and_reserve_funding(
     admission: &mut DepositAdmissionControl,
     owner: Principal,
     deposit_id: [u8; 32],
+    mint_amount: u128,
     quota: DepositQuotaAdmission,
 ) -> Result<(), StorageError> {
     if admission
@@ -102,13 +103,71 @@ pub(super) fn consume_deposit_quota_and_reserve_funding(
             retry_after_seconds: 1,
         });
     }
+    consume_deposit_verification_quota(admission, owner, quota)?;
     consume_deposit_quota(admission, owner, quota)?;
     admission
         .funding_reservations
         .push(DepositFundingReservation {
             deposit_id,
             caller: owner.as_slice().to_vec(),
+            mint_amount,
+            quota_window_id: admission.window_id,
         });
+    Ok(())
+}
+
+fn consume_deposit_verification_quota(
+    admission: &mut DepositAdmissionControl,
+    owner: Principal,
+    quota: DepositQuotaAdmission,
+) -> Result<(), StorageError> {
+    let window_ns = quota.window_seconds.saturating_mul(1_000_000_000);
+    let window_id = quota.now_ns / window_ns;
+    if admission.verification_window_id != window_id {
+        admission.verification_window_id = window_id;
+        admission.verification_global_count = 0;
+        admission.verification_caller_counts.clear();
+    }
+    let retry_after_seconds = ((window_id + 1)
+        .saturating_mul(window_ns)
+        .saturating_sub(quota.now_ns)
+        .saturating_add(999_999_999)
+        / 1_000_000_000)
+        .max(1);
+    let caller_count = admission
+        .verification_caller_counts
+        .iter()
+        .find(|entry| entry.caller == owner.as_slice())
+        .map_or(0, |entry| entry.count);
+    if admission.verification_global_count >= quota.global_limit
+        || caller_count >= quota.per_principal_limit
+    {
+        return Err(StorageError::DepositRateLimited {
+            retry_after_seconds,
+        });
+    }
+    admission.verification_global_count = admission
+        .verification_global_count
+        .checked_add(1)
+        .ok_or(StorageError::CounterOverflow)?;
+    match admission
+        .verification_caller_counts
+        .iter_mut()
+        .find(|entry| entry.caller == owner.as_slice())
+    {
+        Some(entry) => {
+            entry.count = entry
+                .count
+                .checked_add(1)
+                .ok_or(StorageError::CounterOverflow)?
+        }
+        None => admission
+            .verification_caller_counts
+            .push(DepositCallerQuota {
+                caller: owner.as_slice().to_vec(),
+                count: 1,
+            }),
+    }
     Ok(())
 }
 
@@ -127,6 +186,41 @@ pub(super) fn release_deposit_funding_reservation(
         return Err(StorageError::RecordNotFound);
     };
     admission.funding_reservations.remove(index);
+    Ok(())
+}
+
+pub(super) fn rollback_failed_deposit_admission(
+    admission: &mut DepositAdmissionControl,
+    owner: Principal,
+    deposit_id: [u8; 32],
+) -> Result<(), StorageError> {
+    let index = admission
+        .funding_reservations
+        .iter()
+        .position(|reservation| {
+            reservation.deposit_id == deposit_id && reservation.caller == owner.as_slice()
+        })
+        .ok_or(StorageError::RecordNotFound)?;
+    let reservation = admission.funding_reservations.remove(index);
+    if reservation.quota_window_id != admission.window_id {
+        return Ok(());
+    }
+    admission.global_count = admission
+        .global_count
+        .checked_sub(1)
+        .ok_or(StorageError::DatabaseFailure)?;
+    let caller_index = admission
+        .caller_counts
+        .iter()
+        .position(|entry| entry.caller == owner.as_slice())
+        .ok_or(StorageError::DatabaseFailure)?;
+    admission.caller_counts[caller_index].count = admission.caller_counts[caller_index]
+        .count
+        .checked_sub(1)
+        .ok_or(StorageError::DatabaseFailure)?;
+    if admission.caller_counts[caller_index].count == 0 {
+        admission.caller_counts.remove(caller_index);
+    }
     Ok(())
 }
 

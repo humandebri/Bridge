@@ -263,12 +263,13 @@ export class PlugAdapter implements IcWalletAdapter {
       fee: [call.ledgerFee], memo: [], created_at_time: [],
     })
     if ("Err" in result) throw new Error(`Plug approval failed: ${stringify(result.Err)}`)
-    if (account.owner !== this.#account?.owner) throw new Error("Plug account changed during approval")
+    await this.assertSameConnectedAccount(account, "approval")
     return result.Ok
   }
 
   async requestDeposit(call: DepositCall): Promise<DepositReceipt> {
-    const actor = await this.bridgeActor()
+    const account = await this.assertConnectedPrincipal()
+    const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
     const result = await actor.request_deposit({
       owner_sequence: call.ownerSequence,
       base_recipient: call.baseRecipient,
@@ -276,12 +277,16 @@ export class PlugAdapter implements IcWalletAdapter {
       gross_amount: call.grossAmount,
       max_service_fee: call.maxServiceFee,
     })
+    await this.assertSameConnectedAccount(account, "deposit")
     return unwrapDepositResult(result)
   }
 
   async requestDepositRefund(depositId: Uint8Array): Promise<DepositView> {
-    const actor = await this.bridgeActor()
-    return unwrapRequestDepositRefundResult(await actor.request_deposit_refund(depositId))
+    const account = await this.assertConnectedPrincipal()
+    const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
+    const result = await actor.request_deposit_refund(depositId)
+    await this.assertSameConnectedAccount(account, "refund")
+    return unwrapRequestDepositRefundResult(result)
   }
 
   private async assertConnectedPrincipal(): Promise<IcAccount> {
@@ -290,12 +295,14 @@ export class PlugAdapter implements IcWalletAdapter {
     if (!agent) throw new Error("Plug Agent is unavailable; reconnect and review the transaction")
     const current = (await agent.getPrincipal()).toText()
     if (current !== this.#account.owner) throw new Error("Plug account changed; reconnect and review the transaction")
-    return this.#account
+    return copyAccount(this.#account)
   }
 
-  private async bridgeActor(): Promise<_SERVICE> {
-    await this.assertConnectedPrincipal()
-    return requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
+  private async assertSameConnectedAccount(expected: IcAccount, operation: string): Promise<void> {
+    const current = await this.assertConnectedPrincipal()
+    if (current.owner !== expected.owner || !sameOptionalBytes(current.subaccount, expected.subaccount)) {
+      throw new Error(`Plug account changed during ${operation}; reconnect and review the transaction`)
+    }
   }
 }
 

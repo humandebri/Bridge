@@ -40,13 +40,31 @@ build_once() {
   FOUNDRY_PROFILE=default FOUNDRY_OFFLINE=true forge build --offline --force --root "$SOURCE_ROOT/contracts" \
     --out "$output/forge" --cache-path "$output/forge-cache"
   verify_source
-  python3 - "$output/forge/Bridge.sol/Bridge.json" "$output/bridge-runtime.bin" <<'PY'
+  python3 - \
+    "$output/forge/Bridge.sol/Bridge.json" "$output/bridge-runtime.bin" \
+    "$output/forge/BSNS.sol/BSNS.json" "$output/bsns-creation.bin" "$output/bsns-runtime.bin" "$output/bsns-runtime-layout.json" <<'PY'
 import json, pathlib, sys
-source, target = sys.argv[1:]
-value = json.load(open(source, encoding="utf-8"))["deployedBytecode"]["object"]
-if not isinstance(value, str) or not value.startswith("0x"):
-    raise SystemExit("Bridge runtime bytecode is missing")
-pathlib.Path(target).write_bytes(bytes.fromhex(value[2:]))
+bridge_source, bridge_target, bsns_source, bsns_creation_target, bsns_runtime_target, bsns_layout_target = sys.argv[1:]
+def write_bytecode(source, field, target, label):
+    value = json.load(open(source, encoding="utf-8"))[field]["object"]
+    if not isinstance(value, str) or not value.startswith("0x") or not value[2:]:
+        raise SystemExit(f"{label} bytecode is missing")
+    pathlib.Path(target).write_bytes(bytes.fromhex(value[2:]))
+write_bytecode(bridge_source, "deployedBytecode", bridge_target, "Bridge runtime")
+write_bytecode(bsns_source, "bytecode", bsns_creation_target, "BSNS creation")
+artifact=json.load(open(bsns_source, encoding="utf-8"))
+runtime=bytearray.fromhex(artifact["deployedBytecode"]["object"].removeprefix("0x"))
+ranges=[]
+for values in artifact["deployedBytecode"].get("immutableReferences", {}).values():
+    for value in values:
+        start=value.get("start"); length=value.get("length")
+        if not isinstance(start,int) or not isinstance(length,int) or start < 0 or length <= 0 or start + length > len(runtime):
+            raise SystemExit("BSNS immutable reference layout is invalid")
+        ranges.append({"start":start,"length":length})
+if not ranges: raise SystemExit("BSNS runtime has no immutable reference layout")
+for value in ranges: runtime[value["start"]:value["start"]+value["length"]]=bytes(value["length"])
+pathlib.Path(bsns_runtime_target).write_bytes(runtime)
+pathlib.Path(bsns_layout_target).write_text(json.dumps({"schema_version":1,"byte_length":len(runtime),"immutable_ranges":sorted(ranges,key=lambda x:(x["start"],x["length"]))},sort_keys=True,separators=(",",":"))+"\n")
 PY
   verify_source
 }

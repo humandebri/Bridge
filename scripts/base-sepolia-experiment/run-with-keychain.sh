@@ -18,4 +18,4 @@ security find-generic-password -a "$ACCOUNT" -s "$CANCELLER_SERVICE" -w >"$temp_
 export BASE_SEPOLIA_DEPLOYER_PASSWORD_FILE="$temp_dir/deployer-password"
 export BASE_SEPOLIA_SIGNER_PASSWORD_FILE="$temp_dir/signer-password"
 export BASE_SEPOLIA_CANCELLER_PASSWORD_FILE="$temp_dir/canceller-password"
-exec "$SCRIPT_DIR/experiment.sh" "$@"
+"$SCRIPT_DIR/experiment.sh" "$@"

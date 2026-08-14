@@ -283,7 +283,9 @@ contract Bridge is IBridge, EIP712 {
         if (!depositMintsPaused) {
             return;
         }
+        (, uint256 nextEpoch) = MintAuthorizationPolicy.adminEpochTransition(mintAuthorizationEpoch, true);
         depositMintsPaused = false;
+        _setMintAuthorizationEpoch(nextEpoch);
         emit IBridge.DepositMintsUnpaused(msg.sender);
     }
 

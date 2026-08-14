@@ -117,6 +117,63 @@ class ChangedAreaTests(unittest.TestCase):
             json.loads(values["matrix"]),
             ["rust", "proofs", "real", "icp"],
         )
+        self.assertEqual(values["policy"], "false")
+
+    def test_executable_policy_and_tests_require_owner_review(self) -> None:
+        for path in (
+            ".github/workflows/trusted-pr-gate.yml",
+            "scripts/ci-local.sh",
+            "pnpm-lock.yaml",
+            "rust-toolchain.toml",
+            "contracts/test/BridgeDeposit.t.sol",
+            "canister/bridge-core/tests/state_machine.rs",
+            "integration/phase3.spec.ts",
+            "ui/src/lib/ic/wallet.test.ts",
+            "verification/claims.tsv",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(ci_changed_areas.requires_policy_review([path]))
+
+    def test_production_source_alone_remains_eligible_for_isolated_checks(self) -> None:
+        self.assertFalse(ci_changed_areas.requires_policy_review([
+            "canister/bridge-canister/src/api.rs",
+            "contracts/src/Bridge.sol",
+            "ui/src/lib/ic/wallet.ts",
+        ]))
+
+    def test_policy_only_allows_policy_and_documentation(self) -> None:
+        ci_changed_areas.validate_policy_only([
+            "scripts/ci-local.sh",
+            "verification/claims.tsv",
+            "docs/security-policy.md",
+        ])
+
+    def test_policy_and_production_source_mix_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be policy-only"):
+            ci_changed_areas.validate_policy_only([
+                "scripts/ci-local.sh",
+                "canister/bridge-canister/src/api.rs",
+            ])
+
+    def test_cli_fails_before_writing_outputs_for_policy_source_mix(self) -> None:
+        with tempfile.NamedTemporaryFile() as output:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    ci_changed_areas.__file__,
+                    "--github-output",
+                    output.name,
+                    ".github/workflows/trusted-pr-gate.yml",
+                    "contracts/src/Bridge.sol",
+                ],
+                env={**os.environ, "GITHUB_OUTPUT": output.name},
+                capture_output=True,
+                text=True,
+            )
+            output.seek(0)
+            self.assertEqual(output.read(), b"")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be policy-only", result.stderr)
 
 
 if __name__ == "__main__":

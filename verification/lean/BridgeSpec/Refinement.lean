@@ -193,11 +193,13 @@ theorem deposit_nonterminal_index_refinement (state : U16) :
   rfl
 
 theorem notification_admission_refinement
-    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : U16) :
+    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : U16)
+    (hashMatches : Bool) (nowNs retryAfterNs : U64) :
     notificationAdmissionImpl globalCount callerCount globalLimit callerLimit
-        ingestionCount ingestionLimit =
+        ingestionCount ingestionLimit hashMatches nowNs retryAfterNs =
       (notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val,
-        notificationIngestionAllowed ingestionCount.val ingestionLimit.val) := by
+        notificationIngestionAllowed ingestionCount.val ingestionLimit.val,
+        notificationFailureCooldownActive hashMatches nowNs.val retryAfterNs.val) := by
   rfl
 
 theorem lease_lane_refinement

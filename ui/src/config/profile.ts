@@ -128,7 +128,9 @@ const preflightProfile = {
 const viteProfileJson: unknown = import.meta.env?.VITE_DEPLOYMENT_PROFILE_JSON
 const globalProfileJson = (globalThis as typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string })
   .__KINIC_DEPLOYMENT_PROFILE_JSON__
-const injectedProfileJson = typeof viteProfileJson === "string" ? viteProfileJson : globalProfileJson
+const injectedProfileJson = typeof globalProfileJson === "string"
+  ? globalProfileJson
+  : typeof viteProfileJson === "string" ? viteProfileJson : undefined
 const deploymentProfileInput: unknown = injectedProfileJson
   ? (JSON.parse(injectedProfileJson) as unknown)
   : preflightProfile

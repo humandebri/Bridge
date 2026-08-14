@@ -826,10 +826,31 @@ async fn notify_withdrawal(
             .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
             .ok_or(api::NotifyWithdrawalError::StorageFailure)
     })?;
-    if !has_external_call_cycle_budget(
+    let now_ns = ic_cdk::api::time();
+    if STORE
+        .with(|store| {
+            store
+                .borrow()
+                .notification_failure_cooldown_active(transaction_hash, now_ns)
+        })
+        .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
+    {
+        return Err(api::NotifyWithdrawalError::RateLimited);
+    }
+    let reserve_token = STORE
+        .with(|store| {
+            let store = store.borrow();
+            Ok::<_, storage::StorageError>((
+                store.deposit_reserve_token()?,
+                store.deposit_funding_reservation_count()?,
+            ))
+        })
+        .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?;
+    if !has_notification_cycle_budget(
         ic_cdk::api::canister_liquid_cycle_balance(),
-        config.cycles_floor,
-        config.settlement_cycle_ceiling,
+        config.reserve_policy(),
+        reserve_token.0,
+        reserve_token.1,
     ) {
         return Err(api::NotifyWithdrawalError::InsufficientCycles);
     }
@@ -841,7 +862,6 @@ async fn notify_withdrawal(
     else {
         return Err(api::NotifyWithdrawalError::Busy);
     };
-    let now_ns = ic_cdk::api::time();
     let caller_count = NotificationAdmissionGuard::caller_count(
         caller,
         now_ns,
@@ -866,7 +886,21 @@ async fn notify_withdrawal(
         now_ns,
         config.notification_rate_limit_window_seconds,
     );
-    let receipt = api::notify_withdrawal(caller, args).await?;
+    let receipt = match api::notify_withdrawal(caller, args).await {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            STORE
+                .with(|store| {
+                    store.borrow_mut().record_notification_failure_cooldown(
+                        transaction_hash,
+                        ic_cdk::api::time(),
+                        30_000_000_000,
+                    )
+                })
+                .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?;
+            return Err(error);
+        }
+    };
     match &receipt {
         api::NotifyWithdrawalReceipt::Ingested { .. } => {}
         api::NotifyWithdrawalReceipt::Duplicate { .. } => return Ok(receipt),
@@ -877,6 +911,23 @@ async fn notify_withdrawal(
 
 fn has_external_call_cycle_budget(current: u128, floor: u128, call_ceiling: u128) -> bool {
     current > floor.saturating_add(call_ceiling)
+}
+
+fn has_notification_cycle_budget(
+    current: u128,
+    policy: bridge_core::ReservePolicy,
+    token: storage::DepositReserveToken,
+    active_funding: u64,
+) -> bool {
+    token
+        .reserved_deposit_mint_operations
+        .checked_add(active_funding)
+        .and_then(|reserved| {
+            policy
+                .required_cycles(token.nonterminal_withdrawals, reserved, 1)
+                .ok()
+        })
+        .is_some_and(|required| current > required)
 }
 
 fn can_continue_withdrawal(caller: candid::Principal) -> bool {
@@ -1662,9 +1713,10 @@ pub fn generated_candid_interface() -> String {
 #[cfg(test)]
 mod candid_tests {
     use super::{
-        can_continue_withdrawal, has_external_call_cycle_budget, storage::StorageError,
-        storage_or_trap, ActionKey, DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard,
-        StableStore, NOTIFICATION_CALLER_ADMISSION,
+        can_continue_withdrawal, has_external_call_cycle_budget, has_notification_cycle_budget,
+        storage::DepositReserveToken, storage::StorageError, storage_or_trap, ActionKey,
+        DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
+        NOTIFICATION_CALLER_ADMISSION,
     };
 
     #[cfg(feature = "test-deployment")]
@@ -1777,6 +1829,22 @@ mod candid_tests {
         assert!(!has_external_call_cycle_budget(150, 100, 50));
         assert!(has_external_call_cycle_budget(151, 100, 50));
         assert!(!has_external_call_cycle_budget(u128::MAX, u128::MAX, 1));
+    }
+
+    #[test]
+    fn new_notifications_preserve_cycles_for_every_existing_asset_liability() {
+        let policy = bridge_core::ReservePolicy {
+            cycles_floor: 100,
+            settlement_cycle_ceiling: 10,
+        };
+        let token = DepositReserveToken {
+            nonterminal_withdrawals: 2,
+            reserved_deposit_mint_amount: 500,
+            reserved_deposit_mint_operations: 3,
+        };
+        // 2 withdrawals + 3 formal deposits + 1 funding attempt + 1 new RPC lane.
+        assert!(!has_notification_cycle_budget(170, policy, token, 1));
+        assert!(has_notification_cycle_budget(171, policy, token, 1));
     }
 
     #[test]

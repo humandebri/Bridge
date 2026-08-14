@@ -6,7 +6,7 @@ mod validation;
 
 use admission::{
     consume_deposit_quota, consume_deposit_quota_and_reserve_funding,
-    release_deposit_funding_reservation,
+    release_deposit_funding_reservation, rollback_failed_deposit_admission,
 };
 pub use admission::{DepositAdmissionOutcome, DepositCycleAdmission, DepositQuotaAdmission};
 pub use schema::{RETIRED_STABLE_STRUCTURE_MEMORY_IDS, SCHEMA_VERSION, SQLITE_MEMORY_ID};
@@ -38,8 +38,7 @@ use ic_sqlite_vfs::MemoryId;
 use ic_sqlite_vfs::{params, DbError, DbHandle, DefaultMemoryImpl, MemoryManager};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(test)]
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{fmt, io::Cursor, marker::PhantomData, ops::Bound as RangeBound, ops::RangeBounds};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -236,7 +235,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 32, 28);
+INSERT INTO bridge_metadata VALUES (1, 33, 28);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -371,7 +370,7 @@ const MIGRATIONS: &[Migration] = &[Migration {
 }];
 
 #[cfg(test)]
-const OBSOLETE_SCHEMA_VERSION_V31: u16 = 31;
+const OBSOLETE_SCHEMA_VERSION_V32: u16 = 32;
 #[cfg(test)]
 const OBSOLETE_WIRE_VERSION_V27: u8 = 27;
 
@@ -1069,6 +1068,8 @@ pub struct DepositCallerQuota {
 pub struct DepositFundingReservation {
     pub deposit_id: [u8; 32],
     pub caller: Vec<u8>,
+    pub mint_amount: u128,
+    pub quota_window_id: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1087,6 +1088,9 @@ pub struct DepositAdmissionControl {
     pub window_id: u64,
     pub global_count: u16,
     pub caller_counts: Vec<DepositCallerQuota>,
+    pub verification_window_id: u64,
+    pub verification_global_count: u16,
+    pub verification_caller_counts: Vec<DepositCallerQuota>,
     pub funding_reservations: Vec<DepositFundingReservation>,
     pub signer_address: Option<[u8; 20]>,
     pub signer_public_key: Option<Vec<u8>>,
@@ -1168,13 +1172,20 @@ struct SettlementAdmissionControl {
     record_counts: Vec<SettlementRecordQuota>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct NotificationAdmissionControl {
     window_id: u64,
     #[serde(alias = "global_count")]
     verification_count: u16,
     #[serde(default)]
     ingestion_count: u16,
+    failed_transactions: Vec<NotificationFailureCooldown>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct NotificationFailureCooldown {
+    transaction_hash: [u8; 32],
+    retry_after_ns: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2721,7 +2732,9 @@ impl StableStore {
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
         verify_metadata(handle)?;
-        Self::reopen_handle(handle)
+        let store = Self::reopen_handle(handle)?;
+        store.validate_relations()?;
+        Ok(store)
     }
 
     fn validate_singletons(&self) -> Result<(), StorageError> {
@@ -3272,7 +3285,6 @@ impl StableStore {
             outcome,
         })
     }
-    #[cfg(test)]
     fn validate_relations(&self) -> Result<(), StorageError> {
         const COUNTED_TABLES: &[&str] = &[
             "deposits",
@@ -3373,6 +3385,7 @@ impl StableStore {
         let mut reserved_deposit_mint_amount = 0u128;
         let mut nonterminal_withdrawals = 0u64;
         let mut reconciliation_holds = 0u64;
+        let mut deposit_ids = BTreeSet::new();
 
         for (key, bytes) in deposits {
             let key: [u8; 32] = key.try_into().map_err(|_| StorageError::DecodeFailed)?;
@@ -3380,6 +3393,9 @@ impl StableStore {
             let record = stored.record;
             if key != record.id.bytes() {
                 return Err(StorageError::DecodeFailed);
+            }
+            if !deposit_ids.insert(key) {
+                return Err(StorageError::DatabaseFailure);
             }
             if is_pending_deposit_ledger(&record) {
                 expected_pull.insert(key);
@@ -3396,8 +3412,34 @@ impl StableStore {
                     .ok_or(StorageError::CounterOverflow)?;
             }
         }
+        let mut expected_funding_reservations = BTreeMap::new();
         for bytes in funding_attempts {
-            let _: DepositFundingAttempt = decode(&StableBlob::new(bytes)?)?;
+            let attempt: DepositFundingAttempt = decode(&StableBlob::new(bytes)?)?;
+            if deposit_ids.contains(&attempt.intent.deposit_id)
+                || expected_funding_reservations
+                    .insert(
+                        attempt.intent.deposit_id,
+                        (attempt.intent.caller.clone(), attempt.gross_amount),
+                    )
+                    .is_some()
+            {
+                return Err(StorageError::DatabaseFailure);
+            }
+        }
+        let mut actual_funding_reservations = BTreeMap::new();
+        for reservation in self.deposit_admission()?.funding_reservations {
+            if actual_funding_reservations
+                .insert(
+                    reservation.deposit_id,
+                    (reservation.caller, reservation.mint_amount),
+                )
+                .is_some()
+            {
+                return Err(StorageError::DatabaseFailure);
+            }
+        }
+        if expected_funding_reservations != actual_funding_reservations {
+            return Err(StorageError::DatabaseFailure);
         }
         for (key, bytes) in withdrawals {
             let key: [u8; 32] = key.try_into().map_err(|_| StorageError::DecodeFailed)?;
@@ -3531,6 +3573,7 @@ impl StableStore {
                 window_id,
                 verification_count: 0,
                 ingestion_count: 0,
+                failed_transactions: admission.failed_transactions,
             };
         }
         if !bridge_core::notification_admission_allowed(
@@ -3615,6 +3658,7 @@ impl StableStore {
                 window_id,
                 verification_count: 0,
                 ingestion_count: 0,
+                failed_transactions: admission.failed_transactions,
             };
         }
         if !bridge_core::notification_ingestion_allowed(admission.ingestion_count, ingestion_limit)
@@ -3626,6 +3670,79 @@ impl StableStore {
             .checked_add(1)
             .ok_or(StorageError::CounterOverflow)?;
         Ok((previous_blob, encode(&admission)?))
+    }
+
+    pub fn notification_failure_cooldown_active(
+        &self,
+        transaction_hash: [u8; 32],
+        now_ns: u64,
+    ) -> Result<bool, StorageError> {
+        Ok(
+            decode::<NotificationAdmissionControl>(&self.notification_admission.get()?)?
+                .failed_transactions
+                .iter()
+                .any(|entry| {
+                    bridge_core::notification_failure_cooldown_active(
+                        entry.transaction_hash == transaction_hash,
+                        now_ns,
+                        entry.retry_after_ns,
+                    )
+                }),
+        )
+    }
+
+    pub fn record_notification_failure_cooldown(
+        &mut self,
+        transaction_hash: [u8; 32],
+        now_ns: u64,
+        cooldown_ns: u64,
+    ) -> Result<(), StorageError> {
+        const MAX_FAILURE_COOLDOWNS: usize = 4_096;
+        let previous_blob = self.notification_admission.get()?;
+        let mut admission: NotificationAdmissionControl = decode(&previous_blob)?;
+        admission
+            .failed_transactions
+            .retain(|entry| now_ns < entry.retry_after_ns);
+        let retry_after_ns = now_ns.saturating_add(cooldown_ns);
+        if let Some(entry) = admission
+            .failed_transactions
+            .iter_mut()
+            .find(|entry| entry.transaction_hash == transaction_hash)
+        {
+            entry.retry_after_ns = entry.retry_after_ns.max(retry_after_ns);
+        } else {
+            if admission.failed_transactions.len() >= MAX_FAILURE_COOLDOWNS {
+                let oldest = admission
+                    .failed_transactions
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, entry)| entry.retry_after_ns)
+                    .map(|(index, _)| index)
+                    .ok_or(StorageError::DatabaseFailure)?;
+                admission.failed_transactions.swap_remove(oldest);
+            }
+            admission
+                .failed_transactions
+                .push(NotificationFailureCooldown {
+                    transaction_hash,
+                    retry_after_ns,
+                });
+        }
+        let next_blob = encode(&admission)?;
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_blob.as_slice(),
+                "stale notification admission",
+            )?;
+            connection.execute(
+                "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
+                params![next_blob.to_sql_bytes()],
+            )
+        })?;
+        Ok(())
     }
 
     pub fn current_mint_authorization_epoch(&self) -> Result<u64, StorageError> {
@@ -6440,6 +6557,7 @@ impl StableStore {
             &mut admission,
             owner,
             attempt.intent.deposit_id,
+            attempt.gross_amount,
             quota,
         )?;
         let active_funding_reservations = u64::try_from(admission.funding_reservations.len())
@@ -6514,6 +6632,21 @@ impl StableStore {
             .map_err(|_| StorageError::CounterOverflow)
     }
 
+    pub fn deposit_funding_reserved_mint_amount_excluding(
+        &self,
+        deposit_id: [u8; 32],
+    ) -> Result<u128, StorageError> {
+        self.deposit_admission()?
+            .funding_reservations
+            .iter()
+            .filter(|reservation| reservation.deposit_id != deposit_id)
+            .try_fold(0u128, |total, reservation| {
+                total
+                    .checked_add(reservation.mint_amount)
+                    .ok_or(StorageError::CounterOverflow)
+            })
+    }
+
     fn settlement_job_kind_count(&self, kind: SettlementJobKind) -> Result<u64, StorageError> {
         let count = self.handle.query(|connection| {
             connection.query_scalar::<i64>(
@@ -6562,7 +6695,7 @@ impl StableStore {
     ) -> Result<(), StorageError> {
         let previous_admission_blob = self.deposit_admission.get()?;
         let mut admission: DepositAdmissionControl = decode(&previous_admission_blob)?;
-        release_deposit_funding_reservation(&mut admission, owner, attempt.intent.deposit_id)?;
+        rollback_failed_deposit_admission(&mut admission, owner, attempt.intent.deposit_id)?;
         let admission_blob = encode(&admission)?;
         let attempt_blob = encode(attempt)?;
         let key = attempt.intent.deposit_id.to_sql_bytes();
@@ -10345,6 +10478,7 @@ mod tests {
         let signature_result = record
             .apply(DepositEvent::AuthorizationSigned {
                 signature: vec![1; 65],
+                observed_timestamp: 1,
             })
             .expect("install signature");
         store
@@ -10952,7 +11086,7 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 32);
+        assert_eq!(SCHEMA_VERSION, 33);
         assert_eq!(WIRE_VERSION, 28);
     }
 
@@ -11046,22 +11180,22 @@ mod tests {
 
     #[test]
     #[serial]
-    fn obsolete_v31_schema_fails_closed_even_when_empty() {
+    fn obsolete_v32_schema_fails_closed_even_when_empty() {
         let memory = VectorMemory::default();
         let store = StableStore::init(memory.clone()).expect("initialize current schema");
-        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V31);
+        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V32);
         drop(store);
 
         assert!(matches!(
             StableStore::reopen_after_upgrade(memory),
             Err(StorageError::UnsupportedSchemaVersion(version))
-                if version == OBSOLETE_SCHEMA_VERSION_V31
+                if version == OBSOLETE_SCHEMA_VERSION_V32
         ));
     }
 
     #[test]
     #[serial]
-    fn live_v32_cbor_with_retired_fields_reopens_config_progress_deposit_and_audit() {
+    fn live_v33_cbor_with_retired_fields_reopens_config_progress_deposit_and_audit() {
         #[derive(Serialize)]
         struct LiveV32ImmutableConfig<'a> {
             #[serde(flatten)]
@@ -11082,7 +11216,7 @@ mod tests {
         let memory = VectorMemory::default();
         let expected_config = config();
         let mut store = StableStore::init_configured(memory.clone(), &expected_config)
-            .expect("initialize live v32 fixture");
+            .expect("initialize live v33 fixture");
         let expected_deposit = deposit();
         store
             .put_deposit(&expected_deposit)
@@ -11111,7 +11245,7 @@ mod tests {
             current: &immutable,
             governance_eth_floor_wei: 10_000_000_000_000_000,
         }))
-        .expect("encode live v32 config");
+        .expect("encode live v33 config");
         let progress_blob = encode(&LiveV32ExternalProgress {
             current: &expected_progress,
             last_eth_balance_wei: 19_433_605_485_256_720,
@@ -11119,7 +11253,7 @@ mod tests {
             reserve_observation_generation: 7,
             last_reserve_observation_ns: 1_785_920_381_347_296_085,
         })
-        .expect("encode live v32 progress");
+        .expect("encode live v33 progress");
         store
             .handle
             .update(|connection| {
@@ -11128,10 +11262,10 @@ mod tests {
                     params![config_blob.to_sql_bytes(), progress_blob.to_sql_bytes()],
                 )
             })
-            .expect("install live v32 CBOR fixture");
+            .expect("install live v33 CBOR fixture");
         drop(store);
 
-        let reopened = StableStore::reopen_after_upgrade(memory).expect("reopen live v32 fixture");
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("reopen live v33 fixture");
         assert_eq!(reopened.config().expect("config"), Some(expected_config));
         assert_eq!(
             reopened.external_progress().expect("external progress"),
@@ -11748,6 +11882,14 @@ mod tests {
             .expect("first funding reservation");
         assert_eq!(store.deposit_funding_reservation_count(), Ok(1));
         assert_eq!(
+            store.deposit_funding_reserved_mint_amount_excluding([0; 32]),
+            Ok(first.gross_amount)
+        );
+        assert_eq!(
+            store.deposit_funding_reserved_mint_amount_excluding(first.intent.deposit_id),
+            Ok(0)
+        );
+        assert_eq!(
             store.prepare_deposit_funding_attempt(second_owner, &second, quota, cycles),
             Err(StorageError::ReserveUnavailable)
         );
@@ -11756,6 +11898,13 @@ mod tests {
         store
             .remove_deposit_funding_attempt(first_owner, &first)
             .expect("release first funding reservation");
+        let admission = store.deposit_admission().expect("rolled back admission");
+        assert_eq!(admission.global_count, 0);
+        assert!(admission.caller_counts.is_empty());
+        assert_eq!(
+            store.deposit_funding_reserved_mint_amount_excluding([0; 32]),
+            Ok(0)
+        );
         assert_eq!(
             store
                 .prepare_deposit_funding_attempt(second_owner, &second, quota, cycles)
@@ -11767,7 +11916,51 @@ mod tests {
 
     #[test]
     #[serial]
-    fn funding_definitive_failure_preserves_consumed_quota_without_formal_artifacts() {
+    fn failed_withdrawal_notification_hash_has_a_bounded_stable_cooldown() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        let hash = [73; 32];
+        assert!(!store
+            .notification_failure_cooldown_active(hash, 100)
+            .expect("empty cooldown"));
+        store
+            .record_notification_failure_cooldown(hash, 100, 30)
+            .expect("record cooldown");
+        assert!(store
+            .notification_failure_cooldown_active(hash, 129)
+            .expect("active cooldown"));
+        assert!(!store
+            .notification_failure_cooldown_active([74; 32], 129)
+            .expect("cooldown is hash scoped"));
+        assert!(!store
+            .notification_failure_cooldown_active(hash, 130)
+            .expect("expired cooldown"));
+        assert!(!store
+            .notification_failure_cooldown_active(hash, 131)
+            .expect("cooldown remains expired"));
+        store
+            .record_notification_failure_cooldown(hash, 120, 30)
+            .expect("extend cooldown");
+        assert!(store
+            .notification_failure_cooldown_active(hash, 149)
+            .expect("extended cooldown"));
+        assert!(!store
+            .notification_failure_cooldown_active(hash, 150)
+            .expect("extended cooldown expires at equality"));
+        drop(store);
+
+        let reopened = StableStore::reopen(memory).expect("reopen cooldown");
+        assert!(reopened
+            .notification_failure_cooldown_active(hash, 149)
+            .expect("persisted cooldown"));
+        assert!(!reopened
+            .notification_failure_cooldown_active(hash, 150)
+            .expect("persisted cooldown expiry"));
+    }
+
+    #[test]
+    #[serial]
+    fn funding_definitive_failure_preserves_verification_quota_but_releases_asset_admission() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory.clone()).expect("initialize");
         initialize_unpaused_admin(&mut store);
@@ -11819,17 +12012,24 @@ mod tests {
             .deposit_ids
             .is_empty());
         let admission = store.deposit_admission().expect("admission");
-        assert_eq!(admission.global_count, 1);
-        assert_eq!(admission.caller_counts.len(), 1);
-        assert_eq!(admission.caller_counts[0].caller, owner.as_slice());
-        assert_eq!(admission.caller_counts[0].count, 1);
+        assert_eq!(admission.global_count, 0);
+        assert!(admission.caller_counts.is_empty());
+        assert_eq!(admission.verification_global_count, 1);
+        assert_eq!(admission.verification_caller_counts.len(), 1);
+        assert_eq!(
+            admission.verification_caller_counts[0].caller,
+            owner.as_slice()
+        );
+        assert_eq!(admission.verification_caller_counts[0].count, 1);
         assert!(admission.funding_reservations.is_empty());
 
         drop(store);
         let reopened = StableStore::reopen(memory).expect("reopen after failed funding");
         let admission = reopened.deposit_admission().expect("reopened admission");
-        assert_eq!(admission.global_count, 1);
-        assert_eq!(admission.caller_counts[0].count, 1);
+        assert_eq!(admission.global_count, 0);
+        assert!(admission.caller_counts.is_empty());
+        assert_eq!(admission.verification_global_count, 1);
+        assert_eq!(admission.verification_caller_counts[0].count, 1);
         assert!(admission.funding_reservations.is_empty());
     }
 
@@ -14623,6 +14823,43 @@ mod tests {
         let reopened = StableStore::reopen(counter_memory).expect("bounded reopen ignores rows");
         assert_eq!(
             reopened.validate_relations().err(),
+            Some(StorageError::DatabaseFailure)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn post_upgrade_reopen_rejects_funding_reservation_relation_drift() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        initialize_unpaused_admin(&mut store);
+        let owner = Principal::self_authenticating([91; 32]);
+        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        store
+            .prepare_deposit_funding_attempt(
+                owner,
+                &attempt,
+                DepositQuotaAdmission {
+                    now_ns: 1,
+                    window_seconds: 60,
+                    global_limit: 30,
+                    per_principal_limit: 3,
+                },
+                ample_cycle_admission(),
+            )
+            .expect("prepare funding attempt");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.funding_reservations[0].mint_amount = admission.funding_reservations[0]
+            .mint_amount
+            .saturating_add(1);
+        store
+            .deposit_admission
+            .set(encode(&admission).expect("encode corrupt admission"))
+            .expect("persist corrupt admission");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen_after_upgrade(memory).err(),
             Some(StorageError::DatabaseFailure)
         );
     }

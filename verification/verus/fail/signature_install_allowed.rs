@@ -3,7 +3,7 @@ mod kernel;
 use vstd::prelude::*;
 verus! {
 proof fn signature_can_be_installed_without_dispatch()
-    ensures kernel::signature_install_allowed_spec(false, true, true)
+    ensures kernel::signature_install_allowed_spec(false, true, true, true)
 {}
 }
 fn main() {}

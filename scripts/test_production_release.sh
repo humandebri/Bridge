@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-production-release.XXXXXX")"
 trap 'rm -rf "$TEST_TMP_ROOT"' EXIT
 
-mkdir -p "$TEST_TMP_ROOT/bundle-a" "$TEST_TMP_ROOT/bundle-b" "$TEST_TMP_ROOT/source/scripts" "$TEST_TMP_ROOT/source/src" "$TEST_TMP_ROOT/release-inputs"
+mkdir -p "$TEST_TMP_ROOT/bundle-a" "$TEST_TMP_ROOT/bundle-b" "$TEST_TMP_ROOT/source/scripts" "$TEST_TMP_ROOT/source/src" "$TEST_TMP_ROOT/source/ui/scripts" "$TEST_TMP_ROOT/release-inputs"
 git -C "$TEST_TMP_ROOT/source" init -q
 git -C "$TEST_TMP_ROOT/source" config user.email bridge-test@example.invalid
 git -C "$TEST_TMP_ROOT/source" config user.name bridge-test
@@ -33,10 +33,12 @@ RS
 printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' 'printf '\''{"bridge":{"transaction_hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","block_number":1,"block_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"timelock":{"transaction_hash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","block_number":1,"block_hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}\n'\'' >"$BRIDGE_DEPLOYMENT_BINDING_FILE"' >"$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' >"$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TEST_TMP_ROOT/source/scripts/production-live-preflight.sh"
+printf '%s\n' 'process.exit(0)' >"$TEST_TMP_ROOT/source/ui/scripts/production-assets.mjs"
 cp "$ROOT/scripts/production-release.sh" "$ROOT/scripts/production-validation.sh" "$TEST_TMP_ROOT/source/scripts/"
 chmod +x "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh" "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh" "$TEST_TMP_ROOT/source/scripts/production-live-preflight.sh" "$TEST_TMP_ROOT/source/scripts/production-release.sh"
 git -C "$TEST_TMP_ROOT/source" add source.txt .gitignore Cargo.toml Cargo.lock src/main.rs
 git -C "$TEST_TMP_ROOT/source" add scripts/production-deploy-driver.sh scripts/production-activate-driver.sh scripts/production-live-preflight.sh scripts/production-release.sh scripts/production-validation.sh
+git -C "$TEST_TMP_ROOT/source" add ui/scripts/production-assets.mjs
 git -C "$TEST_TMP_ROOT/source" commit -qm 'test source'
 printf '%s\n' '#!/usr/bin/env bash' 'touch "$PROFILE_OVERRIDE_MARKER"' 'exit 0' >"$TEST_TMP_ROOT/malicious-profile"
 chmod +x "$TEST_TMP_ROOT/malicious-profile"
@@ -48,6 +50,10 @@ WASM_SHA256="$(printf wasm | shasum -a 256 | awk '{print $1}')"
 RUNTIME_SHA256="$(printf runtime | shasum -a 256 | awk '{print $1}')"
 printf '%s' "$PROFILE_CONTENT" >"$TEST_TMP_ROOT/bundle-a/profile.json"
 printf '%s' "$PROFILE_CONTENT" >"$TEST_TMP_ROOT/bundle-b/profile.json"
+printf wasm >"$TEST_TMP_ROOT/bundle-a/bridge-canister.wasm"
+printf runtime >"$TEST_TMP_ROOT/bundle-a/bridge-runtime.bin"
+printf wasm >"$TEST_TMP_ROOT/bundle-b/bridge-canister.wasm"
+printf runtime >"$TEST_TMP_ROOT/bundle-b/bridge-runtime.bin"
 printf '{}\n' >"$TEST_TMP_ROOT/release-inputs/canister-init.json"
 printf '{}\n' >"$TEST_TMP_ROOT/release-inputs/contract-constructor-args.json"
 printf '{}\n' >"$TEST_TMP_ROOT/release-inputs/ui-runtime-profile.json"
@@ -118,6 +124,12 @@ PY
 python3 -c 'import json,sys; json.dump({"profile_file_sha256":sys.argv[2]},open(sys.argv[1],"w"),sort_keys=True,separators=(",",":")); open(sys.argv[1],"a").write("\n")' \
   "$TEST_TMP_ROOT/release-inputs/release-inputs-manifest.json" "$POST_PROFILE_SHA256"
 cp "$TEST_TMP_ROOT/receipt.json" "$TEST_TMP_ROOT/bundle-b/gate-a-receipt.json"
+GATE_RECEIPT_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/gate-a-receipt.json" | awk '{print $1}')"
+python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$GATE_RECEIPT_SHA256" <<'PY'
+import json,sys
+p=sys.argv[1]; value=json.load(open(p)); value['artifacts'].append({'path':'gate-a-receipt.json','sha256':sys.argv[2]})
+json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
+PY
 rg -q '^validate-bundle --offline ' "$TEST_TMP_ROOT/gate-calls"
 
 write_gate 1

@@ -150,7 +150,7 @@ if args[:2] == ["canister", "status"]:
 if args[:2] != ["canister", "call"]: raise SystemExit(2)
 method = args[3]
 if method == "get_public_config":
-    schema = os.environ.get("MOCK_SCHEMA", "32")
+    schema = os.environ.get("MOCK_SCHEMA", "33")
     instance = os.environ.get("MOCK_INSTANCE", policy["deployment_instance_id"])[2:]
     chain = os.environ.get("MOCK_PUBLIC_CHAIN", str(policy["base_chain_id"]))
     evm = os.environ.get("MOCK_EVM_CANISTER", policy["evm_rpc_canister_id"])

@@ -221,7 +221,11 @@ RUST_RENDERERS: dict[str, tuple[str, str]] = {
         ), boolean(&case, "allowed"));
         assert_eq!(notification_ingestion_allowed(
             short(text(&case, "ingestion_count")), short(text(&case, "ingestion_limit")),
-        ), boolean(&case, "ingestion_allowed"));''',
+        ), boolean(&case, "ingestion_allowed"));
+        assert_eq!(notification_failure_cooldown_active(
+            boolean(&case, "hash_matches"), block(text(&case, "now_ns")),
+            block(text(&case, "retry_after_ns")),
+        ), boolean(&case, "cooldown_active"));''',
     ),
     "lease_lane_cases": (
         "protocol_lease_lane_cases_matches_production",
@@ -431,7 +435,8 @@ use bridge_core::{
     deposit_ledger_block_transition,
     fee_recipient_rotation_allowed, funding_attempt_decision, funding_reconciliation_decision,
     hold_retry_allowed, lease_lane_claim_decision, lease_outcome_is_current, manual_claim_allowed,
-    notification_admission_allowed, notification_ingestion_allowed, outbound_settlement,
+    notification_admission_allowed, notification_failure_cooldown_active,
+    notification_ingestion_allowed, outbound_settlement,
     payout_allowed, payout_debit, refund_request_identity_decision, release_transfer_matches,
     reserve_admission_preserves_requirement, service_fee_change_allowed, Amount,
     BaseMintSnapshot, DepositIdentityDecision,

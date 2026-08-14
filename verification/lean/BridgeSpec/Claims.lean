@@ -164,6 +164,12 @@ theorem notification_admission_claim
     simpa [notificationIngestionAllowed] using ingestionAccepted
   exact ⟨verification.1, verification.2, ingestion⟩
 
+theorem notification_failure_cooldown_is_hash_scoped_and_strict
+    {hashMatches : Bool} {nowNs retryAfterNs : Nat}
+    (active : notificationFailureCooldownActive hashMatches nowNs retryAfterNs = true) :
+    hashMatches = true ∧ nowNs < retryAfterNs := by
+  simpa [notificationFailureCooldownActive, Bool.and_eq_true] using active
+
 theorem lease_lane_claim
     {targetActive targetAutomatic : Bool} {activeInLane capacity : Nat}
     (allowed :

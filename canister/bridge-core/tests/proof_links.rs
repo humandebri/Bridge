@@ -153,18 +153,22 @@ fn withdrawal_admission_boundary_uses_the_full_big_endian_uint256() {
 }
 
 #[test]
-fn withdrawal_finality_quorum_selects_the_greatest_two_provider_checkpoint() {
+fn withdrawal_finality_quorum_requires_an_exact_two_provider_checkpoint() {
     assert_eq!(
-        withdrawal_finalized_checkpoint(Some(100), Some(101), Some(102)),
-        Some(101)
+        withdrawal_finalized_checkpoint(Some(100), Some(100), Some(102)),
+        Some(100)
     );
     assert_eq!(
-        withdrawal_finalized_checkpoint(Some(102), Some(100), Some(101)),
-        Some(101)
+        withdrawal_finalized_checkpoint(Some(102), Some(100), Some(102)),
+        Some(102)
     );
     assert_eq!(
         withdrawal_finalized_checkpoint(Some(100), None, Some(102)),
-        Some(100)
+        None
+    );
+    assert_eq!(
+        withdrawal_finalized_checkpoint(Some(100), Some(101), Some(102)),
+        None
     );
     assert_eq!(withdrawal_finalized_checkpoint(Some(102), None, None), None);
 }

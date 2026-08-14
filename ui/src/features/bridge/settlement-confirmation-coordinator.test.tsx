@@ -60,6 +60,7 @@ import { NotifyWithdrawalCallError } from "@/lib/ic/withdrawal-notification-clie
 import { SettlementConfirmationCoordinator } from "./settlement-confirmation-coordinator"
 
 const hash = `0x${"33".repeat(32)}` as const
+const blockHash = `0x${"44".repeat(32)}` as const
 const pending: PendingWithdrawal = {
   kind: "withdrawal",
   transactionHash: hash,
@@ -93,8 +94,8 @@ beforeEach(() => {
   }
   mocks.pendingEntries = [pending]
   mocks.readPending.mockImplementation(() => mocks.pendingEntries)
-  mocks.getReceipt.mockResolvedValue({ status: "success", blockNumber: 10n })
-  mocks.getBlock.mockResolvedValue({ number: 9n })
+  mocks.getReceipt.mockResolvedValue({ status: "success", blockNumber: 10n, blockHash })
+  mocks.getBlock.mockResolvedValue({ number: 9n, hash: blockHash })
   mocks.removePending.mockResolvedValue(undefined)
   mocks.markNotified.mockImplementation((entry: PendingWithdrawal, withdrawalId: Hex): Promise<void> => {
     mocks.pendingEntries = mocks.pendingEntries.map((candidate) => candidate.transactionHash === entry.transactionHash
@@ -144,8 +145,36 @@ describe("SettlementConfirmationCoordinator", () => {
     expect(mocks.removePending).not.toHaveBeenCalled()
   })
 
+  it("does_not_notify_a_success_receipt_from_a_noncanonical_fork", async () => {
+    mocks.getBlock.mockImplementation(({ blockTag }: { blockTag?: string }) => Promise.resolve(
+      blockTag === "finalized"
+        ? { number: 11n, hash: `0x${"55".repeat(32)}` }
+        : { number: 10n, hash: `0x${"66".repeat(32)}` },
+    ))
+
+    render(<SettlementConfirmationCoordinator />)
+
+    await waitFor(() => expect(mocks.getBlock).toHaveBeenCalledTimes(2))
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
+    expect(mocks.removePending).not.toHaveBeenCalled()
+  })
+
+  it("keeps_a_reverted_receipt_until_its_exact_block_is_canonical_and_finalized", async () => {
+    mocks.getReceipt.mockResolvedValue({ status: "reverted", blockNumber: 10n, blockHash })
+    mocks.getBlock.mockResolvedValue({ number: 9n, hash: `0x${"55".repeat(32)}` })
+
+    render(<SettlementConfirmationCoordinator />)
+
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(
+      "withdraw:1",
+      expect.objectContaining({ phase: "base-withdrawal-finalizing" }),
+    ))
+    expect(mocks.removePending).not.toHaveBeenCalled()
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
+  })
+
   it("notifies_with_the_browser_identity_after_Base_finality_without_an_IC_wallet", async () => {
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     render(<SettlementConfirmationCoordinator />)
 
     await waitFor(() => expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce())
@@ -166,7 +195,7 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("accepts a duplicate notification receipt as recorded", async () => {
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     mocks.notifyWithdrawal.mockResolvedValue({ Duplicate: { withdrawal_id: new Uint8Array(32).fill(8) } })
 
     render(<SettlementConfirmationCoordinator />)
@@ -195,22 +224,22 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("does not start a second observer when progress rerenders during receipt lookup", async () => {
-    let resolveReceipt!: (receipt: { status: "success"; blockNumber: bigint }) => void
+    let resolveReceipt!: (receipt: { status: "success"; blockNumber: bigint; blockHash: Hex }) => void
     mocks.getReceipt.mockReturnValue(new Promise((resolve) => { resolveReceipt = resolve }))
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     const view = render(<SettlementConfirmationCoordinator />)
     await waitFor(() => expect(mocks.getReceipt).toHaveBeenCalledOnce())
 
     mocks.progress = { ...mocks.progress, phase: "base-withdrawal-included" }
     view.rerender(<SettlementConfirmationCoordinator />)
-    resolveReceipt({ status: "success", blockNumber: 10n })
+    resolveReceipt({ status: "success", blockNumber: 10n, blockHash })
 
     await waitFor(() => expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce())
     expect(mocks.getReceipt).toHaveBeenCalledOnce()
   })
 
   it("browser_notification_remains_current_across_unrelated_rerenders", async () => {
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     let resolveNotification!: (value: { Ingested: { finalized_checkpoint_block_number: bigint; withdrawal_id: Uint8Array } }) => void
     mocks.notifyWithdrawal.mockReturnValue(new Promise((resolve) => { resolveNotification = resolve }))
     const view = render(<SettlementConfirmationCoordinator />)
@@ -227,7 +256,7 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("terminal_notification_failure_blocks_the_pending_observer_without_reopening_attention", async () => {
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     mocks.notifyWithdrawal.mockRejectedValue(new NotifyWithdrawalCallError(
       "WithdrawalBeforeAdmissionBoundary",
       "Withdrawal predates the admission boundary",
@@ -249,7 +278,7 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("stops automatic retries after an RPC availability failure", async () => {
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     mocks.notifyWithdrawal.mockRejectedValue(new NotifyWithdrawalCallError("RpcUnavailable", "Base RPC is unavailable"))
 
     render(<SettlementConfirmationCoordinator />)
@@ -295,7 +324,7 @@ describe("SettlementConfirmationCoordinator", () => {
 
   it("runs_a_restored_manual_notification_retry_and_clears_the_action_on_success", async () => {
     mocks.progress = { ...mocks.progress, phase: "attention" }
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     mocks.pendingEntries = [{
       ...pending,
       notification: {
@@ -325,7 +354,7 @@ describe("SettlementConfirmationCoordinator", () => {
 
   it("reinstates_the_manual_notification_retry_after_an_explicit_retry_fails", async () => {
     mocks.progress = { ...mocks.progress, phase: "attention" }
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     mocks.notifyWithdrawal.mockRejectedValue(new NotifyWithdrawalCallError("RpcUnavailable", "Base RPC is unavailable"))
     mocks.pendingEntries = [{
       ...pending,
@@ -389,7 +418,7 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("retries TransactionNotConfirmed only once after the finalized head advances", async () => {
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     mocks.notifyWithdrawal.mockRejectedValue(new NotifyWithdrawalCallError(
       "TransactionNotConfirmed",
       "not finalized",
@@ -408,7 +437,7 @@ describe("SettlementConfirmationCoordinator", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0))
     expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce()
 
-    mocks.getBlock.mockResolvedValue({ number: 11n })
+    mocks.getBlock.mockResolvedValue({ number: 11n, hash: blockHash })
     document.dispatchEvent(new Event("visibilitychange"))
     await waitFor(() => expect(mocks.notifyWithdrawal).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(mocks.setFailure).toHaveBeenLastCalledWith(
@@ -416,7 +445,7 @@ describe("SettlementConfirmationCoordinator", () => {
       expect.objectContaining({ disposition: "manual-retry" }),
     ))
 
-    mocks.getBlock.mockResolvedValue({ number: 12n })
+    mocks.getBlock.mockResolvedValue({ number: 12n, hash: blockHash })
     document.dispatchEvent(new Event("visibilitychange"))
     await Promise.resolve()
     expect(mocks.notifyWithdrawal).toHaveBeenCalledTimes(2)
@@ -425,7 +454,7 @@ describe("SettlementConfirmationCoordinator", () => {
   it("uses one five-second retry for an interrupted UI-to-IC call", async () => {
     vi.useFakeTimers()
     try {
-      mocks.getBlock.mockResolvedValue({ number: 10n })
+      mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
       mocks.notifyWithdrawal
         .mockRejectedValueOnce(new Error("network disconnected"))
         .mockResolvedValueOnce({ Ingested: { finalized_checkpoint_block_number: 10n, withdrawal_id: new Uint8Array(32).fill(7) } })
@@ -444,7 +473,7 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("retains a successful notification until Paid", async () => {
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
 
     render(<SettlementConfirmationCoordinator />)
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("withdraw:1", expect.objectContaining({ phase: "ic-notification-recorded" })))
@@ -482,7 +511,7 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("does_not_automatically_repeat_an_incomplete_payout_step", async () => {
-    mocks.getBlock.mockResolvedValue({ number: 10n })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
     mocks.continueWithdrawal.mockResolvedValue({ ReconciliationProgress: { state: { Withdrawal: { ReconciliationHold: { phase: { SearchByMemo: null } } } } } })
 
     render(<SettlementConfirmationCoordinator />)

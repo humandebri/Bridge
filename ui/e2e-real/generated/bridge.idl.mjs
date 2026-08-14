@@ -104,6 +104,7 @@ export const idlFactory = ({ IDL }) => {
     'RpcInconsistent' : IDL.Null,
     'LedgerAmbiguous' : IDL.Null,
     'LedgerUnavailable' : IDL.Null,
+    'AuthorizationExpired' : IDL.Null,
     'BaseStateMismatch' : IDL.Null,
     'BridgeSignerMismatch' : IDL.Null,
     'SigningUnavailable' : IDL.Null,

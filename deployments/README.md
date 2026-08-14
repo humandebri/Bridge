@@ -61,7 +61,7 @@ Plan 007のIC stagingで新規作成またはinstallするCanisterは`sepolia-st
 
 外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh`をclean commitで実行し、`deployments/sepolia-staging/evidence/local-e2e.json`を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
-外部stageのschema v7証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証でき、`EXTENDED_COMPLETE`には実wallet matrix、10件のRPC rehearsal、同一Wasm upgrade、Base/ICのfinal pause、pending settlement/Timelockゼロが必要である。この詳細完了はproduction activationをblockしない。Gate BはRPC rehearsalの主要5件による`LAUNCH_READY`だけを要求する。現行staging driverはstable schema v32かつ同一deployment instanceのupgradeだけを受理する。reinstall、異なるinstance、v32以外のschema、未登録形状はfail closedにする。
+外部stageのschema v7証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証でき、`EXTENDED_COMPLETE`には実wallet matrix、10件のRPC rehearsal、同一Wasm upgrade、Base/ICのfinal pause、pending settlement/Timelockゼロが必要である。この詳細完了はproduction activationをblockしない。Gate BはRPC rehearsalの主要5件による`LAUNCH_READY`だけを要求する。現行staging driverはstable schema v33かつ同一deployment instanceのupgradeだけを受理する。reinstall、異なるinstance、v32以前または未知のschema、未登録形状はfail closedにする。
 
 新規作成するstaging Bridge Canister IDだけを`.icp/data/mappings/sepolia-staging.ids.json`へ保存する。既存`testicrc`を新規作成対象としてmappingへ追加しない。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`の`pnpm run deploy:test`でCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
 

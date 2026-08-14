@@ -10,7 +10,13 @@ import sys
 from pathlib import Path
 
 
-ARTIFACTS = ("bridge-canister.wasm", "bridge-runtime.bin")
+ARTIFACTS = (
+    "bridge-canister.wasm",
+    "bridge-runtime.bin",
+    "bsns-creation.bin",
+    "bsns-runtime.bin",
+    "bsns-runtime-layout.json",
+)
 SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
@@ -34,7 +40,7 @@ def expected_hashes(manifest_path: Path) -> dict[str, str]:
                 raise ValueError(f"invalid or duplicate release artifact: {path}")
             result[path] = value.lower()
     if set(result) != set(ARTIFACTS):
-        raise ValueError("release manifest must bind both reproducible artifacts")
+        raise ValueError("release manifest must bind every reproducible artifact")
     return result
 
 
@@ -60,7 +66,7 @@ def main(argv: list[str]) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(error, file=sys.stderr)
         return 1
-    print("reproducible Wasm and contract runtime hashes match the release manifest")
+    print("reproducible Wasm and contract creation/runtime hashes match the release manifest")
     return 0
 
 

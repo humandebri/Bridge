@@ -41,7 +41,7 @@ contract BridgeDepositTest is TestBase {
 
     function testConstructorInitializesRolesLimitsAndBoundToken() public view {
         assert(bridge.bridgeSigner() == BRIDGE_SIGNER);
-        assert(bridge.mintAuthorizationEpoch() == 1);
+        assert(bridge.mintAuthorizationEpoch() == 2);
         assert(bridge.runtimeAdministrator() == RUNTIME_ADMINISTRATOR);
         assert(bridge.baseAdminTimelock() == BASE_ADMIN_TIMELOCK);
         assert(bridge.serviceFee() == SERVICE_FEE);
@@ -252,11 +252,11 @@ contract BridgeDepositTest is TestBase {
         IBridge.MintAuthorization memory authorization = _authorization(keccak256("old-epoch"), RECIPIENT, 110, 10);
         vm.prank(RUNTIME_ADMINISTRATOR);
         bridge.pauseDepositMints();
-        assert(bridge.mintAuthorizationEpoch() == 2);
+        assert(bridge.mintAuthorizationEpoch() == 3);
 
         vm.prank(BASE_ADMIN_TIMELOCK);
         bridge.unpauseDepositMints();
-        vm.expectRevert(abi.encodeWithSelector(IBridge.MintAuthorizationEpochMismatch.selector, 1, 2));
+        vm.expectRevert(abi.encodeWithSelector(IBridge.MintAuthorizationEpochMismatch.selector, 2, 4));
         _submit(bridge, authorization);
     }
 
@@ -266,7 +266,7 @@ contract BridgeDepositTest is TestBase {
         assert(snapshot.blockNumber == block.number);
         assert(snapshot.blockTimestamp == expectedBlockTimestamp);
         assert(snapshot.bridgeSigner == BRIDGE_SIGNER);
-        assert(snapshot.mintAuthorizationEpoch == 1);
+        assert(snapshot.mintAuthorizationEpoch == 2);
         assert(snapshot.serviceFee == SERVICE_FEE);
         assert(snapshot.maxServiceFee == MAX_SERVICE_FEE);
         assert(snapshot.perDepositLimit == PER_DEPOSIT_LIMIT);
@@ -390,7 +390,7 @@ contract BridgeDepositTest is TestBase {
             maxServiceFee: maximumServiceFee,
             chargedServiceFee: chargedServiceFee,
             deadline: block.timestamp + 30 minutes,
-            authorizationEpoch: 1
+            authorizationEpoch: 2
         });
     }
 

@@ -13,6 +13,20 @@ try {
     throw new Error("Production UI deploy requires a 32-character hexadecimal VITE_WALLETCONNECT_PROJECT_ID")
   }
   const sourceRoot = resolve(import.meta.dirname, "../..")
+  const releaseManifest = JSON.parse(readFileSync(join(bundle, "release-manifest.json"), "utf8"))
+  if (!/^[0-9a-f]{40}$/i.test(releaseManifest.source_revision)
+    || !/^[0-9a-f]{64}$/i.test(releaseManifest.source_tree_sha256)) {
+    throw new Error("Gate B manifest does not bind a valid UI source revision and tree")
+  }
+  const dirty = execFileSync("git", ["-C", sourceRoot, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], { encoding: "utf8" })
+  if (dirty !== "") throw new Error("Production UI deploy requires the exact clean Gate B source tree")
+  const revision = execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
+  const tree = createHash("sha256")
+    .update(execFileSync("git", ["-C", sourceRoot, "archive", "HEAD"]))
+    .digest("hex")
+  if (revision !== releaseManifest.source_revision || tree !== releaseManifest.source_tree_sha256.toLowerCase()) {
+    throw new Error("Production UI checkout differs from the Gate B source revision or tree")
+  }
   const cargoArgs = ["run", "--locked", "--quiet", "--manifest-path", join(sourceRoot, "Cargo.toml"), "-p", "bridge-profile", "--"]
   const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", bundle], { encoding: "utf8" })
   const verifiedManifestSha256 = /manifest_sha256=([0-9a-fA-F]{64})/.exec(gateOutput)?.[1]

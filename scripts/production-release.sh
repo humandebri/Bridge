@@ -97,6 +97,10 @@ usage() {
 SOURCE_ROOT="$ROOT"
 SOURCE_ROOT="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SOURCE_ROOT")"
 production_require_clean_source "$SOURCE_ROOT"
+FROZEN_BUNDLE="$(mktemp -d "${TMPDIR:-/tmp}/bridge-release-plan.XXXXXX")"
+trap 'rm -rf "$FROZEN_BUNDLE"' EXIT
+production_freeze_bundle "$BUNDLE" "$FROZEN_BUNDLE"
+BUNDLE="$FROZEN_BUNDLE"
 DRIVER_PATH="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")"
 DRIVER_RELATIVE="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$DRIVER_PATH" "$SOURCE_ROOT")"
 EXPECTED_DRIVER="production-${MODE}-driver.sh"
@@ -128,13 +132,18 @@ print(manifest.get("release_id", ""), manifest.get("source_revision", ""), manif
   echo "release bundle does not bind the current clean source/profile" >&2
   exit 1
 }
+if [[ "$MODE" == "activate" ]]; then
+  UI_ASSET_HELPER="$SOURCE_ROOT/ui/scripts"/production-assets.mjs
+  [[ -f "$UI_ASSET_HELPER" ]] || { echo "reviewed production UI artifact verifier is missing" >&2; exit 1; }
+  node "$UI_ASSET_HELPER" verify "$BUNDLE/ui-assets.json"
+fi
 
 RENDERED_INPUTS="$(mktemp -d "${TMPDIR:-/tmp}/bridge-release-inputs.XXXXXX")"
 PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-profile-build.XXXXXX")"
 RECEIPT_TMP=""
 POST_DEPLOY_PROFILE_TMP=""
 DEPLOYMENT_BINDING=""
-trap 'rm -rf "$RENDERED_INPUTS" "$PROFILE_TARGET"; [[ -z "$RECEIPT_TMP" ]] || rm -f "$RECEIPT_TMP"; [[ -z "$POST_DEPLOY_PROFILE_TMP" ]] || rm -f "$POST_DEPLOY_PROFILE_TMP"' EXIT
+trap 'chmod u+w "$FROZEN_BUNDLE" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE" "$RENDERED_INPUTS" "$PROFILE_TARGET"; [[ -z "$RECEIPT_TMP" ]] || rm -f "$RECEIPT_TMP"; [[ -z "$POST_DEPLOY_PROFILE_TMP" ]] || rm -f "$POST_DEPLOY_PROFILE_TMP"' EXIT
 CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --locked --quiet --release \
   --manifest-path "$SOURCE_ROOT/Cargo.toml" -p bridge-profile
 PROFILE_BIN="$PROFILE_TARGET/release/bridge-profile"
@@ -289,7 +298,7 @@ PY
 import json, sys
 binding = json.load(open(sys.argv[10], encoding="utf-8"))
 with open(sys.argv[1], "w", encoding="utf-8") as output:
-    json.dump({"gate_a_manifest_sha256": sys.argv[2], "release_id": sys.argv[3], "source_revision": sys.argv[4], "source_tree_sha256": sys.argv[5], "gate_a_profile_sha256": sys.argv[6], "post_deploy_profile_sha256": sys.argv[7], "bridge_canister_wasm_sha256": sys.argv[8], "bridge_runtime_bytecode_sha256": sys.argv[9], "bridge_deployment_transaction_hash": binding["bridge"]["transaction_hash"], "bridge_deployment_block_number": binding["bridge"]["block_number"], "bridge_deployment_block_hash": binding["bridge"]["block_hash"], "timelock_deployment_transaction_hash": binding["timelock"]["transaction_hash"], "timelock_deployment_block_number": binding["timelock"]["block_number"], "timelock_deployment_block_hash": binding["timelock"]["block_hash"]}, output, sort_keys=True, separators=(",", ":"))
+    json.dump({"schema_version": 1, "gate_a_manifest_sha256": sys.argv[2], "release_id": sys.argv[3], "source_revision": sys.argv[4], "source_tree_sha256": sys.argv[5], "gate_a_profile_sha256": sys.argv[6], "post_deploy_profile_sha256": sys.argv[7], "bridge_canister_wasm_sha256": sys.argv[8], "bridge_runtime_bytecode_sha256": sys.argv[9], "bridge_deployment_transaction_hash": binding["bridge"]["transaction_hash"], "bridge_deployment_block_number": binding["bridge"]["block_number"], "bridge_deployment_block_hash": binding["bridge"]["block_hash"], "timelock_deployment_transaction_hash": binding["timelock"]["transaction_hash"], "timelock_deployment_block_number": binding["timelock"]["block_number"], "timelock_deployment_block_hash": binding["timelock"]["block_hash"]}, output, sort_keys=True, separators=(",", ":"))
     output.write("\n")
 ' "$RECEIPT_TMP" "$GATE_MANIFEST_SHA256" "$RELEASE_ID" "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" "$GATE_A_PROFILE_CANONICAL_SHA256" "$POST_DEPLOY_PROFILE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" "$DEPLOYMENT_BINDING"
   production_atomic_replace "$POST_DEPLOY_PROFILE_TMP" "$POST_DEPLOY_PROFILE"

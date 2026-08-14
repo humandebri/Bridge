@@ -3,6 +3,8 @@ name: trusted-pr-gate
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
 
 permissions:
   contents: read
@@ -21,6 +23,7 @@ jobs:
       base_sha: ${{ steps.base.outputs.sha }}
       matrix: ${{ steps.classify.outputs.matrix }}
       any: ${{ steps.classify.outputs.any }}
+      policy: ${{ steps.classify.outputs.policy }}
     steps:
       - name: Check out trusted base
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -58,7 +61,7 @@ jobs:
 
   test:
     needs: classify
-    if: needs.classify.outputs.any == 'true'
+    if: needs.classify.outputs.any == 'true' && needs.classify.outputs.policy != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -73,16 +76,8 @@ jobs:
           ref: ${{ needs.classify.outputs.base_sha }}
           path: trusted-policy
           persist-credentials: false
-      - name: Check out exact untrusted head
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: source
-          fetch-depth: 0
-          submodules: recursive
-          persist-credentials: false
       - name: Install pinned Rust toolchain
+        working-directory: trusted-policy
         run: rustup show
       - name: Install Node.js 24.14.0
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -99,51 +94,91 @@ jobs:
           version: v1.7.1
       - name: Install complete CI toolchain
         run: trusted-policy/scripts/install-ci-tools.sh all
-      - name: Install UI dependencies
-        run: pnpm --dir source/ui install --frozen-lockfile
+      - name: Install trusted UI dependencies without lifecycle scripts
+        run: pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts
       - name: Install Chromium when required
         if: matrix.area == 'ui' || matrix.area == 'real'
-        run: pnpm --dir source/ui exec playwright install --with-deps chromium
-      - name: Install trusted driver alongside untrusted source
-        run: |
-          test -d source/scripts
-          test ! -L source/scripts
-          rm -f source/scripts/ci-local.trusted.sh
-          cp trusted-policy/scripts/ci-local.sh source/scripts/ci-local.trusted.sh
+        run: pnpm --dir trusted-policy/ui exec playwright install --with-deps chromium
+      - name: Build the pinned isolation image from trusted policy
+        run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
+      - name: Check out exact untrusted head as read-only container input
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: source
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
       - name: Run selected trusted check
         env:
           AREA: ${{ matrix.area }}
+          BRIDGE_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          cd source
+          run_check() {
+            trusted-policy/scripts/trusted-pr-container.sh source trusted-policy "$1"
+          }
           case "$AREA" in
             rust)
-              scripts/ci-local.trusted.sh rust-fast
-              scripts/ci-local.trusted.sh rust-integration
+              run_check rust-fast
+              run_check rust-integration
               ;;
             contracts)
-              scripts/ci-local.trusted.sh contracts-fast
-              scripts/ci-local.trusted.sh contracts-coverage
+              run_check contracts-fast
+              run_check contracts-coverage
               ;;
-            proofs) scripts/ci-local.trusted.sh proofs ;;
+            proofs) run_check proofs ;;
             ui)
-              scripts/ci-local.trusted.sh ui-fast
-              scripts/ci-local.trusted.sh ui-e2e
+              run_check ui-fast
+              run_check ui-e2e
               ;;
-            real) scripts/ci-local.trusted.sh real ;;
-            icp) scripts/ci-local.trusted.sh icp ;;
+            real) run_check real ;;
+            icp) run_check icp ;;
             *) exit 2 ;;
           esac
 
+  policy-review:
+    needs: classify
+    if: needs.classify.outputs.policy == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Require current repository-owner approval for policy changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          approved="$({ gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" || exit 1; } |
+            jq --arg head "$HEAD_SHA" -s -r '[add | sort_by(.submitted_at) | group_by(.user.login)[] | last |
+              select(.state == "APPROVED" and .commit_id == $head) | .user.login] |
+              any(. == "humandebri")')"
+          test "$approved" = true
+
   trusted-pr-gate:
     if: always()
-    needs: [classify, test]
+    needs: [classify, test, policy-review]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
       - name: Require trusted classification and applicable checks
         env:
           CLASSIFY_RESULT: ${{ needs.classify.result }}
+          ANY: ${{ needs.classify.outputs.any }}
+          POLICY: ${{ needs.classify.outputs.policy }}
           TEST_RESULT: ${{ needs.test.result }}
+          POLICY_REVIEW_RESULT: ${{ needs.policy-review.result }}
         run: |
           test "$CLASSIFY_RESULT" = success
-          test "$TEST_RESULT" = success -o "$TEST_RESULT" = skipped
+          if [[ "$ANY" == true && "$POLICY" != true ]]; then
+            test "$TEST_RESULT" = success
+          else
+            test "$TEST_RESULT" = skipped
+          fi
+          if [[ "$POLICY" == true ]]; then
+            test "$POLICY_REVIEW_RESULT" = success
+          else
+            test "$POLICY_REVIEW_RESULT" = skipped
+          fi

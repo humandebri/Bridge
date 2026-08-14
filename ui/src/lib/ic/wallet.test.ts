@@ -237,4 +237,32 @@ describe("Plug restored account validation", () => {
     await expect(adapter.prepare()).rejects.toThrow("Plug account changed")
     expect(adapter.requiresUserGesture).toBe(true)
   })
+
+  it("re-reads the Plug principal after an approval prompt", async () => {
+    const plug = installPlug("aaaaa-aa")
+    plug.agent!.getPrincipal
+      .mockResolvedValueOnce(Principal.fromText("aaaaa-aa"))
+      .mockResolvedValueOnce(Principal.fromText("2vxsx-fae"))
+    plug.createActor.mockResolvedValue({ icrc2_approve: vi.fn().mockResolvedValue({ Ok: 1n }) })
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", { owner: "aaaaa-aa" })
+
+    await expect(adapter.approve({ amount: 10n, currentAllowance: 0n, ledgerFee: 1n }))
+      .rejects.toThrow("Plug account changed")
+  })
+
+  it("re-reads the Plug principal after a deposit prompt", async () => {
+    const plug = installPlug("aaaaa-aa")
+    plug.agent!.getPrincipal
+      .mockResolvedValueOnce(Principal.fromText("aaaaa-aa"))
+      .mockResolvedValueOnce(Principal.fromText("2vxsx-fae"))
+    plug.createActor.mockResolvedValue({ request_deposit: vi.fn().mockResolvedValue({}) })
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", { owner: "aaaaa-aa" })
+
+    await expect(adapter.requestDeposit({
+      ownerSequence: 1n,
+      baseRecipient: new Uint8Array(20),
+      grossAmount: 10n,
+      maxServiceFee: 1n,
+    })).rejects.toThrow("Plug account changed")
+  })
 })

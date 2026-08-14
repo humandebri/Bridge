@@ -551,6 +551,7 @@ export type SettlementStopReason = { 'LedgerFeeExceedsServiceFee' : null } |
   { 'RpcInconsistent' : null } |
   { 'LedgerAmbiguous' : null } |
   { 'LedgerUnavailable' : null } |
+  { 'AuthorizationExpired' : null } |
   { 'BaseStateMismatch' : null } |
   { 'BridgeSignerMismatch' : null } |
   { 'SigningUnavailable' : null } |

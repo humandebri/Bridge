@@ -26,7 +26,7 @@ function moduleHash(value, context) {
 export function verifyUpgradeInstance(profile, livePublicConfig, liveCanisterStatus) {
   const next = deploymentInstanceHex(profile?.deploymentInstanceId, "frontend profile deploymentInstanceId")
   const schemaVersion = Number(livePublicConfig?.schema_version)
-  if (schemaVersion !== 32) throw new Error("staging upgrade requires current stable schema v32")
+  if (schemaVersion !== 33) throw new Error("staging upgrade requires current stable schema v33")
   const previous = deploymentInstanceHex(
     livePublicConfig?.deployment_instance_id,
     "live PublicConfig deployment_instance_id",

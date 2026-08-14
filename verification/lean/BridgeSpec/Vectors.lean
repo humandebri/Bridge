@@ -193,7 +193,8 @@ def depositNonterminalIndexCase (state : Nat) : String :=
     field "indexed" (boolJson (depositNonterminalIndexed state)) ++ "}"
 
 def notificationAdmissionCase
-    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : Nat) : String :=
+    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : Nat)
+    (hashMatches : Bool) (nowNs retryAfterNs : Nat) : String :=
   "{" ++ natField "global_count" globalCount ++ "," ++
     natField "caller_count" callerCount ++ "," ++ natField "global_limit" globalLimit ++ "," ++
     natField "caller_limit" callerLimit ++ "," ++
@@ -202,7 +203,11 @@ def notificationAdmissionCase
     field "allowed"
       (boolJson (notificationAdmissionAllowed globalCount callerCount globalLimit callerLimit)) ++ "," ++
     field "ingestion_allowed"
-      (boolJson (notificationIngestionAllowed ingestionCount ingestionLimit)) ++ "}"
+      (boolJson (notificationIngestionAllowed ingestionCount ingestionLimit)) ++ "," ++
+    field "hash_matches" (boolJson hashMatches) ++ "," ++
+    natField "now_ns" nowNs ++ "," ++ natField "retry_after_ns" retryAfterNs ++ "," ++
+    field "cooldown_active"
+      (boolJson (notificationFailureCooldownActive hashMatches nowNs retryAfterNs)) ++ "}"
 
 def leaseLaneDecisionName : LeaseLaneClaimDecision → String
   | .allow => "allow"
@@ -332,10 +337,10 @@ def document : String :=
     refundRequestIdentityCase true]
   let depositNonterminalIndexes := (List.range 11).map depositNonterminalIndexCase
   let notificationAdmissions := [
-    notificationAdmissionCase 0 0 48 6 0 24,
-    notificationAdmissionCase 47 5 48 6 23 24,
-    notificationAdmissionCase 48 0 48 6 0 24,
-    notificationAdmissionCase 0 6 48 6 24 24]
+    notificationAdmissionCase 0 0 48 6 0 24 false 9 10,
+    notificationAdmissionCase 47 5 48 6 23 24 true 9 10,
+    notificationAdmissionCase 48 0 48 6 0 24 true 10 10,
+    notificationAdmissionCase 0 6 48 6 24 24 true 11 10]
   let leaseLanes := [
     leaseLaneCase false false 0 4,
     leaseLaneCase false false 4 4,

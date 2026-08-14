@@ -245,10 +245,25 @@ for index,entry in enumerate(p['rpc_providers']):
 (root/'provider-observations.json').write_text(json.dumps(observations,sort_keys=True,separators=(',',':'))+'\n')
 PY
 
-python3 - "$PROFILE" "$TMP" <<'PY'
+python3 - "$PROFILE" "$TMP" "$BUNDLE" <<'PY'
 import hashlib,json,re,subprocess,sys
 from pathlib import Path
-p=json.load(open(sys.argv[1])); root=Path(sys.argv[2]); receipt=json.load(open(Path(sys.argv[1]).with_name('gate-a-receipt.json')))
+p=json.load(open(sys.argv[1])); root=Path(sys.argv[2]); bundle=Path(sys.argv[3]); receipt=json.load(open(Path(sys.argv[1]).with_name('gate-a-receipt.json')))
+bsns_template=(bundle/'bsns-runtime.bin').read_bytes(); bsns_layout=json.load(open(bundle/'bsns-runtime-layout.json'))
+if bsns_layout.get('schema_version')!=1 or bsns_layout.get('byte_length')!=len(bsns_template): raise SystemExit('invalid BSNS runtime layout')
+if hashlib.sha256(bsns_template).hexdigest().lower()!=p['bsns_runtime_template_sha256'].lower(): raise SystemExit('BSNS runtime template differs from profile')
+def bsns_runtime_hashes(value):
+ runtime=bytearray.fromhex(value.removeprefix('0x'))
+ if len(runtime)!=len(bsns_template): raise ValueError('BSNS runtime length differs from template')
+ mutable=bytearray(len(runtime))
+ for item in bsns_layout.get('immutable_ranges',[]):
+  start=item.get('start'); length=item.get('length')
+  if not isinstance(start,int) or not isinstance(length,int) or start<0 or length<=0 or start+length>len(runtime): raise ValueError('invalid BSNS immutable range')
+  mutable[start:start+length]=bytes([1])*length
+ for index,(actual,expected) in enumerate(zip(runtime,bsns_template)):
+  if not mutable[index] and actual!=expected: raise ValueError(f'BSNS runtime differs outside immutable references at byte {index}')
+ for item in bsns_layout['immutable_ranges']: runtime[item['start']:item['start']+item['length']]=bytes(item['length'])
+ return hashlib.sha256(bytes.fromhex(value.removeprefix('0x'))).hexdigest(),hashlib.sha256(runtime).hexdigest()
 observations=json.load(open(root/'provider-observations.json'))
 blocks=[]
 for observation in observations:
@@ -334,6 +349,7 @@ for provider_index,rpc_entry in enumerate(p['rpc_providers']):
  try:
   rpc=rpc_entry['url']; bridge=p['bridge_contract']; timelock=p['timelock']['address']
   bsns=call(rpc,bridge,'bsns()(address)').lower()
+  bsns_runtime=code(rpc,bsns); bsns_exact_hash,bsns_template_hash=bsns_runtime_hashes(bsns_runtime)
   external={p['timelock']['proposer'],p['timelock']['executor'],p['timelock']['canceller'],p['governance_operator'],zero}
   bridge_deployment_hash=deployment(rpc,receipt['bridge_deployment_transaction_hash'],bridge,receipt['bridge_deployment_block_number'],'bridge')
   timelock_deployment_hash=deployment(rpc,receipt['timelock_deployment_transaction_hash'],timelock,receipt['timelock_deployment_block_number'],'timelock')
@@ -357,7 +373,7 @@ for provider_index,rpc_entry in enumerate(p['rpc_providers']):
   'timelock_open_proposer':call(rpc,timelock,'hasRole(bytes32,address)(bool)',roles['PROPOSER_ROLE'],zero).lower()=='true',
   'timelock_open_executor':call(rpc,timelock,'hasRole(bytes32,address)(bool)',roles['EXECUTOR_ROLE'],zero).lower()=='true',
   'timelock_open_canceller':call(rpc,timelock,'hasRole(bytes32,address)(bool)',roles['CANCELLER_ROLE'],zero).lower()=='true',
-  'bsns_address':bsns,'bsns_runtime_bytecode_sha256':sha_code(code(rpc,bsns)),
+  'bsns_address':bsns,'bsns_runtime_bytecode_sha256':bsns_exact_hash,'bsns_runtime_template_sha256':bsns_template_hash,
   'bsns_name':call(rpc,bsns,'name()(string)'),'bsns_symbol':call(rpc,bsns,'symbol()(string)'),
   'bsns_decimals':int(call(rpc,bsns,'decimals()(uint8)').split()[0],0),'bsns_bridge':call(rpc,bsns,'bridge()(address)').lower(),
   'timelock_role_members':{k:sorted(v) for k,v in role_members.items()},'timelock_roles_exact':roles_exact,
@@ -489,7 +505,7 @@ if any(state[k].lower()!=v.lower() for k,v in expected_addresses.items()): raise
 if not state['base_deposit_mints_paused'] or not state['base_withdrawals_paused']: raise SystemExit('Base asset flows are not paused')
 if not all(state[k] for k in ('timelock_self_admin','timelock_proposer_authorized','timelock_executor_authorized','timelock_canceller_authorized','timelock_external_admins_absent','timelock_roles_exact')): raise SystemExit('Timelock role drift')
 if any(state[k] for k in ('timelock_open_proposer','timelock_open_executor','timelock_open_canceller')): raise SystemExit('Timelock has an open role')
-if state['bsns_runtime_bytecode_sha256'].lower()!=p['bsns_runtime_bytecode_sha256'].lower() or state['bsns_name']!='KINIC' or state['bsns_symbol']!='KINIC' or state['bsns_decimals']!=p['decimals']: raise SystemExit('bSNS runtime or metadata drift')
+if state['bsns_runtime_bytecode_sha256'].lower()!=p['bsns_runtime_bytecode_sha256'].lower() or state['bsns_runtime_template_sha256'].lower()!=p['bsns_runtime_template_sha256'].lower() or state['bsns_name']!='KINIC' or state['bsns_symbol']!='KINIC' or state['bsns_decimals']!=p['decimals']: raise SystemExit('bSNS runtime template, immutable binding, or metadata drift')
 out={
  'schema_version':2,'observed_at_unix':int(time.time()),'chain_id':p['chain_id'],'evm_rpc_canister_id':p['evm_rpc_canister_id'],
  'finalized_head_block_number':height,'finalized_head_block_hash':bhash,'canonical':True,'agreeing_providers':agree,'total_providers':3,
@@ -513,6 +529,7 @@ out={
  'timelock_deployment_transaction_hash':state['timelock_deployment_transaction_hash'],'timelock_deployment_block_number':state['timelock_deployment_block_number'],
  'timelock_deployment_block_hash':state['timelock_deployment_block_hash'],
  'bsns_runtime_bytecode_sha256':state['bsns_runtime_bytecode_sha256'],'bsns_name':state['bsns_name'],'bsns_symbol':state['bsns_symbol'],
+ 'bsns_runtime_template_sha256':state['bsns_runtime_template_sha256'],
  'bsns_decimals':state['bsns_decimals'],'bsns_bridge':state['bsns_bridge'],'rpc_provider_urls_sha256':actual_rpc_digest,
  'public_config':public_config}
 mode=sys.argv[4]

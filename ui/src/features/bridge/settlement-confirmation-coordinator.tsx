@@ -4,6 +4,7 @@ import { toast } from "sonner"
 import { deploymentProfile } from "@/config/profile"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
 import { basePublicClient } from "@/lib/evm/client"
+import { finalizedCheckpointMatches } from "@/lib/finalized-checkpoint"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { continueWithdrawalWithBrowserIdentity, NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
 import {
@@ -148,19 +149,7 @@ export function SettlementConfirmationCoordinator() {
       if (!isCurrent()) return
       if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
       let latest = progressForTrigger(entry, trigger)
-      if (receipt.status === "reverted") {
-        await removePendingConfirmation(entry)
-        if (!isCurrent()) return
-        if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
-        latest = progressForTrigger(entry, trigger)
-        if (latest) update(latest.id, {
-          phase: "attention",
-          receiptBlockNumber: receipt.blockNumber.toString(),
-          attentionMessage: "The Base withdrawal transaction reverted. No withdrawal was recorded on the IC; you can close this transfer and try again.",
-        })
-        toast.warning("The Base withdrawal transaction reverted. You can try again.")
-        return
-      }
+      if (receipt.blockHash === null) return
       if (latest) update(latest.id, {
         phase: "base-withdrawal-included",
         receiptBlockNumber: receipt.blockNumber.toString(),
@@ -169,11 +158,35 @@ export function SettlementConfirmationCoordinator() {
       if (!isCurrent()) return
       if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
       latest = progressForTrigger(entry, trigger)
-      if (finalized.number === null || finalized.number < receipt.blockNumber) {
+      if (finalized.number === null || finalized.hash === null || finalized.number < receipt.blockNumber) {
         if (latest) update(latest.id, {
           phase: "base-withdrawal-finalizing",
           finalizedBlockNumber: finalized.number?.toString(),
         })
+        return
+      }
+      const canonical = await finalizedCheckpointMatches({
+        finalizedBlock: finalized.number,
+        finalizedBlockHash: finalized.hash,
+        checkpointBlock: receipt.blockNumber,
+        checkpointBlockHash: receipt.blockHash,
+        fetchCheckpointBlockHash: async (blockNumber) => {
+          const block = await basePublicClient.getBlock({ blockNumber })
+          return block.hash
+        },
+      })
+      if (!isCurrent() || !canonical) return
+      if (receipt.status === "reverted") {
+        await removePendingConfirmation(entry)
+        if (!isCurrent()) return
+        if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
+        latest = progressForTrigger(entry, trigger)
+        if (latest) update(latest.id, {
+          phase: "attention",
+          receiptBlockNumber: receipt.blockNumber.toString(),
+          attentionMessage: "The canonical finalized Base withdrawal transaction reverted. No withdrawal was recorded on the IC; you can close this transfer and try again.",
+        })
+        toast.warning("The canonical finalized Base withdrawal transaction reverted. You can try again.")
         return
       }
 

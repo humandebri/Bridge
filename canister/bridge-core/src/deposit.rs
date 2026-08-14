@@ -119,6 +119,7 @@ pub enum DepositEvent {
     },
     AuthorizationSigned {
         signature: Vec<u8>,
+        observed_timestamp: u64,
     },
     MarkRefundAvailable {
         reason: DepositRefundReason,
@@ -334,7 +335,7 @@ impl DepositRecord {
                 State::AuthorizationPending {
                     funding_ledger_block_index,
                 },
-                Event::AuthorizationSigned { signature },
+                Event::AuthorizationSigned { signature, .. },
             ) => {
                 let mut authorization =
                     self.mint_authorization
@@ -343,7 +344,9 @@ impl DepositRecord {
                             entity: "deposit",
                             event: "missing_authorization",
                         })?;
-                authorization.signature = Some(signature);
+                if !authorization.install_signature(signature) {
+                    return Err(CoreError::ConflictingReplay);
+                }
                 (
                     State::AuthorizationAvailable {
                         funding_ledger_block_index: *funding_ledger_block_index,
@@ -645,13 +648,18 @@ impl DepositRecord {
                     }),
                 )
             }
-            Event::AuthorizationSigned { signature } => {
+            Event::AuthorizationSigned {
+                signature,
+                observed_timestamp,
+            } => {
                 let authorization = self.mint_authorization.as_ref();
                 let guard = Guard::InstallSignature {
                     dispatched: authorization.is_some_and(|record| record.signature_dispatched),
                     signature_absent: authorization
                         .is_some_and(|record| record.signature.is_none()),
                     signature_length_valid: signature.len() == 65,
+                    deadline_open: authorization
+                        .is_some_and(|record| *observed_timestamp <= record.authorization.deadline),
                 };
                 (
                     guard,
@@ -845,7 +853,10 @@ impl DepositRecord {
                 self.quote == Some(*quote)
                     && self.mint_authorization.as_ref() == Some(authorization)
             }
-            (State::AuthorizationAvailable { .. }, Event::AuthorizationSigned { signature }) => {
+            (
+                State::AuthorizationAvailable { .. },
+                Event::AuthorizationSigned { signature, .. },
+            ) => {
                 self.mint_authorization
                     .as_ref()
                     .and_then(|record| record.signature.as_ref())

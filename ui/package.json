@@ -26,7 +26,7 @@
     "codegen:candid": "node scripts/generate-candid.mjs",
     "codegen:candid:check": "node scripts/generate-candid.mjs --check",
     "deploy:check": "node scripts/check-deploy-profile.mjs",
-    "deploy": "pnpm run deploy:check && pnpm run build && wrangler deploy",
+    "deploy": "pnpm run deploy:check && node scripts/production-assets.mjs deploy $BRIDGE_RELEASE_BUNDLE/ui-assets.json $BRIDGE_UI_RUNTIME_PROFILE_FILE",
     "deploy:test": "pnpm run build:sepolia && node scripts/check-sepolia-assets.mjs && wrangler deploy --name kinic-bridge-ui-test"
   },
   "dependencies": {

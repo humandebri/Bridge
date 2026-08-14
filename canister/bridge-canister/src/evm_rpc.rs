@@ -1191,34 +1191,11 @@ async fn withdrawal_finalized_observation(
         .try_send()
         .await
         .map_err(|_| ObservationError::Rpc)?;
-    let checkpoint = match result {
-        MultiRpcResult::Consistent(Ok(block)) => {
-            u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?
-        }
-        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(results) => {
-            let mut block_numbers = [None, None, None];
-            for (index, (_, result)) in results.into_iter().take(3).enumerate() {
-                if let Ok(block) = result {
-                    block_numbers[index] = Some(block.number);
-                }
-            }
-            withdrawal_finalized_checkpoint_from_provider_numbers(block_numbers)?
-        }
-    };
-    let block = match client(args)
-        .get_block_by_number(BlockTag::Number(Nat256::from(checkpoint)))
-        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(block)) => block,
-        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
-    };
+    let block = exact_withdrawal_finalized_block(result)?;
     let block_number = u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?;
-    if block_number != checkpoint {
+    if withdrawal_finalized_checkpoint(Some(block_number), Some(block_number), None)
+        != Some(block_number)
+    {
         return Err(ObservationError::InvalidResponse);
     }
     Ok(FinalizedObservation {
@@ -1228,11 +1205,48 @@ async fn withdrawal_finalized_observation(
     })
 }
 
-fn withdrawal_finalized_checkpoint_from_provider_numbers(
-    block_numbers: [Option<Nat256>; 3],
-) -> Result<u64, ObservationError> {
-    let heights = block_numbers.map(|number| number.and_then(|value| u64::try_from(value).ok()));
-    withdrawal_finalized_checkpoint(heights[0], heights[1], heights[2]).ok_or(ObservationError::Rpc)
+fn exact_withdrawal_finalized_block(
+    result: MultiRpcResult<Block>,
+) -> Result<Block, ObservationError> {
+    match result {
+        MultiRpcResult::Consistent(Ok(block)) => Ok(block),
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => {
+            let successful = results
+                .into_iter()
+                .filter_map(|(_, result)| result.ok())
+                .collect::<Vec<_>>();
+            let identities = successful
+                .iter()
+                .map(|block| {
+                    u64::try_from(block.number.clone())
+                        .ok()
+                        .map(|number| (number, *block.hash.as_array()))
+                })
+                .collect::<Vec<_>>();
+            exact_withdrawal_finalized_identity_index(&identities)
+                .map(|index| successful[index].clone())
+                .ok_or(ObservationError::Inconsistent)
+        }
+    }
+}
+
+fn exact_withdrawal_finalized_identity_index(
+    candidates: &[Option<(u64, [u8; 32])>],
+) -> Option<usize> {
+    candidates
+        .iter()
+        .enumerate()
+        .find_map(|(index, candidate)| {
+            candidate.as_ref().and_then(|candidate| {
+                candidates
+                    .iter()
+                    .skip(index + 1)
+                    .flatten()
+                    .any(|other| other == candidate)
+                    .then_some(index)
+            })
+        })
 }
 
 async fn canonical_finalized_receipt_at(
@@ -1799,44 +1813,41 @@ mod tests {
     }
 
     #[test]
-    fn withdrawal_finality_quorum_ignores_one_overflowing_provider_height() {
-        let overflow = Nat256::from(u128::from(u64::MAX) + 1);
+    fn withdrawal_finality_quorum_accepts_only_matching_provider_heights() {
+        assert_eq!(
+            withdrawal_finalized_checkpoint(Some(100), Some(100), Some(102)),
+            Some(100)
+        );
+        assert_eq!(
+            withdrawal_finalized_checkpoint(Some(100), Some(101), Some(102)),
+            None
+        );
+    }
 
-        for block_numbers in [
-            [
-                Some(Nat256::from(100u64)),
-                Some(Nat256::from(102u64)),
-                Some(overflow.clone()),
-            ],
-            [
-                Some(overflow.clone()),
-                Some(Nat256::from(102u64)),
-                Some(Nat256::from(100u64)),
-            ],
-            [
-                Some(Nat256::from(102u64)),
-                Some(overflow),
-                Some(Nat256::from(100u64)),
-            ],
+    #[test]
+    fn withdrawal_finality_quorum_rejects_fewer_than_two_provider_attestations() {
+        assert_eq!(withdrawal_finalized_checkpoint(Some(100), None, None), None);
+    }
+
+    #[test]
+    fn withdrawal_finality_quorum_ignores_one_overflowing_provider_identity() {
+        let agreed = Some((100, [0xaa; 32]));
+        for candidates in [
+            [None, agreed, agreed],
+            [agreed, None, agreed],
+            [agreed, agreed, None],
         ] {
-            assert_eq!(
-                withdrawal_finalized_checkpoint_from_provider_numbers(block_numbers),
-                Ok(100)
-            );
+            let index = exact_withdrawal_finalized_identity_index(&candidates)
+                .expect("two valid providers agree");
+            assert_eq!(candidates[index], agreed);
         }
     }
 
     #[test]
-    fn withdrawal_finality_quorum_rejects_fewer_than_two_valid_provider_heights() {
-        let overflow = Nat256::from(u128::from(u64::MAX) + 1);
-
+    fn withdrawal_finality_quorum_rejects_one_valid_and_one_overflowing_provider_identity() {
         assert_eq!(
-            withdrawal_finalized_checkpoint_from_provider_numbers([
-                Some(Nat256::from(100u64)),
-                Some(overflow),
-                None,
-            ]),
-            Err(ObservationError::Rpc)
+            exact_withdrawal_finalized_identity_index(&[Some((100, [0xaa; 32])), None, None]),
+            None
         );
     }
 

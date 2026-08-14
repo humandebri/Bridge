@@ -4,8 +4,8 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-通常の再オープンと`post_upgrade`はstable schema v32、record wire version v28だけを受理する。v31以下、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否する。
-upgrade検証はcurrent schema v32のrecord・config・quota・auditを保持するsame-Wasm再オープンと、旧schema・wireの拒否を検証する。
+通常の再オープンと`post_upgrade`はstable schema v33、record wire version v28だけを受理する。v32以下、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否する。
+upgrade検証はcurrent schema v33のrecord・config・quota・auditを保持するsame-Wasm再オープンと、旧schema・wireの拒否を検証する。
 
 `settlement_jobs`が実行中・停止中Settlementの正本である。Depositとfee payoutはtimerが自動claimし、Withdrawalは明示的な`continue_withdrawal`だけがmanual claimする。Withdrawal通知時はrecordと固定transfer identityだけをatomic保存し、jobを作らない。外部`await`前に署名dispatchやLedger transfer identityを永続化し、lease generationとDB上の状態だけが実行権を決める。
 
@@ -60,7 +60,7 @@ RefundPending
 8. 認可発行済みの`RefundAvailable`では、同じcanonical Finalized block hashへruntime identity、signer、epoch、strict deadline、`isDepositProcessed(depositId)`をEIP-1898で束縛する。`processed == false`だけを`gross - charged service fee - refund ledger fee`で返金する。service fee、初回pull fee、refund feeは返さない。
 9. `processed == true`なら、作成元blockから観測Finalized headまでの`DepositMinted`を取得し、件数1、contract、digest、recipient、amount、fee、canonical成功receiptを検証して`Minted`へ進む。event欠落・複数・内容不一致、RPC不一致、Finalized停止、runtime不一致では資金を動かさない。
 10. Ledger結果不明は同一transfer identityを`RefundReconciliationHold`に保持する。timer retryは行わず、任意の非anonymous callerの再請求で照合を1 step進める。Duplicateは同一送金の成功として扱い、完全な不存在証拠なしに別identityを発行しない。
-11. pause、epoch変更、signer rotationは未期限AuthorizationをContract上で失効させるが、早期返金の根拠にはしない。元のdeadlineとFinalized未処理証拠を必ず通す。
+11. pause、unpause、epoch変更、signer rotationは各遷移前に作られた未期限AuthorizationをContract上で失効させるが、早期返金の根拠にはしない。元のdeadlineとFinalized未処理証拠を必ず通す。
 
 未処理Authorizationはdeadline超過を観測するまでmint window liabilityとして予約する。Deposit admissionはMint Signer ETH、gas price、nonceへ依存しない。cycles floorとsettlement cycle ceilingは署名、明示Refund時のRPC・Ledger処理のため維持する。
 
@@ -80,7 +80,7 @@ Base Committed
             └─ 完全な不存在証拠 → 新identityのReleasePending（送金は次回）
 ```
 
-UIはtransaction hashと通知attempt状態をv7形式でlocalStorageへ保存し、Finalized event検出後の初回だけdeployment-scopedなbrowser identityから`notify_withdrawal`を自動実行する。通信切断または`Busy`の短期再試行は1回、`TransactionNotConfirmed`後のhead進行再通知も1回に制限し、その他の失敗はProgressまたはHistoryの明示操作で再開する。成功後は同じidentityで`continue_withdrawal`を1回だけ呼び、非終端ならHistoryの`Continue payout`へ移る。通知・継続にIC walletの署名やICRC-21同意取得は使用しない。Canisterはreceiptをexact 2-of-3で一致させ、providerのFinalized高さの2番目に大きい値をcheckpointとして選び、その高さのblock hashをexact 2-of-3で再取得する。receiptのcanonical probeを維持し、event、`getWithdrawal`、Bridge snapshotをcheckpoint hashへ束縛する。Ledger結果不明は時間経過だけで失敗扱いにせず、LedgerとIndexの完全なwatermarkで不存在を証明できるまでHoldを維持する。
+UIはtransaction hashと通知attempt状態をv7形式でlocalStorageへ保存し、Finalized event検出後の初回だけdeployment-scopedなbrowser identityから`notify_withdrawal`を自動実行する。通信切断または`Busy`の短期再試行は1回、`TransactionNotConfirmed`後のhead進行再通知も1回に制限し、その他の失敗はProgressまたはHistoryの明示操作で再開する。成功後は同じidentityで`continue_withdrawal`を1回だけ呼び、非終端ならHistoryの`Continue payout`へ移る。通知・継続にIC walletの署名やICRC-21同意取得は使用しない。Canisterは各providerのFinalized block番号とhashを保持し、同一番号・同一hashへexact 2-of-3が一致したcheckpointだけを採用する。receiptのcanonical probeを維持し、event、`getWithdrawal`、Bridge snapshotをcheckpoint hashへ束縛する。Ledger結果不明は時間経過だけで失敗扱いにせず、LedgerとIndexの完全なwatermarkで不存在を証明できるまでHoldを維持する。
 
 ## 公開APIと権限
 

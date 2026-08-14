@@ -240,6 +240,10 @@ def notificationAdmissionAllowed
 def notificationIngestionAllowed (ingestionCount ingestionLimit : Nat) : Bool :=
   ingestionCount < ingestionLimit
 
+def notificationFailureCooldownActive
+    (hashMatches : Bool) (nowNs retryAfterNs : Nat) : Bool :=
+  hashMatches && nowNs < retryAfterNs
+
 inductive LeaseLaneClaimDecision where
   | allow
   | automaticProgressPending

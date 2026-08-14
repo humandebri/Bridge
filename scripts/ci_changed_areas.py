@@ -13,6 +13,54 @@ from pathlib import PurePosixPath
 AREAS = ("rust", "contracts", "proofs", "ui", "real", "icp")
 
 
+def is_policy_path(raw_path: str) -> bool:
+    """Return whether a path can change the verdict or executable review policy."""
+    exact = {
+        ".gitmodules",
+        "Cargo.toml",
+        "Cargo.lock",
+        "package.json",
+        "pnpm-lock.yaml",
+        "rust-toolchain.toml",
+        "lean-toolchain",
+        "ui/package.json",
+        "ui/pnpm-lock.yaml",
+        "ui/pnpm-workspace.yaml",
+    }
+    path = PurePosixPath(raw_path.strip()).as_posix()
+    name = PurePosixPath(path).name.lower()
+    parts = set(PurePosixPath(path).parts)
+    return (
+        path.startswith((".github/", "scripts/", "verification/"))
+        or path in exact
+        or "tests" in parts
+        or "test" in parts
+        or "fixtures" in parts
+        or name.endswith((".test.ts", ".test.tsx", ".spec.ts", ".t.sol"))
+    )
+
+
+def requires_policy_review(paths: list[str]) -> bool:
+    """Keep executable CI policy and its verdict-producing tests out of untrusted jobs."""
+    return any(is_policy_path(path) for path in paths)
+
+
+def validate_policy_only(paths: list[str]) -> None:
+    """Reject a PR that could hide production changes inside a policy-only review path."""
+    if not requires_policy_review(paths):
+        return
+    mixed = [
+        PurePosixPath(path.strip()).as_posix()
+        for path in paths
+        if path.strip() and not is_policy_path(path) and not _is_documentation(path)
+    ]
+    if mixed:
+        raise ValueError(
+            "policy-changing PRs must be policy-only; split production source paths: "
+            + ", ".join(sorted(set(mixed)))
+        )
+
+
 def _matches(path: str, prefixes: tuple[str, ...], exact: tuple[str, ...] = ()) -> bool:
     return path in exact or path.startswith(prefixes)
 
@@ -126,9 +174,14 @@ def main() -> int:
         separator = b"\0" if args.null else b"\n"
         paths.extend(part.decode("utf-8") for part in data.split(separator) if part)
 
+    try:
+        validate_policy_only(paths)
+    except ValueError as error:
+        parser.error(str(error))
     result = classify(paths)
     lines = [f"{area}={'true' if enabled else 'false'}" for area, enabled in result.items()]
     lines.append(f"any={'true' if any(result.values()) else 'false'}")
+    lines.append(f"policy={'true' if requires_policy_review(paths) else 'false'}")
     lines.append(
         "matrix="
         + json.dumps(
