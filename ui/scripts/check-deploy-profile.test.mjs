@@ -20,7 +20,8 @@ function fixture(profileOverrides = {}) {
   mkdirSync(inputs); mkdirSync(bundle); mkdirSync(bin)
   const gate = "a".repeat(64)
   const revision = "b".repeat(40)
-  const tree = createHash("sha256").update("archive").digest("hex")
+  const archive = "x".repeat(2 * 1024 * 1024)
+  const tree = createHash("sha256").update(archive).digest("hex")
   const profile = JSON.stringify({
     environment: "mainnet-candidate", label: "Base", testOnly: false,
     environmentMode: null, activationTimelockDelaySeconds: 86_400, gateBManifestSha256: gate,
@@ -55,7 +56,7 @@ else process.exit(2);
 const a=process.argv.slice(2);
 if(a.includes('status')) process.stdout.write(process.env.FAKE_GIT_DIRTY ? ' M ui/src/config.ts\\n' : '');
 else if(a.includes('rev-parse')) console.log('${revision}');
-else if(a.includes('archive')) process.stdout.write('archive');
+else if(a.includes('archive')) process.stdout.write('${archive}');
 else process.exit(2);
 `)
   chmodSync(git, 0o755)

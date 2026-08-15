@@ -23,7 +23,10 @@ DEFAULT_PROFILE = ROOT / "deployments/sepolia-staging/frontend-profile.json"
 DEFAULT_LOCAL_EVIDENCE = ROOT / "deployments/sepolia-staging/evidence/local-e2e.json"
 DEFAULT_DID = ROOT / "canister/bridge-canister/bridge.did"
 PUBLIC_METADATA_READER = ROOT / "scripts/plan007/read-public-canister-metadata.mjs"
+BOUNDARY_CAPTURE = ROOT / "scripts/plan007/capture-withdrawal-boundary.mjs"
 IC_MAINNET_HOST = "https://icp-api.io"
+V32_SCHEMA_VERSION = 32
+MIGRATION_ID = "bridge-storage-v32-to-v33"
 COUNT_FIELDS = (
     "retained_audit_events",
     "reconciliation_holds",
@@ -82,11 +85,43 @@ def validate_policy(policy: dict[str, Any]) -> None:
         "before_rpc_urls_sha256", "after_rpc_urls", "after_rpc_urls_sha256",
         "status_counts",
     }
-    if set(policy) != required or policy["schema_version"] != 2:
+    required.add("migration")
+    if set(policy) != required or policy["schema_version"] != 3:
         fail("RPC replacement policy has an unsupported shape")
+    migration = policy["migration"]
+    if not isinstance(migration, dict) or set(migration) != {
+        "migration_id", "from_schema_version", "to_schema_version", "source_states", "boundary_required",
+    }:
+        fail("policy migration has an unsupported shape")
+    if migration["migration_id"] != MIGRATION_ID or migration["from_schema_version"] != V32_SCHEMA_VERSION \
+        or migration["to_schema_version"] != policy["stable_schema_version"] \
+        or migration["boundary_required"] is not True:
+        fail("policy migration does not describe the reviewed v32 to v33 path")
+    source_states = migration["source_states"]
+    if not isinstance(source_states, list) or len(source_states) != 2:
+        fail("policy migration must describe exactly two reviewed v32 source states")
+    for source in source_states:
+        if not isinstance(source, dict) or set(source) != {
+            "module_sha256", "rpc_provider_urls_sha256", "candid_metadata",
+        } or source["candid_metadata"] not in {"present", "absent"}:
+            fail("policy migration source state has an unsupported shape")
+        for field in ("module_sha256", "rpc_provider_urls_sha256"):
+            if not isinstance(source[field], str) or not re.fullmatch(r"[0-9a-f]{64}", source[field]):
+                fail(f"policy migration source {field} must be a lowercase SHA-256 digest")
+    if len({source["module_sha256"] for source in source_states}) != len(source_states):
+        fail("policy migration source module hashes must be distinct")
     for field in ("before_module_sha256", "metadata_missing_module_sha256"):
         if not isinstance(policy[field], str) or not re.fullmatch(r"[0-9a-f]{64}", policy[field]):
             fail(f"policy {field} must be a lowercase SHA-256 digest")
+    source_by_module = {source["module_sha256"]: source for source in source_states}
+    normal_source = source_by_module.get(policy["before_module_sha256"])
+    missing_source = source_by_module.get(policy["metadata_missing_module_sha256"])
+    if normal_source is None or missing_source is None:
+        fail("policy migration source states must bind both reviewed v32 module hashes")
+    if normal_source["rpc_provider_urls_sha256"] != policy["before_rpc_urls_sha256"]:
+        fail("normal v32 source state does not bind the before RPC digest")
+    if missing_source["rpc_provider_urls_sha256"] != policy["after_rpc_urls_sha256"]:
+        fail("metadata-missing v32 source state does not bind the after RPC digest")
     for side in ("before", "after"):
         urls = policy[f"{side}_rpc_urls"]
         if not isinstance(urls, list) or len(urls) != 3 or len(set(urls)) != 3:
@@ -143,6 +178,40 @@ def call(policy: dict[str, Any], identity: str, did: Path, method: str) -> str:
     return candid
 
 
+def update_call(
+    policy: dict[str, Any], identity: str, did: Path, method: str, arguments: str,
+) -> str:
+    output = run([
+        "icp", "canister", "call", policy["canister_name"], method, arguments,
+        "--candid", str(did), "--json", *icp_base(policy, identity),
+    ])
+    payload = json.loads(output)
+    candid = payload.get("response_candid")
+    if not isinstance(candid, str):
+        fail(f"{method} did not return response_candid")
+    if re.search(r"\bErr\s*=", candid):
+        fail(f"{method} returned a validation error")
+    return candid
+
+
+def run_storage_validation(policy: dict[str, Any], identity: str, did: Path) -> int:
+    status = update_call(policy, identity, did, "start_storage_validation", "()")
+    calls = 1
+    while calls <= 100_000:
+        if re.search(r"\bcomplete\s*=\s*true\b", status):
+            return calls
+        status = update_call(
+            policy,
+            identity,
+            did,
+            "continue_storage_validation",
+            "(100 : nat16)",
+        )
+        calls += 1
+    fail("storage validation did not complete within the bounded call budget")
+    return calls
+
+
 def snapshot(policy: dict[str, Any], identity: str, did: Path) -> dict[str, Any]:
     public = call(policy, identity, did, "get_public_config")
     status = call(policy, identity, did, "get_bridge_status")
@@ -171,7 +240,14 @@ def snapshot(policy: dict[str, Any], identity: str, did: Path) -> dict[str, Any]
     }
 
 
-def verify_snapshot(snapshot_value: dict[str, Any], policy: dict[str, Any], *, phase: str, wasm_hash: str) -> None:
+def verify_snapshot(
+    snapshot_value: dict[str, Any],
+    policy: dict[str, Any],
+    *,
+    phase: str,
+    wasm_hash: str,
+    migration_source: dict[str, Any] | None = None,
+) -> None:
     expected = {
         "canister_id": policy["canister_id"],
         "schema_version": policy["stable_schema_version"],
@@ -181,12 +257,15 @@ def verify_snapshot(snapshot_value: dict[str, Any], policy: dict[str, Any], *, p
         "status_counts": policy["status_counts"],
         "storage_integrity": "ok",
     }
-    if phase == "before":
+    if phase == "migration-before":
+        if migration_source is None:
+            fail("migration-before snapshot is missing its reviewed source state")
+        expected["schema_version"] = V32_SCHEMA_VERSION
+        expected["module_sha256"] = migration_source["module_sha256"]
+        expected["rpc_provider_urls_sha256"] = migration_source["rpc_provider_urls_sha256"]
+    elif phase == "before":
         expected["module_sha256"] = policy["before_module_sha256"]
         expected["rpc_provider_urls_sha256"] = policy["before_rpc_urls_sha256"]
-    elif phase == "metadata-missing":
-        expected["module_sha256"] = policy["metadata_missing_module_sha256"]
-        expected["rpc_provider_urls_sha256"] = policy["after_rpc_urls_sha256"]
     else:
         expected["module_sha256"] = wasm_hash
         expected["rpc_provider_urls_sha256"] = policy["after_rpc_urls_sha256"]
@@ -279,15 +358,43 @@ def verify_provider_chains(policy: dict[str, Any]) -> None:
             fail(f"staging RPC provider {index} returned an unexpected chain ID")
 
 
-def install(policy: dict[str, Any], identity: str, wasm: Path) -> None:
+def capture_withdrawal_boundary(policy: dict[str, Any]) -> dict[str, Any]:
+    config = {"schema_version": 1, "rpc_urls": policy["after_rpc_urls"]}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8") as config_file:
+        json.dump(config, config_file)
+        config_file.flush()
+        output = run(["node", str(BOUNDARY_CAPTURE), str(DEFAULT_PROFILE), config_file.name])
+    try:
+        evidence = json.loads(output)
+    except json.JSONDecodeError:
+        fail("withdrawal boundary capture returned invalid JSON")
+    boundary = evidence.get("minimum_withdrawal_id")
+    if not isinstance(boundary, str) or not re.fullmatch(r"0x[0-9a-f]{64}", boundary):
+        fail("withdrawal boundary capture did not return a 32-byte boundary")
+    if int(boundary, 16) == 0:
+        fail("withdrawal boundary must be nonzero")
+    return evidence
+
+
+def candid_blob(hex_value: str) -> str:
+    return 'blob "' + "".join(f"\\{hex_value[index:index + 2]}" for index in range(2, len(hex_value), 2)) + '"'
+
+
+def install(policy: dict[str, Any], identity: str, wasm: Path, *, migration: dict[str, Any] | None = None) -> None:
     urls = "; ".join(json.dumps(url) for url in policy["after_rpc_urls"])
     counts = policy["status_counts"]
     count_fields = "; ".join(
         f"{field} = {counts[field]} : {'nat' if field == 'reserved_deposit_mint_amount' else 'nat64'}"
         for field in COUNT_FIELDS
     )
+    migration_fields = ""
+    if migration is not None:
+        migration_fields = (
+            f'migration_id = opt "{MIGRATION_ID}"; '
+            f'minimum_withdrawal_id = opt {candid_blob(migration["minimum_withdrawal_id"])}; '
+        )
     args = (
-        "(record { status_counts_guard_version = 1 : nat8; rpc_provider_update = opt record { "
+        f"(record {{ {migration_fields}status_counts_guard_version = 1 : nat8; rpc_provider_update = opt record {{ "
         f"custom_evm_rpc_urls = vec {{ {urls} }}; "
         f"expected_status_counts = record {{ {count_fields} }}"
         " } })"
@@ -354,27 +461,48 @@ def main() -> None:
     did_hash = sha256(DEFAULT_DID)
     verify_candidate_metadata(wasm, DEFAULT_DID)
     before = snapshot(policy, identity, DEFAULT_DID)
+    if before["schema_version"] != policy["stable_schema_version"] \
+        or before["rpc_provider_urls_sha256"] != policy["after_rpc_urls_sha256"]:
+        run_storage_validation(policy, identity, DEFAULT_DID)
+        before = snapshot(policy, identity, DEFAULT_DID)
     digest = before["rpc_provider_urls_sha256"]
-    repair = (
-        digest == policy["after_rpc_urls_sha256"]
-        and before["module_sha256"] == policy["metadata_missing_module_sha256"]
-    )
-    if repair:
-        if not args.repair_missing_candid_metadata:
-            fail("known metadata-missing staging module requires the explicit repair flag")
-        verify_snapshot(before, policy, phase="metadata-missing", wasm_hash=wasm_hash)
+    if before["schema_version"] == V32_SCHEMA_VERSION:
+        migration_source = next(
+            (
+                source for source in policy["migration"]["source_states"]
+                if source["module_sha256"] == before["module_sha256"]
+                and source["rpc_provider_urls_sha256"] == digest
+            ),
+            None,
+        )
+        if migration_source is None:
+            fail("v32 staging state does not match a reviewed migration source state")
+        verify_snapshot(
+            before,
+            policy,
+            phase="migration-before",
+            wasm_hash=wasm_hash,
+            migration_source=migration_source,
+        )
         candid_hash = verify_candid_compatibility(policy, ic_host, DEFAULT_DID)
-        if candid_hash is not None:
-            fail("metadata repair is allowed only when live candid:service metadata is absent")
+        if migration_source["candid_metadata"] == "absent" and candid_hash is not None:
+            fail("reviewed metadata-missing migration source unexpectedly exposes Candid metadata")
+        if migration_source["candid_metadata"] == "present" and candid_hash is None:
+            fail("reviewed migration source is missing Candid metadata")
         verify_provider_chains(policy)
+        boundary_evidence = capture_withdrawal_boundary(policy)
+        boundary = boundary_evidence["minimum_withdrawal_id"]
+        migration = {"minimum_withdrawal_id": boundary}
+        if not args.repair_missing_candid_metadata:
+            fail("v32 staging state requires the explicit migration/repair flag")
         if not args.execute:
-            print(json.dumps({"result": "metadata-repair-preflight-passed", "before": before}, sort_keys=True))
+            print(json.dumps({"result": "v32-to-v33-preflight-passed", "before": before, "boundary": boundary}, sort_keys=True))
             return
-        install(policy, identity, wasm)
+        install(policy, identity, wasm, migration=migration)
         after = snapshot(policy, identity, DEFAULT_DID)
         verify_snapshot(after, policy, phase="after", wasm_hash=wasm_hash)
         after_candid_hash = verify_live_metadata(policy, identity, ic_host, DEFAULT_DID)
-        result = "metadata-repaired"
+        result = "migrated-and-rpc-replaced"
     elif digest == policy["after_rpc_urls_sha256"]:
         verify_snapshot(before, policy, phase="after", wasm_hash=wasm_hash)
         candid_hash = verify_live_metadata(policy, identity, ic_host, DEFAULT_DID)

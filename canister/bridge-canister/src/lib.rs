@@ -28,6 +28,8 @@ pub mod storage;
 mod tasks;
 
 #[cfg(feature = "test-deployment")]
+use storage::SchemaMigrationContext;
+#[cfg(feature = "test-deployment")]
 use storage::SettlementClaimProfile;
 use storage::{
     AuditEventKind, ChecksumRefreshStatus, StableStore, StorageError, StorageMaintenanceError,
@@ -106,7 +108,6 @@ pub struct PublicConfig {
     pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
     pub deployment_instance_id: Vec<u8>,
-    pub minimum_withdrawal_id: Vec<u8>,
     pub ledger_canister_id: candid::Principal,
     pub ledger_fee: u128,
     pub index_canister_id: candid::Principal,
@@ -347,6 +348,7 @@ fn init(args: config::BridgeInitArgs) {
     scheduler::arm_funding_recovery();
 }
 
+#[cfg(not(feature = "test-deployment"))]
 fn reopen_store_after_upgrade() -> StableStore {
     StableStore::reopen_after_upgrade(DefaultMemoryImpl::default())
         .unwrap_or_else(|error| ic_cdk::trap(format!("stable state reopen failed: {error}")))
@@ -429,7 +431,26 @@ fn apply_staging_rpc_provider_update(
 #[cfg(feature = "test-deployment")]
 #[ic_cdk::post_upgrade(decode_with = "decode_staging_upgrade_args")]
 fn post_upgrade(args: config::StagingUpgradeArgs) {
-    let mut store = reopen_store_after_upgrade();
+    let migration = args.migration_id.as_deref().map(|migration_id| {
+        let (from_schema, to_schema) = if migration_id == storage::V32_TO_V33_MIGRATION_ID {
+            (storage::V32_SCHEMA_VERSION, SCHEMA_VERSION)
+        } else {
+            (u16::MAX, 0)
+        };
+        SchemaMigrationContext {
+            migration_id,
+            from_schema,
+            to_schema,
+            minimum_withdrawal_id: args.minimum_withdrawal_id.as_deref().unwrap_or_default(),
+        }
+    });
+    let mut store = storage_or_trap(
+        "stable state reopen",
+        StableStore::reopen_after_upgrade_with_context(
+            DefaultMemoryImpl::default(),
+            migration.as_ref(),
+        ),
+    );
     apply_staging_rpc_provider_update(&mut store, &args)
         .unwrap_or_else(|error| ic_cdk::trap(error));
     finish_post_upgrade(store);
@@ -1482,7 +1503,6 @@ fn get_public_config() -> PublicConfig {
             expected_bridge_runtime_sha256: config.expected_bridge_runtime_sha256,
             timelock_contract: config.timelock_contract,
             deployment_instance_id: config.deployment_instance_id,
-            minimum_withdrawal_id: config.minimum_withdrawal_id,
             ledger_canister_id: config.ledger_canister_id,
             ledger_fee: ledger::KINIC_LEDGER_FEE.get(),
             index_canister_id: config.index_canister_id,
@@ -1729,6 +1749,7 @@ mod candid_tests {
         );
 
         let expected = super::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 1,
             minimum_withdrawal_id: None,
             rpc_provider_update: Some(super::config::StagingRpcProviderUpdate {

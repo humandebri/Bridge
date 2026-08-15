@@ -14,6 +14,8 @@ esac
 
 [[ -d "$SOURCE_ROOT/.git" && ! -L "$SOURCE_ROOT" ]] || { echo "candidate source must be a checkout" >&2; exit 1; }
 [[ -d "$POLICY_ROOT/scripts" && ! -L "$POLICY_ROOT/scripts" ]] || { echo "trusted policy is invalid" >&2; exit 1; }
+[[ -d "$POLICY_ROOT/node_modules" && ! -L "$POLICY_ROOT/node_modules" ]] \
+  || { echo "trusted workspace dependencies are missing" >&2; exit 1; }
 [[ -d "$POLICY_ROOT/ui/node_modules" && ! -L "$POLICY_ROOT/ui/node_modules" ]] \
   || { echo "trusted UI dependencies are missing" >&2; exit 1; }
 [[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "${BRIDGE_EXPECTED_HEAD_SHA:?missing expected head SHA}" ]] \
@@ -44,6 +46,7 @@ docker run --rm \
   --security-opt no-new-privileges \
   --mount "type=bind,src=$SOURCE_ROOT,dst=/workspace,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/scripts,dst=/workspace/scripts,readonly" \
+  --mount "type=bind,src=$POLICY_ROOT/node_modules,dst=/workspace/node_modules,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
   --mount "type=bind,src=$SCRATCH/target,dst=/workspace/target" \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \

@@ -10,6 +10,14 @@ WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
 
 
 class TrustedPrGateTests(unittest.TestCase):
+    def test_trusted_bootstrap_files_are_present_and_pinned(self) -> None:
+        dockerfile = ROOT / ".github" / "trusted-pr" / "Dockerfile"
+        wrapper = ROOT / "scripts" / "trusted-pr-container.sh"
+        self.assertTrue(dockerfile.is_file())
+        self.assertTrue(wrapper.is_file())
+        first_line = dockerfile.read_text(encoding="utf-8").splitlines()[0]
+        self.assertRegex(first_line, r"^FROM ubuntu@sha256:[0-9a-f]{64}$")
+
     def test_policy_is_loaded_from_the_base_commit(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", workflow)
@@ -21,6 +29,13 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn(
             "python3 scripts/ci_changed_areas.py --null --github-output \"$GITHUB_OUTPUT\"",
             workflow,
+        )
+        self.assertIn("Require complete trusted classifier outputs", workflow)
+        self.assertIn("CLASSIFY_POLICY: ${{ steps.classify.outputs.policy }}", workflow)
+        self.assertIn('case "$CLASSIFY_POLICY" in', workflow)
+        self.assertLess(
+            workflow.index("Require complete trusted classifier outputs"),
+            workflow.index("Install trusted classifier dependencies"),
         )
         self.assertLess(
             workflow.index("ref: ${{ github.event.pull_request.base.ref }}"),
@@ -62,6 +77,10 @@ class TrustedPrGateTests(unittest.TestCase):
             "pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts",
             workflow,
         )
+        self.assertIn(
+            "pnpm --dir trusted-policy install --frozen-lockfile",
+            workflow,
+        )
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
         self.assertIn("trusted-policy/scripts/trusted-pr-container.sh source trusted-policy", workflow)
         self.assertLess(
@@ -78,8 +97,10 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("--cap-drop ALL", wrapper)
         self.assertIn("dst=/workspace,readonly", wrapper)
         self.assertIn("dst=/workspace/scripts,readonly", wrapper)
+        self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/.tools,readonly", wrapper)
+        self.assertIn("BRIDGE_EXPECTED_HEAD_SHA", wrapper)
         self.assertNotIn("src=/home/runner,dst=/home/runner", wrapper)
         self.assertIn(".cargo .rustup .local .elan .foundry setup-pnpm", wrapper)
         self.assertIn("/home/runner/.cache/ms-playwright", wrapper)

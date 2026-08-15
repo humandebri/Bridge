@@ -49,6 +49,21 @@ jobs:
         run: |
           git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" |
             python3 scripts/ci_changed_areas.py --null --github-output "$GITHUB_OUTPUT"
+      - name: Require complete trusted classifier outputs
+        env:
+          CLASSIFY_ANY: ${{ steps.classify.outputs.any }}
+          CLASSIFY_MATRIX: ${{ steps.classify.outputs.matrix }}
+          CLASSIFY_POLICY: ${{ steps.classify.outputs.policy }}
+        run: |
+          case "$CLASSIFY_ANY" in
+            true|false) ;;
+            *) echo "trusted classifier did not emit a boolean any output" >&2; exit 1 ;;
+          esac
+          case "$CLASSIFY_POLICY" in
+            true|false) ;;
+            *) echo "trusted classifier did not emit a boolean policy output" >&2; exit 1 ;;
+          esac
+          test -n "$CLASSIFY_MATRIX"
       - name: Install trusted classifier dependencies
         run: |
           sudo apt-get update
@@ -94,6 +109,8 @@ jobs:
           version: v1.7.1
       - name: Install complete CI toolchain
         run: trusted-policy/scripts/install-ci-tools.sh all
+      - name: Install trusted workspace dependencies
+        run: pnpm --dir trusted-policy install --frozen-lockfile
       - name: Install trusted UI dependencies without lifecycle scripts
         run: pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts
       - name: Install Chromium when required

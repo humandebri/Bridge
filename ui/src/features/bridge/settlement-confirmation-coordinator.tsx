@@ -149,6 +149,19 @@ export function SettlementConfirmationCoordinator() {
       if (!isCurrent()) return
       if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
       let latest = progressForTrigger(entry, trigger)
+      if (receipt.status === "reverted") {
+        await removePendingConfirmation(entry)
+        if (!isCurrent()) return
+        if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
+        latest = progressForTrigger(entry, trigger)
+        if (latest) update(latest.id, {
+          phase: "attention",
+          receiptBlockNumber: receipt.blockNumber.toString(),
+          attentionMessage: "The Base withdrawal transaction reverted. No withdrawal was recorded on the IC; you can close this transfer and try again.",
+        })
+        toast.warning("The Base withdrawal transaction reverted. You can try again.")
+        return
+      }
       if (receipt.blockHash === null) return
       if (latest) update(latest.id, {
         phase: "base-withdrawal-included",
@@ -176,19 +189,6 @@ export function SettlementConfirmationCoordinator() {
         },
       })
       if (!isCurrent() || !canonical) return
-      if (receipt.status === "reverted") {
-        await removePendingConfirmation(entry)
-        if (!isCurrent()) return
-        if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
-        latest = progressForTrigger(entry, trigger)
-        if (latest) update(latest.id, {
-          phase: "attention",
-          receiptBlockNumber: receipt.blockNumber.toString(),
-          attentionMessage: "The canonical finalized Base withdrawal transaction reverted. No withdrawal was recorded on the IC; you can close this transfer and try again.",
-        })
-        toast.warning("The canonical finalized Base withdrawal transaction reverted. You can try again.")
-        return
-      }
 
       const refreshed = readPendingConfirmations().find((candidate) => candidate.kind === "withdrawal"
         && candidate.transactionHash.toLowerCase() === entry.transactionHash.toLowerCase())

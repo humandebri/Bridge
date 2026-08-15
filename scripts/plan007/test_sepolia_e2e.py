@@ -158,6 +158,7 @@ class SepoliaE2ETests(unittest.TestCase):
             "providers": [
                 {
                     "provider_url_sha256": digest_char * 64,
+                    "finalized_head_block_number": 100,
                     "checkpoint_block_number": 100,
                     "checkpoint_block_hash": TX_B,
                     "withdrawals_paused": True,
@@ -697,6 +698,22 @@ class SepoliaE2ETests(unittest.TestCase):
         )
         boundary_artifact["sha256"] = sepolia_e2e.digest(boundary_path)
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "provider order differs"):
+            self.validate_preflight(self.details("preflight"), binding, artifacts)
+
+    def test_preflight_rejects_boundary_provider_below_median_checkpoint(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        artifacts = self.current_upgrade_artifacts()
+        boundary_path = self.root / "artifacts/withdrawal-admission-boundary.json"
+        boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
+        boundary["providers"][0]["finalized_head_block_number"] = 99
+        boundary_path.write_text(json.dumps(boundary) + "\n", encoding="utf-8")
+        boundary_artifact = next(
+            artifact
+            for artifact in artifacts
+            if artifact["kind"] == sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND
+        )
+        boundary_artifact["sha256"] = sepolia_e2e.digest(boundary_path)
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "below the median checkpoint"):
             self.validate_preflight(self.details("preflight"), binding, artifacts)
 
     def test_preflight_rejects_artifact_and_summary_drift(self) -> None:

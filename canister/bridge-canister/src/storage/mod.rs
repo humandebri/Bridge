@@ -1991,6 +1991,7 @@ pub enum StorageError {
     MissingWireVersion,
     UnsupportedWireVersion(u8),
     UnsupportedSchemaVersion(u16),
+    SchemaMigrationRejected(String),
     ValueTooLarge { actual: usize, maximum: usize },
     CounterOverflow,
     CounterUnderflow,
@@ -2004,6 +2005,16 @@ pub enum StorageError {
     ReserveUnavailable,
     QuoteSnapshotMismatch,
     Core(CoreError),
+}
+
+pub const V32_SCHEMA_VERSION: u16 = 32;
+pub const V32_TO_V33_MIGRATION_ID: &str = "bridge-storage-v32-to-v33";
+
+pub struct SchemaMigrationContext<'a> {
+    pub migration_id: &'a str,
+    pub from_schema: u16,
+    pub to_schema: u16,
+    pub minimum_withdrawal_id: &'a [u8],
 }
 
 impl fmt::Display for StorageError {
@@ -2110,6 +2121,128 @@ fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
             Ok(())
         })
         .map_err(|_| StorageError::DatabaseFailure)
+}
+
+fn migrate_v32_to_v33(
+    handle: DbHandle,
+    context: &SchemaMigrationContext<'_>,
+) -> Result<(), StorageError> {
+    if context.migration_id != V32_TO_V33_MIGRATION_ID
+        || context.from_schema != V32_SCHEMA_VERSION
+        || context.to_schema != SCHEMA_VERSION
+    {
+        return Err(StorageError::SchemaMigrationRejected(
+            "unsupported schema migration context".into(),
+        ));
+    }
+    if context.minimum_withdrawal_id.len() != 32
+        || context.minimum_withdrawal_id.iter().all(|byte| *byte == 0)
+    {
+        return Err(StorageError::SchemaMigrationRejected(
+            "v32 to v33 migration requires a nonzero 32-byte withdrawal boundary".into(),
+        ));
+    }
+
+    let (schema, wire) = stored_metadata(handle)?;
+    if schema != V32_SCHEMA_VERSION {
+        return Err(StorageError::UnsupportedSchemaVersion(schema));
+    }
+    if wire != WIRE_VERSION {
+        return Err(StorageError::UnsupportedWireVersion(wire));
+    }
+    verify_current_schema_shape(handle)?;
+
+    let boundary: [u8; 32] = context
+        .minimum_withdrawal_id
+        .try_into()
+        .map_err(|_| StorageError::SchemaMigrationRejected("invalid boundary".into()))?;
+
+    handle
+        .update(|connection| {
+            let config_blob = connection.query_scalar::<Vec<u8>>(
+                "SELECT config FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let old_config = decode::<Option<crate::config::V32ImmutableBridgeConfig>>(
+                &StableBlob::new(config_blob)
+                    .map_err(|_| DbError::Constraint("invalid v32 config".into()))?,
+            )
+            .map_err(|_| DbError::Constraint("cannot decode v32 config".into()))?
+            .ok_or_else(|| DbError::Constraint("missing v32 config".into()))?;
+
+            let counters_blob = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let counters: CounterState = decode(
+                &StableBlob::new(counters_blob)
+                    .map_err(|_| DbError::Constraint("invalid counters".into()))?,
+            )
+            .map_err(|_| DbError::Constraint("cannot decode counters".into()))?;
+            let open_holds = u64::from_sql_bytes(connection.query_scalar::<Vec<u8>>(
+                "SELECT count FROM table_counts WHERE name = 'open_hold_index'",
+                params![],
+            )?)
+            .map_err(|_| DbError::Constraint("invalid open hold count".into()))?;
+            let liability_count = u64::from_sql_bytes(connection.query_scalar::<Vec<u8>>(
+                "SELECT count FROM table_counts WHERE name = 'withdrawal_liability_index'",
+                params![],
+            )?)
+            .map_err(|_| DbError::Constraint("invalid liability count".into()))?;
+            let liability_amount = u128::from_sql_bytes(connection.query_scalar::<Vec<u8>>(
+                "SELECT withdrawal_liability_amount FROM singleton_state WHERE id = 1",
+                params![],
+            )?)
+            .map_err(|_| DbError::Constraint("invalid liability amount".into()))?;
+            if counters.pending_ledger_operations != 0
+                || open_holds != 0
+                || liability_count != 0
+                || liability_amount != 0
+            {
+                return Err(DbError::Constraint(
+                    "v32 to v33 migration requires no pending operations or liabilities".into(),
+                ));
+            }
+
+            let withdrawals =
+                connection.query_all("SELECT value FROM withdrawals", params![], |row| {
+                    row.get::<Vec<u8>>(0)
+                })?;
+            for bytes in withdrawals {
+                let record: WithdrawalRecord = decode(
+                    &StableBlob::new(bytes)
+                        .map_err(|_| DbError::Constraint("invalid withdrawal row".into()))?,
+                )
+                .map_err(|_| DbError::Constraint("cannot decode withdrawal row".into()))?;
+                if is_nonterminal_withdrawal(&record) || record.id.bytes() >= boundary {
+                    return Err(DbError::Constraint(
+                        "v32 withdrawal history is incompatible with the migration boundary".into(),
+                    ));
+                }
+            }
+
+            let next_config = old_config.into_current(boundary.to_vec());
+            let config_blob = encode(&Some(next_config))
+                .map_err(|_| DbError::Constraint("cannot encode v33 config".into()))?
+                .to_sql_bytes();
+            connection.execute(
+                "UPDATE singleton_state SET config = ?1 WHERE id = 1",
+                params![config_blob],
+            )?;
+            connection.execute(
+                "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
+                params![i64::from(SCHEMA_VERSION)],
+            )?;
+            Ok(())
+        })
+        .map_err(|error| match error {
+            DbError::Constraint(message) => StorageError::SchemaMigrationRejected(message),
+            _ => StorageError::DatabaseFailure,
+        })?;
+
+    verify_metadata(handle)?;
+    StableStore::reopen_handle(handle)?;
+    Ok(())
 }
 
 fn initialize_singleton_state(
@@ -2728,12 +2861,34 @@ impl StableStore {
     }
 
     pub fn reopen_after_upgrade(memory: DefaultMemoryImpl) -> Result<Self, StorageError> {
+        Self::reopen_after_upgrade_with_context(memory, None)
+    }
+
+    pub fn reopen_after_upgrade_with_context(
+        memory: DefaultMemoryImpl,
+        migration: Option<&SchemaMigrationContext<'_>>,
+    ) -> Result<Self, StorageError> {
         #[cfg(test)]
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
-        verify_metadata(handle)?;
+        let (schema, wire) = stored_metadata(handle)?;
+        if schema == 32 {
+            let Some(context) = migration else {
+                return Err(StorageError::UnsupportedSchemaVersion(schema));
+            };
+            if wire != WIRE_VERSION {
+                return Err(StorageError::UnsupportedWireVersion(wire));
+            }
+            migrate_v32_to_v33(handle, context)?;
+        } else {
+            if migration.is_some() {
+                return Err(StorageError::SchemaMigrationRejected(
+                    "v32 to v33 migration was already applied or schema is not v32".into(),
+                ));
+            }
+            verify_metadata(handle)?;
+        }
         let store = Self::reopen_handle(handle)?;
-        store.validate_relations()?;
         Ok(store)
     }
 
@@ -5284,15 +5439,44 @@ impl StableStore {
         }
         let counts = self.status_counts()?;
         let liabilities = self.withdrawal_liability_summary()?;
-        if counts.withdrawals != 0
-            || counts.pending_ledger_operations != 0
+        if counts.pending_ledger_operations != 0
             || liabilities.count != 0
             || liabilities.amount_out != 0
         {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
+        self.verify_withdrawal_history_boundary(
+            minimum_withdrawal_id
+                .try_into()
+                .map_err(|_| StorageError::Core(CoreError::PayloadConflict))?,
+        )?;
         config.minimum_withdrawal_id = minimum_withdrawal_id.to_vec();
         self.config.set(encode(&Some(config))?)
+    }
+
+    #[cfg(feature = "test-deployment")]
+    fn verify_withdrawal_history_boundary(&self, boundary: [u8; 32]) -> Result<(), StorageError> {
+        self.handle
+            .query(|connection| {
+                let rows =
+                    connection.query_all("SELECT value FROM withdrawals", params![], |row| {
+                        row.get::<Vec<u8>>(0)
+                    })?;
+                for bytes in rows {
+                    let record: WithdrawalRecord = decode(
+                        &StableBlob::new(bytes)
+                            .map_err(|_| DbError::Constraint("invalid withdrawal row".into()))?,
+                    )
+                    .map_err(|_| DbError::Constraint("cannot decode withdrawal row".into()))?;
+                    if is_nonterminal_withdrawal(&record) || record.id.bytes() >= boundary {
+                        return Err(DbError::Constraint(
+                            "withdrawal history is incompatible with the migration boundary".into(),
+                        ));
+                    }
+                }
+                Ok(())
+            })
+            .map_err(StorageError::from)
     }
 
     pub fn initialize_admin(&mut self, config: &BridgeInitArgs) -> Result<(), StorageError> {
@@ -11193,6 +11377,118 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn v32_to_v33_migration_preserves_terminal_history_and_sets_boundary_atomically() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.minimum_withdrawal_id = vec![0; 32];
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize current fixture");
+        let mut paid = withdrawal();
+        paid.apply(WithdrawalEvent::ReleaseSucceeded {
+            release_ledger_block_index: 7,
+        })
+        .expect("make terminal withdrawal");
+        store
+            .put_withdrawal(&paid)
+            .expect("persist terminal history");
+        let v32 = crate::config::V32ImmutableBridgeConfig::from_current(
+            &ImmutableBridgeConfig::from_init(&initial),
+        );
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET config = ?1 WHERE id = 1",
+                    params![encode(&Some(v32))
+                        .expect("encode v32 config")
+                        .to_sql_bytes()],
+                )?;
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = 32 WHERE id = 1",
+                    params![],
+                )
+            })
+            .expect("mark live v32");
+        drop(store);
+
+        let boundary = vec![4; 32];
+        let context = SchemaMigrationContext {
+            migration_id: V32_TO_V33_MIGRATION_ID,
+            from_schema: 32,
+            to_schema: SCHEMA_VERSION,
+            minimum_withdrawal_id: &boundary,
+        };
+        let reopened =
+            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
+                .expect("migrate v32 to v33");
+        assert_eq!(reopened.status_counts().expect("counts").withdrawals, 1);
+        assert_eq!(
+            reopened
+                .config()
+                .expect("config")
+                .expect("configured")
+                .minimum_withdrawal_id,
+            boundary
+        );
+        assert!(StableStore::reopen_after_upgrade(memory.clone()).is_ok());
+        assert!(matches!(
+            StableStore::reopen_after_upgrade_with_context(memory, Some(&context)),
+            Err(StorageError::SchemaMigrationRejected(_))
+        ));
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn v32_to_v33_migration_rejects_nonterminal_history_and_rolls_back() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.minimum_withdrawal_id = vec![0; 32];
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize current fixture");
+        store
+            .put_withdrawal(&withdrawal())
+            .expect("persist liability");
+        let v32 = crate::config::V32ImmutableBridgeConfig::from_current(
+            &ImmutableBridgeConfig::from_init(&initial),
+        );
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET config = ?1 WHERE id = 1",
+                    params![encode(&Some(v32))
+                        .expect("encode v32 config")
+                        .to_sql_bytes()],
+                )?;
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = 32 WHERE id = 1",
+                    params![],
+                )
+            })
+            .expect("mark live v32");
+        drop(store);
+
+        let boundary = vec![4; 32];
+        let context = SchemaMigrationContext {
+            migration_id: V32_TO_V33_MIGRATION_ID,
+            from_schema: 32,
+            to_schema: SCHEMA_VERSION,
+            minimum_withdrawal_id: &boundary,
+        };
+        assert!(matches!(
+            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context)),
+            Err(StorageError::SchemaMigrationRejected(_))
+        ));
+        assert!(matches!(
+            StableStore::reopen_after_upgrade(memory),
+            Err(StorageError::UnsupportedSchemaVersion(32))
+        ));
+    }
+
     #[test]
     #[serial]
     fn live_v33_cbor_with_retired_fields_reopens_config_progress_deposit_and_audit() {
@@ -11381,6 +11677,7 @@ mod tests {
             .map(str::to_owned)
             .to_vec();
         let args = crate::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 1,
             minimum_withdrawal_id: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
@@ -11468,6 +11765,7 @@ mod tests {
         let mut drifted = expected;
         drifted.deposits += 1;
         let args = crate::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 1,
             minimum_withdrawal_id: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
@@ -11496,6 +11794,7 @@ mod tests {
         assert_eq!(store.external_progress().expect("progress"), progress);
 
         let empty_unguarded = crate::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 0,
             rpc_provider_update: None,
             minimum_withdrawal_id: None,
@@ -14829,7 +15128,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn post_upgrade_reopen_rejects_funding_reservation_relation_drift() {
+    fn post_upgrade_reopen_defers_funding_reservation_relation_drift_to_chunked_validation() {
         let memory = VectorMemory::default();
         let mut store = StableStore::init(memory.clone()).expect("initialize");
         initialize_unpaused_admin(&mut store);
@@ -14858,8 +15157,10 @@ mod tests {
             .expect("persist corrupt admission");
         drop(store);
 
+        let reopened =
+            StableStore::reopen_after_upgrade(memory).expect("bounded post-upgrade reopen");
         assert_eq!(
-            StableStore::reopen_after_upgrade(memory).err(),
+            reopened.validate_relations().err(),
             Some(StorageError::DatabaseFailure)
         );
     }

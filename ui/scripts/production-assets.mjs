@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { execFileSync, spawnSync } from "node:child_process"
+import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, relative, resolve, sep } from "node:path"
 import { tmpdir } from "node:os"
@@ -18,12 +18,43 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex")
 }
 
-function sourceIdentity() {
+function hashGitArchive() {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", ["-C", sourceRoot, "archive", "HEAD"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const digest = createHash("sha256")
+    let stderr = ""
+    let settled = false
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    child.stdout.on("data", (chunk) => digest.update(chunk))
+    child.stdout.on("error", fail)
+    child.stderr.setEncoding("utf8")
+    child.stderr.on("data", (chunk) => { stderr += chunk })
+    child.stderr.on("error", fail)
+    child.on("error", fail)
+    child.on("close", (code, signal) => {
+      if (settled) return
+      if (code !== 0) {
+        fail(new Error(`git archive failed (${code ?? signal}): ${stderr.trim()}`))
+        return
+      }
+      settled = true
+      resolve(digest.digest("hex"))
+    })
+  })
+}
+
+async function sourceIdentity() {
   const dirty = execFileSync("git", ["-C", sourceRoot, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], { encoding: "utf8" })
   if (dirty !== "") throw new Error("Production UI artifact generation requires a clean source tree")
   return {
     source_revision: execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-    source_tree_sha256: sha256(execFileSync("git", ["-C", sourceRoot, "archive", "HEAD"])),
+    source_tree_sha256: await hashGitArchive(),
   }
 }
 
@@ -112,7 +143,7 @@ try {
   if (!receiptPath || !["generate", "verify", "deploy"].includes(mode)) {
     throw new Error("usage: production-assets.mjs {generate|verify|deploy} RECEIPT [UI_RUNTIME_PROFILE]")
   }
-  const identity = sourceIdentity()
+  const identity = await sourceIdentity()
   const built = buildGenericAssets()
   if (mode === "generate") {
     writeFileSync(receiptPath, `${JSON.stringify({ schema_version: 1, ...identity, ...built })}\n`, { flag: "wx" })

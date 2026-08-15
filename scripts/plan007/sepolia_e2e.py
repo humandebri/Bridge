@@ -352,8 +352,8 @@ def validate_withdrawal_boundary(
     require_bool(value, "withdrawals_paused", True, context)
     minimum = require_deployment_instance_id(value, "minimum_withdrawal_id", context)
     providers = value["providers"]
-    if not isinstance(providers, list) or len(providers) != 3:
-        fail(f"{context} requires exactly three provider observations")
+    if not isinstance(providers, list) or not 2 <= len(providers) <= 3:
+        fail(f"{context} requires two or three eligible provider observations")
     agreeing = 0
     digests: list[str] = []
     for index, provider in enumerate(providers):
@@ -361,11 +361,15 @@ def validate_withdrawal_boundary(
         if not isinstance(provider, dict):
             fail(f"{provider_context} must be an object")
         exact_keys(provider, {
-            "provider_url_sha256", "checkpoint_block_number", "checkpoint_block_hash",
+            "provider_url_sha256", "finalized_head_block_number", "checkpoint_block_number", "checkpoint_block_hash",
             "withdrawals_paused", "minimum_withdrawal_id",
         }, provider_context)
         digests.append(require_pattern(provider, "provider_url_sha256", SHA256, provider_context))
         require_bool(provider, "withdrawals_paused", True, provider_context)
+        head = require_nat(provider, "finalized_head_block_number", provider_context)
+        checkpoint = value["finalized_checkpoint_block_number"]
+        if head < checkpoint:
+            fail(f"{provider_context}.finalized_head_block_number is below the median checkpoint")
         provider_minimum = require_deployment_instance_id(provider, "minimum_withdrawal_id", provider_context)
         if (
             require_nat(provider, "checkpoint_block_number", provider_context)
@@ -374,9 +378,10 @@ def validate_withdrawal_boundary(
             and provider_minimum == minimum
         ):
             agreeing += 1
-    if digests != configured_provider_digests:
+    expected_digests = [digest for digest in configured_provider_digests if digest in digests]
+    if digests != expected_digests:
         fail(f"{context} provider order differs from the configured RPC providers")
-    if len(set(digests)) != 3 or agreeing < 2:
+    if len(set(digests)) != len(digests) or agreeing < 2:
         fail(f"{context} does not contain a two-provider canonical quorum")
     if minimum != binding["minimum_withdrawal_id"]:
         fail(f"{context} minimum withdrawal ID differs from the reviewed binding")

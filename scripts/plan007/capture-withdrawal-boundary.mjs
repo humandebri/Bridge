@@ -63,7 +63,8 @@ export async function collectWithdrawalBoundary(profile, config, fetchImpl = fet
   }))
   const sorted = heads.map((head) => head.number).sort((a, b) => a < b ? -1 : a > b ? 1 : 0)
   const checkpoint = sorted[1]
-  const observations = await Promise.all(config.rpc_urls.map(async (url) => {
+  const observations = (await Promise.all(config.rpc_urls.map(async (url, index) => {
+    if (heads[index].number < checkpoint) return null
     const block = await rpc(url, "eth_getBlockByNumber", [`0x${checkpoint.toString(16)}`, false], fetchImpl)
     if (quantity(block.number, "checkpoint block number") !== checkpoint) fail("provider returned a different checkpoint block number")
     const blockHash = String(block.hash).toLowerCase()
@@ -78,12 +79,13 @@ export async function collectWithdrawalBoundary(profile, config, fetchImpl = fet
     if (paused !== 1n || BigInt(minimumWithdrawalId) === 0n) fail("Bridge must be withdrawal-paused with a nonzero nextWithdrawalId")
     return {
       provider_url_sha256: sha256(url),
+      finalized_head_block_number: Number(heads[index].number),
       checkpoint_block_number: Number(checkpoint),
       checkpoint_block_hash: blockHash,
       withdrawals_paused: true,
       minimum_withdrawal_id: minimumWithdrawalId,
     }
-  }))
+  }))).filter((observation) => observation !== null)
   const groups = new Map()
   for (const observation of observations) {
     const key = `${observation.checkpoint_block_hash}:${observation.minimum_withdrawal_id}`

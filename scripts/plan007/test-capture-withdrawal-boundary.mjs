@@ -16,7 +16,7 @@ async function fetchImpl(url, request) {
   let result
   if (method === "eth_chainId") result = "0x14a34"
   else if (method === "eth_getBlockByNumber" && params[0] === "finalized") {
-    result = { number: ["0x66", "0x65", "0x64"][urls.indexOf(url)], hash: blockHash }
+    result = { number: ["0x5a", "0x64", "0x6e"][urls.indexOf(url)], hash: blockHash }
   } else if (method === "eth_getBlockByNumber") result = { number: params[0], hash: blockHash }
   else if (method === "eth_call" && params[0].data === "0xe9f2838e") result = word(1)
   else if (method === "eth_call" && params[0].data === "0x4a9122e3") result = word(3)
@@ -29,10 +29,14 @@ const evidence = await collectWithdrawalBoundary(
   { schema_version: 1, rpc_urls: urls },
   fetchImpl,
 )
-assert.equal(evidence.finalized_checkpoint_block_number, 101)
+assert.equal(evidence.finalized_checkpoint_block_number, 100)
 assert.equal(evidence.finalized_checkpoint_block_hash, blockHash)
 assert.equal(evidence.minimum_withdrawal_id, word(3))
-assert.equal(evidence.providers.length, 3)
+assert.equal(evidence.providers.length, 2)
+assert.deepEqual(
+  evidence.providers.map(({ finalized_head_block_number: head }) => head),
+  [100, 110],
+)
 
 await assert.rejects(
   collectWithdrawalBoundary(
@@ -42,7 +46,7 @@ await assert.rejects(
       const response = await fetchImpl(url, request)
       const body = JSON.parse(request.body)
       if (body.method !== "eth_getBlockByNumber" || body.params[0] === "finalized") return response
-      return { ok: true, json: async () => ({ jsonrpc: "2.0", id: 1, result: { number: "0x64", hash: blockHash } }) }
+      return { ok: true, json: async () => ({ jsonrpc: "2.0", id: 1, result: { number: "0x65", hash: blockHash } }) }
     },
   ),
   /different checkpoint block number/,

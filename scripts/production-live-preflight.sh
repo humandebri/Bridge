@@ -448,7 +448,6 @@ paused=scalars(status,'deposits_paused')
 if paused != [True]: raise SystemExit('Canister deposits are not paused')
 rpc_ids=scalars(public,'evm_rpc_canister_id'); ledger_ids=scalars(public,'ledger_canister_id'); rpc_digests=scalars(public,'rpc_provider_urls_sha256')
 deployment_instances=scalars(public,'deployment_instance_id')
-minimum_withdrawal_ids=scalars(public,'minimum_withdrawal_id')
 if len(rpc_ids)!=1 or str(rpc_ids[0])!=p['evm_rpc_canister_id']: raise SystemExit('Canister EVM RPC ID drift')
 if len(ledger_ids)!=1 or str(ledger_ids[0])!=p['ledger_canister_id']: raise SystemExit('Canister Ledger ID drift')
 expected_rpc_digest=hashlib.sha256(b'[]').hexdigest()
@@ -460,11 +459,6 @@ deployment_instance=deployment_instances[0]
 if isinstance(deployment_instance,list): deployment_instance='0x'+bytes(deployment_instance).hex()
 else: deployment_instance=str(deployment_instance).lower()
 if not re.fullmatch(r'0x[0-9a-f]{64}',deployment_instance) or int(deployment_instance[2:],16)==0: raise SystemExit('Canister deployment instance ID invalid')
-if len(minimum_withdrawal_ids)!=1: raise SystemExit('Canister minimum withdrawal ID missing')
-minimum_withdrawal_id=minimum_withdrawal_ids[0]
-if isinstance(minimum_withdrawal_id,list): minimum_withdrawal_id='0x'+bytes(minimum_withdrawal_id).hex()
-else: minimum_withdrawal_id=str(minimum_withdrawal_id).lower()
-if not re.fullmatch(r'0x[0-9a-f]{64}',minimum_withdrawal_id) or int(minimum_withdrawal_id[2:],16)==0: raise SystemExit('Canister minimum withdrawal ID invalid')
 governance_replacement=one('governance_replacement'); governance_evm_fee=one('governance_evm_fee'); fee_recipient=one('fee_recipient')
 if not isinstance(governance_replacement,dict) or not isinstance(governance_evm_fee,dict) or not isinstance(fee_recipient,dict): raise SystemExit('Canister public config nested values are malformed')
 subaccount=fee_recipient.get('subaccount',[])
@@ -472,7 +466,6 @@ public_config={
  'base_chain_id':num(one('base_chain_id')),'bridge_contract':address_value(one('bridge_contract')),
  'timelock_contract':address_value(one('timelock_contract')),'ledger_canister_id':str(one('ledger_canister_id')),
  'deployment_instance_id':deployment_instance,
- 'minimum_withdrawal_id':minimum_withdrawal_id,
  'index_canister_id':str(one('index_canister_id')),'schema_version':num(one('schema_version')),
  'expected_bridge_signer':address_value(one('expected_bridge_signer')),'governance_operator':address_value(one('governance_operator')),
  'evm_rpc_canister_id':str(one('evm_rpc_canister_id')),'rpc_provider_urls_sha256':actual_rpc_digest,

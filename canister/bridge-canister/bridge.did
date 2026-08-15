@@ -420,7 +420,6 @@ type PublicConfig = record {
   deposit_rate_limit_per_principal : nat16;
   deployment_instance_id : blob;
   schema_version : nat16;
-  minimum_withdrawal_id : blob;
   deposit_rate_limit_global : nat16;
   pause_principal : principal;
   governance_principal : principal;

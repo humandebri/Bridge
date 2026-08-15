@@ -1,8 +1,39 @@
 import { createHash } from "node:crypto"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+
+function hashGitArchive(sourceRoot) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn("git", ["-C", sourceRoot, "archive", "HEAD"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const digest = createHash("sha256")
+    let stderr = ""
+    let settled = false
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    child.stdout.on("data", (chunk) => digest.update(chunk))
+    child.stdout.on("error", fail)
+    child.stderr.setEncoding("utf8")
+    child.stderr.on("data", (chunk) => { stderr += chunk })
+    child.stderr.on("error", fail)
+    child.on("error", fail)
+    child.on("close", (code, signal) => {
+      if (settled) return
+      if (code !== 0) {
+        fail(new Error(`git archive failed (${code ?? signal}): ${stderr.trim()}`))
+        return
+      }
+      settled = true
+      resolvePromise(digest.digest("hex"))
+    })
+  })
+}
 
 try {
   const profileFile = process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE
@@ -21,9 +52,7 @@ try {
   const dirty = execFileSync("git", ["-C", sourceRoot, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], { encoding: "utf8" })
   if (dirty !== "") throw new Error("Production UI deploy requires the exact clean Gate B source tree")
   const revision = execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
-  const tree = createHash("sha256")
-    .update(execFileSync("git", ["-C", sourceRoot, "archive", "HEAD"]))
-    .digest("hex")
+  const tree = await hashGitArchive(sourceRoot)
   if (revision !== releaseManifest.source_revision || tree !== releaseManifest.source_tree_sha256.toLowerCase()) {
     throw new Error("Production UI checkout differs from the Gate B source revision or tree")
   }
