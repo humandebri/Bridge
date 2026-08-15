@@ -1,5 +1,7 @@
 name: trusted-pr-gate
 
+# This file is intentionally promoted to the default branch before dependent PRs.
+
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
