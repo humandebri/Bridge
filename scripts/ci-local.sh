@@ -148,10 +148,10 @@ run_versions() {
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
-  node "$ROOT/scripts/plan007/test-check-reinstall-instance.mjs"
+  node "$ROOT/scripts/plan007/test-check-upgrade-instance.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
-  node "$ROOT/scripts/plan007/test-capture-obsolete-pause-evidence.mjs"
+  node "$ROOT/scripts/plan007/test-capture-withdrawal-boundary.mjs"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
     "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
