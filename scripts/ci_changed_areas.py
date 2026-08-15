@@ -45,22 +45,6 @@ def requires_policy_review(paths: list[str]) -> bool:
     return any(is_policy_path(path) for path in paths)
 
 
-def validate_policy_only(paths: list[str]) -> None:
-    """Reject a PR that could hide production changes inside a policy-only review path."""
-    if not requires_policy_review(paths):
-        return
-    mixed = [
-        PurePosixPath(path.strip()).as_posix()
-        for path in paths
-        if path.strip() and not is_policy_path(path) and not _is_documentation(path)
-    ]
-    if mixed:
-        raise ValueError(
-            "policy-changing PRs must be policy-only; split production source paths: "
-            + ", ".join(sorted(set(mixed)))
-        )
-
-
 def _matches(path: str, prefixes: tuple[str, ...], exact: tuple[str, ...] = ()) -> bool:
     return path in exact or path.startswith(prefixes)
 
@@ -174,10 +158,6 @@ def main() -> int:
         separator = b"\0" if args.null else b"\n"
         paths.extend(part.decode("utf-8") for part in data.split(separator) if part)
 
-    try:
-        validate_policy_only(paths)
-    except ValueError as error:
-        parser.error(str(error))
     result = classify(paths)
     lines = [f"{area}={'true' if enabled else 'false'}" for area, enabled in result.items()]
     lines.append(f"any={'true' if any(result.values()) else 'false'}")

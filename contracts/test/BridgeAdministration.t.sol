@@ -184,9 +184,7 @@ contract BridgeAdministrationTest is TestBase {
         assert(bridge.mintAuthorizationEpoch() == pauseEpoch + 1);
         vm.expectRevert(
             abi.encodeWithSelector(
-                IBridge.MintAuthorizationEpochMismatch.selector,
-                pausedAuthorization.authorizationEpoch,
-                pauseEpoch + 1
+                IBridge.MintAuthorizationEpochMismatch.selector, pausedAuthorization.authorizationEpoch, pauseEpoch + 1
             )
         );
         _submitMintAuthorization(BRIDGE_SIGNER_KEY, bridge, pausedAuthorization, address(this));

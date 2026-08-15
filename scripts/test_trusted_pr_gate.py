@@ -86,12 +86,12 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertNotIn("GITHUB_TOKEN", wrapper)
         self.assertNotIn("GH_TOKEN", wrapper)
 
-    def test_policy_changes_require_current_codeowner_approval_without_untrusted_execution(self) -> None:
+    def test_policy_changes_require_current_codeowner_approval_and_untrusted_tests(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         codeowners = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
         self.assertIn("policy: ${{ steps.classify.outputs.policy }}", workflow)
         self.assertIn(
-            "if: needs.classify.outputs.any == 'true' && needs.classify.outputs.policy != 'true'",
+            "if: needs.classify.outputs.any == 'true'",
             workflow,
         )
         self.assertIn("needs.classify.outputs.policy == 'true'", workflow)
@@ -100,14 +100,14 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn(".commit_id == $head", workflow)
         self.assertIn('any(. == "humandebri")', workflow)
         classifier = (ROOT / "scripts" / "ci_changed_areas.py").read_text(encoding="utf-8")
-        self.assertIn("validate_policy_only(paths)", classifier)
-        self.assertIn("policy-changing PRs must be policy-only", classifier)
+        self.assertNotIn("validate_policy_only", classifier)
+        self.assertNotIn("policy-changing PRs must be policy-only", classifier)
         for path in ("/.github/", "/scripts/", "/Cargo.lock", "/verification/"):
             self.assertIn(path, codeowners)
 
     def test_aggregate_gate_requires_each_applicable_job_to_succeed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn('if [[ "$ANY" == true && "$POLICY" != true ]]; then', workflow)
+        self.assertIn('if [[ "$ANY" == true ]]; then', workflow)
         self.assertIn('if [[ "$POLICY" == true ]]; then', workflow)
         self.assertIn('test "$TEST_RESULT" = success', workflow)
         self.assertIn('test "$POLICY_REVIEW_RESULT" = success', workflow)

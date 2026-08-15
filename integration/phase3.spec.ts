@@ -793,11 +793,18 @@ describe("Phase 3 PocketIC saga", () => {
 
   it("reserves Mint capacity at quote and rejects a later window overflow before Ledger pull", async () => {
     const { ledger, evm, bridge } = await setup();
-    await (evm.actor as any).set_mint_window(0n, 300_000n, 0n, 100n, 1n);
+    const baseNow = BigInt(Math.floor((await pic!.getTime()) / 1_000));
+    await (evm.actor as any).set_mint_window(0n, 300_000n, baseNow, 100n, baseNow + 1n);
     const first: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });
     expect(first).toHaveProperty("Ok");
     await awaitMintAuthorization(bridge, first.Ok.deposit_id);
-    await (evm.actor as any).set_mint_window(199_993n, 300_000n, 0n, 100n, 1n);
+    await (evm.actor as any).set_mint_window(
+      199_993n,
+      300_000n,
+      baseNow,
+      100n,
+      baseNow + 1n,
+    );
     const second: any = await (bridge.actor as any).request_deposit({ owner_sequence: 1n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_003n, max_service_fee: 10n });
     expect(second).toEqual({ Err: { Rejected: "MintWindowLimitExceeded" } });
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
@@ -899,7 +906,14 @@ describe("Phase 3 PocketIC saga", () => {
 
   it("treats a full expired Mint window as having zero effective consumption", async () => {
     const { ledger, evm, bridge } = await setup();
-    await (evm.actor as any).set_mint_window(300_000n, 300_000n, 0n, 10n, 11n);
+    const baseNow = BigInt(Math.floor((await pic!.getTime()) / 1_000));
+    await (evm.actor as any).set_mint_window(
+      300_000n,
+      300_000n,
+      baseNow,
+      10n,
+      baseNow + 11n,
+    );
     const accepted: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });
     expect(accepted).toHaveProperty("Ok");
     await awaitMintAuthorization(bridge, accepted.Ok.deposit_id);

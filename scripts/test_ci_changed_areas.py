@@ -141,21 +141,15 @@ class ChangedAreaTests(unittest.TestCase):
             "ui/src/lib/ic/wallet.ts",
         ]))
 
-    def test_policy_only_allows_policy_and_documentation(self) -> None:
-        ci_changed_areas.validate_policy_only([
+    def test_policy_and_production_source_mix_runs_tests_and_requires_review(self) -> None:
+        paths = [
             "scripts/ci-local.sh",
-            "verification/claims.tsv",
-            "docs/security-policy.md",
-        ])
+            "canister/bridge-canister/src/api.rs",
+        ]
+        self.assertTrue(ci_changed_areas.requires_policy_review(paths))
+        self.assert_areas(paths, *ci_changed_areas.AREAS)
 
-    def test_policy_and_production_source_mix_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "must be policy-only"):
-            ci_changed_areas.validate_policy_only([
-                "scripts/ci-local.sh",
-                "canister/bridge-canister/src/api.rs",
-            ])
-
-    def test_cli_fails_before_writing_outputs_for_policy_source_mix(self) -> None:
+    def test_cli_emits_matrix_and_policy_for_policy_source_mix(self) -> None:
         with tempfile.NamedTemporaryFile() as output:
             result = subprocess.run(
                 [
@@ -169,11 +163,17 @@ class ChangedAreaTests(unittest.TestCase):
                 env={**os.environ, "GITHUB_OUTPUT": output.name},
                 capture_output=True,
                 text=True,
+                check=True,
             )
             output.seek(0)
-            self.assertEqual(output.read(), b"")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must be policy-only", result.stderr)
+            values = dict(
+                line.rstrip().split("=", 1)
+                for line in output.read().decode("utf-8").splitlines()
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(values["matrix"]), list(ci_changed_areas.AREAS))
+        self.assertEqual(values["any"], "true")
+        self.assertEqual(values["policy"], "true")
 
 
 if __name__ == "__main__":

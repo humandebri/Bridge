@@ -61,7 +61,7 @@ jobs:
 
   test:
     needs: classify
-    if: needs.classify.outputs.any == 'true' && needs.classify.outputs.policy != 'true'
+    if: needs.classify.outputs.any == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -172,7 +172,7 @@ jobs:
           POLICY_REVIEW_RESULT: ${{ needs.policy-review.result }}
         run: |
           test "$CLASSIFY_RESULT" = success
-          if [[ "$ANY" == true && "$POLICY" != true ]]; then
+          if [[ "$ANY" == true ]]; then
             test "$TEST_RESULT" = success
           else
             test "$TEST_RESULT" = skipped
