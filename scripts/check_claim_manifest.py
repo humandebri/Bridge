@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -14,7 +15,12 @@ from proof_fingerprint import source_fingerprint
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
-REPORT = ROOT / "verification" / "output" / "claim-report.json"
+REPORT = Path(
+    os.environ.get(
+        "BRIDGE_CLAIM_REPORT",
+        str(ROOT / "verification" / "output" / "claim-report.json"),
+    )
+)
 CLAIM_REPORT_SCHEMA = 3
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REQUIRED_SCALAR_CALLS = (

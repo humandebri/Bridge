@@ -5,6 +5,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTRACTS="$ROOT/contracts"
 MODE="${1:-all}"
+
+if [[ "${BRIDGE_CI_LOCAL_NODE_REEXEC:-0}" != 1 ]]; then
+  EXPECTED_NODE_VERSION="v$(<"$ROOT/.node-version")"
+  CURRENT_NODE_VERSION="$(node --version 2>/dev/null || true)"
+  if [[ "$CURRENT_NODE_VERSION" != "$EXPECTED_NODE_VERSION" ]] \
+    && command -v fnm >/dev/null 2>&1; then
+    echo "ci-local: selecting Node.js $EXPECTED_NODE_VERSION with fnm" >&2
+    exec fnm exec --using "$EXPECTED_NODE_VERSION" env \
+      BRIDGE_CI_LOCAL_NODE_REEXEC=1 "$ROOT/scripts/ci-local.sh" "$@"
+  fi
+fi
+
 export PATH="$ROOT/.tools/bin:$PATH"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-phase0.XXXXXX")"
 ANVIL_PID=""
@@ -290,6 +302,20 @@ run_no_automatic_execution_guards() {
   fi
 }
 
+require_workspace_dependencies() {
+  if [[ "${BRIDGE_TRUSTED_DEPS_READY:-0}" == "1" ]]; then
+    if [[ ! -d "$ROOT/node_modules" || -L "$ROOT/node_modules" ]]; then
+      echo "trusted workspace dependencies are missing or symlinked" >&2
+      return 1
+    fi
+  elif [[ "${CI:-}" == "true" ]]; then
+    pnpm --dir "$ROOT" install --frozen-lockfile
+  elif [[ ! -d "$ROOT/node_modules" ]]; then
+    echo "node_modules is missing; run pnpm install --frozen-lockfile before checks" >&2
+    return 1
+  fi
+}
+
 run_rust_fast() {
   run_no_automatic_execution_guards
   cargo fmt --manifest-path "$ROOT/Cargo.toml" --all --check
@@ -310,12 +336,7 @@ run_rust_integration() {
     --target wasm32-unknown-unknown \
     --release \
     -p mock-external
-  if [[ "${CI:-}" == "true" ]]; then
-    pnpm --dir "$ROOT" install --frozen-lockfile
-  elif [[ ! -d "$ROOT/node_modules" ]]; then
-    echo "node_modules is missing; run pnpm install --frozen-lockfile before checks" >&2
-    return 1
-  fi
+  require_workspace_dependencies
   pnpm --dir "$ROOT" run governance-relayer:test
   pnpm --dir "$ROOT" run governance-relayer:typecheck
   pnpm --dir "$ROOT" run test:e2e
@@ -650,7 +671,12 @@ require_ui_dependencies() {
   if [[ "$UI_DEPENDENCIES_READY" -eq 1 ]]; then
     return
   fi
-  if [[ "${CI:-}" == "true" ]]; then
+  if [[ "${BRIDGE_TRUSTED_DEPS_READY:-0}" == "1" ]]; then
+    if [[ ! -d "$ROOT/ui/node_modules" || -L "$ROOT/ui/node_modules" ]]; then
+      echo "trusted UI dependencies are missing or symlinked" >&2
+      return 1
+    fi
+  elif [[ "${CI:-}" == "true" ]]; then
     pnpm --dir "$ROOT/ui" install --frozen-lockfile
   elif [[ ! -d "$ROOT/ui/node_modules" ]]; then
     echo "ui/node_modules is missing; run pnpm --dir ui install --frozen-lockfile before checks" >&2

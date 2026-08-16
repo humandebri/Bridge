@@ -25,9 +25,16 @@ SCRATCH="$(mktemp -d "${RUNNER_TEMP:-/tmp}/bridge-pr-${MODE}.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT INT TERM
 mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-out" \
   "$SCRATCH/contracts-cache" "$SCRATCH/ui-dist" "$SCRATCH/ui-results" "$SCRATCH/local" \
-  "$SCRATCH/empty-tools"
+  "$SCRATCH/proof" "$SCRATCH/empty-tools"
 chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
+
+CACHE_MOUNTS=()
+if [[ "$MODE" == "real" ]]; then
+  [[ -d "$POLICY_ROOT/ui/.e2e-cache" && ! -L "$POLICY_ROOT/ui/.e2e-cache" ]] \
+    || { echo "trusted real-E2E artifact cache is missing" >&2; exit 1; }
+  CACHE_MOUNTS+=(--mount "type=bind,src=$POLICY_ROOT/ui/.e2e-cache,dst=/workspace/ui/.e2e-cache,readonly")
+fi
 
 TOOL_MOUNTS=()
 for tool_path in .cargo .rustup .local .elan .foundry setup-pnpm; do
@@ -57,9 +64,14 @@ docker run --rm \
   --mount "type=bind,src=$SCRATCH/empty-tools,dst=/workspace/.tools,readonly" \
   --mount "type=bind,src=$SCRATCH/home,dst=/scratch/home" \
   --mount "type=bind,src=$SCRATCH/tmp,dst=/scratch/tmp" \
+  --mount "type=bind,src=$SCRATCH/proof,dst=/scratch/proof" \
   "${TOOL_MOUNTS[@]}" \
+  "${CACHE_MOUNTS[@]}" \
   --mount type=bind,src=/opt/hostedtoolcache,dst=/opt/hostedtoolcache,readonly \
   --env CI=true \
+  --env BRIDGE_TRUSTED_DEPS_READY=1 \
+  --env BRIDGE_CLAIM_REPORT=/scratch/proof/claim-report.json \
+  --env PROOF_RECEIPT=/scratch/proof/proof-receipt.json \
   --env HOME=/scratch/home \
   --env TMPDIR=/scratch/tmp \
   --env CARGO_HOME=/home/runner/.cargo \

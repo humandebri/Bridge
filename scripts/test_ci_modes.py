@@ -31,6 +31,12 @@ def mode_body(name: str) -> str:
 
 
 class CiModeTests(unittest.TestCase):
+    def test_local_driver_selects_the_pinned_node_with_fnm_once(self) -> None:
+        self.assertIn('EXPECTED_NODE_VERSION="v$(<"$ROOT/.node-version")"', SOURCE)
+        self.assertIn('BRIDGE_CI_LOCAL_NODE_REEXEC:-0', SOURCE)
+        self.assertIn('exec fnm exec --using "$EXPECTED_NODE_VERSION" env \\', SOURCE)
+        self.assertIn('BRIDGE_CI_LOCAL_NODE_REEXEC=1 "$ROOT/scripts/ci-local.sh"', SOURCE)
+
     def assert_calls(self, aggregate: str, expected: list[str]) -> None:
         body = function_body(aggregate)
         positions = [body.find(f"  {name}\n") for name in expected]

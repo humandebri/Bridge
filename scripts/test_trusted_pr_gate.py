@@ -30,6 +30,7 @@ class TrustedPrGateTests(unittest.TestCase):
             "python3 scripts/ci_changed_areas.py --null --github-output \"$GITHUB_OUTPUT\"",
             workflow,
         )
+        self.assertIn("git diff --no-renames --name-only -z", workflow)
         self.assertIn("Require complete trusted classifier outputs", workflow)
         self.assertIn("CLASSIFY_POLICY: ${{ steps.classify.outputs.policy }}", workflow)
         self.assertIn('case "$CLASSIFY_POLICY" in', workflow)
@@ -83,14 +84,31 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
         self.assertIn("trusted-policy/scripts/trusted-pr-container.sh source trusted-policy", workflow)
+        self.assertIn(
+            "cargo fetch --locked --manifest-path trusted-policy/Cargo.toml",
+            workflow,
+        )
+        self.assertIn(
+            "node trusted-policy/ui/scripts/download-ledger-artifacts.mjs",
+            workflow,
+        )
         self.assertLess(
             workflow.index("Build the pinned isolation image from trusted policy"),
+            workflow.index("Check out exact untrusted head as read-only container input"),
+        )
+        self.assertLess(
+            workflow.index("Prefetch locked Rust dependencies from trusted policy"),
+            workflow.index("Check out exact untrusted head as read-only container input"),
+        )
+        self.assertLess(
+            workflow.index("Prefetch verified real-E2E ledger artifacts"),
             workflow.index("Check out exact untrusted head as read-only container input"),
         )
         self.assertNotIn("pnpm --dir source/ui install", workflow)
 
     def test_each_check_uses_fresh_read_only_container_boundaries(self) -> None:
         wrapper = (ROOT / "scripts" / "trusted-pr-container.sh").read_text(encoding="utf-8")
+        driver = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
         self.assertIn("docker run --rm", wrapper)
         self.assertIn("--read-only", wrapper)
         self.assertIn("--network none", wrapper)
@@ -99,8 +117,15 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("dst=/workspace/scripts,readonly", wrapper)
         self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
+        self.assertIn("dst=/scratch/proof", wrapper)
+        self.assertIn("BRIDGE_TRUSTED_DEPS_READY=1", wrapper)
+        self.assertIn("BRIDGE_CLAIM_REPORT=/scratch/proof/claim-report.json", wrapper)
+        self.assertIn("PROOF_RECEIPT=/scratch/proof/proof-receipt.json", wrapper)
+        self.assertIn("dst=/workspace/ui/.e2e-cache,readonly", wrapper)
         self.assertIn("dst=/workspace/.tools,readonly", wrapper)
         self.assertIn("BRIDGE_EXPECTED_HEAD_SHA", wrapper)
+        self.assertIn("BRIDGE_TRUSTED_DEPS_READY", driver)
+        self.assertIn("require_workspace_dependencies", driver)
         self.assertNotIn("src=/home/runner,dst=/home/runner", wrapper)
         self.assertIn(".cargo .rustup .local .elan .foundry setup-pnpm", wrapper)
         self.assertIn("/home/runner/.cache/ms-playwright", wrapper)
