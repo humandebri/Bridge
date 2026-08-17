@@ -212,6 +212,7 @@ fn minted_state_requires_and_persists_exact_canonical_evidence() {
     deposit
         .apply(DepositEvent::AuthorizationSigned {
             signature: vec![12; 65],
+            observed_timestamp: 1,
         })
         .expect("signed");
     deposit
@@ -250,6 +251,48 @@ fn minted_state_requires_and_persists_exact_canonical_evidence() {
 }
 
 #[test]
+fn expired_signature_is_not_installed_or_charged() {
+    let mut deposit = accepted_deposit();
+    deposit
+        .apply(DepositEvent::FundingSucceeded {
+            funding_ledger_block_index: 1,
+        })
+        .expect("escrow");
+    deposit
+        .apply(DepositEvent::CommitAuthorization {
+            quote: test_deposit_quote(),
+            authorization: Box::new(authorization_record(&deposit)),
+        })
+        .expect("authorization");
+    let deadline = deposit
+        .mint_authorization
+        .as_mut()
+        .expect("authorization record")
+        .authorization
+        .deadline;
+    deposit
+        .mint_authorization
+        .as_mut()
+        .expect("authorization record")
+        .dispatch_signature()
+        .expect("dispatch");
+    let before = deposit.clone();
+
+    assert_eq!(
+        deposit.apply(DepositEvent::AuthorizationSigned {
+            signature: vec![12; 65],
+            observed_timestamp: deadline + 1,
+        }),
+        Err(CoreError::ConflictingReplay)
+    );
+    assert_eq!(deposit, before);
+    assert!(deposit
+        .mint_authorization
+        .as_ref()
+        .is_some_and(|authorization| authorization.signature.is_none()));
+}
+
+#[test]
 fn expired_authorization_refund_requires_persisted_finalized_unprocessed_evidence() {
     let mut deposit = accepted_deposit();
     deposit
@@ -272,6 +315,7 @@ fn expired_authorization_refund_requires_persisted_finalized_unprocessed_evidenc
     deposit
         .apply(DepositEvent::AuthorizationSigned {
             signature: vec![12; 65],
+            observed_timestamp: 1,
         })
         .expect("signed");
     let deadline = MintAuthorization::deadline_from_finalized_timestamp(1).expect("valid deadline");

@@ -31,6 +31,12 @@ def mode_body(name: str) -> str:
 
 
 class CiModeTests(unittest.TestCase):
+    def test_local_driver_selects_the_pinned_node_with_fnm_once(self) -> None:
+        self.assertIn('EXPECTED_NODE_VERSION="v$(<"$ROOT/.node-version")"', SOURCE)
+        self.assertIn('BRIDGE_CI_LOCAL_NODE_REEXEC:-0', SOURCE)
+        self.assertIn('exec fnm exec --using "$EXPECTED_NODE_VERSION" env \\', SOURCE)
+        self.assertIn('BRIDGE_CI_LOCAL_NODE_REEXEC=1 "$ROOT/scripts/ci-local.sh"', SOURCE)
+
     def assert_calls(self, aggregate: str, expected: list[str]) -> None:
         body = function_body(aggregate)
         positions = [body.find(f"  {name}\n") for name in expected]
@@ -63,9 +69,21 @@ class CiModeTests(unittest.TestCase):
         self.assertIn('python3 "$ROOT/scripts/test_check_claim_manifest.py"', body)
         self.assertIn("run_proof_stage claim-transaction-tests", body)
 
+    def test_shared_verus_kernels_may_be_const_or_non_const(self) -> None:
+        body = function_body("run_verus")
+        self.assertIn('pub (const )?fn ${kernel_name}\\b', body)
+
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
         body = function_body("run_proof_stage")
-        self.assertIn('  (\n    set -e\n    "$@"\n  )\n', body)
+        before = body.index('proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"')
+        command = body.index('    "$@"')
+        after = body.index(
+            'proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"', before + 1
+        )
+        pass_record = body.index("    stage_status=pass")
+        self.assertLess(before, command)
+        self.assertLess(command, after)
+        self.assertLess(after, pass_record)
         refinement = function_body("run_refinement_gate")
         commands = [line.strip() for line in refinement.splitlines() if line.strip()]
         self.assertTrue(all(command.endswith("|| return") for command in commands[:-1]))

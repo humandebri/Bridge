@@ -268,6 +268,10 @@ pub enum NotifyWithdrawalError {
     WithdrawalConflict,
     BaseStateMismatch,
     BridgeSignerMismatch,
+    WithdrawalBeforeAdmissionBoundary {
+        observed_withdrawal_id: Vec<u8>,
+        minimum_withdrawal_id: Vec<u8>,
+    },
     StorageFailure,
     Busy,
     RateLimited,
@@ -338,6 +342,12 @@ pub async fn notify_withdrawal(
                 finalized_checkpoint_block_number,
             ),
         };
+    if !bridge_core::withdrawal_id_is_admissible(&observed.id, &config.minimum_withdrawal_id) {
+        return Err(NotifyWithdrawalError::WithdrawalBeforeAdmissionBoundary {
+            observed_withdrawal_id: observed.id.to_vec(),
+            minimum_withdrawal_id: config.minimum_withdrawal_id,
+        });
+    }
     let expected_signer = cached_signer_address(&config)
         .await
         .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
@@ -1689,11 +1699,17 @@ async fn fresh_deposit_preflight(
         expected_signer,
     )?;
     let reserved_mint_amount = STORE.with(|store| {
-        store
-            .borrow()
+        let store = store.borrow();
+        let committed = store
             .counters()
             .map(|counters| counters.reserved_deposit_mint_amount)
-            .map_err(|_| DepositError::StorageFailure)
+            .map_err(|_| DepositError::StorageFailure)?;
+        let funding = store
+            .deposit_funding_reserved_mint_amount_excluding(deposit_id)
+            .map_err(|_| DepositError::StorageFailure)?;
+        committed
+            .checked_add(funding)
+            .ok_or(DepositError::StorageFailure)
     })?;
     cached_deposit_preflight(
         mint_snapshot,

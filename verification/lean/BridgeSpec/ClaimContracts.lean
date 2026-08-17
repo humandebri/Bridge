@@ -298,10 +298,16 @@ def NotificationQuotaIsolation : Prop :=
       notificationAdmissionAllowed globalCount callerCount globalLimit callerLimit = true →
       notificationIngestionAllowed ingestionCount ingestionLimit = true →
         globalCount < globalLimit ∧ callerCount < callerLimit ∧
-          ingestionCount < ingestionLimit) ∧ IntegratedProtocolReachability
+          ingestionCount < ingestionLimit) ∧
+    (∀ {hashMatches : Bool} {nowNs retryAfterNs : Nat},
+      notificationFailureCooldownActive hashMatches nowNs retryAfterNs = true →
+        hashMatches = true ∧ nowNs < retryAfterNs) ∧
+    IntegratedProtocolReachability
 
 theorem notification_quota_isolation_witness : NotificationQuotaIsolation :=
-  ⟨Claims.notification_admission_claim, integrated_protocol_reachability_witness⟩
+  ⟨Claims.notification_admission_claim,
+    Claims.notification_failure_cooldown_is_hash_scoped_and_strict,
+    integrated_protocol_reachability_witness⟩
 
 def LeaseLaneIsolation : Prop :=
   (∀ {targetActive targetAutomatic : Bool} {activeInLane capacity : Nat},
@@ -347,6 +353,14 @@ theorem withdrawal_finalization_witness : WithdrawalFinalization := by
   · exact Claims.withdrawal_finalization_claim
   · intro receiptSucceeded receiptBlock
     rfl
+
+def WithdrawalAdmissionBoundary : Prop :=
+  ∀ {observed minimum : Nat},
+    withdrawalIdAdmissible observed minimum = true →
+      minimum != 0 ∧ minimum ≤ observed
+
+theorem withdrawal_admission_boundary_witness : WithdrawalAdmissionBoundary :=
+  Claims.withdrawal_admission_boundary_claim
 
 def PendingQueue : Prop :=
   (∀ {queue : BridgeSpec.PendingQueue} {existing incoming : PendingQueueEntry},

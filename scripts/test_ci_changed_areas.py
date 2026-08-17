@@ -129,6 +129,9 @@ class ChangedAreaTests(unittest.TestCase):
             "canister/bridge-core/tests/state_machine.rs",
             "integration/phase3.spec.ts",
             "ui/src/lib/ic/wallet.test.ts",
+            "ui/e2e-real/global-setup.mjs",
+            "ui/e2e-real/ic-wallet-provider.tsx",
+            "ui/playwright.real.config.ts",
             "verification/claims.tsv",
         ):
             with self.subTest(path=path):

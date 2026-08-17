@@ -24,7 +24,13 @@ class ReproducibleArtifactTests(unittest.TestCase):
         for directory in (self.bundle, self.first, self.second):
             directory.mkdir()
         artifacts = []
-        for name, value in (("bridge-canister.wasm", b"wasm"), ("bridge-runtime.bin", b"runtime")):
+        for name, value in (
+            ("bridge-canister.wasm", b"wasm"),
+            ("bridge-runtime.bin", b"runtime"),
+            ("bsns-creation.bin", b"creation"),
+            ("bsns-runtime.bin", b"token-runtime"),
+            ("bsns-runtime-layout.json", b'{"schema_version":1}'),
+        ):
             for directory in (self.bundle, self.first, self.second):
                 (directory / name).write_bytes(value)
             artifacts.append({"path": name, "sha256": hashlib.sha256(value).hexdigest()})
@@ -41,6 +47,11 @@ class ReproducibleArtifactTests(unittest.TestCase):
     def test_second_build_drift_is_rejected(self) -> None:
         (self.second / "bridge-canister.wasm").write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "independent builds differ"):
+            reproducible.verify(self.bundle, self.first, self.second)
+
+    def test_malicious_bsns_runtime_drift_is_rejected(self) -> None:
+        (self.second / "bsns-runtime.bin").write_bytes(b"backdoored-token")
+        with self.assertRaisesRegex(ValueError, "independent builds differ for bsns-runtime.bin"):
             reproducible.verify(self.bundle, self.first, self.second)
 
     def test_manifest_substitution_is_rejected(self) -> None:

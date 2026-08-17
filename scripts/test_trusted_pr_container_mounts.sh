@@ -35,14 +35,14 @@ printf 'artifact\n' >"$POLICY/ui/.e2e-cache/ledger.wasm.gz"
 
 bridge_prepare_mountpoint "$CANDIDATE" scripts
 for path in node_modules ui/node_modules target contracts/out contracts/out-staging \
-  contracts/cache verification/output verification/lean/.lake .icp/cache ui/dist \
+  contracts/cache contracts/cache-staging verification/output verification/lean/.lake .icp/cache ui/dist \
   ui/test-results ui/.e2e-cache ui/.e2e-runtime .tools; do
   bridge_prepare_candidate_mountpoint "$CANDIDATE" "$path"
 done
 bridge_prepare_mountpoint "$POLICY/ui/node_modules" .tmp
 bridge_prepare_mountpoint "$POLICY/ui/node_modules" .vite-temp
 
-for path in target contracts-out contracts-cache contracts-staging-out proof-output \
+for path in target contracts-out contracts-cache contracts-staging-out contracts-staging-cache proof-output \
   lean-lake icp-cache ui-dist ui-results ui-tsbuildinfo ui-vite-temp e2e-runtime \
   empty-tools; do
   mkdir -p "$SCRATCH/$path"
@@ -67,6 +67,7 @@ docker run --rm \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \
   --mount "type=bind,src=$SCRATCH/contracts-cache,dst=/workspace/contracts/cache" \
   --mount "type=bind,src=$SCRATCH/contracts-staging-out,dst=/workspace/contracts/out-staging" \
+  --mount "type=bind,src=$SCRATCH/contracts-staging-cache,dst=/workspace/contracts/cache-staging" \
   --mount "type=bind,src=$SCRATCH/proof-output,dst=/workspace/verification/output" \
   --mount "type=bind,src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake" \
   --mount "type=bind,src=$SCRATCH/icp-cache,dst=/workspace/.icp/cache" \
@@ -82,6 +83,7 @@ docker run --rm \
     touch /workspace/contracts/out/write
     touch /workspace/contracts/cache/write
     touch /workspace/contracts/out-staging/write
+    touch /workspace/contracts/cache-staging/write
     touch /workspace/verification/output/write
     touch /workspace/verification/lean/.lake/write
     touch /workspace/.icp/cache/write

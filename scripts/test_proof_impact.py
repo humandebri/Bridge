@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import check_proof_impact
+import proof_fingerprint
 from check_claim_manifest import CLAIM_REPORT_SCHEMA, build_claim_report
 
 
@@ -67,6 +68,11 @@ class ProofImpactTests(unittest.TestCase):
 
     def valid_receipt(self) -> dict[str, object]:
         claims = build_claim_report()["claims"]
+        current = {
+            "algorithm": "sha256",
+            "digest": "c" * 64,
+            "input_count": 1,
+        }
         summary = {
             status: sum(claim.get("status") == status for claim in claims)
             for status in ("implementation-proved", "refinement-tested", "partial", "assumed")
@@ -75,10 +81,14 @@ class ProofImpactTests(unittest.TestCase):
             "schema": check_proof_impact.RECEIPT_SCHEMA,
             "required_stages": list(check_proof_impact.REQUIRED_STAGES),
             "stages": [
-                {"id": stage, "status": "pass"}
+                {
+                    "id": stage,
+                    "status": "pass",
+                    "source_fingerprint": current,
+                }
                 for stage in check_proof_impact.REQUIRED_STAGES
             ],
-            "source_fingerprint": {"algorithm": "sha256", "digest": "current"},
+            "source_fingerprint": current,
             "claim_report_schema": CLAIM_REPORT_SCHEMA,
             "claims": claims,
             "claim_summary": summary,
@@ -92,7 +102,7 @@ class ProofImpactTests(unittest.TestCase):
             with patch.object(
                 check_proof_impact,
                 "source_fingerprint",
-                return_value={"algorithm": "sha256", "digest": "current"},
+                return_value=receipt["source_fingerprint"],
             ):
                 check_proof_impact.check_receipt(path)
 
@@ -125,7 +135,7 @@ class ProofImpactTests(unittest.TestCase):
             self.check_receipt(forged)
 
     def test_receipt_rejects_wrong_schema_and_untyped_stages(self) -> None:
-        for schema in (2, 3.0, True):
+        for schema in (4, 3.0, True):
             with self.subTest(schema=schema):
                 wrong_schema = self.valid_receipt()
                 wrong_schema["schema"] = schema
@@ -137,18 +147,63 @@ class ProofImpactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "typed records"):
             self.check_receipt(untyped)
 
+    def test_receipt_rejects_missing_or_mixed_stage_fingerprints(self) -> None:
+        missing = self.valid_receipt()
+        missing["stages"][0].pop("source_fingerprint")
+        with self.assertRaisesRegex(ValueError, "typed records"):
+            self.check_receipt(missing)
+
+        mixed = self.valid_receipt()
+        mixed["stages"][0]["source_fingerprint"] = {
+            "algorithm": "sha256",
+            "digest": "d" * 64,
+            "input_count": 1,
+        }
+        with self.assertRaisesRegex(ValueError, "do not match"):
+            self.check_receipt(mixed)
+
     def test_receipt_rejects_stale_fingerprint(self) -> None:
         receipt = self.valid_receipt()
-        receipt["source_fingerprint"] = {
+        stale = {
             "algorithm": "sha256",
-            "digest": "stale",
-            "input_count": 0,
+            "digest": "d" * 64,
+            "input_count": 1,
         }
+        receipt["source_fingerprint"] = stale
+        for stage in receipt["stages"]:
+            stage["source_fingerprint"] = stale
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "receipt.json"
             path.write_text(json.dumps(receipt), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "stale"):
                 check_proof_impact.check_receipt(path)
+
+    def test_fingerprint_baseline_write_check_and_drift(self) -> None:
+        current = {
+            "algorithm": "sha256",
+            "digest": "a" * 64,
+            "input_count": 2,
+        }
+        changed = {
+            "algorithm": "sha256",
+            "digest": "b" * 64,
+            "input_count": 2,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "baseline.json"
+            with patch.object(proof_fingerprint, "source_fingerprint", return_value=current):
+                self.assertEqual(proof_fingerprint.write_fingerprint(path), current)
+                self.assertEqual(proof_fingerprint.check_fingerprint(path), current)
+            with patch.object(proof_fingerprint, "source_fingerprint", return_value=changed):
+                with self.assertRaisesRegex(ValueError, "proof run started"):
+                    proof_fingerprint.check_fingerprint(path)
+
+    def test_fingerprint_baseline_rejects_malformed_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "baseline.json"
+            path.write_text('{"algorithm":"sha256","digest":"short","input_count":1}')
+            with self.assertRaisesRegex(ValueError, "invalid shape"):
+                proof_fingerprint.load_fingerprint(path)
 
     def test_receipt_rejects_forged_claims_and_summary(self) -> None:
         forged_claims = self.valid_receipt()

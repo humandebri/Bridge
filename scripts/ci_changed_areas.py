@@ -32,6 +32,8 @@ def is_policy_path(raw_path: str) -> bool:
     parts = set(PurePosixPath(path).parts)
     return (
         path.startswith((".github/", "scripts/", "verification/"))
+        or path.startswith(("ui/e2e/", "ui/e2e-real/"))
+        or PurePosixPath(path).match("ui/playwright*.config.*")
         or path in exact
         or "tests" in parts
         or "test" in parts

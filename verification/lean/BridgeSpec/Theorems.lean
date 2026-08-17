@@ -120,6 +120,12 @@ theorem unfinalized_receipt_remains_retryable
     decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) = .retry := by
   simp [decideWithdrawalFinalization, unfinalized]
 
+theorem withdrawal_id_admission_requires_nonzero_inclusive_boundary
+    {observed minimum : Nat}
+    (accepted : withdrawalIdAdmissible observed minimum = true) :
+    minimum != 0 ∧ minimum ≤ observed := by
+  simpa [withdrawalIdAdmissible] using accepted
+
 theorem serialized_upsert_preserves_different_entry
     {queue : PendingQueue} {incoming : PendingQueueEntry} {key : Nat}
     (different : Not (key = incoming.key)) :

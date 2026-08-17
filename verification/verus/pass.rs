@@ -497,25 +497,27 @@ proof fn canonical_probe_accepts_exact_block(receipt_block: int, snapshot_block:
         <==> receipt_block == snapshot_block
 {}
 
-spec fn finalized_head_attests(head: Option<int>, checkpoint: int) -> bool {
-    match head {
-        Some(height) => checkpoint <= height,
+spec fn finalized_identity_attests(
+    observation: Option<(int, int)>, checkpoint: (int, int),
+) -> bool {
+    match observation {
+        Some(identity) => checkpoint == identity,
         None => false,
     }
 }
 
 proof fn withdrawal_finality_quorum_selects_two_provider_checkpoint(
-    first: Option<int>, second: Option<int>, third: Option<int>,
+    first: Option<(int, int)>, second: Option<(int, int)>, third: Option<(int, int)>,
 )
-    ensures match kernel::withdrawal_finalized_checkpoint_spec(first, second, third) {
+    ensures match kernel::withdrawal_finalized_identity_quorum_spec(first, second, third) {
         Some(checkpoint) =>
-            (finalized_head_attests(first, checkpoint) && finalized_head_attests(second, checkpoint))
-            || (finalized_head_attests(first, checkpoint) && finalized_head_attests(third, checkpoint))
-            || (finalized_head_attests(second, checkpoint) && finalized_head_attests(third, checkpoint)),
+            (finalized_identity_attests(first, checkpoint) && finalized_identity_attests(second, checkpoint))
+            || (finalized_identity_attests(first, checkpoint) && finalized_identity_attests(third, checkpoint))
+            || (finalized_identity_attests(second, checkpoint) && finalized_identity_attests(third, checkpoint)),
         None => true,
     }
 {
-    reveal(finalized_head_attests);
+    reveal(finalized_identity_attests);
 }
 
 proof fn runtime_attestation_requires_every_config_binding(
@@ -663,6 +665,14 @@ fn notification_ingestion_checks_global_window(
     kernel::notification_ingestion_allowed(ingestion_count, ingestion_limit)
 }
 
+proof fn notification_failure_cooldown_requires_matching_hash_and_open_deadline(
+    hash_matches: bool, now_ns: int, retry_after_ns: int,
+)
+    ensures kernel::notification_failure_cooldown_active_spec(
+        hash_matches, now_ns, retry_after_ns)
+        <==> hash_matches && now_ns < retry_after_ns
+{}
+
 fn lease_lane_claim_is_record_and_lane_scoped(
     target_active: bool,
     target_automatic: bool,
@@ -757,11 +767,11 @@ proof fn mint_finalization_requires_exact_finalized_success(
         <==> binding && succeeded && receipt_block <= finalized_block
 {}
 
-proof fn signature_install_requires_dispatch_absence_and_exact_length(
-    dispatched: bool, absent: bool, length: bool,
+proof fn signature_install_requires_dispatch_absence_exact_length_and_open_deadline(
+    dispatched: bool, absent: bool, length: bool, deadline_open: bool,
 )
-    ensures kernel::signature_install_allowed_spec(dispatched, absent, length)
-        <==> dispatched && absent && length
+    ensures kernel::signature_install_allowed_spec(dispatched, absent, length, deadline_open)
+        <==> dispatched && absent && length && deadline_open
 {}
 
 proof fn refund_start_requires_attempt_and_policy(attempt: bool, policy: bool)

@@ -1,6 +1,7 @@
 import { Principal } from "@dfinity/principal"
 import { bytesToHex } from "viem"
 import { describe, expect, it, vi } from "vitest"
+import { NotifyWithdrawalCallError } from "./ic/withdrawal-notification-client"
 import { decodeWithdrawalDestination, fetchInBatches, fetchUniqueBlockTimestamps, notifyHistoryWithdrawal, scanWithdrawalLogs, WITHDRAWAL_LOG_CHUNK_SIZE, WITHDRAWAL_SCAN_CHUNKS_PER_STEP } from "./withdrawal-history"
 
 interface TestLog {
@@ -64,6 +65,38 @@ describe("withdrawal log scanning", () => {
 
     expect(notify).not.toHaveBeenCalled()
     expect(markNotified).not.toHaveBeenCalled()
+  })
+
+  it("treats_a_pre_boundary_withdrawal_as_terminal_without_retry", async () => {
+    const failure = new NotifyWithdrawalCallError(
+      "WithdrawalBeforeAdmissionBoundary",
+      "Withdrawal predates the admission boundary",
+    )
+    const notify = vi.fn(() => Promise.reject(failure))
+    const setFailure = vi.fn(() => Promise.resolve())
+    const delay = vi.fn(() => Promise.resolve())
+
+    await expect(notifyHistoryWithdrawal({
+      hash: `0x${"66".repeat(32)}`,
+      destinationAccount: { owner: "aaaaa-aa", subaccount: new Uint8Array(32) },
+    }, {
+      ensurePending: vi.fn(() => Promise.resolve()),
+      notify,
+      markNotified: vi.fn(() => Promise.resolve()),
+      markAttempt: vi.fn(() => Promise.resolve()),
+      setFailure,
+      delay,
+    })).rejects.toBe(failure)
+
+    expect(notify).toHaveBeenCalledOnce()
+    expect(delay).not.toHaveBeenCalled()
+    expect(setFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        code: "WithdrawalBeforeAdmissionBoundary",
+        disposition: "terminal",
+      }),
+    )
   })
 
   it("fetches a shared block timestamp only once", async () => {

@@ -5,6 +5,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTRACTS="$ROOT/contracts"
 MODE="${1:-all}"
+
+if [[ "${BRIDGE_CI_LOCAL_NODE_REEXEC:-0}" != 1 ]]; then
+  EXPECTED_NODE_VERSION="v$(<"$ROOT/.node-version")"
+  CURRENT_NODE_VERSION="$(node --version 2>/dev/null || true)"
+  if [[ "$CURRENT_NODE_VERSION" != "$EXPECTED_NODE_VERSION" ]] \
+    && command -v fnm >/dev/null 2>&1; then
+    echo "ci-local: selecting Node.js $EXPECTED_NODE_VERSION with fnm" >&2
+    exec fnm exec --using "$EXPECTED_NODE_VERSION" env \
+      BRIDGE_CI_LOCAL_NODE_REEXEC=1 "$ROOT/scripts/ci-local.sh" "$@"
+  fi
+fi
+
 export PATH="$ROOT/.tools/bin:$PATH"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-phase0.XXXXXX")"
 ANVIL_PID=""
@@ -149,9 +161,11 @@ run_versions() {
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
   node "$ROOT/scripts/plan007/test-check-upgrade-instance.mjs"
-  python3 "$ROOT/scripts/plan007/test_candid_values.py"
-  python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
   node "$ROOT/scripts/plan007/test-capture-withdrawal-boundary.mjs"
+  node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
+  python3 "$ROOT/scripts/plan007/test_candid_values.py"
+  python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
+  python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
     "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
@@ -316,13 +330,6 @@ run_rust_integration() {
     --target wasm32-unknown-unknown \
     --release \
     -p bridge-canister
-  CARGO_TARGET_DIR="$ROOT/target/test-deployment" cargo build \
-    --locked \
-    --manifest-path "$ROOT/Cargo.toml" \
-    --target wasm32-unknown-unknown \
-    --release \
-    -p bridge-canister \
-    --features test-deployment
   cargo build \
     --locked \
     --manifest-path "$ROOT/Cargo.toml" \
@@ -455,7 +462,7 @@ run_verus() {
           echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
           return 1
         }
-        rg -q "pub const fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+        rg -q "pub (const )?fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
           echo "shared Verus kernel is missing: $kernel_name" >&2
           return 1
         }
@@ -609,27 +616,35 @@ run_proof_stage() {
   local stage="$1"
   shift
   local status
+  local stage_status
   set +e
   (
     set -e
+    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
     "$@"
+    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
   )
   status=$?
   set -e
   if [[ "$status" -eq 0 ]]; then
-    printf '%s\tpass\n' "$stage" >>"$PROOF_STAGE_RECEIPT"
+    stage_status=pass
   else
-    printf '%s\tfail\n' "$stage" >>"$PROOF_STAGE_RECEIPT"
+    stage_status=fail
   fi
+  printf '%s\t%s\t' "$stage" "$stage_status" >>"$PROOF_STAGE_RECEIPT"
+  tr -d '\n' <"$PROOF_SOURCE_BASELINE" >>"$PROOF_STAGE_RECEIPT"
+  printf '\n' >>"$PROOF_STAGE_RECEIPT"
   python3 "$ROOT/scripts/write_proof_receipt.py" \
-    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT"
+    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"
   return "$status"
 }
 
 run_proofs() {
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
+  PROOF_SOURCE_BASELINE="$TMP_ROOT/proof-source-fingerprint.json"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
+  python3 "$ROOT/scripts/proof_fingerprint.py" --write "$PROOF_SOURCE_BASELINE" >/dev/null
   python3 "$ROOT/scripts/test_write_proof_receipt.py"
   python3 "$ROOT/scripts/test_claim_test_manifest.py"
   python3 "$ROOT/scripts/test_check_claim_manifest.py"
@@ -941,6 +956,7 @@ run_smoke() {
     expected_bridge_runtime_sha256 = blob \"\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\";
     timelock_contract = blob \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\";
     deployment_instance_id = blob \"\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\";
+    minimum_withdrawal_id = blob \"\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\01\";
     ecdsa_key_name = \"dfx_test_key\";
     ecdsa_derivation_path = vec {};
     governance_ecdsa_derivation_path = vec { blob \"governance-operator\" };
@@ -985,7 +1001,7 @@ run_smoke() {
     -e local \
     --mode "$ICP_TEST_CANISTER_INSTALL_MODE" \
     --yes \
-    --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --wasm "$ROOT/target/test-deployment/staging/bridge_canister.wasm" \
     --args "$bridge_init_args" \
     --project-root-override "$ROOT"
   icp canister status bridge-canister -e local --json \
@@ -1046,7 +1062,7 @@ for field, (value, candid_type) in expected.items():
   icp canister install bridge-canister \
     -e local \
     --mode upgrade \
-    --wasm "$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.wasm" \
+    --wasm "$ROOT/target/test-deployment/staging/bridge_canister.wasm" \
     --project-root-override "$ROOT"
   icp canister call bridge-canister get_public_config '()' \
     -e local --query --json \

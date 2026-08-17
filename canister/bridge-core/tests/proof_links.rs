@@ -4,7 +4,8 @@ use bridge_core::{
     hold_resolution_decision, lease_lane_claim_decision, lease_outcome_decision,
     manual_claim_decision, notification_admission_allowed, payout_decision,
     release_transfer_matches, reservation_decision, service_fee_change_allowed,
-    settlement_decision, withdrawal_finalized_checkpoint,
+    settlement_decision, withdrawal_finalized_identity_quorum, withdrawal_id_is_admissible,
+    WithdrawalFinalizedIdentity,
 };
 
 macro_rules! production_link {
@@ -17,6 +18,12 @@ macro_rules! production_link {
 
 #[test]
 fn phase5_production_links_typecheck() {
+    production_link!(
+        "withdrawal_admission_boundary",
+        "canister/bridge-core/src/kernel.rs#withdrawal_id_is_admissible",
+        withdrawal_id_is_admissible,
+        fn(&[u8; 32], &[u8]) -> bool
+    );
     production_link!(
         "committed_quote",
         "canister/bridge-core/src/kernel.rs#committed_quote_matches",
@@ -123,25 +130,68 @@ fn phase5_production_links_typecheck() {
     );
     production_link!(
         "withdrawal_finality_quorum",
-        "canister/bridge-core/src/kernel.rs#withdrawal_finalized_checkpoint",
-        withdrawal_finalized_checkpoint,
-        fn(Option<u64>, Option<u64>, Option<u64>) -> Option<u64>
+        "canister/bridge-core/src/kernel.rs#withdrawal_finalized_identity_quorum",
+        withdrawal_finalized_identity_quorum,
+        fn(
+            Option<WithdrawalFinalizedIdentity>,
+            Option<WithdrawalFinalizedIdentity>,
+            Option<WithdrawalFinalizedIdentity>,
+        ) -> Option<WithdrawalFinalizedIdentity>
     );
 }
 
 #[test]
-fn withdrawal_finality_quorum_selects_the_greatest_two_provider_checkpoint() {
+fn withdrawal_admission_boundary_uses_the_full_big_endian_uint256() {
+    let mut minimum = [0u8; 32];
+    minimum[15] = 1;
+    let mut below = minimum;
+    below[15] = 0;
+    below[31] = u8::MAX;
+    let mut above = minimum;
+    above[31] = 1;
+
+    assert!(!withdrawal_id_is_admissible(&below, &minimum));
+    assert!(withdrawal_id_is_admissible(&minimum, &minimum));
+    assert!(withdrawal_id_is_admissible(&above, &minimum));
+    assert!(!withdrawal_id_is_admissible(&minimum, &[0; 32]));
+    assert!(!withdrawal_id_is_admissible(&minimum, &[1; 31]));
+}
+
+#[test]
+fn withdrawal_finality_quorum_requires_an_exact_two_provider_checkpoint() {
+    let first = WithdrawalFinalizedIdentity {
+        block_number: 100,
+        block_hash: [0xaa; 32],
+    };
+    let third = WithdrawalFinalizedIdentity {
+        block_number: 102,
+        block_hash: [0xbb; 32],
+    };
     assert_eq!(
-        withdrawal_finalized_checkpoint(Some(100), Some(101), Some(102)),
-        Some(101)
+        withdrawal_finalized_identity_quorum(Some(first), Some(first), Some(third)),
+        Some(first)
     );
     assert_eq!(
-        withdrawal_finalized_checkpoint(Some(102), Some(100), Some(101)),
-        Some(101)
+        withdrawal_finalized_identity_quorum(Some(third), Some(first), Some(third)),
+        Some(third)
     );
     assert_eq!(
-        withdrawal_finalized_checkpoint(Some(100), None, Some(102)),
-        Some(100)
+        withdrawal_finalized_identity_quorum(Some(first), None, Some(third)),
+        None
     );
-    assert_eq!(withdrawal_finalized_checkpoint(Some(102), None, None), None);
+    assert_eq!(
+        withdrawal_finalized_identity_quorum(
+            Some(first),
+            Some(WithdrawalFinalizedIdentity {
+                block_number: 100,
+                block_hash: [0xcc; 32],
+            }),
+            Some(third),
+        ),
+        None
+    );
+    assert_eq!(
+        withdrawal_finalized_identity_quorum(Some(third), None, None),
+        None
+    );
 }
