@@ -21,10 +21,15 @@ CANDIDATE="$FIXTURE/candidate"
 POLICY="$FIXTURE/policy"
 SCRATCH="$FIXTURE/scratch"
 mkdir -p "$CANDIDATE/ui" "$CANDIDATE/contracts" "$CANDIDATE/verification/lean" \
+  "$CANDIDATE/scripts" \
   "$POLICY/scripts" "$POLICY/node_modules" "$POLICY/ui/node_modules" \
   "$POLICY/ui/.e2e-cache" "$SCRATCH"
 git -C "$CANDIDATE" init --quiet
 printf 'fixture\n' >"$POLICY/scripts/fixture.txt"
+printf 'candidate-added\n' >"$CANDIDATE/scripts/candidate-added.sh"
+printf 'candidate-modified\n' >"$CANDIDATE/scripts/fixture.txt"
+git -C "$CANDIDATE" add scripts/candidate-added.sh scripts/fixture.txt
+: >"$POLICY/scripts/candidate-added.sh"
 printf 'artifact\n' >"$POLICY/ui/.e2e-cache/ledger.wasm.gz"
 
 bridge_prepare_mountpoint "$CANDIDATE" scripts
@@ -34,9 +39,10 @@ for path in node_modules ui/node_modules target contracts/out contracts/cache \
   bridge_prepare_candidate_mountpoint "$CANDIDATE" "$path"
 done
 bridge_prepare_mountpoint "$POLICY/ui/node_modules" .tmp
+bridge_prepare_mountpoint "$POLICY/ui/node_modules" .vite-temp
 
 for path in target contracts-out contracts-cache proof-output lean-lake icp-cache \
-  ui-dist ui-results ui-tsbuildinfo e2e-runtime empty-tools; do
+  ui-dist ui-results ui-tsbuildinfo ui-vite-temp e2e-runtime empty-tools; do
   mkdir -p "$SCRATCH/$path"
 done
 chmod -R 0777 "$SCRATCH"
@@ -50,9 +56,12 @@ docker run --rm \
   --security-opt no-new-privileges \
   --mount "type=bind,src=$CANDIDATE,dst=/workspace,readonly" \
   --mount "type=bind,src=$POLICY/scripts,dst=/workspace/scripts,readonly" \
+  --mount "type=bind,src=$CANDIDATE/scripts/candidate-added.sh,dst=/workspace/scripts/candidate-added.sh,readonly" \
+  --mount "type=bind,src=$CANDIDATE/scripts,dst=/scratch/candidate-scripts,readonly" \
   --mount "type=bind,src=$POLICY/node_modules,dst=/workspace/node_modules,readonly" \
   --mount "type=bind,src=$POLICY/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
   --mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp" \
+  --mount "type=bind,src=$SCRATCH/ui-vite-temp,dst=/workspace/ui/node_modules/.vite-temp" \
   --mount "type=bind,src=$SCRATCH/target,dst=/workspace/target" \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \
   --mount "type=bind,src=$SCRATCH/contracts-cache,dst=/workspace/contracts/cache" \
@@ -75,8 +84,13 @@ docker run --rm \
     touch /workspace/ui/dist/write
     touch /workspace/ui/test-results/write
     touch /workspace/ui/node_modules/.tmp/write
+    touch /workspace/ui/node_modules/.vite-temp/write
     touch /workspace/ui/.e2e-runtime/write
     test -f /workspace/ui/.e2e-cache/ledger.wasm.gz
+    test -f /workspace/scripts/candidate-added.sh
+    grep -qx fixture /workspace/scripts/fixture.txt
+    test -f /scratch/candidate-scripts/candidate-added.sh
+    grep -qx candidate-modified /scratch/candidate-scripts/fixture.txt
     ! touch /workspace/candidate-write
     ! touch /workspace/node_modules/dependency-write
     ! touch /workspace/.tools/tool-write
