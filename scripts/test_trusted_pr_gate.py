@@ -142,6 +142,7 @@ class TrustedPrGateTests(unittest.TestCase):
             wrapper,
         )
         self.assertIn('if [[ "$MODE" == "real" ]]', wrapper)
+        self.assertNotIn("dst=/workspace/.local", wrapper)
 
     def test_each_check_uses_fresh_read_only_container_boundaries(self) -> None:
         wrapper = (ROOT / "scripts" / "trusted-pr-container.sh").read_text(encoding="utf-8")
