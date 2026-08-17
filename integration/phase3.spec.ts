@@ -684,6 +684,7 @@ describe("Phase 3 PocketIC saga", () => {
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
     expect(config.schema_version).toBe(33);
+    expect(Array.from(config.minimum_withdrawal_id)).toEqual(Array.from(init.minimum_withdrawal_id));
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(testLedgerFee);
     expect(config.notification_rate_limit_window_seconds).toBe(600n);

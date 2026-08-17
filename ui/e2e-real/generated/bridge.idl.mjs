@@ -446,6 +446,7 @@ export const idlFactory = ({ IDL }) => {
     'deposit_rate_limit_per_principal' : IDL.Nat16,
     'deployment_instance_id' : IDL.Vec(IDL.Nat8),
     'schema_version' : IDL.Nat16,
+    'minimum_withdrawal_id' : IDL.Vec(IDL.Nat8),
     'deposit_rate_limit_global' : IDL.Nat16,
     'pause_principal' : IDL.Principal,
     'governance_principal' : IDL.Principal,

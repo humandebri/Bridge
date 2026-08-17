@@ -38,6 +38,7 @@ use ic_sqlite_vfs::MemoryId;
 use ic_sqlite_vfs::{params, DbError, DbHandle, DefaultMemoryImpl, MemoryManager};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::{fmt, io::Cursor, marker::PhantomData, ops::Bound as RangeBound, ops::RangeBounds};
 
@@ -3440,6 +3441,7 @@ impl StableStore {
             outcome,
         })
     }
+    #[cfg(test)]
     fn validate_relations(&self) -> Result<(), StorageError> {
         const COUNTED_TABLES: &[&str] = &[
             "deposits",

@@ -206,7 +206,7 @@ pub(crate) struct V32ImmutableBridgeConfig {
 }
 
 impl V32ImmutableBridgeConfig {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "test-deployment"))]
     pub(crate) fn from_current(value: &ImmutableBridgeConfig) -> Self {
         Self {
             ledger_canister_id: value.ledger_canister_id,

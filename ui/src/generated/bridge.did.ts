@@ -430,6 +430,7 @@ export interface PublicConfig {
   'deposit_rate_limit_per_principal' : number,
   'deployment_instance_id' : Uint8Array | number[],
   'schema_version' : number,
+  'minimum_withdrawal_id' : Uint8Array | number[],
   'deposit_rate_limit_global' : number,
   'pause_principal' : Principal,
   'governance_principal' : Principal,
