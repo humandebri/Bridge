@@ -29,20 +29,22 @@ printf 'fixture\n' >"$POLICY/scripts/fixture.txt"
 printf 'candidate-added\n' >"$CANDIDATE/scripts/candidate-added.sh"
 printf 'candidate-modified\n' >"$CANDIDATE/scripts/fixture.txt"
 git -C "$CANDIDATE" add scripts/candidate-added.sh scripts/fixture.txt
-: >"$POLICY/scripts/candidate-added.sh"
+cp -p "$CANDIDATE/scripts/candidate-added.sh" "$POLICY/scripts/candidate-added.sh"
+chmod +x "$POLICY/scripts/candidate-added.sh"
 printf 'artifact\n' >"$POLICY/ui/.e2e-cache/ledger.wasm.gz"
 
 bridge_prepare_mountpoint "$CANDIDATE" scripts
-for path in node_modules ui/node_modules target contracts/out contracts/cache \
-  verification/output verification/lean/.lake .icp/cache ui/dist ui/test-results \
-  ui/.e2e-cache ui/.e2e-runtime .tools; do
+for path in node_modules ui/node_modules target contracts/out contracts/out-staging \
+  contracts/cache verification/output verification/lean/.lake .icp/cache ui/dist \
+  ui/test-results ui/.e2e-cache ui/.e2e-runtime .tools; do
   bridge_prepare_candidate_mountpoint "$CANDIDATE" "$path"
 done
 bridge_prepare_mountpoint "$POLICY/ui/node_modules" .tmp
 bridge_prepare_mountpoint "$POLICY/ui/node_modules" .vite-temp
 
-for path in target contracts-out contracts-cache proof-output lean-lake icp-cache \
-  ui-dist ui-results ui-tsbuildinfo ui-vite-temp e2e-runtime empty-tools; do
+for path in target contracts-out contracts-cache contracts-staging-out proof-output \
+  lean-lake icp-cache ui-dist ui-results ui-tsbuildinfo ui-vite-temp e2e-runtime \
+  empty-tools; do
   mkdir -p "$SCRATCH/$path"
 done
 chmod -R 0777 "$SCRATCH"
@@ -56,7 +58,6 @@ docker run --rm \
   --security-opt no-new-privileges \
   --mount "type=bind,src=$CANDIDATE,dst=/workspace,readonly" \
   --mount "type=bind,src=$POLICY/scripts,dst=/workspace/scripts,readonly" \
-  --mount "type=bind,src=$CANDIDATE/scripts/candidate-added.sh,dst=/workspace/scripts/candidate-added.sh,readonly" \
   --mount "type=bind,src=$CANDIDATE/scripts,dst=/scratch/candidate-scripts,readonly" \
   --mount "type=bind,src=$POLICY/node_modules,dst=/workspace/node_modules,readonly" \
   --mount "type=bind,src=$POLICY/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
@@ -65,6 +66,7 @@ docker run --rm \
   --mount "type=bind,src=$SCRATCH/target,dst=/workspace/target" \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \
   --mount "type=bind,src=$SCRATCH/contracts-cache,dst=/workspace/contracts/cache" \
+  --mount "type=bind,src=$SCRATCH/contracts-staging-out,dst=/workspace/contracts/out-staging" \
   --mount "type=bind,src=$SCRATCH/proof-output,dst=/workspace/verification/output" \
   --mount "type=bind,src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake" \
   --mount "type=bind,src=$SCRATCH/icp-cache,dst=/workspace/.icp/cache" \
@@ -73,11 +75,13 @@ docker run --rm \
   --mount "type=bind,src=$POLICY/ui/.e2e-cache,dst=/workspace/ui/.e2e-cache,readonly" \
   --mount "type=bind,src=$SCRATCH/e2e-runtime,dst=/workspace/ui/.e2e-runtime" \
   --mount "type=bind,src=$SCRATCH/empty-tools,dst=/workspace/.tools,readonly" \
+  --env PLAYWRIGHT_BROWSERS_PATH=/home/runner/.cache/ms-playwright \
   "$IMAGE" /bin/bash -ceu '
     git -C /workspace status --short >/dev/null
     touch /workspace/target/write
     touch /workspace/contracts/out/write
     touch /workspace/contracts/cache/write
+    touch /workspace/contracts/out-staging/write
     touch /workspace/verification/output/write
     touch /workspace/verification/lean/.lake/write
     touch /workspace/.icp/cache/write
@@ -87,7 +91,8 @@ docker run --rm \
     touch /workspace/ui/node_modules/.vite-temp/write
     touch /workspace/ui/.e2e-runtime/write
     test -f /workspace/ui/.e2e-cache/ledger.wasm.gz
-    test -f /workspace/scripts/candidate-added.sh
+    test -x /workspace/scripts/candidate-added.sh
+    grep -qx candidate-added /workspace/scripts/candidate-added.sh
     grep -qx fixture /workspace/scripts/fixture.txt
     test -f /scratch/candidate-scripts/candidate-added.sh
     grep -qx candidate-modified /scratch/candidate-scripts/fixture.txt
