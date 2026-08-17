@@ -153,11 +153,23 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn(".cargo .rustup .local .elan .foundry setup-pnpm", wrapper)
         self.assertIn("/home/runner/.cache/ms-playwright", wrapper)
         self.assertIn("src=/home/runner/.svm,dst=/scratch/home/.svm,readonly", wrapper)
+        self.assertIn(
+            "src=/home/runner/.elan/toolchains,dst=/scratch/home/.elan/toolchains,readonly",
+            wrapper,
+        )
         self.assertIn("BRIDGE_TRUSTED_DEPS_READY=1", wrapper)
-        self.assertIn("ELAN_HOME=/home/runner/.elan", wrapper)
+        self.assertIn("PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false", wrapper)
+        self.assertIn("ELAN_HOME=/scratch/home/.elan", wrapper)
         self.assertIn("CARGO_NET_OFFLINE=true", wrapper)
         self.assertIn("FOUNDRY_OFFLINE=true", wrapper)
-        self.assertIn("XDG_DATA_HOME=/home/runner/.local/share", wrapper)
+        self.assertIn("XDG_DATA_HOME=/scratch/home/.local/share", wrapper)
+        self.assertIn("XDG_CONFIG_HOME=/scratch/home/.config", wrapper)
+        self.assertIn(
+            'cp -R /home/runner/.local/share/icp-cli/pkg/. '
+            '"$SCRATCH/home/.local/share/icp-cli/pkg/"',
+            wrapper,
+        )
+        self.assertNotIn("/home/runner/.local/share/icp-cli/identity", wrapper)
         self.assertIn("ICP_CLI_DISABLE_UPDATE=1", wrapper)
         self.assertIn("ICP_TELEMETRY_DISABLED=1", wrapper)
         self.assertNotIn("GITHUB_TOKEN", wrapper)
@@ -166,6 +178,10 @@ class TrustedPrGateTests(unittest.TestCase):
         driver = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
         self.assertIn("require_workspace_dependencies", driver)
         self.assertIn("BRIDGE_TRUSTED_DEPS_READY", driver)
+        self.assertIn(
+            'pnpm --dir "$ROOT/ui" exec playwright test --config playwright.real.config.ts',
+            driver,
+        )
 
         installer = (ROOT / "scripts" / "install-ci-tools.sh").read_text(encoding="utf-8")
         self.assertIn("solc-linux-amd64-v0.8.36+commit.8a079791", installer)
