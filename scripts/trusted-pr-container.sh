@@ -57,7 +57,7 @@ done
 
 WRITABLE_UI_MOUNTS=()
 case "$MODE" in
-  ui-fast|ui-e2e|real)
+  proofs|ui-fast|ui-e2e|real)
     bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .tmp
     bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .vite-temp
     WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp")
