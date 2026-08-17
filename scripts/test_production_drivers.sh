@@ -84,9 +84,11 @@ case "$1 $2" in
   'receipt deposit-action') printf '{"blockNumber":"0x64","blockHash":"0x%s","status":"0x1","logs":[{"address":"0x3333333333333333333333333333333333333333","topics":["0x%s"]}]}\n' "$(printf 'a%.0s' {1..64})" "$(printf '66%.0s' {1..32})";;
   'receipt withdrawal-action') printf '{"blockNumber":"0x64","blockHash":"0x%s","status":"0x1","logs":[{"address":"0x3333333333333333333333333333333333333333","topics":["0x%s"]}]}\n' "$(printf 'a%.0s' {1..64})" "$(printf '77%.0s' {1..32})";;
   'receipt cancel-action') printf '{"blockNumber":"0x64","blockHash":"0x%s","status":"0x1","logs":[{"address":"0x2222222222222222222222222222222222222222","topics":["0x%s"]}]}\n' "$(printf 'a%.0s' {1..64})" "$(printf '88%.0s' {1..32})";;
+  'receipt 0x8888888888888888888888888888888888888888888888888888888888888888') if [[ "${KEEPER_BURN_DRIFT:-}" == true ]]; then bh=f; else bh=a; fi; printf '{"blockNumber":"0x64","blockHash":"0x%s","status":"0x1","logs":[{"address":"0x3333333333333333333333333333333333333333","topics":["0x%s","0x%s"]}]}\n' "$(printf "$bh%.0s" {1..64})" "$(printf '99%.0s' {1..32})" "$(printf '77%.0s' {1..32})";;
   'tx deposit-action') echo '{"to":"0x3333333333333333333333333333333333333333","input":"0x1111"}';;
   'tx withdrawal-action') echo '{"to":"0x3333333333333333333333333333333333333333","input":"0x2222"}';;
   'tx cancel-action') echo '{"to":"0x2222222222222222222222222222222222222222","input":"0x3333"}';;
+  'tx 0x8888888888888888888888888888888888888888888888888888888888888888') echo '{"to":"0x3333333333333333333333333333333333333333","input":"0x4444"}';;
   'receipt 0x'*) if [[ "$2" == "0x$(printf 'a%.0s' {1..64})" ]]; then address=0x3333333333333333333333333333333333333333; bh=b; else address=0x2222222222222222222222222222222222222222; bh=c; fi; if [[ "${DEPLOYMENT_RECEIPT_DRIFT:-}" == true || ( "${ACTIVATION_RECEIPT_DRIFT:-}" == true && "$2" != "0x$(printf 'a%.0s' {1..64})" && "$2" != "0x$(printf 'b%.0s' {1..64})" ) ]]; then bh=f; fi; printf '{"blockNumber":"0x1","blockHash":"0x%s","status":"0x1","contractAddress":"%s"}\n' "$(printf "$bh%.0s" {1..64})" "$address";;
   'logs --address') if [[ "${ROLE_EVENT_DRIFT:-}" == true ]]; then role="$(printf 'ff%.0s' {1..32})"; else role="$(printf '00%.0s' {1..32})"; fi; if [[ "${ROLE_EVENT_HASH_DRIFT:-}" == true ]]; then eh=f; else eh=c; fi; printf '[{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]}]\n' \
     "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$role" "$(printf '00%.0s' {1..12})2222222222222222222222222222222222222222" \
@@ -182,6 +184,7 @@ printf '{"release_id":"release-test","source_revision":"%s","source_tree_sha256"
 printf '{"final_controllers":["aaaaa-aa"]}\n' >"$T/bundle/controller-handover.json"
 printf '{"gate_a_manifest_sha256":"%s","bridge_deployment_transaction_hash":"0x%s","bridge_deployment_block_number":1,"bridge_deployment_block_hash":"0x%s","timelock_deployment_transaction_hash":"0x%s","timelock_deployment_block_number":1,"timelock_deployment_block_hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'c%.0s' {1..64})" >"$T/bundle/gate-a-receipt.json"
 printf '{"base_chain_id":8453,"rpc_provider_urls_sha256":"%s","base_actions":[{"kind":"PauseDepositMints","transaction_hash":"deposit-action","block_number":100,"block_hash":"0x%s","target":"0x3333333333333333333333333333333333333333","calldata_hex":"0x1111"},{"kind":"PauseWithdrawals","transaction_hash":"withdrawal-action","block_number":100,"block_hash":"0x%s","target":"0x3333333333333333333333333333333333333333","calldata_hex":"0x2222"},{"kind":"CancelTimelock","transaction_hash":"cancel-action","block_number":100,"block_hash":"0x%s","target":"0x2222222222222222222222222222222222222222","calldata_hex":"0x3333"}]}\n' "$INDEPENDENT_RPC_DIGEST" "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" >"$T/bundle/monitor-drill.json"
+printf '{"burn_transaction_hash":"0x%s","burn":{"block_number":100,"block_hash":"0x%s","withdrawal_committed_topic":"0x%s","withdrawal_id_topic":"0x%s"}}\n' "$(printf '88%.0s' {1..32})" "$(printf 'a%.0s' {1..64})" "$(printf '99%.0s' {1..32})" "$(printf '77%.0s' {1..32})" >"$T/bundle/monitoring-receipt.json"
 : >"$TRACE"
 BRIDGE_GATE_A_RPC_URL_1=https://one.example BRIDGE_GATE_A_RPC_URL_2=https://two.example BRIDGE_GATE_A_RPC_URL_3=https://three.example \
   "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-gate-a "$T/bundle" >/dev/null
@@ -307,6 +310,10 @@ for line in open(sys.argv[1]):
     assert '{"blockHash":"0x' in line and '"requireCanonical":true}' in line,line
 assert count>0
 PY
+if KEEPER_BURN_DRIFT=true "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify "$T/bundle" >/dev/null 2>&1; then
+  echo "live preflight accepted drifted keeper burn evidence" >&2
+  exit 1
+fi
 for drift in base canister signer controller roles role_events role_event_hash deployment providers timelock_code approved_hash mid_read_reorg canonical_probe canonical_probe_block; do
   case "$drift" in
     base) args=(BASE_PAUSED=false);;

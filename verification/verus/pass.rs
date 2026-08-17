@@ -497,25 +497,27 @@ proof fn canonical_probe_accepts_exact_block(receipt_block: int, snapshot_block:
         <==> receipt_block == snapshot_block
 {}
 
-spec fn finalized_head_attests(head: Option<int>, checkpoint: int) -> bool {
-    match head {
-        Some(height) => checkpoint == height,
+spec fn finalized_identity_attests(
+    observation: Option<(int, int)>, checkpoint: (int, int),
+) -> bool {
+    match observation {
+        Some(identity) => checkpoint == identity,
         None => false,
     }
 }
 
 proof fn withdrawal_finality_quorum_selects_two_provider_checkpoint(
-    first: Option<int>, second: Option<int>, third: Option<int>,
+    first: Option<(int, int)>, second: Option<(int, int)>, third: Option<(int, int)>,
 )
-    ensures match kernel::withdrawal_finalized_checkpoint_spec(first, second, third) {
+    ensures match kernel::withdrawal_finalized_identity_quorum_spec(first, second, third) {
         Some(checkpoint) =>
-            (finalized_head_attests(first, checkpoint) && finalized_head_attests(second, checkpoint))
-            || (finalized_head_attests(first, checkpoint) && finalized_head_attests(third, checkpoint))
-            || (finalized_head_attests(second, checkpoint) && finalized_head_attests(third, checkpoint)),
+            (finalized_identity_attests(first, checkpoint) && finalized_identity_attests(second, checkpoint))
+            || (finalized_identity_attests(first, checkpoint) && finalized_identity_attests(third, checkpoint))
+            || (finalized_identity_attests(second, checkpoint) && finalized_identity_attests(third, checkpoint)),
         None => true,
     }
 {
-    reveal(finalized_head_attests);
+    reveal(finalized_identity_attests);
 }
 
 proof fn runtime_attestation_requires_every_config_binding(

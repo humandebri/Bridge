@@ -26,7 +26,7 @@ Withdrawal livenessはschedulerだけでは主張しない。債務と固定支�
 Solidity SMTはproduction共有predicateの性質であり、完全なdeployed contract proofではない。
 frontend LeanモデルはTypeScript実装そのものの証明ではなく、生成vectorと純粋な判断関数との対応をテストで検査する。
 Bridge SignerはEIP-712 Mint Authorizationへ署名する。侵害されたSignerは未処理Deposit IDへの有効なAuthorizationを作成できるため、epoch invalidation、pause、固定limit、mint windowが被害速度の境界となる。
-EIP-1898 `requireCanonical`の正しさ、EVM rollbackとEIP-1153 transient storage lifetime、ABI decoder、Web Locks、browser storage、providerの`finalized`意味論、EVM RPC quorum、wallet、ICRC履歴の真正性、SQLite atomicityとSQL row selectionは外部仮定である。形式証明の対象は、decode後のblock一致、enumから派生indexへの分類、成功したbrowser storage更新後のqueue状態までである。
+EIP-1898 `requireCanonical`の正しさ、EVM rollbackとEIP-1153 transient storage lifetime、ABI decoder、Web Locks、browser storage、providerの`finalized`意味論、provider応答の真正性、wallet、ICRC履歴の真正性、SQLite atomicityとSQL row selectionは外部仮定である。decode済み`(block number, block hash)`からexact 2-of-3 identityを選ぶpredicateはproduction-shared kernelとVerusが同じ式を使用する。形式証明の対象はこの選択、decode後のblock一致、enumから派生indexへの分類、成功したbrowser storage更新後のqueue状態までである。
 Bridge runtimeの不変性は外部仮定である。保存済み観測をwarm attestationとして再利用できる条件はproduction-shared predicateとVerusで検査し、cold成功後の永続化、経路間再利用、upgrade/reinstall境界はRustとPocketIC transaction testで検査する。
 Verus/Rust/LLVM、Lean kernel、Solidity SMTChecker、Wasm compilerはtrusted computing baseであり、source-level proofをWasm binary verificationとは呼ばない。
 固定100,000 rawのLedger Feeがcharged Service Feeを超える場合は固定fee guardでrelease前に停止し、Base withdrawal pauseと設定確認後に同じrecordを再検証する。Ledger Feeの不変性は外部仮定であり、runtime settlementは`icrc1_fee()`を照会しない。

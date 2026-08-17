@@ -217,7 +217,7 @@ macro_rules! canonical_probe_matches_body {
     };
 }
 
-macro_rules! withdrawal_finalized_checkpoint_body {
+macro_rules! withdrawal_finalized_identity_quorum_body {
     ($first:expr, $second:expr, $third:expr) => {{
         match ($first, $second, $third) {
             (Some(a), Some(b), Some(c)) if a == b || a == c => Some(a),
@@ -966,14 +966,20 @@ pub fn withdrawal_id_is_admissible(observed: &[u8; 32], minimum: &[u8]) -> bool 
     minimum.len() == 32 && minimum.iter().any(|byte| *byte != 0) && observed.as_slice() >= minimum
 }
 
-/// Accepts only an exact finalized height attested by at least two of three providers.
+/// Accepts only an exact finalized block identity attested by at least two of three providers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WithdrawalFinalizedIdentity {
+    pub block_number: u64,
+    pub block_hash: [u8; 32],
+}
+
 #[cfg(not(verus_keep_ghost))]
-pub const fn withdrawal_finalized_checkpoint(
-    first: Option<u64>,
-    second: Option<u64>,
-    third: Option<u64>,
-) -> Option<u64> {
-    withdrawal_finalized_checkpoint_body!(first, second, third)
+pub fn withdrawal_finalized_identity_quorum(
+    first: Option<WithdrawalFinalizedIdentity>,
+    second: Option<WithdrawalFinalizedIdentity>,
+    third: Option<WithdrawalFinalizedIdentity>,
+) -> Option<WithdrawalFinalizedIdentity> {
+    withdrawal_finalized_identity_quorum_body!(first, second, third)
 }
 
 /// Allows reuse of a persisted runtime attestation only when every immutable-config
@@ -2034,12 +2040,12 @@ verus! {
         canonical_probe_matches_body!(receipt_block, snapshot_block)
     }
 
-    pub open spec fn withdrawal_finalized_checkpoint_spec(
-        first: Option<int>,
-        second: Option<int>,
-        third: Option<int>,
-    ) -> Option<int> {
-        withdrawal_finalized_checkpoint_body!(first, second, third)
+    pub open spec fn withdrawal_finalized_identity_quorum_spec(
+        first: Option<(int, int)>,
+        second: Option<(int, int)>,
+        third: Option<(int, int)>,
+    ) -> Option<(int, int)> {
+        withdrawal_finalized_identity_quorum_body!(first, second, third)
     }
 
     pub open spec fn runtime_attestation_matches_spec(

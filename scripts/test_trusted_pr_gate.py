@@ -73,6 +73,8 @@ class TrustedPrGateTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
+        self.assertIn("Install area CI toolchain", workflow)
+        self.assertIn("trusted-policy/scripts/install-ci-tools.sh icp", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh all", workflow)
         self.assertIn(
             "pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts",
@@ -105,6 +107,41 @@ class TrustedPrGateTests(unittest.TestCase):
             workflow.index("Check out exact untrusted head as read-only container input"),
         )
         self.assertNotIn("pnpm --dir source/ui install", workflow)
+
+    def test_area_checks_use_one_aggregate_container(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        for area in ("rust", "contracts", "proofs", "ui", "real", "icp"):
+            self.assertIn(f"{area})", workflow)
+        self.assertIn("rust) run_check rust", workflow)
+        self.assertIn("contracts) run_check contracts", workflow)
+        self.assertIn("ui) run_check ui", workflow)
+        for mode in (
+            "run_check rust-fast",
+            "run_check rust-integration",
+            "run_check contracts-fast",
+            "run_check contracts-coverage",
+            "run_check ui-fast",
+            "run_check ui-e2e",
+        ):
+            self.assertNotIn(mode, workflow)
+
+        wrapper = (ROOT / "scripts" / "trusted-pr-container.sh").read_text(encoding="utf-8")
+        self.assertIn("rust|contracts|proofs|ui|real|icp", wrapper)
+        self.assertIn("NEEDS_WORKSPACE_DEPS", wrapper)
+        self.assertIn("NEEDS_UI_DEPS", wrapper)
+        self.assertIn("rust|proofs) NEEDS_WORKSPACE_DEPS=1", wrapper)
+        self.assertIn("proofs|ui|real) NEEDS_UI_DEPS=1", wrapper)
+        self.assertIn("DEPENDENCY_MOUNTS", wrapper)
+        self.assertIn("WRITABLE_UI_MOUNTS", wrapper)
+        self.assertIn(
+            "src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp",
+            wrapper,
+        )
+        self.assertIn(
+            "src=$SCRATCH/e2e-runtime,dst=/workspace/ui/.e2e-runtime",
+            wrapper,
+        )
+        self.assertIn('if [[ "$MODE" == "real" ]]', wrapper)
 
     def test_each_check_uses_fresh_read_only_container_boundaries(self) -> None:
         wrapper = (ROOT / "scripts" / "trusted-pr-container.sh").read_text(encoding="utf-8")

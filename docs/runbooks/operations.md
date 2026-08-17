@@ -132,7 +132,7 @@ Mint Authorizationは作成元Finalized timestampから固定2時間（7,200秒�
 RPC障害では複数providerの応答一致とcanonical Finalized headを回復させてから停止recordを再実行する。expired leaseでは保存済みAuthorization digestまたはLedger transfer identityが変わっていないことを確認する。Mint用raw transactionやnonceは存在しない。
 
 Base burnが未通知なら、Historyの`Check and notify`でCanisterのFinalized receipt検証と通知を一回だけ実行する。
-productionではUI操作に依存せず、運用者とfailure domainが異なる2系統のkeeperが非終端Withdrawalを監視し、permissionlessな`continue_withdrawal`を1 external stepずつ進める。Gate Bは実burnから`Paid`までのdrill、最大未処理時間、監視receipt、片系停止時の他系継続、manual fallback実施を`keeper-drill.json`で要求する。両系停止または最大未処理時間超過時は新規受付をpauseし、既存債務用cycle reserveを維持してmanual fallbackを開始する。
+productionではUI操作に依存せず、運用者とfailure domainが異なる2系統のkeeperが非終端Withdrawalを監視し、permissionlessな`continue_withdrawal`を1 external stepずつ進める。Gate Bは実burnから`Paid`までのdrill、最大未処理時間、片系停止時の他系継続、manual fallback実施を`keeper-drill.json`で要求する。`monitoring-receipt.json`は同じWithdrawalのFinalized Base receipt／`WithdrawalCommitted` eventと、署名検証付き`get_withdrawal` queryの`Paid`応答を束縛し、そのartifact digestを`keeper-drill.json`から参照する。両系停止または最大未処理時間超過時は新規受付をpauseし、既存債務用cycle reserveを維持してmanual fallbackを開始する。
 Withdrawal transaction hashはactive deploymentに束縛したpending confirmationとしてbrowser localStorageへ保存する。recovery cursorは保存しない。回復はWithdrawal Historyの明示的な`Refresh`と必要な回数の`Scan older`でFinalized Base eventを取得し、event行の`Check and notify`から同じhashを通知する。
 Deposit mint transaction hashはactive deploymentに束縛して保存する。HistoryはFinalized `DepositMinted` logとCanister DepositをIDで統合し、exact Authorization fieldが一致する成功を復元する。成功後のIC wallet署名やCanister通知はない。
 Depositの不明応答はbrowser storageへ保存しない。`Refresh`でowner sequenceとHistoryを読み、受付済みrecordがあれば状態を表示し、未受付なら同じ次sequenceで再度明示送信する。

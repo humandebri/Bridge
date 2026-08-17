@@ -1,4 +1,4 @@
-use candid::{CandidType, Decode, Encode, Principal, Reserved};
+use candid::{CandidType, Decode, Encode, Nat, Principal, Reserved};
 use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,7 +31,7 @@ const GATE_A_ARTIFACTS: [&str; 7] = [
     "bsns-runtime.bin",
     "bsns-runtime-layout.json",
 ];
-const GATE_B_ARTIFACTS: [&str; 15] = [
+const GATE_B_ARTIFACTS: [&str; 16] = [
     "profile.json",
     "signer-snapshot.json",
     "rpc-e2e.json",
@@ -39,6 +39,7 @@ const GATE_B_ARTIFACTS: [&str; 15] = [
     "sns-upgrade.json",
     "monitor-drill.json",
     "keeper-drill.json",
+    "monitoring-receipt.json",
     "provider-independence.json",
     "ui-assets.json",
     "bridge-canister.wasm",
@@ -490,6 +491,63 @@ struct KeeperDrill {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct MonitoringReceipt {
+    schema_version: u8,
+    source_revision: String,
+    source_tree_sha256: String,
+    bridge_canister_id: String,
+    withdrawal_id: String,
+    burn_transaction_hash: String,
+    burn: MonitoringBurnReceipt,
+    paid: MonitoringPaidObservation,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitoringBurnReceipt {
+    base_chain_id: u64,
+    bridge_contract: String,
+    block_number: u64,
+    block_hash: String,
+    receipt_status: u8,
+    withdrawal_committed_topic: String,
+    withdrawal_id_topic: String,
+    canonical_finalized: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitoringPaidObservation {
+    observed_at_unix: u64,
+    state: String,
+    response_hex: String,
+    response_sha256: String,
+    authenticated_query: bool,
+}
+
+#[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
+enum WithdrawalPhaseView {
+    Paid,
+    ReleasePending,
+    ReconciliationHold,
+    Observed,
+}
+
+#[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
+struct WithdrawalView {
+    charged_service_fee: Nat,
+    withdrawal_id: Vec<u8>,
+    max_service_fee: Nat,
+    release_ledger_block_index: Option<Nat>,
+    last_settlement_stop_reason: Option<String>,
+    amount_out: Nat,
+    state: WithdrawalPhaseView,
+    ledger_fee: Nat,
+    amount: Nat,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderIndependenceReceipt {
     schema_version: u8,
     observed_at_unix: u64,
@@ -909,6 +967,14 @@ fn evm_selector(signature: &str) -> String {
     format!("0x{}", hex(&hash[..4]))
 }
 
+fn evm_topic(signature: &str) -> String {
+    let mut hash = [0u8; 32];
+    let mut keccak = Keccak::v256();
+    keccak.update(signature.as_bytes());
+    keccak.finalize(&mut hash);
+    format!("0x{}", hex(&hash))
+}
+
 fn validate_monitor_drill(
     drill: &MonitorDrill,
     manifest: &ReleaseManifest,
@@ -1021,6 +1087,23 @@ fn validate_keeper_drill(
     now: u64,
 ) -> Result<(), String> {
     let drill: KeeperDrill = read_json(&root.join("keeper-drill.json"))?;
+    let monitoring_path = root.join("monitoring-receipt.json");
+    let monitoring_bytes = fs::read(&monitoring_path)
+        .map_err(|error| format!("{}: {error}", monitoring_path.display()))?;
+    let monitoring: MonitoringReceipt = serde_json::from_slice(&monitoring_bytes)
+        .map_err(|error| format!("{}: {error}", monitoring_path.display()))?;
+    let monitoring_sha256 = hex(&Sha256::digest(&monitoring_bytes));
+    let withdrawal_id = decode_hex(&monitoring.withdrawal_id)?;
+    let paid_response = decode_hex(&monitoring.paid.response_hex)?;
+    let withdrawal: Option<WithdrawalView> = Decode!(&paid_response, Option<WithdrawalView>)
+        .map_err(|error| format!("invalid monitoring withdrawal response: {error}"))?;
+    let paid_withdrawal = withdrawal
+        .as_ref()
+        .filter(|view| view.state == WithdrawalPhaseView::Paid)
+        .ok_or("monitoring receipt does not contain a Paid withdrawal")?;
+    let withdrawal_committed_topic = evm_topic(
+        "WithdrawalCommitted(uint256,address,uint256,uint256,uint256,uint256,bytes,bytes32)",
+    );
     let elapsed = drill
         .paid_at_unix
         .checked_sub(drill.burned_at_unix)
@@ -1058,7 +1141,48 @@ fn validate_keeper_drill(
             .iter()
             .any(|value| value.is_empty() || value.len() > 128)
         || !valid_sha256(&drill.monitoring_receipt_sha256)
+        || !drill
+            .monitoring_receipt_sha256
+            .eq_ignore_ascii_case(&monitoring_sha256)
         || !drill.manual_fallback_drilled
+        || monitoring.schema_version != 1
+        || monitoring.source_revision != manifest.source_revision
+        || !monitoring
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        || monitoring.bridge_canister_id != profile.bridge_canister_id
+        || !monitoring
+            .withdrawal_id
+            .eq_ignore_ascii_case(&drill.withdrawal_id)
+        || !monitoring
+            .burn_transaction_hash
+            .eq_ignore_ascii_case(&drill.burn_transaction_hash)
+        || monitoring.burn.base_chain_id != profile.chain_id
+        || !monitoring
+            .burn
+            .bridge_contract
+            .eq_ignore_ascii_case(&profile.bridge_contract)
+        || monitoring.burn.block_number == 0
+        || !valid_hash32(&monitoring.burn.block_hash)
+        || monitoring.burn.receipt_status != 1
+        || !monitoring
+            .burn
+            .withdrawal_committed_topic
+            .eq_ignore_ascii_case(&withdrawal_committed_topic)
+        || !monitoring
+            .burn
+            .withdrawal_id_topic
+            .eq_ignore_ascii_case(&monitoring.withdrawal_id)
+        || !monitoring.burn.canonical_finalized
+        || monitoring.paid.observed_at_unix != drill.paid_at_unix
+        || monitoring.paid.state != "Paid"
+        || !monitoring.paid.authenticated_query
+        || !valid_nonempty_hex(&monitoring.paid.response_hex)
+        || !hex_sha256_matches(
+            &monitoring.paid.response_hex,
+            &monitoring.paid.response_sha256,
+        )
+        || paid_withdrawal.withdrawal_id != withdrawal_id
     {
         return Err(
             "Gate B keeper drill does not prove two independent settlement paths through Paid"
@@ -2453,6 +2577,37 @@ fn verify_monitor_ic_certificate(bundle: &ValidatedBundle) -> Result<(), String>
     Ok(())
 }
 
+fn verify_keeper_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
+    let monitoring: MonitoringReceipt = read_json(&bundle.root.join("monitoring-receipt.json"))?;
+    let withdrawal_id = decode_hex(&monitoring.withdrawal_id)?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let arg = Encode!(&withdrawal_id).map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let response = async_runtime()?
+        .block_on(async {
+            agent
+                .query(&bridge, "get_withdrawal")
+                .with_arg(arg)
+                .call()
+                .await
+        })
+        .map_err(|error| format!("authenticated get_withdrawal query failed: {error}"))?;
+    let expected = decode_hex(&monitoring.paid.response_hex)?;
+    if response != expected
+        || !hex(&Sha256::digest(&response)).eq_ignore_ascii_case(&monitoring.paid.response_sha256)
+    {
+        return Err("live get_withdrawal response differs from monitoring evidence".into());
+    }
+    let withdrawal = Decode!(&response, Option<WithdrawalView>)
+        .map_err(|error| format!("invalid live get_withdrawal response: {error}"))?
+        .ok_or("live monitoring withdrawal is missing")?;
+    if withdrawal.withdrawal_id != withdrawal_id || withdrawal.state != WithdrawalPhaseView::Paid {
+        return Err("live monitoring withdrawal is not the bound Paid record".into());
+    }
+    Ok(())
+}
+
 fn verify_sns_upgrade_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     let upgrade: SnsUpgrade = read_json(&bundle.root.join("sns-upgrade.json"))?;
     let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|e| e.to_string())?;
@@ -2586,6 +2741,7 @@ fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
         ));
     }
     verify_live_inputs(bundle)?;
+    verify_keeper_authenticity(bundle)?;
     verify_sns_upgrade_authenticity(bundle)?;
     verify_provider_independence_authenticity(bundle)
 }
@@ -3879,19 +4035,61 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             governance_query_response_hex: hex(b"governance raw"),
             governance_query_response_sha256: hex(&Sha256::digest(b"governance raw")),
         };
+        let withdrawal_id = format!("0x{}", "7".repeat(64));
+        let burn_transaction_hash = format!("0x{}", "8".repeat(64));
+        let paid_response = Encode!(&Some(WithdrawalView {
+            charged_service_fee: Nat::from(10u64),
+            withdrawal_id: vec![0x77; 32],
+            max_service_fee: Nat::from(10u64),
+            release_ledger_block_index: Some(Nat::from(7u64)),
+            last_settlement_stop_reason: None,
+            amount_out: Nat::from(90u64),
+            state: WithdrawalPhaseView::Paid,
+            ledger_fee: Nat::from(1u64),
+            amount: Nat::from(100u64),
+        }))
+        .unwrap();
+        let monitoring_receipt = MonitoringReceipt {
+            schema_version: 1,
+            source_revision: "a".repeat(40),
+            source_tree_sha256: "2".repeat(64),
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            withdrawal_id: withdrawal_id.clone(),
+            burn_transaction_hash: burn_transaction_hash.clone(),
+            burn: MonitoringBurnReceipt {
+                base_chain_id: profile.chain_id,
+                bridge_contract: profile.bridge_contract.clone(),
+                block_number: 3,
+                block_hash: format!("0x{}", "16".repeat(32)),
+                receipt_status: 1,
+                withdrawal_committed_topic: evm_topic(
+                    "WithdrawalCommitted(uint256,address,uint256,uint256,uint256,uint256,bytes,bytes32)",
+                ),
+                withdrawal_id_topic: withdrawal_id.clone(),
+                canonical_finalized: true,
+            },
+            paid: MonitoringPaidObservation {
+                observed_at_unix: now - 40,
+                state: "Paid".into(),
+                response_hex: hex(&paid_response),
+                response_sha256: hex(&Sha256::digest(&paid_response)),
+                authenticated_query: true,
+            },
+        };
+        let monitoring_receipt_bytes = serde_json::to_vec(&monitoring_receipt).unwrap();
         let keeper_drill = KeeperDrill {
             schema_version: 1,
             source_revision: "a".repeat(40),
             source_tree_sha256: "2".repeat(64),
             bridge_canister_id: profile.bridge_canister_id.clone(),
-            withdrawal_id: format!("0x{}", "7".repeat(64)),
-            burn_transaction_hash: format!("0x{}", "8".repeat(64)),
+            withdrawal_id,
+            burn_transaction_hash,
             burned_at_unix: now - 80,
             paid_at_unix: now - 40,
             maximum_unprocessed_seconds: 300,
             keeper_ids: vec!["keeper-primary".into(), "keeper-secondary".into()],
             keeper_failure_domains: vec!["operator-a".into(), "operator-b".into()],
-            monitoring_receipt_sha256: "9".repeat(64),
+            monitoring_receipt_sha256: hex(&Sha256::digest(&monitoring_receipt_bytes)),
             manual_fallback_drilled: true,
         };
         let provider_independence = ProviderIndependenceReceipt {
@@ -3935,6 +4133,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 "keeper-drill.json",
                 serde_json::to_vec(&keeper_drill).unwrap(),
             ),
+            ("monitoring-receipt.json", monitoring_receipt_bytes),
             (
                 "provider-independence.json",
                 serde_json::to_vec(&provider_independence).unwrap(),
@@ -4089,6 +4288,52 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         // Cryptographic SNS authenticity is verified against the live network by
         // `verify-live`; this fixture exercises only deterministic bundle inputs.
         verify_live_inputs(&bundle).unwrap();
+
+        let valid_monitoring_bytes = fs::read(root.join("monitoring-receipt.json")).unwrap();
+        let valid_keeper_bytes = fs::read(root.join("keeper-drill.json")).unwrap();
+        let mut mismatched_withdrawal: Value =
+            serde_json::from_slice(&valid_monitoring_bytes).unwrap();
+        mismatched_withdrawal["withdrawal_id"] = Value::String(format!("0x{}", "9".repeat(64)));
+        fs::write(
+            root.join("monitoring-receipt.json"),
+            serde_json::to_vec(&mismatched_withdrawal).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_keeper_drill(&root, &bundle.manifest, &bundle.profile, now).is_err());
+
+        let mut noncanonical_burn: Value = serde_json::from_slice(&valid_monitoring_bytes).unwrap();
+        noncanonical_burn["burn"]["canonical_finalized"] = Value::Bool(false);
+        fs::write(
+            root.join("monitoring-receipt.json"),
+            serde_json::to_vec(&noncanonical_burn).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_keeper_drill(&root, &bundle.manifest, &bundle.profile, now).is_err());
+
+        let mut unpaid_observation: Value =
+            serde_json::from_slice(&valid_monitoring_bytes).unwrap();
+        unpaid_observation["paid"]["state"] = Value::String("ReleasePending".into());
+        fs::write(
+            root.join("monitoring-receipt.json"),
+            serde_json::to_vec(&unpaid_observation).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_keeper_drill(&root, &bundle.manifest, &bundle.profile, now).is_err());
+        fs::write(
+            root.join("monitoring-receipt.json"),
+            &valid_monitoring_bytes,
+        )
+        .unwrap();
+
+        let mut arbitrary_digest: Value = serde_json::from_slice(&valid_keeper_bytes).unwrap();
+        arbitrary_digest["monitoring_receipt_sha256"] = Value::String("9".repeat(64));
+        fs::write(
+            root.join("keeper-drill.json"),
+            serde_json::to_vec(&arbitrary_digest).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_keeper_drill(&root, &bundle.manifest, &bundle.profile, now).is_err());
+        fs::write(root.join("keeper-drill.json"), &valid_keeper_bytes).unwrap();
 
         let payload_sha256 = hex(&Sha256::digest([0x44, 0x49, 0x44, 0x4c, 0x00, 0x00]));
         let mut schedule_receipt = ActivationReceipt {

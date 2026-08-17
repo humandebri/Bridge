@@ -245,10 +245,10 @@ for index,entry in enumerate(p['rpc_providers']):
 (root/'provider-observations.json').write_text(json.dumps(observations,sort_keys=True,separators=(',',':'))+'\n')
 PY
 
-python3 - "$PROFILE" "$TMP" "$BUNDLE" <<'PY'
+python3 - "$PROFILE" "$TMP" "$BUNDLE" "$MODE" <<'PY'
 import hashlib,json,re,subprocess,sys
 from pathlib import Path
-p=json.load(open(sys.argv[1])); root=Path(sys.argv[2]); bundle=Path(sys.argv[3]); receipt=json.load(open(Path(sys.argv[1]).with_name('gate-a-receipt.json')))
+p=json.load(open(sys.argv[1])); root=Path(sys.argv[2]); bundle=Path(sys.argv[3]); mode=sys.argv[4]; receipt=json.load(open(Path(sys.argv[1]).with_name('gate-a-receipt.json')))
 bsns_template=(bundle/'bsns-runtime.bin').read_bytes(); bsns_layout=json.load(open(bundle/'bsns-runtime-layout.json'))
 if bsns_layout.get('schema_version')!=1 or bsns_layout.get('byte_length')!=len(bsns_template): raise SystemExit('invalid BSNS runtime layout')
 if hashlib.sha256(bsns_template).hexdigest().lower()!=p['bsns_runtime_template_sha256'].lower(): raise SystemExit('BSNS runtime template differs from profile')
@@ -296,12 +296,40 @@ def canonical_bridge_probe(rpc,address,at_hash,expected_block=None):
  if expected_block is not None and observed_block!=expected_block:
   raise ValueError('bridgeSnapshot block number mismatch')
  return observed_block
+def verify_keeper_burn():
+ if mode!='verify': return
+ evidence=json.load(open(bundle/'monitoring-receipt.json'))
+ expected_tx=str(evidence['burn_transaction_hash']).lower(); burn=evidence['burn']
+ expected_block=number(burn['block_number']); expected_hash=str(burn['block_hash']).lower()
+ expected_event=str(burn['withdrawal_committed_topic']).lower()
+ expected_withdrawal=str(burn['withdrawal_id_topic']).lower()
+ matching=0
+ for observation in observations:
+  index=observation['provider_index']
+  if index not in eligible: continue
+  rpc=p['rpc_providers'][index]['url']
+  try:
+   actual=json.loads(run(['cast','receipt',expected_tx,'--rpc-url',rpc,'--json']))
+   transaction=json.loads(run(['cast','tx',expected_tx,'--rpc-url',rpc,'--json']))
+   actual_block=number(actual.get('blockNumber',-1)); actual_hash=str(actual.get('blockHash','')).lower()
+   status=number(actual.get('status',0)); target=str(transaction.get('to','')).lower()
+   event_match=any(
+    str(log.get('address','')).lower()==p['bridge_contract'].lower()
+    and [str(topic).lower() for topic in log.get('topics',[])][:2]==[expected_event,expected_withdrawal]
+    for log in actual.get('logs',[]))
+   if (actual_block==expected_block and actual_hash==expected_hash and status==1
+       and target==p['bridge_contract'].lower() and height>=actual_block and event_match):
+    canonical_bridge_probe(rpc,p['bridge_contract'],actual_hash,actual_block)
+    matching+=1
+  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
+ if matching<2: raise SystemExit('keeper burn evidence lacks 2-of-3 canonical Finalized agreement')
 def code(rpc,address):
  selector=json.dumps({'blockHash':block_hash,'requireCanonical':True},separators=(',',':'))
  return run(['cast','rpc','--rpc-url',rpc,'eth_getCode',json.dumps(address),selector])
 def sha_code(value): return hashlib.sha256(bytes.fromhex(value.removeprefix('0x'))).hexdigest()
 def number(value):
  return int(str(value),16) if str(value).startswith('0x') else int(value)
+verify_keeper_burn()
 def deployment(rpc,tx,address,expected_block,probe):
  receipt=json.loads(run(['cast','receipt',tx,'--rpc-url',rpc,'--json']))
  actual_block=number(receipt.get('blockNumber',-1)); actual_hash=str(receipt.get('blockHash','')).lower()

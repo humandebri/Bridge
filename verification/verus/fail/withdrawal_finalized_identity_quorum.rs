@@ -3,7 +3,8 @@ use vstd::prelude::*;
 
 verus! {
 proof fn one_provider_is_enough()
-    ensures kernel::withdrawal_finalized_checkpoint_spec(Some(102int), None, None) == Some(102int)
+    ensures kernel::withdrawal_finalized_identity_quorum_spec(
+        Some((102int, 7int)), None, None) == Some((102int, 7int))
 {}
 }
 fn main() {}
