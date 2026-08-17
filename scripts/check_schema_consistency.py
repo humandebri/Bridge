@@ -4,23 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 from pathlib import Path
 
-
-ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE_SCRIPTS = os.environ.get("BRIDGE_CANDIDATE_SCRIPTS")
-
-
-def schema_path(relative: str) -> Path:
-    if CANDIDATE_SCRIPTS and relative.startswith("scripts/"):
-        return Path(CANDIDATE_SCRIPTS) / relative.removeprefix("scripts/")
-    return ROOT / relative
+from source_resolution import ROOT, source_path
 
 
 def require_versions(path: str, pattern: str, expected: int, expected_count: int) -> None:
-    text = schema_path(path).read_text(encoding="utf-8")
+    text = source_path(path).read_text(encoding="utf-8")
     versions = [int(version) for version in re.findall(pattern, text)]
     if not versions:
         raise SystemExit(f"missing stable schema declaration in {path}")

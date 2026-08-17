@@ -202,14 +202,12 @@ class TrustedPrGateTests(unittest.TestCase):
 
     def test_candidate_scripts_are_exposed_without_overriding_trusted_checks(self) -> None:
         wrapper = (ROOT / "scripts" / "trusted-pr-container.sh").read_text(encoding="utf-8")
-        consistency = (ROOT / "scripts" / "check_schema_consistency.py").read_text(
+        resolution = (ROOT / "scripts" / "source_resolution.py").read_text(
             encoding="utf-8"
         )
         self.assertIn('[[ -e "$POLICY_ROOT/$candidate_script" ]] && continue', wrapper)
-        self.assertIn(
-            'src=$SOURCE_ROOT/$candidate_script,dst=/workspace/$candidate_script,readonly',
-            wrapper,
-        )
+        self.assertIn('cp -p "$SOURCE_ROOT/$candidate_script"', wrapper)
+        self.assertIn('chmod +x "$POLICY_ROOT/$candidate_script"', wrapper)
         self.assertIn("BRIDGE_CANDIDATE_SCRIPTS=/scratch/candidate-scripts", wrapper)
         self.assertIn(
             'src=$SOURCE_ROOT/scripts,dst=/scratch/candidate-scripts,readonly',
@@ -219,8 +217,13 @@ class TrustedPrGateTests(unittest.TestCase):
             wrapper.index("dst=/workspace/scripts,readonly"),
             wrapper.index("dst=/scratch/candidate-scripts,readonly"),
         )
-        self.assertIn("BRIDGE_CANDIDATE_SCRIPTS", consistency)
-        self.assertIn('relative.startswith("scripts/")', consistency)
+        self.assertIn("BRIDGE_CANDIDATE_SCRIPTS", resolution)
+        self.assertIn('relative.startswith("scripts/")', resolution)
+        for check in ("check_schema_consistency.py", "check_claim_manifest.py"):
+            self.assertIn(
+                "from source_resolution import",
+                (ROOT / "scripts" / check).read_text(encoding="utf-8"),
+            )
 
     def test_schema_consistency_reads_isolated_candidate_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
