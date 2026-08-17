@@ -24,7 +24,7 @@ esac
 SCRATCH="$(mktemp -d "${RUNNER_TEMP:-/tmp}/bridge-pr-${MODE}.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT INT TERM
 mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-out" \
-  "$SCRATCH/contracts-cache" "$SCRATCH/ui-dist" "$SCRATCH/ui-results" "$SCRATCH/local" \
+  "$SCRATCH/contracts-cache" "$SCRATCH/ui-dist" "$SCRATCH/ui-results" \
   "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/e2e-runtime" "$SCRATCH/empty-tools"
 chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
@@ -64,7 +64,6 @@ docker run --rm \
   --mount "type=bind,src=$SCRATCH/contracts-cache,dst=/workspace/contracts/cache" \
   --mount "type=bind,src=$SCRATCH/ui-dist,dst=/workspace/ui/dist" \
   --mount "type=bind,src=$SCRATCH/ui-results,dst=/workspace/ui/test-results" \
-  --mount "type=bind,src=$SCRATCH/local,dst=/workspace/.local" \
   --mount "type=bind,src=$SCRATCH/empty-tools,dst=/workspace/.tools,readonly" \
   --mount "type=bind,src=$SCRATCH/home,dst=/scratch/home" \
   --mount "type=bind,src=$SCRATCH/tmp,dst=/scratch/tmp" \

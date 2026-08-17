@@ -101,6 +101,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
         self.assertIn("dst=/workspace/ui/.e2e-runtime", wrapper)
+        self.assertNotIn("dst=/workspace/.local", wrapper)
         self.assertIn('if [[ "$MODE" == "real" ]]', wrapper)
         self.assertIn("dst=/workspace/.tools,readonly", wrapper)
         self.assertIn("BRIDGE_EXPECTED_HEAD_SHA", wrapper)
