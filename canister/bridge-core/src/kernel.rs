@@ -2045,7 +2045,23 @@ verus! {
         second: Option<(int, int)>,
         third: Option<(int, int)>,
     ) -> Option<(int, int)> {
-        withdrawal_finalized_identity_quorum_body!(first, second, third)
+        match (first, second, third) {
+            (Some(a), Some(b), Some(c)) => {
+                if (a.0 == b.0 && a.1 == b.1) || (a.0 == c.0 && a.1 == c.1) {
+                    Some(a)
+                } else if b.0 == c.0 && b.1 == c.1 {
+                    Some(b)
+                } else {
+                    None
+                }
+            },
+            (Some(a), Some(b), None)
+            | (Some(a), None, Some(b))
+            | (None, Some(a), Some(b)) => {
+                if a.0 == b.0 && a.1 == b.1 { Some(a) } else { None }
+            },
+            _ => None,
+        }
     }
 
     pub open spec fn runtime_attestation_matches_spec(
