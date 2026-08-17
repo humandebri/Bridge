@@ -25,9 +25,19 @@ SCRATCH="$(mktemp -d "${RUNNER_TEMP:-/tmp}/bridge-pr-${MODE}.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT INT TERM
 mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-out" \
   "$SCRATCH/contracts-cache" "$SCRATCH/ui-dist" "$SCRATCH/ui-results" "$SCRATCH/local" \
-  "$SCRATCH/empty-tools"
+  "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/e2e-runtime" "$SCRATCH/empty-tools"
 chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
+
+WRITABLE_UI_MOUNTS=()
+case "$MODE" in
+  ui-fast|ui-e2e|real)
+    WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp")
+    ;;
+esac
+if [[ "$MODE" == "real" ]]; then
+  WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/e2e-runtime,dst=/workspace/ui/.e2e-runtime")
+fi
 
 TOOL_MOUNTS=()
 for tool_path in .cargo .rustup .local .elan .foundry setup-pnpm; do
@@ -48,6 +58,7 @@ docker run --rm \
   --mount "type=bind,src=$POLICY_ROOT/scripts,dst=/workspace/scripts,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/node_modules,dst=/workspace/node_modules,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
+  "${WRITABLE_UI_MOUNTS[@]}" \
   --mount "type=bind,src=$SCRATCH/target,dst=/workspace/target" \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \
   --mount "type=bind,src=$SCRATCH/contracts-cache,dst=/workspace/contracts/cache" \
