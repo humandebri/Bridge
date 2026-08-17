@@ -25,6 +25,12 @@ theorem withdrawal_finalization_claim
     receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock :=
   withdrawal_notify_requires_finalized_success accepted
 
+theorem withdrawal_admission_boundary_claim
+    {observed minimum : Nat}
+    (accepted : withdrawalIdAdmissible observed minimum = true) :
+    minimum != 0 ∧ minimum ≤ observed :=
+  withdrawal_id_admission_requires_nonzero_inclusive_boundary accepted
+
 theorem pending_queue_claim
     {queue : PendingQueue} {existing incoming : PendingQueueEntry}
     (blocked : existing.blocked = true)
@@ -157,6 +163,12 @@ theorem notification_admission_claim
   have ingestion : ingestionCount < ingestionLimit := by
     simpa [notificationIngestionAllowed] using ingestionAccepted
   exact ⟨verification.1, verification.2, ingestion⟩
+
+theorem notification_failure_cooldown_is_hash_scoped_and_strict
+    {hashMatches : Bool} {nowNs retryAfterNs : Nat}
+    (active : notificationFailureCooldownActive hashMatches nowNs retryAfterNs = true) :
+    hashMatches = true ∧ nowNs < retryAfterNs := by
+  simpa [notificationFailureCooldownActive, Bool.and_eq_true] using active
 
 theorem lease_lane_claim
     {targetActive targetAutomatic : Bool} {activeInLane capacity : Nat}

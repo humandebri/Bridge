@@ -133,10 +133,27 @@ describe("withdrawal notification client", () => {
     expect(mocks.notifyWithdrawal).toHaveBeenCalledWith({ transaction_hash: transactionHash })
   })
 
-  it("decodes typed notification failures", () => {
+  it("decodes_typed_notification_failures", () => {
     expect(notifyWithdrawalErrorMessage({ RpcInconsistent: null })).toContain("providers disagreed")
     expect(() => unwrapNotifyWithdrawalResult({ Err: { BaseStateMismatch: null } })).toThrow("state does not match")
     expect(() => unwrapNotifyWithdrawalResult({ Err: { RateLimited: null } })).toThrow("rate limited")
+
+    let boundaryFailure: unknown
+    try {
+      unwrapNotifyWithdrawalResult({
+        Err: {
+          WithdrawalBeforeAdmissionBoundary: {
+            observed_withdrawal_id: new Uint8Array(32).fill(2),
+            minimum_withdrawal_id: new Uint8Array(32).fill(3),
+          },
+        },
+      })
+    } catch (error) {
+      boundaryFailure = error
+    }
+    expect(boundaryFailure).toBeInstanceOf(NotifyWithdrawalCallError)
+    expect((boundaryFailure as NotifyWithdrawalCallError).code).toBe("WithdrawalBeforeAdmissionBoundary")
+    expect((boundaryFailure as Error).message).toContain("admission boundary")
 
     let thrown: unknown
     try {

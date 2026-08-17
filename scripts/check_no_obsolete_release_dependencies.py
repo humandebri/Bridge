@@ -81,13 +81,13 @@ def dependency_closure(root: Path) -> tuple[set[Path], list[str]]:
             except ValueError:
                 missing.append(f"{relative_path(root, path)}: outside-root helper {reference}")
                 continue
-            if is_test_helper(reference):
-                continue
             if not reference.is_file():
                 missing.append(
                     f"{relative_path(root, path)}: missing helper "
                     f"{reference.relative_to(root.resolve()).as_posix()}"
                 )
+                continue
+            if is_test_helper(reference):
                 continue
             pending.append(reference)
     return visited, missing

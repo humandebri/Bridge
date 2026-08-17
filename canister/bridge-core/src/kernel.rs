@@ -217,26 +217,17 @@ macro_rules! canonical_probe_matches_body {
     };
 }
 
-macro_rules! withdrawal_finalized_checkpoint_body {
+macro_rules! withdrawal_finalized_identity_quorum_body {
     ($first:expr, $second:expr, $third:expr) => {{
         match ($first, $second, $third) {
-            (Some(a), Some(b), Some(c)) => Some(if a >= b {
-                if b >= c {
-                    b
-                } else if a >= c {
-                    c
-                } else {
-                    a
-                }
-            } else if a >= c {
-                a
-            } else if b >= c {
-                c
-            } else {
-                b
-            }),
+            (Some(a), Some(b), Some(c)) if a == b || a == c => Some(a),
+            (Some(_), Some(b), Some(c)) if b == c => Some(b),
             (Some(a), Some(b), None) | (Some(a), None, Some(b)) | (None, Some(a), Some(b)) => {
-                Some(if a <= b { a } else { b })
+                if a == b {
+                    Some(a)
+                } else {
+                    None
+                }
             }
             _ => None,
         }
@@ -391,6 +382,12 @@ macro_rules! refund_request_identity_decision_body {
 macro_rules! notification_admission_body {
     ($global_count:expr, $caller_count:expr, $global_limit:expr, $caller_limit:expr) => {
         $global_count < $global_limit && $caller_count < $caller_limit
+    };
+}
+
+macro_rules! notification_failure_cooldown_active_body {
+    ($hash_matches:expr, $now_ns:expr, $retry_after_ns:expr) => {
+        $hash_matches && $now_ns < $retry_after_ns
     };
 }
 
@@ -657,8 +654,8 @@ macro_rules! mint_finalization_allowed_body {
 }
 
 macro_rules! signature_install_allowed_body {
-    ($dispatched:expr, $absent:expr, $length:expr) => {
-        $dispatched && $absent && $length
+    ($dispatched:expr, $absent:expr, $length:expr, $deadline_open:expr) => {
+        $dispatched && $absent && $length && $deadline_open
     };
 }
 
@@ -962,14 +959,27 @@ pub const fn canonical_probe_matches(receipt_block: u64, snapshot_block: u64) ->
     canonical_probe_matches_body!(receipt_block, snapshot_block)
 }
 
-/// Selects the greatest height attested as finalized by at least two of three providers.
+/// Accepts only Base withdrawal IDs at or above the immutable deployment boundary.
+/// Both values use the contract's 32-byte big-endian uint256 representation.
 #[cfg(not(verus_keep_ghost))]
-pub const fn withdrawal_finalized_checkpoint(
-    first: Option<u64>,
-    second: Option<u64>,
-    third: Option<u64>,
-) -> Option<u64> {
-    withdrawal_finalized_checkpoint_body!(first, second, third)
+pub fn withdrawal_id_is_admissible(observed: &[u8; 32], minimum: &[u8]) -> bool {
+    minimum.len() == 32 && minimum.iter().any(|byte| *byte != 0) && observed.as_slice() >= minimum
+}
+
+/// Accepts only an exact finalized block identity attested by at least two of three providers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WithdrawalFinalizedIdentity {
+    pub block_number: u64,
+    pub block_hash: [u8; 32],
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub fn withdrawal_finalized_identity_quorum(
+    first: Option<WithdrawalFinalizedIdentity>,
+    second: Option<WithdrawalFinalizedIdentity>,
+    third: Option<WithdrawalFinalizedIdentity>,
+) -> Option<WithdrawalFinalizedIdentity> {
+    withdrawal_finalized_identity_quorum_body!(first, second, third)
 }
 
 /// Allows reuse of a persisted runtime attestation only when every immutable-config
@@ -1001,6 +1011,15 @@ pub const fn deposit_nonterminal_indexed(state: u8) -> bool {
 #[cfg(not(verus_keep_ghost))]
 pub const fn mint_admission_total(consumed: u128, reserved: u128, candidate: u128) -> Option<u128> {
     mint_admission_total_body!(consumed, reserved, candidate, u128::MAX)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn notification_failure_cooldown_active(
+    hash_matches: bool,
+    now_ns: u64,
+    retry_after_ns: u64,
+) -> bool {
+    notification_failure_cooldown_active_body!(hash_matches, now_ns, retry_after_ns)
 }
 
 verus! {
@@ -1523,11 +1542,13 @@ pub const fn signature_install_allowed(
     signature_dispatched: bool,
     signature_absent: bool,
     signature_length_valid: bool,
+    deadline_open: bool,
 ) -> bool {
     signature_install_allowed_body!(
         signature_dispatched,
         signature_absent,
-        signature_length_valid
+        signature_length_valid,
+        deadline_open
     )
 }
 
@@ -1635,6 +1656,7 @@ pub enum DepositEventGuard {
         dispatched: bool,
         signature_absent: bool,
         signature_length_valid: bool,
+        deadline_open: bool,
     },
     MarkRefundAvailable {
         policy_allowed: bool,
@@ -1688,8 +1710,9 @@ impl DepositEventGuard {
                 dispatched,
                 signature_absent,
                 signature_length_valid,
+                deadline_open,
             } => signature_install_allowed_body!(
-                dispatched, signature_absent, signature_length_valid),
+                dispatched, signature_absent, signature_length_valid, deadline_open),
             Self::MintFinalization {
                 fixed_fields_match,
                 receipt_succeeded,
@@ -2017,12 +2040,28 @@ verus! {
         canonical_probe_matches_body!(receipt_block, snapshot_block)
     }
 
-    pub open spec fn withdrawal_finalized_checkpoint_spec(
-        first: Option<int>,
-        second: Option<int>,
-        third: Option<int>,
-    ) -> Option<int> {
-        withdrawal_finalized_checkpoint_body!(first, second, third)
+    pub open spec fn withdrawal_finalized_identity_quorum_spec(
+        first: Option<(int, int)>,
+        second: Option<(int, int)>,
+        third: Option<(int, int)>,
+    ) -> Option<(int, int)> {
+        match (first, second, third) {
+            (Some(a), Some(b), Some(c)) => {
+                if (a.0 == b.0 && a.1 == b.1) || (a.0 == c.0 && a.1 == c.1) {
+                    Some(a)
+                } else if b.0 == c.0 && b.1 == c.1 {
+                    Some(b)
+                } else {
+                    None
+                }
+            },
+            (Some(a), Some(b), None)
+            | (Some(a), None, Some(b))
+            | (None, Some(a), Some(b)) => {
+                if a.0 == b.0 && a.1 == b.1 { Some(a) } else { None }
+            },
+            _ => None,
+        }
     }
 
     pub open spec fn runtime_attestation_matches_spec(
@@ -2140,9 +2179,15 @@ verus! {
     }
 
     pub open spec fn signature_install_allowed_spec(
-        dispatched: bool, absent: bool, length: bool,
+        dispatched: bool, absent: bool, length: bool, deadline_open: bool,
     ) -> bool {
-        signature_install_allowed_body!(dispatched, absent, length)
+        signature_install_allowed_body!(dispatched, absent, length, deadline_open)
+    }
+
+    pub open spec fn notification_failure_cooldown_active_spec(
+        hash_matches: bool, now_ns: int, retry_after_ns: int,
+    ) -> bool {
+        notification_failure_cooldown_active_body!(hash_matches, now_ns, retry_after_ns)
     }
 
     pub open spec fn refund_start_allowed_spec(attempt: bool, policy: bool) -> bool {

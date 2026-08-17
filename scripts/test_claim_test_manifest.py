@@ -173,9 +173,10 @@ class ClaimTestManifestTests(unittest.TestCase):
         claim_tests.prepare_test_dependencies(tests, root, runner)
 
         self.assertEqual(len(commands), 2)
-        self.assertIn(str(root / "target/test-deployment"), commands[0])
-        self.assertIn("bridge-canister", commands[0])
-        self.assertIn("test-deployment", commands[0])
+        self.assertEqual(
+            commands[0],
+            [str(root / "scripts/plan007/build-staging-canister-wasm.sh")],
+        )
         self.assertIn("mock-external", commands[1])
 
     def test_non_jest_dependencies_require_no_build(self) -> None:

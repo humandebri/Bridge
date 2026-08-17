@@ -1,7 +1,8 @@
 use crate::config::BridgeInitArgs;
 use async_trait::async_trait;
 use bridge_core::{
-    withdrawal_finalized_checkpoint, Amount, BaseMintSnapshot, FinalizedObservationRecord,
+    withdrawal_finalized_identity_quorum, Amount, BaseMintSnapshot, FinalizedObservationRecord,
+    WithdrawalFinalizedIdentity,
 };
 use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use evm_rpc_client::{CandidResponseConverter, EvmRpcClient, NoRetry};
@@ -1191,36 +1192,8 @@ async fn withdrawal_finalized_observation(
         .try_send()
         .await
         .map_err(|_| ObservationError::Rpc)?;
-    let checkpoint = match result {
-        MultiRpcResult::Consistent(Ok(block)) => {
-            u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?
-        }
-        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(results) => {
-            let mut block_numbers = [None, None, None];
-            for (index, (_, result)) in results.into_iter().take(3).enumerate() {
-                if let Ok(block) = result {
-                    block_numbers[index] = Some(block.number);
-                }
-            }
-            withdrawal_finalized_checkpoint_from_provider_numbers(block_numbers)?
-        }
-    };
-    let block = match client(args)
-        .get_block_by_number(BlockTag::Number(Nat256::from(checkpoint)))
-        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(block)) => block,
-        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
-    };
+    let block = exact_withdrawal_finalized_block(result)?;
     let block_number = u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?;
-    if block_number != checkpoint {
-        return Err(ObservationError::InvalidResponse);
-    }
     Ok(FinalizedObservation {
         block_number,
         block_hash: *block.hash.as_array(),
@@ -1228,11 +1201,42 @@ async fn withdrawal_finalized_observation(
     })
 }
 
-fn withdrawal_finalized_checkpoint_from_provider_numbers(
-    block_numbers: [Option<Nat256>; 3],
-) -> Result<u64, ObservationError> {
-    let heights = block_numbers.map(|number| number.and_then(|value| u64::try_from(value).ok()));
-    withdrawal_finalized_checkpoint(heights[0], heights[1], heights[2]).ok_or(ObservationError::Rpc)
+fn exact_withdrawal_finalized_block(
+    result: MultiRpcResult<Block>,
+) -> Result<Block, ObservationError> {
+    match result {
+        MultiRpcResult::Consistent(Ok(block)) => Ok(block),
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => {
+            let successful = results
+                .into_iter()
+                .map(|(_, result)| result.ok())
+                .collect::<Vec<_>>();
+            if successful.len() != 3 {
+                return Err(ObservationError::Inconsistent);
+            }
+            let identities = successful
+                .iter()
+                .map(|block| block.as_ref().and_then(withdrawal_finalized_identity))
+                .collect::<Vec<_>>();
+            let selected =
+                withdrawal_finalized_identity_quorum(identities[0], identities[1], identities[2])
+                    .ok_or(ObservationError::Inconsistent)?;
+            successful
+                .iter()
+                .flatten()
+                .find(|block| withdrawal_finalized_identity(block) == Some(selected))
+                .cloned()
+                .ok_or(ObservationError::Inconsistent)
+        }
+    }
+}
+
+fn withdrawal_finalized_identity(block: &Block) -> Option<WithdrawalFinalizedIdentity> {
+    Some(WithdrawalFinalizedIdentity {
+        block_number: u64::try_from(block.number.clone()).ok()?,
+        block_hash: *block.hash.as_array(),
+    })
 }
 
 async fn canonical_finalized_receipt_at(
@@ -1799,44 +1803,102 @@ mod tests {
     }
 
     #[test]
-    fn withdrawal_finality_quorum_ignores_one_overflowing_provider_height() {
-        let overflow = Nat256::from(u128::from(u64::MAX) + 1);
+    fn withdrawal_finality_quorum_accepts_only_matching_provider_identities() {
+        let agreed = WithdrawalFinalizedIdentity {
+            block_number: 100,
+            block_hash: [0xaa; 32],
+        };
+        assert_eq!(
+            withdrawal_finalized_identity_quorum(
+                Some(agreed),
+                Some(agreed),
+                Some(WithdrawalFinalizedIdentity {
+                    block_number: 102,
+                    block_hash: [0xbb; 32],
+                }),
+            ),
+            Some(agreed)
+        );
+        assert_eq!(
+            withdrawal_finalized_identity_quorum(
+                Some(agreed),
+                Some(WithdrawalFinalizedIdentity {
+                    block_number: 100,
+                    block_hash: [0xbb; 32],
+                }),
+                Some(WithdrawalFinalizedIdentity {
+                    block_number: 100,
+                    block_hash: [0xcc; 32],
+                }),
+            ),
+            None
+        );
+    }
 
-        for block_numbers in [
-            [
-                Some(Nat256::from(100u64)),
-                Some(Nat256::from(102u64)),
-                Some(overflow.clone()),
-            ],
-            [
-                Some(overflow.clone()),
-                Some(Nat256::from(102u64)),
-                Some(Nat256::from(100u64)),
-            ],
-            [
-                Some(Nat256::from(102u64)),
-                Some(overflow),
-                Some(Nat256::from(100u64)),
-            ],
+    #[test]
+    fn withdrawal_finality_quorum_rejects_fewer_than_two_provider_attestations() {
+        assert_eq!(
+            withdrawal_finalized_identity_quorum(
+                Some(WithdrawalFinalizedIdentity {
+                    block_number: 100,
+                    block_hash: [0xaa; 32],
+                }),
+                None,
+                None,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn withdrawal_finality_quorum_ignores_one_overflowing_provider_identity() {
+        let agreed = Some((100, [0xaa; 32]));
+        for candidates in [
+            [None, agreed, agreed],
+            [agreed, None, agreed],
+            [agreed, agreed, None],
         ] {
             assert_eq!(
-                withdrawal_finalized_checkpoint_from_provider_numbers(block_numbers),
-                Ok(100)
+                withdrawal_finalized_identity_quorum(
+                    candidates[0].map(|(block_number, block_hash)| {
+                        WithdrawalFinalizedIdentity {
+                            block_number,
+                            block_hash,
+                        }
+                    }),
+                    candidates[1].map(|(block_number, block_hash)| {
+                        WithdrawalFinalizedIdentity {
+                            block_number,
+                            block_hash,
+                        }
+                    }),
+                    candidates[2].map(|(block_number, block_hash)| {
+                        WithdrawalFinalizedIdentity {
+                            block_number,
+                            block_hash,
+                        }
+                    }),
+                ),
+                Some(WithdrawalFinalizedIdentity {
+                    block_number: 100,
+                    block_hash: [0xaa; 32],
+                })
             );
         }
     }
 
     #[test]
-    fn withdrawal_finality_quorum_rejects_fewer_than_two_valid_provider_heights() {
-        let overflow = Nat256::from(u128::from(u64::MAX) + 1);
-
+    fn withdrawal_finality_quorum_rejects_one_valid_and_one_overflowing_provider_identity() {
         assert_eq!(
-            withdrawal_finalized_checkpoint_from_provider_numbers([
-                Some(Nat256::from(100u64)),
-                Some(overflow),
+            withdrawal_finalized_identity_quorum(
+                Some(WithdrawalFinalizedIdentity {
+                    block_number: 100,
+                    block_hash: [0xaa; 32],
+                }),
                 None,
-            ]),
-            Err(ObservationError::Rpc)
+                None,
+            ),
+            None
         );
     }
 
@@ -2157,6 +2219,7 @@ mod tests {
             expected_bridge_runtime_sha256: vec![0x55; 32],
             timelock_contract: vec![0x43; 20],
             deployment_instance_id: vec![0x44; 32],
+            minimum_withdrawal_id: [vec![0; 31], vec![1]].concat(),
             base_chain_id: 8453,
             custom_evm_rpc_urls: vec![
                 "https://rpc-1.example".to_owned(),

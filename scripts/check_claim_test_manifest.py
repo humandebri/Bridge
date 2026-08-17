@@ -147,22 +147,7 @@ def prepare_test_dependencies(
     if not any(test.runner == "jest" for test in tests):
         return
     run_command(
-        [
-            "cargo",
-            "build",
-            "--locked",
-            "--manifest-path",
-            str(root / "Cargo.toml"),
-            "--target-dir",
-            str(root / "target/test-deployment"),
-            "--target",
-            "wasm32-unknown-unknown",
-            "--release",
-            "-p",
-            "bridge-canister",
-            "--features",
-            "test-deployment",
-        ],
+        [str(root / "scripts/plan007/build-staging-canister-wasm.sh")],
         root,
         runner,
     )

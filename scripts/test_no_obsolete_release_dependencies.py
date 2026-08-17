@@ -48,6 +48,14 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
         )
         self.assertIn("missing helper", "\n".join(guard.violations(root)))
 
+    def test_missing_test_helper_from_ci_entrypoint_fails_closed(self) -> None:
+        temporary, root = self.root()
+        self.addCleanup(temporary.cleanup)
+        (root / "scripts/ci-local.sh").write_text(
+            'node "$ROOT/scripts/plan007/test-missing.mjs"\n', encoding="utf-8"
+        )
+        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+
     def test_unreachable_historical_asset_is_allowed(self) -> None:
         temporary, root = self.root()
         self.addCleanup(temporary.cleanup)

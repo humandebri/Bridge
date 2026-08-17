@@ -118,10 +118,12 @@ def depositNonterminalIndexImpl (state : U16) : Bool :=
   depositNonterminalIndexed state.val
 
 def notificationAdmissionImpl
-    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : U16) :
-    Bool × Bool :=
+    (globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : U16)
+    (hashMatches : Bool) (nowNs retryAfterNs : U64) :
+    Bool × Bool × Bool :=
   (notificationAdmissionAllowed globalCount.val callerCount.val globalLimit.val callerLimit.val,
-    notificationIngestionAllowed ingestionCount.val ingestionLimit.val)
+    notificationIngestionAllowed ingestionCount.val ingestionLimit.val,
+    notificationFailureCooldownActive hashMatches nowNs.val retryAfterNs.val)
 
 def leaseLaneClaimImpl
     (targetActive targetAutomatic : Bool) (activeInLane capacity : U64) :

@@ -109,7 +109,7 @@ callerは制限しない。callerはgasだけを支払い、mint先は署名済�
 
 fixed windowはBridge deploy時刻から開始する。`block.timestamp >= mintWindowStartedAt + mintWindowDuration`となった後、最初に成功したmintの時刻を次windowの起点にし、消費量をresetする。失敗したmintは起点も消費量も変更しない。window境界直前と直後には最大2 window分をmintできるため、上限値は`docs/parameters.md`の2倍係数を前提に導出する。
 
-`mintAuthorizationEpoch`は1から始まる。Deposit mintがactiveからpausedへ変わるとき、またはBridge Signerが実際に別addressへrotationするときだけ1増加し、未期限Authorizationを一括失効する。repeated pause、同じsignerへのrotation、unpauseでは増加しない。
+`mintAuthorizationEpoch`は1から始まる。Deposit mintがactiveからpausedへ変わるとき、pausedからactiveへ戻るとき、またはBridge Signerが実際に別addressへrotationするときに1増加し、遷移前に作られた未期限Authorizationを一括失効する。repeated pause、repeated unpause、同じsignerへのrotationでは増加しない。
 
 ## Withdrawal
 

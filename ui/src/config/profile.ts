@@ -24,6 +24,7 @@ export const deploymentProfileSchema = z.object({
   chainId: z.number().int().positive(),
   bridgeCanisterId: z.string().min(1).nullable(),
   deploymentInstanceId: hash.nullable(),
+  minimumWithdrawalId: hash.nullable(),
   ledgerCanisterId: z.string().min(1).nullable(),
   indexCanisterId: z.string().min(1).nullable(),
   snsRootCanisterId: z.string().min(1).nullable().default(null),
@@ -58,6 +59,7 @@ function assertEmbeddedTestUiProfile(profile: {
   chainId: number
   bridgeCanisterId: string | null
   deploymentInstanceId: `0x${string}` | null
+  minimumWithdrawalId: `0x${string}` | null
   ledgerCanisterId: string | null
   indexCanisterId: string | null
   evmRpcCanisterId: string | null
@@ -76,8 +78,8 @@ function assertEmbeddedTestUiProfile(profile: {
   if (profile.environment === "sepolia-staging" && !profile.baseHistoryRpcUrls?.length) {
     throw new Error("Sepolia staging requires reviewed Base history RPC URLs")
   }
-  if (profile.environment === "sepolia-staging" && !profile.deploymentInstanceId) {
-    throw new Error("Sepolia staging requires a deployment instance ID")
+  if (profile.environment === "sepolia-staging" && (!profile.deploymentInstanceId || !profile.minimumWithdrawalId)) {
+    throw new Error("Sepolia staging requires deployment instance and minimum withdrawal IDs")
   }
   if (profile.environment === "sepolia-staging"
     && (profile.environmentMode !== "short-delay-test-only" || profile.activationTimelockDelaySeconds !== 300)) {
@@ -107,6 +109,7 @@ const preflightProfile = {
   chainId: 84532,
   bridgeCanisterId: null,
   deploymentInstanceId: null,
+  minimumWithdrawalId: null,
   ledgerCanisterId: null,
   indexCanisterId: null,
   icToken: { name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 },
@@ -125,7 +128,9 @@ const preflightProfile = {
 const viteProfileJson: unknown = import.meta.env?.VITE_DEPLOYMENT_PROFILE_JSON
 const globalProfileJson = (globalThis as typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string })
   .__KINIC_DEPLOYMENT_PROFILE_JSON__
-const injectedProfileJson = typeof viteProfileJson === "string" ? viteProfileJson : globalProfileJson
+const injectedProfileJson = typeof globalProfileJson === "string"
+  ? globalProfileJson
+  : typeof viteProfileJson === "string" ? viteProfileJson : undefined
 const deploymentProfileInput: unknown = injectedProfileJson
   ? (JSON.parse(injectedProfileJson) as unknown)
   : preflightProfile
@@ -136,6 +141,7 @@ export function profileCompleteness(profile: DeploymentProfile): string[] {
   const missing: string[] = []
   if (!profile.bridgeCanisterId) missing.push("Bridge canister ID is missing")
   if (!profile.deploymentInstanceId) missing.push("Deployment instance ID is missing")
+  if (!profile.minimumWithdrawalId) missing.push("Minimum withdrawal ID is missing")
   if (!profile.profileFileSha256) missing.push("Profile file SHA-256 is missing")
   if (!profile.profileCanonicalSha256) missing.push("Canonical profile SHA-256 is missing")
   if (!profile.ledgerCanisterId) missing.push("IC token ledger ID is missing")

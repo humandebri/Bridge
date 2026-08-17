@@ -13,6 +13,7 @@ from proof_fingerprint import (
     FINGERPRINT_SOURCE_ROOTS,
     fingerprint_inputs,
     source_fingerprint,
+    validate_fingerprint,
 )
 from claim_manifest import parse_claim_manifest
 
@@ -29,7 +30,7 @@ REQUIRED_STAGES = (
     "smt-and-negative",
     "verus-and-negative",
 )
-RECEIPT_SCHEMA = 4
+RECEIPT_SCHEMA = 5
 
 
 @dataclass(frozen=True)
@@ -231,11 +232,17 @@ def validate_receipt_contents(receipt: object) -> None:
     if receipt.get("required_stages") != list(REQUIRED_STAGES):
         raise ValueError("proof receipt required stages do not match the impact policy")
 
+    try:
+        receipt_fingerprint = validate_fingerprint(receipt.get("source_fingerprint"))
+    except ValueError as error:
+        raise ValueError("proof receipt source fingerprint is malformed") from error
+
     stages = receipt.get("stages")
     if not isinstance(stages, list) or not all(
         isinstance(stage, dict)
         and isinstance(stage.get("id"), str)
         and isinstance(stage.get("status"), str)
+        and isinstance(stage.get("source_fingerprint"), dict)
         for stage in stages
     ):
         raise ValueError("proof receipt stages must be typed records")
@@ -246,6 +253,8 @@ def validate_receipt_contents(receipt: object) -> None:
         )
     if any(stage["status"] != "pass" for stage in stages):
         raise ValueError("proof receipt contains a non-passing stage")
+    if any(stage["source_fingerprint"] != receipt_fingerprint for stage in stages):
+        raise ValueError("proof receipt stage source fingerprints do not match the run baseline")
 
     claims = receipt.get("claims")
     if not isinstance(claims, list) or not claims:

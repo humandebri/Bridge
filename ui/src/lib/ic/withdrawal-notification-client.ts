@@ -183,6 +183,7 @@ export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): stri
     TransactionReverted: "The Base withdrawal transaction reverted.",
     BaseStateMismatch: "The finalized Bridge withdrawal state does not match its creation event.",
     BridgeSignerMismatch: "The finalized Bridge signer does not match the configured canister signer.",
+    WithdrawalBeforeAdmissionBoundary: "This withdrawal predates the Bridge Canister admission boundary and cannot be notified.",
     WithdrawalConflict: "A different withdrawal payload already uses this withdrawal ID.",
     InvalidTransactionHash: "The withdrawal transaction hash is invalid.",
     StorageFailure: "The Bridge could not save the withdrawal.",
@@ -202,7 +203,8 @@ function notifyWithdrawalErrorCode(error: unknown): NotifyWithdrawalErrorCode | 
     "LedgerFeeExceedsServiceFee", "Busy", "RpcUnavailable", "TransactionNotConfirmed",
     "WithdrawalConflict", "RpcInconsistent", "InvalidTransactionHash",
     "TransactionReverted", "StorageFailure", "BaseStateMismatch",
-    "TransactionNotFound", "BridgeSignerMismatch", "AnonymousCaller", "InvalidBaseResponse",
+    "TransactionNotFound", "BridgeSignerMismatch", "WithdrawalBeforeAdmissionBoundary",
+    "AnonymousCaller", "InvalidBaseResponse",
     "RateLimited", "InsufficientCycles",
   ].includes(code)) return code as NotifyWithdrawalErrorCode
   return undefined

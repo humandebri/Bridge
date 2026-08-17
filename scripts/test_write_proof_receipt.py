@@ -25,6 +25,18 @@ class ProofReceiptTests(unittest.TestCase):
             "claims": claims,
         }
 
+    def write_baseline(self, root: Path, current: dict[str, object]) -> Path:
+        baseline = root / "baseline.json"
+        baseline.write_text(json.dumps(current), encoding="utf-8")
+        return baseline
+
+    def stage_rows(self, current: dict[str, object], status: str = "pass") -> str:
+        encoded = json.dumps(current, sort_keys=True)
+        return "".join(
+            f"{stage}\t{status}\t{encoded}\n"
+            for stage in write_proof_receipt.REQUIRED
+        )
+
     def test_complete_receipt_uses_matching_claim_report(self) -> None:
         claim = {
             "id": "current_claim",
@@ -38,13 +50,11 @@ class ProofReceiptTests(unittest.TestCase):
             root = Path(directory)
             stages = root / "stages.tsv"
             receipt = root / "receipt.json"
+            baseline = self.write_baseline(root, current)
             report_path = root / "claim-report.json"
             report = self.report(current, [claim])
             report_path.write_text(json.dumps(report), encoding="utf-8")
-            stages.write_text(
-                "".join(f"{stage}\tpass\n" for stage in write_proof_receipt.REQUIRED),
-                encoding="utf-8",
-            )
+            stages.write_text(self.stage_rows(current), encoding="utf-8")
             with (
                 patch.object(
                     write_proof_receipt,
@@ -57,13 +67,20 @@ class ProofReceiptTests(unittest.TestCase):
                     "source_fingerprint",
                     side_effect=[current, current],
                 ),
-                patch.object(sys, "argv", ["write_proof_receipt.py", str(stages), str(receipt)]),
+                patch.object(
+                    sys,
+                    "argv",
+                    ["write_proof_receipt.py", str(stages), str(receipt), str(baseline)],
+                ),
             ):
                 self.assertEqual(write_proof_receipt.main(), 0)
             build.assert_called_once_with()
             document = json.loads(receipt.read_text(encoding="utf-8"))
             self.assertEqual(document["claims"], [claim])
             self.assertEqual(document["source_fingerprint"], current)
+            self.assertTrue(
+                all(stage["source_fingerprint"] == current for stage in document["stages"])
+            )
             self.assertEqual(
                 document["claim_report_schema"], write_proof_receipt.CLAIM_REPORT_SCHEMA
             )
@@ -76,17 +93,15 @@ class ProofReceiptTests(unittest.TestCase):
             missing = root / "missing.json"
             stages = root / "stages.tsv"
             receipt = root / "receipt.json"
-            stages.write_text(
-                "".join(f"{stage}\tpass\n" for stage in write_proof_receipt.REQUIRED),
-                encoding="utf-8",
-            )
+            baseline = self.write_baseline(root, current)
+            stages.write_text(self.stage_rows(current), encoding="utf-8")
             with (
                 patch.object(write_proof_receipt, "REPORT", missing),
                 patch.object(write_proof_receipt, "source_fingerprint", return_value=current),
                 patch.object(
                     sys,
                     "argv",
-                    ["write_proof_receipt.py", str(stages), str(receipt)],
+                    ["write_proof_receipt.py", str(stages), str(receipt), str(baseline)],
                 ),
             ):
                 self.assertEqual(write_proof_receipt.main(), 1)
@@ -100,7 +115,7 @@ class ProofReceiptTests(unittest.TestCase):
             missing = Path(directory) / "missing.json"
             with patch.object(write_proof_receipt, "REPORT", missing):
                 with self.assertRaisesRegex(ValueError, "missing"):
-                    write_proof_receipt.current_claim_evidence()
+                    write_proof_receipt.current_claim_evidence(fingerprint("a" * 64))
 
     def test_stale_report_is_rejected(self) -> None:
         current = fingerprint("a" * 64)
@@ -120,7 +135,7 @@ class ProofReceiptTests(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(ValueError, "stale"):
-                    write_proof_receipt.current_claim_evidence()
+                    write_proof_receipt.current_claim_evidence(current)
 
     def test_schema_mismatch_is_rejected(self) -> None:
         current = fingerprint("a" * 64)
@@ -135,7 +150,7 @@ class ProofReceiptTests(unittest.TestCase):
                 patch.object(write_proof_receipt, "build_claim_report", return_value=report),
             ):
                 with self.assertRaisesRegex(ValueError, "schema"):
-                    write_proof_receipt.current_claim_evidence()
+                    write_proof_receipt.current_claim_evidence(current)
 
     def test_modified_claims_are_rejected(self) -> None:
         current = fingerprint("a" * 64)
@@ -150,7 +165,7 @@ class ProofReceiptTests(unittest.TestCase):
                 patch.object(write_proof_receipt, "build_claim_report", return_value=expected),
             ):
                 with self.assertRaisesRegex(ValueError, "deterministic"):
-                    write_proof_receipt.current_claim_evidence()
+                    write_proof_receipt.current_claim_evidence(current)
 
     def test_source_change_during_claim_computation_fails_closed(self) -> None:
         before = fingerprint("a" * 64)
@@ -165,7 +180,7 @@ class ProofReceiptTests(unittest.TestCase):
                 patch.object(write_proof_receipt, "source_fingerprint", side_effect=[before, after]),
             ):
                 with self.assertRaisesRegex(ValueError, "changed while computing"):
-                    write_proof_receipt.current_claim_evidence()
+                    write_proof_receipt.current_claim_evidence(before)
 
     def test_empty_claim_evidence_is_rejected(self) -> None:
         current = fingerprint("a" * 64)
@@ -179,7 +194,47 @@ class ProofReceiptTests(unittest.TestCase):
                 patch.object(write_proof_receipt, "source_fingerprint", side_effect=[current, current]),
             ):
                 with self.assertRaisesRegex(ValueError, "non-empty"):
-                    write_proof_receipt.current_claim_evidence()
+                    write_proof_receipt.current_claim_evidence(current)
+
+    def test_source_change_before_claim_computation_fails_closed(self) -> None:
+        before = fingerprint("a" * 64)
+        after = fingerprint("b" * 64)
+        with patch.object(write_proof_receipt, "source_fingerprint", return_value=after):
+            with self.assertRaisesRegex(ValueError, "proof run started"):
+                write_proof_receipt.current_claim_evidence(before)
+
+    def test_stage_fingerprint_mismatch_is_rejected(self) -> None:
+        current = fingerprint("a" * 64)
+        stale = fingerprint("b" * 64)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stages = root / "stages.tsv"
+            receipt = root / "receipt.json"
+            baseline = self.write_baseline(root, current)
+            stages.write_text(self.stage_rows(stale), encoding="utf-8")
+            with patch.object(
+                sys,
+                "argv",
+                ["write_proof_receipt.py", str(stages), str(receipt), str(baseline)],
+            ):
+                with self.assertRaisesRegex(ValueError, "differs from baseline"):
+                    write_proof_receipt.main()
+
+    def test_legacy_two_column_stage_rows_are_rejected(self) -> None:
+        current = fingerprint("a" * 64)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stages = root / "stages.tsv"
+            receipt = root / "receipt.json"
+            baseline = self.write_baseline(root, current)
+            stages.write_text("lean\tpass\n", encoding="utf-8")
+            with patch.object(
+                sys,
+                "argv",
+                ["write_proof_receipt.py", str(stages), str(receipt), str(baseline)],
+            ):
+                with self.assertRaisesRegex(ValueError, "invalid proof receipt stage"):
+                    write_proof_receipt.main()
 
 
 if __name__ == "__main__":

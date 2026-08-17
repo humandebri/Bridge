@@ -37,6 +37,7 @@ pub enum SettlementStopReason {
     RpcInconsistent,
     InvalidBaseResponse,
     SigningUnavailable,
+    AuthorizationExpired,
     BaseStateMismatch,
     BridgeSignerMismatch,
     LedgerFeeExceedsServiceFee,
@@ -100,6 +101,9 @@ pub(crate) fn stop_reason_text(result: &SettlementActionResult) -> Option<String
             SettlementStopReason::RpcInconsistent => "Base RPC providers disagreed".into(),
             SettlementStopReason::InvalidBaseResponse => "Invalid Base response".into(),
             SettlementStopReason::SigningUnavailable => "Threshold signing unavailable".into(),
+            SettlementStopReason::AuthorizationExpired => {
+                "Mint authorization expired before signing completed".into()
+            }
             SettlementStopReason::BaseStateMismatch => {
                 "Confirmed Base withdrawal state does not match the creation receipt".into()
             }
@@ -777,6 +781,7 @@ pub(crate) async fn advance_deposit(
                 }
             }
             bridge_core::DepositState::AuthorizationPending { .. } => {
+                let observed_timestamp = ic_cdk::api::time() / 1_000_000_000;
                 let digest = STORE.with(|store| {
                     let mut store = store.borrow_mut();
                     let mut current = store
@@ -787,6 +792,9 @@ pub(crate) async fn advance_deposit(
                         .mint_authorization
                         .as_mut()
                         .ok_or(SettlementActionError::StorageFailure)?;
+                    if observed_timestamp > authorization.authorization.deadline {
+                        return Ok::<_, SettlementActionError>(None);
+                    }
                     authorization
                         .dispatch_signature()
                         .ok_or(SettlementActionError::StorageFailure)?;
@@ -794,8 +802,14 @@ pub(crate) async fn advance_deposit(
                     store
                         .put_deposit(&current)
                         .map_err(|_| SettlementActionError::StorageFailure)?;
-                    Ok::<_, SettlementActionError>(digest)
+                    Ok::<_, SettlementActionError>(Some(digest))
                 })?;
+                let Some(digest) = digest else {
+                    return Ok(SettlementActionResult::Stopped {
+                        state,
+                        reason: SettlementStopReason::AuthorizationExpired,
+                    });
+                };
                 lease.renew_before_external_call()?;
                 let expected_signer = crate::api::cached_signer_address(&config)
                     .await
@@ -820,19 +834,39 @@ pub(crate) async fn advance_deposit(
                         reason: SettlementStopReason::BridgeSignerMismatch,
                     });
                 }
-                STORE.with(|store| {
+                let installed = STORE.with(|store| {
+                    let observed_timestamp = ic_cdk::api::time() / 1_000_000_000;
                     let mut store = store.borrow_mut();
                     let mut current = store
                         .deposit(deposit_id)
                         .map_err(|_| SettlementActionError::StorageFailure)?
                         .ok_or(SettlementActionError::NotFound)?;
+                    if current
+                        .mint_authorization
+                        .as_ref()
+                        .is_some_and(|authorization| {
+                            observed_timestamp > authorization.authorization.deadline
+                        })
+                    {
+                        return Ok::<_, SettlementActionError>(false);
+                    }
                     let result = current
-                        .apply(DepositEvent::AuthorizationSigned { signature })
+                        .apply(DepositEvent::AuthorizationSigned {
+                            signature,
+                            observed_timestamp,
+                        })
                         .map_err(|_| SettlementActionError::StorageFailure)?;
                     store
                         .put_deposit_transition(&current, result)
-                        .map_err(|_| SettlementActionError::StorageFailure)
+                        .map_err(|_| SettlementActionError::StorageFailure)?;
+                    Ok::<_, SettlementActionError>(true)
                 })?;
+                if !installed {
+                    return Ok(SettlementActionResult::Stopped {
+                        state,
+                        reason: SettlementStopReason::AuthorizationExpired,
+                    });
+                }
                 return Ok(SettlementActionResult::Complete {
                     state: SettlementState::Deposit(DepositPhase::AuthorizationAvailable),
                 });

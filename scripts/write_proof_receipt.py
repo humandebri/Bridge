@@ -9,11 +9,14 @@ from pathlib import Path
 
 from check_claim_manifest import CLAIM_REPORT_SCHEMA, REPORT, build_claim_report
 from check_proof_impact import RECEIPT_SCHEMA, REQUIRED_STAGES, source_fingerprint
+from proof_fingerprint import load_fingerprint
 
 REQUIRED = REQUIRED_STAGES
 
 
-def current_claim_evidence() -> tuple[list[dict[str, object]], dict[str, object]]:
+def current_claim_evidence(
+    baseline: dict[str, object],
+) -> tuple[list[dict[str, object]], dict[str, object]]:
     if not REPORT.is_file():
         raise ValueError("claim report is missing")
     try:
@@ -22,9 +25,11 @@ def current_claim_evidence() -> tuple[list[dict[str, object]], dict[str, object]
         raise ValueError("claim report is unreadable") from error
 
     fingerprint_before = source_fingerprint()
+    if fingerprint_before != baseline:
+        raise ValueError("proof inputs changed after the proof run started")
     expected = build_claim_report()
     fingerprint_after = source_fingerprint()
-    if fingerprint_before != fingerprint_after:
+    if fingerprint_after != baseline:
         raise ValueError("proof inputs changed while computing claim evidence")
     claims = report.get("claims")
     if report.get("schema") != CLAIM_REPORT_SCHEMA:
@@ -37,31 +42,40 @@ def current_claim_evidence() -> tuple[list[dict[str, object]], dict[str, object]
         raise ValueError("claim evidence must contain a non-empty claim list")
     if not all(isinstance(claim, dict) for claim in claims):
         raise ValueError("claim evidence contains a malformed claim")
-    return claims, fingerprint_after
+    return claims, baseline
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: write_proof_receipt.py STAGE_TSV RECEIPT_JSON")
-    stages_path, receipt_path = map(Path, sys.argv[1:])
-    stages: dict[str, str] = {}
+    if len(sys.argv) != 4:
+        raise SystemExit(
+            "usage: write_proof_receipt.py STAGE_TSV RECEIPT_JSON BASELINE_JSON"
+        )
+    stages_path, receipt_path, baseline_path = map(Path, sys.argv[1:])
+    baseline = load_fingerprint(baseline_path)
+    stages: dict[str, tuple[str, dict[str, object]]] = {}
     if stages_path.exists():
         for line in stages_path.read_text(encoding="utf-8").splitlines():
-            stage, status = line.split("\t")
+            try:
+                stage, status, raw_fingerprint = line.split("\t")
+                stage_fingerprint = json.loads(raw_fingerprint)
+            except (ValueError, json.JSONDecodeError) as error:
+                raise ValueError(f"invalid proof receipt stage: {line}") from error
             if stage not in REQUIRED or status not in {"pass", "fail"} or stage in stages:
                 raise ValueError(f"invalid proof receipt stage: {line}")
-            stages[stage] = status
+            if stage_fingerprint != baseline:
+                raise ValueError(f"proof stage fingerprint differs from baseline: {stage}")
+            stages[stage] = (status, stage_fingerprint)
     claim_error: str | None = None
     try:
-        claims, fingerprint = current_claim_evidence()
+        claims, fingerprint = current_claim_evidence(baseline)
     except ValueError as error:
         claims = []
-        fingerprint = source_fingerprint()
+        fingerprint = baseline
         claim_error = str(error)
     complete = (
         claim_error is None
         and tuple(stages) == REQUIRED
-        and all(status == "pass" for status in stages.values())
+        and all(status == "pass" for status, _ in stages.values())
         and bool(claims)
     )
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +85,14 @@ def main() -> int:
                 "schema": RECEIPT_SCHEMA,
                 "claim_report_schema": CLAIM_REPORT_SCHEMA,
                 "required_stages": list(REQUIRED),
-                "stages": [{"id": stage, "status": stages[stage]} for stage in stages],
+                "stages": [
+                    {
+                        "id": stage,
+                        "status": stages[stage][0],
+                        "source_fingerprint": stages[stage][1],
+                    }
+                    for stage in stages
+                ],
                 "source_fingerprint": fingerprint,
                 "claims": claims,
                 "claim_summary": {

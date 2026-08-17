@@ -10,7 +10,7 @@ describe("reviewed deployment profile", () => {
     expect(blockers).toContain("Timelock contract address is missing")
     expect(blockers).toContain("Timelock delay is missing")
     expect(blockers).toContain("Deployment instance ID is missing")
-    expect(blockers).toHaveLength(16)
+    expect(blockers).toHaveLength(17)
     expect(deploymentProfile.snsRootCanisterId).toBeNull()
     expect(deploymentProfile.icToken).toEqual({ name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 })
     expect(deploymentProfile.baseToken).toEqual({ symbol: "KINIC", decimals: 8 })
@@ -32,6 +32,7 @@ describe("reviewed deployment profile", () => {
       activationTimelockDelaySeconds: 300,
       bridgeCanisterId: "aaaaa-aa",
       deploymentInstanceId: `0x${"99".repeat(32)}`,
+      minimumWithdrawalId: `0x${"00".repeat(31)}01`,
       ledgerCanisterId: "aaaaa-aa",
       indexCanisterId: "aaaaa-aa",
       evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
@@ -43,6 +44,7 @@ describe("reviewed deployment profile", () => {
     expect(() => deploymentProfileSchema.parse({
       ...deploymentProfile,
       deploymentInstanceId: `0x${"00".repeat(32)}`,
+      minimumWithdrawalId: `0x${"00".repeat(31)}01`,
     })).toThrow("hash must be nonzero")
   })
 

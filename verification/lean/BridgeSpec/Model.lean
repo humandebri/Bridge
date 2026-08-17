@@ -96,6 +96,9 @@ def decideWithdrawalFinalization
       if finalized < receiptBlock then .retry
       else if receiptSucceeded then .notify else .discardReverted
 
+def withdrawalIdAdmissible (observed minimum : Nat) : Bool :=
+  minimum != 0 && minimum ≤ observed
+
 structure PendingQueueEntry where
   key : Nat
   owner : Nat
@@ -236,6 +239,10 @@ def notificationAdmissionAllowed
 
 def notificationIngestionAllowed (ingestionCount ingestionLimit : Nat) : Bool :=
   ingestionCount < ingestionLimit
+
+def notificationFailureCooldownActive
+    (hashMatches : Bool) (nowNs retryAfterNs : Nat) : Bool :=
+  hashMatches && nowNs < retryAfterNs
 
 inductive LeaseLaneClaimDecision where
   | allow
