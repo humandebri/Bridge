@@ -34,14 +34,25 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-out" \
   "$SCRATCH/contracts-cache" "$SCRATCH/ui-dist" "$SCRATCH/ui-results" \
-  "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/e2e-runtime" "$SCRATCH/proof-output" \
-  "$SCRATCH/lean-lake" "$SCRATCH/icp-cache" "$SCRATCH/empty-tools" \
+  "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/ui-vite-temp" "$SCRATCH/e2e-runtime" \
+  "$SCRATCH/proof-output" "$SCRATCH/lean-lake" "$SCRATCH/icp-cache" \
+  "$SCRATCH/empty-tools" \
   "$SCRATCH/home/.svm" "$SCRATCH/home/.elan/toolchains" \
   "$SCRATCH/home/.local/share/icp-cli/pkg" "$SCRATCH/home/.config"
 chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
 
 bridge_prepare_mountpoint "$SOURCE_ROOT" scripts
+CANDIDATE_SCRIPT_MOUNTS=()
+while IFS= read -r candidate_script; do
+  [[ -f "$SOURCE_ROOT/$candidate_script" ]] || continue
+  [[ -e "$POLICY_ROOT/$candidate_script" ]] && continue
+  mkdir -p "$(dirname "$POLICY_ROOT/$candidate_script")"
+  : >"$POLICY_ROOT/$candidate_script"
+  CANDIDATE_SCRIPT_MOUNTS+=(
+    --mount "type=bind,src=$SOURCE_ROOT/$candidate_script,dst=/workspace/$candidate_script,readonly"
+  )
+done < <(git -C "$SOURCE_ROOT" ls-files scripts/)
 for path in node_modules ui/node_modules target contracts/out contracts/cache \
   ui/dist ui/test-results .tools; do
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" "$path"
@@ -51,7 +62,9 @@ WRITABLE_UI_MOUNTS=()
 case "$MODE" in
   ui-fast|ui-e2e|real)
     bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .tmp
+    bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .vite-temp
     WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp")
+    WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-vite-temp,dst=/workspace/ui/node_modules/.vite-temp")
     ;;
 esac
 if [[ "$MODE" == "real" ]]; then
@@ -108,6 +121,8 @@ docker run --rm \
   --security-opt no-new-privileges \
   --mount "type=bind,src=$SOURCE_ROOT,dst=/workspace,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/scripts,dst=/workspace/scripts,readonly" \
+  "${CANDIDATE_SCRIPT_MOUNTS[@]}" \
+  --mount "type=bind,src=$SOURCE_ROOT/scripts,dst=/scratch/candidate-scripts,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/node_modules,dst=/workspace/node_modules,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
   "${WRITABLE_UI_MOUNTS[@]}" \
@@ -125,6 +140,7 @@ docker run --rm \
   "${CACHE_MOUNTS[@]}" \
   --env CI=true \
   --env BRIDGE_TRUSTED_DEPS_READY=1 \
+  --env BRIDGE_CANDIDATE_SCRIPTS=/scratch/candidate-scripts \
   --env PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false \
   --env HOME=/scratch/home \
   --env TMPDIR=/scratch/tmp \

@@ -137,6 +137,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
+        self.assertIn("dst=/workspace/ui/node_modules/.vite-temp", wrapper)
         self.assertIn("dst=/workspace/ui/.e2e-runtime", wrapper)
         self.assertIn("dst=/workspace/ui/.e2e-cache,readonly", wrapper)
         self.assertIn("dst=/workspace/verification/output", wrapper)
@@ -198,6 +199,55 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("safe.directory /workspace", dockerfile)
         self.assertNotIn("safe.directory '*'", dockerfile)
+
+    def test_candidate_scripts_are_exposed_without_overriding_trusted_checks(self) -> None:
+        wrapper = (ROOT / "scripts" / "trusted-pr-container.sh").read_text(encoding="utf-8")
+        consistency = (ROOT / "scripts" / "check_schema_consistency.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('[[ -e "$POLICY_ROOT/$candidate_script" ]] && continue', wrapper)
+        self.assertIn(
+            'src=$SOURCE_ROOT/$candidate_script,dst=/workspace/$candidate_script,readonly',
+            wrapper,
+        )
+        self.assertIn("BRIDGE_CANDIDATE_SCRIPTS=/scratch/candidate-scripts", wrapper)
+        self.assertIn(
+            'src=$SOURCE_ROOT/scripts,dst=/scratch/candidate-scripts,readonly',
+            wrapper,
+        )
+        self.assertLess(
+            wrapper.index("dst=/workspace/scripts,readonly"),
+            wrapper.index("dst=/scratch/candidate-scripts,readonly"),
+        )
+        self.assertIn("BRIDGE_CANDIDATE_SCRIPTS", consistency)
+        self.assertIn('relative.startswith("scripts/")', consistency)
+
+    def test_schema_consistency_reads_isolated_candidate_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "candidate-scripts"
+            (candidate / "plan007").mkdir(parents=True)
+            (candidate / "test_production_drivers.sh").write_text(
+                '{"schema_version":99,"expected_bridge_signer":[0]}\n',
+                encoding="utf-8",
+            )
+            (candidate / "plan007" / "generate-local-e2e.mjs").write_text(
+                "CURRENT_STABLE_SCHEMA_VERSION = 99\n",
+                encoding="utf-8",
+            )
+            (candidate / "plan007" / "sepolia_e2e.py").write_text(
+                "CURRENT_STABLE_SCHEMA = 99\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["BRIDGE_CANDIDATE_SCRIPTS"] = str(candidate)
+            result = subprocess.run(
+                ["python3", str(ROOT / "scripts" / "check_schema_consistency.py")],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn("stable schema mismatch", result.stderr)
 
     def test_mountpoint_preparation_creates_and_cleans_only_missing_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
