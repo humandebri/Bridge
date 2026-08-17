@@ -1458,7 +1458,12 @@ for field, (value, candid_type) in stable_fields.items():
 }
 
 run_real() {
-  pnpm --dir "$ROOT/ui" e2e:real
+  require_ui_dependencies
+  if [[ "${BRIDGE_TRUSTED_DEPS_READY:-0}" == "1" ]]; then
+    pnpm --dir "$ROOT/ui" exec playwright test --config playwright.real.config.ts
+  else
+    pnpm --dir "$ROOT/ui" e2e:real
+  fi
 }
 
 run_smoke_step() {

@@ -10,6 +10,7 @@ export default defineConfig({
   timeout: 180_000,
   expect: { timeout: 30_000 },
   reporter: process.env.CI ? "github" : "list",
+  outputDir: "test-results/real",
   use: {
     ...devices["Desktop Chrome"],
     baseURL: "http://127.0.0.1:4174",

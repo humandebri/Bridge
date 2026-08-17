@@ -1,5 +1,7 @@
 name: trusted-pr-gate
 
+# This file is intentionally promoted to the default branch before dependent PRs.
+
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
@@ -47,7 +49,7 @@ jobs:
           BASE_SHA: ${{ steps.base.outputs.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          git diff --no-renames --name-only -z "$BASE_SHA" "$HEAD_SHA" |
+          git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" |
             python3 scripts/ci_changed_areas.py --null --github-output "$GITHUB_OUTPUT"
       - name: Require complete trusted classifier outputs
         env:
@@ -92,45 +94,38 @@ jobs:
           path: trusted-policy
           persist-credentials: false
       - name: Install pinned Rust toolchain
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'real' || matrix.area == 'icp'
         working-directory: trusted-policy
         run: rustup show
       - name: Install Node.js 24.14.0
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.14.0
       - name: Install pnpm 11.0.8
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
           version: 11.0.8
           run_install: false
       - name: Install Foundry 1.7.1
-        if: matrix.area == 'contracts' || matrix.area == 'proofs' || matrix.area == 'real'
         uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.7.1
-      - name: Install area CI toolchain
-        run: |
-          case "${{ matrix.area }}" in
-            rust|icp) trusted-policy/scripts/install-ci-tools.sh icp ;;
-            proofs) trusted-policy/scripts/install-ci-tools.sh all ;;
-            contracts|ui|real) ;;
-            *) echo "unsupported area: ${{ matrix.area }}" >&2; exit 2 ;;
-          esac
+      - name: Install complete CI toolchain
+        run: trusted-policy/scripts/install-ci-tools.sh all
+      - name: Prefetch locked Rust dependencies from trusted policy
+        run: cargo fetch --locked --manifest-path trusted-policy/Cargo.toml
+      - name: Prefetch pinned ICP recipes from trusted policy
+        working-directory: trusted-policy
+        env:
+          ICP_CLI_DISABLE_UPDATE: "1"
+          ICP_TELEMETRY_DISABLED: "1"
+        run: icp project show --project-root-override . >/dev/null
       - name: Install trusted workspace dependencies
-        if: matrix.area == 'rust' || matrix.area == 'proofs'
         run: pnpm --dir trusted-policy install --frozen-lockfile
       - name: Install trusted UI dependencies without lifecycle scripts
-        if: matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
         run: pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts
       - name: Install Chromium when required
         if: matrix.area == 'ui' || matrix.area == 'real'
         run: pnpm --dir trusted-policy/ui exec playwright install --with-deps chromium
-      - name: Prefetch locked Rust dependencies from trusted policy
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'real' || matrix.area == 'icp'
-        run: cargo fetch --locked --manifest-path trusted-policy/Cargo.toml
       - name: Prefetch verified real-E2E ledger artifacts
         if: matrix.area == 'real'
         run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
@@ -154,10 +149,19 @@ jobs:
             trusted-policy/scripts/trusted-pr-container.sh source trusted-policy "$1"
           }
           case "$AREA" in
-            rust) run_check rust ;;
-            contracts) run_check contracts ;;
+            rust)
+              run_check rust-fast
+              run_check rust-integration
+              ;;
+            contracts)
+              run_check contracts-fast
+              run_check contracts-coverage
+              ;;
             proofs) run_check proofs ;;
-            ui) run_check ui ;;
+            ui)
+              run_check ui-fast
+              run_check ui-e2e
+              ;;
             real) run_check real ;;
             icp) run_check icp ;;
             *) exit 2 ;;
