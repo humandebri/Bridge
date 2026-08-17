@@ -645,6 +645,7 @@ run_proofs() {
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
   python3 "$ROOT/scripts/proof_fingerprint.py" --write "$PROOF_SOURCE_BASELINE" >/dev/null
+  python3 "$ROOT/scripts/check_claim_manifest.py" >/dev/null
   python3 "$ROOT/scripts/test_write_proof_receipt.py"
   python3 "$ROOT/scripts/test_claim_test_manifest.py"
   python3 "$ROOT/scripts/test_check_claim_manifest.py"
