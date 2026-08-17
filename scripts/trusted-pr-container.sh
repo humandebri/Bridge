@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Execute one untrusted PR check in a fresh process namespace with immutable inputs.
+# Execute one untrusted PR check in a fresh process namespace with read-only inputs.
 set -euo pipefail
 
 SOURCE_ROOT="$(cd "${1:?missing candidate source}" && pwd)"
@@ -20,23 +20,63 @@ esac
   || { echo "trusted UI dependencies are missing" >&2; exit 1; }
 [[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "${BRIDGE_EXPECTED_HEAD_SHA:?missing expected head SHA}" ]] \
   || { echo "candidate checkout SHA mismatch" >&2; exit 1; }
+# shellcheck source=/dev/null
+source "$POLICY_ROOT/scripts/trusted-pr-mountpoints.sh"
 
 SCRATCH="$(mktemp -d "${RUNNER_TEMP:-/tmp}/bridge-pr-${MODE}.XXXXXX")"
-trap 'rm -rf "$SCRATCH"' EXIT INT TERM
+cleanup() {
+  local exit_status=$?
+  bridge_cleanup_mountpoints || [[ "$exit_status" -ne 0 ]] || exit_status=1
+  rm -rf "$SCRATCH"
+  trap - EXIT
+  exit "$exit_status"
+}
+trap cleanup EXIT
 mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-out" \
   "$SCRATCH/contracts-cache" "$SCRATCH/ui-dist" "$SCRATCH/ui-results" \
-  "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/e2e-runtime" "$SCRATCH/empty-tools"
+  "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/e2e-runtime" "$SCRATCH/proof-output" \
+  "$SCRATCH/lean-lake" "$SCRATCH/icp-cache" "$SCRATCH/empty-tools"
 chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
+
+bridge_prepare_mountpoint "$SOURCE_ROOT" scripts
+for path in node_modules ui/node_modules target contracts/out contracts/cache \
+  ui/dist ui/test-results .tools; do
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" "$path"
+done
 
 WRITABLE_UI_MOUNTS=()
 case "$MODE" in
   ui-fast|ui-e2e|real)
+    bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .tmp
     WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp")
     ;;
 esac
 if [[ "$MODE" == "real" ]]; then
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" ui/.e2e-runtime
   WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/e2e-runtime,dst=/workspace/ui/.e2e-runtime")
+fi
+
+WRITABLE_BUILD_MOUNTS=()
+if [[ "$MODE" == "proofs" ]]; then
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/output
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/lean/.lake
+  WRITABLE_BUILD_MOUNTS+=(
+    --mount "type=bind,src=$SCRATCH/proof-output,dst=/workspace/verification/output"
+    --mount "type=bind,src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake"
+  )
+fi
+if [[ "$MODE" == "icp" ]]; then
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" .icp/cache
+  WRITABLE_BUILD_MOUNTS+=(--mount "type=bind,src=$SCRATCH/icp-cache,dst=/workspace/.icp/cache")
+fi
+
+CACHE_MOUNTS=()
+if [[ "$MODE" == "real" ]]; then
+  [[ -d "$POLICY_ROOT/ui/.e2e-cache" && ! -L "$POLICY_ROOT/ui/.e2e-cache" ]] \
+    || { echo "trusted real-E2E artifact cache is missing" >&2; exit 1; }
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" ui/.e2e-cache
+  CACHE_MOUNTS+=(--mount "type=bind,src=$POLICY_ROOT/ui/.e2e-cache,dst=/workspace/ui/.e2e-cache,readonly")
 fi
 
 TOOL_MOUNTS=()
@@ -62,6 +102,7 @@ docker run --rm \
   --mount "type=bind,src=$SCRATCH/target,dst=/workspace/target" \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \
   --mount "type=bind,src=$SCRATCH/contracts-cache,dst=/workspace/contracts/cache" \
+  "${WRITABLE_BUILD_MOUNTS[@]}" \
   --mount "type=bind,src=$SCRATCH/ui-dist,dst=/workspace/ui/dist" \
   --mount "type=bind,src=$SCRATCH/ui-results,dst=/workspace/ui/test-results" \
   --mount "type=bind,src=$SCRATCH/empty-tools,dst=/workspace/.tools,readonly" \
@@ -69,6 +110,7 @@ docker run --rm \
   --mount "type=bind,src=$SCRATCH/tmp,dst=/scratch/tmp" \
   "${TOOL_MOUNTS[@]}" \
   --mount type=bind,src=/opt/hostedtoolcache,dst=/opt/hostedtoolcache,readonly \
+  "${CACHE_MOUNTS[@]}" \
   --env CI=true \
   --env HOME=/scratch/home \
   --env TMPDIR=/scratch/tmp \
