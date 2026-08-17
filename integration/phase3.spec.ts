@@ -986,6 +986,36 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
   });
 
+  async function stops_an_expired_pending_authorization_before_installing_a_signature() {
+    const { evm, bridge } = await setup();
+    const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });
+    expect(result).toHaveProperty("Ok.state.EscrowedUnquoted");
+    await (evm.actor as any).set_deposit_mints_paused(true);
+    await advanceDepositJobs(bridge, result.Ok.deposit_id);
+
+    const pending: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    expect(phaseName(pending[0].state)).toBe("AuthorizationPending");
+    expect(pending[0].mint_authorization[0].signature).toEqual([]);
+    const deadline = BigInt(pending[0].mint_authorization[0].deadline);
+    const now = BigInt(Math.floor((await pic!.getTime()) / 1_000));
+    expect(deadline).toBeGreaterThan(now);
+
+    await pic!.advanceTime(Number((deadline - now + 61n) * 1_000n));
+    await pic!.tick(30);
+
+    const stopped: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    expect(phaseName(stopped[0].state)).toBe("AuthorizationPending");
+    expect(stopped[0].mint_authorization[0].signature).toEqual([]);
+    expect(stopped[0].last_settlement_stop_reason).toEqual([
+      "Mint authorization expired before signing completed",
+    ]);
+  }
+
+  it(
+    "stops an expired pending authorization before installing a signature",
+    stops_an_expired_pending_authorization_before_installing_a_signature,
+  );
+
   it("rate-limits new deposit admissions while preserving idempotent retries", async () => {
     const { bridge } = await setup();
     const request = (tag: number) => ({ owner_sequence: BigInt(tag - 72), base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });

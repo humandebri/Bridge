@@ -243,6 +243,11 @@ cat >"$T/bundle/signer-snapshot.json" <<'JSON'
 {}
 JSON
 : >"$TRACE"; BRIDGE_ICP_IDENTITY=observer "$DRIVER_ROOT/scripts/production-live-preflight.sh" capture "$T/bundle" "$T/snapshot.json"
+python3 - "$T/snapshot.json" <<'PY'
+import json,sys
+snapshot=json.load(open(sys.argv[1]))
+assert snapshot['public_config']['minimum_withdrawal_id']=='0x'+'00'*31+'01'
+PY
 if grep -q sign_chain_key_challenge "$TRACE"; then
   echo "live preflight called the retired chain-key challenge endpoint" >&2; exit 1
 fi

@@ -14,5 +14,8 @@ RUN apt-get update \
 RUN groupadd --gid 10001 bridge-ci \
     && useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash bridge-ci
 
+RUN git config --system --add safe.directory /workspace \
+    && git config --system --add safe.directory /workspace/contracts/lib/openzeppelin-contracts
+
 USER 10001:10001
 WORKDIR /workspace

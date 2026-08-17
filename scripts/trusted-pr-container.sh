@@ -38,7 +38,8 @@ SCRATCH="$(mktemp -d "${RUNNER_TEMP:-/tmp}/bridge-pr-${MODE}.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT INT TERM
 mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-out" \
   "$SCRATCH/contracts-cache" "$SCRATCH/ui-dist" "$SCRATCH/ui-results" \
-  "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/e2e-runtime" "$SCRATCH/proof" "$SCRATCH/empty-tools"
+  "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/e2e-runtime" "$SCRATCH/lean-lake" \
+  "$SCRATCH/icp-cache" "$SCRATCH/proof" "$SCRATCH/empty-tools"
 chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
 
@@ -79,6 +80,14 @@ WRITABLE_UI_MOUNTS=()
 if [[ "$NEEDS_UI_DEPS" -eq 1 ]]; then
   WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp")
 fi
+
+WRITABLE_BUILD_MOUNTS=()
+if [[ "$MODE" == "proofs" ]]; then
+  WRITABLE_BUILD_MOUNTS+=(--mount "type=bind,src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake")
+fi
+if [[ "$MODE" == "icp" ]]; then
+  WRITABLE_BUILD_MOUNTS+=(--mount "type=bind,src=$SCRATCH/icp-cache,dst=/workspace/.icp/cache")
+fi
 if [[ "$MODE" == "real" ]]; then
   WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/e2e-runtime,dst=/workspace/ui/.e2e-runtime")
 fi
@@ -95,6 +104,7 @@ docker run --rm \
   --mount "type=bind,src=$SCRATCH/target,dst=/workspace/target" \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \
   --mount "type=bind,src=$SCRATCH/contracts-cache,dst=/workspace/contracts/cache" \
+  "${WRITABLE_BUILD_MOUNTS[@]}" \
   "${WRITABLE_UI_MOUNTS[@]}" \
   --mount "type=bind,src=$SCRATCH/ui-dist,dst=/workspace/ui/dist" \
   --mount "type=bind,src=$SCRATCH/ui-results,dst=/workspace/ui/test-results" \

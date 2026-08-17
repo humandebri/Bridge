@@ -448,6 +448,11 @@ def one(key):
   return values[0]
 def address_value(value):
   return '0x'+bytes(value).hex() if isinstance(value,list) else str(value).lower()
+def hash32_value(value,key):
+  normalized='0x'+bytes(value).hex() if isinstance(value,list) else str(value).lower()
+  if not re.fullmatch(r'0x[0-9a-f]{64}',normalized) or int(normalized,16)==0:
+    raise SystemExit(f'Canister public config {key} is not a nonzero 32-byte value')
+  return normalized
 base_result=json.load(open(root/'base-state.json')); state=base_result['state']; agree=base_result['agreeing_providers']
 height=state['height']; bhash=state['hash']; base=state['base_bridge_signer']; runtime_hash=state['bridge_runtime_bytecode_sha256']
 delay=state['timelock_minimum_delay_seconds']; self_admin=state['timelock_self_admin']
@@ -484,9 +489,8 @@ d=rpc_digests[0]; actual_rpc_digest=bytes(d).hex() if isinstance(d,list) else st
 if actual_rpc_digest!=expected_rpc_digest: raise SystemExit('Canister RPC URL digest drift')
 if len(deployment_instances)!=1: raise SystemExit('Canister deployment instance ID missing')
 deployment_instance=deployment_instances[0]
-if isinstance(deployment_instance,list): deployment_instance='0x'+bytes(deployment_instance).hex()
-else: deployment_instance=str(deployment_instance).lower()
-if not re.fullmatch(r'0x[0-9a-f]{64}',deployment_instance) or int(deployment_instance[2:],16)==0: raise SystemExit('Canister deployment instance ID invalid')
+deployment_instance=hash32_value(deployment_instance,'deployment_instance_id')
+minimum_withdrawal_id=hash32_value(one('minimum_withdrawal_id'),'minimum_withdrawal_id')
 governance_replacement=one('governance_replacement'); governance_evm_fee=one('governance_evm_fee'); fee_recipient=one('fee_recipient')
 if not isinstance(governance_replacement,dict) or not isinstance(governance_evm_fee,dict) or not isinstance(fee_recipient,dict): raise SystemExit('Canister public config nested values are malformed')
 subaccount=fee_recipient.get('subaccount',[])
@@ -494,6 +498,7 @@ public_config={
  'base_chain_id':num(one('base_chain_id')),'bridge_contract':address_value(one('bridge_contract')),
  'timelock_contract':address_value(one('timelock_contract')),'ledger_canister_id':str(one('ledger_canister_id')),
  'deployment_instance_id':deployment_instance,
+ 'minimum_withdrawal_id':minimum_withdrawal_id,
  'index_canister_id':str(one('index_canister_id')),'schema_version':num(one('schema_version')),
  'expected_bridge_signer':address_value(one('expected_bridge_signer')),'governance_operator':address_value(one('governance_operator')),
  'evm_rpc_canister_id':str(one('evm_rpc_canister_id')),'rpc_provider_urls_sha256':actual_rpc_digest,

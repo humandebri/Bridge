@@ -224,12 +224,17 @@ def snapshot(policy: dict[str, Any], identity: str, did: Path) -> dict[str, Any]
     module_hash = str(canister_status.get("module_hash", "")).lower().removeprefix("0x")
     if not re.fullmatch(r"[0-9a-f]{64}", module_hash):
         fail("canister status did not expose a module hash")
+    schema_version = nat(public, "schema_version")
+    minimum_withdrawal_id = None
+    if schema_version >= policy["stable_schema_version"]:
+        minimum_withdrawal_id = "0x" + blob(public, "minimum_withdrawal_id", length=32).hex()
     return {
         "canister_id": run([
             "icp", "canister", "status", policy["canister_name"], "--id-only",
             *icp_base(policy, identity),
         ]).strip(),
-        "schema_version": nat(public, "schema_version"),
+        "schema_version": schema_version,
+        "minimum_withdrawal_id": minimum_withdrawal_id,
         "deployment_instance_id": "0x" + blob(public, "deployment_instance_id", length=32).hex(),
         "base_chain_id": nat(public, "base_chain_id"),
         "evm_rpc_canister_id": principal(public, "evm_rpc_canister_id"),
@@ -246,6 +251,7 @@ def verify_snapshot(
     *,
     phase: str,
     wasm_hash: str,
+    minimum_withdrawal_id: str,
     migration_source: dict[str, Any] | None = None,
 ) -> None:
     expected = {
@@ -266,9 +272,11 @@ def verify_snapshot(
     elif phase == "before":
         expected["module_sha256"] = policy["before_module_sha256"]
         expected["rpc_provider_urls_sha256"] = policy["before_rpc_urls_sha256"]
+        expected["minimum_withdrawal_id"] = minimum_withdrawal_id
     else:
         expected["module_sha256"] = wasm_hash
         expected["rpc_provider_urls_sha256"] = policy["after_rpc_urls_sha256"]
+        expected["minimum_withdrawal_id"] = minimum_withdrawal_id
     for field, value in expected.items():
         if snapshot_value.get(field) != value:
             fail(f"{phase} snapshot {field} does not match the reviewed policy")
@@ -415,7 +423,7 @@ def write_evidence(path: Path, value: dict[str, Any]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true")
-    parser.add_argument("--repair-missing-candid-metadata", action="store_true")
+    parser.add_argument("--migrate-v32-to-v33", action="store_true")
     parser.add_argument("--wasm", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     return parser.parse_args()
@@ -438,6 +446,10 @@ def main() -> None:
     policy = load_object(DEFAULT_POLICY, "RPC replacement policy")
     validate_policy(policy)
     profile = load_object(DEFAULT_PROFILE, "staging frontend profile")
+    profile_boundary = profile.get("minimumWithdrawalId")
+    if not isinstance(profile_boundary, str) or not re.fullmatch(r"0x[0-9a-f]{64}", profile_boundary) \
+        or int(profile_boundary, 16) == 0:
+        fail("frontend profile minimumWithdrawalId must be a nonzero lowercase 32-byte value")
     profile_binding = {
         "environment": policy["environment"],
         "bridgeCanisterId": policy["canister_id"],
@@ -466,6 +478,9 @@ def main() -> None:
         run_storage_validation(policy, identity, DEFAULT_DID)
         before = snapshot(policy, identity, DEFAULT_DID)
     digest = before["rpc_provider_urls_sha256"]
+    if args.migrate_v32_to_v33 and before["schema_version"] != V32_SCHEMA_VERSION:
+        fail("--migrate-v32-to-v33 requires a reviewed v32 staging source state")
+    boundary_evidence = None
     if before["schema_version"] == V32_SCHEMA_VERSION:
         migration_source = next(
             (
@@ -482,6 +497,7 @@ def main() -> None:
             policy,
             phase="migration-before",
             wasm_hash=wasm_hash,
+            minimum_withdrawal_id=profile_boundary,
             migration_source=migration_source,
         )
         candid_hash = verify_candid_compatibility(policy, ic_host, DEFAULT_DID)
@@ -492,19 +508,33 @@ def main() -> None:
         verify_provider_chains(policy)
         boundary_evidence = capture_withdrawal_boundary(policy)
         boundary = boundary_evidence["minimum_withdrawal_id"]
+        if boundary != profile_boundary:
+            fail("captured withdrawal boundary does not match the reviewed frontend profile")
         migration = {"minimum_withdrawal_id": boundary}
-        if not args.repair_missing_candid_metadata:
-            fail("v32 staging state requires the explicit migration/repair flag")
+        if not args.migrate_v32_to_v33:
+            fail("v32 staging state requires the explicit migration flag")
         if not args.execute:
             print(json.dumps({"result": "v32-to-v33-preflight-passed", "before": before, "boundary": boundary}, sort_keys=True))
             return
         install(policy, identity, wasm, migration=migration)
         after = snapshot(policy, identity, DEFAULT_DID)
-        verify_snapshot(after, policy, phase="after", wasm_hash=wasm_hash)
+        verify_snapshot(
+            after,
+            policy,
+            phase="after",
+            wasm_hash=wasm_hash,
+            minimum_withdrawal_id=profile_boundary,
+        )
         after_candid_hash = verify_live_metadata(policy, identity, ic_host, DEFAULT_DID)
         result = "migrated-and-rpc-replaced"
     elif digest == policy["after_rpc_urls_sha256"]:
-        verify_snapshot(before, policy, phase="after", wasm_hash=wasm_hash)
+        verify_snapshot(
+            before,
+            policy,
+            phase="after",
+            wasm_hash=wasm_hash,
+            minimum_withdrawal_id=profile_boundary,
+        )
         candid_hash = verify_live_metadata(policy, identity, ic_host, DEFAULT_DID)
         verify_provider_chains(policy)
         if not args.execute:
@@ -514,7 +544,13 @@ def main() -> None:
         after = before
         after_candid_hash = candid_hash
     else:
-        verify_snapshot(before, policy, phase="before", wasm_hash=wasm_hash)
+        verify_snapshot(
+            before,
+            policy,
+            phase="before",
+            wasm_hash=wasm_hash,
+            minimum_withdrawal_id=profile_boundary,
+        )
         candid_hash = verify_live_metadata(policy, identity, ic_host, DEFAULT_DID)
         verify_provider_chains(policy)
         if not args.execute:
@@ -522,11 +558,17 @@ def main() -> None:
             return
         install(policy, identity, wasm)
         after = snapshot(policy, identity, DEFAULT_DID)
-        verify_snapshot(after, policy, phase="after", wasm_hash=wasm_hash)
+        verify_snapshot(
+            after,
+            policy,
+            phase="after",
+            wasm_hash=wasm_hash,
+            minimum_withdrawal_id=profile_boundary,
+        )
         after_candid_hash = verify_live_metadata(policy, identity, ic_host, DEFAULT_DID)
         result = "upgraded"
     evidence = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "staging-rpc-provider-replacement",
         "result": result,
         "source_commit": head,
@@ -536,6 +578,9 @@ def main() -> None:
         "live_candid_sha256_before": candid_hash,
         "live_candid_sha256_after": after_candid_hash,
         "policy_sha256": sha256(DEFAULT_POLICY),
+        "profile_sha256": sha256(DEFAULT_PROFILE),
+        "boundary_capture": boundary_evidence,
+        "minimum_withdrawal_id": after["minimum_withdrawal_id"],
         "before": before,
         "after": after,
     }

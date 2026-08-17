@@ -1183,6 +1183,15 @@ struct NotificationAdmissionControl {
     failed_transactions: Vec<NotificationFailureCooldown>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct V32NotificationAdmissionControl {
+    window_id: u64,
+    #[serde(alias = "global_count")]
+    verification_count: u16,
+    #[serde(default)]
+    ingestion_count: u16,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct NotificationFailureCooldown {
     transaction_hash: [u8; 32],
@@ -2171,6 +2180,17 @@ fn migrate_v32_to_v33(
             .map_err(|_| DbError::Constraint("cannot decode v32 config".into()))?
             .ok_or_else(|| DbError::Constraint("missing v32 config".into()))?;
 
+            let notification_blob = connection.query_scalar::<Vec<u8>>(
+                "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let old_notification = decode::<V32NotificationAdmissionControl>(
+                &StableBlob::new(notification_blob).map_err(|_| {
+                    DbError::Constraint("invalid v32 notification admission".into())
+                })?,
+            )
+            .map_err(|_| DbError::Constraint("cannot decode v32 notification admission".into()))?;
+
             let counters_blob = connection.query_scalar::<Vec<u8>>(
                 "SELECT counters FROM singleton_state WHERE id = 1",
                 params![],
@@ -2226,9 +2246,17 @@ fn migrate_v32_to_v33(
             let config_blob = encode(&Some(next_config))
                 .map_err(|_| DbError::Constraint("cannot encode v33 config".into()))?
                 .to_sql_bytes();
+            let notification_blob = encode(&NotificationAdmissionControl {
+                window_id: old_notification.window_id,
+                verification_count: old_notification.verification_count,
+                ingestion_count: old_notification.ingestion_count,
+                failed_transactions: Vec::new(),
+            })
+            .map_err(|_| DbError::Constraint("cannot encode v33 notification admission".into()))?
+            .to_sql_bytes();
             connection.execute(
-                "UPDATE singleton_state SET config = ?1 WHERE id = 1",
-                params![config_blob],
+                "UPDATE singleton_state SET config = ?1, notification_admission = ?2 WHERE id = 1",
+                params![config_blob, notification_blob],
             )?;
             connection.execute(
                 "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
@@ -11364,6 +11392,35 @@ mod tests {
             .expect("mark stored schema");
     }
 
+    #[cfg(feature = "test-deployment")]
+    fn rewrite_fixture_as_v32(
+        store: &StableStore,
+        initial: &BridgeInitArgs,
+        notification: V32NotificationAdmissionControl,
+    ) {
+        let config = crate::config::V32ImmutableBridgeConfig::from_current(
+            &ImmutableBridgeConfig::from_init(initial),
+        );
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET config = ?1, notification_admission = ?2 WHERE id = 1",
+                    params![
+                        encode(&Some(config)).expect("encode v32 config").to_sql_bytes(),
+                        encode(&notification)
+                            .expect("encode v32 notification admission")
+                            .to_sql_bytes()
+                    ],
+                )?;
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = 32 WHERE id = 1",
+                    params![],
+                )
+            })
+            .expect("write genuine v32 singleton blobs");
+    }
+
     #[test]
     #[serial]
     fn obsolete_v32_schema_fails_closed_even_when_empty() {
@@ -11379,10 +11436,40 @@ mod tests {
         ));
     }
 
+    #[test]
+    #[serial]
+    fn current_schema_rejects_the_v32_config_shape() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize current schema");
+        let old_config = crate::config::V32ImmutableBridgeConfig::from_current(
+            &ImmutableBridgeConfig::from_init(&initial),
+        );
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET config = ?1 WHERE id = 1",
+                    params![encode(&Some(old_config))
+                        .expect("encode v32 config")
+                        .to_sql_bytes()],
+                )
+            })
+            .expect("replace current config with v32 shape");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen_after_upgrade(memory).err(),
+            Some(StorageError::DecodeFailed)
+        );
+    }
+
     #[cfg(feature = "test-deployment")]
     #[test]
     #[serial]
-    fn v32_to_v33_migration_preserves_terminal_history_and_sets_boundary_atomically() {
+    fn v32_to_v33_migration_preserves_terminal_history_notification_admission_and_sets_boundary_atomically(
+    ) {
         let memory = VectorMemory::default();
         let mut initial = config();
         initial.minimum_withdrawal_id = vec![0; 32];
@@ -11396,24 +11483,15 @@ mod tests {
         store
             .put_withdrawal(&paid)
             .expect("persist terminal history");
-        let v32 = crate::config::V32ImmutableBridgeConfig::from_current(
-            &ImmutableBridgeConfig::from_init(&initial),
+        rewrite_fixture_as_v32(
+            &store,
+            &initial,
+            V32NotificationAdmissionControl {
+                window_id: 7,
+                verification_count: 2,
+                ingestion_count: 1,
+            },
         );
-        store
-            .handle
-            .update(|connection| {
-                connection.execute(
-                    "UPDATE singleton_state SET config = ?1 WHERE id = 1",
-                    params![encode(&Some(v32))
-                        .expect("encode v32 config")
-                        .to_sql_bytes()],
-                )?;
-                connection.execute(
-                    "UPDATE bridge_metadata SET application_schema_version = 32 WHERE id = 1",
-                    params![],
-                )
-            })
-            .expect("mark live v32");
         drop(store);
 
         let boundary = vec![4; 32];
@@ -11435,6 +11513,21 @@ mod tests {
                 .minimum_withdrawal_id,
             boundary
         );
+        assert_eq!(
+            decode::<NotificationAdmissionControl>(
+                &reopened
+                    .notification_admission
+                    .get()
+                    .expect("notification admission blob"),
+            )
+            .expect("migrated notification admission"),
+            NotificationAdmissionControl {
+                window_id: 7,
+                verification_count: 2,
+                ingestion_count: 1,
+                failed_transactions: Vec::new(),
+            }
+        );
         assert!(StableStore::reopen_after_upgrade(memory.clone()).is_ok());
         assert!(matches!(
             StableStore::reopen_after_upgrade_with_context(memory, Some(&context)),
@@ -11454,24 +11547,7 @@ mod tests {
         store
             .put_withdrawal(&withdrawal())
             .expect("persist liability");
-        let v32 = crate::config::V32ImmutableBridgeConfig::from_current(
-            &ImmutableBridgeConfig::from_init(&initial),
-        );
-        store
-            .handle
-            .update(|connection| {
-                connection.execute(
-                    "UPDATE singleton_state SET config = ?1 WHERE id = 1",
-                    params![encode(&Some(v32))
-                        .expect("encode v32 config")
-                        .to_sql_bytes()],
-                )?;
-                connection.execute(
-                    "UPDATE bridge_metadata SET application_schema_version = 32 WHERE id = 1",
-                    params![],
-                )
-            })
-            .expect("mark live v32");
+        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
         drop(store);
 
         let boundary = vec![4; 32];
@@ -11484,6 +11560,45 @@ mod tests {
         assert!(matches!(
             StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context)),
             Err(StorageError::SchemaMigrationRejected(_))
+        ));
+        assert!(matches!(
+            StableStore::reopen_after_upgrade(memory),
+            Err(StorageError::UnsupportedSchemaVersion(32))
+        ));
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn v32_to_v33_migration_rejects_a_malformed_notification_blob_atomically() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.minimum_withdrawal_id = vec![0; 32];
+        let store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize current fixture");
+        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
+                    params![vec![WIRE_VERSION, 0xff]],
+                )
+            })
+            .expect("corrupt v32 notification admission");
+        drop(store);
+
+        let boundary = vec![4; 32];
+        let context = SchemaMigrationContext {
+            migration_id: V32_TO_V33_MIGRATION_ID,
+            from_schema: 32,
+            to_schema: SCHEMA_VERSION,
+            minimum_withdrawal_id: &boundary,
+        };
+        assert!(matches!(
+            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context)),
+            Err(StorageError::SchemaMigrationRejected(message))
+                if message == "cannot decode v32 notification admission"
         ));
         assert!(matches!(
             StableStore::reopen_after_upgrade(memory),

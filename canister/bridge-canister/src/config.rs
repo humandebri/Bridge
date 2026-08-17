@@ -147,7 +147,6 @@ pub(crate) struct ImmutableBridgeConfig {
     pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
     pub deployment_instance_id: Vec<u8>,
-    #[serde(default = "unset_minimum_withdrawal_id")]
     pub minimum_withdrawal_id: Vec<u8>,
     pub ecdsa_key_name: String,
     pub ecdsa_derivation_path: Vec<Vec<u8>>,
@@ -206,7 +205,7 @@ pub(crate) struct V32ImmutableBridgeConfig {
 }
 
 impl V32ImmutableBridgeConfig {
-    #[cfg(all(test, feature = "test-deployment"))]
+    #[cfg(test)]
     pub(crate) fn from_current(value: &ImmutableBridgeConfig) -> Self {
         Self {
             ledger_canister_id: value.ledger_canister_id,
@@ -276,10 +275,6 @@ impl V32ImmutableBridgeConfig {
 
 const fn default_notification_ingestion_rate_limit_global() -> u16 {
     30
-}
-
-fn unset_minimum_withdrawal_id() -> Vec<u8> {
-    vec![0; 32]
 }
 
 impl ImmutableBridgeConfig {

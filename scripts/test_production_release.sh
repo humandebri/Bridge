@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-production-release.XXXXXX")"
 trap 'rm -rf "$TEST_TMP_ROOT"' EXIT
 
-mkdir -p "$TEST_TMP_ROOT/bundle-a" "$TEST_TMP_ROOT/bundle-b" "$TEST_TMP_ROOT/source/scripts" "$TEST_TMP_ROOT/source/src" "$TEST_TMP_ROOT/source/ui/scripts" "$TEST_TMP_ROOT/release-inputs"
+mkdir -p "$TEST_TMP_ROOT/bundle-a" "$TEST_TMP_ROOT/bundle-b" "$TEST_TMP_ROOT/source/scripts" "$TEST_TMP_ROOT/source/src" "$TEST_TMP_ROOT/source/ui/scripts" "$TEST_TMP_ROOT/release-inputs" "$TEST_TMP_ROOT/release-scratch"
 git -C "$TEST_TMP_ROOT/source" init -q
 git -C "$TEST_TMP_ROOT/source" config user.email bridge-test@example.invalid
 git -C "$TEST_TMP_ROOT/source" config user.name bridge-test
@@ -31,7 +31,7 @@ fn copy_dir(from:&Path,to:&Path){fs::create_dir_all(to).unwrap();for e in fs::re
 fn main(){let a:Vec<String>=env::args().skip(1).collect();fs::OpenOptions::new().create(true).append(true).open(env::var("GATE_CALLS").unwrap()).and_then(|mut f|{use std::io::Write;writeln!(f,"{}",a.join(" "))}).unwrap();if a[0].starts_with("render-"){copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate"{println!("{:064}",2);return}println!("gate=pass manifest_sha256={:064}",1);if env::var("GATE_RESULT").as_deref()==Ok("fail"){std::process::exit(1)}}
 RS
 printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' 'printf '\''{"bridge":{"transaction_hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","block_number":1,"block_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"timelock":{"transaction_hash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","block_number":1,"block_hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}\n'\'' >"$BRIDGE_DEPLOYMENT_BINDING_FILE"' >"$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' >"$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' '[[ "${ACTION_FAIL:-0}" == 0 ]] || exit 23' >"$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TEST_TMP_ROOT/source/scripts/production-live-preflight.sh"
 printf '%s\n' 'process.exit(0)' >"$TEST_TMP_ROOT/source/ui/scripts/production-assets.mjs"
 cp "$ROOT/scripts/production-release.sh" "$ROOT/scripts/production-validation.sh" "$TEST_TMP_ROOT/source/scripts/"
@@ -79,6 +79,7 @@ run_release() {
     BRIDGE_SOURCE_ROOT="$TEST_TMP_ROOT/ignored-source-override" \
     BRIDGE_PROFILE_BIN="$TEST_TMP_ROOT/malicious-profile" \
     PROFILE_OVERRIDE_MARKER="$TEST_TMP_ROOT/profile-override-used" \
+    TMPDIR="$TEST_TMP_ROOT/release-scratch" \
     GATE_RESULT="$GATE_RESULT" \
     "$TEST_TMP_ROOT/source/scripts/production-release.sh" "$@"
 }
@@ -157,8 +158,21 @@ mv "$TEST_TMP_ROOT/inputs-valid.json" "$TEST_TMP_ROOT/release-inputs/release-inp
 ACTION_MARKER="$TEST_TMP_ROOT/activated" run_release activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
   --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ -e "$TEST_TMP_ROOT/activated" ]]
+[[ -z "$(find "$TEST_TMP_ROOT/release-scratch" -mindepth 1 -maxdepth 1 -print -quit)" ]]
 rg -q '^verify-live ' "$TEST_TMP_ROOT/gate-calls"
 [[ ! -e "$TEST_TMP_ROOT/profile-override-used" ]]
+
+if ACTION_MARKER="$TEST_TMP_ROOT/activation-failed" ACTION_FAIL=1 run_release activate \
+  --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" \
+  -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"; then
+  echo "production activation propagated a successful status from a failed driver" >&2
+  exit 1
+else
+  [[ "$?" -eq 23 ]]
+fi
+[[ -e "$TEST_TMP_ROOT/activation-failed" ]]
+[[ -z "$(find "$TEST_TMP_ROOT/release-scratch" -mindepth 1 -maxdepth 1 -print -quit)" ]]
 
 printf '{"phase":"schedule","release_id":"release-test","source_revision":"%s"}\n' \
   "$SOURCE_REVISION" >"$TEST_TMP_ROOT/schedule-receipt.json"

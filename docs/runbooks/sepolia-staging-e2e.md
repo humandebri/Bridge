@@ -168,7 +168,7 @@ storage integrityがすべて更新後の値と一致する場合に限り、次
 
 ```sh
 BRIDGE_STAGING_IDENTITY=<identity> \
-  scripts/plan007/staging-canister-upgrade.sh --repair-missing-candid-metadata \
+  scripts/plan007/staging-canister-upgrade.sh --migrate-v32-to-v33 \
     --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
     --evidence /secure/work/staging-candid-metadata-repair.json
 

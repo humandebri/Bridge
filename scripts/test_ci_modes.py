@@ -69,6 +69,10 @@ class CiModeTests(unittest.TestCase):
         self.assertIn('python3 "$ROOT/scripts/test_check_claim_manifest.py"', body)
         self.assertIn("run_proof_stage claim-transaction-tests", body)
 
+    def test_shared_verus_kernels_may_be_const_or_non_const(self) -> None:
+        body = function_body("run_verus")
+        self.assertIn('pub (const )?fn ${kernel_name}\\b', body)
+
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
         body = function_body("run_proof_stage")
         before = body.index('proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"')

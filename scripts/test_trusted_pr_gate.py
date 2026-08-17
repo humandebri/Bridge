@@ -133,6 +133,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("proofs|ui|real) NEEDS_UI_DEPS=1", wrapper)
         self.assertIn("DEPENDENCY_MOUNTS", wrapper)
         self.assertIn("WRITABLE_UI_MOUNTS", wrapper)
+        self.assertIn("WRITABLE_BUILD_MOUNTS", wrapper)
         self.assertIn(
             "src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp",
             wrapper,
@@ -142,6 +143,16 @@ class TrustedPrGateTests(unittest.TestCase):
             wrapper,
         )
         self.assertIn('if [[ "$MODE" == "real" ]]', wrapper)
+        self.assertIn('if [[ "$MODE" == "proofs" ]]', wrapper)
+        self.assertIn('if [[ "$MODE" == "icp" ]]', wrapper)
+        self.assertIn(
+            "src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake",
+            wrapper,
+        )
+        self.assertIn(
+            "src=$SCRATCH/icp-cache,dst=/workspace/.icp/cache",
+            wrapper,
+        )
         self.assertNotIn("dst=/workspace/.local", wrapper)
 
     def test_each_check_uses_fresh_read_only_container_boundaries(self) -> None:
@@ -169,6 +180,14 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("/home/runner/.cache/ms-playwright", wrapper)
         self.assertNotIn("GITHUB_TOKEN", wrapper)
         self.assertNotIn("GH_TOKEN", wrapper)
+
+        dockerfile = (ROOT / ".github" / "trusted-pr" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("git config --system --add safe.directory /workspace", dockerfile)
+        self.assertIn(
+            "git config --system --add safe.directory /workspace/contracts/lib/openzeppelin-contracts",
+            dockerfile,
+        )
+        self.assertNotIn("safe.directory '*'", dockerfile)
 
     def test_policy_changes_require_current_codeowner_approval_and_untrusted_tests(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
