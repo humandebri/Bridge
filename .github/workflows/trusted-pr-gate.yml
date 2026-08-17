@@ -114,10 +114,11 @@ jobs:
       - name: Prefetch locked Rust dependencies from trusted policy
         run: cargo fetch --locked --manifest-path trusted-policy/Cargo.toml
       - name: Prefetch pinned ICP recipes from trusted policy
+        working-directory: trusted-policy
         env:
           ICP_CLI_DISABLE_UPDATE: "1"
           ICP_TELEMETRY_DISABLED: "1"
-        run: icp project show --project-root-override trusted-policy >/dev/null
+        run: icp project show --project-root-override . >/dev/null
       - name: Install trusted workspace dependencies
         run: pnpm --dir trusted-policy install --frozen-lockfile
       - name: Install trusted UI dependencies without lifecycle scripts
