@@ -33,7 +33,7 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-out" \
-  "$SCRATCH/contracts-cache" "$SCRATCH/contracts-staging-out" "$SCRATCH/ui-dist" \
+  "$SCRATCH/contracts-cache" "$SCRATCH/contracts-staging-out" "$SCRATCH/contracts-staging-cache" "$SCRATCH/ui-dist" \
   "$SCRATCH/ui-results" "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/ui-vite-temp" \
   "$SCRATCH/e2e-runtime" "$SCRATCH/proof-output" "$SCRATCH/lean-lake" \
   "$SCRATCH/icp-cache" "$SCRATCH/empty-tools" \
@@ -51,6 +51,7 @@ while IFS= read -r candidate_script; do
   chmod +x "$POLICY_ROOT/$candidate_script"
 done < <(git -C "$SOURCE_ROOT" ls-files scripts/)
 for path in node_modules ui/node_modules target contracts/out contracts/cache \
+  contracts/out-staging contracts/cache-staging \
   ui/dist ui/test-results .tools; do
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" "$path"
 done
@@ -84,7 +85,11 @@ if [[ "$MODE" == "icp" ]]; then
 fi
 if [[ "$MODE" == "real" ]]; then
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" contracts/out-staging
-  WRITABLE_BUILD_MOUNTS+=(--mount "type=bind,src=$SCRATCH/contracts-staging-out,dst=/workspace/contracts/out-staging")
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" contracts/cache-staging
+  WRITABLE_BUILD_MOUNTS+=(
+    --mount "type=bind,src=$SCRATCH/contracts-staging-out,dst=/workspace/contracts/out-staging"
+    --mount "type=bind,src=$SCRATCH/contracts-staging-cache,dst=/workspace/contracts/cache-staging"
+  )
 fi
 
 CACHE_MOUNTS=()
