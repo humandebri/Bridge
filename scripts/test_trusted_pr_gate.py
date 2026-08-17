@@ -157,6 +157,8 @@ class TrustedPrGateTests(unittest.TestCase):
             "src=/home/runner/.elan/toolchains,dst=/scratch/home/.elan/toolchains,readonly",
             wrapper,
         )
+        self.assertNotIn("trusted Elan settings are missing", wrapper)
+        self.assertNotIn("cp /home/runner/.elan/settings.toml", wrapper)
         self.assertIn("BRIDGE_TRUSTED_DEPS_READY=1", wrapper)
         self.assertIn("PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false", wrapper)
         self.assertIn("ELAN_HOME=/scratch/home/.elan", wrapper)

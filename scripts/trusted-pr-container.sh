@@ -89,11 +89,8 @@ done
 [[ -x /home/runner/.svm/0.8.36/solc-0.8.36 ]] \
   || { echo "trusted Solidity compiler is missing" >&2; exit 1; }
 TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.svm,dst=/scratch/home/.svm,readonly")
-[[ -f /home/runner/.elan/settings.toml && ! -L /home/runner/.elan/settings.toml ]] \
-  || { echo "trusted Elan settings are missing" >&2; exit 1; }
 [[ -d /home/runner/.elan/toolchains && ! -L /home/runner/.elan/toolchains ]] \
   || { echo "trusted Lean toolchains are missing" >&2; exit 1; }
-cp /home/runner/.elan/settings.toml "$SCRATCH/home/.elan/settings.toml"
 TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.elan/toolchains,dst=/scratch/home/.elan/toolchains,readonly")
 [[ -d /home/runner/.local/share/icp-cli/pkg && ! -L /home/runner/.local/share/icp-cli/pkg ]] \
   || { echo "trusted ICP package cache is missing" >&2; exit 1; }
