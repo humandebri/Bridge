@@ -36,7 +36,8 @@ mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-ou
   "$SCRATCH/contracts-cache" "$SCRATCH/ui-dist" "$SCRATCH/ui-results" \
   "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/e2e-runtime" "$SCRATCH/proof-output" \
   "$SCRATCH/lean-lake" "$SCRATCH/icp-cache" "$SCRATCH/empty-tools" \
-  "$SCRATCH/home/.svm"
+  "$SCRATCH/home/.svm" "$SCRATCH/home/.elan/toolchains" \
+  "$SCRATCH/home/.local/share/icp-cli/pkg" "$SCRATCH/home/.config"
 chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
 
@@ -88,6 +89,15 @@ done
 [[ -x /home/runner/.svm/0.8.36/solc-0.8.36 ]] \
   || { echo "trusted Solidity compiler is missing" >&2; exit 1; }
 TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.svm,dst=/scratch/home/.svm,readonly")
+[[ -f /home/runner/.elan/settings.toml && ! -L /home/runner/.elan/settings.toml ]] \
+  || { echo "trusted Elan settings are missing" >&2; exit 1; }
+[[ -d /home/runner/.elan/toolchains && ! -L /home/runner/.elan/toolchains ]] \
+  || { echo "trusted Lean toolchains are missing" >&2; exit 1; }
+cp /home/runner/.elan/settings.toml "$SCRATCH/home/.elan/settings.toml"
+TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.elan/toolchains,dst=/scratch/home/.elan/toolchains,readonly")
+[[ -d /home/runner/.local/share/icp-cli/pkg && ! -L /home/runner/.local/share/icp-cli/pkg ]] \
+  || { echo "trusted ICP package cache is missing" >&2; exit 1; }
+cp -R /home/runner/.local/share/icp-cli/pkg/. "$SCRATCH/home/.local/share/icp-cli/pkg/"
 if [[ -d /home/runner/.cache/ms-playwright ]]; then
   TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.cache/ms-playwright,dst=/home/runner/.cache/ms-playwright,readonly")
 fi
@@ -118,14 +128,16 @@ docker run --rm \
   "${CACHE_MOUNTS[@]}" \
   --env CI=true \
   --env BRIDGE_TRUSTED_DEPS_READY=1 \
+  --env PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false \
   --env HOME=/scratch/home \
   --env TMPDIR=/scratch/tmp \
   --env CARGO_HOME=/home/runner/.cargo \
   --env CARGO_NET_OFFLINE=true \
   --env RUSTUP_HOME=/home/runner/.rustup \
   --env FOUNDRY_OFFLINE=true \
-  --env ELAN_HOME=/home/runner/.elan \
-  --env XDG_DATA_HOME=/home/runner/.local/share \
+  --env ELAN_HOME=/scratch/home/.elan \
+  --env XDG_DATA_HOME=/scratch/home/.local/share \
+  --env XDG_CONFIG_HOME=/scratch/home/.config \
   --env ICP_CLI_DISABLE_UPDATE=1 \
   --env ICP_TELEMETRY_DISABLED=1 \
   --env PATH="${PATH:?}" \
