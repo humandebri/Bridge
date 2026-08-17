@@ -111,6 +111,13 @@ jobs:
           version: v1.7.1
       - name: Install complete CI toolchain
         run: trusted-policy/scripts/install-ci-tools.sh all
+      - name: Prefetch locked Rust dependencies from trusted policy
+        run: cargo fetch --locked --manifest-path trusted-policy/Cargo.toml
+      - name: Prefetch pinned ICP recipes from trusted policy
+        env:
+          ICP_CLI_DISABLE_UPDATE: "1"
+          ICP_TELEMETRY_DISABLED: "1"
+        run: icp project show --project-root-override trusted-policy >/dev/null
       - name: Install trusted workspace dependencies
         run: pnpm --dir trusted-policy install --frozen-lockfile
       - name: Install trusted UI dependencies without lifecycle scripts
@@ -118,6 +125,9 @@ jobs:
       - name: Install Chromium when required
         if: matrix.area == 'ui' || matrix.area == 'real'
         run: pnpm --dir trusted-policy/ui exec playwright install --with-deps chromium
+      - name: Prefetch verified real-E2E ledger artifacts
+        if: matrix.area == 'real'
+        run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
       - name: Build the pinned isolation image from trusted policy
         run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
       - name: Check out exact untrusted head as read-only container input

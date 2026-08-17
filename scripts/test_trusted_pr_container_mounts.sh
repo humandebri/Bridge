@@ -43,6 +43,7 @@ chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
 
 docker run --rm \
+  --user "$(id -u):$(id -g)" \
   --read-only \
   --network none \
   --cap-drop ALL \
@@ -64,6 +65,7 @@ docker run --rm \
   --mount "type=bind,src=$SCRATCH/e2e-runtime,dst=/workspace/ui/.e2e-runtime" \
   --mount "type=bind,src=$SCRATCH/empty-tools,dst=/workspace/.tools,readonly" \
   "$IMAGE" /bin/bash -ceu '
+    git -C /workspace status --short >/dev/null
     touch /workspace/target/write
     touch /workspace/contracts/out/write
     touch /workspace/contracts/cache/write
