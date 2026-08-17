@@ -58,6 +58,23 @@ install_ic_wasm() {
   test "$(ic-wasm --version)" = "ic-wasm 0.10.0"
 }
 
+install_solc() {
+  local version="0.8.36"
+  local release="solc-linux-amd64-v0.8.36+commit.8a079791"
+  local svm_dir="$HOME/.svm/$version"
+  local solc="$svm_dir/solc-$version"
+
+  mkdir -p "$svm_dir"
+  curl --proto '=https' --tlsv1.2 -LsSf \
+    -o "$solc" \
+    "https://binaries.soliditylang.org/linux-amd64/$release"
+  echo "c8d35afdddc3cd2743ee88b8f25e0fecd16e2bdd5f2120f37e52cd9cc45ae0e6  $solc" \
+    | sha256sum --check
+  chmod +x "$solc"
+  printf '%s\n' "$version" >"$HOME/.svm/.global-version"
+  test "$("$solc" --version | sed -n 's/^Version: //p')" = "0.8.36+commit.8a079791.Linux.g++"
+}
+
 install_proof_tools() {
   local z3_archive="/tmp/z3.zip"
   local verus_archive="/tmp/verus.zip"
@@ -102,15 +119,19 @@ case "$MODE" in
     install_icp
     install_ic_wasm
     ;;
+  solc)
+    install_solc
+    ;;
   proof)
     install_proof_tools
     ;;
   all)
     install_proof_tools
     install_ic_wasm
+    install_solc
     ;;
   *)
-    echo "usage: $0 {didc|icp|proof|all}" >&2
+    echo "usage: $0 {didc|icp|solc|proof|all}" >&2
     exit 2
     ;;
 esac

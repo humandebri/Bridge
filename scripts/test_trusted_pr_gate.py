@@ -83,6 +83,16 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("path: source", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh all", workflow)
         self.assertIn(
+            "cargo fetch --locked --manifest-path trusted-policy/Cargo.toml",
+            workflow,
+        )
+        self.assertIn(
+            "icp project show --project-root-override trusted-policy",
+            workflow,
+        )
+        self.assertIn("ICP_CLI_DISABLE_UPDATE: \"1\"", workflow)
+        self.assertIn("ICP_TELEMETRY_DISABLED: \"1\"", workflow)
+        self.assertIn(
             "pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts",
             workflow,
         )
@@ -92,6 +102,19 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
         self.assertIn("trusted-policy/scripts/trusted-pr-container.sh source trusted-policy", workflow)
+        self.assertIn(
+            "node trusted-policy/ui/scripts/download-ledger-artifacts.mjs",
+            workflow,
+        )
+        for prefetch in (
+            "Prefetch locked Rust dependencies from trusted policy",
+            "Prefetch pinned ICP recipes from trusted policy",
+            "Prefetch verified real-E2E ledger artifacts",
+        ):
+            self.assertLess(
+                workflow.index(prefetch),
+                workflow.index("Check out exact untrusted head as read-only container input"),
+            )
         self.assertLess(
             workflow.index("Build the pinned isolation image from trusted policy"),
             workflow.index("Check out exact untrusted head as read-only container input"),
@@ -101,6 +124,7 @@ class TrustedPrGateTests(unittest.TestCase):
     def test_each_check_uses_fresh_read_only_container_boundaries(self) -> None:
         wrapper = (ROOT / "scripts" / "trusted-pr-container.sh").read_text(encoding="utf-8")
         self.assertIn("docker run --rm", wrapper)
+        self.assertIn('--user "$(id -u):$(id -g)"', wrapper)
         self.assertIn("--read-only", wrapper)
         self.assertIn("--network none", wrapper)
         self.assertIn("--cap-drop ALL", wrapper)
@@ -124,8 +148,34 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertNotIn("src=/home/runner,dst=/home/runner", wrapper)
         self.assertIn(".cargo .rustup .local .elan .foundry setup-pnpm", wrapper)
         self.assertIn("/home/runner/.cache/ms-playwright", wrapper)
+        self.assertIn("src=/home/runner/.svm,dst=/scratch/home/.svm,readonly", wrapper)
+        self.assertIn("BRIDGE_TRUSTED_DEPS_READY=1", wrapper)
+        self.assertIn("ELAN_HOME=/home/runner/.elan", wrapper)
+        self.assertIn("CARGO_NET_OFFLINE=true", wrapper)
+        self.assertIn("FOUNDRY_OFFLINE=true", wrapper)
+        self.assertIn("XDG_DATA_HOME=/home/runner/.local/share", wrapper)
+        self.assertIn("ICP_CLI_DISABLE_UPDATE=1", wrapper)
+        self.assertIn("ICP_TELEMETRY_DISABLED=1", wrapper)
         self.assertNotIn("GITHUB_TOKEN", wrapper)
         self.assertNotIn("GH_TOKEN", wrapper)
+
+        driver = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
+        self.assertIn("require_workspace_dependencies", driver)
+        self.assertIn("BRIDGE_TRUSTED_DEPS_READY", driver)
+
+        installer = (ROOT / "scripts" / "install-ci-tools.sh").read_text(encoding="utf-8")
+        self.assertIn("solc-linux-amd64-v0.8.36+commit.8a079791", installer)
+        self.assertIn(
+            "c8d35afdddc3cd2743ee88b8f25e0fecd16e2bdd5f2120f37e52cd9cc45ae0e6",
+            installer,
+        )
+        self.assertIn('>"$HOME/.svm/.global-version"', installer)
+
+        dockerfile = (ROOT / ".github" / "trusted-pr" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("safe.directory /workspace", dockerfile)
+        self.assertNotIn("safe.directory '*'", dockerfile)
 
     def test_mountpoint_preparation_creates_and_cleans_only_missing_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
