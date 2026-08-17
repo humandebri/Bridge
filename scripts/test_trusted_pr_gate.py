@@ -2,6 +2,9 @@
 """Fail closed if the trusted PR gate stops separating base policy from PR code."""
 
 from pathlib import Path
+import os
+import subprocess
+import tempfile
 import unittest
 
 
@@ -13,8 +16,14 @@ class TrustedPrGateTests(unittest.TestCase):
     def test_trusted_bootstrap_files_are_present_and_pinned(self) -> None:
         dockerfile = ROOT / ".github" / "trusted-pr" / "Dockerfile"
         wrapper = ROOT / "scripts" / "trusted-pr-container.sh"
+        mountpoints = ROOT / "scripts" / "trusted-pr-mountpoints.sh"
+        mount_smoke = ROOT / "scripts" / "test_trusted_pr_container_mounts.sh"
         self.assertTrue(dockerfile.is_file())
         self.assertTrue(wrapper.is_file())
+        self.assertTrue(mountpoints.is_file())
+        self.assertTrue(mount_smoke.is_file())
+        self.assertTrue(os.access(mountpoints, os.X_OK))
+        self.assertTrue(os.access(mount_smoke, os.X_OK))
         first_line = dockerfile.read_text(encoding="utf-8").splitlines()[0]
         self.assertRegex(first_line, r"^FROM ubuntu@sha256:[0-9a-f]{64}$")
 
@@ -101,6 +110,14 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
         self.assertIn("dst=/workspace/ui/.e2e-runtime", wrapper)
+        self.assertIn("dst=/workspace/ui/.e2e-cache,readonly", wrapper)
+        self.assertIn("dst=/workspace/verification/output", wrapper)
+        self.assertIn("dst=/workspace/verification/lean/.lake", wrapper)
+        self.assertIn("dst=/workspace/.icp/cache", wrapper)
+        self.assertNotIn("dst=/workspace/.local", wrapper)
+        self.assertIn('source "$POLICY_ROOT/scripts/trusted-pr-mountpoints.sh"', wrapper)
+        self.assertIn("bridge_prepare_candidate_mountpoint", wrapper)
+        self.assertIn("bridge_cleanup_mountpoints", wrapper)
         self.assertIn('if [[ "$MODE" == "real" ]]', wrapper)
         self.assertIn("dst=/workspace/.tools,readonly", wrapper)
         self.assertIn("BRIDGE_EXPECTED_HEAD_SHA", wrapper)
@@ -109,6 +126,64 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("/home/runner/.cache/ms-playwright", wrapper)
         self.assertNotIn("GITHUB_TOKEN", wrapper)
         self.assertNotIn("GH_TOKEN", wrapper)
+
+    def test_mountpoint_preparation_creates_and_cleans_only_missing_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "candidate"
+            (candidate / "ui").mkdir(parents=True)
+            subprocess.run(["git", "init", "--quiet", candidate], check=True)
+            command = f"""
+                set -euo pipefail
+                source {ROOT / 'scripts' / 'trusted-pr-mountpoints.sh'}
+                bridge_prepare_candidate_mountpoint "$1" ui/node_modules/.tmp
+                test -d "$1/ui/node_modules/.tmp"
+                bridge_cleanup_mountpoints
+                test -d "$1/ui"
+                test ! -e "$1/ui/node_modules"
+            """
+            subprocess.run(["bash", "-c", command, "bash", candidate], check=True)
+
+    def test_mountpoint_preparation_rejects_links_files_and_tracked_content(self) -> None:
+        helper = ROOT / "scripts" / "trusted-pr-mountpoints.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for kind in ("intermediate-link", "leaf-link", "file", "tracked"):
+                with self.subTest(kind=kind):
+                    candidate = root / kind
+                    candidate.mkdir()
+                    subprocess.run(["git", "init", "--quiet", candidate], check=True)
+                    if kind == "intermediate-link":
+                        (candidate / "outside").mkdir()
+                        (candidate / "ui").symlink_to(candidate / "outside", target_is_directory=True)
+                        relative = "ui/node_modules"
+                    else:
+                        (candidate / "ui").mkdir()
+                        relative = "ui/node_modules"
+                        if kind == "leaf-link":
+                            (candidate / "outside").mkdir()
+                            (candidate / relative).symlink_to(candidate / "outside", target_is_directory=True)
+                        elif kind == "file":
+                            (candidate / relative).write_text("not a directory", encoding="utf-8")
+                        else:
+                            (candidate / relative).mkdir()
+                            tracked = candidate / relative / "tracked.txt"
+                            tracked.write_text("tracked", encoding="utf-8")
+                            subprocess.run(
+                                ["git", "-C", candidate, "add", "--force", relative],
+                                check=True,
+                            )
+                    command = f"""
+                        set -euo pipefail
+                        source {helper}
+                        bridge_prepare_candidate_mountpoint "$1" "$2"
+                    """
+                    result = subprocess.run(
+                        ["bash", "-c", command, "bash", candidate, relative],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
 
     def test_policy_changes_require_current_codeowner_approval_and_untrusted_tests(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
