@@ -54,3 +54,5 @@ schema v33再オープンとwire v28をRust transaction testとsame-Wasm PocketI
 proof成功後は、同じclean revisionからBridge Canister WasmとBridge contract runtimeをofflineで二回buildし、二つのbuildとrelease manifestのSHA-256が完全一致しなければ不可逆操作へ進まない。
 
 このgateはローカルの固定sourceとtoolchainを信頼境界とする再現性検査であり、第三者CI provenance、compiler correctness、sourceとbinaryのsemantic equivalenceは主張しない。
+
+`verification/output/proof-receipt.json`はproof gateの生成成果物であり、git追跡しない。receiptのsource fingerprintは実行開始時のworking treeを固定するため、追跡されたソースに一致させる方式ではなく、release gate内で同一fingerprintのまま全stageが`pass`し`complete: true`になることを`ci-local.sh proofs`自身が強制する。receiptはgitignoreされているため、コミット内容とreceiptのfingerprintの一致は期待しない。gate bundleへは`proof-attestation.json`を含めず、receipt自体もGate bundleへ同梱しない。fingerprint不一致や未完了stage、非pass stageを含むreceiptはfail closedで再実行を要求する。

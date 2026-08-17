@@ -44,6 +44,15 @@ Phase 4（外部仮定の設計的削減、例: `ledger_fee_immutability`のrunt
 - `contracts/src/Bridge.sol`・`MintAccounting.sol`・`DeploymentPolicy.sol`の境界predicateをSMT harness（`assert`）化する。
 - `verification/smt/pass/*.sol`追加、`claims.tsv`の`smt_obligations`と`check_claim_manifest.py`の`REQUIRED_SCALAR_CALLS`に反映する。
 
+#### Phase 2 実施結果（厳密対応のみwiring）
+
+- SMT pass 4ファイルのうち`WithdrawalState.sol`・`BoundedValue.sol`・`BridgeAdministrationState.sol`はforge buildで検証されるが、どのclaimにも`_obligations`が無い（orphaned）状態だった。
+- 各orphaned harness関数のassertとclaimのabstract theoremを照合し、厳密一致するもののみwiring:
+  - `BoundedValue.sol#netAmount` / `#consumeWindow` → `deposit_admission`（abstract: `net = grossAmount - serviceFee ∧ net > 0`、`mintedInWindow + net ≤ mintWindowLimit`）。`smt_scalar`が`implementation-proved`に昇格。
+  - `BridgeAdministrationState.sol#boundedServiceFee` → `service_fee_maximum`（abstract: `serviceFee ≤ maximumServiceFee`、production `Bridge.sol#setServiceFee` が`serviceFeeIsValid`を使用）。`smt_scalar`が`implementation-proved`に昇格。
+- 厳密一致しないものはcosmetic proof回避のためwiringしない: `WithdrawalState.sol#commit`（Solidity側withdrawal commit算術。対応するabstract theoremが存在しない）、`BridgeAdministrationState.sol`の他関数（role分離・u128・timelock境界。該当claim abstractなし）。
+- `REQUIRED_SCALAR_CALLS`はBridge mint wrapperのwrapper refinement検証用のため、withdrawal/governance側の新規scalar呼び出しは追加しない（production `Bridge.sol` mint wrapperが呼ばない関数を必須化すると偽陰性になるため）。
+
 ### Phase 3 — Lean refinement vector網羅性拡張
 
 - `verification/lean/BridgeSpec/Vectors.lean`のcase追加（境界値、位相遷移の全組合せ、reject系）。
