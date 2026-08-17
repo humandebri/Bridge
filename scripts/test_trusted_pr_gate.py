@@ -87,7 +87,11 @@ class TrustedPrGateTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "icp project show --project-root-override trusted-policy",
+            "working-directory: trusted-policy",
+            workflow,
+        )
+        self.assertIn(
+            "icp project show --project-root-override .",
             workflow,
         )
         self.assertIn("ICP_CLI_DISABLE_UPDATE: \"1\"", workflow)
