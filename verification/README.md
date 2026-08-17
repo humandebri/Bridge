@@ -35,6 +35,16 @@ Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_ste
 
 schema v33再オープンとwire v28をRust transaction testとsame-Wasm PocketIC testで検証する。既存stagingに限り、固定migration ID `bridge-storage-v32-to-v33`、同じrecord-wire形式、明示boundary、state invariantを同一transactionで検証する一回限りのv32->v33 migrationを許可する。migration完了後と他のv32以下・未知schema・未知wireはfail closedにする。
 
+## Production-equivalence definition
+
+本番相当は「全claimが`implementation-proved`」を意味しない。全41 claimが`runtime_toolchain`（Lean kernel、Verus、Rust/LLVM、Solidity SMTChecker、Wasm/Solidity compilerから成るTCB）に依存するため、外部仮定を含むclaimは設計上必ず`partial`となり、`implementation-proved: 0`が上限である。TCBの正しさは証明の外側の仮定であり、証明で除去できない。
+
+本番相当とは以下を満たすことと定義する:
+
+1. release proof gateがclean checkoutから直接passする（後述）。
+2. 各claimの証拠強度（`implementation`、`smt_scalar`、`vector_consumer`、refinement網羅性）がmanifestへ登録済みで、最弱要素から算出したstatusが`partial`以上の誠実な証拠を保持する。
+3. 外部仮定は`verification/assumptions.tsv`へ登録され、依存claim・fault test・運用監視・fail-closed動作が明記されている。
+
 ## Release proof gate
 
 自己申告のproof attestationは使用しない。

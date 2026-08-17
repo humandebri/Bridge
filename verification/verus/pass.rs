@@ -497,6 +497,35 @@ proof fn canonical_probe_accepts_exact_block(receipt_block: int, snapshot_block:
         <==> receipt_block == snapshot_block
 {}
 
+proof fn withdrawal_admission_boundary_requires_well_formed_nonzero_ge_minimum(
+    well_formed_len: bool,
+    minimum_nonzero: bool,
+    observed_ge_minimum: bool,
+)
+    ensures kernel::withdrawal_id_is_admissible_spec(
+        well_formed_len, minimum_nonzero, observed_ge_minimum)
+            <==> well_formed_len && minimum_nonzero && observed_ge_minimum
+{}
+
+proof fn activation_preflight_requires_signer_match_and_paused_state(
+    signer_matches: bool,
+    deposits_paused: bool,
+    withdrawals_paused: bool,
+)
+    ensures kernel::activation_base_preflight_matches_spec(
+        signer_matches, deposits_paused, withdrawals_paused)
+            <==> signer_matches && deposits_paused && withdrawals_paused
+{}
+
+proof fn activation_postcondition_requires_unpaused_state(
+    deposits_paused: bool,
+    withdrawals_paused: bool,
+)
+    ensures kernel::activation_postcondition_matches_spec(
+        deposits_paused, withdrawals_paused)
+            <==> !deposits_paused && !withdrawals_paused
+{}
+
 spec fn finalized_identity_attests(
     observation: Option<(int, int)>, checkpoint: (int, int),
 ) -> bool {
