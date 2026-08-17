@@ -12,6 +12,7 @@ from pathlib import Path
 
 from claim_manifest import lean_contract_check_source, parse_claim_manifest
 from proof_fingerprint import source_fingerprint
+from source_resolution import is_inside_source_roots, source_path
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
@@ -49,8 +50,8 @@ def checked_link(value: str) -> tuple[Path, str]:
     path_text, symbol = value.split("#")
     if not IDENTIFIER.fullmatch(symbol):
         raise ValueError(f"invalid source symbol: {value}")
-    path = (ROOT / path_text).resolve()
-    if ROOT.resolve() not in path.parents or not path.is_file():
+    path = source_path(path_text).resolve()
+    if not is_inside_source_roots(path) or not path.is_file():
         raise ValueError(f"missing source link target: {value}")
     if re.search(rf"\b{re.escape(symbol)}\b", path.read_text(encoding="utf-8")) is None:
         raise ValueError(f"missing registered source symbol: {value}")

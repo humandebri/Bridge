@@ -129,6 +129,9 @@ jobs:
       - name: Prefetch verified real-E2E ledger artifacts
         if: matrix.area == 'real'
         run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
+      - name: Prefetch PocketIC runtime for real E2E
+        if: matrix.area == 'real'
+        run: node trusted-policy/ui/node_modules/@dfinity/pic/postinstall.mjs
       - name: Build the pinned isolation image from trusted policy
         run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
       - name: Check out exact untrusted head as read-only container input
