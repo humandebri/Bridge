@@ -1,0 +1,13 @@
+# Security policy and executable test infrastructure require repository-owner review.
+/.github/ @humandebri
+/scripts/ @humandebri
+/Cargo.lock @humandebri
+/pnpm-lock.yaml @humandebri
+/rust-toolchain.toml @humandebri
+/lean-toolchain @humandebri
+/contracts/test/ @humandebri
+/canister/**/tests/ @humandebri
+/integration/ @humandebri
+/ui/e2e*/ @humandebri
+/ui/src/**/*.test.* @humandebri
+/verification/ @humandebri
