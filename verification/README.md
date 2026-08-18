@@ -35,6 +35,16 @@ Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_ste
 
 schema v33再オープンとwire v28をRust transaction testとsame-Wasm PocketIC testで検証する。既存stagingに限り、固定migration ID `bridge-storage-v32-to-v33`、同じrecord-wire形式、明示boundary、state invariantを同一transactionで検証する一回限りのv32->v33 migrationを許可する。migration完了後と他のv32以下・未知schema・未知wireはfail closedにする。
 
+## Production-equivalence definition
+
+本番相当は「全claimが`implementation-proved`」を意味しない。全41 claimが`runtime_toolchain`（Lean kernel、Verus、Rust/LLVM、Solidity SMTChecker、Wasm/Solidity compilerから成るTCB）に依存するため、外部仮定を含むclaimは設計上必ず`partial`となり、`implementation-proved: 0`が上限である。TCBの正しさは証明の外側の仮定であり、証明で除去できない。
+
+本番相当とは以下を満たすことと定義する:
+
+1. release proof gateがclean checkoutから直接passする（後述）。
+2. 各claimの証拠強度（`implementation`、`smt_scalar`、`vector_consumer`、refinement網羅性）がmanifestへ登録済みで、最弱要素から算出したstatusが`partial`以上の誠実な証拠を保持する。
+3. 外部仮定は`verification/assumptions.tsv`へ登録され、依存claim・fault test・運用監視・fail-closed動作が明記されている。
+
 ## Release proof gate
 
 自己申告のproof attestationは使用しない。
@@ -44,3 +54,5 @@ schema v33再オープンとwire v28をRust transaction testとsame-Wasm PocketI
 proof成功後は、同じclean revisionからBridge Canister WasmとBridge contract runtimeをofflineで二回buildし、二つのbuildとrelease manifestのSHA-256が完全一致しなければ不可逆操作へ進まない。
 
 このgateはローカルの固定sourceとtoolchainを信頼境界とする再現性検査であり、第三者CI provenance、compiler correctness、sourceとbinaryのsemantic equivalenceは主張しない。
+
+`verification/output/proof-receipt.json`はproof gateの生成成果物であり、git追跡しない。receiptのsource fingerprintは実行開始時のworking treeを固定するため、追跡されたソースに一致させる方式ではなく、release gate内で同一fingerprintのまま全stageが`pass`し`complete: true`になることを`ci-local.sh proofs`自身が強制する。receiptはgitignoreされているため、コミット内容とreceiptのfingerprintの一致は期待しない。gate bundleへは`proof-attestation.json`を含めず、receipt自体もGate bundleへ同梱しない。fingerprint不一致や未完了stage、非pass stageを含むreceiptはfail closedで再実行を要求する。

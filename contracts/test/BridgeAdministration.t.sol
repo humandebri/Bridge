@@ -178,8 +178,16 @@ contract BridgeAdministrationTest is TestBase {
 
         vm.expectEmit(true, false, false, true, address(bridge));
         emit DepositMintsUnpaused(BASE_ADMIN_TIMELOCK);
+        uint256 pauseEpoch = bridge.mintAuthorizationEpoch();
         vm.prank(BASE_ADMIN_TIMELOCK);
         bridge.unpauseDepositMints();
+        assert(bridge.mintAuthorizationEpoch() == pauseEpoch + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IBridge.MintAuthorizationEpochMismatch.selector, pausedAuthorization.authorizationEpoch, pauseEpoch + 1
+            )
+        );
+        _submitMintAuthorization(BRIDGE_SIGNER_KEY, bridge, pausedAuthorization, address(this));
         vm.expectEmit(true, false, false, true, address(bridge));
         emit WithdrawalsUnpaused(BASE_ADMIN_TIMELOCK);
         vm.prank(BASE_ADMIN_TIMELOCK);
@@ -253,7 +261,7 @@ contract BridgeAdministrationTest is TestBase {
         emit BridgeSignerChanged(BRIDGE_SIGNER, NEW_BRIDGE_SIGNER);
         vm.prank(BASE_ADMIN_TIMELOCK);
         bridge.rotateBridgeSigner(NEW_BRIDGE_SIGNER);
-        assert(bridge.mintAuthorizationEpoch() == 2);
+        assert(bridge.mintAuthorizationEpoch() == 3);
         vm.expectRevert(IBridge.InvalidMintAuthorizationSignature.selector);
         _submitMintAuthorization(BRIDGE_SIGNER_KEY, bridge, oldAuthorization, address(this));
         _mintAuthorized(keccak256("new-signer"), USER, 11, SERVICE_FEE, NEW_BRIDGE_SIGNER_KEY);

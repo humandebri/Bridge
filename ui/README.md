@@ -9,6 +9,13 @@ The primary `/` route combines both directions and stores the selected flow in
 reviewed runtime and settlement evidence is isolated at `/status`. There are intentionally no
 legacy `/deposit` or `/withdraw` routes because this UI has not been deployed to production.
 
+Production assets are built without an embedded deployment profile. The sorted per-file digest
+receipt (`ui-assets.json`) is a mandatory Gate B artifact and is reproduced from the exact clean
+source before activation and again before deployment. `deployment-profile.js` is excluded from
+that generic code digest and is generated only from the UI runtime profile rendered by the
+verified Gate B bundle. Production deployment rejects a dirty source tree, receipt drift, or a
+runtime profile that differs from the reviewed release inputs.
+
 ## Requirements
 
 - Node.js `24.14.0`

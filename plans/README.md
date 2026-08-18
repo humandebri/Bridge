@@ -14,6 +14,7 @@ Plan 001〜004は完了済みの履歴資料であり、現行仕様はリポジ
 | [005](005-production-parameters-key-operations.md) | 対象SNS・数値パラメータ・鍵管理・testnet運用の確定 | P1 | M | 001〜004 | IN PROGRESS |
 | [006](006-sns-handover-upgrade-production-preflight.md) | SNS handover、upgrade互換性、production preflight | P0 | L | 001〜005 | IN PROGRESS |
 | [007](007-local-ic-mainnet-base-sepolia-frontend-e2e.md) | LocalからIC mainnet test Canister・Base Sepolia・test frontendへのE2E | P0 | L | 001〜004 | LOCAL DONE / EXTERNAL PENDING |
+| [008](008-proof-strength-production-equivalence.md) | 形式検証の証拠強度向上（Verus executable、SMT義務、vector網羅性） | P1 | M | 001〜004 | IN PROGRESS |
 
 ## 依存関係
 

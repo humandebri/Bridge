@@ -775,11 +775,15 @@ fn activation_base_preflight_matches(
     deposits_paused: bool,
     withdrawals_paused: bool,
 ) -> bool {
-    observed_signer == expected_signer && deposits_paused && withdrawals_paused
+    bridge_core::activation_base_preflight_matches(
+        observed_signer == expected_signer,
+        deposits_paused,
+        withdrawals_paused,
+    )
 }
 
 fn activation_postcondition_matches(deposits_paused: bool, withdrawals_paused: bool) -> bool {
-    !deposits_paused && !withdrawals_paused
+    bridge_core::activation_postcondition_matches(deposits_paused, withdrawals_paused)
 }
 
 fn governance_lane(

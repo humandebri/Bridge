@@ -361,11 +361,31 @@ def document : String :=
     fundingReconciliationCase true false true,
     fundingReconciliationCase true true false,
     fundingReconciliationCase true true true]
-  let finalizations := [finalizationCase true 10 none, finalizationCase false 10 none,
-    finalizationCase true 10 (some 9), finalizationCase false 10 (some 9),
-    finalizationCase true 10 (some 10), finalizationCase false 10 (some 10)]
+  let finalizations := [
+    finalizationCase true 10 none,
+    finalizationCase false 10 none,
+    finalizationCase true 10 (some 9),
+    finalizationCase false 10 (some 9),
+    finalizationCase true 10 (some 10),
+    finalizationCase false 10 (some 10),
+    finalizationCase true 0 none,
+    finalizationCase false 0 none,
+    finalizationCase true 0 (some 0),
+    finalizationCase false 0 (some 0),
+    finalizationCase true 1 (some 0),
+    finalizationCase false 1 (some 0),
+    finalizationCase true 0 (some 1),
+    finalizationCase false 0 (some 1),
+    finalizationCase true max (some max),
+    finalizationCase false max (some max),
+    finalizationCase true max (some 0),
+    finalizationCase false max (some 0)]
   let queues := [queueCase none false true, queueCase (some false) true false,
-    queueCase (some true) false true]
+    queueCase (some true) false true,
+    queueCase none true true, queueCase none false false, queueCase none true false,
+    queueCase (some false) false true, queueCase (some false) true true,
+    queueCase (some false) false false, queueCase (some true) true true,
+    queueCase (some true) true false, queueCase (some true) false false]
   let probes := [canonicalProbeCase 0 0, canonicalProbeCase 42 42,
     canonicalProbeCase 42 43, canonicalProbeCase 18446744073709551615 18446744073709551615]
   let ledgerBlocks := [

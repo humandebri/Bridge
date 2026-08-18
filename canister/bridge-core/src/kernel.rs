@@ -217,6 +217,24 @@ macro_rules! canonical_probe_matches_body {
     };
 }
 
+macro_rules! withdrawal_id_is_admissible_body {
+    ($well_formed_len:expr, $minimum_nonzero:expr, $observed_ge_minimum:expr) => {
+        $well_formed_len && $minimum_nonzero && $observed_ge_minimum
+    };
+}
+
+macro_rules! activation_base_preflight_matches_body {
+    ($signer_matches:expr, $deposits_paused:expr, $withdrawals_paused:expr) => {
+        $signer_matches && $deposits_paused && $withdrawals_paused
+    };
+}
+
+macro_rules! activation_postcondition_matches_body {
+    ($deposits_paused:expr, $withdrawals_paused:expr) => {
+        !$deposits_paused && !$withdrawals_paused
+    };
+}
+
 macro_rules! withdrawal_finalized_identity_quorum_body {
     ($first:expr, $second:expr, $third:expr) => {{
         match ($first, $second, $third) {
@@ -963,7 +981,25 @@ pub const fn canonical_probe_matches(receipt_block: u64, snapshot_block: u64) ->
 /// Both values use the contract's 32-byte big-endian uint256 representation.
 #[cfg(not(verus_keep_ghost))]
 pub fn withdrawal_id_is_admissible(observed: &[u8; 32], minimum: &[u8]) -> bool {
-    minimum.len() == 32 && minimum.iter().any(|byte| *byte != 0) && observed.as_slice() >= minimum
+    withdrawal_id_is_admissible_body!(
+        minimum.len() == 32,
+        minimum.iter().any(|byte| *byte != 0),
+        observed.as_slice() >= minimum
+    )
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub fn activation_base_preflight_matches(
+    signer_matches: bool,
+    deposits_paused: bool,
+    withdrawals_paused: bool,
+) -> bool {
+    activation_base_preflight_matches_body!(signer_matches, deposits_paused, withdrawals_paused)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub fn activation_postcondition_matches(deposits_paused: bool, withdrawals_paused: bool) -> bool {
+    activation_postcondition_matches_body!(deposits_paused, withdrawals_paused)
 }
 
 /// Accepts only an exact finalized block identity attested by at least two of three providers.
@@ -2038,6 +2074,31 @@ verus! {
 
     pub open spec fn canonical_probe_matches_spec(receipt_block: int, snapshot_block: int) -> bool {
         canonical_probe_matches_body!(receipt_block, snapshot_block)
+    }
+
+    pub open spec fn withdrawal_id_is_admissible_spec(
+        well_formed_len: bool,
+        minimum_nonzero: bool,
+        observed_ge_minimum: bool,
+    ) -> bool {
+        withdrawal_id_is_admissible_body!(
+            well_formed_len, minimum_nonzero, observed_ge_minimum)
+    }
+
+    pub open spec fn activation_base_preflight_matches_spec(
+        signer_matches: bool,
+        deposits_paused: bool,
+        withdrawals_paused: bool,
+    ) -> bool {
+        activation_base_preflight_matches_body!(
+            signer_matches, deposits_paused, withdrawals_paused)
+    }
+
+    pub open spec fn activation_postcondition_matches_spec(
+        deposits_paused: bool,
+        withdrawals_paused: bool,
+    ) -> bool {
+        activation_postcondition_matches_body!(deposits_paused, withdrawals_paused)
     }
 
     pub open spec fn withdrawal_finalized_identity_quorum_spec(
