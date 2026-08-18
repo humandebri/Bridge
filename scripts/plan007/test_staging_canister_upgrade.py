@@ -166,7 +166,7 @@ if method == "start_storage_validation":
         candid = 'variant { Ok = record { complete = false; phase = "deposits"; scanned_rows = 0 : nat64 } }'
 elif method == "continue_storage_validation":
     if os.environ.get("MOCK_VALIDATION_FAIL") == "1":
-        candid = 'variant { Err = variant { StateChanged } }'
+        candid = 'variant { Err = variant { StorageFailure } }'
     else:
         candid = 'variant { Ok = record { complete = true; phase = "complete"; scanned_rows = 1 : nat64 } }'
 elif method == "get_public_config":
@@ -176,7 +176,20 @@ elif method == "get_public_config":
     evm = os.environ.get("MOCK_EVM_CANISTER", policy["evm_rpc_canister_id"])
     boundary = os.environ.get("MOCK_BOUNDARY", "01" * 32)
     boundary_field = f'; minimum_withdrawal_id = blob "{blob(boundary)}"' if int(schema) >= 33 else ''
-    candid = f'''record {{ schema_version = {schema} : nat16; deployment_instance_id = blob "{blob(instance)}"; base_chain_id = {chain} : nat64; evm_rpc_canister_id = principal "{evm}"; rpc_provider_urls_sha256 = blob "{blob(digest)}"{boundary_field} }}'''
+    named = f'''record {{ schema_version = {schema} : nat16; deployment_instance_id = blob "{blob(instance)}"; base_chain_id = {chain} : nat64; evm_rpc_canister_id = principal "{evm}"; rpc_provider_urls_sha256 = blob "{blob(digest)}"{boundary_field} }}'''
+    if os.environ.get("MOCK_CANDID_NULL") == "1":
+        if "--candid" in args:
+            print(json.dumps({"response_candid": None})); raise SystemExit(0)
+        ids = {
+            "schema_version": 2125064634, "deployment_instance_id": 2063157835,
+            "base_chain_id": 805517511, "evm_rpc_canister_id": 1452342262,
+            "rpc_provider_urls_sha256": 4005183470, "minimum_withdrawal_id": 2442470196,
+        }
+        numeric = named
+        for name, fid in ids.items():
+            numeric = numeric.replace(f"{name} =", f"{fid} =")
+        print(json.dumps({"response_candid": numeric})); raise SystemExit(0)
+    candid = named
 elif method == "get_bridge_status":
     counts = dict(policy["status_counts"])
     if os.environ.get("MOCK_COUNT_DRIFT") == "1" or (applied and os.environ.get("MOCK_POST_COUNT_DRIFT") == "1"): counts["deposits"] += 1
@@ -304,6 +317,29 @@ print(json.dumps({"response_candid": candid}))
         migrated = self.run_driver(
             "--migrate-v32-to-v33", "--execute",
             MOCK_SCHEMA="32", MOCK_MODULE=before_module,
+        )
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        evidence = json.loads((self.base / "result.json").read_text())
+        self.assertEqual(evidence["result"], "migrated-and-rpc-replaced")
+        self.assertEqual(evidence["before"]["schema_version"], 32)
+        self.assertEqual(evidence["after"]["schema_version"], 33)
+
+    def test_v32_metadata_missing_retries_without_candid(self) -> None:
+        missing_module = str(self.policy()["metadata_missing_module_sha256"])
+        after_digest = str(self.policy()["after_rpc_urls_sha256"])
+        result = self.run_driver(
+            "--migrate-v32-to-v33",
+            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
+            MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("v32-to-v33-preflight-passed", result.stdout)
+        self.assertFalse(self.install_record.exists())
+
+        migrated = self.run_driver(
+            "--migrate-v32-to-v33", "--execute",
+            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
+            MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
         )
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         evidence = json.loads((self.base / "result.json").read_text())

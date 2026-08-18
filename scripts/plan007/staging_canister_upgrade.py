@@ -27,6 +27,48 @@ BOUNDARY_CAPTURE = ROOT / "scripts/plan007/capture-withdrawal-boundary.mjs"
 IC_MAINNET_HOST = "https://icp-api.io"
 V32_SCHEMA_VERSION = 32
 MIGRATION_ID = "bridge-storage-v32-to-v33"
+# Candid record field hashes for PublicConfig. A v32 live module omits the v33
+# minimum_withdrawal_id field, so the pinned v33 bridge.did cannot decode the
+# response and icp --candid reports response_candid null. In that case the
+# driver retries without --candid and rewrites these numeric hashes to names
+# so the existing candid_values helpers can parse the fields it reads.
+PUBLIC_CONFIG_FIELD_IDS = {
+    "settlement_rate_limit_global": 73853136,
+    "expected_bridge_signer": 91141849,
+    "settlement_rate_limit_per_principal": 290616767,
+    "settlement_cycle_ceiling": 400134606,
+    "settlement_rate_limit_per_record": 473344736,
+    "mint_authorization_ttl_seconds": 501612361,
+    "governance_evm_fee": 537108678,
+    "mint_authorization_epoch": 677966310,
+    "notification_rate_limit_global": 679081874,
+    "deposit_rate_limit_window_seconds": 705710418,
+    "base_chain_id": 805517511,
+    "bridge_contract": 979557576,
+    "fee_recipient": 1105070432,
+    "notification_rate_limit_window_seconds": 1170219295,
+    "settlement_rate_limit_window_seconds": 1207795805,
+    "notification_ingestion_rate_limit_global": 1359670263,
+    "evm_rpc_canister_id": 1452342262,
+    "deposit_rate_limit_per_principal": 1501741674,
+    "deployment_instance_id": 2063157835,
+    "schema_version": 2125064634,
+    "minimum_withdrawal_id": 2442470196,
+    "deposit_rate_limit_global": 2511156421,
+    "pause_principal": 2703831269,
+    "governance_principal": 2916479505,
+    "ledger_fee": 2958225776,
+    "index_canister_id": 3018849862,
+    "ledger_canister_id": 3201814365,
+    "settlement_retry_interval_seconds": 3440225362,
+    "governance_replacement": 3458152949,
+    "governance_operator": 3760207265,
+    "expected_bridge_runtime_sha256": 3847051293,
+    "timelock_contract": 3932280057,
+    "cycles_floor": 3998627290,
+    "rpc_provider_urls_sha256": 4005183470,
+}
+FIELD_ID_TO_NAME = {hash_id: name for name, hash_id in PUBLIC_CONFIG_FIELD_IDS.items()}
 COUNT_FIELDS = (
     "retained_audit_events",
     "reconciliation_holds",
@@ -166,6 +208,18 @@ def icp_base(policy: dict[str, Any], identity: str) -> list[str]:
     return ["-e", policy["environment"], "--identity", identity, "--project-root-override", str(ROOT)]
 
 
+def rewrite_field_ids(candid: str) -> str:
+    """Rewrite PublicConfig numeric field hashes to names for candid_values helpers."""
+    def replace(match: re.Match[str]) -> str:
+        digits = match.group(1).replace("_", "")
+        name = FIELD_ID_TO_NAME.get(int(digits))
+        if name:
+            return f"{name} ="
+        return match.group(0)
+
+    return re.sub(r"(?<![\w])([0-9][0-9_]*)[ \t]*=", replace, candid)
+
+
 def call(policy: dict[str, Any], identity: str, did: Path, method: str) -> str:
     output = run([
         "icp", "canister", "call", policy["canister_name"], method, "()", "--query",
@@ -174,7 +228,19 @@ def call(policy: dict[str, Any], identity: str, did: Path, method: str) -> str:
     payload = json.loads(output)
     candid = payload.get("response_candid")
     if not isinstance(candid, str):
-        fail(f"{method} did not return response_candid")
+        # A v32 live module omits the v33 minimum_withdrawal_id field, which the
+        # pinned bridge.did requires, so icp cannot decode the response. Retry
+        # without --candid and resolve the numeric field hashes to names.
+        output = run([
+            "icp", "canister", "call", policy["canister_name"], method, "()", "--query",
+            "--json", *icp_base(policy, identity),
+        ])
+        payload = json.loads(output)
+        candid = payload.get("response_candid")
+        if not isinstance(candid, str):
+            fail(f"{method} did not return response_candid")
+        if method == "get_public_config":
+            candid = rewrite_field_ids(candid)
     return candid
 
 
