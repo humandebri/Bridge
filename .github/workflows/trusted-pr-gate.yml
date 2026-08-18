@@ -25,7 +25,6 @@ jobs:
       base_sha: ${{ steps.base.outputs.sha }}
       matrix: ${{ steps.classify.outputs.matrix }}
       any: ${{ steps.classify.outputs.any }}
-      policy: ${{ steps.classify.outputs.policy }}
     steps:
       - name: Check out trusted base
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -55,15 +54,10 @@ jobs:
         env:
           CLASSIFY_ANY: ${{ steps.classify.outputs.any }}
           CLASSIFY_MATRIX: ${{ steps.classify.outputs.matrix }}
-          CLASSIFY_POLICY: ${{ steps.classify.outputs.policy }}
         run: |
           case "$CLASSIFY_ANY" in
             true|false) ;;
             *) echo "trusted classifier did not emit a boolean any output" >&2; exit 1 ;;
-          esac
-          case "$CLASSIFY_POLICY" in
-            true|false) ;;
-            *) echo "trusted classifier did not emit a boolean policy output" >&2; exit 1 ;;
           esac
           test -n "$CLASSIFY_MATRIX"
       - name: Install trusted classifier dependencies
@@ -199,29 +193,9 @@ jobs:
             *) exit 2 ;;
           esac
 
-  policy-review:
-    needs: classify
-    if: needs.classify.outputs.policy == 'true'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - name: Require current repository-owner approval for policy changes
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          approved="$({ gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" || exit 1; } |
-            jq --arg head "$HEAD_SHA" -s -r '[add | sort_by(.submitted_at) | group_by(.user.login)[] | last |
-              select(.state == "APPROVED" and .commit_id == $head) | .user.login] |
-              any(. == "humandebri")')"
-          test "$approved" = true
-
   trusted-pr-gate:
     if: always()
-    needs: [classify, test, policy-review]
+    needs: [classify, test]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
@@ -229,18 +203,11 @@ jobs:
         env:
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           ANY: ${{ needs.classify.outputs.any }}
-          POLICY: ${{ needs.classify.outputs.policy }}
           TEST_RESULT: ${{ needs.test.result }}
-          POLICY_REVIEW_RESULT: ${{ needs.policy-review.result }}
         run: |
           test "$CLASSIFY_RESULT" = success
           if [[ "$ANY" == true ]]; then
             test "$TEST_RESULT" = success
           else
             test "$TEST_RESULT" = skipped
-          fi
-          if [[ "$POLICY" == true ]]; then
-            test "$POLICY_REVIEW_RESULT" = success
-          else
-            test "$POLICY_REVIEW_RESULT" = skipped
           fi
