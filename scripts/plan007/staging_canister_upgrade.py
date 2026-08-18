@@ -497,6 +497,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--migrate-v32-to-v33", action="store_true")
+    parser.add_argument("--skip-storage-validation", action="store_true")
     parser.add_argument("--wasm", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     return parser.parse_args()
@@ -546,8 +547,9 @@ def main() -> None:
     did_hash = sha256(DEFAULT_DID)
     verify_candidate_metadata(wasm, DEFAULT_DID)
     before = snapshot(policy, identity, DEFAULT_DID)
-    if before["schema_version"] != policy["stable_schema_version"] \
-        or before["rpc_provider_urls_sha256"] != policy["after_rpc_urls_sha256"]:
+    if not args.skip_storage_validation \
+        and (before["schema_version"] != policy["stable_schema_version"]
+             or before["rpc_provider_urls_sha256"] != policy["after_rpc_urls_sha256"]):
         run_storage_validation(policy, identity, DEFAULT_DID)
         before = snapshot(policy, identity, DEFAULT_DID)
     digest = before["rpc_provider_urls_sha256"]

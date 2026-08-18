@@ -347,6 +347,20 @@ print(json.dumps({"response_candid": candid}))
         self.assertEqual(evidence["before"]["schema_version"], 32)
         self.assertEqual(evidence["after"]["schema_version"], 33)
 
+    def test_skip_storage_validation_runs_preflight_without_resetting_validation(self) -> None:
+        missing_module = str(self.policy()["metadata_missing_module_sha256"])
+        after_digest = str(self.policy()["after_rpc_urls_sha256"])
+        result = self.run_driver(
+            "--migrate-v32-to-v33", "--skip-storage-validation",
+            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
+            MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
+            MOCK_VALIDATION_FAIL="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("v32-to-v33-preflight-passed", result.stdout)
+        self.assertFalse((self.state / "validation-started").exists())
+        self.assertFalse(self.install_record.exists())
+
     def test_v32_migration_requires_the_reviewed_profile_boundary(self) -> None:
         before_module = str(self.policy()["before_module_sha256"])
         result = self.run_driver(
