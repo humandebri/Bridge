@@ -998,10 +998,7 @@ pub fn activation_base_preflight_matches(
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub fn activation_postcondition_matches(
-    deposits_paused: bool,
-    withdrawals_paused: bool,
-) -> bool {
+pub fn activation_postcondition_matches(deposits_paused: bool, withdrawals_paused: bool) -> bool {
     activation_postcondition_matches_body!(deposits_paused, withdrawals_paused)
 }
 

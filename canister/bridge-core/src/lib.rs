@@ -30,11 +30,12 @@ pub use external::{
 };
 pub use kernel::{
     activation_base_preflight_matches, activation_postcondition_matches, administrator_authorized,
-    audit_next, authorization_commit_allowed, canonical_probe_matches, checked_counter_transition, checked_requirement, committed_quote_matches, counter_delta,
-    deposit_admission_decision, deposit_charge_service_fee, deposit_identity_decision,
-    deposit_ledger_block_transition, deposit_nonterminal_indexed, deposit_numeric_effects,
-    deposit_refund_amount, deposit_releases_reservation, deposit_reservation_active,
-    deposit_transition, deposit_transition_decision, deposit_transition_effects, evidence_matches,
+    audit_next, authorization_commit_allowed, canonical_probe_matches, checked_counter_transition,
+    checked_requirement, committed_quote_matches, counter_delta, deposit_admission_decision,
+    deposit_charge_service_fee, deposit_identity_decision, deposit_ledger_block_transition,
+    deposit_nonterminal_indexed, deposit_numeric_effects, deposit_refund_amount,
+    deposit_releases_reservation, deposit_reservation_active, deposit_transition,
+    deposit_transition_decision, deposit_transition_effects, evidence_matches,
     expiry_refund_allowed, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     funding_attempt_decision, funding_reconciliation_decision, hold_resolution_decision,
     hold_retry_allowed, lease_generation_next, lease_lane_claim_decision, lease_outcome_decision,
