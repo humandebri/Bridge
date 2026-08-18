@@ -109,8 +109,37 @@ jobs:
         uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.7.1
-      - name: Install complete CI toolchain
-        run: trusted-policy/scripts/install-ci-tools.sh all
+      - name: Restore cached proof toolchain
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: matrix.area == 'proofs'
+        with:
+          path: |
+            /home/runner/.elan
+            /home/runner/.local/z3
+            /home/runner/.local/verus
+            /home/runner/.local/bin
+            /home/runner/.rustup/toolchains/1.96.0
+          key: bridge-trusted-pr-proof-tools-${{ hashFiles('trusted-policy/lean-toolchain', 'trusted-policy/scripts/install-ci-tools.sh') }}
+      - name: Install CI toolchain
+        env:
+          AREA: ${{ matrix.area }}
+        run: |
+          case "$AREA" in
+            proofs) mode="all" ;;
+            *) mode="ci" ;;
+          esac
+          trusted-policy/scripts/install-ci-tools.sh "$mode"
+      - name: Save cached proof toolchain
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: matrix.area == 'proofs'
+        with:
+          path: |
+            /home/runner/.elan
+            /home/runner/.local/z3
+            /home/runner/.local/verus
+            /home/runner/.local/bin
+            /home/runner/.rustup/toolchains/1.96.0
+          key: bridge-trusted-pr-proof-tools-${{ hashFiles('trusted-policy/lean-toolchain', 'trusted-policy/scripts/install-ci-tools.sh') }}
       - name: Prefetch locked Rust dependencies from trusted policy
         run: cargo fetch --locked --manifest-path trusted-policy/Cargo.toml
       - name: Prefetch pinned ICP recipes from trusted policy
