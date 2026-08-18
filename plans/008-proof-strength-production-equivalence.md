@@ -5,7 +5,7 @@
 - **Priority**: P1
 - **Risk**: MEDIUM
 - **Depends on**: Plan 001〜004（検証基盤）、現行の`verification/`正本
-- **State**: IN PROGRESS
+- **State**: COMPLETE (2026-08-18)
 
 ## Goal
 
@@ -21,19 +21,19 @@ Phase 4（外部仮定の設計的削減、例: `ledger_fee_immutability`のrunt
 - 本番相当 = release proof gate（clean checkout + fingerprint一致 + 9 stage pass + offline二回build SHA-256一致）。
 - 全claimが`implementation-proved: 0`なのは設計であり、`runtime_toolchain`（TCB）が不可除去であるためと明記する。
 
-### Phase 1 — Verus executable拡張
+### Phase 1 — Verus predicate proof拡張
 
-`implementation: unproved` かつ Rust側に実体があるclaimを、executable proof（実production実行関数を直接呼ぶproof）へ昇格させる。
+`implementation: unproved` かつ Rust側に実体があるclaimを、Verus `shared` predicate proof（productionと式macroを共有する`_spec` + proof + negative fixture）へ昇格させる。`shared`は実行関数全体のproofではなく、Cargo式とVerus specで式を共有しdriftを防ぐpredicate proofである（`verification/README.md`参照）。
 
 対象:
 
 | Claim | 対象symbol | 作業 | 結果 |
 |---|---|---|---|
-| `withdrawal_admission_boundary` | `kernel.rs#withdrawal_id_is_admissible` | `_spec` + executable proof + negative fixture追加 | 完了（`implementation-proved`昇格） |
-| `activation_preflight` | `base_governance.rs` preflight/postcondition predicate | kernel共有化 → Verus対象へ | 完了（`implementation-proved`昇格） |
+| `withdrawal_admission_boundary` | `kernel.rs#withdrawal_id_is_admissible` | 式macro化 + `_spec` + proof + negative fixture追加 | 完了（`implementation-proved`昇格） |
+| `activation_preflight` | `base_governance.rs` preflight/postcondition predicate | kernel共有化 → Verus `shared`対象へ | 完了（`implementation-proved`昇格） |
 | `governance_nonce_chain_binding` | `evm_rpc.rs#transaction_count` chain binding | Verus対象へ（`rpc_provider_chain_configuration`仮定は残す） | 対象外に確定。chain bindingは`client()`の`chain_id: args.base_chain_id`（evm_rpc.rs:304）と`prepare`のenvelope構築（base_governance.rs:255）というasync境界の代入で、純粋な判定predicateが存在しない。Verus spec化はcosmetic proofになるためAGENTS.md方針により実施しない。`rpc_provider_chain_configuration`仮定で防護される挙動として`partial`を維持 |
 
-- liveness 5件: `occurrence_produces_valid_step`の「共通enable条件 + valid step」部分がexecutable検証可能なら追加。scheduler全体の公平性は`scheduler_weak_fairness`仮定として残す。
+- liveness 5件: `occurrence_produces_valid_step`の「共通enable条件 + valid step」部分が`shared`検証可能なら追加。scheduler全体の公平性は`scheduler_weak_fairness`仮定として残す。
 - `withdrawal_finalization` / `pending_queue`（TS純粋関数）: Verus対象外。Phase 3のvector拡張で対応する。
 - 更新ファイル: `verification/verus/manifest.tsv`、`verification/verus/pass.rs`、`verification/verus/fail/*.rs`、`verification/claims.tsv`（verus_obligations / production_links）。
 - CIがmanifest整合・proof escape・fixture 1:1を自動検証するため、追加漏れはfail closedになる。
@@ -59,6 +59,14 @@ Phase 4（外部仮定の設計的削減、例: `ledger_fee_immutability`のrunt
 - `refinement-manifest.tsv`のsection拡張とconsumer追加。
 - `withdrawal_finalization` / `pending_queue`のTS純粋関数はここで網羅性を強化する。
 - 検証資材の変更なので安全判断は伴わないが、fingerprint範囲が拡がる点を`proof-impact.tsv`で確認する。
+
+#### Phase 3 実施結果
+
+- `Vectors.lean`の`finalization_cases`を6件から18件へ、`queue_cases`を3件から12件へ拡張（境界値: `receiptBlock=0`/`max`、`finalizedBlock=0`/`max`、`finalized < receiptBlock`/`≥`/`>`の全branch。queueは`existing_blocked` 3値 × `incoming_blocked` 2値 × `other_blocked` 2値の意味ある組合せ）。
+- `python3 scripts/protocol_vectors.py --update`で`verification/generated/protocol-vectors.json`を再生成。
+- vitest consumer（`generated-refinement.test.ts`のfinalization/queue両テスト）が拡張後もPASS。Rust vector schema consumerもPASS。
+- `refinement-manifest.tsv`のsection/consumerは既存のままで充足（新section不要）。
+- 注意: vitest JSON出力のparseは`.node-version`（24.14.0）で`fnm exec`経由でないとpnpmのengine warningがstdoutに混入して失敗する。`scripts/ci-local.sh`はfnmで正しいnodeを選択するため、gate内では問題ない。
 
 ### Phase 5 — 本番ゲート運用堅牢化
 
