@@ -35,7 +35,7 @@ trap cleanup EXIT
 mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-out" \
   "$SCRATCH/contracts-cache" "$SCRATCH/contracts-staging-out" "$SCRATCH/contracts-staging-cache" "$SCRATCH/ui-dist" \
   "$SCRATCH/ui-results" "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/ui-vite-temp" "$SCRATCH/ui-vite" \
-  "$SCRATCH/e2e-runtime" "$SCRATCH/proof-output" "$SCRATCH/lean-lake" \
+  "$SCRATCH/e2e-runtime" "$SCRATCH/proof-output" "$SCRATCH/lean-lake" "$SCRATCH/smt-out" "$SCRATCH/smt-cache" \
   "$SCRATCH/icp-cache" "$SCRATCH/empty-tools" \
   "$SCRATCH/home/.svm" "$SCRATCH/home/.elan/toolchains" \
   "$SCRATCH/home/.local/share/icp-cli/pkg" "$SCRATCH/home/.config"
@@ -89,9 +89,13 @@ WRITABLE_BUILD_MOUNTS=()
 if [[ "$MODE" == "proofs" ]]; then
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/output
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/lean/.lake
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/smt/out
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/smt/cache
   WRITABLE_BUILD_MOUNTS+=(
     --mount "type=bind,src=$SCRATCH/proof-output,dst=/workspace/verification/output"
     --mount "type=bind,src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake"
+    --mount "type=bind,src=$SCRATCH/smt-out,dst=/workspace/verification/smt/out"
+    --mount "type=bind,src=$SCRATCH/smt-cache,dst=/workspace/verification/smt/cache"
   )
 fi
 if [[ "$MODE" == "icp" ]]; then
