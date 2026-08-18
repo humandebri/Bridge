@@ -81,7 +81,11 @@ class TrustedPrGateTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
-        self.assertIn("trusted-policy/scripts/install-ci-tools.sh all", workflow)
+        self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
+        self.assertIn("proofs) mode=\"all\"", workflow)
+        self.assertIn("*) mode=\"ci\"", workflow)
+        self.assertIn("actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
+        self.assertIn("actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn(
             "cargo fetch --locked --manifest-path trusted-policy/Cargo.toml",
             workflow,
