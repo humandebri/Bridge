@@ -200,6 +200,7 @@ def verify_clean_evidence(wasm: Path, did: Path, evidence: dict[str, Any]) -> st
         # decode live pre-migration state; every reviewed build input, Wasm,
         # Candid, policy, and profile change still fails closed.
         "scripts/plan007/staging_canister_upgrade.py",
+        "scripts/plan007/test_staging_canister_upgrade.py",
     }
     if source != head and set(changed) - allowed:
         fail("HEAD contains build-input changes after the local E2E source commit")
