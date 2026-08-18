@@ -34,7 +34,7 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-out" \
   "$SCRATCH/contracts-cache" "$SCRATCH/contracts-staging-out" "$SCRATCH/contracts-staging-cache" "$SCRATCH/ui-dist" \
-  "$SCRATCH/ui-results" "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/ui-vite-temp" \
+  "$SCRATCH/ui-results" "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/ui-vite-temp" "$SCRATCH/ui-vite" \
   "$SCRATCH/e2e-runtime" "$SCRATCH/proof-output" "$SCRATCH/lean-lake" \
   "$SCRATCH/icp-cache" "$SCRATCH/empty-tools" \
   "$SCRATCH/home/.svm" "$SCRATCH/home/.elan/toolchains" \
@@ -61,8 +61,10 @@ case "$MODE" in
   proofs|ui-fast|ui-e2e|real)
     bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .tmp
     bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .vite-temp
+    bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .vite
     WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp")
     WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-vite-temp,dst=/workspace/ui/node_modules/.vite-temp")
+    WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-vite,dst=/workspace/ui/node_modules/.vite")
     ;;
 esac
 if [[ "$MODE" == "real" ]]; then
