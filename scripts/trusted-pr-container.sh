@@ -68,6 +68,19 @@ esac
 if [[ "$MODE" == "real" ]]; then
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" ui/.e2e-runtime
   WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/e2e-runtime,dst=/workspace/ui/.e2e-runtime")
+  pic_pkg="$(find "$POLICY_ROOT/ui/node_modules/.pnpm" -maxdepth 4 -type d \
+    -path '*/@dfinity+pic@*/node_modules/@dfinity/pic' 2>/dev/null | head -n 1)"
+  if [[ -n "$pic_pkg" ]]; then
+    pic_scratch="$SCRATCH/pic-package"
+    mkdir -p "$pic_scratch"
+    cp -a "$pic_pkg/." "$pic_scratch/"
+    chmod 0755 "$pic_scratch/pocket-ic" 2>/dev/null || true
+    pic_rel="${pic_pkg#"$POLICY_ROOT/"}"
+    WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$pic_scratch,dst=/workspace/$pic_rel")
+  else
+    echo "trusted real-E2E @dfinity/pic package is missing" >&2
+    exit 1
+  fi
 fi
 
 WRITABLE_BUILD_MOUNTS=()
