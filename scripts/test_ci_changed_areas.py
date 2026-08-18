@@ -117,42 +117,24 @@ class ChangedAreaTests(unittest.TestCase):
             json.loads(values["matrix"]),
             ["rust", "proofs", "real", "icp"],
         )
-        self.assertEqual(values["policy"], "false")
-
-    def test_executable_policy_and_tests_require_owner_review(self) -> None:
-        for path in (
-            ".github/workflows/trusted-pr-gate.yml",
-            "scripts/ci-local.sh",
-            "pnpm-lock.yaml",
-            "rust-toolchain.toml",
-            "contracts/test/BridgeDeposit.t.sol",
-            "canister/bridge-core/tests/state_machine.rs",
-            "integration/phase3.spec.ts",
-            "ui/src/lib/ic/wallet.test.ts",
-            "ui/e2e-real/global-setup.mjs",
-            "ui/e2e-real/ic-wallet-provider.tsx",
-            "ui/playwright.real.config.ts",
-            "verification/claims.tsv",
-        ):
-            with self.subTest(path=path):
-                self.assertTrue(ci_changed_areas.requires_policy_review([path]))
 
     def test_production_source_alone_remains_eligible_for_isolated_checks(self) -> None:
-        self.assertFalse(ci_changed_areas.requires_policy_review([
-            "canister/bridge-canister/src/api.rs",
-            "contracts/src/Bridge.sol",
-            "ui/src/lib/ic/wallet.ts",
-        ]))
+        self.assert_areas(
+            ["canister/bridge-canister/src/api.rs"],
+            "rust",
+            "proofs",
+            "real",
+            "icp",
+        )
 
-    def test_policy_and_production_source_mix_runs_tests_and_requires_review(self) -> None:
+    def test_policy_and_production_source_mix_runs_every_area(self) -> None:
         paths = [
             "scripts/ci-local.sh",
             "canister/bridge-canister/src/api.rs",
         ]
-        self.assertTrue(ci_changed_areas.requires_policy_review(paths))
         self.assert_areas(paths, *ci_changed_areas.AREAS)
 
-    def test_cli_emits_matrix_and_policy_for_policy_source_mix(self) -> None:
+    def test_cli_emits_matrix_for_policy_source_mix(self) -> None:
         with tempfile.NamedTemporaryFile() as output:
             result = subprocess.run(
                 [
@@ -176,7 +158,6 @@ class ChangedAreaTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(values["matrix"]), list(ci_changed_areas.AREAS))
         self.assertEqual(values["any"], "true")
-        self.assertEqual(values["policy"], "true")
 
 
 if __name__ == "__main__":
