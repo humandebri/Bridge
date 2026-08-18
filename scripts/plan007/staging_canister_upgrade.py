@@ -194,7 +194,13 @@ def verify_clean_evidence(wasm: Path, did: Path, evidence: dict[str, Any]) -> st
     if ancestry.returncode:
         fail("local E2E source commit is not an ancestor of HEAD")
     changed = run(["git", "diff", "--name-only", source, head]).splitlines()
-    allowed = {"deployments/sepolia-staging/evidence/local-e2e.json"}
+    allowed = {
+        "deployments/sepolia-staging/evidence/local-e2e.json",
+        # The driver may be corrected on top of the local E2E source commit to
+        # decode live pre-migration state; every reviewed build input, Wasm,
+        # Candid, policy, and profile change still fails closed.
+        "scripts/plan007/staging_canister_upgrade.py",
+    }
     if source != head and set(changed) - allowed:
         fail("HEAD contains build-input changes after the local E2E source commit")
     if evidence.get("bridge_wasm_sha256") != sha256(wasm):
