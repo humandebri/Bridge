@@ -41,9 +41,10 @@ for path in node_modules ui/node_modules target contracts/out contracts/out-stag
 done
 bridge_prepare_mountpoint "$POLICY/ui/node_modules" .tmp
 bridge_prepare_mountpoint "$POLICY/ui/node_modules" .vite-temp
+bridge_prepare_mountpoint "$POLICY/ui/node_modules" .vite
 
 for path in target contracts-out contracts-cache contracts-staging-out contracts-staging-cache proof-output \
-  lean-lake icp-cache ui-dist ui-results ui-tsbuildinfo ui-vite-temp e2e-runtime \
+  lean-lake icp-cache ui-dist ui-results ui-tsbuildinfo ui-vite-temp ui-vite e2e-runtime \
   empty-tools; do
   mkdir -p "$SCRATCH/$path"
 done
@@ -63,6 +64,7 @@ docker run --rm \
   --mount "type=bind,src=$POLICY/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
   --mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp" \
   --mount "type=bind,src=$SCRATCH/ui-vite-temp,dst=/workspace/ui/node_modules/.vite-temp" \
+  --mount "type=bind,src=$SCRATCH/ui-vite,dst=/workspace/ui/node_modules/.vite" \
   --mount "type=bind,src=$SCRATCH/target,dst=/workspace/target" \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \
   --mount "type=bind,src=$SCRATCH/contracts-cache,dst=/workspace/contracts/cache" \
@@ -91,6 +93,7 @@ docker run --rm \
     touch /workspace/ui/test-results/write
     touch /workspace/ui/node_modules/.tmp/write
     touch /workspace/ui/node_modules/.vite-temp/write
+    touch /workspace/ui/node_modules/.vite/write
     touch /workspace/ui/.e2e-runtime/write
     test -f /workspace/ui/.e2e-cache/ledger.wasm.gz
     test -x /workspace/scripts/candidate-added.sh
