@@ -1199,6 +1199,42 @@ struct NotificationFailureCooldown {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct V32DepositFundingReservation {
+    deposit_id: [u8; 32],
+    caller: Vec<u8>,
+}
+
+/// The v32 stable deposit admission has no verification lane and its funding
+/// reservations carry no mint amount or quota window. Keep this decoder
+/// explicit so a future deposit admission field cannot silently become part of
+/// the one-time v32 -> v33 migration.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct V32DepositAdmissionControl {
+    pub window_id: u64,
+    pub global_count: u16,
+    pub caller_counts: Vec<DepositCallerQuota>,
+    pub funding_reservations: Vec<V32DepositFundingReservation>,
+    pub signer_address: Option<[u8; 20]>,
+    pub signer_public_key: Option<Vec<u8>>,
+    pub governance_operator_address: Option<[u8; 20]>,
+    pub governance_operator_public_key: Option<Vec<u8>>,
+    pub governance_nonce_initialized: bool,
+    pub next_governance_nonce: u64,
+    pub next_governance_operation_id: u64,
+    pub pending_governance_transaction: Option<GovernanceTransaction>,
+    pub last_completed_governance_transaction: Option<GovernanceTransaction>,
+    pub pending_timelock_operation: Option<PendingTimelockOperation>,
+    pub emergency_pause_deposit_required: bool,
+    pub emergency_pause_withdrawal_required: bool,
+    pub emergency_cancel_required: bool,
+    pub base_snapshot: Option<CachedBaseMintSnapshot>,
+    pub refresh_started_at_ns: Option<u64>,
+    pub refresh_generation: u64,
+    pub refresh_owner: Option<u64>,
+    pub next_refresh_allowed_at_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SettlementCallerQuota {
     caller: Principal,
     count: u16,
@@ -2133,6 +2169,41 @@ fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
         .map_err(|_| StorageError::DatabaseFailure)
 }
 
+fn migrate_deposit_funding_reservation(
+    connection: &UpdateConnection<'_>,
+    reservation: &V32DepositFundingReservation,
+    quota_window_id: u64,
+) -> Result<DepositFundingReservation, DbError> {
+    let deposit_id = reservation.deposit_id;
+    let bytes = connection
+        .query_optional_scalar::<Vec<u8>>(
+            "SELECT value FROM deposits WHERE key = ?1",
+            params![deposit_id.to_sql_bytes()],
+        )?
+        .ok_or_else(|| {
+            DbError::Constraint("v32 funding reservation has no matching deposit row".into())
+        })?;
+    let record: DepositRecord = decode(
+        &StableBlob::new(bytes)
+            .map_err(|_| DbError::Constraint("invalid v32 deposit row".into()))?,
+    )
+    .map_err(|_| DbError::Constraint("cannot decode v32 deposit row".into()))?;
+    let mint_amount = record
+        .reserved_mint_amount()
+        .map_err(|_| {
+            DbError::Constraint(
+                "v32 funding reservation deposit does not reserve a mint amount".into(),
+            )
+        })?
+        .get();
+    Ok(DepositFundingReservation {
+        deposit_id,
+        caller: reservation.caller.clone(),
+        mint_amount,
+        quota_window_id,
+    })
+}
+
 fn migrate_v32_to_v33(
     handle: DbHandle,
     context: &SchemaMigrationContext<'_>,
@@ -2254,9 +2325,62 @@ fn migrate_v32_to_v33(
             })
             .map_err(|_| DbError::Constraint("cannot encode v33 notification admission".into()))?
             .to_sql_bytes();
+
+            let old_deposit_blob = connection.query_scalar::<Vec<u8>>(
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let old_deposit = decode::<V32DepositAdmissionControl>(
+                &StableBlob::new(old_deposit_blob)
+                    .map_err(|_| DbError::Constraint("invalid v32 deposit admission".into()))?,
+            )
+            .map_err(|_| DbError::Constraint("cannot decode v32 deposit admission".into()))?;
+            let funding_reservations = old_deposit
+                .funding_reservations
+                .iter()
+                .map(|reservation| {
+                    migrate_deposit_funding_reservation(
+                        connection,
+                        reservation,
+                        old_deposit.window_id,
+                    )
+                })
+                .collect::<Result<Vec<_>, DbError>>()?;
+            let deposit_blob = encode(&DepositAdmissionControl {
+                window_id: old_deposit.window_id,
+                global_count: old_deposit.global_count,
+                caller_counts: old_deposit.caller_counts,
+                verification_window_id: 0,
+                verification_global_count: 0,
+                verification_caller_counts: Vec::new(),
+                funding_reservations,
+                signer_address: old_deposit.signer_address,
+                signer_public_key: old_deposit.signer_public_key,
+                governance_operator_address: old_deposit.governance_operator_address,
+                governance_operator_public_key: old_deposit.governance_operator_public_key,
+                governance_nonce_initialized: old_deposit.governance_nonce_initialized,
+                next_governance_nonce: old_deposit.next_governance_nonce,
+                next_governance_operation_id: old_deposit.next_governance_operation_id,
+                pending_governance_transaction: old_deposit.pending_governance_transaction,
+                last_completed_governance_transaction: old_deposit
+                    .last_completed_governance_transaction,
+                pending_timelock_operation: old_deposit.pending_timelock_operation,
+                emergency_pause_deposit_required: old_deposit
+                    .emergency_pause_deposit_required,
+                emergency_pause_withdrawal_required: old_deposit
+                    .emergency_pause_withdrawal_required,
+                emergency_cancel_required: old_deposit.emergency_cancel_required,
+                base_snapshot: old_deposit.base_snapshot,
+                refresh_started_at_ns: old_deposit.refresh_started_at_ns,
+                refresh_generation: old_deposit.refresh_generation,
+                refresh_owner: old_deposit.refresh_owner,
+                next_refresh_allowed_at_ns: old_deposit.next_refresh_allowed_at_ns,
+            })
+            .map_err(|_| DbError::Constraint("cannot encode v33 deposit admission".into()))?
+            .to_sql_bytes();
             connection.execute(
-                "UPDATE singleton_state SET config = ?1, notification_admission = ?2 WHERE id = 1",
-                params![config_blob, notification_blob],
+                "UPDATE singleton_state SET config = ?1, notification_admission = ?2, deposit_admission = ?3 WHERE id = 1",
+                params![config_blob, notification_blob, deposit_blob],
             )?;
             connection.execute(
                 "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
@@ -11401,15 +11525,55 @@ mod tests {
         let config = crate::config::V32ImmutableBridgeConfig::from_current(
             &ImmutableBridgeConfig::from_init(initial),
         );
+        let current_deposit = store
+            .deposit_admission()
+            .expect("read current deposit admission");
+        let v32_deposit = V32DepositAdmissionControl {
+            window_id: current_deposit.window_id,
+            global_count: current_deposit.global_count,
+            caller_counts: current_deposit.caller_counts,
+            funding_reservations: current_deposit
+                .funding_reservations
+                .into_iter()
+                .map(|reservation| V32DepositFundingReservation {
+                    deposit_id: reservation.deposit_id,
+                    caller: reservation.caller,
+                })
+                .collect(),
+            signer_address: current_deposit.signer_address,
+            signer_public_key: current_deposit.signer_public_key,
+            governance_operator_address: current_deposit.governance_operator_address,
+            governance_operator_public_key: current_deposit.governance_operator_public_key,
+            governance_nonce_initialized: current_deposit.governance_nonce_initialized,
+            next_governance_nonce: current_deposit.next_governance_nonce,
+            next_governance_operation_id: current_deposit.next_governance_operation_id,
+            pending_governance_transaction: current_deposit.pending_governance_transaction,
+            last_completed_governance_transaction: current_deposit
+                .last_completed_governance_transaction,
+            pending_timelock_operation: current_deposit.pending_timelock_operation,
+            emergency_pause_deposit_required: current_deposit
+                .emergency_pause_deposit_required,
+            emergency_pause_withdrawal_required: current_deposit
+                .emergency_pause_withdrawal_required,
+            emergency_cancel_required: current_deposit.emergency_cancel_required,
+            base_snapshot: current_deposit.base_snapshot,
+            refresh_started_at_ns: current_deposit.refresh_started_at_ns,
+            refresh_generation: current_deposit.refresh_generation,
+            refresh_owner: current_deposit.refresh_owner,
+            next_refresh_allowed_at_ns: current_deposit.next_refresh_allowed_at_ns,
+        };
         store
             .handle
             .update(|connection| {
                 connection.execute(
-                    "UPDATE singleton_state SET config = ?1, notification_admission = ?2 WHERE id = 1",
+                    "UPDATE singleton_state SET config = ?1, notification_admission = ?2, deposit_admission = ?3 WHERE id = 1",
                     params![
                         encode(&Some(config)).expect("encode v32 config").to_sql_bytes(),
                         encode(&notification)
                             .expect("encode v32 notification admission")
+                            .to_sql_bytes(),
+                        encode(&v32_deposit)
+                            .expect("encode v32 deposit admission")
                             .to_sql_bytes()
                     ],
                 )?;
@@ -11604,6 +11768,80 @@ mod tests {
             StableStore::reopen_after_upgrade(memory),
             Err(StorageError::UnsupportedSchemaVersion(32))
         ));
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn v32_to_v33_migration_preserves_deposit_funding_reservation_with_mint_amount() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.minimum_withdrawal_id = vec![0; 32];
+        let store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize current fixture");
+        let owner = Principal::self_authenticating([40; 32]);
+        let mut record = funding_pending_deposit();
+        record.transfer.from =
+            Account::new(owner.as_slice().to_vec(), [0; 32]).expect("valid owner");
+        record.state = bridge_core::DepositState::AuthorizationPending {
+            funding_ledger_block_index: 4,
+        };
+        record.quote = Some(bridge_core::DepositQuote {
+            service_fee: Amount::new(10),
+            net_amount: Amount::new(100),
+        });
+        let deposit_id = record.id.bytes();
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "INSERT INTO deposits(key, value) VALUES(?1, ?2)",
+                    params![
+                        deposit_id.to_sql_bytes(),
+                        encode(&record).expect("encode deposit").to_sql_bytes()
+                    ],
+                )?;
+                let blob = connection.query_scalar::<Vec<u8>>(
+                    "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                    params![],
+                )?;
+                let mut admission: DepositAdmissionControl =
+                    decode(&StableBlob::new(blob).expect("blob")).expect("decode deposit admission");
+                admission
+                    .funding_reservations
+                    .push(DepositFundingReservation {
+                        deposit_id,
+                        caller: owner.as_slice().to_vec(),
+                        mint_amount: 100,
+                        quota_window_id: admission.window_id,
+                    });
+                connection.execute(
+                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                    params![encode(&admission).expect("encode admission").to_sql_bytes()],
+                )?;
+                Ok(())
+            })
+            .expect("seed deposit funding reservation");
+        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
+        drop(store);
+
+        let boundary = vec![4; 32];
+        let context = SchemaMigrationContext {
+            migration_id: V32_TO_V33_MIGRATION_ID,
+            from_schema: 32,
+            to_schema: SCHEMA_VERSION,
+            minimum_withdrawal_id: &boundary,
+        };
+        let reopened = StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
+            .expect("migrate v32 to v33");
+        let admission = reopened.deposit_admission().expect("deposit admission");
+        assert_eq!(admission.funding_reservations.len(), 1);
+        let reservation = &admission.funding_reservations[0];
+        assert_eq!(reservation.deposit_id, deposit_id);
+        assert_eq!(reservation.caller, owner.as_slice().to_vec());
+        assert_eq!(reservation.mint_amount, 100);
+        assert_eq!(reservation.quota_window_id, admission.window_id);
+        assert!(StableStore::reopen_after_upgrade(memory.clone()).is_ok());
     }
 
     #[test]
