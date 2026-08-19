@@ -154,6 +154,7 @@ run_versions() {
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
   "$ROOT/scripts/test_ci_guards.sh"
+  "$ROOT/scripts/test_production_canister_bootstrap.sh"
   "$ROOT/scripts/test_production_release.sh"
   "$ROOT/scripts/test_production_drivers.sh"
   "$ROOT/scripts/test_production_activation.sh"

@@ -454,7 +454,13 @@ pub async fn confirm(
     let config = config()?;
     let outcome = evm_rpc::confirmed_receipt_outcome(&config, transaction_hash)
         .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        .map_err(|error| {
+            ic_cdk::println!(
+                "base governance confirmation observation failed: operation_id={} phase=confirmed_receipt error={error:?}",
+                transaction.id
+            );
+            BaseGovernanceError::ObservationUnavailable
+        })?;
     require_transaction_authorization(caller, &transaction.kind)?;
     let (receipt_block_number, succeeded, finalized_observation) = match outcome {
         evm_rpc::ConfirmedReceiptOutcome::Missing
@@ -485,7 +491,13 @@ pub async fn confirm(
         let observed =
             evm_rpc::bridge_snapshot_at(&config, finalized_observation, runtime_attested)
                 .await
-                .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+                .map_err(|error| {
+                    ic_cdk::println!(
+                        "base governance confirmation observation failed: operation_id={} phase=activation_snapshot error={error:?}",
+                        transaction.id
+                    );
+                    BaseGovernanceError::ObservationUnavailable
+                })?;
         crate::api::cache_runtime_attestation(&config, &observed)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
         require_transaction_authorization(caller, &transaction.kind)?;
@@ -493,6 +505,12 @@ pub async fn confirm(
             observed.snapshot.deposits_paused,
             observed.snapshot.withdrawals_paused,
         ) {
+            ic_cdk::println!(
+                "base governance confirmation observation failed: operation_id={} phase=activation_postcondition deposits_paused={} withdrawals_paused={}",
+                transaction.id,
+                observed.snapshot.deposits_paused,
+                observed.snapshot.withdrawals_paused
+            );
             return Err(BaseGovernanceError::ObservationUnavailable);
         }
     }

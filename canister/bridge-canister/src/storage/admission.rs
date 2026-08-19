@@ -112,6 +112,7 @@ pub(super) fn consume_deposit_quota_and_reserve_funding(
             caller: owner.as_slice().to_vec(),
             mint_amount,
             quota_window_id: admission.window_id,
+            releases_quota_on_failure: true,
         });
     Ok(())
 }
@@ -202,7 +203,8 @@ pub(super) fn rollback_failed_deposit_admission(
         })
         .ok_or(StorageError::RecordNotFound)?;
     let reservation = admission.funding_reservations.remove(index);
-    if reservation.quota_window_id != admission.window_id {
+    if !reservation.releases_quota_on_failure || reservation.quota_window_id != admission.window_id
+    {
         return Ok(());
     }
     admission.global_count = admission

@@ -107,6 +107,8 @@ npm run governance-relayer -- run --operation-id <id>
 
 stagingを現行schemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認する。schema v33／wire v28以外のcanisterはupgrade対象にせず、現行Wasmを新規installして検証stateを作り直す。rollbackでは最初にrelayerを停止し、同一schemaの対応Wasmとstable snapshotをセットで復元する。
 
+初回production Canister作成は`icp.yaml`へsubnetを設定せず、review済みidentityで`BRIDGE_ICP_IDENTITY=<identity> scripts/production-canister-bootstrap.sh`を実行する。このscriptは`pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeez-fez7a-iae`を`icp canister create --subnet`へ固定し、作成後または既存mapping再利用時にNNS Registryが返す実subnetとの一致を必須にする。`.icp/data/mappings/production.ids.json`に既存IDがある場合は新規作成しない。
+
 本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
 
 Gate Bにはcleanなmanifest sourceからprofile非依存で生成したUI code/assetsの全file digestとaggregate digestを持つ`ui-assets.json`を必須登録する。activation driverは同じsourceから再buildしてreceipt一致を確認する。production UI deployはこのartifact集合だけを再生成し、検証済みGate Bからrenderした`ui-runtime-profile.json`を`deployment-profile.js`へ直前合成して公開する。dirty checkout、asset追加・欠落・hash drift、bundle外profileはすべて拒否する。

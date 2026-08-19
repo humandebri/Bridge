@@ -238,7 +238,7 @@ const DEPOSIT_PREFLIGHT_RPC_CALLS: [&str; 3] = [
 // larger than the fixed-size header fields.
 const BLOCK_RESPONSE_BYTES: u64 = 16 * 1024;
 const RECEIPT_RESPONSE_BYTES: u64 = 32 * 1024;
-const EVM_RPC_TIMEOUT_SECONDS: u32 = 30;
+const EVM_RPC_TIMEOUT_SECONDS: u32 = 300;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BoundedRuntime;
@@ -267,8 +267,20 @@ impl Runtime for BoundedRuntime {
             .with_args(&args)
             .with_cycles(cycles)
             .await
-            .map_err(IcError::from)
-            .and_then(|response| response.candid::<Out>().map_err(IcError::from))
+            .map_err(|error| {
+                ic_cdk::println!(
+                    "EVM RPC inter-canister update failed: method={method} error={error:?}"
+                );
+                IcError::from(error)
+            })
+            .and_then(|response| {
+                response.candid::<Out>().map_err(|error| {
+                    ic_cdk::println!(
+                        "EVM RPC inter-canister update decode failed: method={method} error={error:?}"
+                    );
+                    IcError::from(error)
+                })
+            })
     }
 
     async fn query_call<In, Out>(
@@ -291,8 +303,20 @@ impl Runtime for BoundedRuntime {
             .change_timeout(EVM_RPC_TIMEOUT_SECONDS)
             .with_args(&args)
             .await
-            .map_err(IcError::from)
-            .and_then(|response| response.candid::<Out>().map_err(IcError::from))
+            .map_err(|error| {
+                ic_cdk::println!(
+                    "EVM RPC inter-canister query failed: method={method} error={error:?}"
+                );
+                IcError::from(error)
+            })
+            .and_then(|response| {
+                response.candid::<Out>().map_err(|error| {
+                    ic_cdk::println!(
+                        "EVM RPC inter-canister query decode failed: method={method} error={error:?}"
+                    );
+                    IcError::from(error)
+                })
+            })
     }
 }
 
@@ -1756,8 +1780,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn evm_rpc_runtime_uses_the_fixed_thirty_second_bound() {
-        assert_eq!(EVM_RPC_TIMEOUT_SECONDS, 30);
+    fn evm_rpc_runtime_uses_the_sdk_default_five_minute_bound() {
+        assert_eq!(EVM_RPC_TIMEOUT_SECONDS, 300);
         assert_eq!(SMALL_RESPONSE_BYTES, 4 * 1024);
         assert_eq!(BLOCK_RESPONSE_BYTES, 16 * 1024);
     }

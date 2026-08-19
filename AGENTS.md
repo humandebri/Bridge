@@ -32,3 +32,9 @@
 - When isolation is explicitly necessary because concurrent build-input changes must be preserved, reuse the existing Cargo target cache, pnpm store, pinned tools, and initialized submodules. Set non-interactive package-manager mode before starting the gate.
 - Reuse a proof receipt only after the repository verifier confirms its source fingerprint, tool versions, submodule revisions, required stages, and completeness against the current checkout. File existence or a matching commit name alone is not sufficient.
 - Before waiting for chain finality, inspect an available transaction receipt for terminal failure. A reverted receipt must stop the driver immediately and must never be reported as a finality timeout.
+
+## Cycles handling safety
+
+- Before minting, transferring, or topping up cycles, apply the `cycles-management` skill and verify whether the destination is a cycles-ledger account or a canister execution balance.
+- Never use `icp cycles transfer <amount> <canister-principal>` to top up a canister. It credits the cycles-ledger account owned by that principal and does not increase the canister execution balance.
+- Use `icp canister top-up <canister> --amount <amount>` when increasing a canister execution balance, and verify both the canister status balance and the cycles-ledger transaction result after the operation.

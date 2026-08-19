@@ -196,11 +196,6 @@ def verify_clean_evidence(wasm: Path, did: Path, evidence: dict[str, Any]) -> st
     changed = run(["git", "diff", "--name-only", source, head]).splitlines()
     allowed = {
         "deployments/sepolia-staging/evidence/local-e2e.json",
-        # The driver may be corrected on top of the local E2E source commit to
-        # decode live pre-migration state; every reviewed build input, Wasm,
-        # Candid, policy, and profile change still fails closed.
-        "scripts/plan007/staging_canister_upgrade.py",
-        "scripts/plan007/test_staging_canister_upgrade.py",
     }
     if source != head and set(changed) - allowed:
         fail("HEAD contains build-input changes after the local E2E source commit")
@@ -505,6 +500,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.execute and args.skip_storage_validation:
+        fail("--skip-storage-validation is preflight-only and cannot be used with --execute")
     identity = os.environ.get("BRIDGE_STAGING_IDENTITY")
     if not identity:
         fail("BRIDGE_STAGING_IDENTITY is required")

@@ -361,6 +361,19 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse((self.state / "validation-started").exists())
         self.assertFalse(self.install_record.exists())
 
+    def test_execute_rejects_skip_storage_validation(self) -> None:
+        result = self.run_driver(
+            "--execute", "--skip-storage-validation",
+            MOCK_VALIDATION_FAIL="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "--skip-storage-validation is preflight-only and cannot be used with --execute",
+            result.stderr,
+        )
+        self.assertFalse(self.install_record.exists())
+        self.assertFalse((self.state / "validation-started").exists())
+
     def test_v32_migration_requires_the_reviewed_profile_boundary(self) -> None:
         before_module = str(self.policy()["before_module_sha256"])
         result = self.run_driver(

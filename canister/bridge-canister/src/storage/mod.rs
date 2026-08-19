@@ -1071,6 +1071,7 @@ pub struct DepositFundingReservation {
     pub caller: Vec<u8>,
     pub mint_amount: u128,
     pub quota_window_id: u64,
+    pub releases_quota_on_failure: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1207,7 +1208,12 @@ struct V32DepositFundingReservation {
 /// The v32 stable deposit admission has no verification lane and its funding
 /// reservations carry no mint amount or quota window. Keep this decoder
 /// explicit so a future deposit admission field cannot silently become part of
-/// the one-time v32 -> v33 migration.
+/// the one-time v32 -> v33 migration. A v32 funding reservation exists only
+/// while its funding attempt has no deposit row yet (the reservation is
+/// released atomically when the deposit is admitted), so the migration carries
+/// genuine in-flight attempts over from the deposit_funding_attempts table,
+/// drops stale deposit-linked reservations after a fail-closed binding check,
+/// and rejects reservations that reference neither or both.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct V32DepositAdmissionControl {
     pub window_id: u64,
@@ -1936,6 +1942,7 @@ struct StorageValidationProgress {
     reconciliation_holds: u64,
     reserved_deposit_mint_amount: u128,
     reserved_deposit_mint_operations: u64,
+    funding_attempts: u64,
     settlement_job_status_counts: [u64; 4],
     settlement_job_kind_counts: [u64; 3],
 }
@@ -2169,39 +2176,76 @@ fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
         .map_err(|_| StorageError::DatabaseFailure)
 }
 
+/// Map one v32 funding reservation into the v33 shape, or drop it when it is
+/// stale. A reservation that references a genuine in-flight `deposit_funding_attempts`
+/// row (no deposit row yet) is carried over with the attempt's `gross_amount` and
+/// caller; one that already has a committed deposit row (no attempt) is dropped
+/// after a fail-closed id/caller binding check; a reservation that references
+/// neither or both is rejected.
+///
+/// v32 recorded no quota window, so migrated reservations never release quota on
+/// failure. This conservatively preserves the current asset-admission counts
+/// instead of guessing that an in-flight attempt consumed them in the current
+/// window.
 fn migrate_deposit_funding_reservation(
     connection: &UpdateConnection<'_>,
     reservation: &V32DepositFundingReservation,
     quota_window_id: u64,
-) -> Result<DepositFundingReservation, DbError> {
+) -> Result<Option<DepositFundingReservation>, DbError> {
     let deposit_id = reservation.deposit_id;
-    let bytes = connection
-        .query_optional_scalar::<Vec<u8>>(
-            "SELECT value FROM deposits WHERE key = ?1",
-            params![deposit_id.to_sql_bytes()],
-        )?
-        .ok_or_else(|| {
-            DbError::Constraint("v32 funding reservation has no matching deposit row".into())
-        })?;
-    let record: DepositRecord = decode(
-        &StableBlob::new(bytes)
-            .map_err(|_| DbError::Constraint("invalid v32 deposit row".into()))?,
-    )
-    .map_err(|_| DbError::Constraint("cannot decode v32 deposit row".into()))?;
-    let mint_amount = record
-        .reserved_mint_amount()
-        .map_err(|_| {
-            DbError::Constraint(
-                "v32 funding reservation deposit does not reserve a mint amount".into(),
+    let key = deposit_id.to_sql_bytes();
+    let deposit_bytes = connection.query_optional_scalar::<Vec<u8>>(
+        "SELECT value FROM deposits WHERE key = ?1",
+        params![key.clone()],
+    )?;
+    let attempt_bytes = connection.query_optional_scalar::<Vec<u8>>(
+        "SELECT value FROM deposit_funding_attempts WHERE key = ?1",
+        params![key.clone()],
+    )?;
+    match (deposit_bytes, attempt_bytes) {
+        (None, None) => Err(DbError::Constraint(
+            "v32 funding reservation references neither a deposit nor a funding attempt".into(),
+        )),
+        (Some(_), Some(_)) => Err(DbError::Constraint(
+            "v32 funding reservation coexists with both a deposit and a funding attempt".into(),
+        )),
+        (Some(bytes), None) => {
+            let stored: StoredDeposit = decode(
+                &StableBlob::new(bytes)
+                    .map_err(|_| DbError::Constraint("invalid v32 deposit row".into()))?,
             )
-        })?
-        .get();
-    Ok(DepositFundingReservation {
-        deposit_id,
-        caller: reservation.caller.clone(),
-        mint_amount,
-        quota_window_id,
-    })
+            .map_err(|_| DbError::Constraint("cannot decode v32 deposit row".into()))?;
+            if stored.record.id.bytes() != deposit_id
+                || stored.record.transfer.from.owner() != reservation.caller.as_slice()
+            {
+                return Err(DbError::Constraint(
+                    "v32 funding reservation does not match its committed deposit".into(),
+                ));
+            }
+            Ok(None)
+        }
+        (None, Some(bytes)) => {
+            let attempt: DepositFundingAttempt = decode(
+                &StableBlob::new(bytes)
+                    .map_err(|_| DbError::Constraint("invalid v32 funding attempt row".into()))?,
+            )
+            .map_err(|_| DbError::Constraint("cannot decode v32 funding attempt row".into()))?;
+            if attempt.intent.deposit_id != deposit_id
+                || attempt.intent.caller != reservation.caller
+            {
+                return Err(DbError::Constraint(
+                    "v32 funding reservation does not match its funding attempt".into(),
+                ));
+            }
+            Ok(Some(DepositFundingReservation {
+                deposit_id,
+                caller: attempt.intent.caller,
+                mint_amount: attempt.gross_amount,
+                quota_window_id,
+                releases_quota_on_failure: false,
+            }))
+        }
+    }
 }
 
 fn migrate_v32_to_v33(
@@ -2335,24 +2379,30 @@ fn migrate_v32_to_v33(
                     .map_err(|_| DbError::Constraint("invalid v32 deposit admission".into()))?,
             )
             .map_err(|_| DbError::Constraint("cannot decode v32 deposit admission".into()))?;
-            let funding_reservations = old_deposit
-                .funding_reservations
-                .iter()
-                .map(|reservation| {
-                    migrate_deposit_funding_reservation(
-                        connection,
-                        reservation,
-                        old_deposit.window_id,
-                    )
-                })
-                .collect::<Result<Vec<_>, DbError>>()?;
+            // v32 had no verification lane, so the migration deliberately copies the
+            // current window's asset counts into the v33 verification lane as well.
+            // This is the conservative choice: it keeps the per-window anti-abuse
+            // budget intact (a fresh v33 deployment would have consumed both lanes
+            // in lockstep for every attempt). The consequence is that a migrated
+            // canister starts the verification lane partially consumed in the
+            // migration window rather than at zero; it resets on the next window.
+            let mut funding_reservations = Vec::new();
+            for reservation in &old_deposit.funding_reservations {
+                if let Some(migrated) = migrate_deposit_funding_reservation(
+                    connection,
+                    reservation,
+                    old_deposit.window_id,
+                )? {
+                    funding_reservations.push(migrated);
+                }
+            }
             let deposit_blob = encode(&DepositAdmissionControl {
                 window_id: old_deposit.window_id,
                 global_count: old_deposit.global_count,
-                caller_counts: old_deposit.caller_counts,
-                verification_window_id: 0,
-                verification_global_count: 0,
-                verification_caller_counts: Vec::new(),
+                caller_counts: old_deposit.caller_counts.clone(),
+                verification_window_id: old_deposit.window_id,
+                verification_global_count: old_deposit.global_count,
+                verification_caller_counts: old_deposit.caller_counts,
                 funding_reservations,
                 signer_address: old_deposit.signer_address,
                 signer_public_key: old_deposit.signer_public_key,
@@ -2510,6 +2560,7 @@ fn validate_storage_row(
     table: &str,
     key: &[u8],
     value: &[u8],
+    funding_reservations: Option<&[DepositFundingReservation]>,
     progress: &mut StorageValidationProgress,
 ) -> Result<(), DbError> {
     match table {
@@ -2593,6 +2644,26 @@ fn validate_storage_row(
                     "funding attempt missing nonterminal index".into(),
                 ));
             }
+            let reservations = funding_reservations.ok_or_else(|| {
+                DbError::Constraint("missing funding reservations during validation".into())
+            })?;
+            let matches = reservations
+                .iter()
+                .filter(|reservation| {
+                    reservation.deposit_id == attempt.intent.deposit_id
+                        && reservation.caller == attempt.intent.caller
+                        && reservation.mint_amount == attempt.gross_amount
+                })
+                .count();
+            if matches != 1 {
+                return Err(DbError::Constraint(
+                    "funding attempt reservation mismatch".into(),
+                ));
+            }
+            progress.funding_attempts = progress
+                .funding_attempts
+                .checked_add(1)
+                .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
         }
         "withdrawals" => {
             let record: WithdrawalRecord =
@@ -3158,6 +3229,7 @@ impl StableStore {
                     reconciliation_holds: 0,
                     reserved_deposit_mint_amount: 0,
                     reserved_deposit_mint_operations: 0,
+                    funding_attempts: 0,
                     settlement_job_status_counts: [0; 4],
                     settlement_job_kind_counts: [0; 3],
                 };
@@ -3221,6 +3293,21 @@ impl StableStore {
                 let table = VALIDATION_TABLES
                     .get(usize::from(progress.phase))
                     .ok_or_else(|| DbError::Constraint("invalid validation phase".into()))?;
+                let funding_reservations = if *table == "deposit_funding_attempts" {
+                    let bytes = connection.query_scalar::<Vec<u8>>(
+                        "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                        params![],
+                    )?;
+                    Some(
+                        decode_with_context::<DepositAdmissionControl>(
+                            bytes,
+                            "invalid deposit admission during validation",
+                        )?
+                        .funding_reservations,
+                    )
+                } else {
+                    None
+                };
                 let rows = if *table == "settlement_jobs" {
                     let sql = if progress.cursor.is_some() {
                         "SELECT settlement_kind, settlement_id, status FROM settlement_jobs
@@ -3273,7 +3360,14 @@ impl StableStore {
                     }
                 };
                 for (key, value) in &rows {
-                    validate_storage_row(connection, table, key, value, &mut progress)?;
+                    validate_storage_row(
+                        connection,
+                        table,
+                        key,
+                        value,
+                        funding_reservations.as_deref(),
+                        &mut progress,
+                    )?;
                 }
                 progress.phase_rows = progress
                     .phase_rows
@@ -3361,6 +3455,17 @@ impl StableStore {
                         u64::from_sql_bytes(raw)
                             .map_err(|_| DbError::Constraint("invalid index count".into()))
                     };
+                    let deposit_admission = decode_with_context::<DepositAdmissionControl>(
+                        connection.query_scalar::<Vec<u8>>(
+                            "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                            params![],
+                        )?,
+                        "invalid deposit admission during validation",
+                    )?;
+                    let funding_reservation_count =
+                        u64::try_from(deposit_admission.funding_reservations.len()).map_err(
+                            |_| DbError::Constraint("funding reservation count overflow".into()),
+                        )?;
                     if counters.pending_ledger_operations != progress.pending_ledger_operations
                         || index_count("withdrawal_liability_index")?
                             != progress.nonterminal_withdrawals
@@ -3369,6 +3474,7 @@ impl StableStore {
                             != progress.reserved_deposit_mint_amount
                         || counters.reserved_deposit_mint_operations
                             != progress.reserved_deposit_mint_operations
+                        || funding_reservation_count != progress.funding_attempts
                     {
                         return Err(DbError::Constraint("counter mismatch".into()));
                     }
@@ -11551,8 +11657,7 @@ mod tests {
             last_completed_governance_transaction: current_deposit
                 .last_completed_governance_transaction,
             pending_timelock_operation: current_deposit.pending_timelock_operation,
-            emergency_pause_deposit_required: current_deposit
-                .emergency_pause_deposit_required,
+            emergency_pause_deposit_required: current_deposit.emergency_pause_deposit_required,
             emergency_pause_withdrawal_required: current_deposit
                 .emergency_pause_withdrawal_required,
             emergency_cancel_required: current_deposit.emergency_cancel_required,
@@ -11773,13 +11878,79 @@ mod tests {
     #[cfg(feature = "test-deployment")]
     #[test]
     #[serial]
-    fn v32_to_v33_migration_preserves_deposit_funding_reservation_with_mint_amount() {
+    fn v32_to_v33_migration_preserves_inflight_funding_attempts_with_gross_amount() {
         let memory = VectorMemory::default();
         let mut initial = config();
         initial.minimum_withdrawal_id = vec![0; 32];
-        let store = StableStore::init_configured(memory.clone(), &initial)
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
             .expect("initialize current fixture");
+        initialize_unpaused_admin(&mut store);
         let owner = Principal::self_authenticating([40; 32]);
+        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        store
+            .prepare_deposit_funding_attempt(
+                owner,
+                &attempt,
+                DepositQuotaAdmission {
+                    now_ns: 1,
+                    window_seconds: 60,
+                    global_limit: 30,
+                    per_principal_limit: 3,
+                },
+                ample_cycle_admission(),
+            )
+            .expect("prepare funding attempt");
+        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
+        drop(store);
+
+        let boundary = vec![4; 32];
+        let context = SchemaMigrationContext {
+            migration_id: V32_TO_V33_MIGRATION_ID,
+            from_schema: 32,
+            to_schema: SCHEMA_VERSION,
+            minimum_withdrawal_id: &boundary,
+        };
+        let mut reopened =
+            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
+                .expect("migrate v32 to v33");
+        let admission = reopened.deposit_admission().expect("deposit admission");
+        assert_eq!(admission.funding_reservations.len(), 1);
+        let reservation = &admission.funding_reservations[0];
+        assert_eq!(reservation.deposit_id, attempt.intent.deposit_id);
+        assert_eq!(reservation.caller, owner.as_slice().to_vec());
+        assert_eq!(reservation.mint_amount, attempt.gross_amount);
+        assert_eq!(reservation.quota_window_id, admission.window_id);
+        assert!(!reservation.releases_quota_on_failure);
+        assert_eq!(admission.verification_global_count, admission.global_count);
+        assert_eq!(
+            admission.verification_caller_counts,
+            admission.caller_counts
+        );
+        let global_count = admission.global_count;
+        let caller_counts = admission.caller_counts.clone();
+        reopened
+            .remove_deposit_funding_attempt(owner, &attempt)
+            .expect("remove migrated funding attempt");
+        let admission = reopened.deposit_admission().expect("deposit admission");
+        assert!(admission.funding_reservations.is_empty());
+        assert_eq!(admission.global_count, global_count);
+        assert_eq!(admission.caller_counts, caller_counts);
+        reopened
+            .validate_relations()
+            .expect("migrated relations hold");
+        assert!(StableStore::reopen_after_upgrade(memory.clone()).is_ok());
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn v32_to_v33_migration_drops_stale_deposit_linked_reservations_fail_closed() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.minimum_withdrawal_id = vec![0; 32];
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize current fixture");
+        let owner = Principal::self_authenticating([41; 32]);
         let mut record = funding_pending_deposit();
         record.transfer.from =
             Account::new(owner.as_slice().to_vec(), [0; 32]).expect("valid owner");
@@ -11791,22 +11962,21 @@ mod tests {
             net_amount: Amount::new(100),
         });
         let deposit_id = record.id.bytes();
+        store.put_deposit(&record).expect("seed committed deposit");
+        let reserved_before = store
+            .counters()
+            .expect("counters")
+            .reserved_deposit_mint_amount;
         store
             .handle
             .update(|connection| {
-                connection.execute(
-                    "INSERT INTO deposits(key, value) VALUES(?1, ?2)",
-                    params![
-                        deposit_id.to_sql_bytes(),
-                        encode(&record).expect("encode deposit").to_sql_bytes()
-                    ],
-                )?;
                 let blob = connection.query_scalar::<Vec<u8>>(
                     "SELECT deposit_admission FROM singleton_state WHERE id = 1",
                     params![],
                 )?;
                 let mut admission: DepositAdmissionControl =
-                    decode(&StableBlob::new(blob).expect("blob")).expect("decode deposit admission");
+                    decode(&StableBlob::new(blob).expect("blob"))
+                        .expect("decode deposit admission");
                 admission
                     .funding_reservations
                     .push(DepositFundingReservation {
@@ -11814,6 +11984,7 @@ mod tests {
                         caller: owner.as_slice().to_vec(),
                         mint_amount: 100,
                         quota_window_id: admission.window_id,
+                        releases_quota_on_failure: true,
                     });
                 connection.execute(
                     "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
@@ -11821,7 +11992,7 @@ mod tests {
                 )?;
                 Ok(())
             })
-            .expect("seed deposit funding reservation");
+            .expect("seed stale deposit funding reservation");
         rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
         drop(store);
 
@@ -11832,109 +12003,266 @@ mod tests {
             to_schema: SCHEMA_VERSION,
             minimum_withdrawal_id: &boundary,
         };
-        let reopened = StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
-            .expect("migrate v32 to v33");
+        let reopened =
+            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
+                .expect("migrate v32 to v33");
         let admission = reopened.deposit_admission().expect("deposit admission");
-        assert_eq!(admission.funding_reservations.len(), 1);
-        let reservation = &admission.funding_reservations[0];
-        assert_eq!(reservation.deposit_id, deposit_id);
-        assert_eq!(reservation.caller, owner.as_slice().to_vec());
-        assert_eq!(reservation.mint_amount, 100);
-        assert_eq!(reservation.quota_window_id, admission.window_id);
+        assert!(admission.funding_reservations.is_empty());
+        assert_eq!(
+            reopened
+                .counters()
+                .expect("counters")
+                .reserved_deposit_mint_amount,
+            reserved_before
+        );
+        assert_eq!(
+            reopened
+                .deposit_funding_reserved_mint_amount_excluding(deposit_id)
+                .expect("funding reserved amount"),
+            0
+        );
+        reopened
+            .validate_relations()
+            .expect("migrated relations hold");
         assert!(StableStore::reopen_after_upgrade(memory.clone()).is_ok());
+
+        let mut store = StableStore::reopen(memory).expect("reopen migrated store");
+        initialize_unpaused_admin(&mut store);
+        store
+            .owner_deposit_sequences
+            .insert(owner_sequence_key(owner).expect("owner sequence key"), 1);
+        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        let mut attempt = attempt;
+        attempt.intent.owner_sequence = 1;
+        store
+            .prepare_deposit_funding_attempt(
+                owner,
+                &attempt,
+                DepositQuotaAdmission {
+                    now_ns: 1,
+                    window_seconds: 60,
+                    global_limit: 30,
+                    per_principal_limit: 3,
+                },
+                ample_cycle_admission(),
+            )
+            .expect("caller funding slot is freed after the stale reservation is dropped");
     }
 
+    #[cfg(feature = "test-deployment")]
     #[test]
     #[serial]
-    fn live_v33_cbor_with_retired_fields_reopens_config_progress_deposit_and_audit() {
-        #[derive(Serialize)]
-        struct LiveV32ImmutableConfig<'a> {
-            #[serde(flatten)]
-            current: &'a ImmutableBridgeConfig,
-            governance_eth_floor_wei: u128,
-        }
-
-        #[derive(Serialize)]
-        struct LiveV32ExternalProgress<'a> {
-            #[serde(flatten)]
-            current: &'a ExternalProgress,
-            last_eth_balance_wei: u128,
-            reserve_sufficient: bool,
-            reserve_observation_generation: u64,
-            last_reserve_observation_ns: u64,
-        }
-
+    fn v32_to_v33_migration_rejects_reservation_without_attempt_or_deposit() {
         let memory = VectorMemory::default();
-        let expected_config = config();
-        let mut store = StableStore::init_configured(memory.clone(), &expected_config)
-            .expect("initialize live v33 fixture");
-        let expected_deposit = deposit();
+        let mut initial = config();
+        initial.minimum_withdrawal_id = vec![0; 32];
+        let store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize current fixture");
+        let owner = Principal::self_authenticating([42; 32]);
         store
-            .put_deposit(&expected_deposit)
-            .expect("persist fixture deposit");
-        store
-            .append_audit_event_at(
-                Principal::self_authenticating([8; 32]),
-                AuditEventKind::DepositsPaused,
-                1_000,
-            )
-            .expect("persist fixture audit");
-        let expected_progress = ExternalProgress {
-            last_finalized_base_block: 45_155_198,
-            last_finalized_observation_ns: 1_786_080_004_911_993_512,
-            finalized_observation: Some(bridge_core::FinalizedObservationRecord {
-                chain_id: 84_532,
-                block_number: 45_155_198,
-                block_hash: [0x77; 32],
-                observed_at_ns: 1_786_080_004_911_993_512,
-                bridge_signer: [0x0b; 20],
-                runtime_sha256: [0x93; 32],
-            }),
+            .handle
+            .update(|connection| {
+                let blob = connection.query_scalar::<Vec<u8>>(
+                    "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                    params![],
+                )?;
+                let mut admission: DepositAdmissionControl =
+                    decode(&StableBlob::new(blob).expect("blob"))
+                        .expect("decode deposit admission");
+                admission
+                    .funding_reservations
+                    .push(DepositFundingReservation {
+                        deposit_id: [9; 32],
+                        caller: owner.as_slice().to_vec(),
+                        mint_amount: 100,
+                        quota_window_id: admission.window_id,
+                        releases_quota_on_failure: true,
+                    });
+                connection.execute(
+                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                    params![encode(&admission).expect("encode admission").to_sql_bytes()],
+                )?;
+                Ok(())
+            })
+            .expect("seed orphaned funding reservation");
+        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
+        drop(store);
+
+        let boundary = vec![4; 32];
+        let context = SchemaMigrationContext {
+            migration_id: V32_TO_V33_MIGRATION_ID,
+            from_schema: 32,
+            to_schema: SCHEMA_VERSION,
+            minimum_withdrawal_id: &boundary,
         };
-        let immutable = ImmutableBridgeConfig::from_init(&expected_config);
-        let config_blob = encode(&Some(LiveV32ImmutableConfig {
-            current: &immutable,
-            governance_eth_floor_wei: 10_000_000_000_000_000,
-        }))
-        .expect("encode live v33 config");
-        let progress_blob = encode(&LiveV32ExternalProgress {
-            current: &expected_progress,
-            last_eth_balance_wei: 19_433_605_485_256_720,
-            reserve_sufficient: true,
-            reserve_observation_generation: 7,
-            last_reserve_observation_ns: 1_785_920_381_347_296_085,
-        })
-        .expect("encode live v33 progress");
+        assert!(matches!(
+            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context)),
+            Err(StorageError::SchemaMigrationRejected(message))
+                if message.contains("references neither a deposit nor a funding attempt")
+        ));
+        assert!(matches!(
+            StableStore::reopen_after_upgrade(memory),
+            Err(StorageError::UnsupportedSchemaVersion(32))
+        ));
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn v32_to_v33_migration_rejects_reservation_coexisting_with_deposit_and_attempt() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.minimum_withdrawal_id = vec![0; 32];
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize current fixture");
+        initialize_unpaused_admin(&mut store);
+        let owner = Principal::self_authenticating([43; 32]);
+        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        store
+            .prepare_deposit_funding_attempt(
+                owner,
+                &attempt,
+                DepositQuotaAdmission {
+                    now_ns: 1,
+                    window_seconds: 60,
+                    global_limit: 30,
+                    per_principal_limit: 3,
+                },
+                ample_cycle_admission(),
+            )
+            .expect("prepare funding attempt");
+        let deposit_id = attempt.intent.deposit_id;
         store
             .handle
             .update(|connection| {
                 connection.execute(
-                    "UPDATE singleton_state SET config = ?1, external_progress = ?2 WHERE id = 1",
-                    params![config_blob.to_sql_bytes(), progress_blob.to_sql_bytes()],
-                )
+                    "INSERT INTO deposits(key, value) VALUES(?1, ?2)",
+                    params![
+                        deposit_id.to_sql_bytes(),
+                        encode(&deposit_for(owner))
+                            .expect("encode deposit")
+                            .to_sql_bytes()
+                    ],
+                )?;
+                Ok(())
             })
-            .expect("install live v33 CBOR fixture");
+            .expect("seed overlapping deposit row");
+        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
         drop(store);
 
-        let reopened = StableStore::reopen_after_upgrade(memory).expect("reopen live v33 fixture");
-        assert_eq!(reopened.config().expect("config"), Some(expected_config));
-        assert_eq!(
-            reopened.external_progress().expect("external progress"),
-            expected_progress
-        );
-        assert_eq!(
-            reopened
-                .deposit(expected_deposit.id.bytes())
-                .expect("deposit"),
-            Some(expected_deposit)
-        );
-        assert_eq!(
-            reopened
-                .status_counts()
-                .expect("counts")
-                .retained_audit_events,
-            1
-        );
+        let boundary = vec![4; 32];
+        let context = SchemaMigrationContext {
+            migration_id: V32_TO_V33_MIGRATION_ID,
+            from_schema: 32,
+            to_schema: SCHEMA_VERSION,
+            minimum_withdrawal_id: &boundary,
+        };
+        assert!(matches!(
+            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context)),
+            Err(StorageError::SchemaMigrationRejected(message))
+                if message.contains("coexists with both a deposit and a funding attempt")
+        ));
+        assert!(matches!(
+            StableStore::reopen_after_upgrade(memory),
+            Err(StorageError::UnsupportedSchemaVersion(32))
+        ));
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn v32_to_v33_migration_carries_quota_history_into_the_verification_lane() {
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        initial.minimum_withdrawal_id = vec![0; 32];
+        let store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize current fixture");
+        let owner = Principal::self_authenticating([44; 32]);
+        store
+            .handle
+            .update(|connection| {
+                let blob = connection.query_scalar::<Vec<u8>>(
+                    "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                    params![],
+                )?;
+                let mut admission: DepositAdmissionControl =
+                    decode(&StableBlob::new(blob).expect("blob"))
+                        .expect("decode deposit admission");
+                admission.window_id = 5;
+                admission.global_count = 3;
+                admission.caller_counts.push(DepositCallerQuota {
+                    caller: owner.as_slice().to_vec(),
+                    count: 3,
+                });
+                connection.execute(
+                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                    params![encode(&admission).expect("encode admission").to_sql_bytes()],
+                )?;
+                Ok(())
+            })
+            .expect("seed v32 quota history");
+        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
+        drop(store);
+
+        let boundary = vec![4; 32];
+        let context = SchemaMigrationContext {
+            migration_id: V32_TO_V33_MIGRATION_ID,
+            from_schema: 32,
+            to_schema: SCHEMA_VERSION,
+            minimum_withdrawal_id: &boundary,
+        };
+        let reopened =
+            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
+                .expect("migrate v32 to v33");
+        let admission = reopened.deposit_admission().expect("deposit admission");
+        assert_eq!(admission.window_id, 5);
+        assert_eq!(admission.verification_window_id, 5);
+        assert_eq!(admission.verification_global_count, 3);
+        assert_eq!(admission.verification_caller_counts.len(), 1);
+        assert_eq!(admission.verification_caller_counts[0].count, 3);
+        reopened
+            .validate_relations()
+            .expect("migrated relations hold");
+
+        let quota = DepositQuotaAdmission {
+            now_ns: 5 * 60_000_000_000,
+            window_seconds: 60,
+            global_limit: 4,
+            per_principal_limit: 4,
+        };
+        let mut store = StableStore::reopen(memory.clone()).expect("reopen migrated store");
+        initialize_unpaused_admin(&mut store);
+        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        store
+            .prepare_deposit_funding_attempt(owner, &attempt, quota, ample_cycle_admission())
+            .expect("consume the remaining same-window budget");
+        store
+            .remove_deposit_funding_attempt(owner, &attempt)
+            .expect("definitive failure keeps the verification count");
+        let (next_attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        assert!(matches!(
+            store.prepare_deposit_funding_attempt(
+                owner,
+                &next_attempt,
+                quota,
+                ample_cycle_admission(),
+            ),
+            Err(StorageError::DepositRateLimited { .. })
+        ));
+
+        let next_window = DepositQuotaAdmission {
+            now_ns: 6 * 60_000_000_000 + 1,
+            ..quota
+        };
+        let (fresh_attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        store
+            .prepare_deposit_funding_attempt(
+                owner,
+                &fresh_attempt,
+                next_window,
+                ample_cycle_admission(),
+            )
+            .expect("next window resets the verification lane");
     }
 
     #[cfg(feature = "test-deployment")]
@@ -15514,10 +15842,21 @@ mod tests {
 
         let reopened =
             StableStore::reopen_after_upgrade(memory).expect("bounded post-upgrade reopen");
-        assert_eq!(
-            reopened.validate_relations().err(),
-            Some(StorageError::DatabaseFailure)
-        );
+        reopened
+            .start_storage_validation()
+            .expect("start chunked validation");
+        let mut rejected = false;
+        for _ in 0..=VALIDATION_TABLES.len() {
+            match reopened.continue_storage_validation(1) {
+                Err(StorageMaintenanceError::StorageFailure) => {
+                    rejected = true;
+                    break;
+                }
+                Ok(status) if !status.complete => {}
+                result => panic!("funding reservation drift unexpectedly passed: {result:?}"),
+            }
+        }
+        assert!(rejected, "funding reservation drift was not rejected");
     }
 
     #[test]
