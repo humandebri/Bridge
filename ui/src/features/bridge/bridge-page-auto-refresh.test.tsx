@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   bsnsBalance: vi.fn(),
   readDepositIntent: vi.fn(),
   runtimeWriteReadiness: vi.fn(),
+  runtimeHeartbeatHook: vi.fn(),
   runtimeRefetch: vi.fn(),
   heartbeatIsError: { value: false },
   heartbeatIsFetching: { value: false },
@@ -48,30 +49,33 @@ vi.mock("@/features/wallet/ic-wallet-provider", () => ({ useIcWallet: mocks.useI
 vi.mock("@/features/wallet/wallet-controls", () => ({ useWalletDialog: () => ({ openFor: vi.fn() }) }))
 vi.mock("@/features/status/use-status", () => ({
   useRuntimeValidation: () => ({ data: mocks.runtimeValidation.value, isFetching: false, refetch: mocks.runtimeRefetch }),
-  useRuntimeHeartbeat: () => ({
-    data: {
-      ready: true,
-      blockers: [],
-      checkedAt: Date.now(),
-      snapshot: {
-        serviceFee: 50_000_000n,
-        maxServiceFee: 50_000_000n,
-        perDepositLimit: 15_000_000_000_000n,
-        minted: 0n,
-        limit: 15_000_000_000_000n,
-        startedAt: 0n,
-        duration: 86_400n,
-        depositsPaused: mocks.heartbeatDepositsPaused.value,
-        withdrawalsPaused: mocks.heartbeatWithdrawalsPaused.value,
-        bridgeSigner: "0x0000000000000000000000000000000000000001",
-        mintAuthorizationEpoch: 1n,
-        blockTimestamp: 1_000n,
+  useRuntimeHeartbeat: (...args: unknown[]) => {
+    mocks.runtimeHeartbeatHook(...args)
+    return {
+      data: {
+        ready: true,
+        blockers: [],
+        checkedAt: Date.now(),
+        snapshot: {
+          serviceFee: 50_000_000n,
+          maxServiceFee: 50_000_000n,
+          perDepositLimit: 15_000_000_000_000n,
+          minted: 0n,
+          limit: 15_000_000_000_000n,
+          startedAt: 0n,
+          duration: 86_400n,
+          depositsPaused: mocks.heartbeatDepositsPaused.value,
+          withdrawalsPaused: mocks.heartbeatWithdrawalsPaused.value,
+          bridgeSigner: "0x0000000000000000000000000000000000000001",
+          mintAuthorizationEpoch: 1n,
+          blockTimestamp: 1_000n,
+        },
       },
-    },
-    isError: mocks.heartbeatIsError.value,
-    isFetching: mocks.heartbeatIsFetching.value,
-    refetch: mocks.baseRefetch,
-  }),
+      isError: mocks.heartbeatIsError.value,
+      isFetching: mocks.heartbeatIsFetching.value,
+      refetch: mocks.baseRefetch,
+    }
+  },
   finalizedObservationQuote: (observation: { snapshot?: unknown }) => observation?.snapshot,
   useRuntimeWriteReadiness: mocks.runtimeWriteReadiness,
 }))
@@ -146,6 +150,7 @@ describe("BridgePage automatic wallet refresh", () => {
     mocks.bsnsBalance.mockReset().mockResolvedValue(1_000_000_000n)
     mocks.readDepositIntent.mockReset().mockReturnValue(undefined)
     mocks.runtimeWriteReadiness.mockReset().mockReturnValue({ ready: true, reason: undefined })
+    mocks.runtimeHeartbeatHook.mockReset()
     mocks.heartbeatIsError.value = false
     mocks.heartbeatIsFetching.value = false
     mocks.heartbeatDepositsPaused.value = false
@@ -280,15 +285,26 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled()
   })
 
-  it("reports an RPC refresh error as unknown while keeping the last known fee", () => {
+  it("hides an RPC refresh error while keeping the last known fee", () => {
     mocks.heartbeatIsError.value = true
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
 
-    expect(screen.getByText("Live status could not be refreshed. Current conditions will be checked before continuing.")).toBeVisible()
+    expect(screen.queryByText("Live status could not be refreshed. Current conditions will be checked before continuing.")).not.toBeInTheDocument()
+    expect(screen.queryByRole("link", { name: "View status" })).not.toBeInTheDocument()
     expect(screen.getByText("Last known bridge fee")).toBeVisible()
     expect(screen.getByText("0.5 TICRC1")).toBeVisible()
     expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled()
+  })
+
+  it("disables focus and reconnect heartbeat refreshes on the Bridge page", () => {
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    expect(mocks.runtimeHeartbeatHook).toHaveBeenCalledWith(84_532, mocks.runtimeValidation.value, {
+      enabled: true,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    })
   })
 
   it("blocks the entry point only when a fresh heartbeat confirms the selected direction is paused", () => {
@@ -313,7 +329,7 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(screen.getByText("Next: Deposits are paused on Base")).toBeVisible()
   })
 
-  it("runs withdrawal preflight checks before exposing irreversible confirmation", async () => {
+  it("runs withdrawal preflight checks before enabling confirmation", async () => {
     const account = { owner: "aaaaa-aa" }
     mocks.useAccount.mockReturnValue({
       address: "0x0000000000000000000000000000000000000002",
@@ -340,9 +356,8 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(await screen.findByText("Review the transfer details before continuing.")).toBeVisible()
     expect(screen.queryByText("Wallets connected")).not.toBeInTheDocument()
     expect(screen.queryByText("Transfer availability checked")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Continue to Base wallet" })).toBeDisabled()
-    fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge irreversible burn" }))
     expect(screen.getByRole("button", { name: "Continue to Base wallet" })).toBeEnabled()
+    expect(screen.queryByText(/no Base refund/)).not.toBeInTheDocument()
   })
 
   it("submits the reviewed IC destination without reopening OISY", async () => {
@@ -378,9 +393,7 @@ describe("BridgePage automatic wallet refresh", () => {
     await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
     fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
     fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
-    const acknowledgment = await screen.findByRole("checkbox", { name: "Acknowledge irreversible burn" })
-    fireEvent.click(acknowledgment)
-    fireEvent.click(screen.getByRole("button", { name: "Continue to Base wallet" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Continue to Base wallet" }))
 
     expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("IC destination verification")
     await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())

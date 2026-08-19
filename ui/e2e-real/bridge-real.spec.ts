@@ -159,7 +159,6 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
       return await page.getByText(/^Next:/).textContent()
     }
   }, { timeout: 30_000 }).toBe("opened")
-  await page.getByRole("checkbox", { name: "Acknowledge irreversible burn" }).check()
   await page.getByRole("button", { name: "Continue to Base wallet" }).click()
   await expect(page.getByText(/Withdrawal submitted:/)).toBeVisible()
   await postControl(request, "/test/prepare-latest-withdrawal", {})

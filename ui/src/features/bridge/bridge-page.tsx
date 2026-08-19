@@ -9,7 +9,6 @@ import { useAccount, useChainId, useConnectorClient, useWriteContract } from "wa
 import baseLogo from "@/assets/base-square.svg"
 import icpLogo from "@/assets/icp-logo-mark.svg"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -162,6 +161,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   })
   const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, {
     enabled: true,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   })
   const heartbeatReadiness = useRuntimeWriteReadiness(heartbeat.data)
   const sendToken = direction === "deposit" ? deploymentProfile.icToken : deploymentProfile.baseToken
@@ -775,7 +776,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const liveStatusNotice = heartbeat.isFetching && !heartbeat.data
     ? "Checking live status…"
     : heartbeat.isError
-      ? "Live status could not be refreshed. Current conditions will be checked before continuing."
+      ? undefined
       : !heartbeatReadiness.ready
         ? "Live status is not confirmed. Current conditions will be checked before continuing."
         : undefined
@@ -977,9 +978,7 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
   onRetry: () => void
   onConfirm: () => void
 }) {
-  const [burnAcknowledged, setBurnAcknowledged] = useState(false)
   const close = (value: boolean) => {
-    if (!value) setBurnAcknowledged(false)
     setOpen(value)
   }
   const ready = preflight?.phase === "ready"
@@ -1004,14 +1003,10 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
         <ConfirmRow label="From" value={source} />
         <div className="sm:col-span-2"><ConfirmRow label="Recipient" value={destination} /></div>
       </div></>}
-      {ready && direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5">
-        <Checkbox aria-label="Acknowledge irreversible burn" checked={burnAcknowledged} onCheckedChange={(checked) => setBurnAcknowledged(checked === true)} />
-        <span>I understand that confirming burns the Base tokens and no Base refund is available.</span>
-      </label>}
       <DialogFooter>
         <DialogClose asChild><Button variant="ghost">{failed ? "Close" : "Cancel"}</Button></DialogClose>
-        {failed && <Button onClick={() => { setBurnAcknowledged(false); onRetry() }}>Try again</Button>}
-        {ready && <Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>{direction === "deposit" ? "Continue to IC wallet" : "Continue to Base wallet"}</Button>}
+        {failed && <Button onClick={onRetry}>Try again</Button>}
+        {ready && <Button disabled={pending} onClick={onConfirm}>{direction === "deposit" ? "Continue to IC wallet" : "Continue to Base wallet"}</Button>}
       </DialogFooter>
     </DialogContent>
   </Dialog>

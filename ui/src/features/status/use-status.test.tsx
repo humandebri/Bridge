@@ -215,6 +215,30 @@ describe("automatic status queries", () => {
     view.unmount()
   })
 
+  it("can disable focus and reconnect refreshes", async () => {
+    focusManager.setFocused(false)
+    const view = renderHook(
+      () => useRuntimeHeartbeat(undefined, undefined, {
+        enabled: true,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+      }),
+      { wrapper: wrapper() },
+    )
+
+    await waitFor(() => expect(view.result.current.isSuccess).toBe(true))
+    expect(mocks.validateRuntimeHeartbeat).toHaveBeenCalledOnce()
+
+    focusManager.setFocused(true)
+    onlineManager.setOnline(false)
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 30)))
+    onlineManager.setOnline(true)
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 30)))
+
+    expect(mocks.validateRuntimeHeartbeat).toHaveBeenCalledOnce()
+    view.unmount()
+  })
+
   it("does not validate automatically when disabled", async () => {
     renderHook(() => useRuntimeValidation(undefined), { wrapper: wrapper() })
     await act(async () => Promise.resolve())
