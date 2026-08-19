@@ -1947,6 +1947,7 @@ struct StorageValidationProgress {
     reconciliation_holds: u64,
     reserved_deposit_mint_amount: u128,
     reserved_deposit_mint_operations: u64,
+    #[serde(default)]
     funding_attempts: u64,
     settlement_job_status_counts: [u64; 4],
     settlement_job_kind_counts: [u64; 3],
@@ -14678,6 +14679,58 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[test]
+    #[serial]
+    fn current_v33_validation_progress_without_funding_attempt_count_reopens() {
+        #[derive(Serialize)]
+        struct ExistingV33StorageValidationProgress {
+            expected_revision: u64,
+            phase: u16,
+            cursor: Option<Vec<u8>>,
+            phase_rows: u64,
+            scanned_rows: u64,
+            pending_ledger_operations: u64,
+            nonterminal_withdrawals: u64,
+            reconciliation_holds: u64,
+            reserved_deposit_mint_amount: u128,
+            reserved_deposit_mint_operations: u64,
+            settlement_job_status_counts: [u64; 4],
+            settlement_job_kind_counts: [u64; 3],
+        }
+
+        let memory = VectorMemory::default();
+        let store = StableStore::init(memory.clone()).expect("initialize");
+        let progress = ExistingV33StorageValidationProgress {
+            expected_revision: 7,
+            phase: 5,
+            cursor: Some(vec![0, 0, 0, 0, 0, 0, 0, 1]),
+            phase_rows: 2,
+            scanned_rows: 6,
+            pending_ledger_operations: 0,
+            nonterminal_withdrawals: 1,
+            reconciliation_holds: 0,
+            reserved_deposit_mint_amount: 1_050_000_000,
+            reserved_deposit_mint_operations: 1,
+            settlement_job_status_counts: [0; 4],
+            settlement_job_kind_counts: [0; 3],
+        };
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET storage_validation = ?1 WHERE id = 1",
+                    params![encode(&progress)
+                        .expect("encode existing v33 validation progress")
+                        .to_sql_bytes()],
+                )?;
+                Ok(())
+            })
+            .expect("store existing v33 validation progress");
+        drop(store);
+
+        assert!(StableStore::reopen_after_upgrade(memory).is_ok());
     }
 
     #[test]
