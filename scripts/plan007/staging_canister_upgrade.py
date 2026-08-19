@@ -128,7 +128,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
         "status_counts",
     }
     required.add("migration")
-    if set(policy) != required or policy["schema_version"] != 3:
+    if set(policy) != required or policy["schema_version"] != 4:
         fail("RPC replacement policy has an unsupported shape")
     migration = policy["migration"]
     if not isinstance(migration, dict) or set(migration) != {
@@ -152,18 +152,15 @@ def validate_policy(policy: dict[str, Any]) -> None:
                 fail(f"policy migration source {field} must be a lowercase SHA-256 digest")
     if len({source["module_sha256"] for source in source_states}) != len(source_states):
         fail("policy migration source module hashes must be distinct")
+    if {source["candid_metadata"] for source in source_states} != {"present", "absent"}:
+        fail("policy migration must bind exactly one present and one absent Candid source")
     for field in ("before_module_sha256", "metadata_missing_module_sha256"):
         if not isinstance(policy[field], str) or not re.fullmatch(r"[0-9a-f]{64}", policy[field]):
             fail(f"policy {field} must be a lowercase SHA-256 digest")
     source_by_module = {source["module_sha256"]: source for source in source_states}
-    normal_source = source_by_module.get(policy["before_module_sha256"])
     missing_source = source_by_module.get(policy["metadata_missing_module_sha256"])
-    if normal_source is None or missing_source is None:
-        fail("policy migration source states must bind both reviewed v32 module hashes")
-    if normal_source["rpc_provider_urls_sha256"] != policy["before_rpc_urls_sha256"]:
-        fail("normal v32 source state does not bind the before RPC digest")
-    if missing_source["rpc_provider_urls_sha256"] != policy["after_rpc_urls_sha256"]:
-        fail("metadata-missing v32 source state does not bind the after RPC digest")
+    if missing_source is None or missing_source["candid_metadata"] != "absent":
+        fail("policy migration must bind the reviewed metadata-missing v32 module as absent")
     for side in ("before", "after"):
         urls = policy[f"{side}_rpc_urls"]
         if not isinstance(urls, list) or len(urls) != 3 or len(set(urls)) != 3:

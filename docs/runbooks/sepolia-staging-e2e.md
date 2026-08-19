@@ -104,7 +104,7 @@ v33→v33 upgradeではさらに、同じ観測時点の次のJSON artifactを�
 
 manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は同一schema upgrade後も保持する。
 
-`test-deployment` Wasmに限り、TenderlyをOnFinalityへ置換する今回専用のupgrade引数を受理する。引数なしの`()`はRPC設定を変更しない。更新指定は次のCandidに固定し、PublicNode、`sepolia.base.org`、OnFinalityの順序を変えない。
+`test-deployment` Wasmに限り、IC HTTPS outcallで401を返すOnFinalityをdRPCへ置換する今回専用のupgrade引数を受理する。引数なしの`()`はRPC設定を変更しない。更新指定は次のCandidに固定し、PublicNode、`sepolia.base.org`、dRPCの順序を変えない。
 
 ```candid
 (
@@ -114,7 +114,7 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
       custom_evm_rpc_urls = vec {
         "https://base-sepolia-rpc.publicnode.com";
         "https://sepolia.base.org";
-        "https://base-sepolia.api.onfinality.io/public";
+        "https://base-sepolia.drpc.org";
       };
       expected_status_counts = record {
         retained_audit_events = 15 : nat64;
@@ -132,7 +132,7 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
 )
 ```
 
-この更新は旧digest `e9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb`から新digest `3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48`だけを許可する。新設定の同値再実行は成功するが、URL・順序・chain ID・EVM RPC Canister ID・現在digestの不一致はtrapしてupgrade全体をrollbackする。更新後もFinalized水位を保持し、runtime attestation cacheだけを無効化する。production Wasmの`post_upgrade()`は引数なしで、この更新経路を含まない。
+この更新は旧digest `3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48`から新digest `df7e867aaf6abeaf00b0f61e8662fa87c6f8675eb0aebdf7b09f8c99a499d064`だけを許可する。新設定の同値再実行は成功するが、URL・順序・chain ID・EVM RPC Canister ID・現在digestの不一致はtrapしてupgrade全体をrollbackする。更新後もFinalized水位を保持し、runtime attestation cacheだけを無効化する。production Wasmの`post_upgrade()`は引数なしで、この更新経路を含まない。
 
 PR #11の新profileを含むclean checkoutから、repository-owned
 `rpc-provider-replacement-policy.json`に固定したCanister ID、schema v33、instance ID、変更前module hash、

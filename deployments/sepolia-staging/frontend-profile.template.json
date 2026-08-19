@@ -11,7 +11,7 @@
   "baseRpcUrl": "https://base-sepolia-rpc.publicnode.com",
   "baseHistoryRpcUrls": [
     "https://sepolia.base.org",
-    "https://base-sepolia.api.onfinality.io/public"
+    "https://base-sepolia.drpc.org"
   ],
   "chainId": 84532,
   "bridgeCanisterId": "REPLACE_WITH_TEST_BRIDGE_CANISTER_ID",

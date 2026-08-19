@@ -11,7 +11,7 @@
   "baseRpcUrl": "https://base-sepolia-rpc.publicnode.com",
   "baseHistoryRpcUrls": [
     "https://sepolia.base.org",
-    "https://base-sepolia.api.onfinality.io/public"
+    "https://base-sepolia.drpc.org"
   ],
   "chainId": 84532,
   "bridgeCanisterId": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
@@ -33,7 +33,7 @@
   "timelockAddress": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
   "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
   "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
-  "rpcProviderUrlsSha256": "0x3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48",
+  "rpcProviderUrlsSha256": "0xdf7e867aaf6abeaf00b0f61e8662fa87c6f8675eb0aebdf7b09f8c99a499d064",
   "deploymentBlock": "44770225",
   "bridgeRuntimeHash": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
   "bsnsRuntimeHash": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b"
