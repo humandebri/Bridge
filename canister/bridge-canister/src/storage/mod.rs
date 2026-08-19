@@ -1071,7 +1071,12 @@ pub struct DepositFundingReservation {
     pub caller: Vec<u8>,
     pub mint_amount: u128,
     pub quota_window_id: u64,
+    #[serde(default = "existing_v33_reservation_releases_quota")]
     pub releases_quota_on_failure: bool,
+}
+
+fn existing_v33_reservation_releases_quota() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -12938,6 +12943,29 @@ mod tests {
         assert!(!reopened
             .notification_failure_cooldown_active(hash, 150)
             .expect("persisted cooldown expiry"));
+    }
+
+    #[test]
+    fn current_v33_funding_reservation_without_release_flag_keeps_existing_behavior() {
+        #[derive(Serialize)]
+        struct ExistingV33DepositFundingReservation {
+            deposit_id: [u8; 32],
+            caller: Vec<u8>,
+            mint_amount: u128,
+            quota_window_id: u64,
+        }
+
+        let encoded = encode(&ExistingV33DepositFundingReservation {
+            deposit_id: [61; 32],
+            caller: vec![62; 29],
+            mint_amount: 1_050_000_000,
+            quota_window_id: 7,
+        })
+        .expect("encode existing v33 reservation");
+        let decoded: DepositFundingReservation =
+            decode(&encoded).expect("decode existing v33 reservation");
+
+        assert!(decoded.releases_quota_on_failure);
     }
 
     #[test]
