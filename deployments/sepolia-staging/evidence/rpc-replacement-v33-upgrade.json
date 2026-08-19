@@ -1,0 +1,87 @@
+{
+  "after": {
+    "base_chain_id": 84532,
+    "canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "deployment_instance_id": "0x2c344ca868267bc19791a2e1a966c210eef545945b3879223d3cb6c1255d789b",
+    "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+    "minimum_withdrawal_id": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "module_sha256": "a33e5a5fa718830a8930ad04c912a19b6e8b2d2e9f8758d67e797fefcf8c994f",
+    "rpc_provider_urls_sha256": "3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48",
+    "schema_version": 33,
+    "status_counts": {
+      "deposits": 1,
+      "pending_ledger_operations": 0,
+      "pruned_audit_events": 0,
+      "reconciliation_holds": 0,
+      "reserved_deposit_mint_amount": 1050000000,
+      "reserved_deposit_mint_operations": 1,
+      "retained_audit_events": 15,
+      "retained_deposit_index_entries": 1,
+      "withdrawals": 1
+    },
+    "storage_integrity": "ok"
+  },
+  "before": {
+    "base_chain_id": 84532,
+    "canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "deployment_instance_id": "0x2c344ca868267bc19791a2e1a966c210eef545945b3879223d3cb6c1255d789b",
+    "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+    "minimum_withdrawal_id": null,
+    "module_sha256": "f2388e5bed87a69a27e48469de864933f7577166fd1bafd4b82a842081303834",
+    "rpc_provider_urls_sha256": "3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48",
+    "schema_version": 32,
+    "status_counts": {
+      "deposits": 1,
+      "pending_ledger_operations": 0,
+      "pruned_audit_events": 0,
+      "reconciliation_holds": 0,
+      "reserved_deposit_mint_amount": 1050000000,
+      "reserved_deposit_mint_operations": 1,
+      "retained_audit_events": 15,
+      "retained_deposit_index_entries": 1,
+      "withdrawals": 1
+    },
+    "storage_integrity": "ok"
+  },
+  "boundary_capture": {
+    "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+    "chain_id": 84532,
+    "finalized_checkpoint_block_hash": "0x677e5e449d01b3d8de91511506e629ef1046f31a385af8eeeb58bdd3d42d4bcb",
+    "finalized_checkpoint_block_number": 45668762,
+    "kind": "withdrawal-admission-boundary",
+    "minimum_withdrawal_id": "0x0000000000000000000000000000000000000000000000000000000000000004",
+    "observed_at": "2026-08-19T02:35:56.595Z",
+    "providers": [
+      {
+        "checkpoint_block_hash": "0x677e5e449d01b3d8de91511506e629ef1046f31a385af8eeeb58bdd3d42d4bcb",
+        "checkpoint_block_number": 45668762,
+        "finalized_head_block_number": 45668762,
+        "minimum_withdrawal_id": "0x0000000000000000000000000000000000000000000000000000000000000004",
+        "provider_url_sha256": "a30ce743ddc719cd42638750cfdc375ae936209f7ba24268b4b2eb533494616f",
+        "withdrawals_paused": true
+      },
+      {
+        "checkpoint_block_hash": "0x677e5e449d01b3d8de91511506e629ef1046f31a385af8eeeb58bdd3d42d4bcb",
+        "checkpoint_block_number": 45668762,
+        "finalized_head_block_number": 45668762,
+        "minimum_withdrawal_id": "0x0000000000000000000000000000000000000000000000000000000000000004",
+        "provider_url_sha256": "6dbd0deb51a5f497d7eb0587c807d9939346d9fdad6e53538bb87f61b8819b49",
+        "withdrawals_paused": true
+      }
+    ],
+    "schema_version": 1,
+    "withdrawals_paused": true
+  },
+  "candid_sha256": "e074f6dd9be750ec7321adc81697ee2af33019ee264d61307c5bdd613eda3b28",
+  "kind": "staging-rpc-provider-replacement",
+  "live_candid_sha256_after": "e074f6dd9be750ec7321adc81697ee2af33019ee264d61307c5bdd613eda3b28",
+  "live_candid_sha256_before": null,
+  "local_e2e_source_commit": "56a3b416f1d9bff4420b5b95ea6a0c0aaf2b8a69",
+  "minimum_withdrawal_id": "0x0000000000000000000000000000000000000000000000000000000000000004",
+  "policy_sha256": "19040fbf20f4f89259416ce49cd55155a74753845361268901bca7e6ef02373d",
+  "profile_sha256": "52b93f21b3465873f1854e225fc52a19a80d8079f389a7536bc4e48d0875d36e",
+  "result": "migrated-and-rpc-replaced",
+  "schema_version": 2,
+  "source_commit": "70119e093deb364ba98b182c395684793d056f4b",
+  "wasm_sha256": "a33e5a5fa718830a8930ad04c912a19b6e8b2d2e9f8758d67e797fefcf8c994f"
+}
