@@ -517,9 +517,7 @@ impl BridgeInitArgs {
         if !rpc_urls_match(requested_urls, &STAGING_NEW_RPC_URLS)
             || rpc_urls_sha256(requested_urls) != STAGING_NEW_RPC_URLS_SHA256
         {
-            return Err(
-                "staging RPC replacement only accepts the reviewed dRPC provider set",
-            );
+            return Err("staging RPC replacement only accepts the reviewed dRPC provider set");
         }
         if rpc_urls_match(&self.custom_evm_rpc_urls, &STAGING_NEW_RPC_URLS) {
             if rpc_urls_sha256(&self.custom_evm_rpc_urls) != STAGING_NEW_RPC_URLS_SHA256 {
