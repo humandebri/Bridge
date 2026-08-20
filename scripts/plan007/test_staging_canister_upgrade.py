@@ -93,11 +93,19 @@ class StagingUpgradeDriverTests(unittest.TestCase):
         return json.loads((self.repo / POLICY_PATH).read_text(encoding="utf-8"))
 
     def migration_source(self, candid_metadata: str) -> dict[str, object]:
+        self.require_migration_policy()
         return next(
             source
             for source in self.policy()["migration"]["source_states"]
             if source["candid_metadata"] == candid_metadata
         )
+
+    def has_migration_policy(self) -> bool:
+        return "migration" in self.valid_policy
+
+    def require_migration_policy(self) -> None:
+        if not self.has_migration_policy():
+            self.skipTest("candidate policy has no legacy stable-schema migration")
 
     def write_executable(self, name: str, source: str) -> None:
         path = self.bin / name
@@ -186,7 +194,8 @@ elif method == "continue_storage_validation":
     else:
         candid = 'variant { Ok = record { complete = true; phase = "complete"; scanned_rows = 1 : nat64 } }'
 elif method == "get_public_config":
-    schema = "33" if (state / "applied").exists() else os.environ.get("MOCK_SCHEMA", "33")
+    stable_schema = str(policy["stable_schema_version"])
+    schema = stable_schema if (state / "applied").exists() else os.environ.get("MOCK_SCHEMA", stable_schema)
     instance = os.environ.get("MOCK_INSTANCE", policy["deployment_instance_id"])[2:]
     chain = os.environ.get("MOCK_PUBLIC_CHAIN", str(policy["base_chain_id"]))
     evm = os.environ.get("MOCK_EVM_CANISTER", policy["evm_rpc_canister_id"])
@@ -262,7 +271,10 @@ print(json.dumps({"response_candid": candid}))
         evidence = json.loads((self.base / "result.json").read_text())
         self.assertEqual(evidence["schema_version"], 2)
         self.assertEqual(evidence["result"], "upgraded")
-        self.assertIsNone(evidence["boundary_capture"])
+        if self.has_migration_policy():
+            self.assertIsNone(evidence["boundary_capture"])
+        else:
+            self.assertNotIn("boundary_capture", evidence)
         self.assertEqual(evidence["minimum_withdrawal_id"], "0x" + "01" * 32)
         self.assertEqual(evidence["before"]["status_counts"], evidence["after"]["status_counts"])
 
@@ -279,12 +291,16 @@ print(json.dumps({"response_candid": candid}))
         self.assertEqual(json.loads((self.base / "result.json").read_text())["result"], "already-applied")
 
     def test_migration_flag_is_rejected_outside_a_v32_source(self) -> None:
-        result = self.run_driver("--migrate-v32-to-v33", "--execute")
+        result = self.run_driver("--migrate-v32-to-v33")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("requires a reviewed v32 staging source state", result.stderr)
+        if self.has_migration_policy():
+            self.assertIn("requires a reviewed v32 staging source state", result.stderr)
+        else:
+            self.assertIn("unrecognized arguments", result.stderr)
         self.assertFalse(self.install_record.exists())
 
     def test_known_missing_metadata_requires_explicit_migration(self) -> None:
+        self.require_migration_policy()
         source = self.migration_source("absent")
         missing_module = str(source["module_sha256"])
         after_digest = str(source["rpc_provider_urls_sha256"])
@@ -316,6 +332,7 @@ print(json.dumps({"response_candid": candid}))
         self.assertEqual(evidence["minimum_withdrawal_id"], "0x" + "01" * 32)
 
     def test_known_v32_source_state_requires_the_explicit_migration_flag(self) -> None:
+        self.require_migration_policy()
         source = self.migration_source("present")
         before_module = str(source["module_sha256"])
         before_digest = str(source["rpc_provider_urls_sha256"])
@@ -344,6 +361,7 @@ print(json.dumps({"response_candid": candid}))
         self.assertEqual(evidence["after"]["schema_version"], 33)
 
     def test_v32_metadata_missing_retries_without_candid(self) -> None:
+        self.require_migration_policy()
         if int(self.valid_policy["schema_version"]) < 4:
             self.skipTest("numeric Candid fallback requires a schema v4 candidate policy")
         source = self.migration_source("absent")
@@ -372,17 +390,23 @@ print(json.dumps({"response_candid": candid}))
     def test_skip_storage_validation_runs_preflight_without_resetting_validation(self) -> None:
         if int(self.valid_policy["schema_version"]) < 4:
             self.skipTest("storage validation skip requires a schema v4 candidate policy")
-        source = self.migration_source("absent")
-        missing_module = str(source["module_sha256"])
-        after_digest = str(source["rpc_provider_urls_sha256"])
-        result = self.run_driver(
-            "--migrate-v32-to-v33", "--skip-storage-validation",
-            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
-            MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
-            MOCK_VALIDATION_FAIL="1",
-        )
+        if self.has_migration_policy():
+            source = self.migration_source("absent")
+            result = self.run_driver(
+                "--migrate-v32-to-v33", "--skip-storage-validation",
+                MOCK_SCHEMA="32", MOCK_MODULE=str(source["module_sha256"]),
+                MOCK_DIGEST=str(source["rpc_provider_urls_sha256"]),
+                MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
+                MOCK_VALIDATION_FAIL="1",
+            )
+            expected = "v32-to-v33-preflight-passed"
+        else:
+            result = self.run_driver(
+                "--skip-storage-validation", MOCK_VALIDATION_FAIL="1"
+            )
+            expected = "preflight-passed"
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("v32-to-v33-preflight-passed", result.stdout)
+        self.assertIn(expected, result.stdout)
         self.assertFalse((self.state / "validation-started").exists())
         self.assertFalse(self.install_record.exists())
 
@@ -402,6 +426,7 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse((self.state / "validation-started").exists())
 
     def test_v32_migration_requires_the_reviewed_profile_boundary(self) -> None:
+        self.require_migration_policy()
         source = self.migration_source("present")
         before_module = str(source["module_sha256"])
         before_digest = str(source["rpc_provider_urls_sha256"])
@@ -418,6 +443,7 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse(self.install_record.exists())
 
     def test_v32_migration_verifies_the_persisted_boundary_after_upgrade(self) -> None:
+        self.require_migration_policy()
         source = self.migration_source("present")
         before_module = str(source["module_sha256"])
         before_digest = str(source["rpc_provider_urls_sha256"])
@@ -435,6 +461,7 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse((self.base / "result.json").exists())
 
     def test_v32_migration_rejects_metadata_and_module_drift(self) -> None:
+        self.require_migration_policy()
         source = self.migration_source("absent")
         missing_module = str(source["module_sha256"])
         after_digest = str(source["rpc_provider_urls_sha256"])
@@ -453,6 +480,7 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse(self.install_record.exists())
 
     def test_v32_migration_rejects_lookup_failures_before_install(self) -> None:
+        self.require_migration_policy()
         source = self.migration_source("absent")
         missing_module = str(source["module_sha256"])
         after_digest = str(source["rpc_provider_urls_sha256"])
@@ -476,6 +504,7 @@ print(json.dumps({"response_candid": candid}))
                 self.assertFalse((self.base / "result.json").exists())
 
     def test_v32_migration_rejects_snapshot_drift_before_install(self) -> None:
+        self.require_migration_policy()
         source = self.migration_source("absent")
         missing_module = str(source["module_sha256"])
         after_digest = str(source["rpc_provider_urls_sha256"])
@@ -599,6 +628,7 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse(self.install_record.exists())
 
     def test_policy_rejects_ambiguous_migration_metadata_bindings(self) -> None:
+        self.require_migration_policy()
         if int(self.valid_policy["schema_version"]) < 4:
             self.skipTest("metadata binding uniqueness requires a schema v4 candidate policy")
         policy_path = self.repo / POLICY_PATH
