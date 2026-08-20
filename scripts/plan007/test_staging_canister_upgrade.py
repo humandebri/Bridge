@@ -64,9 +64,9 @@ class StagingUpgradeDriverTests(unittest.TestCase):
         self.wasm = self.base / "reviewed.wasm"
         self.wasm.write_bytes(b"reviewed staging wasm")
         self.after_module = hashlib.sha256(self.wasm.read_bytes()).hexdigest()
-        policy["target_module_sha256"] = self.after_module
-        (self.repo / POLICY_PATH).write_text(json.dumps(policy), encoding="utf-8")
-        self.valid_policy = policy
+        if "target_module_sha256" in policy:
+            policy["target_module_sha256"] = self.after_module
+            (self.repo / POLICY_PATH).write_text(json.dumps(policy), encoding="utf-8")
         self.bin = self.base / "bin"
         self.bin.mkdir()
         self.install_record = self.state / "install.json"
