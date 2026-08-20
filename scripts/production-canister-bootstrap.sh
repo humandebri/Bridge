@@ -50,12 +50,35 @@ else
   echo "production mapping already contains $CANISTER=$CANISTER_ID; skipping creation"
 fi
 
-STATUS_ID="$(icp canister status "$CANISTER" -e "$ENVIRONMENT" -i \
+STATUS_JSON="$(icp canister status "$CANISTER_ID" -n ic --json \
   --identity "$BRIDGE_ICP_IDENTITY" --project-root-override "$ROOT")"
-[[ "$STATUS_ID" == "$CANISTER_ID" ]] || {
-  echo "production mapping does not match the reachable Bridge Canister" >&2
-  exit 1
-}
+EXECUTING_PRINCIPAL="$(icp identity principal --identity "$BRIDGE_ICP_IDENTITY" \
+  --project-root-override "$ROOT")"
+python3 - "$STATUS_JSON" "$EXECUTING_PRINCIPAL" <<'PY'
+import json, sys
+
+status = json.loads(sys.argv[1])
+caller = sys.argv[2]
+
+def values(value, key):
+    found = []
+    if isinstance(value, dict):
+        for name, child in value.items():
+            if name == key:
+                found.append(child)
+            found.extend(values(child, key))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(values(child, key))
+    return found
+
+controller_values = values(status, "controllers")
+if len(controller_values) != 1 or not isinstance(controller_values[0], list):
+    raise SystemExit("production Canister status does not expose one controller set")
+controllers = [str(value) for value in controller_values[0]]
+if caller not in controllers:
+    raise SystemExit("reviewed production identity is not a Canister controller")
+PY
 
 SUBNET_RESPONSE="$(icp canister call "$REGISTRY" get_subnet_for_canister \
   "(record { \"principal\" = opt principal \"$CANISTER_ID\" })" --query -n ic \
