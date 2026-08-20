@@ -118,7 +118,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   )
   expect(BigInt(afterDeposit.indexBlocksSynced)).toBeGreaterThanOrEqual(BigInt(initial.indexBlocksSynced) + 4n)
   await openHistory(page)
-  await expect(page.getByText("Minted on Base (finalized)").first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Minted", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
   for (const heading of ["Direction", "Base tx", "KINIC tx", "Amount", "Status", "Time", "Next step"]) {
     await expect(page.getByText(heading, { exact: true }).filter({ visible: true }).first()).toBeVisible()
   }
@@ -127,7 +127,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByText("1.99 KINIC", { exact: true })).toBeVisible()
   await expect(page.getByText(/KINIC (?:on Base|returned to IC|awaiting quote)/)).toHaveCount(0)
   const nextStepHeader = page.getByText("Next step", { exact: true }).filter({ visible: true })
-  const completedDepositNextStep = page.locator("article").filter({ hasText: "Minted on Base (finalized)" }).first().getByText("—", { exact: true })
+  const completedDepositNextStep = page.locator("article").filter({ hasText: "Minted" }).first().getByText("—", { exact: true })
   const nextStepHeaderBox = await nextStepHeader.boundingBox()
   const completedDepositNextStepBox = await completedDepositNextStep.boundingBox()
   expect(nextStepHeaderBox).not.toBeNull()
@@ -138,7 +138,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.reload()
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
   await expect(page.getByRole("button", { name: "Connect IC wallet", exact: true })).toHaveCount(0)
-  await expect(page.getByText("Minted on Base (finalized)").first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Minted", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
 
   const beforeWithdrawal = await controlState(request)
   const bridgeUpdateGate = await holdIcUpdateMethod(page, "continue_withdrawal")
