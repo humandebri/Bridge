@@ -13,5 +13,5 @@ status: accepted
 - 正常WithdrawalのBase transaction、Finalized確認、ユーザー意思確認は1回だけとなる。
 - Withdrawalごとのthreshold ECDSA署名、2回目のgas、nonce、confirmation job、EVM recoveryを削除する。
 - Ledger障害時は同じWithdrawal ID・IC Account・transfer identityを使う再試行と履歴照合で解消する。管理者による送金先変更や任意送金は認めない。
-- burn後にBaseへ資産を戻せないため、UIは不可逆性を署名前に表示し、fee、残高、wallet、chainを直前に再検証する。
+- Withdrawal reviewはamount、fee、IC recipientを表示し、fee、残高、wallet、chainを署名前に再検証する。deployment単位の初回利用時にはunaudited bridgeに関する一般risk acknowledgementを要求し、最終的な`createWithdrawal`はwallet署名で承認する。withdrawal固有のburn・Base refund不在の警告またはcheckboxは要求しない。この簡略化は、Base refund、release acknowledgement、cancelを追加するものではなく、不可逆な`Committed`設計を変更しない製品判断として受容する。
 - Finalized headとcanonical hashが2-of-3で収束しない場合は停止し、Safeや固定confirmation数へfallbackしない。

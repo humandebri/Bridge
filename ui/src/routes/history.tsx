@@ -729,7 +729,6 @@ function BaseTransactionLink({ transactionHash }: { transactionHash: `0x${string
 
 type KinicTransactionKind = "deposit" | "refund" | "payout"
 type KinicTransaction = { kind: KinicTransactionKind; blockIndex: bigint }
-const KINIC_SNS_ROOT_CANISTER_ID = "7jkta-eyaaa-aaaaq-aaarq-cai"
 
 export function depositKinicTransactions(record: DepositView): KinicTransaction[] {
   const fundingBlock = record.funding_ledger_block_index[0]
@@ -748,10 +747,7 @@ export function withdrawalKinicTransactions(record?: WithdrawalView): KinicTrans
 export function KinicTransactionLink({ kind, blockIndex }: KinicTransaction) {
   const label = `${kind[0]!.toUpperCase()}${kind.slice(1)}`
   const text = `${label} #${blockIndex.toLocaleString()}`
-  const href = kinicTransactionExplorerUrl(
-    deploymentProfile.snsRootCanisterId ?? KINIC_SNS_ROOT_CANISTER_ID,
-    blockIndex,
-  )
+  const href = kinicTransactionExplorerUrl(deploymentProfile.snsRootCanisterId, blockIndex)
   if (!href) return <p className="mt-1 truncate text-xs text-[var(--muted)]">{text}</p>
   return <a
     href={href}
