@@ -193,7 +193,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   expect((await controlState(request)).bsnsAllowance).toBe("0")
   await openHistory(page)
   await page.getByRole("button", { name: "Refresh", exact: true }).click()
-  await expect(page.getByText("Waiting for recovery", { exact: true })).toBeVisible()
+  await expect(page.getByText("Payout pending", { exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "Continue payout", exact: true })).toBeVisible()
   await page.getByRole("button", { name: /IC wallet connected as /i }).click()
   await page.getByRole("button", { name: /^Disconnect (OISY Wallet|Plug)$/ }).click()
