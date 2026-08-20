@@ -226,6 +226,15 @@ class TrustedPrGateTests(unittest.TestCase):
                 "from source_resolution import",
                 (ROOT / "scripts" / check).read_text(encoding="utf-8"),
             )
+        staging_upgrade_test = (
+            ROOT / "scripts" / "plan007" / "test_staging_canister_upgrade.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))',
+            staging_upgrade_test,
+        )
+        self.assertIn("from source_resolution import source_path", staging_upgrade_test)
+        self.assertIn("source_path(relative) if relative in SCRIPT_FILES", staging_upgrade_test)
 
     def test_schema_consistency_reads_isolated_candidate_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
