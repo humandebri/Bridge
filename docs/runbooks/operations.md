@@ -113,6 +113,8 @@ stagingを現行schemaへ切り替える前にpending governance transactionとe
 
 Gate Bにはcleanなmanifest sourceからprofile非依存で生成したUI code/assetsの全file digestとaggregate digestを持つ`ui-assets.json`を必須登録する。activation driverは同じsourceから再buildしてreceipt一致を確認する。production UI deployはこのartifact集合だけを再生成し、検証済みGate Bからrenderした`ui-runtime-profile.json`を`deployment-profile.js`へ直前合成して公開する。dirty checkout、asset追加・欠落・hash drift、bundle外profileはすべて拒否する。
 
+BaseScanのsource verification、contract-created BSNSのownership確認、Token Update申請は[`token-publication.md`](token-publication.md)に従う。この外部申請と審査はGate A、Gate B、activationの認可条件ではない。
+
 deploy、controller handover、activation schedule/executeの固定driverは、不可逆操作の直前にclean sourceから`scripts/ci-local.sh proofs`を再実行する。
 proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`proof-attestation.json`を含むbundleはfail closedとする。
 

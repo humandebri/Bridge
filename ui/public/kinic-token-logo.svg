@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 952 952" role="img" aria-labelledby="title description">
+  <title id="title">KINIC token logo</title>
+  <desc id="description">A geometric letter K in pink, yellow, blue, and orange.</desc>
+
+  <g fill="#ec1978" fill-opacity="0.996">
+    <path d="M276 235h23v498h-23z"/>
+    <path d="M319 235h22v498h-22z"/>
+    <path d="M362 235h22v212l-13 38 13 38v210h-22z"/>
+    <path d="M405 235h22v136l-22 42z"/>
+    <path d="M405 556l22 43v134h-22z"/>
+  </g>
+
+  <path fill="#fbaf28" d="M533 235h26L432 485l127 248h-26L406 485z"/>
+  <path fill="#23a8e0" fill-opacity="0.851" d="M581 235h26L480 485l127 248h-26L454 485z"/>
+  <path fill="#fbaf28" d="M629 235h26L528 485l127 248h-26L502 485z"/>
+  <path fill="#f05c22" d="M677 235h26L576 485l127 248h-26L550 485z"/>
+</svg>

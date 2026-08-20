@@ -19,7 +19,7 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 ICP→BaseではCanisterはFinalized Base timestampから固定期限のEIP-712 Mint Authorizationへ署名するだけで、Base transactionを生成・送信しない。任意のBase walletが`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。
 期限後、既存のBase Finalized snapshotを使うdeadline順の上限付きローカル走査でmint予約だけを解放する。Depositごとのtimerや個別Base照合、自動返金は行わない。任意の非anonymous Principalが`request_deposit_refund`を明示実行すると、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を照合し、未処理ならrecordに固定された元account・金額・transfer identityでLedger refund、処理済みならexact `DepositMinted` eventとcanonical receiptを保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では資金を動かさない。
 Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
-Base側はKINICを表すERC-20（`name = "kinic"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの24時間Timelockへ接続している。
+Base側はKINICを表すERC-20（`name = "KINIC"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの24時間Timelockへ接続している。
 
 Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed`化を原子的に実行する。Canisterは同じcanonical Finalized block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証し、固定IC Accountへの債務とtransfer identityを保存する。通知成功後にUIがbrowser identityで`continue_withdrawal`を1回実行し、未完了ならHistoryの明示操作ごとにLedger送金または照合を最大1 external step進める。Canister timerによるWithdrawal再試行、Base refund、release acknowledgementはない。Finalized headまたはcanonical hashが2-of-3で収束しない場合はfail closedとし、Safeへfallbackしない。
 
