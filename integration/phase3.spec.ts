@@ -92,7 +92,7 @@ describe("Phase 3 PocketIC saga", () => {
     bridge.actor.setPrincipal(governance);
     await (evm.actor as any).set_deposit_mints_paused(true);
     await (evm.actor as any).set_withdrawals_paused(true);
-    await (evm.actor as any).set_receipt_mode({ DelayedConfirmed: null });
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
     const auditBefore: any = await (bridge.actor as any).get_audit_events(0n, 100);
     const resumesBefore = auditBefore.Ok.events.filter(
       (event: any) => "DepositsResumed" in event.kind,
@@ -706,7 +706,7 @@ describe("Phase 3 PocketIC saga", () => {
     bridge.actor.setPrincipal(runtimePrincipal);
     const scheduled: any = await (bridge.actor as any).schedule_activation();
     expect(scheduled).toHaveProperty("Ok.kind.ScheduleActivation");
-    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+    await (evm.actor as any).set_receipt_mode({ DelayedConfirmed: null });
     const receiptCallsBefore = await (evm.actor as any).receipt_call_count();
 
     const deferredConfirmation = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
@@ -715,21 +715,34 @@ describe("Phase 3 PocketIC saga", () => {
       operation_id: scheduled.Ok.operation_id,
       transaction_hash: scheduled.Ok.transaction_hash,
     });
-    const revokedConfirmationPromise = startConfirmation();
+    let receiptBarrier: Awaited<ReturnType<NonNullable<typeof pic>["getPendingHttpsOutcalls"]>>[number] | undefined;
     for (let attempt = 0; attempt < 10; attempt += 1) {
-      if (await (evm.actor as any).receipt_call_count() > receiptCallsBefore) break;
       await pic!.tick(1);
+      receiptBarrier = (await pic!.getPendingHttpsOutcalls())
+        .find((outcall) => outcall.url === "https://receipt-delay.invalid/");
+      if (receiptBarrier) break;
     }
+    expect(receiptBarrier).toBeDefined();
     expect(await (evm.actor as any).receipt_call_count()).toBeGreaterThan(receiptCallsBefore);
+
     bridge.actor.setPrincipal(runtimePrincipal);
-    expect(await (bridge.actor as any).rotate_pause_principal({
+    const rotation = await (bridge.actor as any).rotate_pause_principal({
       pause_principal: nextPausePrincipal,
-    })).toHaveProperty("Ok");
-    const revokedConfirmation = await revokedConfirmationPromise;
+    });
+    expect(rotation).toHaveProperty("Ok");
+    expect((await (bridge.actor as any).get_public_config()).pause_principal.toText())
+      .toBe(nextPausePrincipal.toText());
+    await pic!.mockPendingHttpsOutcall({
+      requestId: receiptBarrier!.requestId,
+      subnetId: receiptBarrier!.subnetId,
+      response: { type: "success", statusCode: 200, headers: [], body: new Uint8Array() },
+    });
+    const revokedConfirmation = await startConfirmation();
     expect(revokedConfirmation).toEqual({ Err: { Unauthorized: null } });
     expect(await (bridge.actor as any).get_pending_base_governance_transaction())
       .toHaveProperty("Ok.0.kind.ScheduleActivation");
 
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
     bridge.actor.setPrincipal(confirmationRelayerPrincipal);
     expect(await (bridge.actor as any).confirm_base_governance_transaction({
       operation_id: scheduled.Ok.operation_id,

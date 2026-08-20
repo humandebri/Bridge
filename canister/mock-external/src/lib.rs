@@ -4,10 +4,9 @@ use evm_rpc_types::{
     MultiRpcResult, Nat256, ProviderError, RpcConfig, RpcError, RpcService, RpcServices,
     SendRawTransactionStatus, TransactionReceipt,
 };
-use ic_cdk::call::Call;
 use ic_cdk_management_canister::{
-    ecdsa_public_key, sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs,
-    SignWithEcdsaArgs,
+    ecdsa_public_key, http_request, sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs,
+    HttpMethod, HttpRequestArgs, SignWithEcdsaArgs,
 };
 use icrc_ledger_types::{
     icrc1::{
@@ -356,9 +355,6 @@ fn set_withdrawal_status(status: u8) {
 fn set_receipt_mode(mode: ReceiptMode) {
     RECEIPT_MODE.with(|current| *current.borrow_mut() = mode);
 }
-
-#[ic_cdk::update]
-fn receipt_delay_tick() {}
 
 #[ic_cdk::update]
 fn set_processed_deposit(processed: bool) {
@@ -1251,13 +1247,17 @@ async fn eth_get_transaction_receipt(
         *count.borrow_mut() = next;
     });
     if RECEIPT_MODE.with(|mode| *mode.borrow()) == ReceiptMode::DelayedConfirmed {
-        for _ in 0..32 {
-            Call::unbounded_wait(ic_cdk::api::canister_self(), "receipt_delay_tick")
-                .await
-                .unwrap_or_else(|error| {
-                    ic_cdk::trap(format!("receipt delay self-call failed: {error:?}"))
-                });
-        }
+        http_request(&HttpRequestArgs {
+            url: "https://receipt-delay.invalid/".into(),
+            max_response_bytes: Some(1),
+            method: HttpMethod::GET,
+            headers: vec![],
+            body: None,
+            transform: None,
+            is_replicated: Some(false),
+        })
+        .await
+        .unwrap_or_else(|error| ic_cdk::trap(format!("receipt delay outcall failed: {error:?}")));
     }
     let hash: [u8; 32] = hash.into();
     match RECEIPT_MODE.with(|mode| *mode.borrow()) {
