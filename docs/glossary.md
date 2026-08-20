@@ -2,7 +2,7 @@
 
 KINICトークンをICPとBaseの間で移動し、両チェーンにまたがる裏付け債務を管理する文脈。
 
-本BridgeはKINIC専用である。以下の`SNSトークン`や`bSNS`は設計上の総称として使い、実際の対象はKINIC、Base上のERC-20 metadataは`name = "kinic"`、`symbol = "KINIC"`とする。
+本BridgeはKINIC専用である。以下の`SNSトークン`や`bSNS`は設計上の総称として使い、実際の対象はKINIC、Base上のERC-20 metadataは`name = "KINIC"`、`symbol = "KINIC"`とする。
 
 ## Language
 
@@ -40,7 +40,7 @@ _Avoid_: Total supply, staked token
 
 **bSNS**:
 Bridgeable SNS Tokenを1:1で裏付けるBase上のERC-20。SNS Governanceの投票権やneuron権限を持たない。
-これは内部の総称であり、ERC-20 metadataへ`b` prefixを付けることを意味しない。KINIC用deployのtoken nameは`kinic`、symbolは`KINIC`とする。
+これは内部の総称であり、ERC-20 metadataへ`b` prefixを付けることを意味しない。KINIC用deployのtoken nameは`KINIC`、symbolは`KINIC`とする。
 _Avoid_: Cross-chain governance token, voting token
 
 **Withdrawal Settlement**:

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Connector } from "wagmi"
 import { deploymentProfile } from "@/config/profile"
@@ -9,11 +9,18 @@ const mocks = vi.hoisted(() => ({
   useConnect: vi.fn(),
   useConnectors: vi.fn(),
   useDisconnect: vi.fn(),
+  useChainId: vi.fn(),
+  useWatchAsset: vi.fn(),
   useIcWallet: vi.fn(),
   connectAsync: vi.fn(),
   disconnectBase: vi.fn(),
   connectIc: vi.fn(),
   disconnectIc: vi.fn(),
+  watchAssetAsync: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastInfo: vi.fn(),
+  toastError: vi.fn(),
+  withBrowserLock: vi.fn(),
 }))
 
 vi.mock("wagmi", () => ({
@@ -21,10 +28,24 @@ vi.mock("wagmi", () => ({
   useConnect: mocks.useConnect,
   useConnectors: mocks.useConnectors,
   useDisconnect: mocks.useDisconnect,
+  useChainId: mocks.useChainId,
+  useWatchAsset: mocks.useWatchAsset,
+}))
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: mocks.toastSuccess,
+    info: mocks.toastInfo,
+    error: mocks.toastError,
+  },
 }))
 
 vi.mock("@/features/wallet/ic-wallet-provider", () => ({
   useIcWallet: mocks.useIcWallet,
+}))
+
+vi.mock("@/lib/browser-lock", () => ({
+  withBrowserLock: mocks.withBrowserLock,
 }))
 
 function connector(input: Partial<Connector> & Pick<Connector, "id" | "name" | "type" | "uid">): Connector {
@@ -37,19 +58,31 @@ const rabby = connector({ id: "io.rabby", uid: "rabby", name: "Rabby Wallet", ty
 const metamask = connector({ id: "io.metamask", uid: "metamask", name: "MetaMask", type: "injected" })
 const plugEvm = connector({ id: "com.plugwallet", uid: "plug-evm", name: "Plug", type: "injected" })
 const walletConnect = connector({ id: "walletConnect", uid: "wallet-connect", name: "WalletConnect", type: "walletConnect" })
+const originalBsnsAddress = deploymentProfile.bsnsAddress
+const bsnsAddress = "0x2222222222222222222222222222222222222222" as const
 
 describe("wallet controls", () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    deploymentProfile.bsnsAddress = originalBsnsAddress
+  })
 
   beforeEach(() => {
     mocks.connectAsync.mockReset().mockResolvedValue(undefined)
     mocks.disconnectBase.mockReset()
     mocks.connectIc.mockReset().mockResolvedValue(undefined)
     mocks.disconnectIc.mockReset().mockResolvedValue(undefined)
+    mocks.watchAssetAsync.mockReset().mockResolvedValue(true)
+    mocks.toastSuccess.mockReset()
+    mocks.toastInfo.mockReset()
+    mocks.toastError.mockReset()
+    mocks.withBrowserLock.mockReset().mockImplementation((_name: string, action: () => unknown) => action())
     mocks.useAccount.mockReturnValue({ address: undefined, connector: undefined, isConnected: false })
+    mocks.useChainId.mockReturnValue(deploymentProfile.chainId)
     mocks.useConnectors.mockReturnValue([])
     mocks.useConnect.mockReturnValue({ connectAsync: mocks.connectAsync, isPending: false, variables: undefined })
     mocks.useDisconnect.mockReturnValue({ disconnect: mocks.disconnectBase })
+    mocks.useWatchAsset.mockReturnValue({ mutateAsync: mocks.watchAssetAsync, isPending: false })
     mocks.useIcWallet.mockReturnValue({
       account: undefined,
       provider: undefined,
@@ -58,6 +91,7 @@ describe("wallet controls", () => {
       connect: mocks.connectIc,
       disconnect: mocks.disconnectIc,
     })
+    deploymentProfile.bsnsAddress = originalBsnsAddress
   })
 
   it("orders named browser wallets before WalletConnect and removes the generic duplicate", () => {
@@ -129,6 +163,92 @@ describe("wallet controls", () => {
     fireEvent.click(summary)
     expect(screen.getByText("Review or disconnect the EVM wallet connected to Base.")).toBeVisible()
     expect(screen.getByRole("dialog").querySelector('[data-dialog-network-logo="base"]')).toBeVisible()
+  })
+
+  it("adds the profile-bound KINIC contract to the connected wallet", async () => {
+    deploymentProfile.bsnsAddress = bsnsAddress
+    mocks.useAccount.mockReturnValue({ address: "0x1234567890abcdef1234567890abcdef12345678", connector: rabby, isConnected: true })
+    render(<WalletDialogProvider><WalletCenter /></WalletDialogProvider>)
+
+    fireEvent.click(screen.getByRole("button", { name: /EVM wallet connected as/ }))
+    expect(screen.getByRole("img", { name: "KINIC token logo" })).toHaveAttribute("src", "/kinic-token-logo.svg")
+    fireEvent.click(screen.getByRole("button", { name: "Add to wallet" }))
+
+    await waitFor(() => expect(mocks.watchAssetAsync).toHaveBeenCalledWith({
+      type: "ERC20",
+      options: {
+        address: bsnsAddress,
+        symbol: "KINIC",
+        decimals: 8,
+        image: `${window.location.origin}/kinic-token-logo-64.png`,
+      },
+    }))
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("KINIC added to wallet.")
+  })
+
+  it("fails closed when the connected wallet is on another chain", () => {
+    deploymentProfile.bsnsAddress = bsnsAddress
+    mocks.useChainId.mockReturnValue(deploymentProfile.chainId + 1)
+    mocks.useAccount.mockReturnValue({ address: "0x1234567890abcdef1234567890abcdef12345678", connector: rabby, isConnected: true })
+    render(<WalletDialogProvider><WalletCenter /></WalletDialogProvider>)
+
+    fireEvent.click(screen.getByRole("button", { name: /EVM wallet connected as/ }))
+    expect(screen.getByText(`Use ${deploymentProfile.label}`)).toBeVisible()
+    expect(screen.getByRole("button", { name: "Add to wallet" })).toBeDisabled()
+  })
+
+  it("fails closed when the deployment profile has no token address", () => {
+    mocks.useAccount.mockReturnValue({ address: "0x1234567890abcdef1234567890abcdef12345678", connector: rabby, isConnected: true })
+    render(<WalletDialogProvider><WalletCenter /></WalletDialogProvider>)
+
+    fireEvent.click(screen.getByRole("button", { name: /EVM wallet connected as/ }))
+    expect(screen.getByText("Token address unavailable")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Add to wallet" })).toBeDisabled()
+  })
+
+  it("prevents duplicate requests while token addition is pending", () => {
+    deploymentProfile.bsnsAddress = bsnsAddress
+    mocks.useWatchAsset.mockReturnValue({ mutateAsync: mocks.watchAssetAsync, isPending: true })
+    mocks.useAccount.mockReturnValue({ address: "0x1234567890abcdef1234567890abcdef12345678", connector: rabby, isConnected: true })
+    render(<WalletDialogProvider><WalletCenter /></WalletDialogProvider>)
+
+    fireEvent.click(screen.getByRole("button", { name: /EVM wallet connected as/ }))
+    expect(screen.getByRole("button", { name: "Adding…" })).toBeDisabled()
+  })
+
+  it("prevents duplicate requests before the pending state rerenders", async () => {
+    deploymentProfile.bsnsAddress = bsnsAddress
+    mocks.useAccount.mockReturnValue({ address: "0x1234567890abcdef1234567890abcdef12345678", connector: rabby, isConnected: true })
+    let resolveWatchAsset!: (added: boolean) => void
+    mocks.watchAssetAsync.mockReturnValue(new Promise<boolean>((resolve) => { resolveWatchAsset = resolve }))
+    render(<WalletDialogProvider><WalletCenter /></WalletDialogProvider>)
+
+    fireEvent.click(screen.getByRole("button", { name: /EVM wallet connected as/ }))
+    const addButton = screen.getByRole("button", { name: "Add to wallet" })
+    fireEvent.click(addButton)
+    fireEvent.click(addButton)
+
+    expect(mocks.withBrowserLock).toHaveBeenCalledTimes(1)
+    expect(mocks.withBrowserLock).toHaveBeenCalledWith(
+      "kinic-wallet-prompt:base:0x1234567890abcdef1234567890abcdef12345678",
+      expect.any(Function),
+    )
+    expect(mocks.watchAssetAsync).toHaveBeenCalledTimes(1)
+    resolveWatchAsset(true)
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalledWith("KINIC added to wallet."))
+  })
+
+  it("explains wallet rejection and unsupported automatic token addition", async () => {
+    deploymentProfile.bsnsAddress = bsnsAddress
+    mocks.useAccount.mockReturnValue({ address: "0x1234567890abcdef1234567890abcdef12345678", connector: rabby, isConnected: true })
+    mocks.watchAssetAsync.mockResolvedValueOnce(false).mockRejectedValueOnce(new Error("unsupported"))
+    render(<WalletDialogProvider><WalletCenter /></WalletDialogProvider>)
+
+    fireEvent.click(screen.getByRole("button", { name: /EVM wallet connected as/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Add to wallet" }))
+    await waitFor(() => expect(mocks.toastInfo).toHaveBeenCalledWith(expect.stringContaining(bsnsAddress)))
+    fireEvent.click(screen.getByRole("button", { name: "Add to wallet" }))
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith(expect.stringContaining(bsnsAddress)))
   })
 
   it("uses the connected provider logo and only the principal in the IC wallet summary", () => {
