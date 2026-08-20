@@ -92,6 +92,13 @@ class StagingUpgradeDriverTests(unittest.TestCase):
     def policy(self) -> dict[str, object]:
         return json.loads((self.repo / POLICY_PATH).read_text(encoding="utf-8"))
 
+    def migration_source(self, candid_metadata: str) -> dict[str, object]:
+        return next(
+            source
+            for source in self.policy()["migration"]["source_states"]
+            if source["candid_metadata"] == candid_metadata
+        )
+
     def write_executable(self, name: str, source: str) -> None:
         path = self.bin / name
         path.write_text(source, encoding="utf-8")
@@ -146,7 +153,8 @@ policy = json.loads(pathlib.Path(os.environ["MOCK_POLICY"]).read_text())
 after_module = os.environ["MOCK_AFTER_MODULE"]
 applied = (state / "applied").exists() or os.environ.get("MOCK_ALREADY_APPLIED") == "1"
 digest = policy["after_rpc_urls_sha256"] if applied else policy["before_rpc_urls_sha256"]
-digest = os.environ.get("MOCK_DIGEST", digest)
+if not applied:
+    digest = os.environ.get("MOCK_DIGEST", digest)
 module = after_module if (state / "metadata-repaired").exists() else os.environ.get(
     "MOCK_MODULE", after_module if applied else policy["before_module_sha256"]
 )
@@ -264,8 +272,9 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse(self.install_record.exists())
 
     def test_known_missing_metadata_requires_explicit_migration(self) -> None:
-        missing_module = str(self.policy()["metadata_missing_module_sha256"])
-        after_digest = str(self.policy()["after_rpc_urls_sha256"])
+        source = self.migration_source("absent")
+        missing_module = str(source["module_sha256"])
+        after_digest = str(source["rpc_provider_urls_sha256"])
         rejected = self.run_driver(
             MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1", MOCK_DIGEST=after_digest
         )
@@ -294,16 +303,18 @@ print(json.dumps({"response_candid": candid}))
         self.assertEqual(evidence["minimum_withdrawal_id"], "0x" + "01" * 32)
 
     def test_known_v32_source_state_requires_the_explicit_migration_flag(self) -> None:
-        before_module = str(self.policy()["before_module_sha256"])
+        source = self.migration_source("present")
+        before_module = str(source["module_sha256"])
+        before_digest = str(source["rpc_provider_urls_sha256"])
         rejected = self.run_driver(
-            MOCK_SCHEMA="32", MOCK_MODULE=before_module,
+            MOCK_SCHEMA="32", MOCK_MODULE=before_module, MOCK_DIGEST=before_digest,
         )
         self.assertNotEqual(rejected.returncode, 0)
         self.assertFalse(self.install_record.exists())
 
         preflight = self.run_driver(
             "--migrate-v32-to-v33",
-            MOCK_SCHEMA="32", MOCK_MODULE=before_module,
+            MOCK_SCHEMA="32", MOCK_MODULE=before_module, MOCK_DIGEST=before_digest,
         )
         self.assertEqual(preflight.returncode, 0, preflight.stderr)
         self.assertIn("v32-to-v33-preflight-passed", preflight.stdout)
@@ -311,7 +322,7 @@ print(json.dumps({"response_candid": candid}))
 
         migrated = self.run_driver(
             "--migrate-v32-to-v33", "--execute",
-            MOCK_SCHEMA="32", MOCK_MODULE=before_module,
+            MOCK_SCHEMA="32", MOCK_MODULE=before_module, MOCK_DIGEST=before_digest,
         )
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         evidence = json.loads((self.base / "result.json").read_text())
@@ -320,12 +331,15 @@ print(json.dumps({"response_candid": candid}))
         self.assertEqual(evidence["after"]["schema_version"], 33)
 
     def test_v32_migration_requires_the_reviewed_profile_boundary(self) -> None:
-        before_module = str(self.policy()["before_module_sha256"])
+        source = self.migration_source("present")
+        before_module = str(source["module_sha256"])
+        before_digest = str(source["rpc_provider_urls_sha256"])
         result = self.run_driver(
             "--migrate-v32-to-v33",
             "--execute",
             MOCK_SCHEMA="32",
             MOCK_MODULE=before_module,
+            MOCK_DIGEST=before_digest,
             MOCK_CAPTURE_BOUNDARY="0x" + "02" * 32,
         )
         self.assertNotEqual(result.returncode, 0)
@@ -333,12 +347,15 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse(self.install_record.exists())
 
     def test_v32_migration_verifies_the_persisted_boundary_after_upgrade(self) -> None:
-        before_module = str(self.policy()["before_module_sha256"])
+        source = self.migration_source("present")
+        before_module = str(source["module_sha256"])
+        before_digest = str(source["rpc_provider_urls_sha256"])
         result = self.run_driver(
             "--migrate-v32-to-v33",
             "--execute",
             MOCK_SCHEMA="32",
             MOCK_MODULE=before_module,
+            MOCK_DIGEST=before_digest,
             MOCK_BOUNDARY="02" * 32,
         )
         self.assertNotEqual(result.returncode, 0)
