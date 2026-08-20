@@ -9,8 +9,13 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from source_resolution import source_path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_FILES = (
@@ -33,7 +38,10 @@ class StagingUpgradeDriverTests(unittest.TestCase):
         for relative in SCRIPT_FILES + (POLICY_PATH,):
             destination = self.repo / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(ROOT / relative, destination)
+            source = (
+                source_path(relative) if relative in SCRIPT_FILES else ROOT / relative
+            )
+            shutil.copy2(source, destination)
         (self.repo / "canister/bridge-canister").mkdir(parents=True)
         self.did = self.repo / "canister/bridge-canister/bridge.did"
         self.did.write_text("service : {}\n", encoding="utf-8")
