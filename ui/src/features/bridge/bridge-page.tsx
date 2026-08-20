@@ -884,7 +884,6 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         <div className="mt-1 flex items-center gap-3"><Input id="bridge-amount" disabled={depositControlsLocked} aria-invalid={Boolean(amountError)} aria-describedby="bridge-amount-feedback" className="font-numeric h-14 border-0 px-0 text-3xl font-semibold focus:ring-0" inputMode="decimal" placeholder="0.00000000" value={amount} onChange={(event) => { if (direction === "deposit") setDepositAmount(event.target.value); else setWithdrawAmount(event.target.value) }} /><span className="rounded-xl bg-[var(--panel)] px-3 py-2 text-sm font-bold">{sendToken.symbol}</span></div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-sm"><Quote label={feeLabel} value={fee !== undefined ? `${formatTokenAmount(fee)} ${sendToken.symbol}` : "—"} /><Quote label="Estimated receive" value={receive !== undefined ? `${formatTokenAmount(receive)} ${receiveToken.symbol}` : "—"} /></div>
-      {heartbeat.data?.checkedAt && !reviewedQuote && <p className="mt-2 text-center text-xs text-[var(--muted)]">Last checked {new Date(heartbeat.data.checkedAt).toLocaleString()}. Current terms will be verified before continuing.</p>}
       {direction === "deposit" && (effectiveDepositProgress === "oisy-action" || deposit.isPending) && (
         <DepositProgressCard title="Confirming deposit…" detail="Confirm the action in Oisy. After confirmation, its window stays open while the bridge verifies Deposit acceptance." />
       )}
