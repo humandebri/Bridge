@@ -1395,6 +1395,12 @@ describe("Phase 3 PocketIC saga", () => {
     bridge.actor.setPrincipal(runtimePrincipal);
     expect((await (bridge.actor as any).get_bridge_status()).deposits_paused).toBe(true);
     expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+    expect(await (bridge.actor as any).seal_operational_config({
+      governance_evm_fee: init.governance_evm_fee,
+      cycles_floor: init.cycles_floor,
+      settlement_cycle_ceiling: init.settlement_cycle_ceiling,
+    })).toHaveProperty("Ok.OperationalConfigSealed");
+    expect(await (evm.actor as any).get_code_call_count()).toBe(2n);
     expect(await (bridge.actor as any).prepare_base_governance_action({
       SetServiceFee: { value: 1n },
     })).toHaveProperty("Ok.chain_id", 8453n);
