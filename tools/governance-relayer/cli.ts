@@ -22,8 +22,6 @@ import type {
 } from "../../ui/src/generated/bridge.did.ts"
 import { idlFactory } from "../../integration/generated/bridge.idl.ts"
 
-const POLL_INTERVAL_MS = 5_000
-
 type Options = Record<string, string | boolean>
 interface RelayerRpc {
   sendRawTransaction(args: { serializedTransaction: TransactionSerialized }): Promise<Hex>
@@ -38,6 +36,8 @@ interface RelayerRpc {
   }>
 }
 
+const POLL_INTERVAL_MS = 5_000
+
 async function main(): Promise<void> {
   const [command = "help", ...rest] = process.argv.slice(2)
   const options = parseOptions(rest)
@@ -45,8 +45,7 @@ async function main(): Promise<void> {
     printHelp()
     return
   }
-  const actor = await bridgeActor()
-
+  const actor = await bridgeActor(commandRequiresIdentity(command))
   switch (command) {
     case "prepare": {
       const result = await actor.prepare_base_governance_action(parseAction(options))
@@ -91,10 +90,11 @@ async function main(): Promise<void> {
       return
     }
     case "run": {
+      if (options.action !== undefined) {
+        throw new Error("run relays an existing signed transaction; use prepare separately")
+      }
       const rpc = rpcClient()
-      const artifact = options.action
-        ? unwrap(await actor.prepare_base_governance_action(parseAction(options)))
-        : await pendingArtifact(actor, options)
+      const artifact = await pendingArtifact(actor, options)
       await validateArtifact(artifact)
       await relay(rpc, artifact)
       await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
@@ -136,6 +136,10 @@ async function main(): Promise<void> {
   }
 }
 
+export function commandRequiresIdentity(command: string): boolean {
+  return !new Set(["status", "relay", "confirm", "run"]).has(command)
+}
+
 async function runActivation(
   actor: _SERVICE,
   rpc: RelayerRpc,
@@ -161,12 +165,14 @@ function rpcClient(): RelayerRpc {
   }) as unknown as RelayerRpc
 }
 
-async function bridgeActor(): Promise<_SERVICE> {
-  const pemPath = requiredEnv("IC_IDENTITY_PEM")
-  const pem = await readFile(pemPath, "utf8")
-  const identity = identityFromPem(pem)
+async function bridgeActor(authenticated: boolean): Promise<_SERVICE> {
   const host = process.env.IC_HOST || "https://icp-api.io"
-  const agent = HttpAgent.createSync({ identity, host })
+  const agent = authenticated
+    ? HttpAgent.createSync({
+      identity: identityFromPem(await readFile(requiredEnv("IC_IDENTITY_PEM"), "utf8")),
+      host,
+    })
+    : HttpAgent.createSync({ host })
   if (agent.isLocal()) await agent.fetchRootKey()
   return Actor.createActor<_SERVICE>(idlFactory, {
     agent,
@@ -249,9 +255,7 @@ export async function waitForFinalized(
   for (;;) {
     const receipt = await rpc.getTransactionReceipt({ hash }).catch(() => undefined)
     if (receipt) {
-      if (receipt.status === "reverted") {
-        throw new Error(`Transaction reverted: ${hash}`)
-      }
+      if (receipt.status === "reverted") throw new Error(`Transaction reverted: ${hash}`)
       const finalized = await rpc.getBlock({ blockTag: "finalized" })
       if (finalized.number !== null && receipt.blockNumber <= finalized.number) {
         const canonical = await rpc.getBlock({ blockNumber: receipt.blockNumber })
@@ -389,7 +393,7 @@ Commands:
   status [--operation-id N]
   relay [--operation-id N]
   confirm [--operation-id N] [--hash 0x...]
-  run [--operation-id N | --action ...]
+  run [--operation-id N]
   schedule-activation
   execute-activation
   replace --operation-id N --max-fee N --priority-fee N
@@ -397,7 +401,7 @@ Commands:
 
 Environment:
   BRIDGE_CANISTER_ID  Bridge Canister principal
-  IC_IDENTITY_PEM    Governance secp256k1 identity PEM path
+  IC_IDENTITY_PEM    Required only for prepare, replace, activation, and emergency commands
   BASE_RPC_URL       Base JSON-RPC URL
   IC_HOST            Optional IC API host (defaults to https://icp-api.io)
 `)

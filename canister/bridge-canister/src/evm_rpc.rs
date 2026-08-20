@@ -386,7 +386,16 @@ async fn eth_call_at_observation(
     calldata: &[u8],
     observation: FinalizedObservation,
 ) -> Result<String, ObservationError> {
-    let request = eth_call_request(&args.bridge_contract, calldata, observation);
+    eth_call_target_at_observation(args, &args.bridge_contract, calldata, observation).await
+}
+
+async fn eth_call_target_at_observation(
+    args: &BridgeInitArgs,
+    target: &[u8],
+    calldata: &[u8],
+    observation: FinalizedObservation,
+) -> Result<String, ObservationError> {
+    let request = eth_call_request(target, calldata, observation);
     match client(args)
         .multi_request(request)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
@@ -398,6 +407,62 @@ async fn eth_call_at_observation(
         MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
         MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
     }
+}
+
+pub async fn deployment_postconditions_match(
+    args: &BridgeInitArgs,
+    governance_operator: [u8; 20],
+) -> Result<bool, ObservationError> {
+    let finalized = finalized_observation(args).await?;
+    let timelock: [u8; 20] = args
+        .timelock_contract
+        .as_slice()
+        .try_into()
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    let bridge_timelock = observed_address(
+        &eth_call_at_observation(args, &selector("baseAdminTimelock()"), finalized).await?,
+    )?;
+    let runtime_admin = observed_address(
+        &eth_call_at_observation(args, &selector("runtimeAdministrator()"), finalized).await?,
+    )?;
+    if bridge_timelock != timelock || runtime_admin != governance_operator {
+        return Ok(false);
+    }
+    for (role_name, expected) in [
+        (None, timelock),
+        (Some("PROPOSER_ROLE"), governance_operator),
+        (Some("CANCELLER_ROLE"), governance_operator),
+        (Some("EXECUTOR_ROLE"), governance_operator),
+    ] {
+        let role = role_name.map(role_hash).unwrap_or([0; 32]);
+        let mut calldata = selector("roleMember(bytes32)").to_vec();
+        calldata.extend_from_slice(&role);
+        let member = observed_address(
+            &eth_call_target_at_observation(args, &timelock, &calldata, finalized).await?,
+        )?;
+        if member != expected {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn observed_address(value: &str) -> Result<[u8; 20], ObservationError> {
+    let decoded = decode_hex(value.trim_matches('"').strip_prefix("0x").unwrap_or(value))?;
+    if decoded.len() != 32 || decoded[..12].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    decoded[12..]
+        .try_into()
+        .map_err(|_| ObservationError::InvalidResponse)
+}
+
+fn role_hash(name: &str) -> [u8; 32] {
+    let mut hash = [0; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(name.as_bytes());
+    hasher.finalize(&mut hash);
+    hash
 }
 
 fn eth_call_request(

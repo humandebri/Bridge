@@ -12,7 +12,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v33、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
+Bridge canisterはstable schema v34、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
 Plan 005は10回・7日の本番パラメータ外部計測と単一emergency pause経路演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、主要5 scenarioのGate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
 
 ## 全体構成
@@ -92,7 +92,7 @@ Phase 1Eで検証を閉じ、ABIを凍結済みである。
 
 - Withdrawal受付を継続できない残高を運用監視で検出したとき、Runtime Administratorが新規Withdrawalをpauseし、既存Settlementだけを継続する。Bridge contractやCanisterによる自動pauseは行わない。
 - 即時操作（pause、上限内Service Fee変更）をRuntime Administratorのroleに割り当てる。
-- 遅延操作（unpause、role rotation）をtimelock経由の単一Base Admin hardware walletに割り当てる。timelock遅延は24時間とし、遅延変更とsigner変更もtimelockを経由する。
+- 遅延操作（unpause、role rotation）はCanister由来Governance OperatorだけがTimelock経由で実行する。人間のEVM管理鍵とhardware walletは置かず、timelock遅延は24時間とする。
 - limitを変更するfunctionとselectorは公開しない。
 - Base Admin に mint、refund、escrow 資産への権限を与えない。
 
@@ -122,7 +122,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorizationを追加し、現行stable schemaはv33である。
+後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorizationを追加し、現行stable schemaはv34である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -130,7 +130,7 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
 - 本番初回deployまではstable schemaを直接置換し、migration、dual-read、fallbackを追加しない。現行version以外はfail closedとする。
-- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v33・record wire v28とする。
+- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v34・record wire v29とする。
 - Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
 - Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
 
@@ -165,7 +165,7 @@ PicJSでDeposit、Withdrawal、Holdのupgrade保持、stuck receiptを検証す�
 ### 3-1. EVM 連携（ADR 0005、0011）
 
 - Deposit Mintはthreshold ECDSAでEIP-712 Authorizationへ署名し、Base walletがtransactionを送信する。Mint用nonce、raw transaction、gas reserveは持たない。
-- Governance Operator laneではCanisterがnonceと署名済みgenerationを保持し、外部relayerがbroadcast、Finalized待機、確定通知を行う。Canisterのrebroadcast、receipt timer、自動replacementは持たず、明示要求されたreplacementだけを同一nonceで最大3回再署名する。
+- 初期contract配置は外部EOAがTimelock、Bridgeの順に実行し、配置後にroleを残さない。Governance Operator laneではCanisterがnonceと署名済みgenerationを保持し、権限なしrelayerがbroadcast、Finalized待機、確定通知を行う。Canisterのrebroadcast、receipt timer、自動replacementは持たず、明示要求されたreplacementだけを同一nonceで最大3回再署名する。
 - Withdrawalの受付観測は`eth_getLogs`で発見し、Finalized headの状態読みで確定する。読み取りは3 provider中2の合意を要求する。
 
 ### 3-2. Settlement Reserve と stable executor（ADR 0005、0019）

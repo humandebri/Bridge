@@ -114,6 +114,16 @@ ACTION_MARKER="$TEST_TMP_ROOT/deployed" run_release deploy --bundle "$TEST_TMP_R
 [[ -s "$TEST_TMP_ROOT/receipt.json" ]]
 [[ -s "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json" ]]
 [[ "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["deployment_block"])' "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json")" == 1 ]]
+python3 - "$TEST_TMP_ROOT/receipt.json" <<'PY'
+import json,sys
+receipt=json.load(open(sys.argv[1],encoding='utf-8'))
+assert receipt['bridge_deployment_transaction_hash']=='0x'+'a'*64
+assert receipt['bridge_deployment_block_number']==1
+assert receipt['bridge_deployment_block_hash']=='0x'+'c'*64
+assert receipt['timelock_deployment_transaction_hash']=='0x'+'b'*64
+assert receipt['timelock_deployment_block_number']==1
+assert receipt['timelock_deployment_block_hash']=='0x'+'d'*64
+PY
 cp "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json" "$TEST_TMP_ROOT/bundle-b/profile.json"
 POST_PROFILE_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/profile.json" | awk '{print $1}')"
 python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$POST_PROFILE_SHA256" <<'PY'

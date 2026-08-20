@@ -162,7 +162,6 @@ run_versions() {
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
   node "$ROOT/scripts/plan007/test-check-upgrade-instance.mjs"
-  node "$ROOT/scripts/plan007/test-capture-withdrawal-boundary.mjs"
   node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"

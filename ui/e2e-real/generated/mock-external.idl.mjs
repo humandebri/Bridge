@@ -489,6 +489,11 @@ export const idlFactory = ({ IDL }) => {
     'set_broadcast_inconsistent_after_accepts' : IDL.Func([IDL.Nat8], [], []),
     'set_chain_id_mode' : IDL.Func([ChainIdMode], [], []),
     'set_configured_chain_id' : IDL.Func([IDL.Nat64], [], []),
+    'set_deployment_postconditions' : IDL.Func(
+        [IDL.Vec(IDL.Nat8), IDL.Vec(IDL.Nat8)],
+        [Result_10],
+        [],
+      ),
     'set_deposit_mints_paused' : IDL.Func([IDL.Bool], [], []),
     'set_eth_balance' : IDL.Func([IDL.Nat], [], []),
     'set_finalized_block' : IDL.Func(

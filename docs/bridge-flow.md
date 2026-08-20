@@ -8,7 +8,7 @@
 |---|---|
 | IC wallet | ICRC-2 approve、`request_deposit`、`request_deposit_refund` |
 | Base wallet | Mint Authorization送信時のgas支払い、Withdrawalのapprove・burn transaction |
-| Bridge Canister | SQLite schema v33、Ledger操作、EIP-712署名、Finalized照合、Governance transaction署名 |
+| Bridge Canister | SQLite schema v34、Ledger操作、EIP-712署名、Finalized照合、Governance transaction署名 |
 | Ledger / Index | Deposit pull、refund、Withdrawal release、履歴照合 |
 | EVM RPC Canister | provider quorumによるcanonical Finalized観測 |
 | Base Bridge / bSNS | 署名検証付きDeposit mint、atomic Withdrawal burn |

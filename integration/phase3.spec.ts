@@ -66,6 +66,18 @@ describe("Phase 3 PocketIC saga", () => {
     // Mint authorization deadlines are Base Unix timestamps. Keep the mock Base
     // clock in the same time domain as the canister before deadline checks run.
     await (evm.actor as any).set_block_timestamp(BigInt(Math.floor((await pic!.getTime()) / 1_000)));
+    await (evm.actor as any).set_deposit_mints_paused(true);
+    await (evm.actor as any).set_withdrawals_paused(true);
+    const publicConfig: any = await (bridge.actor as any).get_public_config();
+    expect(await (evm.actor as any).set_deployment_postconditions(
+      init.timelock_contract,
+      publicConfig.governance_operator,
+    )).toHaveProperty("Ok");
+    expect(await (bridge.actor as any).seal_operational_config({
+      governance_evm_fee: init.governance_evm_fee,
+      cycles_floor: init.cycles_floor,
+      settlement_cycle_ceiling: init.settlement_cycle_ceiling,
+    })).toHaveProperty("Ok.OperationalConfigSealed");
     if (activate) await activateBridgeThroughGovernance(bridge, evm, runtimePrincipal);
     expect((await pic!.getCanisterSubnetId(bridge.canisterId))?.toText()).toBe(subnet.id.toText());
     return { ledger, index, evm, bridge, init, runtimePrincipal };
@@ -590,7 +602,7 @@ describe("Phase 3 PocketIC saga", () => {
     governance_nonce_uses_configured_chain_without_runtime_probe,
   );
 
-  it("lets the pause principal relay only pause and recorded timelock cancellation", async () => {
+  it("keeps signing privileged while allowing anonymous retrieval and confirmation", async () => {
     const { bridge, evm, init, runtimePrincipal } = await setup(false);
     const pausePrincipal = init.pause_principal;
     const thirdParty = Principal.selfAuthenticating(new Uint8Array(32).fill(99));
@@ -602,9 +614,9 @@ describe("Phase 3 PocketIC saga", () => {
     const schedule: any = await (bridge.actor as any).schedule_activation();
     expect(schedule).toHaveProperty("Ok.kind.ScheduleActivation");
     const bumped = (value: bigint) => (value * 11_250n + 9_999n) / 10_000n;
-    bridge.actor.setPrincipal(pausePrincipal);
+    bridge.actor.setPrincipal(Principal.anonymous());
     expect(await (bridge.actor as any).get_pending_base_governance_transaction())
-      .toEqual({ Err: { Unauthorized: null } });
+      .toHaveProperty("Ok.0.kind.ScheduleActivation");
     expect(await (bridge.actor as any).prepare_base_governance_replacement({
       operation_id: schedule.Ok.operation_id,
       expected_transaction_hash: schedule.Ok.transaction_hash,
@@ -614,15 +626,9 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).confirm_base_governance_transaction({
       operation_id: schedule.Ok.operation_id,
       transaction_hash: schedule.Ok.transaction_hash,
-    })).toEqual({ Err: { Unauthorized: null } });
+    })).toHaveProperty("Ok.succeeded", true);
     expect(await (bridge.actor as any).prepare_next_emergency_base_action())
       .toEqual({ Err: { Unauthorized: null } });
-
-    bridge.actor.setPrincipal(runtimePrincipal);
-    expect(await (bridge.actor as any).confirm_base_governance_transaction({
-      operation_id: schedule.Ok.operation_id,
-      transaction_hash: schedule.Ok.transaction_hash,
-    })).toHaveProperty("Ok.succeeded", true);
 
     bridge.actor.setPrincipal(pausePrincipal);
     expect(await (bridge.actor as any).prepare_base_governance_action({
@@ -661,7 +667,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null }))
       .toEqual({ Err: { Unauthorized: null } });
     expect(await (bridge.actor as any).get_pending_base_governance_transaction())
-      .toEqual({ Err: { Unauthorized: null } });
+      .toEqual({ Ok: [] });
     expect(await (bridge.actor as any).prepare_next_emergency_base_action())
       .toEqual({ Err: { Unauthorized: null } });
   });
@@ -683,7 +689,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(33);
+    expect(config.schema_version).toBe(34);
     expect(Array.from(config.minimum_withdrawal_id)).toEqual(Array.from(init.minimum_withdrawal_id));
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(testLedgerFee);
@@ -2241,7 +2247,7 @@ describe("Phase 3 PocketIC saga", () => {
       median(hundredJobInstructions) * 2n,
     );
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(33);
+    expect(before.schema_version).toBe(34);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.retained_audit_events).toBe(10_000n);
     expect(
@@ -2264,7 +2270,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(33);
+    expect(after.schema_version).toBe(34);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(before.settlement_scheduler.scheduled);
     expect(after.settlement_scheduler.leased).toBe(before.settlement_scheduler.leased);

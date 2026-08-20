@@ -53,8 +53,9 @@ export TRACE="$T/trace"
 : >"$TRACE"
 cat >"$T/bin/forge" <<'SH'
 #!/usr/bin/env bash
-echo "forge $*" >>"$TRACE"; [[ " $* " == *" --ledger "* ]]
-if [[ "$*" == *BridgeTimelockController* ]]; then touch "$TIMELOCK_DEPLOYED_MARKER"; echo '{"deployedTo":"0x2222222222222222222222222222222222222222","transactionHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'; else touch "$BRIDGE_DEPLOYED_MARKER"; echo '{"deployedTo":"0x3333333333333333333333333333333333333333","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'; fi
+echo "forge $*" >>"$TRACE"
+[[ " $* " == *" --keystore "* && " $* " != *" --ledger "* ]]
+if [[ "$*" == *BridgeTimelockController* ]]; then touch "$TIMELOCK_DEPLOYED_MARKER"; echo '{"transactionHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'; else touch "$BRIDGE_DEPLOYED_MARKER"; echo '{"transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'; fi
 SH
 cat >"$T/bin/ci-local.sh" <<'SH'
 #!/usr/bin/env bash
@@ -65,6 +66,8 @@ cat >"$T/bin/cast" <<'SH'
 #!/usr/bin/env bash
 echo "cast $*" >>"$TRACE"
 case "$1 $2" in
+  'wallet address') echo 0x4444444444444444444444444444444444444444;;
+  'balance 0x4444444444444444444444444444444444444444') echo 999999999999999999999999;;
   'keccak PROPOSER_ROLE') printf '0x%s\n' "$(printf '11%.0s' {1..32})";;
   'keccak EXECUTOR_ROLE') printf '0x%s\n' "$(printf '22%.0s' {1..32})";;
   'keccak CANCELLER_ROLE') printf '0x%s\n' "$(printf '33%.0s' {1..32})";;
@@ -89,7 +92,7 @@ case "$1 $2" in
   'tx withdrawal-action') echo '{"to":"0x3333333333333333333333333333333333333333","input":"0x2222"}';;
   'tx cancel-action') echo '{"to":"0x2222222222222222222222222222222222222222","input":"0x3333"}';;
   'tx 0x8888888888888888888888888888888888888888888888888888888888888888') echo '{"to":"0x3333333333333333333333333333333333333333","input":"0x4444"}';;
-  'receipt 0x'*) if [[ "$2" == "0x$(printf 'a%.0s' {1..64})" ]]; then address=0x3333333333333333333333333333333333333333; bh=b; else address=0x2222222222222222222222222222222222222222; bh=c; fi; if [[ "${DEPLOYMENT_RECEIPT_DRIFT:-}" == true || ( "${ACTIVATION_RECEIPT_DRIFT:-}" == true && "$2" != "0x$(printf 'a%.0s' {1..64})" && "$2" != "0x$(printf 'b%.0s' {1..64})" ) ]]; then bh=f; fi; printf '{"blockNumber":"0x1","blockHash":"0x%s","status":"0x1","contractAddress":"%s"}\n' "$(printf "$bh%.0s" {1..64})" "$address";;
+  'receipt 0x'*) if [[ "${DEPLOYMENT_RECEIPT_UNAVAILABLE:-}" == true ]]; then exit 1; fi; if [[ "$2" == "0x$(printf 'a%.0s' {1..64})" ]]; then address=0x3333333333333333333333333333333333333333; bh=b; else address=0x2222222222222222222222222222222222222222; bh=c; fi; if [[ "${DEPLOYMENT_RECEIPT_DRIFT:-}" == true || ( "${ACTIVATION_RECEIPT_DRIFT:-}" == true && "$2" != "0x$(printf 'a%.0s' {1..64})" && "$2" != "0x$(printf 'b%.0s' {1..64})" ) ]]; then bh=f; fi; if [[ "${DEPLOYMENT_BLOCK_HASH_INVALID:-}" == true ]]; then block_hash=12; else block_hash="$(printf "$bh%.0s" {1..64})"; fi; printf '{"blockNumber":"0x1","blockHash":"0x%s","status":"0x1","contractAddress":"%s"}\n' "$block_hash" "$address";;
   'logs --address') if [[ "${ROLE_EVENT_DRIFT:-}" == true ]]; then role="$(printf 'ff%.0s' {1..32})"; else role="$(printf '00%.0s' {1..32})"; fi; if [[ "${ROLE_EVENT_HASH_DRIFT:-}" == true ]]; then eh=f; else eh=c; fi; printf '[{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]}]\n' \
     "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$role" "$(printf '00%.0s' {1..12})2222222222222222222222222222222222222222" \
     "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '11%.0s' {1..32})" "$(printf '00%.0s' {1..12})6666666666666666666666666666666666666666" \
@@ -136,7 +139,7 @@ cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 echo "icp $*" >>"$TRACE"
 if [[ "$*" == *initialize_public_config* ]]; then if [[ "${INITIALIZE_PUBLIC_CONFIG_FAIL:-false}" == true ]]; then echo '{"Err":"DerivationUnavailable"}'; else echo '{"Ok":null}'; fi;
-elif [[ "$*" == *get_public_config* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"base_chain_id":8453,"bridge_contract":[51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51],"expected_bridge_runtime_sha256":[110,52,11,156,255,179,122,152,156,165,68,230,187,120,10,44,120,144,29,63,179,55,56,118,133,17,163,6,23,175,160,29],"timelock_contract":[34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34],"deployment_instance_id":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"minimum_withdrawal_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],"ledger_canister_id":"aaaaa-aa","index_canister_id":"aaaaa-aa","schema_version":33,"expected_bridge_signer":[%s],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s","deposit_rate_limit_window_seconds":1,"deposit_rate_limit_global":1,"deposit_rate_limit_per_principal":1,"notification_rate_limit_window_seconds":600,"notification_rate_limit_global":60,"notification_ingestion_rate_limit_global":30,"settlement_rate_limit_window_seconds":1,"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_rate_limit_per_record":1,"settlement_retry_interval_seconds":60,"governance_evm_fee":{"gas_limit_ceiling":"1","max_fee_per_gas_ceiling":"1","max_priority_fee_per_gas_ceiling":"1","l1_fee_per_transaction_ceiling_wei":"1","quote_validity_seconds":90,"gas_limit_multiplier_bps":13000,"base_fee_multiplier_bps":60000,"l1_fee_multiplier_bps":15000},"governance_replacement":{"max_replacements":3,"fee_bump_bps":1250},"cycles_floor":"1","settlement_cycle_ceiling":"1","governance_principal":"aaaaa-aa","pause_principal":"2vxsx-fae","fee_recipient":{"owner":"aaaaa-aa","subaccount":[]}}\n' "$signer" "$RPC_DIGEST";
+elif [[ "$*" == *get_public_config* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"base_chain_id":8453,"bridge_contract":[51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51],"expected_bridge_runtime_sha256":[110,52,11,156,255,179,122,152,156,165,68,230,187,120,10,44,120,144,29,63,179,55,56,118,133,17,163,6,23,175,160,29],"timelock_contract":[34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34],"deployment_instance_id":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"minimum_withdrawal_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],"ledger_canister_id":"aaaaa-aa","index_canister_id":"aaaaa-aa","schema_version":34,"expected_bridge_signer":[%s],"governance_operator":[102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s","deposit_rate_limit_window_seconds":1,"deposit_rate_limit_global":1,"deposit_rate_limit_per_principal":1,"notification_rate_limit_window_seconds":600,"notification_rate_limit_global":60,"notification_ingestion_rate_limit_global":30,"settlement_rate_limit_window_seconds":1,"settlement_rate_limit_global":1,"settlement_rate_limit_per_principal":1,"settlement_rate_limit_per_record":1,"settlement_retry_interval_seconds":60,"governance_evm_fee":{"gas_limit_ceiling":"1","max_fee_per_gas_ceiling":"1","max_priority_fee_per_gas_ceiling":"1","l1_fee_per_transaction_ceiling_wei":"1","quote_validity_seconds":90,"gas_limit_multiplier_bps":13000,"base_fee_multiplier_bps":60000,"l1_fee_multiplier_bps":15000},"governance_replacement":{"max_replacements":3,"fee_bump_bps":1250},"cycles_floor":"1","settlement_cycle_ceiling":"1","governance_principal":"aaaaa-aa","pause_principal":"2vxsx-fae","fee_recipient":{"owner":"aaaaa-aa","subaccount":[]}}\n' "$signer" "$RPC_DIGEST";
 elif [[ "$*" == *get_bridge_status* ]]; then printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "${CANISTER_PAUSED:-true}";
 elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
 elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; echo '{"Ok":null}';
@@ -156,12 +159,24 @@ export BRIDGE_TIMELOCK_CANCELLER_ADDRESS=0x5555555555555555555555555555555555555
 export BRIDGE_ICP_IDENTITY=production
 export BRIDGE_CANONICAL_CONFIRM_TIMEOUT_SECONDS=1 BRIDGE_CANONICAL_CONFIRM_POLL_SECONDS=1
 export BRIDGE_DEPLOYMENT_BINDING_FILE="$T/deployment-binding.json"
+export BRIDGE_DEPLOYER_KEYSTORE="$T/deployer-keystore.json"
+export BRIDGE_DEPLOYER_PASSWORD_FILE="$T/deployer-password.txt"
+export BASE_RPC_URL=https://rpc.example
+printf '{}\n' >"$BRIDGE_DEPLOYER_KEYSTORE"
+printf 'test-password\n' >"$BRIDGE_DEPLOYER_PASSWORD_FILE"
 export BRIDGE_DEPLOY_GAS_LIMIT=10000000 BRIDGE_DEPLOY_MAX_FEE_PER_GAS=100 BRIDGE_DEPLOY_PRIORITY_FEE_PER_GAS=2
 export RPC_DIGEST="$(python3 -c 'import hashlib;print(hashlib.sha256(b"[]").hexdigest())')"
 export INDEPENDENT_RPC_DIGEST="$(python3 -c 'import hashlib,json;print(hashlib.sha256(json.dumps(["https://one.example","https://two.example","https://three.example"],separators=(",",":"),ensure_ascii=False).encode()).hexdigest())')"
 cat >"$T/bundle/profile.json" <<'JSON'
 {"chain_id":8453,"evm_rpc_canister_id":"aaaaa-aa","bridge_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","bridge_contract":"0x3333333333333333333333333333333333333333","bsns_contract":"0x7777777777777777777777777777777777777777","decimals":8,"expected_bridge_signer":"0x1111111111111111111111111111111111111111","governance_operator":"0x6666666666666666666666666666666666666666","pause_principal":"7jkta-eyaaa-aaaaq-aaarq-cai","timelock":{"address":"0x2222222222222222222222222222222222222222","runtime_code_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","minimum_delay_seconds":86400,"proposer":"0x6666666666666666666666666666666666666666","executor":"0x6666666666666666666666666666666666666666","canceller":"0x6666666666666666666666666666666666666666"},"root_canister_id":"aaaaa-aa","bridge_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_template_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bridge_canister_wasm_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","ic_host":"https://icp-api.io","base_rpc_url":"https://rpc.example","deployment_block":0,"parameters":{"ledger_fee":100000,"service_fee":50000000},"rpc_providers":[{"url":"https://one.example"},{"url":"https://two.example"},{"url":"https://three.example"}]}
 JSON
+python3 - "$T/bundle/profile.json" <<'PY'
+import json,sys
+path=sys.argv[1]
+value=json.load(open(path,encoding='utf-8'))
+value['initial_base_deployment']={'deployer_address':'0x4444444444444444444444444444444444444444','starting_nonce':0,'gas_limit':'10000000','max_fee_per_gas':'100','max_priority_fee_per_gas':'2'}
+with open(path,'w',encoding='utf-8') as out: json.dump(value,out,separators=(',',':')); out.write('\n')
+PY
 cat >"$T/constructors.json" <<'JSON'
 {"timelock":["86400","[0x6666666666666666666666666666666666666666]","[0x6666666666666666666666666666666666666666]","[0x6666666666666666666666666666666666666666]"],"bridge":["0x1111111111111111111111111111111111111111","0x6666666666666666666666666666666666666666","0x2222222222222222222222222222222222222222","0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","1","2","3600","2","1"]}
 JSON
@@ -220,25 +235,41 @@ if PROOF_GATE_MUTATE_SOURCE=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s'
 fi
 git -C "$DRIVER_ROOT" restore src/main.rs
 [[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
+if DEPLOYMENT_RECEIPT_UNAVAILABLE=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+  echo "deploy driver accepted an unavailable Timelock receipt" >&2; exit 1
+fi
+python3 - "$BRIDGE_DEPLOYMENT_BINDING_FILE.checkpoint" <<'PY'
+import json,sys
+checkpoint=json.load(open(sys.argv[1],encoding='utf-8'))
+assert checkpoint == {
+    'phase':'timelock_submitted',
+    'expected_address':'0x2222222222222222222222222222222222222222',
+    'nonce':0,
+    'transaction_hash':'0x'+'b'*64,
+}
+PY
+[[ -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
+rm -f "$TIMELOCK_DEPLOYED_MARKER" "$BRIDGE_DEPLOYED_MARKER" "$BRIDGE_DEPLOYMENT_BINDING_FILE" "$BRIDGE_DEPLOYMENT_BINDING_FILE.checkpoint"
+if DEPLOYMENT_BLOCK_HASH_INVALID=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+  echo "deploy driver accepted an invalid receipt block hash" >&2; exit 1
+fi
+rm -f "$TIMELOCK_DEPLOYED_MARKER" "$BRIDGE_DEPLOYED_MARKER" "$BRIDGE_DEPLOYMENT_BINDING_FILE" "$BRIDGE_DEPLOYMENT_BINDING_FILE.checkpoint"
 BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/malicious-init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/malicious-constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh"
+python3 - "$BRIDGE_DEPLOYMENT_BINDING_FILE" <<'PY'
+import json,sys
+binding=json.load(open(sys.argv[1],encoding='utf-8'))
+assert binding['timelock']['block_hash']=='0x'+'c'*64
+assert binding['bridge']['block_hash']=='0x'+'b'*64
+PY
 python3 - "$TRACE" <<'PY'
 import sys
-s=open(sys.argv[1]).read(); required=['proofs proofs','rebuild ','initialize_public_config','get_public_config','get_bridge_status','BridgeTimelockController','src/Bridge.sol','cast call']; pos=-1
+s=open(sys.argv[1]).read(); required=['proofs proofs','rebuild ','cast chain-id','cast wallet address','cast nonce','BridgeTimelockController','src/Bridge.sol']; pos=-1
 for x in required:
   pos=s.find(x,pos+1); assert pos>=0,(x,s)
-assert '--ledger' in s and 'unpause' not in s
+assert '--keystore' in s and '--ledger' not in s and 'unpause' not in s
 assert 'MALICIOUS' not in s
 PY
 [[ ! -e "$T/path-proof-override-used" ]]
-if INITIALIZE_PUBLIC_CONFIG_FAIL=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
-  echo "deploy driver accepted failed public configuration initialization" >&2; exit 1
-fi
-if TIMELOCK_CODE_DRIFT=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
-  echo "deploy driver accepted a deployed Timelock runtime code hash mismatch" >&2; exit 1
-fi
-if CANISTER_PAUSED=false BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
-  echo "deploy driver accepted deposits_paused=false" >&2; exit 1
-fi
 cat >"$T/bundle/signer-snapshot.json" <<'JSON'
 {}
 JSON
@@ -319,13 +350,13 @@ if KEEPER_BURN_DRIFT=true "$DRIVER_ROOT/scripts/production-live-preflight.sh" ve
   echo "live preflight accepted drifted keeper burn evidence" >&2
   exit 1
 fi
-for drift in base canister signer controller roles role_events role_event_hash deployment providers timelock_code approved_hash mid_read_reorg canonical_probe canonical_probe_block; do
+for drift in base canister signer controller role_members role_events role_event_hash deployment providers timelock_code approved_hash mid_read_reorg canonical_probe canonical_probe_block; do
   case "$drift" in
     base) args=(BASE_PAUSED=false);;
     canister) args=(CANISTER_PAUSED=false);;
     signer) args=(CANISTER_SIGNER_DRIFT=true);;
     controller) args=(CONTROLLER_DRIFT=true);;
-    roles) args=(ROLE_DRIFT=true);;
+    role_members) args=(ROLE_DRIFT=true);;
     role_events) args=(ROLE_EVENT_DRIFT=true);;
     role_event_hash) args=(ROLE_EVENT_HASH_DRIFT=true);;
     deployment) args=(DEPLOYMENT_RECEIPT_DRIFT=true);;

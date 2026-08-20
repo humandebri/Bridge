@@ -1,8 +1,8 @@
 # Bridge資源補充・緊急停止
 
-## Schema v33 baseline
+## Schema v34 baseline
 
-初回mainnet deployで導入するv33は、capacity reservationと`nonterminal_deposit_owner_index`を含む現在のSQLite形状だけを正本とする。同じversion番号を持つそれ以前の開発DBとは互換性を持たず、tableとcounterの欠落はreopen時にfail closedとなる。初回mainnet deploy完了後はこの形状をproduction baselineとして固定し、以後の形状変更はschema番号を上げた明示migrationとして扱う。
+初回mainnet deployで導入するv34は、capacity reservationと`nonterminal_deposit_owner_index`を含む現在のSQLite形状だけを正本とする。v33以下、未知schema、tableやcounterが欠落したDBはreopen時にfail closedとなる。初回mainnet deploy完了後はこの形状をproduction baselineとして固定し、以後の形状変更はschema番号を上げた明示migrationとして扱う。
 
 ## 日常確認
 
@@ -25,7 +25,7 @@ production Canisterが受け入れるLedger feeは`100000` raw、`test-deploymen
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv33、record wireはv28を現行形式とする。`post_upgrade`は現行形式だけを受理し、migration、dual-read、旧wire fallbackは持たない。
+stable schemaはv34、record wireはv29を現行形式とする。`post_upgrade`は現行形式だけを受理し、migration、dual-read、旧wire fallbackは持たない。
 
 ## 保持制限と監査
 
@@ -33,10 +33,10 @@ stable schemaはv33、record wireはv28を現行形式とする。`post_upgrade`
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-schema v33またはwire v28以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
+schema v34またはwire v29以外のstable state、未知schema、decode不能なDBは、空であってもfail closedで起動を拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。buildが選択した固定`KINIC_LEDGER_FEE`（productionは`100000 raw`、stagingは`10000 raw`）とprepared recordのcharged Service Feeをreview済みprofileに照合した後、任意の非anonymous主体がHistoryから`continue_withdrawal`を実行する。Canisterはruntimeで`icrc1_fee()`を照会せず、固定Ledger Feeがcharged Service Fee以下であることを再検証できた場合だけ、同じrecordからreleaseを開始してguardを解除する。
-現行の開発・staging・production canisterはstable schema v33／record wire v28だけを受理する。これ以外の形式は空stateであってもfail closedとし、migrationや旧Wasm fixtureを現行release判断へ使用しない。初期化済みの永続Canisterは同一deployment instanceのupgradeだけで更新し、reinstallは禁止する。新しいCanister IDへの初回installはこの制約に含めない。
+現行の開発・staging・production canisterはstable schema v34／record wire v29だけを受理する。これ以外の形式は空stateであってもfail closedとし、migrationや旧Wasm fixtureを現行release判断へ使用しない。初期化済みの永続Canisterは同一deployment instanceのupgradeだけで更新し、reinstallは禁止する。新しいCanister IDへの初回installはこの制約に含めない。
 SQLite DBやcounterを手作業で変更しない。
 
 schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipient、Authorization、失効またはMint確定証拠を一つのstable envelopeへ保存する。pending Ledger、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、primary rowとliability index・集計は一つのSQLite transactionで更新する。
@@ -63,7 +63,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 
 ## EVM RPC provider
 
-本番Base MainnetのCanister outcallは公式EVM RPC Canisterの組み込み`BaseMainnet` provider群を使い、初期化値`custom_evm_rpc_urls`は空配列とする。公開設定の`rpc_provider_urls_sha256`は実際のcustom URL配列を表すため、本番の正規値は`SHA-256("[]")`である。production profileの3件のcredential-free RPCはCanisterへ注入せず、Gate A、live preflight、UI監視で公式経路から独立して状態を検証するためだけに使う。Base Sepolia stagingと故障演習のcustom provider 3件はURL、chain ID、接続先chainを稼働中固定し、deploy・activation前preflightで全3件のchain ID一致を確認する。runtimeの2-of-3 quorumは応答不一致と障害への対策であり、chain切替検知には使用しない。この設計判断と記録の意味論は[ADR 0024](../adr/0024-validate-rpc-chain-binding-before-runtime.md)を正本とする。
+本番Canisterのoutcallは公式EVM RPC Canisterの組み込み`BaseMainnet`だけを使い、`custom_evm_rpc_urls`は空配列とする。初回配置時の単一`BASE_RPC_URL`はEOA transaction送信transportに限定し、production profile、release bundle、UI、evidenceへ保存しない。Gate A/Bのchain binding、Finalized receipt、runtime、role、pause確認はCanisterが公式経路から取得した監査記録を正本とする。Base Sepolia stagingと故障演習のcustom providerは別設定として扱う。詳細は[ADR 0024](../adr/0024-validate-rpc-chain-binding-before-runtime.md)と[ADR 0027](../adr/0027-use-dedicated-eoa-for-initial-base-deployment.md)を正本とする。
 
 ## 緊急pause
 
@@ -77,7 +77,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 
 ## Governance relayer
 
-CanisterはBase governance transactionをbroadcastせず、governance timerも持たない。Service Fee、activation schedule/executeにはGovernance principal identityを使う。Base pause、記録済みTimelock cancel、`drain-emergency`にはGovernanceまたはpause principal identityを使える。
+CanisterはBase governance transactionをbroadcastせず、governance timerも持たない。署名済みraw transactionの取得、broadcast、confirmation通知は匿名relayerが行う。初期配置はroleを残さない外部EOAで行い、Service Feeとactivation schedule/executeの署名要求にはGovernance principal identityを使う。
 
 ```bash
 export BRIDGE_CANISTER_ID='...'
@@ -103,13 +103,13 @@ npm run governance-relayer -- replace \
 npm run governance-relayer -- run --operation-id <id>
 ```
 
-`IC_IDENTITY_PEM`はCanisterの認可APIだけに使用し、通常操作ではGovernance identity、緊急pause/cancelではpause identityを指定できる。EVM秘密鍵は用意しない。gasはthreshold Governance Operator EOAが負担する。RPC URL/API keyやPEM内容をログ・shell history・incident evidenceへ記録しない。
+配置後のGovernance relayerは`status`、`relay`、`confirm`、`run`を匿名で実行し、EVM秘密鍵もIC identityも持たない。`IC_IDENTITY_PEM`は`prepare`、`replace`、activation、緊急操作の明示要求だけに使用する。初回配置だけは暗号化Foundry keystoreと別password fileを入力とする`production-deploy-driver.sh`で行う。秘密、実path、RPC URLをrelease artifactやevidenceへ記録しない。
 
-stagingを現行schemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認する。schema v33／wire v28以外のcanisterはupgrade対象にせず、現行Wasmを新規installして検証stateを作り直す。rollbackでは最初にrelayerを停止し、同一schemaの対応Wasmとstable snapshotをセットで復元する。
+stagingを現行schemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認する。schema v34／wire v29以外のcanisterはupgrade対象にせず、現行Wasmを新規installして検証stateを作り直す。rollbackでは最初にrelayerを停止し、同一schemaの対応Wasmとstable snapshotをセットで復元する。
 
 初回production Canister作成は`icp.yaml`へsubnetを設定せず、review済みidentityで`BRIDGE_ICP_IDENTITY=<identity> scripts/production-canister-bootstrap.sh`を実行する。このscriptは`pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeez-fez7a-iae`を`icp canister create --subnet`へ固定し、作成後または既存mapping再利用時にNNS Registryが返す実subnetとの一致を必須にする。`.icp/data/mappings/production.ids.json`に既存IDがある場合は新規作成しない。
 
-本番資産受付は、Gate Aで両Bridgeをpause配置し、Canister controllerを承認済みSNS Rootへhandoverした後に進める。handover後のfresh snapshotでprofile、Canister公開設定、Finalized Base stateのMint Signer一致を確認してGate Bを作り、`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
+本番資産受付は、Gate AでTimelock／Bridgeを専用EOAからpause配置し、Canisterの公式EVM RPC監査でruntime、role、EOA権限ゼロを確認した後に進める。Gate A後に7日間・10件以上のfee／cycles計測、monitor drill、emergency pause、主要5 RPC scenario、reserve確認を完了し、SNS Governanceが運用設定を一度だけ封印し、controllerをSNS Rootだけへhandoverする。これらを含むGate B承認後だけ`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Base TimelockのFinalized pending状態を束縛したschedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、最新Finalized stateからsnapshotを再取得して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
 
 Gate Bにはcleanなmanifest sourceからprofile非依存で生成したUI code/assetsの全file digestとaggregate digestを持つ`ui-assets.json`を必須登録する。activation driverは同じsourceから再buildしてreceipt一致を確認する。production UI deployはこのartifact集合だけを再生成し、検証済みGate Bからrenderした`ui-runtime-profile.json`を`deployment-profile.js`へ直前合成して公開する。dirty checkout、asset追加・欠落・hash drift、bundle外profileはすべて拒否する。
 

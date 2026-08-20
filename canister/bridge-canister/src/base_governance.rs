@@ -148,6 +148,59 @@ pub struct ActivationStatus {
     pub pending_timelock_operation: Option<ActivationOperationView>,
 }
 
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProductionLifecycle {
+    Bootstrap,
+    OperationalConfigSealed,
+    Activated,
+}
+
+pub fn production_lifecycle() -> Result<ProductionLifecycle, BaseGovernanceError> {
+    STORE.with(|store| {
+        let store = store.borrow();
+        let sealed = store
+            .operational_config_sealed()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        let paused = store
+            .admin_state()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .deposits_paused;
+        Ok(if sealed && !paused {
+            ProductionLifecycle::Activated
+        } else if sealed {
+            ProductionLifecycle::OperationalConfigSealed
+        } else {
+            ProductionLifecycle::Bootstrap
+        })
+    })
+}
+
+pub async fn seal_operational_config(
+    caller: Principal,
+    value: crate::config::OperationalConfigArgs,
+) -> Result<ProductionLifecycle, BaseGovernanceError> {
+    let (governance, _) = caller_roles(caller)?;
+    if !governance {
+        return Err(BaseGovernanceError::Unauthorized);
+    }
+    let current = config()?;
+    let next = current.with_operational_config(value);
+    next.validate()
+        .map_err(|_| BaseGovernanceError::InvalidArgument)?;
+    activation_preflight(&next).await?;
+    let (governance, _) = caller_roles(caller)?;
+    if !governance {
+        return Err(BaseGovernanceError::Unauthorized);
+    }
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .seal_operational_config(&next)
+            .map_err(|_| BaseGovernanceError::InvalidArgument)
+    })?;
+    production_lifecycle()
+}
+
 pub fn activation_status() -> Result<ActivationStatus, BaseGovernanceError> {
     STORE.with(|store| {
         let store = store.borrow();
@@ -175,6 +228,7 @@ pub async fn prepare(
 ) -> Result<SignedBaseGovernanceTransaction, BaseGovernanceError> {
     require_action_authorization(caller, &action)?;
     let config = config()?;
+    require_operational_config_sealed()?;
     if let GovernanceAction::SetServiceFee { value } = &action {
         let value = nat_u128(value).ok_or(BaseGovernanceError::InvalidArgument)?;
         let runtime_attested = crate::api::runtime_attested(&config)
@@ -237,13 +291,16 @@ pub async fn prepare(
     }
     let (kind, target, calldata) = encode_action(action, id)?;
     let payload_hash: [u8; 32] = Sha256::digest(&calldata).into();
+    let fee_cap = config.governance_evm_fee.max_fee_per_gas_ceiling;
+    let priority_cap = config.governance_evm_fee.max_priority_fee_per_gas_ceiling;
+    let gas_limit = config.governance_evm_fee.gas_limit_ceiling;
     let initial_max_fee_per_gas = initial_fee(
-        config.governance_evm_fee.max_fee_per_gas_ceiling,
+        fee_cap,
         config.governance_replacement.fee_bump_bps,
         config.governance_replacement.max_replacements,
     );
     let initial_max_priority_fee_per_gas = initial_fee(
-        config.governance_evm_fee.max_priority_fee_per_gas_ceiling,
+        priority_cap,
         config.governance_replacement.fee_bump_bps,
         config.governance_replacement.max_replacements,
     )
@@ -255,7 +312,7 @@ pub async fn prepare(
         chain_id: config.base_chain_id,
         contract: target,
         calldata,
-        gas_limit: config.governance_evm_fee.gas_limit_ceiling,
+        gas_limit,
         max_fee_per_gas: initial_max_fee_per_gas,
         max_priority_fee_per_gas: initial_max_priority_fee_per_gas,
         signed_transactions: Vec::new(),
@@ -285,10 +342,7 @@ pub async fn prepare(
     sign_prepared(caller, &config, transaction, operator).await
 }
 
-pub fn get_pending(
-    caller: Principal,
-) -> Result<Option<SignedBaseGovernanceTransaction>, BaseGovernanceError> {
-    require_governance_or_pause(caller)?;
+pub fn get_pending() -> Result<Option<SignedBaseGovernanceTransaction>, BaseGovernanceError> {
     STORE.with(|store| {
         let store = store.borrow();
         let operator = store
@@ -300,10 +354,7 @@ pub fn get_pending(
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .3;
         pending
-            .map(|pending| {
-                require_transaction_authorization(caller, &pending.kind)?;
-                signed_view(&pending, operator)
-            })
+            .map(|pending| signed_view(&pending, operator))
             .transpose()
     })
 }
@@ -406,10 +457,8 @@ pub async fn prepare_replacement(
 }
 
 pub async fn confirm(
-    caller: Principal,
     args: ConfirmBaseGovernanceTransactionArgs,
 ) -> Result<BaseGovernanceConfirmation, BaseGovernanceError> {
-    require_governance_or_pause(caller)?;
     let transaction_hash = hash32(&args.transaction_hash)?;
     let mut transaction = match pending_transaction(args.operation_id) {
         Ok(transaction) => transaction,
@@ -425,7 +474,6 @@ pub async fn confirm(
                 } = completed.state
                 {
                     if completed_hash == transaction_hash {
-                        require_transaction_authorization(caller, &completed.kind)?;
                         return Ok(BaseGovernanceConfirmation {
                             operation_id: completed.id,
                             transaction_hash: completed_hash.to_vec(),
@@ -442,7 +490,6 @@ pub async fn confirm(
         }
         Err(error) => return Err(error),
     };
-    require_transaction_authorization(caller, &transaction.kind)?;
     if !transaction
         .envelope
         .signed_transactions
@@ -461,7 +508,6 @@ pub async fn confirm(
             );
             BaseGovernanceError::ObservationUnavailable
         })?;
-    require_transaction_authorization(caller, &transaction.kind)?;
     let (receipt_block_number, succeeded, finalized_observation) = match outcome {
         evm_rpc::ConfirmedReceiptOutcome::Missing
         | evm_rpc::ConfirmedReceiptOutcome::Pending { .. } => {
@@ -500,7 +546,6 @@ pub async fn confirm(
                 })?;
         crate::api::cache_runtime_attestation(&config, &observed)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
-        require_transaction_authorization(caller, &transaction.kind)?;
         if !activation_postcondition_matches(
             observed.snapshot.deposits_paused,
             observed.snapshot.withdrawals_paused,
@@ -526,7 +571,14 @@ pub async fn confirm(
         }
     };
     if activates {
-        complete_confirmed_activation(&transaction, caller)?;
+        let governance_principal = STORE.with(|store| {
+            store
+                .borrow()
+                .admin_state()
+                .map(|state| state.governance_principal)
+                .map_err(|_| BaseGovernanceError::StorageFailure)
+        })?;
+        complete_confirmed_activation(&transaction, governance_principal)?;
     } else {
         complete(&transaction)?;
     }
@@ -719,6 +771,9 @@ async fn activation_preflight(
     let expected_bridge_signer = crate::api::cached_signer_address(config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let governance_operator = crate::api::cached_governance_operator_address(config)
+        .await
+        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     let runtime_attested =
         crate::api::runtime_attested(config).map_err(|_| BaseGovernanceError::StorageFailure)?;
     let observed = evm_rpc::bridge_snapshot(config, runtime_attested)
@@ -732,6 +787,12 @@ async fn activation_preflight(
         observed.snapshot.deposits_paused,
         observed.snapshot.withdrawals_paused,
     ) {
+        return Err(BaseGovernanceError::ObservationUnavailable);
+    }
+    if !evm_rpc::deployment_postconditions_match(config, governance_operator)
+        .await
+        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?
+    {
         return Err(BaseGovernanceError::ObservationUnavailable);
     }
     STORE.with(|store| {
@@ -989,6 +1050,20 @@ fn require_governance_or_pause(caller: Principal) -> Result<(), BaseGovernanceEr
         Ok(())
     } else {
         Err(BaseGovernanceError::Unauthorized)
+    }
+}
+
+fn require_operational_config_sealed() -> Result<(), BaseGovernanceError> {
+    let sealed = STORE.with(|store| {
+        store
+            .borrow()
+            .operational_config_sealed()
+            .map_err(|_| BaseGovernanceError::StorageFailure)
+    })?;
+    if sealed {
+        Ok(())
+    } else {
+        Err(BaseGovernanceError::InvalidArgument)
     }
 }
 

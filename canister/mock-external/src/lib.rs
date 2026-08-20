@@ -288,6 +288,8 @@ thread_local! {
     static RECEIPT_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
     static RECEIPT_MINT_LOG_INDEX: RefCell<Option<u64>> = const { RefCell::new(None) };
     static BRIDGE_SIGNER: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
+    static BASE_ADMIN_TIMELOCK: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
+    static RUNTIME_ADMINISTRATOR: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static MINT_AUTHORIZATION_EPOCH: RefCell<u64> = const { RefCell::new(1) };
     static DEPOSIT_MINTS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
     static WITHDRAWALS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
@@ -518,6 +520,22 @@ fn set_bridge_signer(value: Vec<u8>) -> Result<(), String> {
 #[ic_cdk::query]
 fn bridge_signer() -> Vec<u8> {
     BRIDGE_SIGNER.with(|current| current.borrow().to_vec())
+}
+
+#[ic_cdk::update]
+fn set_deployment_postconditions(
+    timelock: Vec<u8>,
+    governance_operator: Vec<u8>,
+) -> Result<(), String> {
+    let timelock: [u8; 20] = timelock
+        .try_into()
+        .map_err(|_| "timelock must be 20 bytes".to_string())?;
+    let governance_operator: [u8; 20] = governance_operator
+        .try_into()
+        .map_err(|_| "governance operator must be 20 bytes".to_string())?;
+    BASE_ADMIN_TIMELOCK.with(|current| *current.borrow_mut() = timelock);
+    RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = governance_operator);
+    Ok(())
 }
 
 #[ic_cdk::update]
@@ -1011,6 +1029,17 @@ fn multi_request(
         } else {
             "null".into()
         }
+    } else if request.contains(&selector_hex("baseAdminTimelock()")) {
+        address_word(BASE_ADMIN_TIMELOCK.with(|value| *value.borrow()))
+    } else if request.contains(&selector_hex("runtimeAdministrator()")) {
+        address_word(RUNTIME_ADMINISTRATOR.with(|value| *value.borrow()))
+    } else if request.contains(&selector_hex("roleMember(bytes32)")) {
+        let default_role = format!("{}{}", selector_hex("roleMember(bytes32)"), "00".repeat(32));
+        if request.contains(&default_role) {
+            address_word(BASE_ADMIN_TIMELOCK.with(|value| *value.borrow()))
+        } else {
+            address_word(RUNTIME_ADMINISTRATOR.with(|value| *value.borrow()))
+        }
     } else if request.contains("f702cf2b") {
         let block_number = eip1898_block_number(&request);
         if BLOCK_MODE.with(|mode| *mode.borrow()) == BlockMode::SameHeightDifferentHash {
@@ -1201,6 +1230,14 @@ fn eth_get_logs(
 
 fn word(value: u128) -> String {
     format!("0x{value:064x}")
+}
+
+fn address_word(value: [u8; 20]) -> String {
+    format!("0x{}{}", "00".repeat(12), bytes_hex(&value))
+}
+
+fn selector_hex(signature: &str) -> String {
+    bytes_hex(&keccak(signature.as_bytes())[..4])
 }
 
 fn eip1898_block_number(request: &str) -> Option<u64> {

@@ -403,12 +403,20 @@ export type NotifyWithdrawalReceipt = {
       'finalized_checkpoint_block_number' : bigint,
     }
   };
+export interface OperationalConfigArgs {
+  'settlement_cycle_ceiling' : bigint,
+  'governance_evm_fee' : EvmFeePolicy,
+  'cycles_floor' : bigint,
+}
 export interface PrepareBaseGovernanceReplacementArgs {
   'max_priority_fee_per_gas' : bigint,
   'operation_id' : bigint,
   'max_fee_per_gas' : bigint,
   'expected_transaction_hash' : Uint8Array | number[],
 }
+export type ProductionLifecycle = { 'Bootstrap' : null } |
+  { 'Activated' : null } |
+  { 'OperationalConfigSealed' : null };
 export interface PublicConfig {
   'settlement_rate_limit_global' : number,
   'expected_bridge_signer' : Uint8Array | number[],
@@ -475,27 +483,29 @@ export type Result = { 'Ok' : BaseGovernanceConfirmation } |
   { 'Err' : BaseGovernanceError };
 export type Result_1 = { 'Ok' : FeePayoutActionResult } |
   { 'Err' : SettlementActionError };
-export type Result_10 = { 'Ok' : null } |
+export type Result_10 = { 'Ok' : Array<[] | [WithdrawalView]> } |
+  { 'Err' : GetWithdrawalsError };
+export type Result_11 = { 'Ok' : null } |
   { 'Err' : PublicConfigInitializationError };
-export type Result_11 = { 'Ok' : DepositIdPage } |
+export type Result_12 = { 'Ok' : DepositIdPage } |
   { 'Err' : ListDepositIdsError };
-export type Result_12 = { 'Ok' : NonterminalDepositRefPage } |
+export type Result_13 = { 'Ok' : NonterminalDepositRefPage } |
   { 'Err' : ListDepositIdsError };
-export type Result_13 = { 'Ok' : NotifyWithdrawalReceipt } |
+export type Result_14 = { 'Ok' : NotifyWithdrawalReceipt } |
   { 'Err' : NotifyWithdrawalError };
-export type Result_14 = { 'Ok' : null } |
+export type Result_15 = { 'Ok' : null } |
   { 'Err' : AdminError };
-export type Result_15 = { 'Ok' : ChecksumRefreshStatus } |
+export type Result_16 = { 'Ok' : ChecksumRefreshStatus } |
   { 'Err' : StorageMaintenanceError };
-export type Result_16 = { 'Ok' : DepositReceipt } |
+export type Result_17 = { 'Ok' : DepositReceipt } |
   { 'Err' : DepositError };
-export type Result_17 = { 'Ok' : DepositView } |
+export type Result_18 = { 'Ok' : DepositView } |
   { 'Err' : RequestDepositRefundError };
-export type Result_18 = { 'Ok' : FeePayoutReceipt } |
+export type Result_19 = { 'Ok' : FeePayoutReceipt } |
   { 'Err' : AdminError };
-export type Result_19 = { 'Ok' : string } |
-  { 'Err' : StorageMaintenanceError };
 export type Result_2 = { 'Ok' : StorageValidationStatus } |
+  { 'Err' : StorageMaintenanceError };
+export type Result_20 = { 'Ok' : string } |
   { 'Err' : StorageMaintenanceError };
 export type Result_3 = { 'Ok' : SettlementActionResult } |
   { 'Err' : SettlementActionError };
@@ -509,8 +519,8 @@ export type Result_7 = { 'Ok' : AuditEventPage } |
   { 'Err' : AdminError };
 export type Result_8 = { 'Ok' : [] | [SignedBaseGovernanceTransaction] } |
   { 'Err' : BaseGovernanceError };
-export type Result_9 = { 'Ok' : Array<[] | [WithdrawalView]> } |
-  { 'Err' : GetWithdrawalsError };
+export type Result_9 = { 'Ok' : ProductionLifecycle } |
+  { 'Err' : BaseGovernanceError };
 export interface RotatePausePrincipalArgs { 'pause_principal' : Principal }
 export type SettlementActionError = {
     'AutomaticProgressPending' : { 'next_run_at_ns' : [] | [bigint] }
@@ -637,12 +647,13 @@ export interface _SERVICE {
   >,
   'get_next_deposit_sequence' : ActorMethod<[Principal], bigint>,
   'get_pending_base_governance_transaction' : ActorMethod<[], Result_8>,
+  'get_production_lifecycle' : ActorMethod<[], Result_9>,
   'get_public_config' : ActorMethod<[], PublicConfig>,
   'get_withdrawal' : ActorMethod<
     [Uint8Array | number[]],
     [] | [WithdrawalView]
   >,
-  'get_withdrawals' : ActorMethod<[Array<Uint8Array | number[]>], Result_9>,
+  'get_withdrawals' : ActorMethod<[Array<Uint8Array | number[]>], Result_10>,
   'icrc10_supported_standards' : ActorMethod<
     [],
     Array<Icrc10SupportedStandard>
@@ -651,14 +662,14 @@ export interface _SERVICE {
     [Icrc21ConsentMessageRequest],
     Icrc21ConsentMessageResponse
   >,
-  'initialize_public_config' : ActorMethod<[], Result_10>,
-  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_11>,
+  'initialize_public_config' : ActorMethod<[], Result_11>,
+  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_12>,
   'list_nonterminal_deposit_refs' : ActorMethod<
     [ListDepositIdsArgs],
-    Result_12
+    Result_13
   >,
-  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_13>,
-  'pause_new_deposits' : ActorMethod<[], Result_14>,
+  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_14>,
+  'pause_new_deposits' : ActorMethod<[], Result_15>,
   'prepare_base_governance_action' : ActorMethod<
     [BaseGovernanceAction],
     Result_5
@@ -668,15 +679,16 @@ export interface _SERVICE {
     Result_5
   >,
   'prepare_next_emergency_base_action' : ActorMethod<[], Result_5>,
-  'refresh_storage_checksum' : ActorMethod<[bigint], Result_15>,
-  'request_deposit' : ActorMethod<[DepositArgs], Result_16>,
-  'request_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result_17>,
-  'request_fee_payout' : ActorMethod<[bigint], Result_18>,
-  'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_14>,
-  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_14>,
+  'refresh_storage_checksum' : ActorMethod<[bigint], Result_16>,
+  'request_deposit' : ActorMethod<[DepositArgs], Result_17>,
+  'request_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result_18>,
+  'request_fee_payout' : ActorMethod<[bigint], Result_19>,
+  'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_15>,
+  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_15>,
   'schedule_activation' : ActorMethod<[], Result_5>,
+  'seal_operational_config' : ActorMethod<[OperationalConfigArgs], Result_9>,
   'start_storage_validation' : ActorMethod<[], Result_2>,
-  'storage_integrity_check' : ActorMethod<[], Result_19>,
+  'storage_integrity_check' : ActorMethod<[], Result_20>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
 export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];

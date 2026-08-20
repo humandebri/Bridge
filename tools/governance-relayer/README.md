@@ -4,14 +4,15 @@ Bridge Canisterがthreshold署名したBase governance transactionを、運用�
 
 ```bash
 export BRIDGE_CANISTER_ID='...'
-export IC_IDENTITY_PEM='/secure/path/governance.pem'
 export BASE_RPC_URL='https://...'
 
 npm run governance-relayer -- status
+export IC_IDENTITY_PEM='/secure/path/governance.pem'
 npm run governance-relayer -- prepare --action pause-deposits
+unset IC_IDENTITY_PEM
 npm run governance-relayer -- run
 ```
 
-コマンドは`prepare`、`status`、`relay`、`confirm`、`run`、`replace`、`drain-emergency`を提供する。`run`はpending成果物があれば同じraw transactionから再開する。replacementはCanisterへ新feeを明示して再署名を依頼し、CLI側では作成しない。
+コマンドは`prepare`、`status`、`relay`、`confirm`、`run`、`replace`、`drain-emergency`を提供する。`status`、`relay`、`confirm`、`run`は匿名actorを使い、`run`は保存済みpending成果物の同じraw transactionだけを送信する。replacementはCanisterへ新feeを明示して再署名を依頼し、CLI側では作成しない。
 
-`IC_IDENTITY_PEM`はCanister APIの認証専用である。Service FeeとactivationにはGovernance identityを使い、pause、記録済みTimelock cancel、`drain-emergency`にはGovernanceまたはpause identityを使える。`SigningUnavailable`では安全な失敗分類を表示し、自動再試行しない。`InsufficientCycles`はtop-upとreserve確認後、`CallRejected`、`CallFailed`、`CostUnavailable`はchain-key serviceの回復確認後にだけ、保存済み`Prepared` transactionを明示的に再試行する。それ以外の分類は再試行せず、canister stateとcontroller-only logsを調査する。`BASE_RPC_URL`にAPI keyを含める場合も、値を出力・共有しない。
+`IC_IDENTITY_PEM`は`prepare`、`replace`、activation、緊急操作だけに必要である。Service FeeとactivationにはGovernance identityを使い、pause、記録済みTimelock cancel、`drain-emergency`にはGovernanceまたはpause identityを使える。匿名confirmationは保存済みoperation IDと署名generation hashの一致をRPC前に検査し、receiptや状態値をrelayerから受け取らない。追加rate limitとcooldownは未実装で、既存singleflightだけを維持する。`SigningUnavailable`では安全な失敗分類を表示し、自動再試行しない。`BASE_RPC_URL`にAPI keyを含める場合も、値を出力・共有しない。

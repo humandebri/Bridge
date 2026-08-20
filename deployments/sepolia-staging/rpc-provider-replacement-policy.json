@@ -1,14 +1,13 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "environment": "sepolia-staging",
   "canister_name": "bridge-sepolia",
   "canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
-  "stable_schema_version": 33,
+  "stable_schema_version": 34,
   "deployment_instance_id": "0x2c344ca868267bc19791a2e1a966c210eef545945b3879223d3cb6c1255d789b",
   "base_chain_id": 84532,
   "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
   "before_module_sha256": "c3e9afa5b2a05bb4d197e675a1eb9828caa646980e7915ce914a6f54a1ea3309",
-  "metadata_missing_module_sha256": "f2388e5bed87a69a27e48469de864933f7577166fd1bafd4b82a842081303834",
   "before_rpc_urls": [
     "https://base-sepolia-rpc.publicnode.com",
     "https://sepolia.base.org",
@@ -31,23 +30,5 @@
     "reserved_deposit_mint_operations": 1,
     "reserved_deposit_mint_amount": 1050000000,
     "pruned_audit_events": 0
-  },
-  "migration": {
-    "migration_id": "bridge-storage-v32-to-v33",
-    "from_schema_version": 32,
-    "to_schema_version": 33,
-    "source_states": [
-      {
-        "module_sha256": "da0b90b9464cf7f53ae84547a7720d1bd541944b42dbc64dd5a2bb416a5886ab",
-        "rpc_provider_urls_sha256": "e9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb",
-        "candid_metadata": "present"
-      },
-      {
-        "module_sha256": "f2388e5bed87a69a27e48469de864933f7577166fd1bafd4b82a842081303834",
-        "rpc_provider_urls_sha256": "3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48",
-        "candid_metadata": "absent"
-      }
-    ],
-    "boundary_required": true
   }
 }

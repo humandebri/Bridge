@@ -95,6 +95,12 @@ enum RpcAtomicFailpoint {
     Singleton,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum OperationalConfigSealFailpoint {
+    Singleton,
+}
+
 #[cfg(test)]
 thread_local! {
     static HOLD_BUNDLE_FAILPOINT: std::cell::Cell<Option<HoldBundleFailpoint>> = const { std::cell::Cell::new(None) };
@@ -102,6 +108,25 @@ thread_local! {
     static FEE_PAYOUT_BUNDLE_FAILPOINT: std::cell::Cell<Option<FeePayoutBundleFailpoint>> = const { std::cell::Cell::new(None) };
     static RECORD_WRITE_FAILPOINT: std::cell::Cell<Option<RecordWriteFailpoint>> = const { std::cell::Cell::new(None) };
     static RPC_ATOMIC_FAILPOINT: std::cell::Cell<Option<RpcAtomicFailpoint>> = const { std::cell::Cell::new(None) };
+    static OPERATIONAL_CONFIG_SEAL_FAILPOINT: std::cell::Cell<Option<OperationalConfigSealFailpoint>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn set_operational_config_seal_failpoint(value: Option<OperationalConfigSealFailpoint>) {
+    OPERATIONAL_CONFIG_SEAL_FAILPOINT.with(|slot| slot.set(value));
+}
+
+fn operational_config_seal_db_failpoint(
+    point: OperationalConfigSealFailpoint,
+) -> Result<(), DbError> {
+    #[cfg(test)]
+    if OPERATIONAL_CONFIG_SEAL_FAILPOINT.with(|slot| slot.get()) == Some(point) {
+        return Err(DbError::Constraint(
+            "test operational config seal failpoint".into(),
+        ));
+    }
+    let _ = point;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -236,7 +261,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 33, 28);
+INSERT INTO bridge_metadata VALUES (1, 34, 29);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -372,6 +397,8 @@ const MIGRATIONS: &[Migration] = &[Migration {
 
 #[cfg(test)]
 const OBSOLETE_SCHEMA_VERSION_V32: u16 = 32;
+#[cfg(test)]
+const OBSOLETE_SCHEMA_VERSION_V33: u16 = 33;
 #[cfg(test)]
 const OBSOLETE_WIRE_VERSION_V27: u8 = 27;
 
@@ -1106,6 +1133,7 @@ pub struct DepositAdmissionControl {
     pub governance_nonce_initialized: bool,
     pub next_governance_nonce: u64,
     pub next_governance_operation_id: u64,
+    pub operational_config_sealed: bool,
     pub pending_governance_transaction: Option<GovernanceTransaction>,
     pub last_completed_governance_transaction: Option<GovernanceTransaction>,
     pub pending_timelock_operation: Option<PendingTimelockOperation>,
@@ -1189,60 +1217,10 @@ struct NotificationAdmissionControl {
     failed_transactions: Vec<NotificationFailureCooldown>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct V32NotificationAdmissionControl {
-    window_id: u64,
-    #[serde(alias = "global_count")]
-    verification_count: u16,
-    #[serde(default)]
-    ingestion_count: u16,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct NotificationFailureCooldown {
     transaction_hash: [u8; 32],
     retry_after_ns: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct V32DepositFundingReservation {
-    deposit_id: [u8; 32],
-    caller: Vec<u8>,
-}
-
-/// The v32 stable deposit admission has no verification lane and its funding
-/// reservations carry no mint amount or quota window. Keep this decoder
-/// explicit so a future deposit admission field cannot silently become part of
-/// the one-time v32 -> v33 migration. A v32 funding reservation exists only
-/// while its funding attempt has no deposit row yet (the reservation is
-/// released atomically when the deposit is admitted), so the migration carries
-/// genuine in-flight attempts over from the deposit_funding_attempts table,
-/// drops stale deposit-linked reservations after a fail-closed binding check,
-/// and rejects reservations that reference neither or both.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct V32DepositAdmissionControl {
-    pub window_id: u64,
-    pub global_count: u16,
-    pub caller_counts: Vec<DepositCallerQuota>,
-    pub funding_reservations: Vec<V32DepositFundingReservation>,
-    pub signer_address: Option<[u8; 20]>,
-    pub signer_public_key: Option<Vec<u8>>,
-    pub governance_operator_address: Option<[u8; 20]>,
-    pub governance_operator_public_key: Option<Vec<u8>>,
-    pub governance_nonce_initialized: bool,
-    pub next_governance_nonce: u64,
-    pub next_governance_operation_id: u64,
-    pub pending_governance_transaction: Option<GovernanceTransaction>,
-    pub last_completed_governance_transaction: Option<GovernanceTransaction>,
-    pub pending_timelock_operation: Option<PendingTimelockOperation>,
-    pub emergency_pause_deposit_required: bool,
-    pub emergency_pause_withdrawal_required: bool,
-    pub emergency_cancel_required: bool,
-    pub base_snapshot: Option<CachedBaseMintSnapshot>,
-    pub refresh_started_at_ns: Option<u64>,
-    pub refresh_generation: u64,
-    pub refresh_owner: Option<u64>,
-    pub next_refresh_allowed_at_ns: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2066,16 +2044,6 @@ pub enum StorageError {
     Core(CoreError),
 }
 
-pub const V32_SCHEMA_VERSION: u16 = 32;
-pub const V32_TO_V33_MIGRATION_ID: &str = "bridge-storage-v32-to-v33";
-
-pub struct SchemaMigrationContext<'a> {
-    pub migration_id: &'a str,
-    pub from_schema: u16,
-    pub to_schema: u16,
-    pub minimum_withdrawal_id: &'a [u8],
-}
-
 impl fmt::Display for StorageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{self:?}")
@@ -2180,278 +2148,6 @@ fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
             Ok(())
         })
         .map_err(|_| StorageError::DatabaseFailure)
-}
-
-/// Map one v32 funding reservation into the v33 shape, or drop it when it is
-/// stale. A reservation that references a genuine in-flight `deposit_funding_attempts`
-/// row (no deposit row yet) is carried over with the attempt's `gross_amount` and
-/// caller; one that already has a committed deposit row (no attempt) is dropped
-/// after a fail-closed id/caller binding check; a reservation that references
-/// neither or both is rejected.
-///
-/// v32 recorded no quota window, so migrated reservations never release quota on
-/// failure. This conservatively preserves the current asset-admission counts
-/// instead of guessing that an in-flight attempt consumed them in the current
-/// window.
-fn migrate_deposit_funding_reservation(
-    connection: &UpdateConnection<'_>,
-    reservation: &V32DepositFundingReservation,
-    quota_window_id: u64,
-) -> Result<Option<DepositFundingReservation>, DbError> {
-    let deposit_id = reservation.deposit_id;
-    let key = deposit_id.to_sql_bytes();
-    let deposit_bytes = connection.query_optional_scalar::<Vec<u8>>(
-        "SELECT value FROM deposits WHERE key = ?1",
-        params![key.clone()],
-    )?;
-    let attempt_bytes = connection.query_optional_scalar::<Vec<u8>>(
-        "SELECT value FROM deposit_funding_attempts WHERE key = ?1",
-        params![key.clone()],
-    )?;
-    match (deposit_bytes, attempt_bytes) {
-        (None, None) => Err(DbError::Constraint(
-            "v32 funding reservation references neither a deposit nor a funding attempt".into(),
-        )),
-        (Some(_), Some(_)) => Err(DbError::Constraint(
-            "v32 funding reservation coexists with both a deposit and a funding attempt".into(),
-        )),
-        (Some(bytes), None) => {
-            let stored: StoredDeposit = decode(
-                &StableBlob::new(bytes)
-                    .map_err(|_| DbError::Constraint("invalid v32 deposit row".into()))?,
-            )
-            .map_err(|_| DbError::Constraint("cannot decode v32 deposit row".into()))?;
-            if stored.record.id.bytes() != deposit_id
-                || stored.record.transfer.from.owner() != reservation.caller.as_slice()
-            {
-                return Err(DbError::Constraint(
-                    "v32 funding reservation does not match its committed deposit".into(),
-                ));
-            }
-            Ok(None)
-        }
-        (None, Some(bytes)) => {
-            let attempt: DepositFundingAttempt = decode(
-                &StableBlob::new(bytes)
-                    .map_err(|_| DbError::Constraint("invalid v32 funding attempt row".into()))?,
-            )
-            .map_err(|_| DbError::Constraint("cannot decode v32 funding attempt row".into()))?;
-            if attempt.intent.deposit_id != deposit_id
-                || attempt.intent.caller != reservation.caller
-            {
-                return Err(DbError::Constraint(
-                    "v32 funding reservation does not match its funding attempt".into(),
-                ));
-            }
-            Ok(Some(DepositFundingReservation {
-                deposit_id,
-                caller: attempt.intent.caller,
-                mint_amount: attempt.gross_amount,
-                quota_window_id,
-                releases_quota_on_failure: false,
-            }))
-        }
-    }
-}
-
-fn migrate_v32_to_v33(
-    handle: DbHandle,
-    context: &SchemaMigrationContext<'_>,
-) -> Result<(), StorageError> {
-    if context.migration_id != V32_TO_V33_MIGRATION_ID
-        || context.from_schema != V32_SCHEMA_VERSION
-        || context.to_schema != SCHEMA_VERSION
-    {
-        return Err(StorageError::SchemaMigrationRejected(
-            "unsupported schema migration context".into(),
-        ));
-    }
-    if context.minimum_withdrawal_id.len() != 32
-        || context.minimum_withdrawal_id.iter().all(|byte| *byte == 0)
-    {
-        return Err(StorageError::SchemaMigrationRejected(
-            "v32 to v33 migration requires a nonzero 32-byte withdrawal boundary".into(),
-        ));
-    }
-
-    let (schema, wire) = stored_metadata(handle)?;
-    if schema != V32_SCHEMA_VERSION {
-        return Err(StorageError::UnsupportedSchemaVersion(schema));
-    }
-    if wire != WIRE_VERSION {
-        return Err(StorageError::UnsupportedWireVersion(wire));
-    }
-    verify_current_schema_shape(handle)?;
-
-    let boundary: [u8; 32] = context
-        .minimum_withdrawal_id
-        .try_into()
-        .map_err(|_| StorageError::SchemaMigrationRejected("invalid boundary".into()))?;
-
-    handle
-        .update(|connection| {
-            let config_blob = connection.query_scalar::<Vec<u8>>(
-                "SELECT config FROM singleton_state WHERE id = 1",
-                params![],
-            )?;
-            let old_config = decode::<Option<crate::config::V32ImmutableBridgeConfig>>(
-                &StableBlob::new(config_blob)
-                    .map_err(|_| DbError::Constraint("invalid v32 config".into()))?,
-            )
-            .map_err(|_| DbError::Constraint("cannot decode v32 config".into()))?
-            .ok_or_else(|| DbError::Constraint("missing v32 config".into()))?;
-
-            let notification_blob = connection.query_scalar::<Vec<u8>>(
-                "SELECT notification_admission FROM singleton_state WHERE id = 1",
-                params![],
-            )?;
-            let old_notification = decode::<V32NotificationAdmissionControl>(
-                &StableBlob::new(notification_blob).map_err(|_| {
-                    DbError::Constraint("invalid v32 notification admission".into())
-                })?,
-            )
-            .map_err(|_| DbError::Constraint("cannot decode v32 notification admission".into()))?;
-
-            let counters_blob = connection.query_scalar::<Vec<u8>>(
-                "SELECT counters FROM singleton_state WHERE id = 1",
-                params![],
-            )?;
-            let counters: CounterState = decode(
-                &StableBlob::new(counters_blob)
-                    .map_err(|_| DbError::Constraint("invalid counters".into()))?,
-            )
-            .map_err(|_| DbError::Constraint("cannot decode counters".into()))?;
-            let open_holds = u64::from_sql_bytes(connection.query_scalar::<Vec<u8>>(
-                "SELECT count FROM table_counts WHERE name = 'open_hold_index'",
-                params![],
-            )?)
-            .map_err(|_| DbError::Constraint("invalid open hold count".into()))?;
-            let liability_count = u64::from_sql_bytes(connection.query_scalar::<Vec<u8>>(
-                "SELECT count FROM table_counts WHERE name = 'withdrawal_liability_index'",
-                params![],
-            )?)
-            .map_err(|_| DbError::Constraint("invalid liability count".into()))?;
-            let liability_amount = u128::from_sql_bytes(connection.query_scalar::<Vec<u8>>(
-                "SELECT withdrawal_liability_amount FROM singleton_state WHERE id = 1",
-                params![],
-            )?)
-            .map_err(|_| DbError::Constraint("invalid liability amount".into()))?;
-            if counters.pending_ledger_operations != 0
-                || open_holds != 0
-                || liability_count != 0
-                || liability_amount != 0
-            {
-                return Err(DbError::Constraint(
-                    "v32 to v33 migration requires no pending operations or liabilities".into(),
-                ));
-            }
-
-            let withdrawals =
-                connection.query_all("SELECT value FROM withdrawals", params![], |row| {
-                    row.get::<Vec<u8>>(0)
-                })?;
-            for bytes in withdrawals {
-                let record: WithdrawalRecord = decode(
-                    &StableBlob::new(bytes)
-                        .map_err(|_| DbError::Constraint("invalid withdrawal row".into()))?,
-                )
-                .map_err(|_| DbError::Constraint("cannot decode withdrawal row".into()))?;
-                if is_nonterminal_withdrawal(&record) || record.id.bytes() >= boundary {
-                    return Err(DbError::Constraint(
-                        "v32 withdrawal history is incompatible with the migration boundary".into(),
-                    ));
-                }
-            }
-
-            let next_config = old_config.into_current(boundary.to_vec());
-            let config_blob = encode(&Some(next_config))
-                .map_err(|_| DbError::Constraint("cannot encode v33 config".into()))?
-                .to_sql_bytes();
-            let notification_blob = encode(&NotificationAdmissionControl {
-                window_id: old_notification.window_id,
-                verification_count: old_notification.verification_count,
-                ingestion_count: old_notification.ingestion_count,
-                failed_transactions: Vec::new(),
-            })
-            .map_err(|_| DbError::Constraint("cannot encode v33 notification admission".into()))?
-            .to_sql_bytes();
-
-            let old_deposit_blob = connection.query_scalar::<Vec<u8>>(
-                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
-                params![],
-            )?;
-            let old_deposit = decode::<V32DepositAdmissionControl>(
-                &StableBlob::new(old_deposit_blob)
-                    .map_err(|_| DbError::Constraint("invalid v32 deposit admission".into()))?,
-            )
-            .map_err(|_| DbError::Constraint("cannot decode v32 deposit admission".into()))?;
-            // v32 had no verification lane, so the migration deliberately copies the
-            // current window's asset counts into the v33 verification lane as well.
-            // This is the conservative choice: it keeps the per-window anti-abuse
-            // budget intact (a fresh v33 deployment would have consumed both lanes
-            // in lockstep for every attempt). The consequence is that a migrated
-            // canister starts the verification lane partially consumed in the
-            // migration window rather than at zero; it resets on the next window.
-            let mut funding_reservations = Vec::new();
-            for reservation in &old_deposit.funding_reservations {
-                if let Some(migrated) = migrate_deposit_funding_reservation(
-                    connection,
-                    reservation,
-                    old_deposit.window_id,
-                )? {
-                    funding_reservations.push(migrated);
-                }
-            }
-            let deposit_blob = encode(&DepositAdmissionControl {
-                window_id: old_deposit.window_id,
-                global_count: old_deposit.global_count,
-                caller_counts: old_deposit.caller_counts.clone(),
-                verification_window_id: old_deposit.window_id,
-                verification_global_count: old_deposit.global_count,
-                verification_caller_counts: old_deposit.caller_counts,
-                funding_reservations,
-                signer_address: old_deposit.signer_address,
-                signer_public_key: old_deposit.signer_public_key,
-                governance_operator_address: old_deposit.governance_operator_address,
-                governance_operator_public_key: old_deposit.governance_operator_public_key,
-                governance_nonce_initialized: old_deposit.governance_nonce_initialized,
-                next_governance_nonce: old_deposit.next_governance_nonce,
-                next_governance_operation_id: old_deposit.next_governance_operation_id,
-                pending_governance_transaction: old_deposit.pending_governance_transaction,
-                last_completed_governance_transaction: old_deposit
-                    .last_completed_governance_transaction,
-                pending_timelock_operation: old_deposit.pending_timelock_operation,
-                emergency_pause_deposit_required: old_deposit
-                    .emergency_pause_deposit_required,
-                emergency_pause_withdrawal_required: old_deposit
-                    .emergency_pause_withdrawal_required,
-                emergency_cancel_required: old_deposit.emergency_cancel_required,
-                base_snapshot: old_deposit.base_snapshot,
-                refresh_started_at_ns: old_deposit.refresh_started_at_ns,
-                refresh_generation: old_deposit.refresh_generation,
-                refresh_owner: old_deposit.refresh_owner,
-                next_refresh_allowed_at_ns: old_deposit.next_refresh_allowed_at_ns,
-            })
-            .map_err(|_| DbError::Constraint("cannot encode v33 deposit admission".into()))?
-            .to_sql_bytes();
-            connection.execute(
-                "UPDATE singleton_state SET config = ?1, notification_admission = ?2, deposit_admission = ?3 WHERE id = 1",
-                params![config_blob, notification_blob, deposit_blob],
-            )?;
-            connection.execute(
-                "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
-                params![i64::from(SCHEMA_VERSION)],
-            )?;
-            Ok(())
-        })
-        .map_err(|error| match error {
-            DbError::Constraint(message) => StorageError::SchemaMigrationRejected(message),
-            _ => StorageError::DatabaseFailure,
-        })?;
-
-    verify_metadata(handle)?;
-    StableStore::reopen_handle(handle)?;
-    Ok(())
 }
 
 fn initialize_singleton_state(
@@ -3091,35 +2787,10 @@ impl StableStore {
     }
 
     pub fn reopen_after_upgrade(memory: DefaultMemoryImpl) -> Result<Self, StorageError> {
-        Self::reopen_after_upgrade_with_context(memory, None)
-    }
-
-    pub fn reopen_after_upgrade_with_context(
-        memory: DefaultMemoryImpl,
-        migration: Option<&SchemaMigrationContext<'_>>,
-    ) -> Result<Self, StorageError> {
         #[cfg(test)]
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
-        let (schema, wire) = stored_metadata(handle)?;
-        if schema == 32 {
-            let Some(context) = migration else {
-                return Err(StorageError::UnsupportedSchemaVersion(schema));
-            };
-            if wire != WIRE_VERSION {
-                return Err(StorageError::UnsupportedWireVersion(wire));
-            }
-            migrate_v32_to_v33(handle, context)?;
-        } else {
-            if migration.is_some() {
-                return Err(StorageError::SchemaMigrationRejected(
-                    "v32 to v33 migration was already applied or schema is not v32".into(),
-                ));
-            }
-            verify_metadata(handle)?;
-        }
-        let store = Self::reopen_handle(handle)?;
-        Ok(store)
+        Self::reopen_handle(handle)
     }
 
     fn validate_singletons(&self) -> Result<(), StorageError> {
@@ -5261,6 +4932,43 @@ impl StableStore {
         Ok(self
             .deposit_admission()?
             .last_completed_governance_transaction)
+    }
+
+    pub fn operational_config_sealed(&self) -> Result<bool, StorageError> {
+        Ok(self.deposit_admission()?.operational_config_sealed)
+    }
+
+    pub fn seal_operational_config(&mut self, value: &BridgeInitArgs) -> Result<(), StorageError> {
+        let previous_config = self.config.get()?;
+        let previous_admission = self.deposit_admission.get()?;
+        let mut admission = decode::<DepositAdmissionControl>(&previous_admission)?;
+        if admission.operational_config_sealed {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        admission.operational_config_sealed = true;
+        let next_config = encode(&Some(ImmutableBridgeConfig::from_init(value)))?;
+        let next_admission = encode(&admission)?;
+        self.handle.update(|connection| {
+            let persisted_config = connection.query_scalar::<Vec<u8>>(
+                "SELECT config FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_admission = connection.query_scalar::<Vec<u8>>(
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_config != previous_config.to_sql_bytes()
+                || persisted_admission != previous_admission.to_sql_bytes()
+            {
+                return Err(DbError::Constraint("stale operational config seal".into()));
+            }
+            connection.execute(
+                "UPDATE singleton_state SET config = ?1, deposit_admission = ?2 WHERE id = 1",
+                params![next_config.to_sql_bytes(), next_admission.to_sql_bytes()],
+            )?;
+            operational_config_seal_db_failpoint(OperationalConfigSealFailpoint::Singleton)
+        })?;
+        Ok(())
     }
 
     pub fn pending_timelock_operation(
@@ -9464,6 +9172,78 @@ mod tests {
 
     #[test]
     #[serial]
+    fn operational_config_seal_commits_once_and_survives_reopen() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let mut next = initial.clone();
+        next.cycles_floor = 2;
+        next.settlement_cycle_ceiling = 3;
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize configured store");
+        let revision_before = storage_revision(&store);
+
+        store
+            .seal_operational_config(&next)
+            .expect("seal operational config");
+        assert_eq!(store.config().expect("sealed config"), Some(next.clone()));
+        assert!(store.operational_config_sealed().expect("sealed lifecycle"));
+        assert_eq!(storage_revision(&store), revision_before + 1);
+
+        let mut conflicting = next.clone();
+        conflicting.cycles_floor = 4;
+        assert!(matches!(
+            store.seal_operational_config(&conflicting),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        assert_eq!(
+            store.config().expect("unchanged config"),
+            Some(next.clone())
+        );
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen sealed config");
+        assert_eq!(reopened.config().expect("reopened config"), Some(next));
+        assert!(reopened
+            .operational_config_sealed()
+            .expect("reopened lifecycle"));
+        assert_eq!(storage_revision(&reopened), revision_before + 1);
+    }
+
+    #[test]
+    #[serial]
+    fn operational_config_seal_rolls_back_config_and_lifecycle_together() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let mut next = initial.clone();
+        next.cycles_floor = 2;
+        next.settlement_cycle_ceiling = 3;
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize configured store");
+        let revision_before = storage_revision(&store);
+
+        set_operational_config_seal_failpoint(Some(OperationalConfigSealFailpoint::Singleton));
+        assert!(store.seal_operational_config(&next).is_err());
+        set_operational_config_seal_failpoint(None);
+        assert_eq!(
+            store.config().expect("rolled back config"),
+            Some(initial.clone())
+        );
+        assert!(!store
+            .operational_config_sealed()
+            .expect("rolled back lifecycle"));
+        assert_eq!(storage_revision(&store), revision_before);
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen rolled back store");
+        assert_eq!(reopened.config().expect("reopened config"), Some(initial));
+        assert!(!reopened
+            .operational_config_sealed()
+            .expect("reopened lifecycle"));
+        assert_eq!(storage_revision(&reopened), revision_before);
+    }
+
+    #[test]
+    #[serial]
     fn governance_nonce_lane_is_stable_and_independent_from_finalized_observations() {
         let memory = VectorMemory::default();
         let mut store =
@@ -11536,8 +11316,8 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 33);
-        assert_eq!(WIRE_VERSION, 28);
+        assert_eq!(SCHEMA_VERSION, 34);
+        assert_eq!(WIRE_VERSION, 29);
     }
 
     #[test]
@@ -11628,74 +11408,6 @@ mod tests {
             .expect("mark stored schema");
     }
 
-    #[cfg(feature = "test-deployment")]
-    fn rewrite_fixture_as_v32(
-        store: &StableStore,
-        initial: &BridgeInitArgs,
-        notification: V32NotificationAdmissionControl,
-    ) {
-        let config = crate::config::V32ImmutableBridgeConfig::from_current(
-            &ImmutableBridgeConfig::from_init(initial),
-        );
-        let current_deposit = store
-            .deposit_admission()
-            .expect("read current deposit admission");
-        let v32_deposit = V32DepositAdmissionControl {
-            window_id: current_deposit.window_id,
-            global_count: current_deposit.global_count,
-            caller_counts: current_deposit.caller_counts,
-            funding_reservations: current_deposit
-                .funding_reservations
-                .into_iter()
-                .map(|reservation| V32DepositFundingReservation {
-                    deposit_id: reservation.deposit_id,
-                    caller: reservation.caller,
-                })
-                .collect(),
-            signer_address: current_deposit.signer_address,
-            signer_public_key: current_deposit.signer_public_key,
-            governance_operator_address: current_deposit.governance_operator_address,
-            governance_operator_public_key: current_deposit.governance_operator_public_key,
-            governance_nonce_initialized: current_deposit.governance_nonce_initialized,
-            next_governance_nonce: current_deposit.next_governance_nonce,
-            next_governance_operation_id: current_deposit.next_governance_operation_id,
-            pending_governance_transaction: current_deposit.pending_governance_transaction,
-            last_completed_governance_transaction: current_deposit
-                .last_completed_governance_transaction,
-            pending_timelock_operation: current_deposit.pending_timelock_operation,
-            emergency_pause_deposit_required: current_deposit.emergency_pause_deposit_required,
-            emergency_pause_withdrawal_required: current_deposit
-                .emergency_pause_withdrawal_required,
-            emergency_cancel_required: current_deposit.emergency_cancel_required,
-            base_snapshot: current_deposit.base_snapshot,
-            refresh_started_at_ns: current_deposit.refresh_started_at_ns,
-            refresh_generation: current_deposit.refresh_generation,
-            refresh_owner: current_deposit.refresh_owner,
-            next_refresh_allowed_at_ns: current_deposit.next_refresh_allowed_at_ns,
-        };
-        store
-            .handle
-            .update(|connection| {
-                connection.execute(
-                    "UPDATE singleton_state SET config = ?1, notification_admission = ?2, deposit_admission = ?3 WHERE id = 1",
-                    params![
-                        encode(&Some(config)).expect("encode v32 config").to_sql_bytes(),
-                        encode(&notification)
-                            .expect("encode v32 notification admission")
-                            .to_sql_bytes(),
-                        encode(&v32_deposit)
-                            .expect("encode v32 deposit admission")
-                            .to_sql_bytes()
-                    ],
-                )?;
-                connection.execute(
-                    "UPDATE bridge_metadata SET application_schema_version = 32 WHERE id = 1",
-                    params![],
-                )
-            })
-            .expect("write genuine v32 singleton blobs");
-    }
-
     #[test]
     #[serial]
     fn obsolete_v32_schema_fails_closed_even_when_empty() {
@@ -11713,562 +11425,17 @@ mod tests {
 
     #[test]
     #[serial]
-    fn current_schema_rejects_the_v32_config_shape() {
+    fn obsolete_v33_schema_fails_closed_even_when_empty() {
         let memory = VectorMemory::default();
-        let initial = config();
-        let store = StableStore::init_configured(memory.clone(), &initial)
-            .expect("initialize current schema");
-        let old_config = crate::config::V32ImmutableBridgeConfig::from_current(
-            &ImmutableBridgeConfig::from_init(&initial),
-        );
-        store
-            .handle
-            .update(|connection| {
-                connection.execute(
-                    "UPDATE singleton_state SET config = ?1 WHERE id = 1",
-                    params![encode(&Some(old_config))
-                        .expect("encode v32 config")
-                        .to_sql_bytes()],
-                )
-            })
-            .expect("replace current config with v32 shape");
+        let store = StableStore::init(memory.clone()).expect("initialize current schema");
+        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V33);
         drop(store);
 
-        assert_eq!(
-            StableStore::reopen_after_upgrade(memory).err(),
-            Some(StorageError::DecodeFailed)
-        );
-    }
-
-    #[cfg(feature = "test-deployment")]
-    #[test]
-    #[serial]
-    fn v32_to_v33_migration_preserves_terminal_history_notification_admission_and_sets_boundary_atomically(
-    ) {
-        let memory = VectorMemory::default();
-        let mut initial = config();
-        initial.minimum_withdrawal_id = vec![0; 32];
-        let mut store = StableStore::init_configured(memory.clone(), &initial)
-            .expect("initialize current fixture");
-        let mut paid = withdrawal();
-        paid.apply(WithdrawalEvent::ReleaseSucceeded {
-            release_ledger_block_index: 7,
-        })
-        .expect("make terminal withdrawal");
-        store
-            .put_withdrawal(&paid)
-            .expect("persist terminal history");
-        rewrite_fixture_as_v32(
-            &store,
-            &initial,
-            V32NotificationAdmissionControl {
-                window_id: 7,
-                verification_count: 2,
-                ingestion_count: 1,
-            },
-        );
-        drop(store);
-
-        let boundary = vec![4; 32];
-        let context = SchemaMigrationContext {
-            migration_id: V32_TO_V33_MIGRATION_ID,
-            from_schema: 32,
-            to_schema: SCHEMA_VERSION,
-            minimum_withdrawal_id: &boundary,
-        };
-        let reopened =
-            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
-                .expect("migrate v32 to v33");
-        assert_eq!(reopened.status_counts().expect("counts").withdrawals, 1);
-        assert_eq!(
-            reopened
-                .config()
-                .expect("config")
-                .expect("configured")
-                .minimum_withdrawal_id,
-            boundary
-        );
-        assert_eq!(
-            decode::<NotificationAdmissionControl>(
-                &reopened
-                    .notification_admission
-                    .get()
-                    .expect("notification admission blob"),
-            )
-            .expect("migrated notification admission"),
-            NotificationAdmissionControl {
-                window_id: 7,
-                verification_count: 2,
-                ingestion_count: 1,
-                failed_transactions: Vec::new(),
-            }
-        );
-        assert!(StableStore::reopen_after_upgrade(memory.clone()).is_ok());
-        assert!(matches!(
-            StableStore::reopen_after_upgrade_with_context(memory, Some(&context)),
-            Err(StorageError::SchemaMigrationRejected(_))
-        ));
-    }
-
-    #[cfg(feature = "test-deployment")]
-    #[test]
-    #[serial]
-    fn v32_to_v33_migration_rejects_nonterminal_history_and_rolls_back() {
-        let memory = VectorMemory::default();
-        let mut initial = config();
-        initial.minimum_withdrawal_id = vec![0; 32];
-        let mut store = StableStore::init_configured(memory.clone(), &initial)
-            .expect("initialize current fixture");
-        store
-            .put_withdrawal(&withdrawal())
-            .expect("persist liability");
-        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
-        drop(store);
-
-        let boundary = vec![4; 32];
-        let context = SchemaMigrationContext {
-            migration_id: V32_TO_V33_MIGRATION_ID,
-            from_schema: 32,
-            to_schema: SCHEMA_VERSION,
-            minimum_withdrawal_id: &boundary,
-        };
-        assert!(matches!(
-            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context)),
-            Err(StorageError::SchemaMigrationRejected(_))
-        ));
         assert!(matches!(
             StableStore::reopen_after_upgrade(memory),
-            Err(StorageError::UnsupportedSchemaVersion(32))
+            Err(StorageError::UnsupportedSchemaVersion(version))
+                if version == OBSOLETE_SCHEMA_VERSION_V33
         ));
-    }
-
-    #[cfg(feature = "test-deployment")]
-    #[test]
-    #[serial]
-    fn v32_to_v33_migration_rejects_a_malformed_notification_blob_atomically() {
-        let memory = VectorMemory::default();
-        let mut initial = config();
-        initial.minimum_withdrawal_id = vec![0; 32];
-        let store = StableStore::init_configured(memory.clone(), &initial)
-            .expect("initialize current fixture");
-        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
-        store
-            .handle
-            .update(|connection| {
-                connection.execute(
-                    "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
-                    params![vec![WIRE_VERSION, 0xff]],
-                )
-            })
-            .expect("corrupt v32 notification admission");
-        drop(store);
-
-        let boundary = vec![4; 32];
-        let context = SchemaMigrationContext {
-            migration_id: V32_TO_V33_MIGRATION_ID,
-            from_schema: 32,
-            to_schema: SCHEMA_VERSION,
-            minimum_withdrawal_id: &boundary,
-        };
-        assert!(matches!(
-            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context)),
-            Err(StorageError::SchemaMigrationRejected(message))
-                if message == "cannot decode v32 notification admission"
-        ));
-        assert!(matches!(
-            StableStore::reopen_after_upgrade(memory),
-            Err(StorageError::UnsupportedSchemaVersion(32))
-        ));
-    }
-
-    #[cfg(feature = "test-deployment")]
-    #[test]
-    #[serial]
-    fn v32_to_v33_migration_preserves_inflight_funding_attempts_with_gross_amount() {
-        let memory = VectorMemory::default();
-        let mut initial = config();
-        initial.minimum_withdrawal_id = vec![0; 32];
-        let mut store = StableStore::init_configured(memory.clone(), &initial)
-            .expect("initialize current fixture");
-        initialize_unpaused_admin(&mut store);
-        let owner = Principal::self_authenticating([40; 32]);
-        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
-        store
-            .prepare_deposit_funding_attempt(
-                owner,
-                &attempt,
-                DepositQuotaAdmission {
-                    now_ns: 1,
-                    window_seconds: 60,
-                    global_limit: 30,
-                    per_principal_limit: 3,
-                },
-                ample_cycle_admission(),
-            )
-            .expect("prepare funding attempt");
-        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
-        drop(store);
-
-        let boundary = vec![4; 32];
-        let context = SchemaMigrationContext {
-            migration_id: V32_TO_V33_MIGRATION_ID,
-            from_schema: 32,
-            to_schema: SCHEMA_VERSION,
-            minimum_withdrawal_id: &boundary,
-        };
-        let mut reopened =
-            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
-                .expect("migrate v32 to v33");
-        let admission = reopened.deposit_admission().expect("deposit admission");
-        assert_eq!(admission.funding_reservations.len(), 1);
-        let reservation = &admission.funding_reservations[0];
-        assert_eq!(reservation.deposit_id, attempt.intent.deposit_id);
-        assert_eq!(reservation.caller, owner.as_slice().to_vec());
-        assert_eq!(reservation.mint_amount, attempt.gross_amount);
-        assert_eq!(reservation.quota_window_id, admission.window_id);
-        assert!(!reservation.releases_quota_on_failure);
-        assert_eq!(admission.verification_global_count, admission.global_count);
-        assert_eq!(
-            admission.verification_caller_counts,
-            admission.caller_counts
-        );
-        let global_count = admission.global_count;
-        let caller_counts = admission.caller_counts.clone();
-        reopened
-            .remove_deposit_funding_attempt(owner, &attempt)
-            .expect("remove migrated funding attempt");
-        let admission = reopened.deposit_admission().expect("deposit admission");
-        assert!(admission.funding_reservations.is_empty());
-        assert_eq!(admission.global_count, global_count);
-        assert_eq!(admission.caller_counts, caller_counts);
-        reopened
-            .validate_relations()
-            .expect("migrated relations hold");
-        assert!(StableStore::reopen_after_upgrade(memory.clone()).is_ok());
-    }
-
-    #[cfg(feature = "test-deployment")]
-    #[test]
-    #[serial]
-    fn v32_to_v33_migration_drops_stale_deposit_linked_reservations_fail_closed() {
-        let memory = VectorMemory::default();
-        let mut initial = config();
-        initial.minimum_withdrawal_id = vec![0; 32];
-        let mut store = StableStore::init_configured(memory.clone(), &initial)
-            .expect("initialize current fixture");
-        let owner = Principal::self_authenticating([41; 32]);
-        let mut record = funding_pending_deposit();
-        record.transfer.from =
-            Account::new(owner.as_slice().to_vec(), [0; 32]).expect("valid owner");
-        record.state = bridge_core::DepositState::AuthorizationPending {
-            funding_ledger_block_index: 4,
-        };
-        record.quote = Some(bridge_core::DepositQuote {
-            service_fee: Amount::new(10),
-            net_amount: Amount::new(100),
-        });
-        let deposit_id = record.id.bytes();
-        store.put_deposit(&record).expect("seed committed deposit");
-        let reserved_before = store
-            .counters()
-            .expect("counters")
-            .reserved_deposit_mint_amount;
-        store
-            .handle
-            .update(|connection| {
-                let blob = connection.query_scalar::<Vec<u8>>(
-                    "SELECT deposit_admission FROM singleton_state WHERE id = 1",
-                    params![],
-                )?;
-                let mut admission: DepositAdmissionControl =
-                    decode(&StableBlob::new(blob).expect("blob"))
-                        .expect("decode deposit admission");
-                admission
-                    .funding_reservations
-                    .push(DepositFundingReservation {
-                        deposit_id,
-                        caller: owner.as_slice().to_vec(),
-                        mint_amount: 100,
-                        quota_window_id: admission.window_id,
-                        releases_quota_on_failure: true,
-                    });
-                connection.execute(
-                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
-                    params![encode(&admission).expect("encode admission").to_sql_bytes()],
-                )?;
-                Ok(())
-            })
-            .expect("seed stale deposit funding reservation");
-        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
-        drop(store);
-
-        let boundary = vec![4; 32];
-        let context = SchemaMigrationContext {
-            migration_id: V32_TO_V33_MIGRATION_ID,
-            from_schema: 32,
-            to_schema: SCHEMA_VERSION,
-            minimum_withdrawal_id: &boundary,
-        };
-        let reopened =
-            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
-                .expect("migrate v32 to v33");
-        let admission = reopened.deposit_admission().expect("deposit admission");
-        assert!(admission.funding_reservations.is_empty());
-        assert_eq!(
-            reopened
-                .counters()
-                .expect("counters")
-                .reserved_deposit_mint_amount,
-            reserved_before
-        );
-        assert_eq!(
-            reopened
-                .deposit_funding_reserved_mint_amount_excluding(deposit_id)
-                .expect("funding reserved amount"),
-            0
-        );
-        reopened
-            .validate_relations()
-            .expect("migrated relations hold");
-        assert!(StableStore::reopen_after_upgrade(memory.clone()).is_ok());
-
-        let mut store = StableStore::reopen(memory).expect("reopen migrated store");
-        initialize_unpaused_admin(&mut store);
-        store
-            .owner_deposit_sequences
-            .insert(owner_sequence_key(owner).expect("owner sequence key"), 1);
-        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
-        let mut attempt = attempt;
-        attempt.intent.owner_sequence = 1;
-        store
-            .prepare_deposit_funding_attempt(
-                owner,
-                &attempt,
-                DepositQuotaAdmission {
-                    now_ns: 1,
-                    window_seconds: 60,
-                    global_limit: 30,
-                    per_principal_limit: 3,
-                },
-                ample_cycle_admission(),
-            )
-            .expect("caller funding slot is freed after the stale reservation is dropped");
-    }
-
-    #[cfg(feature = "test-deployment")]
-    #[test]
-    #[serial]
-    fn v32_to_v33_migration_rejects_reservation_without_attempt_or_deposit() {
-        let memory = VectorMemory::default();
-        let mut initial = config();
-        initial.minimum_withdrawal_id = vec![0; 32];
-        let store = StableStore::init_configured(memory.clone(), &initial)
-            .expect("initialize current fixture");
-        let owner = Principal::self_authenticating([42; 32]);
-        store
-            .handle
-            .update(|connection| {
-                let blob = connection.query_scalar::<Vec<u8>>(
-                    "SELECT deposit_admission FROM singleton_state WHERE id = 1",
-                    params![],
-                )?;
-                let mut admission: DepositAdmissionControl =
-                    decode(&StableBlob::new(blob).expect("blob"))
-                        .expect("decode deposit admission");
-                admission
-                    .funding_reservations
-                    .push(DepositFundingReservation {
-                        deposit_id: [9; 32],
-                        caller: owner.as_slice().to_vec(),
-                        mint_amount: 100,
-                        quota_window_id: admission.window_id,
-                        releases_quota_on_failure: true,
-                    });
-                connection.execute(
-                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
-                    params![encode(&admission).expect("encode admission").to_sql_bytes()],
-                )?;
-                Ok(())
-            })
-            .expect("seed orphaned funding reservation");
-        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
-        drop(store);
-
-        let boundary = vec![4; 32];
-        let context = SchemaMigrationContext {
-            migration_id: V32_TO_V33_MIGRATION_ID,
-            from_schema: 32,
-            to_schema: SCHEMA_VERSION,
-            minimum_withdrawal_id: &boundary,
-        };
-        assert!(matches!(
-            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context)),
-            Err(StorageError::SchemaMigrationRejected(message))
-                if message.contains("references neither a deposit nor a funding attempt")
-        ));
-        assert!(matches!(
-            StableStore::reopen_after_upgrade(memory),
-            Err(StorageError::UnsupportedSchemaVersion(32))
-        ));
-    }
-
-    #[cfg(feature = "test-deployment")]
-    #[test]
-    #[serial]
-    fn v32_to_v33_migration_rejects_reservation_coexisting_with_deposit_and_attempt() {
-        let memory = VectorMemory::default();
-        let mut initial = config();
-        initial.minimum_withdrawal_id = vec![0; 32];
-        let mut store = StableStore::init_configured(memory.clone(), &initial)
-            .expect("initialize current fixture");
-        initialize_unpaused_admin(&mut store);
-        let owner = Principal::self_authenticating([43; 32]);
-        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
-        store
-            .prepare_deposit_funding_attempt(
-                owner,
-                &attempt,
-                DepositQuotaAdmission {
-                    now_ns: 1,
-                    window_seconds: 60,
-                    global_limit: 30,
-                    per_principal_limit: 3,
-                },
-                ample_cycle_admission(),
-            )
-            .expect("prepare funding attempt");
-        let deposit_id = attempt.intent.deposit_id;
-        store
-            .handle
-            .update(|connection| {
-                connection.execute(
-                    "INSERT INTO deposits(key, value) VALUES(?1, ?2)",
-                    params![
-                        deposit_id.to_sql_bytes(),
-                        encode(&deposit_for(owner))
-                            .expect("encode deposit")
-                            .to_sql_bytes()
-                    ],
-                )?;
-                Ok(())
-            })
-            .expect("seed overlapping deposit row");
-        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
-        drop(store);
-
-        let boundary = vec![4; 32];
-        let context = SchemaMigrationContext {
-            migration_id: V32_TO_V33_MIGRATION_ID,
-            from_schema: 32,
-            to_schema: SCHEMA_VERSION,
-            minimum_withdrawal_id: &boundary,
-        };
-        assert!(matches!(
-            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context)),
-            Err(StorageError::SchemaMigrationRejected(message))
-                if message.contains("coexists with both a deposit and a funding attempt")
-        ));
-        assert!(matches!(
-            StableStore::reopen_after_upgrade(memory),
-            Err(StorageError::UnsupportedSchemaVersion(32))
-        ));
-    }
-
-    #[cfg(feature = "test-deployment")]
-    #[test]
-    #[serial]
-    fn v32_to_v33_migration_carries_quota_history_into_the_verification_lane() {
-        let memory = VectorMemory::default();
-        let mut initial = config();
-        initial.minimum_withdrawal_id = vec![0; 32];
-        let store = StableStore::init_configured(memory.clone(), &initial)
-            .expect("initialize current fixture");
-        let owner = Principal::self_authenticating([44; 32]);
-        store
-            .handle
-            .update(|connection| {
-                let blob = connection.query_scalar::<Vec<u8>>(
-                    "SELECT deposit_admission FROM singleton_state WHERE id = 1",
-                    params![],
-                )?;
-                let mut admission: DepositAdmissionControl =
-                    decode(&StableBlob::new(blob).expect("blob"))
-                        .expect("decode deposit admission");
-                admission.window_id = 5;
-                admission.global_count = 3;
-                admission.caller_counts.push(DepositCallerQuota {
-                    caller: owner.as_slice().to_vec(),
-                    count: 3,
-                });
-                connection.execute(
-                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
-                    params![encode(&admission).expect("encode admission").to_sql_bytes()],
-                )?;
-                Ok(())
-            })
-            .expect("seed v32 quota history");
-        rewrite_fixture_as_v32(&store, &initial, V32NotificationAdmissionControl::default());
-        drop(store);
-
-        let boundary = vec![4; 32];
-        let context = SchemaMigrationContext {
-            migration_id: V32_TO_V33_MIGRATION_ID,
-            from_schema: 32,
-            to_schema: SCHEMA_VERSION,
-            minimum_withdrawal_id: &boundary,
-        };
-        let reopened =
-            StableStore::reopen_after_upgrade_with_context(memory.clone(), Some(&context))
-                .expect("migrate v32 to v33");
-        let admission = reopened.deposit_admission().expect("deposit admission");
-        assert_eq!(admission.window_id, 5);
-        assert_eq!(admission.verification_window_id, 5);
-        assert_eq!(admission.verification_global_count, 3);
-        assert_eq!(admission.verification_caller_counts.len(), 1);
-        assert_eq!(admission.verification_caller_counts[0].count, 3);
-        reopened
-            .validate_relations()
-            .expect("migrated relations hold");
-
-        let quota = DepositQuotaAdmission {
-            now_ns: 5 * 60_000_000_000,
-            window_seconds: 60,
-            global_limit: 4,
-            per_principal_limit: 4,
-        };
-        let mut store = StableStore::reopen(memory.clone()).expect("reopen migrated store");
-        initialize_unpaused_admin(&mut store);
-        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
-        store
-            .prepare_deposit_funding_attempt(owner, &attempt, quota, ample_cycle_admission())
-            .expect("consume the remaining same-window budget");
-        store
-            .remove_deposit_funding_attempt(owner, &attempt)
-            .expect("definitive failure keeps the verification count");
-        let (next_attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
-        assert!(matches!(
-            store.prepare_deposit_funding_attempt(
-                owner,
-                &next_attempt,
-                quota,
-                ample_cycle_admission(),
-            ),
-            Err(StorageError::DepositRateLimited { .. })
-        ));
-
-        let next_window = DepositQuotaAdmission {
-            now_ns: 6 * 60_000_000_000 + 1,
-            ..quota
-        };
-        let (fresh_attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
-        store
-            .prepare_deposit_funding_attempt(
-                owner,
-                &fresh_attempt,
-                next_window,
-                ample_cycle_admission(),
-            )
-            .expect("next window resets the verification lane");
     }
 
     #[cfg(feature = "test-deployment")]
@@ -12366,7 +11533,6 @@ mod tests {
             .map(str::to_owned)
             .to_vec();
         let args = crate::config::StagingUpgradeArgs {
-            migration_id: None,
             status_counts_guard_version: 1,
             minimum_withdrawal_id: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
@@ -12454,7 +11620,6 @@ mod tests {
         let mut drifted = expected;
         drifted.deposits += 1;
         let args = crate::config::StagingUpgradeArgs {
-            migration_id: None,
             status_counts_guard_version: 1,
             minimum_withdrawal_id: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
@@ -12483,7 +11648,6 @@ mod tests {
         assert_eq!(store.external_progress().expect("progress"), progress);
 
         let empty_unguarded = crate::config::StagingUpgradeArgs {
-            migration_id: None,
             status_counts_guard_version: 0,
             rpc_provider_update: None,
             minimum_withdrawal_id: None,
@@ -12947,7 +12111,7 @@ mod tests {
     }
 
     #[test]
-    fn current_v33_funding_reservation_without_release_flag_keeps_existing_behavior() {
+    fn current_schema_funding_reservation_without_release_flag_keeps_existing_behavior() {
         #[derive(Serialize)]
         struct ExistingV33DepositFundingReservation {
             deposit_id: [u8; 32],
@@ -14683,7 +13847,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn current_v33_validation_progress_without_funding_attempt_count_reopens() {
+    fn current_schema_validation_progress_without_funding_attempt_count_reopens() {
         #[derive(Serialize)]
         struct ExistingV33StorageValidationProgress {
             expected_revision: u64,

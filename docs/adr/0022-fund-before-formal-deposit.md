@@ -14,4 +14,4 @@ Deposit pauseは新しいfunding reservationの作成を拒否する。reservati
 
 公開状態に`FundingPending`は存在しない。確定失敗は`FundingRejected`、一時失敗は`FundingUnavailable`として返す。本番未投入のためschema v32、wire v27へ直接置換する。後にstaging v30の状態保持upgradeが明示承認されたため、v30/wire v26からだけは登録済みmigrationを提供し、それ以外の旧schemaはfail closedとする。
 
-このmigration判断はschema v33／wire v28で置き換えられた。初回production deploy前の現行方針では旧schema migrationを提供せず、v32以下と未知versionをfail closedにする。
+このmigration判断は現行のschema v34／wire v29方針で置き換えられた。初回production deploy前の現行releaseは旧schema migrationを提供せず、v33以下と未知versionをfail closedにする。

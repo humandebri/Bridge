@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use candid::{CandidType, Decode, Encode, Nat, Principal, Reserved};
 use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
@@ -21,17 +23,16 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 33;
-const GATE_A_ARTIFACTS: [&str; 7] = [
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 34;
+const GATE_A_ARTIFACTS: [&str; 6] = [
     "profile.json",
-    "monitor-drill.json",
     "bridge-canister.wasm",
     "bridge-runtime.bin",
     "bsns-creation.bin",
     "bsns-runtime.bin",
     "bsns-runtime-layout.json",
 ];
-const GATE_B_ARTIFACTS: [&str; 16] = [
+const GATE_B_ARTIFACTS: [&str; 17] = [
     "profile.json",
     "signer-snapshot.json",
     "rpc-e2e.json",
@@ -40,6 +41,7 @@ const GATE_B_ARTIFACTS: [&str; 16] = [
     "monitor-drill.json",
     "keeper-drill.json",
     "monitoring-receipt.json",
+    "fee-cycles-measurements.json",
     "provider-independence.json",
     "ui-assets.json",
     "bridge-canister.wasm",
@@ -66,7 +68,8 @@ struct Profile {
     bridge_canister_id: String,
     canister_schema_version: u16,
     ic_host: String,
-    base_rpc_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_rpc_url: Option<String>,
     bridge_contract: String,
     bsns_contract: String,
     deployment_instance_id: String,
@@ -81,14 +84,37 @@ struct Profile {
     ecdsa_derivation_path: Vec<String>,
     governance_ecdsa_derivation_path: Vec<String>,
     governance_operator: String,
+    initial_base_deployment: InitialBaseDeployment,
     timelock: Timelock,
     pause_principal: String,
     fee_recipient: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     rpc_providers: Vec<RpcProvider>,
     monitoring: Monitoring,
     parameters: Parameters,
     rate_limits: RateLimits,
     governance_replacement: GovernanceReplacementPolicy,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct InitialBaseDeployment {
+    deployer_address: String,
+    starting_nonce: u64,
+    #[serde(with = "u128_string")]
+    gas_limit: u128,
+    #[serde(with = "u128_string")]
+    max_fee_per_gas: u128,
+    #[serde(with = "u128_string")]
+    max_priority_fee_per_gas: u128,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeeCyclesMeasurementsReceipt {
+    schema_version: u16,
+    sample_count: u16,
+    observation_days: u16,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -1274,7 +1300,7 @@ fn credential_free_https(url: &str) -> bool {
 }
 
 fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
-    if profile.schema_version != 2 {
+    if profile.schema_version != 3 {
         return Err("obsolete or unknown release profile schema".into());
     }
     if production && profile.test_assets_only {
@@ -1291,15 +1317,26 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     if profile.canister_schema_version != CURRENT_STABLE_SCHEMA_VERSION {
         return Err("profile must bind the current stable schema version".into());
     }
-    if !principal(&profile.bridge_canister_id)
-        || !credential_free_https(&profile.ic_host)
-        || !credential_free_https(&profile.base_rpc_url)
-        || !profile
-            .rpc_providers
-            .iter()
-            .any(|provider| provider.url.eq_ignore_ascii_case(&profile.base_rpc_url))
-    {
+    if !principal(&profile.bridge_canister_id) || !credential_free_https(&profile.ic_host) {
         return Err("invalid release endpoint".into());
+    }
+    if production {
+        if profile.base_rpc_url.is_some() || !profile.rpc_providers.is_empty() {
+            return Err("production uses only the built-in BaseMainnet EVM RPC providers".into());
+        }
+    } else {
+        let base_rpc_url = profile
+            .base_rpc_url
+            .as_deref()
+            .ok_or("staging Base RPC URL is missing")?;
+        if !credential_free_https(base_rpc_url)
+            || !profile
+                .rpc_providers
+                .iter()
+                .any(|provider| provider.url.eq_ignore_ascii_case(base_rpc_url))
+        {
+            return Err("invalid staging release endpoint".into());
+        }
     }
     if profile.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER {
         return Err("profile must bind the official EVM RPC canister ID".into());
@@ -1401,6 +1438,30 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     {
         return Err("invalid or overlapping governance ECDSA derivation path".into());
     }
+    let deployment = &profile.initial_base_deployment;
+    let deployer = decode_address(&deployment.deployer_address)?;
+    if deployment
+        .deployer_address
+        .eq_ignore_ascii_case(&profile.governance_operator)
+        || deployment.gas_limit == 0
+        || deployment.max_fee_per_gas == 0
+        || deployment.max_priority_fee_per_gas > deployment.max_fee_per_gas
+        || !address_matches_create(
+            &profile.timelock.address,
+            deployer,
+            deployment.starting_nonce,
+        )
+        || !address_matches_create(
+            &profile.bridge_contract,
+            deployer,
+            deployment
+                .starting_nonce
+                .checked_add(1)
+                .ok_or("deployment nonce overflow")?,
+        )
+    {
+        return Err("invalid initial Base deployment binding".into());
+    }
     let principals = [
         &profile.governance_principal,
         &profile.pause_principal,
@@ -1412,7 +1473,7 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
             return Err("invalid or overlapping IC operational principal".into());
         }
     }
-    if profile.rpc_providers.len() != 3 {
+    if !production && profile.rpc_providers.len() != 3 {
         return Err("exactly three RPC providers are required".into());
     }
     let urls = profile
@@ -1420,11 +1481,12 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         .iter()
         .map(|p| p.url.trim().to_ascii_lowercase())
         .collect::<BTreeSet<_>>();
-    if urls.len() != 3
-        || profile
-            .rpc_providers
-            .iter()
-            .any(|p| !credential_free_https(p.url.trim()))
+    if !production
+        && (urls.len() != 3
+            || profile
+                .rpc_providers
+                .iter()
+                .any(|p| !credential_free_https(p.url.trim())))
     {
         return Err("RPC providers must be three distinct credential-free HTTPS URLs".into());
     }
@@ -1452,10 +1514,11 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         .iter()
         .map(|provider| provider.failure_domain.trim().to_ascii_lowercase())
         .collect::<BTreeSet<_>>();
-    if !metadata_valid
-        || operators.len() != 3
-        || dns_owners.len() != 3
-        || failure_domains.len() != 3
+    if !production
+        && (!metadata_valid
+            || operators.len() != 3
+            || dns_owners.len() != 3
+            || failure_domains.len() != 3)
     {
         return Err("RPC providers must bind three independently owned failure domains".into());
     }
@@ -1691,9 +1754,16 @@ fn render_release_inputs(
             profile.timelock.minimum_delay_seconds.to_string(),
             [profile.timelock.proposer], [profile.timelock.canceller], [profile.timelock.executor]
         ],
-        "initial_pause_required": true
+        "initial_pause_required": true,
+        "deployment": {
+            "deployer_address": profile.initial_base_deployment.deployer_address,
+            "starting_nonce": profile.initial_base_deployment.starting_nonce,
+            "gas_limit": profile.initial_base_deployment.gas_limit.to_string(),
+            "max_fee_per_gas": profile.initial_base_deployment.max_fee_per_gas.to_string(),
+            "max_priority_fee_per_gas": profile.initial_base_deployment.max_priority_fee_per_gas.to_string()
+        }
     });
-    let ui = serde_json::json!({
+    let mut ui = serde_json::json!({
         "environment": profile.environment,
         "label": if profile.test_assets_only { "Base Sepolia" } else { "Base" },
         "testOnly": profile.test_assets_only,
@@ -1703,7 +1773,6 @@ fn render_release_inputs(
         "profileFileSha256": profile_file_sha256,
         "profileCanonicalSha256": profile_canonical_sha256,
         "icHost": profile.ic_host,
-        "baseRpcUrl": profile.base_rpc_url,
         "chainId": profile.chain_id,
         "bridgeCanisterId": profile.bridge_canister_id,
         "deploymentInstanceId": profile.deployment_instance_id,
@@ -1723,6 +1792,11 @@ fn render_release_inputs(
         "bridgeRuntimeHash": format!("0x{}", profile.bridge_runtime_bytecode_sha256),
         "bsnsRuntimeHash": format!("0x{}", profile.bsns_runtime_bytecode_sha256)
     });
+    if let Some(base_rpc_url) = &profile.base_rpc_url {
+        ui.as_object_mut()
+            .ok_or("UI runtime profile must be an object")?
+            .insert("baseRpcUrl".into(), serde_json::json!(base_rpc_url));
+    }
     let mut artifacts = BTreeMap::new();
     artifacts.insert(
         "canister-init.json",
@@ -1764,6 +1838,41 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
             u8::from_str_radix(s, 16).map_err(|_| "invalid hex".into())
         })
         .collect()
+}
+
+fn decode_address(value: &str) -> Result<[u8; 20], String> {
+    decode_hex(value)?
+        .try_into()
+        .map_err(|_| "invalid EVM address".into())
+}
+
+fn address_matches_create(value: &str, sender: [u8; 20], nonce: u64) -> bool {
+    decode_address(value).is_ok_and(|expected| expected == create_address(sender, nonce))
+}
+
+fn create_address(sender: [u8; 20], nonce: u64) -> [u8; 20] {
+    let mut sender_rlp = vec![0x94];
+    sender_rlp.extend_from_slice(&sender);
+    let nonce_bytes = nonce.to_be_bytes();
+    let first = nonce_bytes.iter().position(|byte| *byte != 0).unwrap_or(8);
+    let nonce_rlp = if first == 8 {
+        vec![0x80]
+    } else if nonce_bytes[first] < 0x80 && first == 7 {
+        vec![nonce_bytes[first]]
+    } else {
+        let mut encoded = vec![0x80 + u8::try_from(8 - first).unwrap_or(u8::MAX)];
+        encoded.extend_from_slice(&nonce_bytes[first..]);
+        encoded
+    };
+    let payload_length = sender_rlp.len() + nonce_rlp.len();
+    let mut encoded = vec![0xc0 + u8::try_from(payload_length).unwrap_or(u8::MAX)];
+    encoded.extend(sender_rlp);
+    encoded.extend(nonce_rlp);
+    let mut digest = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(&encoded);
+    hasher.finalize(&mut digest);
+    digest[12..].try_into().expect("CREATE digest suffix")
 }
 
 fn unsigned_manifest_hash(manifest: &ReleaseManifest) -> Result<[u8; 32], String> {
@@ -2226,6 +2335,14 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     let profile: Profile = read_json(&root.join("profile.json"))?;
     validate_profile(&profile, !manifest.test_only)?;
     if gate_b {
+        let measurements: FeeCyclesMeasurementsReceipt =
+            read_json(&root.join("fee-cycles-measurements.json"))?;
+        if measurements.schema_version != 2
+            || measurements.sample_count < 10
+            || measurements.observation_days < 7
+        {
+            return Err("Gate B requires at least 7 days and 10 fee/cycles samples".into());
+        }
         if profile.deployment_block == 0 {
             return Err("Gate B profile must bind the actual Bridge deployment block".into());
         }
@@ -3340,6 +3457,11 @@ mod tests {
     fn address(seed: u8) -> String {
         format!("0x{seed:040x}")
     }
+    fn address_bytes(seed: u8) -> [u8; 20] {
+        let mut value = [0; 20];
+        value[19] = seed;
+        value
+    }
 
     #[test]
     fn release_id_is_strictly_bounded_and_manifest_safe() {
@@ -3365,12 +3487,16 @@ mod tests {
         assert!(validate_profile(&profile, true).is_err());
 
         profile.minimum_withdrawal_id = format!("0x{}01", "00".repeat(31));
-        assert!(validate_profile(&profile, true).is_ok());
+        assert!(
+            validate_profile(&profile, true).is_ok(),
+            "{:?}",
+            validate_profile(&profile, true)
+        );
     }
 
     fn valid_profile() -> Profile {
         Profile {
-            schema_version: 2,
+            schema_version: 3,
             environment: "mainnet-candidate".into(),
             test_assets_only: false,
             chain_id: 8453,
@@ -3383,8 +3509,8 @@ mod tests {
             bridge_canister_id: test_principal(9),
             canister_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
             ic_host: "https://icp-api.io".into(),
-            base_rpc_url: "https://prod-one.example/base-mainnet".into(),
-            bridge_contract: address(1),
+            base_rpc_url: None,
+            bridge_contract: format!("0x{}", hex(&create_address(address_bytes(7), 1))),
             bsns_contract: address(8),
             deployment_instance_id: format!("0x{}", "11".repeat(32)),
             minimum_withdrawal_id: format!("0x{}01", "00".repeat(31)),
@@ -3398,8 +3524,15 @@ mod tests {
             ecdsa_derivation_path: vec!["KINIC-BASE-BRIDGE".into()],
             governance_ecdsa_derivation_path: vec!["KINIC-BASE-GOVERNANCE".into()],
             governance_operator: address(3),
+            initial_base_deployment: InitialBaseDeployment {
+                deployer_address: address(7),
+                starting_nonce: 0,
+                gas_limit: 5_000_000,
+                max_fee_per_gas: 200,
+                max_priority_fee_per_gas: 10,
+            },
             timelock: Timelock {
-                address: address(5),
+                address: format!("0x{}", hex(&create_address(address_bytes(7), 0))),
                 runtime_code_hash: format!("0x{}", "ab".repeat(32)),
                 minimum_delay_seconds: 86_400,
                 proposer: address(3),
@@ -3409,26 +3542,7 @@ mod tests {
             },
             pause_principal: test_principal(2),
             fee_recipient: test_principal(4),
-            rpc_providers: vec![
-                RpcProvider {
-                    url: "https://prod-one.example/base-mainnet".into(),
-                    operator: "operator-one".into(),
-                    dns_owner: "dns-owner-one".into(),
-                    failure_domain: "upstream-one".into(),
-                },
-                RpcProvider {
-                    url: "https://prod-two.example/base-mainnet".into(),
-                    operator: "operator-two".into(),
-                    dns_owner: "dns-owner-two".into(),
-                    failure_domain: "upstream-two".into(),
-                },
-                RpcProvider {
-                    url: "https://prod-three.example/base-mainnet".into(),
-                    operator: "operator-three".into(),
-                    dns_owner: "dns-owner-three".into(),
-                    failure_domain: "upstream-three".into(),
-                },
-            ],
+            rpc_providers: vec![],
             monitoring: Monitoring {
                 routing_sha256: "5".repeat(64),
                 detection_minutes: 5,
@@ -3598,15 +3712,7 @@ mod tests {
         profile.schema_version = 1;
         assert!(validate_profile(&profile, true).is_err());
         profile = valid_profile();
-        profile.rpc_providers[1].url = "https://another.example".into();
-        assert!(validate_profile(&profile, true).is_ok());
-        profile.rpc_providers[1].failure_domain = profile.rpc_providers[0].failure_domain.clone();
-        assert!(validate_profile(&profile, true).is_err());
-        profile = valid_profile();
-        profile.rpc_providers[1].operator = profile.rpc_providers[0].operator.clone();
-        assert!(validate_profile(&profile, true).is_err());
-        profile = valid_profile();
-        profile.rpc_providers[1].dns_owner = profile.rpc_providers[0].dns_owner.clone();
+        profile.base_rpc_url = Some("https://rpc.example".into());
         assert!(validate_profile(&profile, true).is_err());
         profile = valid_profile();
         let mut value = serde_json::to_value(profile).unwrap();
@@ -3620,19 +3726,12 @@ mod tests {
     #[test]
     fn profile_rejects_credentials_duplicate_urls_and_role_overlap() {
         let mut profile = valid_profile();
-        profile.rpc_providers[1].url = profile.rpc_providers[0].url.clone();
-        assert!(validate_profile(&profile, true).is_err());
-        let mut profile = valid_profile();
-        profile.rpc_providers[1].url = "https://user:secret@rpc.example".into();
-        assert!(validate_profile(&profile, true).is_err());
-        let mut profile = valid_profile();
-        profile.rpc_providers[1].url = "https://rpc.example/rpc?token=secret".into();
-        assert!(validate_profile(&profile, true).is_err());
-        let mut profile = valid_profile();
-        profile.rpc_providers[1].url = "https://rpc.example/abcdefghijklmnop".into();
-        assert!(validate_profile(&profile, true).is_err());
-        let mut profile = valid_profile();
-        profile.rpc_providers[1].url = "https://127.0.0.1/rpc".into();
+        profile.rpc_providers.push(RpcProvider {
+            url: "https://rpc.example".into(),
+            operator: "operator".into(),
+            dns_owner: "dns".into(),
+            failure_domain: "upstream".into(),
+        });
         assert!(validate_profile(&profile, true).is_err());
         let mut profile = valid_profile();
         profile.governance_operator = profile.expected_bridge_signer.clone();
@@ -4134,6 +4233,10 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 serde_json::to_vec(&keeper_drill).unwrap(),
             ),
             ("monitoring-receipt.json", monitoring_receipt_bytes),
+            (
+                "fee-cycles-measurements.json",
+                br#"{"schema_version":2,"sample_count":10,"observation_days":7}"#.to_vec(),
+            ),
             (
                 "provider-independence.json",
                 serde_json::to_vec(&provider_independence).unwrap(),
