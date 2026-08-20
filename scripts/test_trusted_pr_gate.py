@@ -235,6 +235,8 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("from source_resolution import source_path", staging_upgrade_test)
         self.assertIn("source_path(relative) if relative in SCRIPT_FILES", staging_upgrade_test)
+        self.assertIn('if "target_module_sha256" in policy:', staging_upgrade_test)
+        self.assertIn('policy["target_module_sha256"] = self.after_module', staging_upgrade_test)
 
     def test_schema_consistency_reads_isolated_candidate_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
