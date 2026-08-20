@@ -9,9 +9,16 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 : "${BRIDGE_DEPLOYER_KEYSTORE:?missing encrypted Foundry keystore path}"
 : "${BRIDGE_DEPLOYER_PASSWORD_FILE:?missing separate password-file path}"
 : "${BRIDGE_DEPLOYMENT_BINDING_FILE:?missing deployment evidence output path}"
+: "${BRIDGE_DEPLOYMENT_RESERVATION_FILE:?missing deployment reservation path}"
 : "${BASE_RPC_URL:?missing Base transaction transport URL}"
 for tool in awk cast forge python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 [[ -f "$BRIDGE_DEPLOYER_KEYSTORE" && -f "$BRIDGE_DEPLOYER_PASSWORD_FILE" ]] || { echo "keystore or password file is missing" >&2; exit 1; }
+[[ "$BRIDGE_DEPLOYMENT_RESERVATION_FILE" == "$BRIDGE_DEPLOYMENT_BINDING_FILE.reservation" \
+  && -f "$BRIDGE_DEPLOYMENT_RESERVATION_FILE" \
+  && ! -L "$BRIDGE_DEPLOYMENT_RESERVATION_FILE" \
+  && ! -s "$BRIDGE_DEPLOYMENT_RESERVATION_FILE" ]] || {
+  echo "deployment reservation is missing, non-empty, or not the canonical marker" >&2; exit 1;
+}
 [[ ! -e "$BRIDGE_DEPLOYMENT_BINDING_FILE" && ! -e "$BRIDGE_DEPLOYMENT_BINDING_FILE.checkpoint" ]] || {
   echo "deployment evidence/checkpoint already exists; track it instead of redeploying" >&2; exit 1;
 }
@@ -95,7 +102,14 @@ parent=os.open(os.path.dirname(os.path.abspath(target)),os.O_RDONLY|getattr(os,'
 try: os.fsync(parent)
 finally: os.close(parent)
 PY
+python3 - "$BRIDGE_DEPLOYMENT_BINDING_FILE" <<'PY'
+import os,sys
+parent=os.open(os.path.dirname(os.path.abspath(sys.argv[1])),os.O_RDONLY|getattr(os,'O_DIRECTORY',0))
+try: os.fsync(parent)
+finally: os.close(parent)
+PY
 rm "$BRIDGE_DEPLOYMENT_BINDING_FILE.checkpoint"
+rm "$BRIDGE_DEPLOYMENT_RESERVATION_FILE"
 python3 - "$BRIDGE_DEPLOYMENT_BINDING_FILE" <<'PY'
 import os,sys
 parent=os.open(os.path.dirname(os.path.abspath(sys.argv[1])),os.O_RDONLY|getattr(os,'O_DIRECTORY',0))

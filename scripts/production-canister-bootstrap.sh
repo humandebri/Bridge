@@ -76,8 +76,15 @@ controller_values = values(status, "controllers")
 if len(controller_values) != 1 or not isinstance(controller_values[0], list):
     raise SystemExit("production Canister status does not expose one controller set")
 controllers = [str(value) for value in controller_values[0]]
-if caller not in controllers:
-    raise SystemExit("reviewed production identity is not a Canister controller")
+if controllers != [caller]:
+    raise SystemExit("bootstrap Canister controllers must be exactly the reviewed production identity")
+module_hash_values = values(status, "module_hash")
+if len(module_hash_values) > 1:
+    raise SystemExit("production Canister status exposes ambiguous module_hash values")
+if module_hash_values:
+    module_hash = module_hash_values[0]
+    if module_hash not in (None, [], "", {"None": None}):
+        raise SystemExit("bootstrap Canister already has a Wasm module installed")
 PY
 
 SUBNET_RESPONSE="$(icp canister call "$REGISTRY" get_subnet_for_canister \

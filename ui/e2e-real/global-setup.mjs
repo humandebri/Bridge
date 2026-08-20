@@ -32,6 +32,7 @@ const pauseIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(8))
 const pausePrincipal = pauseIdentity.getPrincipal()
 const minter = Principal.selfAuthenticating(new Uint8Array(32).fill(9))
 const feeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(10))
+const confirmationRelayerPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(11))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
 const resources = {}
@@ -229,6 +230,7 @@ async function setup() {
       settlement_cycle_ceiling: operationalConfig.settlement_cycle_ceiling,
       governance_principal: testOwner,
       pause_principal: pausePrincipal,
+      confirmation_relayer_principal: confirmationRelayerPrincipal,
       fee_recipient: { owner: feeRecipient, subaccount: [] },
     }]),
     sender: testOwner,
@@ -446,7 +448,7 @@ async function setup() {
   }
   await syncObservedHeads()
   const sealedLifecycle = await bridge.actor.seal_operational_config(operationalConfig)
-  if (!("Ok" in sealedLifecycle) || !("OperationalConfigSealed" in sealedLifecycle.Ok)) {
+  if (!("Ok" in sealedLifecycle) || !("OperationalConfigSealed" in sealedLifecycle.Ok.lifecycle)) {
     throw new Error(`Failed to seal operational config: ${json(sealedLifecycle)}`)
   }
   const scheduleSubmitted = await bridge.actor.schedule_activation()

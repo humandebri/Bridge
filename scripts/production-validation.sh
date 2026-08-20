@@ -167,7 +167,12 @@ production_validate_gate() {
   else rm -rf "$target"; echo "invalid production gate mode" >&2; return 1
   fi
   rm -rf "$target"
-  actual_hash="$(printf '%s\n' "$output" | sed -nE 's/.*manifest_sha256=([0-9a-fA-F]{64}).*/\1/p' | tail -n 1)"
+  if [[ "$mode" == gate-a ]]; then
+    [[ "$output" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { echo "driver Gate A result is not authorizing" >&2; return 1; }
+    actual_hash="${BASH_REMATCH[1]}"
+  else
+    actual_hash="$(printf '%s\n' "$output" | sed -nE 's/.*manifest_sha256=([0-9a-fA-F]{64}).*/\1/p' | tail -n 1)"
+  fi
   [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { echo "driver Gate manifest hash mismatch" >&2; return 1; }
   production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || return 1
   "$source_root/scripts/rebuild-release-artifacts.sh" \

@@ -64,7 +64,7 @@ service_fee初期値 = 0.5 KINIC
 - `settlement cycle ceiling = ceil(max(settlement cycles) × 1.5)`
 - N: 30日
 
-未確定値をzeroや仮値でmainnet profileへ入れてはならない。release profileは`schema_version: 2`、Gate A/B release manifestは`schema_version: 3`、Gate A receiptは`schema_version: 1`だけを受理し、旧versionや未知versionをmigrationせずfail closedにする。`bridge-profile validate-bundle --offline`と`verify-live`は、実artifact、署名、zero reserve、証跡欠落をfail closedで拒否する。
+未確定値をzeroや仮値でmainnet profileへ入れてはならない。release profileは`schema_version: 4`、Gate A/B release manifestは`schema_version: 3`、Gate A receiptは`schema_version: 1`だけを受理し、旧versionや未知versionをmigrationせずfail closedにする。`bridge-profile validate-bundle --offline`と`verify-live`は、実artifact、署名、zero reserve、証跡欠落をfail closedで拒否する。
 
 ## timelock 遅延（Base Admin）
 

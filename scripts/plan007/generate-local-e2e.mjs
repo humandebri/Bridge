@@ -8,7 +8,7 @@ import { runtimeTemplateSha256FromFile } from "./runtime-template-hash.mjs"
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 export const LOCAL_E2E_SCHEMA_VERSION = 7
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
-export const CURRENT_STABLE_SCHEMA_VERSION = 34
+export const CURRENT_STABLE_SCHEMA_VERSION = 35
 
 export function validateUpgradeEvidence(upgrade) {
   if (!upgrade || upgrade.verified !== true) throw new Error("real E2E did not prove same-Wasm state preservation")

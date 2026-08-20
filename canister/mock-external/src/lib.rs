@@ -1033,6 +1033,21 @@ fn multi_request(
         address_word(BASE_ADMIN_TIMELOCK.with(|value| *value.borrow()))
     } else if request.contains(&selector_hex("runtimeAdministrator()")) {
         address_word(RUNTIME_ADMINISTRATOR.with(|value| *value.borrow()))
+    } else if request.contains(&selector_hex("approvedTimelockRuntimeCodeHash()")) {
+        let code = BRIDGE_RUNTIME_CODE.with(|value| value.borrow().clone());
+        format!("0x{}", bytes_hex(&keccak(&code)))
+    } else if request.contains(&selector_hex("getMinDelay()")) {
+        word(300)
+    } else if request.contains(&selector_hex("bsns()")) {
+        address_word([9; 20])
+    } else if request.contains(&selector_hex("name()")) {
+        abi_string("KINIC")
+    } else if request.contains(&selector_hex("symbol()")) {
+        abi_string("KINIC")
+    } else if request.contains(&selector_hex("decimals()")) {
+        word(8)
+    } else if request.contains(&selector_hex("bridge()")) {
+        address_word([1; 20])
     } else if request.contains(&selector_hex("roleMember(bytes32)")) {
         let default_role = format!("{}{}", selector_hex("roleMember(bytes32)"), "00".repeat(32));
         if request.contains(&default_role) {
@@ -1234,6 +1249,21 @@ fn word(value: u128) -> String {
 
 fn address_word(value: [u8; 20]) -> String {
     format!("0x{}{}", "00".repeat(12), bytes_hex(&value))
+}
+
+fn abi_string(value: &str) -> String {
+    let padded = value.len().div_ceil(32) * 32;
+    format!(
+        "0x{}{}{}{}",
+        "00".repeat(31),
+        "20",
+        format!("{:064x}", value.len()),
+        format!(
+            "{}{}",
+            bytes_hex(value.as_bytes()),
+            "00".repeat(padded - value.len())
+        )
+    )
 }
 
 fn selector_hex(signature: &str) -> String {

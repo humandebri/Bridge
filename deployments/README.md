@@ -7,13 +7,12 @@ cargo run -p bridge-profile -- derive measurements.json
 cargo run -p bridge-profile -- validate profile.json
 cargo run -p bridge-profile -- validate-test rehearsal-profile.json
 cargo run -p bridge-profile -- validate-bundle --offline evidence/release-id
-cargo run -p bridge-profile -- verify-gate-a-live evidence/release-id
 cargo run -p bridge-profile -- verify-live evidence/release-id
 ```
 
 `derive`はschema v2のgovernance gas、settlement cycles、各fee系列を10件以上、開始・終了時刻で7日以上のBase fee sample、pause時の基礎日次cycles、承認済み日次settlement上限が揃わなければ失敗する。cycles floorは30日負荷モデルの2倍、settlement ceilingは10回以上のsample最大値の1.5倍切り上げである。Mint limitとwindow長はderiveせず、profileへraw unitで明示する。通常デプロイ前に使う`validate`は`test_assets_only = true`を必ず拒否する。Sepolia rehearsalだけが明示的な`validate-test`を使える。
 
-本番配置と資産受付開始は、必ず`production-release.sh`を経由する。`deploy`はoffline構造検査に加え、監視演習のIC certificate、emergency pause reply/audit、Base receipt/logをrepository-owned verifierで検証する。Base側はbundleへ束縛された3つのcredential-free RPC URLを`BRIDGE_GATE_A_RPC_URL_1`〜`3`として渡し、2-of-3の同一Finalized結果を要求する。Bridge contractとBridge Canisterはいずれも初期pause状態で配置され、この段階では資産を受け付けない。
+本番配置と資産受付開始は、必ず`production-release.sh`を経由する。`deploy`のGate Aはoffline artifact、profile、constructor条件だけを検証する。Bridge contractとBridge Canisterはいずれも初期pause状態で配置され、この段階では資産を受け付けない。配置後のruntime、role、pause、chain bindingは、Canisterが公式EVM RPC Canisterの組み込み`BaseMainnet`から取得して保存するactivation attestationをGate Bで検証する。
 
 ```sh
 scripts/production-release.sh deploy --bundle evidence/release-id \
@@ -21,7 +20,7 @@ scripts/production-release.sh deploy --bundle evidence/release-id \
   --receipt evidence/release-id/gate-a-receipt.json -- scripts/production-deploy-driver.sh
 ```
 
-配置後は、Canisterをpauseしたままprofile記載のSNS Rootへcontroller handoverし、その結果をlive snapshotで確認する。`activate`はGate Bのlive検証を再実行し、SNS function registryから固定`schedule_activation` / `execute_activation` targetを解決して提案を1件だけ提出する。提出成功はactivation完了を意味しない。`verify-activation`が、認証済みSNS proposal、function registry、Canister module/controllerとactivation状態、Base Timelockの2-of-3 Finalized postconditionをすべて照合して初めて検証済みreceiptを発行する。任意のunpause commandは受け付けない。
+配置後は、Canisterをpauseしたままprofile記載のSNS Rootへcontroller handoverし、その結果をlive snapshotで確認する。`activate`はGate Bのlive検証を再実行し、SNS function registryから固定`schedule_activation` / `execute_activation` targetを解決して提案を1件だけ提出する。提出成功はactivation完了を意味しない。`verify-activation`が、認証済みSNS proposal、function registry、Canister module/controller、activation状態、保存済みFinalized activation結果を照合して初めて検証済みreceiptを発行する。任意のunpause commandは受け付けない。
 
 ```sh
 scripts/production-release.sh activate --phase schedule --bundle evidence/release-id \
@@ -40,18 +39,18 @@ cargo run -p bridge-profile -- verify-activation schedule evidence/release-id \
 24時間後の`execute`はfresh Gate Bを要求し、`--prior-schedule-receipt`と`UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE`を必須とする。release wrapperはproposal提出前に`verify-schedule-receipt-live`を実行し、receipt内部digest、認証済みSNS/Canister状態、canonical Finalized Base Timelock pending状態が一致しなければ停止する。execute proposalの後も、`verify-activation execute ... schedule-receipt.json execute-receipt.json`が成功するまで資産受付開始を完了扱いにしない。
 
 bundle欠落、test profile、source/profile drift、Gate失敗では後続コマンドを起動しない。Gate Aのdeployコマンドにunpauseまたはresume操作を混在させることも拒否する。
-Gate A profileの`deployment_block`は未配置を示す`0`に固定する。deploy後、wrapperは実receipt blockを入れた`<receipt>.post-deploy-profile.json`を生成し、そのSHA-256をGate A receiptへ固定する。Gate Bはこのpost-deploy profileだけを使う別のlive manifestとし、`parent_gate_a_manifest_sha256`がreceiptのGate A hashと一致し、source/code binding、post-deploy profile hash、実deployment blockが一致しなければならない。さらにGate B profileの`deployment_block`だけを0へ戻したcanonical hashがreceiptのGate A profile hashと一致する必要があり、他fieldの変更は拒否される。Gate B bundle確定前に固定`production-live-preflight.sh capture BUNDLE OUTPUT`でfresh snapshotを生成する。activation直前の`verify`は同じheight/hashとlive stateを再照合し、確定済みbundle自体は変更しない。
+Gate A profileの`deployment_block`は未配置を示す`0`に固定する。deploy後、wrapperは実receipt blockを入れた`<receipt>.post-deploy-profile.json`を生成し、そのSHA-256をGate A receiptへ固定する。Gate Bはこのpost-deploy profileだけを使う別のlive manifestとし、`parent_gate_a_manifest_sha256`がreceiptのGate A hashと一致し、source/code binding、post-deploy profile hash、実deployment blockが一致しなければならない。さらにGate B profileの`deployment_block`だけを0へ戻したcanonical hashがreceiptのGate A profile hashと一致する必要があり、他fieldの変更は拒否される。staging monitor drillの直接RPC検証は`production-live-preflight.sh verify-monitor-drill BUNDLE`だけを使い、本番Base状態の正本にはしない。
 外部`--receipt`はGate B bundle内の`gate-a-receipt.json`とbyte単位で一致しなければならない。
 
 初回contract deployだけ一時EOAを使用し、deployerへroleを残さない。以後のBase管理操作はBridge Canisterが導出するGovernance Operatorだけから送信する。production IC操作は`BRIDGE_ICP_IDENTITY`とICP CLIへ統一し、`dfx`を使用しない。Timelock activationはSNS proposalからCanisterの固定schedule/execute APIを呼ぶ二段階とし、各段階でlive preflightを再実行する。失敗または曖昧結果ではIC/Base pauseを維持し、同じsigned transactionを追跡する。
 
 production CanisterはGate A確定前にpause状態でinstallし、固有のMint SignerとGovernance Operatorをprofileへ固定する。Gate A deploy driverは外部指定のconstructor JSONを使用せず、固定sourceからbuildした`bridge-profile`でbundle内profileを一時directoryへ再生成し、稼働中Canisterの2 addressとpause状態を照合してからcontract deploymentへ渡す。Canisterの再installやdeployment binding APIは実行しない。
 
-profileはCanisterから導出してBaseのFinalized snapshotと照合するMint SignerとGovernance Operator、current stable schema、公式EVM RPC Canister ID、単一emergency pause principal、Wasm/bytecode hash、Timelock、固定limit、fee/liveness/reserve関係を含む。Timelock delayはprofileとlive stateの完全一致を要求する。`timelock.runtime_code_hash`は`0x`付き32-byte Keccak runtime code hashであり、生成されたBridge constructor引数、配置直後の実code hash、Gate B Finalized snapshotの三者が一致しなければならない。配置後にGate A receiptがBridge/Timelockのcanonical deployment transaction・blockを記録し、Gate B snapshotが3 providerで再照合する。既知のreceipt、deployment、snapshot、role-event block hashはEIP-1898 `eth_call` probeでcanonicalityを確認し、full block取得は未知hashを発見するFinalized headに限定する。3件のproduction Base RPC providerはcredentialなしのHTTPS URLであり、URL文字列が互いに異ならなければならない。監視欄は通知routingのSHA-256と、検知5分、担当確認15分、Base/IC双方pause 60分のSLOを正確に記録する。
+profileはCanisterから導出してBaseのFinalized attestationと照合するMint SignerとGovernance Operator、current stable schema、公式EVM RPC Canister ID、単一emergency pause principal、Wasm/bytecode hash、Timelock、固定limit、fee/liveness/reserve関係を含む。Timelock delayはprofileとlive stateの完全一致を要求する。`timelock.runtime_code_hash`は`0x`付き32-byte Keccak runtime code hashであり、生成されたBridge constructor引数、配置直後の実code hash、Gate B Finalized attestationの三者が一致しなければならない。配置後にGate A receiptがBridge/Timelockのcanonical deployment transaction・blockを記録し、Gate Bは公式EVM RPC Canister経由でcurrent runtimeとroleを再照合する。監視欄は通知routingのSHA-256と、検知5分、担当確認15分、Base/IC双方pause 60分のSLOを正確に記録する。
 
-Gate Aはpre-deploy `profile.json`、`monitor-drill.json`、`bridge-canister.wasm`、`bridge-runtime.bin`の正確に4 artifactを束縛する。Gate Bはこれらへ`signer-snapshot.json`、`rpc-e2e.json`、`gate-a-receipt.json`、`controller-handover.json`、`sns-upgrade.json`を加えた正確に9 artifactである。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、Canister公開設定、Finalized Base stateの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
+Gate Aはpre-deploy profileとBridge/BSNSの5 build artifact、合計6 artifactを束縛する。Gate BはこれらへRPC rehearsal、handover、SNS upgrade、monitor/keeper、fee/cycles、provider independence、UI、Gate A receiptの10 artifactを加えた正確に16 artifactである。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
 
-`validate-bundle --offline`は構造検査だけを行い、出力にも`authorizing=false`を明記する。Gate Aの認可判定は`verify-gate-a-live`だけであり、IC certificateとBaseの2-of-3 Finalized receipt/logを検証する。`verify-live`はGate Bの構造・fresh snapshotに加え、SNS upgrade proposalを認証済みqueryで再取得し、Root-only controllerとlive module hashをread-stateで照合する。これらのlive commandはネットワークへ接続し、認証・合意・postconditionのいずれかが欠ければ非ゼロ終了する。
+`validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、PublicConfig、reserve、SNS upgrade proposal、Root-only controller、live module hashを認証済みCanister応答で照合する。認証またはpostconditionが欠ければ非ゼロ終了する。
 
 credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
 
@@ -61,7 +60,7 @@ Plan 007のIC stagingで新規作成またはinstallするCanisterは`sepolia-st
 
 外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh`をclean commitで実行し、`deployments/sepolia-staging/evidence/local-e2e.json`を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
-外部stageのschema v7証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証でき、`EXTENDED_COMPLETE`には実wallet matrix、10件のRPC rehearsal、同一Wasm upgrade、Base/ICのfinal pause、pending settlement/Timelockゼロが必要である。この詳細完了はproduction activationをblockしない。Gate BはRPC rehearsalの主要5件による`LAUNCH_READY`だけを要求する。現行staging driverはstable schema v34かつ同一deployment instanceのupgradeだけを受理する。reinstall、異なるinstance、v33以前または未知のschema、未登録形状はfail closedにする。
+外部stageのschema v7証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証でき、`EXTENDED_COMPLETE`には実wallet matrix、10件のRPC rehearsal、同一Wasm upgrade、Base/ICのfinal pause、pending settlement/Timelockゼロが必要である。この詳細完了はproduction activationをblockしない。Gate BはRPC rehearsalの主要5件による`LAUNCH_READY`だけを要求する。現行staging driverはreview済みstable schema v34からv35への一方向migration、または適用済みv35の同値再検証だけを受理する。reinstall、異なるinstance、v33以前または未知のschema、未登録形状はfail closedにする。
 
 新規作成するstaging Bridge Canister IDだけを`.icp/data/mappings/sepolia-staging.ids.json`へ保存する。既存`testicrc`を新規作成対象としてmappingへ追加しない。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`の`pnpm run deploy:test`でCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
 

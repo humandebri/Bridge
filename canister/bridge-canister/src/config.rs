@@ -11,6 +11,34 @@ pub struct FeeRecipientConfig {
     pub subaccount: Vec<u8>,
 }
 
+#[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ActivationAttestation {
+    pub chain_id: u64,
+    pub finalized_block_number: u64,
+    pub finalized_block_hash: Vec<u8>,
+    pub observed_at_ns: u64,
+    pub bridge_signer: Vec<u8>,
+    pub bridge_runtime_sha256: Vec<u8>,
+    pub deposits_paused: bool,
+    pub withdrawals_paused: bool,
+    pub bridge_timelock: Vec<u8>,
+    pub runtime_administrator: Vec<u8>,
+    pub timelock_admin: Vec<u8>,
+    pub timelock_proposer: Vec<u8>,
+    pub timelock_canceller: Vec<u8>,
+    pub timelock_executor: Vec<u8>,
+    pub timelock_runtime_code_hash: Vec<u8>,
+    pub bridge_approved_timelock_runtime_code_hash: Vec<u8>,
+    pub timelock_minimum_delay_seconds: u64,
+    pub bsns_address: Vec<u8>,
+    pub bsns_runtime_sha256: Vec<u8>,
+    pub bsns_name: String,
+    pub bsns_symbol: String,
+    pub bsns_decimals: u8,
+    pub bsns_bridge: Vec<u8>,
+    pub base_service_fee: u128,
+}
+
 pub const KINIC_LEDGER_CANISTER_ID: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 pub const KINIC_INDEX_CANISTER_ID: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
 pub const BASE_MAINNET_CHAIN_ID: u64 = 8453;
@@ -73,6 +101,7 @@ pub struct BridgeInitArgs {
     pub settlement_cycle_ceiling: u128,
     pub governance_principal: Principal,
     pub pause_principal: Principal,
+    pub confirmation_relayer_principal: Principal,
     pub fee_recipient: FeeRecipientConfig,
 }
 
@@ -89,6 +118,7 @@ pub struct StagingUpgradeArgs {
     pub status_counts_guard_version: u8,
     pub rpc_provider_update: Option<StagingRpcProviderUpdate>,
     pub minimum_withdrawal_id: Option<Vec<u8>>,
+    pub confirmation_relayer_principal: Option<Principal>,
 }
 
 #[cfg(feature = "test-deployment")]
@@ -98,6 +128,7 @@ impl Default for StagingUpgradeArgs {
             status_counts_guard_version: 1,
             rpc_provider_update: None,
             minimum_withdrawal_id: None,
+            confirmation_relayer_principal: None,
         }
     }
 }
@@ -172,10 +203,18 @@ pub(crate) struct ImmutableBridgeConfig {
     pub governance_replacement: GovernanceReplacementPolicy,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
+    #[serde(default = "anonymous_principal")]
+    pub confirmation_relayer_principal: Principal,
+    #[serde(default)]
+    pub activation_attestation: Option<ActivationAttestation>,
 }
 
 const fn default_notification_ingestion_rate_limit_global() -> u16 {
     30
+}
+
+fn anonymous_principal() -> Principal {
+    Principal::anonymous()
 }
 
 impl ImmutableBridgeConfig {
@@ -210,7 +249,14 @@ impl ImmutableBridgeConfig {
             governance_replacement: value.governance_replacement,
             cycles_floor: value.cycles_floor,
             settlement_cycle_ceiling: value.settlement_cycle_ceiling,
+            confirmation_relayer_principal: value.confirmation_relayer_principal,
+            activation_attestation: None,
         }
+    }
+
+    pub(crate) fn with_activation_attestation(mut self, value: ActivationAttestation) -> Self {
+        self.activation_attestation = Some(value);
+        self
     }
 
     pub(crate) fn with_admin(
@@ -250,6 +296,7 @@ impl ImmutableBridgeConfig {
             settlement_cycle_ceiling: self.settlement_cycle_ceiling,
             governance_principal,
             pause_principal,
+            confirmation_relayer_principal: self.confirmation_relayer_principal,
             fee_recipient,
         }
     }
@@ -378,12 +425,20 @@ impl BridgeInitArgs {
         {
             return Err("governance replacement policy is outside the supported safety bounds");
         }
+        if self.cycles_floor == 0 || self.settlement_cycle_ceiling == 0 {
+            return Err("cycles limits must be non-zero");
+        }
         if self.governance_principal == Principal::anonymous()
             || self.pause_principal == Principal::anonymous()
+            || self.confirmation_relayer_principal == Principal::anonymous()
             || self.pause_principal == self.governance_principal
+            || (!cfg!(feature = "test-deployment")
+                && self.confirmation_relayer_principal == self.governance_principal)
+            || self.confirmation_relayer_principal == self.pause_principal
             || self.fee_recipient.owner == Principal::anonymous()
             || self.fee_recipient.owner == self.pause_principal
             || self.fee_recipient.owner == self.governance_principal
+            || self.fee_recipient.owner == self.confirmation_relayer_principal
             || !matches!(self.fee_recipient.subaccount.len(), 0 | 32)
         {
             return Err("administrator principals and fee recipient must be valid");
@@ -648,11 +703,41 @@ mod tests {
     }
 
     #[test]
-    fn administrator_roles_are_pairwise_distinct() {
+    fn administrator_roles_are_separated_except_for_the_staging_relayer() {
         let mut args = valid_args();
         args.fee_recipient.owner = args.governance_principal;
         assert!(args.validate().is_err());
+        let mut args = valid_args();
+        args.confirmation_relayer_principal = Principal::anonymous();
+        assert!(args.validate().is_err());
+        for principal in [
+            valid_args().pause_principal,
+            valid_args().fee_recipient.owner,
+        ] {
+            let mut args = valid_args();
+            args.confirmation_relayer_principal = principal;
+            assert!(args.validate().is_err());
+        }
+        let mut args = valid_args();
+        args.confirmation_relayer_principal = args.governance_principal;
+        if cfg!(feature = "test-deployment") {
+            assert!(args.validate().is_ok());
+        } else {
+            assert!(args.validate().is_err());
+        }
     }
+
+    #[test]
+    fn cycle_limits_must_be_nonzero() {
+        let mut args = valid_args();
+        args.cycles_floor = 0;
+        assert_eq!(args.validate(), Err("cycles limits must be non-zero"));
+
+        let mut args = valid_args();
+        args.settlement_cycle_ceiling = 0;
+        assert_eq!(args.validate(), Err("cycles limits must be non-zero"));
+    }
+
     fn valid_args() -> BridgeInitArgs {
         let principal = Principal::from_text("aaaaa-aa").expect("management principal");
         BridgeInitArgs {
@@ -695,6 +780,7 @@ mod tests {
             settlement_cycle_ceiling: 1,
             governance_principal: principal,
             pause_principal: Principal::from_slice(&[2]),
+            confirmation_relayer_principal: Principal::from_slice(&[5]),
             fee_recipient: FeeRecipientConfig {
                 owner: Principal::from_slice(&[3]),
                 subaccount: vec![],

@@ -77,15 +77,21 @@ def rpc_digest(urls: list[str]) -> str:
 def validate_policy(policy: dict[str, Any]) -> None:
     required = {
         "schema_version", "environment", "canister_name", "canister_id",
-        "stable_schema_version", "deployment_instance_id", "base_chain_id",
-        "evm_rpc_canister_id", "before_module_sha256", "before_rpc_urls",
+        "source_schema_version", "target_schema_version", "deployment_instance_id", "base_chain_id",
+        "evm_rpc_canister_id", "source_module_sha256", "target_module_sha256",
+        "governance_principal", "confirmation_relayer_principal", "before_rpc_urls",
         "before_rpc_urls_sha256", "after_rpc_urls", "after_rpc_urls_sha256",
         "status_counts",
     }
-    if set(policy) != required or policy["schema_version"] != 5:
+    if set(policy) != required or policy["schema_version"] != 7:
         fail("RPC replacement policy has an unsupported shape")
-    if not isinstance(policy["before_module_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", policy["before_module_sha256"]):
-        fail("policy before_module_sha256 must be a lowercase SHA-256 digest")
+    if policy["confirmation_relayer_principal"] != policy["governance_principal"]:
+        fail("staging confirmation relayer must temporarily match Governance")
+    for field in ("source_module_sha256", "target_module_sha256"):
+        if not isinstance(policy[field], str) or not re.fullmatch(r"[0-9a-f]{64}", policy[field]):
+            fail(f"policy {field} must be a lowercase SHA-256 digest")
+    if policy["source_schema_version"] != 34 or policy["target_schema_version"] != 35:
+        fail("policy must bind the reviewed schema 34 to 35 transition")
     for side in ("before", "after"):
         urls = policy[f"{side}_rpc_urls"]
         if not isinstance(urls, list) or len(urls) != 3 or len(set(urls)) != 3:
@@ -192,7 +198,7 @@ def snapshot(policy: dict[str, Any], identity: str, did: Path) -> dict[str, Any]
         fail("canister status did not expose a module hash")
     schema_version = nat(public, "schema_version")
     minimum_withdrawal_id = None
-    if schema_version >= policy["stable_schema_version"]:
+    if schema_version >= policy["source_schema_version"]:
         minimum_withdrawal_id = "0x" + blob(public, "minimum_withdrawal_id", length=32).hex()
     return {
         "canister_id": run([
@@ -204,6 +210,7 @@ def snapshot(policy: dict[str, Any], identity: str, did: Path) -> dict[str, Any]
         "deployment_instance_id": "0x" + blob(public, "deployment_instance_id", length=32).hex(),
         "base_chain_id": nat(public, "base_chain_id"),
         "evm_rpc_canister_id": principal(public, "evm_rpc_canister_id"),
+        "governance_principal": principal(public, "governance_principal"),
         "rpc_provider_urls_sha256": blob(public, "rpc_provider_urls_sha256", length=32).hex(),
         "module_sha256": module_hash,
         "status_counts": {field: nat(status, field) for field in COUNT_FIELDS},
@@ -221,19 +228,20 @@ def verify_snapshot(
 ) -> None:
     expected = {
         "canister_id": policy["canister_id"],
-        "schema_version": policy["stable_schema_version"],
+        "schema_version": policy["source_schema_version"] if phase == "before" else policy["target_schema_version"],
         "deployment_instance_id": policy["deployment_instance_id"],
         "base_chain_id": policy["base_chain_id"],
         "evm_rpc_canister_id": policy["evm_rpc_canister_id"],
+        "governance_principal": policy["governance_principal"],
         "status_counts": policy["status_counts"],
         "storage_integrity": "ok",
     }
     if phase == "before":
-        expected["module_sha256"] = policy["before_module_sha256"]
+        expected["module_sha256"] = policy["source_module_sha256"]
         expected["rpc_provider_urls_sha256"] = policy["before_rpc_urls_sha256"]
         expected["minimum_withdrawal_id"] = minimum_withdrawal_id
     else:
-        expected["module_sha256"] = wasm_hash
+        expected["module_sha256"] = policy["target_module_sha256"]
         expected["rpc_provider_urls_sha256"] = policy["after_rpc_urls_sha256"]
         expected["minimum_withdrawal_id"] = minimum_withdrawal_id
     for field, value in expected.items():
@@ -292,7 +300,11 @@ def verify_candidate_metadata(wasm: Path, did: Path) -> None:
         fail("explicit Wasm deployment metadata is invalid")
 
 
-def verify_live_metadata(policy: dict[str, Any], identity: str, ic_host: str, did: Path) -> str:
+def verify_live_metadata(
+    policy: dict[str, Any], identity: str, ic_host: str, did: Path, *, phase: str
+) -> str:
+    if phase not in ("before", "after"):
+        fail("live metadata verification phase must be before or after")
     candid = live_public_metadata(ic_host, policy["canister_id"], "candid:service")
     if candid is None:
         fail("live canister did not expose candid:service metadata")
@@ -300,7 +312,7 @@ def verify_live_metadata(policy: dict[str, Any], identity: str, ic_host: str, di
         live.write(candid)
         live.flush()
         run(["didc", "check", str(did), live.name])
-    if candid.encode() != did.read_bytes():
+    if phase == "after" and candid.encode() != did.read_bytes():
         fail("live canister Candid metadata does not match the checked-in interface")
     if live_private_metadata(policy, identity, "kinic:deployment") != "test-deployment":
         fail("live canister deployment metadata is invalid")
@@ -322,7 +334,9 @@ def install(policy: dict[str, Any], identity: str, wasm: Path) -> None:
         for field in COUNT_FIELDS
     )
     args = (
-        f"(record {{ status_counts_guard_version = 1 : nat8; rpc_provider_update = opt record {{ "
+        f"(record {{ status_counts_guard_version = 1 : nat8; minimum_withdrawal_id = null; "
+        f"confirmation_relayer_principal = opt principal \"{policy['confirmation_relayer_principal']}\"; "
+        f"rpc_provider_update = opt record {{ "
         f"custom_evm_rpc_urls = vec {{ {urls} }}; "
         f"expected_status_counts = record {{ {count_fields} }}"
         " } })"
@@ -392,23 +406,27 @@ def main() -> None:
     local_evidence = load_object(DEFAULT_LOCAL_EVIDENCE, "local E2E evidence")
     head = verify_clean_evidence(wasm, DEFAULT_DID, local_evidence)
     wasm_hash = sha256(wasm)
+    if wasm_hash != policy["target_module_sha256"]:
+        fail("explicit Wasm does not match the reviewed target module hash")
     did_hash = sha256(DEFAULT_DID)
     verify_candidate_metadata(wasm, DEFAULT_DID)
     before = snapshot(policy, identity, DEFAULT_DID)
     if not args.skip_storage_validation \
-        and (before["schema_version"] != policy["stable_schema_version"]
+        and (before["schema_version"] != policy["target_schema_version"]
              or before["rpc_provider_urls_sha256"] != policy["after_rpc_urls_sha256"]):
         run_storage_validation(policy, identity, DEFAULT_DID)
         before = snapshot(policy, identity, DEFAULT_DID)
     digest = before["rpc_provider_urls_sha256"]
-    if before["schema_version"] != policy["stable_schema_version"]:
-        fail("staging source schema does not match the current stable schema")
+    if before["schema_version"] not in (policy["source_schema_version"], policy["target_schema_version"]):
+        fail("staging source schema is neither the reviewed source nor target schema")
     if digest == policy["after_rpc_urls_sha256"]:
         verify_snapshot(
             before, policy, phase="after", wasm_hash=wasm_hash,
             minimum_withdrawal_id=profile_boundary,
         )
-        candid_hash = verify_live_metadata(policy, identity, ic_host, DEFAULT_DID)
+        candid_hash = verify_live_metadata(
+            policy, identity, ic_host, DEFAULT_DID, phase="after"
+        )
         verify_provider_chains(policy)
         if not args.execute:
             print(json.dumps({"result": "preflight-passed", "before": before}, sort_keys=True))
@@ -421,7 +439,9 @@ def main() -> None:
             before, policy, phase="before", wasm_hash=wasm_hash,
             minimum_withdrawal_id=profile_boundary,
         )
-        candid_hash = verify_live_metadata(policy, identity, ic_host, DEFAULT_DID)
+        candid_hash = verify_live_metadata(
+            policy, identity, ic_host, DEFAULT_DID, phase="before"
+        )
         verify_provider_chains(policy)
         if not args.execute:
             print(json.dumps({"result": "preflight-passed", "before": before}, sort_keys=True))
@@ -432,7 +452,9 @@ def main() -> None:
             after, policy, phase="after", wasm_hash=wasm_hash,
             minimum_withdrawal_id=profile_boundary,
         )
-        after_candid_hash = verify_live_metadata(policy, identity, ic_host, DEFAULT_DID)
+        after_candid_hash = verify_live_metadata(
+            policy, identity, ic_host, DEFAULT_DID, phase="after"
+        )
         result = "upgraded"
     evidence = {
         "schema_version": 2,

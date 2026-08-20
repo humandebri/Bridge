@@ -55,8 +55,8 @@ preflight
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
 Canister upgradeの前にはlive `public_config` をJSONへ保存し、次のgateを必ず通す。
-現行v34の同一instance upgradeだけを`current-schema-upgrade`として受理し、upgrade前後のstate count、
-schema v34、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、v33以下、
+review済みv34の同一instanceからv35へのupgradeだけを`current-schema-upgrade`として受理し、upgrade前後のstate count、
+source schema v34、target schema v35、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、v33以下、
 未知schema、欠落、ゼロ値はfail closedにする。新規Canisterへの初回installだけはこのupgrade gateの対象外である。
 出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、manifest検証でも同じ比較を行う。
 
@@ -76,14 +76,14 @@ preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-
 
 履歴を失ったstate、v33以下、旧wireのstaging canisterはupgradeせず、現行Wasmを新規Canister IDへinstallして検証stateを作り直す。
 
-v34→v34 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
+v34→v35 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
 
 - `live-bridge-status`: Deposit／reservationを含むcountsと、Withdrawal、pending Ledger operation、reconciliation hold、未払額を保持する。
 - `live-activation-status`: pending Timelock operation数を保持する。
 - `live-canister-status`: module hash、controller principals、cycles balanceを保持する。
 - `live-storage-integrity`: 認可済みcallerによる`storage_integrity_check()`の`ok`結果を保持する。
 - `live-ledger-balance`: Bridge principalのTICRC1 raw balanceを保持する。
-- install stageにはupgrade前後の全count、schema v34、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
+- install stageにはupgrade前後の全count、source schema v34、target schema v35、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
 
 manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は同一schema upgrade後も保持する。
 
@@ -118,7 +118,7 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
 この更新は旧digest `3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48`から新digest `df7e867aaf6abeaf00b0f61e8662fa87c6f8675eb0aebdf7b09f8c99a499d064`だけを許可する。新設定の同値再実行は成功するが、URL・順序・chain ID・EVM RPC Canister ID・現在digestの不一致はtrapしてupgrade全体をrollbackする。更新後もFinalized水位を保持し、runtime attestation cacheだけを無効化する。production Wasmの`post_upgrade()`は引数なしで、この更新経路を含まない。
 
 PR #11の新profileを含むclean checkoutから、repository-owned
-`rpc-provider-replacement-policy.json`に固定したCanister ID、schema v34、instance ID、変更前module hash、
+`rpc-provider-replacement-policy.json`に固定したCanister ID、source schema v34、target schema v35、instance ID、変更前module hash、
 state count、旧・新RPC順序とdigestをreviewする。driverは`local-e2e.json`のsource commitとWasm／Candid hash、
 live Candid互換性、認証済み`storage_integrity_check`、固定順序3 endpointのchain IDを照合する。
 通常実行はread-only preflightだけを行い、`--execute`を追加した別承認の呼出しだけが明示Wasmをinstallする。

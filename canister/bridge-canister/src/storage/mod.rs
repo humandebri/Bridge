@@ -261,7 +261,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 34, 29);
+INSERT INTO bridge_metadata VALUES (1, 35, 29);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -2793,6 +2793,59 @@ impl StableStore {
         Self::reopen_handle(handle)
     }
 
+    #[cfg(feature = "test-deployment")]
+    pub fn reopen_after_staging_upgrade(
+        memory: DefaultMemoryImpl,
+        confirmation_relayer: Option<Principal>,
+    ) -> Result<Self, StorageError> {
+        #[cfg(test)]
+        reset_sqlite_test_runtime();
+        let handle = open_database(memory)?;
+        let (schema, wire) = stored_metadata(handle)?;
+        if (schema, wire) == (34, 29) {
+            let relayer = confirmation_relayer
+                .filter(|principal| *principal != Principal::anonymous())
+                .ok_or(StorageError::DecodeFailed)?;
+            let persisted = handle.query(|connection| {
+                connection.query_scalar::<Vec<u8>>(
+                    "SELECT config FROM singleton_state WHERE id = 1",
+                    params![],
+                )
+            })?;
+            let mut config = decode_wire_payload::<Option<ImmutableBridgeConfig>>(&persisted, 29)?
+                .ok_or(StorageError::RecordNotFound)?;
+            if config.confirmation_relayer_principal != Principal::anonymous()
+                && config.confirmation_relayer_principal != relayer
+            {
+                return Err(StorageError::Core(CoreError::ConflictingReplay));
+            }
+            config.confirmation_relayer_principal = relayer;
+            config.activation_attestation = None;
+            let encoded = encode(&Some(config))?.to_sql_bytes();
+            handle.update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET config = ?1 WHERE id = 1",
+                    params![encoded],
+                )?;
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = 35, record_wire_version = 29 WHERE id = 1 AND application_schema_version = 34 AND record_wire_version = 29",
+                    params![],
+                )
+            })?;
+        }
+        let store = Self::reopen_handle(handle)?;
+        if let Some(expected) = confirmation_relayer {
+            let actual = store
+                .config()?
+                .ok_or(StorageError::RecordNotFound)?
+                .confirmation_relayer_principal;
+            if actual != expected {
+                return Err(StorageError::Core(CoreError::ConflictingReplay));
+            }
+        }
+        Ok(store)
+    }
+
     fn validate_singletons(&self) -> Result<(), StorageError> {
         self.accounting()?;
         self.counters()?;
@@ -4938,7 +4991,11 @@ impl StableStore {
         Ok(self.deposit_admission()?.operational_config_sealed)
     }
 
-    pub fn seal_operational_config(&mut self, value: &BridgeInitArgs) -> Result<(), StorageError> {
+    pub fn seal_operational_config(
+        &mut self,
+        value: &BridgeInitArgs,
+        attestation: crate::config::ActivationAttestation,
+    ) -> Result<(), StorageError> {
         let previous_config = self.config.get()?;
         let previous_admission = self.deposit_admission.get()?;
         let mut admission = decode::<DepositAdmissionControl>(&previous_admission)?;
@@ -4946,7 +5003,9 @@ impl StableStore {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
         admission.operational_config_sealed = true;
-        let next_config = encode(&Some(ImmutableBridgeConfig::from_init(value)))?;
+        let next_config = encode(&Some(
+            ImmutableBridgeConfig::from_init(value).with_activation_attestation(attestation),
+        ))?;
         let next_admission = encode(&admission)?;
         self.handle.update(|connection| {
             let persisted_config = connection.query_scalar::<Vec<u8>>(
@@ -4967,6 +5026,57 @@ impl StableStore {
                 params![next_config.to_sql_bytes(), next_admission.to_sql_bytes()],
             )?;
             operational_config_seal_db_failpoint(OperationalConfigSealFailpoint::Singleton)
+        })?;
+        Ok(())
+    }
+
+    pub fn activation_attestation(
+        &self,
+    ) -> Result<Option<crate::config::ActivationAttestation>, StorageError> {
+        Ok(
+            decode::<Option<ImmutableBridgeConfig>>(&self.config.get()?)?
+                .and_then(|config| config.activation_attestation),
+        )
+    }
+
+    pub fn refresh_activation_attestation(
+        &mut self,
+        attestation: crate::config::ActivationAttestation,
+    ) -> Result<(), StorageError> {
+        let previous_config = self.config.get()?;
+        let previous_admission = self.deposit_admission.get()?;
+        let admission = decode::<DepositAdmissionControl>(&previous_admission)?;
+        if !admission.operational_config_sealed {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        let admin = self.admin_state()?;
+        if !admin.deposits_paused {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        let current = decode::<Option<ImmutableBridgeConfig>>(&previous_config)?
+            .ok_or(StorageError::Core(CoreError::ConflictingReplay))?;
+        let next_config = encode(&Some(current.with_activation_attestation(attestation)))?;
+        self.handle.update(|connection| {
+            let persisted_config = connection.query_scalar::<Vec<u8>>(
+                "SELECT config FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_admission = connection.query_scalar::<Vec<u8>>(
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_config != previous_config.to_sql_bytes()
+                || persisted_admission != previous_admission.to_sql_bytes()
+            {
+                return Err(DbError::Constraint(
+                    "stale activation attestation refresh".into(),
+                ));
+            }
+            connection.execute(
+                "UPDATE singleton_state SET config = ?1 WHERE id = 1",
+                params![next_config.to_sql_bytes()],
+            )?;
+            Ok(())
         })?;
         Ok(())
     }
@@ -8891,6 +9001,35 @@ mod tests {
         withdrawal
     }
 
+    fn activation_attestation() -> crate::config::ActivationAttestation {
+        crate::config::ActivationAttestation {
+            chain_id: 8453,
+            finalized_block_number: 1,
+            finalized_block_hash: vec![1; 32],
+            observed_at_ns: 1,
+            bridge_signer: vec![2; 20],
+            bridge_runtime_sha256: vec![3; 32],
+            deposits_paused: true,
+            withdrawals_paused: true,
+            bridge_timelock: vec![4; 20],
+            runtime_administrator: vec![5; 20],
+            timelock_admin: vec![4; 20],
+            timelock_proposer: vec![5; 20],
+            timelock_canceller: vec![5; 20],
+            timelock_executor: vec![5; 20],
+            timelock_runtime_code_hash: vec![6; 32],
+            bridge_approved_timelock_runtime_code_hash: vec![6; 32],
+            timelock_minimum_delay_seconds: 86_400,
+            bsns_address: vec![7; 20],
+            bsns_runtime_sha256: vec![8; 32],
+            bsns_name: "KINIC".into(),
+            bsns_symbol: "KINIC".into(),
+            bsns_decimals: 8,
+            bsns_bridge: vec![1; 20],
+            base_service_fee: 10,
+        }
+    }
+
     fn config() -> BridgeInitArgs {
         let principal = Principal::self_authenticating([7; 32]);
         BridgeInitArgs {
@@ -8933,6 +9072,7 @@ mod tests {
             settlement_cycle_ceiling: 1,
             governance_principal: principal,
             pause_principal: Principal::from_slice(&[2]),
+            confirmation_relayer_principal: Principal::from_slice(&[5]),
             fee_recipient: FeeRecipientConfig {
                 owner: Principal::from_slice(&[3]),
                 subaccount: vec![],
@@ -9183,7 +9323,7 @@ mod tests {
         let revision_before = storage_revision(&store);
 
         store
-            .seal_operational_config(&next)
+            .seal_operational_config(&next, activation_attestation())
             .expect("seal operational config");
         assert_eq!(store.config().expect("sealed config"), Some(next.clone()));
         assert!(store.operational_config_sealed().expect("sealed lifecycle"));
@@ -9192,7 +9332,7 @@ mod tests {
         let mut conflicting = next.clone();
         conflicting.cycles_floor = 4;
         assert!(matches!(
-            store.seal_operational_config(&conflicting),
+            store.seal_operational_config(&conflicting, activation_attestation()),
             Err(StorageError::Core(CoreError::ConflictingReplay))
         ));
         assert_eq!(
@@ -9211,6 +9351,47 @@ mod tests {
 
     #[test]
     #[serial]
+    fn activation_attestation_refresh_requires_sealed_paused_state_and_replaces_only_observation() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize configured store");
+        assert!(matches!(
+            store.refresh_activation_attestation(activation_attestation()),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+
+        let first = activation_attestation();
+        store
+            .seal_operational_config(&initial, first.clone())
+            .expect("seal operational config");
+        let mut refreshed = first;
+        refreshed.finalized_block_number += 1;
+        refreshed.observed_at_ns += 1;
+        store
+            .refresh_activation_attestation(refreshed.clone())
+            .expect("refresh activation attestation");
+        assert_eq!(
+            store.activation_attestation().expect("read attestation"),
+            Some(refreshed.clone())
+        );
+        assert_eq!(
+            store.config().expect("config remains unchanged"),
+            Some(initial)
+        );
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen refreshed store");
+        assert_eq!(
+            reopened
+                .activation_attestation()
+                .expect("reopen attestation"),
+            Some(refreshed)
+        );
+    }
+
+    #[test]
+    #[serial]
     fn operational_config_seal_rolls_back_config_and_lifecycle_together() {
         let memory = VectorMemory::default();
         let initial = config();
@@ -9222,7 +9403,9 @@ mod tests {
         let revision_before = storage_revision(&store);
 
         set_operational_config_seal_failpoint(Some(OperationalConfigSealFailpoint::Singleton));
-        assert!(store.seal_operational_config(&next).is_err());
+        assert!(store
+            .seal_operational_config(&next, activation_attestation())
+            .is_err());
         set_operational_config_seal_failpoint(None);
         assert_eq!(
             store.config().expect("rolled back config"),
@@ -11316,8 +11499,51 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 34);
+        assert_eq!(SCHEMA_VERSION, 35);
         assert_eq!(WIRE_VERSION, 29);
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn staging_schema_34_migrates_once_with_the_reviewed_confirmation_relayer() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize schema 35 fixture");
+        let counts = store.status_counts().expect("counts before migration");
+        let mut legacy = ImmutableBridgeConfig::from_init(&initial);
+        legacy.confirmation_relayer_principal = Principal::anonymous();
+        legacy.activation_attestation = None;
+        store
+            .config
+            .set(encode(&Some(legacy)).expect("encode legacy config"))
+            .expect("store legacy config");
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = 34, record_wire_version = 29 WHERE id = 1",
+                    params![],
+                )
+            })
+            .expect("mark schema 34");
+        drop(store);
+
+        let relayer = Principal::from_slice(&[42]);
+        let reopened = StableStore::reopen_after_staging_upgrade(memory.clone(), Some(relayer))
+            .expect("migrate schema 34");
+        assert_eq!(
+            reopened
+                .config()
+                .expect("config")
+                .expect("configured")
+                .confirmation_relayer_principal,
+            relayer
+        );
+        assert_eq!(reopened.status_counts().expect("counts after"), counts);
+        drop(reopened);
+        assert!(StableStore::reopen_after_staging_upgrade(memory, Some(relayer)).is_ok());
     }
 
     #[test]
@@ -11535,6 +11761,7 @@ mod tests {
         let args = crate::config::StagingUpgradeArgs {
             status_counts_guard_version: 1,
             minimum_withdrawal_id: None,
+            confirmation_relayer_principal: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
                 custom_evm_rpc_urls: requested.clone(),
                 expected_status_counts: counts_before.staging_expected_status_counts(),
@@ -11622,6 +11849,7 @@ mod tests {
         let args = crate::config::StagingUpgradeArgs {
             status_counts_guard_version: 1,
             minimum_withdrawal_id: None,
+            confirmation_relayer_principal: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
                 custom_evm_rpc_urls: crate::config::STAGING_NEW_RPC_URLS
                     .map(str::to_owned)
@@ -11651,6 +11879,7 @@ mod tests {
             status_counts_guard_version: 0,
             rpc_provider_update: None,
             minimum_withdrawal_id: None,
+            confirmation_relayer_principal: None,
         };
         assert_eq!(
             crate::apply_staging_rpc_provider_update(&mut store, &empty_unguarded),

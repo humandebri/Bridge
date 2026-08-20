@@ -23,7 +23,8 @@ const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 34;
+const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 35;
 const GATE_A_ARTIFACTS: [&str; 6] = [
     "profile.json",
     "bridge-canister.wasm",
@@ -32,9 +33,8 @@ const GATE_A_ARTIFACTS: [&str; 6] = [
     "bsns-runtime.bin",
     "bsns-runtime-layout.json",
 ];
-const GATE_B_ARTIFACTS: [&str; 17] = [
+const GATE_B_ARTIFACTS: [&str; 16] = [
     "profile.json",
-    "signer-snapshot.json",
     "rpc-e2e.json",
     "controller-handover.json",
     "sns-upgrade.json",
@@ -64,6 +64,7 @@ struct Profile {
     index_canister_id: String,
     root_canister_id: String,
     governance_principal: String,
+    confirmation_relayer_principal: String,
     decimals: u8,
     bridge_canister_id: String,
     canister_schema_version: u16,
@@ -228,14 +229,14 @@ struct RateLimits {
     settlement_retry_interval_seconds: u64,
 }
 
-#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(CandidType, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct GovernanceReplacementPolicy {
     max_replacements: u8,
     fee_bump_bps: u16,
 }
 
-#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(CandidType, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct EvmFeePolicy {
     #[serde(with = "u128_string")]
@@ -342,66 +343,6 @@ struct GateAReceipt {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SignerSnapshot {
-    schema_version: u8,
-    observed_at_unix: u64,
-    chain_id: u64,
-    evm_rpc_canister_id: String,
-    finalized_head_block_number: u64,
-    finalized_head_block_hash: String,
-    canonical: bool,
-    agreeing_providers: u8,
-    total_providers: u8,
-    rpc_provider_urls_sha256: String,
-    base_deposit_mints_paused: bool,
-    base_withdrawals_paused: bool,
-    canister_deposits_paused: bool,
-    base_bridge_signer: String,
-    canister_bridge_signer: String,
-    base_runtime_administrator: String,
-    bridge_runtime_bytecode_sha256: String,
-    expected_bridge_runtime_bytecode_sha256: String,
-    bridge_canister_wasm_sha256: String,
-    bridge_canister_id: String,
-    timelock_address: String,
-    timelock_runtime_code_hash: String,
-    bridge_approved_timelock_runtime_code_hash: String,
-    timelock_minimum_delay_seconds: u64,
-    timelock_self_admin: bool,
-    timelock_proposer: String,
-    timelock_executor: String,
-    timelock_canceller: String,
-    timelock_proposer_authorized: bool,
-    timelock_executor_authorized: bool,
-    timelock_canceller_authorized: bool,
-    timelock_open_proposer: bool,
-    timelock_open_executor: bool,
-    timelock_open_canceller: bool,
-    timelock_external_admins_absent: bool,
-    timelock_roles_exact: bool,
-    bridge_deployment_transaction_hash: String,
-    bridge_deployment_block_number: u64,
-    bridge_deployment_block_hash: String,
-    timelock_deployment_transaction_hash: String,
-    timelock_deployment_block_number: u64,
-    timelock_deployment_block_hash: String,
-    bsns_address: String,
-    bsns_runtime_bytecode_sha256: String,
-    bsns_runtime_template_sha256: String,
-    bsns_name: String,
-    bsns_symbol: String,
-    bsns_decimals: u8,
-    bsns_bridge: String,
-    ic_controller: String,
-    expected_ic_controller: String,
-    settlement_reserve_sufficient: bool,
-    ledger_fee: u128,
-    base_service_fee: u128,
-    public_config: LivePublicConfig,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct LivePublicConfig {
     base_chain_id: u64,
     bridge_contract: String,
@@ -433,6 +374,7 @@ struct LivePublicConfig {
     #[serde(with = "u128_string")]
     settlement_cycle_ceiling: u128,
     governance_principal: String,
+    confirmation_relayer_principal: String,
     pause_principal: String,
     fee_recipient: LiveFeeRecipient,
 }
@@ -798,6 +740,16 @@ struct ActivationOperationStatusView {
 struct ActivationStatusView {
     deposits_paused: bool,
     pending_timelock_operation: Option<ActivationOperationStatusView>,
+    last_confirmed_activation: Option<ActivationConfirmationStatusView>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ActivationConfirmationStatusView {
+    phase: String,
+    governance_operation_id: u64,
+    timelock_operation_id: Vec<u8>,
+    transaction_hash: Vec<u8>,
+    receipt_block_number: u64,
 }
 
 #[derive(CandidType, Deserialize)]
@@ -807,19 +759,102 @@ enum ActivationStatusResultView {
 }
 
 #[derive(CandidType, Deserialize)]
+struct ActivationAttestationView {
+    chain_id: u64,
+    finalized_block_number: u64,
+    finalized_block_hash: Vec<u8>,
+    observed_at_ns: u64,
+    bridge_signer: Vec<u8>,
+    bridge_runtime_sha256: Vec<u8>,
+    deposits_paused: bool,
+    withdrawals_paused: bool,
+    bridge_timelock: Vec<u8>,
+    runtime_administrator: Vec<u8>,
+    timelock_admin: Vec<u8>,
+    timelock_proposer: Vec<u8>,
+    timelock_canceller: Vec<u8>,
+    timelock_executor: Vec<u8>,
+    timelock_runtime_code_hash: Vec<u8>,
+    bridge_approved_timelock_runtime_code_hash: Vec<u8>,
+    timelock_minimum_delay_seconds: u64,
+    bsns_address: Vec<u8>,
+    bsns_runtime_sha256: Vec<u8>,
+    bsns_name: String,
+    bsns_symbol: String,
+    bsns_decimals: u8,
+    bsns_bridge: Vec<u8>,
+    base_service_fee: u128,
+}
+
+#[derive(CandidType, Deserialize)]
+enum ActivationAttestationResultView {
+    Ok(ActivationAttestationView),
+    Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize)]
+struct PublicFeeRecipientView {
+    owner: Principal,
+    subaccount: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct PublicConfigView {
+    base_chain_id: u64,
+    bridge_contract: Vec<u8>,
+    expected_bridge_runtime_sha256: Vec<u8>,
+    timelock_contract: Vec<u8>,
+    deployment_instance_id: Vec<u8>,
+    minimum_withdrawal_id: Vec<u8>,
+    ledger_canister_id: Principal,
+    ledger_fee: u128,
+    index_canister_id: Principal,
+    schema_version: u16,
+    expected_bridge_signer: Vec<u8>,
+    governance_operator: Vec<u8>,
+    evm_rpc_canister_id: Principal,
+    rpc_provider_urls_sha256: Vec<u8>,
+    deposit_rate_limit_window_seconds: u64,
+    deposit_rate_limit_global: u16,
+    deposit_rate_limit_per_principal: u16,
+    notification_rate_limit_window_seconds: u64,
+    notification_rate_limit_global: u16,
+    notification_ingestion_rate_limit_global: u16,
+    settlement_rate_limit_window_seconds: u64,
+    settlement_rate_limit_global: u16,
+    settlement_rate_limit_per_principal: u16,
+    settlement_rate_limit_per_record: u16,
+    settlement_retry_interval_seconds: u64,
+    governance_evm_fee: EvmFeePolicy,
+    governance_replacement: GovernanceReplacementPolicy,
+    cycles_floor: u128,
+    settlement_cycle_ceiling: u128,
+    governance_principal: Principal,
+    confirmation_relayer_principal: Principal,
+    pause_principal: Principal,
+    fee_recipient: PublicFeeRecipientView,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ReserveStatusView {
+    sufficient: bool,
+}
+
+#[derive(CandidType, Deserialize)]
+struct BridgeStatusLiveView {
+    reserve: ReserveStatusView,
+    deposits_paused: bool,
+}
+
+#[derive(CandidType, Deserialize)]
 struct EmergencyPauseReceiptView {
     caller: Principal,
     local_deposits_paused: bool,
     local_pause_audit_sequence: u64,
     local_pause_audit_sha256: Vec<u8>,
-    base_governance: BaseGovernanceReceiptView,
-}
-
-#[derive(CandidType, Deserialize)]
-struct BaseGovernanceReceiptView {
-    operation_id: u64,
-    nonce: u64,
-    transaction_hash: Option<Vec<u8>>,
+    base_actions_queued: bool,
+    base_action_count: u8,
+    base_action_plan_sha256: Vec<u8>,
 }
 
 #[derive(CandidType, Deserialize)]
@@ -1300,7 +1335,7 @@ fn credential_free_https(url: &str) -> bool {
 }
 
 fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
-    if profile.schema_version != 3 {
+    if profile.schema_version != 4 {
         return Err("obsolete or unknown release profile schema".into());
     }
     if production && profile.test_assets_only {
@@ -1459,11 +1494,17 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
                 .checked_add(1)
                 .ok_or("deployment nonce overflow")?,
         )
+        || !address_matches_create(
+            &profile.bsns_contract,
+            decode_address(&profile.bridge_contract)?,
+            1,
+        )
     {
         return Err("invalid initial Base deployment binding".into());
     }
     let principals = [
         &profile.governance_principal,
+        &profile.confirmation_relayer_principal,
         &profile.pause_principal,
         &profile.fee_recipient,
     ];
@@ -1736,6 +1777,7 @@ fn render_release_inputs(
         "cycles_floor": profile.parameters.cycles_floor.to_string(),
         "settlement_cycle_ceiling": profile.parameters.settlement_cycle_ceiling.to_string(),
         "governance_principal": profile.governance_principal,
+        "confirmation_relayer_principal": profile.confirmation_relayer_principal,
         "pause_principal": profile.pause_principal,
         "fee_recipient": { "owner": profile.fee_recipient, "subaccount_hex": "" }
     });
@@ -2108,6 +2150,24 @@ fn validate_activation_time(at: u64, manifest_created: u64, now: u64) -> Result<
     Ok(())
 }
 
+fn validate_activation_attestation_time(
+    observed_at_ns: u64,
+    manifest_created: u64,
+    now: u64,
+) -> Result<(), String> {
+    if observed_at_ns == 0 {
+        return Err("activation attestation timestamp is missing".into());
+    }
+    let observed = observed_at_ns / 1_000_000_000;
+    if observed < manifest_created
+        || observed > now
+        || now - observed > MAX_ACTIVATION_ATTESTATION_AGE_SECS
+    {
+        return Err("activation attestation predates Gate B, is future-dated, or is stale".into());
+    }
+    Ok(())
+}
+
 fn validate_plan006_evidence(
     root: &Path,
     manifest: &ReleaseManifest,
@@ -2403,9 +2463,9 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     if profile.test_assets_only != manifest.test_only {
         return Err("manifest/profile test-only mismatch".into());
     }
-    let drill: MonitorDrill = read_json(&root.join("monitor-drill.json"))?;
-    validate_monitor_drill(&drill, &manifest, &profile, now)?;
     if gate_b {
+        let drill: MonitorDrill = read_json(&root.join("monitor-drill.json"))?;
+        validate_monitor_drill(&drill, &manifest, &profile, now)?;
         validate_keeper_drill(root, &manifest, &profile, now)?;
         validate_provider_independence_receipt(root, &manifest, &profile, now)?;
         validate_ui_assets_receipt(root, &manifest)?;
@@ -2469,6 +2529,7 @@ fn validate_live_public_config(
         || observed.cycles_floor != p.cycles_floor
         || observed.settlement_cycle_ceiling != p.settlement_cycle_ceiling
         || observed.governance_principal != profile.governance_principal
+        || observed.confirmation_relayer_principal != profile.confirmation_relayer_principal
         || observed.pause_principal != profile.pause_principal
         || observed.fee_recipient.owner != profile.fee_recipient
         || !observed.fee_recipient.subaccount_hex.is_empty()
@@ -2478,15 +2539,10 @@ fn validate_live_public_config(
     Ok(())
 }
 
-fn verify_live_inputs(bundle: &ValidatedBundle) -> Result<(), String> {
-    let snapshot: SignerSnapshot = read_json(&bundle.root.join("signer-snapshot.json"))?;
-    let receipt: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
-    let now = now_unix()?;
-    validate_evidence_time(
-        snapshot.observed_at_unix,
-        bundle.manifest.created_at_unix,
-        now,
-    )?;
+fn verify_live_inputs(
+    bundle: &ValidatedBundle,
+    expected_deposits_paused: bool,
+) -> Result<(), String> {
     let rpc_url_hash = hex(&canonical_sha256(
         &bundle
             .profile
@@ -2495,114 +2551,71 @@ fn verify_live_inputs(bundle: &ValidatedBundle) -> Result<(), String> {
             .map(|provider| provider.url.clone())
             .collect::<Vec<_>>(),
     )?);
-    validate_live_public_config(&snapshot.public_config, &bundle.profile, &rpc_url_hash)?;
-    if snapshot.schema_version != 2
-        || now
-            .checked_sub(snapshot.observed_at_unix)
-            .is_none_or(|age| age > 5 * 60)
-        || snapshot.bridge_canister_id != bundle.profile.bridge_canister_id
-        || snapshot.chain_id != bundle.profile.chain_id
-        || snapshot.evm_rpc_canister_id != bundle.profile.evm_rpc_canister_id
-        || snapshot.finalized_head_block_number == 0
-        || !valid_hash32(&snapshot.finalized_head_block_hash)
-        || !snapshot.canonical
-        || snapshot.total_providers != 3
-        || snapshot.agreeing_providers < 2
-        || !snapshot
-            .rpc_provider_urls_sha256
-            .eq_ignore_ascii_case(&rpc_url_hash)
-        || !snapshot.base_deposit_mints_paused
-        || !snapshot.base_withdrawals_paused
-        || !snapshot.canister_deposits_paused
-        || !snapshot
-            .base_bridge_signer
-            .eq_ignore_ascii_case(&bundle.profile.expected_bridge_signer)
-        || !snapshot
-            .canister_bridge_signer
-            .eq_ignore_ascii_case(&bundle.profile.expected_bridge_signer)
-        || !snapshot
-            .base_runtime_administrator
-            .eq_ignore_ascii_case(&bundle.profile.governance_operator)
-        || !valid_sha256(&snapshot.bridge_runtime_bytecode_sha256)
-        || !snapshot
-            .bridge_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&snapshot.expected_bridge_runtime_bytecode_sha256)
-        || !snapshot
-            .bridge_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&bundle.profile.bridge_runtime_bytecode_sha256)
-        || !snapshot
-            .bridge_canister_wasm_sha256
-            .eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
-        || snapshot.bridge_canister_id != bundle.profile.bridge_canister_id
-        || !snapshot
-            .timelock_address
-            .eq_ignore_ascii_case(&bundle.profile.timelock.address)
-        || !valid_hash32(&snapshot.timelock_runtime_code_hash)
-        || !snapshot
-            .timelock_runtime_code_hash
-            .eq_ignore_ascii_case(&bundle.profile.timelock.runtime_code_hash)
-        || !snapshot
-            .bridge_approved_timelock_runtime_code_hash
-            .eq_ignore_ascii_case(&bundle.profile.timelock.runtime_code_hash)
-        || snapshot.timelock_minimum_delay_seconds != bundle.profile.timelock.minimum_delay_seconds
-        || !snapshot.timelock_self_admin
-        || !snapshot
-            .timelock_proposer
-            .eq_ignore_ascii_case(&bundle.profile.timelock.proposer)
-        || !snapshot
-            .timelock_executor
-            .eq_ignore_ascii_case(&bundle.profile.timelock.executor)
-        || !snapshot
-            .timelock_canceller
-            .eq_ignore_ascii_case(&bundle.profile.timelock.canceller)
-        || !snapshot.timelock_proposer_authorized
-        || !snapshot.timelock_executor_authorized
-        || !snapshot.timelock_canceller_authorized
-        || snapshot.timelock_open_proposer
-        || snapshot.timelock_open_executor
-        || snapshot.timelock_open_canceller
-        || !snapshot.timelock_external_admins_absent
-        || !snapshot.timelock_roles_exact
-        || !snapshot
-            .bridge_deployment_transaction_hash
-            .eq_ignore_ascii_case(&receipt.bridge_deployment_transaction_hash)
-        || snapshot.bridge_deployment_block_number != receipt.bridge_deployment_block_number
-        || !snapshot
-            .bridge_deployment_block_hash
-            .eq_ignore_ascii_case(&receipt.bridge_deployment_block_hash)
-        || !snapshot
-            .timelock_deployment_transaction_hash
-            .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
-        || snapshot.timelock_deployment_block_number != receipt.timelock_deployment_block_number
-        || !snapshot
-            .timelock_deployment_block_hash
-            .eq_ignore_ascii_case(&receipt.timelock_deployment_block_hash)
-        || !snapshot
-            .bsns_address
-            .eq_ignore_ascii_case(&bundle.profile.bsns_contract)
-        || !snapshot
-            .bsns_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&bundle.profile.bsns_runtime_bytecode_sha256)
-        || !snapshot
-            .bsns_runtime_template_sha256
-            .eq_ignore_ascii_case(&bundle.profile.bsns_runtime_template_sha256)
-        || snapshot.bsns_name != "KINIC"
-        || snapshot.bsns_symbol != "KINIC"
-        || snapshot.bsns_decimals != bundle.profile.decimals
-        || !snapshot
-            .bsns_bridge
-            .eq_ignore_ascii_case(&bundle.profile.bridge_contract)
-        || snapshot.ic_controller != snapshot.expected_ic_controller
-        || snapshot.ic_controller != bundle.profile.root_canister_id
-        || !principal(&snapshot.ic_controller)
-        || !snapshot.settlement_reserve_sufficient
-        || snapshot.ledger_fee != bundle.profile.parameters.ledger_fee
-        || snapshot.base_service_fee != bundle.profile.parameters.service_fee
-        || snapshot.ledger_fee > snapshot.base_service_fee
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (public_raw, status_raw) = async_runtime()?.block_on(async {
+        let public = agent
+            .query(&bridge, "get_public_config")
+            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = agent
+            .query(&bridge, "get_bridge_status")
+            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((public, status))
+    })?;
+    let public = Decode!(&public_raw, PublicConfigView).map_err(|error| error.to_string())?;
+    let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
+    let observed = LivePublicConfig {
+        base_chain_id: public.base_chain_id,
+        bridge_contract: format!("0x{}", hex(&public.bridge_contract)),
+        timelock_contract: format!("0x{}", hex(&public.timelock_contract)),
+        deployment_instance_id: format!("0x{}", hex(&public.deployment_instance_id)),
+        minimum_withdrawal_id: format!("0x{}", hex(&public.minimum_withdrawal_id)),
+        ledger_canister_id: public.ledger_canister_id.to_text(),
+        index_canister_id: public.index_canister_id.to_text(),
+        schema_version: public.schema_version,
+        expected_bridge_signer: format!("0x{}", hex(&public.expected_bridge_signer)),
+        governance_operator: format!("0x{}", hex(&public.governance_operator)),
+        evm_rpc_canister_id: public.evm_rpc_canister_id.to_text(),
+        rpc_provider_urls_sha256: hex(&public.rpc_provider_urls_sha256),
+        deposit_rate_limit_window_seconds: public.deposit_rate_limit_window_seconds,
+        deposit_rate_limit_global: public.deposit_rate_limit_global,
+        deposit_rate_limit_per_principal: public.deposit_rate_limit_per_principal,
+        notification_rate_limit_window_seconds: public.notification_rate_limit_window_seconds,
+        notification_rate_limit_global: public.notification_rate_limit_global,
+        notification_ingestion_rate_limit_global: public.notification_ingestion_rate_limit_global,
+        settlement_rate_limit_window_seconds: public.settlement_rate_limit_window_seconds,
+        settlement_rate_limit_global: public.settlement_rate_limit_global,
+        settlement_rate_limit_per_principal: public.settlement_rate_limit_per_principal,
+        settlement_rate_limit_per_record: public.settlement_rate_limit_per_record,
+        settlement_retry_interval_seconds: public.settlement_retry_interval_seconds,
+        governance_evm_fee: public.governance_evm_fee,
+        governance_replacement: public.governance_replacement,
+        cycles_floor: public.cycles_floor,
+        settlement_cycle_ceiling: public.settlement_cycle_ceiling,
+        governance_principal: public.governance_principal.to_text(),
+        confirmation_relayer_principal: public.confirmation_relayer_principal.to_text(),
+        pause_principal: public.pause_principal.to_text(),
+        fee_recipient: LiveFeeRecipient {
+            owner: public.fee_recipient.owner.to_text(),
+            subaccount_hex: hex(&public.fee_recipient.subaccount),
+        },
+    };
+    validate_live_public_config(&observed, &bundle.profile, &rpc_url_hash)?;
+    if public.expected_bridge_runtime_sha256
+        != decode_hex(&bundle.profile.bridge_runtime_bytecode_sha256)?
+        || public.ledger_fee != bundle.profile.parameters.ledger_fee
+        || public.ledger_fee > bundle.profile.parameters.service_fee
+        || status.deposits_paused != expected_deposits_paused
+        || !status.reserve.sufficient
     {
-        return Err(
-            "live snapshot does not match the approved profile or safety requirements".into(),
-        );
+        return Err("authenticated live Canister state does not satisfy Gate B".into());
     }
     validate_rpc_rehearsal(bundle)?;
     Ok(())
@@ -2673,24 +2686,24 @@ fn verify_monitor_ic_certificate(bundle: &ValidatedBundle) -> Result<(), String>
     let pause_principal =
         Principal::from_text(&drill.ic_pause.pause_principal).map_err(|error| error.to_string())?;
     let audit_sha = decode_hex(&drill.ic_pause.audit_sha256)?;
-    let first_pause = drill
+    let action_plan = drill
         .base_actions
         .iter()
-        .find(|action| action.kind == "PauseDepositMints")
-        .ok_or("monitor evidence is missing PauseDepositMints")?;
-    let expected_transaction = decode_hex(&first_pause.transaction_hash)?;
+        .map(|action| action.kind.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let action_plan_sha256 = Sha256::digest(action_plan.as_bytes());
     if receipt.caller != pause_principal
         || drill.ic_pause.pause_principal != bundle.profile.pause_principal
         || !receipt.local_deposits_paused
         || receipt.local_pause_audit_sequence != drill.ic_pause.audit_sequence
         || receipt.local_pause_audit_sha256 != audit_sha
-        || receipt.base_governance.operation_id == 0
-        || receipt.base_governance.transaction_hash.as_deref()
-            != Some(expected_transaction.as_slice())
+        || !receipt.base_actions_queued
+        || usize::from(receipt.base_action_count) != drill.base_actions.len()
+        || receipt.base_action_plan_sha256 != action_plan_sha256.as_slice()
     {
         return Err("certified emergency_pause receipt is not bound to the drill evidence".into());
     }
-    let _ = receipt.base_governance.nonce;
     Ok(())
 }
 
@@ -2721,6 +2734,66 @@ fn verify_keeper_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
         .ok_or("live monitoring withdrawal is missing")?;
     if withdrawal.withdrawal_id != withdrawal_id || withdrawal.state != WithdrawalPhaseView::Paid {
         return Err("live monitoring withdrawal is not the bound Paid record".into());
+    }
+    Ok(())
+}
+
+fn verify_activation_attestation_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let raw = async_runtime()?.block_on(async {
+        agent
+            .query(&bridge, "get_activation_attestation")
+            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())
+    })?;
+    let ActivationAttestationResultView::Ok(attestation) =
+        Decode!(&raw, ActivationAttestationResultView).map_err(|error| error.to_string())?
+    else {
+        return Err("authenticated activation attestation is unavailable".into());
+    };
+    let now = now_unix()?;
+    validate_activation_attestation_time(
+        attestation.observed_at_ns,
+        bundle.manifest.created_at_unix,
+        now,
+    )?;
+    let expected_signer = decode_address(&bundle.profile.expected_bridge_signer)?;
+    let expected_runtime = decode_hex(&bundle.profile.bridge_runtime_bytecode_sha256)?;
+    let expected_timelock = decode_address(&bundle.profile.timelock.address)?;
+    let expected_operator = decode_address(&bundle.profile.governance_operator)?;
+    if attestation.chain_id != bundle.profile.chain_id
+        || attestation.finalized_block_number == 0
+        || attestation.finalized_block_hash.len() != 32
+        || attestation.bridge_signer != expected_signer
+        || attestation.bridge_runtime_sha256 != expected_runtime
+        || !attestation.deposits_paused
+        || !attestation.withdrawals_paused
+        || attestation.bridge_timelock != expected_timelock
+        || attestation.runtime_administrator != expected_operator
+        || attestation.timelock_admin != expected_timelock
+        || attestation.timelock_proposer != expected_operator
+        || attestation.timelock_canceller != expected_operator
+        || attestation.timelock_executor != expected_operator
+        || attestation.timelock_runtime_code_hash
+            != decode_hex(&bundle.profile.timelock.runtime_code_hash)?
+        || attestation.bridge_approved_timelock_runtime_code_hash
+            != decode_hex(&bundle.profile.timelock.runtime_code_hash)?
+        || attestation.timelock_minimum_delay_seconds
+            != bundle.profile.timelock.minimum_delay_seconds
+        || attestation.bsns_address != decode_address(&bundle.profile.bsns_contract)?
+        || attestation.bsns_runtime_sha256
+            != decode_hex(&bundle.profile.bsns_runtime_bytecode_sha256)?
+        || attestation.bsns_name != "KINIC"
+        || attestation.bsns_symbol != "KINIC"
+        || attestation.bsns_decimals != bundle.profile.decimals
+        || attestation.bsns_bridge != decode_address(&bundle.profile.bridge_contract)?
+        || attestation.base_service_fee != bundle.profile.parameters.service_fee
+    {
+        return Err("authenticated activation attestation does not match the release".into());
     }
     Ok(())
 }
@@ -2843,21 +2916,10 @@ fn verify_provider_independence_authenticity(bundle: &ValidatedBundle) -> Result
     Ok(())
 }
 
-fn verify_live(bundle: &ValidatedBundle) -> Result<(), String> {
-    let verifier =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/production-live-preflight.sh");
-    let canonical = Command::new(verifier)
-        .arg("verify")
-        .arg(&bundle.root)
-        .output()
-        .map_err(|error| format!("failed to execute canonical live-state verifier: {error}"))?;
-    if !canonical.status.success() {
-        return Err(format!(
-            "canonical live-state verification failed: {}",
-            String::from_utf8_lossy(&canonical.stderr).trim()
-        ));
-    }
-    verify_live_inputs(bundle)?;
+fn verify_live(bundle: &ValidatedBundle, expected_deposits_paused: bool) -> Result<(), String> {
+    verify_live_inputs(bundle, expected_deposits_paused)?;
+    verify_activation_attestation_authenticity(bundle)?;
+    verify_monitor_drill_authenticity(bundle)?;
     verify_keeper_authenticity(bundle)?;
     verify_sns_upgrade_authenticity(bundle)?;
     verify_provider_independence_authenticity(bundle)
@@ -3127,6 +3189,7 @@ fn verify_activation(
     let (operation_id, operation_salt) = if phase == "schedule" {
         let pending = activation
             .pending_timelock_operation
+            .as_ref()
             .ok_or("scheduled activation has no pending Timelock operation")?;
         if !activation.deposits_paused
             || pending.operation_id.len() != 32
@@ -3147,19 +3210,21 @@ fn verify_activation(
         let prior = &prior.as_ref().expect("execute prior checked").0;
         (prior.operation_id.clone(), prior.operation_salt.clone())
     };
-
-    let verifier =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/production-live-preflight.sh");
-    let base_output = Command::new(verifier)
-        .arg("verify-activation")
-        .arg(phase)
-        .arg(&bundle.root)
-        .arg(&operation_id)
-        .output()
-        .map_err(|error| format!("failed to execute activation Base verifier: {error}"))?;
-    if !base_output.status.success() {
-        return Err("activation Base postcondition verifier rejected the live state".into());
+    let confirmation = activation
+        .last_confirmed_activation
+        .as_ref()
+        .ok_or("activation has no Finalized Canister confirmation")?;
+    if confirmation.phase != phase
+        || confirmation.governance_operation_id == 0
+        || confirmation.receipt_block_number == 0
+        || confirmation.transaction_hash.len() != 32
+        || format!("0x{}", hex(&confirmation.timelock_operation_id)) != operation_id.to_lowercase()
+    {
+        return Err(
+            "authenticated activation confirmation does not match the requested phase".into(),
+        );
     }
+
     let prior_schedule_receipt_sha256 = prior.as_ref().map(|(_, digest)| digest.clone());
     let receipt = ActivationReceipt {
         schema_version: 3,
@@ -3182,7 +3247,7 @@ fn verify_activation(
         activation_status_response_sha256: hex(&Sha256::digest(&activation_raw)),
         operation_id,
         operation_salt,
-        base_postcondition_sha256: hex(&Sha256::digest(&base_output.stdout)),
+        base_postcondition_sha256: hex(&Sha256::digest(&activation_raw)),
         prior_schedule_receipt_sha256,
     };
     write_json_new(receipt_path, &receipt)
@@ -3298,6 +3363,7 @@ fn verify_schedule_receipt_live(
     };
     let pending = activation
         .pending_timelock_operation
+        .as_ref()
         .ok_or("schedule receipt operation is no longer pending in the Canister")?;
     if !activation.deposits_paused
         || format!("0x{}", hex(&pending.operation_id)) != receipt.operation_id.to_lowercase()
@@ -3305,33 +3371,34 @@ fn verify_schedule_receipt_live(
     {
         return Err("live Canister activation state does not match the schedule receipt".into());
     }
-
-    let verifier =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/production-live-preflight.sh");
-    let status = Command::new(verifier)
-        .arg("verify-activation")
-        .arg("schedule")
-        .arg(&bundle.root)
-        .arg(&receipt.operation_id)
-        .status()
-        .map_err(|error| format!("failed to execute schedule Base verifier: {error}"))?;
-    if !status.success() {
-        return Err("prior schedule receipt no longer matches the live Base state".into());
+    let confirmation = activation
+        .last_confirmed_activation
+        .as_ref()
+        .ok_or("schedule receipt has no Finalized Canister confirmation")?;
+    if confirmation.phase != "schedule"
+        || confirmation.governance_operation_id == 0
+        || confirmation.receipt_block_number == 0
+        || confirmation.transaction_hash.len() != 32
+        || format!("0x{}", hex(&confirmation.timelock_operation_id))
+            != receipt.operation_id.to_lowercase()
+    {
+        return Err("live Finalized schedule confirmation does not match the receipt".into());
     }
+
     Ok(())
 }
 
-fn verify_gate_a_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
+fn verify_monitor_drill_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     verify_monitor_ic_certificate(bundle)?;
     let verifier =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/production-live-preflight.sh");
     let status = Command::new(verifier)
-        .arg("verify-gate-a")
+        .arg("verify-monitor-drill")
         .arg(&bundle.root)
         .status()
-        .map_err(|error| format!("failed to execute Gate A Base verifier: {error}"))?;
+        .map_err(|error| format!("failed to execute monitor drill Base verifier: {error}"))?;
     if !status.success() {
-        return Err("Gate A Base receipt/log verifier rejected the monitor drill".into());
+        return Err("monitor drill Base receipt/log verifier rejected the evidence".into());
     }
     Ok(())
 }
@@ -3369,22 +3436,14 @@ fn run() -> Result<(), String> {
         Some("validate-bundle") if args.len() == 4 && args[2] == "--offline" => {
             let bundle = validate_bundle(Path::new(&args[3]), false)?;
             println!(
-                "gate_a=structural-pass authorizing=false manifest_sha256={}",
+                "gate_a=pass authorizing=true manifest_sha256={}",
                 bundle.manifest_sha256
             );
-        }
-        Some("verify-gate-a-live") if args.len() == 3 => {
-            let bundle = validate_bundle(Path::new(&args[2]), false)?;
-            if bundle.manifest.test_only {
-                return Err("Gate A rejects test-only bundles".into());
-            }
-            verify_gate_a_authenticity(&bundle)?;
-            println!("gate_a=pass manifest_sha256={}", bundle.manifest_sha256);
         }
         Some("verify-live") if args.len() == 3 => {
             let bundle = validate_bundle(Path::new(&args[2]), true)?;
             if bundle.manifest.test_only { return Err("Gate B rejects test-only bundles".into()); }
-            verify_live(&bundle)?;
+            verify_live(&bundle, true)?;
             println!("gate_b=pass manifest_sha256={}", bundle.manifest_sha256);
         }
         Some("verify-activation") if args.len() == 7 => {
@@ -3392,7 +3451,11 @@ fn run() -> Result<(), String> {
             if bundle.manifest.test_only {
                 return Err("activation verification rejects test-only bundles".into());
             }
-            verify_live(&bundle)?;
+            match args[2].as_str() {
+                "schedule" => verify_live(&bundle, true)?,
+                "execute" => verify_live_inputs(&bundle, false)?,
+                _ => return Err("activation phase must be schedule or execute".into()),
+            }
             let prior = if args[5] == "-" {
                 None
             } else {
@@ -3412,14 +3475,14 @@ fn run() -> Result<(), String> {
             if bundle.manifest.test_only {
                 return Err("schedule receipt verification rejects test-only bundles".into());
             }
-            verify_live(&bundle)?;
+            verify_live(&bundle, true)?;
             verify_schedule_receipt_live(&bundle, Path::new(&args[3]))?;
             println!(
                 "schedule_receipt=verified manifest_sha256={} receipt={}",
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | verify-gate-a-live <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -3449,6 +3512,18 @@ mod tests {
             now,
         )
         .is_err());
+    }
+
+    #[test]
+    fn activation_attestation_must_be_fresh_and_follow_gate_b() {
+        let created = 1_000_000;
+        let now = created + 300;
+        let ns = |seconds: u64| seconds * 1_000_000_000;
+        assert!(validate_activation_attestation_time(ns(created), created, now).is_ok());
+        assert!(validate_activation_attestation_time(ns(created - 1), created, now).is_err());
+        assert!(validate_activation_attestation_time(ns(now + 1), created, now).is_err());
+        assert!(validate_activation_attestation_time(ns(created), created, now + 1).is_err());
+        assert!(validate_activation_attestation_time(0, created, now).is_err());
     }
 
     fn test_principal(seed: u8) -> String {
@@ -3495,8 +3570,9 @@ mod tests {
     }
 
     fn valid_profile() -> Profile {
+        let bridge_contract = create_address(address_bytes(7), 1);
         Profile {
-            schema_version: 3,
+            schema_version: 4,
             environment: "mainnet-candidate".into(),
             test_assets_only: false,
             chain_id: 8453,
@@ -3505,13 +3581,14 @@ mod tests {
             index_canister_id: KINIC_INDEX.into(),
             root_canister_id: KINIC_ROOT.into(),
             governance_principal: KINIC_GOVERNANCE.into(),
+            confirmation_relayer_principal: test_principal(8),
             decimals: 8,
             bridge_canister_id: test_principal(9),
             canister_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
             ic_host: "https://icp-api.io".into(),
             base_rpc_url: None,
-            bridge_contract: format!("0x{}", hex(&create_address(address_bytes(7), 1))),
-            bsns_contract: address(8),
+            bridge_contract: format!("0x{}", hex(&bridge_contract)),
+            bsns_contract: format!("0x{}", hex(&create_address(bridge_contract, 1))),
             deployment_instance_id: format!("0x{}", "11".repeat(32)),
             minimum_withdrawal_id: format!("0x{}01", "00".repeat(31)),
             deployment_block: 1,
@@ -3629,12 +3706,30 @@ mod tests {
             cycles_floor: profile.parameters.cycles_floor,
             settlement_cycle_ceiling: profile.parameters.settlement_cycle_ceiling,
             governance_principal: profile.governance_principal.clone(),
+            confirmation_relayer_principal: profile.confirmation_relayer_principal.clone(),
             pause_principal: profile.pause_principal.clone(),
             fee_recipient: LiveFeeRecipient {
                 owner: profile.fee_recipient.clone(),
                 subaccount_hex: String::new(),
             },
         }
+    }
+
+    #[test]
+    fn live_public_config_must_exactly_match_the_profile() {
+        let profile = valid_profile();
+        let rpc_url_hash = hex(&canonical_sha256(
+            &profile
+                .rpc_providers
+                .iter()
+                .map(|provider| provider.url.clone())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap());
+        let mut observed = live_public_config(&profile);
+        assert!(validate_live_public_config(&observed, &profile, &rpc_url_hash).is_ok());
+        observed.notification_rate_limit_global -= 1;
+        assert!(validate_live_public_config(&observed, &profile, &rpc_url_hash).is_err());
     }
 
     #[test]
@@ -3709,7 +3804,7 @@ mod tests {
     #[test]
     fn profile_has_no_self_asserted_status_and_requires_provider_independence() {
         let mut profile = valid_profile();
-        profile.schema_version = 1;
+        profile.schema_version = 3;
         assert!(validate_profile(&profile, true).is_err());
         profile = valid_profile();
         profile.base_rpc_url = Some("https://rpc.example".into());
@@ -3850,6 +3945,7 @@ mod tests {
             "cycles_floor",
             "settlement_cycle_ceiling",
             "governance_principal",
+            "confirmation_relayer_principal",
             "pause_principal",
             "fee_recipient",
         ]
@@ -3886,7 +3982,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_gate_validates_hashes_slo_and_live_snapshot() {
+    fn bundle_gate_validates_hashes_and_slo() {
         let root = env::temp_dir().join(format!(
             "bridge-profile-{}-{}",
             process::id(),
@@ -3905,71 +4001,6 @@ mod tests {
         profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(b"wasm"));
         profile.bridge_runtime_bytecode_sha256 = hex(&Sha256::digest(b"runtime"));
         profile.deployment_block = 0;
-        let controller = profile.root_canister_id.clone();
-        let mut snapshot = SignerSnapshot {
-            schema_version: 2,
-            observed_at_unix: now,
-            chain_id: profile.chain_id,
-            evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
-            finalized_head_block_number: 1,
-            finalized_head_block_hash: format!("0x{}", "ab".repeat(32)),
-            canonical: true,
-            agreeing_providers: 2,
-            total_providers: 3,
-            rpc_provider_urls_sha256: hex(&canonical_sha256(
-                &profile
-                    .rpc_providers
-                    .iter()
-                    .map(|provider| provider.url.clone())
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap()),
-            base_deposit_mints_paused: true,
-            base_withdrawals_paused: true,
-            canister_deposits_paused: true,
-            base_bridge_signer: profile.expected_bridge_signer.clone(),
-            canister_bridge_signer: profile.expected_bridge_signer.clone(),
-            base_runtime_administrator: profile.governance_operator.clone(),
-            bridge_runtime_bytecode_sha256: "1".repeat(64),
-            expected_bridge_runtime_bytecode_sha256: "1".repeat(64),
-            bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            bridge_canister_id: profile.bridge_canister_id.clone(),
-            timelock_address: profile.timelock.address.clone(),
-            timelock_runtime_code_hash: profile.timelock.runtime_code_hash.clone(),
-            bridge_approved_timelock_runtime_code_hash: profile.timelock.runtime_code_hash.clone(),
-            timelock_minimum_delay_seconds: 86_400,
-            timelock_self_admin: true,
-            timelock_proposer: profile.timelock.proposer.clone(),
-            timelock_executor: profile.timelock.executor.clone(),
-            timelock_canceller: profile.timelock.canceller.clone(),
-            timelock_proposer_authorized: true,
-            timelock_executor_authorized: true,
-            timelock_canceller_authorized: true,
-            timelock_open_proposer: false,
-            timelock_open_executor: false,
-            timelock_open_canceller: false,
-            timelock_external_admins_absent: true,
-            timelock_roles_exact: true,
-            bridge_deployment_transaction_hash: format!("0x{}", "aa".repeat(32)),
-            bridge_deployment_block_number: 1,
-            bridge_deployment_block_hash: format!("0x{}", "cc".repeat(32)),
-            timelock_deployment_transaction_hash: format!("0x{}", "bb".repeat(32)),
-            timelock_deployment_block_number: 1,
-            timelock_deployment_block_hash: format!("0x{}", "dd".repeat(32)),
-            bsns_address: profile.bsns_contract.clone(),
-            bsns_runtime_bytecode_sha256: profile.bsns_runtime_bytecode_sha256.clone(),
-            bsns_runtime_template_sha256: profile.bsns_runtime_template_sha256.clone(),
-            bsns_name: "KINIC".into(),
-            bsns_symbol: "KINIC".into(),
-            bsns_decimals: profile.decimals,
-            bsns_bridge: profile.bridge_contract.clone(),
-            ic_controller: controller.clone(),
-            expected_ic_controller: controller,
-            settlement_reserve_sufficient: true,
-            ledger_fee: profile.parameters.ledger_fee,
-            base_service_fee: profile.parameters.service_fee,
-            public_config: live_public_config(&profile),
-        };
         let test_helper = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/evm-rpc-rehearsal/test_rehearsal.py");
         let python = r###"import importlib.util,json,os,sys
@@ -4214,13 +4245,8 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             files: ui_files,
         };
         profile.bsns_runtime_template_sha256 = hex(&Sha256::digest(b"bsns-runtime"));
-        snapshot.bsns_runtime_template_sha256 = profile.bsns_runtime_template_sha256.clone();
         let mut docs = vec![
             ("profile.json", serde_json::to_vec(&profile).unwrap()),
-            (
-                "signer-snapshot.json",
-                serde_json::to_vec(&snapshot).unwrap(),
-            ),
             ("rpc-e2e.json", fs::read(root.join("rpc-e2e.json")).unwrap()),
             (
                 "controller-handover.json",
@@ -4254,12 +4280,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 br#"{"byte_length":12,"immutable_ranges":[{"length":1,"start":0}],"schema_version":1}"#.to_vec(),
             ),
         ];
-        snapshot.bridge_canister_wasm_sha256 = profile.bridge_canister_wasm_sha256.clone();
-        snapshot.bridge_runtime_bytecode_sha256 = profile.bridge_runtime_bytecode_sha256.clone();
-        snapshot.expected_bridge_runtime_bytecode_sha256 =
-            profile.bridge_runtime_bytecode_sha256.clone();
         docs[0].1 = serde_json::to_vec(&profile).unwrap();
-        docs[1].1 = serde_json::to_vec(&snapshot).unwrap();
         let mut artifacts = Vec::new();
         for (name, bytes) in docs {
             fs::write(root.join(name), &bytes).unwrap();
@@ -4334,10 +4355,14 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         assert!(obsolete_error.contains("obsolete self-asserted proof attestation"));
         fs::remove_file(root.join("proof-attestation.json")).unwrap();
         let gate_a = validate_bundle(&root, false).unwrap();
-        let gate_a_authenticity_error = verify_gate_a_authenticity(&gate_a).unwrap_err();
-        assert!(gate_a_authenticity_error.contains("invalid IC certificate CBOR"));
         let gate_a_profile_sha256 = hex(&canonical_sha256(&profile).unwrap());
-        profile.deployment_block = snapshot.bridge_deployment_block_number;
+        let bridge_deployment_transaction_hash = format!("0x{}", "aa".repeat(32));
+        let bridge_deployment_block_number = 1;
+        let bridge_deployment_block_hash = format!("0x{}", "cc".repeat(32));
+        let timelock_deployment_transaction_hash = format!("0x{}", "bb".repeat(32));
+        let timelock_deployment_block_number = 1;
+        let timelock_deployment_block_hash = format!("0x{}", "dd".repeat(32));
+        profile.deployment_block = bridge_deployment_block_number;
         let post_deploy_profile = serde_json::to_vec(&profile).unwrap();
         fs::write(root.join("profile.json"), &post_deploy_profile).unwrap();
         let post_deploy_profile_sha256 = hex(&Sha256::digest(&post_deploy_profile));
@@ -4356,14 +4381,12 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             post_deploy_profile_sha256,
             bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
             bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
-            bridge_deployment_transaction_hash: snapshot.bridge_deployment_transaction_hash.clone(),
-            bridge_deployment_block_number: snapshot.bridge_deployment_block_number,
-            bridge_deployment_block_hash: snapshot.bridge_deployment_block_hash.clone(),
-            timelock_deployment_transaction_hash: snapshot
-                .timelock_deployment_transaction_hash
-                .clone(),
-            timelock_deployment_block_number: snapshot.timelock_deployment_block_number,
-            timelock_deployment_block_hash: snapshot.timelock_deployment_block_hash.clone(),
+            bridge_deployment_transaction_hash,
+            bridge_deployment_block_number,
+            bridge_deployment_block_hash,
+            timelock_deployment_transaction_hash,
+            timelock_deployment_block_number,
+            timelock_deployment_block_hash,
         };
         let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
         fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();
@@ -4388,9 +4411,8 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .unwrap();
         let bundle = validate_bundle(&root, true).unwrap();
-        // Cryptographic SNS authenticity is verified against the live network by
-        // `verify-live`; this fixture exercises only deterministic bundle inputs.
-        verify_live_inputs(&bundle).unwrap();
+        // Cryptographic live inputs are verified against the network by `verify-live`;
+        // this fixture exercises only deterministic bundle inputs.
 
         let valid_monitoring_bytes = fs::read(root.join("monitoring-receipt.json")).unwrap();
         let valid_keeper_bytes = fs::read(root.join("keeper-drill.json")).unwrap();
@@ -4469,67 +4491,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         schedule_receipt.gate_b_manifest_sha256 = bundle.manifest_sha256.clone();
         schedule_receipt.activation_status_response_sha256 = "4".repeat(64);
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
-
-        let valid_snapshot_bytes = fs::read(root.join("signer-snapshot.json")).unwrap();
-        let mut legacy_snapshot: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
-        legacy_snapshot["chain_key_eip191_signature"] = Value::String("00".repeat(65));
-        fs::write(
-            root.join("signer-snapshot.json"),
-            serde_json::to_vec(&legacy_snapshot).unwrap(),
-        )
-        .unwrap();
-        assert!(read_json::<SignerSnapshot>(&root.join("signer-snapshot.json")).is_err());
-
-        let mut signer_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
-        signer_drift["canister_bridge_signer"] =
-            Value::String("0x9999999999999999999999999999999999999999".into());
-        fs::write(
-            root.join("signer-snapshot.json"),
-            serde_json::to_vec(&signer_drift).unwrap(),
-        )
-        .unwrap();
-        assert!(verify_live_inputs(&bundle).is_err());
-
-        let mut base_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
-        base_drift["base_bridge_signer"] =
-            Value::String("0x8888888888888888888888888888888888888888".into());
-        fs::write(
-            root.join("signer-snapshot.json"),
-            serde_json::to_vec(&base_drift).unwrap(),
-        )
-        .unwrap();
-        assert!(verify_live_inputs(&bundle).is_err());
-        let mut notification_limit_drift: Value =
-            serde_json::from_slice(&valid_snapshot_bytes).unwrap();
-        notification_limit_drift["public_config"]["notification_rate_limit_global"] =
-            Value::from(59);
-        fs::write(
-            root.join("signer-snapshot.json"),
-            serde_json::to_vec(&notification_limit_drift).unwrap(),
-        )
-        .unwrap();
-        assert!(verify_live_inputs(&bundle).is_err());
-        fs::write(root.join("signer-snapshot.json"), valid_snapshot_bytes).unwrap();
-
-        let valid_snapshot_bytes = fs::read(root.join("signer-snapshot.json")).unwrap();
-        let mut delay_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
-        delay_drift["timelock_minimum_delay_seconds"] = Value::from(86_401);
-        fs::write(
-            root.join("signer-snapshot.json"),
-            serde_json::to_vec(&delay_drift).unwrap(),
-        )
-        .unwrap();
-        assert!(verify_live_inputs(&bundle).is_err());
-        let mut public_config_drift: Value = serde_json::from_slice(&valid_snapshot_bytes).unwrap();
-        public_config_drift["public_config"]["governance_evm_fee"]["max_fee_per_gas_ceiling"] =
-            Value::String("11".into());
-        fs::write(
-            root.join("signer-snapshot.json"),
-            serde_json::to_vec(&public_config_drift).unwrap(),
-        )
-        .unwrap();
-        assert!(verify_live_inputs(&bundle).is_err());
-        fs::write(root.join("signer-snapshot.json"), valid_snapshot_bytes).unwrap();
 
         let valid_handover_bytes = fs::read(root.join("controller-handover.json")).unwrap();
         let mut tampered_response: Value = serde_json::from_slice(&valid_handover_bytes).unwrap();

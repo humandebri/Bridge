@@ -134,6 +134,7 @@ pub struct PublicConfig {
     pub settlement_cycle_ceiling: u128,
     pub governance_principal: candid::Principal,
     pub pause_principal: candid::Principal,
+    pub confirmation_relayer_principal: candid::Principal,
     pub fee_recipient: config::FeeRecipientConfig,
 }
 
@@ -432,7 +433,10 @@ fn apply_staging_rpc_provider_update(
 fn post_upgrade(args: config::StagingUpgradeArgs) {
     let mut store = storage_or_trap(
         "stable state reopen",
-        StableStore::reopen_after_upgrade(DefaultMemoryImpl::default()),
+        StableStore::reopen_after_staging_upgrade(
+            DefaultMemoryImpl::default(),
+            args.confirmation_relayer_principal,
+        ),
     );
     apply_staging_rpc_provider_update(&mut store, &args)
         .unwrap_or_else(|error| ic_cdk::trap(error));
@@ -1518,6 +1522,7 @@ fn get_public_config() -> PublicConfig {
             settlement_cycle_ceiling: config.settlement_cycle_ceiling,
             governance_principal: admin.governance_principal,
             pause_principal: admin.pause_principal,
+            confirmation_relayer_principal: config.confirmation_relayer_principal,
             fee_recipient: admin.fee_recipient,
         }
     })
@@ -1538,11 +1543,26 @@ async fn prepare_base_governance_action(
 #[ic_cdk::update]
 async fn seal_operational_config(
     args: config::OperationalConfigArgs,
-) -> Result<base_governance::ProductionLifecycle, base_governance::BaseGovernanceError> {
+) -> Result<base_governance::OperationalConfigSealReceipt, base_governance::BaseGovernanceError> {
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
     base_governance::seal_operational_config(ic_cdk::api::msg_caller(), args).await
+}
+
+#[ic_cdk::update]
+async fn refresh_activation_attestation(
+) -> Result<config::ActivationAttestation, base_governance::BaseGovernanceError> {
+    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
+    };
+    base_governance::refresh_activation_attestation(ic_cdk::api::msg_caller()).await
+}
+
+#[ic_cdk::query]
+fn get_activation_attestation(
+) -> Result<config::ActivationAttestation, base_governance::BaseGovernanceError> {
+    base_governance::activation_attestation()
 }
 
 #[ic_cdk::query]
@@ -1572,10 +1592,12 @@ fn get_pending_base_governance_transaction() -> Result<
 async fn confirm_base_governance_transaction(
     args: base_governance::ConfirmBaseGovernanceTransactionArgs,
 ) -> Result<base_governance::BaseGovernanceConfirmation, base_governance::BaseGovernanceError> {
+    let caller = ic_cdk::api::msg_caller();
+    base_governance::require_confirmation_caller(caller)?;
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
-    base_governance::confirm(args).await
+    base_governance::confirm(caller, args).await
 }
 
 #[ic_cdk::update]
@@ -1751,6 +1773,7 @@ mod candid_tests {
         let expected = super::config::StagingUpgradeArgs {
             status_counts_guard_version: 1,
             minimum_withdrawal_id: None,
+            confirmation_relayer_principal: Some(candid::Principal::from_slice(&[9])),
             rpc_provider_update: Some(super::config::StagingRpcProviderUpdate {
                 custom_evm_rpc_urls: super::config::STAGING_NEW_RPC_URLS
                     .map(str::to_owned)

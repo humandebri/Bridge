@@ -990,6 +990,7 @@ run_smoke() {
     settlement_cycle_ceiling = 1 : nat;
     governance_principal = principal \"$smoke_principal\";
     pause_principal = principal \"7jkta-eyaaa-aaaaq-aaarq-cai\";
+    confirmation_relayer_principal = principal \"rrkah-fqaaa-aaaaa-aaaaq-cai\";
     fee_recipient = record {
       owner = principal \"aaaaa-aa\";
       subaccount = blob \"\";

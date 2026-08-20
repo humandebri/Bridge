@@ -1,7 +1,41 @@
+type ActivationAttestation = record {
+  finalized_block_number : nat64;
+  timelock_runtime_code_hash : blob;
+  base_service_fee : nat;
+  bsns_runtime_sha256 : blob;
+  bsns_name : text;
+  bsns_address : blob;
+  observed_at_ns : nat64;
+  bsns_decimals : nat8;
+  timelock_proposer : blob;
+  bsns_symbol : text;
+  deposits_paused : bool;
+  bridge_runtime_sha256 : blob;
+  timelock_executor : blob;
+  bridge_signer : blob;
+  chain_id : nat64;
+  bridge_approved_timelock_runtime_code_hash : blob;
+  finalized_block_hash : blob;
+  bsns_bridge : blob;
+  timelock_minimum_delay_seconds : nat64;
+  timelock_canceller : blob;
+  timelock_admin : blob;
+  runtime_administrator : blob;
+  withdrawals_paused : bool;
+  bridge_timelock : blob;
+};
+type ActivationConfirmationView = record {
+  transaction_hash : blob;
+  governance_operation_id : nat64;
+  phase : text;
+  timelock_operation_id : blob;
+  receipt_block_number : nat64;
+};
 type ActivationOperationView = record { salt : blob; operation_id : blob };
 type ActivationStatus = record {
   pending_timelock_operation : opt ActivationOperationView;
   deposits_paused : bool;
+  last_confirmed_activation : opt ActivationConfirmationView;
 };
 type AdminError = variant {
   Busy;
@@ -127,6 +161,7 @@ type BridgeInitArgs = record {
   pause_principal : principal;
   governance_principal : principal;
   index_canister_id : principal;
+  confirmation_relayer_principal : principal;
   ledger_canister_id : principal;
   settlement_retry_interval_seconds : nat64;
   governance_replacement : GovernanceReplacementPolicy;
@@ -252,8 +287,10 @@ type DepositView = record {
 };
 type EmergencyPauseReceipt = record {
   local_pause_audit_sequence : nat64;
+  base_action_count : nat8;
   caller : principal;
   local_pause_audit_sha256 : blob;
+  base_action_plan_sha256 : blob;
   local_deposits_paused : bool;
   base_actions_queued : bool;
 };
@@ -398,6 +435,10 @@ type OperationalConfigArgs = record {
   governance_evm_fee : EvmFeePolicy;
   cycles_floor : nat;
 };
+type OperationalConfigSealReceipt = record {
+  activation_attestation : ActivationAttestation;
+  lifecycle : ProductionLifecycle;
+};
 type PrepareBaseGovernanceReplacementArgs = record {
   max_priority_fee_per_gas : nat;
   operation_id : nat64;
@@ -436,6 +477,7 @@ type PublicConfig = record {
   governance_principal : principal;
   ledger_fee : nat;
   index_canister_id : principal;
+  confirmation_relayer_principal : principal;
   ledger_canister_id : principal;
   settlement_retry_interval_seconds : nat64;
   governance_replacement : GovernanceReplacementPolicy;
@@ -482,32 +524,40 @@ type Result_1 = variant {
   Err : SettlementActionError;
 };
 type Result_10 = variant {
+  Ok : ProductionLifecycle;
+  Err : BaseGovernanceError;
+};
+type Result_11 = variant {
   Ok : vec opt WithdrawalView;
   Err : GetWithdrawalsError;
 };
-type Result_11 = variant { Ok; Err : PublicConfigInitializationError };
-type Result_12 = variant { Ok : DepositIdPage; Err : ListDepositIdsError };
-type Result_13 = variant {
+type Result_12 = variant { Ok; Err : PublicConfigInitializationError };
+type Result_13 = variant { Ok : DepositIdPage; Err : ListDepositIdsError };
+type Result_14 = variant {
   Ok : NonterminalDepositRefPage;
   Err : ListDepositIdsError;
 };
-type Result_14 = variant {
+type Result_15 = variant {
   Ok : NotifyWithdrawalReceipt;
   Err : NotifyWithdrawalError;
 };
-type Result_15 = variant { Ok; Err : AdminError };
-type Result_16 = variant {
+type Result_16 = variant { Ok; Err : AdminError };
+type Result_17 = variant {
   Ok : ChecksumRefreshStatus;
   Err : StorageMaintenanceError;
 };
-type Result_17 = variant { Ok : DepositReceipt; Err : DepositError };
-type Result_18 = variant { Ok : DepositView; Err : RequestDepositRefundError };
-type Result_19 = variant { Ok : FeePayoutReceipt; Err : AdminError };
+type Result_18 = variant { Ok : DepositReceipt; Err : DepositError };
+type Result_19 = variant { Ok : DepositView; Err : RequestDepositRefundError };
 type Result_2 = variant {
   Ok : StorageValidationStatus;
   Err : StorageMaintenanceError;
 };
-type Result_20 = variant { Ok : text; Err : StorageMaintenanceError };
+type Result_20 = variant { Ok : FeePayoutReceipt; Err : AdminError };
+type Result_21 = variant {
+  Ok : OperationalConfigSealReceipt;
+  Err : BaseGovernanceError;
+};
+type Result_22 = variant { Ok : text; Err : StorageMaintenanceError };
 type Result_3 = variant {
   Ok : SettlementActionResult;
   Err : SettlementActionError;
@@ -520,13 +570,16 @@ type Result_5 = variant {
   Ok : SignedBaseGovernanceTransaction;
   Err : BaseGovernanceError;
 };
-type Result_6 = variant { Ok : ActivationStatus; Err : BaseGovernanceError };
-type Result_7 = variant { Ok : AuditEventPage; Err : AdminError };
-type Result_8 = variant {
+type Result_6 = variant {
+  Ok : ActivationAttestation;
+  Err : BaseGovernanceError;
+};
+type Result_7 = variant { Ok : ActivationStatus; Err : BaseGovernanceError };
+type Result_8 = variant { Ok : AuditEventPage; Err : AdminError };
+type Result_9 = variant {
   Ok : opt SignedBaseGovernanceTransaction;
   Err : BaseGovernanceError;
 };
-type Result_9 = variant { Ok : ProductionLifecycle; Err : BaseGovernanceError };
 type RotatePausePrincipalArgs = record { pause_principal : principal };
 type SettlementActionError = variant {
   AutomaticProgressPending : record { next_run_at_ns : opt nat64 };
@@ -650,39 +703,41 @@ service : (BridgeInitArgs) -> {
   continue_withdrawal : (blob) -> (Result_3);
   emergency_pause : () -> (Result_4);
   execute_activation : () -> (Result_5);
-  get_activation_status : () -> (Result_6) query;
-  get_audit_events : (nat64, nat16) -> (Result_7) query;
+  get_activation_attestation : () -> (Result_6) query;
+  get_activation_status : () -> (Result_7) query;
+  get_audit_events : (nat64, nat16) -> (Result_8) query;
   get_bridge_status : () -> (BridgeStatus) query;
   get_deposit : (blob) -> (opt DepositView) query;
   get_deposit_by_owner_sequence : (principal, nat64) -> (opt DepositView) query;
   get_next_deposit_sequence : (principal) -> (nat64) query;
-  get_pending_base_governance_transaction : () -> (Result_8) query;
-  get_production_lifecycle : () -> (Result_9) query;
+  get_pending_base_governance_transaction : () -> (Result_9) query;
+  get_production_lifecycle : () -> (Result_10) query;
   get_public_config : () -> (PublicConfig) query;
   get_withdrawal : (blob) -> (opt WithdrawalView) query;
-  get_withdrawals : (vec blob) -> (Result_10) query;
+  get_withdrawals : (vec blob) -> (Result_11) query;
   icrc10_supported_standards : () -> (vec Icrc10SupportedStandard) query;
   icrc21_canister_call_consent_message : (Icrc21ConsentMessageRequest) -> (
       Icrc21ConsentMessageResponse,
     );
-  initialize_public_config : () -> (Result_11);
-  list_deposit_ids : (ListDepositIdsArgs) -> (Result_12) query;
-  list_nonterminal_deposit_refs : (ListDepositIdsArgs) -> (Result_13) query;
-  notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_14);
-  pause_new_deposits : () -> (Result_15);
+  initialize_public_config : () -> (Result_12);
+  list_deposit_ids : (ListDepositIdsArgs) -> (Result_13) query;
+  list_nonterminal_deposit_refs : (ListDepositIdsArgs) -> (Result_14) query;
+  notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_15);
+  pause_new_deposits : () -> (Result_16);
   prepare_base_governance_action : (BaseGovernanceAction) -> (Result_5);
   prepare_base_governance_replacement : (
       PrepareBaseGovernanceReplacementArgs,
     ) -> (Result_5);
   prepare_next_emergency_base_action : () -> (Result_5);
-  refresh_storage_checksum : (nat64) -> (Result_16);
-  request_deposit : (DepositArgs) -> (Result_17);
-  request_deposit_refund : (blob) -> (Result_18);
-  request_fee_payout : (nat) -> (Result_19);
-  rotate_fee_recipient : (FeeRecipientConfig) -> (Result_15);
-  rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_15);
+  refresh_activation_attestation : () -> (Result_6);
+  refresh_storage_checksum : (nat64) -> (Result_17);
+  request_deposit : (DepositArgs) -> (Result_18);
+  request_deposit_refund : (blob) -> (Result_19);
+  request_fee_payout : (nat) -> (Result_20);
+  rotate_fee_recipient : (FeeRecipientConfig) -> (Result_16);
+  rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_16);
   schedule_activation : () -> (Result_5);
-  seal_operational_config : (OperationalConfigArgs) -> (Result_9);
+  seal_operational_config : (OperationalConfigArgs) -> (Result_21);
   start_storage_validation : () -> (Result_2);
-  storage_integrity_check : () -> (Result_20) query;
+  storage_integrity_check : () -> (Result_22) query;
 }
