@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,22 @@ VITEST_OUTPUT = ROOT / "ui" / "src" / "lib" / "generated-refinement.test.ts"
 RUST_TARGET = "canister/bridge-core/tests/generated_refinement.rs"
 FOUNDRY_TARGET = "contracts/test/GeneratedRefinement.t.sol"
 VITEST_TARGET = "ui/src/lib/generated-refinement.test.ts"
+
+LEGACY_BRIDGE_CONSTRUCTOR_PARAMETERS = (
+    "tokenName",
+    "tokenSymbol",
+    "tokenDecimals",
+    "initialBridgeSigner",
+    "initialRuntimeAdministrator",
+    "initialBaseAdminTimelock",
+    "initialApprovedTimelockRuntimeCodeHash",
+    "initialPerDepositLimit",
+    "initialMintWindowLimit",
+    "initialMintWindowDuration",
+    "maxServiceFee",
+    "initialServiceFee",
+)
+CURRENT_BRIDGE_CONSTRUCTOR_PARAMETERS = LEGACY_BRIDGE_CONSTRUCTOR_PARAMETERS[3:]
 
 
 @dataclass(frozen=True)
@@ -508,7 +525,7 @@ contract GeneratedRefinementTest is TestBase {
         address bridgeSigner = vm.addr(BRIDGE_SIGNER_KEY);
         address timelock = _deployTestTimelock(address(0x33));
         bridge = new Bridge(
-            bridgeSigner, RUNTIME_ADMINISTRATOR, timelock,
+            __BRIDGE_CONSTRUCTOR_PREFIX__bridgeSigner, RUNTIME_ADMINISTRATOR, timelock,
             _timelockCodeHash(timelock), 2_000, 2_000, 1 hours, 100, serviceFee
         );
         token = bridge.bsns();
@@ -595,11 +612,32 @@ def format_source(command: list[str], source: str, language: str) -> str:
     return result.stdout
 
 
-def generated_sources(root: Path = ROOT) -> dict[Path, str]:
+def bridge_constructor_prefix(root: Path) -> str:
+    source = (root / "contracts" / "src" / "Bridge.sol").read_text(encoding="utf-8")
+    constructor = re.search(r"\bconstructor\s*\((.*?)\)\s*EIP712\b", source, re.DOTALL)
+    if constructor is None:
+        raise ValueError("Bridge constructor declaration is missing")
+    parameters = tuple(
+        match.group(1)
+        for match in re.finditer(
+            r"(?:^|,)\s*[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:memory|calldata|storage))?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?=,|$)",
+            constructor.group(1),
+        )
+    )
+    if parameters == LEGACY_BRIDGE_CONSTRUCTOR_PARAMETERS:
+        return '"kinic", "KINIC", 8, '
+    if parameters == CURRENT_BRIDGE_CONSTRUCTOR_PARAMETERS:
+        return ""
+    raise ValueError(f"unsupported Bridge constructor parameters: {parameters!r}")
+
+
+def generated_sources(root: Path = ROOT, *, source_root: Path = ROOT) -> dict[Path, str]:
     rust_source = RUST_PRELUDE + "\n".join(
         renderer.body for key, renderer in sorted(RENDERERS.items()) if key[1] == "rust"
     )
-    foundry_source = FOUNDRY_PRELUDE + "\n".join(
+    foundry_source = FOUNDRY_PRELUDE.replace(
+        "__BRIDGE_CONSTRUCTOR_PREFIX__", bridge_constructor_prefix(source_root)
+    ) + "\n".join(
         renderer.body for key, renderer in sorted(RENDERERS.items()) if key[1] == "foundry"
     ) + "}\n"
     vitest = VITEST_PRELUDE + "\n".join(
@@ -620,14 +658,17 @@ def generated_sources(root: Path = ROOT) -> dict[Path, str]:
     }
 
 
-def expected_outputs(root: Path = ROOT) -> dict[Path, str]:
-    return {root / OUTPUT.relative_to(ROOT): registry(), **generated_sources(root)}
+def expected_outputs(root: Path = ROOT, *, source_root: Path = ROOT) -> dict[Path, str]:
+    return {
+        root / OUTPUT.relative_to(ROOT): registry(),
+        **generated_sources(root, source_root=source_root),
+    }
 
 
-def stale_outputs(root: Path = ROOT) -> list[Path]:
+def stale_outputs(root: Path = ROOT, *, source_root: Path = ROOT) -> list[Path]:
     return [
         path
-        for path, expected in expected_outputs(root).items()
+        for path, expected in expected_outputs(root, source_root=source_root).items()
         if not path.is_file() or path.read_text(encoding="utf-8") != expected
     ]
 

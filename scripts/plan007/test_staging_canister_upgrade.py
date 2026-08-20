@@ -92,6 +92,21 @@ class StagingUpgradeDriverTests(unittest.TestCase):
     def policy(self) -> dict[str, object]:
         return json.loads((self.repo / POLICY_PATH).read_text(encoding="utf-8"))
 
+    def migration_source(self, candid_metadata: str) -> dict[str, object]:
+        self.require_migration_policy()
+        return next(
+            source
+            for source in self.policy()["migration"]["source_states"]
+            if source["candid_metadata"] == candid_metadata
+        )
+
+    def has_migration_policy(self) -> bool:
+        return "migration" in self.valid_policy
+
+    def require_migration_policy(self) -> None:
+        if not self.has_migration_policy():
+            self.skipTest("candidate policy has no legacy stable-schema migration")
+
     def write_executable(self, name: str, source: str) -> None:
         path = self.bin / name
         path.write_text(source, encoding="utf-8")
@@ -104,6 +119,14 @@ class StagingUpgradeDriverTests(unittest.TestCase):
 import json, os, pathlib, sys
 args = sys.argv[1:]
 state = pathlib.Path(os.environ["MOCK_STATE"])
+if args and args[0].endswith("capture-withdrawal-boundary.mjs"):
+    print(json.dumps({
+        "schema_version": 1,
+        "kind": "withdrawal-admission-boundary",
+        "minimum_withdrawal_id": os.environ.get("MOCK_CAPTURE_BOUNDARY", "0x" + "01" * 32),
+        "providers": [{"provider_url_sha256": "11" * 32}, {"provider_url_sha256": "22" * 32}],
+    }))
+    raise SystemExit(0)
 if len(args) != 4 or args[1] != "https://icp-api.io" or args[3] != "candid:service":
     raise SystemExit(2)
 if os.environ.get("MOCK_PUBLIC_METADATA_FAIL") == "1":
@@ -171,12 +194,13 @@ elif method == "continue_storage_validation":
     else:
         candid = 'variant { Ok = record { complete = true; phase = "complete"; scanned_rows = 1 : nat64 } }'
 elif method == "get_public_config":
-    schema = "34" if (state / "applied").exists() else os.environ.get("MOCK_SCHEMA", "34")
+    stable_schema = str(policy["stable_schema_version"])
+    schema = stable_schema if (state / "applied").exists() else os.environ.get("MOCK_SCHEMA", stable_schema)
     instance = os.environ.get("MOCK_INSTANCE", policy["deployment_instance_id"])[2:]
     chain = os.environ.get("MOCK_PUBLIC_CHAIN", str(policy["base_chain_id"]))
     evm = os.environ.get("MOCK_EVM_CANISTER", policy["evm_rpc_canister_id"])
     boundary = os.environ.get("MOCK_BOUNDARY", "01" * 32)
-    boundary_field = f'; minimum_withdrawal_id = blob "{blob(boundary)}"' if int(schema) >= 34 else ''
+    boundary_field = f'; minimum_withdrawal_id = blob "{blob(boundary)}"' if int(schema) >= 33 else ''
     named = f'''record {{ schema_version = {schema} : nat16; deployment_instance_id = blob "{blob(instance)}"; base_chain_id = {chain} : nat64; evm_rpc_canister_id = principal "{evm}"; rpc_provider_urls_sha256 = blob "{blob(digest)}"{boundary_field} }}'''
     if os.environ.get("MOCK_CANDID_NULL") == "1":
         if "--candid" in args:
@@ -247,6 +271,10 @@ print(json.dumps({"response_candid": candid}))
         evidence = json.loads((self.base / "result.json").read_text())
         self.assertEqual(evidence["schema_version"], 2)
         self.assertEqual(evidence["result"], "upgraded")
+        if self.has_migration_policy():
+            self.assertIsNone(evidence["boundary_capture"])
+        else:
+            self.assertNotIn("boundary_capture", evidence)
         self.assertEqual(evidence["minimum_withdrawal_id"], "0x" + "01" * 32)
         self.assertEqual(evidence["before"]["status_counts"], evidence["after"]["status_counts"])
 
@@ -262,22 +290,129 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse(self.install_record.exists())
         self.assertEqual(json.loads((self.base / "result.json").read_text())["result"], "already-applied")
 
-    def test_obsolete_migration_flag_is_not_exposed(self) -> None:
+    def test_migration_flag_is_rejected_outside_a_v32_source(self) -> None:
         result = self.run_driver("--migrate-v32-to-v33")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unrecognized arguments", result.stderr)
+        if self.has_migration_policy():
+            self.assertIn("requires a reviewed v32 staging source state", result.stderr)
+        else:
+            self.assertIn("unrecognized arguments", result.stderr)
         self.assertFalse(self.install_record.exists())
 
-    def test_skip_storage_validation_runs_current_schema_preflight(self) -> None:
+    def test_known_missing_metadata_requires_explicit_migration(self) -> None:
+        self.require_migration_policy()
+        source = self.migration_source("absent")
+        missing_module = str(source["module_sha256"])
+        after_digest = str(source["rpc_provider_urls_sha256"])
+        rejected = self.run_driver(
+            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1", MOCK_DIGEST=after_digest
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertFalse(self.install_record.exists())
+
+        preflight = self.run_driver(
+            "--migrate-v32-to-v33",
+            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1", MOCK_DIGEST=after_digest,
+        )
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        self.assertIn("v32-to-v33-preflight-passed", preflight.stdout)
+        self.assertFalse(self.install_record.exists())
+
+        repaired = self.run_driver(
+            "--migrate-v32-to-v33", "--execute",
+            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1", MOCK_DIGEST=after_digest,
+        )
+        self.assertEqual(repaired.returncode, 0, repaired.stderr)
+        evidence = json.loads((self.base / "result.json").read_text())
+        self.assertEqual(evidence["result"], "migrated-and-rpc-replaced")
+        self.assertEqual(evidence["before"]["module_sha256"], missing_module)
+        self.assertEqual(evidence["after"]["module_sha256"], self.after_module)
+        self.assertEqual(evidence["live_candid_sha256_after"], evidence["candid_sha256"])
+        self.assertEqual(evidence["boundary_capture"]["minimum_withdrawal_id"], "0x" + "01" * 32)
+        self.assertEqual(evidence["minimum_withdrawal_id"], "0x" + "01" * 32)
+
+    def test_known_v32_source_state_requires_the_explicit_migration_flag(self) -> None:
+        self.require_migration_policy()
+        source = self.migration_source("present")
+        before_module = str(source["module_sha256"])
+        before_digest = str(source["rpc_provider_urls_sha256"])
+        rejected = self.run_driver(
+            MOCK_SCHEMA="32", MOCK_MODULE=before_module, MOCK_DIGEST=before_digest,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertFalse(self.install_record.exists())
+
+        preflight = self.run_driver(
+            "--migrate-v32-to-v33",
+            MOCK_SCHEMA="32", MOCK_MODULE=before_module, MOCK_DIGEST=before_digest,
+        )
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        self.assertIn("v32-to-v33-preflight-passed", preflight.stdout)
+        self.assertFalse(self.install_record.exists())
+
+        migrated = self.run_driver(
+            "--migrate-v32-to-v33", "--execute",
+            MOCK_SCHEMA="32", MOCK_MODULE=before_module, MOCK_DIGEST=before_digest,
+        )
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        evidence = json.loads((self.base / "result.json").read_text())
+        self.assertEqual(evidence["result"], "migrated-and-rpc-replaced")
+        self.assertEqual(evidence["before"]["schema_version"], 32)
+        self.assertEqual(evidence["after"]["schema_version"], 33)
+
+    def test_v32_metadata_missing_retries_without_candid(self) -> None:
+        self.require_migration_policy()
+        if int(self.valid_policy["schema_version"]) < 4:
+            self.skipTest("numeric Candid fallback requires a schema v4 candidate policy")
+        source = self.migration_source("absent")
+        missing_module = str(source["module_sha256"])
+        after_digest = str(source["rpc_provider_urls_sha256"])
         result = self.run_driver(
-            "--skip-storage-validation", MOCK_VALIDATION_FAIL="1",
+            "--migrate-v32-to-v33",
+            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
+            MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("preflight-passed", result.stdout)
+        self.assertIn("v32-to-v33-preflight-passed", result.stdout)
+        self.assertFalse(self.install_record.exists())
+
+        migrated = self.run_driver(
+            "--migrate-v32-to-v33", "--execute",
+            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
+            MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
+        )
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        evidence = json.loads((self.base / "result.json").read_text())
+        self.assertEqual(evidence["result"], "migrated-and-rpc-replaced")
+        self.assertEqual(evidence["before"]["schema_version"], 32)
+        self.assertEqual(evidence["after"]["schema_version"], 33)
+
+    def test_skip_storage_validation_runs_preflight_without_resetting_validation(self) -> None:
+        if int(self.valid_policy["schema_version"]) < 4:
+            self.skipTest("storage validation skip requires a schema v4 candidate policy")
+        if self.has_migration_policy():
+            source = self.migration_source("absent")
+            result = self.run_driver(
+                "--migrate-v32-to-v33", "--skip-storage-validation",
+                MOCK_SCHEMA="32", MOCK_MODULE=str(source["module_sha256"]),
+                MOCK_DIGEST=str(source["rpc_provider_urls_sha256"]),
+                MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
+                MOCK_VALIDATION_FAIL="1",
+            )
+            expected = "v32-to-v33-preflight-passed"
+        else:
+            result = self.run_driver(
+                "--skip-storage-validation", MOCK_VALIDATION_FAIL="1"
+            )
+            expected = "preflight-passed"
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(expected, result.stdout)
         self.assertFalse((self.state / "validation-started").exists())
         self.assertFalse(self.install_record.exists())
 
     def test_execute_rejects_skip_storage_validation(self) -> None:
+        if int(self.valid_policy["schema_version"]) < 4:
+            self.skipTest("storage validation skip requires a schema v4 candidate policy")
         result = self.run_driver(
             "--execute", "--skip-storage-validation",
             MOCK_VALIDATION_FAIL="1",
@@ -289,6 +424,110 @@ print(json.dumps({"response_candid": candid}))
         )
         self.assertFalse(self.install_record.exists())
         self.assertFalse((self.state / "validation-started").exists())
+
+    def test_v32_migration_requires_the_reviewed_profile_boundary(self) -> None:
+        self.require_migration_policy()
+        source = self.migration_source("present")
+        before_module = str(source["module_sha256"])
+        before_digest = str(source["rpc_provider_urls_sha256"])
+        result = self.run_driver(
+            "--migrate-v32-to-v33",
+            "--execute",
+            MOCK_SCHEMA="32",
+            MOCK_MODULE=before_module,
+            MOCK_DIGEST=before_digest,
+            MOCK_CAPTURE_BOUNDARY="0x" + "02" * 32,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match the reviewed frontend profile", result.stderr)
+        self.assertFalse(self.install_record.exists())
+
+    def test_v32_migration_verifies_the_persisted_boundary_after_upgrade(self) -> None:
+        self.require_migration_policy()
+        source = self.migration_source("present")
+        before_module = str(source["module_sha256"])
+        before_digest = str(source["rpc_provider_urls_sha256"])
+        result = self.run_driver(
+            "--migrate-v32-to-v33",
+            "--execute",
+            MOCK_SCHEMA="32",
+            MOCK_MODULE=before_module,
+            MOCK_DIGEST=before_digest,
+            MOCK_BOUNDARY="02" * 32,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("minimum_withdrawal_id does not match", result.stderr)
+        self.assertTrue(self.install_record.exists())
+        self.assertFalse((self.base / "result.json").exists())
+
+    def test_v32_migration_rejects_metadata_and_module_drift(self) -> None:
+        self.require_migration_policy()
+        source = self.migration_source("absent")
+        missing_module = str(source["module_sha256"])
+        after_digest = str(source["rpc_provider_urls_sha256"])
+        present = self.run_driver(
+            "--migrate-v32-to-v33", "--execute",
+            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
+        )
+        self.assertNotEqual(present.returncode, 0)
+        self.assertFalse(self.install_record.exists())
+
+        unknown = self.run_driver(
+            "--migrate-v32-to-v33", "--execute",
+            MOCK_SCHEMA="32", MOCK_MODULE="11" * 32, MOCK_METADATA_MISSING="1", MOCK_DIGEST=after_digest,
+        )
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertFalse(self.install_record.exists())
+
+    def test_v32_migration_rejects_lookup_failures_before_install(self) -> None:
+        self.require_migration_policy()
+        source = self.migration_source("absent")
+        missing_module = str(source["module_sha256"])
+        after_digest = str(source["rpc_provider_urls_sha256"])
+        cases = {
+            "reader failure": {"MOCK_PUBLIC_METADATA_FAIL": "1"},
+            "invalid JSON": {"MOCK_PUBLIC_METADATA_JSON": "not-json"},
+            "unknown status": {"MOCK_PUBLIC_METADATA_JSON": json.dumps({"status": "unknown"})},
+            "present without value": {
+                "MOCK_PUBLIC_METADATA_JSON": json.dumps({"status": "present"})
+            },
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                result = self.run_driver(
+                    "--migrate-v32-to-v33", "--execute",
+                    MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1",
+                    MOCK_SCHEMA="32", MOCK_DIGEST=after_digest, **changes,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.install_record.exists())
+                self.assertFalse((self.base / "result.json").exists())
+
+    def test_v32_migration_rejects_snapshot_drift_before_install(self) -> None:
+        self.require_migration_policy()
+        source = self.migration_source("absent")
+        missing_module = str(source["module_sha256"])
+        after_digest = str(source["rpc_provider_urls_sha256"])
+        cases = {
+            "canister ID": {"MOCK_CANISTER_ID": "aaaaa-aa"},
+            "schema": {"MOCK_SCHEMA": "31"},
+            "instance": {"MOCK_INSTANCE": "0x" + "11" * 32},
+            "configured chain": {"MOCK_PUBLIC_CHAIN": "1"},
+            "EVM RPC canister": {"MOCK_EVM_CANISTER": "aaaaa-aa"},
+            "RPC digest": {"MOCK_DIGEST": "22" * 32},
+            "status count": {"MOCK_COUNT_DRIFT": "1"},
+            "storage integrity": {"MOCK_INTEGRITY_FAIL": "1"},
+            "provider chain": {"MOCK_CHAIN_ID": "1"},
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                result = self.run_driver(
+                    "--migrate-v32-to-v33", "--execute",
+                    MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1",
+                    **{"MOCK_SCHEMA": "32", "MOCK_DIGEST": after_digest, **changes},
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.install_record.exists())
 
     def test_candidate_metadata_is_validated_before_live_calls(self) -> None:
         cases = {
@@ -387,6 +626,28 @@ print(json.dumps({"response_candid": candid}))
         self.git("commit", "-qm", "missing count")
         self.assertNotEqual(self.run_driver("--execute").returncode, 0)
         self.assertFalse(self.install_record.exists())
+
+    def test_policy_rejects_ambiguous_migration_metadata_bindings(self) -> None:
+        self.require_migration_policy()
+        if int(self.valid_policy["schema_version"]) < 4:
+            self.skipTest("metadata binding uniqueness requires a schema v4 candidate policy")
+        policy_path = self.repo / POLICY_PATH
+        cases = ("duplicate metadata state", "missing module marked present")
+        for name in cases:
+            with self.subTest(name=name):
+                policy = json.loads(json.dumps(self.valid_policy))
+                sources = policy["migration"]["source_states"]
+                if name == "duplicate metadata state":
+                    sources[0]["candid_metadata"] = "absent"
+                else:
+                    present = next(source for source in sources if source["candid_metadata"] == "present")
+                    policy["metadata_missing_module_sha256"] = present["module_sha256"]
+                policy_path.write_text(json.dumps(policy), encoding="utf-8")
+                self.git("add", POLICY_PATH)
+                self.git("commit", "-qm", name)
+                result = self.run_driver("--execute")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.install_record.exists())
 
     def test_dirty_checkout_and_wasm_mismatch_fail_closed(self) -> None:
         (self.repo / "dirty").write_text("x")

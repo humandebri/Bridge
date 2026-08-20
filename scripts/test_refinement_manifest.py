@@ -14,6 +14,43 @@ from generate_refinement_harness import Renderer
 
 
 class RefinementManifestTests(unittest.TestCase):
+    def write_bridge_constructor(self, root: Path, parameters: str) -> None:
+        bridge = root / "contracts/src/Bridge.sol"
+        bridge.parent.mkdir(parents=True, exist_ok=True)
+        bridge.write_text(
+            f"contract Bridge {{ constructor({parameters}) EIP712(\"KINIC Bridge\", \"1\") {{}} }}\n",
+            encoding="utf-8",
+        )
+
+    def test_generator_supports_legacy_and_current_bridge_constructors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_bridge_constructor(
+                root,
+                "string memory tokenName, string memory tokenSymbol, uint8 tokenDecimals, "
+                "address initialBridgeSigner, address initialRuntimeAdministrator, "
+                "address initialBaseAdminTimelock, bytes32 initialApprovedTimelockRuntimeCodeHash, "
+                "uint256 initialPerDepositLimit, uint256 initialMintWindowLimit, "
+                "uint64 initialMintWindowDuration, uint256 maxServiceFee, uint256 initialServiceFee",
+            )
+            self.assertEqual(generator.bridge_constructor_prefix(root), '"kinic", "KINIC", 8, ')
+
+            self.write_bridge_constructor(
+                root,
+                "address initialBridgeSigner, address initialRuntimeAdministrator, "
+                "address initialBaseAdminTimelock, bytes32 initialApprovedTimelockRuntimeCodeHash, "
+                "uint256 initialPerDepositLimit, uint256 initialMintWindowLimit, "
+                "uint64 initialMintWindowDuration, uint256 maxServiceFee, uint256 initialServiceFee",
+            )
+            self.assertEqual(generator.bridge_constructor_prefix(root), "")
+
+    def test_generator_rejects_unknown_bridge_constructor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_bridge_constructor(root, "address unexpectedAdministrator")
+            with self.assertRaisesRegex(ValueError, "unsupported Bridge constructor"):
+                generator.bridge_constructor_prefix(root)
+
     def fixture(self) -> tuple[Path, dict[str, object], str, str, str, str, dict[tuple[str, str], Renderer]]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
