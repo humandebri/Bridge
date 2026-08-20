@@ -4493,7 +4493,12 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_ok());
         schedule_receipt.schema_version = 3;
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
+        schedule_receipt.schema_version = 5;
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
         schedule_receipt.schema_version = 4;
+        let mut obsolete_receipt = serde_json::to_value(&schedule_receipt).unwrap();
+        obsolete_receipt["base_postcondition_sha256"] = Value::String("3".repeat(64));
+        assert!(serde_json::from_value::<ActivationReceipt>(obsolete_receipt).is_err());
         schedule_receipt.gate_b_manifest_sha256 = "9".repeat(64);
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
         schedule_receipt.gate_b_manifest_sha256 = bundle.manifest_sha256.clone();

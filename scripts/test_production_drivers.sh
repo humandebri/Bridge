@@ -41,7 +41,7 @@ LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs,path::Path};
 fn copy_dir(from:&Path,to:&Path){fs::create_dir_all(to).unwrap();for e in fs::read_dir(from).unwrap(){let e=e.unwrap();let d=to.join(e.file_name());if e.path().is_dir(){copy_dir(&e.path(),&d)}else{fs::copy(e.path(),d).unwrap();}}}
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if let Ok(trace)=env::var("TRACE"){use std::io::Write;writeln!(fs::OpenOptions::new().create(true).append(true).open(trace).unwrap(),"profile {}",a.join(" ")).unwrap()}if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate-bundle"&&a.iter().any(|v|v=="--gate-b"){println!("gate_b=structural-pass authorizing=false manifest_sha256={}","b".repeat(64))}else if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else if a[0]=="verify-live"{println!("gate_b=pass manifest_sha256={}","b".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if let Ok(trace)=env::var("TRACE"){use std::io::Write;writeln!(fs::OpenOptions::new().create(true).append(true).open(trace).unwrap(),"profile {}",a.join(" ")).unwrap()}if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate-bundle"&&a.iter().any(|v|v=="--gate-b"){println!("gate_b=structural-pass authorizing=false manifest_sha256={}","b".repeat(64))}else if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else if a[0]=="verify-live"{if env::var("FINAL_LIVE_FAIL").as_deref()==Ok("true"){std::process::exit(1)}println!("gate_b=pass manifest_sha256={}","b".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -143,7 +143,8 @@ elif [[ "$*" == *get_public_config* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-fal
 elif [[ "$*" == *get_bridge_status* ]]; then printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "${CANISTER_PAUSED:-true}";
 elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
 elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; echo '{"Ok":null}';
-elif [[ "$*" == *'identity principal --identity production'* ]]; then echo 'aaaaa-aa';
+elif [[ "$*" == *'identity principal --identity production'* ]]; then if [[ "${CONFIRMATION_RELAYER_DRIFT:-false}" == true ]]; then echo '2vxsx-fae'; else echo 'aaaaa-aa'; fi;
+elif [[ "$*" == *refresh_activation_attestation* ]]; then if [[ "${REFRESH_CALL_FAIL:-false}" == true ]]; then exit 1; else echo '{"Ok":{}}'; fi;
 elif [[ "$*" == *list_nervous_system_functions* ]]; then echo '{"functions":[{"id":1,"target_canister_id":"aaaaa-aa","target_method_name":"schedule_activation"}]}';
 elif [[ "$*" == *manage_neuron* ]]; then echo '{"command":{"MakeProposal":{"proposal_id":[]}}}';
 elif [[ "$*" == *'canister status bridge-canister -e production -i --identity'* ]]; then echo 'aaaaa-aa';
@@ -279,7 +280,33 @@ CONFIRMATION_RELAYER_IDENTITY_FIXTURE=production
 SNS_NEURON_SUBACCOUNT_FIXTURE="$(printf '11%.0s' {1..32})"
 SNS_PROPOSER_PRINCIPAL_FIXTURE=aaaaa-aa
 ACTIVATION_SUBMISSION_FIXTURE="$T/activation-submission.json"
-if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
+COMMON_ACTIVATION_ENV=(
+  BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})"
+  BRIDGE_RELEASE_BUNDLE="$T/bundle"
+  BRIDGE_ACTIVATION_PHASE=schedule
+  BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION_FIXTURE"
+  BRIDGE_SNS_IDENTITY="$SNS_IDENTITY_FIXTURE"
+  BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY_FIXTURE"
+  BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT_FIXTURE"
+  BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL_FIXTURE"
+)
+: >"$TRACE"
+if env CONFIRMATION_RELAYER_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation driver accepted a confirmation relayer identity mismatch" >&2
+  exit 1
+fi
+! grep -q 'manage_neuron' "$TRACE"
+: >"$TRACE"
+if env FINAL_LIVE_FAIL=true "${COMMON_ACTIVATION_ENV[@]}" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation driver accepted a failed final live verification" >&2
+  exit 1
+fi
+grep -q 'refresh_activation_attestation' "$TRACE"
+! grep -q 'manage_neuron' "$TRACE"
+: >"$TRACE"
+if REFRESH_CALL_FAIL=true BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
   BRIDGE_ACTIVATION_PHASE=schedule \
   BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION_FIXTURE" \
