@@ -77,9 +77,6 @@ contract BridgeAdministrationTest is TestBase {
         BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
         NEW_TIMELOCK = _deployTestTimelock(address(0x34));
         bridge = new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
@@ -99,9 +96,6 @@ contract BridgeAdministrationTest is TestBase {
 
     function testConstructorStartsBothAssetFlowsPaused() public {
         Bridge freshBridge = new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
@@ -316,9 +310,6 @@ contract BridgeAdministrationTest is TestBase {
     function testConstructorRejectsUnapprovedInitialTimelock() public {
         vm.expectRevert(abi.encodeWithSelector(IBridge.TimelockCandidateHasNoCode.selector, OUTSIDER));
         new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             OUTSIDER,
@@ -333,9 +324,6 @@ contract BridgeAdministrationTest is TestBase {
         address spoof = address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, true));
         vm.expectPartialRevert(IBridge.TimelockCandidateCodeHashMismatch.selector);
         new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             spoof,
@@ -369,9 +357,6 @@ contract BridgeAdministrationTest is TestBase {
         address shortDelay = address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY - 1, true));
         address missingSelfAdmin = address(new TimelockCandidateFixture(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, false));
         Bridge fixtureBridge = new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             valid,

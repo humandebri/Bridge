@@ -20,6 +20,9 @@ interface ITimelockCandidate {
 
 /// @notice Phase 1E Base implementation whose concrete ABI is checked against the frozen interface snapshot.
 contract Bridge is IBridge, EIP712 {
+    string private constant TOKEN_NAME = "KINIC";
+    string private constant TOKEN_SYMBOL = "KINIC";
+    uint8 private constant TOKEN_DECIMALS = 8;
     uint256 private constant MINIMUM_TIMELOCK_DELAY = DeploymentPolicy.MINIMUM_TIMELOCK_DELAY;
     uint256 private constant MAXIMUM_TIMELOCK_DELAY = 30 days;
     uint64 private constant MINIMUM_MINT_WINDOW_DURATION = 1 hours;
@@ -81,9 +84,6 @@ contract Bridge is IBridge, EIP712 {
     }
 
     constructor(
-        string memory tokenName,
-        string memory tokenSymbol,
-        uint8 tokenDecimals,
         address initialBridgeSigner,
         address initialRuntimeAdministrator,
         address initialBaseAdminTimelock,
@@ -139,7 +139,7 @@ contract Bridge is IBridge, EIP712 {
         mintWindowStartedAt = uint64(block.timestamp);
         MAX_SERVICE_FEE = maxServiceFee;
         serviceFee = initialServiceFee;
-        bsns = new BSNS(tokenName, tokenSymbol, tokenDecimals, address(this));
+        bsns = new BSNS(TOKEN_NAME, TOKEN_SYMBOL, TOKEN_DECIMALS, address(this));
     }
 
     function mintDepositWithAuthorization(IBridge.MintAuthorization calldata authorization, bytes calldata signature)

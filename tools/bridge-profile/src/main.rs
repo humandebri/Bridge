@@ -1678,8 +1678,8 @@ fn render_release_inputs(
     });
     let constructors = serde_json::json!({
         "bridge": [
-            "KINIC", "KINIC", profile.decimals.to_string(), profile.expected_bridge_signer,
-            profile.governance_operator, profile.timelock.address, profile.timelock.runtime_code_hash,
+            profile.expected_bridge_signer, profile.governance_operator, profile.timelock.address,
+            profile.timelock.runtime_code_hash,
             profile.parameters.per_deposit_limit.to_string(),
             profile.parameters.mint_throughput_limit.to_string(),
             profile.parameters.mint_window_duration_seconds.to_string(),
@@ -3767,7 +3767,7 @@ mod tests {
         );
         let constructors: Value = read_json(&first.join("contract-constructor-args.json")).unwrap();
         assert_eq!(
-            constructors["bridge"][6],
+            constructors["bridge"][3],
             valid_profile().timelock.runtime_code_hash
         );
         let ui: Value = read_json(&first.join("ui-runtime-profile.json")).unwrap();

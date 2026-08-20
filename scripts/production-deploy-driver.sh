@@ -128,8 +128,8 @@ fi
 TIMELOCK_RUNTIME_CODE="$(cast code "$DEPLOYED_TIMELOCK" --rpc-url "$RPC")"
 DEPLOYED_TIMELOCK_CODE_HASH="$(cast keccak "$TIMELOCK_RUNTIME_CODE")"
 ARGS=(); while IFS= read -r x; do ARGS+=("$x"); done < <(python3 -c 'import json,sys;[print(x) for x in json.load(open(sys.argv[1]))["bridge"]]' "$CONSTRUCTOR_ARGS_FILE")
-[[ ${#ARGS[@]} -ge 7 ]] || { echo "rendered Bridge constructor args are incomplete" >&2; exit 1; }
-RENDERED_TIMELOCK_CODE_HASH="$(printf '%s' "${ARGS[6]}" | tr '[:upper:]' '[:lower:]')"
+[[ ${#ARGS[@]} -eq 9 ]] || { echo "rendered Bridge constructor args must contain exactly 9 values" >&2; exit 1; }
+RENDERED_TIMELOCK_CODE_HASH="$(printf '%s' "${ARGS[3]}" | tr '[:upper:]' '[:lower:]')"
 EXPECTED_TIMELOCK_CODE_HASH_LOWER="$(printf '%s' "$EXPECTED_TIMELOCK_CODE_HASH" | tr '[:upper:]' '[:lower:]')"
 DEPLOYED_TIMELOCK_CODE_HASH_LOWER="$(printf '%s' "$DEPLOYED_TIMELOCK_CODE_HASH" | tr '[:upper:]' '[:lower:]')"
 [[ "$RENDERED_TIMELOCK_CODE_HASH" == "$EXPECTED_TIMELOCK_CODE_HASH_LOWER" ]] || { echo "rendered Timelock code hash differs from profile" >&2; exit 1; }

@@ -508,7 +508,7 @@ contract GeneratedRefinementTest is TestBase {
         address bridgeSigner = vm.addr(BRIDGE_SIGNER_KEY);
         address timelock = _deployTestTimelock(address(0x33));
         bridge = new Bridge(
-            "kinic", "KINIC", 8, bridgeSigner, RUNTIME_ADMINISTRATOR, timelock,
+            bridgeSigner, RUNTIME_ADMINISTRATOR, timelock,
             _timelockCodeHash(timelock), 2_000, 2_000, 1 hours, 100, serviceFee
         );
         token = bridge.bsns();

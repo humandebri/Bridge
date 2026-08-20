@@ -21,18 +21,7 @@ contract ScaffoldTest {
         BridgeTimelockController timelock =
             new BridgeTimelockController(DeploymentPolicy.MINIMUM_TIMELOCK_DELAY, operators, cancellers, operators);
         Bridge bridge = new Bridge(
-            "kinic",
-            "KINIC",
-            8,
-            address(0x11),
-            address(0x22),
-            address(timelock),
-            address(timelock).codehash,
-            100,
-            200,
-            1 hours,
-            10,
-            1
+            address(0x11), address(0x22), address(timelock), address(timelock).codehash, 100, 200, 1 hours, 10, 1
         );
         assert(address(bridge).code.length > 0);
         assert(address(bridge.bsns()).code.length > 0);

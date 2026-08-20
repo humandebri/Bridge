@@ -8,9 +8,6 @@ Phase 1Eで凍結するBase側のconcrete ABIとinterfaceを記録する。Solid
 
 ```solidity
 constructor(
-    string memory tokenName,
-    string memory tokenSymbol,
-    uint8 tokenDecimals,
     address initialBridgeSigner,
     address initialRuntimeAdministrator,
     address initialBaseAdminTimelock,
@@ -23,9 +20,9 @@ constructor(
 )
 ```
 
-KINIC用deployではERC-20 metadataを`name = "kinic"`、`symbol = "KINIC"`、`decimals = 8`とする。`bKINIC`のような`b` prefixは付けない。`bSNS`はBridgeable SNS Tokenを表す内部の総称であり、token metadataには使用しない。
+`Bridge`が生成する`BSNS`のERC-20 metadataは、`name = "KINIC"`、`symbol = "KINIC"`、`decimals = 8`にcontract内で固定する。constructorからはmetadataを受け取らず、異なるmetadataでdeployできない。`bKINIC`のような`b` prefixは付けない。`bSNS`はBridgeable SNS Tokenを表す内部の総称であり、token metadataには使用しない。
 
-3個の権限addressはzero addressを禁止し、相互に異なる必要がある。limitとwindow durationはzeroを禁止し、`initialServiceFee <= maxServiceFee`を要求する。`tokenDecimals`はKINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai`のdecimalsと同じ8に固定する。`initialApprovedTimelockRuntimeCodeHash`は、deploy時およびTimelock rotation時に検証するOpenZeppelin Timelock runtime code hashである。
+3個の権限addressはzero addressを禁止し、相互に異なる必要がある。limitとwindow durationはzeroを禁止し、`initialServiceFee <= maxServiceFee`を要求する。固定decimalsはKINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai`のdecimalsと同じ8である。`initialApprovedTimelockRuntimeCodeHash`は、deploy時およびTimelock rotation時に検証するOpenZeppelin Timelock runtime code hashである。
 
 ## EIP-3009署名送金
 

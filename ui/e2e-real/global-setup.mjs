@@ -850,7 +850,7 @@ function deployBridge(signer, governanceOperator, timelockAddress) {
   const output = execFileSync("forge", [
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast", "src/Bridge.sol:Bridge", "--constructor-args",
-    "Bridged KINIC", "KINIC", "8", signer, governanceOperator, timelockAddress, timelockCodeHash,
+    signer, governanceOperator, timelockAddress, timelockCodeHash,
     "1000000000000", "10000000000000", "3600", "100000000", "1000000",
   ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
