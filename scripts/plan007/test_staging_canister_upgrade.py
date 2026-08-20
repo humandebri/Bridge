@@ -344,6 +344,8 @@ print(json.dumps({"response_candid": candid}))
         self.assertEqual(evidence["after"]["schema_version"], 33)
 
     def test_v32_metadata_missing_retries_without_candid(self) -> None:
+        if int(self.valid_policy["schema_version"]) < 4:
+            self.skipTest("numeric Candid fallback requires a schema v4 candidate policy")
         source = self.migration_source("absent")
         missing_module = str(source["module_sha256"])
         after_digest = str(source["rpc_provider_urls_sha256"])
@@ -368,6 +370,8 @@ print(json.dumps({"response_candid": candid}))
         self.assertEqual(evidence["after"]["schema_version"], 33)
 
     def test_skip_storage_validation_runs_preflight_without_resetting_validation(self) -> None:
+        if int(self.valid_policy["schema_version"]) < 4:
+            self.skipTest("storage validation skip requires a schema v4 candidate policy")
         source = self.migration_source("absent")
         missing_module = str(source["module_sha256"])
         after_digest = str(source["rpc_provider_urls_sha256"])
@@ -383,6 +387,8 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse(self.install_record.exists())
 
     def test_execute_rejects_skip_storage_validation(self) -> None:
+        if int(self.valid_policy["schema_version"]) < 4:
+            self.skipTest("storage validation skip requires a schema v4 candidate policy")
         result = self.run_driver(
             "--execute", "--skip-storage-validation",
             MOCK_VALIDATION_FAIL="1",
@@ -593,6 +599,8 @@ print(json.dumps({"response_candid": candid}))
         self.assertFalse(self.install_record.exists())
 
     def test_policy_rejects_ambiguous_migration_metadata_bindings(self) -> None:
+        if int(self.valid_policy["schema_version"]) < 4:
+            self.skipTest("metadata binding uniqueness requires a schema v4 candidate policy")
         policy_path = self.repo / POLICY_PATH
         cases = ("duplicate metadata state", "missing module marked present")
         for name in cases:
