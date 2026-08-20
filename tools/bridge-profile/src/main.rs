@@ -623,7 +623,6 @@ struct ActivationReceipt {
     activation_status_response_sha256: String,
     operation_id: String,
     operation_salt: String,
-    base_postcondition_sha256: String,
     prior_schedule_receipt_sha256: Option<String>,
 }
 
@@ -2954,7 +2953,7 @@ fn validate_schedule_receipt_binding(
     let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
     let payload_sha256 = hex(&Sha256::digest(canonical_payload));
     let now = now_unix()?;
-    if receipt.schema_version != 3
+    if receipt.schema_version != 4
         || receipt.phase != "schedule"
         || receipt.release_id != bundle.manifest.release_id
         || receipt.source_revision != bundle.manifest.source_revision
@@ -2988,7 +2987,6 @@ fn validate_schedule_receipt_binding(
         )?
         || !valid_hash32(&receipt.operation_id)
         || !valid_hash32(&receipt.operation_salt)
-        || !valid_sha256(&receipt.base_postcondition_sha256)
         || receipt.prior_schedule_receipt_sha256.is_some()
     {
         return Err("prior schedule receipt is malformed or not bound to this release".into());
@@ -3227,7 +3225,7 @@ fn verify_activation(
 
     let prior_schedule_receipt_sha256 = prior.as_ref().map(|(_, digest)| digest.clone());
     let receipt = ActivationReceipt {
-        schema_version: 3,
+        schema_version: 4,
         phase: phase.into(),
         release_id: bundle.manifest.release_id.clone(),
         source_revision: bundle.manifest.source_revision.clone(),
@@ -3247,7 +3245,6 @@ fn verify_activation(
         activation_status_response_sha256: hex(&Sha256::digest(&activation_raw)),
         operation_id,
         operation_salt,
-        base_postcondition_sha256: hex(&Sha256::digest(&activation_raw)),
         prior_schedule_receipt_sha256,
     };
     write_json_new(receipt_path, &receipt)
@@ -3440,6 +3437,15 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256
             );
         }
+        Some("validate-bundle")
+            if args.len() == 5 && args[2] == "--offline" && args[3] == "--gate-b" =>
+        {
+            let bundle = validate_bundle(Path::new(&args[4]), true)?;
+            println!(
+                "gate_b=structural-pass authorizing=false manifest_sha256={}",
+                bundle.manifest_sha256
+            );
+        }
         Some("verify-live") if args.len() == 3 => {
             let bundle = validate_bundle(Path::new(&args[2]), true)?;
             if bundle.manifest.test_only { return Err("Gate B rejects test-only bundles".into()); }
@@ -3482,7 +3488,7 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -4462,7 +4468,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
 
         let payload_sha256 = hex(&Sha256::digest([0x44, 0x49, 0x44, 0x4c, 0x00, 0x00]));
         let mut schedule_receipt = ActivationReceipt {
-            schema_version: 3,
+            schema_version: 4,
             phase: "schedule".into(),
             release_id: bundle.manifest.release_id.clone(),
             source_revision: bundle.manifest.source_revision.clone(),
@@ -4482,10 +4488,12 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             activation_status_response_sha256: hex(&Sha256::digest(b"activation")),
             operation_id: format!("0x{}", "1".repeat(64)),
             operation_salt: format!("0x{}", "2".repeat(64)),
-            base_postcondition_sha256: "3".repeat(64),
             prior_schedule_receipt_sha256: None,
         };
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_ok());
+        schedule_receipt.schema_version = 3;
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
+        schedule_receipt.schema_version = 4;
         schedule_receipt.gate_b_manifest_sha256 = "9".repeat(64);
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
         schedule_receipt.gate_b_manifest_sha256 = bundle.manifest_sha256.clone();

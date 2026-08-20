@@ -15,6 +15,7 @@ RELEASE_INPUTS=""
 ACTIVATION_PHASE=""
 ACTIVATION_SUBMISSION=""
 SNS_IDENTITY=""
+CONFIRMATION_RELAYER_IDENTITY=""
 SNS_NEURON_SUBACCOUNT=""
 SNS_PROPOSER_PRINCIPAL=""
 PRIOR_SCHEDULE_RECEIPT=""
@@ -55,6 +56,11 @@ while [[ "$#" -gt 0 ]]; do
       SNS_IDENTITY="$2"
       shift 2
       ;;
+    --confirmation-relayer-identity)
+      [[ "$#" -ge 2 ]] || { echo "--confirmation-relayer-identity requires a name" >&2; exit 2; }
+      CONFIRMATION_RELAYER_IDENTITY="$2"
+      shift 2
+      ;;
     --sns-neuron-subaccount)
       [[ "$#" -ge 2 ]] || { echo "--sns-neuron-subaccount requires 32-byte hex" >&2; exit 2; }
       SNS_NEURON_SUBACCOUNT="$2"
@@ -83,7 +89,7 @@ done
 
 usage() {
   echo "usage: $0 deploy --bundle DIR --release-inputs DIR --receipt FILE -- DEPLOY_DRIVER" >&2
-  echo "       $0 activate --phase schedule --bundle DIR --release-inputs DIR --receipt FILE --submission FILE --sns-identity NAME --sns-neuron-subaccount HEX --sns-proposer-principal PRINCIPAL --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION -- scripts/production-activate-driver.sh" >&2
+  echo "       $0 activate --phase schedule --bundle DIR --release-inputs DIR --receipt FILE --submission FILE --sns-identity NAME --confirmation-relayer-identity NAME --sns-neuron-subaccount HEX --sns-proposer-principal PRINCIPAL --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION -- scripts/production-activate-driver.sh" >&2
   echo "       $0 activate --phase execute [same options] --prior-schedule-receipt FILE --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- scripts/production-activate-driver.sh" >&2
   exit 2
 }
@@ -195,8 +201,8 @@ else
     echo "activation phase requires its exact explicit confirmation" >&2
     exit 1
   }
-  [[ -n "$ACTIVATION_SUBMISSION" && -n "$SNS_IDENTITY" && -n "$SNS_NEURON_SUBACCOUNT" && -n "$SNS_PROPOSER_PRINCIPAL" ]] || {
-    echo "activation requires submission output and fixed SNS proposer identity inputs" >&2
+  [[ -n "$ACTIVATION_SUBMISSION" && -n "$SNS_IDENTITY" && -n "$CONFIRMATION_RELAYER_IDENTITY" && -n "$SNS_NEURON_SUBACCOUNT" && -n "$SNS_PROPOSER_PRINCIPAL" ]] || {
+    echo "activation requires submission output, fixed SNS proposer inputs, and a confirmation relayer ICP identity" >&2
     exit 1
   }
   if [[ "$ACTIVATION_PHASE" == schedule ]]; then
@@ -236,11 +242,7 @@ raise SystemExit(0 if [str(v).lower() for v in actual] == [v.lower() for v in ex
     echo "Gate A receipt does not match the current release" >&2
     exit 1
   }
-  if [[ "$ACTIVATION_PHASE" == execute ]]; then
-    GATE_OUTPUT="$(run_profile_gate verify-schedule-receipt-live "$BUNDLE" "$PRIOR_SCHEDULE_RECEIPT")"
-  else
-    GATE_OUTPUT="$(run_profile_gate verify-live "$BUNDLE")"
-  fi
+  GATE_OUTPUT="$(run_profile_gate validate-bundle --offline --gate-b "$BUNDLE")"
   printf '%s\n' "$GATE_OUTPUT"
 fi
 
@@ -299,7 +301,9 @@ else
   export BRIDGE_ACTIVATION_PHASE="$ACTIVATION_PHASE"
   export BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION"
   export BRIDGE_SNS_IDENTITY="$SNS_IDENTITY"
+  export BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY"
   export BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT"
   export BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL"
+  export BRIDGE_PRIOR_SCHEDULE_RECEIPT="$PRIOR_SCHEDULE_RECEIPT"
   "$DRIVER_PATH"
 fi

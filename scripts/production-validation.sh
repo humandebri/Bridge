@@ -151,6 +151,7 @@ PY
 production_validate_gate() {
   local mode="$1" bundle="$2" expected_hash="$3"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
+  local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   [[ -f "$bundle/release-manifest.json" ]] || { echo "release manifest is missing" >&2; return 1; }
   production_require_clean_source "$source_root" || return 1
@@ -163,20 +164,60 @@ production_validate_gate() {
   CARGO_TARGET_DIR="$target" cargo build --locked --quiet --release --manifest-path "$source_root/Cargo.toml" -p bridge-profile || { rm -rf "$target"; return 1; }
   profile_bin="$target/release/bridge-profile"
   if [[ "$mode" == gate-a ]]; then output="$("$profile_bin" validate-bundle --offline "$bundle")" || { rm -rf "$target"; return 1; }
-  elif [[ "$mode" == gate-b ]]; then output="$("$profile_bin" verify-live "$bundle")" || { rm -rf "$target"; return 1; }
+  elif [[ "$mode" == gate-b ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
   else rm -rf "$target"; echo "invalid production gate mode" >&2; return 1
   fi
-  rm -rf "$target"
   if [[ "$mode" == gate-a ]]; then
-    [[ "$output" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { echo "driver Gate A result is not authorizing" >&2; return 1; }
+    [[ "$output" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate A result is not authorizing" >&2; return 1; }
     actual_hash="${BASH_REMATCH[1]}"
   else
-    actual_hash="$(printf '%s\n' "$output" | sed -nE 's/.*manifest_sha256=([0-9a-fA-F]{64}).*/\1/p' | tail -n 1)"
+    [[ "$output" =~ ^gate_b=structural-pass[[:space:]]authorizing=false[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate B structural result is malformed" >&2; return 1; }
+    actual_hash="${BASH_REMATCH[1]}"
   fi
-  [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { echo "driver Gate manifest hash mismatch" >&2; return 1; }
-  production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || return 1
+  [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "driver Gate manifest hash mismatch" >&2; return 1; }
+  production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
   "$source_root/scripts/rebuild-release-artifacts.sh" \
-    "$bundle" "$manifest_revision" "$manifest_tree"
+    "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
+  if [[ "$mode" == gate-a ]]; then
+    rm -rf "$target"
+    return 0
+  fi
+
+  : "${BRIDGE_CONFIRMATION_RELAYER_IDENTITY:?missing confirmation relayer ICP identity name}"
+  : "${BRIDGE_ACTIVATION_PHASE:?missing activation phase}"
+  command -v icp >/dev/null || { rm -rf "$target"; echo "icp is required" >&2; return 1; }
+  production_require_clean_source "$source_root" || { rm -rf "$target"; return 1; }
+  revision="$(git -C "$source_root" rev-parse HEAD)"
+  tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')"
+  [[ "$revision" == "$manifest_revision" && "$tree" == "$(printf '%s' "$manifest_tree" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "source changed during Gate B validation" >&2; return 1; }
+  read -r expected_relayer bridge_canister < <(python3 -c 'import json,sys;p=json.load(open(sys.argv[1],encoding="utf-8"));print(p.get("confirmation_relayer_principal",""),p.get("bridge_canister_id",""))' "$bundle/profile.json")
+  [[ -n "$expected_relayer" && -n "$bridge_canister" ]] || { rm -rf "$target"; echo "Gate B profile is missing confirmation relayer or Bridge Canister identity" >&2; return 1; }
+  resolved_relayer="$(icp identity principal --identity "$BRIDGE_CONFIRMATION_RELAYER_IDENTITY")" || { rm -rf "$target"; echo "failed to resolve confirmation relayer ICP identity" >&2; return 1; }
+  [[ "$resolved_relayer" == "$expected_relayer" ]] || { rm -rf "$target"; echo "confirmation relayer ICP identity differs from the approved profile" >&2; return 1; }
+
+  refresh_output="$(mktemp "${TMPDIR:-/tmp}/bridge-attestation-refresh.XXXXXX")"
+  if ! icp canister call "$bridge_canister" refresh_activation_attestation '()' \
+    -n ic --identity "$BRIDGE_CONFIRMATION_RELAYER_IDENTITY" --json >"$refresh_output" 2>&1; then
+    echo "activation attestation refresh returned an ambiguous failure; checking the authenticated live postcondition" >&2
+  fi
+  rm -f "$refresh_output"
+  final_output="$("$profile_bin" verify-live "$bundle")" || { rm -rf "$target"; return 1; }
+  [[ "$final_output" =~ ^gate_b=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "final Gate B live result is malformed" >&2; return 1; }
+  actual_hash="${BASH_REMATCH[1]}"
+  [[ "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "final Gate B manifest hash mismatch" >&2; return 1; }
+  if [[ "$BRIDGE_ACTIVATION_PHASE" == execute ]]; then
+    : "${BRIDGE_PRIOR_SCHEDULE_RECEIPT:?missing prior schedule receipt}"
+    "$profile_bin" verify-schedule-receipt-live "$bundle" "$BRIDGE_PRIOR_SCHEDULE_RECEIPT" >/dev/null || { rm -rf "$target"; return 1; }
+  elif [[ "$BRIDGE_ACTIVATION_PHASE" != schedule ]]; then
+    rm -rf "$target"
+    echo "invalid activation phase" >&2
+    return 1
+  fi
+  production_require_clean_source "$source_root" || { rm -rf "$target"; return 1; }
+  revision="$(git -C "$source_root" rev-parse HEAD)"
+  tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')"
+  [[ "$revision" == "$manifest_revision" && "$tree" == "$(printf '%s' "$manifest_tree" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "source changed after final Gate B live verification" >&2; return 1; }
+  rm -rf "$target"
 }
 
 production_render_release_inputs() {

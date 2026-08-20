@@ -41,7 +41,7 @@ LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs,path::Path};
 fn copy_dir(from:&Path,to:&Path){fs::create_dir_all(to).unwrap();for e in fs::read_dir(from).unwrap(){let e=e.unwrap();let d=to.join(e.file_name());if e.path().is_dir(){copy_dir(&e.path(),&d)}else{fs::copy(e.path(),d).unwrap();}}}
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if let Ok(trace)=env::var("TRACE"){use std::io::Write;writeln!(fs::OpenOptions::new().create(true).append(true).open(trace).unwrap(),"profile {}",a.join(" ")).unwrap()}if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate-bundle"&&a.iter().any(|v|v=="--gate-b"){println!("gate_b=structural-pass authorizing=false manifest_sha256={}","b".repeat(64))}else if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else if a[0]=="verify-live"{println!("gate_b=pass manifest_sha256={}","b".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -176,6 +176,7 @@ python3 - "$T/bundle/profile.json" <<'PY'
 import json,sys
 path=sys.argv[1]
 value=json.load(open(path,encoding='utf-8'))
+value['confirmation_relayer_principal']='aaaaa-aa'
 value['initial_base_deployment']={'deployer_address':'0x4444444444444444444444444444444444444444','starting_nonce':0,'gas_limit':'10000000','max_fee_per_gas':'100','max_priority_fee_per_gas':'2'}
 with open(path,'w',encoding='utf-8') as out: json.dump(value,out,separators=(',',':')); out.write('\n')
 PY
@@ -274,6 +275,7 @@ PY
 [[ ! -e "$T/path-proof-override-used" ]]
 : >"$TRACE"
 SNS_IDENTITY_FIXTURE=production
+CONFIRMATION_RELAYER_IDENTITY_FIXTURE=production
 SNS_NEURON_SUBACCOUNT_FIXTURE="$(printf '11%.0s' {1..32})"
 SNS_PROPOSER_PRINCIPAL_FIXTURE=aaaaa-aa
 ACTIVATION_SUBMISSION_FIXTURE="$T/activation-submission.json"
@@ -282,6 +284,7 @@ if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
   BRIDGE_ACTIVATION_PHASE=schedule \
   BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION_FIXTURE" \
   BRIDGE_SNS_IDENTITY="$SNS_IDENTITY_FIXTURE" \
+  BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY_FIXTURE" \
   BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT_FIXTURE" \
   BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL_FIXTURE" \
   "$DRIVER_ROOT/scripts/production-activate-driver.sh"; then
@@ -289,6 +292,23 @@ if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
   exit 1
 fi
 grep -q '^icp identity principal --identity production$' "$TRACE"
+python3 - "$TRACE" <<'PY'
+import sys
+trace=open(sys.argv[1],encoding='utf-8').read()
+required=[
+    'profile validate-bundle --offline --gate-b',
+    'proofs proofs',
+    'rebuild ',
+    'icp identity principal --identity production',
+    'icp canister call aaaaa-aa refresh_activation_attestation () -n ic --identity production --json',
+    'profile verify-live',
+    ' manage_neuron ',
+]
+position=-1
+for item in required:
+    position=trace.find(item,position+1)
+    assert position >= 0, (item, trace)
+PY
 grep -q 'list_nervous_system_functions' "$TRACE"
 grep -q 'manage_neuron' "$TRACE"
 [[ -f "$ACTIVATION_SUBMISSION_FIXTURE" && ! -s "$ACTIVATION_SUBMISSION_FIXTURE" ]]

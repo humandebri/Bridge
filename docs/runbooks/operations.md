@@ -88,7 +88,7 @@ npm run governance-relayer -- status
 npm run governance-relayer -- prepare --action pause-deposits
 # confirmation relayer PEMへ切り替える
 export IC_IDENTITY_PEM='/secure/path/confirmation-relayer.pem'
-# Gate B manifest作成後、専用confirmation relayer identityで5分以内のBase観測を保存する
+# 手動診断時だけ、専用confirmation relayer identityでBase観測を更新する
 npm run governance-relayer -- refresh-attestation
 npm run governance-relayer -- run
 ```
@@ -113,7 +113,7 @@ stagingを現行schemaへ切り替える前にpending governance transactionとe
 
 初回production Canister作成は`icp.yaml`へsubnetを設定せず、review済みidentityで`BRIDGE_ICP_IDENTITY=<identity> scripts/production-canister-bootstrap.sh`を実行する。このscriptは`pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeez-fez7a-iae`を`icp canister create --subnet`へ固定し、作成後または既存mapping再利用時にNNS Registryが返す実subnetとの一致を必須にする。`.icp/data/mappings/production.ids.json`に既存IDがある場合は新規作成しない。
 
-本番資産受付は、Gate Aでoffline artifactとconstructor条件を承認し、Timelock／Bridgeを専用EOAからpause配置する。配置後はCanisterの公式EVM RPC監査でruntime、role、EOA権限ゼロを確認する。さらに7日間・10件以上のfee／cycles計測、monitor drill、emergency pause、主要5 RPC scenario、reserve確認を完了し、SNS Governanceが運用設定を一度だけ封印し、controllerをSNS Rootだけへhandoverする。これらを含むGate B承認後だけ`production-release.sh activate --phase schedule`で固定SNS proposalを提出する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Canisterが独立確認したFinalized Base transactionを束縛したschedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、専用confirmation relayerがfresh activation attestationを保存して新しいGate Bを作り、schedule receiptと明示承認を指定して`--phase execute`を実行する。
+本番資産受付は、Gate Aでoffline artifactとconstructor条件を承認し、Timelock／Bridgeを専用EOAからpause配置する。配置後はCanisterの公式EVM RPC監査でruntime、role、EOA権限ゼロを確認する。さらに7日間・10件以上のfee／cycles計測、monitor drill、emergency pause、主要5 RPC scenario、reserve確認を完了し、SNS Governanceが運用設定を一度だけ封印し、controllerをSNS Rootだけへhandoverする。これらを含むGate B承認後だけ`production-release.sh activate --phase schedule --confirmation-relayer-identity <name>`で固定SNS proposalを提出する。driverはproofとartifact再buildを完了してからnamed ICP identityのprincipalをprofileと照合し、`refresh_activation_attestation`、署名付き`verify-live`、source再照合を連続実行する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Canisterが独立確認したFinalized Base transactionを束縛したschema v4 schedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、新しいGate Bとschema v4 schedule receipt、明示承認を指定して`--phase execute --confirmation-relayer-identity <name>`を実行する。
 
 Gate Bにはcleanなmanifest sourceからprofile非依存で生成したUI code/assetsの全file digestとaggregate digestを持つ`ui-assets.json`を必須登録する。activation driverは同じsourceから再buildしてreceipt一致を確認する。production UI deployはこのartifact集合だけを再生成し、検証済みGate Bからrenderした`ui-runtime-profile.json`を`deployment-profile.js`へ直前合成して公開する。dirty checkout、asset追加・欠落・hash drift、bundle外profileはすべて拒否する。
 
@@ -122,7 +122,7 @@ BaseScanのsource verification、contract-created BSNSのownership確認、Token
 deploy、controller handover、activation schedule/executeの固定driverは、不可逆操作の直前にclean sourceから`scripts/ci-local.sh proofs`を再実行する。
 proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`proof-attestation.json`を含むbundleはfail closedとする。
 
-`execute`提出前に`verify-schedule-receipt-live`がschedule receipt内部のdigest、認証済みSNS proposal/function registry、Canisterのpending operationを再照合する。その後、Base両flowのunpause確定後にCanisterがICをresumeする。ProductionのBase状態は公式EVM RPC Canisterの`BaseMainnet`観測を保存したactivation attestationと認証済みCanister queryで確認し、直接Custom RPC URLは使用しない。3-provider直接照合はstaging monitor drillだけに限定する。
+`execute`提出前はproofと再build後のattestation更新・`verify-live`に続けて`verify-schedule-receipt-live`を実行し、schedule receipt内部のdigest、認証済みSNS proposal/function registry、Canisterのpending operationを再照合する。その後、Base両flowのunpause確定後にCanisterがICをresumeする。ProductionのBase状態は公式EVM RPC Canisterの`BaseMainnet`観測を保存したactivation attestationと認証済みCanister queryで確認し、直接Custom RPC URLは使用しない。3-provider直接照合はstaging monitor drillだけに限定する。
 - Holdの強制解除、nonce操作、任意transaction送信は行わない。
 ## Mint証拠不一致
 

@@ -11,6 +11,7 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 : "${BRIDGE_ACTIVATION_PHASE:?set BRIDGE_ACTIVATION_PHASE=schedule or execute}"
 : "${BRIDGE_ACTIVATION_SUBMISSION_OUT:?missing activation submission output}"
 : "${BRIDGE_SNS_IDENTITY:?missing SNS proposer identity name}"
+: "${BRIDGE_CONFIRMATION_RELAYER_IDENTITY:?missing confirmation relayer ICP identity name}"
 : "${BRIDGE_SNS_NEURON_SUBACCOUNT:?missing SNS proposer neuron subaccount}"
 : "${BRIDGE_SNS_PROPOSER_PRINCIPAL:?missing SNS proposer principal}"
 
