@@ -171,8 +171,9 @@ async function setup() {
   const bsnsAddress = execFileSync("cast", ["call", bridgeAddress, "bsns()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   const deploymentBlock = await publicClient.getBlockNumber()
   const bridgeCode = await publicClient.getCode({ address: bridgeAddress })
+  const timelockCode = await publicClient.getCode({ address: timelockAddress })
   const bsnsCode = await publicClient.getCode({ address: bsnsAddress })
-  if (!bridgeCode || !bsnsCode) throw new Error("Anvil contract deployment returned empty code")
+  if (!bridgeCode || !timelockCode || !bsnsCode) throw new Error("Anvil contract deployment returned empty code")
   await mock.actor.set_bridge_runtime_code(hexToBytes(bridgeCode))
   const operationalConfig = {
     governance_evm_fee: {
@@ -268,6 +269,10 @@ async function setup() {
   const deploymentPostconditions = await mock.actor.set_deployment_postconditions(
     hexToBytes(timelockAddress),
     hexToBytes(governanceOperator),
+    hexToBytes(bsnsAddress),
+    hexToBytes(bridgeAddress),
+    hexToBytes(timelockCode),
+    hexToBytes(bsnsCode),
   )
   if (!("Ok" in deploymentPostconditions)) throw new Error(`Failed to configure deployment postconditions: ${deploymentPostconditions.Err}`)
   const governanceReceiptFixture = await mock.actor.set_observed_transaction(

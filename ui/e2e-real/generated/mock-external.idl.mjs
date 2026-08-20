@@ -388,6 +388,7 @@ export const idlFactory = ({ IDL }) => {
     'Reverted' : IDL.Null,
     'Confirmed' : IDL.Null,
     'DecodeFailure' : IDL.Null,
+    'DelayedConfirmed' : IDL.Null,
     'Inconsistent' : IDL.Null,
     'RpcFailure' : IDL.Null,
   });
@@ -475,6 +476,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'probe_chain_key' : IDL.Func([IDL.Text], [Result_9], []),
     'receipt_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
+    'receipt_delay_tick' : IDL.Func([], [], []),
     'receipt_mint_log_index' : IDL.Func([], [IDL.Opt(IDL.Nat64)], ['query']),
     'set_archive_prefix_length' : IDL.Func([IDL.Nat64], [], []),
     'set_block_mode' : IDL.Func([BlockMode], [], []),
@@ -490,7 +492,14 @@ export const idlFactory = ({ IDL }) => {
     'set_chain_id_mode' : IDL.Func([ChainIdMode], [], []),
     'set_configured_chain_id' : IDL.Func([IDL.Nat64], [], []),
     'set_deployment_postconditions' : IDL.Func(
-        [IDL.Vec(IDL.Nat8), IDL.Vec(IDL.Nat8)],
+        [
+          IDL.Vec(IDL.Nat8),
+          IDL.Vec(IDL.Nat8),
+          IDL.Vec(IDL.Nat8),
+          IDL.Vec(IDL.Nat8),
+          IDL.Vec(IDL.Nat8),
+          IDL.Vec(IDL.Nat8),
+        ],
         [Result_10],
         [],
       ),

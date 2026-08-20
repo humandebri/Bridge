@@ -597,6 +597,7 @@ pub async fn confirm(
             );
             BaseGovernanceError::ObservationUnavailable
         })?;
+    require_confirmation_caller(caller)?;
     let (receipt_block_number, succeeded, finalized_observation) = match outcome {
         evm_rpc::ConfirmedReceiptOutcome::Missing
         | evm_rpc::ConfirmedReceiptOutcome::Pending { .. } => {
@@ -633,6 +634,7 @@ pub async fn confirm(
                     );
                     BaseGovernanceError::ObservationUnavailable
                 })?;
+        require_confirmation_caller(caller)?;
         crate::api::cache_runtime_attestation(&config, &observed)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
         if !activation_postcondition_matches(

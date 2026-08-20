@@ -73,6 +73,10 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (evm.actor as any).set_deployment_postconditions(
       init.timelock_contract,
       publicConfig.governance_operator,
+      new Uint8Array(20).fill(9),
+      init.bridge_contract,
+      new Uint8Array([0x60, 0x01]),
+      new Uint8Array([0x60, 0x02]),
     )).toHaveProperty("Ok");
     expect(await (bridge.actor as any).seal_operational_config({
       governance_evm_fee: init.governance_evm_fee,
@@ -88,7 +92,7 @@ describe("Phase 3 PocketIC saga", () => {
     bridge.actor.setPrincipal(governance);
     await (evm.actor as any).set_deposit_mints_paused(true);
     await (evm.actor as any).set_withdrawals_paused(true);
-    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+    await (evm.actor as any).set_receipt_mode({ DelayedConfirmed: null });
     const auditBefore: any = await (bridge.actor as any).get_audit_events(0n, 100);
     const resumesBefore = auditBefore.Ok.events.filter(
       (event: any) => "DepositsResumed" in event.kind,
@@ -694,6 +698,48 @@ describe("Phase 3 PocketIC saga", () => {
   it(
     "keeps signing privileged while restricting confirmation callers",
     keeps_signing_privileged_while_restricting_confirmation_callers,
+  );
+
+  async function reauthorizes_confirmation_after_external_receipt_observation() {
+    const { bridge, evm, init, runtimePrincipal, confirmationRelayerPrincipal } = await setup(false);
+    const nextPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(65));
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const scheduled: any = await (bridge.actor as any).schedule_activation();
+    expect(scheduled).toHaveProperty("Ok.kind.ScheduleActivation");
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+    const receiptCallsBefore = await (evm.actor as any).receipt_call_count();
+
+    const deferredConfirmation = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
+    deferredConfirmation.setPrincipal(init.pause_principal);
+    const startConfirmation = await deferredConfirmation.confirm_base_governance_transaction({
+      operation_id: scheduled.Ok.operation_id,
+      transaction_hash: scheduled.Ok.transaction_hash,
+    });
+    const revokedConfirmationPromise = startConfirmation();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (await (evm.actor as any).receipt_call_count() > receiptCallsBefore) break;
+      await pic!.tick(1);
+    }
+    expect(await (evm.actor as any).receipt_call_count()).toBeGreaterThan(receiptCallsBefore);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await (bridge.actor as any).rotate_pause_principal({
+      pause_principal: nextPausePrincipal,
+    })).toHaveProperty("Ok");
+    const revokedConfirmation = await revokedConfirmationPromise;
+    expect(revokedConfirmation).toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).get_pending_base_governance_transaction())
+      .toHaveProperty("Ok.0.kind.ScheduleActivation");
+
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: scheduled.Ok.operation_id,
+      transaction_hash: scheduled.Ok.transaction_hash,
+    })).toHaveProperty("Ok.succeeded", true);
+  }
+
+  it(
+    "reauthorizes confirmation after external receipt observation",
+    reauthorizes_confirmation_after_external_receipt_observation,
   );
 
   it("binds a selected subaccount, exposes public configuration, consent, and owner history", async () => {
