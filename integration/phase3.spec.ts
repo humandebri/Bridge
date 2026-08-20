@@ -1339,7 +1339,9 @@ describe("Phase 3 PocketIC saga", () => {
 
   async function runtime_attestation_is_reused_across_withdrawal_upgrade_and_governance() {
     const { evm, bridge, init, runtimePrincipal } = await setup(false);
-    expect(await (evm.actor as any).get_code_call_count()).toBe(0n);
+    // Operational sealing performs the initial attestation and caches it for
+    // withdrawal and governance paths until the deployment is reinstalled.
+    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
     const id = new Uint8Array(32).fill(0x9b);
     await (evm.actor as any).set_withdrawal([{
       id,
