@@ -235,12 +235,11 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("from source_resolution import source_path", staging_upgrade_test)
         self.assertIn("source_path(relative) if relative in SCRIPT_FILES", staging_upgrade_test)
-        self.assertIn('if "target_module_sha256" in policy:', staging_upgrade_test)
-        self.assertIn('policy["target_module_sha256"] = self.after_module', staging_upgrade_test)
-        self.assertIn('if "source_module_sha256" in policy', staging_upgrade_test)
-        self.assertIn('if "source_schema_version" in policy', staging_upgrade_test)
-        self.assertIn('elif method == "get_operational_config":', staging_upgrade_test)
-        self.assertIn('policy["governance_principal"]', staging_upgrade_test)
+        self.assertIn('"bridge_wasm_sha256": self.target_module', staging_upgrade_test)
+        self.assertIn('policy["source_module_sha256"] = self.source_module', staging_upgrade_test)
+        self.assertIn('policy["source_candid_sha256"] = self.sha(self.source_did)', staging_upgrade_test)
+        self.assertIn('elif method=="get_operational_config":', staging_upgrade_test)
+        self.assertIn('governance_principal = principal', staging_upgrade_test)
 
     def test_failure_manifest_checker_reads_claim_contracts(self) -> None:
         checker = (ROOT / "scripts" / "check_failure_manifests.py").read_text(

@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from source_resolution import source_path
 
 ROOT = Path(__file__).resolve().parents[2]
-FILES = ("scripts/plan007/staging-canister-upgrade.sh", "scripts/plan007/staging_canister_upgrade.py",
+SCRIPT_FILES = ("scripts/plan007/staging-canister-upgrade.sh", "scripts/plan007/staging_canister_upgrade.py",
          "scripts/plan007/candid_values.py", "scripts/plan007/read-public-canister-metadata.mjs")
 POLICY = "deployments/sepolia-staging/same-schema-upgrade-policy.json"
 PROFILE = "deployments/sepolia-staging/frontend-profile.json"
@@ -24,9 +24,9 @@ class SameSchemaUpgradeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); self.base = Path(self.temp.name)
         self.repo, self.state, self.bin = self.base / "repo", self.base / "state", self.base / "bin"
         self.repo.mkdir(); self.state.mkdir(); self.bin.mkdir()
-        for relative in (*FILES, POLICY, PROFILE):
+        for relative in (*SCRIPT_FILES, POLICY, PROFILE):
             target = self.repo / relative; target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path(relative) if relative in FILES else ROOT / relative, target)
+            shutil.copy2(source_path(relative) if relative in SCRIPT_FILES else ROOT / relative, target)
         self.did = self.repo / "canister/bridge-canister/bridge.did"; self.did.parent.mkdir(parents=True)
         self.did.write_text("service : { get_runtime_binding : () -> (); get_operational_config : () -> () }")
         self.source_did = self.base / "source.did"; self.source_did.write_text("service : { get_public_config : () -> () }")
@@ -102,7 +102,7 @@ print(json.dumps({"response_candid":candid}))
         value.update(changes); return value
 
     def run_driver(self, execute: bool = False, **changes: str):
-        argv = ["bash", str(self.repo / FILES[0]), "--wasm", str(self.wasm), "--local-evidence", str(self.local),
+        argv = ["bash", str(self.repo / SCRIPT_FILES[0]), "--wasm", str(self.wasm), "--local-evidence", str(self.local),
                 "--evidence", str(self.result if execute else self.preflight)]
         if execute: argv += ["--execute", "--preflight-evidence", str(self.preflight)]
         return subprocess.run(argv, cwd=self.repo, env=self.env(**changes), text=True, capture_output=True)
