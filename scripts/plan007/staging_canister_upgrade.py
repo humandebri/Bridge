@@ -13,6 +13,7 @@ PROFILE = ROOT / "deployments/sepolia-staging/frontend-profile.json"
 DID = ROOT / "canister/bridge-canister/bridge.did"
 METADATA_READER = ROOT / "scripts/plan007/read-public-canister-metadata.mjs"
 IC_HOST = "https://icp-api.io"
+LOCAL_E2E_SCHEMA_VERSION = 8
 COUNTS = ("retained_audit_events", "reconciliation_holds", "retained_deposit_index_entries",
           "pending_ledger_operations", "withdrawals", "deposits",
           "reserved_deposit_mint_operations", "reserved_deposit_mint_amount", "pruned_audit_events")
@@ -274,6 +275,10 @@ def main() -> None:
                             "evmRpcCanisterId": policy["evm_rpc_canister_id"]}.items():
         if profile.get(field) != expected: fail(f"frontend profile {field} does not match policy")
     local = load(args.local_evidence, "local E2E evidence")
+    if local.get("schema_version") != LOCAL_E2E_SCHEMA_VERSION \
+            or local.get("state_upgrade", {}).get("verified") is not True \
+            or set(local.get("tests", {}).values()) != {"passed"}:
+        fail("local E2E evidence has an unsupported or incomplete shape")
     if local.get("source_commit") != head: fail("local E2E evidence source commit must equal clean HEAD")
     if local.get("bridge_wasm_sha256") != digest(args.wasm) or local.get("candid_sha256") != digest(DID):
         fail("local E2E evidence does not bind the explicit Wasm and Candid")

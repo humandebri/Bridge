@@ -40,8 +40,11 @@ class SameSchemaUpgradeTests(unittest.TestCase):
         self.git("init", "-q"); self.git("config", "user.email", "test@example.invalid"); self.git("config", "user.name", "Test")
         self.git("add", "."); self.git("commit", "-qm", "fixture")
         self.local = self.base / "local.json"
-        self.local.write_text(json.dumps({"source_commit": self.git("rev-parse", "HEAD").stdout.strip(),
-                                          "bridge_wasm_sha256": self.target_module, "candid_sha256": self.sha(self.did)}))
+        self.local.write_text(json.dumps({"schema_version": 8,
+                                          "source_commit": self.git("rev-parse", "HEAD").stdout.strip(),
+                                          "bridge_wasm_sha256": self.target_module, "candid_sha256": self.sha(self.did),
+                                          "state_upgrade": {"verified": True},
+                                          "tests": {"full_local_ci": "passed"}}))
         self.preflight, self.result = self.base / "preflight.json", self.base / "result.json"
 
     def tearDown(self) -> None: self.temp.cleanup()
@@ -151,6 +154,12 @@ print(json.dumps({"response_candid":candid}))
         unknown = self.run_driver(MOCK_UNKNOWN_CANDID="1"); self.assertNotEqual(unknown.returncode, 0)
         (self.repo / "dirty").write_text("x")
         dirty = self.run_driver(); self.assertNotEqual(dirty.returncode, 0); self.assertIn("clean checkout", dirty.stderr)
+
+    def test_obsolete_local_evidence_is_rejected(self) -> None:
+        value = json.loads(self.local.read_text()); value["schema_version"] = 7
+        self.local.write_text(json.dumps(value))
+        result = self.run_driver(); self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported or incomplete shape", result.stderr)
 
 
 if __name__ == "__main__": unittest.main()

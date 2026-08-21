@@ -743,9 +743,10 @@ async function cleanup() {
 }
 
 async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
-  const [status, publicConfig, ownerSequence, deposits, withdrawals, auditPage, activationStatus, storageIntegrity] = await Promise.all([
+  const [status, runtimeBinding, operationalConfig, ownerSequence, deposits, withdrawals, auditPage, activationStatus, storageIntegrity] = await Promise.all([
     actor.get_bridge_status(),
     actor.get_runtime_binding(),
+    actor.get_operational_config(),
     actor.get_next_deposit_sequence(owner),
     Promise.all(depositIds.map((id) => actor.get_deposit(id))),
     Promise.all(withdrawalIds.map((id) => actor.get_withdrawal(id))),
@@ -756,6 +757,7 @@ async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
   if (deposits.some((item) => item.length !== 1) || withdrawals.some((item) => item.length !== 1)) {
     throw new Error("upgrade evidence could not reopen every known settlement record")
   }
+  if (!("Ok" in operationalConfig)) throw new Error("upgrade evidence could not read operational configuration")
   if (!("Ok" in activationStatus)) throw new Error(`upgrade evidence could not read activation status: ${json(activationStatus.Err)}`)
   if (storageIntegrity.Ok !== "ok") throw new Error(`upgrade evidence failed storage integrity: ${json(storageIntegrity)}`)
   const durableStatus = {
@@ -784,7 +786,8 @@ async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
   }
   return JSON.parse(json({
     status: durableStatus,
-    public_config: publicConfig,
+    runtime_binding: runtimeBinding,
+    operational_config: operationalConfig.Ok,
     owner_sequence: ownerSequence,
     deposits: deposits.map(([item]) => item),
     withdrawals: withdrawals.map(([item]) => item),
