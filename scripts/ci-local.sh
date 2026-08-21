@@ -1013,11 +1013,11 @@ run_smoke() {
     cat "$canister_status" >&2
     return 1
   fi
-  if icp canister call bridge-canister get_public_config '()' \
+  if icp canister call bridge-canister get_runtime_binding '()' \
     -e local --query --json \
     --candid "$ROOT/canister/bridge-canister/bridge.did" \
     --project-root-override "$ROOT" >/dev/null 2>&1; then
-    echo "get_public_config succeeded before chain-key address initialization" >&2
+    echo "get_runtime_binding succeeded before chain-key address initialization" >&2
     return 1
   fi
   public_config_initialization="$(
@@ -1033,7 +1033,7 @@ candid = response.get("response_candid") or ""
 if not re.search(r"variant\s*\{\s*Ok\s*\}", candid):
     raise SystemExit(f"public configuration initialization failed: {response!r}")
 ' <<<"$public_config_initialization"
-  icp canister call bridge-canister get_public_config '()' \
+  icp canister call bridge-canister get_runtime_binding '()' \
     -e local --query --json \
     --candid "$ROOT/canister/bridge-canister/bridge.did" \
     --project-root-override "$ROOT" >/dev/null
@@ -1066,7 +1066,7 @@ for field, (value, candid_type) in expected.items():
     --mode upgrade \
     --wasm "$ROOT/target/test-deployment/staging/bridge_canister.wasm" \
     --project-root-override "$ROOT"
-  icp canister call bridge-canister get_public_config '()' \
+  icp canister call bridge-canister get_runtime_binding '()' \
     -e local --query --json \
     --candid "$ROOT/canister/bridge-canister/bridge.did" \
     --project-root-override "$ROOT" >/dev/null
