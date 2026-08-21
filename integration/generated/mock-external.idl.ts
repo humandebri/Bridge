@@ -477,7 +477,6 @@ export const idlFactory = ({ IDL }) => {
       ),
     'probe_chain_key' : IDL.Func([IDL.Text], [Result_9], []),
     'receipt_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
-    'receipt_delay_tick' : IDL.Func([], [], []),
     'receipt_mint_log_index' : IDL.Func([], [IDL.Opt(IDL.Nat64)], ['query']),
     'set_archive_prefix_length' : IDL.Func([IDL.Nat64], [], []),
     'set_block_mode' : IDL.Func([BlockMode], [], []),

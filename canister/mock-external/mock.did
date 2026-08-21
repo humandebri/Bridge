@@ -302,8 +302,8 @@ type ReceiptMode = variant {
   Orphaned;
   Reverted;
   Confirmed;
-  DelayedConfirmed;
   DecodeFailure;
+  DelayedConfirmed;
   Inconsistent;
   RpcFailure;
 };
@@ -472,7 +472,6 @@ type WithdrawalFixture = record {
   amount : nat;
 };
 service : (InitArgs) -> {
-  receipt_delay_tick : () -> ();
   bridge_signer : () -> (blob) query;
   broadcast_transactions : () -> (vec blob) query;
   chain_id_call_count : () -> (nat64) query;
@@ -520,7 +519,9 @@ service : (InitArgs) -> {
   set_broadcast_inconsistent_after_accepts : (nat8) -> ();
   set_chain_id_mode : (ChainIdMode) -> ();
   set_configured_chain_id : (nat64) -> ();
-  set_deployment_postconditions : (blob, blob, blob, blob, blob, blob) -> (Result_10);
+  set_deployment_postconditions : (blob, blob, blob, blob, blob, blob) -> (
+      Result_10,
+    );
   set_deposit_mints_paused : (bool) -> ();
   set_eth_balance : (nat) -> ();
   set_finalized_block : (nat64, blob) -> (Result_10);
