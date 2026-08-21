@@ -787,7 +787,7 @@ struct ActivationAttestationView {
 
 #[derive(CandidType, Deserialize)]
 enum ActivationAttestationResultView {
-    Ok(ActivationAttestationView),
+    Ok(Box<ActivationAttestationView>),
     Err(Reserved),
 }
 
