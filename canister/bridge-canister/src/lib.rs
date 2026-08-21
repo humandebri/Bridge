@@ -446,6 +446,26 @@ fn apply_staging_rpc_provider_update(
 }
 
 #[cfg(feature = "test-deployment")]
+fn validate_staging_upgrade_status_counts(
+    store: &StableStore,
+    args: &config::StagingUpgradeArgs,
+) -> Result<(), String> {
+    if args.status_counts_guard_version != 1 {
+        return Err("unsupported staging status count guard version".into());
+    }
+    let Some(expected) = args.expected_status_counts.as_ref() else {
+        return Ok(());
+    };
+    let counts = store
+        .status_counts()
+        .map_err(|error| format!("staging status count read failed: {error}"))?;
+    if !counts.matches_staging_expected_status_counts(expected) {
+        return Err("staging status counts do not match the reviewed preflight snapshot".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "test-deployment")]
 #[ic_cdk::post_upgrade(decode_with = "decode_staging_upgrade_args")]
 fn post_upgrade(args: config::StagingUpgradeArgs) {
     let mut store = storage_or_trap(
@@ -455,6 +475,8 @@ fn post_upgrade(args: config::StagingUpgradeArgs) {
             args.confirmation_relayer_principal,
         ),
     );
+    validate_staging_upgrade_status_counts(&store, &args)
+        .unwrap_or_else(|error| ic_cdk::trap(error));
     apply_staging_rpc_provider_update(&mut store, &args)
         .unwrap_or_else(|error| ic_cdk::trap(error));
     finish_post_upgrade(store);
@@ -1880,6 +1902,17 @@ mod candid_tests {
 
         let expected = super::config::StagingUpgradeArgs {
             status_counts_guard_version: 1,
+            expected_status_counts: Some(super::config::StagingExpectedStatusCounts {
+                retained_audit_events: 11,
+                reconciliation_holds: 12,
+                retained_deposit_index_entries: 13,
+                pending_ledger_operations: 14,
+                withdrawals: 15,
+                deposits: 16,
+                reserved_deposit_mint_operations: 17,
+                reserved_deposit_mint_amount: 18,
+                pruned_audit_events: 19,
+            }),
             minimum_withdrawal_id: None,
             confirmation_relayer_principal: Some(candid::Principal::from_slice(&[9])),
             rpc_provider_update: Some(super::config::StagingRpcProviderUpdate {

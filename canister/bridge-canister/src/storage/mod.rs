@@ -11760,6 +11760,7 @@ mod tests {
             .to_vec();
         let args = crate::config::StagingUpgradeArgs {
             status_counts_guard_version: 1,
+            expected_status_counts: Some(counts_before.staging_expected_status_counts()),
             minimum_withdrawal_id: None,
             confirmation_relayer_principal: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
@@ -11767,6 +11768,8 @@ mod tests {
                 expected_status_counts: counts_before.staging_expected_status_counts(),
             }),
         };
+        crate::validate_staging_upgrade_status_counts(&store, &args)
+            .expect("accept matching same-schema count guard");
         crate::apply_staging_rpc_provider_update(&mut store, &args)
             .expect("apply reviewed replacement");
         crate::apply_staging_rpc_provider_update(&mut store, &args)
@@ -11846,8 +11849,23 @@ mod tests {
 
         let mut drifted = expected;
         drifted.deposits += 1;
+        let same_schema_args = crate::config::StagingUpgradeArgs {
+            status_counts_guard_version: 1,
+            expected_status_counts: Some(drifted),
+            rpc_provider_update: None,
+            minimum_withdrawal_id: None,
+            confirmation_relayer_principal: None,
+        };
+        assert_eq!(
+            crate::validate_staging_upgrade_status_counts(&store, &same_schema_args),
+            Err("staging status counts do not match the reviewed preflight snapshot".into())
+        );
+        assert_eq!(store.config().expect("config"), Some(initial.clone()));
+        assert_eq!(store.external_progress().expect("progress"), progress);
+
         let args = crate::config::StagingUpgradeArgs {
             status_counts_guard_version: 1,
+            expected_status_counts: None,
             minimum_withdrawal_id: None,
             confirmation_relayer_principal: None,
             rpc_provider_update: Some(crate::config::StagingRpcProviderUpdate {
@@ -11877,6 +11895,7 @@ mod tests {
 
         let empty_unguarded = crate::config::StagingUpgradeArgs {
             status_counts_guard_version: 0,
+            expected_status_counts: None,
             rpc_provider_update: None,
             minimum_withdrawal_id: None,
             confirmation_relayer_principal: None,

@@ -24,7 +24,7 @@ staging Bridgeは公式EVM RPC Canister `7hfb6-caaaa-aaaar-qadga-cai`を使用�
 ## Local promotion gate
 
 ```sh
-scripts/plan007-local-gate.sh
+scripts/plan007-local-gate.sh /secure/work/local-e2e.json
 ```
 
 gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実ICRC Ledger/Index・Anvil・test frontendを接続したPlaywright E2Eを実行する。E2Eは次を実証する。

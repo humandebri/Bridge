@@ -18,7 +18,7 @@ production artifactではKINIC mainnet Ledgerのlive fee、固定値`100000`、�
 
 ## 開始条件
 
-- clean commitで`scripts/plan007-local-gate.sh`を実行し、現行commitの`local-e2e.json`を発行する。
+- clean commitで`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`を実行し、repo外へ現行commitの証跡を発行する。
 - `frontend-profile.json`の値を予定値として信用せず、共有test Ledger/Index、staging Bridge、Base Sepoliaのlive値を再読する。
 - ICP identity名、wallet secret、RPC fault controller tokenはリポジトリへ保存しない。
 - Canisterの初回installと同一instance upgrade、cycles投入、Base Sepolia transaction、Cloudflare test UI公開は別々に承認を得る。初期化済みCanisterのreinstallは行わない。
@@ -26,8 +26,8 @@ production artifactではKINIC mainnet Ledgerのlive fee、固定値`100000`、�
 
 ## 証跡state machine
 
-次でmanifestを初期化する。現行commitからgateが生成した`local-e2e.json`の差分だけは許可するが、
-それ以外のdirty treeまたは古いlocal evidenceでは失敗する。
+次でmanifestを初期化する。tracked treeは常にcleanでなければならず、repo外のlocal evidenceが
+現行HEAD、Wasm、Candidと一致しない場合は失敗する。
 
 ```sh
 scripts/plan007/staging-e2e-driver.sh init
@@ -115,30 +115,28 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
 )
 ```
 
-この更新は旧digest `3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48`から新digest `df7e867aaf6abeaf00b0f61e8662fa87c6f8675eb0aebdf7b09f8c99a499d064`だけを許可する。新設定の同値再実行は成功するが、URL・順序・chain ID・EVM RPC Canister ID・現在digestの不一致はtrapしてupgrade全体をrollbackする。更新後もFinalized水位を保持し、runtime attestation cacheだけを無効化する。production Wasmの`post_upgrade()`は引数なしで、この更新経路を含まない。
-
-PR #11の新profileを含むclean checkoutから、repository-owned
-`rpc-provider-replacement-policy.json`に固定したCanister ID、source schema v34、target schema v35、instance ID、変更前module hash、
-state count、旧・新RPC順序とdigestをreviewする。driverは`local-e2e.json`のsource commitとWasm／Candid hash、
-live Candid互換性、認証済み`storage_integrity_check`、固定順序3 endpointのchain IDを照合する。
-通常実行はread-only preflightだけを行い、`--execute`を追加した別承認の呼出しだけが明示Wasmをinstallする。
-到達不能、不正応答、binding不一致、state driftはRPC置換の適用前にfail closedとする。
-Python driverのsnapshot照合は、operatorへ早期にdriftを示す事前診断である。`--execute`では同じreview済み
-state countと固定guard version `1`をupgrade引数にも含め、test-deployment Wasmの`post_upgrade()`がstable stateを再openした直後、
-設定またはruntime attestationを書き換える前に全countを再照合する。preflight後にstateが変わった場合は
-`post_upgrade()`がtrapし、RPC置換を含むupgrade全体をrollbackする。
+same-schema gateはstable schema v35を維持したまま、旧`get_public_config`を
+`get_runtime_binding`と権限付き`get_operational_config`へ置換する。`same-schema-upgrade-policy.json`は
+Canister、deployment、旧module／Candidを固定し、repo外のlocal E2E evidenceはclean HEADとtarget Wasm／Candidを固定する。
+preflightはcertified live Candidを旧APIとして読み、binding、state count、controller、cycles、storage integrity、
+pending Timelock数を記録する。executeは同じpreflightを再構築できた場合だけinstallし、全state countを
+`expected_status_counts`として渡す。`post_upgrade()`はstable stateを再openした直後にcountを照合し、drift時はtrapして
+module更新全体をrollbackする。production Wasmの引数なし`post_upgrade()`は変更しない。
 
 ```sh
 BRIDGE_STAGING_IDENTITY=<identity> \
   scripts/plan007/staging-canister-upgrade.sh \
     --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
-    --evidence /secure/work/staging-rpc-replacement.json
+    --local-evidence /secure/work/local-e2e.json \
+    --evidence /secure/work/staging-same-schema-preflight.json
 
 # preflight結果とpolicyを別レビューし、Canister upgradeの明示承認後だけ実行する。
 BRIDGE_STAGING_IDENTITY=<identity> \
   scripts/plan007/staging-canister-upgrade.sh --execute \
     --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
-    --evidence /secure/work/staging-rpc-replacement.json
+    --local-evidence /secure/work/local-e2e.json \
+    --preflight-evidence /secure/work/staging-same-schema-preflight.json \
+    --evidence /secure/work/staging-same-schema-result.json
 ```
 
 driverは`icp deploy`や暗黙buildを使用しない。成功または適用済みpostconditionをすべて確認した場合だけ

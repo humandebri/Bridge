@@ -116,6 +116,7 @@ pub struct OperationalConfigArgs {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct StagingUpgradeArgs {
     pub status_counts_guard_version: u8,
+    pub expected_status_counts: Option<StagingExpectedStatusCounts>,
     pub rpc_provider_update: Option<StagingRpcProviderUpdate>,
     pub minimum_withdrawal_id: Option<Vec<u8>>,
     pub confirmation_relayer_principal: Option<Principal>,
@@ -126,6 +127,7 @@ impl Default for StagingUpgradeArgs {
     fn default() -> Self {
         Self {
             status_counts_guard_version: 1,
+            expected_status_counts: None,
             rpc_provider_update: None,
             minimum_withdrawal_id: None,
             confirmation_relayer_principal: None,

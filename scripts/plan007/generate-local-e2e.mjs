@@ -46,9 +46,16 @@ export function validateUpgradeEvidence(upgrade) {
   return upgrade
 }
 
-export async function generateLocalEvidence(root = defaultRoot) {
+export async function generateLocalEvidence(root = defaultRoot, requestedOutputPath) {
   const factsPath = path.join(root, "ui/.e2e-runtime/local-e2e-facts.json")
-  const outputPath = path.join(root, "deployments/sepolia-staging/evidence/local-e2e.json")
+  if (!requestedOutputPath || !path.isAbsolute(requestedOutputPath)) {
+    throw new Error("--output must be an absolute path outside the repository")
+  }
+  const outputPath = path.resolve(requestedOutputPath)
+  const relativeOutput = path.relative(root, outputPath)
+  if (relativeOutput === "" || (!relativeOutput.startsWith("..") && !path.isAbsolute(relativeOutput))) {
+    throw new Error("--output must be outside the repository")
+  }
   const status = execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" })
   if (status.trim()) throw new Error("promotion evidence requires a clean working tree")
   const facts = JSON.parse(await readFile(factsPath, "utf8"))
@@ -102,5 +109,9 @@ function bytesHex(value) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.stdout.write(`${await generateLocalEvidence()}\n`)
+  const args = process.argv.slice(2)
+  if (args.length !== 2 || args[0] !== "--output") {
+    throw new Error("usage: generate-local-e2e.mjs --output /absolute/path/local-e2e.json")
+  }
+  process.stdout.write(`${await generateLocalEvidence(defaultRoot, args[1])}\n`)
 }
