@@ -10,14 +10,14 @@
 - Fee Recipient、RPC credential、raw transaction、秘密情報を監視ログへ出さない。
 - `get_bridge_status.counts`の`reserved_deposit_mint_operations`、`reserved_deposit_mint_amount`、`pending_ledger_operations`、`retained_audit_events`、`pruned_audit_events`、`retained_deposit_index_entries`と`audit_retention_warning`を確認する。audit詳細は直近100,000件で、80,000件以上は警告する。通常Deposit一覧はownerごとに直近100件だが、非終端Depositは独立indexから全件をpagination取得できる。
 
-Status画面とruntime事前検証は、ブラウザからreview済みprofileのBase RPCへ直接問い合わせる表示用観測であり、CanisterのHTTP outcallを発生させない。Deposit表示用availabilityはBase Finalized/Safe、runtime、pause、epoch、IC pause、Canister cycles floorを組み合わせ、Mint Signer ETH残高を条件にしない。Governance availabilityだけはGovernance Operator ETH floorを確認する。いずれかが60秒を超えた場合はlast-known値を残したままfail closedにする。資産状態を変える最終判断ではブラウザ観測を信用せず、Canisterがprovider quorumでBaseを再検証する。
+Status画面と資産操作直前のruntime事前検証は、ブラウザからreview済みprofileのBase RPCへ直接問い合わせる観測であり、CanisterのHTTP outcallを発生させない。Bridge画面の通常表示はruntime readinessを自動検証せず、手数料とpauseの軽量Quoteだけを読む。Deposit availabilityは操作直前にBase Finalized/Safe、runtime、pause、epoch、IC pause、Canister cycles floorを組み合わせ、60秒を超えた結果を再利用せずfail closedにする。Mint Signer ETH残高は条件にせず、Governance availabilityだけはGovernance Operator ETH floorを確認する。資産状態を変える最終判断ではブラウザ観測を信用せず、Canisterがprovider quorumでBaseを再検証する。
 
 CanisterがFinalized headを取得する際のblock response上限は固定16 KiBである。上限超過時は応答上限の自動拡大や自動再試行をせず、RPC unavailableとしてLedger処理前にfail closedにする。receipt blockは取得せず、2-of-3で一致したreceipt hashへ4 KiB上限の`bridgeSnapshot()` EIP-1898 probeを実行し、`requireCanonical=true`とsnapshotのblock numberでcanonical receiptを確認する。
 本番preflightも、receipt、deployment、保存snapshot、Timelock role eventの既知block hashをBridgeの`bridgeSnapshot()`またはTimelockの`getMinDelay()`へEIP-1898で固定する。番号指定block取得は行わず、full block応答はFinalized headのhash発見だけに使う。
 2026-07-23のBase Sepolia検証では、直近256 Finalized blockの`eth_getBlockByNumber`応答は最大5,542 bytesであり、16 KiB上限内に収まった。
 
 Canisterが使用するLedger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。
-Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示し、事前検証へ使う。
+Canisterの全Ledger処理がこの値を使う。UIはBridge Canisterを経由せず、対象Ledgerの`icrc1_fee()`をqueryして表示と事前検証へ使う。
 
 production Canisterが受け入れるLedger feeは`100000` raw、`test-deployment` featureで作るstaging Canisterは`10000` rawに固定する。activation preflightとruntimeの`BadFee`処理は、buildが選択した固定値との差異をfail closedにする。
 詳しい検証条件は`sepolia-staging-e2e.md`の「Test Ledgerのfee」に記載する。
@@ -45,7 +45,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 
 保守APIはCanister controllerだけが呼び出せる。Governance principal、pause principal、Runtime Administratorには許可しない。実行前に対象Wasmとstable imageを保存し、処理失敗時にmetadataやDBを手作業で変更しない。
 
-新規install後、controller handover前にcontroller identityから`initialize_public_config()`を一度実行する。これはMint SignerとGovernance Operatorをchain-keyから導出し、両方が成功した場合だけstable stateへ一括保存する。続けて`get_public_config()` queryを実行し、release profileの両アドレスと一致することを確認する。初期化失敗、未初期化query、保存済みアドレスとの不一致はいずれもdeployment blockerであり、空値や手入力値で代替しない。upgradeでは保存値を維持し、再初期化を必須としない。
+新規install後、controller handover前にcontroller identityから`initialize_public_config()`を一度実行する。これはMint SignerとGovernance Operatorをchain-keyから導出し、両方が成功した場合だけstable stateへ一括保存する。続けて公開`get_runtime_binding()`とcontroller/governance限定`get_operational_config()`を実行し、release profileの両アドレスと一致することを確認する。`get_runtime_binding().operational_config_sha256`は、operational実値と固定Ledger feeをdomain-separated Candid encodingで束縛し、handover後の`verify-live`がprofile driftを公開値なしで検出する。初期化失敗、未初期化query、保存済みアドレスまたはbinding digestの不一致はいずれもdeployment blockerであり、空値や手入力値で代替しない。upgradeでは保存値を維持し、再初期化を必須としない。
 
 1. `start_storage_validation()`を一度呼び、`continue_storage_validation(100)`を`complete = true`まで反復する。途中で通常更新が入って`StateChanged`になった場合、古いprogressは破棄されるため、静穏時間帯に明示的に再開始する。
 2. `storage_integrity_check()` queryが`ok`を返すことを確認する。upgrade処理からこの検査は自動実行されない。

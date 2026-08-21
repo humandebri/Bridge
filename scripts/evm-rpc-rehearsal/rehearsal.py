@@ -663,7 +663,7 @@ def validate_capture_command(kind: str, tool: str, argv: list[str], binding: dic
             allowed_methods = {
                 "ledger": {"icrc3_get_blocks", "icrc1_balance_of", "icrc1_fee"},
                 "audit": {"get_audit_events"},
-                "bridge": {"get_public_config", "get_bridge_status", "get_deposit", "get_withdrawals"},
+                "bridge": {"get_runtime_binding", "get_bridge_status", "get_deposit", "get_withdrawals"},
             }
             if method not in allowed_methods[kind]:
                 fail(f"ICP CLI artifact method is not allowed for {kind}: {method}")

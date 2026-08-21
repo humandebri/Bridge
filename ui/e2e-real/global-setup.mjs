@@ -263,9 +263,14 @@ async function setup() {
   const ledger = pic.createActor(ledgerIdl, ledgerId)
   ledger.setIdentity(testIdentity)
   const index = pic.createActor(indexIdl, indexId)
-  const publicConfig = await bridge.actor.get_public_config()
+  const [publicConfig, operationalConfigResult] = await Promise.all([
+    bridge.actor.get_runtime_binding(),
+    bridge.actor.get_operational_config(),
+  ])
+  if (!("Ok" in operationalConfigResult)) throw new Error("Bridge operational configuration is unavailable to the controller")
+  const liveOperationalConfig = operationalConfigResult.Ok
   if (bytesHex(publicConfig.expected_bridge_signer).toLowerCase() !== signer.toLowerCase()) throw new Error("Bridge mint signer derivation drifted")
-  if (bytesHex(publicConfig.governance_operator).toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge governance operator derivation drifted")
+  if (bytesHex(liveOperationalConfig.governance_operator).toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge governance operator derivation drifted")
   const deploymentPostconditions = await mock.actor.set_deployment_postconditions(
     hexToBytes(timelockAddress),
     hexToBytes(governanceOperator),
@@ -740,7 +745,7 @@ async function cleanup() {
 async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
   const [status, publicConfig, ownerSequence, deposits, withdrawals, auditPage, activationStatus, storageIntegrity] = await Promise.all([
     actor.get_bridge_status(),
-    actor.get_public_config(),
+    actor.get_runtime_binding(),
     actor.get_next_deposit_sequence(owner),
     Promise.all(depositIds.map((id) => actor.get_deposit(id))),
     Promise.all(withdrawalIds.map((id) => actor.get_withdrawal(id))),

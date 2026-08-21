@@ -50,7 +50,7 @@ profileはCanisterから導出してBaseのFinalized attestationと照合するM
 
 Gate Aはpre-deploy profileとBridge/BSNSの5 build artifact、合計6 artifactを束縛する。Gate BはこれらへRPC rehearsal、handover、SNS upgrade、monitor/keeper、fee/cycles、provider independence、UI、Gate A receiptの10 artifactを加えた正確に16 artifactである。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
 
-`validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、PublicConfig、reserve、SNS upgrade proposal、Root-only controller、live module hashを認証済みCanister応答で照合する。認証またはpostconditionが欠ければ非ゼロ終了する。
+`validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、公開RuntimeBinding、reserve、SNS upgrade proposal、Root-only controller、live module hashを認証済みCanister応答で照合する。権限principal、rate/cycles policy、Governance fee、固定Ledger feeは、公開RuntimeBindingの`operational_config_sha256`をrelease profileから再構成した値と照合する。実値の確認はcontroller/governance限定`get_operational_config`を使う。認証またはpostconditionが欠ければ非ゼロ終了する。
 
 credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
 

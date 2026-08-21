@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   createIndexActor: vi.fn(),
   createLedgerActor: vi.fn(),
   getBridgeStatus: vi.fn(),
-  getPublicConfig: vi.fn(),
+  getRuntimeBinding: vi.fn(),
   sha256: vi.fn(),
 }))
 
@@ -125,7 +125,7 @@ beforeEach(() => {
     readContract: readContractMock,
   })
   mocks.sha256.mockImplementation((code: string) => code === "0x01" ? bridgeHash : bsnsHash)
-  mocks.getPublicConfig.mockImplementation(() => Promise.resolve({
+  mocks.getRuntimeBinding.mockImplementation(() => Promise.resolve({
     base_chain_id: BigInt(profile.chainId),
     bridge_contract: Array.from({ length: 20 }, () => 0x11),
     expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
@@ -141,7 +141,7 @@ beforeEach(() => {
   }))
   mocks.getBridgeStatus.mockResolvedValue({ withdrawal_fee_guard_active: false })
   mocks.createBridgeActor.mockResolvedValue({
-    get_public_config: mocks.getPublicConfig,
+    get_runtime_binding: mocks.getRuntimeBinding,
     get_bridge_status: mocks.getBridgeStatus,
   })
   mocks.createLedgerActor.mockResolvedValue({
@@ -257,7 +257,7 @@ describe("validateRuntime token bindings", () => {
       blockHash: finalizedHash,
       requireCanonical: true,
     }))
-    expect(mocks.getPublicConfig).not.toHaveBeenCalled()
+    expect(mocks.getRuntimeBinding).not.toHaveBeenCalled()
     expect(getChainIdMock).toHaveBeenCalledOnce()
     expect(getCodeMock).not.toHaveBeenCalled()
     expect(mocks.sha256).not.toHaveBeenCalled()
@@ -361,7 +361,7 @@ describe("validateRuntime token bindings", () => {
       if (functionName === "getMinDelay") return Promise.resolve(301n)
       throw new Error(`Unexpected contract call ${functionName}`)
     })
-    mocks.getPublicConfig.mockResolvedValueOnce({
+    mocks.getRuntimeBinding.mockResolvedValueOnce({
       base_chain_id: BigInt(profile.chainId),
       bridge_contract: new Uint8Array(20).fill(0x11),
       expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
@@ -389,7 +389,7 @@ describe("validateRuntime token bindings", () => {
   })
 
   it("fails closed when the Canister runtime attestation differs from the profile", async () => {
-    mocks.getPublicConfig.mockResolvedValueOnce({
+    mocks.getRuntimeBinding.mockResolvedValueOnce({
       base_chain_id: BigInt(profile.chainId),
       bridge_contract: new Uint8Array(20).fill(0x11),
       expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xdd),
@@ -409,7 +409,7 @@ describe("validateRuntime token bindings", () => {
 
   it("blocks obsolete schema and mismatched Canister EVM RPC bindings", async () => {
     mocks.createBridgeActor.mockResolvedValue({
-      get_public_config: vi.fn().mockResolvedValue({
+      get_runtime_binding: vi.fn().mockResolvedValue({
         base_chain_id: BigInt(profile.chainId), bridge_contract: new Uint8Array(20).fill(0x11),
         expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
         timelock_contract: new Uint8Array(20).fill(0x55),

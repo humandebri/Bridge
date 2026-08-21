@@ -13,7 +13,7 @@ TICRC1 Ledgerのfeeは`10000` rawである。
 `test-deployment` featureで作るstaging Wasmは`KINIC_LEDGER_FEE = 10000`を使用し、production Wasmは`100000`を使用する。
 この差は設定driftではなく、stagingとproductionで対象Ledgerが異なるために意図して設けている。staging artifactをproductionへ流用してはならない。
 
-stagingの検証では、Canisterの`get_public_config().ledger_fee`とTICRC1 Ledgerの`icrc1_fee()`がともに`10000` rawで一致することを確認する。
+stagingの検証では、Canister buildの固定feeとTICRC1 Ledgerの`icrc1_fee()`がともに`10000` rawで一致することを確認する。UIはLedgerを直接queryし、Bridge Canisterからfeeを取得しない。
 production artifactではKINIC mainnet Ledgerのlive fee、固定値`100000`、承認済みproduction profileが一致することを別途検証する。
 
 ## 開始条件

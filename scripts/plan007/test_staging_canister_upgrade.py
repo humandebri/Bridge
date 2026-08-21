@@ -207,18 +207,14 @@ elif method == "continue_storage_validation":
         candid = 'variant { Err = variant { StorageFailure } }'
     else:
         candid = 'variant { Ok = record { complete = true; phase = "complete"; scanned_rows = 1 : nat64 } }'
-elif method == "get_public_config":
+elif method == "get_runtime_binding":
     schema = str(target_schema) if applied else os.environ.get("MOCK_SCHEMA", str(source_schema))
     instance = os.environ.get("MOCK_INSTANCE", policy["deployment_instance_id"])[2:]
     chain = os.environ.get("MOCK_PUBLIC_CHAIN", str(policy["base_chain_id"]))
     evm = os.environ.get("MOCK_EVM_CANISTER", policy["evm_rpc_canister_id"])
-    governance_field = ""
-    if "governance_principal" in policy:
-        governance = os.environ.get("MOCK_GOVERNANCE", policy["governance_principal"])
-        governance_field = f'; governance_principal = principal "{governance}"'
     boundary = os.environ.get("MOCK_BOUNDARY", "01" * 32)
     boundary_field = f'; minimum_withdrawal_id = blob "{blob(boundary)}"' if int(schema) >= 33 else ''
-    named = f'''record {{ schema_version = {schema} : nat16; deployment_instance_id = blob "{blob(instance)}"; base_chain_id = {chain} : nat64; evm_rpc_canister_id = principal "{evm}"{governance_field}; rpc_provider_urls_sha256 = blob "{blob(digest)}"{boundary_field} }}'''
+    named = f'''record {{ schema_version = {schema} : nat16; deployment_instance_id = blob "{blob(instance)}"; base_chain_id = {chain} : nat64; evm_rpc_canister_id = principal "{evm}"; rpc_provider_urls_sha256 = blob "{blob(digest)}"{boundary_field} }}'''
     if os.environ.get("MOCK_CANDID_NULL") == "1":
         if "--candid" in args:
             print(json.dumps({"response_candid": None})); raise SystemExit(0)
@@ -233,6 +229,9 @@ elif method == "get_public_config":
             numeric = numeric.replace(f"{name} =", f"{fid} =")
         print(json.dumps({"response_candid": numeric})); raise SystemExit(0)
     candid = named
+elif method == "get_operational_config":
+    governance = os.environ.get("MOCK_GOVERNANCE", policy["governance_principal"])
+    candid = f'''variant {{ Ok = record {{ governance_principal = principal "{governance}" }} }}'''
 elif method == "get_bridge_status":
     counts = dict(policy["status_counts"])
     if os.environ.get("MOCK_COUNT_DRIFT") == "1" or (applied and os.environ.get("MOCK_POST_COUNT_DRIFT") == "1"): counts["deposits"] += 1

@@ -185,7 +185,8 @@ def run_storage_validation(policy: dict[str, Any], identity: str, did: Path) -> 
 
 
 def snapshot(policy: dict[str, Any], identity: str, did: Path) -> dict[str, Any]:
-    public = call(policy, identity, did, "get_public_config")
+    public = call(policy, identity, did, "get_runtime_binding")
+    operational = call(policy, identity, did, "get_operational_config")
     status = call(policy, identity, did, "get_bridge_status")
     integrity = call(policy, identity, did, "storage_integrity_check")
     status_raw = run([
@@ -210,7 +211,7 @@ def snapshot(policy: dict[str, Any], identity: str, did: Path) -> dict[str, Any]
         "deployment_instance_id": "0x" + blob(public, "deployment_instance_id", length=32).hex(),
         "base_chain_id": nat(public, "base_chain_id"),
         "evm_rpc_canister_id": principal(public, "evm_rpc_canister_id"),
-        "governance_principal": principal(public, "governance_principal"),
+        "governance_principal": principal(operational, "governance_principal"),
         "rpc_provider_urls_sha256": blob(public, "rpc_provider_urls_sha256", length=32).hex(),
         "module_sha256": module_hash,
         "status_counts": {field: nat(status, field) for field in COUNT_FIELDS},
