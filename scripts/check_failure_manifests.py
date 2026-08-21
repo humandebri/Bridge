@@ -29,6 +29,7 @@ def main() -> int:
         (ROOT / "verification" / "lean" / "BridgeSpec" / name).read_text(encoding="utf-8")
         for name in (
             "DepositAuthorization.lean",
+            "ClaimContracts.lean",
             "LedgerBlockProvenance.lean",
             "Protocol.lean",
         )

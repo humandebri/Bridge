@@ -241,6 +241,12 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn('if "source_schema_version" in policy', staging_upgrade_test)
         self.assertIn('if "governance_principal" in policy', staging_upgrade_test)
 
+    def test_failure_manifest_checker_reads_claim_contracts(self) -> None:
+        checker = (ROOT / "scripts" / "check_failure_manifests.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"ClaimContracts.lean"', checker)
+
     def test_schema_consistency_reads_isolated_candidate_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             candidate = Path(directory) / "candidate-scripts"
