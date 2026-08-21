@@ -21,6 +21,8 @@ use transaction::*;
 use validation::expect_row_shape;
 
 use crate::admin::AdminState;
+#[cfg(feature = "test-deployment")]
+use crate::config::V33ImmutableBridgeConfig;
 use crate::config::{BridgeInitArgs, FeeRecipientConfig, ImmutableBridgeConfig};
 use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
@@ -1147,6 +1149,103 @@ pub struct DepositAdmissionControl {
     pub next_refresh_allowed_at_ns: u64,
 }
 
+#[cfg(feature = "test-deployment")]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct V33DepositAdmissionControl {
+    window_id: u64,
+    global_count: u16,
+    caller_counts: Vec<DepositCallerQuota>,
+    verification_window_id: u64,
+    verification_global_count: u16,
+    verification_caller_counts: Vec<DepositCallerQuota>,
+    funding_reservations: Vec<DepositFundingReservation>,
+    signer_address: Option<[u8; 20]>,
+    signer_public_key: Option<Vec<u8>>,
+    governance_operator_address: Option<[u8; 20]>,
+    governance_operator_public_key: Option<Vec<u8>>,
+    governance_nonce_initialized: bool,
+    next_governance_nonce: u64,
+    next_governance_operation_id: u64,
+    pending_governance_transaction: Option<GovernanceTransaction>,
+    last_completed_governance_transaction: Option<GovernanceTransaction>,
+    pending_timelock_operation: Option<PendingTimelockOperation>,
+    emergency_pause_deposit_required: bool,
+    emergency_pause_withdrawal_required: bool,
+    emergency_cancel_required: bool,
+    base_snapshot: Option<CachedBaseMintSnapshot>,
+    refresh_started_at_ns: Option<u64>,
+    refresh_generation: u64,
+    refresh_owner: Option<u64>,
+    next_refresh_allowed_at_ns: u64,
+}
+
+#[cfg(feature = "test-deployment")]
+impl V33DepositAdmissionControl {
+    #[cfg(test)]
+    fn from_current(value: &DepositAdmissionControl) -> Self {
+        Self {
+            window_id: value.window_id,
+            global_count: value.global_count,
+            caller_counts: value.caller_counts.clone(),
+            verification_window_id: value.verification_window_id,
+            verification_global_count: value.verification_global_count,
+            verification_caller_counts: value.verification_caller_counts.clone(),
+            funding_reservations: value.funding_reservations.clone(),
+            signer_address: value.signer_address,
+            signer_public_key: value.signer_public_key.clone(),
+            governance_operator_address: value.governance_operator_address,
+            governance_operator_public_key: value.governance_operator_public_key.clone(),
+            governance_nonce_initialized: value.governance_nonce_initialized,
+            next_governance_nonce: value.next_governance_nonce,
+            next_governance_operation_id: value.next_governance_operation_id,
+            pending_governance_transaction: value.pending_governance_transaction.clone(),
+            last_completed_governance_transaction: value
+                .last_completed_governance_transaction
+                .clone(),
+            pending_timelock_operation: value.pending_timelock_operation.clone(),
+            emergency_pause_deposit_required: value.emergency_pause_deposit_required,
+            emergency_pause_withdrawal_required: value.emergency_pause_withdrawal_required,
+            emergency_cancel_required: value.emergency_cancel_required,
+            base_snapshot: value.base_snapshot,
+            refresh_started_at_ns: value.refresh_started_at_ns,
+            refresh_generation: value.refresh_generation,
+            refresh_owner: value.refresh_owner,
+            next_refresh_allowed_at_ns: value.next_refresh_allowed_at_ns,
+        }
+    }
+
+    fn into_current(self) -> DepositAdmissionControl {
+        DepositAdmissionControl {
+            window_id: self.window_id,
+            global_count: self.global_count,
+            caller_counts: self.caller_counts,
+            verification_window_id: self.verification_window_id,
+            verification_global_count: self.verification_global_count,
+            verification_caller_counts: self.verification_caller_counts,
+            funding_reservations: self.funding_reservations,
+            signer_address: self.signer_address,
+            signer_public_key: self.signer_public_key,
+            governance_operator_address: self.governance_operator_address,
+            governance_operator_public_key: self.governance_operator_public_key,
+            governance_nonce_initialized: self.governance_nonce_initialized,
+            next_governance_nonce: self.next_governance_nonce,
+            next_governance_operation_id: self.next_governance_operation_id,
+            operational_config_sealed: true,
+            pending_governance_transaction: self.pending_governance_transaction,
+            last_completed_governance_transaction: self.last_completed_governance_transaction,
+            pending_timelock_operation: self.pending_timelock_operation,
+            emergency_pause_deposit_required: self.emergency_pause_deposit_required,
+            emergency_pause_withdrawal_required: self.emergency_pause_withdrawal_required,
+            emergency_cancel_required: self.emergency_cancel_required,
+            base_snapshot: self.base_snapshot,
+            refresh_started_at_ns: self.refresh_started_at_ns,
+            refresh_generation: self.refresh_generation,
+            refresh_owner: self.refresh_owner,
+            next_refresh_allowed_at_ns: self.next_refresh_allowed_at_ns,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GovernanceTransactionKind {
     PauseDepositMints,
@@ -2150,6 +2249,244 @@ fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
         .map_err(|_| StorageError::DatabaseFailure)
 }
 
+#[cfg(feature = "test-deployment")]
+const STAGING_SOURCE_SCHEMA_VERSION: u16 = 33;
+#[cfg(feature = "test-deployment")]
+const STAGING_SOURCE_WIRE_VERSION: u8 = 28;
+
+#[cfg(feature = "test-deployment")]
+fn replace_staging_wire_version(
+    mut bytes: Vec<u8>,
+    source: u8,
+    target: u8,
+    context: &str,
+) -> Result<Vec<u8>, DbError> {
+    let Some(version) = bytes.first_mut() else {
+        return Err(DbError::Constraint(format!(
+            "missing wire version in {context}"
+        )));
+    };
+    if *version != source {
+        return Err(DbError::Constraint(format!(
+            "unexpected wire version in {context}"
+        )));
+    }
+    *version = target;
+    Ok(bytes)
+}
+
+#[cfg(feature = "test-deployment")]
+fn validate_staging_wire_blob<T: DeserializeOwned>(
+    bytes: &[u8],
+    context: &str,
+) -> Result<(), DbError> {
+    decode_wire_payload::<T>(bytes, STAGING_SOURCE_WIRE_VERSION)
+        .map(|_| ())
+        .map_err(|_| DbError::Constraint(format!("cannot decode v33 {context}")))
+}
+
+#[cfg(feature = "test-deployment")]
+fn migrate_staging_v33_to_v35(
+    handle: DbHandle,
+    confirmation_relayer: Principal,
+) -> Result<(), StorageError> {
+    verify_current_schema_shape(handle)?;
+    handle
+        .update(|connection| {
+            let admin_blob = connection.query_scalar::<Vec<u8>>(
+                "SELECT admin_state FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let admin =
+                decode_wire_payload::<Option<AdminState>>(&admin_blob, STAGING_SOURCE_WIRE_VERSION)
+                    .map_err(|_| {
+                        DbError::Constraint("cannot decode v33 administrator state".into())
+                    })?
+                    .ok_or_else(|| DbError::Constraint("missing v33 administrator state".into()))?;
+            if admin.governance_principal != confirmation_relayer {
+                return Err(DbError::Constraint(
+                    "staging confirmation relayer must equal the reviewed governance principal"
+                        .into(),
+                ));
+            }
+
+            let config_blob = connection.query_scalar::<Vec<u8>>(
+                "SELECT config FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let config = decode_wire_payload::<Option<V33ImmutableBridgeConfig>>(
+                &config_blob,
+                STAGING_SOURCE_WIRE_VERSION,
+            )
+            .map_err(|_| DbError::Constraint("cannot decode v33 configuration".into()))?
+            .ok_or_else(|| DbError::Constraint("missing v33 configuration".into()))?
+            .into_current(confirmation_relayer);
+
+            let admission_blob = connection.query_scalar::<Vec<u8>>(
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let admission = decode_wire_payload::<V33DepositAdmissionControl>(
+                &admission_blob,
+                STAGING_SOURCE_WIRE_VERSION,
+            )
+            .map_err(|_| DbError::Constraint("cannot decode v33 deposit admission".into()))?;
+            if admission.pending_governance_transaction.is_some()
+                || admission.pending_timelock_operation.is_some()
+            {
+                return Err(DbError::Constraint(
+                    "v33 to v35 migration requires empty governance and Timelock queues".into(),
+                ));
+            }
+            let admission = admission.into_current();
+
+            for column in [
+                "accounting",
+                "counters",
+                "external_progress",
+                "admin_state",
+                "notification_admission",
+                "audit_retention",
+                "settlement_admission",
+                "settlement_scheduler_health",
+            ] {
+                let select = format!("SELECT {column} FROM singleton_state WHERE id = 1");
+                let bytes = connection.query_scalar::<Vec<u8>>(&select, params![])?;
+                match column {
+                    "accounting" => validate_staging_wire_blob::<AccountingState>(&bytes, column)?,
+                    "counters" => validate_staging_wire_blob::<CounterState>(&bytes, column)?,
+                    "external_progress" => {
+                        validate_staging_wire_blob::<ExternalProgress>(&bytes, column)?
+                    }
+                    "admin_state" => {
+                        validate_staging_wire_blob::<Option<AdminState>>(&bytes, column)?
+                    }
+                    "notification_admission" => {
+                        validate_staging_wire_blob::<NotificationAdmissionControl>(&bytes, column)?
+                    }
+                    "audit_retention" => {
+                        validate_staging_wire_blob::<AuditRetentionState>(&bytes, column)?
+                    }
+                    "settlement_admission" => {
+                        validate_staging_wire_blob::<SettlementAdmissionControl>(&bytes, column)?
+                    }
+                    "settlement_scheduler_health" => {
+                        validate_staging_wire_blob::<SettlementSchedulerHealth>(&bytes, column)?
+                    }
+                    _ => {
+                        return Err(DbError::Constraint(
+                            "unregistered v33 singleton blob".into(),
+                        ))
+                    }
+                }
+                let migrated = replace_staging_wire_version(
+                    bytes,
+                    STAGING_SOURCE_WIRE_VERSION,
+                    WIRE_VERSION,
+                    column,
+                )?;
+                let update = format!("UPDATE singleton_state SET {column} = ?1 WHERE id = 1");
+                connection.execute(&update, params![migrated])?;
+            }
+            let validation = connection.query_one(
+                "SELECT storage_validation FROM singleton_state WHERE id = 1",
+                params![],
+                |row| row.get::<Option<Vec<u8>>>(0),
+            )?;
+            if let Some(bytes) = validation {
+                validate_staging_wire_blob::<StorageValidationProgress>(
+                    &bytes,
+                    "storage validation",
+                )?;
+                let migrated = replace_staging_wire_version(
+                    bytes,
+                    STAGING_SOURCE_WIRE_VERSION,
+                    WIRE_VERSION,
+                    "storage_validation",
+                )?;
+                connection.execute(
+                    "UPDATE singleton_state SET storage_validation = ?1 WHERE id = 1",
+                    params![migrated],
+                )?;
+            }
+
+            for table in [
+                "deposits",
+                "deposit_funding_attempts",
+                "withdrawals",
+                "reconciliation_holds",
+                "reconciliation_scans",
+                "audit_events",
+                "fee_payouts",
+            ] {
+                let select = format!("SELECT key, value FROM {table}");
+                let rows = connection.query_all(&select, params![], |row| {
+                    Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+                })?;
+                let update = format!("UPDATE {table} SET value = ?1 WHERE key = ?2");
+                for (key, bytes) in rows {
+                    match table {
+                        "deposits" => validate_staging_wire_blob::<StoredDeposit>(&bytes, table)?,
+                        "deposit_funding_attempts" => {
+                            validate_staging_wire_blob::<DepositFundingAttempt>(&bytes, table)?
+                        }
+                        "withdrawals" => {
+                            validate_staging_wire_blob::<WithdrawalRecord>(&bytes, table)?
+                        }
+                        "reconciliation_holds" => {
+                            validate_staging_wire_blob::<ReconciliationHoldRecord>(&bytes, table)?
+                        }
+                        "reconciliation_scans" => {
+                            validate_staging_wire_blob::<ReconciliationScanProgress>(&bytes, table)?
+                        }
+                        "audit_events" => validate_staging_wire_blob::<AuditEvent>(&bytes, table)?,
+                        "fee_payouts" => {
+                            validate_staging_wire_blob::<crate::admin::FeePayoutRecord>(
+                                &bytes, table,
+                            )?
+                        }
+                        _ => {
+                            return Err(DbError::Constraint("unregistered v33 record blob".into()))
+                        }
+                    }
+                    let migrated = replace_staging_wire_version(
+                        bytes,
+                        STAGING_SOURCE_WIRE_VERSION,
+                        WIRE_VERSION,
+                        table,
+                    )?;
+                    connection.execute(&update, params![migrated, key])?;
+                }
+            }
+
+            connection.execute(
+                "UPDATE singleton_state SET config = ?1, deposit_admission = ?2 WHERE id = 1",
+                params![
+                    encode(&Some(config))
+                        .map_err(|_| DbError::Constraint("cannot encode v35 configuration".into()))?
+                        .to_sql_bytes(),
+                    encode(&admission)
+                        .map_err(|_| DbError::Constraint(
+                            "cannot encode v35 deposit admission".into()
+                        ))?
+                        .to_sql_bytes()
+                ],
+            )?;
+            connection.execute(
+                "UPDATE bridge_metadata
+                 SET application_schema_version = 35, record_wire_version = 29
+                 WHERE id = 1 AND application_schema_version = 33 AND record_wire_version = 28",
+                params![],
+            )?;
+            Ok(())
+        })
+        .map_err(|error| match error {
+            DbError::Constraint(message) => StorageError::SchemaMigrationRejected(message),
+            _ => StorageError::DatabaseFailure,
+        })?;
+    verify_metadata(handle)
+}
+
 fn initialize_singleton_state(
     handle: DbHandle,
     config: Option<&BridgeInitArgs>,
@@ -2796,42 +3133,27 @@ impl StableStore {
     #[cfg(feature = "test-deployment")]
     pub fn reopen_after_staging_upgrade(
         memory: DefaultMemoryImpl,
+        migration_id: Option<&str>,
         confirmation_relayer: Option<Principal>,
     ) -> Result<Self, StorageError> {
         #[cfg(test)]
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
         let (schema, wire) = stored_metadata(handle)?;
-        if (schema, wire) == (34, 29) {
+        if (schema, wire) == (STAGING_SOURCE_SCHEMA_VERSION, STAGING_SOURCE_WIRE_VERSION) {
+            if migration_id != Some(crate::config::STAGING_V33_TO_V35_MIGRATION_ID) {
+                return Err(StorageError::SchemaMigrationRejected(
+                    "missing reviewed v33 to v35 staging migration ID".into(),
+                ));
+            }
             let relayer = confirmation_relayer
                 .filter(|principal| *principal != Principal::anonymous())
                 .ok_or(StorageError::DecodeFailed)?;
-            let persisted = handle.query(|connection| {
-                connection.query_scalar::<Vec<u8>>(
-                    "SELECT config FROM singleton_state WHERE id = 1",
-                    params![],
-                )
-            })?;
-            let mut config = decode_wire_payload::<Option<ImmutableBridgeConfig>>(&persisted, 29)?
-                .ok_or(StorageError::RecordNotFound)?;
-            if config.confirmation_relayer_principal != Principal::anonymous()
-                && config.confirmation_relayer_principal != relayer
-            {
-                return Err(StorageError::Core(CoreError::ConflictingReplay));
-            }
-            config.confirmation_relayer_principal = relayer;
-            config.activation_attestation = None;
-            let encoded = encode(&Some(config))?.to_sql_bytes();
-            handle.update(|connection| {
-                connection.execute(
-                    "UPDATE singleton_state SET config = ?1 WHERE id = 1",
-                    params![encoded],
-                )?;
-                connection.execute(
-                    "UPDATE bridge_metadata SET application_schema_version = 35, record_wire_version = 29 WHERE id = 1 AND application_schema_version = 34 AND record_wire_version = 29",
-                    params![],
-                )
-            })?;
+            migrate_staging_v33_to_v35(handle, relayer)?;
+        } else if migration_id.is_some() {
+            return Err(StorageError::SchemaMigrationRejected(
+                "staging migration ID is invalid for the stored schema".into(),
+            ));
         }
         let store = Self::reopen_handle(handle)?;
         if let Some(expected) = confirmation_relayer {
@@ -11506,33 +11828,103 @@ mod tests {
     #[cfg(feature = "test-deployment")]
     #[test]
     #[serial]
-    fn staging_schema_34_migrates_once_with_the_reviewed_confirmation_relayer() {
+    fn staging_schema_33_migrates_all_wire_blobs_with_the_governance_relayer() {
         let memory = VectorMemory::default();
         let initial = config();
-        let store = StableStore::init_configured(memory.clone(), &initial)
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
             .expect("initialize schema 35 fixture");
+        let deposit = deposit_for(initial.governance_principal);
+        store.put_deposit(&deposit).expect("seed v33 deposit row");
         let counts = store.status_counts().expect("counts before migration");
-        let mut legacy = ImmutableBridgeConfig::from_init(&initial);
-        legacy.confirmation_relayer_principal = Principal::anonymous();
-        legacy.activation_attestation = None;
-        store
-            .config
-            .set(encode(&Some(legacy)).expect("encode legacy config"))
-            .expect("store legacy config");
+        let legacy_config = crate::config::V33ImmutableBridgeConfig::from_current(
+            &ImmutableBridgeConfig::from_init(&initial),
+        );
+        let legacy_admission = V33DepositAdmissionControl::from_current(
+            &store.deposit_admission().expect("current admission"),
+        );
         store
             .handle
             .update(|connection| {
+                for column in [
+                    "accounting",
+                    "counters",
+                    "external_progress",
+                    "admin_state",
+                    "notification_admission",
+                    "audit_retention",
+                    "settlement_admission",
+                    "settlement_scheduler_health",
+                ] {
+                    let select = format!("SELECT {column} FROM singleton_state WHERE id = 1");
+                    let bytes = connection.query_scalar::<Vec<u8>>(&select, params![])?;
+                    let legacy = replace_staging_wire_version(
+                        bytes,
+                        WIRE_VERSION,
+                        STAGING_SOURCE_WIRE_VERSION,
+                        column,
+                    )?;
+                    let update = format!("UPDATE singleton_state SET {column} = ?1 WHERE id = 1");
+                    connection.execute(&update, params![legacy])?;
+                }
+                for table in [
+                    "deposits",
+                    "deposit_funding_attempts",
+                    "withdrawals",
+                    "reconciliation_holds",
+                    "reconciliation_scans",
+                    "audit_events",
+                    "fee_payouts",
+                ] {
+                    let select = format!("SELECT key, value FROM {table}");
+                    let rows = connection.query_all(&select, params![], |row| {
+                        Ok((row.get::<Vec<u8>>(0)?, row.get::<Vec<u8>>(1)?))
+                    })?;
+                    let update = format!("UPDATE {table} SET value = ?1 WHERE key = ?2");
+                    for (key, bytes) in rows {
+                        let legacy = replace_staging_wire_version(
+                            bytes,
+                            WIRE_VERSION,
+                            STAGING_SOURCE_WIRE_VERSION,
+                            table,
+                        )?;
+                        connection.execute(&update, params![legacy, key])?;
+                    }
+                }
+                let config = replace_staging_wire_version(
+                    encode(&Some(legacy_config))
+                        .expect("encode v33 config")
+                        .to_sql_bytes(),
+                    WIRE_VERSION,
+                    STAGING_SOURCE_WIRE_VERSION,
+                    "config",
+                )?;
+                let admission = replace_staging_wire_version(
+                    encode(&legacy_admission)
+                        .expect("encode v33 admission")
+                        .to_sql_bytes(),
+                    WIRE_VERSION,
+                    STAGING_SOURCE_WIRE_VERSION,
+                    "deposit_admission",
+                )?;
                 connection.execute(
-                    "UPDATE bridge_metadata SET application_schema_version = 34, record_wire_version = 29 WHERE id = 1",
+                    "UPDATE singleton_state SET config = ?1, deposit_admission = ?2 WHERE id = 1",
+                    params![config, admission],
+                )?;
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = 33, record_wire_version = 28 WHERE id = 1",
                     params![],
                 )
             })
-            .expect("mark schema 34");
+            .expect("write v33 fixture");
         drop(store);
 
-        let relayer = Principal::from_slice(&[42]);
-        let reopened = StableStore::reopen_after_staging_upgrade(memory.clone(), Some(relayer))
-            .expect("migrate schema 34");
+        let relayer = initial.governance_principal;
+        let reopened = StableStore::reopen_after_staging_upgrade(
+            memory.clone(),
+            Some(crate::config::STAGING_V33_TO_V35_MIGRATION_ID),
+            Some(relayer),
+        )
+        .expect("migrate schema 33");
         assert_eq!(
             reopened
                 .config()
@@ -11541,9 +11933,18 @@ mod tests {
                 .confirmation_relayer_principal,
             relayer
         );
+        assert!(reopened
+            .operational_config_sealed()
+            .expect("migrated operational lifecycle"));
         assert_eq!(reopened.status_counts().expect("counts after"), counts);
+        assert_eq!(
+            reopened
+                .deposit(deposit.id.bytes())
+                .expect("migrated deposit"),
+            Some(deposit)
+        );
         drop(reopened);
-        assert!(StableStore::reopen_after_staging_upgrade(memory, Some(relayer)).is_ok());
+        assert!(StableStore::reopen_after_staging_upgrade(memory, None, Some(relayer)).is_ok());
     }
 
     #[test]
@@ -11759,6 +12160,7 @@ mod tests {
             .map(str::to_owned)
             .to_vec();
         let args = crate::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 1,
             expected_status_counts: Some(counts_before.staging_expected_status_counts()),
             minimum_withdrawal_id: None,
@@ -11850,6 +12252,7 @@ mod tests {
         let mut drifted = expected;
         drifted.deposits += 1;
         let same_schema_args = crate::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 1,
             expected_status_counts: Some(drifted),
             rpc_provider_update: None,
@@ -11864,6 +12267,7 @@ mod tests {
         assert_eq!(store.external_progress().expect("progress"), progress);
 
         let args = crate::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 1,
             expected_status_counts: None,
             minimum_withdrawal_id: None,
@@ -11883,6 +12287,7 @@ mod tests {
         assert_eq!(store.external_progress().expect("progress"), progress);
 
         let unguarded = crate::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 0,
             ..args
         };
@@ -11894,6 +12299,7 @@ mod tests {
         assert_eq!(store.external_progress().expect("progress"), progress);
 
         let empty_unguarded = crate::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 0,
             expected_status_counts: None,
             rpc_provider_update: None,

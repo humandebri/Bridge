@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the fail-closed staging same-schema upgrade gate."""
+"""Regression tests for the fail-closed staging v33-to-v35 upgrade gate."""
 from __future__ import annotations
 
 import hashlib, json, os, shutil, subprocess, sys, tempfile, unittest
@@ -19,7 +19,7 @@ COUNTS = {"retained_audit_events": 15, "reconciliation_holds": 0, "retained_depo
           "pruned_audit_events": 0}
 
 
-class SameSchemaUpgradeTests(unittest.TestCase):
+class V33ToV35UpgradeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(); self.base = Path(self.temp.name)
         self.repo, self.state, self.bin = self.base / "repo", self.base / "state", self.base / "bin"
@@ -84,7 +84,8 @@ if a[:2]==["canister","status"]:
  print(json.dumps({"module_hash":module,"settings":{"controllers":["aaaaa-aa"]},"cycles":"1000000000000"})); raise SystemExit(0)
 if a[:2] != ["canister","call"]: raise SystemExit(2)
 method=a[3]; identity=a[a.index("--identity")+1]
-fields=f"""schema_version = 35 : nat16; deployment_instance_id = blob "{esc(profile['deploymentInstanceId'][2:])}"; minimum_withdrawal_id = blob "{esc(profile['minimumWithdrawalId'][2:])}"; base_chain_id = 84532 : nat64; bridge_contract = blob "{esc(profile['bridgeAddress'][2:])}"; expected_bridge_runtime_sha256 = blob "{esc(profile['bridgeRuntimeHash'][2:])}"; timelock_contract = blob "{esc(profile['timelockAddress'][2:])}"; expected_bridge_signer = blob "{esc(profile['expected_bridge_signer'][2:])}"; ledger_canister_id = principal "{profile['ledgerCanisterId']}"; index_canister_id = principal "{profile['indexCanisterId']}"; evm_rpc_canister_id = principal "{profile['evmRpcCanisterId']}"; rpc_provider_urls_sha256 = blob "{esc(profile['rpcProviderUrlsSha256'][2:])}"; marker = 0 : nat8"""
+schema=35 if applied else 33
+fields=f"""schema_version = {schema} : nat16; deployment_instance_id = blob "{esc(profile['deploymentInstanceId'][2:])}"; minimum_withdrawal_id = blob "{esc(profile['minimumWithdrawalId'][2:])}"; base_chain_id = 84532 : nat64; bridge_contract = blob "{esc(profile['bridgeAddress'][2:])}"; expected_bridge_runtime_sha256 = blob "{esc(profile['bridgeRuntimeHash'][2:])}"; timelock_contract = blob "{esc(profile['timelockAddress'][2:])}"; expected_bridge_signer = blob "{esc(profile['expected_bridge_signer'][2:])}"; ledger_canister_id = principal "{profile['ledgerCanisterId']}"; index_canister_id = principal "{profile['indexCanisterId']}"; evm_rpc_canister_id = principal "{profile['evmRpcCanisterId']}"; rpc_provider_urls_sha256 = blob "{esc(profile['rpcProviderUrlsSha256'][2:])}"; marker = 0 : nat8"""
 if method in ("get_public_config","get_runtime_binding"): candid=f'record {{ {fields}; governance_principal = principal "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"; cycles_floor = 1000 : nat }}'
 elif method=="get_operational_config": candid='variant { Err = variant { Unauthorized } }' if identity=="anonymous" else 'variant { Ok = record { governance_principal = principal "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"; cycles_floor = 1000 : nat } }'
 elif method=="get_bridge_status":
@@ -93,6 +94,7 @@ elif method=="get_bridge_status":
  candid='record { '+ '; '.join(f'{k} = {v} : '+('nat' if k=='reserved_deposit_mint_amount' else 'nat64') for k,v in counts.items()) +' }'
 elif method=="storage_integrity_check": candid='variant { Ok = "ok" }'
 elif method=="get_activation_status": candid='variant { Ok = record { pending_timelock_operation = null } }'
+elif method=="get_pending_base_governance_transaction": candid='variant { Ok = null }'
 else: raise SystemExit(2)
 print(json.dumps({"response_candid":candid}))
 ''')
@@ -116,6 +118,8 @@ print(json.dumps({"response_candid":candid}))
         evidence = json.loads(self.preflight.read_text())
         self.assertEqual(evidence["result"], "preflight-passed")
         self.assertIn("expected_status_counts = opt record", evidence["upgrade_arguments"])
+        self.assertIn('migration_id = opt "bridge-staging-v33-to-v35"', evidence["upgrade_arguments"])
+        self.assertIn('confirmation_relayer_principal = opt principal', evidence["upgrade_arguments"])
         self.assertIn("rpc_provider_update = null", evidence["upgrade_arguments"])
 
     def test_execute_requires_unchanged_preflight_and_upgrades(self) -> None:
