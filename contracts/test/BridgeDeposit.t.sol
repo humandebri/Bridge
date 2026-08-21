@@ -57,7 +57,7 @@ contract BridgeDepositTest is TestBase {
         assert(!bridge.withdrawalsPaused());
         assert(bridge.nextWithdrawalId() == 1);
         assert(token.bridge() == address(bridge));
-        assert(_sameString(token.name(), "kinic"));
+        assert(_sameString(token.name(), "KINIC"));
         assert(_sameString(token.symbol(), "KINIC"));
         assert(token.decimals() == 8);
     }
@@ -71,9 +71,6 @@ contract BridgeDepositTest is TestBase {
     function testConstructorRejectsZeroAndDuplicateRoles() public {
         vm.expectRevert(IBridge.ZeroAddress.selector);
         new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             address(0),
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,
@@ -87,18 +84,7 @@ contract BridgeDepositTest is TestBase {
 
         vm.expectRevert(IBridge.RoleAddressesMustDiffer.selector);
         new Bridge(
-            "kinic",
-            "KINIC",
-            8,
-            BRIDGE_SIGNER,
-            BRIDGE_SIGNER,
-            BASE_ADMIN_TIMELOCK,
-            _timelockCodeHash(BASE_ADMIN_TIMELOCK),
-            1,
-            1,
-            1,
-            1,
-            0
+            BRIDGE_SIGNER, BRIDGE_SIGNER, BASE_ADMIN_TIMELOCK, _timelockCodeHash(BASE_ADMIN_TIMELOCK), 1, 1, 1, 1, 0
         );
     }
 
@@ -353,9 +339,6 @@ contract BridgeDepositTest is TestBase {
         uint256 initialServiceFee
     ) private returns (Bridge) {
         return new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,

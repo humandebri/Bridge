@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { deploymentProfile } from "@/config/profile"
 import { MintAuthorizationAction } from "@/features/bridge/mint-authorization-action"
+import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
 import { useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
@@ -82,6 +83,8 @@ function HistoryPage() {
   const runtime = useRuntimeValidation(chainId, { enabled: false })
   const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, { enabled: true })
   const queryClient = useQueryClient()
+  const bridgeProgress = useBridgeProgress()
+  const completeWithdrawalProgress = bridgeProgress.completeWithdrawal
   const [retryingHash, setRetryingHash] = useState<string>()
   const [actioningId, setActioningId] = useState<string>()
   const [loadingOlderWithdrawals, setLoadingOlderWithdrawals] = useState(false)
@@ -299,6 +302,16 @@ function HistoryPage() {
       ])
     },
   )
+  useEffect(() => {
+    for (const item of withdrawals.data?.items ?? []) {
+      if (!item.canister || !("Paid" in item.canister.state)) continue
+      completeWithdrawalProgress({
+        transactionHash: item.hash,
+        owner: item.destinationAccount.owner,
+        withdrawalId: bytesHex(item.canister.withdrawal_id),
+      })
+    }
+  }, [completeWithdrawalProgress, withdrawals.data?.items])
 
   const scanOlderWithdrawals = async () => {
     if (!withdrawals.data || withdrawals.data.olderCursor === null) return
@@ -341,6 +354,11 @@ function HistoryPage() {
         if ("Complete" in result
           && "Withdrawal" in result.Complete.state
           && isWithdrawalTerminal(result.Complete.state.Withdrawal)) {
+          completeWithdrawalProgress({
+            transactionHash: item.hash,
+            owner: item.destinationAccount.owner,
+            withdrawalId: bytesHex(withdrawalId),
+          })
           await removePendingConfirmation(pending)
         }
       } catch (error) {
@@ -382,6 +400,18 @@ function HistoryPage() {
       if (!feeGuardBlocked(item.canister)) await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
       const result = await continueWithdrawalWithBrowserIdentity(Uint8Array.from(item.canister.withdrawal_id))
       toastSettlement(result)
+      if ("Complete" in result
+        && "Withdrawal" in result.Complete.state
+        && isWithdrawalTerminal(result.Complete.state.Withdrawal)) {
+        completeWithdrawalProgress({
+          transactionHash: item.hash,
+          owner: item.destinationAccount.owner,
+          withdrawalId: bytesHex(item.canister.withdrawal_id),
+        })
+        const pending = readPendingConfirmations().find((entry) => entry.kind === "withdrawal"
+          && entry.transactionHash.toLowerCase() === item.hash.toLowerCase())
+        if (pending) await removePendingConfirmation(pending)
+      }
       await withdrawals.refetch()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "This payout step could not be completed. Try again later.")
@@ -628,7 +658,7 @@ function DepositActivityRow({ item, mintFinalization, mintTransactionHash, mintS
           {kinicTransactions.map((transaction) => <KinicTransactionLink key={transaction.kind} {...transaction} />)}
         </div>}</div>
     <div><MobileLabel>Amount</MobileLabel><p className="text-sm font-bold">{amountText}</p></div>
-    <div><MobileLabel>Status</MobileLabel><Badge tone={mintedOnBase ? "good" : mintSubmitted ? "info" : depositPhaseTone(record.state)}>{mintedOnBase ? "Minted on Base (finalized)" : mintSubmitted ? "Mint submitted" : depositPhaseName(record.state)}</Badge>{!mintedOnBase && !mintSubmitted && progress && <AutomaticProgress progress={progress} />}{!mintedOnBase && refund && "ReconciliationRequired" in refund.status && <p className="mt-1 text-xs font-bold text-[#b42318]">Ledger result is uncertain — requesting again checks the same transfer.</p>}{!mintedOnBase && reconciliationMessage && <p className={`mt-1 text-xs font-bold ${record.last_settlement_stop_reason[0] ? "text-[#b42318]" : "text-[var(--muted)]"}`}>{reconciliationMessage}</p>}</div>
+    <div><MobileLabel>Status</MobileLabel><Badge tone={mintedOnBase ? "good" : mintSubmitted ? "info" : depositPhaseTone(record.state)}>{mintedOnBase ? "Minted" : mintSubmitted ? "Mint pending" : depositPhaseName(record.state)}</Badge>{!mintedOnBase && !mintSubmitted && progress && <AutomaticProgress progress={progress} />}{!mintedOnBase && refund && "ReconciliationRequired" in refund.status && <p className="mt-1 text-xs font-bold text-[#b42318]">Ledger result is uncertain — requesting again checks the same transfer.</p>}{!mintedOnBase && reconciliationMessage && <p className={`mt-1 text-xs font-bold ${record.last_settlement_stop_reason[0] ? "text-[#b42318]" : "text-[var(--muted)]"}`}>{reconciliationMessage}</p>}</div>
     <div><MobileLabel>Time</MobileLabel><ActivityTime valueNs={item.createdAtNs} /></div>
     <div className="min-w-0"><MobileLabel>Next step</MobileLabel>{mintedOnBase
       ? <span className="text-sm text-[var(--muted)]">—</span>
@@ -660,9 +690,9 @@ function WithdrawalActivityRow({ item, writesEnabled, actioningId, retryingHash,
   const label = !record.canister
     ? "Committed"
     : "ReleasePending" in record.canister.state
-      ? "Waiting for payout"
+      ? "Payout pending"
       : "ReconciliationHold" in record.canister.state
-        ? "Waiting for recovery"
+        ? "Recovery needed"
         : withdrawalPhaseName(record.canister.state)
   const kinicTransactions = withdrawalKinicTransactions(record.canister)
   return <article className="grid gap-4 rounded-2xl bg-white p-4 lg:grid-cols-[minmax(6rem,0.7fr)_minmax(7rem,0.8fr)_minmax(7rem,0.8fr)_minmax(9rem,1.3fr)_minmax(7.5rem,1fr)_minmax(6rem,0.7fr)_9rem] lg:items-center">
@@ -691,7 +721,7 @@ function BaseTransactionLink({ transactionHash }: { transactionHash: `0x${string
     rel="noreferrer"
     title={transactionHash}
     aria-label={`Open Base transaction ${transactionHash} in explorer`}
-    className="mt-1 block truncate text-xs text-[var(--muted)] underline decoration-current/40 underline-offset-2 transition hover:text-[var(--pink)]"
+    className="mt-1 block truncate text-xs text-blue-600 underline decoration-current/40 underline-offset-2 transition hover:text-blue-800"
   >
     Tx {transactionHash.slice(0, 10)}…
   </a>
@@ -724,7 +754,7 @@ export function KinicTransactionLink({ kind, blockIndex }: KinicTransaction) {
     target="_blank"
     rel="noreferrer"
     aria-label={`Open KINIC ${kind} transaction ${blockIndex.toString()} in explorer`}
-    className="mt-1 block truncate text-xs text-[var(--muted)] underline decoration-current/40 underline-offset-2 transition hover:text-[var(--pink)]"
+    className="mt-1 block truncate text-xs text-blue-600 underline decoration-current/40 underline-offset-2 transition hover:text-blue-800"
   >
     {text}
   </a>

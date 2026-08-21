@@ -32,6 +32,7 @@ const pauseIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(8))
 const pausePrincipal = pauseIdentity.getPrincipal()
 const minter = Principal.selfAuthenticating(new Uint8Array(32).fill(9))
 const feeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(10))
+const confirmationRelayerPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(11))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
 const resources = {}
@@ -170,9 +171,24 @@ async function setup() {
   const bsnsAddress = execFileSync("cast", ["call", bridgeAddress, "bsns()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   const deploymentBlock = await publicClient.getBlockNumber()
   const bridgeCode = await publicClient.getCode({ address: bridgeAddress })
+  const timelockCode = await publicClient.getCode({ address: timelockAddress })
   const bsnsCode = await publicClient.getCode({ address: bsnsAddress })
-  if (!bridgeCode || !bsnsCode) throw new Error("Anvil contract deployment returned empty code")
+  if (!bridgeCode || !timelockCode || !bsnsCode) throw new Error("Anvil contract deployment returned empty code")
   await mock.actor.set_bridge_runtime_code(hexToBytes(bridgeCode))
+  const operationalConfig = {
+    governance_evm_fee: {
+      gas_limit_ceiling: 500_000n,
+      max_fee_per_gas_ceiling: 200_000_000_000n,
+      max_priority_fee_per_gas_ceiling: 10_000_000_000n,
+      l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n,
+      quote_validity_seconds: 90n,
+      gas_limit_multiplier_bps: 13_000,
+      base_fee_multiplier_bps: 60_000,
+      l1_fee_multiplier_bps: 15_000,
+    },
+    cycles_floor: 1n,
+    settlement_cycle_ceiling: 1n,
+  }
 
   await pic.reinstallCode({
     canisterId: bridgeId,
@@ -206,24 +222,16 @@ async function setup() {
       settlement_rate_limit_per_principal: 6,
       settlement_rate_limit_per_record: 3,
       settlement_retry_interval_seconds: 60n,
-      governance_evm_fee: {
-        gas_limit_ceiling: 500_000n,
-        max_fee_per_gas_ceiling: 200_000_000_000n,
-        max_priority_fee_per_gas_ceiling: 10_000_000_000n,
-        l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n,
-        quote_validity_seconds: 90n,
-        gas_limit_multiplier_bps: 13_000,
-        base_fee_multiplier_bps: 60_000,
-        l1_fee_multiplier_bps: 15_000,
-      },
+      governance_evm_fee: operationalConfig.governance_evm_fee,
       governance_replacement: {
         max_replacements: 3,
         fee_bump_bps: 1_250,
       },
-      cycles_floor: 1n,
-      settlement_cycle_ceiling: 1n,
+      cycles_floor: operationalConfig.cycles_floor,
+      settlement_cycle_ceiling: operationalConfig.settlement_cycle_ceiling,
       governance_principal: testOwner,
       pause_principal: pausePrincipal,
+      confirmation_relayer_principal: confirmationRelayerPrincipal,
       fee_recipient: { owner: feeRecipient, subaccount: [] },
     }]),
     sender: testOwner,
@@ -258,6 +266,15 @@ async function setup() {
   const publicConfig = await bridge.actor.get_public_config()
   if (bytesHex(publicConfig.expected_bridge_signer).toLowerCase() !== signer.toLowerCase()) throw new Error("Bridge mint signer derivation drifted")
   if (bytesHex(publicConfig.governance_operator).toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge governance operator derivation drifted")
+  const deploymentPostconditions = await mock.actor.set_deployment_postconditions(
+    hexToBytes(timelockAddress),
+    hexToBytes(governanceOperator),
+    hexToBytes(bsnsAddress),
+    hexToBytes(bridgeAddress),
+    hexToBytes(timelockCode),
+    hexToBytes(bsnsCode),
+  )
+  if (!("Ok" in deploymentPostconditions)) throw new Error(`Failed to configure deployment postconditions: ${deploymentPostconditions.Err}`)
   const governanceReceiptFixture = await mock.actor.set_observed_transaction(
     new Uint8Array(32).fill(9),
     hexToBytes(timelockAddress),
@@ -435,6 +452,10 @@ async function setup() {
     })
   }
   await syncObservedHeads()
+  const sealedLifecycle = await bridge.actor.seal_operational_config(operationalConfig)
+  if (!("Ok" in sealedLifecycle) || !("OperationalConfigSealed" in sealedLifecycle.Ok.lifecycle)) {
+    throw new Error(`Failed to seal operational config: ${json(sealedLifecycle)}`)
+  }
   const scheduleSubmitted = await bridge.actor.schedule_activation()
   if (!("Ok" in scheduleSubmitted)) throw new Error(`Canister schedule_activation failed: ${json(scheduleSubmitted.Err)}`)
   const scheduleConfirmed = await confirmSigned(scheduleSubmitted.Ok)
@@ -850,7 +871,7 @@ function deployBridge(signer, governanceOperator, timelockAddress) {
   const output = execFileSync("forge", [
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast", "src/Bridge.sol:Bridge", "--constructor-args",
-    "Bridged KINIC", "KINIC", "8", signer, governanceOperator, timelockAddress, timelockCodeHash,
+    signer, governanceOperator, timelockAddress, timelockCodeHash,
     "1000000000000", "10000000000000", "3600", "100000000", "1000000",
   ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)

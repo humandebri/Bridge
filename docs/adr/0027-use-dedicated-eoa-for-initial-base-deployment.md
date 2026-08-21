@@ -1,0 +1,17 @@
+# ADR 0027: 初回Base配置に専用EOAを使う
+
+## 決定
+
+TimelockとBridgeの初回配置は、freshな専用EOAがTimelock、Bridgeの順に行う。EOAは暗号化Foundry keystoreと別password fileでrelayerだけが扱い、release profileにはEOA address、開始nonce、予測CREATE address、gas／fee上限だけを固定する。単一の`BASE_RPC_URL`はtransaction送信transportであり、profile、bundle、UI、evidenceには保存しない。
+
+送信直前にBase Mainnet chain ID、pending nonce、残高、両CREATE addressを再検査する。nonce driftでは送信せずprofileの再承認へ戻る。結果不明時はcheckpointに記録した同一transactionを追跡し、自動再deployや次nonceの送信をしない。reverted receiptは直ちに停止する。
+
+Timelockのproposer／executor／cancellerはGovernance Operator、追加adminはzero addressとし、Bridgeの管理先はTimelockにする。専用EOAにはTimelock、Bridge、bSNSのrole、owner、adminを与えない。Gate Aはoffline artifactとconstructor条件を先に承認する。配置後のruntime、constructor postcondition、role、pause、相互参照はBridge Canisterが公式EVM RPC Canisterの組み込み`BaseMainnet`から取得した監査記録で検証し、Gate Bへ束縛する。配置検証後に残余ETHを回収し、回収transactionを記録してkeystoreを運用対象から外す。
+
+## 帰結
+
+Canisterはcontract creation、deploy署名、deploy nonce、deploy replacement、deploy confirmation状態を持たない。配置後の通常Base管理transactionはGovernance Operatorがthreshold署名する。署名済みraw transactionの取得とbroadcastは匿名公開し、Finalized検証を開始するconfirmationだけをrelease profileへ固定した専用relayer Principal、Governance principal、Pause principalへ制限する。署名要求と明示replacementはGovernance/Pause principalだけに許可する。confirmation callerの報告内容は信用せず、Canisterが保存済みhashと公式EVM RPC CanisterのFinalized観測を照合する。
+
+confirmationはcaller認可をsingleflightとRPCより前に行い、安価なoperation/hash検査と既存singleflightを適用する。追加のstable rate limitとcooldownはこの決定には含めない。専用relayer identityにはcontroller、Governance/Pause、EVM鍵、contract role、資産移動権限を与えない。
+
+Gate Aはpause状態の配置完了を表す。7日間かつ10件以上のfee／cycles計測、monitor drill、emergency pause、主要RPC rehearsal、controller handover、運用設定の一回限りの封印はGate Bの必須証跡とし、asset activation前に完了させる。

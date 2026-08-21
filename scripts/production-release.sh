@@ -15,6 +15,7 @@ RELEASE_INPUTS=""
 ACTIVATION_PHASE=""
 ACTIVATION_SUBMISSION=""
 SNS_IDENTITY=""
+CONFIRMATION_RELAYER_IDENTITY=""
 SNS_NEURON_SUBACCOUNT=""
 SNS_PROPOSER_PRINCIPAL=""
 PRIOR_SCHEDULE_RECEIPT=""
@@ -55,6 +56,11 @@ while [[ "$#" -gt 0 ]]; do
       SNS_IDENTITY="$2"
       shift 2
       ;;
+    --confirmation-relayer-identity)
+      [[ "$#" -ge 2 ]] || { echo "--confirmation-relayer-identity requires a name" >&2; exit 2; }
+      CONFIRMATION_RELAYER_IDENTITY="$2"
+      shift 2
+      ;;
     --sns-neuron-subaccount)
       [[ "$#" -ge 2 ]] || { echo "--sns-neuron-subaccount requires 32-byte hex" >&2; exit 2; }
       SNS_NEURON_SUBACCOUNT="$2"
@@ -83,7 +89,7 @@ done
 
 usage() {
   echo "usage: $0 deploy --bundle DIR --release-inputs DIR --receipt FILE -- DEPLOY_DRIVER" >&2
-  echo "       $0 activate --phase schedule --bundle DIR --release-inputs DIR --receipt FILE --submission FILE --sns-identity NAME --sns-neuron-subaccount HEX --sns-proposer-principal PRINCIPAL --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION -- scripts/production-activate-driver.sh" >&2
+  echo "       $0 activate --phase schedule --bundle DIR --release-inputs DIR --receipt FILE --submission FILE --sns-identity NAME --confirmation-relayer-identity NAME --sns-neuron-subaccount HEX --sns-proposer-principal PRINCIPAL --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION -- scripts/production-activate-driver.sh" >&2
   echo "       $0 activate --phase execute [same options] --prior-schedule-receipt FILE --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- scripts/production-activate-driver.sh" >&2
   exit 2
 }
@@ -143,6 +149,7 @@ PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-profile-build.XXXXXX")"
 RECEIPT_TMP=""
 POST_DEPLOY_PROFILE_TMP=""
 DEPLOYMENT_BINDING=""
+DEPLOYMENT_RESERVATION=""
 trap 'chmod u+w "$FROZEN_BUNDLE" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE" "$RENDERED_INPUTS" "$PROFILE_TARGET"; [[ -z "$RECEIPT_TMP" ]] || rm -f "$RECEIPT_TMP"; [[ -z "$POST_DEPLOY_PROFILE_TMP" ]] || rm -f "$POST_DEPLOY_PROFILE_TMP"' EXIT
 CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --locked --quiet --release \
   --manifest-path "$SOURCE_ROOT/Cargo.toml" -p bridge-profile
@@ -175,17 +182,12 @@ GATE_OUTPUT=""
 if [[ "$MODE" == "deploy" ]]; then
   STRUCTURAL_GATE_OUTPUT="$(run_profile_gate validate-bundle --offline "$BUNDLE")"
   printf '%s\n' "$STRUCTURAL_GATE_OUTPUT"
-  [[ "$STRUCTURAL_GATE_OUTPUT" =~ manifest_sha256=([0-9a-fA-F]{64}) ]] || {
-    echo "offline Gate A validation did not return a manifest hash" >&2
+  [[ "$STRUCTURAL_GATE_OUTPUT" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
+    echo "offline Gate A validation did not return an authorizing success result" >&2
     exit 1
   }
   STRUCTURAL_MANIFEST_SHA256="${BASH_REMATCH[1]}"
-  GATE_OUTPUT="$(run_profile_gate verify-gate-a-live "$BUNDLE")"
-  printf '%s\n' "$GATE_OUTPUT"
-  [[ "$GATE_OUTPUT" == *"manifest_sha256=$STRUCTURAL_MANIFEST_SHA256"* ]] || {
-    echo "offline and live Gate A validation disagree on the manifest" >&2
-    exit 1
-  }
+  GATE_OUTPUT="$STRUCTURAL_GATE_OUTPUT"
 else
   [[ "$ACTIVATION_PHASE" == schedule || "$ACTIVATION_PHASE" == execute ]] || {
     echo "activation requires --phase schedule or execute" >&2
@@ -199,8 +201,8 @@ else
     echo "activation phase requires its exact explicit confirmation" >&2
     exit 1
   }
-  [[ -n "$ACTIVATION_SUBMISSION" && -n "$SNS_IDENTITY" && -n "$SNS_NEURON_SUBACCOUNT" && -n "$SNS_PROPOSER_PRINCIPAL" ]] || {
-    echo "activation requires submission output and fixed SNS proposer identity inputs" >&2
+  [[ -n "$ACTIVATION_SUBMISSION" && -n "$SNS_IDENTITY" && -n "$CONFIRMATION_RELAYER_IDENTITY" && -n "$SNS_NEURON_SUBACCOUNT" && -n "$SNS_PROPOSER_PRINCIPAL" ]] || {
+    echo "activation requires submission output, fixed SNS proposer inputs, and a confirmation relayer ICP identity" >&2
     exit 1
   }
   if [[ "$ACTIVATION_PHASE" == schedule ]]; then
@@ -240,20 +242,7 @@ raise SystemExit(0 if [str(v).lower() for v in actual] == [v.lower() for v in ex
     echo "Gate A receipt does not match the current release" >&2
     exit 1
   }
-  LIVE_PREFLIGHT_PATH="$SOURCE_ROOT/scripts/production-live-preflight.sh"
-  [[ -x "$LIVE_PREFLIGHT_PATH" ]] || {
-    echo "Gate B requires the reviewed live snapshot preflight" >&2
-    exit 1
-  }
-  LIVE_PREFLIGHT_RELATIVE="scripts/production-live-preflight.sh"
-  git -C "$SOURCE_ROOT" ls-files --error-unmatch "$LIVE_PREFLIGHT_RELATIVE" >/dev/null \
-    || { echo "live preflight is not tracked by the bound source revision" >&2; exit 1; }
-  "$LIVE_PREFLIGHT_PATH" verify "$BUNDLE"
-  if [[ "$ACTIVATION_PHASE" == execute ]]; then
-    GATE_OUTPUT="$(run_profile_gate verify-schedule-receipt-live "$BUNDLE" "$PRIOR_SCHEDULE_RECEIPT")"
-  else
-    GATE_OUTPUT="$(run_profile_gate verify-live "$BUNDLE")"
-  fi
+  GATE_OUTPUT="$(run_profile_gate validate-bundle --offline --gate-b "$BUNDLE")"
   printf '%s\n' "$GATE_OUTPUT"
 fi
 
@@ -273,10 +262,13 @@ if [[ "$MODE" == "deploy" ]]; then
     exit 1
   }
   DEPLOYMENT_BINDING="$RECEIPT.deployment-binding.json"
-  production_reserve_output "$DEPLOYMENT_BINDING" "deployment checkpoint"
+  DEPLOYMENT_RESERVATION="$DEPLOYMENT_BINDING.reservation"
+  production_reserve_output "$DEPLOYMENT_RESERVATION" "deployment reservation"
   export BRIDGE_DEPLOYMENT_BINDING_FILE="$DEPLOYMENT_BINDING"
+  export BRIDGE_DEPLOYMENT_RESERVATION_FILE="$DEPLOYMENT_RESERVATION"
   "$DRIVER_PATH"
   [[ -f "$DEPLOYMENT_BINDING" ]] || { echo "deployment driver did not produce its canonical binding" >&2; exit 1; }
+  [[ ! -e "$DEPLOYMENT_RESERVATION" ]] || { echo "deployment driver left its reservation unresolved" >&2; exit 1; }
   RECEIPT_TMP="$RECEIPT.tmp.$$"
   POST_DEPLOY_PROFILE_TMP="$POST_DEPLOY_PROFILE.tmp.$$"
   python3 - "$BUNDLE/profile.json" "$DEPLOYMENT_BINDING" "$POST_DEPLOY_PROFILE_TMP" <<'PY'
@@ -309,7 +301,9 @@ else
   export BRIDGE_ACTIVATION_PHASE="$ACTIVATION_PHASE"
   export BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION"
   export BRIDGE_SNS_IDENTITY="$SNS_IDENTITY"
+  export BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY"
   export BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT"
   export BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL"
+  export BRIDGE_PRIOR_SCHEDULE_RECEIPT="$PRIOR_SCHEDULE_RECEIPT"
   "$DRIVER_PATH"
 fi

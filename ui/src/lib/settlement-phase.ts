@@ -24,12 +24,12 @@ export function depositPhaseName(phase: DepositPhase): string {
   if (!name) throw new Error("Invalid deposit phase")
   const labels: Record<(typeof depositNames)[number], string> = {
     EscrowedUnquoted: "Checking Base",
-    AuthorizationPending: "Signing authorization",
+    AuthorizationPending: "Signing",
     AuthorizationAvailable: "Ready to mint",
-    RefundAvailable: "Refund available",
+    RefundAvailable: "Refund ready",
     Minted: "Complete",
-    FundingReconciliationHold: "Funding needs review",
-    RefundProcessing: "Refund processing",
+    FundingReconciliationHold: "Review needed",
+    RefundProcessing: "Refunding",
     Refunded: "Refunded",
     Cancelled: "Cancelled",
   }

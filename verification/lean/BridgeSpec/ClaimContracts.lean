@@ -54,6 +54,35 @@ theorem governance_nonce_chain_binding_witness : GovernanceNonceChainBinding := 
   exact ControlPlane.governance_nonce_binds_configured_chain
     (ControlPlane.reachable_is_safe reachable)
 
+def confirmationCallerAuthorized
+    (caller confirmationRelayer governance pause : Nat) : Bool :=
+  caller != 0 &&
+    (caller == confirmationRelayer || caller == governance || caller == pause)
+
+def GovernanceConfirmationAuthorization : Prop :=
+  ∀ caller initialConfirmationRelayer initialGovernance initialPause
+      currentConfirmationRelayer currentGovernance currentPause : Nat,
+    confirmationCallerAuthorized
+        caller initialConfirmationRelayer initialGovernance initialPause = true →
+      confirmationCallerAuthorized
+        caller currentConfirmationRelayer currentGovernance currentPause = true →
+      caller ≠ 0 ∧
+        (caller = currentConfirmationRelayer ∨
+          caller = currentGovernance ∨ caller = currentPause)
+
+theorem governance_confirmation_authorization_witness :
+    GovernanceConfirmationAuthorization := by
+  intro caller _ _ _ currentConfirmationRelayer currentGovernance currentPause _ authorized
+  simp [confirmationCallerAuthorized] at authorized
+  rcases authorized with ⟨nonzero, (relayer | governance) | pause⟩
+  · exact ⟨nonzero, Or.inl relayer⟩
+  · exact ⟨nonzero, Or.inr (Or.inl governance)⟩
+  · exact ⟨nonzero, Or.inr (Or.inr pause)⟩
+
+theorem governance_confirmation_authorization_claim :
+    GovernanceConfirmationAuthorization :=
+  governance_confirmation_authorization_witness
+
 def GovernanceTransactionAffordability : Prop :=
   ∀ observedWei requiredWei : Nat,
     observedWei < requiredWei → ¬requiredWei ≤ observedWei

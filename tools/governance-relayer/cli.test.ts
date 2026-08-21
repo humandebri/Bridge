@@ -3,7 +3,23 @@ import { generateKeyPairSync } from "node:crypto"
 import test from "node:test"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
-import { canisterErrorMessage, identityFromPem, unwrap, waitForFinalized } from "./cli.ts"
+import {
+  canisterErrorMessage,
+  commandRequiresIdentity,
+  identityFromPem,
+  isNonceTooLow,
+  unwrap,
+  waitForFinalized,
+} from "./cli.ts"
+
+test("uses an anonymous IC actor only for status and raw relay commands", () => {
+  for (const command of ["status", "relay"]) {
+    assert.equal(commandRequiresIdentity(command), false)
+  }
+  for (const command of ["confirm", "run", "prepare", "replace", "schedule-activation", "execute-activation", "refresh-attestation", "drain-emergency"]) {
+    assert.equal(commandRequiresIdentity(command), true)
+  }
+})
 
 test("loads an Ed25519 PKCS#8 identity exported by icp-cli", () => {
   const { privateKey } = generateKeyPairSync("ed25519")
@@ -26,27 +42,23 @@ test("rejects unsupported private-key curves", () => {
   assert.throws(() => identityFromPem(pem), /Unsupported identity PEM key type: P-256/)
 })
 
-test("stops immediately when a governance transaction reverted", async () => {
+test("returns a revert immediately so the caller can terminalize it in the Canister", async () => {
   let blockReads = 0
   const hash = `0x${"12".repeat(32)}` as `0x${string}`
-  const rpc = {
+  const outcome = await waitForFinalized({
     async getTransactionReceipt() {
-      return {
-        blockNumber: 42n,
-        blockHash: `0x${"34".repeat(32)}` as `0x${string}`,
-        status: "reverted" as const,
-      }
+      return { blockNumber: 42n, blockHash: `0x${"34".repeat(32)}` as `0x${string}`, status: "reverted" as const }
     },
     async getBlock() {
       blockReads += 1
       return { number: 42n, hash: `0x${"34".repeat(32)}` as `0x${string}` }
     },
-  }
-
-  await assert.rejects(
-    waitForFinalized(rpc, hash),
-    new RegExp(`Transaction reverted: ${hash}`),
-  )
+  }, hash)
+  assert.deepEqual(outcome, {
+    blockNumber: 42n,
+    blockHash: `0x${"34".repeat(32)}`,
+    status: "reverted",
+  })
   assert.equal(blockReads, 0)
 })
 
@@ -59,4 +71,10 @@ test("reports a safe signing class without automatically retrying", () => {
     canisterErrorMessage({ SigningUnavailable: { class: { RecoveryMismatch: null } } }),
     /Do not retry; inspect the canister state and controller-only logs/,
   )
+})
+
+test("classifies only explicit consumed-nonce errors for receipt recovery", () => {
+  assert.equal(isNonceTooLow(new Error("nonce too low")), true)
+  assert.equal(isNonceTooLow(new Error("nonce has already been used")), true)
+  assert.equal(isNonceTooLow(new Error("replacement transaction underpriced")), false)
 })

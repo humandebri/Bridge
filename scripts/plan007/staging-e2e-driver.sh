@@ -53,15 +53,8 @@ case "$MODE" in
     }
     node "$ROOT/scripts/plan007/check-upgrade-instance.mjs" "$PROFILE" "$2" "$3"
     ;;
-  capture-withdrawal-boundary)
-    [[ "$#" -eq 2 ]] || {
-      echo "usage: $0 capture-withdrawal-boundary <capture-config.json>" >&2
-      exit 2
-    }
-    node "$ROOT/scripts/plan007/capture-withdrawal-boundary.mjs" "$PROFILE" "$2"
-    ;;
   *)
-    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault|check-upgrade-instance|capture-withdrawal-boundary}" >&2
+    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault|check-upgrade-instance}" >&2
     exit 2
     ;;
 esac

@@ -22,8 +22,6 @@ import type {
 } from "../../ui/src/generated/bridge.did.ts"
 import { idlFactory } from "../../integration/generated/bridge.idl.ts"
 
-const POLL_INTERVAL_MS = 5_000
-
 type Options = Record<string, string | boolean>
 interface RelayerRpc {
   sendRawTransaction(args: { serializedTransaction: TransactionSerialized }): Promise<Hex>
@@ -38,6 +36,14 @@ interface RelayerRpc {
   }>
 }
 
+export interface FinalizedTransactionOutcome {
+  blockNumber: bigint
+  blockHash: Hex
+  status: "success" | "reverted"
+}
+
+const POLL_INTERVAL_MS = 5_000
+
 async function main(): Promise<void> {
   const [command = "help", ...rest] = process.argv.slice(2)
   const options = parseOptions(rest)
@@ -45,8 +51,7 @@ async function main(): Promise<void> {
     printHelp()
     return
   }
-  const actor = await bridgeActor()
-
+  const actor = await bridgeActor(commandRequiresIdentity(command))
   switch (command) {
     case "prepare": {
       const result = await actor.prepare_base_governance_action(parseAction(options))
@@ -91,18 +96,27 @@ async function main(): Promise<void> {
       return
     }
     case "run": {
+      if (options.action !== undefined) {
+        throw new Error("run relays an existing signed transaction; use prepare separately")
+      }
       const rpc = rpcClient()
-      const artifact = options.action
-        ? unwrap(await actor.prepare_base_governance_action(parseAction(options)))
-        : await pendingArtifact(actor, options)
+      const artifact = await pendingArtifact(actor, options)
       await validateArtifact(artifact)
       await relay(rpc, artifact)
-      await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
-      const confirmation = unwrap(await actor.confirm_base_governance_transaction({
+      const outcome = await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
+      if (outcome.status === "reverted") {
+        throw new Error(`Transaction reverted; stopped before finality polling. Confirm it after finalization: ${bytesHex(artifact.transaction_hash)}`)
+      }
+      const confirmationResult = await actor.confirm_base_governance_transaction({
         operation_id: artifact.operation_id,
         transaction_hash: artifact.transaction_hash,
-      }))
-      process.stdout.write(`${JSON.stringify(jsonValue(confirmation))}\n`)
+      })
+      process.stdout.write(`${JSON.stringify(jsonValue(unwrap(confirmationResult)))}\n`)
+      return
+    }
+    case "refresh-attestation": {
+      const attestation = unwrap(await actor.refresh_activation_attestation())
+      process.stdout.write(`${JSON.stringify(jsonValue(attestation))}\n`)
       return
     }
     case "schedule-activation": {
@@ -124,16 +138,24 @@ async function main(): Promise<void> {
         const artifact = unwrap(prepared)
         await validateArtifact(artifact)
         await relay(rpc, artifact)
-        await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
-        unwrap(await actor.confirm_base_governance_transaction({
+        const outcome = await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
+        if (outcome.status === "reverted") {
+          throw new Error(`Emergency Base action reverted; stopped before finality polling. Confirm it after finalization: ${bytesHex(artifact.transaction_hash)}`)
+        }
+        const confirmationResult = await actor.confirm_base_governance_transaction({
           operation_id: artifact.operation_id,
           transaction_hash: artifact.transaction_hash,
-        }))
+        })
+        unwrap(confirmationResult)
       }
     }
     default:
       throw new Error(`Unknown command: ${command}`)
   }
+}
+
+export function commandRequiresIdentity(command: string): boolean {
+  return !new Set(["status", "relay"]).has(command)
 }
 
 async function runActivation(
@@ -147,11 +169,15 @@ async function runActivation(
   const artifact = unwrap(result)
   await validateArtifact(artifact)
   await relay(rpc, artifact)
-  await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
-  const confirmation = unwrap(await actor.confirm_base_governance_transaction({
+  const outcome = await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
+  if (outcome.status === "reverted") {
+    throw new Error(`Activation transaction reverted; stopped before finality polling. Confirm it after finalization: ${bytesHex(artifact.transaction_hash)}`)
+  }
+  const confirmationResult = await actor.confirm_base_governance_transaction({
     operation_id: artifact.operation_id,
     transaction_hash: artifact.transaction_hash,
-  }))
+  })
+  const confirmation = unwrap(confirmationResult)
   process.stdout.write(`${JSON.stringify(jsonValue(confirmation))}\n`)
 }
 
@@ -161,12 +187,14 @@ function rpcClient(): RelayerRpc {
   }) as unknown as RelayerRpc
 }
 
-async function bridgeActor(): Promise<_SERVICE> {
-  const pemPath = requiredEnv("IC_IDENTITY_PEM")
-  const pem = await readFile(pemPath, "utf8")
-  const identity = identityFromPem(pem)
+async function bridgeActor(authenticated: boolean): Promise<_SERVICE> {
   const host = process.env.IC_HOST || "https://icp-api.io"
-  const agent = HttpAgent.createSync({ identity, host })
+  const agent = authenticated
+    ? HttpAgent.createSync({
+      identity: identityFromPem(await readFile(requiredEnv("IC_IDENTITY_PEM"), "utf8")),
+      host,
+    })
+    : HttpAgent.createSync({ host })
   if (agent.isLocal()) await agent.fetchRootKey()
   return Actor.createActor<_SERVICE>(idlFactory, {
     agent,
@@ -221,7 +249,7 @@ export async function validateArtifact(
   if (transaction.maxPriorityFeePerGas !== artifact.max_priority_fee_per_gas) throw new Error("Signed transaction priority fee mismatch")
 }
 
-async function relay(
+export async function relay(
   rpc: RelayerRpc,
   artifact: SignedBaseGovernanceTransaction,
 ): Promise<void> {
@@ -238,6 +266,13 @@ async function relay(
       process.stdout.write(`Transaction already known: ${expectedHash}\n`)
       return
     }
+    if (isNonceTooLow(error)) {
+      const receipt = await rpc.getTransactionReceipt({ hash: expectedHash }).catch(() => undefined)
+      if (receipt) {
+        process.stdout.write(`Transaction nonce already consumed by expected hash: ${expectedHash}\n`)
+        return
+      }
+    }
     throw error
   }
 }
@@ -245,18 +280,16 @@ async function relay(
 export async function waitForFinalized(
   rpc: Pick<RelayerRpc, "getTransactionReceipt" | "getBlock">,
   hash: Hex,
-): Promise<void> {
+): Promise<FinalizedTransactionOutcome> {
   for (;;) {
     const receipt = await rpc.getTransactionReceipt({ hash }).catch(() => undefined)
     if (receipt) {
-      if (receipt.status === "reverted") {
-        throw new Error(`Transaction reverted: ${hash}`)
-      }
+      if (receipt.status === "reverted") return receipt
       const finalized = await rpc.getBlock({ blockTag: "finalized" })
       if (finalized.number !== null && receipt.blockNumber <= finalized.number) {
         const canonical = await rpc.getBlock({ blockNumber: receipt.blockNumber })
         if (canonical.hash !== receipt.blockHash) throw new Error("Receipt block is not canonical")
-        return
+        return receipt
       }
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
@@ -355,6 +388,11 @@ export function isAlreadyKnown(error: unknown): boolean {
   return /already known|known transaction/i.test(message)
 }
 
+export function isNonceTooLow(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /nonce too low|nonce has already been used/i.test(message)
+}
+
 export function redactedErrorMessage(
   error: unknown,
   environment: NodeJS.ProcessEnv = process.env,
@@ -389,15 +427,16 @@ Commands:
   status [--operation-id N]
   relay [--operation-id N]
   confirm [--operation-id N] [--hash 0x...]
-  run [--operation-id N | --action ...]
+  run [--operation-id N]
   schedule-activation
   execute-activation
+  refresh-attestation
   replace --operation-id N --max-fee N --priority-fee N
   drain-emergency
 
 Environment:
   BRIDGE_CANISTER_ID  Bridge Canister principal
-  IC_IDENTITY_PEM    Governance secp256k1 identity PEM path
+  IC_IDENTITY_PEM    Required for confirm, run, prepare, replace, activation, attestation, and emergency commands
   BASE_RPC_URL       Base JSON-RPC URL
   IC_HOST            Optional IC API host (defaults to https://icp-api.io)
 `)

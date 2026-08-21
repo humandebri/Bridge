@@ -875,6 +875,57 @@
     "inputs": [
       {
         "internalType": "address",
+        "name": "initialBridgeSigner",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "initialRuntimeAdministrator",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "initialBaseAdminTimelock",
+        "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "initialApprovedTimelockRuntimeCodeHash",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256",
+        "name": "initialPerDepositLimit",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "initialMintWindowLimit",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint64",
+        "name": "initialMintWindowDuration",
+        "type": "uint64"
+      },
+      {
+        "internalType": "uint256",
+        "name": "maxServiceFee",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "initialServiceFee",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
         "name": "newAdministrator",
         "type": "address"
       }
@@ -972,72 +1023,6 @@
     ],
     "name": "StringTooLong",
     "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "string",
-        "name": "tokenName",
-        "type": "string"
-      },
-      {
-        "internalType": "string",
-        "name": "tokenSymbol",
-        "type": "string"
-      },
-      {
-        "internalType": "uint8",
-        "name": "tokenDecimals",
-        "type": "uint8"
-      },
-      {
-        "internalType": "address",
-        "name": "initialBridgeSigner",
-        "type": "address"
-      },
-      {
-        "internalType": "address",
-        "name": "initialRuntimeAdministrator",
-        "type": "address"
-      },
-      {
-        "internalType": "address",
-        "name": "initialBaseAdminTimelock",
-        "type": "address"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "initialApprovedTimelockRuntimeCodeHash",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "uint256",
-        "name": "initialPerDepositLimit",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "initialMintWindowLimit",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint64",
-        "name": "initialMintWindowDuration",
-        "type": "uint64"
-      },
-      {
-        "internalType": "uint256",
-        "name": "maxServiceFee",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "initialServiceFee",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "nonpayable",
-    "type": "constructor"
   },
   {
     "inputs": [

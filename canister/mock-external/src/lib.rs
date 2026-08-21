@@ -5,8 +5,8 @@ use evm_rpc_types::{
     SendRawTransactionStatus, TransactionReceipt,
 };
 use ic_cdk_management_canister::{
-    ecdsa_public_key, sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs,
-    SignWithEcdsaArgs,
+    ecdsa_public_key, http_request, sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs,
+    HttpMethod, HttpRequestArgs, SignWithEcdsaArgs,
 };
 use icrc_ledger_types::{
     icrc1::{
@@ -65,6 +65,7 @@ pub struct MintLogFixture {
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReceiptMode {
     Confirmed,
+    DelayedConfirmed,
     Missing,
     Reverted,
     RpcFailure,
@@ -206,6 +207,10 @@ struct StableMockState {
     chain_id_mode: ChainIdMode,
     configured_chain_id: u64,
     bridge_runtime_code: Vec<u8>,
+    timelock_runtime_code: Vec<u8>,
+    bsns_runtime_code: Vec<u8>,
+    bsns_address: [u8; 20],
+    bsns_bridge: [u8; 20],
     block_mode: BlockMode,
     broadcast_inconsistent_after_accepts: u8,
     broadcasts: Vec<Vec<u8>>,
@@ -261,6 +266,10 @@ thread_local! {
     static CHAIN_ID_MODE: RefCell<ChainIdMode> = const { RefCell::new(ChainIdMode::Configured) };
     static CONFIGURED_CHAIN_ID: RefCell<u64> = const { RefCell::new(8_453) };
     static BRIDGE_RUNTIME_CODE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static TIMELOCK_RUNTIME_CODE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static BSNS_RUNTIME_CODE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static BSNS_ADDRESS: RefCell<[u8; 20]> = const { RefCell::new([9; 20]) };
+    static BSNS_BRIDGE: RefCell<[u8; 20]> = const { RefCell::new([1; 20]) };
     static BLOCK_MODE: RefCell<BlockMode> = const { RefCell::new(BlockMode::Canonical) };
     static BROADCAST_INCONSISTENT_AFTER_ACCEPTS: RefCell<u8> = const { RefCell::new(0) };
     static BROADCASTS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
@@ -288,6 +297,8 @@ thread_local! {
     static RECEIPT_CALL_COUNT: RefCell<u64> = const { RefCell::new(0) };
     static RECEIPT_MINT_LOG_INDEX: RefCell<Option<u64>> = const { RefCell::new(None) };
     static BRIDGE_SIGNER: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
+    static BASE_ADMIN_TIMELOCK: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
+    static RUNTIME_ADMINISTRATOR: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static MINT_AUTHORIZATION_EPOCH: RefCell<u64> = const { RefCell::new(1) };
     static DEPOSIT_MINTS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
     static WITHDRAWALS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
@@ -521,6 +532,39 @@ fn bridge_signer() -> Vec<u8> {
 }
 
 #[ic_cdk::update]
+fn set_deployment_postconditions(
+    timelock: Vec<u8>,
+    governance_operator: Vec<u8>,
+    bsns: Vec<u8>,
+    bridge: Vec<u8>,
+    timelock_runtime_code: Vec<u8>,
+    bsns_runtime_code: Vec<u8>,
+) -> Result<(), String> {
+    let timelock: [u8; 20] = timelock
+        .try_into()
+        .map_err(|_| "timelock must be 20 bytes".to_string())?;
+    let governance_operator: [u8; 20] = governance_operator
+        .try_into()
+        .map_err(|_| "governance operator must be 20 bytes".to_string())?;
+    let bsns: [u8; 20] = bsns
+        .try_into()
+        .map_err(|_| "BSNS address must be 20 bytes".to_string())?;
+    let bridge: [u8; 20] = bridge
+        .try_into()
+        .map_err(|_| "Bridge address must be 20 bytes".to_string())?;
+    if timelock_runtime_code.is_empty() || bsns_runtime_code.is_empty() {
+        return Err("deployment runtime code must be non-empty".into());
+    }
+    BASE_ADMIN_TIMELOCK.with(|current| *current.borrow_mut() = timelock);
+    RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = governance_operator);
+    BSNS_ADDRESS.with(|current| *current.borrow_mut() = bsns);
+    BSNS_BRIDGE.with(|current| *current.borrow_mut() = bridge);
+    TIMELOCK_RUNTIME_CODE.with(|current| *current.borrow_mut() = timelock_runtime_code);
+    BSNS_RUNTIME_CODE.with(|current| *current.borrow_mut() = bsns_runtime_code);
+    Ok(())
+}
+
+#[ic_cdk::update]
 fn set_deposit_mints_paused(value: bool) {
     DEPOSIT_MINTS_PAUSED.with(|current| *current.borrow_mut() = value);
 }
@@ -608,6 +652,10 @@ fn pre_upgrade() {
         chain_id_mode: CHAIN_ID_MODE.with(|v| *v.borrow()),
         configured_chain_id: CONFIGURED_CHAIN_ID.with(|v| *v.borrow()),
         bridge_runtime_code: BRIDGE_RUNTIME_CODE.with(|v| v.borrow().clone()),
+        timelock_runtime_code: TIMELOCK_RUNTIME_CODE.with(|v| v.borrow().clone()),
+        bsns_runtime_code: BSNS_RUNTIME_CODE.with(|v| v.borrow().clone()),
+        bsns_address: BSNS_ADDRESS.with(|v| *v.borrow()),
+        bsns_bridge: BSNS_BRIDGE.with(|v| *v.borrow()),
         block_mode: BLOCK_MODE.with(|v| *v.borrow()),
         broadcast_inconsistent_after_accepts: BROADCAST_INCONSISTENT_AFTER_ACCEPTS
             .with(|v| *v.borrow()),
@@ -667,6 +715,10 @@ fn post_upgrade() {
     CHAIN_ID_MODE.with(|v| *v.borrow_mut() = state.chain_id_mode);
     CONFIGURED_CHAIN_ID.with(|v| *v.borrow_mut() = state.configured_chain_id);
     BRIDGE_RUNTIME_CODE.with(|v| *v.borrow_mut() = state.bridge_runtime_code);
+    TIMELOCK_RUNTIME_CODE.with(|v| *v.borrow_mut() = state.timelock_runtime_code);
+    BSNS_RUNTIME_CODE.with(|v| *v.borrow_mut() = state.bsns_runtime_code);
+    BSNS_ADDRESS.with(|v| *v.borrow_mut() = state.bsns_address);
+    BSNS_BRIDGE.with(|v| *v.borrow_mut() = state.bsns_bridge);
     BLOCK_MODE.with(|v| *v.borrow_mut() = state.block_mode);
     BROADCAST_INCONSISTENT_AFTER_ACCEPTS
         .with(|v| *v.borrow_mut() = state.broadcast_inconsistent_after_accepts);
@@ -985,7 +1037,24 @@ fn multi_request(
             let next = value.borrow().saturating_add(1);
             *value.borrow_mut() = next;
         });
-        BRIDGE_RUNTIME_CODE.with(|code| format!("\"0x{}\"", bytes_hex(&code.borrow())))
+        let target = rpc_target(&request);
+        let timelock =
+            BASE_ADMIN_TIMELOCK.with(|value| format!("0x{}", bytes_hex(&*value.borrow())));
+        let bsns = BSNS_ADDRESS.with(|value| format!("0x{}", bytes_hex(&*value.borrow())));
+        let code = if target
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(&timelock))
+        {
+            TIMELOCK_RUNTIME_CODE.with(|value| value.borrow().clone())
+        } else if target
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(&bsns))
+        {
+            BSNS_RUNTIME_CODE.with(|value| value.borrow().clone())
+        } else {
+            BRIDGE_RUNTIME_CODE.with(|value| value.borrow().clone())
+        };
+        format!("\"0x{}\"", bytes_hex(&code))
     } else if request.contains("eth_getTransactionByHash") {
         let requested = serde_json::from_str::<serde_json::Value>(&request)
             .ok()
@@ -1010,6 +1079,32 @@ fn multi_request(
             serde_json::json!({"hash": hash}).to_string()
         } else {
             "null".into()
+        }
+    } else if request.contains(&selector_hex("baseAdminTimelock()")) {
+        address_word(BASE_ADMIN_TIMELOCK.with(|value| *value.borrow()))
+    } else if request.contains(&selector_hex("runtimeAdministrator()")) {
+        address_word(RUNTIME_ADMINISTRATOR.with(|value| *value.borrow()))
+    } else if request.contains(&selector_hex("approvedTimelockRuntimeCodeHash()")) {
+        let code = TIMELOCK_RUNTIME_CODE.with(|value| value.borrow().clone());
+        format!("0x{}", bytes_hex(&keccak(&code)))
+    } else if request.contains(&selector_hex("getMinDelay()")) {
+        word(300)
+    } else if request.contains(&selector_hex("bsns()")) {
+        address_word(BSNS_ADDRESS.with(|value| *value.borrow()))
+    } else if request.contains(&selector_hex("name()"))
+        || request.contains(&selector_hex("symbol()"))
+    {
+        abi_string("KINIC")
+    } else if request.contains(&selector_hex("decimals()")) {
+        word(8)
+    } else if request.contains(&selector_hex("bridge()")) {
+        address_word(BSNS_BRIDGE.with(|value| *value.borrow()))
+    } else if request.contains(&selector_hex("roleMember(bytes32)")) {
+        let default_role = format!("{}{}", selector_hex("roleMember(bytes32)"), "00".repeat(32));
+        if request.contains(&default_role) {
+            address_word(BASE_ADMIN_TIMELOCK.with(|value| *value.borrow()))
+        } else {
+            address_word(RUNTIME_ADMINISTRATOR.with(|value| *value.borrow()))
         }
     } else if request.contains("f702cf2b") {
         let block_number = eip1898_block_number(&request);
@@ -1142,7 +1237,7 @@ fn eth_get_block_by_number(
 }
 
 #[ic_cdk::update(name = "eth_getTransactionReceipt")]
-fn eth_get_transaction_receipt(
+async fn eth_get_transaction_receipt(
     _services: RpcServices,
     _config: Option<RpcConfig>,
     hash: Hex32,
@@ -1151,9 +1246,22 @@ fn eth_get_transaction_receipt(
         let next = count.borrow().saturating_add(1);
         *count.borrow_mut() = next;
     });
+    if RECEIPT_MODE.with(|mode| *mode.borrow()) == ReceiptMode::DelayedConfirmed {
+        http_request(&HttpRequestArgs {
+            url: "https://receipt-delay.invalid/".into(),
+            max_response_bytes: Some(1),
+            method: HttpMethod::GET,
+            headers: vec![],
+            body: None,
+            transform: None,
+            is_replicated: Some(false),
+        })
+        .await
+        .unwrap_or_else(|error| ic_cdk::trap(format!("receipt delay outcall failed: {error:?}")));
+    }
     let hash: [u8; 32] = hash.into();
     match RECEIPT_MODE.with(|mode| *mode.borrow()) {
-        ReceiptMode::Confirmed | ReceiptMode::DecodeFailure => {
+        ReceiptMode::Confirmed | ReceiptMode::DelayedConfirmed | ReceiptMode::DecodeFailure => {
             MultiRpcResult::Consistent(Ok(Some(mock_receipt(hash, false, true))))
         }
         ReceiptMode::Missing => MultiRpcResult::Consistent(Ok(None)),
@@ -1201,6 +1309,34 @@ fn eth_get_logs(
 
 fn word(value: u128) -> String {
     format!("0x{value:064x}")
+}
+
+fn address_word(value: [u8; 20]) -> String {
+    format!("0x{}{}", "00".repeat(12), bytes_hex(&value))
+}
+
+fn abi_string(value: &str) -> String {
+    let padded = value.len().div_ceil(32) * 32;
+    format!(
+        "0x{}20{:064x}{}{}",
+        "00".repeat(31),
+        value.len(),
+        bytes_hex(value.as_bytes()),
+        "00".repeat(padded - value.len())
+    )
+}
+
+fn selector_hex(signature: &str) -> String {
+    bytes_hex(&keccak(signature.as_bytes())[..4])
+}
+
+fn rpc_target(request: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(request).ok()?;
+    let first = value.get("params")?.as_array()?.first()?;
+    first
+        .as_str()
+        .or_else(|| first.get("to")?.as_str())
+        .map(str::to_owned)
 }
 
 fn eip1898_block_number(request: &str) -> Option<u64> {

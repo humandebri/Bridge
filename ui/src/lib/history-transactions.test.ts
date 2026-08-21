@@ -1,6 +1,16 @@
+import { cleanup, render, screen } from "@testing-library/react"
+import { createElement } from "react"
+import { deploymentProfile } from "@/config/profile"
 import type { DepositView, WithdrawalView } from "@/generated/bridge.did"
-import { depositKinicTransactions, withdrawalKinicTransactions } from "@/routes/history"
-import { describe, expect, it } from "vitest"
+import { depositKinicTransactions, KinicTransactionLink, withdrawalKinicTransactions } from "@/routes/history"
+import { afterEach, describe, expect, it } from "vitest"
+
+const originalSnsRootCanisterId = deploymentProfile.snsRootCanisterId
+
+afterEach(() => {
+  cleanup()
+  deploymentProfile.snsRootCanisterId = originalSnsRootCanisterId
+})
 
 describe("History KINIC transactions", () => {
   it("shows both the funding and completed refund blocks in order", () => {
@@ -30,5 +40,23 @@ describe("History KINIC transactions", () => {
     expect(withdrawalKinicTransactions({ release_ledger_block_index: [99n] } as unknown as WithdrawalView)).toEqual([
       { kind: "payout", blockIndex: 99n },
     ])
+  })
+
+  it("renders a block number without a link when the deployment has no SNS Root", () => {
+    deploymentProfile.snsRootCanisterId = null
+    render(createElement(KinicTransactionLink, { kind: "deposit", blockIndex: 41n }))
+
+    expect(screen.getByText("Deposit #41")).toBeInTheDocument()
+    expect(screen.queryByRole("link")).not.toBeInTheDocument()
+  })
+
+  it("links through the deployment-specific SNS Root when configured", () => {
+    deploymentProfile.snsRootCanisterId = "7jkta-eyaaa-aaaaq-aaarq-cai"
+    render(createElement(KinicTransactionLink, { kind: "payout", blockIndex: 97_754n }))
+
+    expect(screen.getByRole("link", { name: "Open KINIC payout transaction 97754 in explorer" })).toHaveAttribute(
+      "href",
+      "https://dashboard.internetcomputer.org/sns/7jkta-eyaaa-aaaaq-aaarq-cai/transaction/97754",
+    )
   })
 })

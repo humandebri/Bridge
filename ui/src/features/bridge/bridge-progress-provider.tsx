@@ -33,6 +33,11 @@ interface BridgeProgressContextValue {
   restore: () => void
   dismiss: () => void
   setAction: (progressId: string, action?: ProgressAction) => void
+  completeWithdrawal: (input: {
+    transactionHash: `0x${string}`
+    owner: string
+    withdrawalId?: `0x${string}`
+  }) => boolean
 }
 
 const BridgeProgressContext = createContext<BridgeProgressContextValue | undefined>(undefined)
@@ -89,6 +94,17 @@ export function BridgeProgressProvider({ children }: { children: ReactNode }) {
     setAction(undefined)
     setMinimized(false)
   }, [])
+  const completeWithdrawal = useCallback<BridgeProgressContextValue["completeWithdrawal"]>((input) => {
+    const current = progressRef.current
+    if (current?.direction !== "withdraw"
+      || current.transactionHash?.toLowerCase() !== input.transactionHash.toLowerCase()) return false
+    if (current.phase !== "complete") update(current.id, {
+      phase: "complete",
+      withdrawal: { owner: input.owner, withdrawalId: input.withdrawalId },
+      completionMessage: `${current.receiveAmount} ${current.receiveSymbol} was paid to ${shortDestination(current.destination)}.`,
+    })
+    return true
+  }, [update])
 
   const value = useMemo<BridgeProgressContextValue>(() => ({
     progress,
@@ -98,7 +114,8 @@ export function BridgeProgressProvider({ children }: { children: ReactNode }) {
     restore,
     dismiss,
     setAction: setProgressAction,
-  }), [dismiss, minimize, progress, restore, setProgressAction, start, update])
+    completeWithdrawal,
+  }), [completeWithdrawal, dismiss, minimize, progress, restore, setProgressAction, start, update])
 
   return <BridgeProgressContext.Provider value={value}>
     {children}
@@ -155,6 +172,10 @@ function ProgressDialog({ progress, action, onMinimize, onDismiss }: { progress:
         <p className="font-bold text-black">{bridgeProgressLabel(progress)}</p>
         <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{bridgeProgressDetail(progress)}</p>
       </div>}
+      {progress.phase === "complete" && <div className="mt-5 rounded-2xl border border-[#9ed8b3] bg-[#eaf8ef] p-4" role="status">
+        <p className="font-bold text-black">{bridgeProgressLabel(progress)}</p>
+        <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{bridgeProgressDetail(progress)}</p>
+      </div>}
       <ol className="mt-5 space-y-1" aria-label="Transfer progress">
         {steps.map((step, index) => <li key={step.label} aria-current={step.status === "current" ? "step" : undefined} aria-label={depositTransactionComplete && step.label === "Base mint transaction" ? "Base mint transaction complete" : undefined} className="relative flex min-h-11 items-start gap-3">
           {index < steps.length - 1 && <span aria-hidden="true" className="absolute left-[15px] top-8 h-[calc(100%-1rem)] w-px bg-[var(--line)]" />}
@@ -182,4 +203,8 @@ function ProgressDialog({ progress, action, onMinimize, onDismiss }: { progress:
       </DialogFooter>
     </DialogContent>
   </Dialog>
+}
+
+function shortDestination(value: string): string {
+  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value
 }

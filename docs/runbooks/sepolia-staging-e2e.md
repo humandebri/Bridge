@@ -55,8 +55,8 @@ preflight
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
 Canister upgradeの前にはlive `public_config` をJSONへ保存し、次のgateを必ず通す。
-現行v33の同一instance upgradeだけを`current-schema-upgrade`として受理し、upgrade前後のstate count、
-schema v33、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、v32以下、
+review済みv34の同一instanceからv35へのupgradeだけを`current-schema-upgrade`として受理し、upgrade前後のstate count、
+source schema v34、target schema v35、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、v33以下、
 未知schema、欠落、ゼロ値はfail closedにする。新規Canisterへの初回installだけはこのupgrade gateの対象外である。
 出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、manifest検証でも同じ比較を行う。
 
@@ -74,37 +74,20 @@ preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-
 各artifactを再読し、live設定とmodule hashから比較を再計算してchecker出力および`details`と照合する。
 別のlive取得結果、手編集したchecker出力、manifest外のpathは使用しない。
 
-履歴を失った空のstaging stateを同じBase Bridgeへ復旧するときは、Base Withdrawalをpauseしたまま、
-固定した3 RPCから同一のcanonical Finalized checkpointに対する`nextWithdrawalId()`を取得する。
-その値を「まだ一度も発行されていない最初のID」として、inclusiveな`minimum_withdrawal_id`へ一度だけ設定する。
+履歴を失ったstate、v33以下、旧wireのstaging canisterはupgradeせず、現行Wasmを新規Canister IDへinstallして検証stateを作り直す。
 
-```sh
-scripts/plan007/staging-e2e-driver.sh capture-withdrawal-boundary \
-  /secure/work/withdrawal-boundary-capture.json \
-  > /secure/work/withdrawal-admission-boundary.json
-```
-
-capture configは`schema_version = 1`と、credentialを含まない相異なる3件の`rpc_urls`だけを持つ。
-`rpc_urls`はfrontend profileの`baseRpcUrl`、続いて`baseHistoryRpcUrls`の順序付き3件と完全一致させる。
-artifactは全providerのchain ID、EIP-1898 canonical block hash、pause状態、`nextWithdrawalId`を記録し、
-2-of-3が同一block hashと境界値へ一致しなければ失敗する。preflight、upgrade引数、upgrade後PublicConfig、
-frontend profileは同じ境界値をhashで束縛する。境界未満の古いIDはcanonical eventであってもrecord作成、
-Ledger call、liability変更より前に拒否する。境界以上だけを受理し、境界はupgrade後に変更できない。
-Base Withdrawalをpauseした状態でpreflight直前にcaptureし、5分以内にpreflightを記録する。capture開始前から
-upgrade完了までBase Withdrawalを再開してはならず、古いartifact、未来時刻、provider順序の不一致は拒否する。
-
-v33→v33 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
+v34→v35 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
 
 - `live-bridge-status`: Deposit／reservationを含むcountsと、Withdrawal、pending Ledger operation、reconciliation hold、未払額を保持する。
 - `live-activation-status`: pending Timelock operation数を保持する。
 - `live-canister-status`: module hash、controller principals、cycles balanceを保持する。
 - `live-storage-integrity`: 認可済みcallerによる`storage_integrity_check()`の`ok`結果を保持する。
 - `live-ledger-balance`: Bridge principalのTICRC1 raw balanceを保持する。
-- install stageにはupgrade前後の全count、schema v33、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
+- install stageにはupgrade前後の全count、source schema v34、target schema v35、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致なら後続activationへ進まない。
 
 manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は同一schema upgrade後も保持する。
 
-`test-deployment` Wasmに限り、TenderlyをOnFinalityへ置換する今回専用のupgrade引数を受理する。引数なしの`()`はRPC設定を変更しない。更新指定は次のCandidに固定し、PublicNode、`sepolia.base.org`、OnFinalityの順序を変えない。
+`test-deployment` Wasmに限り、IC HTTPS outcallで401を返すOnFinalityをdRPCへ置換する今回専用のupgrade引数を受理する。引数なしの`()`はRPC設定を変更しない。更新指定は次のCandidに固定し、PublicNode、`sepolia.base.org`、dRPCの順序を変えない。
 
 ```candid
 (
@@ -114,7 +97,7 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
       custom_evm_rpc_urls = vec {
         "https://base-sepolia-rpc.publicnode.com";
         "https://sepolia.base.org";
-        "https://base-sepolia.api.onfinality.io/public";
+        "https://base-sepolia.drpc.org";
       };
       expected_status_counts = record {
         retained_audit_events = 15 : nat64;
@@ -132,10 +115,10 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
 )
 ```
 
-この更新は旧digest `e9b9c716dedf57245c75b8d87114b065a55a96bd0f7bd56691683722ac5721fb`から新digest `3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48`だけを許可する。新設定の同値再実行は成功するが、URL・順序・chain ID・EVM RPC Canister ID・現在digestの不一致はtrapしてupgrade全体をrollbackする。更新後もFinalized水位を保持し、runtime attestation cacheだけを無効化する。production Wasmの`post_upgrade()`は引数なしで、この更新経路を含まない。
+この更新は旧digest `3ab53c0532b80b3f39ed076f9661794c0a847b0d2eba1845b5c7e0ed1663ed48`から新digest `df7e867aaf6abeaf00b0f61e8662fa87c6f8675eb0aebdf7b09f8c99a499d064`だけを許可する。新設定の同値再実行は成功するが、URL・順序・chain ID・EVM RPC Canister ID・現在digestの不一致はtrapしてupgrade全体をrollbackする。更新後もFinalized水位を保持し、runtime attestation cacheだけを無効化する。production Wasmの`post_upgrade()`は引数なしで、この更新経路を含まない。
 
 PR #11の新profileを含むclean checkoutから、repository-owned
-`rpc-provider-replacement-policy.json`に固定したCanister ID、schema v33、instance ID、変更前module hash、
+`rpc-provider-replacement-policy.json`に固定したCanister ID、source schema v34、target schema v35、instance ID、変更前module hash、
 state count、旧・新RPC順序とdigestをreviewする。driverは`local-e2e.json`のsource commitとWasm／Candid hash、
 live Candid互換性、認証済み`storage_integrity_check`、固定順序3 endpointのchain IDを照合する。
 通常実行はread-only preflightだけを行い、`--execute`を追加した別承認の呼出しだけが明示Wasmをinstallする。
@@ -161,19 +144,6 @@ BRIDGE_STAGING_IDENTITY=<identity> \
 driverは`icp deploy`や暗黙buildを使用しない。成功または適用済みpostconditionをすべて確認した場合だけ
 evidenceをatomicに確定する。install失敗またはpostcondition不一致では再実行せず、CLI出力と未確定artifactを
 保全して原因をreviewする。過去のarchive evidenceは変更しない。
-
-module hashがpolicyに固定されたmetadata欠落Wasmと一致し、RPC digest、schema、instance、state count、
-storage integrityがすべて更新後の値と一致する場合に限り、次の明示flagで公開Candid metadataを修復できる。
-通常の置換・適用済み経路へこのflagを使用してはならない。
-
-```sh
-BRIDGE_STAGING_IDENTITY=<identity> \
-  scripts/plan007/staging-canister-upgrade.sh --migrate-v32-to-v33 \
-    --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
-    --evidence /secure/work/staging-candid-metadata-repair.json
-
-# preflight結果を別レビューし、明示承認後だけ --execute を追加する。
-```
 
 ```sh
 scripts/plan007/staging-e2e-driver.sh record /secure/work/preflight-evidence.json

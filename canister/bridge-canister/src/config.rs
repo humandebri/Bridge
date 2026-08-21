@@ -11,6 +11,34 @@ pub struct FeeRecipientConfig {
     pub subaccount: Vec<u8>,
 }
 
+#[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ActivationAttestation {
+    pub chain_id: u64,
+    pub finalized_block_number: u64,
+    pub finalized_block_hash: Vec<u8>,
+    pub observed_at_ns: u64,
+    pub bridge_signer: Vec<u8>,
+    pub bridge_runtime_sha256: Vec<u8>,
+    pub deposits_paused: bool,
+    pub withdrawals_paused: bool,
+    pub bridge_timelock: Vec<u8>,
+    pub runtime_administrator: Vec<u8>,
+    pub timelock_admin: Vec<u8>,
+    pub timelock_proposer: Vec<u8>,
+    pub timelock_canceller: Vec<u8>,
+    pub timelock_executor: Vec<u8>,
+    pub timelock_runtime_code_hash: Vec<u8>,
+    pub bridge_approved_timelock_runtime_code_hash: Vec<u8>,
+    pub timelock_minimum_delay_seconds: u64,
+    pub bsns_address: Vec<u8>,
+    pub bsns_runtime_sha256: Vec<u8>,
+    pub bsns_name: String,
+    pub bsns_symbol: String,
+    pub bsns_decimals: u8,
+    pub bsns_bridge: Vec<u8>,
+    pub base_service_fee: u128,
+}
+
 pub const KINIC_LEDGER_CANISTER_ID: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 pub const KINIC_INDEX_CANISTER_ID: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
 pub const BASE_MAINNET_CHAIN_ID: u64 = 8453;
@@ -22,23 +50,23 @@ pub const BASE_SEPOLIA_CHAIN_ID: u64 = 84_532;
 pub const STAGING_OLD_RPC_URLS: [&str; 3] = [
     "https://base-sepolia-rpc.publicnode.com",
     "https://sepolia.base.org",
-    "https://base-sepolia.gateway.tenderly.co",
+    "https://base-sepolia.api.onfinality.io/public",
 ];
 #[cfg(feature = "test-deployment")]
 pub const STAGING_NEW_RPC_URLS: [&str; 3] = [
     "https://base-sepolia-rpc.publicnode.com",
     "https://sepolia.base.org",
-    "https://base-sepolia.api.onfinality.io/public",
+    "https://base-sepolia.drpc.org",
 ];
 #[cfg(feature = "test-deployment")]
 pub const STAGING_OLD_RPC_URLS_SHA256: [u8; 32] = [
-    0xe9, 0xb9, 0xc7, 0x16, 0xde, 0xdf, 0x57, 0x24, 0x5c, 0x75, 0xb8, 0xd8, 0x71, 0x14, 0xb0, 0x65,
-    0xa5, 0x5a, 0x96, 0xbd, 0x0f, 0x7b, 0xd5, 0x66, 0x91, 0x68, 0x37, 0x22, 0xac, 0x57, 0x21, 0xfb,
+    0x3a, 0xb5, 0x3c, 0x05, 0x32, 0xb8, 0x0b, 0x3f, 0x39, 0xed, 0x07, 0x6f, 0x96, 0x61, 0x79, 0x4c,
+    0x0a, 0x84, 0x7b, 0x0d, 0x2e, 0xba, 0x18, 0x45, 0xb5, 0xc7, 0xe0, 0xed, 0x16, 0x63, 0xed, 0x48,
 ];
 #[cfg(feature = "test-deployment")]
 pub const STAGING_NEW_RPC_URLS_SHA256: [u8; 32] = [
-    0x3a, 0xb5, 0x3c, 0x05, 0x32, 0xb8, 0x0b, 0x3f, 0x39, 0xed, 0x07, 0x6f, 0x96, 0x61, 0x79, 0x4c,
-    0x0a, 0x84, 0x7b, 0x0d, 0x2e, 0xba, 0x18, 0x45, 0xb5, 0xc7, 0xe0, 0xed, 0x16, 0x63, 0xed, 0x48,
+    0xdf, 0x7e, 0x86, 0x7a, 0xaf, 0x6a, 0xbe, 0xaf, 0x00, 0xb0, 0xf6, 0x1e, 0x86, 0x62, 0xfa, 0x87,
+    0xc6, 0xf8, 0x67, 0x5e, 0xb0, 0xae, 0xbd, 0xf7, 0xb0, 0x9f, 0x8c, 0x99, 0xa4, 0x99, 0xd0, 0x64,
 ];
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
@@ -73,26 +101,34 @@ pub struct BridgeInitArgs {
     pub settlement_cycle_ceiling: u128,
     pub governance_principal: Principal,
     pub pause_principal: Principal,
+    pub confirmation_relayer_principal: Principal,
     pub fee_recipient: FeeRecipientConfig,
+}
+
+#[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OperationalConfigArgs {
+    pub governance_evm_fee: EvmFeePolicy,
+    pub cycles_floor: u128,
+    pub settlement_cycle_ceiling: u128,
 }
 
 #[cfg(feature = "test-deployment")]
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct StagingUpgradeArgs {
-    pub migration_id: Option<String>,
     pub status_counts_guard_version: u8,
     pub rpc_provider_update: Option<StagingRpcProviderUpdate>,
     pub minimum_withdrawal_id: Option<Vec<u8>>,
+    pub confirmation_relayer_principal: Option<Principal>,
 }
 
 #[cfg(feature = "test-deployment")]
 impl Default for StagingUpgradeArgs {
     fn default() -> Self {
         Self {
-            migration_id: None,
             status_counts_guard_version: 1,
             rpc_provider_update: None,
             minimum_withdrawal_id: None,
+            confirmation_relayer_principal: None,
         }
     }
 }
@@ -167,114 +203,18 @@ pub(crate) struct ImmutableBridgeConfig {
     pub governance_replacement: GovernanceReplacementPolicy,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
-}
-
-/// The v32 stable config deliberately has no withdrawal boundary field. Keep
-/// this decoder explicit so a future config field cannot silently become part
-/// of the one-time v32 -> v33 migration.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct V32ImmutableBridgeConfig {
-    pub ledger_canister_id: Principal,
-    pub index_canister_id: Principal,
-    pub evm_rpc_canister_id: Principal,
-    pub custom_evm_rpc_urls: Vec<String>,
-    pub base_chain_id: u64,
-    pub bridge_contract: Vec<u8>,
-    pub expected_bridge_runtime_sha256: Vec<u8>,
-    pub timelock_contract: Vec<u8>,
-    pub deployment_instance_id: Vec<u8>,
-    pub ecdsa_key_name: String,
-    pub ecdsa_derivation_path: Vec<Vec<u8>>,
-    pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
-    pub deposit_rate_limit_window_seconds: u64,
-    pub deposit_rate_limit_global: u16,
-    pub deposit_rate_limit_per_principal: u16,
-    pub notification_rate_limit_window_seconds: u64,
-    pub notification_rate_limit_global: u16,
-    #[serde(default = "default_notification_ingestion_rate_limit_global")]
-    pub notification_ingestion_rate_limit_global: u16,
-    pub settlement_rate_limit_window_seconds: u64,
-    pub settlement_rate_limit_global: u16,
-    pub settlement_rate_limit_per_principal: u16,
-    pub settlement_rate_limit_per_record: u16,
-    pub settlement_retry_interval_seconds: u64,
-    pub governance_evm_fee: EvmFeePolicy,
-    pub governance_replacement: GovernanceReplacementPolicy,
-    pub cycles_floor: u128,
-    pub settlement_cycle_ceiling: u128,
-}
-
-impl V32ImmutableBridgeConfig {
-    #[cfg(test)]
-    pub(crate) fn from_current(value: &ImmutableBridgeConfig) -> Self {
-        Self {
-            ledger_canister_id: value.ledger_canister_id,
-            index_canister_id: value.index_canister_id,
-            evm_rpc_canister_id: value.evm_rpc_canister_id,
-            custom_evm_rpc_urls: value.custom_evm_rpc_urls.clone(),
-            base_chain_id: value.base_chain_id,
-            bridge_contract: value.bridge_contract.clone(),
-            expected_bridge_runtime_sha256: value.expected_bridge_runtime_sha256.clone(),
-            timelock_contract: value.timelock_contract.clone(),
-            deployment_instance_id: value.deployment_instance_id.clone(),
-            ecdsa_key_name: value.ecdsa_key_name.clone(),
-            ecdsa_derivation_path: value.ecdsa_derivation_path.clone(),
-            governance_ecdsa_derivation_path: value.governance_ecdsa_derivation_path.clone(),
-            deposit_rate_limit_window_seconds: value.deposit_rate_limit_window_seconds,
-            deposit_rate_limit_global: value.deposit_rate_limit_global,
-            deposit_rate_limit_per_principal: value.deposit_rate_limit_per_principal,
-            notification_rate_limit_window_seconds: value.notification_rate_limit_window_seconds,
-            notification_rate_limit_global: value.notification_rate_limit_global,
-            notification_ingestion_rate_limit_global: value
-                .notification_ingestion_rate_limit_global,
-            settlement_rate_limit_window_seconds: value.settlement_rate_limit_window_seconds,
-            settlement_rate_limit_global: value.settlement_rate_limit_global,
-            settlement_rate_limit_per_principal: value.settlement_rate_limit_per_principal,
-            settlement_rate_limit_per_record: value.settlement_rate_limit_per_record,
-            settlement_retry_interval_seconds: value.settlement_retry_interval_seconds,
-            governance_evm_fee: value.governance_evm_fee,
-            governance_replacement: value.governance_replacement,
-            cycles_floor: value.cycles_floor,
-            settlement_cycle_ceiling: value.settlement_cycle_ceiling,
-        }
-    }
-
-    pub(crate) fn into_current(self, minimum_withdrawal_id: Vec<u8>) -> ImmutableBridgeConfig {
-        ImmutableBridgeConfig {
-            ledger_canister_id: self.ledger_canister_id,
-            index_canister_id: self.index_canister_id,
-            evm_rpc_canister_id: self.evm_rpc_canister_id,
-            custom_evm_rpc_urls: self.custom_evm_rpc_urls,
-            base_chain_id: self.base_chain_id,
-            bridge_contract: self.bridge_contract,
-            expected_bridge_runtime_sha256: self.expected_bridge_runtime_sha256,
-            timelock_contract: self.timelock_contract,
-            deployment_instance_id: self.deployment_instance_id,
-            minimum_withdrawal_id,
-            ecdsa_key_name: self.ecdsa_key_name,
-            ecdsa_derivation_path: self.ecdsa_derivation_path,
-            governance_ecdsa_derivation_path: self.governance_ecdsa_derivation_path,
-            deposit_rate_limit_window_seconds: self.deposit_rate_limit_window_seconds,
-            deposit_rate_limit_global: self.deposit_rate_limit_global,
-            deposit_rate_limit_per_principal: self.deposit_rate_limit_per_principal,
-            notification_rate_limit_window_seconds: self.notification_rate_limit_window_seconds,
-            notification_rate_limit_global: self.notification_rate_limit_global,
-            notification_ingestion_rate_limit_global: self.notification_ingestion_rate_limit_global,
-            settlement_rate_limit_window_seconds: self.settlement_rate_limit_window_seconds,
-            settlement_rate_limit_global: self.settlement_rate_limit_global,
-            settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
-            settlement_rate_limit_per_record: self.settlement_rate_limit_per_record,
-            settlement_retry_interval_seconds: self.settlement_retry_interval_seconds,
-            governance_evm_fee: self.governance_evm_fee,
-            governance_replacement: self.governance_replacement,
-            cycles_floor: self.cycles_floor,
-            settlement_cycle_ceiling: self.settlement_cycle_ceiling,
-        }
-    }
+    #[serde(default = "anonymous_principal")]
+    pub confirmation_relayer_principal: Principal,
+    #[serde(default)]
+    pub activation_attestation: Option<ActivationAttestation>,
 }
 
 const fn default_notification_ingestion_rate_limit_global() -> u16 {
     30
+}
+
+fn anonymous_principal() -> Principal {
+    Principal::anonymous()
 }
 
 impl ImmutableBridgeConfig {
@@ -309,7 +249,14 @@ impl ImmutableBridgeConfig {
             governance_replacement: value.governance_replacement,
             cycles_floor: value.cycles_floor,
             settlement_cycle_ceiling: value.settlement_cycle_ceiling,
+            confirmation_relayer_principal: value.confirmation_relayer_principal,
+            activation_attestation: None,
         }
+    }
+
+    pub(crate) fn with_activation_attestation(mut self, value: ActivationAttestation) -> Self {
+        self.activation_attestation = Some(value);
+        self
     }
 
     pub(crate) fn with_admin(
@@ -349,6 +296,7 @@ impl ImmutableBridgeConfig {
             settlement_cycle_ceiling: self.settlement_cycle_ceiling,
             governance_principal,
             pause_principal,
+            confirmation_relayer_principal: self.confirmation_relayer_principal,
             fee_recipient,
         }
     }
@@ -364,6 +312,14 @@ impl Default for GovernanceReplacementPolicy {
 }
 
 impl BridgeInitArgs {
+    pub fn with_operational_config(&self, value: OperationalConfigArgs) -> Self {
+        let mut next = self.clone();
+        next.governance_evm_fee = value.governance_evm_fee;
+        next.cycles_floor = value.cycles_floor;
+        next.settlement_cycle_ceiling = value.settlement_cycle_ceiling;
+        next
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.bridge_contract.len() != 20
             || self.expected_bridge_runtime_sha256.len() != 32
@@ -469,12 +425,20 @@ impl BridgeInitArgs {
         {
             return Err("governance replacement policy is outside the supported safety bounds");
         }
+        if self.cycles_floor == 0 || self.settlement_cycle_ceiling == 0 {
+            return Err("cycles limits must be non-zero");
+        }
         if self.governance_principal == Principal::anonymous()
             || self.pause_principal == Principal::anonymous()
+            || self.confirmation_relayer_principal == Principal::anonymous()
             || self.pause_principal == self.governance_principal
+            || (!cfg!(feature = "test-deployment")
+                && self.confirmation_relayer_principal == self.governance_principal)
+            || self.confirmation_relayer_principal == self.pause_principal
             || self.fee_recipient.owner == Principal::anonymous()
             || self.fee_recipient.owner == self.pause_principal
             || self.fee_recipient.owner == self.governance_principal
+            || self.fee_recipient.owner == self.confirmation_relayer_principal
             || !matches!(self.fee_recipient.subaccount.len(), 0 | 32)
         {
             return Err("administrator principals and fee recipient must be valid");
@@ -517,9 +481,7 @@ impl BridgeInitArgs {
         if !rpc_urls_match(requested_urls, &STAGING_NEW_RPC_URLS)
             || rpc_urls_sha256(requested_urls) != STAGING_NEW_RPC_URLS_SHA256
         {
-            return Err(
-                "staging RPC replacement only accepts the reviewed OnFinality provider set",
-            );
+            return Err("staging RPC replacement only accepts the reviewed dRPC provider set");
         }
         if rpc_urls_match(&self.custom_evm_rpc_urls, &STAGING_NEW_RPC_URLS) {
             if rpc_urls_sha256(&self.custom_evm_rpc_urls) != STAGING_NEW_RPC_URLS_SHA256 {
@@ -530,7 +492,7 @@ impl BridgeInitArgs {
         if !rpc_urls_match(&self.custom_evm_rpc_urls, &STAGING_OLD_RPC_URLS)
             || rpc_urls_sha256(&self.custom_evm_rpc_urls) != STAGING_OLD_RPC_URLS_SHA256
         {
-            return Err("staging RPC replacement requires the reviewed Tenderly provider set");
+            return Err("staging RPC replacement requires the reviewed OnFinality provider set");
         }
 
         let mut next = self.clone();
@@ -741,11 +703,41 @@ mod tests {
     }
 
     #[test]
-    fn administrator_roles_are_pairwise_distinct() {
+    fn administrator_roles_are_separated_except_for_the_staging_relayer() {
         let mut args = valid_args();
         args.fee_recipient.owner = args.governance_principal;
         assert!(args.validate().is_err());
+        let mut args = valid_args();
+        args.confirmation_relayer_principal = Principal::anonymous();
+        assert!(args.validate().is_err());
+        for principal in [
+            valid_args().pause_principal,
+            valid_args().fee_recipient.owner,
+        ] {
+            let mut args = valid_args();
+            args.confirmation_relayer_principal = principal;
+            assert!(args.validate().is_err());
+        }
+        let mut args = valid_args();
+        args.confirmation_relayer_principal = args.governance_principal;
+        if cfg!(feature = "test-deployment") {
+            assert!(args.validate().is_ok());
+        } else {
+            assert!(args.validate().is_err());
+        }
     }
+
+    #[test]
+    fn cycle_limits_must_be_nonzero() {
+        let mut args = valid_args();
+        args.cycles_floor = 0;
+        assert_eq!(args.validate(), Err("cycles limits must be non-zero"));
+
+        let mut args = valid_args();
+        args.settlement_cycle_ceiling = 0;
+        assert_eq!(args.validate(), Err("cycles limits must be non-zero"));
+    }
+
     fn valid_args() -> BridgeInitArgs {
         let principal = Principal::from_text("aaaaa-aa").expect("management principal");
         BridgeInitArgs {
@@ -788,6 +780,7 @@ mod tests {
             settlement_cycle_ceiling: 1,
             governance_principal: principal,
             pause_principal: Principal::from_slice(&[2]),
+            confirmation_relayer_principal: Principal::from_slice(&[5]),
             fee_recipient: FeeRecipientConfig {
                 owner: Principal::from_slice(&[3]),
                 subaccount: vec![],

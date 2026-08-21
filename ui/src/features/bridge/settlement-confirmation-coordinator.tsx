@@ -36,6 +36,7 @@ export function SettlementConfirmationCoordinator() {
   const observerGenerationRef = useRef(0)
   const update = bridgeProgress.update
   const setAction = bridgeProgress.setAction
+  const completeWithdrawal = bridgeProgress.completeWithdrawal
 
   useEffect(() => {
     progressRef.current = bridgeProgress.progress
@@ -68,7 +69,7 @@ export function SettlementConfirmationCoordinator() {
       return trigger === "manual" ? recoverableProgressFor(entry) : activeProgressFor(entry)
     }
     const presentationIsCurrent = (progressId: string | undefined, entry: PendingWithdrawal) => {
-      return isCurrent() && (progressId === undefined || activeProgressFor(entry)?.id === progressId)
+      return isCurrent() && (progressId === undefined || recoverableProgressFor(entry)?.id === progressId)
     }
 
     const tick = () => {
@@ -125,10 +126,10 @@ export function SettlementConfirmationCoordinator() {
         const record = await actor.get_withdrawal(hexToBytes(entry.notification.withdrawalId))
         if (!isCurrent() || !record[0]) return
         if ("Paid" in record[0].state) {
-          if (progress) update(progress.id, {
-            phase: "complete",
-            withdrawal: { owner: entry.owner, withdrawalId: entry.notification.withdrawalId },
-            completionMessage: `${progress.receiveAmount} ${progress.receiveSymbol} was paid to ${shortAddress(progress.destination)}.`,
+          completeWithdrawal({
+            transactionHash: entry.transactionHash,
+            owner: entry.owner,
+            withdrawalId: entry.notification.withdrawalId,
           })
           await removePendingConfirmation(entry)
         } else if ("ReconciliationHold" in record[0].state) {
@@ -218,7 +219,7 @@ export function SettlementConfirmationCoordinator() {
       try {
         if (latest && trigger === "manual") setAction(latest.id, undefined)
         await markPendingConfirmationNotificationAttempt(refreshed, attemptKind, finalized.number).catch(() => undefined)
-        await notifyWithdrawalWithRetry(refreshed, finalized.number, latest?.id, update, presentationIsCurrent, isCurrent)
+        await notifyWithdrawalWithRetry(refreshed, finalized.number, latest?.id, update, completeWithdrawal, presentationIsCurrent, isCurrent)
       } catch (error) {
         if (!isCurrent()) return
         const latestEntry = readPendingConfirmations().find((candidate) => candidate.kind === "withdrawal"
@@ -243,7 +244,7 @@ export function SettlementConfirmationCoordinator() {
       window.clearInterval(interval)
       document.removeEventListener("visibilitychange", tick)
     }
-  }, [setAction, update])
+  }, [completeWithdrawal, setAction, update])
 
   return null
 }
@@ -252,6 +253,7 @@ async function notifyWithdrawal(
   entry: PendingWithdrawal,
   progressId: string | undefined,
   update: ReturnType<typeof useBridgeProgress>["update"],
+  completeWithdrawal: ReturnType<typeof useBridgeProgress>["completeWithdrawal"],
   presentationIsCurrent: (progressId: string | undefined, entry: PendingWithdrawal) => boolean,
 ) {
   const notified = await notifyWithdrawalWithBrowserIdentity(hexToBytes(entry.transactionHash))
@@ -283,6 +285,11 @@ async function notifyWithdrawal(
       attentionMessage: continuationError instanceof Error ? continuationError.message : "The payout needs another attempt from History.",
     })
     toast.warning("The withdrawal was recorded, but the payout needs another attempt from History.")
+  } else if (continuation && "Complete" in continuation
+    && "Withdrawal" in continuation.Complete.state
+    && "Paid" in continuation.Complete.state.Withdrawal) {
+    completeWithdrawal({ transactionHash: entry.transactionHash, owner: entry.owner, withdrawalId: withdrawalIdHex })
+    await removePendingConfirmation(entry)
   } else if (continuation && !("Complete" in continuation)) {
     if (progressId) update(progressId, {
       phase: "attention",
@@ -296,11 +303,12 @@ async function notifyWithdrawalWithRetry(
   finalizedBlock: bigint,
   progressId: string | undefined,
   update: ReturnType<typeof useBridgeProgress>["update"],
+  completeWithdrawal: ReturnType<typeof useBridgeProgress>["completeWithdrawal"],
   presentationIsCurrent: (progressId: string | undefined, entry: PendingWithdrawal) => boolean,
   isCurrent: () => boolean,
 ) {
   try {
-    return await notifyWithdrawal(entry, progressId, update, presentationIsCurrent)
+    return await notifyWithdrawal(entry, progressId, update, completeWithdrawal, presentationIsCurrent)
   } catch (error) {
     const current = readPendingConfirmations().find((candidate) => candidate.kind === "withdrawal"
       && candidate.transactionHash.toLowerCase() === entry.transactionHash.toLowerCase())
@@ -311,16 +319,12 @@ async function notifyWithdrawalWithRetry(
     await delay(NOTIFICATION_RETRY_DELAY_MS)
     if (!isCurrent()) return
     await markPendingConfirmationNotificationAttempt(current, "short-retry", finalizedBlock).catch(() => undefined)
-    return notifyWithdrawal(current, progressId, update, presentationIsCurrent)
+    return notifyWithdrawal(current, progressId, update, completeWithdrawal, presentationIsCurrent)
   }
 }
 
 function bytesHex(bytes: Uint8Array | number[]): `0x${string}` {
   return `0x${Array.from(bytes, (value) => Number(value).toString(16).padStart(2, "0")).join("")}`
-}
-
-function shortAddress(value: string): string {
-  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value
 }
 
 function notificationAllowsShortRetry(error: unknown): boolean {

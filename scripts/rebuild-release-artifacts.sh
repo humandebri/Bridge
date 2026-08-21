@@ -41,16 +41,14 @@ build_once() {
     --out "$output/forge" --cache-path "$output/forge-cache"
   verify_source
   python3 - \
-    "$output/forge/Bridge.sol/Bridge.json" "$output/bridge-runtime.bin" \
     "$output/forge/BSNS.sol/BSNS.json" "$output/bsns-creation.bin" "$output/bsns-runtime.bin" "$output/bsns-runtime-layout.json" <<'PY'
 import json, pathlib, sys
-bridge_source, bridge_target, bsns_source, bsns_creation_target, bsns_runtime_target, bsns_layout_target = sys.argv[1:]
+bsns_source, bsns_creation_target, bsns_runtime_target, bsns_layout_target = sys.argv[1:]
 def write_bytecode(source, field, target, label):
     value = json.load(open(source, encoding="utf-8"))[field]["object"]
     if not isinstance(value, str) or not value.startswith("0x") or not value[2:]:
         raise SystemExit(f"{label} bytecode is missing")
     pathlib.Path(target).write_bytes(bytes.fromhex(value[2:]))
-write_bytecode(bridge_source, "deployedBytecode", bridge_target, "Bridge runtime")
 write_bytecode(bsns_source, "bytecode", bsns_creation_target, "BSNS creation")
 artifact=json.load(open(bsns_source, encoding="utf-8"))
 runtime=bytearray.fromhex(artifact["deployedBytecode"]["object"].removeprefix("0x"))
@@ -66,6 +64,8 @@ for value in ranges: runtime[value["start"]:value["start"]+value["length"]]=byte
 pathlib.Path(bsns_runtime_target).write_bytes(runtime)
 pathlib.Path(bsns_layout_target).write_text(json.dumps({"schema_version":1,"byte_length":len(runtime),"immutable_ranges":sorted(ranges,key=lambda x:(x["start"],x["length"]))},sort_keys=True,separators=(",",":"))+"\n")
 PY
+  bash "$SOURCE_ROOT/scripts/concretize-bridge-runtime.sh" \
+    "$SOURCE_ROOT" "$BUNDLE/profile.json" "$output/bridge-runtime.bin"
   verify_source
 }
 

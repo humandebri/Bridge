@@ -35,7 +35,7 @@ name = "bridge-profile"
 version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
-fn main(){println!("gate=pass manifest_sha256={}","a".repeat(64));}
+fn main(){println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64));}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid

@@ -154,6 +154,7 @@ run_versions() {
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
   "$ROOT/scripts/test_ci_guards.sh"
+  "$ROOT/scripts/test_production_canister_bootstrap.sh"
   "$ROOT/scripts/test_production_release.sh"
   "$ROOT/scripts/test_production_drivers.sh"
   "$ROOT/scripts/test_production_activation.sh"
@@ -161,7 +162,6 @@ run_versions() {
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
   node "$ROOT/scripts/plan007/test-check-upgrade-instance.mjs"
-  node "$ROOT/scripts/plan007/test-capture-withdrawal-boundary.mjs"
   node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
@@ -990,6 +990,7 @@ run_smoke() {
     settlement_cycle_ceiling = 1 : nat;
     governance_principal = principal \"$smoke_principal\";
     pause_principal = principal \"7jkta-eyaaa-aaaaq-aaarq-cai\";
+    confirmation_relayer_principal = principal \"rrkah-fqaaa-aaaaa-aaaaq-cai\";
     fee_recipient = record {
       owner = principal \"aaaaa-aa\";
       subaccount = blob \"\";

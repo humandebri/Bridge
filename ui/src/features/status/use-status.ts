@@ -13,7 +13,10 @@ interface AutomaticQueryOptions {
   staleTime?: number
 }
 
-type RuntimeHeartbeatQueryOptions = Omit<AutomaticQueryOptions, "refetchInterval">
+type RuntimeHeartbeatQueryOptions = Omit<AutomaticQueryOptions, "refetchInterval"> & {
+  refetchOnWindowFocus?: boolean | "always"
+  refetchOnReconnect?: boolean | "always"
+}
 
 export function useRuntimeValidation(chainId?: number, options: AutomaticQueryOptions = {}) {
   const queryClient = useQueryClient()
@@ -54,7 +57,12 @@ export function useRuntimeValidation(chainId?: number, options: AutomaticQueryOp
 
 export function useRuntimeHeartbeat(chainId: number | undefined, initialValidation: RuntimeValidation | undefined, options: RuntimeHeartbeatQueryOptions = {}) {
   const queryClient = useQueryClient()
-  const { enabled = false, staleTime = RUNTIME_VALIDATION_TTL_MS } = options
+  const {
+    enabled = false,
+    staleTime = RUNTIME_VALIDATION_TTL_MS,
+    refetchOnWindowFocus = "always",
+    refetchOnReconnect = "always",
+  } = options
   const candidate: FinalizedRuntimeObservation | undefined = initialValidation
   const initialData = candidate?.ready && candidate.snapshot ? candidate : undefined
   return useQuery({
@@ -75,8 +83,8 @@ export function useRuntimeHeartbeat(chainId: number | undefined, initialValidati
     initialDataUpdatedAt: initialData?.checkedAt,
     staleTime,
     refetchOnMount: initialData ? false : undefined,
-    refetchOnWindowFocus: "always",
-    refetchOnReconnect: "always",
+    refetchOnWindowFocus,
+    refetchOnReconnect,
   })
 }
 

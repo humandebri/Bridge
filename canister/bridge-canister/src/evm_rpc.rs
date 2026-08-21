@@ -118,6 +118,25 @@ pub struct CompletedFinalizedObservation {
     pub rpc_audit: RpcAuditEvidence,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeploymentPostconditionsObservation {
+    pub bridge_timelock: [u8; 20],
+    pub runtime_administrator: [u8; 20],
+    pub timelock_admin: [u8; 20],
+    pub timelock_proposer: [u8; 20],
+    pub timelock_canceller: [u8; 20],
+    pub timelock_executor: [u8; 20],
+    pub timelock_runtime_code_hash: [u8; 32],
+    pub bridge_approved_timelock_runtime_code_hash: [u8; 32],
+    pub timelock_minimum_delay_seconds: u64,
+    pub bsns_address: [u8; 20],
+    pub bsns_runtime_sha256: [u8; 32],
+    pub bsns_name: String,
+    pub bsns_symbol: String,
+    pub bsns_decimals: u8,
+    pub bsns_bridge: [u8; 20],
+}
+
 pub fn stable_observation(
     observation: &CompletedFinalizedObservation,
     configured_chain_id: u64,
@@ -238,7 +257,7 @@ const DEPOSIT_PREFLIGHT_RPC_CALLS: [&str; 3] = [
 // larger than the fixed-size header fields.
 const BLOCK_RESPONSE_BYTES: u64 = 16 * 1024;
 const RECEIPT_RESPONSE_BYTES: u64 = 32 * 1024;
-const EVM_RPC_TIMEOUT_SECONDS: u32 = 30;
+const EVM_RPC_TIMEOUT_SECONDS: u32 = 300;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BoundedRuntime;
@@ -267,8 +286,20 @@ impl Runtime for BoundedRuntime {
             .with_args(&args)
             .with_cycles(cycles)
             .await
-            .map_err(IcError::from)
-            .and_then(|response| response.candid::<Out>().map_err(IcError::from))
+            .map_err(|error| {
+                ic_cdk::println!(
+                    "EVM RPC inter-canister update failed: method={method} error={error:?}"
+                );
+                IcError::from(error)
+            })
+            .and_then(|response| {
+                response.candid::<Out>().map_err(|error| {
+                    ic_cdk::println!(
+                        "EVM RPC inter-canister update decode failed: method={method} error={error:?}"
+                    );
+                    IcError::from(error)
+                })
+            })
     }
 
     async fn query_call<In, Out>(
@@ -291,8 +322,20 @@ impl Runtime for BoundedRuntime {
             .change_timeout(EVM_RPC_TIMEOUT_SECONDS)
             .with_args(&args)
             .await
-            .map_err(IcError::from)
-            .and_then(|response| response.candid::<Out>().map_err(IcError::from))
+            .map_err(|error| {
+                ic_cdk::println!(
+                    "EVM RPC inter-canister query failed: method={method} error={error:?}"
+                );
+                IcError::from(error)
+            })
+            .and_then(|response| {
+                response.candid::<Out>().map_err(|error| {
+                    ic_cdk::println!(
+                        "EVM RPC inter-canister query decode failed: method={method} error={error:?}"
+                    );
+                    IcError::from(error)
+                })
+            })
     }
 }
 
@@ -362,7 +405,16 @@ async fn eth_call_at_observation(
     calldata: &[u8],
     observation: FinalizedObservation,
 ) -> Result<String, ObservationError> {
-    let request = eth_call_request(&args.bridge_contract, calldata, observation);
+    eth_call_target_at_observation(args, &args.bridge_contract, calldata, observation).await
+}
+
+async fn eth_call_target_at_observation(
+    args: &BridgeInitArgs,
+    target: &[u8],
+    calldata: &[u8],
+    observation: FinalizedObservation,
+) -> Result<String, ObservationError> {
+    let request = eth_call_request(target, calldata, observation);
     match client(args)
         .multi_request(request)
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
@@ -374,6 +426,146 @@ async fn eth_call_at_observation(
         MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
         MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
     }
+}
+
+pub async fn deployment_postconditions_at(
+    args: &BridgeInitArgs,
+    finalized: FinalizedObservation,
+) -> Result<DeploymentPostconditionsObservation, ObservationError> {
+    let timelock: [u8; 20] = args
+        .timelock_contract
+        .as_slice()
+        .try_into()
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    let bridge_timelock = observed_address(
+        &eth_call_at_observation(args, &selector("baseAdminTimelock()"), finalized).await?,
+    )?;
+    let runtime_admin = observed_address(
+        &eth_call_at_observation(args, &selector("runtimeAdministrator()"), finalized).await?,
+    )?;
+    let approved_timelock_runtime = observed_bytes32(
+        &eth_call_at_observation(
+            args,
+            &selector("approvedTimelockRuntimeCodeHash()"),
+            finalized,
+        )
+        .await?,
+    )?;
+    let mut members = Vec::with_capacity(4);
+    for role_name in [
+        None,
+        Some("PROPOSER_ROLE"),
+        Some("CANCELLER_ROLE"),
+        Some("EXECUTOR_ROLE"),
+    ] {
+        let role = role_name.map(role_hash).unwrap_or([0; 32]);
+        let mut calldata = selector("roleMember(bytes32)").to_vec();
+        calldata.extend_from_slice(&role);
+        let member = observed_address(
+            &eth_call_target_at_observation(args, &timelock, &calldata, finalized).await?,
+        )?;
+        members.push(member);
+    }
+    let timelock_runtime = runtime_at_observation(args, &timelock, finalized).await?;
+    let timelock_runtime_code_hash = keccak256(&timelock_runtime);
+    let timelock_minimum_delay_seconds = observed_u64(
+        &eth_call_target_at_observation(args, &timelock, &selector("getMinDelay()"), finalized)
+            .await?,
+    )?;
+    let bsns_address =
+        observed_address(&eth_call_at_observation(args, &selector("bsns()"), finalized).await?)?;
+    let bsns_runtime = runtime_at_observation(args, &bsns_address, finalized).await?;
+    let bsns_runtime_sha256 = Sha256::digest(&bsns_runtime).into();
+    let bsns_name = observed_string(
+        &eth_call_target_at_observation(args, &bsns_address, &selector("name()"), finalized)
+            .await?,
+    )?;
+    let bsns_symbol = observed_string(
+        &eth_call_target_at_observation(args, &bsns_address, &selector("symbol()"), finalized)
+            .await?,
+    )?;
+    let bsns_decimals = observed_u64(
+        &eth_call_target_at_observation(args, &bsns_address, &selector("decimals()"), finalized)
+            .await?,
+    )?
+    .try_into()
+    .map_err(|_| ObservationError::InvalidResponse)?;
+    let bsns_bridge = observed_address(
+        &eth_call_target_at_observation(args, &bsns_address, &selector("bridge()"), finalized)
+            .await?,
+    )?;
+    Ok(DeploymentPostconditionsObservation {
+        bridge_timelock,
+        runtime_administrator: runtime_admin,
+        timelock_admin: members[0],
+        timelock_proposer: members[1],
+        timelock_canceller: members[2],
+        timelock_executor: members[3],
+        timelock_runtime_code_hash,
+        bridge_approved_timelock_runtime_code_hash: approved_timelock_runtime,
+        timelock_minimum_delay_seconds,
+        bsns_address,
+        bsns_runtime_sha256,
+        bsns_name,
+        bsns_symbol,
+        bsns_decimals,
+        bsns_bridge,
+    })
+}
+
+fn observed_bytes32(value: &str) -> Result<[u8; 32], ObservationError> {
+    decode_hex(value.trim_matches('"').strip_prefix("0x").unwrap_or(value))?
+        .try_into()
+        .map_err(|_| ObservationError::InvalidResponse)
+}
+
+fn observed_u64(value: &str) -> Result<u64, ObservationError> {
+    let word = observed_bytes32(value)?;
+    if word[..24].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    Ok(u64::from_be_bytes(
+        word[24..].try_into().expect("eight-byte suffix"),
+    ))
+}
+
+fn observed_string(value: &str) -> Result<String, ObservationError> {
+    let bytes = decode_hex(value.trim_matches('"').strip_prefix("0x").unwrap_or(value))?;
+    if bytes.len() < 64 || observed_u64(&format!("0x{}", hex(&bytes[..32])))? != 32 {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let length = observed_u64(&format!("0x{}", hex(&bytes[32..64])))? as usize;
+    let end = 64usize
+        .checked_add(length)
+        .filter(|end| *end <= bytes.len())
+        .ok_or(ObservationError::InvalidResponse)?;
+    String::from_utf8(bytes[64..end].to_vec()).map_err(|_| ObservationError::InvalidResponse)
+}
+
+fn keccak256(value: &[u8]) -> [u8; 32] {
+    let mut output = [0; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(value);
+    hasher.finalize(&mut output);
+    output
+}
+
+fn observed_address(value: &str) -> Result<[u8; 20], ObservationError> {
+    let decoded = decode_hex(value.trim_matches('"').strip_prefix("0x").unwrap_or(value))?;
+    if decoded.len() != 32 || decoded[..12].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    decoded[12..]
+        .try_into()
+        .map_err(|_| ObservationError::InvalidResponse)
+}
+
+fn role_hash(name: &str) -> [u8; 32] {
+    let mut hash = [0; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(name.as_bytes());
+    hasher.finalize(&mut hash);
+    hash
 }
 
 fn eth_call_request(
@@ -1007,7 +1199,15 @@ async fn bridge_runtime_at_observation(
     args: &BridgeInitArgs,
     observation: FinalizedObservation,
 ) -> Result<Vec<u8>, ObservationError> {
-    let request = bridge_runtime_request(&args.bridge_contract, observation);
+    runtime_at_observation(args, &args.bridge_contract, observation).await
+}
+
+async fn runtime_at_observation(
+    args: &BridgeInitArgs,
+    target: &[u8],
+    observation: FinalizedObservation,
+) -> Result<Vec<u8>, ObservationError> {
+    let request = bridge_runtime_request(target, observation);
     let value = match client(args)
         .multi_request(request)
         .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
@@ -1756,8 +1956,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn evm_rpc_runtime_uses_the_fixed_thirty_second_bound() {
-        assert_eq!(EVM_RPC_TIMEOUT_SECONDS, 30);
+    fn evm_rpc_runtime_uses_the_sdk_default_five_minute_bound() {
+        assert_eq!(EVM_RPC_TIMEOUT_SECONDS, 300);
         assert_eq!(SMALL_RESPONSE_BYTES, 4 * 1024);
         assert_eq!(BLOCK_RESPONSE_BYTES, 16 * 1024);
     }
@@ -2255,6 +2455,7 @@ mod tests {
             settlement_cycle_ceiling: 1,
             governance_principal: Principal::from_slice(&[1]),
             pause_principal: Principal::from_slice(&[2]),
+            confirmation_relayer_principal: Principal::from_slice(&[3]),
             fee_recipient: crate::config::FeeRecipientConfig {
                 owner: Principal::from_slice(&[7]),
                 subaccount: vec![],

@@ -8,12 +8,13 @@ const mocks = vi.hoisted(() => ({
   getBlock: vi.fn(),
   getWithdrawal: vi.fn(),
   update: vi.fn(),
+  completeWithdrawalProgress: vi.fn(),
   setAction: vi.fn(),
   progress: undefined as undefined | Record<string, unknown>,
 }))
 
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
-  useBridgeProgress: () => ({ progress: mocks.progress, update: mocks.update, setAction: mocks.setAction }),
+  useBridgeProgress: () => ({ progress: mocks.progress, update: mocks.update, setAction: mocks.setAction, completeWithdrawal: mocks.completeWithdrawalProgress }),
 }))
 vi.mock("@/lib/evm/client", () => ({
   basePublicClient: { getTransactionReceipt: mocks.getReceipt, getBlock: mocks.getBlock },
@@ -84,6 +85,7 @@ afterEach(async () => {
 
 describe("withdrawal interruption recovery", () => {
   it("reloads_a_durably_notified_withdrawal_without_repeating_notification", async () => {
+    mocks.continueWithdrawal.mockResolvedValue({ Deferred: { state: { Withdrawal: { ReleasePending: null } } } })
     await savePendingConfirmation(pending)
     const first = render(<SettlementConfirmationCoordinator />)
 
@@ -150,10 +152,11 @@ describe("withdrawal interruption recovery", () => {
     mocks.getWithdrawal.mockResolvedValue([{ state: { Paid: null } }])
     render(<SettlementConfirmationCoordinator />)
 
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(
-      "withdraw:recovery",
-      expect.objectContaining({ phase: "complete" }),
-    ))
+    await waitFor(() => expect(mocks.completeWithdrawalProgress).toHaveBeenCalledWith({
+      transactionHash,
+      owner: "aaaaa-aa",
+      withdrawalId,
+    }))
     await waitFor(() => expect(readPendingConfirmations()).toEqual([]))
     expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
   })

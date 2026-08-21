@@ -28,10 +28,10 @@ LOCK
 cat >"$TEST_TMP_ROOT/source/src/main.rs" <<'RS'
 use std::{env,fs,path::Path};
 fn copy_dir(from:&Path,to:&Path){fs::create_dir_all(to).unwrap();for e in fs::read_dir(from).unwrap(){let e=e.unwrap();let d=to.join(e.file_name());if e.path().is_dir(){copy_dir(&e.path(),&d)}else{fs::copy(e.path(),d).unwrap();}}}
-fn main(){let a:Vec<String>=env::args().skip(1).collect();fs::OpenOptions::new().create(true).append(true).open(env::var("GATE_CALLS").unwrap()).and_then(|mut f|{use std::io::Write;writeln!(f,"{}",a.join(" "))}).unwrap();if a[0].starts_with("render-"){copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate"{println!("{:064}",2);return}println!("gate=pass manifest_sha256={:064}",1);if env::var("GATE_RESULT").as_deref()==Ok("fail"){std::process::exit(1)}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();fs::OpenOptions::new().create(true).append(true).open(env::var("GATE_CALLS").unwrap()).and_then(|mut f|{use std::io::Write;writeln!(f,"{}",a.join(" "))}).unwrap();if a[0].starts_with("render-"){copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate"{println!("{:064}",2);return}if a[0]=="validate-bundle"{println!("gate_a=pass authorizing={} manifest_sha256={:064}",env::var("GATE_AUTHORIZING").unwrap_or_else(|_|"true".into()),1)}else{println!("gate=pass manifest_sha256={:064}",1)}if env::var("GATE_RESULT").as_deref()==Ok("fail"){std::process::exit(1)}}
 RS
-printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' 'printf '\''{"bridge":{"transaction_hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","block_number":1,"block_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"timelock":{"transaction_hash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","block_number":1,"block_hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}\n'\'' >"$BRIDGE_DEPLOYMENT_BINDING_FILE"' >"$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' '[[ "${ACTION_FAIL:-0}" == 0 ]] || exit 23' >"$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'touch "$ACTION_MARKER"' 'printf '\''{"bridge":{"transaction_hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","block_number":1,"block_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"timelock":{"transaction_hash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","block_number":1,"block_hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}\n'\'' >"$BRIDGE_DEPLOYMENT_BINDING_FILE"' 'rm "$BRIDGE_DEPLOYMENT_RESERVATION_FILE"' >"$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
+printf '%s\n' '#!/usr/bin/env bash' ': "${BRIDGE_CONFIRMATION_RELAYER_IDENTITY:?}"' 'touch "$ACTION_MARKER"' '[[ "${ACTION_FAIL:-0}" == 0 ]] || exit 23' >"$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TEST_TMP_ROOT/source/scripts/production-live-preflight.sh"
 printf '%s\n' 'process.exit(0)' >"$TEST_TMP_ROOT/source/ui/scripts/production-assets.mjs"
 cp "$ROOT/scripts/production-release.sh" "$ROOT/scripts/production-validation.sh" "$TEST_TMP_ROOT/source/scripts/"
@@ -95,6 +95,7 @@ ACTIVATION_ARGS=(
   --phase schedule
   --submission "$TEST_TMP_ROOT/activation-submission.json"
   --sns-identity proposer
+  --confirmation-relayer-identity confirmation-relayer
   --sns-neuron-subaccount "$(printf 'a%.0s' {1..64})"
   --sns-proposer-principal "aaaaa-aa"
   --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION
@@ -109,11 +110,24 @@ expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TES
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ ! -e "$TEST_TMP_ROOT/activated" ]]
 
+GATE_AUTHORIZING=false expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
+[[ ! -e "$TEST_TMP_ROOT/deployed" ]]
+
 ACTION_MARKER="$TEST_TMP_ROOT/deployed" run_release deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 [[ -e "$TEST_TMP_ROOT/deployed" ]]
 [[ -s "$TEST_TMP_ROOT/receipt.json" ]]
 [[ -s "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json" ]]
 [[ "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["deployment_block"])' "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json")" == 1 ]]
+python3 - "$TEST_TMP_ROOT/receipt.json" <<'PY'
+import json,sys
+receipt=json.load(open(sys.argv[1],encoding='utf-8'))
+assert receipt['bridge_deployment_transaction_hash']=='0x'+'a'*64
+assert receipt['bridge_deployment_block_number']==1
+assert receipt['bridge_deployment_block_hash']=='0x'+'c'*64
+assert receipt['timelock_deployment_transaction_hash']=='0x'+'b'*64
+assert receipt['timelock_deployment_block_number']==1
+assert receipt['timelock_deployment_block_hash']=='0x'+'d'*64
+PY
 cp "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json" "$TEST_TMP_ROOT/bundle-b/profile.json"
 POST_PROFILE_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/profile.json" | awk '{print $1}')"
 python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$POST_PROFILE_SHA256" <<'PY'
@@ -159,7 +173,7 @@ ACTION_MARKER="$TEST_TMP_ROOT/activated" run_release activate --bundle "$TEST_TM
   --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ -e "$TEST_TMP_ROOT/activated" ]]
 [[ -z "$(find "$TEST_TMP_ROOT/release-scratch" -mindepth 1 -maxdepth 1 -print -quit)" ]]
-rg -q '^verify-live ' "$TEST_TMP_ROOT/gate-calls"
+rg -q '^validate-bundle --offline --gate-b ' "$TEST_TMP_ROOT/gate-calls"
 [[ ! -e "$TEST_TMP_ROOT/profile-override-used" ]]
 
 if ACTION_MARKER="$TEST_TMP_ROOT/activation-failed" ACTION_FAIL=1 run_release activate \
@@ -180,6 +194,7 @@ EXECUTION_ARGS=(
   --phase execute
   --submission "$TEST_TMP_ROOT/execution-submission.json"
   --sns-identity proposer
+  --confirmation-relayer-identity confirmation-relayer
   --sns-neuron-subaccount "$(printf 'b%.0s' {1..64})"
   --sns-proposer-principal "aaaaa-aa"
   --prior-schedule-receipt "$TEST_TMP_ROOT/schedule-receipt.json"
@@ -188,7 +203,7 @@ EXECUTION_ARGS=(
 ACTION_MARKER="$TEST_TMP_ROOT/executed" run_release activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
   --release-inputs "$TEST_TMP_ROOT/release-inputs" "${EXECUTION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ -e "$TEST_TMP_ROOT/executed" ]]
-rg -q '^verify-schedule-receipt-live ' "$TEST_TMP_ROOT/gate-calls"
+rg -q '^validate-bundle --offline --gate-b ' "$TEST_TMP_ROOT/gate-calls"
 
 mkdir -p "$TEST_TMP_ROOT/failing-git"
 REAL_GIT="$(command -v git)"

@@ -1,11 +1,12 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react"
-import { ArrowRight, Check, LoaderCircle, LogOut, QrCode, Wallet } from "lucide-react"
-import { useAccount, useConnect, useConnectors, useDisconnect, type Connector } from "wagmi"
+import { createContext, useContext, useMemo, useRef, useState, type ReactNode } from "react"
+import { ArrowRight, Check, LoaderCircle, LogOut, Plus, QrCode, Wallet } from "lucide-react"
+import { useAccount, useChainId, useConnect, useConnectors, useDisconnect, useWatchAsset, type Connector } from "wagmi"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { deploymentProfile } from "@/config/profile"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
+import { withBrowserLock } from "@/lib/browser-lock"
 import type { IcWalletProvider } from "@/lib/ic/wallet"
 import baseLogo from "@/assets/base-square.svg"
 import blueKinic from "@/assets/blue_kinic.png"
@@ -131,9 +132,12 @@ function WalletSummary({ side, value, walletName, icon, walletConnect, onClick }
 function WalletDialog() {
   const dialog = useWalletDialog()
   const { address, connector, isConnected } = useAccount()
+  const chainId = useChainId()
   const connectors = visibleEvmConnectors(useConnectors())
   const { connectAsync, isPending, variables } = useConnect()
   const { disconnect } = useDisconnect()
+  const watchAsset = useWatchAsset()
+  const addTokenInFlight = useRef(false)
   const ic = useIcWallet()
   const connectIc = (provider: IcWalletProvider) => void ic.connect(provider).catch(showWalletError)
   const connectEvm = (nextConnector: Connector) => void connectAsync({
@@ -154,19 +158,62 @@ function WalletDialog() {
   const headerLogo = target === "ic" ? icpLogo : target === "base" ? baseLogo : blueKinic
   const connectedBrand = ic.provider ? icWalletBrands[ic.provider] : undefined
   const pendingConnectorUid = variables?.connector && "uid" in variables.connector ? variables.connector.uid : undefined
+  const bsnsAddress = deploymentProfile.bsnsAddress
+  const tokenChainMatches = chainId === deploymentProfile.chainId
+  const addTokenDisabled = !bsnsAddress || !tokenChainMatches || watchAsset.isPending
+  const addKinic = () => {
+    if (!address || !bsnsAddress || !tokenChainMatches || watchAsset.isPending || addTokenInFlight.current) return
+    addTokenInFlight.current = true
+    void withBrowserLock(
+      `kinic-wallet-prompt:base:${address.toLowerCase()}`,
+      () => watchAsset.mutateAsync({
+        type: "ERC20",
+        options: {
+          address: bsnsAddress,
+          symbol: deploymentProfile.baseToken.symbol,
+          decimals: deploymentProfile.baseToken.decimals,
+          image: new URL("/kinic-token-logo-64.png", window.location.origin).href,
+        },
+      }),
+    ).then((added) => {
+      if (added) toast.success("KINIC added to wallet.")
+      else toast.info(`KINIC was not added. Add ${bsnsAddress} manually on ${deploymentProfile.label}.`)
+    }).catch(() => {
+      toast.error(`This wallet could not add KINIC automatically. Add ${bsnsAddress} manually on ${deploymentProfile.label}.`)
+    }).finally(() => {
+      addTokenInFlight.current = false
+    })
+  }
 
   return <Dialog open={dialog.open} onOpenChange={(open) => dialog.setOpen(open)}><DialogContent className="max-h-[min(720px,calc(100vh-2rem))] overflow-y-auto">
     <DialogHeader><div className="mb-3 flex items-center gap-3"><span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-white"><img src={headerLogo} alt="" data-dialog-network-logo={target} className={target === "ic" ? "w-9" : "size-10 object-cover"} /></span><DialogTitle>{title}</DialogTitle></div><DialogDescription>{description}</DialogDescription></DialogHeader>
     <div className="mt-6 space-y-6">
       {(!target || target === "base") && <WalletSection label="EVM wallet">
-        {isConnected && address ? <ConnectedWallet
-          name={connector?.name ?? "EVM wallet"}
-          value={short(address)}
-          icon={connectorIcon(connector)}
-          walletConnect={connector ? isWalletConnect(connector) : false}
-          side="base"
-          onDisconnect={() => disconnect()}
-        /> : connectors.length ? <div className="grid gap-2">
+        {isConnected && address ? <div className="space-y-2">
+          <ConnectedWallet
+            name={connector?.name ?? "EVM wallet"}
+            value={short(address)}
+            icon={connectorIcon(connector)}
+            walletConnect={connector ? isWalletConnect(connector) : false}
+            side="base"
+            onDisconnect={() => disconnect()}
+          />
+          <div className="flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-white p-3">
+            <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-[var(--panel)]">
+              <img src="/kinic-token-logo.svg" alt="KINIC token logo" className="size-9 object-contain" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-bold text-black">KINIC</p>
+              <p className="mt-0.5 truncate text-xs text-[var(--muted)]">
+                {!bsnsAddress ? "Token address unavailable" : !tokenChainMatches ? `Use ${deploymentProfile.label}` : short(bsnsAddress)}
+              </p>
+            </div>
+            <Button variant="outline" size="sm" disabled={addTokenDisabled} onClick={addKinic}>
+              {watchAsset.isPending ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <Plus className="size-4" aria-hidden="true" />}
+              {watchAsset.isPending ? "Adding…" : "Add to wallet"}
+            </Button>
+          </div>
+        </div> : connectors.length ? <div className="grid gap-2">
           {connectors.map((nextConnector) => <WalletOption
             key={nextConnector.uid}
             name={isGenericInjected(nextConnector) ? "Browser wallet" : nextConnector.name}

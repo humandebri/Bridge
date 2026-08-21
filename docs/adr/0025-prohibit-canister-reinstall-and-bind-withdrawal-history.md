@@ -10,15 +10,14 @@ Bridge Canisterのreinstallはstable stateを失う一方、Base Bridge contract
 
 ## 決定
 
-初期化済みの永続Canisterは、同じdeployment instanceを保つ現行schema upgradeだけで更新する。reinstall、instance変更、旧schemaからのupgradeはdeployment gateで拒否する。例外として、既存staging canisterに限り、`bridge-storage-v32-to-v33` を一度だけ、wire v28・対象module hash・state invariantが一致する場合に実行する。migration完了後はv32以下を再び拒否する。新しいCanister IDへの初回installは許可する。
+初期化済みの永続Canisterは、同じdeployment instanceを保つstable schema v34／record wire v29のupgradeだけで更新する。reinstall、instance変更、v33以下、未知schema、旧wireからのupgradeは例外なくdeployment gateとstorage reopenで拒否する。新しいCanister IDへの初回installは許可する。
 
-初回install時には、非ゼロ32-byteのinclusive `minimum_withdrawal_id`をimmutable configへ設定する。通常の新規deploymentでは1を使う。既にBase履歴が存在するstagingを一度だけmigrationする場合は、Base Withdrawalをpauseし、3 providerのcanonical Finalized checkpointから2-of-3一致した`nextWithdrawalId()`を境界にする。既存Withdrawalはterminalかつ全IDが境界未満でなければならず、pending Ledger operation、hold、未払liabilityもゼロでなければならない。境界はupgrade argsの明示値だけを受け付け、同じ値の再適用以外は拒否する。
+初回install時には、非ゼロ32-byteのinclusive `minimum_withdrawal_id`をimmutable configへ設定する。通常の新規deploymentでは1を使う。test-deploymentの現行schemaにはstaging boundaryを空のliability stateで一度だけ設定する経路を残すが、旧schema migrationや履歴を失ったreinstallの復旧には使用しない。同じ値の再適用以外は拒否する。
 
 Canisterはcanonical Withdrawal eventを確認した後、record作成、Ledger call、liability変更より前に、event IDが境界以上かを256-bit big-endian比較する。境界未満は型付きエラーでfail closedにする。
 
 ## 帰結
 
 - reinstallによる履歴消失を通常運用の選択肢から除外する。
-- Base contractを変更しないstaging復旧でも、過去IDの再払出しを防げる。
-- 境界captureのcanonicalityと、pause時の`nextWithdrawalId()`が最初の未発行IDであることは外部前提として証拠台帳へ記録する。
-- 境界値を誤ると正当なWithdrawalを拒否し得るため、手入力や単一RPC観測を認めない。
+- 旧schemaや履歴を失ったstaging stateは復旧対象にせず、現行schemaで検証stateを作り直す。
+- 一度設定した境界は同一値だけを冪等に受理し、別値への変更を拒否する。

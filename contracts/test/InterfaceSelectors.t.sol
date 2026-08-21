@@ -13,9 +13,6 @@ contract BridgeConstructorFixture {
     bytes32 public immutable argumentsHash;
 
     constructor(
-        string memory tokenName,
-        string memory tokenSymbol,
-        uint8 tokenDecimals,
         address bridgeSigner,
         address runtimeAdministrator,
         address baseAdminTimelock,
@@ -28,9 +25,6 @@ contract BridgeConstructorFixture {
     ) {
         argumentsHash = keccak256(
             abi.encode(
-                tokenName,
-                tokenSymbol,
-                tokenDecimals,
                 bridgeSigner,
                 runtimeAdministrator,
                 baseAdminTimelock,
@@ -251,24 +245,10 @@ contract InterfaceSelectorsTest {
 
     function testConstructorArgumentOrderFixture() public {
         BridgeConstructorFixture fixture = new BridgeConstructorFixture(
-            "kinic",
-            "KINIC",
-            8,
-            address(0x11),
-            address(0x22),
-            address(0x33),
-            bytes32(uint256(0x44)),
-            100,
-            200,
-            1 hours,
-            10,
-            1
+            address(0x11), address(0x22), address(0x33), bytes32(uint256(0x44)), 100, 200, 1 hours, 10, 1
         );
         bytes32 expected = keccak256(
             abi.encode(
-                "kinic",
-                "KINIC",
-                uint8(8),
                 address(0x11),
                 address(0x22),
                 address(0x33),

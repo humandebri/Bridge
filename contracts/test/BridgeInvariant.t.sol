@@ -27,9 +27,6 @@ contract BridgeInvariantHandler is TestBase {
         address bridgeSigner = vm.addr(BRIDGE_SIGNER_KEY);
         BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
         _bridge = new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             bridgeSigner,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,

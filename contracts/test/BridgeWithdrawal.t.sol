@@ -43,9 +43,6 @@ contract BridgeWithdrawalTest is TestBase {
         BRIDGE_SIGNER = vm.addr(BRIDGE_SIGNER_KEY);
         BASE_ADMIN_TIMELOCK = _deployTestTimelock(address(0x33));
         bridge = new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             BASE_ADMIN_TIMELOCK,

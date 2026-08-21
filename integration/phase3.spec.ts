@@ -52,8 +52,9 @@ describe("Phase 3 PocketIC saga", () => {
     expect(preflight.Ok.public_key).toHaveLength(33);
     expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
+    const confirmationRelayerPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(8));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
-    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, notification_ingestion_rate_limit_global: 30, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
+    const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), deployment_instance_id: new Uint8Array(32).fill(3), minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, notification_ingestion_rate_limit_global: 30, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), confirmation_relayer_principal: confirmationRelayerPrincipal, fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     Object.assign(init, initOverrides);
     const bridge = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(wasmPath), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id });
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
@@ -66,9 +67,25 @@ describe("Phase 3 PocketIC saga", () => {
     // Mint authorization deadlines are Base Unix timestamps. Keep the mock Base
     // clock in the same time domain as the canister before deadline checks run.
     await (evm.actor as any).set_block_timestamp(BigInt(Math.floor((await pic!.getTime()) / 1_000)));
+    await (evm.actor as any).set_deposit_mints_paused(true);
+    await (evm.actor as any).set_withdrawals_paused(true);
+    const publicConfig: any = await (bridge.actor as any).get_public_config();
+    expect(await (evm.actor as any).set_deployment_postconditions(
+      init.timelock_contract,
+      publicConfig.governance_operator,
+      new Uint8Array(20).fill(9),
+      init.bridge_contract,
+      new Uint8Array([0x60, 0x01]),
+      new Uint8Array([0x60, 0x02]),
+    )).toHaveProperty("Ok");
+    expect(await (bridge.actor as any).seal_operational_config({
+      governance_evm_fee: init.governance_evm_fee,
+      cycles_floor: init.cycles_floor,
+      settlement_cycle_ceiling: init.settlement_cycle_ceiling,
+    })).toHaveProperty("Ok.lifecycle.OperationalConfigSealed");
     if (activate) await activateBridgeThroughGovernance(bridge, evm, runtimePrincipal);
     expect((await pic!.getCanisterSubnetId(bridge.canisterId))?.toText()).toBe(subnet.id.toText());
-    return { ledger, index, evm, bridge, init, runtimePrincipal };
+    return { ledger, index, evm, bridge, init, runtimePrincipal, confirmationRelayerPrincipal };
   }
 
   async function activateBridgeThroughGovernance(bridge: any, evm: any, governance: Principal) {
@@ -590,8 +607,8 @@ describe("Phase 3 PocketIC saga", () => {
     governance_nonce_uses_configured_chain_without_runtime_probe,
   );
 
-  it("lets the pause principal relay only pause and recorded timelock cancellation", async () => {
-    const { bridge, evm, init, runtimePrincipal } = await setup(false);
+  async function keeps_signing_privileged_while_restricting_confirmation_callers() {
+    const { bridge, evm, init, runtimePrincipal, confirmationRelayerPrincipal } = await setup(false);
     const pausePrincipal = init.pause_principal;
     const thirdParty = Principal.selfAuthenticating(new Uint8Array(32).fill(99));
     await (evm.actor as any).set_deposit_mints_paused(true);
@@ -602,27 +619,39 @@ describe("Phase 3 PocketIC saga", () => {
     const schedule: any = await (bridge.actor as any).schedule_activation();
     expect(schedule).toHaveProperty("Ok.kind.ScheduleActivation");
     const bumped = (value: bigint) => (value * 11_250n + 9_999n) / 10_000n;
-    bridge.actor.setPrincipal(pausePrincipal);
+    bridge.actor.setPrincipal(Principal.anonymous());
     expect(await (bridge.actor as any).get_pending_base_governance_transaction())
-      .toEqual({ Err: { Unauthorized: null } });
+      .toHaveProperty("Ok.0.kind.ScheduleActivation");
     expect(await (bridge.actor as any).prepare_base_governance_replacement({
       operation_id: schedule.Ok.operation_id,
       expected_transaction_hash: schedule.Ok.transaction_hash,
       max_fee_per_gas: bumped(schedule.Ok.max_fee_per_gas),
       max_priority_fee_per_gas: bumped(schedule.Ok.max_priority_fee_per_gas),
     })).toEqual({ Err: { Unauthorized: null } });
+    const receiptCallsBeforeUnauthorized = await (evm.actor as any).receipt_call_count();
     expect(await (bridge.actor as any).confirm_base_governance_transaction({
       operation_id: schedule.Ok.operation_id,
       transaction_hash: schedule.Ok.transaction_hash,
     })).toEqual({ Err: { Unauthorized: null } });
-    expect(await (bridge.actor as any).prepare_next_emergency_base_action())
-      .toEqual({ Err: { Unauthorized: null } });
-
-    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await (evm.actor as any).receipt_call_count()).toBe(receiptCallsBeforeUnauthorized);
+    bridge.actor.setPrincipal(thirdParty);
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: schedule.Ok.operation_id,
+      transaction_hash: schedule.Ok.transaction_hash,
+    })).toEqual({ Err: { Unauthorized: null } });
+    expect(await (evm.actor as any).receipt_call_count()).toBe(receiptCallsBeforeUnauthorized);
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
     expect(await (bridge.actor as any).confirm_base_governance_transaction({
       operation_id: schedule.Ok.operation_id,
       transaction_hash: schedule.Ok.transaction_hash,
     })).toHaveProperty("Ok.succeeded", true);
+    expect(await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null }))
+      .toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).prepare_next_emergency_base_action())
+      .toEqual({ Err: { Unauthorized: null } });
+    bridge.actor.setPrincipal(Principal.anonymous());
+    expect(await (bridge.actor as any).prepare_next_emergency_base_action())
+      .toEqual({ Err: { Unauthorized: null } });
 
     bridge.actor.setPrincipal(pausePrincipal);
     expect(await (bridge.actor as any).prepare_base_governance_action({
@@ -661,10 +690,70 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null }))
       .toEqual({ Err: { Unauthorized: null } });
     expect(await (bridge.actor as any).get_pending_base_governance_transaction())
-      .toEqual({ Err: { Unauthorized: null } });
+      .toEqual({ Ok: [] });
     expect(await (bridge.actor as any).prepare_next_emergency_base_action())
       .toEqual({ Err: { Unauthorized: null } });
-  });
+  }
+
+  it(
+    "keeps signing privileged while restricting confirmation callers",
+    keeps_signing_privileged_while_restricting_confirmation_callers,
+  );
+
+  async function reauthorizes_confirmation_after_external_receipt_observation() {
+    const { bridge, evm, init, runtimePrincipal, confirmationRelayerPrincipal } = await setup(false);
+    const nextPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(65));
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const scheduled: any = await (bridge.actor as any).schedule_activation();
+    expect(scheduled).toHaveProperty("Ok.kind.ScheduleActivation");
+    await (evm.actor as any).set_receipt_mode({ DelayedConfirmed: null });
+    const receiptCallsBefore = await (evm.actor as any).receipt_call_count();
+
+    const deferredConfirmation = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
+    deferredConfirmation.setPrincipal(init.pause_principal);
+    const startConfirmation = await deferredConfirmation.confirm_base_governance_transaction({
+      operation_id: scheduled.Ok.operation_id,
+      transaction_hash: scheduled.Ok.transaction_hash,
+    });
+    let receiptBarrier: Awaited<ReturnType<NonNullable<typeof pic>["getPendingHttpsOutcalls"]>>[number] | undefined;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await pic!.tick(1);
+      receiptBarrier = (await pic!.getPendingHttpsOutcalls())
+        .find((outcall) => outcall.url === "https://receipt-delay.invalid/");
+      if (receiptBarrier) break;
+    }
+    expect(receiptBarrier).toBeDefined();
+    expect(await (evm.actor as any).receipt_call_count()).toBeGreaterThan(receiptCallsBefore);
+
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const rotation = await (bridge.actor as any).rotate_pause_principal({
+      pause_principal: nextPausePrincipal,
+    });
+    expect(rotation).toHaveProperty("Ok");
+    expect((await (bridge.actor as any).get_public_config()).pause_principal.toText())
+      .toBe(nextPausePrincipal.toText());
+    await pic!.mockPendingHttpsOutcall({
+      requestId: receiptBarrier!.requestId,
+      subnetId: receiptBarrier!.subnetId,
+      response: { type: "success", statusCode: 200, headers: [], body: new Uint8Array() },
+    });
+    const revokedConfirmation = await startConfirmation();
+    expect(revokedConfirmation).toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).get_pending_base_governance_transaction())
+      .toHaveProperty("Ok.0.kind.ScheduleActivation");
+
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: scheduled.Ok.operation_id,
+      transaction_hash: scheduled.Ok.transaction_hash,
+    })).toHaveProperty("Ok.succeeded", true);
+  }
+
+  it(
+    "reauthorizes confirmation after external receipt observation",
+    reauthorizes_confirmation_after_external_receipt_observation,
+  );
 
   it("binds a selected subaccount, exposes public configuration, consent, and owner history", async () => {
     const { bridge, init, runtimePrincipal } = await setup();
@@ -683,7 +772,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_public_config();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(33);
+    expect(config.schema_version).toBe(35);
     expect(Array.from(config.minimum_withdrawal_id)).toEqual(Array.from(init.minimum_withdrawal_id));
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.ledger_fee).toBe(testLedgerFee);
@@ -1333,7 +1422,10 @@ describe("Phase 3 PocketIC saga", () => {
 
   async function runtime_attestation_is_reused_across_withdrawal_upgrade_and_governance() {
     const { evm, bridge, init, runtimePrincipal } = await setup(false);
-    expect(await (evm.actor as any).get_code_call_count()).toBe(0n);
+    // Operational sealing performs the initial attestation and caches it for
+    // withdrawal and governance paths until the deployment is reinstalled.
+    const initialAttestationCalls = await (evm.actor as any).get_code_call_count();
+    expect(initialAttestationCalls).toBe(3n);
     const id = new Uint8Array(32).fill(0x9b);
     await (evm.actor as any).set_withdrawal([{
       id,
@@ -1345,7 +1437,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) }))
       .toHaveProperty("Ok.Ingested");
     expect(await (evm.actor as any).chain_id_call_count()).toBe(0n);
-    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+    expect(await (evm.actor as any).get_code_call_count()).toBe(initialAttestationCalls);
 
     const secondId = new Uint8Array(32).fill(0x9c);
     await (evm.actor as any).set_observed_transaction(
@@ -1363,7 +1455,7 @@ describe("Phase 3 PocketIC saga", () => {
     }]);
     expect(await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(10) }))
       .toHaveProperty("Ok.Ingested");
-    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+    expect(await (evm.actor as any).get_code_call_count()).toBe(initialAttestationCalls);
 
     await pic!.upgradeCanister({
       canisterId: bridge.canisterId,
@@ -1374,7 +1466,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).prepare_base_governance_action({
       SetServiceFee: { value: 1n },
     })).toHaveProperty("Ok.chain_id", 8453n);
-    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+    expect(await (evm.actor as any).get_code_call_count()).toBe(initialAttestationCalls);
     expect(await (evm.actor as any).chain_id_call_count()).toBe(0n);
 
     await pic!.reinstallCode({
@@ -1386,11 +1478,18 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).initialize_public_config()).toHaveProperty("Ok");
     bridge.actor.setPrincipal(runtimePrincipal);
     expect((await (bridge.actor as any).get_bridge_status()).deposits_paused).toBe(true);
-    expect(await (evm.actor as any).get_code_call_count()).toBe(1n);
+    expect(await (evm.actor as any).get_code_call_count()).toBe(initialAttestationCalls);
+    expect(await (bridge.actor as any).seal_operational_config({
+      governance_evm_fee: init.governance_evm_fee,
+      cycles_floor: init.cycles_floor,
+      settlement_cycle_ceiling: init.settlement_cycle_ceiling,
+    })).toHaveProperty("Ok.lifecycle.OperationalConfigSealed");
+    const reinstalledAttestationCalls = initialAttestationCalls + 3n;
+    expect(await (evm.actor as any).get_code_call_count()).toBe(reinstalledAttestationCalls);
     expect(await (bridge.actor as any).prepare_base_governance_action({
       SetServiceFee: { value: 1n },
     })).toHaveProperty("Ok.chain_id", 8453n);
-    expect(await (evm.actor as any).get_code_call_count()).toBe(2n);
+    expect(await (evm.actor as any).get_code_call_count()).toBe(reinstalledAttestationCalls);
     expect(await (evm.actor as any).chain_id_call_count()).toBe(0n);
   }
 
@@ -1398,6 +1497,19 @@ describe("Phase 3 PocketIC saga", () => {
     "reuses runtime attestation across withdrawal and upgrade but not reinstall",
     runtime_attestation_is_reused_across_withdrawal_upgrade_and_governance,
   );
+
+  it("allows only Governance or the fixed confirmation relayer to refresh activation evidence", async () => {
+    const { bridge, runtimePrincipal, confirmationRelayerPrincipal } = await setup(false);
+    bridge.actor.setPrincipal(Principal.anonymous());
+    expect(await (bridge.actor as any).refresh_activation_attestation())
+      .toHaveProperty("Err.Unauthorized");
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+    expect(await (bridge.actor as any).refresh_activation_attestation())
+      .toHaveProperty("Ok.deposits_paused", true);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await (bridge.actor as any).refresh_activation_attestation())
+      .toHaveProperty("Ok.deposits_paused", true);
+  });
 
   it.each([
     { mode: { FinalizedUnavailable: null }, error: "RpcUnavailable", tag: 0x9c },
@@ -1723,7 +1835,7 @@ describe("Phase 3 PocketIC saga", () => {
   async function refund_observation_preserves_global_runtime_attestation() {
     const { ledger, evm, bridge, runtimePrincipal } = await setup();
     const activationAttestationCalls = await (evm.actor as any).get_code_call_count();
-    expect(activationAttestationCalls).toBe(1n);
+    expect(activationAttestationCalls).toBeGreaterThanOrEqual(3n);
     const result: any = await requestDefaultDeposit(bridge);
     expect(await (evm.actor as any).get_code_call_count()).toBe(activationAttestationCalls);
     await assertAuthorizationRefunded(bridge, evm, result.Ok.deposit_id);
@@ -2241,7 +2353,7 @@ describe("Phase 3 PocketIC saga", () => {
       median(hundredJobInstructions) * 2n,
     );
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(33);
+    expect(before.schema_version).toBe(35);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.retained_audit_events).toBe(10_000n);
     expect(
@@ -2264,7 +2376,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(33);
+    expect(after.schema_version).toBe(35);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(before.settlement_scheduler.scheduled);
     expect(after.settlement_scheduler.leased).toBe(before.settlement_scheduler.leased);

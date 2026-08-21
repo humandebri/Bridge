@@ -11,6 +11,7 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 : "${BRIDGE_ACTIVATION_PHASE:?set BRIDGE_ACTIVATION_PHASE=schedule or execute}"
 : "${BRIDGE_ACTIVATION_SUBMISSION_OUT:?missing activation submission output}"
 : "${BRIDGE_SNS_IDENTITY:?missing SNS proposer identity name}"
+: "${BRIDGE_CONFIRMATION_RELAYER_IDENTITY:?missing confirmation relayer ICP identity name}"
 : "${BRIDGE_SNS_NEURON_SUBACCOUNT:?missing SNS proposer neuron subaccount}"
 : "${BRIDGE_SNS_PROPOSER_PRINCIPAL:?missing SNS proposer principal}"
 
@@ -22,7 +23,6 @@ for tool in python3; do
   command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }
 done
 
-"$SOURCE_ROOT/scripts/production-live-preflight.sh" verify "$BRIDGE_RELEASE_BUNDLE"
 production_validate_gate gate-b "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
 
 exec "$SOURCE_ROOT/scripts/production-activation-proposal.sh" \

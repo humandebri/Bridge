@@ -36,9 +36,6 @@ contract BridgeTimelockTest is TestBase {
         cancellers[0] = CANCELLER;
         timelock = new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
         bridge = new Bridge(
-            "kinic",
-            "KINIC",
-            8,
             BRIDGE_SIGNER,
             RUNTIME_ADMINISTRATOR,
             address(timelock),

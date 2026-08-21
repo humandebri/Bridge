@@ -117,16 +117,15 @@ describe("BridgeConfirmationDialog", () => {
     expect(confirm).toBeEnabled()
   })
 
-  it("requires an irreversible burn acknowledgement for a withdrawal", () => {
+  it("lets a withdrawal continue after reviewing its wallets and amount", () => {
     render(<Harness direction="withdraw" />)
     expect(screen.getByText("10 KINIC")).toBeVisible()
     expect(screen.getByText("0.00000009 TICRC1")).toBeVisible()
     expect(screen.getByRole("heading", { name: "Review bridge to IC" })).toBeVisible()
     expect(screen.queryByText("Next in your wallets")).not.toBeInTheDocument()
     const confirm = screen.getByRole("button", { name: "Continue to Base wallet" })
-    expect(confirm).toBeDisabled()
-    fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge irreversible burn" }))
     expect(confirm).toBeEnabled()
+    expect(screen.queryByText(/no Base refund/)).not.toBeInTheDocument()
   })
 })
 

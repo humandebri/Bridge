@@ -73,8 +73,19 @@ function Harness() {
       receiveAmount: "1.5",
       sendSymbol: "KINIC",
       receiveSymbol: "TICRC1",
+      transactionHash: `0x${"33".repeat(32)}`,
       withdrawal: { owner: "aaaaa-aa" },
     })}>Start withdrawal</button>
+    <button type="button" onClick={() => progress.completeWithdrawal({
+      transactionHash: `0x${"33".repeat(32)}`,
+      owner: "aaaaa-aa",
+      withdrawalId: `0x${"44".repeat(32)}`,
+    })}>Complete matching withdrawal</button>
+    <button type="button" onClick={() => progress.completeWithdrawal({
+      transactionHash: `0x${"55".repeat(32)}`,
+      owner: "aaaaa-aa",
+      withdrawalId: `0x${"66".repeat(32)}`,
+    })}>Complete other withdrawal</button>
     <button type="button" onClick={() => progress.progress && progress.update(progress.progress.id, { phase: "attention", attentionMessage: "Withdrawal failed." })}>Fail</button>
     <button type="button" onClick={() => progress.progress && progress.update(progress.progress.id, { phase: "attention", attentionMessage: "Withdrawal still needs attention." })}>Fail again</button>
     <button type="button" onClick={() => progress.progress && progress.update(progress.progress.id, { phase: "awaiting-base-withdrawal" })}>Resume</button>
@@ -210,6 +221,20 @@ describe("BridgeProgressProvider", () => {
     expect(completeStep?.querySelector(".lucide-check")).toBeVisible()
     expect(completeStep?.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
     expect(screen.queryByRole("listitem", { current: "step" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled()
+  })
+
+  it("completes only the withdrawal whose transaction hash matches the current progress", () => {
+    render(<BridgeProgressProvider><Harness /></BridgeProgressProvider>)
+    fireEvent.click(screen.getByRole("button", { name: "Start withdrawal" }))
+    fireEvent.click(screen.getByRole("button", { name: "Fail", hidden: true }))
+
+    fireEvent.click(screen.getByRole("button", { name: "Complete other withdrawal", hidden: true }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Withdrawal failed.")
+
+    fireEvent.click(screen.getByRole("button", { name: "Complete matching withdrawal", hidden: true }))
+    expect(screen.getByText("Bridge complete")).toBeVisible()
+    expect(screen.getByText("1.5 TICRC1 was paid to aaaaa-aa.")).toBeVisible()
     expect(screen.getByRole("button", { name: "Close" })).toBeEnabled()
   })
 

@@ -9,7 +9,6 @@ import { useAccount, useChainId, useConnectorClient, useWriteContract } from "wa
 import baseLogo from "@/assets/base-square.svg"
 import icpLogo from "@/assets/icp-logo-mark.svg"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -162,6 +161,8 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   })
   const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, {
     enabled: true,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   })
   const heartbeatReadiness = useRuntimeWriteReadiness(heartbeat.data)
   const sendToken = direction === "deposit" ? deploymentProfile.icToken : deploymentProfile.baseToken
@@ -775,7 +776,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const liveStatusNotice = heartbeat.isFetching && !heartbeat.data
     ? "Checking live status…"
     : heartbeat.isError
-      ? "Live status could not be refreshed. Current conditions will be checked before continuing."
+      ? undefined
       : !heartbeatReadiness.ready
         ? "Live status is not confirmed. Current conditions will be checked before continuing."
         : undefined
@@ -883,7 +884,6 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         <div className="mt-1 flex items-center gap-3"><Input id="bridge-amount" disabled={depositControlsLocked} aria-invalid={Boolean(amountError)} aria-describedby="bridge-amount-feedback" className="font-numeric h-14 border-0 px-0 text-3xl font-semibold focus:ring-0" inputMode="decimal" placeholder="0.00000000" value={amount} onChange={(event) => { if (direction === "deposit") setDepositAmount(event.target.value); else setWithdrawAmount(event.target.value) }} /><span className="rounded-xl bg-[var(--panel)] px-3 py-2 text-sm font-bold">{sendToken.symbol}</span></div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-sm"><Quote label={feeLabel} value={fee !== undefined ? `${formatTokenAmount(fee)} ${sendToken.symbol}` : "—"} /><Quote label="Estimated receive" value={receive !== undefined ? `${formatTokenAmount(receive)} ${receiveToken.symbol}` : "—"} /></div>
-      {heartbeat.data?.checkedAt && !reviewedQuote && <p className="mt-2 text-center text-xs text-[var(--muted)]">Last checked {new Date(heartbeat.data.checkedAt).toLocaleString()}. Current terms will be verified before continuing.</p>}
       {direction === "deposit" && (effectiveDepositProgress === "oisy-action" || deposit.isPending) && (
         <DepositProgressCard title="Confirming deposit…" detail="Confirm the action in Oisy. After confirmation, its window stays open while the bridge verifies Deposit acceptance." />
       )}
@@ -977,9 +977,7 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
   onRetry: () => void
   onConfirm: () => void
 }) {
-  const [burnAcknowledged, setBurnAcknowledged] = useState(false)
   const close = (value: boolean) => {
-    if (!value) setBurnAcknowledged(false)
     setOpen(value)
   }
   const ready = preflight?.phase === "ready"
@@ -1004,14 +1002,10 @@ export function BridgeConfirmationDialog({ direction, open, setOpen, preflight, 
         <ConfirmRow label="From" value={source} />
         <div className="sm:col-span-2"><ConfirmRow label="Recipient" value={destination} /></div>
       </div></>}
-      {ready && direction === "withdraw" && <label className="mt-4 flex items-start gap-3 text-sm leading-5">
-        <Checkbox aria-label="Acknowledge irreversible burn" checked={burnAcknowledged} onCheckedChange={(checked) => setBurnAcknowledged(checked === true)} />
-        <span>I understand that confirming burns the Base tokens and no Base refund is available.</span>
-      </label>}
       <DialogFooter>
         <DialogClose asChild><Button variant="ghost">{failed ? "Close" : "Cancel"}</Button></DialogClose>
-        {failed && <Button onClick={() => { setBurnAcknowledged(false); onRetry() }}>Try again</Button>}
-        {ready && <Button disabled={pending || (direction === "withdraw" && !burnAcknowledged)} onClick={() => { setBurnAcknowledged(false); onConfirm() }}>{direction === "deposit" ? "Continue to IC wallet" : "Continue to Base wallet"}</Button>}
+        {failed && <Button onClick={onRetry}>Try again</Button>}
+        {ready && <Button disabled={pending} onClick={onConfirm}>{direction === "deposit" ? "Continue to IC wallet" : "Continue to Base wallet"}</Button>}
       </DialogFooter>
     </DialogContent>
   </Dialog>
