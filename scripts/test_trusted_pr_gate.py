@@ -235,11 +235,28 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("from source_resolution import source_path", staging_upgrade_test)
         self.assertIn("source_path(relative) if relative in SCRIPT_FILES", staging_upgrade_test)
-        self.assertIn('"bridge_wasm_sha256": self.target_module', staging_upgrade_test)
-        self.assertIn('policy["source_module_sha256"] = self.source_module', staging_upgrade_test)
-        self.assertIn('policy["source_candid_sha256"] = self.sha(self.source_did)', staging_upgrade_test)
-        self.assertIn('elif method=="get_operational_config":', staging_upgrade_test)
-        self.assertIn('governance_principal = principal', staging_upgrade_test)
+        self.assertIn('if "target_module_sha256" in policy:', staging_upgrade_test)
+        self.assertIn('policy["target_module_sha256"] = self.after_module', staging_upgrade_test)
+        self.assertIn('if "source_module_sha256" in policy', staging_upgrade_test)
+        self.assertIn('if "source_schema_version" in policy', staging_upgrade_test)
+        self.assertIn('if "governance_principal" in policy', staging_upgrade_test)
+        self.assertIn(
+            'if "same-schema-upgrade-policy.json" in driver:',
+            staging_upgrade_test,
+        )
+        v33_upgrade_test = (
+            ROOT / "scripts" / "plan007" / "test_staging_v33_to_v35_upgrade.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("from source_resolution import source_path", v33_upgrade_test)
+        self.assertIn(
+            'if "same-schema-upgrade-policy.json" not in driver:',
+            v33_upgrade_test,
+        )
+        ci_local = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'python3 "$ROOT/scripts/plan007/test_staging_v33_to_v35_upgrade.py"',
+            ci_local,
+        )
 
     def test_failure_manifest_checker_reads_claim_contracts(self) -> None:
         checker = (ROOT / "scripts" / "check_failure_manifests.py").read_text(

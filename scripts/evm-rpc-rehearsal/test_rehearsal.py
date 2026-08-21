@@ -428,7 +428,7 @@ class RehearsalTests(unittest.TestCase):
                 rehearsal.validate_capture_command(
                     "bridge",
                     "icp",
-                    ["canister", "call", "aaaaa-aa", "get_runtime_binding", "()", "-n", "ic", "--json", *extra],
+                    ["canister", "call", "aaaaa-aa", "get_public_config", "()", "-n", "ic", "--json", *extra],
                     binding,
                 )
         with self.assertRaises(rehearsal.InvalidEvidence):
@@ -475,7 +475,7 @@ class RehearsalTests(unittest.TestCase):
                 [
                     "python3", str(MODULE_PATH), "capture-artifact", str(manifest_path), str(config_path),
                     "preflight", "bridge", str(output), "none", "--", "icp", "canister", "call", "aaaaa-aa",
-                    "get_runtime_binding", "()", "-n", "ic", "--json",
+                    "get_public_config", "()", "-n", "ic", "--json",
                 ],
                 text=True,
                 stdout=subprocess.PIPE,
@@ -515,7 +515,7 @@ class RehearsalTests(unittest.TestCase):
                 [
                     "python3", str(MODULE_PATH), "capture-artifact", str(manifest_path), str(config_path),
                     "preflight", "bridge", str(root / "artifacts" / "failed.json"), "none", "--", "icp",
-                    "canister", "call", "aaaaa-aa", "get_runtime_binding", "()", "-n", "ic", "--json",
+                    "canister", "call", "aaaaa-aa", "get_public_config", "()", "-n", "ic", "--json",
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

@@ -24,7 +24,7 @@ assert.deepEqual(
 assert.equal(
   verifyUpgradeInstance(
     { deploymentInstanceId: previousHex },
-    { schema_version: 33, deployment_instance_id: previousBytes },
+    { schema_version: 34, deployment_instance_id: previousBytes },
     currentStatus,
   ).replacement_mode,
   "schema-migration-upgrade",
@@ -37,14 +37,14 @@ assert.throws(
   ),
   /reinstall is prohibited/,
 )
-for (const schemaVersion of [34, 32, 31, 30]) {
+for (const schemaVersion of [33, 32, 31, 30]) {
   assert.throws(
     () => verifyUpgradeInstance(
       { deploymentInstanceId: previousHex },
       { schema_version: schemaVersion, deployment_instance_id: previousBytes },
       currentStatus,
     ),
-    /requires reviewed source schema v33 or target schema v35/,
+    /requires reviewed source schema v34 or target schema v35/,
   )
 }
 assert.throws(() => verifyUpgradeInstance(
