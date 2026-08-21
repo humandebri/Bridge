@@ -1584,7 +1584,7 @@ fn operational_config_sha256(config: &OperationalConfig) -> Vec<u8> {
         operational_config: config.clone(),
     };
     let encoded = candid::encode_one(binding).unwrap_or_else(|error| {
-        ic_cdk::trap(&format!("operational config encoding failed: {error}"))
+        ic_cdk::trap(format!("operational config encoding failed: {error}"))
     });
     let mut digest = Sha256::new();
     digest.update(OPERATIONAL_CONFIG_BINDING_DOMAIN);
