@@ -54,6 +54,11 @@ class V33ToV35UpgradeTests(unittest.TestCase):
         path = self.bin / name; path.write_text(text); path.chmod(0o755)
 
     def make_tools(self) -> None:
+        self.executable("cast", r'''#!/usr/bin/env python3
+import os,sys
+if sys.argv[1:3] != ["chain-id","--rpc-url"]: raise SystemExit(2)
+print(os.environ.get("MOCK_CHAIN_ID","84532"))
+''')
         self.executable("ic-wasm", r'''#!/usr/bin/env python3
 import os,pathlib,sys
 a=sys.argv[1:]
@@ -121,6 +126,12 @@ print(json.dumps({"response_candid":candid}))
         self.assertIn('migration_id = opt "bridge-staging-v33-to-v35"', evidence["upgrade_arguments"])
         self.assertIn('confirmation_relayer_principal = opt principal', evidence["upgrade_arguments"])
         self.assertIn("rpc_provider_update = null", evidence["upgrade_arguments"])
+
+    def test_rpc_provider_chain_mismatch_rejects_before_live_state_reads(self) -> None:
+        result = self.run_driver(MOCK_CHAIN_ID="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("RPC provider 0 returned an unexpected chain ID", result.stderr)
+        self.assertFalse(self.preflight.exists())
 
     def test_execute_requires_unchanged_preflight_and_upgrades(self) -> None:
         self.assertEqual(self.run_driver().returncode, 0)

@@ -182,6 +182,26 @@ def verify_binding(observed: dict[str, Any], policy: dict[str, Any], profile: di
         fail("live staging governance queues must be empty")
 
 
+def verify_provider_chains(profile: dict[str, Any], expected_chain_id: int) -> None:
+    primary = profile.get("baseRpcUrl")
+    history = profile.get("baseHistoryRpcUrls")
+    if not isinstance(primary, str) or not isinstance(history, list) \
+            or len(history) != 2 or not all(isinstance(url, str) for url in history):
+        fail("frontend profile must define one primary and two history RPC providers")
+    urls = [primary, *history]
+    if len(set(urls)) != 3 or any(not url.startswith("https://") for url in urls):
+        fail("frontend profile RPC providers must be distinct HTTPS URLs")
+    observed_digest = "0x" + hashlib.sha256(
+        json.dumps(urls, separators=(",", ":")).encode()
+    ).hexdigest()
+    if observed_digest != profile.get("rpcProviderUrlsSha256"):
+        fail("frontend profile RPC provider digest does not match its URLs")
+    for index, url in enumerate(urls):
+        observed = run(["cast", "chain-id", "--rpc-url", url]).strip()
+        if observed != str(expected_chain_id):
+            fail(f"staging RPC provider {index} returned an unexpected chain ID")
+
+
 def classify(candid: str) -> str:
     old = bool(re.search(r"\bget_public_config\s*:", candid))
     new = bool(re.search(r"\bget_runtime_binding\s*:", candid)) and bool(re.search(r"\bget_operational_config\s*:", candid))
@@ -276,7 +296,7 @@ def main() -> None:
     if args.preflight_evidence is not None and not args.preflight_evidence.is_absolute(): fail("--preflight-evidence must be absolute")
     identity = os.environ.get("BRIDGE_STAGING_IDENTITY")
     if not identity: fail("BRIDGE_STAGING_IDENTITY is required")
-    for tool in ("git", "ic-wasm", "icp", "node"):
+    for tool in ("cast", "git", "ic-wasm", "icp", "node"):
         if shutil.which(tool) is None: fail(f"{tool} is required")
     if run(["git", "status", "--porcelain", "--untracked-files=all"]).strip(): fail("upgrade requires a clean checkout")
     head = run(["git", "rev-parse", "HEAD"]).strip()
@@ -287,6 +307,7 @@ def main() -> None:
                             "deploymentInstanceId": policy["deployment_instance_id"], "chainId": policy["base_chain_id"],
                             "evmRpcCanisterId": policy["evm_rpc_canister_id"]}.items():
         if profile.get(field) != expected: fail(f"frontend profile {field} does not match policy")
+    verify_provider_chains(profile, policy["base_chain_id"])
     local = load(args.local_evidence, "local E2E evidence")
     if local.get("schema_version") != LOCAL_E2E_SCHEMA_VERSION \
             or local.get("state_upgrade", {}).get("verified") is not True \
