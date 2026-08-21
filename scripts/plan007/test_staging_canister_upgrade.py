@@ -162,12 +162,23 @@ args = sys.argv[1:]
 state = pathlib.Path(os.environ["MOCK_STATE"])
 policy = json.loads(pathlib.Path(os.environ["MOCK_POLICY"]).read_text())
 after_module = os.environ["MOCK_AFTER_MODULE"]
+source_module = (
+    policy["source_module_sha256"]
+    if "source_module_sha256" in policy
+    else policy["before_module_sha256"]
+)
+source_schema = (
+    policy["source_schema_version"]
+    if "source_schema_version" in policy
+    else policy["stable_schema_version"]
+)
+target_schema = policy.get("target_schema_version", source_schema)
 applied = (state / "applied").exists() or os.environ.get("MOCK_ALREADY_APPLIED") == "1"
 digest = policy["after_rpc_urls_sha256"] if applied else policy["before_rpc_urls_sha256"]
 if not applied:
     digest = os.environ.get("MOCK_DIGEST", digest)
 module = after_module if (state / "metadata-repaired").exists() else os.environ.get(
-    "MOCK_MODULE", after_module if applied else policy["before_module_sha256"]
+    "MOCK_MODULE", after_module if applied else source_module
 )
 def blob(value): return ''.join('\\' + value[i:i+2] for i in range(0, len(value), 2))
 if args[:2] == ["canister", "install"]:
@@ -197,20 +208,24 @@ elif method == "continue_storage_validation":
     else:
         candid = 'variant { Ok = record { complete = true; phase = "complete"; scanned_rows = 1 : nat64 } }'
 elif method == "get_public_config":
-    stable_schema = str(policy["stable_schema_version"])
-    schema = stable_schema if (state / "applied").exists() else os.environ.get("MOCK_SCHEMA", stable_schema)
+    schema = str(target_schema) if applied else os.environ.get("MOCK_SCHEMA", str(source_schema))
     instance = os.environ.get("MOCK_INSTANCE", policy["deployment_instance_id"])[2:]
     chain = os.environ.get("MOCK_PUBLIC_CHAIN", str(policy["base_chain_id"]))
     evm = os.environ.get("MOCK_EVM_CANISTER", policy["evm_rpc_canister_id"])
+    governance_field = ""
+    if "governance_principal" in policy:
+        governance = os.environ.get("MOCK_GOVERNANCE", policy["governance_principal"])
+        governance_field = f'; governance_principal = principal "{governance}"'
     boundary = os.environ.get("MOCK_BOUNDARY", "01" * 32)
     boundary_field = f'; minimum_withdrawal_id = blob "{blob(boundary)}"' if int(schema) >= 33 else ''
-    named = f'''record {{ schema_version = {schema} : nat16; deployment_instance_id = blob "{blob(instance)}"; base_chain_id = {chain} : nat64; evm_rpc_canister_id = principal "{evm}"; rpc_provider_urls_sha256 = blob "{blob(digest)}"{boundary_field} }}'''
+    named = f'''record {{ schema_version = {schema} : nat16; deployment_instance_id = blob "{blob(instance)}"; base_chain_id = {chain} : nat64; evm_rpc_canister_id = principal "{evm}"{governance_field}; rpc_provider_urls_sha256 = blob "{blob(digest)}"{boundary_field} }}'''
     if os.environ.get("MOCK_CANDID_NULL") == "1":
         if "--candid" in args:
             print(json.dumps({"response_candid": None})); raise SystemExit(0)
         ids = {
             "schema_version": 2125064634, "deployment_instance_id": 2063157835,
             "base_chain_id": 805517511, "evm_rpc_canister_id": 1452342262,
+            "governance_principal": 2916479505,
             "rpc_provider_urls_sha256": 4005183470, "minimum_withdrawal_id": 2442470196,
         }
         numeric = named
