@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs"
 import { readFile, mkdir, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -6,39 +5,6 @@ import { fileURLToPath } from "node:url"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const check = process.argv.includes("--check")
-const fullBridgeDid = "canister/bridge-canister/bridge.did"
-const uiBridgeDid = "ui/src/generated/bridge.ui.did"
-const bridgeInterfaces = existsSync(resolve(root, uiBridgeDid))
-  ? [
-      {
-        name: "UI Bridge",
-        did: uiBridgeDid,
-        types: ["ui/src/generated/bridge.did.ts"],
-        runtimes: [["ui/src/generated/bridge.idl.ts", true]],
-      },
-      {
-        name: "Bridge",
-        did: fullBridgeDid,
-        types: [],
-        runtimes: [
-          ["integration/generated/bridge.idl.ts", true],
-          ["ui/e2e-real/generated/bridge.idl.mjs", false],
-        ],
-      },
-    ]
-  : [
-      {
-        name: "Bridge",
-        did: fullBridgeDid,
-        types: ["ui/src/generated/bridge.did.ts"],
-        runtimes: [
-          ["ui/src/generated/bridge.idl.ts", true],
-          ["integration/generated/bridge.idl.ts", true],
-          ["ui/e2e-real/generated/bridge.idl.mjs", false],
-        ],
-      },
-    ]
-
 const uiBridgeDid = "ui/src/generated/bridge.ui.did"
 
 const interfaces = [
