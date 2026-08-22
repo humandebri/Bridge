@@ -2253,6 +2253,8 @@ fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
 const STAGING_SOURCE_SCHEMA_VERSION: u16 = 33;
 #[cfg(feature = "test-deployment")]
 const STAGING_SOURCE_WIRE_VERSION: u8 = 28;
+#[cfg(feature = "test-deployment")]
+const STAGING_LEGACY_AUDIT_WIRE_VERSION: u8 = 27;
 
 #[cfg(feature = "test-deployment")]
 fn replace_staging_wire_version(
@@ -2283,6 +2285,22 @@ fn validate_staging_wire_blob<T: DeserializeOwned>(
     decode_wire_payload::<T>(bytes, STAGING_SOURCE_WIRE_VERSION)
         .map(|_| ())
         .map_err(|_| DbError::Constraint(format!("cannot decode v33 {context}")))
+}
+
+#[cfg(feature = "test-deployment")]
+fn migrate_staging_audit_event_blob(mut bytes: Vec<u8>) -> Result<Vec<u8>, DbError> {
+    let version = *bytes
+        .first()
+        .ok_or_else(|| DbError::Constraint("missing wire version in audit_events".into()))?;
+    if version != STAGING_SOURCE_WIRE_VERSION && version != STAGING_LEGACY_AUDIT_WIRE_VERSION {
+        return Err(DbError::Constraint(
+            "unexpected wire version in audit_events".into(),
+        ));
+    }
+    decode_wire_payload::<AuditEvent>(&bytes, version)
+        .map_err(|_| DbError::Constraint("cannot decode v33 audit_events".into()))?;
+    bytes[0] = WIRE_VERSION;
+    Ok(bytes)
 }
 
 #[cfg(feature = "test-deployment")]
@@ -2439,7 +2457,7 @@ fn migrate_staging_v33_to_v35(
                         "reconciliation_scans" => {
                             validate_staging_wire_blob::<ReconciliationScanProgress>(&bytes, table)?
                         }
-                        "audit_events" => validate_staging_wire_blob::<AuditEvent>(&bytes, table)?,
+                        "audit_events" => {}
                         "fee_payouts" => {
                             validate_staging_wire_blob::<crate::admin::FeePayoutRecord>(
                                 &bytes, table,
@@ -2449,12 +2467,16 @@ fn migrate_staging_v33_to_v35(
                             return Err(DbError::Constraint("unregistered v33 record blob".into()))
                         }
                     }
-                    let migrated = replace_staging_wire_version(
-                        bytes,
-                        STAGING_SOURCE_WIRE_VERSION,
-                        WIRE_VERSION,
-                        table,
-                    )?;
+                    let migrated = if table == "audit_events" {
+                        migrate_staging_audit_event_blob(bytes)?
+                    } else {
+                        replace_staging_wire_version(
+                            bytes,
+                            STAGING_SOURCE_WIRE_VERSION,
+                            WIRE_VERSION,
+                            table,
+                        )?
+                    };
                     connection.execute(&update, params![migrated, key])?;
                 }
             }
@@ -11835,6 +11857,24 @@ mod tests {
             .expect("initialize schema 35 fixture");
         let deposit = deposit_for(initial.governance_principal);
         store.put_deposit(&deposit).expect("seed v33 deposit row");
+        store
+            .append_audit_event_at(
+                initial.governance_principal,
+                AuditEventKind::DepositsPaused,
+                1_000,
+            )
+            .expect("seed legacy audit row");
+        store
+            .append_audit_event_at(
+                initial.governance_principal,
+                AuditEventKind::DepositsResumed,
+                2_000,
+            )
+            .expect("seed current audit row");
+        let audit_events = store
+            .audit_events(0, 10)
+            .expect("audit events before migration")
+            .events;
         let counts = store.status_counts().expect("counts before migration");
         let legacy_config = crate::config::V33ImmutableBridgeConfig::from_current(
             &ImmutableBridgeConfig::from_init(&initial),
@@ -11890,6 +11930,20 @@ mod tests {
                         connection.execute(&update, params![legacy, key])?;
                     }
                 }
+                let first_audit = connection.query_scalar::<Vec<u8>>(
+                    "SELECT value FROM audit_events WHERE key = ?1",
+                    params![0u64.to_sql_bytes()],
+                )?;
+                let first_audit = replace_staging_wire_version(
+                    first_audit,
+                    STAGING_SOURCE_WIRE_VERSION,
+                    STAGING_LEGACY_AUDIT_WIRE_VERSION,
+                    "legacy audit_events",
+                )?;
+                connection.execute(
+                    "UPDATE audit_events SET value = ?1 WHERE key = ?2",
+                    params![first_audit, 0u64.to_sql_bytes()],
+                )?;
                 let config = replace_staging_wire_version(
                     encode(&Some(legacy_config))
                         .expect("encode v33 config")
@@ -11937,6 +11991,13 @@ mod tests {
             .operational_config_sealed()
             .expect("migrated operational lifecycle"));
         assert_eq!(reopened.status_counts().expect("counts after"), counts);
+        assert_eq!(
+            reopened
+                .audit_events(0, 10)
+                .expect("migrated audit events")
+                .events,
+            audit_events
+        );
         assert_eq!(
             reopened
                 .deposit(deposit.id.bytes())
