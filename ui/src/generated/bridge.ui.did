@@ -1,3 +1,4 @@
+// Generated from canister/bridge-canister/bridge.did. Do not edit.
 type ActivationAttestation = record {
   finalized_block_number : nat64;
   timelock_runtime_code_hash : blob;
@@ -134,40 +135,6 @@ type BaseGovernanceOperationKind = variant {
   PauseWithdrawals;
   ScheduleActivation : ActivationOperationView;
   ExecuteActivation : ActivationOperationView;
-};
-type BridgeInitArgs = record {
-  settlement_rate_limit_global : nat16;
-  settlement_rate_limit_per_principal : nat16;
-  settlement_cycle_ceiling : nat;
-  settlement_rate_limit_per_record : nat16;
-  governance_evm_fee : EvmFeePolicy;
-  notification_rate_limit_global : nat16;
-  deposit_rate_limit_window_seconds : nat64;
-  ecdsa_key_name : text;
-  base_chain_id : nat64;
-  bridge_contract : blob;
-  fee_recipient : FeeRecipientConfig;
-  notification_rate_limit_window_seconds : nat64;
-  settlement_rate_limit_window_seconds : nat64;
-  ecdsa_derivation_path : vec blob;
-  notification_ingestion_rate_limit_global : nat16;
-  evm_rpc_canister_id : principal;
-  deposit_rate_limit_per_principal : nat16;
-  deployment_instance_id : blob;
-  governance_ecdsa_derivation_path : vec blob;
-  custom_evm_rpc_urls : vec text;
-  minimum_withdrawal_id : blob;
-  deposit_rate_limit_global : nat16;
-  pause_principal : principal;
-  governance_principal : principal;
-  index_canister_id : principal;
-  confirmation_relayer_principal : principal;
-  ledger_canister_id : principal;
-  settlement_retry_interval_seconds : nat64;
-  governance_replacement : GovernanceReplacementPolicy;
-  expected_bridge_runtime_sha256 : blob;
-  timelock_contract : blob;
-  cycles_floor : nat;
 };
 type BridgeStatus = record {
   unpaid_withdrawal_count : nat64;
@@ -430,36 +397,11 @@ type NotifyWithdrawalReceipt = variant {
     finalized_checkpoint_block_number : nat64;
   };
 };
-type OperationalConfig = record {
-  settlement_rate_limit_global : nat16;
-  settlement_rate_limit_per_principal : nat16;
-  settlement_cycle_ceiling : nat;
-  settlement_rate_limit_per_record : nat16;
-  mint_authorization_ttl_seconds : nat64;
-  governance_evm_fee : EvmFeePolicy;
-  mint_authorization_epoch : nat64;
-  notification_rate_limit_global : nat16;
-  deposit_rate_limit_window_seconds : nat64;
-  fee_recipient : FeeRecipientConfig;
-  notification_rate_limit_window_seconds : nat64;
-  settlement_rate_limit_window_seconds : nat64;
-  notification_ingestion_rate_limit_global : nat16;
-  deposit_rate_limit_per_principal : nat16;
-  deposit_rate_limit_global : nat16;
-  pause_principal : principal;
-  governance_principal : principal;
-  confirmation_relayer_principal : principal;
-  settlement_retry_interval_seconds : nat64;
-  governance_replacement : GovernanceReplacementPolicy;
-  governance_operator : blob;
-  cycles_floor : nat;
-};
 type OperationalConfigArgs = record {
   settlement_cycle_ceiling : nat;
   governance_evm_fee : EvmFeePolicy;
   cycles_floor : nat;
 };
-type OperationalConfigError = variant { Unauthorized };
 type OperationalConfigSealReceipt = record {
   activation_attestation : ActivationAttestation;
   lifecycle : ProductionLifecycle;
@@ -568,10 +510,6 @@ type Result_6 = variant {
 };
 type Result_7 = variant { Ok : ActivationStatus; Err : BaseGovernanceError };
 type Result_8 = variant { Ok : AuditEventPage; Err : AdminError };
-type Result_9 = variant {
-  Ok : OperationalConfig;
-  Err : OperationalConfigError;
-};
 type RotatePausePrincipalArgs = record { pause_principal : principal };
 type RuntimeBinding = record {
   expected_bridge_signer : blob;
@@ -701,7 +639,7 @@ type WithdrawalView = record {
   ledger_fee : nat;
   amount : nat;
 };
-service : (BridgeInitArgs) -> {
+service : {
   confirm_base_governance_transaction : (
       ConfirmBaseGovernanceTransactionArgs,
     ) -> (Result);
@@ -717,7 +655,6 @@ service : (BridgeInitArgs) -> {
   get_deposit : (blob) -> (opt DepositView) query;
   get_deposit_by_owner_sequence : (principal, nat64) -> (opt DepositView) query;
   get_next_deposit_sequence : (principal) -> (nat64) query;
-  get_operational_config : () -> (Result_9) query;
   get_pending_base_governance_transaction : () -> (Result_10) query;
   get_production_lifecycle : () -> (Result_11) query;
   get_runtime_binding : () -> (RuntimeBinding) query;

@@ -80,7 +80,7 @@ driverはshellを介さずcommandを実行し、argv、exit status、raw stdout�
 python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-artifact \
   /secure/work/rpc-e2e.json /secure/work/rehearsal-config.json preflight bridge \
   /secure/work/artifacts/preflight-bridge.json none -- \
-  icp canister call <bridge-canister-id> get_public_config '()' \
+  icp canister call <bridge-canister-id> get_runtime_binding '()' \
   -n ic --query --json
 
 python3 scripts/evm-rpc-rehearsal/rehearsal.py capture-artifact \

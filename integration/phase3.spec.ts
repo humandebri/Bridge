@@ -69,10 +69,11 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_block_timestamp(BigInt(Math.floor((await pic!.getTime()) / 1_000)));
     await (evm.actor as any).set_deposit_mints_paused(true);
     await (evm.actor as any).set_withdrawals_paused(true);
-    const publicConfig: any = await (bridge.actor as any).get_public_config();
+    const operationalConfig: any = await (bridge.actor as any).get_operational_config();
+    expect(operationalConfig).toHaveProperty("Ok");
     expect(await (evm.actor as any).set_deployment_postconditions(
       init.timelock_contract,
-      publicConfig.governance_operator,
+      operationalConfig.Ok.governance_operator,
       new Uint8Array(20).fill(9),
       init.bridge_contract,
       new Uint8Array([0x60, 0x01]),
@@ -730,7 +731,7 @@ describe("Phase 3 PocketIC saga", () => {
       pause_principal: nextPausePrincipal,
     });
     expect(rotation).toHaveProperty("Ok");
-    expect((await (bridge.actor as any).get_public_config()).pause_principal.toText())
+    expect((await (bridge.actor as any).get_operational_config()).Ok.pause_principal.toText())
       .toBe(nextPausePrincipal.toText());
     await pic!.mockPendingHttpsOutcall({
       requestId: receiptBarrier!.requestId,
@@ -755,7 +756,7 @@ describe("Phase 3 PocketIC saga", () => {
     reauthorizes_confirmation_after_external_receipt_observation,
   );
 
-  it("binds a selected subaccount, exposes public configuration, consent, and owner history", async () => {
+  it("binds a selected subaccount, exposes only runtime binding, protects operational configuration, consent, and owner history", async () => {
     const { bridge, init, runtimePrincipal } = await setup();
     const selectedSubaccount = new Uint8Array(32).fill(8);
     const request = {
@@ -770,17 +771,23 @@ describe("Phase 3 PocketIC saga", () => {
 
     const standards: any = await (bridge.actor as any).icrc10_supported_standards();
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
-    const config: any = await (bridge.actor as any).get_public_config();
+    const config: any = await (bridge.actor as any).get_runtime_binding();
     expect(config.base_chain_id).toBe(8453n);
     expect(config.schema_version).toBe(35);
     expect(Array.from(config.minimum_withdrawal_id)).toEqual(Array.from(init.minimum_withdrawal_id));
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
-    expect(config.ledger_fee).toBe(testLedgerFee);
-    expect(config.notification_rate_limit_window_seconds).toBe(600n);
-    expect(config.notification_rate_limit_global).toBe(60);
-    expect(config.notification_ingestion_rate_limit_global).toBe(30);
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
     expect(config.rpc_provider_urls_sha256).toHaveLength(32);
+    expect(config.operational_config_sha256).toHaveLength(32);
+    expect(config).not.toHaveProperty("confirmation_relayer_principal");
+    bridge.actor.setPrincipal(Principal.anonymous());
+    expect(await (bridge.actor as any).get_operational_config()).toEqual({ Err: { Unauthorized: null } });
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const operational: any = await (bridge.actor as any).get_operational_config();
+    expect(operational).toHaveProperty("Ok");
+    expect(operational.Ok.notification_rate_limit_window_seconds).toBe(600n);
+    expect(operational.Ok.notification_rate_limit_global).toBe(60);
+    expect(operational.Ok.notification_ingestion_rate_limit_global).toBe(30);
 
     const consent: any = await (bridge.actor as any).icrc21_canister_call_consent_message({
       arg: new Uint8Array(IDL.encode([depositArgs], [request])),
@@ -831,10 +838,11 @@ describe("Phase 3 PocketIC saga", () => {
     expect(replayPage.Ok.deposit_ids).toHaveLength(1);
   });
 
-  it("publishes rotated administrator configuration and preserves it across reopen", async () => {
+  async function publishes_rotated_administrator_configuration_and_preserves_it_across_reopen() {
     const { bridge, init, runtimePrincipal } = await setup(false);
     const nextPausePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(65));
     const nextFeeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(66));
+    const initialBinding: any = await (bridge.actor as any).get_runtime_binding();
 
     expect(await (bridge.actor as any).rotate_pause_principal({
       pause_principal: nextPausePrincipal,
@@ -844,9 +852,11 @@ describe("Phase 3 PocketIC saga", () => {
       subaccount: [],
     })).toHaveProperty("Ok");
 
-    const rotated: any = await (bridge.actor as any).get_public_config();
-    expect(rotated.pause_principal.toText()).toBe(nextPausePrincipal.toText());
-    expect(rotated.fee_recipient.owner.toText()).toBe(nextFeeRecipient.toText());
+    const rotated: any = await (bridge.actor as any).get_operational_config();
+    const rotatedBinding: any = await (bridge.actor as any).get_runtime_binding();
+    expect(rotated.Ok.pause_principal.toText()).toBe(nextPausePrincipal.toText());
+    expect(rotated.Ok.fee_recipient.owner.toText()).toBe(nextFeeRecipient.toText());
+    expect(rotatedBinding.operational_config_sha256).not.toEqual(initialBinding.operational_config_sha256);
 
     bridge.actor.setPrincipal(init.pause_principal);
     expect(await (bridge.actor as any).pause_new_deposits()).toEqual({
@@ -864,10 +874,17 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     bridge.actor.setPrincipal(runtimePrincipal);
-    const reopened: any = await (bridge.actor as any).get_public_config();
-    expect(reopened.pause_principal.toText()).toBe(nextPausePrincipal.toText());
-    expect(reopened.fee_recipient.owner.toText()).toBe(nextFeeRecipient.toText());
-  });
+    const reopened: any = await (bridge.actor as any).get_operational_config();
+    const reopenedBinding: any = await (bridge.actor as any).get_runtime_binding();
+    expect(reopened.Ok.pause_principal.toText()).toBe(nextPausePrincipal.toText());
+    expect(reopened.Ok.fee_recipient.owner.toText()).toBe(nextFeeRecipient.toText());
+    expect(reopenedBinding.operational_config_sha256).toEqual(rotatedBinding.operational_config_sha256);
+  }
+
+  it(
+    "publishes rotated administrator configuration and preserves it across reopen",
+    publishes_rotated_administrator_configuration_and_preserves_it_across_reopen,
+  );
 
   it("commits the preflight service fee through the Ledger pull and authorization", async () => {
     const { evm, bridge } = await setup();

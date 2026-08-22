@@ -256,13 +256,13 @@ def upgrade_instance_check(
     schema_version = require_nat(
         live_public_config,
         "schema_version",
-        "live PublicConfig",
+        "live RuntimeBinding",
     )
     if schema_version != CURRENT_STABLE_SCHEMA:
         fail(f"staging upgrade requires current stable schema v{CURRENT_STABLE_SCHEMA}")
     previous = deployment_instance_hex(
         live_public_config.get("deployment_instance_id"),
-        "live PublicConfig deployment_instance_id",
+        "live RuntimeBinding deployment_instance_id",
     )
     live_module_hash = require_pattern(
         live_canister_status,
@@ -527,7 +527,7 @@ def validate_preflight(
         binding["bridge_canister_id"],
     )
     if normalized_upgrade_check(recorded_check) != expected_check:
-        fail("upgrade instance check does not match the live PublicConfig and reviewed binding")
+        fail("upgrade instance check does not match the live RuntimeBinding and reviewed binding")
     summary_check = normalized_upgrade_check(
         {
             "replacement_mode": details["replacement_mode"],

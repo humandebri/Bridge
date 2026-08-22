@@ -13,7 +13,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { deploymentProfile } from "@/config/profile"
-import { finalizedObservationQuote, useRuntimeHeartbeat, useRuntimeValidation, useRuntimeWriteReadiness } from "@/features/status/use-status"
+import { useCurrentBaseQuote, useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import { useWalletDialog } from "@/features/wallet/wallet-controls"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
@@ -59,7 +59,7 @@ interface UnresolvedDepositAttempt {
 type DepositProgress = "idle" | "checking" | "oisy-action" | "authorization"
 interface DepositWriteGate {
   base: NonNullable<FinalizedRuntimeObservation["snapshot"]>
-  ledger: { balance: bigint; fee: bigint; allowance: bigint; mintAuthorizationTtlSeconds?: bigint }
+  ledger: { balance: bigint; fee: bigint; allowance: bigint }
   sequence: bigint
   observation: FinalizedRuntimeObservation
 }
@@ -160,14 +160,14 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     staleTime: RUNTIME_VALIDATION_TTL_MS,
   })
   const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, {
-    enabled: true,
+    enabled: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   })
-  const heartbeatReadiness = useRuntimeWriteReadiness(heartbeat.data)
+  const baseQuote = useCurrentBaseQuote({ enabled: true, staleTime: 15_000 })
   const sendToken = direction === "deposit" ? deploymentProfile.icToken : deploymentProfile.baseToken
   const receiveToken = direction === "deposit" ? deploymentProfile.baseToken : deploymentProfile.icToken
-  const baseData = finalizedObservationQuote(heartbeat.data)
+  const baseData = baseQuote.data
   const depositParsed = useMemo(() => parseTokenAmount(depositAmount), [depositAmount])
   const withdrawParsed = useMemo(() => parseTokenAmount(withdrawAmount), [withdrawAmount])
 
@@ -258,22 +258,17 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     ...automaticQueryOptions,
     queryFn: async () => {
       const ledgerActor = await createLedgerActor(deploymentProfile.icHost, deploymentProfile.ledgerCanisterId as string)
-      const bridgeActor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
       const account = ledgerAccount(ic.account!.owner, ic.account!.subaccount)
       const spender = ledgerAccount(deploymentProfile.bridgeCanisterId as string)
-      const [balance, allowance, publicConfig] = await Promise.all([
+      const [balance, allowance, fee] = await Promise.all([
         ledgerActor.icrc1_balance_of(account),
         ledgerActor.icrc2_allowance({ account, spender }),
-        bridgeActor.get_public_config(),
+        ledgerActor.icrc1_fee(),
       ])
       return {
         balance,
-        fee: publicConfig.ledger_fee,
+        fee,
         allowance: allowance.allowance,
-        mintAuthorizationTtlSeconds:
-          typeof publicConfig.mint_authorization_ttl_seconds === "bigint"
-            ? publicConfig.mint_authorization_ttl_seconds
-            : undefined,
       }
     },
   })
@@ -285,9 +280,9 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   })
   const ledgerData = !ledger.isError && !ledger.isStale ? ledger.data : undefined
   const bsnsBalanceData = !bsnsBalance.isError && !bsnsBalance.isStale ? bsnsBalance.data : undefined
-  const refreshing = heartbeat.isFetching || ledger.isFetching || bsnsBalance.isFetching || (!unresolvedDeposit && ownerSequence.isFetching)
+  const refreshing = baseQuote.isFetching || ledger.isFetching || bsnsBalance.isFetching || (!unresolvedDeposit && ownerSequence.isFetching)
   const refreshBridgeData = () => {
-    const calls: Promise<unknown>[] = [heartbeat.refetch()]
+    const calls: Promise<unknown>[] = [baseQuote.refetch()]
     if (direction === "deposit" && ic.account) {
       calls.push(ledger.refetch())
       if (!unresolvedDeposit) calls.push(ownerSequence.refetch())
@@ -295,12 +290,6 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
     if (direction === "withdraw" && address) calls.push(bsnsBalance.refetch())
     void Promise.all(calls)
   }
-  const refetchBaseSnapshot = async () => {
-    const observation = await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
-    if (!observation.snapshot) throw new Error("Finalized Base snapshot is unavailable")
-    return observation.snapshot
-  }
-
   useEffect(() => {
     const account = ic.account
     let active = true
@@ -382,6 +371,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       const walletSession = ic.adapter.prepare()
       if (unresolvedDeposit) {
         closeWalletSession = onceAsync(await walletSession)
+        await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
         bridgeProgress.update(progressId, { phase: "awaiting-ic-deposit" })
         await withBrowserLock(`kinic-deposit-owner:${unresolvedDeposit.account.owner}`, () => deposit.mutateAsync({ attempt: unresolvedDeposit, closeWalletSession: closeWalletSession!, progressId }))
         return
@@ -395,7 +385,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       const expectedWallets = { address: confirmedRecipient, chainId: deploymentProfile.chainId, icAccount: confirmedAccount }
       requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: activeIc })
       await withBrowserLock(`kinic-deposit-owner:${confirmedAccount.owner}`, async () => {
-        const beforeApproval = reviewed.gate
+        const beforeApproval = await refetchDepositWriteGate(
+          reviewed.amount,
+          reviewed.gate.sequence,
+        )
         const requiredAllowance = reviewed.amount + beforeApproval.ledger.fee
         if (beforeApproval.ledger.allowance < requiredAllowance) {
           bridgeProgress.update(progressId, { phase: "awaiting-ic-allowance" })
@@ -700,7 +693,12 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       requireWalletSnapshot(expectedWallets, { ...activeEvm, icAccount: confirmedIcAccount })
       const owner = Principal.fromText(confirmedIcAccount.owner).toUint8Array()
       const subaccount = confirmedIcAccount.subaccount ?? new Uint8Array(32)
-      const [approvalQuote, approvalBalance] = await Promise.all([refetchBaseSnapshot(), bsnsBalance.refetch()])
+      const [approvalObservation, approvalBalance] = await Promise.all([
+        refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch),
+        bsnsBalance.refetch(),
+      ])
+      const approvalQuote = approvalObservation.snapshot
+      if (!approvalQuote) throw new Error("Finalized Base snapshot is unavailable")
       if (approvalBalance.isError || approvalBalance.isStale || approvalBalance.data === undefined) throw new Error("Withdrawal limits, fee, or balance could not be verified")
       if (approvalQuote.withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
       if (withdrawParsed.value <= approvalQuote.serviceFee || approvalBalance.data < withdrawParsed.value) throw new Error("Withdrawal fee or balance changed; review again")
@@ -771,17 +769,10 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
 
   const retryAccountMatches = unresolvedDeposit && ic.account ? sameIcAccount(ic.account, unresolvedDeposit.account) : false
   const retryRecipientMatches = unresolvedDeposit && address ? address.toLowerCase() === unresolvedDeposit.recipient.toLowerCase() : false
-  const reviewedQuote = reviewedDeposit?.gate.base ?? finalizedObservationQuote(reviewedObservation)
+  const reviewedQuote = reviewedDeposit?.gate.base ?? reviewedObservation?.snapshot
   const quoteForDisplay = reviewedQuote ?? baseData
-  const liveStatusNotice = heartbeat.isFetching && !heartbeat.data
-    ? "Checking live status…"
-    : heartbeat.isError
-      ? undefined
-      : !heartbeatReadiness.ready
-        ? "Live status is not confirmed. Current conditions will be checked before continuing."
-        : undefined
-  const depositsConfirmedPaused = !heartbeat.isError && heartbeatReadiness.ready && baseData?.depositsPaused === true
-  const withdrawalsConfirmedPaused = !heartbeat.isError && heartbeatReadiness.ready && baseData?.withdrawalsPaused === true
+  const depositsConfirmedPaused = baseData?.depositsPaused === true
+  const withdrawalsConfirmedPaused = baseData?.withdrawalsPaused === true
   const activeTransferReason = bridgeProgress.progress
     ? "Complete or close the current transfer before starting another one"
     : undefined
@@ -798,7 +789,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const amount = direction === "deposit" ? (unresolvedDeposit ? formatTokenAmount(unresolvedDeposit.call.grossAmount) : depositAmount) : withdrawAmount
   const balance = direction === "deposit" ? ledgerData?.balance : bsnsBalanceData
   const fee = unresolvedDeposit?.call.maxServiceFee ?? quoteForDisplay?.serviceFee
-  const feeLabel = reviewedQuote || (!heartbeat.isError && heartbeatReadiness.ready) ? "Current bridge fee" : baseData ? "Last known bridge fee" : "Bridge fee"
+  const feeLabel = reviewedQuote || baseData ? "Current bridge fee" : "Bridge fee"
   const receive = direction === "deposit" ? (unresolvedDeposit ? (unresolvedDeposit.call.grossAmount > unresolvedDeposit.call.maxServiceFee ? unresolvedDeposit.call.grossAmount - unresolvedDeposit.call.maxServiceFee : 0n) : depositParsed.ok && fee !== undefined ? (depositParsed.value > fee ? depositParsed.value - fee : 0n) : undefined) : withdrawParsed.ok && fee !== undefined && withdrawParsed.value > fee ? estimatedAmountOut(withdrawParsed.value, fee) : undefined
   const source = direction === "deposit" ? { network: "ic" as const, wallet: unresolvedDeposit?.account.owner ?? ic.account?.owner ?? "Connect IC wallet" } : { network: "base" as const, wallet: address ?? "Connect EVM wallet" }
   const destination = direction === "deposit" ? { network: "base" as const, wallet: unresolvedDeposit?.recipient ?? address ?? "Connect EVM wallet" } : { network: "ic" as const, wallet: reviewedWithdrawalAccount?.owner ?? ic.account?.owner ?? "Connect IC wallet" }
@@ -900,7 +891,6 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
         <DepositProgressCard title="Generating authorization…" detail="The Deposit was accepted. Waiting for the Mint Authorization to become available." />
       )}
       {unresolvedDeposit && !deposit.isPending && <div className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]"><p className="font-bold text-black">Deposit status unavailable</p><p className="mt-1 leading-5">Check whether the deposit was accepted before starting another one.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="ghost" disabled={checkingDeposit} onClick={() => void checkUnresolvedDeposit()}>{checkingDeposit ? "Checking…" : "Check status"}</Button><Link to="/history" className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-bold underline underline-offset-4">Open History</Link></div></div>}
-      {liveStatusNotice && <div className="mt-4 flex items-center justify-between gap-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] px-4 py-3 text-sm text-[#d5691b]"><span>{liveStatusNotice}</span><Link to="/status" className="font-bold underline underline-offset-4">View status</Link></div>}
       {!depositFlowActive && <Button className="mt-3 h-14 w-full" size="lg" aria-busy={depositActionPending} disabled={blockers.length > 0 || depositActionPending || write.isPending || submittingWithdrawal} onClick={beginBridgeReview}>
           {direction === "deposit" ? depositActionLabel : "Bridge to IC"}
           {depositActionPending

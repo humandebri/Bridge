@@ -10,14 +10,14 @@
 - Fee Recipient、RPC credential、raw transaction、秘密情報を監視ログへ出さない。
 - `get_bridge_status.counts`の`reserved_deposit_mint_operations`、`reserved_deposit_mint_amount`、`pending_ledger_operations`、`retained_audit_events`、`pruned_audit_events`、`retained_deposit_index_entries`と`audit_retention_warning`を確認する。audit詳細は直近100,000件で、80,000件以上は警告する。通常Deposit一覧はownerごとに直近100件だが、非終端Depositは独立indexから全件をpagination取得できる。
 
-Status画面とruntime事前検証は、ブラウザからreview済みprofileのBase RPCへ直接問い合わせる表示用観測であり、CanisterのHTTP outcallを発生させない。Deposit表示用availabilityはBase Finalized/Safe、runtime、pause、epoch、IC pause、Canister cycles floorを組み合わせ、Mint Signer ETH残高を条件にしない。Governance availabilityだけはGovernance Operator ETH floorを確認する。いずれかが60秒を超えた場合はlast-known値を残したままfail closedにする。資産状態を変える最終判断ではブラウザ観測を信用せず、Canisterがprovider quorumでBaseを再検証する。
+Status画面と資産操作直前のruntime事前検証は、ブラウザからreview済みprofileのBase RPCへ直接問い合わせる観測であり、CanisterのHTTP outcallを発生させない。Bridge画面の通常表示はruntime readinessを自動検証せず、手数料とpauseの軽量Quoteだけを読む。Deposit availabilityは操作直前にBase Finalized/Safe、runtime、pause、epoch、IC pause、Canister cycles floorを組み合わせ、60秒を超えた結果を再利用せずfail closedにする。Mint Signer ETH残高は条件にせず、Governance availabilityだけはGovernance Operator ETH floorを確認する。資産状態を変える最終判断ではブラウザ観測を信用せず、Canisterがprovider quorumでBaseを再検証する。
 
 CanisterがFinalized headを取得する際のblock response上限は固定16 KiBである。上限超過時は応答上限の自動拡大や自動再試行をせず、RPC unavailableとしてLedger処理前にfail closedにする。receipt blockは取得せず、2-of-3で一致したreceipt hashへ4 KiB上限の`bridgeSnapshot()` EIP-1898 probeを実行し、`requireCanonical=true`とsnapshotのblock numberでcanonical receiptを確認する。
 本番preflightも、receipt、deployment、保存snapshot、Timelock role eventの既知block hashをBridgeの`bridgeSnapshot()`またはTimelockの`getMinDelay()`へEIP-1898で固定する。番号指定block取得は行わず、full block応答はFinalized headのhash発見だけに使う。
 2026-07-23のBase Sepolia検証では、直近256 Finalized blockの`eth_getBlockByNumber`応答は最大5,542 bytesであり、16 KiB上限内に収まった。
 
 Canisterが使用するLedger feeの単一の定義元は`canister/bridge-canister/src/ledger.rs`の`KINIC_LEDGER_FEE`である。
-Canisterの全Ledger処理がこの値を使い、UIは`get_public_config().ledger_fee`をqueryして同じ値を表示し、事前検証へ使う。
+Canisterの全Ledger処理がこの値を使う。UIはBridge Canisterを経由せず、対象Ledgerの`icrc1_fee()`をqueryして表示と事前検証へ使う。
 
 production Canisterが受け入れるLedger feeは`100000` raw、`test-deployment` featureで作るstaging Canisterは`10000` rawに固定する。activation preflightとruntimeの`BadFee`処理は、buildが選択した固定値との差異をfail closedにする。
 詳しい検証条件は`sepolia-staging-e2e.md`の「Test Ledgerのfee」に記載する。
@@ -25,7 +25,7 @@ production Canisterが受け入れるLedger feeは`100000` raw、`test-deploymen
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv35、record wireはv29を現行形式とする。Productionの`post_upgrade`は現行形式だけを受理する。test-deployment stagingだけは、review済みv34／wire v29からv35／wire v29への一方向migrationを持つ。
+stable schemaはv35、record wireはv29を現行形式とする。Productionの`post_upgrade`は現行形式だけを受理する。test-deployment stagingだけは、review済みlive v33／wire v28からv35／wire v29への一方向migrationを持つ。
 
 ## 保持制限と監査
 
@@ -36,7 +36,7 @@ stable schemaはv35、record wireはv29を現行形式とする。Productionの`
 Productionではschema v35またはwire v29以外のstable state、未知schema、decode不能なDBを、空であってもfail closedで拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。buildが選択した固定`KINIC_LEDGER_FEE`（productionは`100000 raw`、stagingは`10000 raw`）とprepared recordのcharged Service Feeをreview済みprofileに照合した後、任意の非anonymous主体がHistoryから`continue_withdrawal`を実行する。Canisterはruntimeで`icrc1_fee()`を照会せず、固定Ledger Feeがcharged Service Fee以下であることを再検証できた場合だけ、同じrecordからreleaseを開始してguardを解除する。
-現行形式はstable schema v35／record wire v29とする。Productionはこれ以外をfail closedで拒否する。test-deployment stagingだけは、source v34/module hash、target v35/module hash、confirmation relayer、state countsをpolicyで固定した一方向upgradeを許可する。初期化済みの永続Canisterは同一deployment instanceのupgradeだけで更新し、reinstallは禁止する。
+現行形式はstable schema v35／record wire v29とする。Productionはこれ以外をfail closedで拒否する。test-deployment stagingだけは、source v33/module・Candid hash、target v35/module・Candid hash、Governance兼用confirmation relayer、state countsをpolicyで固定した一方向upgradeを許可する。初期化済みの永続Canisterは同一deployment instanceのupgradeだけで更新し、reinstallは禁止する。
 SQLite DBやcounterを手作業で変更しない。
 
 schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipient、Authorization、失効またはMint確定証拠を一つのstable envelopeへ保存する。pending Ledger、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、primary rowとliability index・集計は一つのSQLite transactionで更新する。
@@ -45,7 +45,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 
 保守APIはCanister controllerだけが呼び出せる。Governance principal、pause principal、Runtime Administratorには許可しない。実行前に対象Wasmとstable imageを保存し、処理失敗時にmetadataやDBを手作業で変更しない。
 
-新規install後、controller handover前にcontroller identityから`initialize_public_config()`を一度実行する。これはMint SignerとGovernance Operatorをchain-keyから導出し、両方が成功した場合だけstable stateへ一括保存する。続けて`get_public_config()` queryを実行し、release profileの両アドレスと一致することを確認する。初期化失敗、未初期化query、保存済みアドレスとの不一致はいずれもdeployment blockerであり、空値や手入力値で代替しない。upgradeでは保存値を維持し、再初期化を必須としない。
+新規install後、controller handover前にcontroller identityから`initialize_public_config()`を一度実行する。これはMint SignerとGovernance Operatorをchain-keyから導出し、両方が成功した場合だけstable stateへ一括保存する。続けて公開`get_runtime_binding()`とcontroller/governance限定`get_operational_config()`を実行し、release profileの両アドレスと一致することを確認する。`get_runtime_binding().operational_config_sha256`は、operational実値と固定Ledger feeをdomain-separated Candid encodingで束縛し、handover後の`verify-live`がprofile driftを公開値なしで検出する。初期化失敗、未初期化query、保存済みアドレスまたはbinding digestの不一致はいずれもdeployment blockerであり、空値や手入力値で代替しない。upgradeでは保存値を維持し、再初期化を必須としない。
 
 1. `start_storage_validation()`を一度呼び、`continue_storage_validation(100)`を`complete = true`まで反復する。途中で通常更新が入って`StateChanged`になった場合、古いprogressは破棄されるため、静穏時間帯に明示的に再開始する。
 2. `storage_integrity_check()` queryが`ok`を返すことを確認する。upgrade処理からこの検査は自動実行されない。
@@ -109,7 +109,7 @@ npm run governance-relayer -- run --operation-id <id>
 
 配置後のGovernance relayerは`status`と`relay`を匿名で実行できる。`confirm`とconfirmationを含む`run`は専用confirmation relayer identityを必須とし、障害復旧時だけGovernance/Pause principalを使う。`prepare`、`replace`、activation、緊急操作の明示要求には対応するGovernance/Pause identityを使う。初回配置だけは暗号化Foundry keystoreと別password fileを入力とする`production-deploy-driver.sh`で行う。秘密、実path、RPC URLをrelease artifactやevidenceへ記録しない。
 
-stagingを現行schemaへ切り替える前にpending governance transactionとemergency queueが空であることを確認する。reviewed policyに一致するschema v34／wire v29だけをv35へ移行し、それ以外はupgrade対象にしない。rollbackでは最初にrelayerを停止し、同一schemaの対応Wasmとstable snapshotをセットで復元する。
+stagingを現行schemaへ切り替える前にpending governance transactionとTimelock queueが空であることを確認する。reviewed policyに一致するschema v33／wire v28だけをv35／wire v29へ移行し、それ以外はupgrade対象にしない。rollbackでは最初にrelayerを停止し、対応Wasmとstable snapshotをセットで復元する。
 
 初回production Canister作成は`icp.yaml`へsubnetを設定せず、review済みidentityで`BRIDGE_ICP_IDENTITY=<identity> scripts/production-canister-bootstrap.sh`を実行する。このscriptは`pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeez-fez7a-iae`を`icp canister create --subnet`へ固定し、作成後または既存mapping再利用時にNNS Registryが返す実subnetとの一致を必須にする。`.icp/data/mappings/production.ids.json`に既存IDがある場合は新規作成しない。
 

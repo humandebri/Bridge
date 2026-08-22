@@ -15,6 +15,13 @@ describe("Base Sepolia asset profile template", () => {
     expect(manifest.scripts["deploy:test"]).toBe("pnpm run build:sepolia && node scripts/check-sepolia-assets.mjs && wrangler deploy --name kinic-bridge-ui-test")
   })
 
+  it("can publish the staging Worker from a frozen artifact receipt without rebuilding", async () => {
+    const manifest = JSON.parse(await readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"))
+    expect(manifest.scripts["artifact:test"]).toContain("staging-assets.mjs generate")
+    expect(manifest.scripts["deploy:test:artifact"]).toContain("staging-assets.mjs deploy")
+    expect(manifest.scripts["deploy:test:artifact"]).not.toContain("build:sepolia")
+  })
+
   it("deploys production only from the Gate B UI artifact receipt", async () => {
     const manifest = JSON.parse(await readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"))
     expect(manifest.scripts.deploy).toContain("production-assets.mjs deploy")

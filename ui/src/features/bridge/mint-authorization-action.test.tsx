@@ -50,6 +50,12 @@ vi.mock("@/features/status/use-status", () => ({
     isError: false,
     isStale: false,
   }),
+  useFinalizedBaseClock: () => ({
+    data: { timestamp: mocks.heartbeatTimestamp.value },
+    dataUpdatedAt: Date.now() - mocks.heartbeatAgeMs.value,
+    isError: false,
+    isStale: false,
+  }),
 }))
 
 vi.mock("@/lib/runtime-validation", () => ({

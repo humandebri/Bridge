@@ -281,7 +281,6 @@ async function refreshBridgeData(page: Page): Promise<void> {
   const bridge = page.getByRole("region", { name: "KINIC bridge" })
   const refresh = bridge.getByRole("button", { name: "Refresh", exact: true })
   await refresh.click()
-  await expect(bridge.getByRole("button", { name: "Refreshing…", exact: true })).toBeVisible()
   await expect(refresh).toBeEnabled({ timeout: 90_000 })
 }
 

@@ -27,7 +27,10 @@
     "codegen:candid:check": "node scripts/generate-candid.mjs --check",
     "deploy:check": "node scripts/check-deploy-profile.mjs",
     "deploy": "pnpm run deploy:check && node scripts/production-assets.mjs deploy $BRIDGE_RELEASE_BUNDLE/ui-assets.json $BRIDGE_UI_RUNTIME_PROFILE_FILE",
-    "deploy:test": "pnpm run build:sepolia && node scripts/check-sepolia-assets.mjs && wrangler deploy --name kinic-bridge-ui-test"
+    "deploy:test": "pnpm run build:sepolia && node scripts/check-sepolia-assets.mjs && wrangler deploy --name kinic-bridge-ui-test",
+    "artifact:test": "node scripts/staging-assets.mjs generate $BRIDGE_STAGING_UI_RECEIPT",
+    "artifact:test:verify": "node scripts/staging-assets.mjs verify $BRIDGE_STAGING_UI_RECEIPT",
+    "deploy:test:artifact": "node scripts/staging-assets.mjs deploy $BRIDGE_STAGING_UI_RECEIPT"
   },
   "dependencies": {
     "@coinbase/wallet-sdk": "^4.3.7",

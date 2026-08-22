@@ -34,7 +34,7 @@ Gate B uses a new manifest containing those six files plus `rpc-e2e.json`, `gate
 
 The actual Gate A manifest must list all six Gate A artifacts exactly once; Gate B must list all sixteen Gate B artifacts exactly once. Paths must be single relative file paths; symlinks or path traversal outside the bundle are rejected. Gate A omits the parent hash; Gate B requires it. Manifest release-approver signatures and key ceremony artifacts do not exist.
 
-Gate B reads PublicConfig and reserve status through signature-verified Canister queries. Governance must run `governance-relayer refresh-attestation` immediately before verification; the authenticated Finalized Base attestation must postdate the Gate B manifest and be no older than five minutes. It binds Bridge, Timelock, BSNS, pause, signer, runtime, role and fee state, including an exact Timelock delay match.
+Gate B reads the public RuntimeBinding and reserve status through signature-verified Canister queries. Governance must run `governance-relayer refresh-attestation` immediately before verification; the authenticated Finalized Base attestation must postdate the Gate B manifest and be no older than five minutes. It binds Bridge, Timelock, BSNS, pause, signer, runtime, role and fee state, including an exact Timelock delay match. Operational configuration is read separately with a controller or governance identity.
 
 `monitor-drill.json` schema v4 binds the emergency pause claim to exact Finalized Base actions and an IC request certificate. Gate Aでは認可入力にせず、Gate Bでresponse、certificate、audit digest、timestamp ordering、exact pause/cancel action setを検証する。staging monitor drillの直接RPC照合だけは`production-live-preflight.sh verify-monitor-drill`を使い、本番Base状態は公式EVM RPC Canister経由で保存したactivation attestationを正本とする。
 

@@ -16,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
+import { useFinalizedBaseClock, useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
 import { withBrowserLock } from "@/lib/browser-lock"
 import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
@@ -77,8 +77,9 @@ export function MintAuthorizationAction({
   const queryClient = useQueryClient()
   const runtime = useRuntimeValidation(chainId, { enabled: false, gcTime: Infinity, staleTime: 60_000 })
   const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, {
-    enabled: true,
+    enabled: false,
   })
+  const finalizedBaseClock = useFinalizedBaseClock({ enabled: true, staleTime: 15_000, refetchInterval: 15_000 })
   const authorization = record.mint_authorization[0]
   const contract = useMemo(
     () => authorization ? contractAuthorization(authorization) : undefined,
@@ -246,9 +247,9 @@ export function MintAuthorizationAction({
   const recipient = authorization
     ? `0x${Array.from(authorization.recipient, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
     : ""
-  const finalizedTimestamp = heartbeat.data?.snapshot?.blockTimestamp
-  const estimatedTimestamp = heartbeat.data?.snapshot
-    ? heartbeat.data.snapshot.blockTimestamp + BigInt(Math.max(0, Math.floor((clockNow - heartbeat.data.checkedAt) / 1_000)))
+  const finalizedTimestamp = finalizedBaseClock.data?.timestamp
+  const estimatedTimestamp = finalizedBaseClock.data
+    ? finalizedBaseClock.data.timestamp + BigInt(Math.max(0, Math.floor((clockNow - finalizedBaseClock.dataUpdatedAt) / 1_000)))
     : undefined
   const estimatedDeadlinePassed = authorization !== undefined
     && estimatedTimestamp !== undefined
@@ -261,7 +262,7 @@ export function MintAuthorizationAction({
 
   useEffect(() => {
     if (!registerAction) return
-    if (pending || identityConflict || finalizedDeadlinePassed || mintBlockedReason || !address || finalizedTimestamp === undefined || heartbeat.isError || heartbeat.isStale) {
+    if (pending || identityConflict || finalizedDeadlinePassed || mintBlockedReason || !address || finalizedTimestamp === undefined || finalizedBaseClock.isError || finalizedBaseClock.isStale) {
       registerAction(undefined)
       return
     }
@@ -271,7 +272,7 @@ export function MintAuthorizationAction({
       run: async () => { await runMint() },
     })
     return () => registerAction(undefined)
-  }, [address, finalizedDeadlinePassed, finalizedTimestamp, heartbeat.isError, heartbeat.isStale, identityConflict, mintBlockedReason, mintPending, pending, registerAction, runMint, write.isPending])
+  }, [address, finalizedBaseClock.isError, finalizedBaseClock.isStale, finalizedDeadlinePassed, finalizedTimestamp, identityConflict, mintBlockedReason, mintPending, pending, registerAction, runMint, write.isPending])
 
   useEffect(() => {
     if (finalizedDeadlinePassed && !pending) onProgress?.({ phase: "attention", message: "The Mint Authorization expired before a Base transaction was submitted. Open History to confirm the refund path." })
@@ -285,8 +286,8 @@ export function MintAuthorizationAction({
       || address.toLowerCase() !== recipient.toLowerCase()
       || chainId !== deploymentProfile.chainId
       || finalizedTimestamp === undefined
-      || heartbeat.isError
-      || heartbeat.isStale
+      || finalizedBaseClock.isError
+      || finalizedBaseClock.isStale
       || finalizedDeadlinePassed
       || mintBlockedReason
       || identityConflict
@@ -295,7 +296,7 @@ export function MintAuthorizationAction({
       || write.isPending) return
     attemptedAutoMintPrompts.add(autoPromptKey)
     mint.mutate()
-  }, [address, authorizationAvailable, autoPromptKey, chainId, finalizedDeadlinePassed, finalizedTimestamp, heartbeat.isError, heartbeat.isStale, identityConflict, mint, mintBlockedReason, pending, recipient, write.isPending])
+  }, [address, authorizationAvailable, autoPromptKey, chainId, finalizedBaseClock.isError, finalizedBaseClock.isStale, finalizedDeadlinePassed, finalizedTimestamp, identityConflict, mint, mintBlockedReason, pending, recipient, write.isPending])
 
   if (!authorization || !authorizationAvailable) return null
   const remaining = estimatedTimestamp === undefined

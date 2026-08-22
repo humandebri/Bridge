@@ -39,7 +39,7 @@ pnpm run e2e:real
 The checked-in `base-sepolia-preflight` profile is intentionally incomplete. Complete every
 canister/contract identifier, expected Bridge signer, deployment block, and runtime bytecode hash before publishing a
 working environment. At runtime the UI verifies wallet chain, contract
-bytecode, `Bridge.bsns()`, the quorum-confirmed Finalized Bridge signer, token metadata, `get_public_config`, and schema version. Any failure
+bytecode, `Bridge.bsns()`, the quorum-confirmed Finalized Bridge signer, token metadata, `get_runtime_binding`, and schema version immediately before a value-changing action. Any failure
 disables approve, deposit, and withdrawal controls.
 
 The deployment profile has no manual read-only flag or origin allowlist. Controls become available

@@ -81,7 +81,7 @@ function HistoryPage() {
   const ic = useIcWallet()
   const historyAccount = ic.account ?? ic.historyAccount
   const runtime = useRuntimeValidation(chainId, { enabled: false })
-  const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, { enabled: true })
+  const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, { enabled: false })
   const queryClient = useQueryClient()
   const bridgeProgress = useBridgeProgress()
   const completeWithdrawalProgress = bridgeProgress.completeWithdrawal
@@ -423,7 +423,6 @@ function HistoryPage() {
     manualMintScan.current = true
     try {
       await Promise.all([
-        heartbeat.refetch(),
         historyAccount ? deposits.refetch() : Promise.resolve(),
         ...depositMintScans.map((scan) => scan.refetch()),
         address ? withdrawals.refetch() : Promise.resolve(),
@@ -432,7 +431,7 @@ function HistoryPage() {
       manualMintScan.current = false
     }
   }
-  const refreshing = runtime.isFetching || heartbeat.isFetching || (Boolean(historyAccount) && (deposits.isFetching || depositMintScanFetching)) || (Boolean(address) && withdrawals.isFetching)
+  const refreshing = (Boolean(historyAccount) && (deposits.isFetching || depositMintScanFetching)) || (Boolean(address) && withdrawals.isFetching)
   const loadingInitial = Boolean(historyAccount && !deposits.data && deposits.isFetching) || Boolean(address && !withdrawals.data && withdrawals.isFetching)
   const loadingOlder = loadingOlderDeposits || loadingOlderWithdrawals
   const writesEnabled = !runtime.isFetching && !heartbeat.isFetching

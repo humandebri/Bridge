@@ -1,689 +1,180 @@
 #!/usr/bin/env python3
-"""Regression tests for the fail-closed staging RPC replacement driver."""
-
+"""Regression tests for the fail-closed staging v33-to-v35 upgrade gate."""
 from __future__ import annotations
 
-import hashlib
-import json
-import os
+import hashlib, json, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
-import shutil
-import subprocess
-import sys
-import tempfile
-import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from source_resolution import source_path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_FILES = (
-    "scripts/plan007/staging-canister-upgrade.sh",
-    "scripts/plan007/staging_canister_upgrade.py",
-    "scripts/plan007/candid_values.py",
-    "scripts/plan007/read-public-canister-metadata.mjs",
-)
-POLICY_PATH = "deployments/sepolia-staging/rpc-provider-replacement-policy.json"
+SCRIPT_FILES = ("scripts/plan007/staging-canister-upgrade.sh", "scripts/plan007/staging_canister_upgrade.py",
+         "scripts/plan007/candid_values.py", "scripts/plan007/read-public-canister-metadata.mjs")
+POLICY = "deployments/sepolia-staging/same-schema-upgrade-policy.json"
+PROFILE = "deployments/sepolia-staging/frontend-profile.json"
+COUNTS = {"retained_audit_events": 15, "reconciliation_holds": 0, "retained_deposit_index_entries": 1,
+          "pending_ledger_operations": 0, "withdrawals": 1, "deposits": 1,
+          "reserved_deposit_mint_operations": 1, "reserved_deposit_mint_amount": 1050000000,
+          "pruned_audit_events": 0}
 
 
-class StagingUpgradeDriverTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        driver = source_path("scripts/plan007/staging_canister_upgrade.py").read_text(
-            encoding="utf-8"
-        )
-        if "same-schema-upgrade-policy.json" in driver:
-            raise unittest.SkipTest(
-                "v33-to-v35 candidates are covered by the dedicated trusted suite"
-            )
-
+class V33ToV35UpgradeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.base = Path(self.temporary.name)
-        self.repo = self.base / "repo"
-        self.state = self.base / "state"
-        self.repo.mkdir()
-        self.state.mkdir()
-        for relative in SCRIPT_FILES + (POLICY_PATH,):
-            destination = self.repo / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            source = (
-                source_path(relative) if relative in SCRIPT_FILES else ROOT / relative
-            )
-            shutil.copy2(source, destination)
-        (self.repo / "canister/bridge-canister").mkdir(parents=True)
-        self.did = self.repo / "canister/bridge-canister/bridge.did"
-        self.did.write_text("service : {}\n", encoding="utf-8")
-        policy = self.policy()
-        self.valid_policy = policy
-        staging = self.repo / "deployments/sepolia-staging"
-        (staging / "evidence").mkdir(parents=True, exist_ok=True)
-        (staging / "frontend-profile.json").write_text(json.dumps({
-            "environment": policy["environment"],
-            "bridgeCanisterId": policy["canister_id"],
-            "deploymentInstanceId": policy["deployment_instance_id"],
-            "chainId": policy["base_chain_id"],
-            "evmRpcCanisterId": policy["evm_rpc_canister_id"],
-            "icHost": "https://icp-api.io",
-            "baseRpcUrl": policy["after_rpc_urls"][0],
-            "baseHistoryRpcUrls": policy["after_rpc_urls"][1:],
-            "rpcProviderUrlsSha256": "0x" + policy["after_rpc_urls_sha256"],
-            "minimumWithdrawalId": "0x" + "01" * 32,
-        }), encoding="utf-8")
-        self.wasm = self.base / "reviewed.wasm"
-        self.wasm.write_bytes(b"reviewed staging wasm")
-        self.after_module = hashlib.sha256(self.wasm.read_bytes()).hexdigest()
-        if "target_module_sha256" in policy:
-            policy["target_module_sha256"] = self.after_module
-            (self.repo / POLICY_PATH).write_text(json.dumps(policy), encoding="utf-8")
-        self.bin = self.base / "bin"
-        self.bin.mkdir()
-        self.install_record = self.state / "install.json"
-        self.write_tools()
-        self.git("init", "-q")
-        self.git("config", "user.email", "test@example.invalid")
-        self.git("config", "user.name", "Test")
-        self.git("add", ".")
-        self.git("commit", "-qm", "code")
-        source = self.git("rev-parse", "HEAD").stdout.strip()
-        local_e2e = {
-            "source_commit": source,
-            "bridge_wasm_sha256": self.after_module,
-            "candid_sha256": hashlib.sha256(self.did.read_bytes()).hexdigest(),
-        }
-        (staging / "evidence/local-e2e.json").write_text(json.dumps(local_e2e), encoding="utf-8")
-        self.git("add", "deployments/sepolia-staging/evidence/local-e2e.json")
-        self.git("commit", "-qm", "evidence")
+        self.temp = tempfile.TemporaryDirectory(); self.base = Path(self.temp.name)
+        self.repo, self.state, self.bin = self.base / "repo", self.base / "state", self.base / "bin"
+        self.repo.mkdir(); self.state.mkdir(); self.bin.mkdir()
+        for relative in (*SCRIPT_FILES, POLICY, PROFILE):
+            target = self.repo / relative; target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path(relative) if relative in SCRIPT_FILES else ROOT / relative, target)
+        self.did = self.repo / "canister/bridge-canister/bridge.did"; self.did.parent.mkdir(parents=True)
+        self.did.write_text("service : { get_runtime_binding : () -> (); get_operational_config : () -> () }")
+        self.source_did = self.base / "source.did"; self.source_did.write_text("service : { get_public_config : () -> () }")
+        self.wasm = self.base / "candidate.wasm"; self.wasm.write_bytes(b"same schema candidate")
+        self.source_module = "11" * 32; self.target_module = self.sha(self.wasm)
+        policy_path = self.repo / POLICY; policy = json.loads(policy_path.read_text())
+        policy["source_module_sha256"] = self.source_module; policy["source_candid_sha256"] = self.sha(self.source_did)
+        policy_path.write_text(json.dumps(policy))
+        self.profile = json.loads((self.repo / PROFILE).read_text())
+        self.make_tools()
+        self.git("init", "-q"); self.git("config", "user.email", "test@example.invalid"); self.git("config", "user.name", "Test")
+        self.git("add", "."); self.git("commit", "-qm", "fixture")
+        self.local = self.base / "local.json"
+        self.local.write_text(json.dumps({"schema_version": 8,
+                                          "source_commit": self.git("rev-parse", "HEAD").stdout.strip(),
+                                          "bridge_wasm_sha256": self.target_module, "candid_sha256": self.sha(self.did),
+                                          "state_upgrade": {"verified": True},
+                                          "tests": {"full_local_ci": "passed"}}))
+        self.preflight, self.result = self.base / "preflight.json", self.base / "result.json"
 
-    def tearDown(self) -> None:
-        self.temporary.cleanup()
+    def tearDown(self) -> None: self.temp.cleanup()
+    def sha(self, path: Path) -> str: return hashlib.sha256(path.read_bytes()).hexdigest()
+    def git(self, *args: str): return subprocess.run(["git", *args], cwd=self.repo, text=True, capture_output=True, check=True)
+    def executable(self, name: str, text: str) -> None:
+        path = self.bin / name; path.write_text(text); path.chmod(0o755)
 
-    def git(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["git", *args], cwd=self.repo, text=True, capture_output=True, check=True)
-
-    def policy(self) -> dict[str, object]:
-        return json.loads((self.repo / POLICY_PATH).read_text(encoding="utf-8"))
-
-    def migration_source(self, candid_metadata: str) -> dict[str, object]:
-        self.require_migration_policy()
-        return next(
-            source
-            for source in self.policy()["migration"]["source_states"]
-            if source["candid_metadata"] == candid_metadata
-        )
-
-    def has_migration_policy(self) -> bool:
-        return "migration" in self.valid_policy
-
-    def require_migration_policy(self) -> None:
-        if not self.has_migration_policy():
-            self.skipTest("candidate policy has no legacy stable-schema migration")
-
-    def write_executable(self, name: str, source: str) -> None:
-        path = self.bin / name
-        path.write_text(source, encoding="utf-8")
-        path.chmod(0o755)
-
-    def write_tools(self) -> None:
-        self.write_executable("cast", "#!/bin/sh\n[ \"${MOCK_CHAIN_FAIL:-0}\" = 0 ] || exit 1\necho \"${MOCK_CHAIN_ID:-84532}\"\n")
-        self.write_executable("didc", "#!/bin/sh\n[ \"${MOCK_DIDC_FAIL:-0}\" = 0 ] || exit 1\n")
-        self.write_executable("node", r'''#!/usr/bin/env python3
-import json, os, pathlib, sys
-args = sys.argv[1:]
-state = pathlib.Path(os.environ["MOCK_STATE"])
-if args and args[0].endswith("capture-withdrawal-boundary.mjs"):
-    print(json.dumps({
-        "schema_version": 1,
-        "kind": "withdrawal-admission-boundary",
-        "minimum_withdrawal_id": os.environ.get("MOCK_CAPTURE_BOUNDARY", "0x" + "01" * 32),
-        "providers": [{"provider_url_sha256": "11" * 32}, {"provider_url_sha256": "22" * 32}],
-    }))
-    raise SystemExit(0)
-if len(args) != 4 or args[1] != "https://icp-api.io" or args[3] != "candid:service":
-    raise SystemExit(2)
-if os.environ.get("MOCK_PUBLIC_METADATA_FAIL") == "1":
-    print("certified metadata lookup failed", file=sys.stderr)
-    raise SystemExit(1)
-if "MOCK_PUBLIC_METADATA_JSON" in os.environ:
-    print(os.environ["MOCK_PUBLIC_METADATA_JSON"])
-    raise SystemExit(0)
-if os.environ.get("MOCK_METADATA_MISSING") == "1" and not (state / "metadata-repaired").exists():
-    print(json.dumps({"status": "absent"}))
-    raise SystemExit(0)
-print(json.dumps({"status": "present", "value": pathlib.Path(os.environ["MOCK_DID"]).read_text()}))
+    def make_tools(self) -> None:
+        self.executable("cast", r'''#!/usr/bin/env python3
+import os,sys
+if sys.argv[1:3] != ["chain-id","--rpc-url"]: raise SystemExit(2)
+print(os.environ.get("MOCK_CHAIN_ID","84532"))
 ''')
-        self.write_executable("ic-wasm", r'''#!/usr/bin/env python3
-import os, pathlib, sys
-args = sys.argv[1:]
-if args[-1] == "metadata":
-    sections = ["icp:private kinic:deployment"] if os.environ.get("MOCK_CANDID_SECTION_MISSING") == "1" else ["icp:public candid:service", "icp:private kinic:deployment"]
-    print("\n".join(sections))
-elif args[-2:] == ["metadata", "candid:service"]:
-    print(pathlib.Path(os.environ["MOCK_DID"]).read_text())
-elif args[-2:] == ["metadata", "kinic:deployment"]:
-    print(os.environ.get("MOCK_CANDID_DEPLOYMENT", "test-deployment"))
-else:
-    raise SystemExit(2)
-''')
-        self.write_executable("icp", r"""#!/usr/bin/env python3
-import json, os, pathlib, sys
-args = sys.argv[1:]
-state = pathlib.Path(os.environ["MOCK_STATE"])
-policy = json.loads(pathlib.Path(os.environ["MOCK_POLICY"]).read_text())
-after_module = os.environ["MOCK_AFTER_MODULE"]
-source_module = (
-    policy["source_module_sha256"]
-    if "source_module_sha256" in policy
-    else policy["before_module_sha256"]
-)
-source_schema = (
-    policy["source_schema_version"]
-    if "source_schema_version" in policy
-    else policy["stable_schema_version"]
-)
-target_schema = policy.get("target_schema_version", source_schema)
-applied = (state / "applied").exists() or os.environ.get("MOCK_ALREADY_APPLIED") == "1"
-digest = policy["after_rpc_urls_sha256"] if applied else policy["before_rpc_urls_sha256"]
-if not applied:
-    digest = os.environ.get("MOCK_DIGEST", digest)
-module = after_module if (state / "metadata-repaired").exists() else os.environ.get(
-    "MOCK_MODULE", after_module if applied else source_module
-)
-def blob(value): return ''.join('\\' + value[i:i+2] for i in range(0, len(value), 2))
-if args[:2] == ["canister", "install"]:
-    (state / "install.json").write_text(json.dumps(args))
-    if os.environ.get("MOCK_INSTALL_FAIL") == "1": raise SystemExit(1)
-    (state / "applied").touch(); (state / "metadata-repaired").touch(); raise SystemExit(0)
-if args[:2] == ["canister", "metadata"]:
-    name = args[3]
-    if name == "kinic:deployment":
-        if os.environ.get("MOCK_PRIVATE_METADATA_FAIL") == "1": raise SystemExit(1)
-        print(json.dumps({"value": os.environ.get("MOCK_LIVE_DEPLOYMENT", "test-deployment")})); raise SystemExit(0)
-    raise SystemExit(2)
-if args[:2] == ["canister", "status"]:
-    if "--id-only" in args: print(os.environ.get("MOCK_CANISTER_ID", policy["canister_id"])); raise SystemExit(0)
-    print(json.dumps({"module_hash": module})); raise SystemExit(0)
-if args[:2] != ["canister", "call"]: raise SystemExit(2)
-method = args[3]
-if method == "start_storage_validation":
-    if os.environ.get("MOCK_VALIDATION_FAIL") == "1":
-        candid = 'variant { Err = variant { StorageFailure } }'
-    else:
-        (state / "validation-started").touch()
-        candid = 'variant { Ok = record { complete = false; phase = "deposits"; scanned_rows = 0 : nat64 } }'
-elif method == "continue_storage_validation":
-    if os.environ.get("MOCK_VALIDATION_FAIL") == "1":
-        candid = 'variant { Err = variant { StorageFailure } }'
-    else:
-        candid = 'variant { Ok = record { complete = true; phase = "complete"; scanned_rows = 1 : nat64 } }'
-elif method == "get_public_config":
-    schema = str(target_schema) if applied else os.environ.get("MOCK_SCHEMA", str(source_schema))
-    instance = os.environ.get("MOCK_INSTANCE", policy["deployment_instance_id"])[2:]
-    chain = os.environ.get("MOCK_PUBLIC_CHAIN", str(policy["base_chain_id"]))
-    evm = os.environ.get("MOCK_EVM_CANISTER", policy["evm_rpc_canister_id"])
-    governance_field = ""
-    if "governance_principal" in policy:
-        governance = os.environ.get("MOCK_GOVERNANCE", policy["governance_principal"])
-        governance_field = f'; governance_principal = principal "{governance}"'
-    boundary = os.environ.get("MOCK_BOUNDARY", "01" * 32)
-    boundary_field = f'; minimum_withdrawal_id = blob "{blob(boundary)}"' if int(schema) >= 33 else ''
-    named = f'''record {{ schema_version = {schema} : nat16; deployment_instance_id = blob "{blob(instance)}"; base_chain_id = {chain} : nat64; evm_rpc_canister_id = principal "{evm}"{governance_field}; rpc_provider_urls_sha256 = blob "{blob(digest)}"{boundary_field} }}'''
-    if os.environ.get("MOCK_CANDID_NULL") == "1":
-        if "--candid" in args:
-            print(json.dumps({"response_candid": None})); raise SystemExit(0)
-        ids = {
-            "schema_version": 2125064634, "deployment_instance_id": 2063157835,
-            "base_chain_id": 805517511, "evm_rpc_canister_id": 1452342262,
-            "governance_principal": 2916479505,
-            "rpc_provider_urls_sha256": 4005183470, "minimum_withdrawal_id": 2442470196,
-        }
-        numeric = named
-        for name, fid in ids.items():
-            numeric = numeric.replace(f"{name} =", f"{fid} =")
-        print(json.dumps({"response_candid": numeric})); raise SystemExit(0)
-    candid = named
-elif method == "get_bridge_status":
-    counts = dict(policy["status_counts"])
-    if os.environ.get("MOCK_COUNT_DRIFT") == "1" or (applied and os.environ.get("MOCK_POST_COUNT_DRIFT") == "1"): counts["deposits"] += 1
-    candid = 'record { ' + '; '.join(f'{key} = {value} : nat64' for key, value in counts.items()) + ' }'
-elif method == "storage_integrity_check":
-    candid = 'variant { Err = variant { StorageFailure } }' if os.environ.get("MOCK_INTEGRITY_FAIL") == "1" else 'variant { Ok = "ok" }'
+        self.executable("ic-wasm", r'''#!/usr/bin/env python3
+import os,pathlib,sys
+a=sys.argv[1:]
+if a[-1]=="metadata": print("icp:public candid:service\nicp:private kinic:deployment")
+elif a[-2:]==["metadata","candid:service"]: print(pathlib.Path(os.environ["MOCK_DID"]).read_text(),end="")
+elif a[-2:]==["metadata","kinic:deployment"]: print("test-deployment")
 else: raise SystemExit(2)
-print(json.dumps({"response_candid": candid}))
-""")
+''')
+        self.executable("node", r'''#!/usr/bin/env python3
+import json,os,pathlib,sys
+state=pathlib.Path(os.environ["MOCK_STATE"])
+if os.environ.get("MOCK_UNKNOWN_CANDID")=="1": value="service : {}\n"
+elif state.joinpath("applied").exists() or os.environ.get("MOCK_APPLIED")=="1": value=pathlib.Path(os.environ["MOCK_DID"]).read_text()
+else: value=pathlib.Path(os.environ["MOCK_SOURCE_DID"]).read_text()
+print(json.dumps({"status":"present","value":value}))
+''')
+        self.executable("icp", r'''#!/usr/bin/env python3
+import json,os,pathlib,sys
+a=sys.argv[1:]; state=pathlib.Path(os.environ["MOCK_STATE"]); profile=json.loads(pathlib.Path(os.environ["MOCK_PROFILE"]).read_text())
+applied=state.joinpath("applied").exists() or os.environ.get("MOCK_APPLIED")=="1"
+def esc(v): return ''.join('\\'+v[i:i+2] for i in range(0,len(v),2))
+if a[:2]==["canister","install"]:
+ state.joinpath("install.json").write_text(json.dumps(a)); state.joinpath("applied").touch(); raise SystemExit(0)
+if a[:2]==["canister","metadata"]: print(json.dumps({"value":"test-deployment"})); raise SystemExit(0)
+if a[:2]==["canister","status"]:
+ if "--id-only" in a: print("rlhjx-iyaaa-aaaaf-qcnyq-cai"); raise SystemExit(0)
+ module=os.environ["MOCK_TARGET"] if applied else os.environ.get("MOCK_MODULE",os.environ["MOCK_SOURCE"])
+ print(json.dumps({"module_hash":module,"settings":{"controllers":["aaaaa-aa"]},"cycles":"1000000000000"})); raise SystemExit(0)
+if a[:2] != ["canister","call"]: raise SystemExit(2)
+method=a[3]; identity=a[a.index("--identity")+1]
+schema=35 if applied else 33
+fields=f"""schema_version = {schema} : nat16; deployment_instance_id = blob "{esc(profile['deploymentInstanceId'][2:])}"; minimum_withdrawal_id = blob "{esc(profile['minimumWithdrawalId'][2:])}"; base_chain_id = 84532 : nat64; bridge_contract = blob "{esc(profile['bridgeAddress'][2:])}"; expected_bridge_runtime_sha256 = blob "{esc(profile['bridgeRuntimeHash'][2:])}"; timelock_contract = blob "{esc(profile['timelockAddress'][2:])}"; expected_bridge_signer = blob "{esc(profile['expected_bridge_signer'][2:])}"; ledger_canister_id = principal "{profile['ledgerCanisterId']}"; index_canister_id = principal "{profile['indexCanisterId']}"; evm_rpc_canister_id = principal "{profile['evmRpcCanisterId']}"; rpc_provider_urls_sha256 = blob "{esc(profile['rpcProviderUrlsSha256'][2:])}"; marker = 0 : nat8"""
+if method in ("get_public_config","get_runtime_binding"): candid=f'record {{ {fields}; governance_principal = principal "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"; cycles_floor = 1000 : nat }}'
+elif method=="get_operational_config": candid='variant { Err = variant { Unauthorized } }' if identity=="anonymous" else 'variant { Ok = record { governance_principal = principal "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"; cycles_floor = 1000 : nat } }'
+elif method=="get_bridge_status":
+ counts=json.loads(os.environ["MOCK_COUNTS"]); counts["deposits"] += int(os.environ.get("MOCK_DRIFT","0"))
+ if applied: counts["deposits"] += int(os.environ.get("MOCK_POST_DRIFT","0"))
+ candid='record { '+ '; '.join(f'{k} = {v} : '+('nat' if k=='reserved_deposit_mint_amount' else 'nat64') for k,v in counts.items()) +' }'
+elif method=="storage_integrity_check": candid='variant { Ok = "ok" }'
+elif method=="get_activation_status": candid='variant { Ok = record { pending_timelock_operation = null } }'
+elif method=="get_pending_base_governance_transaction": candid='variant { Ok = null }'
+else: raise SystemExit(2)
+print(json.dumps({"response_candid":candid}))
+''')
 
-    def run_driver(self, *extra: str, **changes: str) -> subprocess.CompletedProcess[str]:
-        evidence = self.base / "result.json"
-        environment = os.environ.copy()
-        environment.update({
-            "PATH": f"{self.bin}{os.pathsep}{environment['PATH']}",
-            "BRIDGE_STAGING_IDENTITY": "reviewed-controller",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "MOCK_STATE": str(self.state),
-            "MOCK_POLICY": str(self.repo / POLICY_PATH),
-            "MOCK_AFTER_MODULE": self.after_module,
-            "MOCK_DID": str(self.did),
-        })
-        environment.update(changes)
-        return subprocess.run([
-            "bash", str(self.repo / SCRIPT_FILES[0]), "--wasm", str(self.wasm),
-            "--evidence", str(evidence), *extra,
-        ], cwd=self.repo, env=environment, text=True, capture_output=True, check=False)
+    def env(self, **changes: str) -> dict[str, str]:
+        value = os.environ.copy(); value.update({"PATH": f"{self.bin}{os.pathsep}{value['PATH']}",
+            "BRIDGE_STAGING_IDENTITY": "controller", "MOCK_STATE": str(self.state), "MOCK_DID": str(self.did),
+            "MOCK_SOURCE_DID": str(self.source_did), "MOCK_PROFILE": str(self.repo / PROFILE),
+            "MOCK_SOURCE": self.source_module, "MOCK_TARGET": self.target_module, "MOCK_COUNTS": json.dumps(COUNTS)})
+        value.update(changes); return value
 
-    def test_preflight_is_read_only(self) -> None:
-        result = self.run_driver()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("preflight-passed", result.stdout)
-        self.assertFalse(self.install_record.exists())
-        self.assertFalse((self.base / "result.json").exists())
-        self.assertFalse((self.repo / "scripts/plan007/__pycache__").exists())
+    def run_driver(self, execute: bool = False, **changes: str):
+        argv = ["bash", str(self.repo / SCRIPT_FILES[0]), "--wasm", str(self.wasm), "--local-evidence", str(self.local),
+                "--evidence", str(self.result if execute else self.preflight)]
+        if execute: argv += ["--execute", "--preflight-evidence", str(self.preflight)]
+        return subprocess.run(argv, cwd=self.repo, env=self.env(**changes), text=True, capture_output=True)
 
-    def test_preflight_rejects_storage_validation_failure_before_install(self) -> None:
-        result = self.run_driver("--execute", MOCK_VALIDATION_FAIL="1")
+    def test_preflight_is_read_only_and_records_atomic_counts(self) -> None:
+        result = self.run_driver(); self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.state / "install.json").exists())
+        evidence = json.loads(self.preflight.read_text())
+        self.assertEqual(evidence["result"], "preflight-passed")
+        self.assertIn("expected_status_counts = opt record", evidence["upgrade_arguments"])
+        self.assertIn('migration_id = opt "bridge-staging-v33-to-v35"', evidence["upgrade_arguments"])
+        self.assertIn('confirmation_relayer_principal = opt principal', evidence["upgrade_arguments"])
+        self.assertIn("rpc_provider_update = null", evidence["upgrade_arguments"])
+
+    def test_rpc_provider_chain_mismatch_rejects_before_live_state_reads(self) -> None:
+        result = self.run_driver(MOCK_CHAIN_ID="1")
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self.install_record.exists())
+        self.assertIn("RPC provider 0 returned an unexpected chain ID", result.stderr)
+        self.assertFalse(self.preflight.exists())
 
-    def test_execute_uses_explicit_wasm_and_writes_verified_evidence(self) -> None:
-        result = self.run_driver("--execute")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        command = json.loads(self.install_record.read_text())
-        self.assertNotIn("deploy", command)
-        self.assertEqual(command[command.index("--wasm") + 1], str(self.wasm.resolve()))
-        candid_args = command[command.index("--args") + 1]
-        self.assertIn("expected_status_counts = record", candid_args)
-        self.assertIn("status_counts_guard_version = 1 : nat8", candid_args)
-        for field, value in self.policy()["status_counts"].items():
-            annotation = "nat" if field == "reserved_deposit_mint_amount" else "nat64"
-            self.assertIn(f"{field} = {value} : {annotation}", candid_args)
-        evidence = json.loads((self.base / "result.json").read_text())
-        self.assertEqual(evidence["schema_version"], 2)
-        self.assertEqual(evidence["result"], "upgraded")
-        if self.has_migration_policy():
-            self.assertIsNone(evidence["boundary_capture"])
-        else:
-            self.assertNotIn("boundary_capture", evidence)
-        self.assertEqual(evidence["minimum_withdrawal_id"], "0x" + "01" * 32)
-        self.assertEqual(evidence["before"]["status_counts"], evidence["after"]["status_counts"])
+    def test_execute_requires_unchanged_preflight_and_upgrades(self) -> None:
+        self.assertEqual(self.run_driver().returncode, 0)
+        result = self.run_driver(execute=True); self.assertEqual(result.returncode, 0, result.stderr)
+        install = json.loads((self.state / "install.json").read_text())
+        self.assertEqual(install[install.index("--wasm") + 1], str(self.wasm))
+        self.assertEqual(json.loads(self.result.read_text())["result"], "upgraded")
 
-    def test_already_applied_is_idempotent(self) -> None:
-        preflight = self.run_driver(MOCK_ALREADY_APPLIED="1")
-        self.assertEqual(preflight.returncode, 0, preflight.stderr)
-        self.assertIn("preflight-passed", preflight.stdout)
-        self.assertFalse(self.install_record.exists())
-        self.assertFalse((self.base / "result.json").exists())
+    def test_state_drift_rejects_before_install(self) -> None:
+        self.assertEqual(self.run_driver().returncode, 0)
+        result = self.run_driver(execute=True, MOCK_DRIFT="1")
+        self.assertNotEqual(result.returncode, 0); self.assertFalse((self.state / "install.json").exists())
 
-        result = self.run_driver("--execute", MOCK_ALREADY_APPLIED="1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.install_record.exists())
-        self.assertEqual(json.loads((self.base / "result.json").read_text())["result"], "already-applied")
+    def test_tampered_preflight_is_rejected(self) -> None:
+        self.assertEqual(self.run_driver().returncode, 0)
+        value = json.loads(self.preflight.read_text()); value["before"]["status_counts"]["deposits"] += 1
+        self.preflight.write_text(json.dumps(value))
+        result = self.run_driver(execute=True); self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.state / "install.json").exists())
 
-    def test_migration_flag_is_rejected_outside_a_v32_source(self) -> None:
-        result = self.run_driver("--migrate-v32-to-v33")
+    def test_postcondition_drift_does_not_write_success_evidence(self) -> None:
+        self.assertEqual(self.run_driver().returncode, 0)
+        result = self.run_driver(execute=True, MOCK_POST_DRIFT="1")
         self.assertNotEqual(result.returncode, 0)
-        if self.has_migration_policy():
-            self.assertIn("requires a reviewed v32 staging source state", result.stderr)
-        else:
-            self.assertIn("unrecognized arguments", result.stderr)
-        self.assertFalse(self.install_record.exists())
+        self.assertTrue((self.state / "install.json").exists())
+        self.assertFalse(self.result.exists())
 
-    def test_known_missing_metadata_requires_explicit_migration(self) -> None:
-        self.require_migration_policy()
-        source = self.migration_source("absent")
-        missing_module = str(source["module_sha256"])
-        after_digest = str(source["rpc_provider_urls_sha256"])
-        rejected = self.run_driver(
-            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1", MOCK_DIGEST=after_digest
-        )
-        self.assertNotEqual(rejected.returncode, 0)
-        self.assertFalse(self.install_record.exists())
+    def test_already_applied_skips_install(self) -> None:
+        self.assertEqual(self.run_driver(MOCK_APPLIED="1").returncode, 0)
+        result = self.run_driver(execute=True, MOCK_APPLIED="1"); self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.state / "install.json").exists())
+        self.assertEqual(json.loads(self.result.read_text())["result"], "already-applied")
 
-        preflight = self.run_driver(
-            "--migrate-v32-to-v33",
-            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1", MOCK_DIGEST=after_digest,
-        )
-        self.assertEqual(preflight.returncode, 0, preflight.stderr)
-        self.assertIn("v32-to-v33-preflight-passed", preflight.stdout)
-        self.assertFalse(self.install_record.exists())
-
-        repaired = self.run_driver(
-            "--migrate-v32-to-v33", "--execute",
-            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1", MOCK_DIGEST=after_digest,
-        )
-        self.assertEqual(repaired.returncode, 0, repaired.stderr)
-        evidence = json.loads((self.base / "result.json").read_text())
-        self.assertEqual(evidence["result"], "migrated-and-rpc-replaced")
-        self.assertEqual(evidence["before"]["module_sha256"], missing_module)
-        self.assertEqual(evidence["after"]["module_sha256"], self.after_module)
-        self.assertEqual(evidence["live_candid_sha256_after"], evidence["candid_sha256"])
-        self.assertEqual(evidence["boundary_capture"]["minimum_withdrawal_id"], "0x" + "01" * 32)
-        self.assertEqual(evidence["minimum_withdrawal_id"], "0x" + "01" * 32)
-
-    def test_known_v32_source_state_requires_the_explicit_migration_flag(self) -> None:
-        self.require_migration_policy()
-        source = self.migration_source("present")
-        before_module = str(source["module_sha256"])
-        before_digest = str(source["rpc_provider_urls_sha256"])
-        rejected = self.run_driver(
-            MOCK_SCHEMA="32", MOCK_MODULE=before_module, MOCK_DIGEST=before_digest,
-        )
-        self.assertNotEqual(rejected.returncode, 0)
-        self.assertFalse(self.install_record.exists())
-
-        preflight = self.run_driver(
-            "--migrate-v32-to-v33",
-            MOCK_SCHEMA="32", MOCK_MODULE=before_module, MOCK_DIGEST=before_digest,
-        )
-        self.assertEqual(preflight.returncode, 0, preflight.stderr)
-        self.assertIn("v32-to-v33-preflight-passed", preflight.stdout)
-        self.assertFalse(self.install_record.exists())
-
-        migrated = self.run_driver(
-            "--migrate-v32-to-v33", "--execute",
-            MOCK_SCHEMA="32", MOCK_MODULE=before_module, MOCK_DIGEST=before_digest,
-        )
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        evidence = json.loads((self.base / "result.json").read_text())
-        self.assertEqual(evidence["result"], "migrated-and-rpc-replaced")
-        self.assertEqual(evidence["before"]["schema_version"], 32)
-        self.assertEqual(evidence["after"]["schema_version"], 33)
-
-    def test_v32_metadata_missing_retries_without_candid(self) -> None:
-        self.require_migration_policy()
-        if int(self.valid_policy["schema_version"]) < 4:
-            self.skipTest("numeric Candid fallback requires a schema v4 candidate policy")
-        source = self.migration_source("absent")
-        missing_module = str(source["module_sha256"])
-        after_digest = str(source["rpc_provider_urls_sha256"])
-        result = self.run_driver(
-            "--migrate-v32-to-v33",
-            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
-            MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("v32-to-v33-preflight-passed", result.stdout)
-        self.assertFalse(self.install_record.exists())
-
-        migrated = self.run_driver(
-            "--migrate-v32-to-v33", "--execute",
-            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
-            MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
-        )
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        evidence = json.loads((self.base / "result.json").read_text())
-        self.assertEqual(evidence["result"], "migrated-and-rpc-replaced")
-        self.assertEqual(evidence["before"]["schema_version"], 32)
-        self.assertEqual(evidence["after"]["schema_version"], 33)
-
-    def test_skip_storage_validation_runs_preflight_without_resetting_validation(self) -> None:
-        if int(self.valid_policy["schema_version"]) < 4:
-            self.skipTest("storage validation skip requires a schema v4 candidate policy")
-        if self.has_migration_policy():
-            source = self.migration_source("absent")
-            result = self.run_driver(
-                "--migrate-v32-to-v33", "--skip-storage-validation",
-                MOCK_SCHEMA="32", MOCK_MODULE=str(source["module_sha256"]),
-                MOCK_DIGEST=str(source["rpc_provider_urls_sha256"]),
-                MOCK_CANDID_NULL="1", MOCK_METADATA_MISSING="1",
-                MOCK_VALIDATION_FAIL="1",
-            )
-            expected = "v32-to-v33-preflight-passed"
-        else:
-            result = self.run_driver(
-                "--skip-storage-validation", MOCK_VALIDATION_FAIL="1"
-            )
-            expected = "preflight-passed"
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(expected, result.stdout)
-        self.assertFalse((self.state / "validation-started").exists())
-        self.assertFalse(self.install_record.exists())
-
-    def test_execute_rejects_skip_storage_validation(self) -> None:
-        if int(self.valid_policy["schema_version"]) < 4:
-            self.skipTest("storage validation skip requires a schema v4 candidate policy")
-        result = self.run_driver(
-            "--execute", "--skip-storage-validation",
-            MOCK_VALIDATION_FAIL="1",
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(
-            "--skip-storage-validation is preflight-only and cannot be used with --execute",
-            result.stderr,
-        )
-        self.assertFalse(self.install_record.exists())
-        self.assertFalse((self.state / "validation-started").exists())
-
-    def test_v32_migration_requires_the_reviewed_profile_boundary(self) -> None:
-        self.require_migration_policy()
-        source = self.migration_source("present")
-        before_module = str(source["module_sha256"])
-        before_digest = str(source["rpc_provider_urls_sha256"])
-        result = self.run_driver(
-            "--migrate-v32-to-v33",
-            "--execute",
-            MOCK_SCHEMA="32",
-            MOCK_MODULE=before_module,
-            MOCK_DIGEST=before_digest,
-            MOCK_CAPTURE_BOUNDARY="0x" + "02" * 32,
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("does not match the reviewed frontend profile", result.stderr)
-        self.assertFalse(self.install_record.exists())
-
-    def test_v32_migration_verifies_the_persisted_boundary_after_upgrade(self) -> None:
-        self.require_migration_policy()
-        source = self.migration_source("present")
-        before_module = str(source["module_sha256"])
-        before_digest = str(source["rpc_provider_urls_sha256"])
-        result = self.run_driver(
-            "--migrate-v32-to-v33",
-            "--execute",
-            MOCK_SCHEMA="32",
-            MOCK_MODULE=before_module,
-            MOCK_DIGEST=before_digest,
-            MOCK_BOUNDARY="02" * 32,
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("minimum_withdrawal_id does not match", result.stderr)
-        self.assertTrue(self.install_record.exists())
-        self.assertFalse((self.base / "result.json").exists())
-
-    def test_v32_migration_rejects_metadata_and_module_drift(self) -> None:
-        self.require_migration_policy()
-        source = self.migration_source("absent")
-        missing_module = str(source["module_sha256"])
-        after_digest = str(source["rpc_provider_urls_sha256"])
-        present = self.run_driver(
-            "--migrate-v32-to-v33", "--execute",
-            MOCK_SCHEMA="32", MOCK_MODULE=missing_module, MOCK_DIGEST=after_digest,
-        )
-        self.assertNotEqual(present.returncode, 0)
-        self.assertFalse(self.install_record.exists())
-
-        unknown = self.run_driver(
-            "--migrate-v32-to-v33", "--execute",
-            MOCK_SCHEMA="32", MOCK_MODULE="11" * 32, MOCK_METADATA_MISSING="1", MOCK_DIGEST=after_digest,
-        )
-        self.assertNotEqual(unknown.returncode, 0)
-        self.assertFalse(self.install_record.exists())
-
-    def test_v32_migration_rejects_lookup_failures_before_install(self) -> None:
-        self.require_migration_policy()
-        source = self.migration_source("absent")
-        missing_module = str(source["module_sha256"])
-        after_digest = str(source["rpc_provider_urls_sha256"])
-        cases = {
-            "reader failure": {"MOCK_PUBLIC_METADATA_FAIL": "1"},
-            "invalid JSON": {"MOCK_PUBLIC_METADATA_JSON": "not-json"},
-            "unknown status": {"MOCK_PUBLIC_METADATA_JSON": json.dumps({"status": "unknown"})},
-            "present without value": {
-                "MOCK_PUBLIC_METADATA_JSON": json.dumps({"status": "present"})
-            },
-        }
-        for name, changes in cases.items():
-            with self.subTest(name=name):
-                result = self.run_driver(
-                    "--migrate-v32-to-v33", "--execute",
-                    MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1",
-                    MOCK_SCHEMA="32", MOCK_DIGEST=after_digest, **changes,
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.install_record.exists())
-                self.assertFalse((self.base / "result.json").exists())
-
-    def test_v32_migration_rejects_snapshot_drift_before_install(self) -> None:
-        self.require_migration_policy()
-        source = self.migration_source("absent")
-        missing_module = str(source["module_sha256"])
-        after_digest = str(source["rpc_provider_urls_sha256"])
-        cases = {
-            "canister ID": {"MOCK_CANISTER_ID": "aaaaa-aa"},
-            "schema": {"MOCK_SCHEMA": "31"},
-            "instance": {"MOCK_INSTANCE": "0x" + "11" * 32},
-            "configured chain": {"MOCK_PUBLIC_CHAIN": "1"},
-            "EVM RPC canister": {"MOCK_EVM_CANISTER": "aaaaa-aa"},
-            "RPC digest": {"MOCK_DIGEST": "22" * 32},
-            "status count": {"MOCK_COUNT_DRIFT": "1"},
-            "storage integrity": {"MOCK_INTEGRITY_FAIL": "1"},
-            "provider chain": {"MOCK_CHAIN_ID": "1"},
-        }
-        for name, changes in cases.items():
-            with self.subTest(name=name):
-                result = self.run_driver(
-                    "--migrate-v32-to-v33", "--execute",
-                    MOCK_MODULE=missing_module, MOCK_METADATA_MISSING="1",
-                    **{"MOCK_SCHEMA": "32", "MOCK_DIGEST": after_digest, **changes},
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.install_record.exists())
-
-    def test_candidate_metadata_is_validated_before_live_calls(self) -> None:
-        cases = {
-            "missing Candid section": {"MOCK_CANDID_SECTION_MISSING": "1"},
-            "wrong deployment tag": {"MOCK_CANDID_DEPLOYMENT": "production"},
-        }
-        for name, changes in cases.items():
-            with self.subTest(name=name):
-                result = self.run_driver("--execute", **changes)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.install_record.exists())
-
-    def test_unreviewed_ic_host_is_rejected_before_live_calls(self) -> None:
-        profile_path = self.repo / "deployments/sepolia-staging/frontend-profile.json"
-        profile = json.loads(profile_path.read_text(encoding="utf-8"))
-        profile["icHost"] = "https://example.invalid"
-        profile_path.write_text(json.dumps(profile), encoding="utf-8")
-        self.git("add", "deployments/sepolia-staging/frontend-profile.json")
-        self.git("commit", "-qm", "unreviewed IC host")
-
-        result = self.run_driver("--execute")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self.install_record.exists())
-
-    def test_missing_profile_boundary_is_rejected_before_live_calls(self) -> None:
-        profile_path = self.repo / "deployments/sepolia-staging/frontend-profile.json"
-        profile = json.loads(profile_path.read_text(encoding="utf-8"))
-        profile["minimumWithdrawalId"] = None
-        profile_path.write_text(json.dumps(profile), encoding="utf-8")
-        self.git("add", "deployments/sepolia-staging/frontend-profile.json")
-        self.git("commit", "-qm", "missing boundary")
-
-        result = self.run_driver("--execute")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("minimumWithdrawalId", result.stderr)
-        self.assertFalse(self.install_record.exists())
-
-    def test_preconditions_fail_before_install(self) -> None:
-        cases = {
-            "wrong chain": {"MOCK_CHAIN_ID": "1"},
-            "chain failure": {"MOCK_CHAIN_FAIL": "1"},
-            "Candid incompatibility": {"MOCK_DIDC_FAIL": "1"},
-            "canister ID drift": {"MOCK_CANISTER_ID": "aaaaa-aa"},
-            "schema drift": {"MOCK_SCHEMA": "31"},
-            "instance drift": {"MOCK_INSTANCE": "0x" + "11" * 32},
-            "configured chain drift": {"MOCK_PUBLIC_CHAIN": "1"},
-            "EVM RPC Canister drift": {"MOCK_EVM_CANISTER": "aaaaa-aa"},
-            "module drift": {"MOCK_MODULE": "11" * 32},
-            "RPC digest drift": {"MOCK_DIGEST": "22" * 32},
-            "count drift": {"MOCK_COUNT_DRIFT": "1"},
-            "integrity failure": {"MOCK_INTEGRITY_FAIL": "1"},
-            "private metadata failure": {"MOCK_PRIVATE_METADATA_FAIL": "1"},
-        }
-        for name, environment in cases.items():
-            with self.subTest(name=name):
-                result = self.run_driver("--execute", **environment)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.install_record.exists())
-
-    def test_install_failure_does_not_write_success_evidence(self) -> None:
-        result = self.run_driver("--execute", MOCK_INSTALL_FAIL="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((self.base / "result.json").exists())
-
-    def test_postcondition_mismatch_does_not_write_success_evidence(self) -> None:
-        result = self.run_driver("--execute", MOCK_POST_COUNT_DRIFT="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertTrue(self.install_record.exists())
-        self.assertTrue((self.state / "applied").exists())
-        self.assertFalse((self.base / "result.json").exists())
-
-    def test_policy_rejects_invalid_status_count_types_and_ranges(self) -> None:
-        policy_path = self.repo / POLICY_PATH
-        cases = (
-            ("bool", True),
-            ("negative", -1),
-            ("u64 overflow", 1 << 64),
-            ("u128 overflow", 1 << 128),
-        )
-        for name, value in cases:
-            with self.subTest(name=name):
-                policy = json.loads(json.dumps(self.valid_policy))
-                field = "reserved_deposit_mint_amount" if name == "u128 overflow" else "deposits"
-                policy["status_counts"][field] = value
-                policy_path.write_text(json.dumps(policy), encoding="utf-8")
-                self.git("add", POLICY_PATH)
-                self.git("commit", "-qm", f"invalid {name}")
-                result = self.run_driver("--execute")
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.install_record.exists())
-
-        policy = json.loads(json.dumps(self.valid_policy))
-        del policy["status_counts"]["deposits"]
-        policy_path.write_text(json.dumps(policy), encoding="utf-8")
-        self.git("add", POLICY_PATH)
-        self.git("commit", "-qm", "missing count")
-        self.assertNotEqual(self.run_driver("--execute").returncode, 0)
-        self.assertFalse(self.install_record.exists())
-
-    def test_policy_rejects_ambiguous_migration_metadata_bindings(self) -> None:
-        self.require_migration_policy()
-        if int(self.valid_policy["schema_version"]) < 4:
-            self.skipTest("metadata binding uniqueness requires a schema v4 candidate policy")
-        policy_path = self.repo / POLICY_PATH
-        cases = ("duplicate metadata state", "missing module marked present")
-        for name in cases:
-            with self.subTest(name=name):
-                policy = json.loads(json.dumps(self.valid_policy))
-                sources = policy["migration"]["source_states"]
-                if name == "duplicate metadata state":
-                    sources[0]["candid_metadata"] = "absent"
-                else:
-                    present = next(source for source in sources if source["candid_metadata"] == "present")
-                    policy["metadata_missing_module_sha256"] = present["module_sha256"]
-                policy_path.write_text(json.dumps(policy), encoding="utf-8")
-                self.git("add", POLICY_PATH)
-                self.git("commit", "-qm", name)
-                result = self.run_driver("--execute")
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.install_record.exists())
-
-    def test_dirty_checkout_and_wasm_mismatch_fail_closed(self) -> None:
+    def test_unknown_candid_and_dirty_checkout_fail_closed(self) -> None:
+        unknown = self.run_driver(MOCK_UNKNOWN_CANDID="1"); self.assertNotEqual(unknown.returncode, 0)
         (self.repo / "dirty").write_text("x")
-        self.assertNotEqual(self.run_driver().returncode, 0)
-        (self.repo / "dirty").unlink()
-        self.wasm.write_bytes(b"different")
-        self.assertNotEqual(self.run_driver().returncode, 0)
+        dirty = self.run_driver(); self.assertNotEqual(dirty.returncode, 0); self.assertIn("clean checkout", dirty.stderr)
+
+    def test_obsolete_local_evidence_is_rejected(self) -> None:
+        value = json.loads(self.local.read_text()); value["schema_version"] = 7
+        self.local.write_text(json.dumps(value))
+        result = self.run_driver(); self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported or incomplete shape", result.stderr)
 
 
-if __name__ == "__main__":
-    unittest.main()
+if __name__ == "__main__": unittest.main()
