@@ -28,6 +28,16 @@ POLICY_PATH = "deployments/sepolia-staging/rpc-provider-replacement-policy.json"
 
 
 class StagingUpgradeDriverTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        driver = source_path("scripts/plan007/staging_canister_upgrade.py").read_text(
+            encoding="utf-8"
+        )
+        if "same-schema-upgrade-policy.json" in driver:
+            raise unittest.SkipTest(
+                "v33-to-v35 candidates are covered by the dedicated trusted suite"
+            )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.base = Path(self.temporary.name)

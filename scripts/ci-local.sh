@@ -166,6 +166,7 @@ run_versions() {
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
   python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
+  python3 "$ROOT/scripts/plan007/test_staging_v33_to_v35_upgrade.py"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
     "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"

@@ -240,6 +240,23 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn('if "source_module_sha256" in policy', staging_upgrade_test)
         self.assertIn('if "source_schema_version" in policy', staging_upgrade_test)
         self.assertIn('if "governance_principal" in policy', staging_upgrade_test)
+        self.assertIn(
+            'if "same-schema-upgrade-policy.json" in driver:',
+            staging_upgrade_test,
+        )
+        v33_upgrade_test = (
+            ROOT / "scripts" / "plan007" / "test_staging_v33_to_v35_upgrade.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("from source_resolution import source_path", v33_upgrade_test)
+        self.assertIn(
+            'if "same-schema-upgrade-policy.json" not in driver:',
+            v33_upgrade_test,
+        )
+        ci_local = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'python3 "$ROOT/scripts/plan007/test_staging_v33_to_v35_upgrade.py"',
+            ci_local,
+        )
 
     def test_failure_manifest_checker_reads_claim_contracts(self) -> None:
         checker = (ROOT / "scripts" / "check_failure_manifests.py").read_text(
