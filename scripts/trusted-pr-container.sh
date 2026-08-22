@@ -149,6 +149,7 @@ docker run --rm \
   --mount "type=bind,src=$SOURCE_ROOT,dst=/workspace,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/scripts,dst=/workspace/scripts,readonly" \
   --mount "type=bind,src=$SOURCE_ROOT/scripts/plan007/generate-local-e2e.mjs,dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly" \
+  --mount "type=bind,src=$SOURCE_ROOT/scripts/plan007/test-generate-local-e2e.mjs,dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly" \
   --mount "type=bind,src=$SOURCE_ROOT/scripts,dst=/scratch/candidate-scripts,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/node_modules,dst=/workspace/node_modules,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \

@@ -141,6 +141,11 @@ class TrustedPrGateTests(unittest.TestCase):
             "dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly",
             wrapper,
         )
+        self.assertIn(
+            "src=$SOURCE_ROOT/scripts/plan007/test-generate-local-e2e.mjs,"
+            "dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly",
+            wrapper,
+        )
         self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
