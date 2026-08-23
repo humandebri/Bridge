@@ -96,6 +96,7 @@ export type AuditEventKind = { 'PausePrincipalRotated' : null } |
   } |
   { 'DepositsResumed' : null } |
   { 'FeePayoutRequested' : { 'amount' : bigint } } |
+  { 'ReserveGateChanged' : { 'sufficient' : boolean } } |
   {
     'WithdrawalFeeGuardTripped' : {
       'charged_service_fee' : bigint,

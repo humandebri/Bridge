@@ -121,7 +121,8 @@ Canister、deployment、live source module／Candidを固定し、repo外のloca
 preflightはcertified live Candidを旧APIとして読み、binding、state count、controller、cycles、storage integrity、
 pending Timelock／governance transaction数を記録する。executeは同じpreflightを再構築できた場合だけinstallし、全state countを
 `expected_status_counts`として渡す。`post_upgrade()`はstable stateを再openした直後にcountを照合し、drift時はtrapして
-module更新全体をrollbackする。production Wasmの引数なし`post_upgrade()`は変更しない。
+module更新全体をrollbackする。v33 DBに混在するwire v27の`ReserveGateChanged` audit eventは同名の履歴専用variantへ
+再encodeして意味と件数を保持し、新規eventとしては生成しない。production Wasmの引数なし`post_upgrade()`は変更しない。
 
 ```sh
 BRIDGE_STAGING_IDENTITY=<identity> \

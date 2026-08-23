@@ -1861,6 +1861,11 @@ pub enum AuditEventKind {
         previous_sha256: Vec<u8>,
         current_sha256: Vec<u8>,
     },
+    // Historical wire-v27 staging records can contain this event. New code does not emit it,
+    // but retaining the variant preserves the meaning of the append-only audit log on upgrade.
+    ReserveGateChanged {
+        sufficient: bool,
+    },
     FeePayoutRequested {
         amount: u128,
     },
@@ -11860,7 +11865,7 @@ mod tests {
         store
             .append_audit_event_at(
                 initial.governance_principal,
-                AuditEventKind::DepositsPaused,
+                AuditEventKind::ReserveGateChanged { sufficient: true },
                 1_000,
             )
             .expect("seed legacy audit row");

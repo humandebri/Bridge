@@ -313,6 +313,7 @@ export const idlFactory = ({ IDL }) => {
     }),
     'DepositsResumed' : IDL.Null,
     'FeePayoutRequested' : IDL.Record({ 'amount' : IDL.Nat }),
+    'ReserveGateChanged' : IDL.Record({ 'sufficient' : IDL.Bool }),
     'WithdrawalFeeGuardTripped' : IDL.Record({
       'charged_service_fee' : IDL.Nat,
       'ledger_fee' : IDL.Nat,

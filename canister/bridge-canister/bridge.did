@@ -82,6 +82,7 @@ type AuditEventKind = variant {
   };
   DepositsResumed;
   FeePayoutRequested : record { amount : nat };
+  ReserveGateChanged : record { sufficient : bool };
   WithdrawalFeeGuardTripped : record {
     charged_service_fee : nat;
     ledger_fee : nat;
