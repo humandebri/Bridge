@@ -1,6 +1,6 @@
 module.exports = {
-  rootDir: "..",
-  testMatch: ["<rootDir>/integration/**/*.spec.ts"],
+  rootDir: ".",
+  testMatch: ["<rootDir>/**/*.spec.ts"],
   transform: { "^.+\\.tsx?$": ["@swc/jest"] },
   testTimeout: 120000,
 };
