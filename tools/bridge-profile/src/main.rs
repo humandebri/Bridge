@@ -24,7 +24,7 @@ const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
 const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 35;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 36;
 const GATE_A_ARTIFACTS: [&str; 6] = [
     "profile.json",
     "bridge-canister.wasm",
@@ -2999,6 +2999,64 @@ fn validate_schedule_receipt_binding(
     Ok(())
 }
 
+struct LiveActivationSnapshot {
+    proposal_raw: Vec<u8>,
+    registry_raw: Vec<u8>,
+    activation_raw: Vec<u8>,
+    controllers: Vec<Principal>,
+    module_hash: Vec<u8>,
+}
+
+fn fetch_live_activation_snapshot(
+    host: &str,
+    bridge: Principal,
+    proposal_id: u64,
+    canonical_payload: &[u8],
+) -> Result<LiveActivationSnapshot, String> {
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
+    let proposal_arg = Encode!(&GetProposalRequest {
+        proposal_id: Some(ProposalId { id: proposal_id }),
+    })
+    .map_err(|error| error.to_string())?;
+    let empty_arg = canonical_payload.to_vec();
+    let agent = mainnet_agent(host, false)?;
+    async_runtime()?.block_on(async {
+        let proposal_raw = agent
+            .query(&governance, "get_proposal")
+            .with_arg(proposal_arg)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let registry_raw = agent
+            .query(&governance, "list_nervous_system_functions")
+            .with_arg(empty_arg.clone())
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let activation_raw = agent
+            .query(&bridge, "get_activation_status")
+            .with_arg(empty_arg)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let controllers = agent
+            .read_state_canister_controllers(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        let module_hash = agent
+            .read_state_canister_module_hash(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(LiveActivationSnapshot {
+            proposal_raw,
+            registry_raw,
+            activation_raw,
+            controllers,
+            module_hash,
+        })
+    })
+}
+
 fn verify_activation(
     phase: &str,
     bundle: &ValidatedBundle,
@@ -3083,47 +3141,21 @@ fn verify_activation(
         validate_schedule_receipt_binding(receipt, bundle)?;
     }
 
-    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
-    let proposal_arg = Encode!(&GetProposalRequest {
-        proposal_id: Some(ProposalId {
-            id: submission.proposal_id,
-        }),
-    })
-    .map_err(|error| error.to_string())?;
-    let empty_arg = canonical_payload.to_vec();
-    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
-    let (proposal_raw, registry_raw, activation_raw, controllers, module_hash) =
-        async_runtime()?.block_on(async {
-            let proposal = agent
-                .query(&governance, "get_proposal")
-                .with_arg(proposal_arg)
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let registry = agent
-                .query(&governance, "list_nervous_system_functions")
-                .with_arg(empty_arg.clone())
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let activation = agent
-                .query(&bridge, "get_activation_status")
-                .with_arg(empty_arg)
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let controllers = agent
-                .read_state_canister_controllers(bridge)
-                .await
-                .map_err(|error| error.to_string())?;
-            let module_hash = agent
-                .read_state_canister_module_hash(bridge)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok::<_, String>((proposal, registry, activation, controllers, module_hash))
-        })?;
+    let snapshot = fetch_live_activation_snapshot(
+        &bundle.profile.ic_host,
+        bridge.clone(),
+        submission.proposal_id,
+        &canonical_payload,
+    )?;
+    let LiveActivationSnapshot {
+        proposal_raw,
+        registry_raw,
+        activation_raw,
+        controllers,
+        module_hash,
+    } = snapshot;
 
     let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
     let proposal = match decoded.result {
@@ -3263,46 +3295,21 @@ fn verify_schedule_receipt_live(
     let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
     validate_schedule_receipt_binding(&receipt, bundle)?;
 
-    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
-    let proposal_arg = Encode!(&GetProposalRequest {
-        proposal_id: Some(ProposalId {
-            id: receipt.proposal_id,
-        }),
-    })
-    .map_err(|error| error.to_string())?;
-    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
-    let (proposal_raw, registry_raw, activation_raw, controllers, module_hash) =
-        async_runtime()?.block_on(async {
-            let proposal = agent
-                .query(&governance, "get_proposal")
-                .with_arg(proposal_arg)
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let registry = agent
-                .query(&governance, "list_nervous_system_functions")
-                .with_arg(canonical_payload.to_vec())
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let activation = agent
-                .query(&bridge, "get_activation_status")
-                .with_arg(canonical_payload.to_vec())
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let controllers = agent
-                .read_state_canister_controllers(bridge)
-                .await
-                .map_err(|error| error.to_string())?;
-            let module_hash = agent
-                .read_state_canister_module_hash(bridge)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok::<_, String>((proposal, registry, activation, controllers, module_hash))
-        })?;
+    let snapshot = fetch_live_activation_snapshot(
+        &bundle.profile.ic_host,
+        bridge.clone(),
+        receipt.proposal_id,
+        &canonical_payload,
+    )?;
+    let LiveActivationSnapshot {
+        proposal_raw,
+        registry_raw,
+        activation_raw,
+        controllers,
+        module_hash,
+    } = snapshot;
 
     let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
     let proposal = match decoded.result {

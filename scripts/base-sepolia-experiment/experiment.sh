@@ -287,7 +287,7 @@ init_manifest() {
     --argjson mint_window_limit "$DEFAULT_MINT_WINDOW_LIMIT" \
     --argjson max_service_fee "$DEFAULT_MAX_SERVICE_FEE" \
     --argjson initial_service_fee "$DEFAULT_INITIAL_SERVICE_FEE" \
-    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"kinic",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:$per_deposit_limit,mint_window_limit:$mint_window_limit,mint_window_duration_seconds:3600,max_service_fee:$max_service_fee,initial_service_fee:$initial_service_fee},contracts:{},transactions:{},checks:{},synthetic_ledger_block:42}' \
+    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"kinic",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:$per_deposit_limit,mint_window_limit:$mint_window_limit,mint_window_duration_seconds:3600,max_service_fee:$max_service_fee,initial_service_fee:$initial_service_fee},contracts:{},transactions:{},checks:{}}' \
     >"$MANIFEST"
 }
 
@@ -481,11 +481,7 @@ verify_deployment() {
   local deployment_state
   deployment_state="$(manifest_get '.state')"
   if [[ "$deployment_state" == COMPLETE ]]; then
-    if [[ "$(manifest_get '.parameters.initial_service_fee')" == 1000000 ]]; then
-      assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
-    else
-      assert_call_eq 50000000 "$bridge" 'serviceFee()(uint256)'
-    fi
+    assert_call_eq "$DEFAULT_INITIAL_SERVICE_FEE" "$bridge" 'serviceFee()(uint256)'
   else
     assert_call_eq "$(manifest_get '.parameters.initial_service_fee')" "$bridge" 'serviceFee()(uint256)'
   fi
@@ -685,7 +681,7 @@ resume() {
 verify() {
   check_chain
   require_manifest_chain
-  local bridge bsns state status1 status2 withdrawal1 withdrawal2
+  local bridge bsns state status1 withdrawal1
   bridge="$(manifest_get '.contracts.bridge.address')"
   bsns="$(manifest_get '.contracts.bsns.address')"
   state="$(manifest_get '.state')"
@@ -713,25 +709,20 @@ verify() {
     return
   fi
   [[ "$state" == COMPLETE ]] || die "unsupported manifest state $state"
-  if [[ "$(manifest_get '.parameters.initial_service_fee')" == 1000000 ]]; then
-    assert_call_eq 50000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
-    assert_call_eq 50000000 "$bsns" 'totalSupply()(uint256)'
-  else
-    assert_call_eq 25000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
-    assert_call_eq 25000000 "$bsns" 'totalSupply()(uint256)'
-  fi
-  withdrawal1="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))' 1 --rpc-url "$RPC_URL" --json)"
-  withdrawal2="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,bytes,bytes32,uint8,uint256,uint256,uint256,uint256))' 2 --rpc-url "$RPC_URL" --json)"
-  status1="$(jq -r '.[0][5]' <<<"$withdrawal1")"
-  status2="$(jq -r '.[0][5]' <<<"$withdrawal2")"
-  [[ "$status1" == 3 && "$status2" == 4 ]] || die "withdrawal final states mismatch"
+  assert_call_eq 25000000 "$bsns" 'balanceOf(address)(uint256)' "$DEPLOYER"
+  assert_call_eq 25000000 "$bsns" 'totalSupply()(uint256)'
+  withdrawal1="$(cast call "$bridge" 'getWithdrawal(uint256)((address,uint256,uint256,uint256,uint256,bytes,bytes32,uint8))' 1 --rpc-url "$RPC_URL" --json)"
+  status1="$(jq -r '.[0][7]' <<<"$withdrawal1")"
+  [[ "$status1" == 1 ]] || die "withdrawal 1 status is $status1, expected Committed(1)"
+  address_eq "$(jq -r '.[0][0]' <<<"$withdrawal1")" "$DEPLOYER" \
+    || die "withdrawal 1 requester mismatch"
+  [[ "$(jq -r '.[0][1]' <<<"$withdrawal1")" == 75000000 ]] || die "withdrawal 1 amount mismatch"
+  [[ "$(jq -r '.[0][2]' <<<"$withdrawal1")" == 50000000 ]] || die "withdrawal 1 max fee mismatch"
+  [[ "$(jq -r '.[0][3]' <<<"$withdrawal1")" == 50000000 ]] || die "withdrawal 1 charged fee mismatch"
+  [[ "$(jq -r '.[0][4]' <<<"$withdrawal1")" == 25000000 ]] || die "withdrawal 1 amount out mismatch"
   assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
   assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
-  if [[ "$(manifest_get '.parameters.initial_service_fee')" == 1000000 ]]; then
-    assert_call_eq 2000000 "$bridge" 'serviceFee()(uint256)'
-  else
-    assert_call_eq 50000000 "$bridge" 'serviceFee()(uint256)'
-  fi
+  assert_call_eq "$DEFAULT_INITIAL_SERVICE_FEE" "$bridge" 'serviceFee()(uint256)'
   local name hash receipt recorded_hash status block safe
   while IFS= read -r name; do
     hash="$(jq -r --arg name "$name" '.transactions[$name].hash' "$MANIFEST")"

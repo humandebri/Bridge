@@ -26,7 +26,7 @@ function moduleHash(value, context) {
 export function verifyUpgradeInstance(profile, liveRuntimeBinding, liveCanisterStatus) {
   const next = deploymentInstanceHex(profile?.deploymentInstanceId, "frontend profile deploymentInstanceId")
   const schemaVersion = Number(liveRuntimeBinding?.schema_version)
-  if (![33, 35].includes(schemaVersion)) throw new Error("staging upgrade requires reviewed source schema v33 or target schema v35")
+  if (![33, 36].includes(schemaVersion)) throw new Error("staging upgrade requires reviewed source schema v33 or target schema v36")
   const previous = deploymentInstanceHex(
     liveRuntimeBinding?.deployment_instance_id,
     "live RuntimeBinding deployment_instance_id",

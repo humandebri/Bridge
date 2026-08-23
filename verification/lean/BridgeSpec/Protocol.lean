@@ -1522,7 +1522,7 @@ theorem payout_preserves_backing_and_reserve_bound
 theorem finalized_success_notifies
     {receiptBlock finalizedBlock : Nat}
     (finalized : receiptBlock ≤ finalizedBlock) :
-    decideWithdrawalFinalization true receiptBlock (some finalizedBlock) = .notify := by
+    decideWithdrawalFinalization true receiptBlock (some finalizedBlock) true = .notify := by
   simp [decideWithdrawalFinalization, Nat.not_lt.mpr finalized]
 
 theorem restored_queue_preserves_other_keys

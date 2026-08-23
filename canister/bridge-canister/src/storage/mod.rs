@@ -263,7 +263,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 35, 29);
+INSERT INTO bridge_metadata VALUES (1, 36, 29);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -287,7 +287,14 @@ CREATE TABLE table_counts (
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE deposits (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
-CREATE TABLE deposit_funding_attempts (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE deposit_funding_attempts (
+    key BLOB PRIMARY KEY NOT NULL,
+    value BLOB NOT NULL,
+                -- This is nullable only during the atomic insert/update that derives the
+                -- deadline from the encoded attempt. Committed rows must be non-null.
+                recovery_due_ns INTEGER
+) STRICT, WITHOUT ROWID;
+CREATE INDEX deposit_funding_attempts_recovery_due ON deposit_funding_attempts(recovery_due_ns, key);
 CREATE TABLE withdrawals (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE reconciliation_holds (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE reconciliation_scans (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
@@ -1202,7 +1209,7 @@ impl V33DepositAdmissionControl {
             last_completed_governance_transaction: value
                 .last_completed_governance_transaction
                 .clone(),
-            pending_timelock_operation: value.pending_timelock_operation.clone(),
+            pending_timelock_operation: value.pending_timelock_operation,
             emergency_pause_deposit_required: value.emergency_pause_deposit_required,
             emergency_pause_withdrawal_required: value.emergency_pause_withdrawal_required,
             emergency_cancel_required: value.emergency_cancel_required,
@@ -2098,6 +2105,21 @@ pub struct DepositFundingAttempt {
     pub last_failure: Option<LedgerFailure>,
 }
 
+fn funding_recovery_due_ns(attempt: &DepositFundingAttempt) -> Result<i64, StorageError> {
+    let due = match &attempt.state {
+        DepositFundingAttemptState::Prepared | DepositFundingAttemptState::Retryable { .. } => {
+            attempt.updated_at_ns.saturating_add(120_000_000_000)
+        }
+        DepositFundingAttemptState::Dispatched { dispatched_at_ns } => {
+            dispatched_at_ns.saturating_add(30_000_000_000)
+        }
+        DepositFundingAttemptState::Reconciling {
+            next_check_at_ns, ..
+        } => *next_check_at_ns,
+    };
+    i64::try_from(due).map_err(|_| StorageError::CounterOverflow)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredDeposit {
     record: DepositRecord,
@@ -2309,7 +2331,7 @@ fn migrate_staging_audit_event_blob(mut bytes: Vec<u8>) -> Result<Vec<u8>, DbErr
 }
 
 #[cfg(feature = "test-deployment")]
-fn migrate_staging_v33_to_v35(
+fn migrate_staging_v33_to_v36(
     handle: DbHandle,
     confirmation_relayer: Principal,
 ) -> Result<(), StorageError> {
@@ -2358,7 +2380,7 @@ fn migrate_staging_v33_to_v35(
                 || admission.pending_timelock_operation.is_some()
             {
                 return Err(DbError::Constraint(
-                    "v33 to v35 migration requires empty governance and Timelock queues".into(),
+                    "v33 to v36 migration requires empty governance and Timelock queues".into(),
                 ));
             }
             let admission = admission.into_current();
@@ -2433,6 +2455,22 @@ fn migrate_staging_v33_to_v35(
                 )?;
             }
 
+            let recovery_due_columns = connection.query_scalar::<i64>(
+                "SELECT COUNT(*) FROM pragma_table_info('deposit_funding_attempts')
+                 WHERE name = 'recovery_due_ns'",
+                params![],
+            )?;
+            if recovery_due_columns == 0 {
+                connection.execute(
+                    "ALTER TABLE deposit_funding_attempts ADD COLUMN recovery_due_ns INTEGER",
+                    params![],
+                )?;
+            } else if recovery_due_columns != 1 {
+                return Err(DbError::Constraint(
+                    "invalid funding recovery deadline column shape".into(),
+                ));
+            }
+
             for table in [
                 "deposits",
                 "deposit_funding_attempts",
@@ -2482,26 +2520,47 @@ fn migrate_staging_v33_to_v35(
                             table,
                         )?
                     };
-                    connection.execute(&update, params![migrated, key])?;
+                    connection.execute(&update, params![migrated, key.clone()])?;
+                    if table == "deposit_funding_attempts" {
+                        let attempt = decode_wire_payload::<DepositFundingAttempt>(
+                            &connection.query_scalar::<Vec<u8>>(
+                                "SELECT value FROM deposit_funding_attempts WHERE key = ?1",
+                                params![key.clone()],
+                            )?,
+                            WIRE_VERSION,
+                        )
+                        .map_err(|_| DbError::Constraint("cannot decode migrated funding attempt".into()))?;
+                        let due = funding_recovery_due_ns(&attempt)
+                            .map_err(|_| DbError::Constraint("funding recovery deadline exceeds SQLite range".into()))?;
+                        connection.execute(
+                            "UPDATE deposit_funding_attempts SET recovery_due_ns = ?1 WHERE key = ?2",
+                            params![due, key],
+                        )?;
+                    }
                 }
             }
+
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS deposit_funding_attempts_recovery_due ON deposit_funding_attempts(recovery_due_ns, key)",
+                params![],
+            )?;
 
             connection.execute(
                 "UPDATE singleton_state SET config = ?1, deposit_admission = ?2 WHERE id = 1",
                 params![
                     encode(&Some(config))
-                        .map_err(|_| DbError::Constraint("cannot encode v35 configuration".into()))?
+                        .map_err(|_| DbError::Constraint("cannot encode v36 configuration".into()))?
                         .to_sql_bytes(),
                     encode(&admission)
                         .map_err(|_| DbError::Constraint(
-                            "cannot encode v35 deposit admission".into()
+                            "cannot encode v36 deposit admission".into()
                         ))?
                         .to_sql_bytes()
                 ],
             )?;
             connection.execute(
                 "UPDATE bridge_metadata
-                 SET application_schema_version = 35, record_wire_version = 29
+                 SET application_schema_version = 36, record_wire_version = 29
                  WHERE id = 1 AND application_schema_version = 33 AND record_wire_version = 28",
                 params![],
             )?;
@@ -2680,6 +2739,18 @@ fn validate_storage_row(
         "deposit_funding_attempts" => {
             let attempt: DepositFundingAttempt =
                 decode_with_context(value.to_vec(), "invalid deposit funding attempt")?;
+            let stored_due = connection.query_scalar::<i64>(
+                "SELECT recovery_due_ns FROM deposit_funding_attempts WHERE key = ?1",
+                params![key],
+            )?;
+            let expected_due = funding_recovery_due_ns(&attempt).map_err(|_| {
+                DbError::Constraint("funding recovery deadline exceeds SQLite range".into())
+            })?;
+            if stored_due != expected_due {
+                return Err(DbError::Constraint(
+                    "funding recovery deadline index mismatch".into(),
+                ));
+            }
             if key != attempt.intent.deposit_id.to_sql_bytes()
                 || attempt.transfer.operation != bridge_core::LedgerOperation::PullDeposit
             {
@@ -3168,15 +3239,15 @@ impl StableStore {
         let handle = open_database(memory)?;
         let (schema, wire) = stored_metadata(handle)?;
         if (schema, wire) == (STAGING_SOURCE_SCHEMA_VERSION, STAGING_SOURCE_WIRE_VERSION) {
-            if migration_id != Some(crate::config::STAGING_V33_TO_V35_MIGRATION_ID) {
+            if migration_id != Some(crate::config::STAGING_V33_TO_V36_MIGRATION_ID) {
                 return Err(StorageError::SchemaMigrationRejected(
-                    "missing reviewed v33 to v35 staging migration ID".into(),
+                    "missing reviewed v33 to v36 staging migration ID".into(),
                 ));
             }
             let relayer = confirmation_relayer
                 .filter(|principal| *principal != Principal::anonymous())
                 .ok_or(StorageError::DecodeFailed)?;
-            migrate_staging_v33_to_v35(handle, relayer)?;
+            migrate_staging_v33_to_v36(handle, relayer)?;
         } else if migration_id.is_some() {
             return Err(StorageError::SchemaMigrationRejected(
                 "staging migration ID is invalid for the stored schema".into(),
@@ -3206,52 +3277,39 @@ impl StableStore {
         decode::<AuditRetentionState>(&self.audit_retention.get()?)?;
         decode::<SettlementAdmissionControl>(&self.settlement_admission.get()?)?;
         decode::<SettlementSchedulerHealth>(&self.settlement_scheduler_health.get()?)?;
-        let (
-            revision,
-            liability_amount,
-            validation,
-            status_counts,
-            kind_counts,
-            actual_kind_counts,
-        ) = self.handle.query(|connection| {
-            let singleton = connection.query_one(
-                "SELECT storage_revision, withdrawal_liability_amount, storage_validation
+        let (revision, liability_amount, validation, status_counts, kind_counts) =
+            self.handle.query(|connection| {
+                let singleton = connection.query_one(
+                    "SELECT storage_revision, withdrawal_liability_amount, storage_validation
                  FROM singleton_state WHERE id = 1",
-                params![],
-                |row| {
-                    Ok((
-                        row.get::<Vec<u8>>(0)?,
-                        row.get::<Vec<u8>>(1)?,
-                        row.get::<Option<Vec<u8>>>(2)?,
-                    ))
-                },
-            )?;
-            let status_counts = connection.query_all(
-                "SELECT status, count FROM settlement_job_status_counts ORDER BY status",
-                params![],
-                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
-            )?;
-            let kind_counts = connection.query_all(
-                "SELECT settlement_kind, count FROM settlement_job_kind_counts
+                    params![],
+                    |row| {
+                        Ok((
+                            row.get::<Vec<u8>>(0)?,
+                            row.get::<Vec<u8>>(1)?,
+                            row.get::<Option<Vec<u8>>>(2)?,
+                        ))
+                    },
+                )?;
+                let status_counts = connection.query_all(
+                    "SELECT status, count FROM settlement_job_status_counts ORDER BY status",
+                    params![],
+                    |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+                )?;
+                let kind_counts = connection.query_all(
+                    "SELECT settlement_kind, count FROM settlement_job_kind_counts
                      ORDER BY settlement_kind",
-                params![],
-                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
-            )?;
-            let actual_kind_counts = connection.query_all(
-                "SELECT settlement_kind, COUNT(*) FROM settlement_jobs
-                     GROUP BY settlement_kind ORDER BY settlement_kind",
-                params![],
-                |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
-            )?;
-            Ok((
-                singleton.0,
-                singleton.1,
-                singleton.2,
-                status_counts,
-                kind_counts,
-                actual_kind_counts,
-            ))
-        })?;
+                    params![],
+                    |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+                )?;
+                Ok((
+                    singleton.0,
+                    singleton.1,
+                    singleton.2,
+                    status_counts,
+                    kind_counts,
+                ))
+            })?;
         u64::from_sql_bytes(revision).map_err(|_| StorageError::DecodeFailed)?;
         u128::from_sql_bytes(liability_amount).map_err(|_| StorageError::DecodeFailed)?;
         let valid_count_rows = |rows: &[(i64, i64)]| {
@@ -3261,17 +3319,8 @@ impl StableStore {
                     .enumerate()
                     .all(|(index, (key, count))| *key == index as i64 && *count >= 0)
         };
-        let mut actual = [0i64; 3];
-        for (kind, count) in actual_kind_counts {
-            let kind = usize::try_from(kind).map_err(|_| StorageError::DecodeFailed)?;
-            *actual.get_mut(kind).ok_or(StorageError::DecodeFailed)? = count;
-        }
         if !valid_count_rows(&status_counts)
             || !valid_count_rows(&kind_counts)
-            || kind_counts
-                .iter()
-                .enumerate()
-                .any(|(kind, (_, count))| *count != actual[kind])
             || status_counts.iter().map(|(_, count)| *count).sum::<i64>()
                 != kind_counts.iter().map(|(_, count)| *count).sum::<i64>()
         {
@@ -4951,11 +5000,11 @@ impl StableStore {
                 .is_some();
             let expired = connection
                 .query_optional_scalar::<i64>(
-                    "SELECT 1 FROM settlement_jobs
-                     WHERE status = 1 AND lease_until_ns <= ?1 LIMIT 1",
+                    "SELECT COUNT(*) FROM settlement_jobs
+                     WHERE status = 1 AND lease_until_ns <= ?1",
                     params![now_ns.to_sql_bytes()],
                 )?
-                .is_some();
+                .ok_or_else(|| DbError::Constraint("expired lease count is missing".into()))?;
             Ok((counts, overdue, expired))
         })?;
         let mut by_status = [0u64; 4];
@@ -4964,11 +5013,12 @@ impl StableStore {
             let count = u64::try_from(count).map_err(|_| StorageError::DecodeFailed)?;
             *by_status.get_mut(index).ok_or(StorageError::DecodeFailed)? = count;
         }
+        let expired = u64::try_from(expired).map_err(|_| StorageError::DecodeFailed)?;
         let mut summary = SettlementJobSummary {
             scheduled: by_status[0],
-            leased: by_status[1].saturating_sub(u64::from(expired)),
+            leased: by_status[1].saturating_sub(expired),
             stopped: by_status[2],
-            expired: u64::from(expired),
+            expired,
             overdue: u64::from(overdue),
             next_wakeup_at_ns: None,
         };
@@ -7088,31 +7138,17 @@ impl StableStore {
         &self,
         now_ns: u64,
     ) -> Result<Option<DepositFundingAttempt>, StorageError> {
-        let rows = self.handle.query(|connection| {
-            connection.query_all(
-                "SELECT value FROM deposit_funding_attempts ORDER BY key",
-                params![],
-                |row| row.get::<Vec<u8>>(0),
+        let now = i64::try_from(now_ns).unwrap_or(i64::MAX);
+        let row = self.handle.query(|connection| {
+            connection.query_optional_scalar::<Vec<u8>>(
+                "SELECT value FROM deposit_funding_attempts
+                 WHERE recovery_due_ns <= ?1
+                 ORDER BY recovery_due_ns, key LIMIT 1",
+                params![now],
             )
         })?;
-        rows.into_iter()
-            .map(|bytes| decode::<DepositFundingAttempt>(&StableBlob::new(bytes)?))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter(|attempt| match &attempt.state {
-                DepositFundingAttemptState::Prepared
-                | DepositFundingAttemptState::Retryable { .. } => {
-                    now_ns >= attempt.updated_at_ns.saturating_add(120_000_000_000)
-                }
-                DepositFundingAttemptState::Dispatched { dispatched_at_ns } => {
-                    now_ns >= dispatched_at_ns.saturating_add(30_000_000_000)
-                }
-                DepositFundingAttemptState::Reconciling {
-                    next_check_at_ns, ..
-                } => now_ns >= *next_check_at_ns,
-            })
-            .min_by_key(|attempt| attempt.updated_at_ns)
-            .map_or(Ok(None), |attempt| Ok(Some(attempt)))
+        row.map(|bytes| decode::<DepositFundingAttempt>(&StableBlob::new(bytes)?))
+            .transpose()
     }
 
     pub fn prepare_deposit_funding_attempt(
@@ -7189,6 +7225,7 @@ impl StableStore {
         }
         let admission_blob = encode(&admission)?;
         let attempt_blob = encode(attempt)?;
+        let recovery_due_ns = funding_recovery_due_ns(attempt)?;
         let key = attempt.intent.deposit_id.to_sql_bytes();
         let nonterminal_index_key =
             deposit_owner_index_key(owner, attempt.intent.owner_sequence)?.to_sql_bytes();
@@ -7229,6 +7266,10 @@ impl StableStore {
                 "deposit_funding_attempts",
                 key.clone(),
                 attempt_blob.to_sql_bytes(),
+            )?;
+            connection.execute(
+                "UPDATE deposit_funding_attempts SET recovery_due_ns = ?1 WHERE key = ?2",
+                params![recovery_due_ns, key.clone()],
             )?;
             insert_tracked_entry(
                 connection,
@@ -7289,6 +7330,7 @@ impl StableStore {
         let key = previous.intent.deposit_id.to_sql_bytes();
         let previous_blob = encode(previous)?;
         let next_blob = encode(next)?;
+        let next_recovery_due_ns = funding_recovery_due_ns(next)?;
         self.handle.update(|connection| {
             expect_blob(
                 connection,
@@ -7298,8 +7340,8 @@ impl StableStore {
                 "stale deposit funding attempt",
             )?;
             connection.execute(
-                "UPDATE deposit_funding_attempts SET value = ?1 WHERE key = ?2",
-                params![next_blob.to_sql_bytes(), key],
+                "UPDATE deposit_funding_attempts SET value = ?1, recovery_due_ns = ?2 WHERE key = ?3",
+                params![next_blob.to_sql_bytes(), next_recovery_due_ns, key],
             )
         })?;
         Ok(())
@@ -11848,7 +11890,7 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 35);
+        assert_eq!(SCHEMA_VERSION, 36);
         assert_eq!(WIRE_VERSION, 29);
     }
 
@@ -11980,7 +12022,7 @@ mod tests {
         let relayer = initial.governance_principal;
         let reopened = StableStore::reopen_after_staging_upgrade(
             memory.clone(),
-            Some(crate::config::STAGING_V33_TO_V35_MIGRATION_ID),
+            Some(crate::config::STAGING_V33_TO_V36_MIGRATION_ID),
             Some(relayer),
         )
         .expect("migrate schema 33");
@@ -13057,6 +13099,60 @@ mod tests {
 
     #[test]
     #[serial]
+    fn funding_recovery_query_uses_due_index_at_high_cardinality() {
+        let store = StableStore::init(VectorMemory::default()).expect("initialize");
+        let owner = Principal::self_authenticating([65; 32]);
+        let (template, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        store
+            .handle
+            .update(|connection| {
+                for sequence in 0..10_000u32 {
+                    let mut attempt = template.clone();
+                    let mut id = [0u8; 32];
+                    id[28..].copy_from_slice(&sequence.to_be_bytes());
+                    attempt.intent.deposit_id = id;
+                    attempt.updated_at_ns = u64::from(sequence);
+                    let value = encode(&attempt)
+                        .map_err(|_| DbError::Constraint("encode funding attempt".into()))?;
+                    let due = funding_recovery_due_ns(&attempt)
+                        .map_err(|_| DbError::Constraint("funding recovery deadline".into()))?;
+                    connection.execute(
+                        "INSERT INTO deposit_funding_attempts (key, value, recovery_due_ns) VALUES (?1, ?2, ?3)",
+                        params![id.to_sql_bytes(), value.to_sql_bytes(), due],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("seed funding attempts");
+
+        let plan = store
+            .handle
+            .query(|connection| {
+                connection.query_all(
+                    "EXPLAIN QUERY PLAN SELECT value FROM deposit_funding_attempts
+                     WHERE recovery_due_ns <= ?1
+                     ORDER BY recovery_due_ns, key LIMIT 1",
+                    params![i64::MAX],
+                    |row| row.get::<String>(3),
+                )
+            })
+            .expect("query plan");
+        assert!(plan
+            .iter()
+            .any(|detail| detail.contains("deposit_funding_attempts_recovery_due")));
+        assert_eq!(
+            store
+                .next_deposit_funding_attempt_for_recovery(120_000_000_000)
+                .expect("indexed due attempt")
+                .expect("due attempt")
+                .intent
+                .deposit_id,
+            [0u8; 32]
+        );
+    }
+
+    #[test]
+    #[serial]
     fn funding_success_promotes_attempt_once_atomically() {
         let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
         initialize_unpaused_admin(&mut store);
@@ -13426,6 +13522,36 @@ mod tests {
                 .lease_generation,
             second.lease_generation
         );
+    }
+
+    #[test]
+    #[serial]
+    fn settlement_summary_counts_every_expired_lease() {
+        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        store
+            .handle
+            .update(|connection| {
+                enqueue_settlement_job(connection, SettlementJobKind::Deposit, [1; 32], 1)?;
+                enqueue_settlement_job(connection, SettlementJobKind::Deposit, [2; 32], 1)
+            })
+            .expect("enqueue jobs");
+        for expected in [[1; 32], [2; 32]] {
+            let SettlementJobClaim::Claimed(job) =
+                store.claim_due_settlement_job(1, 10, 2).expect("claim job")
+            else {
+                panic!("job was not claimed")
+            };
+            assert_eq!(job.settlement_id, expected);
+        }
+
+        let before_expiry = store.settlement_job_summary(9, 0).expect("summary");
+        assert_eq!(before_expiry.leased, 2);
+        assert_eq!(before_expiry.expired, 0);
+        let expired = store
+            .settlement_job_summary(10, 0)
+            .expect("expired summary");
+        assert_eq!(expired.leased, 0);
+        assert_eq!(expired.expired, 2);
     }
 
     #[test]
@@ -15884,7 +16010,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn reopen_rejects_missing_or_mismatched_settlement_job_kind_counts() {
+    fn reopen_bounds_kind_count_checks_and_chunked_validation_rejects_row_drift() {
         for corruption in ["missing", "mismatched"] {
             let memory = VectorMemory::default();
             let store = StableStore::init(memory.clone()).expect("initialize");
@@ -15912,11 +16038,44 @@ mod tests {
                 .expect("corrupt kind count");
             drop(store);
 
-            assert!(
-                StableStore::reopen(memory).is_err(),
-                "{corruption} kind count must fail closed"
-            );
+            if corruption == "missing" {
+                assert!(
+                    StableStore::reopen(memory).is_err(),
+                    "missing fixed count row must fail at reopen"
+                );
+            } else {
+                let reopened = StableStore::reopen(memory).expect("bounded reopen");
+                assert!(
+                    reopened.validate_relations().is_err(),
+                    "row/count drift must fail in chunked validation"
+                );
+            }
         }
+    }
+
+    #[test]
+    #[serial]
+    fn reopen_remains_bounded_with_ten_thousand_settlement_jobs() {
+        let memory = VectorMemory::default();
+        let store = StableStore::init(memory.clone()).expect("initialize");
+        store
+            .handle
+            .update(|connection| {
+                for sequence in 0..10_000u64 {
+                    let mut id = [0u8; 32];
+                    id[24..].copy_from_slice(&sequence.to_be_bytes());
+                    enqueue_settlement_job(connection, SettlementJobKind::Deposit, id, sequence)?;
+                }
+                Ok(())
+            })
+            .expect("seed settlement jobs");
+        drop(store);
+
+        let reopened = StableStore::reopen(memory).expect("bounded reopen");
+        assert_eq!(
+            reopened.settlement_job_kind_count(SettlementJobKind::Deposit),
+            Ok(10_000)
+        );
     }
 
     #[test]

@@ -252,11 +252,15 @@ def decisionName : WithdrawalFinalizationDecision → String
   | .notify => "notify"
   | .discardReverted => "discard-reverted"
 
-def finalizationCase (succeeded : Bool) (receiptBlock : Nat) (finalized : Option Nat) : String :=
+def finalizationCase
+    (succeeded : Bool) (receiptBlock : Nat) (finalized : Option Nat)
+    (canonical : Bool) : String :=
   let finalizedJson := match finalized with | some value => quoted (toString value) | none => "null"
-  let decision := decisionName (decideWithdrawalFinalization succeeded receiptBlock finalized)
+  let decision := decisionName
+    (decideWithdrawalFinalization succeeded receiptBlock finalized canonical)
   "{" ++ field "receipt_succeeded" (boolJson succeeded) ++ "," ++
     natField "receipt_block" receiptBlock ++ "," ++ field "finalized_block" finalizedJson ++ "," ++
+    field "canonical" (boolJson canonical) ++ "," ++
     stringField "decision" decision ++ "}"
 
 def queueCase (existingBlocked : Option Bool) (incomingBlocked otherBlocked : Bool) : String :=
@@ -362,24 +366,26 @@ def document : String :=
     fundingReconciliationCase true true false,
     fundingReconciliationCase true true true]
   let finalizations := [
-    finalizationCase true 10 none,
-    finalizationCase false 10 none,
-    finalizationCase true 10 (some 9),
-    finalizationCase false 10 (some 9),
-    finalizationCase true 10 (some 10),
-    finalizationCase false 10 (some 10),
-    finalizationCase true 0 none,
-    finalizationCase false 0 none,
-    finalizationCase true 0 (some 0),
-    finalizationCase false 0 (some 0),
-    finalizationCase true 1 (some 0),
-    finalizationCase false 1 (some 0),
-    finalizationCase true 0 (some 1),
-    finalizationCase false 0 (some 1),
-    finalizationCase true max (some max),
-    finalizationCase false max (some max),
-    finalizationCase true max (some 0),
-    finalizationCase false max (some 0)]
+    finalizationCase true 10 none true,
+    finalizationCase false 10 none true,
+    finalizationCase true 10 (some 9) true,
+    finalizationCase false 10 (some 9) true,
+    finalizationCase true 10 (some 10) true,
+    finalizationCase false 10 (some 10) true,
+    finalizationCase true 10 (some 10) false,
+    finalizationCase false 10 (some 10) false,
+    finalizationCase true 0 none true,
+    finalizationCase false 0 none true,
+    finalizationCase true 0 (some 0) true,
+    finalizationCase false 0 (some 0) true,
+    finalizationCase true 1 (some 0) true,
+    finalizationCase false 1 (some 0) true,
+    finalizationCase true 0 (some 1) true,
+    finalizationCase false 0 (some 1) true,
+    finalizationCase true max (some max) true,
+    finalizationCase false max (some max) true,
+    finalizationCase true max (some 0) true,
+    finalizationCase false max (some 0) true]
   let queues := [queueCase none false true, queueCase (some false) true false,
     queueCase (some true) false true,
     queueCase none true true, queueCase none false false, queueCase none true false,

@@ -10,12 +10,12 @@ assert.equal(deploymentInstanceHex(previousBytes, "test"), previousHex)
 assert.deepEqual(
   verifyUpgradeInstance(
     { deploymentInstanceId: previousHex },
-    { schema_version: 35, deployment_instance_id: previousBytes },
+    { schema_version: 36, deployment_instance_id: previousBytes },
     currentStatus,
   ),
   {
     replacement_mode: "current-schema-upgrade",
-    live_schema_version: 35,
+    live_schema_version: 36,
     previous_deployment_instance_id: previousHex,
     live_module_hash: currentStatus.module_hash,
     next: previousHex,
@@ -32,7 +32,7 @@ assert.equal(
 assert.throws(
   () => verifyUpgradeInstance(
     { deploymentInstanceId: changedHex },
-    { schema_version: 35, deployment_instance_id: previousBytes },
+    { schema_version: 36, deployment_instance_id: previousBytes },
     currentStatus,
   ),
   /reinstall is prohibited/,
@@ -44,12 +44,12 @@ for (const schemaVersion of [34, 32, 31, 30]) {
       { schema_version: schemaVersion, deployment_instance_id: previousBytes },
       currentStatus,
     ),
-    /requires reviewed source schema v33 or target schema v35/,
+    /requires reviewed source schema v33 or target schema v36/,
   )
 }
 assert.throws(() => verifyUpgradeInstance(
   { deploymentInstanceId: previousHex },
-  { schema_version: 35, deployment_instance_id: previousBytes },
+  { schema_version: 36, deployment_instance_id: previousBytes },
   {},
 ), /module hash/)
 

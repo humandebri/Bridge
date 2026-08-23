@@ -1,4 +1,4 @@
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { DeploymentProfile } from "@/config/profile"
 import {
@@ -134,7 +134,7 @@ beforeEach(() => {
     minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
     ledger_canister_id: Principal.fromText(configuredLedgerId),
     index_canister_id: Principal.fromText(configuredIndexId),
-    schema_version: 35,
+    schema_version: 36,
     expected_bridge_signer: new Uint8Array(20).fill(0x33),
     evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
     rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
@@ -370,7 +370,7 @@ describe("validateRuntime token bindings", () => {
       minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
       ledger_canister_id: Principal.fromText(ledgerId),
       index_canister_id: Principal.fromText(indexId),
-      schema_version: 35,
+      schema_version: 36,
       expected_bridge_signer: new Uint8Array(20).fill(0x33),
       evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
       rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
@@ -398,7 +398,7 @@ describe("validateRuntime token bindings", () => {
       minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
       ledger_canister_id: Principal.fromText(ledgerId),
       index_canister_id: Principal.fromText(indexId),
-      schema_version: 35,
+      schema_version: 36,
       expected_bridge_signer: new Uint8Array(20).fill(0x33),
       evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
       rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),

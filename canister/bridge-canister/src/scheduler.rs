@@ -10,10 +10,12 @@ use crate::{
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
-// A receipt observation can make four bounded 30-second RPC calls (chain id,
-// finalized head, receipt, and canonical block). Leave ample callback overhead
-// while still keeping crash recovery bounded.
-const LEASE_NS: u64 = 5 * 60 * 1_000_000_000;
+// A single EVM RPC management call may consume the full 300-second timeout.
+// Keep an additional two-minute callback/commit margin; generation fencing still
+// rejects a stale callback after crash recovery reclaims the lease.
+const MAX_EVM_RPC_CALL_NS: u64 = 300 * 1_000_000_000;
+const LEASE_CALLBACK_MARGIN_NS: u64 = 120 * 1_000_000_000;
+const LEASE_NS: u64 = MAX_EVM_RPC_CALL_NS + LEASE_CALLBACK_MARGIN_NS;
 const BUSY_RETRY_NS: u64 = 60 * 1_000_000_000;
 const MAX_TRANSIENT_RETRY_NS: u64 = 15 * 60 * 1_000_000_000;
 #[cfg(target_arch = "wasm32")]

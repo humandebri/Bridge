@@ -55,8 +55,8 @@ preflight
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
 Canister upgradeの前にはlive `public_config` をJSONへ保存し、次のgateを必ず通す。
-review済みlive v33の同一instanceからv35へのupgradeだけを`schema-migration-upgrade`として受理し、upgrade前後のstate count、
-source schema v33／wire v28、target schema v35／wire v29、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、v34、v32以下、
+review済みlive v33の同一instanceからv36へのupgradeだけを`schema-migration-upgrade`として受理し、upgrade前後のstate count、
+source schema v33／wire v28、target schema v36／wire v29、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、v35、v34、v32以下、
 未知schema、欠落、ゼロ値はfail closedにする。新規Canisterへの初回installだけはこのupgrade gateの対象外である。
 出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、manifest検証でも同じ比較を行う。
 
@@ -76,14 +76,14 @@ preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-
 
 履歴を失ったstate、v33以下、旧wireのstaging canisterはupgradeせず、現行Wasmを新規Canister IDへinstallして検証stateを作り直す。
 
-v33→v35 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
+v33→v36 upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
 
 - `live-bridge-status`: Deposit／reservationを含むcountsと、Withdrawal、pending Ledger operation、reconciliation hold、未払額を保持する。
 - `live-activation-status`: pending Timelock operation数を保持する。
 - `live-canister-status`: module hash、controller principals、cycles balanceを保持する。
 - `live-storage-integrity`: 認可済みcallerによる`storage_integrity_check()`の`ok`結果を保持する。
 - `live-ledger-balance`: Bridge principalのTICRC1 raw balanceを保持する。
-- install stageにはupgrade前後の全count、source schema v33／wire v28、target schema v35／wire v29、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致ならUI公開へ進まない。
+- install stageにはupgrade前後の全count、source schema v33／wire v28、target schema v36／wire v29、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致ならUI公開へ進まない。
 
 manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は同一schema upgrade後も保持する。
 
@@ -115,7 +115,7 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
 )
 ```
 
-staging migration gateはlive stable schema v33／wire v28をv35／wire v29へ原子的に変換しながら、旧`get_public_config`を
+staging migration gateはlive stable schema v33／wire v28をv36／wire v29へ原子的に変換しながら、旧`get_public_config`を
 `get_runtime_binding`と権限付き`get_operational_config`へ置換する。`same-schema-upgrade-policy.json`は
 Canister、deployment、live source module／Candidを固定し、repo外のlocal E2E evidenceはclean HEADとtarget Wasm／Candidを固定する。
 preflightはcertified live Candidを旧APIとして読み、binding、state count、controller、cycles、storage integrity、
@@ -129,15 +129,15 @@ BRIDGE_STAGING_IDENTITY=<identity> \
   scripts/plan007/staging-canister-upgrade.sh \
     --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
     --local-evidence /secure/work/local-e2e.json \
-    --evidence /secure/work/staging-v33-v35-preflight.json
+    --evidence /secure/work/staging-v33-v36-preflight.json
 
 # preflight結果とpolicyを別レビューし、Canister upgradeの明示承認後だけ実行する。
 BRIDGE_STAGING_IDENTITY=<identity> \
   scripts/plan007/staging-canister-upgrade.sh --execute \
     --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
     --local-evidence /secure/work/local-e2e.json \
-    --preflight-evidence /secure/work/staging-v33-v35-preflight.json \
-    --evidence /secure/work/staging-v33-v35-result.json
+    --preflight-evidence /secure/work/staging-v33-v36-preflight.json \
+    --evidence /secure/work/staging-v33-v36-result.json
 ```
 
 driverは`icp deploy`や暗黙buildを使用しない。成功または適用済みpostconditionをすべて確認した場合だけ

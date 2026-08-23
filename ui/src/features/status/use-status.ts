@@ -1,9 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useEffect, useReducer } from "react"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { RUNTIME_VALIDATION_TTL_MS, runtimeProfileFingerprint, runtimeWriteBlocker, validateRuntime, validateRuntimeHeartbeat, type FinalizedRuntimeObservation, type RuntimeValidation } from "@/lib/runtime-validation"
+import { RUNTIME_VALIDATION_TTL_MS, runtimeProfileFingerprint, validateRuntime, validateRuntimeHeartbeat, type FinalizedRuntimeObservation, type RuntimeValidation } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 
 interface AutomaticQueryOptions {
@@ -86,23 +85,6 @@ export function useRuntimeHeartbeat(chainId: number | undefined, initialValidati
     refetchOnWindowFocus,
     refetchOnReconnect,
   })
-}
-
-export function finalizedObservationQuote(observation?: FinalizedRuntimeObservation) {
-  return observation?.ready ? observation.snapshot : undefined
-}
-
-export function useRuntimeWriteReadiness(validation?: RuntimeValidation) {
-  const [, expire] = useReducer((value: number) => value + 1, 0)
-  useEffect(() => {
-    if (!validation?.ready) return
-    const remaining = validation.checkedAt + RUNTIME_VALIDATION_TTL_MS - Date.now()
-    if (remaining <= 0) return
-    const timeout = window.setTimeout(expire, remaining + 1)
-    return () => window.clearTimeout(timeout)
-  }, [validation?.checkedAt, validation?.ready])
-  const reason = runtimeWriteBlocker(validation)
-  return { ready: reason === undefined, reason }
 }
 
 export function useBridgeStatus() {

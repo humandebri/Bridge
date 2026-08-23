@@ -1,4 +1,4 @@
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 
 const ICP_DASHBOARD_ORIGIN = "https://dashboard.internetcomputer.org"
 

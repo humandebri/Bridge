@@ -90,10 +90,11 @@ theorem settlement_backing_refinement
   simp [settlementImpl, bounded]
 
 theorem withdrawal_finalization_refinement
-    (receiptSucceeded : Bool) (receiptBlock : U64) (finalizedBlock : Option U64) :
-    finalizationImpl receiptSucceeded receiptBlock finalizedBlock =
+    (receiptSucceeded : Bool) (receiptBlock : U64) (finalizedBlock : Option U64)
+    (canonical : Bool) :
+    finalizationImpl receiptSucceeded receiptBlock finalizedBlock canonical =
       decideWithdrawalFinalization receiptSucceeded receiptBlock.val
-        (finalizedBlock.map U64.val) := by
+        (finalizedBlock.map U64.val) canonical := by
   rfl
 
 theorem pending_queue_refinement

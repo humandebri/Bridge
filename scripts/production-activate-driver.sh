@@ -19,9 +19,7 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
   echo "invalid activation phase" >&2
   exit 1
 }
-for tool in python3; do
-  command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }
-done
+command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
 production_validate_gate gate-b "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
 

@@ -15,7 +15,9 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 [[ "$BRIDGE_HANDOVER_CONFIRMATION" == TRANSFER_TO_KINIC_SNS_ROOT_ONLY ]] || {
   echo "controller handover requires the exact confirmation phrase" >&2; exit 1;
 }
-[[ ! -e "$BRIDGE_HANDOVER_EVIDENCE_FILE" ]] || { echo "handover evidence output already exists" >&2; exit 1; }
+[[ ! -e "$BRIDGE_HANDOVER_EVIDENCE_FILE" && ! -L "$BRIDGE_HANDOVER_EVIDENCE_FILE" ]] || {
+  echo "handover evidence output already exists or is a symlink" >&2; exit 1;
+}
 for tool in icp python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 
 production_validate_gate gate-a "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_A_MANIFEST_SHA256"
@@ -72,7 +74,6 @@ PY
 production_reserve_output "$BRIDGE_HANDOVER_EVIDENCE_FILE" "handover evidence"
 
 COMMAND=(icp canister settings update bridge-canister -e production --remove-all-controllers --add-controller "$ROOT" --force --identity "$BRIDGE_ICP_IDENTITY" --debug)
-STARTED_AT="$(date +%s)"
 set +e
 "${COMMAND[@]}" >"$TMP/response.stdout" 2>"$TMP/response.stderr"
 STATUS=$?
@@ -81,14 +82,16 @@ if [[ $STATUS -ne 0 ]]; then
   COMPLETED_AT="$(date +%s)"
   RESPONSE_SHA256="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()+open(sys.argv[2],"rb").read()).hexdigest())' "$TMP/response.stdout" "$TMP/response.stderr")"
   python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
-import json,os,sys
+import json,os,sys,tempfile
 target,canister,root,caller,status,response_sha,completed,preflight,stdout_path,stderr_path,*argv=sys.argv[1:]
 value={'schema_version':2,'stage':'controller_update_uncertain','observed_at_unix':int(completed),
        'bridge_canister_id':canister,'sns_root_canister_id':root,'executing_principal':caller,
        'command_argv':argv,'request_id':'','response_exit_code':int(status),
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),'response_stderr_hex':open(stderr_path,'rb').read().hex(),
        'response_sha256':response_sha,**json.load(open(preflight))}
-tmp=target+'.tmp'; out=open(tmp,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
+parent=os.path.dirname(os.path.abspath(target)) or '.'
+fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
+out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
 fd=os.open(os.path.dirname(os.path.abspath(target)) or '.',os.O_RDONLY); os.fsync(fd); os.close(fd)
 PY
   echo "INCIDENT: controller handover result is uncertain; durable checkpoint retained and automatic retry is forbidden" >&2
@@ -104,14 +107,16 @@ if not m: raise SystemExit(1)
 print(m.group(1).lower())
 ' "$TMP/response.stdout" "$TMP/response.stderr")" || {
   python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
-import json,os,sys
+import json,os,sys,tempfile
 target,canister,root,caller,status,response_sha,completed,preflight,stdout_path,stderr_path,*argv=sys.argv[1:]
 value={'schema_version':2,'stage':'controller_update_uncertain','observed_at_unix':int(completed),
        'bridge_canister_id':canister,'sns_root_canister_id':root,'executing_principal':caller,
        'command_argv':argv,'request_id':'','response_exit_code':int(status),
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),'response_stderr_hex':open(stderr_path,'rb').read().hex(),
        'response_sha256':response_sha,**json.load(open(preflight))}
-tmp=target+'.tmp'; out=open(tmp,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
+parent=os.path.dirname(os.path.abspath(target)) or '.'
+fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
+out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
 fd=os.open(os.path.dirname(os.path.abspath(target)) or '.',os.O_RDONLY); os.fsync(fd); os.close(fd)
 PY
   echo "INCIDENT: controller handover succeeded but the ICP CLI omitted the request ID; durable uncertain checkpoint retained" >&2
@@ -119,14 +124,16 @@ PY
 }
 # Persist the irreversible request before attempting the public postcondition.
 python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
-import json,os,sys
+import json,os,sys,tempfile
 target,canister,root,caller,request_id,response_sha,completed,preflight,stdout_path,stderr_path,*argv=sys.argv[1:]
 value={'schema_version':2,'stage':'controller_update_submitted','observed_at_unix':int(completed),
        'bridge_canister_id':canister,'sns_root_canister_id':root,'executing_principal':caller,
        'command_argv':argv,'request_id':request_id,'response_exit_code':0,
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),'response_stderr_hex':open(stderr_path,'rb').read().hex(),
        'response_sha256':response_sha,**json.load(open(preflight))}
-tmp=target+'.tmp'; out=open(tmp,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
+parent=os.path.dirname(os.path.abspath(target)) or '.'
+fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
+out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
 fd=os.open(os.path.dirname(os.path.abspath(target)) or '.',os.O_RDONLY); os.fsync(fd); os.close(fd)
 PY
 if ! icp canister status bridge-canister -e production --public --json >"$TMP/postcondition-status.json"; then
@@ -155,7 +162,7 @@ print(json.dumps({'final_controllers':controllers},sort_keys=True,separators=(',
 PY
 COMPLETED_AT="$(date +%s)"
 python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/postcondition.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
-import json,os,sys
+import json,os,sys,tempfile
 target,canister,root,caller,request_id,response_sha,completed,preflight,postcondition,stdout_path,stderr_path,*argv=sys.argv[1:]
 metrics=json.load(open(preflight))
 final_controllers=json.load(open(postcondition))['final_controllers']
@@ -165,7 +172,9 @@ value={'schema_version':2,'stage':'complete','observed_at_unix':int(completed),'
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),
        'response_stderr_hex':open(stderr_path,'rb').read().hex(),
        'response_sha256':response_sha,'final_controllers':final_controllers,**metrics}
-tmp=target+'.tmp'; out=open(tmp,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
+parent=os.path.dirname(os.path.abspath(target)) or '.'
+fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
+out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
 fd=os.open(os.path.dirname(os.path.abspath(target)) or '.',os.O_RDONLY); os.fsync(fd); os.close(fd)
 PY
 echo "controller handover completed; evidence=$BRIDGE_HANDOVER_EVIDENCE_FILE" >&2

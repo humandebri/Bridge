@@ -88,13 +88,16 @@ inductive WithdrawalFinalizationDecision where
 deriving DecidableEq
 
 def decideWithdrawalFinalization
-    (receiptSucceeded : Bool) (receiptBlock : Nat) (finalizedBlock : Option Nat) :
+    (receiptSucceeded : Bool) (receiptBlock : Nat) (finalizedBlock : Option Nat)
+    (canonical : Bool) :
     WithdrawalFinalizationDecision :=
   match finalizedBlock with
   | none => .retry
   | some finalized =>
       if finalized < receiptBlock then .retry
-      else if receiptSucceeded then .notify else .discardReverted
+      else if canonical then
+        if receiptSucceeded then .notify else .discardReverted
+      else .retry
 
 def withdrawalIdAdmissible (observed minimum : Nat) : Bool :=
   minimum != 0 && minimum ≤ observed

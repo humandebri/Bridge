@@ -1,5 +1,5 @@
 import { IcrcLedgerCanister } from "@icp-sdk/canisters/ledger/icrc"
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 import { createIcAgent } from "@/lib/ic/agent"
 
 export interface LedgerAccount { owner: Principal; subaccount: [] | [Uint8Array] }

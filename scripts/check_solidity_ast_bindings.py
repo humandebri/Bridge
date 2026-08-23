@@ -356,6 +356,54 @@ def declaration_initializer_call(
     return initializer
 
 
+def library_calls(node: object, library: str, member: str) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+    expected_type = f"type(library {library})"
+    for item in walk(node):
+        if item.get("nodeType") != "FunctionCall":
+            continue
+        expression = item.get("expression")
+        base = expression.get("expression") if isinstance(expression, dict) else None
+        base_type = base.get("typeDescriptions", {}) if isinstance(base, dict) else {}
+        if (
+            isinstance(expression, dict)
+            and expression.get("nodeType") == "MemberAccess"
+            and expression.get("memberName") == member
+            and isinstance(base_type, dict)
+            and base_type.get("typeString") == expected_type
+        ):
+            calls.append(item)
+    return calls
+
+
+def declaration_initializer_library_call(
+    node: object, declaration_id: int, library: str, member: str
+) -> dict[str, object]:
+    statements = [
+        item
+        for item in walk(node)
+        if item.get("nodeType") == "VariableDeclarationStatement"
+        and any(
+            isinstance(declaration, dict) and declaration.get("id") == declaration_id
+            for declaration in item.get("declarations", [])
+        )
+    ]
+    if len(statements) != 1:
+        raise ValueError(
+            f"Solidity declaration statement must resolve exactly once: "
+            f"{declaration_id}/{len(statements)}"
+        )
+    initializer = statements[0].get("initialValue")
+    if not isinstance(initializer, dict) or initializer not in library_calls(
+        initializer, library, member
+    ):
+        raise ValueError(
+            f"Solidity declaration initializer is not compiler-bound to "
+            f"{library}.{member}: {declaration_id}"
+        )
+    return initializer
+
+
 def require_no_declaration_reassignment(node: object, declaration_ids: set[int]) -> None:
     reassigned: set[int] = set()
     for item in walk(node):
@@ -554,11 +602,11 @@ def validate_bridge_commit(index: AstIndex) -> None:
         raise ValueError(
             "Bridge Mint digest must come from the unique authorization digest call"
         )
-    evaluate_initializer = declaration_initializer_call(
-        wrapper.node.get("body"), effects_id, evaluate_records[0].declaration_id
+    evaluate_initializer = declaration_initializer_library_call(
+        wrapper.node.get("body"), effects_id, "MintAuthorizationPolicy", "evaluateMint"
     )
-    evaluate_calls = direct_calls(
-        wrapper.node.get("body"), evaluate_records[0].declaration_id
+    evaluate_calls = library_calls(
+        wrapper.node.get("body"), "MintAuthorizationPolicy", "evaluateMint"
     )
     if (
         len(evaluate_calls) != 1
@@ -568,9 +616,7 @@ def validate_bridge_commit(index: AstIndex) -> None:
     require_evaluate_input_binding(
         evaluate_initializer, authorization_id, variables
     )
-    recover_calls = direct_calls(
-        wrapper.node.get("body"), recover_records[0].declaration_id
-    )
+    recover_calls = library_calls(wrapper.node.get("body"), "ECDSA", "tryRecoverCalldata")
     if len(recover_calls) != 1:
         raise ValueError("Bridge Mint wrapper must recover exactly one signature")
     require_call_argument_declarations(

@@ -24,6 +24,17 @@ describe("reviewed deployment profile", () => {
     expect(parsed.deploymentBlock).toBe(123n)
   })
 
+  it("rejects token metadata that does not use the Bridge-wide 8 decimal contract", () => {
+    expect(() => deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      icToken: { ...deploymentProfile.icToken, decimals: 6 },
+    })).toThrow()
+    expect(() => deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      baseToken: { ...deploymentProfile.baseToken, decimals: 18 },
+    })).toThrow()
+  })
+
   it("requires reviewed history RPCs for Sepolia staging", () => {
     expect(() => deploymentProfileSchema.parse({
       ...deploymentProfile,

@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowDownUp, ArrowRight, LoaderCircle, LockKeyhole, RefreshCcw, TriangleAlert } from "lucide-react"
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { hexToBytes } from "viem"

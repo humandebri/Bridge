@@ -359,11 +359,6 @@ export const idlFactory = ({ IDL }) => {
     'SameHeightDifferentHash' : IDL.Null,
   });
   const Result_10 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : IDL.Text });
-  const ChainIdMode = IDL.Variant({
-    'Wrong' : IDL.Null,
-    'Configured' : IDL.Null,
-    'Inconsistent' : IDL.Null,
-  });
   const LedgerMode = IDL.Variant({
     'TemporarilyUnavailable' : IDL.Null,
     'InsufficientAllowance' : IDL.Record({ 'allowance' : IDL.Nat }),
@@ -488,7 +483,6 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'set_broadcast_inconsistent_after_accepts' : IDL.Func([IDL.Nat8], [], []),
-    'set_chain_id_mode' : IDL.Func([ChainIdMode], [], []),
     'set_configured_chain_id' : IDL.Func([IDL.Nat64], [], []),
     'set_deployment_postconditions' : IDL.Func(
         [

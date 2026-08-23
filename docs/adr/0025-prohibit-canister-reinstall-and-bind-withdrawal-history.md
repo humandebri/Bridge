@@ -10,7 +10,7 @@ Bridge Canisterのreinstallはstable stateを失う一方、Base Bridge contract
 
 ## 決定
 
-初期化済みの永続Canisterは、同じdeployment instanceを保つstable schema v34／record wire v29のupgradeだけで更新する。reinstall、instance変更、v33以下、未知schema、旧wireからのupgradeは例外なくdeployment gateとstorage reopenで拒否する。新しいCanister IDへの初回installは許可する。
+初期化済みの永続staging Canisterは、同じdeployment instanceを保つreview済みstable schema v33／record wire v28からv36／wire v29へのupgradeだけで更新する。reinstall、instance変更、その他の旧schema、未知schema、未登録wireからのupgradeは例外なくdeployment gateとstorage reopenで拒否する。新しいCanister IDへの初回installは許可する。
 
 初回install時には、非ゼロ32-byteのinclusive `minimum_withdrawal_id`をimmutable configへ設定する。通常の新規deploymentでは1を使う。test-deploymentの現行schemaにはstaging boundaryを空のliability stateで一度だけ設定する経路を残すが、旧schema migrationや履歴を失ったreinstallの復旧には使用しない。同じ値の再適用以外は拒否する。
 

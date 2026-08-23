@@ -32,6 +32,7 @@ CLEANUP_DONE=0
 UI_DEPENDENCIES_READY=0
 
 # shellcheck source=ci_guards.sh
+# shellcheck source=ci_guards.sh
 source "$ROOT/scripts/ci_guards.sh"
 
 cleanup_runtime() {
@@ -123,23 +124,17 @@ run_step() {
   return "$status"
 }
 
-verify_no_npm_lockfiles() {
-  local lockfile
-
-  for lockfile in \
-    "$ROOT/package-lock.json" \
-    "$ROOT/npm-shrinkwrap.json" \
-    "$ROOT/ui/package-lock.json" \
-    "$ROOT/ui/npm-shrinkwrap.json"; do
-    if [[ -e "$lockfile" ]]; then
-      echo "npm lockfile is forbidden; use pnpm-lock.yaml: $lockfile" >&2
-      return 1
-    fi
-  done
-}
-
 run_versions() {
-  verify_no_npm_lockfiles
+  verify_no_npm_lockfiles "$ROOT"
+  shellcheck -x -S warning \
+    "$ROOT/scripts/ci-local.sh" \
+    "$ROOT/scripts/production-release.sh" \
+    "$ROOT/scripts/production-validation.sh" \
+    "$ROOT/scripts/production-deploy-driver.sh" \
+    "$ROOT/scripts/production-activation-proposal.sh" \
+    "$ROOT/scripts/production-activate-driver.sh" \
+    "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/trusted-pr-container.sh"
   "$ROOT/scripts/check_tool_versions.sh"
   "$ROOT/scripts/test_tool_version_gate.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
@@ -148,7 +143,6 @@ run_versions() {
   verify_no_obsolete_withdrawal_terms \
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
-  python3 "$ROOT/scripts/test_live_fee_guard.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
   python3 "$ROOT/scripts/test_proof_impact.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
@@ -320,6 +314,8 @@ run_rust_fast() {
   run_no_automatic_execution_guards
   cargo fmt --manifest-path "$ROOT/Cargo.toml" --all --check
   cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" --workspace --all-targets -- -D warnings
+  cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" -p bridge-canister --all-targets \
+    --features test-deployment -- -D warnings
   cargo test --locked --manifest-path "$ROOT/Cargo.toml" --workspace
 }
 
@@ -339,6 +335,7 @@ run_rust_integration() {
   require_workspace_dependencies
   pnpm --dir "$ROOT" run governance-relayer:test
   pnpm --dir "$ROOT" run governance-relayer:typecheck
+  pnpm --dir "$ROOT" run integration:typecheck
   pnpm --dir "$ROOT" run test:e2e
   python3 "$ROOT/scripts/test_prepare_local_network.py"
   bash "$ROOT/scripts/test_ci_local_safety.sh"
@@ -427,10 +424,6 @@ run_verus() {
   local kernel_name
   local proof_name
   local expected_fixture
-  local production_path
-  local production_source
-  local claim_ids
-  local -a production_sources
   local verus_version
 
   verus_version="$(verus --version 2>&1)"
@@ -451,7 +444,7 @@ run_verus() {
   verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass"
   python3 "$ROOT/scripts/check_verus_manifest.py"
 
-  while IFS=$'\t' read -r obligation_id kind kernel_name proof_name expected_fixture binding derived_bindings production_calls claim_ids; do
+  while IFS=$'\t' read -r obligation_id kind kernel_name proof_name expected_fixture _binding _derived_bindings _production_calls _claim_ids; do
     [[ "$obligation_id" == "schema" ]] && continue
     case "$kind" in
       shared-expression|derived|model)
@@ -640,9 +633,18 @@ run_proof_stage() {
   set +e
   (
     set -e
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
-    "$@"
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
+    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+      echo "proof source fingerprint changed before stage: $stage" >&2
+      exit 1
+    }
+    if ! "$@"; then
+      echo "proof stage command failed: $stage" >&2
+      exit 1
+    fi
+    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+      echo "proof source fingerprint changed during stage: $stage" >&2
+      exit 1
+    }
   )
   status=$?
   set -e
@@ -654,8 +656,11 @@ run_proof_stage() {
   printf '%s\t%s\t' "$stage" "$stage_status" >>"$PROOF_STAGE_RECEIPT"
   tr -d '\n' <"$PROOF_SOURCE_BASELINE" >>"$PROOF_STAGE_RECEIPT"
   printf '\n' >>"$PROOF_STAGE_RECEIPT"
-  python3 "$ROOT/scripts/write_proof_receipt.py" \
-    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"
+  if ! python3 "$ROOT/scripts/write_proof_receipt.py" \
+    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"; then
+    echo "proof receipt write failed after stage: $stage" >&2
+    return 1
+  fi
   return "$status"
 }
 
@@ -669,6 +674,10 @@ run_proofs() {
   python3 "$ROOT/scripts/test_write_proof_receipt.py"
   python3 "$ROOT/scripts/test_claim_test_manifest.py"
   python3 "$ROOT/scripts/test_check_claim_manifest.py"
+  python3 "$ROOT/scripts/test_halmos_environment.py"
+  python3 "$ROOT/scripts/test_solidity_ast_bindings.py"
+  python3 "$ROOT/scripts/test_verus_manifest.py"
+  "$ROOT/scripts/test_concrete_runtime.sh"
   python3 "$ROOT/scripts/check_failure_manifests.py"
   run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"
   run_proof_stage lean run_lean_proofs
@@ -733,8 +742,8 @@ run_icp_build() {
 }
 
 wait_for_anvil() {
-  local attempt
-  for attempt in {1..50}; do
+  local _attempt
+  for _attempt in {1..50}; do
     if [[ -z "$ANVIL_PID" ]] || ! kill -0 "$ANVIL_PID" 2>/dev/null; then
       echo "spawned Anvil exited before becoming ready" >&2
       return 1
@@ -948,22 +957,22 @@ run_smoke() {
   local limit_signature
   local smoke_principal
   local bridge_init_args
-  local readonly bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-  local readonly runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
-  local readonly unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
-  local readonly independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
-  local readonly recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
-  local readonly deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
-  local readonly gross_amount="101000000"
-  local readonly service_fee="1000000"
-  local readonly minted_amount="100000000"
-  local readonly release_amount="50000000"
-  local readonly release_amount_out="49000000"
-  local readonly principal_owner="0x010203"
-  local readonly default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
-  local readonly timelock_delay_seconds="86400"
-  local readonly zero_address="0x0000000000000000000000000000000000000000"
-  local readonly zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
+  local -r bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  local -r runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+  local -r unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+  local -r independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
+  local -r recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
+  local -r deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
+  local -r gross_amount="101000000"
+  local -r service_fee="1000000"
+  local -r minted_amount="100000000"
+  local -r release_amount="50000000"
+  local -r release_amount_out="49000000"
+  local -r principal_owner="0x010203"
+  local -r default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
+  local -r timelock_delay_seconds="86400"
+  local -r zero_address="0x0000000000000000000000000000000000000000"
+  local -r zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
 
   ensure_icp_network "$network_status"
   prepare_smoke_canister_state

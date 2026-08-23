@@ -55,8 +55,8 @@ class SepoliaE2ETests(unittest.TestCase):
                     "bsns_runtime_template_sha256": TX_B,
                     "state_upgrade": {
                         "verified": True,
-                        "before": {"status": {"schema_version": 35}},
-                        "after": {"status": {"schema_version": 35}},
+                        "before": {"status": {"schema_version": 36}},
+                        "after": {"status": {"schema_version": 36}},
                     },
                     "tests": {
                         "full_local_ci": "passed",
@@ -121,11 +121,11 @@ class SepoliaE2ETests(unittest.TestCase):
         status: dict[str, object] | None = None,
     ) -> list[dict[str, str]]:
         if live is None:
-            live = {"schema_version": 35, "deployment_instance_id": PROFILE_INSTANCE}
+            live = {"schema_version": 36, "deployment_instance_id": PROFILE_INSTANCE}
         if check is None:
             check = {
                 "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
+                "live_schema_version": 36,
                 "previous_deployment_instance_id": PROFILE_INSTANCE,
                 "live_module_hash": TX,
                 "next": PROFILE_INSTANCE,
@@ -252,12 +252,12 @@ class SepoliaE2ETests(unittest.TestCase):
 
     def current_upgrade_artifacts(self) -> list[dict[str, str]]:
         live = {
-            "schema_version": 35,
+            "schema_version": 36,
             "deployment_instance_id": PROFILE_INSTANCE,
         }
         check = {
             "replacement_mode": "current-schema-upgrade",
-            "live_schema_version": 35,
+            "live_schema_version": 36,
             "previous_deployment_instance_id": PROFILE_INSTANCE,
             "live_module_hash": TX,
             "next": PROFILE_INSTANCE,
@@ -311,7 +311,7 @@ class SepoliaE2ETests(unittest.TestCase):
                 "canister_deposits_paused": True,
                 "configured_rpc_url_sha256": [H64, H64_B, H64_C],
                 "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
+                "live_schema_version": 36,
                 "previous_deployment_instance_id": PROFILE_INSTANCE,
                 "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
             }
@@ -320,14 +320,14 @@ class SepoliaE2ETests(unittest.TestCase):
             return {
                 "install_mode": "upgrade", "module_sha256": H64, "cycles_balance": 1,
                 "controller_principals": ["aaaaa-aa"], "state_counts_before": counts,
-                "state_counts_after": dict(counts), "schema_version_after": 35,
+                "state_counts_after": dict(counts), "schema_version_after": 36,
                 "deployment_instance_id_after": PROFILE_INSTANCE,
                 "minimum_withdrawal_id_after": MINIMUM_WITHDRAWAL_ID,
                 "storage_integrity_after": "ok",
             }
         if stage == "initialize":
             return {
-                "schema_version": 35,
+                "schema_version": 36,
                 "deployment_instance_id": PROFILE_INSTANCE,
                 "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
                 "chain_id": 84532,
@@ -512,7 +512,7 @@ class SepoliaE2ETests(unittest.TestCase):
             "controller_principals": ["aaaaa-aa"],
             "state_counts_before": counts,
             "state_counts_after": dict(counts),
-            "schema_version_after": 35,
+            "schema_version_after": 36,
             "deployment_instance_id_after": PROFILE_INSTANCE,
             "minimum_withdrawal_id_after": MINIMUM_WITHDRAWAL_ID,
             "storage_integrity_after": "ok",
@@ -550,16 +550,16 @@ class SepoliaE2ETests(unittest.TestCase):
         self.assertNotIn("current-schema-reinstall", schema_text)
         self.assertNotIn("obsolete-pause-evidence", schema_text)
 
-    def test_v35_preflight_rejects_a_distinct_previous_instance(self) -> None:
+    def test_v36_preflight_rejects_a_distinct_previous_instance(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
-        details["live_schema_version"] = 35
+        details["live_schema_version"] = 36
         details["previous_deployment_instance_id"] = TX
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 35, "deployment_instance_id": [17] * 32},
+            {"schema_version": 36, "deployment_instance_id": [17] * 32},
             {
                 "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
+                "live_schema_version": 36,
                 "previous_deployment_instance_id": TX,
                 "live_module_hash": TX,
                 "next": PROFILE_INSTANCE,
@@ -569,10 +569,10 @@ class SepoliaE2ETests(unittest.TestCase):
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reinstall is prohibited"):
             self.validate_preflight(details, binding, artifacts)
         for live in (
-            {"schema_version": 35},
-            {"schema_version": 35, "deployment_instance_id": f"0x{'0' * 64}"},
-            {"schema_version": 35, "deployment_instance_id": "0x11"},
-            {"schema_version": 35, "deployment_instance_id": [17] * 31},
+            {"schema_version": 36},
+            {"schema_version": 36, "deployment_instance_id": f"0x{'0' * 64}"},
+            {"schema_version": 36, "deployment_instance_id": "0x11"},
+            {"schema_version": 36, "deployment_instance_id": [17] * 31},
             {"schema_version": 28, "deployment_instance_id": TX},
         ):
             invalid_artifacts = self.reinstall_artifacts(live)
@@ -583,13 +583,13 @@ class SepoliaE2ETests(unittest.TestCase):
                     invalid_artifacts,
                 )
 
-    def test_v35_upgrade_preflight_requires_state_preservation_snapshots(self) -> None:
+    def test_v36_upgrade_preflight_requires_state_preservation_snapshots(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
         details.update(
             {
                 "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
+                "live_schema_version": 36,
                 "previous_deployment_instance_id": PROFILE_INSTANCE,
             }
         )
@@ -720,10 +720,10 @@ class SepoliaE2ETests(unittest.TestCase):
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 35, "deployment_instance_id": TX},
+            {"schema_version": 36, "deployment_instance_id": TX},
             {
                 "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
+                "live_schema_version": 36,
                 "previous_deployment_instance_id": TX,
                 "live_module_hash": TX,
                 "next": TX,
@@ -738,10 +738,10 @@ class SepoliaE2ETests(unittest.TestCase):
             )
 
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 35, "deployment_instance_id": PROFILE_INSTANCE},
+            {"schema_version": 36, "deployment_instance_id": PROFILE_INSTANCE},
             {
                 "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
+                "live_schema_version": 36,
                 "previous_deployment_instance_id": PROFILE_INSTANCE,
                 "live_module_hash": TX,
                 "next": PROFILE_INSTANCE,
@@ -798,7 +798,7 @@ class SepoliaE2ETests(unittest.TestCase):
             )
 
     def test_node_checker_output_is_accepted_by_manifest_validation(self) -> None:
-        live = {"schema_version": 35, "deployment_instance_id": PROFILE_INSTANCE}
+        live = {"schema_version": 36, "deployment_instance_id": PROFILE_INSTANCE}
         live_path = self.root / "node-live-public-config.json"
         live_path.write_text(json.dumps(live), encoding="utf-8")
         status = {"module_hash": TX}
@@ -818,7 +818,7 @@ class SepoliaE2ETests(unittest.TestCase):
         ).stdout
         check = json.loads(output)
         details = self.details("preflight")
-        details["live_schema_version"] = 35
+        details["live_schema_version"] = 36
         details["previous_deployment_instance_id"] = PROFILE_INSTANCE
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         self.validate_preflight(
@@ -886,7 +886,7 @@ class SepoliaE2ETests(unittest.TestCase):
         local["state_upgrade"]["before"]["status"]["schema_version"] = 28
         local["state_upgrade"]["after"]["status"]["schema_version"] = 28
         self.local.write_text(json.dumps(local), encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must use stable schema v35"):
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must use stable schema v36"):
             sepolia_e2e.initialize(self.manifest, self.local, self.profile)
 
     def test_artifact_hash_drift_is_rejected(self) -> None:

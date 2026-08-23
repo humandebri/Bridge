@@ -138,10 +138,11 @@ def fundingReconciliationImpl
   decideFundingReconciliation completeAbsence finalScan dedupExpired
 
 def finalizationImpl
-    (receiptSucceeded : Bool) (receiptBlock : U64) (finalizedBlock : Option U64) :
+    (receiptSucceeded : Bool) (receiptBlock : U64) (finalizedBlock : Option U64)
+    (canonical : Bool) :
     WithdrawalFinalizationDecision :=
   decideWithdrawalFinalization receiptSucceeded receiptBlock.val
-    (finalizedBlock.map U64.val)
+    (finalizedBlock.map U64.val) canonical
 
 def pendingQueueImpl
     (queue : PendingQueue) (incoming : PendingQueueEntry) : PendingQueue :=

@@ -118,6 +118,19 @@ contract BridgeWithdrawalTest is TestBase {
         vm.stopPrank();
     }
 
+    function testStoredWithdrawalRoundTripsPackedFields() public {
+        uint256 amount = 1_000;
+        uint256 id = _createWithdrawal(amount, type(uint128).max, hex"010203040506", SUBACCOUNT);
+
+        IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(id);
+        assert(withdrawal.requester == USER);
+        assert(withdrawal.amount == amount);
+        assert(withdrawal.maxServiceFee == type(uint128).max);
+        assert(withdrawal.chargedServiceFee == SERVICE_FEE);
+        assert(withdrawal.amountOut == amount - SERVICE_FEE);
+        assert(withdrawal.status == IBridge.WithdrawalStatus.Committed);
+    }
+
     function testPrincipalValidationAndPauseRemainBurnGuards() public {
         bytes memory thirtyBytes = new bytes(30);
         vm.startPrank(USER);

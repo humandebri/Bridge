@@ -165,7 +165,7 @@ describe("SettlementConfirmationCoordinator", () => {
     expect(mocks.removePending).not.toHaveBeenCalled()
   })
 
-  it("surfaces_a_reverted_receipt_before_finality_is_available", async () => {
+  it("keeps_a_reverted_receipt_pending_until_its_block_is_finalized", async () => {
     for (const finalized of [
       { number: 9n, hash: `0x${"55".repeat(32)}` },
       { number: null, hash: null },
@@ -176,17 +176,30 @@ describe("SettlementConfirmationCoordinator", () => {
 
       render(<SettlementConfirmationCoordinator />)
 
-      await waitFor(() => expect(mocks.removePending).toHaveBeenCalledWith(pending))
-      expect(mocks.update).toHaveBeenCalledWith(
+      await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(
         "withdraw:1",
-        expect.objectContaining({ phase: "attention", receiptBlockNumber: "10" }),
-      )
-      expect(mocks.getBlock).not.toHaveBeenCalled()
+        expect.objectContaining({ phase: "base-withdrawal-included", receiptBlockNumber: "10" }),
+      ))
+      expect(mocks.removePending).not.toHaveBeenCalled()
       expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
       cleanup()
       vi.clearAllMocks()
       mocks.readPending.mockReturnValue([pending])
     }
+  })
+
+  it("discards_a_reverted_receipt_only_after_finality_and_canonicality", async () => {
+    mocks.getReceipt.mockResolvedValue({ status: "reverted", blockNumber: 10n, blockHash })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
+
+    render(<SettlementConfirmationCoordinator />)
+
+    await waitFor(() => expect(mocks.removePending).toHaveBeenCalledWith(pending))
+    expect(mocks.update).toHaveBeenCalledWith(
+      "withdraw:1",
+      expect.objectContaining({ phase: "attention", receiptBlockNumber: "10" }),
+    )
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
   })
 
   it("notifies_with_the_browser_identity_after_Base_finality_without_an_IC_wallet", async () => {

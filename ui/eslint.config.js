@@ -5,12 +5,13 @@ import reactRefresh from "eslint-plugin-react-refresh"
 import tseslint from "typescript-eslint"
 
 export default tseslint.config(
-  { ignores: ["dist", "src/generated", "src/routeTree.gen.ts", "playwright-report", "test-results", "eslint.config.js", "scripts", "e2e-real/**/*.mjs", ".e2e-runtime", ".e2e-cache"] },
+  { ignores: ["dist", "src/generated", "src/routeTree.gen.ts", "playwright-report", "test-results", "eslint.config.js", "e2e-real/**/*.mjs", ".e2e-runtime", ".e2e-cache"] },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
     files: ["**/*.{js,mjs,cjs}"],
     ...tseslint.configs.disableTypeChecked,
+    languageOptions: { ecmaVersion: 2023, globals: globals.node },
   },
   {
     files: ["**/*.{ts,tsx}"],

@@ -1,4 +1,4 @@
-import { Ed25519KeyIdentity } from "@dfinity/identity"
+import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import type { NotifyWithdrawalError, NotifyWithdrawalReceipt, SettlementActionError, SettlementActionResult } from "@/generated/bridge.did"
 import { deploymentProfile, type DeploymentProfile } from "@/config/profile"
 import { browserLocalStorage, withBrowserLock } from "@/lib/browser-lock"

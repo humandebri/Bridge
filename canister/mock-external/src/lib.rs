@@ -75,13 +75,6 @@ pub enum ReceiptMode {
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChainIdMode {
-    Configured,
-    Wrong,
-    Inconsistent,
-}
-
-#[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockMode {
     Canonical,
     FinalizedUnavailable,
@@ -204,7 +197,6 @@ struct StableMockState {
     withdrawal: Option<WithdrawalFixture>,
     withdrawal_status: u8,
     receipt_mode: ReceiptMode,
-    chain_id_mode: ChainIdMode,
     configured_chain_id: u64,
     bridge_runtime_code: Vec<u8>,
     timelock_runtime_code: Vec<u8>,
@@ -263,7 +255,6 @@ thread_local! {
     static WITHDRAWAL: RefCell<Option<WithdrawalFixture>> = const { RefCell::new(None) };
     static WITHDRAWAL_STATUS: RefCell<u8> = const { RefCell::new(1) };
     static RECEIPT_MODE: RefCell<ReceiptMode> = const { RefCell::new(ReceiptMode::Confirmed) };
-    static CHAIN_ID_MODE: RefCell<ChainIdMode> = const { RefCell::new(ChainIdMode::Configured) };
     static CONFIGURED_CHAIN_ID: RefCell<u64> = const { RefCell::new(8_453) };
     static BRIDGE_RUNTIME_CODE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static TIMELOCK_RUNTIME_CODE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -374,11 +365,6 @@ fn set_mint_authorization_epoch(epoch: u64) {
 #[ic_cdk::update]
 fn set_block_timestamp(timestamp: u64) {
     BLOCK_TIMESTAMP.with(|current| *current.borrow_mut() = timestamp);
-}
-
-#[ic_cdk::update]
-fn set_chain_id_mode(mode: ChainIdMode) {
-    CHAIN_ID_MODE.with(|current| *current.borrow_mut() = mode);
 }
 
 #[ic_cdk::update]
@@ -649,7 +635,6 @@ fn pre_upgrade() {
         withdrawal: WITHDRAWAL.with(|v| v.borrow().clone()),
         withdrawal_status: WITHDRAWAL_STATUS.with(|v| *v.borrow()),
         receipt_mode: RECEIPT_MODE.with(|v| *v.borrow()),
-        chain_id_mode: CHAIN_ID_MODE.with(|v| *v.borrow()),
         configured_chain_id: CONFIGURED_CHAIN_ID.with(|v| *v.borrow()),
         bridge_runtime_code: BRIDGE_RUNTIME_CODE.with(|v| v.borrow().clone()),
         timelock_runtime_code: TIMELOCK_RUNTIME_CODE.with(|v| v.borrow().clone()),
@@ -712,7 +697,6 @@ fn post_upgrade() {
     WITHDRAWAL.with(|v| *v.borrow_mut() = state.withdrawal);
     WITHDRAWAL_STATUS.with(|v| *v.borrow_mut() = state.withdrawal_status);
     RECEIPT_MODE.with(|v| *v.borrow_mut() = state.receipt_mode);
-    CHAIN_ID_MODE.with(|v| *v.borrow_mut() = state.chain_id_mode);
     CONFIGURED_CHAIN_ID.with(|v| *v.borrow_mut() = state.configured_chain_id);
     BRIDGE_RUNTIME_CODE.with(|v| *v.borrow_mut() = state.bridge_runtime_code);
     TIMELOCK_RUNTIME_CODE.with(|v| *v.borrow_mut() = state.timelock_runtime_code);
@@ -859,17 +843,21 @@ fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
 }
 
 #[ic_cdk::query]
-fn get_transactions(_args: GetBlocksRequest) -> GetTransactionsResponse {
+fn get_transactions(args: GetBlocksRequest) -> GetTransactionsResponse {
     let transactions = TRANSACTIONS.with(|transactions| transactions.borrow().clone());
+    let start = nat_to_usize(&args.start).min(transactions.len());
+    let length = nat_to_usize(&args.length);
+    let end = start.saturating_add(length).min(transactions.len());
     let archive_length = ARCHIVE_PREFIX_LENGTH
         .with(|length| *length.borrow())
         .min(transactions.len() as u64) as usize;
-    let archived_transactions = if archive_length == 0 {
+    let archived_end = end.min(archive_length);
+    let archived_transactions = if start >= archived_end {
         vec![]
     } else {
         vec![ArchivedRange {
-            start: Nat::from(0u8),
-            length: Nat::from(archive_length),
+            start: Nat::from(start),
+            length: Nat::from(archived_end - start),
             callback: QueryTxArchiveFn::new(
                 ic_cdk::api::canister_self(),
                 "get_archive_transactions",
@@ -878,8 +866,12 @@ fn get_transactions(_args: GetBlocksRequest) -> GetTransactionsResponse {
     };
     GetTransactionsResponse {
         log_length: Nat::from(transactions.len()),
-        first_index: Nat::from(archive_length),
-        transactions: transactions.into_iter().skip(archive_length).collect(),
+        first_index: Nat::from(start.max(archive_length).min(end)),
+        transactions: transactions
+            .into_iter()
+            .skip(start.max(archive_length))
+            .take(end.saturating_sub(start.max(archive_length)))
+            .collect(),
         archived_transactions,
     }
 }
@@ -923,14 +915,19 @@ fn status() -> Status {
 
 #[ic_cdk::query]
 fn get_account_transactions(
-    _args: GetAccountTransactionsArgs,
+    args: GetAccountTransactionsArgs,
 ) -> Result<IndexTransactions, IndexError> {
-    let transactions = TRANSACTIONS.with(|transactions| {
+    let start = args.start.as_ref().map(nat_to_usize).unwrap_or(usize::MAX);
+    let max_results = nat_to_usize(&args.max_results);
+    let all_transactions = TRANSACTIONS.with(|transactions| {
         transactions
             .borrow()
             .iter()
             .cloned()
             .enumerate()
+            .filter(|(id, transaction)| {
+                *id < start && transaction_matches_account(transaction, &args.account)
+            })
             .rev()
             .map(|(id, transaction)| TransactionWithId {
                 id: Nat::from(id),
@@ -938,13 +935,35 @@ fn get_account_transactions(
             })
             .collect::<Vec<_>>()
     });
+    let oldest_tx_id = all_transactions
+        .last()
+        .map(|transaction| transaction.id.clone());
+    let transactions = all_transactions.into_iter().take(max_results).collect();
     Ok(IndexTransactions {
         balance: Nat::from(0u8),
-        oldest_tx_id: transactions
-            .last()
-            .map(|transaction| transaction.id.clone()),
+        oldest_tx_id,
         transactions,
     })
+}
+
+fn transaction_matches_account(transaction: &Transaction, account: &Account) -> bool {
+    transaction
+        .mint
+        .as_ref()
+        .is_some_and(|mint| &mint.to == account)
+        || transaction
+            .burn
+            .as_ref()
+            .is_some_and(|burn| &burn.from == account)
+        || transaction.transfer.as_ref().is_some_and(|transfer| {
+            &transfer.from == account
+                || &transfer.to == account
+                || transfer.spender.as_ref() == Some(account)
+        })
+        || transaction
+            .approve
+            .as_ref()
+            .is_some_and(|approve| &approve.from == account || &approve.spender == account)
 }
 
 #[ic_cdk::update]
@@ -958,16 +977,9 @@ fn multi_request(
             let next = value.borrow().saturating_add(1);
             *value.borrow_mut() = next;
         });
-        return match CHAIN_ID_MODE.with(|mode| *mode.borrow()) {
-            ChainIdMode::Configured => MultiRpcResult::Consistent(Ok(
-                CONFIGURED_CHAIN_ID.with(|chain_id| format!("0x{:x}", *chain_id.borrow()))
-            )),
-            ChainIdMode::Wrong => MultiRpcResult::Consistent(Ok("0x1".into())),
-            ChainIdMode::Inconsistent => MultiRpcResult::Inconsistent(vec![
-                (RpcService::Provider(1), Ok("0x2105".into())),
-                (RpcService::Provider(2), Ok("0x1".into())),
-            ]),
-        };
+        return MultiRpcResult::Consistent(Ok(
+            CONFIGURED_CHAIN_ID.with(|chain_id| format!("0x{:x}", *chain_id.borrow()))
+        ));
     }
     if request.contains("eth_maxPriorityFeePerGas") {
         return MultiRpcResult::Consistent(Ok("0x1".into()));
@@ -1738,11 +1750,100 @@ pub fn generated_candid_interface() -> String {
 
 #[cfg(test)]
 mod candid_tests {
+    use candid::{Nat, Principal};
+    use icrc_ledger_types::{
+        icrc1::account::Account,
+        icrc3::transactions::{Transaction, Transfer},
+    };
+
+    fn account(seed: u8) -> Account {
+        Account {
+            owner: Principal::self_authenticating([seed; 32]),
+            subaccount: None,
+        }
+    }
+
+    fn transfer(from: Account, to: Account, timestamp: u64) -> Transaction {
+        Transaction::transfer(
+            Transfer {
+                amount: Nat::from(1u8),
+                from,
+                to,
+                spender: None,
+                memo: None,
+                fee: None,
+                created_at_time: None,
+            },
+            timestamp,
+        )
+    }
+
     #[test]
     fn checked_in_candid_matches_exported_interface() {
         assert_eq!(
             super::generated_candid_interface(),
             include_str!("../mock.did")
         );
+    }
+
+    #[test]
+    fn index_history_honors_account_exclusive_cursor_and_page_size() {
+        let owner = account(1);
+        let other = account(2);
+        let destination = account(3);
+        super::TRANSACTIONS.with(|transactions| {
+            *transactions.borrow_mut() = vec![
+                transfer(owner, destination, 0),
+                transfer(other, destination, 1),
+                transfer(owner, destination, 2),
+                transfer(other, destination, 3),
+                transfer(owner, destination, 4),
+            ];
+        });
+
+        let first = super::get_account_transactions(super::GetAccountTransactionsArgs {
+            account: owner,
+            start: None,
+            max_results: Nat::from(2u8),
+        })
+        .expect("first page");
+        assert_eq!(
+            first
+                .transactions
+                .iter()
+                .map(|transaction| transaction.id.clone())
+                .collect::<Vec<_>>(),
+            vec![Nat::from(4u8), Nat::from(2u8)]
+        );
+
+        let second = super::get_account_transactions(super::GetAccountTransactionsArgs {
+            account: owner,
+            start: Some(Nat::from(2u8)),
+            max_results: Nat::from(2u8),
+        })
+        .expect("second page");
+        assert_eq!(second.transactions.len(), 1);
+        assert_eq!(second.transactions[0].id, Nat::from(0u8));
+    }
+
+    #[test]
+    fn ledger_history_honors_requested_range() {
+        let owner = account(4);
+        let destination = account(5);
+        super::ARCHIVE_PREFIX_LENGTH.with(|length| *length.borrow_mut() = 0);
+        super::TRANSACTIONS.with(|transactions| {
+            *transactions.borrow_mut() = (0..5)
+                .map(|timestamp| transfer(owner, destination, timestamp))
+                .collect();
+        });
+
+        let page = super::get_transactions(icrc_ledger_types::icrc3::blocks::GetBlocksRequest {
+            start: Nat::from(1u8),
+            length: Nat::from(2u8),
+        });
+        assert_eq!(page.log_length, Nat::from(5u8));
+        assert_eq!(page.first_index, Nat::from(1u8));
+        assert_eq!(page.transactions.len(), 2);
+        assert!(page.archived_transactions.is_empty());
     }
 }

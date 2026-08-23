@@ -19,10 +19,10 @@ theorem settlement_backing_claim
   checked_settlement_preserves_backing accepted
 
 theorem withdrawal_finalization_claim
-    {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat}
+    {receiptSucceeded canonical : Bool} {receiptBlock finalizedBlock : Nat}
     (accepted : decideWithdrawalFinalization receiptSucceeded receiptBlock
-      (some finalizedBlock) = .notify) :
-    receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock :=
+      (some finalizedBlock) canonical = .notify) :
+    receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock ∧ canonical = true :=
   withdrawal_notify_requires_finalized_success accepted
 
 theorem withdrawal_admission_boundary_claim

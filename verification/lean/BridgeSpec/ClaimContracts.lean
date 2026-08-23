@@ -371,16 +371,17 @@ theorem funding_reconciliation_freshness_witness : FundingReconciliationFreshnes
   ⟨Claims.funding_reconciliation_claim, integrated_protocol_reachability_witness⟩
 
 def WithdrawalFinalization : Prop :=
-  (∀ {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat},
-      decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) = .notify →
-        receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock) ∧
-    (∀ {receiptSucceeded : Bool} {receiptBlock : Nat},
-      decideWithdrawalFinalization receiptSucceeded receiptBlock none = .retry)
+  (∀ {receiptSucceeded canonical : Bool} {receiptBlock finalizedBlock : Nat},
+      decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) canonical =
+          .notify →
+        receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock ∧ canonical = true) ∧
+    (∀ {receiptSucceeded canonical : Bool} {receiptBlock : Nat},
+      decideWithdrawalFinalization receiptSucceeded receiptBlock none canonical = .retry)
 
 theorem withdrawal_finalization_witness : WithdrawalFinalization := by
   constructor
   · exact Claims.withdrawal_finalization_claim
-  · intro receiptSucceeded receiptBlock
+  · intro receiptSucceeded canonical receiptBlock
     rfl
 
 def WithdrawalAdmissionBoundary : Prop :=

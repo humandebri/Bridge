@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
+/** @param {string} sourceRoot */
 function hashGitArchive(sourceRoot) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn("git", ["-C", sourceRoot, "archive", "HEAD"], {
@@ -12,6 +13,7 @@ function hashGitArchive(sourceRoot) {
     const digest = createHash("sha256")
     let stderr = ""
     let settled = false
+    /** @param {Error} error */
     const fail = (error) => {
       if (settled) return
       settled = true
@@ -81,7 +83,9 @@ try {
   if (process.env.VITE_DEPLOYMENT_PROFILE_JSON?.trim() !== rawProfile.trim()) {
     throw new Error("VITE_DEPLOYMENT_PROFILE_JSON must be the reviewed UI runtime profile verbatim")
   }
-  globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = process.env.VITE_DEPLOYMENT_PROFILE_JSON
+  /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
+  const deploymentGlobal = globalThis
+  deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = process.env.VITE_DEPLOYMENT_PROFILE_JSON
   const [{ deploymentProfile }, { assertProductionUiProfile }] = await Promise.all([
     import("../src/config/profile.ts"),
     import("../src/config/deploy-safety.ts"),

@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from check_transition_manifest import production_body_calls, strip_comments_and_strings
-from verus_manifest import parse_verus_manifest
+from verus_manifest import VerusObligation, parse_verus_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -377,13 +377,43 @@ def validate_shared_expression(
         )
 
 
+def validate_derived_dependencies(
+    obligations: dict[str, VerusObligation],
+) -> None:
+    by_kernel = {obligation.kernel: obligation for obligation in obligations.values()}
+    for obligation in obligations.values():
+        if obligation.kind != "derived":
+            continue
+        if len(obligation.binding) != len(set(obligation.binding)):
+            raise ValueError(
+                f"derived Verus obligation has duplicate dependencies: "
+                f"{obligation.obligation_id}"
+            )
+        unknown = set(obligation.binding) - set(by_kernel)
+        if unknown:
+            raise ValueError(
+                f"derived Verus obligation has unknown dependencies: "
+                f"{obligation.obligation_id}/{sorted(unknown)}"
+            )
+        invalid = {
+            dependency
+            for dependency in obligation.binding
+            if by_kernel[dependency].kind not in {"executable", "shared-expression"}
+        }
+        if invalid:
+            raise ValueError(
+                f"derived Verus obligation dependencies must be executable or "
+                f"shared-expression: {obligation.obligation_id}/{sorted(invalid)}"
+            )
+
+
 def main() -> int:
     obligations = parse_verus_manifest(MANIFEST.read_text(encoding="utf-8"))
+    validate_derived_dependencies(obligations)
     kernel_source = KERNEL.read_text(encoding="utf-8")
     cleaned_kernel = strip_comments_and_strings(kernel_source)
     pass_source = PASS.read_text(encoding="utf-8")
     cleaned_pass = strip_comments_and_strings(pass_source)
-    kernels = {obligation.kernel for obligation in obligations.values()}
     cleaned_sources: dict[Path, str] = {KERNEL.resolve(): cleaned_kernel}
 
     for obligation in obligations.values():
@@ -409,13 +439,6 @@ def main() -> int:
                 macro,
                 obligation.derived_bindings,
             )
-        if obligation.kind == "derived":
-            unknown = set(obligation.binding) - kernels
-            if unknown:
-                raise ValueError(
-                    f"derived Verus obligation has unknown dependencies: "
-                    f"{obligation.obligation_id}/{sorted(unknown)}"
-                )
         for call_site in obligation.call_sites:
             if call_site.count("#") != 1:
                 raise ValueError(f"invalid production call-site: {call_site}")

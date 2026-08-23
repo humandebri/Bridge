@@ -25,7 +25,7 @@ REPORT = Path(
         str(ROOT / "verification" / "output" / "claim-report.json"),
     )
 )
-CLAIM_REPORT_SCHEMA = 5
+CLAIM_REPORT_SCHEMA = 6
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REQUIRED_SCALAR_CALLS = (
     "deadlineAccepts(",
@@ -216,6 +216,40 @@ def require_exact_implementation_basis(
             f"missing={sorted(required - actual)} extra={sorted(actual - required)}"
         )
     return required
+
+
+def uncovered_verus_obligations(
+    claim_id: str,
+    verus_proofs: list[str],
+    verus_rows: dict[str, list[object]],
+) -> set[str]:
+    """Return claim obligations without a complete production binding."""
+    kernels = {
+        registration.kernel: registration
+        for registrations in verus_rows.values()
+        for registration in registrations
+    }
+    referenced = set(verus_proofs)
+    uncovered: set[str] = set()
+    for proof in verus_proofs:
+        registrations = verus_rows[proof]
+        if any(registration.production_bound for registration in registrations):
+            continue
+        derived_is_covered = any(
+            registration.kind == "derived"
+            and all(
+                (dependency := kernels.get(kernel)) is not None
+                and dependency.kind in {"executable", "shared-expression"}
+                and dependency.production_bound
+                and dependency.proof in referenced
+                and claim_id in dependency.claim_ids
+                for kernel in registration.binding
+            )
+            for registration in registrations
+        )
+        if not derived_is_covered:
+            uncovered.add(proof)
+    return uncovered
 
 
 def missing_scalar_calls(function_body: str) -> list[str]:
@@ -505,11 +539,9 @@ def build_claim_report() -> dict[str, object]:
         production_text = "\n".join(
             path.read_text(encoding="utf-8") for path, _ in production
         )
-        unbound_verus = [
-            obligation
-            for obligation in obligations
-            if all(not registration.production_bound for registration in verus_rows[obligation])
-        ]
+        uncovered_verus = uncovered_verus_obligations(
+            claim_id, obligations, verus_rows
+        )
         unreferenced_kernels = [
             registration.kernel
             for obligation in obligations
@@ -526,7 +558,9 @@ def build_claim_report() -> dict[str, object]:
             else "not-applicable"
         )
         kernel_strength = (
-            "implementation-proved" if required_basis else "refinement-tested"
+            "implementation-proved"
+            if required_basis and not uncovered_verus
+            else "refinement-tested"
         )
         evidence = {
             "proof": (
@@ -570,8 +604,10 @@ def build_claim_report() -> dict[str, object]:
         reasons: list[str] = []
         if not manifest.contracts[claim_id].is_proved:
             reasons.append("missing_claim_contract")
-        if unbound_verus and not basis:
-            reasons.append("unbound_verus:" + ",".join(sorted(unbound_verus)))
+        if uncovered_verus:
+            reasons.append(
+                "uncovered_verus:" + ",".join(sorted(uncovered_verus))
+            )
         if not basis:
             reasons.append("missing_implementation_basis")
         if unreferenced_kernels:

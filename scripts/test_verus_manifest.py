@@ -7,6 +7,7 @@ from check_transition_manifest import production_body_calls, strip_comments_and_
 from check_verus_manifest import (
     production_call_site_path,
     rust_body,
+    validate_derived_dependencies,
     validate_proof_binding,
     validate_shared_expression,
     verus_spec_body,
@@ -68,6 +69,66 @@ class VerusManifestParserTests(unittest.TestCase):
         ).replace("\tclaim\n", "\tclaim;claim\n")
         with self.assertRaisesRegex(ValueError, "duplicate Verus claim IDs"):
             parse_verus_manifest(document)
+
+
+class VerusDerivedDependencyTests(unittest.TestCase):
+    @staticmethod
+    def document(*rows: str) -> str:
+        return "schema\t4\t-\t-\t-\t-\t-\t-\t-\n" + "\n".join(rows) + "\n"
+
+    @staticmethod
+    def row(
+        obligation: str,
+        kind: str,
+        kernel: str,
+        proof: str,
+        binding: str,
+    ) -> str:
+        calls = "src.rs#caller" if kind in {"executable", "shared-expression"} else "-"
+        return (
+            f"{obligation}\t{kind}\t{kernel}\t{proof}\tfail.rs\t{binding}\t-\t"
+            f"{calls}\tclaim"
+        )
+
+    def test_accepts_direct_dependency_kinds_even_when_supporting_only(self) -> None:
+        obligations = parse_verus_manifest(
+            self.document(
+                self.row("base", "shared-expression", "base_kernel", "base_proof", "macro"),
+                self.row("derived", "derived", "derived_kernel", "derived_proof", "base_kernel"),
+            )
+        )
+        validate_derived_dependencies(obligations)
+
+    def test_rejects_unknown_dependency(self) -> None:
+        obligations = parse_verus_manifest(
+            self.document(
+                self.row("derived", "derived", "derived_kernel", "derived_proof", "missing")
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "unknown dependencies"):
+            validate_derived_dependencies(obligations)
+
+    def test_rejects_duplicate_dependency(self) -> None:
+        obligations = parse_verus_manifest(
+            self.document(
+                self.row("base", "executable", "base_kernel", "base_proof", "direct"),
+                self.row("derived", "derived", "derived_kernel", "derived_proof", "base_kernel;base_kernel"),
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate dependencies"):
+            validate_derived_dependencies(obligations)
+
+    def test_rejects_derived_and_model_dependencies(self) -> None:
+        for dependency_kind, binding in (("derived", "base_kernel"), ("model", "-")):
+            with self.subTest(kind=dependency_kind):
+                obligations = parse_verus_manifest(
+                    self.document(
+                        self.row("base", dependency_kind, "base_kernel", "base_proof", binding),
+                        self.row("child", "derived", "child_kernel", "child_proof", "base_kernel"),
+                    )
+                )
+                with self.assertRaisesRegex(ValueError, "must be executable or shared-expression"):
+                    validate_derived_dependencies(obligations)
 
 
 class VerusBindingTests(unittest.TestCase):

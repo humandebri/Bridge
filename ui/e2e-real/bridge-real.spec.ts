@@ -1,4 +1,4 @@
-import { Cbor, requestIdOf } from "@dfinity/agent"
+import { Cbor, requestIdOf } from "@icp-sdk/core/agent"
 import { expect, test, type APIRequestContext, type Page, type Request, type Response, type Route } from "@playwright/test"
 
 const DEPLOYER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"

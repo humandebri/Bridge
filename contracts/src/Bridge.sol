@@ -20,6 +20,16 @@ interface ITimelockCandidate {
 
 /// @notice Phase 1E Base implementation whose concrete ABI is checked against the frozen interface snapshot.
 contract Bridge is IBridge, EIP712 {
+    struct StoredWithdrawal {
+        address requester;
+        bool exists;
+        uint128 amount;
+        uint128 maxServiceFee;
+        uint128 chargedServiceFee;
+        bytes owner;
+        bytes32 subaccount;
+    }
+
     string private constant TOKEN_NAME = "KINIC";
     string private constant TOKEN_SYMBOL = "KINIC";
     uint8 private constant TOKEN_DECIMALS = 8;
@@ -53,7 +63,7 @@ contract Bridge is IBridge, EIP712 {
     uint256 public override nextWithdrawalId = 1;
 
     mapping(bytes32 depositId => bool processed) private _processedDeposits;
-    mapping(uint256 withdrawalId => IBridge.Withdrawal withdrawal) private _withdrawals;
+    mapping(uint256 withdrawalId => StoredWithdrawal withdrawal) private _withdrawals;
 
     modifier onlyRuntimeAdministrator() {
         if (msg.sender != runtimeAdministrator) {
@@ -232,22 +242,33 @@ contract Bridge is IBridge, EIP712 {
 
         withdrawalId = nextWithdrawalId;
         nextWithdrawalId = withdrawalId + 1;
-        IBridge.Withdrawal storage withdrawal = _withdrawals[withdrawalId];
+        StoredWithdrawal storage withdrawal = _withdrawals[withdrawalId];
         withdrawal.requester = msg.sender;
-        withdrawal.amount = amount;
-        withdrawal.maxServiceFee = maxServiceFee;
-        withdrawal.chargedServiceFee = chargedServiceFee;
-        withdrawal.amountOut = amount - chargedServiceFee;
+        withdrawal.exists = true;
+        // The request values are checked above. The charged fee is also bounded because
+        // every service-fee update preserves serviceFee <= MAX_SERVICE_FEE <= uint128.max.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        withdrawal.amount = uint128(amount);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        withdrawal.maxServiceFee = uint128(maxServiceFee);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        withdrawal.chargedServiceFee = uint128(chargedServiceFee);
         withdrawal.owner = owner;
         withdrawal.subaccount = subaccount;
-        withdrawal.status = IBridge.WithdrawalStatus.Committed;
 
         if (!bsns.transferFrom(msg.sender, address(this), amount)) {
             revert IBridge.TokenTransferFailed();
         }
         bsns.bridgeBurn(amount);
         emit IBridge.WithdrawalCommitted(
-            withdrawalId, msg.sender, amount, maxServiceFee, chargedServiceFee, withdrawal.amountOut, owner, subaccount
+            withdrawalId,
+            msg.sender,
+            amount,
+            maxServiceFee,
+            chargedServiceFee,
+            amount - chargedServiceFee,
+            owner,
+            subaccount
         );
     }
 
@@ -356,7 +377,23 @@ contract Bridge is IBridge, EIP712 {
     }
 
     function getWithdrawal(uint256 withdrawalId) external view override returns (IBridge.Withdrawal memory) {
-        return _withdrawals[withdrawalId];
+        StoredWithdrawal storage stored = _withdrawals[withdrawalId];
+        // `exists` preserves the public mapping sentinel: an unknown ID must decode to WithdrawalStatus.None.
+        if (!stored.exists) {
+            return IBridge.Withdrawal(address(0), 0, 0, 0, 0, bytes(""), bytes32(0), IBridge.WithdrawalStatus.None);
+        }
+        uint256 amount = stored.amount;
+        uint256 chargedServiceFee = stored.chargedServiceFee;
+        return IBridge.Withdrawal({
+            requester: stored.requester,
+            amount: amount,
+            maxServiceFee: stored.maxServiceFee,
+            chargedServiceFee: chargedServiceFee,
+            amountOut: amount - chargedServiceFee,
+            owner: stored.owner,
+            subaccount: stored.subaccount,
+            status: IBridge.WithdrawalStatus.Committed
+        });
     }
 
     function _validateRoleSet(

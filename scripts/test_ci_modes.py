@@ -10,6 +10,7 @@ import unittest
 
 
 SOURCE = (Path(__file__).parent / "ci-local.sh").read_text(encoding="utf-8")
+GUARDS = (Path(__file__).parent / "ci_guards.sh").read_text(encoding="utf-8")
 
 
 def function_body(name: str) -> str:
@@ -90,7 +91,7 @@ class CiModeTests(unittest.TestCase):
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
         body = function_body("run_proof_stage")
         before = body.index('proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"')
-        command = body.index('    "$@"')
+        command = body.index('    if ! "$@"; then')
         after = body.index(
             'proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"', before + 1
         )
@@ -297,8 +298,8 @@ class CiModeTests(unittest.TestCase):
 
     def test_versions_rejects_npm_lockfiles(self) -> None:
         body = function_body("run_versions")
-        self.assertLess(body.index("  verify_no_npm_lockfiles\n"), body.index("check_tool_versions.sh"))
-        guard = function_body("verify_no_npm_lockfiles")
+        self.assertLess(body.index('  verify_no_npm_lockfiles "$ROOT"\n'), body.index("check_tool_versions.sh"))
+        guard = GUARDS
         for relative_path in (
             "package-lock.json",
             "npm-shrinkwrap.json",

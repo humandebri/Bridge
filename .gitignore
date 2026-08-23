@@ -30,6 +30,8 @@ contracts/.forge-snapshots/
 .pnpm-store/
 verification/output/
 verification/lean/.lake/
+verification/smt/cache/
+verification/smt/out/
 /node_modules/
 ui/node_modules/
 ui/dist/

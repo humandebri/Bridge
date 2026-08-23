@@ -96,28 +96,39 @@ theorem checked_settlement_preserves_backing
   next => simp at accepted
 
 theorem withdrawal_notify_requires_finalized_success
-    {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat}
-    (h : decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) =
+    {receiptSucceeded canonical : Bool} {receiptBlock finalizedBlock : Nat}
+    (h : decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock)
+      canonical =
       .notify) :
-    receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock := by
+    receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock ∧ canonical = true := by
   simp only [decideWithdrawalFinalization] at h
   split at h
   next notFinalized => contradiction
   next finalized =>
     split at h
-    next succeeded => exact ⟨succeeded, Nat.le_of_not_gt finalized⟩
+    next isCanonical =>
+      split at h
+      next succeeded => exact ⟨succeeded, Nat.le_of_not_gt finalized, isCanonical⟩
+      next => contradiction
     next => contradiction
 
 theorem finalized_revert_is_never_notified
     {receiptBlock finalizedBlock : Nat} (finalized : receiptBlock ≤ finalizedBlock) :
-    decideWithdrawalFinalization false receiptBlock (some finalizedBlock) =
+    decideWithdrawalFinalization false receiptBlock (some finalizedBlock) true =
       .discardReverted := by
   simp [decideWithdrawalFinalization, Nat.not_lt.mpr finalized]
 
+theorem noncanonical_receipt_remains_retryable
+    {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat} :
+    decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) false =
+      .retry := by
+  simp [decideWithdrawalFinalization]
+
 theorem unfinalized_receipt_remains_retryable
-    {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat}
+    {receiptSucceeded canonical : Bool} {receiptBlock finalizedBlock : Nat}
     (unfinalized : finalizedBlock < receiptBlock) :
-    decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) = .retry := by
+    decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) canonical =
+      .retry := by
   simp [decideWithdrawalFinalization, unfinalized]
 
 theorem withdrawal_id_admission_requires_nonzero_inclusive_boundary

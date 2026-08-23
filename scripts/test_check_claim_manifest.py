@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from claim_manifest import lean_contract_check_source, parse_claim_manifest
 from halmos_obligations import parse_halmos_obligations
+from verus_manifest import parse_verus_manifest
 from check_claim_manifest import (
     abstract_evidence_status,
     missing_scalar_calls,
@@ -18,6 +19,7 @@ from check_claim_manifest import (
     require_unique_smt_obligations,
     solidity_function_body,
     strip_solidity_comments_and_strings,
+    uncovered_verus_obligations,
 )
 from smt_obligations import parse_smt_obligations
 
@@ -311,6 +313,129 @@ class ImplementationBasisTests(unittest.TestCase):
             },
         )
         self.assertEqual(required, {"halmos:complete"})
+
+
+class VerusImplementationCoverageTests(unittest.TestCase):
+    @staticmethod
+    def obligation(
+        proof: str,
+        kind: str,
+        *,
+        production_bound: bool = False,
+        kernel: str | None = None,
+        binding: tuple[str, ...] = (),
+        claims: tuple[str, ...] = ("claim",),
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            proof=proof,
+            kind=kind,
+            production_bound=production_bound,
+            kernel=kernel or proof,
+            binding=binding,
+            claim_ids=claims,
+        )
+
+    def test_one_bound_obligation_does_not_cover_an_unbound_sibling(self) -> None:
+        rows = {
+            "bound": [self.obligation("bound", "executable", production_bound=True)],
+            "unbound": [self.obligation("unbound", "shared-expression")],
+        }
+        self.assertEqual(
+            uncovered_verus_obligations("claim", ["bound", "unbound"], rows),
+            {"unbound"},
+        )
+
+    def test_model_obligation_is_not_implementation_coverage(self) -> None:
+        rows = {"model": [self.obligation("model", "model")]}
+        self.assertEqual(
+            uncovered_verus_obligations("claim", ["model"], rows), {"model"}
+        )
+
+    def test_derived_is_covered_by_same_claim_bound_dependencies(self) -> None:
+        dependency = self.obligation(
+            "base_proof", "shared-expression", production_bound=True, kernel="base"
+        )
+        derived = self.obligation(
+            "derived_proof", "derived", binding=("base",)
+        )
+        rows = {"base_proof": [dependency], "derived_proof": [derived]}
+        self.assertEqual(
+            uncovered_verus_obligations(
+                "claim", ["base_proof", "derived_proof"], rows
+            ),
+            set(),
+        )
+
+    def test_derived_dependency_must_be_bound_and_registered_for_same_claim(self) -> None:
+        dependency = self.obligation(
+            "base_proof",
+            "shared-expression",
+            production_bound=True,
+            kernel="base",
+            claims=("other_claim",),
+        )
+        derived = self.obligation(
+            "derived_proof", "derived", binding=("base",)
+        )
+        rows = {"base_proof": [dependency], "derived_proof": [derived]}
+        self.assertEqual(
+            uncovered_verus_obligations("claim", ["derived_proof"], rows),
+            {"derived_proof"},
+        )
+
+    def test_current_mixed_strength_claims_are_not_implementation_covered(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        claims = parse_claim_manifest(
+            (root / "verification" / "claims.tsv").read_text(encoding="utf-8")
+        )
+        registrations = parse_verus_manifest(
+            (root / "verification" / "verus" / "manifest.tsv").read_text(
+                encoding="utf-8"
+            )
+        )
+        rows: dict[str, list[object]] = {}
+        for registration in registrations.values():
+            rows.setdefault(registration.proof, []).append(registration)
+        actual = {
+            claim_id
+            for (
+                _,
+                claim_id,
+                _,
+                _,
+                _,
+                verus_proofs,
+                _,
+                _,
+                implementation_basis,
+                _,
+                _,
+                _,
+                _,
+            ) in claims.rows
+            if implementation_basis != "-"
+            and uncovered_verus_obligations(
+                claim_id,
+                [] if verus_proofs == "-" else verus_proofs.split(";"),
+                rows,
+            )
+        }
+        self.assertEqual(
+            actual,
+            {
+                "settlement_backing",
+                "payment_identity",
+                "deposit_admission",
+                "fee_payout",
+                "hold_resolution",
+                "lease_outcome",
+                "expiry_refund",
+                "reservation_lifecycle",
+                "fee_accounting_once",
+                "deposit_backing",
+                "refund_evidence_enforcement",
+            },
+        )
 
 
 class HalmosObligationTests(unittest.TestCase):

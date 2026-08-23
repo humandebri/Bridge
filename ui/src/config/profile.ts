@@ -6,7 +6,7 @@ const hash = z.custom<`0x${string}`>((value) => typeof value === "string" && /^0
 const sha256 = z.string().regex(/^[0-9a-fA-F]{64}$/).refine((value) => !/^0+$/.test(value), "hash must be nonzero")
 const tokenMetadata = z.object({
   symbol: z.string().min(1),
-  decimals: z.number().int().nonnegative(),
+  decimals: z.literal(8),
 })
 
 export const deploymentProfileSchema = z.object({

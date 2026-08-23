@@ -10,6 +10,12 @@ const distRoot = resolve(uiRoot, "dist")
 const profileFile = resolve(sourceRoot, "deployments/sepolia-staging/frontend-profile.json")
 const workerName = "kinic-bridge-ui-test"
 
+/** @typedef {{ path: string, sha256: string }} ArtifactFile */
+/** @typedef {{ source_revision: string, source_tree_sha256: string }} SourceIdentity */
+/** @typedef {{ files: ArtifactFile[], artifact_set_sha256: string }} BuiltAssets */
+/** @typedef {{ schema_version: number, worker_name: string, source_revision: string, source_tree_sha256: string, profile_sha256: string, artifact_set_sha256: string, files: ArtifactFile[] }} ArtifactReceipt */
+
+/** @param {string | NodeJS.ArrayBufferView} value */
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex")
 }
@@ -39,7 +45,9 @@ async function sourceIdentity() {
   }
 }
 
+/** @param {string} root @param {string} [current] @returns {ArtifactFile[]} */
 function walk(root, current = root) {
+  /** @type {ArtifactFile[]} */
   const files = []
   for (const name of readdirSync(current).sort()) {
     const path = resolve(current, name)
@@ -58,6 +66,7 @@ function artifactSet() {
   return { files, artifact_set_sha256: sha256(JSON.stringify(files)) }
 }
 
+/** @param {ArtifactReceipt} receipt @param {SourceIdentity} identity @param {BuiltAssets} built */
 function validateReceipt(receipt, identity, built) {
   const keys = Object.keys(receipt).sort().join(",")
   if (keys !== "artifact_set_sha256,files,profile_sha256,schema_version,source_revision,source_tree_sha256,worker_name") {
@@ -74,6 +83,7 @@ function validateReceipt(receipt, identity, built) {
   }
 }
 
+/** @param {ArtifactReceipt} receipt */
 function deployFrozen(receipt) {
   const frozen = mkdtempSync(resolve(tmpdir(), "kinic-staging-ui."))
   try {

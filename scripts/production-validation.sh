@@ -81,13 +81,18 @@ PY
 production_atomic_replace() {
   local staged="$1" target="$2"
   python3 - "$staged" "$target" <<'PY'
-import os, sys
+import os, stat, sys
 staged, target = sys.argv[1:]
-with open(staged, 'rb') as stream:
-    os.fsync(stream.fileno())
+fd = os.open(staged, os.O_RDONLY | os.O_NOFOLLOW)
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        raise SystemExit('staged evidence is not a regular file')
+    os.fsync(fd)
+finally:
+    os.close(fd)
 os.replace(staged, target)
 parent = os.path.dirname(os.path.abspath(target)) or '.'
-fd = os.open(parent, os.O_RDONLY)
+fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 try:
     os.fsync(fd)
 finally:
@@ -106,7 +111,7 @@ production_freeze_bundle() {
   python3 - "$source" "$destination" <<'PY'
 import hashlib,json,os,re,stat,sys
 source,destination=sys.argv[1:]
-directory=os.open(source,os.O_RDONLY|os.O_DIRECTORY)
+directory=os.open(source,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
 def read_regular(name,limit):
  if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',name): raise SystemExit(f'unsafe release artifact path: {name}')
  fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory)
@@ -138,9 +143,14 @@ try:
  for name,value in files.items():
   fd=os.open(os.path.join(destination,name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
   try:
-   os.write(fd,value); os.fsync(fd)
+   view=memoryview(value)
+   while view:
+    written=os.write(fd,view)
+    if written<=0: raise SystemExit(f'short write while freezing release artifact: {name}')
+    view=view[written:]
+   os.fsync(fd)
   finally: os.close(fd)
- destination_fd=os.open(destination,os.O_RDONLY|os.O_DIRECTORY)
+ destination_fd=os.open(destination,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
  try: os.fsync(destination_fd)
  finally: os.close(destination_fd)
  os.chmod(destination,0o500)

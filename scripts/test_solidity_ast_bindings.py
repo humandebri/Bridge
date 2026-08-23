@@ -9,6 +9,8 @@ from check_solidity_ast_bindings import (
     AstIndex,
     FunctionRecord,
     declaration_initializer_call,
+    declaration_initializer_library_call,
+    library_calls,
     require_call_argument_declarations,
     require_evaluate_input_binding,
     require_no_declaration_reassignment,
@@ -38,6 +40,23 @@ class FakeIndex:
 
 
 class SolidityAstBindingTests(unittest.TestCase):
+    @staticmethod
+    def library_call(library: str, member: str) -> dict[str, object]:
+        return {
+            "id": 17,
+            "nodeType": "FunctionCall",
+            "expression": {
+                "nodeType": "MemberAccess",
+                "memberName": member,
+                "expression": {
+                    "nodeType": "Identifier",
+                    "name": library,
+                    "typeDescriptions": {"typeString": f"type(library {library})"},
+                },
+            },
+            "arguments": [],
+        }
+
     @staticmethod
     def evaluate_input() -> tuple[dict[str, object], dict[str, int]]:
         authorization = 11
@@ -172,6 +191,30 @@ class SolidityAstBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not call its production kernel"):
             validate_smt_call_graph(self.records(3), {"example": self.obligation()})
 
+    def test_rejects_pass_function_without_an_assertion(self) -> None:
+        records = self.records(2)
+        pass_record = records.records["pass.sol#Harness.check()"][0]
+        pass_record.node["body"] = {"statements": [call("kernel", 2)]}
+        with self.assertRaisesRegex(ValueError, "has no assertion"):
+            validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_rejects_registered_production_kernel_without_pass_coverage(self) -> None:
+        records = self.records(2)
+        second_link = "production.sol#Policy.second(uint256)"
+        records.records[second_link] = (
+            FunctionRecord(Path("/"), "Policy", "second(uint256)", 3, {"body": {}}),
+        )
+        obligation = SmtObligation(
+            "example",
+            "supporting",
+            self.obligation().pass_links,
+            (*self.obligation().production_links, second_link),
+            ("failure",),
+            ("claim",),
+        )
+        with self.assertRaisesRegex(ValueError, "not covered by a pass function"):
+            validate_smt_call_graph(records, {"example": obligation})
+
     def test_rejects_noncanonical_link_before_artifact_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             index = AstIndex(Path(directory), Path(directory))
@@ -187,6 +230,39 @@ class SolidityAstBindingTests(unittest.TestCase):
             ]
         }
         require_call_argument_declarations(call_node, (11, 12, 13))
+
+    def test_accepts_compiler_bound_library_initializer_across_build_units(self) -> None:
+        initializer = self.library_call("Policy", "evaluate")
+        body = {
+            "nodeType": "Block",
+            "statements": [
+                {
+                    "nodeType": "VariableDeclarationStatement",
+                    "declarations": [{"id": 11}],
+                    "initialValue": initializer,
+                }
+            ],
+        }
+        self.assertEqual(library_calls(body, "Policy", "evaluate"), [initializer])
+        self.assertIs(
+            declaration_initializer_library_call(body, 11, "Policy", "evaluate"),
+            initializer,
+        )
+
+    def test_rejects_same_member_name_not_bound_to_expected_library(self) -> None:
+        initializer = self.library_call("Spoof", "evaluate")
+        body = {
+            "nodeType": "Block",
+            "statements": [
+                {
+                    "nodeType": "VariableDeclarationStatement",
+                    "declarations": [{"id": 11}],
+                    "initialValue": initializer,
+                }
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "not compiler-bound to Policy.evaluate"):
+            declaration_initializer_library_call(body, 11, "Policy", "evaluate")
 
     def test_rejects_reordered_commit_arguments(self) -> None:
         call_node = {

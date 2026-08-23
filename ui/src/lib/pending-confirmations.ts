@@ -41,7 +41,6 @@ export type PendingConfirmationInput =
 
 const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v7"
 let sessionQueue: PendingConfirmation[] | undefined
-export const PENDING_CONFIRMATIONS_CHANGED = "kinic-pending-confirmations-changed"
 
 export interface PendingMintExpectation {
   depositId: Hex
@@ -265,12 +264,8 @@ async function update(change: (values: PendingConfirmation[]) => PendingConfirma
   await withBrowserLock(`kinic-storage:${key}`, () => {
     const values = change(readPendingConfirmations())
     sessionQueue = values
-    try {
-      window.localStorage.setItem(key, JSON.stringify({ version: 7, entries: values }))
-      sessionQueue = undefined
-    } finally {
-      window.dispatchEvent(new Event(PENDING_CONFIRMATIONS_CHANGED))
-    }
+    window.localStorage.setItem(key, JSON.stringify({ version: 7, entries: values }))
+    sessionQueue = undefined
   })
 }
 

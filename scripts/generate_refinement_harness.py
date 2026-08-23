@@ -415,6 +415,7 @@ VITEST_RENDERERS = {
         testCase.receipt_succeeded ? "success" : "reverted",
         BigInt(testCase.receipt_block),
         testCase.finalized_block === null ? null : BigInt(testCase.finalized_block),
+        testCase.canonical,
       )).toBe(testCase.decision)
     }''',
     ),

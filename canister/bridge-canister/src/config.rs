@@ -47,7 +47,7 @@ pub const OFFICIAL_EVM_RPC_CANISTER_ID: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 #[cfg(feature = "test-deployment")]
 pub const BASE_SEPOLIA_CHAIN_ID: u64 = 84_532;
 #[cfg(feature = "test-deployment")]
-pub const STAGING_V33_TO_V35_MIGRATION_ID: &str = "bridge-staging-v33-to-v35";
+pub const STAGING_V33_TO_V36_MIGRATION_ID: &str = "bridge-staging-v33-to-v36";
 #[cfg(feature = "test-deployment")]
 pub const STAGING_OLD_RPC_URLS: [&str; 3] = [
     "https://base-sepolia-rpc.publicnode.com",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate and execute the reviewed staging Bridge v33-to-v35 upgrade."""
+"""Gate and execute the reviewed staging Bridge v33-to-v36 upgrade."""
 from __future__ import annotations
 
 import argparse, hashlib, json, os, re, shutil, subprocess, tempfile
@@ -22,7 +22,7 @@ PRESERVED = ("canister_id", "deployment_instance_id", "minimum_withdrawal_id",
              "expected_bridge_signer", "ledger_canister_id", "index_canister_id", "evm_rpc_canister_id",
              "rpc_provider_urls_sha256", "governance_principal", "status_counts", "storage_integrity",
              "pending_timelock_operations", "pending_governance_transactions", "controllers", "cycles_floor")
-MIGRATION_ID = "bridge-staging-v33-to-v35"
+MIGRATION_ID = "bridge-staging-v33-to-v36"
 SHA = re.compile(r"[0-9a-f]{64}")
 PRINCIPAL = re.compile(r"[a-z0-9-]+")
 
@@ -56,12 +56,12 @@ def validate_policy(value: dict[str, Any]) -> None:
               "stable_schema_version", "source_schema_version", "source_wire_version",
               "deployment_instance_id", "base_chain_id", "evm_rpc_canister_id",
               "governance_principal", "source_module_sha256", "source_candid_sha256", "source_api", "target_api"}
-    if set(value) != fields or value["schema_version"] != 1 or value["kind"] != "staging-bridge-v33-to-v35-upgrade":
-        fail("v33-to-v35 upgrade policy has an unsupported shape")
-    if value["stable_schema_version"] != 35 or value["source_schema_version"] != 33 \
+    if set(value) != fields or value["schema_version"] != 1 or value["kind"] != "staging-bridge-v33-to-v36-upgrade":
+        fail("v33-to-v36 upgrade policy has an unsupported shape")
+    if value["stable_schema_version"] != 36 or value["source_schema_version"] != 33 \
             or value["source_wire_version"] != 28 or value["source_api"] != "get_public_config" \
             or value["target_api"] != "get_runtime_binding":
-        fail("policy does not bind the reviewed stable schema v33-to-v35 transition")
+        fail("policy does not bind the reviewed stable schema v33-to-v36 transition")
     if any(not isinstance(value[f], str) or not SHA.fullmatch(value[f])
            for f in ("source_module_sha256", "source_candid_sha256")):
         fail("policy source hashes must be lowercase SHA-256 digests")
@@ -300,7 +300,7 @@ def main() -> None:
         if shutil.which(tool) is None: fail(f"{tool} is required")
     if run(["git", "status", "--porcelain", "--untracked-files=all"]).strip(): fail("upgrade requires a clean checkout")
     head = run(["git", "rev-parse", "HEAD"]).strip()
-    policy, profile = load(POLICY, "v33-to-v35 policy"), load(PROFILE, "frontend profile")
+    policy, profile = load(POLICY, "v33-to-v36 policy"), load(PROFILE, "frontend profile")
     validate_policy(policy)
     if profile.get("icHost") != IC_HOST: fail("frontend profile IC host is invalid")
     for field, expected in {"environment": policy["environment"], "bridgeCanisterId": policy["canister_id"],
@@ -331,7 +331,7 @@ def main() -> None:
     if kind == "target" and before["module_sha256"] != target_module: fail("live target module hash is unknown")
     if kind == "target": verify_auth(policy, identity)
     arguments = upgrade_args(before["status_counts"], policy)
-    preflight = {"schema_version": 1, "kind": "staging-bridge-v33-to-v35-upgrade-preflight",
+    preflight = {"schema_version": 1, "kind": "staging-bridge-v33-to-v36-upgrade-preflight",
                  "result": "already-applied-preflight" if kind == "target" else "preflight-passed",
                  "source_commit": head, "local_e2e_sha256": digest(args.local_evidence),
                  "policy_sha256": digest(POLICY), "profile_sha256": digest(PROFILE),
@@ -356,9 +356,9 @@ def main() -> None:
     if after["cycles_balance"] < after["cycles_floor"] or after["cycles_balance"] > before["cycles_balance"]:
         fail("post-upgrade cycles balance is invalid")
     verify_auth(policy, identity)
-    write(args.evidence, {**preflight, "kind": "staging-bridge-v33-to-v35-upgrade-result", "result": result,
+    write(args.evidence, {**preflight, "kind": "staging-bridge-v33-to-v36-upgrade-result", "result": result,
                           "preflight_evidence_sha256": digest(args.preflight_evidence), "after": after})
-    print(f"staging Bridge v33-to-v35 upgrade verified: {result}")
+    print(f"staging Bridge v33-to-v36 upgrade verified: {result}")
 
 
 if __name__ == "__main__": main()
