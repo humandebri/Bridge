@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate and execute the reviewed staging Bridge v35-to-v35 upgrade."""
+"""Gate and execute the reviewed staging Bridge v33-to-v35 upgrade."""
 from __future__ import annotations
 
 import argparse, hashlib, json, os, re, shutil, subprocess, tempfile
@@ -17,11 +17,12 @@ LOCAL_E2E_SCHEMA_VERSION = 8
 COUNTS = ("retained_audit_events", "reconciliation_holds", "retained_deposit_index_entries",
           "pending_ledger_operations", "withdrawals", "deposits",
           "reserved_deposit_mint_operations", "reserved_deposit_mint_amount", "pruned_audit_events")
-PRESERVED = ("canister_id", "schema_version", "deployment_instance_id", "minimum_withdrawal_id",
+PRESERVED = ("canister_id", "deployment_instance_id", "minimum_withdrawal_id",
              "base_chain_id", "bridge_contract", "expected_bridge_runtime_sha256", "timelock_contract",
              "expected_bridge_signer", "ledger_canister_id", "index_canister_id", "evm_rpc_canister_id",
              "rpc_provider_urls_sha256", "governance_principal", "status_counts", "storage_integrity",
-             "pending_timelock_operations", "controllers", "cycles_floor")
+             "pending_timelock_operations", "pending_governance_transactions", "controllers", "cycles_floor")
+MIGRATION_ID = "bridge-staging-v33-to-v35"
 SHA = re.compile(r"[0-9a-f]{64}")
 PRINCIPAL = re.compile(r"[a-z0-9-]+")
 
@@ -52,13 +53,15 @@ def load(path: Path, context: str) -> dict[str, Any]:
 
 def validate_policy(value: dict[str, Any]) -> None:
     fields = {"schema_version", "kind", "environment", "canister_name", "canister_id",
-              "stable_schema_version", "deployment_instance_id", "base_chain_id", "evm_rpc_canister_id",
+              "stable_schema_version", "source_schema_version", "source_wire_version",
+              "deployment_instance_id", "base_chain_id", "evm_rpc_canister_id",
               "governance_principal", "source_module_sha256", "source_candid_sha256", "source_api", "target_api"}
-    if set(value) != fields or value["schema_version"] != 1 or value["kind"] != "staging-bridge-same-schema-upgrade":
-        fail("same-schema upgrade policy has an unsupported shape")
-    if value["stable_schema_version"] != 35 or value["source_api"] != "get_public_config" \
+    if set(value) != fields or value["schema_version"] != 1 or value["kind"] != "staging-bridge-v33-to-v35-upgrade":
+        fail("v33-to-v35 upgrade policy has an unsupported shape")
+    if value["stable_schema_version"] != 35 or value["source_schema_version"] != 33 \
+            or value["source_wire_version"] != 28 or value["source_api"] != "get_public_config" \
             or value["target_api"] != "get_runtime_binding":
-        fail("policy does not bind the reviewed stable schema v35 API transition")
+        fail("policy does not bind the reviewed stable schema v33-to-v35 transition")
     if any(not isinstance(value[f], str) or not SHA.fullmatch(value[f])
            for f in ("source_module_sha256", "source_candid_sha256")):
         fail("policy source hashes must be lowercase SHA-256 digests")
@@ -118,11 +121,18 @@ def pending_count(candid: str) -> int:
     return 0 if found[0] == "null" else 1
 
 
+def pending_governance_count(candid: str) -> int:
+    if re.search(r"\bOk\s*=\s*null\b", candid): return 0
+    if re.search(r"\bOk\s*=\s*opt\b", candid): return 1
+    fail("governance status must expose one pending transaction")
+
+
 def snapshot(policy: dict[str, Any], identity: str, did: Path, api: str, candid_hash: str) -> dict[str, Any]:
     binding = call(policy, identity, did, api)
     bridge_status = call(policy, identity, did, "get_bridge_status")
     integrity = call(policy, identity, did, "storage_integrity_check")
     activation = call(policy, identity, did, "get_activation_status")
+    governance = call(policy, identity, did, "get_pending_base_governance_transaction")
     operational = binding if api == "get_public_config" else call(policy, identity, did, "get_operational_config")
     if api == "get_runtime_binding" and not re.search(r"\bOk\s*=", operational):
         fail("authorized get_operational_config did not succeed")
@@ -148,13 +158,14 @@ def snapshot(policy: dict[str, Any], identity: str, did: Path, api: str, candid_
             "status_counts": {field: nat(bridge_status, field) for field in COUNTS},
             "storage_integrity": "ok" if integrity_ok(integrity) else "failed",
             "pending_timelock_operations": pending_count(activation),
+            "pending_governance_transactions": pending_governance_count(governance),
         }
     except ValueError as error: fail(f"invalid {api} snapshot: {error}")
     return result
 
 
-def verify_binding(observed: dict[str, Any], policy: dict[str, Any], profile: dict[str, Any]) -> None:
-    expected = {"canister_id": policy["canister_id"], "schema_version": 35,
+def verify_binding(observed: dict[str, Any], policy: dict[str, Any], profile: dict[str, Any], schema: int) -> None:
+    expected = {"canister_id": policy["canister_id"], "schema_version": schema,
                 "deployment_instance_id": policy["deployment_instance_id"],
                 "minimum_withdrawal_id": profile["minimumWithdrawalId"], "base_chain_id": policy["base_chain_id"],
                 "bridge_contract": profile["bridgeAddress"], "expected_bridge_runtime_sha256": profile["bridgeRuntimeHash"],
@@ -167,6 +178,28 @@ def verify_binding(observed: dict[str, Any], policy: dict[str, Any], profile: di
         if observed.get(field) != value: fail(f"live snapshot {field} does not match the reviewed staging binding")
     if observed["cycles_balance"] < observed["cycles_floor"]:
         fail("live cycles balance is below the operational cycles floor")
+    if observed["pending_timelock_operations"] != 0 or observed["pending_governance_transactions"] != 0:
+        fail("live staging governance queues must be empty")
+
+
+def verify_provider_chains(profile: dict[str, Any], expected_chain_id: int) -> None:
+    primary = profile.get("baseRpcUrl")
+    history = profile.get("baseHistoryRpcUrls")
+    if not isinstance(primary, str) or not isinstance(history, list) \
+            or len(history) != 2 or not all(isinstance(url, str) for url in history):
+        fail("frontend profile must define one primary and two history RPC providers")
+    urls = [primary, *history]
+    if len(set(urls)) != 3 or any(not url.startswith("https://") for url in urls):
+        fail("frontend profile RPC providers must be distinct HTTPS URLs")
+    observed_digest = "0x" + hashlib.sha256(
+        json.dumps(urls, separators=(",", ":")).encode()
+    ).hexdigest()
+    if observed_digest != profile.get("rpcProviderUrlsSha256"):
+        fail("frontend profile RPC provider digest does not match its URLs")
+    for index, url in enumerate(urls):
+        observed = run(["cast", "chain-id", "--rpc-url", url]).strip()
+        if observed != str(expected_chain_id):
+            fail(f"staging RPC provider {index} returned an unexpected chain ID")
 
 
 def classify(candid: str) -> str:
@@ -215,11 +248,11 @@ def verify_auth(policy: dict[str, Any], identity: str) -> None:
         fail("controller or governance get_operational_config did not return the reviewed config")
 
 
-def upgrade_args(counts: dict[str, Any]) -> str:
+def upgrade_args(counts: dict[str, Any], policy: dict[str, Any]) -> str:
     fields = "; ".join(f"{field} = {counts[field]} : {'nat' if field == 'reserved_deposit_mint_amount' else 'nat64'}" for field in COUNTS)
-    return ("(record { status_counts_guard_version = 1 : nat8; expected_status_counts = opt record { "
+    return (f'(record {{ migration_id = opt "{MIGRATION_ID}"; status_counts_guard_version = 1 : nat8; expected_status_counts = opt record {{ '
             f"{fields}" + " }; rpc_provider_update = null; minimum_withdrawal_id = null; "
-            "confirmation_relayer_principal = null })")
+            f'confirmation_relayer_principal = opt principal "{policy["governance_principal"]}" }})')
 
 
 def write(path: Path, value: dict[str, Any]) -> None:
@@ -263,17 +296,18 @@ def main() -> None:
     if args.preflight_evidence is not None and not args.preflight_evidence.is_absolute(): fail("--preflight-evidence must be absolute")
     identity = os.environ.get("BRIDGE_STAGING_IDENTITY")
     if not identity: fail("BRIDGE_STAGING_IDENTITY is required")
-    for tool in ("git", "ic-wasm", "icp", "node"):
+    for tool in ("cast", "git", "ic-wasm", "icp", "node"):
         if shutil.which(tool) is None: fail(f"{tool} is required")
     if run(["git", "status", "--porcelain", "--untracked-files=all"]).strip(): fail("upgrade requires a clean checkout")
     head = run(["git", "rev-parse", "HEAD"]).strip()
-    policy, profile = load(POLICY, "same-schema policy"), load(PROFILE, "frontend profile")
+    policy, profile = load(POLICY, "v33-to-v35 policy"), load(PROFILE, "frontend profile")
     validate_policy(policy)
     if profile.get("icHost") != IC_HOST: fail("frontend profile IC host is invalid")
     for field, expected in {"environment": policy["environment"], "bridgeCanisterId": policy["canister_id"],
                             "deploymentInstanceId": policy["deployment_instance_id"], "chainId": policy["base_chain_id"],
                             "evmRpcCanisterId": policy["evm_rpc_canister_id"]}.items():
         if profile.get(field) != expected: fail(f"frontend profile {field} does not match policy")
+    verify_provider_chains(profile, policy["base_chain_id"])
     local = load(args.local_evidence, "local E2E evidence")
     if local.get("schema_version") != LOCAL_E2E_SCHEMA_VERSION \
             or local.get("state_upgrade", {}).get("verified") is not True \
@@ -291,12 +325,13 @@ def main() -> None:
     with tempfile.NamedTemporaryFile("w", suffix=".did", encoding="utf-8") as live_did:
         live_did.write(live); live_did.flush()
         before = snapshot(policy, identity, Path(live_did.name), api, live_hash)
-    verify_binding(before, policy, profile)
+    verify_binding(before, policy, profile,
+                   policy["source_schema_version"] if kind == "source" else policy["stable_schema_version"])
     if kind == "source" and before["module_sha256"] != policy["source_module_sha256"]: fail("live source module hash is unknown")
     if kind == "target" and before["module_sha256"] != target_module: fail("live target module hash is unknown")
     if kind == "target": verify_auth(policy, identity)
-    arguments = upgrade_args(before["status_counts"])
-    preflight = {"schema_version": 1, "kind": "staging-bridge-same-schema-upgrade-preflight",
+    arguments = upgrade_args(before["status_counts"], policy)
+    preflight = {"schema_version": 1, "kind": "staging-bridge-v33-to-v35-upgrade-preflight",
                  "result": "already-applied-preflight" if kind == "target" else "preflight-passed",
                  "source_commit": head, "local_e2e_sha256": digest(args.local_evidence),
                  "policy_sha256": digest(POLICY), "profile_sha256": digest(PROFILE),
@@ -315,15 +350,15 @@ def main() -> None:
     if after_live.encode() != DID.read_bytes(): fail("post-upgrade certified Candid does not match target")
     after = snapshot(policy, identity, DID, policy["target_api"], hashlib.sha256(after_live.encode()).hexdigest())
     if after["module_sha256"] != target_module: fail("post-upgrade module hash does not match target")
-    verify_binding(after, policy, profile)
+    verify_binding(after, policy, profile, policy["stable_schema_version"])
     for field in PRESERVED:
         if after[field] != before[field]: fail(f"post-upgrade {field} was not preserved")
     if after["cycles_balance"] < after["cycles_floor"] or after["cycles_balance"] > before["cycles_balance"]:
         fail("post-upgrade cycles balance is invalid")
     verify_auth(policy, identity)
-    write(args.evidence, {**preflight, "kind": "staging-bridge-same-schema-upgrade-result", "result": result,
+    write(args.evidence, {**preflight, "kind": "staging-bridge-v33-to-v35-upgrade-result", "result": result,
                           "preflight_evidence_sha256": digest(args.preflight_evidence), "after": after})
-    print(f"staging Bridge same-schema upgrade verified: {result}")
+    print(f"staging Bridge v33-to-v35 upgrade verified: {result}")
 
 
 if __name__ == "__main__": main()

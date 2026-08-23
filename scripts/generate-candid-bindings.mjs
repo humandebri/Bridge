@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const check = process.argv.includes("--check")
-
 const uiBridgeDid = "ui/src/generated/bridge.ui.did"
 
 const interfaces = [

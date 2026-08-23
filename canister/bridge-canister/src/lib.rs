@@ -472,6 +472,7 @@ fn post_upgrade(args: config::StagingUpgradeArgs) {
         "stable state reopen",
         StableStore::reopen_after_staging_upgrade(
             DefaultMemoryImpl::default(),
+            args.migration_id.as_deref(),
             args.confirmation_relayer_principal,
         ),
     );
@@ -1901,6 +1902,7 @@ mod candid_tests {
         );
 
         let expected = super::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 1,
             expected_status_counts: Some(super::config::StagingExpectedStatusCounts {
                 retained_audit_events: 11,

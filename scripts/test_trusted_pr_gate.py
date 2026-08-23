@@ -136,6 +136,16 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("--cap-drop ALL", wrapper)
         self.assertIn("dst=/workspace,readonly", wrapper)
         self.assertIn("dst=/workspace/scripts,readonly", wrapper)
+        self.assertIn(
+            "src=$SOURCE_ROOT/scripts/plan007/generate-local-e2e.mjs,"
+            "dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly",
+            wrapper,
+        )
+        self.assertIn(
+            "src=$SOURCE_ROOT/scripts/plan007/test-generate-local-e2e.mjs,"
+            "dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly",
+            wrapper,
+        )
         self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
