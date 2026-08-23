@@ -1197,9 +1197,6 @@ for field, (value, candid_type) in stable_fields.items():
 
   bridge_address="$(deploy_contract \
     "src/Bridge.sol:Bridge" \
-    "kinic" \
-    "KINIC" \
-    "8" \
     "$bridge_signer" \
     "$runtime_administrator" \
     "$base_admin_timelock" \
@@ -1241,7 +1238,7 @@ for field, (value, candid_type) in stable_fields.items():
   token_symbol="$(cast call "$bsns_address" "symbol()(string)" --rpc-url http://127.0.0.1:8545)"
   token_version="$(cast call "$bsns_address" "version()(string)" --rpc-url http://127.0.0.1:8545)"
   read -r token_decimals _ <<<"$(cast call "$bsns_address" "decimals()(uint8)" --rpc-url http://127.0.0.1:8545)"
-  require_equal "bSNS name" "$token_name" '"kinic"'
+  require_equal "bSNS name" "$token_name" '"KINIC"'
   require_equal "bSNS symbol" "$token_symbol" '"KINIC"'
   require_equal "bSNS EIP-712 version" "$token_version" '"1"'
   require_equal "bSNS decimals" "$token_decimals" "8"

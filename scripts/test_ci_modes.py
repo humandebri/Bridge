@@ -53,6 +53,20 @@ class CiModeTests(unittest.TestCase):
         self.assertLess(real, smoke)
         self.assertTrue(body.rstrip().endswith("run_step smoke run_smoke_step"))
 
+    def test_smoke_bridge_deploy_uses_current_constructor_shape(self) -> None:
+        start = SOURCE.index('bridge_address="$(deploy_contract \\\n    "src/Bridge.sol:Bridge"')
+        terminator = '    "$service_fee")"'
+        end = SOURCE.index(terminator, start) + len(terminator)
+        deployment = SOURCE[start:end]
+        self.assertNotIn('"kinic"', deployment)
+        self.assertNotIn('"KINIC"', deployment)
+        self.assertEqual(
+            deployment.count('\n    '),
+            10,
+            "Bridge smoke deployment must pass the contract plus exactly nine constructor arguments",
+        )
+        self.assertIn('require_equal "bSNS name" "$token_name" \'"KINIC"\'', SOURCE)
+
     def test_legacy_aggregate_modes_remain_complete(self) -> None:
         self.assert_calls("run_rust", ["run_rust_fast", "run_rust_integration"])
         self.assert_calls("run_contracts", ["run_contracts_fast", "run_contracts_coverage"])
