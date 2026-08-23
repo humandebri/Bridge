@@ -372,9 +372,9 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn(
             "Verus executable obligation does not call production symbol", driver
         )
-        self.assertIn(
-            """awk -F $'\\t' '$1 != "executable" { print $2 }'""", driver
-        )
+        self.assertIn('python3 "$ROOT/scripts/check_verus_manifest.py"', driver)
+        self.assertIn("shared-expression|derived|model)", driver)
+        self.assertIn('[[ "$obligation_id" == "schema" ]] && continue', driver)
 
     def test_pr_controlled_gate_does_not_return(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(

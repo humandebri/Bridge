@@ -591,7 +591,13 @@ proof fn payout_includes_fee_and_cannot_exceed_reserve(reserve: int, pending: in
     requires 0 <= pending <= reserve, 0 <= amount, 0 <= fee,
         amount + fee <= 340282366920938463463374607431768211455int
     ensures kernel::payout_allowed_spec(reserve, pending, amount, fee)
-        <==> amount + fee <= reserve - pending,
+        <==> amount + fee <= reserve - pending
+{}
+
+proof fn payout_debit_matches_fee_and_confirmation(amount: int, fee: int)
+    requires 0 <= amount, 0 <= fee,
+        amount + fee <= 340282366920938463463374607431768211455int
+    ensures
         kernel::payout_debit_spec(true, amount, fee) == Some(amount + fee),
         kernel::payout_debit_spec(false, amount, fee) == Some(0int)
 {}
@@ -909,13 +915,18 @@ fn withdrawal_transition_effects_cover_release_and_hold_resolutions(
     )
 }
 
+proof fn withdrawal_terminal_phase_step_is_absorbing(state: int, event: int)
+    requires state == 2
+    ensures kernel::withdrawal_phase_step_spec(state, event) == state
+{}
+
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
     requires state == 2
     ensures kernel::withdrawal_phase_run_spec(state, events) == state
     decreases events.len()
 {
     if events.len() > 0 {
-        assert(kernel::withdrawal_phase_step_spec(state, events[0]) == state);
+        withdrawal_terminal_phase_step_is_absorbing(state, events[0]);
         withdrawal_terminal_phase_absorbs_any_sequence(state, events.drop_first());
     }
 }

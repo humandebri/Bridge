@@ -180,6 +180,14 @@ contract Bridge is IBridge, EIP712 {
         );
         _revertRejectedMint(reason, authorization, windowAvailable);
 
+        _commitAuthorizedMint(authorization, digest, effects);
+    }
+
+    function _commitAuthorizedMint(
+        IBridge.MintAuthorization calldata authorization,
+        bytes32 digest,
+        MintAuthorizationPolicy.MintEffects memory effects
+    ) internal {
         _processedDeposits[authorization.depositId] = effects.processedAfter;
         mintWindowStartedAt = effects.windowStartedAtAfter;
         mintedInWindow = effects.windowConsumedAfter;

@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from claim_manifest import LEAN_NAME, parse_claim_manifest
+from verus_manifest import parse_verus_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "transition-manifest.tsv"
@@ -105,6 +106,8 @@ def strip_comments_and_strings(source: str) -> str:
                 continue
             result[index] = " "
         index += 1
+    if state not in {"code", "line"}:
+        raise ValueError(f"unterminated Rust lexical state: {state}")
     return "".join(result)
 
 
@@ -231,13 +234,12 @@ def check_production_call_site(link: str, kernel_symbol: str) -> None:
 
 
 def verus_rows() -> dict[str, tuple[str, str, str]]:
-    rows: dict[str, tuple[str, str, str]] = {}
-    for number, line in enumerate(VERUS_MANIFEST.read_text(encoding="utf-8").splitlines(), 1):
-        kind, kernel, proof, fixture, _ = line.split("\t")
-        if kernel in rows:
-            raise ValueError(f"duplicate Verus kernel row {number}: {kernel}")
-        rows[kernel] = (kind, proof, fixture)
-    return rows
+    return {
+        obligation.kernel: (obligation.kind, obligation.proof, obligation.fixture)
+        for obligation in parse_verus_manifest(
+            VERUS_MANIFEST.read_text(encoding="utf-8")
+        ).values()
+    }
 
 
 def check_lean_contracts(examples: list[tuple[str, str]]) -> None:

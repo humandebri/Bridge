@@ -20,6 +20,8 @@ interface Vm {
     function stopPrank() external;
     function warp(uint256 timestamp) external;
     function chainId(uint256 newChainId) external;
+    function assume(bool condition) external pure;
+    function etch(address target, bytes calldata code) external;
     function expectRevert(bytes4 revertData) external;
     function expectRevert(bytes calldata revertData) external;
     function expectPartialRevert(bytes4 revertData) external;

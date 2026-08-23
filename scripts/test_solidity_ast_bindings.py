@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Regression tests for compiler-AST proof and production bindings."""
+
+from pathlib import Path
+import tempfile
+import unittest
+
+from check_solidity_ast_bindings import (
+    AstIndex,
+    FunctionRecord,
+    declaration_initializer_call,
+    require_call_argument_declarations,
+    require_evaluate_input_binding,
+    require_no_declaration_reassignment,
+    validate_smt_call_graph,
+)
+from smt_obligations import SmtObligation
+
+
+def call(name: str, declaration: int) -> dict[str, object]:
+    return {
+        "nodeType": "FunctionCall",
+        "expression": {
+            "nodeType": "Identifier",
+            "name": name,
+            "referencedDeclaration": declaration,
+        },
+        "arguments": [],
+    }
+
+
+class FakeIndex:
+    def __init__(self, records: dict[str, tuple[FunctionRecord, ...]]) -> None:
+        self.records = records
+
+    def resolve(self, link: str) -> tuple[FunctionRecord, ...]:
+        return self.records[link]
+
+
+class SolidityAstBindingTests(unittest.TestCase):
+    @staticmethod
+    def evaluate_input() -> tuple[dict[str, object], dict[str, int]]:
+        authorization = 11
+        variable_names = (
+            "mintAuthorizationEpoch",
+            "bsns",
+            "MAX_SERVICE_FEE",
+            "perDepositLimit",
+            "mintedInWindow",
+            "mintWindowLimit",
+            "mintWindowStartedAt",
+            "mintWindowDuration",
+            "depositMintsPaused",
+            "_processedDeposits",
+        )
+        variables = {name: 100 + index for index, name in enumerate(variable_names)}
+
+        def identifier(declaration: int, name: str = "value") -> dict[str, object]:
+            return {
+                "nodeType": "Identifier",
+                "name": name,
+                "referencedDeclaration": declaration,
+            }
+
+        def member(base: dict[str, object], name: str) -> dict[str, object]:
+            return {"nodeType": "MemberAccess", "expression": base, "memberName": name}
+
+        def address(value: dict[str, object]) -> dict[str, object]:
+            return {
+                "nodeType": "FunctionCall",
+                "kind": "typeConversion",
+                "expression": {
+                    "nodeType": "ElementaryTypeNameExpression",
+                    "typeName": {"name": "address"},
+                },
+                "arguments": [value],
+            }
+
+        def auth() -> dict[str, object]:
+            return identifier(authorization, "authorization")
+        names = [
+            "timestamp",
+            "deadline",
+            "authorizationEpoch",
+            "currentEpoch",
+            "recipient",
+            "bridge",
+            "token",
+            "grossAmount",
+            "maximumFee",
+            "chargedFee",
+            "protocolMaximumFee",
+            "perDepositLimit",
+            "consumedInWindow",
+            "windowLimit",
+            "windowStartedAt",
+            "windowDuration",
+            "paused",
+            "processed",
+        ]
+        arguments = [
+            member(identifier(-4, "block"), "timestamp"),
+            member(auth(), "deadline"),
+            member(auth(), "authorizationEpoch"),
+            identifier(variables["mintAuthorizationEpoch"]),
+            member(auth(), "recipient"),
+            address(identifier(-28, "this")),
+            address(identifier(variables["bsns"], "bsns")),
+            member(auth(), "grossAmount"),
+            member(auth(), "maxServiceFee"),
+            member(auth(), "chargedServiceFee"),
+            identifier(variables["MAX_SERVICE_FEE"]),
+            identifier(variables["perDepositLimit"]),
+            identifier(variables["mintedInWindow"]),
+            identifier(variables["mintWindowLimit"]),
+            identifier(variables["mintWindowStartedAt"]),
+            identifier(variables["mintWindowDuration"]),
+            identifier(variables["depositMintsPaused"]),
+            {
+                "nodeType": "IndexAccess",
+                "baseExpression": identifier(variables["_processedDeposits"]),
+                "indexExpression": member(auth(), "depositId"),
+            },
+        ]
+        return (
+            {
+                "arguments": [
+                    {
+                        "nodeType": "FunctionCall",
+                        "kind": "structConstructorCall",
+                        "names": names,
+                        "arguments": arguments,
+                    }
+                ]
+            },
+            variables,
+        )
+
+    def obligation(self) -> SmtObligation:
+        return SmtObligation(
+            "example",
+            "supporting",
+            ("pass.sol#Harness.check()",),
+            ("production.sol#Policy.kernel(uint256)",),
+            ("failure",),
+            ("claim",),
+        )
+
+    def records(self, kernel_declaration: int) -> FakeIndex:
+        source = Path("/")
+        pass_record = FunctionRecord(
+            source,
+            "Harness",
+            "check()",
+            1,
+            {"body": {"statements": [call("kernel", kernel_declaration), call("assert", 99)]}},
+        )
+        production_record = FunctionRecord(
+            source, "Policy", "kernel(uint256)", 2, {"body": {"statements": []}}
+        )
+        return FakeIndex(
+            {
+                "pass.sol#Harness.check()": (pass_record,),
+                "production.sol#Policy.kernel(uint256)": (production_record,),
+            }
+        )
+
+    def test_accepts_direct_declaration_binding(self) -> None:
+        validate_smt_call_graph(self.records(2), {"example": self.obligation()})
+
+    def test_rejects_same_name_bound_to_another_declaration(self) -> None:
+        with self.assertRaisesRegex(ValueError, "does not call its production kernel"):
+            validate_smt_call_graph(self.records(3), {"example": self.obligation()})
+
+    def test_rejects_noncanonical_link_before_artifact_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            index = AstIndex(Path(directory), Path(directory))
+            with self.assertRaisesRegex(ValueError, "invalid canonical Solidity function link"):
+                index.resolve("Bridge.sol#mintDepositWithAuthorization")
+
+    def test_accepts_exact_commit_argument_declarations(self) -> None:
+        call_node = {
+            "arguments": [
+                {"nodeType": "Identifier", "referencedDeclaration": 11},
+                {"nodeType": "Identifier", "referencedDeclaration": 12},
+                {"nodeType": "Identifier", "referencedDeclaration": 13},
+            ]
+        }
+        require_call_argument_declarations(call_node, (11, 12, 13))
+
+    def test_rejects_reordered_commit_arguments(self) -> None:
+        call_node = {
+            "arguments": [
+                {"nodeType": "Identifier", "referencedDeclaration": 12},
+                {"nodeType": "Identifier", "referencedDeclaration": 11},
+                {"nodeType": "Identifier", "referencedDeclaration": 13},
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "argument declarations differ"):
+            require_call_argument_declarations(call_node, (11, 12, 13))
+
+    def test_rejects_same_name_with_another_declaration(self) -> None:
+        call_node = {
+            "arguments": [
+                {
+                    "nodeType": "Identifier",
+                    "name": "authorization",
+                    "referencedDeclaration": 99,
+                },
+                {"nodeType": "Identifier", "referencedDeclaration": 12},
+                {"nodeType": "Identifier", "referencedDeclaration": 13},
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "argument declarations differ"):
+            require_call_argument_declarations(call_node, (11, 12, 13))
+
+    def test_rejects_derived_commit_argument(self) -> None:
+        call_node = {
+            "arguments": [
+                {"nodeType": "Identifier", "referencedDeclaration": 11},
+                {"nodeType": "FunctionCall", "referencedDeclaration": 12},
+                {"nodeType": "Identifier", "referencedDeclaration": 13},
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "argument declarations differ"):
+            require_call_argument_declarations(call_node, (11, 12, 13))
+
+    def test_rejects_commit_argument_count_mismatch(self) -> None:
+        call_node = {
+            "arguments": [
+                {"nodeType": "Identifier", "referencedDeclaration": 11},
+                {"nodeType": "Identifier", "referencedDeclaration": 12},
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "argument declarations differ"):
+            require_call_argument_declarations(call_node, (11, 12, 13))
+
+    def test_accepts_exact_declaration_initializer(self) -> None:
+        initializer = call("derive", 21)
+        initializer["arguments"] = [
+            {"nodeType": "Identifier", "referencedDeclaration": 11}
+        ]
+        node = {
+            "nodeType": "VariableDeclarationStatement",
+            "declarations": [{"nodeType": "VariableDeclaration", "id": 12}],
+            "initialValue": initializer,
+        }
+        actual = declaration_initializer_call(node, 12, 21)
+        require_call_argument_declarations(actual, (11,))
+
+    def test_rejects_initializer_from_another_function(self) -> None:
+        node = {
+            "nodeType": "VariableDeclarationStatement",
+            "declarations": [{"nodeType": "VariableDeclaration", "id": 12}],
+            "initialValue": call("other", 22),
+        }
+        with self.assertRaisesRegex(ValueError, "initializer differs"):
+            declaration_initializer_call(node, 12, 21)
+
+    def test_rejects_bound_declaration_reassignment(self) -> None:
+        node = {
+            "nodeType": "Assignment",
+            "leftHandSide": {
+                "nodeType": "MemberAccess",
+                "expression": {
+                    "nodeType": "Identifier",
+                    "referencedDeclaration": 13,
+                },
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "reassigns bound declarations"):
+            require_no_declaration_reassignment(node, {12, 13})
+
+    def test_accepts_read_only_bound_declarations(self) -> None:
+        node = {
+            "nodeType": "FunctionCall",
+            "arguments": [
+                {"nodeType": "Identifier", "referencedDeclaration": 12},
+                {"nodeType": "Identifier", "referencedDeclaration": 13},
+            ],
+        }
+        require_no_declaration_reassignment(node, {12, 13})
+
+    def test_accepts_exact_evaluate_transition_input(self) -> None:
+        call_node, variables = self.evaluate_input()
+        require_evaluate_input_binding(call_node, 11, variables)
+
+    def test_rejects_reordered_evaluate_transition_input(self) -> None:
+        call_node, variables = self.evaluate_input()
+        arguments = call_node["arguments"][0]["arguments"]
+        arguments[1], arguments[2] = arguments[2], arguments[1]
+        with self.assertRaisesRegex(ValueError, "input binding differs"):
+            require_evaluate_input_binding(call_node, 11, variables)
+
+
+if __name__ == "__main__":
+    unittest.main()

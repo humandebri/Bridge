@@ -34,7 +34,7 @@ def claim_test_links(claims_text: str) -> set[tuple[str, str]]:
     links: set[tuple[str, str]] = set()
     manifest = parse_claim_manifest(claims_text)
     for fields in manifest.rows:
-        for link in fields[8].split(";"):
+        for link in fields[10].split(";"):
             if link.count("#") != 1:
                 raise ValueError(f"invalid claim transaction test: {link}")
             links.add(tuple(link.split("#", 1)))

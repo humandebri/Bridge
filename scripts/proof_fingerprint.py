@@ -47,8 +47,19 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
         path
         for path in verification.rglob("*")
         if path.is_file()
-        and verification / "output" not in path.parents
-        and ".lake" not in path.parts
+        and not any(
+            excluded in path.parents
+            for excluded in (
+                verification / "output",
+                verification / "lean" / ".lake",
+                verification / "smt" / "out",
+                verification / "smt" / "cache",
+                verification / "halmos" / ".venv",
+            )
+        )
+        and not any(
+            part.startswith(".") for part in path.relative_to(verification).parts
+        )
     )
     for relative_root, suffixes in FINGERPRINT_SOURCE_ROOTS:
         source_root = repo_root / relative_root

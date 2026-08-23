@@ -393,6 +393,7 @@ build_smt_failure_fixture() {
     --root "$ROOT/verification/smt" \
     "${skip_args[@]}" \
     --force
+
 }
 
 run_smt() {
@@ -410,6 +411,8 @@ run_smt() {
     "${pass_skip_args[@]}" \
     --force
 
+  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope smt
+
   verify_smt_failure_fixtures \
     "$TMP_ROOT/smt-failures" \
     build_smt_failure_fixture \
@@ -426,6 +429,7 @@ run_verus() {
   local expected_fixture
   local production_path
   local production_source
+  local claim_ids
   local -a production_sources
   local verus_version
 
@@ -445,11 +449,12 @@ run_verus() {
   fi
 
   verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass"
+  python3 "$ROOT/scripts/check_verus_manifest.py"
 
-  while IFS=$'\t' read -r kind kernel_name proof_name expected_fixture production_path; do
-    [[ -n "$kernel_name" ]] || continue
+  while IFS=$'\t' read -r obligation_id kind kernel_name proof_name expected_fixture binding derived_bindings production_calls claim_ids; do
+    [[ "$obligation_id" == "schema" ]] && continue
     case "$kind" in
-      shared)
+      shared-expression|derived|model)
         rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
           echo "Verus manifest spec is missing: $kernel_name" >&2
           return 1
@@ -463,20 +468,11 @@ run_verus() {
           return 1
         }
         rg -q "pub (const )?fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
-          echo "shared Verus kernel is missing: $kernel_name" >&2
-          return 1
+          [[ "$kind" == "model" ]] || {
+            echo "non-model Verus kernel is missing: $kernel_name" >&2
+            return 1
+          }
         }
-        IFS=';' read -r -a production_sources <<<"$production_path"
-        for production_source in "${production_sources[@]}"; do
-          [[ -n "$production_source" ]] || {
-            echo "shared Verus kernel has an empty production path: $kernel_name" >&2
-            return 1
-          }
-          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
-            echo "shared Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
-            return 1
-          }
-        done
         ;;
       executable)
         rg -q "^fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
@@ -495,32 +491,6 @@ run_verus() {
           echo "Verus executable kernel is missing: $kernel_name" >&2
           return 1
         }
-        IFS=';' read -r -a production_sources <<<"$production_path"
-        for production_source in "${production_sources[@]}"; do
-          [[ -n "$production_source" ]] || {
-            echo "executable Verus kernel has an empty production path: $kernel_name" >&2
-            return 1
-          }
-          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
-            echo "executable Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
-            return 1
-          }
-        done
-        ;;
-      model)
-        rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
-          echo "Verus manifest spec is missing: $kernel_name" >&2
-          return 1
-        }
-        rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
-          echo "Verus manifest proof is missing: $proof_name" >&2
-          return 1
-        }
-        rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
-          echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
-          return 1
-        }
-        [[ "$production_path" == "-" ]]
         ;;
       *)
         echo "invalid Verus manifest kind: $kind" >&2
@@ -528,25 +498,6 @@ run_verus() {
         ;;
     esac
   done < "$ROOT/verification/verus/manifest.tsv"
-
-  rg -o 'pub open spec fn [A-Za-z0-9_]+' "$ROOT/canister/bridge-core/src/kernel.rs" \
-    | sed 's/pub open spec fn //' | sort >"$TMP_ROOT/verus-specs"
-  awk -F $'\t' '$1 != "executable" { print $2 }' "$ROOT/verification/verus/manifest.tsv" \
-    | sed 's/$/_spec/' | sort >"$TMP_ROOT/verus-manifest-specs"
-  if ! cmp -s "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs"; then
-    echo "Verus manifest does not cover every spec exactly once" >&2
-    diff -u "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs" >&2 || true
-    return 1
-  fi
-
-  cut -f4 "$ROOT/verification/verus/manifest.tsv" | sort >"$TMP_ROOT/verus-manifest-fixtures"
-  rg --files "$ROOT/verification/verus/fail" -g '*.rs' \
-    | sed 's#^.*/##' | sort >"$TMP_ROOT/verus-failure-fixtures"
-  if ! cmp -s "$TMP_ROOT/verus-manifest-fixtures" "$TMP_ROOT/verus-failure-fixtures"; then
-    echo "Verus failure fixtures and manifest are not one-to-one" >&2
-    diff -u "$TMP_ROOT/verus-manifest-fixtures" "$TMP_ROOT/verus-failure-fixtures" >&2 || true
-    return 1
-  fi
 
   while IFS= read -r failure_fixture; do
     failure_log="$TMP_ROOT/verus-$(basename "$failure_fixture" .rs).log"
@@ -565,6 +516,75 @@ run_verus() {
       return 1
     fi
   done < <(rg --files "$ROOT/verification/verus/fail" -g '*.rs' | sort)
+}
+
+run_halmos() {
+  local halmos_entry="$ROOT/verification/halmos/.venv/bin/halmos"
+  local halmos_python="$ROOT/verification/halmos/.venv/bin/python"
+  local -a halmos
+  local positive_log="$TMP_ROOT/halmos-positive.log"
+  local failure_id
+  local failure_link
+  local failure_path
+  local failure_contract
+  local failure_function
+  local failure_log
+  local failure_status
+  local version
+
+  if [[ ! -x "$halmos_entry" || ! -x "$halmos_python" ]]; then
+    echo "missing locked Halmos environment; run uv sync --project verification/halmos --frozen" >&2
+    return 1
+  fi
+  python3 "$ROOT/scripts/halmos_environment.py" --check
+  halmos=("$halmos_python" "$halmos_entry")
+  version="$("${halmos[@]}" --version 2>&1)"
+  if [[ "$version" != "halmos 0.3.3" ]]; then
+    echo "Halmos version mismatch for proofs: $version" >&2
+    return 1
+  fi
+
+  "${halmos[@]}" \
+    --root "$ROOT/contracts" \
+    --contract BridgeMintCommitHalmos \
+    --solver z3 \
+    --solver-timeout-assertion 30s \
+    --early-exit \
+    --no-status >"$positive_log" 2>&1
+  if ! rg -q 'Symbolic test result: 3 passed; 0 failed' "$positive_log" \
+    || rg -qi '\[FAIL\]|counterexample|timeout|unknown' "$positive_log"; then
+    echo "Halmos positive proofs did not complete exactly" >&2
+    cat "$positive_log" >&2
+    return 1
+  fi
+  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope bridge
+
+  while IFS=$'\t' read -r failure_id failure_link; do
+    failure_path="${failure_link%%#*}"
+    failure_function="${failure_link#*#}"
+    failure_contract="$(basename "$failure_path" .t.sol)Halmos"
+    failure_log="$TMP_ROOT/halmos-$failure_id.log"
+    set +e
+    "${halmos[@]}" \
+      --root "$ROOT/contracts" \
+      --contract "$failure_contract" \
+      --function "$failure_function" \
+      --solver z3 \
+      --solver-timeout-assertion 30s \
+      --early-exit \
+      --no-status >"$failure_log" 2>&1
+    failure_status=$?
+    set -e
+    if [[ "$failure_status" -eq 0 ]] \
+      || ! rg -q '\[FAIL\]' "$failure_log" \
+      || ! rg -qi 'counterexample' "$failure_log" \
+      || ! rg -q 'Symbolic test result: 0 passed; 1 failed' "$failure_log" \
+      || rg -qi 'timeout|unknown' "$failure_log"; then
+      echo "Halmos negative fixture did not produce one counterexample: $failure_id" >&2
+      cat "$failure_log" >&2
+      return 1
+    fi
+  done < "$ROOT/verification/halmos/failure-manifest.tsv"
 }
 
 run_lean_failure_fixtures() {
@@ -660,6 +680,7 @@ run_proofs() {
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt
+  run_proof_stage halmos-and-negative run_halmos
   run_proof_stage verus-and-negative run_verus
   python3 -c \
     'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["complete"] is True' \

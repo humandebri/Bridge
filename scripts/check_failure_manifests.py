@@ -6,6 +6,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from smt_obligations import parse_smt_obligations
+from halmos_obligations import parse_halmos_obligations
+from check_claim_manifest import checked_link
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -23,6 +27,56 @@ def main() -> int:
     actual_smt = sorted(path.name for path in smt_dir.glob("*.sol"))
     if len(set(smt_fixtures)) != len(smt_fixtures) or sorted(smt_fixtures) != actual_smt:
         raise ValueError("SMT failure manifest does not exactly cover deliberate fixtures")
+    smt_obligations = parse_smt_obligations(
+        (ROOT / "verification" / "smt" / "obligations.tsv").read_text(encoding="utf-8")
+    )
+    registered_failure_ids = {
+        failure_id
+        for obligation in smt_obligations.values()
+        for failure_id in obligation.failure_ids
+    }
+    actual_failure_ids = {row[0] for row in smt_rows}
+    if registered_failure_ids != actual_failure_ids:
+        raise ValueError(
+            "SMT obligations do not exactly cover negative IDs: "
+            f"missing={sorted(actual_failure_ids - registered_failure_ids)} "
+            f"extra={sorted(registered_failure_ids - actual_failure_ids)}"
+        )
+
+    halmos_dir = ROOT / "contracts" / "test" / "halmos" / "fail"
+    halmos_rows = rows(ROOT / "verification" / "halmos" / "failure-manifest.tsv", 2)
+    halmos_fixture_paths: list[str] = []
+    for failure_id, link in halmos_rows:
+        path, _ = checked_link(link)
+        if halmos_dir.resolve() not in path.parents:
+            raise ValueError(f"Halmos failure fixture is outside the fail directory: {link}")
+        halmos_fixture_paths.append(path.relative_to(halmos_dir).as_posix())
+    actual_halmos = sorted(
+        path.relative_to(halmos_dir).as_posix()
+        for path in halmos_dir.rglob("*.sol")
+        if path.is_file()
+    )
+    if (
+        len({row[0] for row in halmos_rows}) != len(halmos_rows)
+        or len(set(halmos_fixture_paths)) != len(halmos_fixture_paths)
+        or sorted(halmos_fixture_paths) != actual_halmos
+    ):
+        raise ValueError("Halmos failure manifest does not exactly cover deliberate fixtures")
+    halmos_obligations = parse_halmos_obligations(
+        (ROOT / "verification" / "halmos" / "obligations.tsv").read_text(encoding="utf-8")
+    )
+    registered_halmos_failure_ids = {
+        failure_id
+        for obligation in halmos_obligations.values()
+        for failure_id in obligation.failure_ids
+    }
+    actual_halmos_failure_ids = {row[0] for row in halmos_rows}
+    if registered_halmos_failure_ids != actual_halmos_failure_ids:
+        raise ValueError(
+            "Halmos obligations do not exactly cover negative IDs: "
+            f"missing={sorted(actual_halmos_failure_ids - registered_halmos_failure_ids)} "
+            f"extra={sorted(registered_halmos_failure_ids - actual_halmos_failure_ids)}"
+        )
 
     lean_dir = ROOT / "verification" / "lean" / "fail"
     lean_source = "\n".join(

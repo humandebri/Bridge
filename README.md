@@ -121,7 +121,7 @@ bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をreq
 Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、各vector sectionについてmanifestにない仕様・定理・consumerのdriftを拒否する。
 manifestに登録したconsumerはsectionとproduction symbolへの構造的な結合を検査してから許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。
 この照合は列挙した境界値に対する限定的なconformanceであり、各言語実装全体の完全なsemantic refinementではない。
-productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。
+productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。Verus proofは非executableでは登録specを`ensures`へ、executableでは登録kernelの戻り式をnamed returnと`ensures`へ結合し、obligation側の支援claim集合、claim側の参照集合、production-bound evidence必須集合をそれぞれ完全一致させる。Solidityのproof linkはcompiler AST上の完全なcontract・overload signatureと直接call graphへ解決し、Bridge wrapperでは`digest`の生成元、署名回復、`evaluateMint`入力全フィールドと`effects`生成元、再代入の不在、commit引数の宣言IDと順序を結合する。Halmosは署名検証後の`_commitAuthorizedMint`境界についてstate反映、mint量、外部call失敗時のrollbackをsymbolic検査する。SMTとHalmosはともに`supporting`であり、Verusの`derived`義務と同様にclaimの部分証拠として扱い、単独ではproduction実装済みのclaimへ昇格しない。production transaction testはwrapper、認証、event、永続化を含む具体的なend-to-end挙動を担う。
 `ui`はABI/Candid drift、typecheck、lint、unit test、build、desktop/mobile Playwrightを実行する。`real`は実Ledger suiteとAnvilを使うPlaywright統合テストを実行し、`all`にも含まれるが短時間用の`checks`には含まれない。
 証明範囲と外部仮定は[verification/README.md](verification/README.md)と[verification/obligations.md](verification/obligations.md)に記録する。
 
@@ -139,7 +139,7 @@ python3 scripts/protocol_vectors.py --update
 python3 scripts/protocol_vectors.py --check
 ```
 
-release対象claim、抽象・有限幅・trace定理、Verus/SMT義務、production link、transaction test、外部仮定は[verification/claims.tsv](verification/claims.tsv)で統一管理し、証拠statusはgateが算出する。vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。不可逆なproduction操作の直前にはproof gateに続いてWasmとcontract runtimeをclean sourceから二回buildし、release manifestとのhash完全一致を要求する。
+42件のrelease対象claim、抽象・有限幅・trace定理、型付きVerus/SMT/Halmos obligation、明示的なimplementation basis、production link、transaction test、外部仮定は[verification/claims.tsv](verification/claims.tsv)で統一管理し、証拠statusはgateが算出する。vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。不可逆なproduction操作の直前にはproof gateに続いてWasmとcontract runtimeをclean sourceから二回buildし、release manifestとのhash完全一致を要求する。
 
 ## ローカルdeploy
 

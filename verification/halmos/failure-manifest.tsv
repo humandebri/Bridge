@@ -1,0 +1,3 @@
+processed_update_omitted	contracts/test/halmos/fail/MintCommitProcessedOmitted.t.sol#check_processed_update_is_required
+supply_amount_mismatch	contracts/test/halmos/fail/MintCommitSupplyMismatch.t.sol#check_supply_amount_must_match
+rollback_omitted	contracts/test/halmos/fail/MintCommitRollbackOmitted.t.sol#check_external_failure_must_rollback

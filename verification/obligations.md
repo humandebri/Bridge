@@ -3,7 +3,7 @@
 Leanを抽象protocol specificationの正本とし、生成vectorでproduction consumerとのbounded conformanceを検査する。
 vectorに列挙されない入力や副作用を含む実装全体のsemantic refinementは主張しない。
 
-Evidenceはclaimごとに、抽象Lean proof、有限幅Lean refinement、Verus evidence、production transaction test、外部仮定を独立に読む。Verus manifestの`executable`はproduction実行関数を直接呼ぶproof、`shared`はCargo式とspecが式macroを共有するpredicate proof、`model`はproduction symbolを持たないモデルproofであり、三者を同じ強度として扱わない。
+Evidenceはclaimごとに、抽象Lean proof、有限幅Lean refinement、Verus evidence、SMT obligation、Halmos obligation、production transaction test、外部仮定を独立に読む。Verus manifestの`executable`はproduction実行関数の戻り値を当該proofのnamed returnと`ensures`へ結合するproof、`shared-expression`は単一armの登録macro、位置parameter、整数定数alias、明示登録した派生入力を構造検査し、当該proofの`ensures`から対応specを参照するpredicate proof、`derived`は別記述または合成specへ当該proofの`ensures`を結合したproof、`model`はproduction symbolを持たないモデルproofであり、四者を同じ強度として扱わない。各Verus obligationは支援claimを宣言し、claims台帳からの参照集合と完全一致させる。production-bound Verus evidenceの必須集合はclaimの`implementation_basis`と完全一致させる。SMT obligationはproduction共有kernel、Halmos obligationはpost-auth commit境界の部分性質を支える`supporting`だけを許可し、public Bridge wrapperやdeployed contract全体の実装証拠へ昇格させない。Bridge wrapperからcommit境界へのcallは、`digest`の生成元、署名回復で使う宣言ID、`evaluateMint`入力全フィールドと`effects`生成元、再代入の不在、commit引数の宣言IDと順序までASTで結合する。production transaction testは認証からevent・永続化までの具体的な経路を担う。
 release対象の閉じたclaim集合、trace theorem、Verus obligation、production symbol、transaction selector、仮定IDは`claims.tsv`を正本とし、表の説明だけでは完了判定しない。statusはproof gateが証拠の最弱要素から算出する。
 外部仮定の依存claim、検査可能なfault test、運用監視、破壊時のfail-closed動作は`assumptions.tsv`を正本とする。
 

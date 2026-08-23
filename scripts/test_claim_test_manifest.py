@@ -15,7 +15,7 @@ class ClaimTestManifestTests(unittest.TestCase):
     @staticmethod
     def claims(row: str) -> str:
         return (
-            "schema\t3\t-\t-\t-\n"
+            "schema\t5\t-\t-\t-\n"
             "contract\tclaim\timplementation-only\t-\t-\n"
             + row
         )
@@ -28,7 +28,7 @@ class ClaimTestManifestTests(unittest.TestCase):
         target.parent.mkdir(parents=True)
         target.write_text("fn exact_test() {}\n", encoding="utf-8")
         claims = self.claims(
-            "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+            "kind\tclaim\ta\t-\t-\tv\t-\t-\t-\tp\t"
             "canister/bridge-core/tests/example.rs#exact_test\t-\t-\n"
         )
         manifest = (
@@ -70,7 +70,7 @@ class ClaimTestManifestTests(unittest.TestCase):
                 encoding="utf-8",
             )
             claims = self.claims(
-                "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+                "kind\tclaim\ta\t-\t-\tv\t-\t-\t-\tp\t"
                 "ui/src/example.test.ts#exact_test\t-\t-\n"
             )
             manifest = (
@@ -87,7 +87,7 @@ class ClaimTestManifestTests(unittest.TestCase):
             target.parent.mkdir(parents=True)
             target.write_text('it("tsx_test", () => <div />)\n', encoding="utf-8")
             claims = self.claims(
-                "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+                "kind\tclaim\ta\t-\t-\tv\t-\t-\t-\tp\t"
                 "ui/src/example.test.tsx#tsx_test\t-\t-\n"
             )
             manifest = "vitest\tui/src/example.test.tsx\ttsx_test\ttsx_test\n"
@@ -103,7 +103,7 @@ class ClaimTestManifestTests(unittest.TestCase):
                 encoding="utf-8",
             )
             claims = self.claims(
-                "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+                "kind\tclaim\ta\t-\t-\tv\t-\t-\t-\tp\t"
                 "integration/phase3.spec.ts#exact_test\t-\t-\n"
             )
             manifest = (

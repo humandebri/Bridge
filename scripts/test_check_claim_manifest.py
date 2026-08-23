@@ -5,17 +5,29 @@ import unittest
 import subprocess
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from claim_manifest import lean_contract_check_source, parse_claim_manifest
-from check_claim_manifest import abstract_evidence_status, missing_scalar_calls, solidity_function_body
+from halmos_obligations import parse_halmos_obligations
+from check_claim_manifest import (
+    abstract_evidence_status,
+    missing_scalar_calls,
+    require_exact_claim_coverage,
+    require_exact_implementation_basis,
+    require_exact_smt_claim_coverage,
+    require_unique_smt_obligations,
+    solidity_function_body,
+    strip_solidity_comments_and_strings,
+)
+from smt_obligations import parse_smt_obligations
 
 
 class ClaimContractTests(unittest.TestCase):
     def manifest(self, contract: str, witness: str) -> str:
         return (
-            "schema\t3\t-\t-\t-\n"
+            "schema\t5\t-\t-\t-\n"
             f"contract\tclaim_id\thistory-safety\t{contract}\t{witness}\n"
-            "protocol\tclaim_id\tclaim_theorem\t-\ttrace_theorem\t-\t-\t"
+            "protocol\tclaim_id\tclaim_theorem\t-\ttrace_theorem\t-\t-\t-\t-\t"
             "source.rs#kernel\ttest.rs#case\tassumption\t-\n"
         )
 
@@ -83,6 +95,28 @@ function feeWithinBounds() internal pure returns (bool) {
         self.assertIn("if (value > 0) {", body)
         self.assertNotIn("function feeWithinBounds", body)
 
+    def test_comments_and_strings_do_not_define_functions_or_calls(self) -> None:
+        source = r'''
+// function commentOnly() internal { removedKernel(); }
+function evaluateMint() internal {
+    string memory doubleQuoted = "} removedKernel(); \" {";
+    string memory singleQuoted = '} removedKernel(); \' {';
+    /* removedKernel(); } */
+    deadlineAccepts(0, 0);
+}
+'''
+        body = solidity_function_body(source, "evaluateMint")
+        self.assertNotIn("removedKernel", body)
+        self.assertIn("deadlineAccepts", body)
+        with self.assertRaisesRegex(ValueError, "missing Solidity function"):
+            solidity_function_body(source, "commentOnly")
+
+    def test_string_stripping_preserves_offsets_and_newlines(self) -> None:
+        source = 'function f() { string memory value = "{\\\"}";\nreturn; }'
+        cleaned = strip_solidity_comments_and_strings(source)
+        self.assertEqual(len(cleaned), len(source))
+        self.assertEqual(cleaned.count("\n"), source.count("\n"))
+
     def test_following_helper_declaration_does_not_satisfy_call_requirement(self) -> None:
         source = """
 function evaluateMint() internal pure {
@@ -109,6 +143,198 @@ function feeWithinBounds() internal pure returns (bool) {
             solidity_function_body(
                 "function evaluateMint() internal { if (true) { }",
                 "evaluateMint",
+            )
+
+    def test_rejects_unterminated_comment(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unterminated Solidity block"):
+            strip_solidity_comments_and_strings("function f() {} /*")
+
+    def test_rejects_unterminated_string(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unterminated Solidity string"):
+            strip_solidity_comments_and_strings('function f() { string memory x = "')
+
+
+class SmtObligationTests(unittest.TestCase):
+    def manifest(self, strength: str = "supporting") -> str:
+        return (
+            "schema\t2\t-\t-\t-\t-\t-\n"
+            "obligation\texample\t"
+            f"{strength}\tpass.sol#check\tproduction.sol#kernel\tfailure\tclaim\n"
+        )
+
+    def test_parses_typed_obligation(self) -> None:
+        obligation = parse_smt_obligations(self.manifest())["example"]
+        self.assertEqual(obligation.strength, "supporting")
+        self.assertEqual(obligation.pass_links, ("pass.sol#check",))
+
+    def test_rejects_unknown_strength(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid SMT obligation strength"):
+            parse_smt_obligations(self.manifest("implementation-proved"))
+
+    def test_rejects_incomplete_obligation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "incomplete SMT obligation"):
+            parse_smt_obligations(self.manifest().replace("failure\tclaim", "-\tclaim"))
+
+    def test_rejects_claim_complete_strength(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid SMT obligation strength"):
+            parse_smt_obligations(self.manifest("claim-complete"))
+
+    def test_rejects_obsolete_call_site_column(self) -> None:
+        document = self.manifest().replace(
+            "production.sol#kernel\tfailure",
+            "production.sol#kernel\tcaller.sol#apply\tfailure",
+        )
+        with self.assertRaisesRegex(ValueError, "invalid SMT obligation row"):
+            parse_smt_obligations(document)
+
+    def test_rejects_duplicate_claim_ids(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate SMT claim IDs"):
+            parse_smt_obligations(self.manifest().replace("\tclaim\n", "\tclaim;claim\n"))
+
+
+class SmtClaimCoverageTests(unittest.TestCase):
+    def test_accepts_exact_bidirectional_coverage(self) -> None:
+        require_exact_smt_claim_coverage(
+            {"obligation": {"claim_a", "claim_b"}},
+            {"obligation": {"claim_a", "claim_b"}},
+        )
+
+    def test_rejects_claim_declared_only_by_obligation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "claim coverage differs"):
+            require_exact_smt_claim_coverage(
+                {"obligation": {"claim_a", "claim_b"}},
+                {"obligation": {"claim_a"}},
+            )
+
+    def test_rejects_claim_referenced_only_by_claim_manifest(self) -> None:
+        with self.assertRaisesRegex(ValueError, "claim coverage differs"):
+            require_exact_smt_claim_coverage(
+                {"obligation": {"claim_a"}},
+                {"obligation": {"claim_a", "claim_b"}},
+            )
+
+    def test_rejects_duplicate_obligation_references_in_one_claim(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate SMT obligations"):
+            require_unique_smt_obligations(
+                "claim_a", ["obligation", "obligation"]
+            )
+
+
+class VerusClaimCoverageTests(unittest.TestCase):
+    def test_accepts_exact_bidirectional_coverage(self) -> None:
+        require_exact_claim_coverage(
+            "Verus",
+            {"proof": {"claim_a", "claim_b"}},
+            {"proof": {"claim_a", "claim_b"}},
+        )
+
+    def test_rejects_claim_omitted_from_claim_manifest(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Verus obligation claim coverage differs"):
+            require_exact_claim_coverage(
+                "Verus",
+                {"proof": {"claim_a", "claim_b"}},
+                {"proof": {"claim_a"}},
+            )
+
+    def test_rejects_claim_added_only_to_claim_manifest(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Verus obligation claim coverage differs"):
+            require_exact_claim_coverage(
+                "Verus",
+                {"proof": {"claim_a"}},
+                {"proof": {"claim_a", "claim_b"}},
+            )
+
+
+class ImplementationBasisTests(unittest.TestCase):
+    @staticmethod
+    def verus_rows() -> dict[str, list[SimpleNamespace]]:
+        return {
+            "proof_a": [SimpleNamespace(production_bound=True)],
+            "proof_b": [SimpleNamespace(production_bound=True)],
+            "model_only": [SimpleNamespace(production_bound=False)],
+        }
+
+    def test_accepts_exact_all_of_basis(self) -> None:
+        required = require_exact_implementation_basis(
+            "claim",
+            ["verus:proof_b", "verus:proof_a"],
+            ["proof_a", "proof_b"],
+            [],
+            self.verus_rows(),
+            {},
+        )
+        self.assertEqual(required, {"verus:proof_a", "verus:proof_b"})
+
+    def test_rejects_missing_required_basis(self) -> None:
+        with self.assertRaisesRegex(ValueError, "implementation basis differs"):
+            require_exact_implementation_basis(
+                "claim",
+                ["verus:proof_a"],
+                ["proof_a", "proof_b"],
+                [],
+                self.verus_rows(),
+                {},
+            )
+
+    def test_rejects_unbound_extra_basis(self) -> None:
+        with self.assertRaisesRegex(ValueError, "implementation basis differs"):
+            require_exact_implementation_basis(
+                "claim",
+                ["verus:model_only"],
+                ["model_only"],
+                [],
+                self.verus_rows(),
+                {},
+            )
+
+    def test_rejects_nonempty_basis_when_no_evidence_is_required(self) -> None:
+        with self.assertRaisesRegex(ValueError, "implementation basis differs"):
+            require_exact_implementation_basis(
+                "claim",
+                ["verus:proof_a"],
+                [],
+                [],
+                self.verus_rows(),
+                {},
+            )
+
+    def test_includes_future_claim_complete_halmos_evidence(self) -> None:
+        required = require_exact_implementation_basis(
+            "claim",
+            ["halmos:complete"],
+            [],
+            ["complete", "supporting"],
+            {},
+            {
+                "complete": SimpleNamespace(claim_complete=True),
+                "supporting": SimpleNamespace(claim_complete=False),
+            },
+        )
+        self.assertEqual(required, {"halmos:complete"})
+
+
+class HalmosObligationTests(unittest.TestCase):
+    @staticmethod
+    def manifest(strength: str = "supporting") -> str:
+        return (
+            "schema\t1\t-\t-\t-\t-\t-\n"
+            "obligation\texample\t"
+            f"{strength}\tpass.t.sol#check\tBridge.sol#commit\tfailure\tclaim\n"
+        )
+
+    def test_parses_supporting_obligation(self) -> None:
+        obligation = parse_halmos_obligations(self.manifest())["example"]
+        self.assertEqual(obligation.strength, "supporting")
+        self.assertFalse(obligation.claim_complete)
+
+    def test_rejects_claim_complete_strength(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid Halmos obligation strength"):
+            parse_halmos_obligations(self.manifest("claim-complete"))
+
+    def test_rejects_duplicate_claim_ids(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate Halmos claim IDs"):
+            parse_halmos_obligations(
+                self.manifest().replace("\tclaim\n", "\tclaim;claim\n")
             )
 
 

@@ -91,11 +91,13 @@ if [[ "$MODE" == "proofs" ]]; then
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/lean/.lake
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/smt/out
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/smt/cache
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/halmos/.venv
   WRITABLE_BUILD_MOUNTS+=(
     --mount "type=bind,src=$SCRATCH/proof-output,dst=/workspace/verification/output"
     --mount "type=bind,src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake"
     --mount "type=bind,src=$SCRATCH/smt-out,dst=/workspace/verification/smt/out"
     --mount "type=bind,src=$SCRATCH/smt-cache,dst=/workspace/verification/smt/cache"
+    --mount "type=bind,src=$POLICY_ROOT/verification/halmos/.venv,dst=/workspace/verification/halmos/.venv,readonly"
   )
 fi
 if [[ "$MODE" == "icp" ]]; then

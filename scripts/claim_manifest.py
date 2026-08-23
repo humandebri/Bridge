@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parse the fail-closed v3 claim and proof-contract manifest."""
+"""Parse the fail-closed claim and proof-contract manifest."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import re
 from dataclasses import dataclass
 
 
-SCHEMA_VERSION = "3"
-CLAIM_FIELD_COUNT = 11
+SCHEMA_VERSION = "5"
+CLAIM_FIELD_COUNT = 13
 LEAN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 PROOF_CLASSES = {"local-safety", "history-safety", "liveness", "implementation-only"}
 

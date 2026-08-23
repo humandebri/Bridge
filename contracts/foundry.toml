@@ -21,6 +21,7 @@ deny = "warnings"
 ignored_error_codes = [2394, 3860, 6335]
 bytecode_hash = "none"
 cbor_metadata = false
+ast = true
 fs_permissions = [{ access = "read", path = "../verification/generated" }]
 
 [profile.default.fuzz]
@@ -38,13 +39,13 @@ remappings = ["@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/", 
 
 [profile.smt]
 # The trusted driver invokes this profile from the contracts project. Scope all
-# source roots to the dedicated fixtures so skipped tests/scripts cannot pull
-# deployable via-IR contracts into the non-via-IR SMT compilation unit.
+# source roots to the dedicated fixtures. The direct evaluateMint harness returns
+# a large effects struct, so the SMT compilation unit uses via-IR for codegen.
 src = "../verification/smt/pass"
 test = "../verification/smt/pass"
 script = "../verification/smt/pass"
 optimizer = false
-via_ir = false
+via_ir = true
 deny = "warnings"
 
 [profile.smt.model_checker]
