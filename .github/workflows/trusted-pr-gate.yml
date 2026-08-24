@@ -120,7 +120,13 @@ jobs:
         env:
           AREAS: ${{ needs.classify.outputs.matrix }}
         run: |
-          if jq -e 'index("proofs") != null' <<< "$AREAS" >/dev/null; then mode="all"; else mode="ci"; fi
+          mode="ci"
+          while IFS= read -r area; do
+            case "$area" in
+              proofs) mode="all"; break ;;
+              *) mode="ci" ;;
+            esac
+          done < <(jq -r '.[]' <<< "$AREAS")
           trusted-policy/scripts/install-ci-tools.sh "$mode"
       - name: Save cached proof toolchain
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
