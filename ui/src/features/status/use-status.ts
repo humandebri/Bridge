@@ -67,7 +67,14 @@ export function useRuntimeHeartbeat(chainId: number | undefined, initialValidati
   return useQuery({
     queryKey: ["runtime-heartbeat", runtimeProfileFingerprint(deploymentProfile), chainId],
     queryFn: async () => {
-      const validation = await validateRuntimeHeartbeat(deploymentProfile, chainId)
+      let validation
+      try {
+        validation = await validateRuntimeHeartbeat(deploymentProfile, chainId)
+      } catch (error) {
+        if (deploymentProfile.testOnly) console.warn("Runtime heartbeat failed:", error)
+        throw error
+      }
+      if (!validation.ready && deploymentProfile.testOnly) console.warn("Runtime heartbeat blockers:", validation.blockers.join("; "))
       if (validation.status) {
         queryClient.setQueryData(
           ["bridge-status", deploymentProfile.bridgeCanisterId],

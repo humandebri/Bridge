@@ -28,3 +28,17 @@ export function requiredDepositBalance(amount: bigint, ledgerFee: bigint, allowa
   const approvalFee = allowance < requiredAllowance ? ledgerFee : 0n
   return amount + ledgerFee + approvalFee
 }
+
+export function maximumDepositAmount(balance: bigint, ledgerFee: bigint, allowance: bigint): bigint {
+  const amountWithTransferFee = balance > ledgerFee
+    ? minBigInt(balance - ledgerFee, allowance > ledgerFee ? allowance - ledgerFee : 0n)
+    : 0n
+  const amountWithApprovalAndTransferFees = balance > ledgerFee * 2n ? balance - ledgerFee * 2n : 0n
+  return amountWithTransferFee > amountWithApprovalAndTransferFees
+    ? amountWithTransferFee
+    : amountWithApprovalAndTransferFees
+}
+
+function minBigInt(left: bigint, right: bigint): bigint {
+  return left < right ? left : right
+}

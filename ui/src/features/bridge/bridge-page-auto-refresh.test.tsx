@@ -296,6 +296,46 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(mocks.getRuntimeBinding).not.toHaveBeenCalled()
   })
 
+  it("fills the maximum IC deposit after reserving the required ledger fees", async () => {
+    mocks.useIcWallet.mockReturnValue({
+      account: { owner: "aaaaa-aa" },
+      provider: "plug",
+      adapter: {},
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "MAX" })).toBeEnabled())
+    fireEvent.click(screen.getByRole("button", { name: "MAX" }))
+
+    expect(screen.getByRole<HTMLInputElement>("textbox", { name: "You send" }).value).toBe("9.998")
+    expect(screen.getByText("9.498 KINIC")).toBeVisible()
+  })
+
+  it("fills the full bSNS balance for a withdrawal and subtracts the bridge fee only from receive", async () => {
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+
+    render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "MAX" })).toBeEnabled())
+    fireEvent.click(screen.getByRole("button", { name: "MAX" }))
+
+    expect(screen.getByRole<HTMLInputElement>("textbox", { name: "You send" }).value).toBe("10")
+    expect(screen.getByText("9.5 TICRC1")).toBeVisible()
+  })
+
+  it("disables MAX until the selected wallet balance is available", () => {
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+
+    expect(screen.getByRole("button", { name: "MAX" })).toBeDisabled()
+  })
+
   it("does not surface stale live status during passive browsing", () => {
     mocks.runtimeWriteReadiness.mockReturnValue({ ready: false, reason: "Runtime validation failed" })
 
@@ -1013,6 +1053,7 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(await screen.findByRole("button", { name: /Open transfer progress/ })).toBeVisible()
     expect(screen.queryByRole("button", { name: "Bridge to Base" })).not.toBeInTheDocument()
     expect(screen.getByRole("textbox", { name: "You send" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "MAX" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Reverse bridge direction" })).toBeDisabled()
     expect(await screen.findByText("Continue from the transfer progress window to confirm the Base mint transaction.")).toBeVisible()
   })

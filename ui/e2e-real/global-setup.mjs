@@ -242,7 +242,7 @@ async function setup() {
       deposit_rate_limit_window_seconds: 60n,
       deposit_rate_limit_global: 30,
       deposit_rate_limit_per_principal: 3,
-      notification_rate_limit_window_seconds: 600n,
+      notification_rate_limit_window_seconds: 60n,
       notification_rate_limit_global: 60,
       notification_ingestion_rate_limit_global: 30,
       settlement_rate_limit_window_seconds: 600n,
@@ -320,7 +320,6 @@ async function setup() {
 
   const gatewayPort = await pic.client.startHttpGateway()
   resources.gatewayClient = pic.client
-  await startProgressLoop(pic)
   const profileValues = {
     gatewayPort,
     ledgerId: ledgerId.toText(),
@@ -504,7 +503,7 @@ async function setup() {
     if (!("Ok" in schedule)) throw new Error(`Control-plane rotation schedule failed: ${json(schedule.Err)}`)
     const scheduleConfirmed = await confirmSigned(schedule.Ok)
     if (!("Ok" in scheduleConfirmed)) throw new Error(`Control-plane rotation schedule confirmation failed: ${json(scheduleConfirmed.Err)}`)
-    await pic.advanceTime(600_001)
+    await pic.advanceCertifiedTime(60_001)
     await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
     await rpc("evm_mine", [])
     const execute = await bridge.actor.prepare_base_governance_action({ ExecuteControlPlaneRotation: null })
@@ -594,7 +593,7 @@ async function setup() {
   if (!("Ok" in secondScheduleConfirmed)) throw new Error(`Second activation schedule confirmation failed: ${json(secondScheduleConfirmed.Err)}`)
   // The protected verification lane intentionally admits at most six calls per
   // notification window. Continue the long control-plane scenario in the next window.
-  await pic.advanceTime(600_001)
+  await pic.advanceCertifiedTime(60_001)
   await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const secondExecuteSubmitted = await bridge.actor.execute_activation()
@@ -651,6 +650,7 @@ async function setup() {
     activation: resources.activationFacts,
     state_upgrade: false,
   })
+  await startProgressLoop(pic)
   const control = createServer(async (request, response) => {
     response.setHeader("access-control-allow-origin", `http://127.0.0.1:${uiPort}`)
     response.setHeader("access-control-allow-headers", "content-type")
