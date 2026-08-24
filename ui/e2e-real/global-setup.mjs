@@ -162,12 +162,22 @@ async function setup() {
     "key_1",
     [new TextEncoder().encode("governance-operator")],
   ))
+  const independentCanceller = bytesHex(await signerProbe.derive_chain_key_address(
+    bridgeId,
+    "key_1",
+    [
+      new TextEncoder().encode("governance-operator"),
+      new TextEncoder().encode("KINIC-INDEPENDENT-CANCELLER-V1"),
+    ],
+  ))
+  const configuredRoleSigners = await mock.actor.set_deployment_role_signers_for_canister(bridgeId, "key_1")
+  if (!("Ok" in configuredRoleSigners)) throw new Error(`Failed to configure deployment role signers: ${configuredRoleSigners.Err}`)
   await rpc("anvil_setBalance", [governanceOperator, "0x8ac7230489e80000"])
   if (BigInt(await rpc("eth_getBalance", [governanceOperator, "latest"])) === 0n) throw new Error("Failed to fund the PocketIC governance operator")
 
-  const timelockAddress = deployTimelock(governanceOperator)
+  const timelockAddress = deployTimelock(governanceOperator, independentCanceller)
   resources.timelockAddress = timelockAddress
-  const bridgeAddress = deployBridge(signer, governanceOperator, timelockAddress)
+  const bridgeAddress = deployBridge(signer, governanceOperator, timelockAddress, independentCanceller)
   const bsnsAddress = execFileSync("cast", ["call", bridgeAddress, "bsns()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   const deploymentBlock = await publicClient.getBlockNumber()
   const bridgeCode = await publicClient.getCode({ address: bridgeAddress })
@@ -857,14 +867,14 @@ function buildWasm() {
   execFileSync("cargo", ["build", "--target", "wasm32-unknown-unknown", "--release", "-p", "mock-external"], { cwd: root, stdio: "inherit" })
 }
 
-function deployTimelock(governanceOperator) {
+function deployTimelock(governanceOperator, independentCanceller) {
   const output = execFileSync("forge", [
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast",
     "src/BridgeTimelockController.sol:BridgeTimelockController", "--constructor-args",
     String(ACTIVATION_DELAY_SECONDS),
     `[${governanceOperator}]`,
-    `[${governanceOperator}]`,
+    `[${independentCanceller}]`,
     `[${governanceOperator}]`,
   ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
@@ -872,7 +882,7 @@ function deployTimelock(governanceOperator) {
   return match[1]
 }
 
-function deployBridge(signer, governanceOperator, timelockAddress) {
+function deployBridge(signer, governanceOperator, timelockAddress, independentCanceller) {
   const timelockCodeHash = execFileSync(
     "cast", ["codehash", timelockAddress, "--rpc-url", rpcUrl], { encoding: "utf8" },
   ).trim()
@@ -880,26 +890,29 @@ function deployBridge(signer, governanceOperator, timelockAddress) {
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast", "src/Bridge.sol:Bridge", "--constructor-args",
     signer, governanceOperator, timelockAddress, timelockCodeHash,
-    "1000000000000", "10000000000000", "3600", "100000000", "1000000",
+    "1000000000000", "10000000000000", "3600", "10000", "100000000", "1000000",
   ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Bridge deployment:\n${output}`)
-  assertFrozenCanisterRoles(match[1], timelockAddress, governanceOperator)
+  assertFrozenCanisterRoles(match[1], timelockAddress, governanceOperator, independentCanceller)
   return match[1]
 }
 
-function assertFrozenCanisterRoles(bridgeAddress, timelockAddress, governanceOperator) {
+function assertFrozenCanisterRoles(bridgeAddress, timelockAddress, governanceOperator, independentCanceller) {
   const runtime = execFileSync("cast", ["call", bridgeAddress, "runtimeAdministrator()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   if (runtime.toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge runtime administrator is not the canister governance operator")
-  for (const role of [
-    execFileSync("cast", ["call", timelockAddress, "PROPOSER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim(),
-    execFileSync("cast", ["call", timelockAddress, "EXECUTOR_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim(),
-    execFileSync("cast", ["call", timelockAddress, "CANCELLER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim(),
-  ]) {
+  const proposerRole = execFileSync("cast", ["call", timelockAddress, "PROPOSER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const executorRole = execFileSync("cast", ["call", timelockAddress, "EXECUTOR_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const cancellerRole = execFileSync("cast", ["call", timelockAddress, "CANCELLER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  for (const role of [proposerRole, executorRole]) {
     const operatorHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, governanceOperator, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
     const deployerHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, deployer, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-    if (operatorHasRole !== "true" || deployerHasRole !== "false") throw new Error("Timelock role set is not canister-only")
+    if (operatorHasRole !== "true" || deployerHasRole !== "false") throw new Error("Timelock operational role set is not canister-only")
   }
+  const cancellerHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, independentCanceller, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const operatorCanCancel = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, governanceOperator, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const deployerCanCancel = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, deployer, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  if (cancellerHasRole !== "true" || operatorCanCancel !== "false" || deployerCanCancel !== "false") throw new Error("Timelock canceller role is not independently controlled")
 }
 
 function sendAsTimelock(target, signature, ...args) {
