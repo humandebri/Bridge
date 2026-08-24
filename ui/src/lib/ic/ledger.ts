@@ -6,6 +6,7 @@ export interface LedgerAccount { owner: Principal; subaccount: [] | [Uint8Array]
 export interface LedgerAllowance { allowance: bigint; expires_at: [] | [bigint] }
 export interface LedgerActor {
   icrc1_balance_of(account: LedgerAccount): Promise<bigint>
+  icrc1_fee(): Promise<bigint>
   icrc1_name(): Promise<string>
   icrc1_decimals(): Promise<number>
   icrc1_symbol(): Promise<string>
@@ -41,6 +42,7 @@ export async function createLedgerActor(host: string, canisterId: string): Promi
   const readMetadata = async () => metadata ??= await ledger.metadata({ certified: false })
   return {
     icrc1_balance_of: (value) => ledger.balance({ ...balanceAccount(value), certified: false }),
+    icrc1_fee: () => ledger.transactionFee({ certified: false }),
     icrc1_name: async () => metadataText(await readMetadata(), "icrc1:name"),
     icrc1_decimals: async () => metadataNat(await readMetadata(), "icrc1:decimals"),
     icrc1_symbol: async () => metadataText(await readMetadata(), "icrc1:symbol"),

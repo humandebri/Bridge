@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   balance: vi.fn(),
   metadata: vi.fn(),
   allowance: vi.fn(),
+  transactionFee: vi.fn(),
   ledgerId: vi.fn(),
   status: vi.fn(),
 }))
@@ -24,17 +25,19 @@ describe("official ICRC adapters", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.createAgent.mockResolvedValue({})
-    mocks.ledgerCreate.mockReturnValue({ balance: mocks.balance, metadata: mocks.metadata, allowance: mocks.allowance })
+    mocks.ledgerCreate.mockReturnValue({ balance: mocks.balance, metadata: mocks.metadata, allowance: mocks.allowance, transactionFee: mocks.transactionFee })
     mocks.indexCreate.mockReturnValue({ ledgerId: mocks.ledgerId, status: mocks.status })
     mocks.metadata.mockResolvedValue([["icrc1:name", { Text: "KINIC" }], ["icrc1:symbol", { Text: "KINIC" }], ["icrc1:decimals", { Nat: 8n }]])
     mocks.balance.mockResolvedValue(12n)
     mocks.allowance.mockResolvedValue({ allowance: 7n, expires_at: [] })
+    mocks.transactionFee.mockResolvedValue(10n)
   })
 
   it("adapts ledger amounts, metadata, and allowance", async () => {
     const ledger = await createLedgerActor("http://127.0.0.1:4943", "aaaaa-aa")
     const owner = ledgerAccount("aaaaa-aa")
     expect(await ledger.icrc1_balance_of(owner)).toBe(12n)
+    expect(await ledger.icrc1_fee()).toBe(10n)
     expect(await ledger.icrc1_name()).toBe("KINIC")
     expect(await ledger.icrc1_symbol()).toBe("KINIC")
     expect(await ledger.icrc1_decimals()).toBe(8)

@@ -50,7 +50,7 @@ profileはCanisterから導出してBaseのFinalized attestationと照合するM
 
 Gate Aはpre-deploy profileとBridge/BSNSの5 build artifact、合計6 artifactを束縛する。Gate BはこれらへRPC rehearsal、handover、SNS upgrade、monitor/keeper、fee/cycles、provider independence、UI、Gate A receiptの10 artifactを加えた正確に16 artifactである。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
 
-`validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、PublicConfig、reserve、SNS upgrade proposal、Root-only controller、live module hashを認証済みCanister応答で照合する。認証またはpostconditionが欠ければ非ゼロ終了する。
+`validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、公開RuntimeBinding、reserve、SNS upgrade proposal、Root-only controller、live module hashを認証済みCanister応答で照合する。権限principal、rate/cycles policy、Governance fee、固定Ledger feeは、公開RuntimeBindingの`operational_config_sha256`をrelease profileから再構成した値と照合する。実値の確認はcontroller/governance限定`get_operational_config`を使う。認証またはpostconditionが欠ければ非ゼロ終了する。
 
 credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
 
@@ -58,9 +58,9 @@ credential、seed、private key、hardware wallet backup、credential入りRPC U
 
 Plan 007のIC stagingで新規作成またはinstallするCanisterは`sepolia-staging`環境の`bridge-sepolia`だけとする。test tokenには既存の共有`testicrc` Canisterを再利用し、staging専用LedgerまたはIndex Canisterを新規作成しない。`testicrc`の実Canister IDとmetadataは外部配置前にlive状態から確認し、Bridge初期化値と`frontend-profile.json`へ固定する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。`rlhjx-iyaaa-aaaaf-qcnyq-cai`は未配置の旧production候補からstaging専用Bridgeへ再分類し、production mappingから除外する。KINIC Ledger、Base Mainnet、SNSには触れない。
 
-外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh`をclean commitで実行し、`deployments/sepolia-staging/evidence/local-e2e.json`を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
+外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`をclean commitで実行し、repo外へ証跡を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
-外部stageのschema v7証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証でき、`EXTENDED_COMPLETE`には実wallet matrix、10件のRPC rehearsal、同一Wasm upgrade、Base/ICのfinal pause、pending settlement/Timelockゼロが必要である。この詳細完了はproduction activationをblockしない。Gate BはRPC rehearsalの主要5件による`LAUNCH_READY`だけを要求する。現行staging driverはreview済みstable schema v34からv35への一方向migration、または適用済みv35の同値再検証だけを受理する。reinstall、異なるinstance、v33以前または未知のschema、未登録形状はfail closedにする。
+外部stageのschema v7証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証でき、`EXTENDED_COMPLETE`には実wallet matrix、10件のRPC rehearsal、同一Wasm upgrade、Base/ICのfinal pause、pending settlement/Timelockゼロが必要である。この詳細完了はproduction activationをblockしない。Gate BはRPC rehearsalの主要5件による`LAUNCH_READY`だけを要求する。現行same-schema driverはreview済みstable schema v35の旧公開設定APIから新runtime binding APIへの置換、または適用済みtargetの同値再検証だけを受理する。reinstall、異なるinstance、v34以前または未知のschema、未登録形状はfail closedにする。
 
 新規作成するstaging Bridge Canister IDだけを`.icp/data/mappings/sepolia-staging.ids.json`へ保存する。既存`testicrc`を新規作成対象としてmappingへ追加しない。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`の`pnpm run deploy:test`でCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
 

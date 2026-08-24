@@ -135,6 +135,24 @@ export function useCurrentBaseQuote(options: AutomaticQueryOptions = {}) {
   })
 }
 
+export function useFinalizedBaseClock(options: AutomaticQueryOptions = {}) {
+  const { enabled = false, refetchInterval, staleTime } = options
+  return useQuery({
+    queryKey: ["finalized-base-clock", deploymentProfile.bridgeAddress],
+    enabled,
+    staleTime,
+    refetchInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: refetchInterval !== undefined,
+    refetchOnReconnect: refetchInterval !== undefined,
+    queryFn: async () => {
+      const block = await basePublicClient.getBlock({ blockTag: "finalized" })
+      if (block.timestamp === undefined) throw new Error("Finalized Base time is unavailable")
+      return { timestamp: block.timestamp }
+    },
+  })
+}
+
 function bridgeSnapshotView(snapshot: {
   serviceFee: bigint
   maxServiceFee: bigint
@@ -159,5 +177,6 @@ function bridgeSnapshotView(snapshot: {
     depositsPaused: snapshot.depositMintsPaused,
     withdrawalsPaused: snapshot.withdrawalsPaused,
     bridgeSigner: snapshot.bridgeSigner,
+    blockTimestamp: snapshot.blockTimestamp,
   }
 }

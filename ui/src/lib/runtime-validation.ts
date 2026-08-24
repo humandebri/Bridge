@@ -239,7 +239,7 @@ export async function validateRuntime(profile: DeploymentProfile, connectedChain
     createLedgerActor(profile.icHost, profile.ledgerCanisterId as string),
   ])
   const [config, status, ledgerName, ledgerSymbol, ledgerDecimals, localChainId, localFinalized] = await Promise.all([
-    bridge.get_public_config(),
+    bridge.get_runtime_binding(),
     bridge.get_bridge_status(),
     ledger.icrc1_name(),
     ledger.icrc1_symbol(),

@@ -100,7 +100,7 @@ pub struct ReserveStatus {
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct PublicConfig {
+pub struct RuntimeBinding {
     pub base_chain_id: u64,
     pub bridge_contract: Vec<u8>,
     pub expected_bridge_runtime_sha256: Vec<u8>,
@@ -108,15 +108,19 @@ pub struct PublicConfig {
     pub deployment_instance_id: Vec<u8>,
     pub minimum_withdrawal_id: Vec<u8>,
     pub ledger_canister_id: candid::Principal,
-    pub ledger_fee: u128,
     pub index_canister_id: candid::Principal,
     pub schema_version: u16,
-    pub mint_authorization_ttl_seconds: u64,
-    pub mint_authorization_epoch: u64,
     pub expected_bridge_signer: Vec<u8>,
-    pub governance_operator: Vec<u8>,
     pub evm_rpc_canister_id: candid::Principal,
     pub rpc_provider_urls_sha256: Vec<u8>,
+    pub operational_config_sha256: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OperationalConfig {
+    pub mint_authorization_ttl_seconds: u64,
+    pub mint_authorization_epoch: u64,
+    pub governance_operator: Vec<u8>,
     pub deposit_rate_limit_window_seconds: u64,
     pub deposit_rate_limit_global: u16,
     pub deposit_rate_limit_per_principal: u16,
@@ -136,6 +140,19 @@ pub struct PublicConfig {
     pub pause_principal: candid::Principal,
     pub confirmation_relayer_principal: candid::Principal,
     pub fee_recipient: config::FeeRecipientConfig,
+}
+
+#[derive(CandidType)]
+struct OperationalConfigBinding {
+    ledger_fee: u128,
+    operational_config: OperationalConfig,
+}
+
+const OPERATIONAL_CONFIG_BINDING_DOMAIN: &[u8] = b"KINIC_OPERATIONAL_CONFIG_BINDING_V1\0";
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationalConfigError {
+    Unauthorized,
 }
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -429,15 +446,38 @@ fn apply_staging_rpc_provider_update(
 }
 
 #[cfg(feature = "test-deployment")]
+fn validate_staging_upgrade_status_counts(
+    store: &StableStore,
+    args: &config::StagingUpgradeArgs,
+) -> Result<(), String> {
+    if args.status_counts_guard_version != 1 {
+        return Err("unsupported staging status count guard version".into());
+    }
+    let Some(expected) = args.expected_status_counts.as_ref() else {
+        return Ok(());
+    };
+    let counts = store
+        .status_counts()
+        .map_err(|error| format!("staging status count read failed: {error}"))?;
+    if !counts.matches_staging_expected_status_counts(expected) {
+        return Err("staging status counts do not match the reviewed preflight snapshot".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "test-deployment")]
 #[ic_cdk::post_upgrade(decode_with = "decode_staging_upgrade_args")]
 fn post_upgrade(args: config::StagingUpgradeArgs) {
     let mut store = storage_or_trap(
         "stable state reopen",
         StableStore::reopen_after_staging_upgrade(
             DefaultMemoryImpl::default(),
+            args.migration_id.as_deref(),
             args.confirmation_relayer_principal,
         ),
     );
+    validate_staging_upgrade_status_counts(&store, &args)
+        .unwrap_or_else(|error| ic_cdk::trap(error));
     apply_staging_rpc_provider_update(&mut store, &args)
         .unwrap_or_else(|error| ic_cdk::trap(error));
     finish_post_upgrade(store);
@@ -1453,24 +1493,16 @@ async fn initialize_public_config() -> Result<(), PublicConfigInitializationErro
 }
 
 #[ic_cdk::query]
-fn get_public_config() -> PublicConfig {
-    let (config, admin) = STORE.with(|store| {
+fn get_runtime_binding() -> RuntimeBinding {
+    let config = STORE.with(|store| {
         let store = store.borrow();
-        let config = storage_or_trap("configuration read", store.config())
-            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
-        let admin = storage_or_trap("administrator state read", store.admin_state());
-        (config, admin)
+        storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"))
     });
-    let (expected_bridge_signer, governance_operator) = STORE.with(|store| {
+    let expected_bridge_signer = STORE.with(|store| {
         let store = store.borrow();
-        let expected_bridge_signer = storage_or_trap("signer address read", store.signer_address())
-            .unwrap_or_else(|| ic_cdk::trap("public configuration is not initialized"));
-        let governance_operator = storage_or_trap(
-            "governance operator address read",
-            store.governance_operator_address(),
-        )
-        .unwrap_or_else(|| ic_cdk::trap("public configuration is not initialized"));
-        (expected_bridge_signer, governance_operator)
+        storage_or_trap("signer address read", store.signer_address())
+            .unwrap_or_else(|| ic_cdk::trap("runtime binding is not initialized"))
     });
     let normalized_rpc_urls = config
         .custom_evm_rpc_urls
@@ -1482,9 +1514,10 @@ fn get_public_config() -> PublicConfig {
             .unwrap_or_else(|_| ic_cdk::trap("RPC URL digest serialization failed")),
     )
     .to_vec();
+    let operational_config_sha256 = operational_config_sha256(&current_operational_config());
     STORE.with(|store| {
         let store = store.borrow();
-        PublicConfig {
+        RuntimeBinding {
             base_chain_id: config.base_chain_id,
             bridge_contract: config.bridge_contract,
             expected_bridge_runtime_sha256: config.expected_bridge_runtime_sha256,
@@ -1492,40 +1525,83 @@ fn get_public_config() -> PublicConfig {
             deployment_instance_id: config.deployment_instance_id,
             minimum_withdrawal_id: config.minimum_withdrawal_id,
             ledger_canister_id: config.ledger_canister_id,
-            ledger_fee: ledger::KINIC_LEDGER_FEE.get(),
             index_canister_id: config.index_canister_id,
             schema_version: store.schema_version(),
-            mint_authorization_ttl_seconds: bridge_core::MINT_AUTHORIZATION_TTL_SECONDS,
-            mint_authorization_epoch: storage_or_trap(
-                "mint authorization epoch read",
-                store.current_mint_authorization_epoch(),
-            ),
             expected_bridge_signer: Vec::from(expected_bridge_signer),
-            governance_operator: Vec::from(governance_operator),
             evm_rpc_canister_id: config.evm_rpc_canister_id,
             rpc_provider_urls_sha256,
-            deposit_rate_limit_window_seconds: config.deposit_rate_limit_window_seconds,
-            deposit_rate_limit_global: config.deposit_rate_limit_global,
-            deposit_rate_limit_per_principal: config.deposit_rate_limit_per_principal,
-            notification_rate_limit_window_seconds: config.notification_rate_limit_window_seconds,
-            notification_rate_limit_global: config.notification_rate_limit_global,
-            notification_ingestion_rate_limit_global: config
-                .notification_ingestion_rate_limit_global,
-            settlement_rate_limit_window_seconds: config.settlement_rate_limit_window_seconds,
-            settlement_rate_limit_global: config.settlement_rate_limit_global,
-            settlement_rate_limit_per_principal: config.settlement_rate_limit_per_principal,
-            settlement_rate_limit_per_record: config.settlement_rate_limit_per_record,
-            settlement_retry_interval_seconds: config.settlement_retry_interval_seconds,
-            governance_evm_fee: config.governance_evm_fee,
-            governance_replacement: config.governance_replacement,
-            cycles_floor: config.cycles_floor,
-            settlement_cycle_ceiling: config.settlement_cycle_ceiling,
-            governance_principal: admin.governance_principal,
-            pause_principal: admin.pause_principal,
-            confirmation_relayer_principal: config.confirmation_relayer_principal,
-            fee_recipient: admin.fee_recipient,
+            operational_config_sha256,
         }
     })
+}
+
+fn current_operational_config() -> OperationalConfig {
+    let (config, admin) = STORE.with(|store| {
+        let store = store.borrow();
+        let config = storage_or_trap("configuration read", store.config())
+            .unwrap_or_else(|| ic_cdk::trap("missing configuration"));
+        let admin = storage_or_trap("administrator state read", store.admin_state());
+        (config, admin)
+    });
+    let governance_operator = STORE.with(|store| {
+        storage_or_trap(
+            "governance operator address read",
+            store.borrow().governance_operator_address(),
+        )
+        .unwrap_or_else(|| ic_cdk::trap("operational configuration is not initialized"))
+    });
+    STORE.with(|store| OperationalConfig {
+        mint_authorization_ttl_seconds: bridge_core::MINT_AUTHORIZATION_TTL_SECONDS,
+        mint_authorization_epoch: storage_or_trap(
+            "mint authorization epoch read",
+            store.borrow().current_mint_authorization_epoch(),
+        ),
+        governance_operator: Vec::from(governance_operator),
+        deposit_rate_limit_window_seconds: config.deposit_rate_limit_window_seconds,
+        deposit_rate_limit_global: config.deposit_rate_limit_global,
+        deposit_rate_limit_per_principal: config.deposit_rate_limit_per_principal,
+        notification_rate_limit_window_seconds: config.notification_rate_limit_window_seconds,
+        notification_rate_limit_global: config.notification_rate_limit_global,
+        notification_ingestion_rate_limit_global: config.notification_ingestion_rate_limit_global,
+        settlement_rate_limit_window_seconds: config.settlement_rate_limit_window_seconds,
+        settlement_rate_limit_global: config.settlement_rate_limit_global,
+        settlement_rate_limit_per_principal: config.settlement_rate_limit_per_principal,
+        settlement_rate_limit_per_record: config.settlement_rate_limit_per_record,
+        settlement_retry_interval_seconds: config.settlement_retry_interval_seconds,
+        governance_evm_fee: config.governance_evm_fee,
+        governance_replacement: config.governance_replacement,
+        cycles_floor: config.cycles_floor,
+        settlement_cycle_ceiling: config.settlement_cycle_ceiling,
+        governance_principal: admin.governance_principal,
+        pause_principal: admin.pause_principal,
+        confirmation_relayer_principal: config.confirmation_relayer_principal,
+        fee_recipient: admin.fee_recipient,
+    })
+}
+
+fn operational_config_sha256(config: &OperationalConfig) -> Vec<u8> {
+    let binding = OperationalConfigBinding {
+        ledger_fee: ledger::KINIC_LEDGER_FEE.get(),
+        operational_config: config.clone(),
+    };
+    let encoded = candid::encode_one(binding).unwrap_or_else(|error| {
+        ic_cdk::trap(format!("operational config encoding failed: {error}"))
+    });
+    let mut digest = Sha256::new();
+    digest.update(OPERATIONAL_CONFIG_BINDING_DOMAIN);
+    digest.update(encoded);
+    digest.finalize().to_vec()
+}
+
+#[ic_cdk::query]
+fn get_operational_config() -> Result<OperationalConfig, OperationalConfigError> {
+    let caller = ic_cdk::api::msg_caller();
+    if caller == candid::Principal::anonymous()
+        || (!ic_cdk::api::is_controller(&caller) && !admin::is_governance(caller).unwrap_or(false))
+    {
+        return Err(OperationalConfigError::Unauthorized);
+    }
+    Ok(current_operational_config())
 }
 
 #[ic_cdk::update]
@@ -1761,6 +1837,61 @@ mod candid_tests {
         NOTIFICATION_CALLER_ADMISSION,
     };
 
+    #[cfg(not(feature = "test-deployment"))]
+    #[test]
+    fn operational_config_binding_matches_the_release_profile_vector() {
+        let mut governance_operator = vec![0; 20];
+        governance_operator[19] = 3;
+        let config = super::OperationalConfig {
+            mint_authorization_ttl_seconds: 900,
+            mint_authorization_epoch: 7,
+            governance_operator,
+            deposit_rate_limit_window_seconds: 60,
+            deposit_rate_limit_global: 30,
+            deposit_rate_limit_per_principal: 3,
+            notification_rate_limit_window_seconds: 600,
+            notification_rate_limit_global: 60,
+            notification_ingestion_rate_limit_global: 30,
+            settlement_rate_limit_window_seconds: 600,
+            settlement_rate_limit_global: 60,
+            settlement_rate_limit_per_principal: 6,
+            settlement_rate_limit_per_record: 3,
+            settlement_retry_interval_seconds: 60,
+            governance_evm_fee: super::config::EvmFeePolicy {
+                gas_limit_ceiling: 100_000,
+                max_fee_per_gas_ceiling: 200,
+                max_priority_fee_per_gas_ceiling: 10,
+                l1_fee_per_transaction_ceiling_wei: 100,
+                quote_validity_seconds: 90,
+                gas_limit_multiplier_bps: 13_000,
+                base_fee_multiplier_bps: 60_000,
+                l1_fee_multiplier_bps: 15_000,
+            },
+            governance_replacement: super::config::GovernanceReplacementPolicy {
+                max_replacements: 3,
+                fee_bump_bps: 1_250,
+            },
+            cycles_floor: 1,
+            settlement_cycle_ceiling: 1,
+            governance_principal: candid::Principal::from_text("74ncn-fqaaa-aaaaq-aaasa-cai")
+                .unwrap(),
+            pause_principal: candid::Principal::self_authenticating([2; 32]),
+            confirmation_relayer_principal: candid::Principal::self_authenticating([8; 32]),
+            fee_recipient: super::config::FeeRecipientConfig {
+                owner: candid::Principal::self_authenticating([4; 32]),
+                subaccount: Vec::new(),
+            },
+        };
+        assert_eq!(
+            super::operational_config_sha256(&config),
+            [
+                0x5b, 0x28, 0xcf, 0x27, 0x02, 0x43, 0xb8, 0x4d, 0xd4, 0x1c, 0xb1, 0x89, 0x18, 0xf7,
+                0x9d, 0x0e, 0x44, 0x57, 0xc1, 0x08, 0x52, 0xbd, 0x6f, 0xa8, 0xb8, 0x66, 0x43, 0x1e,
+                0x67, 0xd7, 0xfa, 0x48,
+            ]
+        );
+    }
+
     #[cfg(feature = "test-deployment")]
     #[test]
     fn staging_upgrade_decoder_accepts_empty_and_guarded_rpc_update_args() {
@@ -1771,7 +1902,19 @@ mod candid_tests {
         );
 
         let expected = super::config::StagingUpgradeArgs {
+            migration_id: None,
             status_counts_guard_version: 1,
+            expected_status_counts: Some(super::config::StagingExpectedStatusCounts {
+                retained_audit_events: 11,
+                reconciliation_holds: 12,
+                retained_deposit_index_entries: 13,
+                pending_ledger_operations: 14,
+                withdrawals: 15,
+                deposits: 16,
+                reserved_deposit_mint_operations: 17,
+                reserved_deposit_mint_amount: 18,
+                pruned_audit_events: 19,
+            }),
             minimum_withdrawal_id: None,
             confirmation_relayer_principal: Some(candid::Principal::from_slice(&[9])),
             rpc_provider_update: Some(super::config::StagingRpcProviderUpdate {
@@ -1836,7 +1979,9 @@ mod candid_tests {
         assert!(!generated.contains("refresh_base_observation"));
         assert!(!generated.contains("resume_new_deposits"));
         let normalized = normalize(&generated);
-        assert!(normalized.contains("get_public_config:()->(PublicConfig)query;"));
+        assert!(normalized.contains("get_runtime_binding:()->(RuntimeBinding)query;"));
+        assert!(normalized.contains("get_operational_config:()->("));
+        assert!(!normalized.contains("get_public_config"));
         assert!(normalized.contains("initialize_public_config:()->("));
     }
 

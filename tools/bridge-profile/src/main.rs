@@ -343,7 +343,7 @@ struct GateAReceipt {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct LivePublicConfig {
+struct LiveRuntimeBinding {
     base_chain_id: u64,
     bridge_contract: String,
     timelock_contract: String,
@@ -353,37 +353,9 @@ struct LivePublicConfig {
     index_canister_id: String,
     schema_version: u16,
     expected_bridge_signer: String,
-    governance_operator: String,
     evm_rpc_canister_id: String,
     rpc_provider_urls_sha256: String,
-    deposit_rate_limit_window_seconds: u64,
-    deposit_rate_limit_global: u16,
-    deposit_rate_limit_per_principal: u16,
-    notification_rate_limit_window_seconds: u64,
-    notification_rate_limit_global: u16,
-    notification_ingestion_rate_limit_global: u16,
-    settlement_rate_limit_window_seconds: u64,
-    settlement_rate_limit_global: u16,
-    settlement_rate_limit_per_principal: u16,
-    settlement_rate_limit_per_record: u16,
-    settlement_retry_interval_seconds: u64,
-    governance_evm_fee: EvmFeePolicy,
-    governance_replacement: GovernanceReplacementPolicy,
-    #[serde(with = "u128_string")]
-    cycles_floor: u128,
-    #[serde(with = "u128_string")]
-    settlement_cycle_ceiling: u128,
-    governance_principal: String,
-    confirmation_relayer_principal: String,
-    pause_principal: String,
-    fee_recipient: LiveFeeRecipient,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct LiveFeeRecipient {
-    owner: String,
-    subaccount_hex: String,
+    operational_config_sha256: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -792,13 +764,7 @@ enum ActivationAttestationResultView {
 }
 
 #[derive(CandidType, Deserialize)]
-struct PublicFeeRecipientView {
-    owner: Principal,
-    subaccount: Vec<u8>,
-}
-
-#[derive(CandidType, Deserialize)]
-struct PublicConfigView {
+struct RuntimeBindingView {
     base_chain_id: u64,
     bridge_contract: Vec<u8>,
     expected_bridge_runtime_sha256: Vec<u8>,
@@ -806,13 +772,25 @@ struct PublicConfigView {
     deployment_instance_id: Vec<u8>,
     minimum_withdrawal_id: Vec<u8>,
     ledger_canister_id: Principal,
-    ledger_fee: u128,
     index_canister_id: Principal,
     schema_version: u16,
     expected_bridge_signer: Vec<u8>,
-    governance_operator: Vec<u8>,
     evm_rpc_canister_id: Principal,
     rpc_provider_urls_sha256: Vec<u8>,
+    operational_config_sha256: Vec<u8>,
+}
+
+#[derive(CandidType)]
+struct OperationalConfigBindingView {
+    ledger_fee: u128,
+    operational_config: OperationalConfigView,
+}
+
+#[derive(CandidType)]
+struct OperationalConfigView {
+    mint_authorization_ttl_seconds: u64,
+    mint_authorization_epoch: u64,
+    governance_operator: Vec<u8>,
     deposit_rate_limit_window_seconds: u64,
     deposit_rate_limit_global: u16,
     deposit_rate_limit_per_principal: u16,
@@ -829,10 +807,18 @@ struct PublicConfigView {
     cycles_floor: u128,
     settlement_cycle_ceiling: u128,
     governance_principal: Principal,
-    confirmation_relayer_principal: Principal,
     pause_principal: Principal,
-    fee_recipient: PublicFeeRecipientView,
+    confirmation_relayer_principal: Principal,
+    fee_recipient: OperationalFeeRecipientView,
 }
+
+#[derive(CandidType)]
+struct OperationalFeeRecipientView {
+    owner: Principal,
+    subaccount: Vec<u8>,
+}
+
+const OPERATIONAL_CONFIG_BINDING_DOMAIN: &[u8] = b"KINIC_OPERATIONAL_CONFIG_BINDING_V1\0";
 
 #[derive(CandidType, Deserialize)]
 struct ReserveStatusView {
@@ -843,6 +829,8 @@ struct ReserveStatusView {
 struct BridgeStatusLiveView {
     reserve: ReserveStatusView,
     deposits_paused: bool,
+    mint_authorization_ttl_seconds: u64,
+    mint_authorization_epoch: u64,
 }
 
 #[derive(CandidType, Deserialize)]
@@ -2479,13 +2467,12 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     })
 }
 
-fn validate_live_public_config(
-    observed: &LivePublicConfig,
+fn validate_live_runtime_binding(
+    observed: &LiveRuntimeBinding,
     profile: &Profile,
     rpc_url_hash: &str,
+    operational_config_sha256: &[u8],
 ) -> Result<(), String> {
-    let p = &profile.parameters;
-    let r = &profile.rate_limits;
     if observed.base_chain_id != profile.chain_id
         || !observed
             .bridge_contract
@@ -2505,37 +2492,69 @@ fn validate_live_public_config(
         || !observed
             .expected_bridge_signer
             .eq_ignore_ascii_case(&profile.expected_bridge_signer)
-        || !observed
-            .governance_operator
-            .eq_ignore_ascii_case(&profile.governance_operator)
         || observed.evm_rpc_canister_id != profile.evm_rpc_canister_id
         || !observed
             .rpc_provider_urls_sha256
             .eq_ignore_ascii_case(rpc_url_hash)
-        || observed.deposit_rate_limit_window_seconds != r.deposit_window_seconds
-        || observed.deposit_rate_limit_global != r.deposit_global
-        || observed.deposit_rate_limit_per_principal != r.deposit_per_principal
-        || observed.notification_rate_limit_window_seconds != r.notification_window_seconds
-        || observed.notification_rate_limit_global != r.notification_global
-        || observed.notification_ingestion_rate_limit_global != r.notification_ingestion_global
-        || observed.settlement_rate_limit_window_seconds != r.settlement_window_seconds
-        || observed.settlement_rate_limit_global != r.settlement_global
-        || observed.settlement_rate_limit_per_principal != r.settlement_per_principal
-        || observed.settlement_rate_limit_per_record != r.settlement_per_record
-        || observed.settlement_retry_interval_seconds != r.settlement_retry_interval_seconds
-        || observed.governance_evm_fee != p.governance_evm_fee()
-        || observed.governance_replacement != profile.governance_replacement
-        || observed.cycles_floor != p.cycles_floor
-        || observed.settlement_cycle_ceiling != p.settlement_cycle_ceiling
-        || observed.governance_principal != profile.governance_principal
-        || observed.confirmation_relayer_principal != profile.confirmation_relayer_principal
-        || observed.pause_principal != profile.pause_principal
-        || observed.fee_recipient.owner != profile.fee_recipient
-        || !observed.fee_recipient.subaccount_hex.is_empty()
+        || !observed
+            .operational_config_sha256
+            .eq_ignore_ascii_case(&hex(operational_config_sha256))
     {
-        return Err("live Canister PublicConfig does not exactly match the profile".into());
+        return Err("live Canister RuntimeBinding does not exactly match the profile".into());
     }
     Ok(())
+}
+
+fn expected_operational_config_sha256(
+    profile: &Profile,
+    mint_authorization_ttl_seconds: u64,
+    mint_authorization_epoch: u64,
+) -> Result<[u8; 32], String> {
+    let binding = OperationalConfigBindingView {
+        ledger_fee: profile.parameters.ledger_fee,
+        operational_config: OperationalConfigView {
+            mint_authorization_ttl_seconds,
+            mint_authorization_epoch,
+            governance_operator: decode_hex(&profile.governance_operator)?,
+            deposit_rate_limit_window_seconds: profile.rate_limits.deposit_window_seconds,
+            deposit_rate_limit_global: profile.rate_limits.deposit_global,
+            deposit_rate_limit_per_principal: profile.rate_limits.deposit_per_principal,
+            notification_rate_limit_window_seconds: profile.rate_limits.notification_window_seconds,
+            notification_rate_limit_global: profile.rate_limits.notification_global,
+            notification_ingestion_rate_limit_global: profile
+                .rate_limits
+                .notification_ingestion_global,
+            settlement_rate_limit_window_seconds: profile.rate_limits.settlement_window_seconds,
+            settlement_rate_limit_global: profile.rate_limits.settlement_global,
+            settlement_rate_limit_per_principal: profile.rate_limits.settlement_per_principal,
+            settlement_rate_limit_per_record: profile.rate_limits.settlement_per_record,
+            settlement_retry_interval_seconds: profile
+                .rate_limits
+                .settlement_retry_interval_seconds,
+            governance_evm_fee: profile.parameters.governance_evm_fee(),
+            governance_replacement: profile.governance_replacement,
+            cycles_floor: profile.parameters.cycles_floor,
+            settlement_cycle_ceiling: profile.parameters.settlement_cycle_ceiling,
+            governance_principal: Principal::from_text(&profile.governance_principal)
+                .map_err(|error| error.to_string())?,
+            pause_principal: Principal::from_text(&profile.pause_principal)
+                .map_err(|error| error.to_string())?,
+            confirmation_relayer_principal: Principal::from_text(
+                &profile.confirmation_relayer_principal,
+            )
+            .map_err(|error| error.to_string())?,
+            fee_recipient: OperationalFeeRecipientView {
+                owner: Principal::from_text(&profile.fee_recipient)
+                    .map_err(|error| error.to_string())?,
+                subaccount: Vec::new(),
+            },
+        },
+    };
+    let encoded = Encode!(&binding).map_err(|error| error.to_string())?;
+    let mut digest = Sha256::new();
+    digest.update(OPERATIONAL_CONFIG_BINDING_DOMAIN);
+    digest.update(encoded);
+    Ok(digest.finalize().into())
 }
 
 fn verify_live_inputs(
@@ -2555,7 +2574,7 @@ fn verify_live_inputs(
     let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
     let (public_raw, status_raw) = async_runtime()?.block_on(async {
         let public = agent
-            .query(&bridge, "get_public_config")
+            .query(&bridge, "get_runtime_binding")
             .with_arg(Encode!().map_err(|error| error.to_string())?)
             .call_with_verification()
             .await
@@ -2568,9 +2587,9 @@ fn verify_live_inputs(
             .map_err(|error| error.to_string())?;
         Ok::<_, String>((public, status))
     })?;
-    let public = Decode!(&public_raw, PublicConfigView).map_err(|error| error.to_string())?;
+    let public = Decode!(&public_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
-    let observed = LivePublicConfig {
+    let observed = LiveRuntimeBinding {
         base_chain_id: public.base_chain_id,
         bridge_contract: format!("0x{}", hex(&public.bridge_contract)),
         timelock_contract: format!("0x{}", hex(&public.timelock_contract)),
@@ -2580,37 +2599,23 @@ fn verify_live_inputs(
         index_canister_id: public.index_canister_id.to_text(),
         schema_version: public.schema_version,
         expected_bridge_signer: format!("0x{}", hex(&public.expected_bridge_signer)),
-        governance_operator: format!("0x{}", hex(&public.governance_operator)),
         evm_rpc_canister_id: public.evm_rpc_canister_id.to_text(),
         rpc_provider_urls_sha256: hex(&public.rpc_provider_urls_sha256),
-        deposit_rate_limit_window_seconds: public.deposit_rate_limit_window_seconds,
-        deposit_rate_limit_global: public.deposit_rate_limit_global,
-        deposit_rate_limit_per_principal: public.deposit_rate_limit_per_principal,
-        notification_rate_limit_window_seconds: public.notification_rate_limit_window_seconds,
-        notification_rate_limit_global: public.notification_rate_limit_global,
-        notification_ingestion_rate_limit_global: public.notification_ingestion_rate_limit_global,
-        settlement_rate_limit_window_seconds: public.settlement_rate_limit_window_seconds,
-        settlement_rate_limit_global: public.settlement_rate_limit_global,
-        settlement_rate_limit_per_principal: public.settlement_rate_limit_per_principal,
-        settlement_rate_limit_per_record: public.settlement_rate_limit_per_record,
-        settlement_retry_interval_seconds: public.settlement_retry_interval_seconds,
-        governance_evm_fee: public.governance_evm_fee,
-        governance_replacement: public.governance_replacement,
-        cycles_floor: public.cycles_floor,
-        settlement_cycle_ceiling: public.settlement_cycle_ceiling,
-        governance_principal: public.governance_principal.to_text(),
-        confirmation_relayer_principal: public.confirmation_relayer_principal.to_text(),
-        pause_principal: public.pause_principal.to_text(),
-        fee_recipient: LiveFeeRecipient {
-            owner: public.fee_recipient.owner.to_text(),
-            subaccount_hex: hex(&public.fee_recipient.subaccount),
-        },
+        operational_config_sha256: hex(&public.operational_config_sha256),
     };
-    validate_live_public_config(&observed, &bundle.profile, &rpc_url_hash)?;
+    let operational_config_sha256 = expected_operational_config_sha256(
+        &bundle.profile,
+        status.mint_authorization_ttl_seconds,
+        status.mint_authorization_epoch,
+    )?;
+    validate_live_runtime_binding(
+        &observed,
+        &bundle.profile,
+        &rpc_url_hash,
+        &operational_config_sha256,
+    )?;
     if public.expected_bridge_runtime_sha256
         != decode_hex(&bundle.profile.bridge_runtime_bytecode_sha256)?
-        || public.ledger_fee != bundle.profile.parameters.ledger_fee
-        || public.ledger_fee > bundle.profile.parameters.service_fee
         || status.deposits_paused != expected_deposits_paused
         || !status.reserve.sufficient
     {
@@ -3670,7 +3675,7 @@ mod tests {
         }
     }
 
-    fn live_public_config(profile: &Profile) -> LivePublicConfig {
+    fn live_runtime_binding(profile: &Profile) -> LiveRuntimeBinding {
         let rpc_url_hash = hex(&canonical_sha256(
             &profile
                 .rpc_providers
@@ -3679,7 +3684,10 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .unwrap());
-        LivePublicConfig {
+        let operational_config_sha256 = expected_operational_config_sha256(profile, 900, 7)
+            .map(|digest| hex(&digest))
+            .unwrap();
+        LiveRuntimeBinding {
             base_chain_id: profile.chain_id,
             bridge_contract: profile.bridge_contract.clone(),
             timelock_contract: profile.timelock.address.clone(),
@@ -3689,40 +3697,14 @@ mod tests {
             index_canister_id: profile.index_canister_id.clone(),
             schema_version: profile.canister_schema_version,
             expected_bridge_signer: profile.expected_bridge_signer.clone(),
-            governance_operator: profile.governance_operator.clone(),
             evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
             rpc_provider_urls_sha256: rpc_url_hash,
-            deposit_rate_limit_window_seconds: profile.rate_limits.deposit_window_seconds,
-            deposit_rate_limit_global: profile.rate_limits.deposit_global,
-            deposit_rate_limit_per_principal: profile.rate_limits.deposit_per_principal,
-            notification_rate_limit_window_seconds: profile.rate_limits.notification_window_seconds,
-            notification_rate_limit_global: profile.rate_limits.notification_global,
-            notification_ingestion_rate_limit_global: profile
-                .rate_limits
-                .notification_ingestion_global,
-            settlement_rate_limit_window_seconds: profile.rate_limits.settlement_window_seconds,
-            settlement_rate_limit_global: profile.rate_limits.settlement_global,
-            settlement_rate_limit_per_principal: profile.rate_limits.settlement_per_principal,
-            settlement_rate_limit_per_record: profile.rate_limits.settlement_per_record,
-            settlement_retry_interval_seconds: profile
-                .rate_limits
-                .settlement_retry_interval_seconds,
-            governance_evm_fee: profile.parameters.governance_evm_fee(),
-            governance_replacement: profile.governance_replacement,
-            cycles_floor: profile.parameters.cycles_floor,
-            settlement_cycle_ceiling: profile.parameters.settlement_cycle_ceiling,
-            governance_principal: profile.governance_principal.clone(),
-            confirmation_relayer_principal: profile.confirmation_relayer_principal.clone(),
-            pause_principal: profile.pause_principal.clone(),
-            fee_recipient: LiveFeeRecipient {
-                owner: profile.fee_recipient.clone(),
-                subaccount_hex: String::new(),
-            },
+            operational_config_sha256,
         }
     }
 
     #[test]
-    fn live_public_config_must_exactly_match_the_profile() {
+    fn live_runtime_binding_must_exactly_match_the_profile() {
         let profile = valid_profile();
         let rpc_url_hash = hex(&canonical_sha256(
             &profile
@@ -3732,10 +3714,40 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .unwrap());
-        let mut observed = live_public_config(&profile);
-        assert!(validate_live_public_config(&observed, &profile, &rpc_url_hash).is_ok());
-        observed.notification_rate_limit_global -= 1;
-        assert!(validate_live_public_config(&observed, &profile, &rpc_url_hash).is_err());
+        let operational_config_sha256 =
+            expected_operational_config_sha256(&profile, 900, 7).unwrap();
+        let mut observed = live_runtime_binding(&profile);
+        assert!(validate_live_runtime_binding(
+            &observed,
+            &profile,
+            &rpc_url_hash,
+            &operational_config_sha256,
+        )
+        .is_ok());
+        observed.schema_version -= 1;
+        assert!(validate_live_runtime_binding(
+            &observed,
+            &profile,
+            &rpc_url_hash,
+            &operational_config_sha256,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn live_runtime_binding_rejects_operational_profile_drift() {
+        let mut profile = valid_profile();
+        assert_eq!(
+            hex(&expected_operational_config_sha256(&profile, 900, 7).unwrap()),
+            "5b28cf270243b84dd41cb18918f79d0e4457c10852bd6fa8b866431e67d7fa48"
+        );
+        let observed = live_runtime_binding(&profile);
+        let rpc_url_hash = observed.rpc_provider_urls_sha256.clone();
+        profile.rate_limits.notification_global -= 1;
+        let changed = expected_operational_config_sha256(&profile, 900, 7).unwrap();
+        assert!(
+            validate_live_runtime_binding(&observed, &profile, &rpc_url_hash, &changed).is_err()
+        );
     }
 
     #[test]

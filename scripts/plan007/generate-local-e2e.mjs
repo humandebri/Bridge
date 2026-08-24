@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 import { runtimeTemplateSha256FromFile } from "./runtime-template-hash.mjs"
 
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
-export const LOCAL_E2E_SCHEMA_VERSION = 7
+export const LOCAL_E2E_SCHEMA_VERSION = 8
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
 export const CURRENT_STABLE_SCHEMA_VERSION = 35
 
@@ -28,8 +28,10 @@ export function validateUpgradeEvidence(upgrade) {
   if (typeof state.status?.counts?.pending_ledger_operations !== "string" || typeof state.status?.counts?.reserved_deposit_mint_operations !== "string") {
     throw new Error("upgrade evidence has no Ledger-operation or Mint Authorization liability identities")
   }
-  if (!state.status?.settlement_scheduler || !state.public_config || !state.audit_events) throw new Error("upgrade evidence omitted scheduler, configuration, or audit state")
-  const deploymentInstanceId = bytesHex(state.public_config.deployment_instance_id)
+  if (!state.status?.settlement_scheduler || !state.runtime_binding || !state.operational_config || !state.audit_events) {
+    throw new Error("upgrade evidence omitted scheduler, runtime binding, operational configuration, or audit state")
+  }
+  const deploymentInstanceId = bytesHex(state.runtime_binding.deployment_instance_id)
   if (!/^0x[0-9a-f]{64}$/.test(deploymentInstanceId) || /^0x0+$/.test(deploymentInstanceId)) {
     throw new Error("upgrade evidence omitted a nonzero 32-byte deployment instance ID")
   }
@@ -37,8 +39,11 @@ export function validateUpgradeEvidence(upgrade) {
     throw new Error("upgrade evidence omitted the pending Timelock operation identity")
   }
   if (state.storage_integrity !== "ok") throw new Error("upgrade evidence did not pass storage_integrity_check")
-  for (const field of ["deployment_instance_id", "deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "notification_rate_limit_window_seconds", "notification_rate_limit_global", "notification_ingestion_rate_limit_global", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]) {
-    if (!(field in state.public_config)) throw new Error(`upgrade evidence omitted rate-limit configuration ${field}`)
+  for (const field of ["deployment_instance_id", "minimum_withdrawal_id", "base_chain_id", "bridge_contract", "expected_bridge_runtime_sha256", "timelock_contract", "expected_bridge_signer", "ledger_canister_id", "index_canister_id", "evm_rpc_canister_id", "rpc_provider_urls_sha256", "schema_version", "operational_config_sha256"]) {
+    if (!(field in state.runtime_binding)) throw new Error(`upgrade evidence omitted runtime binding ${field}`)
+  }
+  for (const field of ["deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal", "notification_rate_limit_window_seconds", "notification_rate_limit_global", "notification_ingestion_rate_limit_global", "settlement_rate_limit_window_seconds", "settlement_rate_limit_global", "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record", "settlement_retry_interval_seconds"]) {
+    if (!(field in state.operational_config)) throw new Error(`upgrade evidence omitted operational configuration ${field}`)
   }
   if (!state.deposits.some((record) => record && record.deposit_id && "owner_sequence" in record && record.mint_authorization?.length === 1)) {
     throw new Error("upgrade evidence did not preserve a Deposit identity and Mint Authorization")
@@ -46,9 +51,16 @@ export function validateUpgradeEvidence(upgrade) {
   return upgrade
 }
 
-export async function generateLocalEvidence(root = defaultRoot) {
+export async function generateLocalEvidence(root = defaultRoot, requestedOutputPath) {
   const factsPath = path.join(root, "ui/.e2e-runtime/local-e2e-facts.json")
-  const outputPath = path.join(root, "deployments/sepolia-staging/evidence/local-e2e.json")
+  if (!requestedOutputPath || !path.isAbsolute(requestedOutputPath)) {
+    throw new Error("--output must be an absolute path outside the repository")
+  }
+  const outputPath = path.resolve(requestedOutputPath)
+  const relativeOutput = path.relative(root, outputPath)
+  if (relativeOutput === "" || (!relativeOutput.startsWith("..") && !path.isAbsolute(relativeOutput))) {
+    throw new Error("--output must be outside the repository")
+  }
   const status = execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" })
   if (status.trim()) throw new Error("promotion evidence requires a clean working tree")
   const facts = JSON.parse(await readFile(factsPath, "utf8"))
@@ -60,7 +72,7 @@ export async function generateLocalEvidence(root = defaultRoot) {
     schema_version: LOCAL_E2E_SCHEMA_VERSION,
     environment_mode: "short-delay-test-only",
     activation_timelock_delay_seconds: STAGING_ACTIVATION_DELAY_SECONDS,
-    deployment_instance_id: bytesHex(upgrade.after.public_config.deployment_instance_id),
+    deployment_instance_id: bytesHex(upgrade.after.runtime_binding.deployment_instance_id),
     created_at: new Date().toISOString(),
     source_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
     bridge_wasm_sha256: await digest(root, "target/test-deployment/staging/bridge_canister.wasm"),
@@ -102,5 +114,9 @@ function bytesHex(value) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.stdout.write(`${await generateLocalEvidence()}\n`)
+  const args = process.argv.slice(2)
+  if (args.length !== 2 || args[0] !== "--output") {
+    throw new Error("usage: generate-local-e2e.mjs --output /absolute/path/local-e2e.json")
+  }
+  process.stdout.write(`${await generateLocalEvidence(defaultRoot, args[1])}\n`)
 }
