@@ -505,16 +505,42 @@ async fn set_deployment_role_signers_for_canister(
     canister_id: Principal,
     key_name: String,
 ) -> Result<(), String> {
-    let governance_path = vec![b"governance-operator".to_vec()];
+    set_deployment_role_signers_for_canister_at_generation(canister_id, key_name, 0).await
+}
+
+#[ic_cdk::update]
+async fn set_deployment_role_signers_for_canister_at_generation(
+    canister_id: Principal,
+    key_name: String,
+    generation: u32,
+) -> Result<(), String> {
+    let generation_suffix = if generation == 0 {
+        Vec::new()
+    } else {
+        vec![
+            b"KINIC-CONTROL-PLANE-GENERATION-V1".to_vec(),
+            generation.to_be_bytes().to_vec(),
+        ]
+    };
+    let mut mint_path = Vec::new();
+    mint_path.extend(generation_suffix.clone());
+    let mut governance_path = vec![b"governance-operator".to_vec()];
+    governance_path.extend(generation_suffix.clone());
     let mut runtime_administrator_path = governance_path.clone();
-    runtime_administrator_path.push(b"KINIC-RUNTIME-ADMINISTRATOR-V1".to_vec());
-    let mut independent_canceller_path = governance_path;
-    independent_canceller_path.push(b"KINIC-INDEPENDENT-CANCELLER-V1".to_vec());
+    runtime_administrator_path.splice(1..1, [b"KINIC-RUNTIME-ADMINISTRATOR-V1".to_vec()]);
+    let mut independent_canceller_path = governance_path.clone();
+    independent_canceller_path.splice(1..1, [b"KINIC-INDEPENDENT-CANCELLER-V1".to_vec()]);
+    let bridge_signer =
+        derive_address_for_canister(canister_id, key_name.clone(), mint_path).await?;
+    let governance_operator =
+        derive_address_for_canister(canister_id, key_name.clone(), governance_path).await?;
     let runtime_administrator =
         derive_address_for_canister(canister_id, key_name.clone(), runtime_administrator_path)
             .await?;
     let independent_canceller =
         derive_address_for_canister(canister_id, key_name, independent_canceller_path).await?;
+    BRIDGE_SIGNER.with(|current| *current.borrow_mut() = bridge_signer);
+    GOVERNANCE_OPERATOR.with(|current| *current.borrow_mut() = governance_operator);
     RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = runtime_administrator);
     INDEPENDENT_CANCELLER.with(|current| *current.borrow_mut() = independent_canceller);
     Ok(())

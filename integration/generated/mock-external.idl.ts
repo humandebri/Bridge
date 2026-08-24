@@ -502,6 +502,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
         [Result_10],
         [],
       ),
+    'set_deployment_role_signers_for_canister_at_generation' : IDL.Func(
+        [IDL.Principal, IDL.Text, IDL.Nat32],
+        [Result_10],
+        [],
+      ),
     'set_deposit_mints_paused' : IDL.Func([IDL.Bool], [], []),
     'set_eth_balance' : IDL.Func([IDL.Nat], [], []),
     'set_finalized_block' : IDL.Func(

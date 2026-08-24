@@ -522,6 +522,11 @@ service : (InitArgs) -> {
       Result_10,
     );
   set_deployment_role_signers_for_canister : (principal, text) -> (Result_10);
+  set_deployment_role_signers_for_canister_at_generation : (
+      principal,
+      text,
+      nat32,
+    ) -> (Result_10);
   set_deposit_mints_paused : (bool) -> ();
   set_eth_balance : (nat) -> ();
   set_finalized_block : (nat64, blob) -> (Result_10);
