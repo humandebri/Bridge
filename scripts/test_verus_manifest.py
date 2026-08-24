@@ -83,8 +83,10 @@ class VerusDerivedDependencyTests(unittest.TestCase):
         kernel: str,
         proof: str,
         binding: str,
+        calls: str | None = None,
     ) -> str:
-        calls = "src.rs#caller" if kind in {"executable", "shared-expression"} else "-"
+        if calls is None:
+            calls = "src.rs#caller" if kind in {"executable", "shared-expression"} else "-"
         return (
             f"{obligation}\t{kind}\t{kernel}\t{proof}\tfail.rs\t{binding}\t-\t"
             f"{calls}\tclaim"
@@ -93,7 +95,14 @@ class VerusDerivedDependencyTests(unittest.TestCase):
     def test_accepts_direct_dependency_kinds_even_when_supporting_only(self) -> None:
         obligations = parse_verus_manifest(
             self.document(
-                self.row("base", "shared-expression", "base_kernel", "base_proof", "macro"),
+                self.row(
+                    "base",
+                    "shared-expression",
+                    "base_kernel",
+                    "base_proof",
+                    "macro",
+                    calls="-",
+                ),
                 self.row("derived", "derived", "derived_kernel", "derived_proof", "base_kernel"),
             )
         )

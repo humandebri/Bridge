@@ -103,9 +103,11 @@ type AutomaticProgressState = variant {
 };
 type AutomaticProgressView = record { state : AutomaticProgressState };
 type BaseGovernanceAction = variant {
+  ExecuteControlPlaneRotation;
   PauseDepositMints;
   SetServiceFee : record { value : nat };
   PauseWithdrawals;
+  ScheduleControlPlaneRotation;
   CancelPendingTimelock;
 };
 type BaseGovernanceConfirmation = record {
@@ -121,7 +123,9 @@ type BaseGovernanceError = variant {
   };
   Busy : record { operation_id : nat64 };
   TransactionNotFinalized : record { operation_id : nat64 };
+  InsufficientCycles;
   Unauthorized;
+  RateLimited;
   InvalidArgument;
   TransactionReverted : record { operation_id : nat64 };
   StorageFailure;
@@ -130,11 +134,29 @@ type BaseGovernanceError = variant {
   SigningUnavailable : record { class : SigningFailureClass };
 };
 type BaseGovernanceOperationKind = variant {
+  ExecuteControlPlaneRotation : record {
+    independent_canceller : blob;
+    salt : blob;
+    generation : nat32;
+    operation_id : blob;
+    bridge_signer : blob;
+    runtime_administrator : blob;
+    governance_operator : blob;
+  };
   PauseDepositMints;
   CancelTimelock : record { operation_id : blob };
   SetServiceFee : record { value : nat };
   PauseWithdrawals;
   ScheduleActivation : ActivationOperationView;
+  ScheduleControlPlaneRotation : record {
+    independent_canceller : blob;
+    salt : blob;
+    generation : nat32;
+    operation_id : blob;
+    bridge_signer : blob;
+    runtime_administrator : blob;
+    governance_operator : blob;
+  };
   ExecuteActivation : ActivationOperationView;
 };
 type BridgeStatus = record {
@@ -455,7 +477,7 @@ type Result_1 = variant {
   Err : SettlementActionError;
 };
 type Result_10 = variant {
-  Ok : opt SignedBaseGovernanceTransaction;
+  Ok : vec SignedBaseGovernanceTransaction;
   Err : BaseGovernanceError;
 };
 type Result_11 = variant {

@@ -46,12 +46,13 @@ contract Bridge is IBridge, EIP712 {
     );
     bytes32 public immutable override approvedTimelockRuntimeCodeHash;
     IBSNS public immutable override bsns;
+    uint256 public immutable override MIN_SERVICE_FEE;
     uint256 public immutable override MAX_SERVICE_FEE;
 
     address public override bridgeSigner;
     uint256 public override mintAuthorizationEpoch = 1;
     address public override runtimeAdministrator;
-    address public override baseAdminTimelock;
+    address public immutable override baseAdminTimelock;
     uint256 public override serviceFee;
     uint256 public immutable override perDepositLimit;
     uint256 public immutable override mintWindowLimit;
@@ -64,6 +65,8 @@ contract Bridge is IBridge, EIP712 {
 
     mapping(bytes32 depositId => bool processed) private _processedDeposits;
     mapping(uint256 withdrawalId => StoredWithdrawal withdrawal) private _withdrawals;
+    mapping(address signer => bool retired) private _retiredBridgeSigners;
+    address private _bridgeSignerAtLastPause;
 
     modifier onlyRuntimeAdministrator() {
         if (msg.sender != runtimeAdministrator) {
@@ -101,6 +104,7 @@ contract Bridge is IBridge, EIP712 {
         uint256 initialPerDepositLimit,
         uint256 initialMintWindowLimit,
         uint64 initialMintWindowDuration,
+        uint256 minServiceFee,
         uint256 maxServiceFee,
         uint256 initialServiceFee
     ) EIP712("KINIC Bridge", "1") {
@@ -117,7 +121,7 @@ contract Bridge is IBridge, EIP712 {
         if (
             !BridgeAdministration.limitsAreNonzero(
                     initialPerDepositLimit, initialMintWindowLimit, initialMintWindowDuration
-                ) || maxServiceFee == 0
+                ) || minServiceFee == 0 || maxServiceFee < minServiceFee
         ) {
             revert IBridge.InvalidAmount(0);
         }
@@ -134,7 +138,7 @@ contract Bridge is IBridge, EIP712 {
                 initialMintWindowDuration, MINIMUM_MINT_WINDOW_DURATION, MAXIMUM_MINT_WINDOW_DURATION
             );
         }
-        if (!BridgeAdministration.serviceFeeIsValid(initialServiceFee, maxServiceFee)) {
+        if (!BridgeAdministration.serviceFeeIsValid(initialServiceFee, minServiceFee, maxServiceFee)) {
             revert IBridge.InvalidServiceFee(initialServiceFee, maxServiceFee);
         }
         approvedTimelockRuntimeCodeHash = initialApprovedTimelockRuntimeCodeHash;
@@ -147,6 +151,7 @@ contract Bridge is IBridge, EIP712 {
         mintWindowLimit = initialMintWindowLimit;
         mintWindowDuration = initialMintWindowDuration;
         mintWindowStartedAt = uint64(block.timestamp);
+        MIN_SERVICE_FEE = minServiceFee;
         MAX_SERVICE_FEE = maxServiceFee;
         serviceFee = initialServiceFee;
         bsns = new BSNS(TOKEN_NAME, TOKEN_SYMBOL, TOKEN_DECIMALS, address(this));
@@ -296,6 +301,7 @@ contract Bridge is IBridge, EIP712 {
         }
         (, uint256 nextEpoch) = MintAuthorizationPolicy.adminEpochTransition(mintAuthorizationEpoch, true);
         depositMintsPaused = true;
+        _bridgeSignerAtLastPause = bridgeSigner;
         _setMintAuthorizationEpoch(nextEpoch);
         emit IBridge.DepositMintsPaused(msg.sender);
     }
@@ -312,6 +318,9 @@ contract Bridge is IBridge, EIP712 {
         if (!depositMintsPaused) {
             return;
         }
+        if (_bridgeSignerAtLastPause != address(0) && bridgeSigner == _bridgeSignerAtLastPause) {
+            revert IBridge.BridgeSignerRotationRequired();
+        }
         (, uint256 nextEpoch) = MintAuthorizationPolicy.adminEpochTransition(mintAuthorizationEpoch, true);
         depositMintsPaused = false;
         _setMintAuthorizationEpoch(nextEpoch);
@@ -327,7 +336,7 @@ contract Bridge is IBridge, EIP712 {
     }
 
     function setServiceFee(uint256 newServiceFee) external override onlyRuntimeAdministrator {
-        if (!BridgeAdministration.serviceFeeIsValid(newServiceFee, MAX_SERVICE_FEE)) {
+        if (!BridgeAdministration.serviceFeeIsValid(newServiceFee, MIN_SERVICE_FEE, MAX_SERVICE_FEE)) {
             revert IBridge.InvalidServiceFee(newServiceFee, MAX_SERVICE_FEE);
         }
         uint256 previousFee = serviceFee;
@@ -345,7 +354,11 @@ contract Bridge is IBridge, EIP712 {
         if (!changed) {
             return;
         }
+        if (_retiredBridgeSigners[newSigner]) {
+            revert IBridge.BridgeSignerAlreadyRetired(newSigner);
+        }
         _validateRoleSet(newSigner, runtimeAdministrator, baseAdminTimelock);
+        _retiredBridgeSigners[previousSigner] = true;
         bridgeSigner = newSigner;
         _setMintAuthorizationEpoch(nextEpoch);
         emit IBridge.BridgeSignerChanged(previousSigner, newSigner);
@@ -359,17 +372,6 @@ contract Bridge is IBridge, EIP712 {
         _validateRoleSet(bridgeSigner, newAdministrator, baseAdminTimelock);
         runtimeAdministrator = newAdministrator;
         emit IBridge.RuntimeAdministratorChanged(previousAdministrator, newAdministrator);
-    }
-
-    function rotateBaseAdminTimelock(address newTimelock) external override onlyBaseAdminTimelock {
-        address previousTimelock = baseAdminTimelock;
-        if (newTimelock == previousTimelock) {
-            return;
-        }
-        _validateRoleSet(bridgeSigner, runtimeAdministrator, newTimelock);
-        _validateTimelockCandidate(newTimelock);
-        baseAdminTimelock = newTimelock;
-        emit IBridge.BaseAdminTimelockChanged(previousTimelock, newTimelock);
     }
 
     function isDepositProcessed(bytes32 depositId) external view override returns (bool) {
@@ -505,6 +507,9 @@ contract Bridge is IBridge, EIP712 {
             return;
         }
         if (reason == MintAuthorizationPolicy.RejectReason.Paused) revert IBridge.DepositMintsArePaused();
+        if (reason == MintAuthorizationPolicy.RejectReason.DeadlineTooFar) {
+            revert IBridge.MintAuthorizationDeadlineTooFar(authorization.deadline, block.timestamp + 15 minutes);
+        }
         if (reason == MintAuthorizationPolicy.RejectReason.Expired) {
             revert IBridge.MintAuthorizationExpired(block.timestamp, authorization.deadline);
         }

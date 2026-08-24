@@ -88,8 +88,8 @@ def depositIdentityImpl (processed : Bool) : DepositIdentityDecision :=
 def reservationImpl (reserved candidate : U128) : Option (Nat × Nat) :=
   (checkedAdd128 reserved.val candidate.val).map (fun total => (total, 0))
 
-def serviceFeeImpl (serviceFee maximumServiceFee : U128) : Bool :=
-  serviceFeeChangeAllowed serviceFee.val maximumServiceFee.val
+def serviceFeeImpl (serviceFee minimumServiceFee maximumServiceFee : U128) : Bool :=
+  serviceFeeChangeAllowed serviceFee.val minimumServiceFee.val maximumServiceFee.val
 
 def feeRotationImpl (state : FeeState) (recipient : U64) : Option FeeState :=
   rotateFeeRecipient state recipient.val

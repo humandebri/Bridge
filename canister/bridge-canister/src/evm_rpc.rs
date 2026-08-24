@@ -1,14 +1,16 @@
 use crate::config::BridgeInitArgs;
 use async_trait::async_trait;
+#[cfg(test)]
+use bridge_core::withdrawal_finalized_identity_quorum;
 use bridge_core::{
-    withdrawal_finalized_identity_quorum, Amount, BaseMintSnapshot, FinalizedObservationRecord,
-    WithdrawalFinalizedIdentity,
+    withdrawal_common_checkpoint, withdrawal_finalized_checkpoint_quorum, Amount, BaseMintSnapshot,
+    FinalizedObservationRecord, WithdrawalFinalizedIdentity,
 };
 use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use evm_rpc_client::{CandidResponseConverter, EvmRpcClient, NoRetry};
 use evm_rpc_types::{
     Block, BlockTag, ConsensusStrategy, GetTransactionCountArgs, Hex20, Hex32, MultiRpcResult,
-    Nat256, RpcApi, RpcError, RpcServices, TransactionReceipt,
+    Nat256, RpcApi, RpcError, RpcResult, RpcService, RpcServices, TransactionReceipt,
 };
 use ic_canister_runtime::{IcError, Runtime};
 use ic_cdk::call::Call;
@@ -135,6 +137,7 @@ pub struct DeploymentPostconditionsObservation {
     pub bsns_symbol: String,
     pub bsns_decimals: u8,
     pub bsns_bridge: [u8; 20],
+    pub minimum_service_fee: u128,
 }
 
 pub fn stable_observation(
@@ -494,6 +497,9 @@ pub async fn deployment_postconditions_at(
         &eth_call_target_at_observation(args, &bsns_address, &selector("bridge()"), finalized)
             .await?,
     )?;
+    let minimum_service_fee = observed_u128(
+        &eth_call_at_observation(args, &selector("MIN_SERVICE_FEE()"), finalized).await?,
+    )?;
     Ok(DeploymentPostconditionsObservation {
         bridge_timelock,
         runtime_administrator: runtime_admin,
@@ -510,6 +516,7 @@ pub async fn deployment_postconditions_at(
         bsns_symbol,
         bsns_decimals,
         bsns_bridge,
+        minimum_service_fee,
     })
 }
 
@@ -526,6 +533,16 @@ fn observed_u64(value: &str) -> Result<u64, ObservationError> {
     }
     Ok(u64::from_be_bytes(
         word[24..].try_into().expect("eight-byte suffix"),
+    ))
+}
+
+fn observed_u128(value: &str) -> Result<u128, ObservationError> {
+    let word = observed_bytes32(value)?;
+    if word[..16].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    Ok(u128::from_be_bytes(
+        word[16..].try_into().expect("sixteen-byte suffix"),
     ))
 }
 
@@ -840,7 +857,6 @@ async fn exact_mint_evidence_inner(
         return Err(ObservationError::TransactionReverted);
     }
     if receipt.status != Some(Nat256::from(1u64))
-        || receipt.to.as_ref() != Some(&bridge)
         || receipt
             .logs
             .iter()
@@ -1392,7 +1408,27 @@ async fn withdrawal_finalized_observation(
         .try_send()
         .await
         .map_err(|_| ObservationError::Rpc)?;
-    let block = exact_withdrawal_finalized_block(result)?;
+    let block = match result {
+        MultiRpcResult::Consistent(Ok(block)) => block,
+        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => {
+            let finalized_heads = provider_finalized_heads(results)?;
+            let identities = finalized_heads
+                .iter()
+                .map(|(_, identity)| *identity)
+                .collect::<Vec<_>>();
+            let checkpoint =
+                withdrawal_common_checkpoint(identities[0], identities[1], identities[2])
+                    .ok_or(ObservationError::Inconsistent)?;
+            let checkpoint_result = client(args)
+                .get_block_by_number(BlockTag::Number(Nat256::from(checkpoint)))
+                .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+                .try_send()
+                .await
+                .map_err(|_| ObservationError::Rpc)?;
+            exact_withdrawal_finalized_block(&finalized_heads, checkpoint, checkpoint_result)?
+        }
+    };
     let block_number = u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?;
     Ok(FinalizedObservation {
         block_number,
@@ -1402,34 +1438,97 @@ async fn withdrawal_finalized_observation(
 }
 
 fn exact_withdrawal_finalized_block(
+    finalized_heads: &[(RpcService, Option<WithdrawalFinalizedIdentity>)],
+    checkpoint: u64,
     result: MultiRpcResult<Block>,
 ) -> Result<Block, ObservationError> {
     match result {
-        MultiRpcResult::Consistent(Ok(block)) => Ok(block),
-        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(results) => {
-            let successful = results
-                .into_iter()
-                .map(|(_, result)| result.ok())
-                .collect::<Vec<_>>();
-            if successful.len() != 3 {
+        MultiRpcResult::Consistent(Ok(block)) => {
+            if withdrawal_finalized_identity(&block).map(|identity| identity.block_number)
+                != Some(checkpoint)
+            {
                 return Err(ObservationError::Inconsistent);
             }
-            let identities = successful
+            Ok(block)
+        }
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => {
+            let correlated = correlate_provider_responses(finalized_heads, &results)?;
+            let checkpoint_observations = correlated
                 .iter()
-                .map(|block| block.as_ref().and_then(withdrawal_finalized_identity))
+                .map(|result| result.as_ref().ok().and_then(withdrawal_finalized_identity))
                 .collect::<Vec<_>>();
-            let selected =
-                withdrawal_finalized_identity_quorum(identities[0], identities[1], identities[2])
-                    .ok_or(ObservationError::Inconsistent)?;
-            successful
+            let finalized_head_identities = finalized_heads
                 .iter()
-                .flatten()
+                .map(|(_, identity)| *identity)
+                .collect::<Vec<_>>();
+            let selected = withdrawal_finalized_checkpoint_quorum(
+                [
+                    finalized_head_identities[0],
+                    finalized_head_identities[1],
+                    finalized_head_identities[2],
+                ],
+                [
+                    checkpoint_observations[0],
+                    checkpoint_observations[1],
+                    checkpoint_observations[2],
+                ],
+                checkpoint,
+            )
+            .ok_or(ObservationError::Inconsistent)?;
+            correlated
+                .into_iter()
+                .filter_map(|result| result.as_ref().ok())
                 .find(|block| withdrawal_finalized_identity(block) == Some(selected))
                 .cloned()
                 .ok_or(ObservationError::Inconsistent)
         }
     }
+}
+
+fn provider_finalized_heads(
+    results: Vec<(RpcService, RpcResult<Block>)>,
+) -> Result<Vec<(RpcService, Option<WithdrawalFinalizedIdentity>)>, ObservationError> {
+    if results.len() != 3 || has_duplicate_rpc_services(&results) {
+        return Err(ObservationError::Inconsistent);
+    }
+    Ok(results
+        .into_iter()
+        .map(|(service, result)| {
+            let identity = result.as_ref().ok().and_then(withdrawal_finalized_identity);
+            (service, identity)
+        })
+        .collect())
+}
+
+fn correlate_provider_responses<'a, T, U>(
+    finalized_heads: &[(RpcService, T)],
+    responses: &'a [(RpcService, U)],
+) -> Result<Vec<&'a U>, ObservationError> {
+    if finalized_heads.len() != 3
+        || responses.len() != finalized_heads.len()
+        || has_duplicate_rpc_services(finalized_heads)
+        || has_duplicate_rpc_services(responses)
+    {
+        return Err(ObservationError::Inconsistent);
+    }
+    finalized_heads
+        .iter()
+        .map(|(service, _)| {
+            responses
+                .iter()
+                .find(|(candidate, _)| candidate == service)
+                .map(|(_, response)| response)
+                .ok_or(ObservationError::Inconsistent)
+        })
+        .collect()
+}
+
+fn has_duplicate_rpc_services<T>(entries: &[(RpcService, T)]) -> bool {
+    entries
+        .iter()
+        .enumerate()
+        .any(|(index, (service, _))| entries[..index].iter().any(|(seen, _)| seen == service))
 }
 
 fn withdrawal_finalized_identity(block: &Block) -> Option<WithdrawalFinalizedIdentity> {
@@ -2051,6 +2150,53 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_responses_are_correlated_by_provider_not_response_order() {
+        let heads = vec![
+            (RpcService::Provider(1), 90),
+            (RpcService::Provider(2), 100),
+            (RpcService::Provider(3), 110),
+        ];
+        let responses = vec![
+            (RpcService::Provider(3), "third"),
+            (RpcService::Provider(1), "first"),
+            (RpcService::Provider(2), "second"),
+        ];
+
+        assert_eq!(
+            correlate_provider_responses(&heads, &responses),
+            Ok(vec![&"first", &"second", &"third"])
+        );
+    }
+
+    #[test]
+    fn checkpoint_response_correlation_rejects_duplicate_or_missing_providers() {
+        let heads = vec![
+            (RpcService::Provider(1), 90),
+            (RpcService::Provider(2), 100),
+            (RpcService::Provider(3), 110),
+        ];
+        let duplicate = vec![
+            (RpcService::Provider(1), "first"),
+            (RpcService::Provider(1), "duplicate"),
+            (RpcService::Provider(3), "third"),
+        ];
+        let unknown = vec![
+            (RpcService::Provider(1), "first"),
+            (RpcService::Provider(2), "second"),
+            (RpcService::Provider(4), "unknown"),
+        ];
+
+        assert_eq!(
+            correlate_provider_responses(&heads, &duplicate),
+            Err(ObservationError::Inconsistent)
+        );
+        assert_eq!(
+            correlate_provider_responses(&heads, &unknown),
+            Err(ObservationError::Inconsistent)
+        );
+    }
+
+    #[test]
     fn withdrawal_finality_quorum_ignores_one_overflowing_provider_identity() {
         let agreed = Some((100, [0xaa; 32]));
         for candidates in [
@@ -2418,6 +2564,10 @@ mod tests {
             bridge_contract: vec![0x42; 20],
             expected_bridge_runtime_sha256: vec![0x55; 32],
             timelock_contract: vec![0x43; 20],
+            expected_timelock_minimum_delay_seconds: 86_400,
+            expected_bsns_runtime_sha256: vec![0x56; 32],
+            expected_bsns_decimals: 8,
+            expected_minimum_service_fee: 1,
             deployment_instance_id: vec![0x44; 32],
             minimum_withdrawal_id: [vec![0; 31], vec![1]].concat(),
             base_chain_id: 8453,

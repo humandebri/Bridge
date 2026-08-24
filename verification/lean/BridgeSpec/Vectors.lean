@@ -132,9 +132,10 @@ def reservationCase
     "," ++ natField "after_candidate" afterCandidate ++ "," ++
     field "accepted" (boolJson (decide accepted)) ++ "}"
 
-def serviceFeeCase (serviceFee maximum : Nat) : String :=
-  "{" ++ natField "service_fee" serviceFee ++ "," ++ natField "maximum" maximum ++ "," ++
-    field "accepted" (boolJson (serviceFeeChangeAllowed serviceFee maximum)) ++ "}"
+def serviceFeeCase (serviceFee minimum maximum : Nat) : String :=
+  "{" ++ natField "service_fee" serviceFee ++ "," ++ natField "minimum" minimum ++ "," ++
+    natField "maximum" maximum ++ "," ++
+    field "accepted" (boolJson (serviceFeeChangeAllowed serviceFee minimum maximum)) ++ "}"
 
 def feeRotationCase (reserve depositFees withdrawalFees pending recipient nextRecipient : Nat) :
     String :=
@@ -291,7 +292,7 @@ def jsonSection (name : String) (values : List String) : String :=
 
 def document : String :=
   let max := 340282366920938463463374607431768211455
-  let quotes := [quoteCase 100 10, quoteCase 10 10, quoteCase 9 10, quoteCase 1 0]
+  let quotes := [quoteCase 100 10, quoteCase 10 10, quoteCase 9 10, quoteCase 2 1]
   let settlements := [
     settlementCase 90 1 10 105 0 5 100,
     settlementCase 90 10 10 105 0 5 100,
@@ -318,7 +319,7 @@ def document : String :=
     reservationCase 7 1 8 0,
     reservationCase 7 1 7 0,
     reservationCase max 0 max 0]
-  let serviceFees := [serviceFeeCase 10 10, serviceFeeCase 11 10, serviceFeeCase 0 0]
+  let serviceFees := [serviceFeeCase 10 1 10, serviceFeeCase 11 1 10, serviceFeeCase 0 1 10]
   let feeRotations := [
     feeRotationCase 100 40 60 0 1 2,
     feeRotationCase 100 40 60 1 1 2]

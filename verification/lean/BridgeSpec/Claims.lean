@@ -39,6 +39,11 @@ theorem pending_queue_claim
       (fun entry => entry.blocked) = some true :=
   restore_preserves_blocked_retry blocked current
 
+theorem pending_queue_storage_failure_claim (queue : PendingQueue) :
+    (recordPendingQueueWrite queue false).session = queue ∧
+      (recordPendingQueueWrite queue false).durable = none := by
+  simp [recordPendingQueueWrite]
+
 theorem canonical_probe_claim
     {receiptBlock snapshotBlock : Nat} :
     canonicalProbeMatches receiptBlock snapshotBlock = true ↔ receiptBlock = snapshotBlock :=
@@ -49,6 +54,12 @@ theorem withdrawal_finality_quorum_claim
     (selected : withdrawalFinalizedCheckpoint first second third = some checkpoint) :
     twoFinalizedHeadsAttest first second third checkpoint :=
   withdrawal_finality_quorum_selects_two_provider_checkpoint selected
+
+theorem withdrawal_finality_identity_claim
+    {first second third : Option FinalizedIdentity} {checkpoint : FinalizedIdentity}
+    (selected : withdrawalFinalizedIdentityQuorum first second third = some checkpoint) :
+    twoFinalizedIdentitiesAttest first second third checkpoint :=
+  withdrawal_finality_identity_requires_exact_height_and_hash selected
 
 theorem payment_claim :
     (∀ {w paid : Withdrawal} {transfer : LedgerTransfer},
@@ -89,9 +100,9 @@ theorem reservation_claim (reserved candidate : Nat) :
   simp [commitMintReservation]
 
 theorem service_fee_claim
-    {serviceFee maximumServiceFee : Nat} :
-    serviceFeeChangeAllowed serviceFee maximumServiceFee = true ↔
-      serviceFee ≤ maximumServiceFee := by
+    {serviceFee minimumServiceFee maximumServiceFee : Nat} :
+    serviceFeeChangeAllowed serviceFee minimumServiceFee maximumServiceFee = true ↔
+      minimumServiceFee ≤ serviceFee ∧ serviceFee ≤ maximumServiceFee := by
   simp [serviceFeeChangeAllowed]
 
 theorem governance_transaction_affordability_claim

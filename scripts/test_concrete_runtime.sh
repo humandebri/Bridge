@@ -19,10 +19,10 @@ value={
  "initial_base_deployment":{"deployer_address":deployer,"starting_nonce":0},
  "timelock":{"address":timelock,"runtime_code_hash":timelock_hash,"minimum_delay_seconds":86400,
              "proposer":"0x0000000000000000000000000000000000000003",
-             "canceller":"0x0000000000000000000000000000000000000003",
+             "canceller":"0x0000000000000000000000000000000000000004",
              "executor":"0x0000000000000000000000000000000000000003"},
  "parameters":{"per_deposit_limit":"1","mint_throughput_limit":"1","mint_window_duration_seconds":"3600",
-               "max_service_fee":"1000000000","service_fee":"50000000"}}
+               "min_service_fee":"1","max_service_fee":"1000000000","service_fee":"50000000"}}
 with open(target,'w',encoding='utf-8') as out: json.dump(value,out)
 PY
 bash "$ROOT/scripts/concretize-bridge-runtime.sh" "$ROOT" "$T/profile.json" "$T/first.bin"

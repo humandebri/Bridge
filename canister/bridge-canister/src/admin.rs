@@ -148,15 +148,24 @@ pub fn rotate_pause_principal(
             "invalid pause principal".into(),
         ));
     }
+    let confirmation_relayer = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| AdminError::StorageFailure)?
+            .map(|config| config.confirmation_relayer_principal)
+            .ok_or(AdminError::StorageFailure)
+    })?;
     mutate(caller, |state| {
         if !authorized(state, caller, ACTION_ROTATE) {
             return Err(AdminError::Unauthorized);
         }
         if args.pause_principal == state.governance_principal
             || args.pause_principal == state.fee_recipient.owner
+            || args.pause_principal == confirmation_relayer
         {
             return Err(AdminError::InvalidArgument(
-                "pause principal must not overlap governance or fee recipient".into(),
+                "pause principal must not overlap governance, fee recipient, or confirmation relayer".into(),
             ));
         }
         state.pause_principal = args.pause_principal;
@@ -177,10 +186,17 @@ pub fn rotate_fee_recipient(caller: Principal, next: FeeRecipientConfig) -> Resu
         let pending = store
             .pending_fee_payout_amount()
             .map_err(|_| AdminError::StorageFailure)?;
+        let confirmation_relayer = store
+            .config()
+            .map_err(|_| AdminError::StorageFailure)?
+            .map(|config| config.confirmation_relayer_principal)
+            .ok_or(AdminError::StorageFailure)?;
         match bridge_core::fee_recipient_rotation_decision(
             authorized(&state, caller, ACTION_ROTATE),
             next.owner == Principal::anonymous(),
-            next.owner == state.governance_principal || next.owner == state.pause_principal,
+            next.owner == state.governance_principal
+                || next.owner == state.pause_principal
+                || next.owner == confirmation_relayer,
             next.subaccount.len(),
             pending,
         ) {
@@ -190,7 +206,7 @@ pub fn rotate_fee_recipient(caller: Principal, next: FeeRecipientConfig) -> Resu
             }
             bridge_core::FeeRecipientRotationDecision::InvalidInput => {
                 return Err(AdminError::InvalidArgument(
-                    "fee recipient must not overlap governance or pause principal".into(),
+                    "fee recipient must not overlap governance, pause principal, or confirmation relayer".into(),
                 ));
             }
             bridge_core::FeeRecipientRotationDecision::Busy => {
@@ -225,14 +241,6 @@ pub fn audit_events(start: u64, limit: u16) -> Result<AuditEventPage, AdminError
 }
 
 pub fn request_fee_payout(caller: Principal, amount: Nat) -> Result<FeePayoutReceipt, AdminError> {
-    let amount: u128 = amount
-        .0
-        .to_string()
-        .parse()
-        .map_err(|_| AdminError::InvalidArgument("amount exceeds u128".into()))?;
-    if amount == 0 {
-        return Err(AdminError::InvalidArgument("amount must be nonzero".into()));
-    }
     STORE.with(|store| {
         let store = store.borrow();
         let admin = store
@@ -243,6 +251,11 @@ pub fn request_fee_payout(caller: Principal, amount: Nat) -> Result<FeePayoutRec
         }
         Ok(())
     })?;
+    let amount = crate::api::bounded_nat_u128(&amount)
+        .ok_or_else(|| AdminError::InvalidArgument("amount exceeds u128".into()))?;
+    if amount == 0 {
+        return Err(AdminError::InvalidArgument("amount must be nonzero".into()));
+    }
     let fee = ledger::KINIC_LEDGER_FEE;
     let record = STORE.with(|store| {
         let mut store = store.borrow_mut();

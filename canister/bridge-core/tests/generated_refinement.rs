@@ -430,6 +430,7 @@ fn protocol_service_fee_cases_matches_production() {
         assert_eq!(
             service_fee_change_allowed(
                 amount(text(&case, "service_fee")),
+                amount(text(&case, "minimum")),
                 amount(text(&case, "maximum")),
             ),
             boolean(&case, "accepted")

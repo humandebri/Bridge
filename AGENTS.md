@@ -33,6 +33,18 @@
 - Reuse a proof receipt only after the repository verifier confirms its source fingerprint, tool versions, submodule revisions, required stages, and completeness against the current checkout. File existence or a matching commit name alone is not sufficient.
 - Before waiting for chain finality, inspect an available transaction receipt for terminal failure. A reverted receipt must stop the driver immediately and must never be reported as a finality timeout.
 
+## Long-running validation coordination
+
+- A validation input is any tracked or untracked file covered by the gate's source fingerprint or consumed by its build and test commands. A writer is any agent, process, formatter, generator, or user action that can change a validation input. An expensive gate is a full proof, PocketIC, integration, deployment, staging, coverage, or similarly long-running validation command.
+- Use one writer for a shared working tree. While that writer is implementing, other agents and background tasks must remain read-only unless their writes are isolated in a separately authorized working tree. Do not let multiple writers repair or regenerate the same checkout concurrently.
+- Before starting an expensive gate, finish the applicable lightweight checks: diff validation, formatting, schema consistency, code generation checks, claim and proof manifests, and focused unit or stage-specific tests. Resolve their failures first; do not use a full gate to discover errors that a lightweight check can report.
+- Ensure no equivalent expensive gate is already running for the checkout. Do not start duplicate `scripts/ci-local.sh proofs`, PocketIC, Jest, Cargo, or deployment-driver suites. If another valid run already owns the checkout, wait for it and verify its receipt or result instead of competing for locks and temporary space.
+- Freeze validation inputs for the duration of an expensive gate. If an input changes after the gate starts, treat that run as invalid, identify and stop the writer through the applicable coordination or approval path, and wait for a stable checkout before rerunning. Do not repeatedly restart a full gate while writes are still possible.
+- Diagnose a failing proof stage with that stage's direct command or focused fixture first. After the final source edit, run the required full proof gate once to produce a complete current-fingerprint receipt. Reuse prior results only through the repository verifier; never infer stage reuse from partial console output.
+- Put large temporary artifacts on a repository-external directory on a volume with adequate free space. Do not place a copied Cargo source tree below this repository, because Cargo can misclassify it as a workspace member. Check free space before long Jest, PocketIC, SMT, Halmos, Verus, coverage, or deployment-validation runs.
+- When a long-running command exceeds its expected duration or produces no progress for two minutes, inspect its child process, lock contention, concurrent writers, and disk space before waiting longer. Do not kill an unknown process or delete caches until ownership and recoverability are established.
+- Record the command, checkout fingerprint, start time, active owner, temporary directory, and final receipt or failure stage for an expensive gate. The final report must distinguish code failures from invalidated runs, resource exhaustion, sandbox restrictions, and concurrent-process interference.
+
 ## Cycles handling safety
 
 - Before minting, transferring, or topping up cycles, apply the `cycles-management` skill and verify whether the destination is a cycles-ledger account or a canister execution balance.

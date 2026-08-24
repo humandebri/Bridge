@@ -545,4 +545,15 @@ theorem manual_claim_cannot_bypass_evidence
   let preserved := manual_claim_changes_only_scheduler accepted
   ⟨preserved.1, preserved.2.1⟩
 
+def evmMintAuthorizationAccepted
+    (authorizationEpoch currentEpoch authorizationSigner currentSigner : Nat) : Bool :=
+  authorizationEpoch = currentEpoch && authorizationSigner = currentSigner
+
+theorem retired_signer_rejects_even_future_epoch_authorizations
+    {authorizationEpoch currentEpoch retiredSigner replacementSigner : Nat}
+    (rotated : retiredSigner ≠ replacementSigner) :
+    evmMintAuthorizationAccepted
+      authorizationEpoch (currentEpoch + 1) retiredSigner replacementSigner = false := by
+  simp [evmMintAuthorizationAccepted, rotated]
+
 end BridgeSpec.MintAuthorization

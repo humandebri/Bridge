@@ -102,9 +102,11 @@ type AutomaticProgressState = variant {
 };
 type AutomaticProgressView = record { state : AutomaticProgressState };
 type BaseGovernanceAction = variant {
+  ExecuteControlPlaneRotation;
   PauseDepositMints;
   SetServiceFee : record { value : nat };
   PauseWithdrawals;
+  ScheduleControlPlaneRotation;
   CancelPendingTimelock;
 };
 type BaseGovernanceConfirmation = record {
@@ -120,7 +122,9 @@ type BaseGovernanceError = variant {
   };
   Busy : record { operation_id : nat64 };
   TransactionNotFinalized : record { operation_id : nat64 };
+  InsufficientCycles;
   Unauthorized;
+  RateLimited;
   InvalidArgument;
   TransactionReverted : record { operation_id : nat64 };
   StorageFailure;
@@ -129,11 +133,29 @@ type BaseGovernanceError = variant {
   SigningUnavailable : record { class : SigningFailureClass };
 };
 type BaseGovernanceOperationKind = variant {
+  ExecuteControlPlaneRotation : record {
+    independent_canceller : blob;
+    salt : blob;
+    generation : nat32;
+    operation_id : blob;
+    bridge_signer : blob;
+    runtime_administrator : blob;
+    governance_operator : blob;
+  };
   PauseDepositMints;
   CancelTimelock : record { operation_id : blob };
   SetServiceFee : record { value : nat };
   PauseWithdrawals;
   ScheduleActivation : ActivationOperationView;
+  ScheduleControlPlaneRotation : record {
+    independent_canceller : blob;
+    salt : blob;
+    generation : nat32;
+    operation_id : blob;
+    bridge_signer : blob;
+    runtime_administrator : blob;
+    governance_operator : blob;
+  };
   ExecuteActivation : ActivationOperationView;
 };
 type BridgeInitArgs = record {
@@ -164,8 +186,12 @@ type BridgeInitArgs = record {
   index_canister_id : principal;
   confirmation_relayer_principal : principal;
   ledger_canister_id : principal;
+  expected_timelock_minimum_delay_seconds : nat64;
+  expected_bsns_runtime_sha256 : blob;
   settlement_retry_interval_seconds : nat64;
   governance_replacement : GovernanceReplacementPolicy;
+  expected_minimum_service_fee : nat;
+  expected_bsns_decimals : nat8;
   expected_bridge_runtime_sha256 : blob;
   timelock_contract : blob;
   cycles_floor : nat;
@@ -513,7 +539,7 @@ type Result_1 = variant {
   Err : SettlementActionError;
 };
 type Result_10 = variant {
-  Ok : opt SignedBaseGovernanceTransaction;
+  Ok : vec SignedBaseGovernanceTransaction;
   Err : BaseGovernanceError;
 };
 type Result_11 = variant {

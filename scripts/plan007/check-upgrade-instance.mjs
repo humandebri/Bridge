@@ -26,7 +26,9 @@ function moduleHash(value, context) {
 export function verifyUpgradeInstance(profile, liveRuntimeBinding, liveCanisterStatus) {
   const next = deploymentInstanceHex(profile?.deploymentInstanceId, "frontend profile deploymentInstanceId")
   const schemaVersion = Number(liveRuntimeBinding?.schema_version)
-  if (![33, 36].includes(schemaVersion)) throw new Error("staging upgrade requires reviewed source schema v33 or target schema v36")
+  if (schemaVersion !== 33 && schemaVersion !== 34) {
+    throw new Error("staging upgrade requires reviewed source schema v33 or current schema v34")
+  }
   const previous = deploymentInstanceHex(
     liveRuntimeBinding?.deployment_instance_id,
     "live RuntimeBinding deployment_instance_id",
@@ -35,7 +37,7 @@ export function verifyUpgradeInstance(profile, liveRuntimeBinding, liveCanisterS
     throw new Error("reinstall is prohibited: staging upgrade must preserve the deployment instance ID")
   }
   return {
-    replacement_mode: schemaVersion === 33 ? "schema-migration-upgrade" : "current-schema-upgrade",
+    replacement_mode: schemaVersion === 33 ? "staging-v33-to-v34-upgrade" : "current-schema-upgrade",
     live_schema_version: schemaVersion,
     previous_deployment_instance_id: previous,
     live_module_hash: moduleHash(liveCanisterStatus?.module_hash, "live canister status module_hash"),

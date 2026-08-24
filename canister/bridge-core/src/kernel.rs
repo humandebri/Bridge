@@ -252,6 +252,19 @@ macro_rules! withdrawal_finalized_identity_quorum_body {
     }};
 }
 
+macro_rules! withdrawal_finalized_checkpoint_attestation_body {
+    ($head:expr, $observation:expr, $checkpoint:expr) => {{
+        match ($head, $observation) {
+            (Some(head), Some(observation))
+                if head.block_number >= $checkpoint && observation.block_number == $checkpoint =>
+            {
+                Some(observation)
+            }
+            _ => None,
+        }
+    }};
+}
+
 macro_rules! runtime_attestation_matches_body {
     ($observation_present:expr, $chain_id_matches:expr, $runtime_hash_matches:expr) => {
         $observation_present && $chain_id_matches && $runtime_hash_matches
@@ -335,8 +348,8 @@ macro_rules! fee_recipient_rotation_decision_body {
 }
 
 macro_rules! service_fee_change_allowed_body {
-    ($service_fee:expr, $maximum_service_fee:expr) => {
-        $service_fee <= $maximum_service_fee
+    ($service_fee:expr, $minimum_service_fee:expr, $maximum_service_fee:expr) => {
+        $minimum_service_fee <= $service_fee && $service_fee <= $maximum_service_fee
     };
 }
 
@@ -1018,6 +1031,57 @@ pub fn withdrawal_finalized_identity_quorum(
     withdrawal_finalized_identity_quorum_body!(first, second, third)
 }
 
+/// Accepts only checkpoint identities returned by providers whose own finalized
+/// head has reached that checkpoint, then requires an exact two-of-three match.
+#[cfg(not(verus_keep_ghost))]
+pub fn withdrawal_finalized_checkpoint_quorum(
+    finalized_heads: [Option<WithdrawalFinalizedIdentity>; 3],
+    checkpoint_observations: [Option<WithdrawalFinalizedIdentity>; 3],
+    checkpoint: u64,
+) -> Option<WithdrawalFinalizedIdentity> {
+    let eligible = [
+        withdrawal_finalized_checkpoint_attestation_body!(
+            finalized_heads[0],
+            checkpoint_observations[0],
+            checkpoint
+        ),
+        withdrawal_finalized_checkpoint_attestation_body!(
+            finalized_heads[1],
+            checkpoint_observations[1],
+            checkpoint
+        ),
+        withdrawal_finalized_checkpoint_attestation_body!(
+            finalized_heads[2],
+            checkpoint_observations[2],
+            checkpoint
+        ),
+    ];
+    self::withdrawal_finalized_identity_quorum(eligible[0], eligible[1], eligible[2])
+}
+
+/// Selects the newest checkpoint that every available honest pair can safely
+/// have reached. Exact hash quorum is established by a second query at this
+/// height; head hashes are deliberately not trusted here.
+#[cfg(not(verus_keep_ghost))]
+pub fn withdrawal_common_checkpoint(
+    first: Option<WithdrawalFinalizedIdentity>,
+    second: Option<WithdrawalFinalizedIdentity>,
+    third: Option<WithdrawalFinalizedIdentity>,
+) -> Option<u64> {
+    let mut heights = [None, None, None];
+    let mut len = 0usize;
+    for identity in [first, second, third].into_iter().flatten() {
+        heights[len] = Some(identity.block_number);
+        len += 1;
+    }
+    if len < 2 {
+        return None;
+    }
+    let heights = &mut heights[..len];
+    heights.sort_unstable();
+    Some(heights[if len == 3 { 1 } else { 0 }].expect("successful head has a height"))
+}
+
 /// Allows reuse of a persisted runtime attestation only when every immutable-config
 /// binding is present and matches exactly.
 #[cfg(not(verus_keep_ghost))]
@@ -1181,8 +1245,12 @@ verus! {
 }
 
 #[cfg(not(verus_keep_ghost))]
-pub const fn service_fee_change_allowed(service_fee: u128, maximum_service_fee: u128) -> bool {
-    service_fee_change_allowed_body!(service_fee, maximum_service_fee)
+pub const fn service_fee_change_allowed(
+    service_fee: u128,
+    minimum_service_fee: u128,
+    maximum_service_fee: u128,
+) -> bool {
+    service_fee_change_allowed_body!(service_fee, minimum_service_fee, maximum_service_fee)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -2125,6 +2193,52 @@ verus! {
         }
     }
 
+    pub open spec fn withdrawal_finalized_checkpoint_quorum_spec(
+        first_head: Option<(int, int)>,
+        second_head: Option<(int, int)>,
+        third_head: Option<(int, int)>,
+        first_observation: Option<(int, int)>,
+        second_observation: Option<(int, int)>,
+        third_observation: Option<(int, int)>,
+        checkpoint: int,
+    ) -> Option<(int, int)> {
+        let first = match (first_head, first_observation) {
+            (Some(head), Some(observation)) => {
+                if head.0 >= checkpoint && observation.0 == checkpoint {
+                    Some(observation)
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        };
+        let second = match (second_head, second_observation) {
+            (Some(head), Some(observation)) => {
+                if head.0 >= checkpoint && observation.0 == checkpoint {
+                    Some(observation)
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        };
+        let third = match (third_head, third_observation) {
+            (Some(head), Some(observation)) => {
+                if head.0 >= checkpoint && observation.0 == checkpoint {
+                    Some(observation)
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        };
+        withdrawal_finalized_identity_quorum_spec(
+            first,
+            second,
+            third,
+        )
+    }
+
     pub open spec fn runtime_attestation_matches_spec(
         observation_present: bool,
         chain_id_matches: bool,
@@ -2164,9 +2278,9 @@ verus! {
     }
 
     pub open spec fn service_fee_change_allowed_spec(
-        service_fee: int, maximum_service_fee: int,
+        service_fee: int, minimum_service_fee: int, maximum_service_fee: int,
     ) -> bool {
-        service_fee_change_allowed_body!(service_fee, maximum_service_fee)
+        service_fee_change_allowed_body!(service_fee, minimum_service_fee, maximum_service_fee)
     }
 
     pub open spec fn reserve_admission_preserves_requirement_spec(

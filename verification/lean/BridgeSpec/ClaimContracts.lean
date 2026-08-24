@@ -276,12 +276,12 @@ theorem reservation_commit_witness : ReservationCommit :=
   ⟨Claims.reservation_claim, reservation_lifecycle_witness⟩
 
 def ServiceFeeMaximum : Prop :=
-  (∀ serviceFee maximumServiceFee : Nat,
-      serviceFeeChangeAllowed serviceFee maximumServiceFee = true ↔
-        serviceFee ≤ maximumServiceFee) ∧ FeeAccountingOnce
+  (∀ serviceFee minimumServiceFee maximumServiceFee : Nat,
+      serviceFeeChangeAllowed serviceFee minimumServiceFee maximumServiceFee = true ↔
+        minimumServiceFee ≤ serviceFee ∧ serviceFee ≤ maximumServiceFee) ∧ FeeAccountingOnce
 
 theorem service_fee_maximum_witness : ServiceFeeMaximum :=
-  ⟨by intro serviceFee maximumServiceFee; exact Claims.service_fee_claim,
+  ⟨by intro serviceFee minimumServiceFee maximumServiceFee; exact Claims.service_fee_claim,
     fee_accounting_once_witness⟩
 
 def FeeRecipientRotation : Prop :=
@@ -398,10 +398,11 @@ def PendingQueue : Prop :=
         (restorePendingQueue queue incoming incoming.key).map
           (fun entry => entry.blocked) = some true) ∧
     (∀ queue : BridgeSpec.PendingQueue,
-      restorePendingQueue queue = restorePendingQueue queue)
+      (recordPendingQueueWrite queue false).session = queue ∧
+        (recordPendingQueueWrite queue false).durable = none)
 
 theorem pending_queue_witness : PendingQueue := by
-  exact ⟨Claims.pending_queue_claim, fun _ => rfl⟩
+  exact ⟨Claims.pending_queue_claim, Claims.pending_queue_storage_failure_claim⟩
 
 def CanonicalProbe : Prop :=
   (∀ receiptBlock snapshotBlock : Nat,
@@ -413,13 +414,15 @@ theorem canonical_probe_witness : CanonicalProbe :=
     integrated_protocol_reachability_witness⟩
 
 def WithdrawalFinalityQuorum : Prop :=
-  ∀ {first second third : Option Nat} {checkpoint : Nat},
-    withdrawalFinalizedCheckpoint first second third = some checkpoint →
-      twoFinalizedHeadsAttest first second third checkpoint
+  (∀ {first second third : Option Nat} {checkpoint : Nat},
+      withdrawalFinalizedCheckpoint first second third = some checkpoint →
+        twoFinalizedHeadsAttest first second third checkpoint) ∧
+  (∀ {first second third : Option FinalizedIdentity} {checkpoint : FinalizedIdentity},
+      withdrawalFinalizedIdentityQuorum first second third = some checkpoint →
+        twoFinalizedIdentitiesAttest first second third checkpoint)
 
 theorem withdrawal_finality_quorum_witness : WithdrawalFinalityQuorum := by
-  intro first second third checkpoint selected
-  exact Claims.withdrawal_finality_quorum_claim selected
+  exact ⟨Claims.withdrawal_finality_quorum_claim, Claims.withdrawal_finality_identity_claim⟩
 
 def AuthorizationBinding : Prop :=
   (∀ {state next : DepositState} {authorization : Authorization}
@@ -466,10 +469,16 @@ theorem exact_mint_finalization_witness : ExactMintFinalization :=
 def EpochInvalidation : Prop :=
   (∀ {state : DepositState} {current replacement : Authorization}
       {origin : AuthorizationOrigin}, state.authorization = some current →
-        commitAuthorization state replacement origin = none) ∧ AuthorizationBinding
+        commitAuthorization state replacement origin = none) ∧
+  (∀ {authorizationEpoch currentEpoch retiredSigner replacementSigner : Nat},
+      retiredSigner ≠ replacementSigner →
+        evmMintAuthorizationAccepted authorizationEpoch (currentEpoch + 1)
+          retiredSigner replacementSigner = false) ∧ AuthorizationBinding
 
 theorem epoch_invalidation_witness : EpochInvalidation :=
-  ⟨committed_authorization_cannot_be_reissued, authorization_binding_witness⟩
+  ⟨committed_authorization_cannot_be_reissued,
+    retired_signer_rejects_even_future_epoch_authorizations,
+    authorization_binding_witness⟩
 
 abbrev WithdrawalEventuallyPaid := Liveness.WithdrawalEventuallyPaid
 theorem withdrawal_eventually_paid_witness : WithdrawalEventuallyPaid :=

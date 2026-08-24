@@ -20,6 +20,7 @@ contract BridgeConstructorFixture {
         uint256 perDepositLimit,
         uint256 mintWindowLimit,
         uint64 mintWindowDuration,
+        uint256 minServiceFee,
         uint256 maxServiceFee,
         uint256 initialServiceFee
     ) {
@@ -32,6 +33,7 @@ contract BridgeConstructorFixture {
                 perDepositLimit,
                 mintWindowLimit,
                 mintWindowDuration,
+                minServiceFee,
                 maxServiceFee,
                 initialServiceFee
             )
@@ -93,6 +95,7 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.runtimeAdministrator.selector, "runtimeAdministrator()");
         _assertSelector(IBridge.baseAdminTimelock.selector, "baseAdminTimelock()");
         _assertSelector(IBridge.serviceFee.selector, "serviceFee()");
+        _assertSelector(IBridge.MIN_SERVICE_FEE.selector, "MIN_SERVICE_FEE()");
         _assertSelector(IBridge.MAX_SERVICE_FEE.selector, "MAX_SERVICE_FEE()");
         _assertSelector(IBridge.perDepositLimit.selector, "perDepositLimit()");
         _assertSelector(IBridge.mintWindowLimit.selector, "mintWindowLimit()");
@@ -116,7 +119,6 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBridge.setServiceFee.selector, "setServiceFee(uint256)");
         _assertSelector(IBridge.rotateBridgeSigner.selector, "rotateBridgeSigner(address)");
         _assertSelector(IBridge.rotateRuntimeAdministrator.selector, "rotateRuntimeAdministrator(address)");
-        _assertSelector(IBridge.rotateBaseAdminTimelock.selector, "rotateBaseAdminTimelock(address)");
     }
 
     function testErrorSelectors() public pure {
@@ -177,7 +179,15 @@ contract InterfaceSelectorsTest {
     }
 
     function testTimelockErrorSelectors() public pure {
+        _assertSelector(
+            BridgeTimelockController.rotateOperationalMembers.selector,
+            "rotateOperationalMembers(address,address)"
+        );
         _assertSelector(BridgeTimelockController.RoleSetFrozen.selector, "RoleSetFrozen(bytes32,address)");
+        _assertSelector(
+            BridgeTimelockController.InvalidOperationalRoleRotation.selector,
+            "InvalidOperationalRoleRotation(address,address)"
+        );
         _assertSelector(BridgeTimelockController.MaximumDelayTooLong.selector, "MaximumDelayTooLong(uint256,uint256)");
         _assertSelector(
             BridgeTimelockController.RoleMustHaveSingleMember.selector, "RoleMustHaveSingleMember(bytes32,uint256)"
@@ -202,7 +212,6 @@ contract InterfaceSelectorsTest {
             IBridge.MintAuthorizationEpochChanged.selector, "MintAuthorizationEpochChanged(address,uint256,uint256)"
         );
         _assertTopic(IBridge.RuntimeAdministratorChanged.selector, "RuntimeAdministratorChanged(address,address)");
-        _assertTopic(IBridge.BaseAdminTimelockChanged.selector, "BaseAdminTimelockChanged(address,address)");
     }
 
     function testEIP3009TypeHashes() public pure {
@@ -245,7 +254,7 @@ contract InterfaceSelectorsTest {
 
     function testConstructorArgumentOrderFixture() public {
         BridgeConstructorFixture fixture = new BridgeConstructorFixture(
-            address(0x11), address(0x22), address(0x33), bytes32(uint256(0x44)), 100, 200, 1 hours, 10, 1
+            address(0x11), address(0x22), address(0x33), bytes32(uint256(0x44)), 100, 200, 1 hours, 1, 10, 1
         );
         bytes32 expected = keccak256(
             abi.encode(
@@ -256,6 +265,7 @@ contract InterfaceSelectorsTest {
                 uint256(100),
                 uint256(200),
                 uint64(1 hours),
+                uint256(1),
                 uint256(10),
                 uint256(1)
             )

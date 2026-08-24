@@ -1,4 +1,4 @@
-use crate::{api, STORE};
+use crate::{admin, api, STORE};
 use candid::{CandidType, Decode, Deserialize, Nat, Principal};
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -75,12 +75,28 @@ pub fn supported_standards() -> Vec<Icrc10SupportedStandard> {
     }]
 }
 
+pub fn resource_limited() -> Icrc21ConsentMessageResponse {
+    Icrc21ConsentMessageResponse::Err(Icrc21Error::GenericError(Icrc21GenericError {
+        description: "Consent message capacity is temporarily unavailable.".into(),
+        error_code: Nat::from(429u16),
+    }))
+}
+
 pub fn consent_message(
     caller: Principal,
     canister: Principal,
     request: Icrc21ConsentMessageRequest,
     current_ledger_fee: Option<u128>,
 ) -> Icrc21ConsentMessageResponse {
+    const MAX_METHOD_BYTES: usize = 64;
+    const MAX_ARGUMENT_BYTES: usize = 4_096;
+    const MAX_LANGUAGE_BYTES: usize = 16;
+    if request.method.len() > MAX_METHOD_BYTES
+        || request.arg.len() > MAX_ARGUMENT_BYTES
+        || request.user_preferences.metadata.language.len() > MAX_LANGUAGE_BYTES
+    {
+        return unavailable("consent request exceeds supported size limits");
+    }
     if request.method == "continue_withdrawal" {
         return settlement_consent(caller, canister, request);
     }
@@ -94,7 +110,7 @@ pub fn consent_message(
         return deposit_refund_consent(caller, canister, request, current_ledger_fee);
     }
     if request.method != "request_deposit" {
-        return unsupported(format!("unsupported canister call: {}", request.method));
+        return unsupported("unsupported canister call");
     }
     let args = match Decode!(&request.arg, api::DepositArgs) {
         Ok(args) => args,
@@ -185,8 +201,8 @@ fn fee_payout_consent(
     canister: Principal,
     request: Icrc21ConsentMessageRequest,
 ) -> Icrc21ConsentMessageResponse {
-    if caller == Principal::anonymous() {
-        return unavailable("anonymous caller is not allowed");
+    if !matches!(admin::can_manage_fee_payout(caller), Ok(true)) {
+        return unavailable("fee payout consent is not authorized");
     }
     let payout_id = match Decode!(&request.arg, u64) {
         Ok(id) => id,
@@ -494,6 +510,31 @@ mod tests {
         };
         assert!(matches!(
             consent_message(caller, caller, malformed, Some(10_000)),
+            Icrc21ConsentMessageResponse::Err(Icrc21Error::ConsentMessageUnavailable(_))
+        ));
+
+        let reflected = "x".repeat(32);
+        let mut unsupported_request = request(&api::DepositArgs {
+            owner_sequence: 0,
+            base_recipient: vec![2; 20],
+            from_subaccount: None,
+            gross_amount: Nat::from(200_000_000u64),
+            max_service_fee: Nat::from(1_000_000u64),
+        });
+        unsupported_request.method = reflected.clone();
+        let response = consent_message(caller, caller, unsupported_request, Some(10_000));
+        assert!(!format!("{response:?}").contains(&reflected));
+
+        let mut oversized = request(&api::DepositArgs {
+            owner_sequence: 0,
+            base_recipient: vec![2; 20],
+            from_subaccount: None,
+            gross_amount: Nat::from(200_000_000u64),
+            max_service_fee: Nat::from(1_000_000u64),
+        });
+        oversized.arg = vec![0; 4_097];
+        assert!(matches!(
+            consent_message(caller, caller, oversized, Some(10_000)),
             Icrc21ConsentMessageResponse::Err(Icrc21Error::ConsentMessageUnavailable(_))
         ));
 

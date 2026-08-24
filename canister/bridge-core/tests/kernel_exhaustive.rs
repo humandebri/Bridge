@@ -76,8 +76,9 @@ fn signing_cycle_requirement_is_fail_closed() {
 fn fee_rotation_reserve_admission_and_lease_fences_are_fail_closed() {
     assert!(fee_recipient_rotation_allowed(0));
     assert!(!fee_recipient_rotation_allowed(1));
-    assert!(service_fee_change_allowed(10, 10));
-    assert!(!service_fee_change_allowed(11, 10));
+    assert!(service_fee_change_allowed(10, 1, 10));
+    assert!(!service_fee_change_allowed(0, 1, 10));
+    assert!(!service_fee_change_allowed(11, 1, 10));
     assert!(reserve_admission_preserves_requirement(7, 1, 8, 0));
     assert!(!reserve_admission_preserves_requirement(7, 1, 7, 0));
     assert!(!reserve_admission_preserves_requirement(

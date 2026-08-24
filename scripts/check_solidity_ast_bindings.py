@@ -9,6 +9,7 @@ import json
 import re
 from pathlib import Path
 from typing import Iterator
+from collections import Counter
 
 from smt_obligations import SmtObligation, parse_smt_obligations
 
@@ -290,6 +291,173 @@ def direct_calls(node: object, declaration_id: int) -> list[dict[str, object]]:
     return calls
 
 
+def require_closed_call_set(node: object, expected: Counter[str], context: str) -> None:
+    actual: Counter[str] = Counter()
+    for item in walk(node):
+        if item.get("nodeType") == "InlineAssembly":
+            raise ValueError(f"{context} must not contain inline assembly")
+        if item.get("nodeType") != "FunctionCall":
+            continue
+        expression = item.get("expression")
+        if not isinstance(expression, dict):
+            raise ValueError(f"{context} contains an unclassified call")
+        if expression.get("nodeType") == "FunctionCallOptions":
+            raise ValueError(f"{context} must not contain call options")
+        member = expression.get("memberName")
+        if member in {"call", "callcode", "delegatecall", "staticcall", "send", "transfer"}:
+            raise ValueError(f"{context} must not contain low-level calls")
+        actual[expression_path(expression)] += 1
+    if actual != expected:
+        raise ValueError(
+            f"{context} call set differs: actual={dict(actual)} expected={dict(expected)}"
+        )
+
+
+def require_signature_guard(
+    body: object,
+    error_id: int,
+    recovered_id: int,
+    bridge_signer_id: int,
+) -> None:
+    guards = [item for item in walk(body) if item.get("nodeType") == "IfStatement"]
+    if len(guards) != 1:
+        raise ValueError("Bridge Mint wrapper must contain exactly one signature guard")
+    guard = guards[0]
+    condition = guard.get("condition")
+    if not isinstance(condition, dict) or condition.get("nodeType") != "BinaryOperation" \
+            or condition.get("operator") != "||":
+        raise ValueError("Bridge Mint signature guard must be fail-closed OR")
+    left = condition.get("leftExpression")
+    right = condition.get("rightExpression")
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        raise ValueError("Bridge Mint signature guard operands are missing")
+    if (
+        left.get("nodeType") != "BinaryOperation"
+        or left.get("operator") != "!="
+        or referenced_declarations(left.get("leftExpression")) != {error_id}
+        or expression_path(left.get("rightExpression")) != "ECDSA.RecoverError.NoError"
+        or right.get("nodeType") != "BinaryOperation"
+        or right.get("operator") != "!="
+        or referenced_declarations(right.get("leftExpression")) != {recovered_id}
+        or referenced_declarations(right.get("rightExpression")) != {bridge_signer_id}
+    ):
+        raise ValueError("Bridge Mint signature guard binding differs")
+    true_body = guard.get("trueBody")
+    statements = true_body.get("statements") if isinstance(true_body, dict) else None
+    if not isinstance(statements, list) or len(statements) != 1 \
+            or statements[0].get("nodeType") != "RevertStatement":
+        raise ValueError("Bridge Mint invalid signature branch must only revert")
+    error_call = statements[0].get("errorCall")
+    expression = error_call.get("expression") if isinstance(error_call, dict) else None
+    if not isinstance(expression, dict) \
+            or expression_path(expression) != "IBridge.InvalidMintAuthorizationSignature":
+        raise ValueError("Bridge Mint signature guard must use the canonical error")
+
+
+def require_digest_body(
+    digest: FunctionRecord,
+    authorization_id: int,
+    typehash_id: int,
+    hash_typed_data_id: int,
+) -> None:
+    body = digest.node.get("body")
+    statements = body.get("statements") if isinstance(body, dict) else None
+    if not isinstance(statements, list) or len(statements) != 1 \
+            or statements[0].get("nodeType") != "Return":
+        raise ValueError("Bridge Mint digest must be a single closed return")
+    outer = statements[0].get("expression")
+    if not isinstance(outer, dict) or outer.get("nodeType") != "FunctionCall" \
+            or outer.get("expression", {}).get("referencedDeclaration") != hash_typed_data_id:
+        raise ValueError("Bridge Mint digest must use the EIP-712 domain hash")
+    outer_args = outer.get("arguments")
+    inner = outer_args[0] if isinstance(outer_args, list) and len(outer_args) == 1 else None
+    if not isinstance(inner, dict) or expression_path(inner.get("expression")) != "keccak256":
+        raise ValueError("Bridge Mint digest must keccak the encoded struct")
+    inner_args = inner.get("arguments")
+    encoded = inner_args[0] if isinstance(inner_args, list) and len(inner_args) == 1 else None
+    if not isinstance(encoded, dict) or expression_path(encoded.get("expression")) != "abi.encode":
+        raise ValueError("Bridge Mint digest must use abi.encode")
+    auth = ("declaration", authorization_id)
+    expected = (
+        ("declaration", typehash_id),
+        ("member", auth, "depositId"),
+        ("member", auth, "recipient"),
+        ("member", auth, "grossAmount"),
+        ("member", auth, "maxServiceFee"),
+        ("member", auth, "chargedServiceFee"),
+        ("member", auth, "deadline"),
+        ("member", auth, "authorizationEpoch"),
+    )
+    arguments = encoded.get("arguments")
+    actual = tuple(expression_declaration_binding(value) for value in arguments) \
+        if isinstance(arguments, list) else ()
+    if actual != expected:
+        raise ValueError(f"Bridge Mint digest fields differ: {actual}")
+    require_closed_call_set(
+        body,
+        Counter({"_hashTypedDataV4": 1, "keccak256": 1, "abi.encode": 1}),
+        "Bridge Mint digest",
+    )
+
+
+def require_all_reject_reasons_fail_closed(record: FunctionRecord) -> None:
+    body = record.node.get("body")
+    reason_id = named_declaration_id(record.node.get("parameters", {}), "reason")
+    expected = {
+        "None",
+        "Paused",
+        "Expired",
+        "DeadlineTooFar",
+        "EpochMismatch",
+        "ZeroRecipient",
+        "InvalidRecipient",
+        "GrossExceedsU128",
+        "MaximumFeeExceedsU128",
+        "ChargedFeeExceedsU128",
+        "Processed",
+        "ProtocolFeeExceeded",
+        "UserFeeExceeded",
+        "InvalidAmount",
+        "PerDepositLimitExceeded",
+        "WindowLimitExceeded",
+        "TimestampExceedsU64",
+    }
+    observed: set[str] = set()
+    for guard in [item for item in walk(body) if item.get("nodeType") == "IfStatement"]:
+        condition = guard.get("condition")
+        if not isinstance(condition, dict) or condition.get("nodeType") != "BinaryOperation" \
+                or condition.get("operator") != "==" \
+                or referenced_declarations(condition.get("leftExpression")) != {reason_id}:
+            raise ValueError("Bridge Mint reject guard binding differs")
+        path = expression_path(condition.get("rightExpression"))
+        prefix = "MintAuthorizationPolicy.RejectReason."
+        if not path.startswith(prefix):
+            raise ValueError("Bridge Mint reject guard is not bound to RejectReason")
+        variant = path.removeprefix(prefix)
+        true_body = guard.get("trueBody")
+        statements = (
+            true_body.get("statements")
+            if isinstance(true_body, dict) and true_body.get("nodeType") == "Block"
+            else [true_body]
+        )
+        node_types = [item.get("nodeType") for item in statements if isinstance(item, dict)] \
+            if isinstance(statements, list) else []
+        expected_body = ["Return"] if variant == "None" else ["RevertStatement"]
+        if node_types != expected_body:
+            raise ValueError(f"Bridge Mint reject reason does not fail closed: {variant}")
+        if variant in observed:
+            raise ValueError(f"duplicate Bridge Mint reject reason: {variant}")
+        observed.add(variant)
+    if observed != expected:
+        raise ValueError(
+            f"Bridge Mint RejectReason coverage differs: missing={sorted(expected-observed)} "
+            f"extra={sorted(observed-expected)}"
+        )
+    statements = body.get("statements") if isinstance(body, dict) else None
+    if not isinstance(statements, list) or statements[-1].get("nodeType") != "RevertStatement":
+        raise ValueError("Bridge Mint unknown reject reason must fail closed")
+
+
 def named_declaration_id(node: object, name: str) -> int:
     declarations = {
         item["id"]
@@ -566,11 +734,21 @@ def validate_bridge_commit(index: AstIndex) -> None:
         "contracts/lib/openzeppelin-contracts/contracts/utils/cryptography/"
         "ECDSA.sol#ECDSA.tryRecoverCalldata(bytes32,bytes)"
     )
+    reject_link = (
+        "contracts/src/Bridge.sol#Bridge._revertRejectedMint("
+        "MintAuthorizationPolicy.RejectReason,IBridge.MintAuthorization,uint256)"
+    )
+    hash_typed_data_link = (
+        "contracts/lib/openzeppelin-contracts/contracts/utils/cryptography/"
+        "EIP712.sol#EIP712._hashTypedDataV4(bytes32)"
+    )
     wrapper_records = index.resolve(wrapper_link)
     commit_records = index.resolve(commit_link)
     digest_records = index.resolve(digest_link)
     evaluate_records = index.resolve(evaluate_link)
     recover_records = index.resolve(recover_link)
+    reject_records = index.resolve(reject_link)
+    hash_typed_data_records = index.resolve(hash_typed_data_link)
     if any(
         len(records) != 1
         for records in (
@@ -579,12 +757,26 @@ def validate_bridge_commit(index: AstIndex) -> None:
             digest_records,
             evaluate_records,
             recover_records,
+            reject_records,
+            hash_typed_data_records,
         )
     ):
         raise ValueError("Bridge Mint wrapper AST must resolve exactly once")
     wrapper = wrapper_records[0]
     commit = commit_records[0]
+    digest = digest_records[0]
+    reject = reject_records[0]
     variables = _state_variables(wrapper, index)
+    wrapper_statements = wrapper.node.get("body", {}).get("statements", [])
+    if [statement.get("nodeType") for statement in wrapper_statements] != [
+        "VariableDeclarationStatement",
+        "VariableDeclarationStatement",
+        "IfStatement",
+        "VariableDeclarationStatement",
+        "ExpressionStatement",
+        "ExpressionStatement",
+    ]:
+        raise ValueError("Bridge Mint wrapper statement sequence differs")
     commit_calls = direct_calls(wrapper.node.get("body"), commit.declaration_id)
     if len(commit_calls) != 1:
         raise ValueError("Bridge Mint wrapper must call the commit boundary exactly once")
@@ -593,6 +785,8 @@ def validate_bridge_commit(index: AstIndex) -> None:
     signature_id = named_declaration_id(wrapper_parameters, "signature")
     digest_id = named_declaration_id(wrapper.node.get("body"), "digest")
     effects_id = named_declaration_id(wrapper.node.get("body"), "effects")
+    recovered_id = named_declaration_id(wrapper.node.get("body"), "recovered")
+    error_id = named_declaration_id(wrapper.node.get("body"), "error")
     digest_initializer = declaration_initializer_call(
         wrapper.node.get("body"), digest_id, digest_records[0].declaration_id
     )
@@ -622,11 +816,49 @@ def validate_bridge_commit(index: AstIndex) -> None:
     require_call_argument_declarations(
         recover_calls[0], (digest_id, signature_id)
     )
+    recovery_statements = [
+        item
+        for item in wrapper_statements
+        if item.get("nodeType") == "VariableDeclarationStatement"
+        and {declaration.get("id") for declaration in item.get("declarations", []) if declaration}
+        >= {recovered_id, error_id}
+    ]
+    if len(recovery_statements) != 1 \
+            or recovery_statements[0].get("initialValue", {}).get("id") != recover_calls[0].get("id"):
+        raise ValueError("Bridge Mint recovered signer declarations are not bound to recovery")
+    require_signature_guard(
+        wrapper.node.get("body"),
+        error_id,
+        recovered_id,
+        variables["bridgeSigner"],
+    )
     require_no_declaration_reassignment(
-        wrapper.node.get("body"), {digest_id, effects_id}
+        wrapper.node.get("body"), {digest_id, effects_id, recovered_id, error_id, *variables.values()}
     )
     require_call_argument_declarations(
         commit_calls[0], (authorization_id, digest_id, effects_id)
+    )
+    reject_calls = direct_calls(wrapper.node.get("body"), reject.declaration_id)
+    if len(reject_calls) != 1:
+        raise ValueError("Bridge Mint wrapper must call the reject boundary exactly once")
+    reason_id = named_declaration_id(wrapper.node.get("body"), "reason")
+    window_available_id = named_declaration_id(wrapper.node.get("body"), "windowAvailable")
+    require_call_argument_declarations(
+        reject_calls[0], (reason_id, authorization_id, window_available_id)
+    )
+    require_closed_call_set(
+        wrapper.node.get("body"),
+        Counter({
+            "_mintAuthorizationDigest": 1,
+            "ECDSA.tryRecoverCalldata": 1,
+            "IBridge.InvalidMintAuthorizationSignature": 1,
+            "MintAuthorizationPolicy.evaluateMint": 1,
+            "MintAuthorizationPolicy.MintTransitionInput": 1,
+            "ElementaryTypeNameExpression": 2,
+            "_revertRejectedMint": 1,
+            "_commitAuthorizedMint": 1,
+        }),
+        "Bridge Mint wrapper",
     )
     selected = {
         name: variables[name]
@@ -645,6 +877,18 @@ def validate_bridge_commit(index: AstIndex) -> None:
     actual_assignments = assignment_values(commit.node.get("body"), selected)
     if actual_assignments != expected_assignments:
         raise ValueError(f"Bridge Mint commit assignment values differ: {actual_assignments}")
+    all_commit_assignments = _assignment_counts(commit.node.get("body"), variables)
+    if {name: count for name, count in all_commit_assignments.items() if count} \
+            != {name: 1 for name in selected}:
+        raise ValueError(f"Bridge Mint commit has unlisted state writes: {all_commit_assignments}")
+    require_no_declaration_reassignment(
+        commit.node.get("body"), set(variables.values()) - set(selected.values())
+    )
+    require_closed_call_set(
+        commit.node.get("body"),
+        Counter({"bsns.bridgeMint": 1, "IBridge.DepositMinted": 1}),
+        "Bridge Mint commit",
+    )
     if call_name_count(wrapper.node.get("body"), "bridgeMint") != 0:
         raise ValueError("Bridge Mint wrapper calls bridgeMint outside the commit boundary")
     if call_name_count(commit.node.get("body"), "bridgeMint") != 1:
@@ -669,6 +913,16 @@ def validate_bridge_commit(index: AstIndex) -> None:
     ]
     if event_arguments != expected_event_arguments:
         raise ValueError(f"Bridge Mint event arguments differ: {event_arguments}")
+    digest_authorization_id = named_declaration_id(
+        digest.node.get("parameters", {}), "authorization"
+    )
+    require_digest_body(
+        digest,
+        digest_authorization_id,
+        variables["MINT_AUTHORIZATION_TYPEHASH"],
+        hash_typed_data_records[0].declaration_id,
+    )
+    require_all_reject_reasons_fail_closed(reject)
 
 
 def main() -> int:

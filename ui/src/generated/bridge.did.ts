@@ -116,9 +116,11 @@ export type AutomaticProgressState = {
   } |
   { 'Running' : { 'lease_until_ns' : bigint } };
 export interface AutomaticProgressView { 'state' : AutomaticProgressState }
-export type BaseGovernanceAction = { 'PauseDepositMints' : null } |
+export type BaseGovernanceAction = { 'ExecuteControlPlaneRotation' : null } |
+  { 'PauseDepositMints' : null } |
   { 'SetServiceFee' : { 'value' : bigint } } |
   { 'PauseWithdrawals' : null } |
+  { 'ScheduleControlPlaneRotation' : null } |
   { 'CancelPendingTimelock' : null };
 export interface BaseGovernanceConfirmation {
   'transaction_hash' : Uint8Array | number[],
@@ -134,18 +136,42 @@ export type BaseGovernanceError = {
   } |
   { 'Busy' : { 'operation_id' : bigint } } |
   { 'TransactionNotFinalized' : { 'operation_id' : bigint } } |
+  { 'InsufficientCycles' : null } |
   { 'Unauthorized' : null } |
+  { 'RateLimited' : null } |
   { 'InvalidArgument' : null } |
   { 'TransactionReverted' : { 'operation_id' : bigint } } |
   { 'StorageFailure' : null } |
   { 'ObservationUnavailable' : null } |
   { 'ReplacementLimitReached' : { 'operation_id' : bigint } } |
   { 'SigningUnavailable' : { 'class' : SigningFailureClass } };
-export type BaseGovernanceOperationKind = { 'PauseDepositMints' : null } |
+export type BaseGovernanceOperationKind = {
+    'ExecuteControlPlaneRotation' : {
+      'independent_canceller' : Uint8Array | number[],
+      'salt' : Uint8Array | number[],
+      'generation' : number,
+      'operation_id' : Uint8Array | number[],
+      'bridge_signer' : Uint8Array | number[],
+      'runtime_administrator' : Uint8Array | number[],
+      'governance_operator' : Uint8Array | number[],
+    }
+  } |
+  { 'PauseDepositMints' : null } |
   { 'CancelTimelock' : { 'operation_id' : Uint8Array | number[] } } |
   { 'SetServiceFee' : { 'value' : bigint } } |
   { 'PauseWithdrawals' : null } |
   { 'ScheduleActivation' : ActivationOperationView } |
+  {
+    'ScheduleControlPlaneRotation' : {
+      'independent_canceller' : Uint8Array | number[],
+      'salt' : Uint8Array | number[],
+      'generation' : number,
+      'operation_id' : Uint8Array | number[],
+      'bridge_signer' : Uint8Array | number[],
+      'runtime_administrator' : Uint8Array | number[],
+      'governance_operator' : Uint8Array | number[],
+    }
+  } |
   { 'ExecuteActivation' : ActivationOperationView };
 export interface BridgeStatus {
   'unpaid_withdrawal_count' : bigint,
@@ -458,7 +484,7 @@ export type Result = { 'Ok' : BaseGovernanceConfirmation } |
   { 'Err' : BaseGovernanceError };
 export type Result_1 = { 'Ok' : FeePayoutActionResult } |
   { 'Err' : SettlementActionError };
-export type Result_10 = { 'Ok' : [] | [SignedBaseGovernanceTransaction] } |
+export type Result_10 = { 'Ok' : Array<SignedBaseGovernanceTransaction> } |
   { 'Err' : BaseGovernanceError };
 export type Result_11 = { 'Ok' : ProductionLifecycle } |
   { 'Err' : BaseGovernanceError };

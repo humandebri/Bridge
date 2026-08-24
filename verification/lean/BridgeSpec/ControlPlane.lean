@@ -240,6 +240,34 @@ theorem governance_nonce_binds_configured_chain
       chainId = state.configuredChainId :=
   safe.2.2.1
 
+inductive GovernanceNonceLane where
+  | governance
+  | runtimeAdministrator
+  | independentCanceller
+  deriving DecidableEq
+
+def laneAvailable (pending : GovernanceNonceLane → Bool) (lane : GovernanceNonceLane) : Bool :=
+  !(pending lane)
+
+theorem governance_pending_does_not_block_emergency_lanes
+    (pending : GovernanceNonceLane → Bool)
+    (_governancePending : pending .governance = true)
+    (runtimeAvailable : pending .runtimeAdministrator = false)
+    (cancellerAvailable : pending .independentCanceller = false) :
+    laneAvailable pending .runtimeAdministrator = true ∧
+      laneAvailable pending .independentCanceller = true := by
+  simp [laneAvailable, runtimeAvailable, cancellerAvailable]
+
+def confirmedControlPlaneRotation (receiptSucceeded observedRolesMatch : Bool) (next : α) : Option α :=
+  if receiptSucceeded && observedRolesMatch then some next else none
+
+theorem control_plane_rotation_commits_only_after_finalized_match
+    (receiptSucceeded observedRolesMatch : Bool) (next : α)
+    (accepted : confirmedControlPlaneRotation receiptSucceeded observedRolesMatch next = some next) :
+    receiptSucceeded = true ∧ observedRolesMatch = true := by
+  simp [confirmedControlPlaneRotation] at accepted
+  exact accepted
+
 theorem unpaused_activation_is_validated
     {state : State} (safe : Safe state)
     (unpaused : state.paused = false) (activated : state.activationCount > 0) :

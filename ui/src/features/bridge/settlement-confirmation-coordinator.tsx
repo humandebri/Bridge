@@ -3,7 +3,7 @@ import { hexToBytes } from "viem"
 import { toast } from "sonner"
 import { deploymentProfile } from "@/config/profile"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
-import { basePublicClient } from "@/lib/evm/client"
+import { basePublicClient, hasIndependentFinalizedRevertQuorum } from "@/lib/evm/client"
 import { finalizedCheckpointMatches } from "@/lib/finalized-checkpoint"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { continueWithdrawalWithBrowserIdentity, NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
@@ -186,6 +186,8 @@ export function SettlementConfirmationCoordinator() {
       )
       if (decision === "retry") return
       if (decision === "discard-reverted") {
+        if (!await hasIndependentFinalizedRevertQuorum(entry.transactionHash)) return
+        if (!isCurrent()) return
         await removePendingConfirmation(entry)
         if (!isCurrent()) return
         if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return

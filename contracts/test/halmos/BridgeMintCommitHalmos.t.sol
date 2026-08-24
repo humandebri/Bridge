@@ -44,8 +44,9 @@ contract BridgeMintCommitHarness is Bridge {
             type(uint128).max,
             type(uint128).max,
             1 hours,
+            1,
             type(uint128).max,
-            0
+            1
         )
     {}
 

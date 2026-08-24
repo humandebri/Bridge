@@ -72,6 +72,7 @@ type BlockMode = variant {
   CanonicalInconsistent;
   FinalizedInconsistent;
   FinalizedUnavailable;
+  FinalizedCheckpointFork;
   Canonical;
   SameHeightDifferentHash;
 };
@@ -520,6 +521,7 @@ service : (InitArgs) -> {
   set_deployment_postconditions : (blob, blob, blob, blob, blob, blob) -> (
       Result_10,
     );
+  set_deployment_role_signers_for_canister : (principal, text) -> (Result_10);
   set_deposit_mints_paused : (bool) -> ();
   set_eth_balance : (nat) -> ();
   set_finalized_block : (nat64, blob) -> (Result_10);

@@ -47,7 +47,12 @@ pub const OFFICIAL_EVM_RPC_CANISTER_ID: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 #[cfg(feature = "test-deployment")]
 pub const BASE_SEPOLIA_CHAIN_ID: u64 = 84_532;
 #[cfg(feature = "test-deployment")]
-pub const STAGING_V33_TO_V36_MIGRATION_ID: &str = "bridge-staging-v33-to-v36";
+pub const STAGING_V33_TO_V34_MIGRATION_ID: &str = "bridge-staging-v33-to-v34";
+#[cfg(feature = "test-deployment")]
+const STAGING_V34_BSNS_RUNTIME_SHA256: [u8; 32] = [
+    0xf3, 0xc6, 0x73, 0xc3, 0xe3, 0xd7, 0xb9, 0x7e, 0x96, 0x76, 0x09, 0x64, 0xc3, 0x5a, 0xed, 0x87,
+    0x4b, 0x69, 0xc4, 0x14, 0xdf, 0x14, 0x17, 0x38, 0x87, 0xa7, 0xeb, 0xbd, 0x38, 0xa2, 0xfd, 0x9b,
+];
 #[cfg(feature = "test-deployment")]
 pub const STAGING_OLD_RPC_URLS: [&str; 3] = [
     "https://base-sepolia-rpc.publicnode.com",
@@ -81,6 +86,10 @@ pub struct BridgeInitArgs {
     pub bridge_contract: Vec<u8>,
     pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
+    pub expected_timelock_minimum_delay_seconds: u64,
+    pub expected_bsns_runtime_sha256: Vec<u8>,
+    pub expected_bsns_decimals: u8,
+    pub expected_minimum_service_fee: u128,
     pub deployment_instance_id: Vec<u8>,
     pub minimum_withdrawal_id: Vec<u8>,
     pub ecdsa_key_name: String,
@@ -118,6 +127,7 @@ pub struct OperationalConfigArgs {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct StagingUpgradeArgs {
     pub migration_id: Option<String>,
+    pub migration_config: Option<StagingV33MigrationConfig>,
     pub status_counts_guard_version: u8,
     pub expected_status_counts: Option<StagingExpectedStatusCounts>,
     pub rpc_provider_update: Option<StagingRpcProviderUpdate>,
@@ -130,12 +140,32 @@ impl Default for StagingUpgradeArgs {
     fn default() -> Self {
         Self {
             migration_id: None,
+            migration_config: None,
             status_counts_guard_version: 1,
             expected_status_counts: None,
             rpc_provider_update: None,
             minimum_withdrawal_id: None,
             confirmation_relayer_principal: None,
         }
+    }
+}
+
+#[cfg(feature = "test-deployment")]
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct StagingV33MigrationConfig {
+    pub expected_timelock_minimum_delay_seconds: u64,
+    pub expected_bsns_runtime_sha256: Vec<u8>,
+    pub expected_bsns_decimals: u8,
+    pub expected_minimum_service_fee: u128,
+}
+
+#[cfg(feature = "test-deployment")]
+impl StagingV33MigrationConfig {
+    pub(crate) fn is_reviewed_staging_value(&self) -> bool {
+        self.expected_timelock_minimum_delay_seconds == 300
+            && self.expected_bsns_runtime_sha256 == STAGING_V34_BSNS_RUNTIME_SHA256
+            && self.expected_bsns_decimals == 8
+            && self.expected_minimum_service_fee == 10_000
     }
 }
 
@@ -188,6 +218,10 @@ pub(crate) struct ImmutableBridgeConfig {
     pub bridge_contract: Vec<u8>,
     pub expected_bridge_runtime_sha256: Vec<u8>,
     pub timelock_contract: Vec<u8>,
+    pub expected_timelock_minimum_delay_seconds: u64,
+    pub expected_bsns_runtime_sha256: Vec<u8>,
+    pub expected_bsns_decimals: u8,
+    pub expected_minimum_service_fee: u128,
     pub deployment_instance_id: Vec<u8>,
     pub minimum_withdrawal_id: Vec<u8>,
     pub ecdsa_key_name: String,
@@ -198,7 +232,6 @@ pub(crate) struct ImmutableBridgeConfig {
     pub deposit_rate_limit_per_principal: u16,
     pub notification_rate_limit_window_seconds: u64,
     pub notification_rate_limit_global: u16,
-    #[serde(default = "default_notification_ingestion_rate_limit_global")]
     pub notification_ingestion_rate_limit_global: u16,
     pub settlement_rate_limit_window_seconds: u64,
     pub settlement_rate_limit_global: u16,
@@ -209,9 +242,7 @@ pub(crate) struct ImmutableBridgeConfig {
     pub governance_replacement: GovernanceReplacementPolicy,
     pub cycles_floor: u128,
     pub settlement_cycle_ceiling: u128,
-    #[serde(default = "anonymous_principal")]
     pub confirmation_relayer_principal: Principal,
-    #[serde(default)]
     pub activation_attestation: Option<ActivationAttestation>,
 }
 
@@ -289,6 +320,7 @@ impl V33ImmutableBridgeConfig {
     pub(crate) fn into_current(
         self,
         confirmation_relayer_principal: Principal,
+        migration: &StagingV33MigrationConfig,
     ) -> ImmutableBridgeConfig {
         ImmutableBridgeConfig {
             ledger_canister_id: self.ledger_canister_id,
@@ -299,6 +331,11 @@ impl V33ImmutableBridgeConfig {
             bridge_contract: self.bridge_contract,
             expected_bridge_runtime_sha256: self.expected_bridge_runtime_sha256,
             timelock_contract: self.timelock_contract,
+            expected_timelock_minimum_delay_seconds: migration
+                .expected_timelock_minimum_delay_seconds,
+            expected_bsns_runtime_sha256: migration.expected_bsns_runtime_sha256.clone(),
+            expected_bsns_decimals: migration.expected_bsns_decimals,
+            expected_minimum_service_fee: migration.expected_minimum_service_fee,
             deployment_instance_id: self.deployment_instance_id,
             minimum_withdrawal_id: self.minimum_withdrawal_id,
             ecdsa_key_name: self.ecdsa_key_name,
@@ -325,12 +362,9 @@ impl V33ImmutableBridgeConfig {
     }
 }
 
+#[cfg(feature = "test-deployment")]
 const fn default_notification_ingestion_rate_limit_global() -> u16 {
     30
-}
-
-fn anonymous_principal() -> Principal {
-    Principal::anonymous()
 }
 
 impl ImmutableBridgeConfig {
@@ -344,6 +378,10 @@ impl ImmutableBridgeConfig {
             bridge_contract: value.bridge_contract.clone(),
             expected_bridge_runtime_sha256: value.expected_bridge_runtime_sha256.clone(),
             timelock_contract: value.timelock_contract.clone(),
+            expected_timelock_minimum_delay_seconds: value.expected_timelock_minimum_delay_seconds,
+            expected_bsns_runtime_sha256: value.expected_bsns_runtime_sha256.clone(),
+            expected_bsns_decimals: value.expected_bsns_decimals,
+            expected_minimum_service_fee: value.expected_minimum_service_fee,
             deployment_instance_id: value.deployment_instance_id.clone(),
             minimum_withdrawal_id: value.minimum_withdrawal_id.clone(),
             ecdsa_key_name: value.ecdsa_key_name.clone(),
@@ -390,6 +428,10 @@ impl ImmutableBridgeConfig {
             bridge_contract: self.bridge_contract,
             expected_bridge_runtime_sha256: self.expected_bridge_runtime_sha256,
             timelock_contract: self.timelock_contract,
+            expected_timelock_minimum_delay_seconds: self.expected_timelock_minimum_delay_seconds,
+            expected_bsns_runtime_sha256: self.expected_bsns_runtime_sha256,
+            expected_bsns_decimals: self.expected_bsns_decimals,
+            expected_minimum_service_fee: self.expected_minimum_service_fee,
             deployment_instance_id: self.deployment_instance_id,
             minimum_withdrawal_id: self.minimum_withdrawal_id,
             ecdsa_key_name: self.ecdsa_key_name,
@@ -439,6 +481,7 @@ impl BridgeInitArgs {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.bridge_contract.len() != 20
             || self.expected_bridge_runtime_sha256.len() != 32
+            || self.expected_bsns_runtime_sha256.len() != 32
             || self.timelock_contract.len() != 20
             || self.deployment_instance_id.len() != 32
             || self.minimum_withdrawal_id.len() != 32
@@ -453,6 +496,12 @@ impl BridgeInitArgs {
                 .expected_bridge_runtime_sha256
                 .iter()
                 .all(|byte| *byte == 0)
+            || self
+                .expected_bsns_runtime_sha256
+                .iter()
+                .all(|byte| *byte == 0)
+            || self.expected_timelock_minimum_delay_seconds == 0
+            || self.expected_minimum_service_fee == 0
             || self.bridge_contract == self.timelock_contract
         {
             return Err("bridge, Timelock, deployment instance ID, minimum withdrawal ID, and runtime hash must be nonzero, with distinct contracts");
@@ -865,6 +914,10 @@ mod tests {
             bridge_contract: vec![1; 20],
             expected_bridge_runtime_sha256: vec![4; 32],
             timelock_contract: vec![2; 20],
+            expected_timelock_minimum_delay_seconds: 86_400,
+            expected_bsns_runtime_sha256: vec![8; 32],
+            expected_bsns_decimals: 8,
+            expected_minimum_service_fee: 100_000,
             deployment_instance_id: vec![3; 32],
             minimum_withdrawal_id: [vec![0; 31], vec![1]].concat(),
             ecdsa_key_name: "key_1".into(),

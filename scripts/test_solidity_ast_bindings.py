@@ -2,6 +2,7 @@
 """Regression tests for compiler-AST proof and production bindings."""
 
 from pathlib import Path
+from collections import Counter
 import tempfile
 import unittest
 
@@ -12,6 +13,7 @@ from check_solidity_ast_bindings import (
     declaration_initializer_library_call,
     library_calls,
     require_call_argument_declarations,
+    require_closed_call_set,
     require_evaluate_input_binding,
     require_no_declaration_reassignment,
     validate_smt_call_graph,
@@ -367,6 +369,40 @@ class SolidityAstBindingTests(unittest.TestCase):
         arguments[1], arguments[2] = arguments[2], arguments[1]
         with self.assertRaisesRegex(ValueError, "input binding differs"):
             require_evaluate_input_binding(call_node, 11, variables)
+
+    def test_rejects_low_level_call_even_when_expected_calls_remain(self) -> None:
+        node = {
+            "nodeType": "Block",
+            "statements": [
+                call("expected", 1),
+                {
+                    "nodeType": "FunctionCall",
+                    "expression": {
+                        "nodeType": "MemberAccess",
+                        "memberName": "call",
+                        "expression": {"nodeType": "Identifier", "name": "token"},
+                    },
+                },
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "low-level calls"):
+            require_closed_call_set(node, Counter({"expected": 1}), "mint wrapper")
+
+    def test_rejects_extra_direct_call_in_closed_wrapper(self) -> None:
+        node = {
+            "nodeType": "Block",
+            "statements": [call("expected", 1), call("unexpectedMint", 2)],
+        }
+        with self.assertRaisesRegex(ValueError, "call set differs"):
+            require_closed_call_set(node, Counter({"expected": 1}), "mint wrapper")
+
+    def test_rejects_inline_assembly_in_closed_wrapper(self) -> None:
+        node = {
+            "nodeType": "Block",
+            "statements": [call("expected", 1), {"nodeType": "InlineAssembly"}],
+        }
+        with self.assertRaisesRegex(ValueError, "inline assembly"):
+            require_closed_call_set(node, Counter({"expected": 1}), "mint wrapper")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,16 @@ contract BridgeTimelockController is TimelockController {
     error MinimumDelayTooShort(uint256 suppliedDelay, uint256 minimumDelay);
     error MaximumDelayTooLong(uint256 suppliedDelay, uint256 maximumDelay);
     error RoleMustHaveSingleMember(bytes32 role, uint256 suppliedMemberCount);
+    error CancellerMustBeIndependent(address canceller, address operationalMember);
     error RoleSetFrozen(bytes32 role, address account);
+    error InvalidOperationalRoleRotation(address governanceOperator, address canceller);
+
+    event OperationalRoleMembersRotated(
+        address indexed previousGovernanceOperator,
+        address indexed newGovernanceOperator,
+        address previousCanceller,
+        address newCanceller
+    );
 
     bool private _rolePolicyActive;
     mapping(bytes32 role => address member) private _roleMember;
@@ -35,11 +44,12 @@ contract BridgeTimelockController is TimelockController {
         _validateSingleRoleMember(PROPOSER_ROLE, proposers);
         _validateSingleRoleMember(CANCELLER_ROLE, cancellers);
         _validateSingleRoleMember(EXECUTOR_ROLE, executors);
+        if (cancellers[0] == proposers[0] || cancellers[0] == executors[0]) {
+            revert CancellerMustBeIndependent(cancellers[0], proposers[0]);
+        }
 
-        // OpenZeppelin grants CANCELLER_ROLE to every proposer. Normalize the
-        // role set to the explicit constructor list before freezing it. This
-        // intentionally permits one canister-derived operator to hold all
-        // three operational roles.
+        // OpenZeppelin grants CANCELLER_ROLE to every proposer. Normalize it
+        // to the separately controlled recovery member before freezing roles.
         for (uint256 index; index < proposers.length; ++index) {
             _revokeRole(CANCELLER_ROLE, proposers[index]);
         }
@@ -55,6 +65,39 @@ contract BridgeTimelockController is TimelockController {
 
     function roleMember(bytes32 role) external view returns (address) {
         return _roleMember[role];
+    }
+
+    /// @notice Atomically rotates the frozen proposer/executor pair and the
+    /// independent canceller. The call itself must pass through this timelock.
+    function rotateOperationalMembers(address newGovernanceOperator, address newCanceller) external {
+        if (msg.sender != address(this)) {
+            revert TimelockUnauthorizedCaller(msg.sender);
+        }
+        if (
+            newGovernanceOperator == address(0) || newCanceller == address(0)
+                || newGovernanceOperator == newCanceller || newGovernanceOperator == address(this)
+                || newCanceller == address(this)
+        ) {
+            revert InvalidOperationalRoleRotation(newGovernanceOperator, newCanceller);
+        }
+
+        address previousGovernanceOperator = _roleMember[PROPOSER_ROLE];
+        address previousCanceller = _roleMember[CANCELLER_ROLE];
+        _rolePolicyActive = false;
+        super._revokeRole(PROPOSER_ROLE, previousGovernanceOperator);
+        super._revokeRole(EXECUTOR_ROLE, previousGovernanceOperator);
+        super._revokeRole(CANCELLER_ROLE, previousCanceller);
+        super._grantRole(PROPOSER_ROLE, newGovernanceOperator);
+        super._grantRole(EXECUTOR_ROLE, newGovernanceOperator);
+        super._grantRole(CANCELLER_ROLE, newCanceller);
+        _rolePolicyActive = true;
+
+        _roleMember[PROPOSER_ROLE] = newGovernanceOperator;
+        _roleMember[EXECUTOR_ROLE] = newGovernanceOperator;
+        _roleMember[CANCELLER_ROLE] = newCanceller;
+        emit OperationalRoleMembersRotated(
+            previousGovernanceOperator, newGovernanceOperator, previousCanceller, newCanceller
+        );
     }
 
     function schedule(

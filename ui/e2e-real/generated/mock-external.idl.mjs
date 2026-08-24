@@ -355,6 +355,7 @@ export const idlFactory = ({ IDL }) => {
     'CanonicalInconsistent' : IDL.Null,
     'FinalizedInconsistent' : IDL.Null,
     'FinalizedUnavailable' : IDL.Null,
+    'FinalizedCheckpointFork' : IDL.Null,
     'Canonical' : IDL.Null,
     'SameHeightDifferentHash' : IDL.Null,
   });
@@ -493,6 +494,11 @@ export const idlFactory = ({ IDL }) => {
           IDL.Vec(IDL.Nat8),
           IDL.Vec(IDL.Nat8),
         ],
+        [Result_10],
+        [],
+      ),
+    'set_deployment_role_signers_for_canister' : IDL.Func(
+        [IDL.Principal, IDL.Text],
         [Result_10],
         [],
       ),

@@ -24,7 +24,7 @@ const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
 const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 36;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 34;
 const GATE_A_ARTIFACTS: [&str; 6] = [
     "profile.json",
     "bridge-canister.wasm",
@@ -1739,6 +1739,10 @@ fn render_release_inputs(
         "ecdsa_key_name": profile.ecdsa_key_name,
         "ecdsa_derivation_path_utf8": profile.ecdsa_derivation_path,
         "governance_ecdsa_derivation_path_utf8": profile.governance_ecdsa_derivation_path,
+        "expected_timelock_minimum_delay_seconds": profile.timelock.minimum_delay_seconds,
+        "expected_bsns_runtime_sha256_hex": profile.bsns_runtime_bytecode_sha256,
+        "expected_bsns_decimals": profile.decimals,
+        "expected_minimum_service_fee": profile.parameters.ledger_fee.to_string(),
         "deposit_rate_limit_window_seconds": profile.rate_limits.deposit_window_seconds,
         "deposit_rate_limit_global": profile.rate_limits.deposit_global,
         "deposit_rate_limit_per_principal": profile.rate_limits.deposit_per_principal,
@@ -1775,6 +1779,7 @@ fn render_release_inputs(
             profile.parameters.per_deposit_limit.to_string(),
             profile.parameters.mint_throughput_limit.to_string(),
             profile.parameters.mint_window_duration_seconds.to_string(),
+            profile.parameters.ledger_fee.to_string(),
             profile.parameters.max_service_fee.to_string(),
             profile.parameters.service_fee.to_string()
         ],
@@ -3145,7 +3150,7 @@ fn verify_activation(
         .map_err(|error| error.to_string())?;
     let snapshot = fetch_live_activation_snapshot(
         &bundle.profile.ic_host,
-        bridge.clone(),
+        bridge,
         submission.proposal_id,
         &canonical_payload,
     )?;
@@ -3299,7 +3304,7 @@ fn verify_schedule_receipt_live(
         .map_err(|error| error.to_string())?;
     let snapshot = fetch_live_activation_snapshot(
         &bundle.profile.ic_host,
-        bridge.clone(),
+        bridge,
         receipt.proposal_id,
         &canonical_payload,
     )?;
@@ -3949,6 +3954,10 @@ mod tests {
             "bridge_contract_hex",
             "expected_bridge_runtime_sha256_hex",
             "timelock_contract_hex",
+            "expected_timelock_minimum_delay_seconds",
+            "expected_bsns_runtime_sha256_hex",
+            "expected_bsns_decimals",
+            "expected_minimum_service_fee",
             "deployment_instance_id_hex",
             "minimum_withdrawal_id_hex",
             "ecdsa_key_name",

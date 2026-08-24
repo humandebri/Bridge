@@ -51,6 +51,13 @@ describe("reviewed deployment profile", () => {
     })).toThrow("reviewed Base history RPC URLs")
   })
 
+  it("rejects duplicate history RPC URLs", () => {
+    expect(() => deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      baseHistoryRpcUrls: ["https://history.example", "https://history.example/"],
+    })).toThrow("Base history RPC URLs must be distinct")
+  })
+
   it("rejects a zero deployment instance ID", () => {
     expect(() => deploymentProfileSchema.parse({
       ...deploymentProfile,

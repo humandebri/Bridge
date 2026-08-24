@@ -79,6 +79,7 @@ pub enum BlockMode {
     Canonical,
     FinalizedUnavailable,
     FinalizedInconsistent,
+    FinalizedCheckpointFork,
     CanonicalInconsistent,
     SameHeightDifferentHash,
 }
@@ -289,7 +290,9 @@ thread_local! {
     static RECEIPT_MINT_LOG_INDEX: RefCell<Option<u64>> = const { RefCell::new(None) };
     static BRIDGE_SIGNER: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static BASE_ADMIN_TIMELOCK: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
+    static GOVERNANCE_OPERATOR: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static RUNTIME_ADMINISTRATOR: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
+    static INDEPENDENT_CANCELLER: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static MINT_AUTHORIZATION_EPOCH: RefCell<u64> = const { RefCell::new(1) };
     static DEPOSIT_MINTS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
     static WITHDRAWALS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
@@ -485,9 +488,39 @@ async fn set_bridge_signer_for_canister(
     canister_id: Principal,
     key_name: String,
 ) -> Result<(), String> {
+    let address = derive_address_for_canister(canister_id, key_name, vec![]).await?;
+    BRIDGE_SIGNER.with(|current| *current.borrow_mut() = address);
+    Ok(())
+}
+
+#[ic_cdk::update]
+async fn set_deployment_role_signers_for_canister(
+    canister_id: Principal,
+    key_name: String,
+) -> Result<(), String> {
+    let governance_path = vec![b"governance-operator".to_vec()];
+    let mut runtime_administrator_path = governance_path.clone();
+    runtime_administrator_path.push(b"KINIC-RUNTIME-ADMINISTRATOR-V1".to_vec());
+    let mut independent_canceller_path = governance_path;
+    independent_canceller_path.push(b"KINIC-INDEPENDENT-CANCELLER-V1".to_vec());
+    let runtime_administrator =
+        derive_address_for_canister(canister_id, key_name.clone(), runtime_administrator_path)
+            .await?;
+    let independent_canceller =
+        derive_address_for_canister(canister_id, key_name, independent_canceller_path).await?;
+    RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = runtime_administrator);
+    INDEPENDENT_CANCELLER.with(|current| *current.borrow_mut() = independent_canceller);
+    Ok(())
+}
+
+async fn derive_address_for_canister(
+    canister_id: Principal,
+    key_name: String,
+    derivation_path: Vec<Vec<u8>>,
+) -> Result<[u8; 20], String> {
     let result = ecdsa_public_key(&EcdsaPublicKeyArgs {
         canister_id: Some(canister_id),
-        derivation_path: vec![],
+        derivation_path,
         key_id: EcdsaKeyId {
             curve: EcdsaCurve::Secp256k1,
             name: key_name,
@@ -499,8 +532,9 @@ async fn set_bridge_signer_for_canister(
         .map_err(|error| format!("invalid SEC1 public key: {error}"))?;
     let uncompressed = key.to_encoded_point(false);
     let hash = keccak(&uncompressed.as_bytes()[1..]);
-    BRIDGE_SIGNER.with(|current| current.borrow_mut().copy_from_slice(&hash[12..]));
-    Ok(())
+    hash[12..]
+        .try_into()
+        .map_err(|_| "derived address must be 20 bytes".to_string())
 }
 
 #[ic_cdk::update]
@@ -542,7 +576,7 @@ fn set_deployment_postconditions(
         return Err("deployment runtime code must be non-empty".into());
     }
     BASE_ADMIN_TIMELOCK.with(|current| *current.borrow_mut() = timelock);
-    RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = governance_operator);
+    GOVERNANCE_OPERATOR.with(|current| *current.borrow_mut() = governance_operator);
     BSNS_ADDRESS.with(|current| *current.borrow_mut() = bsns);
     BSNS_BRIDGE.with(|current| *current.borrow_mut() = bridge);
     TIMELOCK_RUNTIME_CODE.with(|current| *current.borrow_mut() = timelock_runtime_code);
@@ -1113,10 +1147,17 @@ fn multi_request(
         address_word(BSNS_BRIDGE.with(|value| *value.borrow()))
     } else if request.contains(&selector_hex("roleMember(bytes32)")) {
         let default_role = format!("{}{}", selector_hex("roleMember(bytes32)"), "00".repeat(32));
+        let canceller_role = format!(
+            "{}{}",
+            selector_hex("roleMember(bytes32)"),
+            bytes_hex(&keccak(b"CANCELLER_ROLE")),
+        );
         if request.contains(&default_role) {
             address_word(BASE_ADMIN_TIMELOCK.with(|value| *value.borrow()))
+        } else if request.contains(&canceller_role) {
+            address_word(INDEPENDENT_CANCELLER.with(|value| *value.borrow()))
         } else {
-            address_word(RUNTIME_ADMINISTRATOR.with(|value| *value.borrow()))
+            address_word(GOVERNANCE_OPERATOR.with(|value| *value.borrow()))
         }
     } else if request.contains("f702cf2b") {
         let block_number = eip1898_block_number(&request);
@@ -1135,6 +1176,8 @@ fn multi_request(
         WITHDRAWAL.with(|value| withdrawal_response(value.borrow().as_ref()))
     } else if request.contains("8abdf5aa") {
         word(SERVICE_FEE.with(|value| *value.borrow()))
+    } else if request.contains(&selector_hex("MIN_SERVICE_FEE()")) {
+        word(1)
     } else if request.contains("14d90e1b") {
         word(MAX_SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains("e71fb849") {
@@ -1235,6 +1278,26 @@ fn eth_get_block_by_number(
             let first = mock_block(tag.clone(), false);
             let second = mock_block(tag.clone(), true);
             let third = mock_block(tag, false);
+            MultiRpcResult::Inconsistent(vec![
+                (RpcService::Provider(1), Ok(first)),
+                (RpcService::Provider(2), Ok(second)),
+                (RpcService::Provider(3), Ok(third)),
+            ])
+        }
+        (BlockMode::FinalizedCheckpointFork, BlockTag::Finalized) => {
+            let first = mock_block(tag.clone(), false);
+            let second = mock_block(tag.clone(), false);
+            let third = mock_block(tag, false);
+            MultiRpcResult::Inconsistent(vec![
+                (RpcService::Provider(1), Ok(first)),
+                (RpcService::Provider(2), Ok(second)),
+                (RpcService::Provider(3), Ok(third)),
+            ])
+        }
+        (BlockMode::FinalizedCheckpointFork, BlockTag::Number(_)) => {
+            let first = mock_block(tag.clone(), false);
+            let second = mock_block(tag.clone(), false);
+            let third = mock_block(tag, true);
             MultiRpcResult::Inconsistent(vec![
                 (RpcService::Provider(1), Ok(first)),
                 (RpcService::Provider(2), Ok(second)),

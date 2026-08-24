@@ -768,12 +768,22 @@ pub(crate) fn cache_runtime_attestation(
     })
 }
 
+pub(crate) fn bounded_nat_u128(value: &Nat) -> Option<u128> {
+    if value.0.bits() > 128 {
+        return None;
+    }
+    let digits = value.0.to_u64_digits();
+    match digits.as_slice() {
+        [] => Some(0),
+        [low] => Some(u128::from(*low)),
+        [low, high] => Some(u128::from(*low) | (u128::from(*high) << 64)),
+        _ => None,
+    }
+}
+
 fn nat_u128(value: &Nat) -> Result<u128, DepositError> {
-    value
-        .0
-        .to_string()
-        .parse()
-        .map_err(|_| DepositError::InvalidRequest("amount exceeds u128".into()))
+    bounded_nat_u128(value)
+        .ok_or_else(|| DepositError::InvalidRequest("amount exceeds u128".into()))
 }
 
 fn hash_concat(parts: &[&[u8]]) -> [u8; 32] {
@@ -985,6 +995,9 @@ fn deposit_storage_error(error: crate::storage::StorageError) -> DepositError {
         } => DepositError::RateLimited {
             retry_after_seconds,
         },
+        crate::storage::StorageError::LifetimeDepositCapacityExceeded => {
+            DepositError::Rejected("LifetimeDepositCapacityExceeded".into())
+        }
         crate::storage::StorageError::Core(bridge_core::CoreError::ConflictingReplay) => {
             DepositError::DepositConflict
         }
@@ -1242,24 +1255,6 @@ pub async fn request_deposit(
         DepositFundingAttemptState::Prepared | DepositFundingAttemptState::Retryable { .. } => {}
     }
 
-    if let Err(error) = fresh_deposit_preflight(
-        &config,
-        now,
-        deposit_id,
-        Amount::new(gross_amount),
-        Amount::new(max_service_fee),
-    )
-    .await
-    {
-        STORE.with(|store| {
-            store
-                .borrow_mut()
-                .remove_deposit_funding_attempt(caller, &previous)
-                .map_err(|_| DepositError::StorageFailure)
-        })?;
-        return Err(error);
-    }
-
     let mut attempt = previous.clone();
     attempt.state = DepositFundingAttemptState::Dispatched {
         dispatched_at_ns: now,
@@ -1288,7 +1283,21 @@ pub async fn request_deposit(
             bridge_core::FundingAttemptDecision::PromoteSuccess,
             bridge_core::LedgerCallOutcome::Succeeded { block_index }
             | bridge_core::LedgerCallOutcome::Duplicate { block_index },
-        ) => promote_funding_success(&attempt, block_index, &config),
+        ) => {
+            // Funding is irreversible at this point. Run the paid Base
+            // preflight only for this asset-bound identity, but always expose
+            // the funded record even when Base is temporarily unavailable or
+            // rejects the current snapshot; settlement can retry or refund it.
+            let _preflight = fresh_deposit_preflight(
+                &config,
+                ic_cdk::api::time(),
+                deposit_id,
+                Amount::new(gross_amount),
+                Amount::new(max_service_fee),
+            )
+            .await;
+            promote_funding_success(&attempt, block_index, &config)
+        }
         (
             bridge_core::FundingAttemptDecision::PromoteAmbiguous,
             bridge_core::LedgerCallOutcome::Ambiguous,
@@ -2027,6 +2036,18 @@ pub fn get_withdrawals(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_nat_conversion_rejects_before_decimal_formatting() {
+        assert_eq!(bounded_nat_u128(&Nat::from(0u8)), Some(0));
+        assert_eq!(bounded_nat_u128(&Nat::from(u128::MAX)), Some(u128::MAX));
+        let mut oversized = Nat::from(1u8);
+        oversized.0 <<= 128usize;
+        assert_eq!(bounded_nat_u128(&oversized), None);
+        let mut very_large = Nat::from(1u8);
+        very_large.0 <<= 1_000_000usize;
+        assert_eq!(bounded_nat_u128(&very_large), None);
+    }
 
     fn preflight_snapshot() -> bridge_core::BaseMintSnapshot {
         bridge_core::BaseMintSnapshot {

@@ -34,6 +34,7 @@ contract BridgeInvariantHandler is TestBase {
             1_000,
             100_000,
             1 hours,
+            1,
             100,
             10
         );
@@ -110,6 +111,13 @@ contract BridgeInvariantHandler is TestBase {
             epochDecreased = true;
         }
         lastObservedEpoch = currentEpoch;
+        uint256 nextKey = currentSignerKey + 1;
+        vm.prank(BASE_ADMIN_TIMELOCK);
+        (bool rotated,) = address(_bridge).call(abi.encodeCall(IBridge.rotateBridgeSigner, (vm.addr(nextKey))));
+        if (!rotated) {
+            return;
+        }
+        currentSignerKey = nextKey;
         vm.prank(BASE_ADMIN_TIMELOCK);
         _bridge.unpauseDepositMints();
     }
@@ -127,7 +135,10 @@ contract BridgeInvariantHandler is TestBase {
             return;
         }
         vm.prank(BASE_ADMIN_TIMELOCK);
-        _bridge.rotateBridgeSigner(nextSigner);
+        (bool rotated,) = address(_bridge).call(abi.encodeCall(IBridge.rotateBridgeSigner, (nextSigner)));
+        if (!rotated) {
+            return;
+        }
         currentSignerKey = nextKey;
         uint256 currentEpoch = _bridge.mintAuthorizationEpoch();
         if (currentEpoch <= lastObservedEpoch) {
@@ -184,7 +195,7 @@ contract BridgeInvariantHandler is TestBase {
             grossAmount: grossAmount,
             maxServiceFee: fee,
             chargedServiceFee: fee,
-            deadline: block.timestamp + 30 minutes,
+            deadline: block.timestamp + 15 minutes,
             authorizationEpoch: _bridge.mintAuthorizationEpoch()
         });
     }

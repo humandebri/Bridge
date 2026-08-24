@@ -149,9 +149,9 @@ theorem reservation_refinement
   simp [reservationImpl, checkedAdd128, bounded, commitMintReservation]
 
 theorem service_fee_refinement
-    (serviceFee maximumServiceFee : U128) :
-    serviceFeeImpl serviceFee maximumServiceFee =
-      serviceFeeChangeAllowed serviceFee.val maximumServiceFee.val := by
+    (serviceFee minimumServiceFee maximumServiceFee : U128) :
+    serviceFeeImpl serviceFee minimumServiceFee maximumServiceFee =
+      serviceFeeChangeAllowed serviceFee.val minimumServiceFee.val maximumServiceFee.val := by
   rfl
 
 theorem fee_rotation_refinement

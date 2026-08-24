@@ -1,8 +1,8 @@
 # Bridge資源補充・緊急停止
 
-## Schema v36 baseline
+## Schema v34 baseline
 
-初回mainnet deployで導入するv36は、capacity reservation、`nonterminal_deposit_owner_index`、indexed funding recovery deadlineを含む現在のSQLite形状だけを正本とする。v33以下、未知schema、tableやcounterが欠落したDBはreopen時にfail closedとなる。初回mainnet deploy完了後はこの形状をproduction baselineとして固定し、以後の形状変更はschema番号を上げた明示migrationとして扱う。
+初回mainnet deployで導入するv34は、capacity reservation、`nonterminal_deposit_owner_index`、役割別governance nonce lane、indexed funding recovery deadlineを含む現在のSQLite形状だけを正本とする。staging v33 migration以外の旧・未知schema、tableやcounterが欠落したDBはreopen時にfail closedとなる。初回mainnet deploy完了後はこの形状をproduction baselineとして固定し、以後の形状変更はschema番号を上げた明示migrationとして扱う。
 
 ## 日常確認
 
@@ -25,7 +25,7 @@ production Canisterが受け入れるLedger feeは`100000` raw、`test-deploymen
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv36、record wireはv29を現行形式とする。Productionの`post_upgrade`は現行形式だけを受理する。test-deployment stagingだけは、review済みlive v33／wire v28からv36／wire v29への一方向migrationを持つ。
+stable schemaはv34、record wireはv29を現行形式とする。Productionの`post_upgrade`は現行形式だけを受理する。test-deployment stagingだけは、既にdeploy済みのv33／wire v28を固定ID `bridge-staging-v33-to-v34` で一度だけ移行できる。
 
 ## 保持制限と監査
 
@@ -33,10 +33,10 @@ stable schemaはv36、record wireはv29を現行形式とする。Productionの`
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-Productionではschema v36またはwire v29以外のstable state、未知schema、decode不能なDBを、空であってもfail closedで拒否する。
+Productionではschema v34またはwire v29以外のstable state、未知schema、decode不能なDBを、空であってもfail closedで拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。buildが選択した固定`KINIC_LEDGER_FEE`（productionは`100000 raw`、stagingは`10000 raw`）とprepared recordのcharged Service Feeをreview済みprofileに照合した後、任意の非anonymous主体がHistoryから`continue_withdrawal`を実行する。Canisterはruntimeで`icrc1_fee()`を照会せず、固定Ledger Feeがcharged Service Fee以下であることを再検証できた場合だけ、同じrecordからreleaseを開始してguardを解除する。
-現行形式はstable schema v36／record wire v29とする。Productionはこれ以外をfail closedで拒否する。test-deployment stagingだけは、source v33/module・Candid hash、target v36/module・Candid hash、Governance兼用confirmation relayer、state countsをpolicyで固定した一方向upgradeを許可する。初期化済みの永続Canisterは同一deployment instanceのupgradeだけで更新し、reinstallは禁止する。
+現行形式はstable schema v34／record wire v29とする。staging v33／wire v28の一度限りのmigration以外はこれ以外をfail closedで拒否する。staging upgrade policyはsource/target module・Candid hash、migration ID、immutable設定、confirmation relayer、state countsを固定する。初期化済みの永続Canisterは同一deployment instanceのupgradeだけで更新し、reinstallは禁止する。
 SQLite DBやcounterを手作業で変更しない。
 
 schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipient、Authorization、失効またはMint確定証拠を一つのstable envelopeへ保存する。pending Ledger、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、primary rowとliability index・集計は一つのSQLite transactionで更新する。
@@ -109,7 +109,7 @@ npm run governance-relayer -- run --operation-id <id>
 
 配置後のGovernance relayerは`status`と`relay`を匿名で実行できる。`confirm`とconfirmationを含む`run`は専用confirmation relayer identityを必須とし、障害復旧時だけGovernance/Pause principalを使う。`prepare`、`replace`、activation、緊急操作の明示要求には対応するGovernance/Pause identityを使う。初回配置だけは暗号化Foundry keystoreと別password fileを入力とする`production-deploy-driver.sh`で行う。秘密、実path、RPC URLをrelease artifactやevidenceへ記録しない。
 
-stagingを現行schemaへ切り替える前にpending governance transactionとTimelock queueが空であることを確認する。reviewed policyに一致するschema v33／wire v28だけをv36／wire v29へ移行し、それ以外はupgrade対象にしない。rollbackでは最初にrelayerを停止し、対応Wasmとstable snapshotをセットで復元する。
+staging v33→v34 upgrade前にpending governance transactionとTimelock queueが空であることを確認する。review済みpolicyに一致するv33／wire v28だけを固定migrationで更新し、upgrade直後にcontrollerが`initialize_public_config`を実行して全chain-key addressを設定する。その他の旧schemaはupgradeせず新規Canisterへ再構築する。rollbackでは最初にrelayerを停止し、対応Wasmとstable snapshotをセットで復元する。
 
 初回production Canister作成は`icp.yaml`へsubnetを設定せず、review済みidentityで`BRIDGE_ICP_IDENTITY=<identity> scripts/production-canister-bootstrap.sh`を実行する。このscriptは`pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeez-fez7a-iae`を`icp canister create --subnet`へ固定し、作成後または既存mapping再利用時にNNS Registryが返す実subnetとの一致を必須にする。`.icp/data/mappings/production.ids.json`に既存IDがある場合は新規作成しない。
 

@@ -10,7 +10,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from claim_manifest import lean_contract_check_source, parse_claim_manifest
+from claim_manifest import (
+    REQUIRED_CLAIM_IDS,
+    ClaimManifest,
+    lean_contract_check_source,
+    parse_claim_manifest,
+)
 from halmos_obligations import parse_halmos_obligations
 from proof_fingerprint import source_fingerprint
 from source_resolution import is_inside_source_roots, source_path
@@ -37,6 +42,7 @@ REQUIRED_SCALAR_CALLS = (
     "MintAccounting.tryConsumeWindow(",
     "mintEffectAmounts(",
 )
+ALLOWED_LEAN_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
 
 
 def items(value: str) -> list[str]:
@@ -237,6 +243,7 @@ def uncovered_verus_obligations(
             continue
         derived_is_covered = any(
             registration.kind == "derived"
+            and bool(registration.binding)
             and all(
                 (dependency := kernels.get(kernel)) is not None
                 and dependency.kind in {"executable", "shared-expression"}
@@ -294,6 +301,7 @@ def check_solidity_wrapper_refinement() -> None:
 
 def check_lean_claim_contracts(manifest_text: str) -> None:
     manifest = parse_claim_manifest(manifest_text)
+    require_mandatory_claim_catalog(manifest)
     source = lean_contract_check_source(manifest)
     build = subprocess.run(
         ["lake", "build", "BridgeSpec.ClaimContracts"],
@@ -316,12 +324,35 @@ def check_lean_claim_contracts(manifest_text: str) -> None:
         )
     if result.returncode != 0:
         raise ValueError(f"Lean claim contract check failed:\n{result.stdout}{result.stderr}")
+    printed = re.findall(r"depends on axioms: \[([^\]]*)\]", result.stdout)
+    no_axioms = result.stdout.count("does not depend on any axioms")
+    proved = sum(registration.is_proved for registration in manifest.contracts.values())
+    if len(printed) + no_axioms != proved:
+        raise ValueError("Lean did not report an axiom dependency set for every claim witness")
+    for dependencies in printed:
+        actual = {name.strip() for name in dependencies.split(",") if name.strip()}
+        forbidden = actual - ALLOWED_LEAN_AXIOMS
+        if forbidden:
+            raise ValueError(
+                f"Lean claim witness depends on project-local axioms: {sorted(forbidden)}"
+            )
+
+
+def require_mandatory_claim_catalog(manifest: ClaimManifest) -> None:
+    actual = {row[1] for row in manifest.rows}
+    if actual != REQUIRED_CLAIM_IDS:
+        raise ValueError(
+            "mandatory claim catalog differs: "
+            f"missing={sorted(REQUIRED_CLAIM_IDS - actual)} "
+            f"extra={sorted(actual - REQUIRED_CLAIM_IDS)}"
+        )
 
 
 def build_claim_report() -> dict[str, object]:
     check_solidity_wrapper_refinement()
     manifest_text = MANIFEST.read_text(encoding="utf-8")
     manifest = parse_claim_manifest(manifest_text)
+    require_mandatory_claim_catalog(manifest)
     smt_obligations_by_id = parse_smt_obligations(
         (ROOT / "verification" / "smt" / "obligations.tsv").read_text(encoding="utf-8")
     )

@@ -22,7 +22,7 @@ function dependencies() {
   }
 }
 
-describe("createWithdrawalAfterRevalidation", () => {
+describe("withdrawal submission action-time checks", () => {
   it("does not call createWithdrawal when the signer or code drifts while approval is pending", async () => {
     const deps = dependencies()
     deps.refetchRuntime.mockResolvedValue({ data: { ready: false, blockers: ["Bridge signer differs from the reviewed profile"], checkedAt: Date.now() } })
@@ -37,7 +37,7 @@ describe("createWithdrawalAfterRevalidation", () => {
     expect(deps.createWithdrawal).not.toHaveBeenCalled()
   })
 
-  it("submits only after both action-time checks pass", async () => {
+  it("createWithdrawalAfterRevalidation", async () => {
     const deps = dependencies()
     await expect(createWithdrawalAfterRevalidation(deps)).resolves.toEqual({ transactionHash: "0xtx", pendingSaved: true })
     expect(deps.refetchRuntime).toHaveBeenCalledOnce()

@@ -47,6 +47,7 @@ const POLL_INTERVAL_MS = 5_000
 async function main(): Promise<void> {
   const [command = "help", ...rest] = process.argv.slice(2)
   const options = parseOptions(rest)
+  validateCommandOptions(command, options)
   if (command === "help" || options.help) {
     printHelp()
     return
@@ -59,7 +60,10 @@ async function main(): Promise<void> {
       return
     }
     case "status": {
-      const artifact = unwrap(await actor.get_pending_base_governance_transaction())[0]
+      const artifact = selectPendingArtifact(
+        unwrap(await actor.get_pending_base_governance_transaction()),
+        options["operation-id"],
+      )
       if (!artifact) {
         process.stdout.write("No pending governance transaction.\n")
         return
@@ -76,7 +80,7 @@ async function main(): Promise<void> {
     }
     case "confirm": {
       const artifact = await pendingArtifact(actor, options)
-      const hash = optionHash(options.hash) ?? bytesHex(artifact.transaction_hash)
+      const hash = confirmationHash(options) ?? bytesHex(artifact.transaction_hash)
       const receipt = unwrap(await actor.confirm_base_governance_transaction({
         operation_id: artifact.operation_id,
         transaction_hash: hexToBytes(hash),
@@ -220,13 +224,33 @@ async function pendingArtifact(
   actor: _SERVICE,
   options: Options,
 ): Promise<SignedBaseGovernanceTransaction> {
-  const artifact = unwrap(await actor.get_pending_base_governance_transaction())[0]
-  if (!artifact) throw new Error("No pending governance transaction")
-  if (options["operation-id"] !== undefined
-    && artifact.operation_id !== BigInt(String(options["operation-id"]))) {
-    throw new Error("Pending operation does not match --operation-id")
+  const operationId = options["operation-id"]
+  const artifact = selectPendingArtifact(
+    unwrap(await actor.get_pending_base_governance_transaction()),
+    operationId,
+  )
+  if (!artifact && operationId !== undefined) {
+    throw new Error("No pending governance transaction matches --operation-id")
   }
+  if (!artifact) throw new Error("No pending governance transaction")
   return artifact
+}
+
+export function selectPendingArtifact<T extends { operation_id: bigint }>(
+  artifacts: readonly T[],
+  operationId: string | boolean | undefined,
+): T | undefined {
+  if (operationId !== undefined) {
+    if (typeof operationId !== "string" || !/^(0|[1-9][0-9]*)$/.test(operationId)) {
+      throw new Error("--operation-id must be a non-negative integer")
+    }
+    const expected = BigInt(operationId)
+    return artifacts.find((artifact) => artifact.operation_id === expected)
+  }
+  if (artifacts.length > 1) {
+    throw new Error("--operation-id is required when multiple governance transactions are pending")
+  }
+  return artifacts[0]
 }
 
 export async function validateArtifact(
@@ -260,10 +284,10 @@ export async function relay(
     if (hash.toLowerCase() !== expectedHash.toLowerCase()) {
       throw new Error(`RPC returned unexpected transaction hash ${hash}`)
     }
-    process.stdout.write(`Relayed ${hash}\n`)
+    process.stdout.write(`Unverified submission accepted by configured RPC: ${hash}\n`)
   } catch (error) {
     if (isAlreadyKnown(error)) {
-      process.stdout.write(`Transaction already known: ${expectedHash}\n`)
+      process.stdout.write(`Unverified configured-RPC response (already known): ${expectedHash}\n`)
       return
     }
     if (isNonceTooLow(error)) {
@@ -318,6 +342,7 @@ export function parseOptions(args: string[]): Options {
     if (!argument?.startsWith("--")) throw new Error(`Unexpected argument: ${argument}`)
     const [rawName, inlineValue] = argument.slice(2).split("=", 2)
     if (!rawName) throw new Error("Empty option name")
+    if (rawName in options) throw new Error(`Duplicate option: --${rawName}`)
     if (inlineValue !== undefined) {
       options[rawName] = inlineValue
       continue
@@ -331,6 +356,31 @@ export function parseOptions(args: string[]): Options {
     }
   }
   return options
+}
+
+const COMMAND_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+  help: ["help"],
+  prepare: ["help", "action", "value"],
+  status: ["help", "operation-id"],
+  relay: ["help", "operation-id"],
+  confirm: ["help", "operation-id", "transaction-hash", "hash"],
+  replace: ["help", "operation-id", "max-fee", "priority-fee"],
+  run: ["help", "operation-id"],
+  "refresh-attestation": ["help"],
+  "schedule-activation": ["help"],
+  "execute-activation": ["help"],
+  "drain-emergency": ["help"],
+}
+
+export function validateCommandOptions(command: string, options: Options): void {
+  const allowed = COMMAND_OPTIONS[command]
+  if (!allowed) throw new Error(`Unknown command: ${command}`)
+  for (const name of Object.keys(options)) {
+    if (!allowed.includes(name)) throw new Error(`Unknown option for ${command}: --${name}`)
+  }
+  if (options["transaction-hash"] !== undefined && options.hash !== undefined) {
+    throw new Error("--transaction-hash and --hash cannot be used together")
+  }
 }
 
 export function unwrap<T, E>(result: { Ok: T } | { Err: E }): T {
@@ -375,8 +425,12 @@ function requiredOption(options: Options, name: string): string {
 
 function optionHash(value: string | boolean | undefined): Hex | undefined {
   if (value === undefined) return undefined
-  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value)) throw new Error("--hash must be 32-byte hex")
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value)) throw new Error("transaction hash must be 32-byte hex")
   return value as Hex
+}
+
+export function confirmationHash(options: Options): Hex | undefined {
+  return optionHash(options["transaction-hash"] ?? options.hash)
 }
 
 function bytesHex(value: Uint8Array | number[]): Hex {

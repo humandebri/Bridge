@@ -52,7 +52,8 @@ class ChangedAreaTests(unittest.TestCase):
             "ui/src/lib/future-settlement-module.ts",
         ):
             with self.subTest(path=path):
-                self.assert_areas([path], "ui", "real")
+                expected = ("ui", "real", "proofs") if path == "ui/src/lib/withdrawal-submit.ts" else ("ui", "real")
+                self.assert_areas([path], *expected)
 
     def test_proof_owned_runtime_validation_runs_proofs_and_real(self) -> None:
         self.assert_areas(

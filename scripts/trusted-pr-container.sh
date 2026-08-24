@@ -36,20 +36,14 @@ mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-ou
   "$SCRATCH/contracts-cache" "$SCRATCH/contracts-staging-out" "$SCRATCH/contracts-staging-cache" "$SCRATCH/ui-dist" \
   "$SCRATCH/ui-results" "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/ui-vite-temp" "$SCRATCH/ui-vite" \
   "$SCRATCH/e2e-runtime" "$SCRATCH/proof-output" "$SCRATCH/lean-lake" "$SCRATCH/smt-out" "$SCRATCH/smt-cache" \
-  "$SCRATCH/icp-cache" "$SCRATCH/empty-tools" \
+  "$SCRATCH/icp-cache" "$SCRATCH/empty-tools" "$SCRATCH/candidate-scripts" \
   "$SCRATCH/home/.svm" "$SCRATCH/home/.elan/toolchains" \
   "$SCRATCH/home/.local/share/icp-cli/pkg" "$SCRATCH/home/.config"
 chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
 
 bridge_prepare_mountpoint "$SOURCE_ROOT" scripts
-while IFS= read -r candidate_script; do
-  [[ -f "$SOURCE_ROOT/$candidate_script" ]] || continue
-  [[ -e "$POLICY_ROOT/$candidate_script" ]] && continue
-  mkdir -p "$(dirname "$POLICY_ROOT/$candidate_script")"
-  cp -p "$SOURCE_ROOT/$candidate_script" "$POLICY_ROOT/$candidate_script"
-  chmod +x "$POLICY_ROOT/$candidate_script"
-done < <(git -C "$SOURCE_ROOT" ls-files scripts/)
+bridge_materialize_regular_git_tree "$SOURCE_ROOT" scripts "$SCRATCH/candidate-scripts"
 for path in node_modules ui/node_modules target contracts/out contracts/cache \
   contracts/out-staging contracts/cache-staging \
   ui/dist ui/test-results .tools; do
@@ -150,9 +144,9 @@ docker run --rm \
   --security-opt no-new-privileges \
   --mount "type=bind,src=$SOURCE_ROOT,dst=/workspace,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/scripts,dst=/workspace/scripts,readonly" \
-  --mount "type=bind,src=$SOURCE_ROOT/scripts/plan007/generate-local-e2e.mjs,dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly" \
-  --mount "type=bind,src=$SOURCE_ROOT/scripts/plan007/test-generate-local-e2e.mjs,dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly" \
-  --mount "type=bind,src=$SOURCE_ROOT/scripts,dst=/scratch/candidate-scripts,readonly" \
+  --mount "type=bind,src=$SCRATCH/candidate-scripts/plan007/generate-local-e2e.mjs,dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly" \
+  --mount "type=bind,src=$SCRATCH/candidate-scripts/plan007/test-generate-local-e2e.mjs,dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly" \
+  --mount "type=bind,src=$SCRATCH/candidate-scripts,dst=/scratch/candidate-scripts,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/node_modules,dst=/workspace/node_modules,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
   "${WRITABLE_UI_MOUNTS[@]}" \

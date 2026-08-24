@@ -79,12 +79,13 @@ contract BridgeDepositTest is TestBase {
             1,
             1,
             1,
+            1,
             0
         );
 
         vm.expectRevert(IBridge.RoleAddressesMustDiffer.selector);
         new Bridge(
-            BRIDGE_SIGNER, BRIDGE_SIGNER, BASE_ADMIN_TIMELOCK, _timelockCodeHash(BASE_ADMIN_TIMELOCK), 1, 1, 1, 1, 0
+            BRIDGE_SIGNER, BRIDGE_SIGNER, BASE_ADMIN_TIMELOCK, _timelockCodeHash(BASE_ADMIN_TIMELOCK), 1, 1, 1, 1, 1, 0
         );
     }
 
@@ -241,8 +242,14 @@ contract BridgeDepositTest is TestBase {
         assert(bridge.mintAuthorizationEpoch() == 3);
 
         vm.prank(BASE_ADMIN_TIMELOCK);
+        vm.expectRevert(IBridge.BridgeSignerRotationRequired.selector);
         bridge.unpauseDepositMints();
-        vm.expectRevert(abi.encodeWithSelector(IBridge.MintAuthorizationEpochMismatch.selector, 2, 4));
+        uint256 nextSignerKey = 0xB0B;
+        vm.prank(BASE_ADMIN_TIMELOCK);
+        bridge.rotateBridgeSigner(vm.addr(nextSignerKey));
+        vm.prank(BASE_ADMIN_TIMELOCK);
+        bridge.unpauseDepositMints();
+        vm.expectRevert(IBridge.InvalidMintAuthorizationSignature.selector);
         _submit(bridge, authorization);
     }
 
@@ -285,12 +292,12 @@ contract BridgeDepositTest is TestBase {
         vm.expectRevert(abi.encodeWithSelector(IBridge.MintWindowLimitExceeded.selector, 1, 0));
         IBridge.MintAuthorization memory beforeBoundary =
             _authorization(keccak256("before-boundary"), RECIPIENT, 11, 10);
-        beforeBoundary.deadline = startedAt + WINDOW_DURATION + 30 minutes;
+        beforeBoundary.deadline = startedAt + WINDOW_DURATION + 899 seconds;
         _submit(limitedBridge, beforeBoundary);
 
         vm.warp(startedAt + WINDOW_DURATION);
         IBridge.MintAuthorization memory atBoundary = _authorization(keccak256("at-boundary"), RECIPIENT, 1_010, 10);
-        atBoundary.deadline = startedAt + WINDOW_DURATION + 30 minutes;
+        atBoundary.deadline = startedAt + WINDOW_DURATION + 899 seconds;
         _submit(limitedBridge, atBoundary);
         assert(limitedBridge.mintWindowStartedAt() == startedAt + WINDOW_DURATION);
         assert(limitedBridge.mintedInWindow() == 1_000);
@@ -346,6 +353,7 @@ contract BridgeDepositTest is TestBase {
             perDepositLimit,
             windowLimit,
             windowDuration,
+            1,
             maxServiceFee,
             initialServiceFee
         );
@@ -372,7 +380,7 @@ contract BridgeDepositTest is TestBase {
             grossAmount: grossAmount,
             maxServiceFee: maximumServiceFee,
             chargedServiceFee: chargedServiceFee,
-            deadline: block.timestamp + 30 minutes,
+            deadline: block.timestamp + 15 minutes,
             authorizationEpoch: 2
         });
     }

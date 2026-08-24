@@ -178,4 +178,27 @@ theorem withdrawal_finality_quorum_selects_two_provider_checkpoint
       · simp_all <;> omega
       · split at selected <;> simp_all <;> omega
 
+theorem withdrawal_finality_identity_requires_exact_height_and_hash
+    {first second third : Option FinalizedIdentity} {checkpoint : FinalizedIdentity}
+    (selected : withdrawalFinalizedIdentityQuorum first second third = some checkpoint) :
+    twoFinalizedIdentitiesAttest first second third checkpoint := by
+  rcases first with _ | first <;> rcases second with _ | second <;>
+    rcases third with _ | third <;>
+    simp [withdrawalFinalizedIdentityQuorum, twoFinalizedIdentitiesAttest] at selected ⊢
+  · rcases selected with ⟨rfl, rfl⟩
+    simp
+  · rcases selected with ⟨rfl, rfl⟩
+    simp
+  · rcases selected with ⟨rfl, rfl⟩
+    simp
+  · split at selected
+    · have same : first = checkpoint := Option.some.inj selected
+      rcases ‹first = second ∨ first = third› with pair | pair
+      · exact Or.inl ⟨same, pair.symm.trans same⟩
+      · exact Or.inr (Or.inl ⟨same, pair.symm.trans same⟩)
+    · split at selected
+      · have same : second = checkpoint := Option.some.inj selected
+        exact Or.inr (Or.inr ⟨same, ‹second = third›.symm.trans same⟩)
+      · simp_all
+
 end BridgeSpec

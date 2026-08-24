@@ -355,6 +355,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'CanonicalInconsistent' : IDL.Null,
     'FinalizedInconsistent' : IDL.Null,
     'FinalizedUnavailable' : IDL.Null,
+    'FinalizedCheckpointFork' : IDL.Null,
     'Canonical' : IDL.Null,
     'SameHeightDifferentHash' : IDL.Null,
   });
@@ -493,6 +494,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
           IDL.Vec(IDL.Nat8),
           IDL.Vec(IDL.Nat8),
         ],
+        [Result_10],
+        [],
+      ),
+    'set_deployment_role_signers_for_canister' : IDL.Func(
+        [IDL.Principal, IDL.Text],
         [Result_10],
         [],
       ),

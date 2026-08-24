@@ -549,6 +549,52 @@ proof fn withdrawal_finality_quorum_selects_two_provider_checkpoint(
     reveal(finalized_identity_attests);
 }
 
+spec fn eligible_finalized_checkpoint_attests(
+    head: Option<(int, int)>,
+    observation: Option<(int, int)>,
+    checkpoint: int,
+    selected: (int, int),
+) -> bool {
+    match (head, observation) {
+        (Some(head), Some(observation)) =>
+            head.0 >= checkpoint && observation.0 == checkpoint && observation == selected,
+        _ => false,
+    }
+}
+
+proof fn withdrawal_finality_quorum_requires_two_eligible_provider_checkpoints(
+    first_head: Option<(int, int)>,
+    second_head: Option<(int, int)>,
+    third_head: Option<(int, int)>,
+    first_observation: Option<(int, int)>,
+    second_observation: Option<(int, int)>,
+    third_observation: Option<(int, int)>,
+    checkpoint: int,
+)
+    ensures match kernel::withdrawal_finalized_checkpoint_quorum_spec(
+        first_head, second_head, third_head,
+        first_observation, second_observation, third_observation,
+        checkpoint,
+    ) {
+        Some(selected) =>
+            (eligible_finalized_checkpoint_attests(
+                first_head, first_observation, checkpoint, selected)
+                && eligible_finalized_checkpoint_attests(
+                    second_head, second_observation, checkpoint, selected))
+            || (eligible_finalized_checkpoint_attests(
+                first_head, first_observation, checkpoint, selected)
+                && eligible_finalized_checkpoint_attests(
+                    third_head, third_observation, checkpoint, selected))
+            || (eligible_finalized_checkpoint_attests(
+                second_head, second_observation, checkpoint, selected)
+                && eligible_finalized_checkpoint_attests(
+                    third_head, third_observation, checkpoint, selected)),
+        None => true,
+    }
+{
+    reveal(eligible_finalized_checkpoint_attests);
+}
+
 proof fn runtime_attestation_requires_every_config_binding(
     observation_present: bool,
     chain_id_matches: bool,
@@ -619,10 +665,10 @@ fn fee_recipient_rotation_decision_is_fail_closed(
         authorized, anonymous, role_collision, subaccount_len, pending_payout_debit)
 }
 
-proof fn service_fee_change_respects_immutable_maximum(service_fee: int, maximum: int)
-    requires 0 <= service_fee, 0 <= maximum
-    ensures kernel::service_fee_change_allowed_spec(service_fee, maximum)
-        <==> service_fee <= maximum
+proof fn service_fee_change_respects_immutable_range(service_fee: int, minimum: int, maximum: int)
+    requires 0 <= service_fee, 0 <= minimum, 0 <= maximum
+    ensures kernel::service_fee_change_allowed_spec(service_fee, minimum, maximum)
+        <==> minimum <= service_fee && service_fee <= maximum
 {}
 
 proof fn reserve_candidate_becomes_reservation_without_reducing_requirement(

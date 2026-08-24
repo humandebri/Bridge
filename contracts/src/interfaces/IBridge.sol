@@ -74,7 +74,6 @@ interface IBridge {
     event BridgeSignerChanged(address indexed previousSigner, address indexed newSigner);
     event MintAuthorizationEpochChanged(address indexed caller, uint256 previousEpoch, uint256 newEpoch);
     event RuntimeAdministratorChanged(address indexed previousAdministrator, address indexed newAdministrator);
-    event BaseAdminTimelockChanged(address indexed previousTimelock, address indexed newTimelock);
 
     error ZeroAddress();
     error RoleAddressesMustDiffer();
@@ -85,6 +84,9 @@ interface IBridge {
     error BlockTimestampExceedsU64(uint256 timestamp);
     error InvalidMintWindowDuration(uint64 suppliedDuration, uint64 minimumDuration, uint64 maximumDuration);
     error ServiceFeeExceedsUserMaximum(uint256 serviceFee, uint256 userMaximum);
+    error BridgeSignerRotationRequired();
+    error BridgeSignerAlreadyRetired(address signer);
+    error MintAuthorizationDeadlineTooFar(uint256 deadline, uint256 maximumDeadline);
     error DepositAlreadyProcessed(bytes32 depositId);
     error DepositMintLimitExceeded(uint256 mintAmount, uint256 limit);
     error MintWindowLimitExceeded(uint256 requestedAmount, uint256 availableAmount);
@@ -131,6 +133,8 @@ interface IBridge {
 
     function MAX_SERVICE_FEE() external view returns (uint256);
 
+    function MIN_SERVICE_FEE() external view returns (uint256);
+
     function perDepositLimit() external view returns (uint256);
 
     function mintWindowLimit() external view returns (uint256);
@@ -165,5 +169,4 @@ interface IBridge {
 
     function rotateRuntimeAdministrator(address newAdministrator) external;
 
-    function rotateBaseAdminTimelock(address newTimelock) external;
 }

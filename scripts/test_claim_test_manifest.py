@@ -124,6 +124,16 @@ class ClaimTestManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "did not pass exactly once"):
             claim_tests.execute_test(test, Path("."), runner)
 
+    def test_json_report_tolerates_package_manager_warning_prefix(self) -> None:
+        report = claim_tests.parse_json_report(
+            '[WARN] Unsupported engine: wanted node 24\n{"success":true}\n'
+        )
+        self.assertEqual(report, {"success": True})
+
+    def test_json_report_rejects_non_json_output(self) -> None:
+        with self.assertRaisesRegex(ValueError, "terminal JSON payload"):
+            claim_tests.parse_json_report("warning only\n")
+
     def test_test_deployment_runner_enables_the_feature(self) -> None:
         test = claim_tests.ClaimTest(
             "rust-canister-test-deployment",

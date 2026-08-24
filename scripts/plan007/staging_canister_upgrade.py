@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate and execute the reviewed staging Bridge v33-to-v36 upgrade."""
+"""Gate and execute the reviewed one-time staging Bridge v33 to v34 upgrade."""
 from __future__ import annotations
 
 import argparse, hashlib, json, os, re, shutil, subprocess, tempfile
@@ -8,7 +8,7 @@ from typing import Any
 from candid_values import blob, integrity_ok, nat, principal
 
 ROOT = Path(__file__).resolve().parents[2]
-POLICY = ROOT / "deployments/sepolia-staging/same-schema-upgrade-policy.json"
+POLICY = ROOT / "deployments/sepolia-staging/v33-to-v34-upgrade-policy.json"
 PROFILE = ROOT / "deployments/sepolia-staging/frontend-profile.json"
 DID = ROOT / "canister/bridge-canister/bridge.did"
 METADATA_READER = ROOT / "scripts/plan007/read-public-canister-metadata.mjs"
@@ -22,7 +22,6 @@ PRESERVED = ("canister_id", "deployment_instance_id", "minimum_withdrawal_id",
              "expected_bridge_signer", "ledger_canister_id", "index_canister_id", "evm_rpc_canister_id",
              "rpc_provider_urls_sha256", "governance_principal", "status_counts", "storage_integrity",
              "pending_timelock_operations", "pending_governance_transactions", "controllers", "cycles_floor")
-MIGRATION_ID = "bridge-staging-v33-to-v36"
 SHA = re.compile(r"[0-9a-f]{64}")
 PRINCIPAL = re.compile(r"[a-z0-9-]+")
 
@@ -54,14 +53,23 @@ def load(path: Path, context: str) -> dict[str, Any]:
 def validate_policy(value: dict[str, Any]) -> None:
     fields = {"schema_version", "kind", "environment", "canister_name", "canister_id",
               "stable_schema_version", "source_schema_version", "source_wire_version",
-              "deployment_instance_id", "base_chain_id", "evm_rpc_canister_id",
+              "migration_id", "migration_config", "deployment_instance_id", "base_chain_id", "evm_rpc_canister_id",
               "governance_principal", "source_module_sha256", "source_candid_sha256", "source_api", "target_api"}
-    if set(value) != fields or value["schema_version"] != 1 or value["kind"] != "staging-bridge-v33-to-v36-upgrade":
-        fail("v33-to-v36 upgrade policy has an unsupported shape")
-    if value["stable_schema_version"] != 36 or value["source_schema_version"] != 33 \
+    if set(value) != fields or value["schema_version"] != 1 or value["kind"] != "staging-bridge-v33-to-v34-upgrade":
+        fail("v33-to-v34 upgrade policy has an unsupported shape")
+    if value["stable_schema_version"] != 34 or value["source_schema_version"] != 33 \
             or value["source_wire_version"] != 28 or value["source_api"] != "get_public_config" \
             or value["target_api"] != "get_runtime_binding":
-        fail("policy does not bind the reviewed stable schema v33-to-v36 transition")
+        fail("policy does not bind the reviewed v33/wire28 to v34/wire29 transition")
+    migration = value["migration_config"]
+    if value["migration_id"] != "bridge-staging-v33-to-v34" or not isinstance(migration, dict) \
+            or migration != {
+                "expected_timelock_minimum_delay_seconds": 300,
+                "expected_bsns_runtime_sha256": "f3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b",
+                "expected_bsns_decimals": 8,
+                "expected_minimum_service_fee": 10_000,
+            }:
+        fail("policy migration arguments are not the reviewed staging values")
     if any(not isinstance(value[f], str) or not SHA.fullmatch(value[f])
            for f in ("source_module_sha256", "source_candid_sha256")):
         fail("policy source hashes must be lowercase SHA-256 digests")
@@ -122,9 +130,11 @@ def pending_count(candid: str) -> int:
 
 
 def pending_governance_count(candid: str) -> int:
+    if re.search(r"\bOk\s*=\s*vec\s*\{\s*\}", candid): return 0
+    if re.search(r"\bOk\s*=\s*vec\s*\{", candid): return 1
     if re.search(r"\bOk\s*=\s*null\b", candid): return 0
     if re.search(r"\bOk\s*=\s*opt\b", candid): return 1
-    fail("governance status must expose one pending transaction")
+    fail("governance status must expose all pending nonce lanes as a vector")
 
 
 def snapshot(policy: dict[str, Any], identity: str, did: Path, api: str, candid_hash: str) -> dict[str, Any]:
@@ -202,12 +212,11 @@ def verify_provider_chains(profile: dict[str, Any], expected_chain_id: int) -> N
             fail(f"staging RPC provider {index} returned an unexpected chain ID")
 
 
-def classify(candid: str) -> str:
-    old = bool(re.search(r"\bget_public_config\s*:", candid))
-    new = bool(re.search(r"\bget_runtime_binding\s*:", candid)) and bool(re.search(r"\bget_operational_config\s*:", candid))
-    if old and not new: return "source"
-    if new and not old: return "target"
-    fail("live Candid is neither the reviewed source nor target API shape")
+def classify(candid: str, source_hash: str, target_hash: str) -> str:
+    observed = hashlib.sha256(candid.encode()).hexdigest()
+    if observed == target_hash: return "target"
+    if observed == source_hash: return "source"
+    fail("live Candid is neither the reviewed current-schema source nor target")
 
 
 def live_candid(policy: dict[str, Any]) -> str:
@@ -224,7 +233,7 @@ def candidate(wasm: Path) -> None:
     if sections.count("icp:public candid:service") != 1 or sections.count("icp:private kinic:deployment") != 1:
         fail("explicit Wasm metadata sections are invalid")
     candid = run(["ic-wasm", str(wasm), "metadata", "candid:service"]).removesuffix("\n")
-    if candid.encode() != DID.read_bytes() or classify(candid) != "target":
+    if candid.encode() != DID.read_bytes():
         fail("explicit Wasm Candid metadata does not match the target interface")
     if run(["ic-wasm", str(wasm), "metadata", "kinic:deployment"]).strip() != "test-deployment":
         fail("explicit Wasm deployment metadata is invalid")
@@ -250,9 +259,25 @@ def verify_auth(policy: dict[str, Any], identity: str) -> None:
 
 def upgrade_args(counts: dict[str, Any], policy: dict[str, Any]) -> str:
     fields = "; ".join(f"{field} = {counts[field]} : {'nat' if field == 'reserved_deposit_mint_amount' else 'nat64'}" for field in COUNTS)
-    return (f'(record {{ migration_id = opt "{MIGRATION_ID}"; status_counts_guard_version = 1 : nat8; expected_status_counts = opt record {{ '
+    migration = policy["migration_config"]
+    runtime_hash = "; ".join(f"{byte} : nat8" for byte in bytes.fromhex(migration["expected_bsns_runtime_sha256"]))
+    return (f'(record {{ migration_id = opt "{policy["migration_id"]}"; migration_config = opt record {{ '
+            f'expected_timelock_minimum_delay_seconds = {migration["expected_timelock_minimum_delay_seconds"]} : nat64; '
+            f'expected_bsns_runtime_sha256 = vec {{ {runtime_hash} }}; '
+            f'expected_bsns_decimals = {migration["expected_bsns_decimals"]} : nat8; '
+            f'expected_minimum_service_fee = {migration["expected_minimum_service_fee"]} : nat; '
+            '}; status_counts_guard_version = 1 : nat8; expected_status_counts = opt record { '
             f"{fields}" + " }; rpc_provider_update = null; minimum_withdrawal_id = null; "
             f'confirmation_relayer_principal = opt principal "{policy["governance_principal"]}" }})')
+
+
+def initialize_public_config(policy: dict[str, Any], identity: str) -> None:
+    output = run(["icp", "canister", "call", policy["canister_name"], "initialize_public_config", "()",
+                  "--candid", str(DID), "--json", *base(policy, identity)])
+    try: candid = json.loads(output).get("response_candid")
+    except json.JSONDecodeError: fail("initialize_public_config returned invalid JSON")
+    if not isinstance(candid, str) or not re.search(r"\bOk\b", candid):
+        fail("controller initialize_public_config did not succeed")
 
 
 def write(path: Path, value: dict[str, Any]) -> None:
@@ -300,7 +325,7 @@ def main() -> None:
         if shutil.which(tool) is None: fail(f"{tool} is required")
     if run(["git", "status", "--porcelain", "--untracked-files=all"]).strip(): fail("upgrade requires a clean checkout")
     head = run(["git", "rev-parse", "HEAD"]).strip()
-    policy, profile = load(POLICY, "v33-to-v36 policy"), load(PROFILE, "frontend profile")
+    policy, profile = load(POLICY, "v33-to-v34 upgrade policy"), load(PROFILE, "frontend profile")
     validate_policy(policy)
     if profile.get("icHost") != IC_HOST: fail("frontend profile IC host is invalid")
     for field, expected in {"environment": policy["environment"], "bridgeCanisterId": policy["canister_id"],
@@ -318,7 +343,7 @@ def main() -> None:
         fail("local E2E evidence does not bind the explicit Wasm and Candid")
     candidate(args.wasm); private_metadata(policy, identity)
     target_module, target_candid = digest(args.wasm), digest(DID)
-    live = live_candid(policy); live_hash = hashlib.sha256(live.encode()).hexdigest(); kind = classify(live)
+    live = live_candid(policy); live_hash = hashlib.sha256(live.encode()).hexdigest(); kind = classify(live, policy["source_candid_sha256"], target_candid)
     if kind == "source" and live_hash != policy["source_candid_sha256"]: fail("live source Candid hash is unknown")
     if kind == "target" and live_hash != target_candid: fail("live target Candid hash is unknown")
     api = policy["source_api"] if kind == "source" else policy["target_api"]
@@ -331,7 +356,7 @@ def main() -> None:
     if kind == "target" and before["module_sha256"] != target_module: fail("live target module hash is unknown")
     if kind == "target": verify_auth(policy, identity)
     arguments = upgrade_args(before["status_counts"], policy)
-    preflight = {"schema_version": 1, "kind": "staging-bridge-v33-to-v36-upgrade-preflight",
+    preflight = {"schema_version": 1, "kind": "staging-bridge-v33-to-v34-upgrade-preflight",
                  "result": "already-applied-preflight" if kind == "target" else "preflight-passed",
                  "source_commit": head, "local_e2e_sha256": digest(args.local_evidence),
                  "policy_sha256": digest(POLICY), "profile_sha256": digest(PROFILE),
@@ -344,7 +369,9 @@ def main() -> None:
     verify_preflight_unchanged(load(args.preflight_evidence, "preflight evidence"), preflight)
     if kind == "source":
         run(["icp", "canister", "install", policy["canister_name"], "--mode", "upgrade", "--wasm", str(args.wasm),
-             "--args", arguments, "--yes", *base(policy, identity)], capture=False); result = "upgraded"
+             "--args", arguments, "--yes", *base(policy, identity)], capture=False)
+        initialize_public_config(policy, identity)
+        result = "upgraded"
     else: result = "already-applied"
     after_live = live_candid(policy)
     if after_live.encode() != DID.read_bytes(): fail("post-upgrade certified Candid does not match target")
@@ -356,9 +383,9 @@ def main() -> None:
     if after["cycles_balance"] < after["cycles_floor"] or after["cycles_balance"] > before["cycles_balance"]:
         fail("post-upgrade cycles balance is invalid")
     verify_auth(policy, identity)
-    write(args.evidence, {**preflight, "kind": "staging-bridge-v33-to-v36-upgrade-result", "result": result,
+    write(args.evidence, {**preflight, "kind": "staging-bridge-v33-to-v34-upgrade-result", "result": result,
                           "preflight_evidence_sha256": digest(args.preflight_evidence), "after": after})
-    print(f"staging Bridge v33-to-v36 upgrade verified: {result}")
+    print(f"staging Bridge v33-to-v34 upgrade verified: {result}")
 
 
 if __name__ == "__main__": main()

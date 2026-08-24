@@ -13,6 +13,7 @@ from verus_manifest import parse_verus_manifest
 from check_claim_manifest import (
     abstract_evidence_status,
     missing_scalar_calls,
+    require_mandatory_claim_catalog,
     require_exact_claim_coverage,
     require_exact_implementation_basis,
     require_exact_smt_claim_coverage,
@@ -39,8 +40,11 @@ class ClaimContractTests(unittest.TestCase):
         )
         source = lean_contract_check_source(manifest)
         self.assertIn(
-            "example : BridgeSpec.Contract := BridgeSpec.witness", source
+            "example : BridgeSpec.Contract := by", source
         )
+        self.assertIn("fail_if_success exact True.intro", source)
+        self.assertIn("exact BridgeSpec.witness", source)
+        self.assertIn("#print axioms BridgeSpec.witness", source)
 
     def test_contract_and_witness_cannot_be_declared_independently(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be paired"):
@@ -55,6 +59,13 @@ class ClaimContractTests(unittest.TestCase):
     def test_rejects_literal_true_contract(self) -> None:
         with self.assertRaisesRegex(ValueError, "vacuous Lean claim contract"):
             parse_claim_manifest(self.manifest("True", "True.intro"))
+
+    def test_release_policy_rejects_missing_mandatory_claims(self) -> None:
+        manifest = parse_claim_manifest(
+            self.manifest("BridgeSpec.Contract", "BridgeSpec.witness")
+        )
+        with self.assertRaisesRegex(ValueError, "mandatory claim catalog differs"):
+            require_mandatory_claim_catalog(manifest)
 
     def test_cross_claim_witness_does_not_typecheck(self) -> None:
         root = Path(__file__).resolve().parents[1]

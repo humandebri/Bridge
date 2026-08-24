@@ -16,6 +16,17 @@ const PUBLIC_KEY_CALL_TIMEOUT_SECONDS: u32 = 60;
 pub enum SignerRole {
     Mint,
     Governance,
+    RuntimeAdministrator,
+    Canceller,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlPlaneAddresses {
+    pub generation: u32,
+    pub bridge_signer: [u8; 20],
+    pub governance_operator: [u8; 20],
+    pub runtime_administrator: [u8; 20],
+    pub independent_canceller: [u8; 20],
 }
 
 #[derive(CandidType, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,25 +117,30 @@ where
         })
 }
 
-pub async fn sign_governance(
+pub async fn sign_governance_for_role(
     envelope: &GovernanceTransactionEnvelope,
     config: &BridgeInitArgs,
+    role: SignerRole,
 ) -> Result<Vec<u8>, SignerError> {
-    sign_for_role(envelope, config, SignerRole::Governance).await
+    if role == SignerRole::Mint {
+        return Err(SignerError::InvalidSignature);
+    }
+    sign_for_role(envelope, config, role).await
 }
 
 pub async fn sign_mint_authorization_digest(
     digest: [u8; 32],
     config: &BridgeInitArgs,
 ) -> Result<Vec<u8>, SignerError> {
+    let generation = active_generation()?;
     let key_id = EcdsaKeyId {
         curve: EcdsaCurve::Secp256k1,
         name: config.ecdsa_key_name.clone(),
     };
-    let public_key = signer_public_key(config, &key_id, SignerRole::Mint).await?;
+    let public_key = signer_public_key(config, &key_id, SignerRole::Mint, generation).await?;
     let sign_args = SignWithEcdsaArgs {
         message_hash: digest.to_vec(),
-        derivation_path: derivation_path(config, SignerRole::Mint).to_vec(),
+        derivation_path: derivation_path(config, SignerRole::Mint, generation),
         key_id,
     };
     let raw_signature = threshold_signature(&sign_args, config).await?;
@@ -136,16 +152,17 @@ async fn sign_for_role(
     config: &BridgeInitArgs,
     role: SignerRole,
 ) -> Result<Vec<u8>, SignerError> {
+    let generation = active_generation()?;
     let unsigned = unsigned_transaction(envelope);
     let signing_hash = keccak(&unsigned);
     let key_id = EcdsaKeyId {
         curve: EcdsaCurve::Secp256k1,
         name: config.ecdsa_key_name.clone(),
     };
-    let public_key = signer_public_key(config, &key_id, role).await?;
+    let public_key = signer_public_key(config, &key_id, role, generation).await?;
     let sign_args = SignWithEcdsaArgs {
         message_hash: signing_hash.to_vec(),
-        derivation_path: derivation_path(config, role).to_vec(),
+        derivation_path: derivation_path(config, role, generation),
         key_id,
     };
     let raw_signature = threshold_signature(&sign_args, config).await?;
@@ -156,12 +173,14 @@ async fn signer_public_key(
     config: &BridgeInitArgs,
     key_id: &EcdsaKeyId,
     role: SignerRole,
+    generation: u32,
 ) -> Result<Vec<u8>, SignerError> {
     Ok(
         match STORE
             .with(|store| match role {
                 SignerRole::Mint => store.borrow().signer_public_key(),
                 SignerRole::Governance => store.borrow().governance_operator_public_key(),
+                SignerRole::RuntimeAdministrator | SignerRole::Canceller => Ok(None),
             })
             .map_err(|error| SignerError::ManagementCall {
                 operation: "read_cached_ecdsa_public_key",
@@ -174,7 +193,7 @@ async fn signer_public_key(
                     "ecdsa_public_key",
                     &(&EcdsaPublicKeyArgs {
                         canister_id: None,
-                        derivation_path: derivation_path(config, role).to_vec(),
+                        derivation_path: derivation_path(config, role, generation),
                         key_id: key_id.clone(),
                     },),
                     0,
@@ -190,6 +209,9 @@ async fn signer_public_key(
                             SignerRole::Mint => store.set_signer_public_key_if_absent(public_key),
                             SignerRole::Governance => {
                                 store.set_governance_operator_public_key_if_absent(public_key)
+                            }
+                            SignerRole::RuntimeAdministrator | SignerRole::Canceller => {
+                                Ok(public_key)
                             }
                         }
                     })
@@ -295,15 +317,33 @@ pub async fn governance_operator_address(config: &BridgeInitArgs) -> Result<[u8;
     ethereum_address_for_role(config, SignerRole::Governance).await
 }
 
+pub async fn runtime_administrator_address(
+    config: &BridgeInitArgs,
+) -> Result<[u8; 20], SignerError> {
+    ethereum_address_for_role(config, SignerRole::RuntimeAdministrator).await
+}
+
+pub async fn canceller_address(config: &BridgeInitArgs) -> Result<[u8; 20], SignerError> {
+    ethereum_address_for_role(config, SignerRole::Canceller).await
+}
+
 async fn ethereum_address_for_role(
     config: &BridgeInitArgs,
     role: SignerRole,
+) -> Result<[u8; 20], SignerError> {
+    ethereum_address_for_role_at_generation(config, role, active_generation()?).await
+}
+
+async fn ethereum_address_for_role_at_generation(
+    config: &BridgeInitArgs,
+    role: SignerRole,
+    generation: u32,
 ) -> Result<[u8; 20], SignerError> {
     let result = bounded_management_call::<_, EcdsaPublicKeyResult>(
         "ecdsa_public_key",
         &(&EcdsaPublicKeyArgs {
             canister_id: None,
-            derivation_path: derivation_path(config, role).to_vec(),
+            derivation_path: derivation_path(config, role, generation),
             key_id: EcdsaKeyId {
                 curve: EcdsaCurve::Secp256k1,
                 name: config.ecdsa_key_name.clone(),
@@ -317,11 +357,67 @@ async fn ethereum_address_for_role(
     Ok(ethereum_address_from_key(&key))
 }
 
-fn derivation_path(config: &BridgeInitArgs, role: SignerRole) -> &[Vec<u8>] {
+pub async fn control_plane_addresses_for_generation(
+    config: &BridgeInitArgs,
+    generation: u32,
+) -> Result<ControlPlaneAddresses, SignerError> {
+    let bridge_signer =
+        ethereum_address_for_role_at_generation(config, SignerRole::Mint, generation).await?;
+    let governance_operator =
+        ethereum_address_for_role_at_generation(config, SignerRole::Governance, generation).await?;
+    let runtime_administrator = ethereum_address_for_role_at_generation(
+        config,
+        SignerRole::RuntimeAdministrator,
+        generation,
+    )
+    .await?;
+    let independent_canceller =
+        ethereum_address_for_role_at_generation(config, SignerRole::Canceller, generation).await?;
+    Ok(ControlPlaneAddresses {
+        generation,
+        bridge_signer,
+        governance_operator,
+        runtime_administrator,
+        independent_canceller,
+    })
+}
+
+fn derivation_path(config: &BridgeInitArgs, role: SignerRole, generation: u32) -> Vec<Vec<u8>> {
+    let path = match role {
+        SignerRole::Mint => config.ecdsa_derivation_path.clone(),
+        SignerRole::Governance => config.governance_ecdsa_derivation_path.clone(),
+        SignerRole::RuntimeAdministrator | SignerRole::Canceller => {
+            config.governance_ecdsa_derivation_path.clone()
+        }
+    };
+    role_generation_derivation_path(path, role, generation)
+}
+
+fn role_generation_derivation_path(
+    mut path: Vec<Vec<u8>>,
+    role: SignerRole,
+    generation: u32,
+) -> Vec<Vec<u8>> {
     match role {
-        SignerRole::Mint => &config.ecdsa_derivation_path,
-        SignerRole::Governance => &config.governance_ecdsa_derivation_path,
+        SignerRole::Mint | SignerRole::Governance => {}
+        SignerRole::RuntimeAdministrator => {
+            path.push(b"KINIC-RUNTIME-ADMINISTRATOR-V1".to_vec());
+        }
+        SignerRole::Canceller => {
+            path.push(b"KINIC-INDEPENDENT-CANCELLER-V1".to_vec());
+        }
     }
+    if generation != 0 {
+        path.push(b"KINIC-CONTROL-PLANE-GENERATION-V1".to_vec());
+        path.push(generation.to_be_bytes().to_vec());
+    }
+    path
+}
+
+fn active_generation() -> Result<u32, SignerError> {
+    STORE
+        .with(|store| store.borrow().control_plane_key_generation())
+        .map_err(signing_storage_error)
 }
 
 fn ethereum_address_from_key(key: &VerifyingKey) -> [u8; 20] {
@@ -512,6 +608,41 @@ mod tests {
             SignerError::RecoveryFailed.class(),
             SigningFailureClass::RecoveryMismatch
         );
+    }
+
+    #[test]
+    fn control_plane_derivation_paths_are_role_and_generation_separated() {
+        let mint_zero =
+            role_generation_derivation_path(vec![b"mint".to_vec()], SignerRole::Mint, 0);
+        let governance_zero = role_generation_derivation_path(
+            vec![b"governance".to_vec()],
+            SignerRole::Governance,
+            0,
+        );
+        let runtime_zero = role_generation_derivation_path(
+            vec![b"governance".to_vec()],
+            SignerRole::RuntimeAdministrator,
+            0,
+        );
+        let canceller_zero =
+            role_generation_derivation_path(vec![b"governance".to_vec()], SignerRole::Canceller, 0);
+        let generation_one =
+            |role| role_generation_derivation_path(vec![b"governance".to_vec()], role, 1);
+
+        assert_ne!(mint_zero, governance_zero);
+        assert_ne!(governance_zero, runtime_zero);
+        assert_ne!(governance_zero, canceller_zero);
+        assert_ne!(runtime_zero, canceller_zero);
+        for role in [
+            SignerRole::Mint,
+            SignerRole::Governance,
+            SignerRole::RuntimeAdministrator,
+            SignerRole::Canceller,
+        ] {
+            let path = generation_one(role);
+            assert_eq!(path[path.len() - 2], b"KINIC-CONTROL-PLANE-GENERATION-V1");
+            assert_eq!(path[path.len() - 1], 1u32.to_be_bytes());
+        }
     }
     use bridge_core::GovernanceOperationId;
 
