@@ -74,9 +74,8 @@ contract BridgeTimelockController is TimelockController {
             revert TimelockUnauthorizedCaller(msg.sender);
         }
         if (
-            newGovernanceOperator == address(0) || newCanceller == address(0)
-                || newGovernanceOperator == newCanceller || newGovernanceOperator == address(this)
-                || newCanceller == address(this)
+            newGovernanceOperator == address(0) || newCanceller == address(0) || newGovernanceOperator == newCanceller
+                || newGovernanceOperator == address(this) || newCanceller == address(this)
         ) {
             revert InvalidOperationalRoleRotation(newGovernanceOperator, newCanceller);
         }

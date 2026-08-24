@@ -180,8 +180,7 @@ contract InterfaceSelectorsTest {
 
     function testTimelockErrorSelectors() public pure {
         _assertSelector(
-            BridgeTimelockController.rotateOperationalMembers.selector,
-            "rotateOperationalMembers(address,address)"
+            BridgeTimelockController.rotateOperationalMembers.selector, "rotateOperationalMembers(address,address)"
         );
         _assertSelector(BridgeTimelockController.RoleSetFrozen.selector, "RoleSetFrozen(bytes32,address)");
         _assertSelector(

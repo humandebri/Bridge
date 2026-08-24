@@ -168,5 +168,4 @@ interface IBridge {
     function rotateBridgeSigner(address newSigner) external;
 
     function rotateRuntimeAdministrator(address newAdministrator) external;
-
 }
