@@ -107,6 +107,7 @@ jest	integration/phase3.spec.ts	authenticated_relayer_refund_preserves_fixed_ide
 jest	integration/phase3.spec.ts	prepaid_refund_quota_is_not_charged_twice	prepays one settlement quota before refund RPC and does not charge the claim twice
 jest	integration/phase3.spec.ts	failed_recovery_observation_keeps_quota_and_blocks_the_next_rpc	keeps failed recovery observation quota and blocks another RPC at the limit
 jest	integration/phase3.spec.ts	processed_candidate_is_checked_after_funding_and_preserves_the_funded_record	checks a processed candidate only after funding and preserves the funded record
+jest	integration/phase3.spec.ts	fails_closed_when_processed_is_true_but_exact_Mint_evidence_is_missing	fails closed when processed is true but exact Mint evidence is missing
 jest	integration/phase3.spec.ts	processed_id_with_another_digest_cannot_move_refund_funds	keeps funds fixed when a processed Deposit ID has only another authorization digest
 rust-canister	canister/bridge-canister/src/storage/mod.rs	refund_start_and_manual_claim_rejection_leave_record_and_quota_unchanged	refund_start_and_manual_claim_rejection_leave_record_and_quota_unchanged
 rust-canister	canister/bridge-canister/src/storage/mod.rs	refund_start_and_manual_claim_roll_back_together_at_record_failpoints	refund_start_and_manual_claim_roll_back_together_at_record_failpoints

@@ -1968,8 +1968,8 @@ describe("Phase 3 PocketIC saga", () => {
     expect(phaseName((await bridge.actor.get_deposit(result.Ok.deposit_id))[0].state)).toBe("Minted");
   });
 
-  it("fails closed when processed is true but exact Mint evidence is missing", async () => {
-    const { evm, bridge } = await setup();
+  async function fails_closed_when_processed_is_true_but_exact_Mint_evidence_is_missing() {
+    const { ledger, evm, bridge } = await setup();
     const result: any = await requestDefaultDeposit(bridge);
     const authorization = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
     await evm.actor.set_processed_deposit(true);
@@ -1979,8 +1979,9 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id)).toHaveProperty("Err");
     expect(await (evm.actor as any).deposit_processed_call_count()).toBe(processedCallsBeforeExpiry + 1n);
     const stored: any = await bridge.actor.get_deposit(result.Ok.deposit_id);
-    expect(phaseName(stored[0].state)).toBe("AuthorizationAvailable");
+    expect(phaseName(stored[0].state)).toBe("RefundAvailable");
     expect(stored[0].refund).toEqual([]);
+    expect(await (ledger.actor as any).ledger_transactions()).toHaveLength(1);
 
     const processedCallsBeforeUpgradeRetry = await (evm.actor as any).deposit_processed_call_count();
     await pic!.upgradeCanister({
@@ -1990,7 +1991,14 @@ describe("Phase 3 PocketIC saga", () => {
     });
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id)).toHaveProperty("Err");
     expect(await (evm.actor as any).deposit_processed_call_count()).toBe(processedCallsBeforeUpgradeRetry + 1n);
-  });
+    expect(phaseName((await bridge.actor.get_deposit(result.Ok.deposit_id))[0].state)).toBe("RefundAvailable");
+    expect(await (ledger.actor as any).ledger_transactions()).toHaveLength(1);
+  }
+
+  it(
+    "fails closed when processed is true but exact Mint evidence is missing",
+    fails_closed_when_processed_is_true_but_exact_Mint_evidence_is_missing,
+  );
 
   it("classifies exact Mint RPC failures and audits provider disagreement", async () => {
     const { evm, bridge } = await setup();
