@@ -1,7 +1,8 @@
 import { execFileSync, spawn } from "node:child_process"
 import { createServer } from "node:http"
 import { connect } from "node:net"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { gunzipSync } from "node:zlib"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -71,6 +72,10 @@ async function setup() {
   await waitForOwnedRpc(anvil)
   const publicClient = createPublicClient({ transport: http(rpcUrl) })
 
+  // @dfinity/pic 0.23.0 keys its port file by the parent PID and does not
+  // remove an existing file. Long gates can reuse a PID, so remove only this
+  // process's stale rendezvous file before waiting for the new server port.
+  await rm(path.join(tmpdir(), `pocket_ic_${process.ppid}.port`), { force: true })
   const picServer = await PocketIcServer.start()
   resources.picServer = picServer
   const pic = await PocketIc.create(picServer.getUrl(), {
