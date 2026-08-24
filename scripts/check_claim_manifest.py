@@ -10,9 +10,17 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from claim_manifest import lean_contract_check_source, parse_claim_manifest
+from claim_manifest import (
+    REQUIRED_CLAIM_IDS,
+    ClaimManifest,
+    lean_contract_check_source,
+    parse_claim_manifest,
+)
+from halmos_obligations import parse_halmos_obligations
 from proof_fingerprint import source_fingerprint
 from source_resolution import is_inside_source_roots, source_path
+from smt_obligations import parse_smt_obligations
+from verus_manifest import parse_verus_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
@@ -22,7 +30,7 @@ REPORT = Path(
         str(ROOT / "verification" / "output" / "claim-report.json"),
     )
 )
-CLAIM_REPORT_SCHEMA = 3
+CLAIM_REPORT_SCHEMA = 6
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REQUIRED_SCALAR_CALLS = (
     "deadlineAccepts(",
@@ -34,6 +42,7 @@ REQUIRED_SCALAR_CALLS = (
     "MintAccounting.tryConsumeWindow(",
     "mintEffectAmounts(",
 )
+ALLOWED_LEAN_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
 
 
 def items(value: str) -> list[str]:
@@ -58,24 +67,196 @@ def checked_link(value: str) -> tuple[Path, str]:
     return path, symbol
 
 
+def strip_solidity_comments_and_strings(source: str) -> str:
+    """Preserve offsets while removing Solidity comments and quoted strings."""
+    result = list(source)
+    index = 0
+    state = "code"
+    quote = ""
+    while index < len(source):
+        pair = source[index : index + 2]
+        char = source[index]
+        if state == "code":
+            if pair == "//":
+                result[index] = result[index + 1] = " "
+                index += 2
+                state = "line"
+                continue
+            if pair == "/*":
+                result[index] = result[index + 1] = " "
+                index += 2
+                state = "block"
+                continue
+            if char in {'"', "'"}:
+                quote = char
+                result[index] = " "
+                state = "string"
+        elif state == "line":
+            if char == "\n":
+                state = "code"
+            else:
+                result[index] = " "
+        elif state == "block":
+            result[index] = " "
+            if pair == "*/":
+                result[index + 1] = " "
+                index += 2
+                state = "code"
+                continue
+        else:
+            result[index] = " "
+            if char == "\\" and index + 1 < len(source):
+                result[index + 1] = " "
+                index += 2
+                continue
+            if char == quote:
+                state = "code"
+        index += 1
+    if state in {"block", "string"}:
+        raise ValueError(f"unterminated Solidity {state}")
+    return "".join(result)
+
+
 def solidity_function_body(source: str, name: str) -> str:
-    marker = f"function {name}("
-    start = source.find(marker)
-    if start < 0:
+    cleaned = strip_solidity_comments_and_strings(source)
+    marker = re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", cleaned)
+    if marker is None:
         raise ValueError(f"missing Solidity function: {name}")
-    brace = source.find("{", start)
-    semicolon = source.find(";", start)
+    brace = cleaned.find("{", marker.end())
+    semicolon = cleaned.find(";", marker.end())
     if brace < 0 or (semicolon >= 0 and semicolon < brace):
         raise ValueError(f"Solidity function has no body: {name}")
     depth = 0
-    for index in range(brace, len(source)):
-        if source[index] == "{":
+    for index in range(brace, len(cleaned)):
+        if cleaned[index] == "{":
             depth += 1
-        elif source[index] == "}":
+        elif cleaned[index] == "}":
             depth -= 1
             if depth == 0:
-                return source[brace : index + 1]
+                return cleaned[brace : index + 1]
     raise ValueError(f"Solidity function body is not balanced: {name}")
+
+
+def checked_solidity_function_link(value: str) -> tuple[Path, str]:
+    if value.count("#") != 1:
+        raise ValueError(f"invalid Solidity source link: {value}")
+    path_text, signature = value.split("#")
+    match = re.fullmatch(
+        r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\((.*)\)",
+        signature,
+    )
+    if match is None:
+        raise ValueError(f"invalid Solidity source symbol: {value}")
+    _, symbol, _ = match.groups()
+    path = source_path(path_text).resolve()
+    if not is_inside_source_roots(path) or path.suffix != ".sol" or not path.is_file():
+        raise ValueError(f"missing Solidity source link target: {value}")
+    solidity_function_body(path.read_text(encoding="utf-8"), symbol)
+    return path, signature
+
+
+def require_exact_claim_coverage(
+    label: str,
+    declared: dict[str, set[str]],
+    referenced: dict[str, set[str]],
+) -> None:
+    if set(declared) != set(referenced):
+        raise ValueError(
+            f"{label} obligation coverage differs: "
+            f"missing={sorted(set(declared) - set(referenced))} "
+            f"extra={sorted(set(referenced) - set(declared))}"
+        )
+    mismatches = {
+        obligation_id: {
+            "missing": sorted(declared[obligation_id] - referenced[obligation_id]),
+            "extra": sorted(referenced[obligation_id] - declared[obligation_id]),
+        }
+        for obligation_id in declared
+        if declared[obligation_id] != referenced[obligation_id]
+    }
+    if mismatches:
+        raise ValueError(f"{label} obligation claim coverage differs: {mismatches}")
+
+
+def require_exact_smt_claim_coverage(
+    declared: dict[str, set[str]], referenced: dict[str, set[str]]
+) -> None:
+    require_exact_claim_coverage("SMT", declared, referenced)
+
+
+def require_unique_smt_obligations(claim_id: str, obligation_ids: list[str]) -> None:
+    if len(obligation_ids) != len(set(obligation_ids)):
+        raise ValueError(f"duplicate SMT obligations for {claim_id}")
+
+
+def require_unique_items(label: str, claim_id: str, values: list[str]) -> None:
+    if len(values) != len(set(values)):
+        raise ValueError(f"duplicate {label} for {claim_id}")
+
+
+def require_exact_implementation_basis(
+    claim_id: str,
+    basis: list[str],
+    verus_proofs: list[str],
+    halmos_ids: list[str],
+    verus_rows: dict[str, list[object]],
+    halmos_obligations: dict[str, object],
+) -> set[str]:
+    required = {
+        f"verus:{proof}"
+        for proof in verus_proofs
+        if any(
+            registration.production_bound
+            for registration in verus_rows[proof]
+        )
+    }
+    required.update(
+        f"halmos:{obligation_id}"
+        for obligation_id in halmos_ids
+        if halmos_obligations[obligation_id].claim_complete
+    )
+    actual = set(basis)
+    if actual != required:
+        raise ValueError(
+            f"implementation basis differs for {claim_id}: "
+            f"missing={sorted(required - actual)} extra={sorted(actual - required)}"
+        )
+    return required
+
+
+def uncovered_verus_obligations(
+    claim_id: str,
+    verus_proofs: list[str],
+    verus_rows: dict[str, list[object]],
+) -> set[str]:
+    """Return claim obligations without a complete production binding."""
+    kernels = {
+        registration.kernel: registration
+        for registrations in verus_rows.values()
+        for registration in registrations
+    }
+    referenced = set(verus_proofs)
+    uncovered: set[str] = set()
+    for proof in verus_proofs:
+        registrations = verus_rows[proof]
+        if any(registration.production_bound for registration in registrations):
+            continue
+        derived_is_covered = any(
+            registration.kind == "derived"
+            and bool(registration.binding)
+            and all(
+                (dependency := kernels.get(kernel)) is not None
+                and dependency.kind in {"executable", "shared-expression"}
+                and dependency.production_bound
+                and dependency.proof in referenced
+                and claim_id in dependency.claim_ids
+                for kernel in registration.binding
+            )
+            for registration in registrations
+        )
+        if not derived_is_covered:
+            uncovered.add(proof)
+    return uncovered
 
 
 def missing_scalar_calls(function_body: str) -> list[str]:
@@ -91,13 +272,20 @@ def check_solidity_wrapper_refinement() -> None:
     missing = missing_scalar_calls(evaluate)
     if missing:
         raise ValueError(f"Mint struct wrapper bypasses scalar kernels: {missing}")
-    mint_wrapper = bridge[
-        bridge.index("function mintDepositWithAuthorization") : bridge.index(
-            "function createWithdrawal"
-        )
-    ]
-    required_effect_applications = (
+    mint_wrapper = solidity_function_body(bridge, "mintDepositWithAuthorization")
+    commit = solidity_function_body(bridge, "_commitAuthorizedMint")
+    wrapper_requirements = (
         "MintAuthorizationPolicy.evaluateMint(",
+        "_commitAuthorizedMint(",
+    )
+    missing = [value for value in wrapper_requirements if value not in mint_wrapper]
+    if (
+        missing
+        or mint_wrapper.count("MintAuthorizationPolicy.evaluateMint(") != 1
+        or mint_wrapper.count("_commitAuthorizedMint(") != 1
+    ):
+        raise ValueError(f"Bridge mint wrapper does not apply one exact transition: {missing}")
+    required_effect_applications = (
         "= effects.processedAfter;",
         "= effects.windowStartedAtAfter;",
         "= effects.windowConsumedAfter;",
@@ -106,13 +294,14 @@ def check_solidity_wrapper_refinement() -> None:
         "effects.eventServiceFee",
         "effects.eventMintedAmount",
     )
-    missing = [value for value in required_effect_applications if value not in mint_wrapper]
-    if missing or mint_wrapper.count("MintAuthorizationPolicy.evaluateMint(") != 1:
-        raise ValueError(f"Bridge mint wrapper does not apply one exact transition: {missing}")
+    missing = [value for value in required_effect_applications if value not in commit]
+    if missing:
+        raise ValueError(f"Bridge mint commit does not apply one exact transition: {missing}")
 
 
 def check_lean_claim_contracts(manifest_text: str) -> None:
     manifest = parse_claim_manifest(manifest_text)
+    require_mandatory_claim_catalog(manifest)
     source = lean_contract_check_source(manifest)
     build = subprocess.run(
         ["lake", "build", "BridgeSpec.ClaimContracts"],
@@ -135,12 +324,91 @@ def check_lean_claim_contracts(manifest_text: str) -> None:
         )
     if result.returncode != 0:
         raise ValueError(f"Lean claim contract check failed:\n{result.stdout}{result.stderr}")
+    printed = re.findall(r"depends on axioms: \[([^\]]*)\]", result.stdout)
+    no_axioms = result.stdout.count("does not depend on any axioms")
+    proved = sum(registration.is_proved for registration in manifest.contracts.values())
+    if len(printed) + no_axioms != proved:
+        raise ValueError("Lean did not report an axiom dependency set for every claim witness")
+    for dependencies in printed:
+        actual = {name.strip() for name in dependencies.split(",") if name.strip()}
+        forbidden = actual - ALLOWED_LEAN_AXIOMS
+        if forbidden:
+            raise ValueError(
+                f"Lean claim witness depends on project-local axioms: {sorted(forbidden)}"
+            )
+
+
+def require_mandatory_claim_catalog(manifest: ClaimManifest) -> None:
+    actual = {row[1] for row in manifest.rows}
+    if actual != REQUIRED_CLAIM_IDS:
+        raise ValueError(
+            "mandatory claim catalog differs: "
+            f"missing={sorted(REQUIRED_CLAIM_IDS - actual)} "
+            f"extra={sorted(actual - REQUIRED_CLAIM_IDS)}"
+        )
 
 
 def build_claim_report() -> dict[str, object]:
     check_solidity_wrapper_refinement()
     manifest_text = MANIFEST.read_text(encoding="utf-8")
     manifest = parse_claim_manifest(manifest_text)
+    require_mandatory_claim_catalog(manifest)
+    smt_obligations_by_id = parse_smt_obligations(
+        (ROOT / "verification" / "smt" / "obligations.tsv").read_text(encoding="utf-8")
+    )
+    halmos_obligations_by_id = parse_halmos_obligations(
+        (ROOT / "verification" / "halmos" / "obligations.tsv").read_text(encoding="utf-8")
+    )
+    claim_ids = {row[1] for row in manifest.rows}
+    failure_rows = [
+        line.split("\t")
+        for line in (ROOT / "verification" / "smt" / "failure-manifest.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
+    failure_ids = {row[0] for row in failure_rows if len(row) == 2}
+    if len(failure_ids) != len(failure_rows):
+        raise ValueError("invalid or duplicate SMT failure IDs")
+    for obligation in smt_obligations_by_id.values():
+        for link in obligation.pass_links + obligation.production_links:
+            checked_solidity_function_link(link)
+        unknown_failures = set(obligation.failure_ids) - failure_ids
+        if unknown_failures:
+            raise ValueError(
+                f"unknown SMT negative obligation for {obligation.obligation_id}: "
+                f"{sorted(unknown_failures)}"
+            )
+        unknown_claims = set(obligation.claim_ids) - claim_ids
+        if unknown_claims:
+            raise ValueError(
+                f"unknown SMT claim for {obligation.obligation_id}: {sorted(unknown_claims)}"
+            )
+    halmos_failure_rows = [
+        line.split("\t")
+        for line in (ROOT / "verification" / "halmos" / "failure-manifest.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
+    halmos_failure_ids = {row[0] for row in halmos_failure_rows if len(row) == 2}
+    if len(halmos_failure_ids) != len(halmos_failure_rows):
+        raise ValueError("invalid or duplicate Halmos failure IDs")
+    for obligation in halmos_obligations_by_id.values():
+        for link in obligation.test_links + obligation.production_links:
+            checked_link(link)
+        unknown_failures = set(obligation.failure_ids) - halmos_failure_ids
+        if unknown_failures:
+            raise ValueError(
+                f"unknown Halmos negative obligation for {obligation.obligation_id}: "
+                f"{sorted(unknown_failures)}"
+            )
+        unknown_claims = set(obligation.claim_ids) - claim_ids
+        if unknown_claims:
+            raise ValueError(
+                f"unknown Halmos claim for {obligation.obligation_id}: "
+                f"{sorted(unknown_claims)}"
+            )
     check_lean_claim_contracts(manifest_text)
     lean_source = "\n".join(
         path.read_text(encoding="utf-8")
@@ -150,15 +418,18 @@ def build_claim_report() -> dict[str, object]:
         re.findall(r"^theorem ([A-Za-z_][A-Za-z0-9_]*)\b", lean_source, re.MULTILINE)
     )
     verus_source = (ROOT / "verification" / "verus" / "pass.rs").read_text(encoding="utf-8")
-    verus_rows: dict[str, list[tuple[str, str]]] = {}
-    for line in (ROOT / "verification" / "verus" / "manifest.tsv").read_text(
-        encoding="utf-8"
-    ).splitlines():
-        kind, kernel, proof, _, _ = line.split("\t")
-        registration = (kind, kernel)
-        if registration in verus_rows.setdefault(proof, []):
-            raise ValueError(f"duplicate Verus proof registration: {proof}/{kernel}")
-        verus_rows[proof].append(registration)
+    verus_manifest = parse_verus_manifest(
+        (ROOT / "verification" / "verus" / "manifest.tsv").read_text(encoding="utf-8")
+    )
+    verus_rows: dict[str, list[object]] = {}
+    for obligation in verus_manifest.values():
+        verus_rows.setdefault(obligation.proof, []).append(obligation)
+        unknown_claims = set(obligation.claim_ids) - claim_ids
+        if unknown_claims:
+            raise ValueError(
+                f"unknown Verus claim for {obligation.obligation_id}: "
+                f"{sorted(unknown_claims)}"
+            )
     assumption_dependencies: dict[str, set[str]] = {}
     for number, line in enumerate(
         (ROOT / "verification" / "assumptions.tsv")
@@ -193,6 +464,13 @@ def build_claim_report() -> dict[str, object]:
     rows = manifest.rows
 
     used_verus: set[str] = set()
+    referenced_verus_claims = {proof: set() for proof in verus_rows}
+    referenced_smt_claims = {
+        obligation_id: set() for obligation_id in smt_obligations_by_id
+    }
+    referenced_halmos_claims = {
+        obligation_id: set() for obligation_id in halmos_obligations_by_id
+    }
     results: list[dict[str, object]] = []
     for (
         kind,
@@ -202,6 +480,8 @@ def build_claim_report() -> dict[str, object]:
         trace_theorems,
         verus_obligations,
         smt_obligations,
+        halmos_obligations,
+        implementation_basis,
         production_links,
         transaction_tests,
         assumption_ids,
@@ -220,13 +500,61 @@ def build_claim_report() -> dict[str, object]:
                 f"missing Lean theorem for {claim_id}: {sorted(missing_theorems)}"
             )
         obligations = items(verus_obligations)
+        require_unique_items("Verus obligations", claim_id, obligations)
         unknown_verus = set(obligations) - set(verus_rows)
         if unknown_verus:
             raise ValueError(
                 f"unknown Verus obligation for {claim_id}: {sorted(unknown_verus)}"
             )
         used_verus.update(obligations)
-        smt_links = [checked_link(link) for link in items(smt_obligations)]
+        for proof in obligations:
+            registration = verus_rows[proof][0]
+            if claim_id not in registration.claim_ids:
+                raise ValueError(
+                    f"Verus obligation does not declare claim {claim_id}: "
+                    f"{registration.obligation_id}"
+                )
+            referenced_verus_claims[proof].add(claim_id)
+        claim_smt_ids = items(smt_obligations)
+        require_unique_smt_obligations(claim_id, claim_smt_ids)
+        raw_smt_links = [value for value in claim_smt_ids if "#" in value or "/" in value]
+        if raw_smt_links:
+            raise ValueError(f"raw SMT links are forbidden for {claim_id}: {raw_smt_links}")
+        unknown_smt = set(claim_smt_ids) - set(smt_obligations_by_id)
+        if unknown_smt:
+            raise ValueError(f"unknown SMT obligation for {claim_id}: {sorted(unknown_smt)}")
+        for obligation_id in claim_smt_ids:
+            obligation = smt_obligations_by_id[obligation_id]
+            if claim_id not in obligation.claim_ids:
+                raise ValueError(
+                    f"SMT obligation does not declare claim {claim_id}: {obligation_id}"
+                )
+            referenced_smt_claims[obligation_id].add(claim_id)
+        claim_halmos_ids = items(halmos_obligations)
+        require_unique_items("Halmos obligations", claim_id, claim_halmos_ids)
+        unknown_halmos = set(claim_halmos_ids) - set(halmos_obligations_by_id)
+        if unknown_halmos:
+            raise ValueError(
+                f"unknown Halmos obligation for {claim_id}: {sorted(unknown_halmos)}"
+            )
+        for obligation_id in claim_halmos_ids:
+            obligation = halmos_obligations_by_id[obligation_id]
+            if claim_id not in obligation.claim_ids:
+                raise ValueError(
+                    f"Halmos obligation does not declare claim {claim_id}: {obligation_id}"
+                )
+            referenced_halmos_claims[obligation_id].add(claim_id)
+
+        basis = items(implementation_basis)
+        require_unique_items("implementation basis", claim_id, basis)
+        required_basis = require_exact_implementation_basis(
+            claim_id,
+            basis,
+            obligations,
+            claim_halmos_ids,
+            verus_rows,
+            halmos_obligations_by_id,
+        )
         production = [checked_link(link) for link in items(production_links)]
         tests = [checked_link(link) for link in items(transaction_tests)]
         unknown_assumptions = set(items(assumption_ids)) - assumptions
@@ -242,18 +570,16 @@ def build_claim_report() -> dict[str, object]:
         production_text = "\n".join(
             path.read_text(encoding="utf-8") for path, _ in production
         )
-        model_only = [
-            obligation
-            for obligation in obligations
-            if all(kind == "model" for kind, _ in verus_rows[obligation])
-        ]
+        uncovered_verus = uncovered_verus_obligations(
+            claim_id, obligations, verus_rows
+        )
         unreferenced_kernels = [
-            kernel
+            registration.kernel
             for obligation in obligations
-            for registration_kind, kernel in verus_rows[obligation]
-            if registration_kind != "model"
+            for registration in verus_rows[obligation]
+            if registration.production_bound
             and re.search(
-                rf"\b{re.escape(kernel)}\b", production_text
+                rf"\b{re.escape(registration.kernel)}\b", production_text
             )
             is None
         ]
@@ -264,7 +590,7 @@ def build_claim_report() -> dict[str, object]:
         )
         kernel_strength = (
             "implementation-proved"
-            if smt_links or (obligations and not model_only)
+            if required_basis and not uncovered_verus
             else "refinement-tested"
         )
         evidence = {
@@ -286,7 +612,22 @@ def build_claim_report() -> dict[str, object]:
             "proof_class": manifest.contracts[claim_id].proof_class,
             "abstract": abstract_evidence_status(abstract_theorems),
             "production_kernel": "ownership-registered",
-            "smt_scalar": "implementation-proved" if smt_links else "not-applicable",
+            "smt_scalar": [
+                {
+                    "id": obligation_id,
+                    "status": "supporting-proved",
+                }
+                for obligation_id in claim_smt_ids
+            ],
+            "halmos_commit": [
+                {
+                    "id": obligation_id,
+                    "status": "supporting-symbolically-proved",
+                    "boundary": "post-auth-commit",
+                }
+                for obligation_id in claim_halmos_ids
+            ],
+            "implementation_basis": basis,
             "adapter": "transaction-tested" if tests else "missing",
             "vector_consumer": vector_consumer,
             "external": "assumed" if items(assumption_ids) else "not-applicable",
@@ -294,8 +635,12 @@ def build_claim_report() -> dict[str, object]:
         reasons: list[str] = []
         if not manifest.contracts[claim_id].is_proved:
             reasons.append("missing_claim_contract")
-        if model_only:
-            reasons.append("model_only_verus:" + ",".join(sorted(model_only)))
+        if uncovered_verus:
+            reasons.append(
+                "uncovered_verus:" + ",".join(sorted(uncovered_verus))
+            )
+        if not basis:
+            reasons.append("missing_implementation_basis")
         if unreferenced_kernels:
             reasons.append(
                 "production_kernel_not_linked:" + ",".join(sorted(unreferenced_kernels))
@@ -318,7 +663,6 @@ def build_claim_report() -> dict[str, object]:
             reason
             for reason in result["unproved_reasons"]
             if reason == "missing_claim_contract"
-            or reason.startswith("model_only_verus:")
             or reason.startswith("production_kernel_not_linked:")
         ]
         for result in results
@@ -332,6 +676,30 @@ def build_claim_report() -> dict[str, object]:
         raise ValueError(
             f"unregistered Verus obligations in unified claims: {sorted(missing_verus)}"
         )
+    require_exact_claim_coverage(
+        "Verus",
+        {
+            obligation.proof: set(obligation.claim_ids)
+            for obligation in verus_manifest.values()
+        },
+        referenced_verus_claims,
+    )
+    require_exact_claim_coverage(
+        "SMT",
+        {
+            obligation_id: set(obligation.claim_ids)
+            for obligation_id, obligation in smt_obligations_by_id.items()
+        },
+        referenced_smt_claims,
+    )
+    require_exact_claim_coverage(
+        "Halmos",
+        {
+            obligation_id: set(obligation.claim_ids)
+            for obligation_id, obligation in halmos_obligations_by_id.items()
+        },
+        referenced_halmos_claims,
+    )
     for assumption, declared in assumption_dependencies.items():
         actual = actual_assumption_dependencies[assumption]
         if declared != actual:

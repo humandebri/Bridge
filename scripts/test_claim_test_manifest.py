@@ -15,7 +15,7 @@ class ClaimTestManifestTests(unittest.TestCase):
     @staticmethod
     def claims(row: str) -> str:
         return (
-            "schema\t3\t-\t-\t-\n"
+            "schema\t5\t-\t-\t-\n"
             "contract\tclaim\timplementation-only\t-\t-\n"
             + row
         )
@@ -28,7 +28,7 @@ class ClaimTestManifestTests(unittest.TestCase):
         target.parent.mkdir(parents=True)
         target.write_text("fn exact_test() {}\n", encoding="utf-8")
         claims = self.claims(
-            "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+            "kind\tclaim\ta\t-\t-\tv\t-\t-\t-\tp\t"
             "canister/bridge-core/tests/example.rs#exact_test\t-\t-\n"
         )
         manifest = (
@@ -70,7 +70,7 @@ class ClaimTestManifestTests(unittest.TestCase):
                 encoding="utf-8",
             )
             claims = self.claims(
-                "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+                "kind\tclaim\ta\t-\t-\tv\t-\t-\t-\tp\t"
                 "ui/src/example.test.ts#exact_test\t-\t-\n"
             )
             manifest = (
@@ -87,7 +87,7 @@ class ClaimTestManifestTests(unittest.TestCase):
             target.parent.mkdir(parents=True)
             target.write_text('it("tsx_test", () => <div />)\n', encoding="utf-8")
             claims = self.claims(
-                "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+                "kind\tclaim\ta\t-\t-\tv\t-\t-\t-\tp\t"
                 "ui/src/example.test.tsx#tsx_test\t-\t-\n"
             )
             manifest = "vitest\tui/src/example.test.tsx\ttsx_test\ttsx_test\n"
@@ -103,7 +103,7 @@ class ClaimTestManifestTests(unittest.TestCase):
                 encoding="utf-8",
             )
             claims = self.claims(
-                "kind\tclaim\ta\t-\t-\tv\t-\tp\t"
+                "kind\tclaim\ta\t-\t-\tv\t-\t-\t-\tp\t"
                 "integration/phase3.spec.ts#exact_test\t-\t-\n"
             )
             manifest = (
@@ -123,6 +123,16 @@ class ClaimTestManifestTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "did not pass exactly once"):
             claim_tests.execute_test(test, Path("."), runner)
+
+    def test_json_report_tolerates_package_manager_warning_prefix(self) -> None:
+        report = claim_tests.parse_json_report(
+            '[WARN] Unsupported engine: wanted node 24\n{"success":true}\n'
+        )
+        self.assertEqual(report, {"success": True})
+
+    def test_json_report_rejects_non_json_output(self) -> None:
+        with self.assertRaisesRegex(ValueError, "terminal JSON payload"):
+            claim_tests.parse_json_report("warning only\n")
 
     def test_test_deployment_runner_enables_the_feature(self) -> None:
         test = claim_tests.ClaimTest(

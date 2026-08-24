@@ -47,6 +47,5 @@ The funded wallet is intentionally both the Base Admin wallet and Runtime
 Administrator for this experiment. This does not satisfy the complete
 production role-separation profile. The Bridge signer and Timelock canceller
 are separate, independently encrypted test wallets; the canceller is distinct
-from the proposer and executor even in rehearsal. The ledger block `42` in the
-release acknowledgement is synthetic; no IC canister or KINIC ledger is
-involved.
+from the proposer and executor even in rehearsal. This contract-only rehearsal
+does not create an IC ledger block or a release acknowledgement.

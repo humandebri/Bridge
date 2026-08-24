@@ -30,11 +30,25 @@ class ClaimTest:
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def parse_json_report(output: str) -> object:
+    """Decode a JSON reporter payload while tolerating package-manager warnings."""
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"(?m)^\s*(?=[{\[])", output):
+        candidate = output[match.end() :]
+        try:
+            report, end = decoder.raw_decode(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not candidate[end:].strip():
+            return report
+    raise ValueError("test reporter did not emit one terminal JSON payload")
+
+
 def claim_test_links(claims_text: str) -> set[tuple[str, str]]:
     links: set[tuple[str, str]] = set()
     manifest = parse_claim_manifest(claims_text)
     for fields in manifest.rows:
-        for link in fields[8].split(";"):
+        for link in fields[10].split(";"):
             if link.count("#") != 1:
                 raise ValueError(f"invalid claim transaction test: {link}")
             links.add(tuple(link.split("#", 1)))
@@ -227,7 +241,7 @@ def execute_test(
             root,
             runner,
         )
-        report = json.loads(result.stdout)
+        report = parse_json_report(result.stdout)
         results = [
             (name, value)
             for suite in report.values()
@@ -258,7 +272,7 @@ def execute_test(
             root,
             runner,
         )
-        report = json.loads(result.stdout)
+        report = parse_json_report(result.stdout)
         matches = [
             assertion
             for item in report.get("testResults", [])

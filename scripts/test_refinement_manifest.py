@@ -22,7 +22,7 @@ class RefinementManifestTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def test_generator_supports_legacy_and_current_bridge_constructors(self) -> None:
+    def test_generator_rejects_legacy_and_accepts_only_current_bridge_constructor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.write_bridge_constructor(
@@ -33,14 +33,16 @@ class RefinementManifestTests(unittest.TestCase):
                 "uint256 initialPerDepositLimit, uint256 initialMintWindowLimit, "
                 "uint64 initialMintWindowDuration, uint256 maxServiceFee, uint256 initialServiceFee",
             )
-            self.assertEqual(generator.bridge_constructor_prefix(root), '"kinic", "KINIC", 8, ')
+            with self.assertRaisesRegex(ValueError, "unsupported Bridge constructor"):
+                generator.bridge_constructor_prefix(root)
 
             self.write_bridge_constructor(
                 root,
                 "address initialBridgeSigner, address initialRuntimeAdministrator, "
                 "address initialBaseAdminTimelock, bytes32 initialApprovedTimelockRuntimeCodeHash, "
                 "uint256 initialPerDepositLimit, uint256 initialMintWindowLimit, "
-                "uint64 initialMintWindowDuration, uint256 maxServiceFee, uint256 initialServiceFee",
+                "uint64 initialMintWindowDuration, uint256 minServiceFee, "
+                "uint256 maxServiceFee, uint256 initialServiceFee",
             )
             self.assertEqual(generator.bridge_constructor_prefix(root), "")
 

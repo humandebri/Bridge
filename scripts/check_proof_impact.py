@@ -28,9 +28,10 @@ REQUIRED_STAGES = (
     "claim-transaction-tests",
     "known-answer-consumers",
     "smt-and-negative",
+    "halmos-and-negative",
     "verus-and-negative",
 )
-RECEIPT_SCHEMA = 5
+RECEIPT_SCHEMA = 6
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,7 @@ def _claim_production_sources(repo_root: Path) -> set[str]:
         (repo_root / "verification" / "claims.tsv").read_text(encoding="utf-8")
     )
     for row in manifest.rows:
-        for link in row[7].split(";"):
+        for link in row[9].split(";"):
             if link == "-" or link.count("#") != 1:
                 raise ValueError(f"invalid production source link: {link}")
             sources.add(link.split("#", 1)[0])

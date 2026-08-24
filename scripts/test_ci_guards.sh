@@ -260,6 +260,20 @@ if verify_lean_no_proof_escape "$INCOMPLETE_LEAN_SOURCE" >/dev/null 2>&1; then
   exit 1
 fi
 
+AXIOM_LEAN_SOURCE="$TEST_TMP_ROOT/Axiom.lean"
+printf '%s\n' 'axiom forged : False' >"$AXIOM_LEAN_SOURCE"
+if verify_lean_no_proof_escape "$AXIOM_LEAN_SOURCE" >/dev/null 2>&1; then
+  echo "Lean proof guard accepted project-local axiom" >&2
+  exit 1
+fi
+
+CONSTANT_LEAN_SOURCE="$TEST_TMP_ROOT/Constant.lean"
+printf '%s\n' 'constant forged : False' >"$CONSTANT_LEAN_SOURCE"
+if verify_lean_no_proof_escape "$CONSTANT_LEAN_SOURCE" >/dev/null 2>&1; then
+  echo "Lean proof guard accepted bodyless project-local constant" >&2
+  exit 1
+fi
+
 CI_LOCAL_SOURCE="$ROOT/scripts/ci-local.sh"
 if ! rg -q '^run_smoke_step\(\)' "$CI_LOCAL_SOURCE" ||
   ! rg -q '^  trap cleanup_runtime EXIT$' "$CI_LOCAL_SOURCE"; then

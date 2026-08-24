@@ -19,11 +19,15 @@ FINGERPRINT_SOURCE_ROOTS = (
     ("verification", frozenset({".json", ".lean", ".rs", ".sol", ".toml", ".tsv"})),
 )
 FINGERPRINT_CONFIG_FILES = (
+    ".node-version",
     ".gitmodules",
     "Cargo.lock",
     "Cargo.toml",
+    "icp.yaml",
+    "lean-toolchain",
     "package.json",
     "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
     "rust-toolchain.toml",
     "ui/package.json",
     "ui/pnpm-lock.yaml",
@@ -34,6 +38,21 @@ FINGERPRINT_CONFIG_FILES = (
     "ui/vite.config.ts",
     "ui/vitest.config.ts",
 )
+FINGERPRINT_EXCLUDED_VERIFICATION_DIRS = (
+    ("output",),
+    ("lean", ".lake"),
+    ("smt", "out"),
+    ("smt", "cache"),
+    ("halmos", ".venv"),
+)
+
+
+def excluded_verification_path(path: Path, verification: Path) -> bool:
+    relative = path.relative_to(verification)
+    return any(part.startswith(".") for part in relative.parts) or any(
+        verification.joinpath(*parts) in path.parents
+        for parts in FINGERPRINT_EXCLUDED_VERIFICATION_DIRS
+    )
 
 
 def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> tuple[Path, ...]:
@@ -47,8 +66,7 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
         path
         for path in verification.rglob("*")
         if path.is_file()
-        and verification / "output" not in path.parents
-        and ".lake" not in path.parts
+        and not excluded_verification_path(path, verification)
     )
     for relative_root, suffixes in FINGERPRINT_SOURCE_ROOTS:
         source_root = repo_root / relative_root
@@ -61,10 +79,7 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
             and path.suffix in suffixes
             and not (
                 relative_root == "verification"
-                and (
-                    "output" in path.relative_to(source_root).parts
-                    or any(part.startswith(".") for part in path.relative_to(source_root).parts)
-                )
+                and excluded_verification_path(path, verification)
             )
         )
     patches = repo_root / "ui" / "patches"

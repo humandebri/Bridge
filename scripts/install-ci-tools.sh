@@ -156,6 +156,12 @@ install_proof_tools() {
     echo "elan already installed; skipping installer" >&2
   fi
   install_lean_toolchain
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required to install the locked Halmos environment" >&2
+    return 1
+  fi
+  uv sync --project "$ROOT/verification/halmos" --frozen
+  python3 "$ROOT/scripts/halmos_environment.py" --write
 }
 
 case "$MODE" in

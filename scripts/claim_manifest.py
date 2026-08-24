@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parse the fail-closed v3 claim and proof-contract manifest."""
+"""Parse the fail-closed claim and proof-contract manifest."""
 
 from __future__ import annotations
 
@@ -7,10 +7,26 @@ import re
 from dataclasses import dataclass
 
 
-SCHEMA_VERSION = "3"
-CLAIM_FIELD_COUNT = 11
+SCHEMA_VERSION = "5"
+CLAIM_FIELD_COUNT = 13
 LEAN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 PROOF_CLASSES = {"local-safety", "history-safety", "liveness", "implementation-only"}
+REQUIRED_CLAIM_IDS = frozenset(
+    """activation_preflight authorization_binding canonical_probe committed_quote
+    deposit_admission deposit_backing deposit_identity_preflight epoch_invalidation
+    exact_mint_finalization expired_deposit_eventually_refunded expiry_refund
+    fee_accounting_once fee_payout fee_recipient_rotation funded_deposit_eventually_minted
+    funded_deposit_eventually_minted_or_refunded funding_attempt_lifecycle
+    funding_failure_eventually_cancelled funding_reconciliation_freshness
+    governance_confirmation_authorization governance_nonce_chain_binding
+    governance_transaction_affordability hold_resolution lease_lane_isolation
+    lease_outcome ledger_block_provenance nonterminal_deposit_index_consistency
+    notification_quota_isolation payment_identity pending_queue
+    refund_evidence_enforcement refund_request_authorization reservation_commit
+    reservation_lifecycle runtime_attestation_reuse service_fee_maximum
+    settlement_backing signing_cycle_reserve withdrawal_admission_boundary
+    withdrawal_eventually_paid withdrawal_finality_quorum withdrawal_finalization""".split()
+)
 
 
 @dataclass(frozen=True)
@@ -81,7 +97,12 @@ def lean_contract_check_source(manifest: ClaimManifest) -> str:
     for claim_id in sorted(manifest.contracts):
         registration = manifest.contracts[claim_id]
         if registration.is_proved:
-            lines.append(
-                f"example : {registration.contract} := {registration.witness}"
+            lines.extend(
+                [
+                    f"example : {registration.contract} := by",
+                    "  fail_if_success exact True.intro",
+                    f"  exact {registration.witness}",
+                    f"#print axioms {registration.witness}",
+                ]
             )
     return "\n".join(lines) + "\n"

@@ -20,10 +20,7 @@ RUST_TARGET = "canister/bridge-core/tests/generated_refinement.rs"
 FOUNDRY_TARGET = "contracts/test/GeneratedRefinement.t.sol"
 VITEST_TARGET = "ui/src/lib/generated-refinement.test.ts"
 
-LEGACY_BRIDGE_CONSTRUCTOR_PARAMETERS = (
-    "tokenName",
-    "tokenSymbol",
-    "tokenDecimals",
+CURRENT_BRIDGE_CONSTRUCTOR_PARAMETERS = (
     "initialBridgeSigner",
     "initialRuntimeAdministrator",
     "initialBaseAdminTimelock",
@@ -31,10 +28,10 @@ LEGACY_BRIDGE_CONSTRUCTOR_PARAMETERS = (
     "initialPerDepositLimit",
     "initialMintWindowLimit",
     "initialMintWindowDuration",
+    "minServiceFee",
     "maxServiceFee",
     "initialServiceFee",
 )
-CURRENT_BRIDGE_CONSTRUCTOR_PARAMETERS = LEGACY_BRIDGE_CONSTRUCTOR_PARAMETERS[3:]
 
 
 @dataclass(frozen=True)
@@ -169,7 +166,8 @@ RUST_RENDERERS: dict[str, tuple[str, str]] = {
     "service_fee_cases": (
         "protocol_service_fee_cases_matches_production",
         '''        assert_eq!(service_fee_change_allowed(
-            amount(text(&case, "service_fee")), amount(text(&case, "maximum")),
+            amount(text(&case, "service_fee")), amount(text(&case, "minimum")),
+            amount(text(&case, "maximum")),
         ), boolean(&case, "accepted"));''',
     ),
     "fee_rotation_cases": (
@@ -415,6 +413,7 @@ VITEST_RENDERERS = {
         testCase.receipt_succeeded ? "success" : "reverted",
         BigInt(testCase.receipt_block),
         testCase.finalized_block === null ? null : BigInt(testCase.finalized_block),
+        testCase.canonical,
       )).toBe(testCase.decision)
     }''',
     ),
@@ -526,7 +525,7 @@ contract GeneratedRefinementTest is TestBase {
         address timelock = _deployTestTimelock(address(0x33));
         bridge = new Bridge(
             __BRIDGE_CONSTRUCTOR_PREFIX__bridgeSigner, RUNTIME_ADMINISTRATOR, timelock,
-            _timelockCodeHash(timelock), 2_000, 2_000, 1 hours, 100, serviceFee
+            _timelockCodeHash(timelock), 2_000, 2_000, 1 hours, 1, 100, serviceFee
         );
         token = bridge.bsns();
         vm.prank(timelock);
@@ -539,7 +538,7 @@ contract GeneratedRefinementTest is TestBase {
             grossAmount: 1_100,
             maxServiceFee: serviceFee,
             chargedServiceFee: serviceFee,
-            deadline: block.timestamp + 30 minutes,
+            deadline: block.timestamp + 15 minutes,
             authorizationEpoch: bridge.mintAuthorizationEpoch()
         });
         _submitMintAuthorization(BRIDGE_SIGNER_KEY, bridge, authorization, address(this));
@@ -624,8 +623,6 @@ def bridge_constructor_prefix(root: Path) -> str:
             constructor.group(1),
         )
     )
-    if parameters == LEGACY_BRIDGE_CONSTRUCTOR_PARAMETERS:
-        return '"kinic", "KINIC", 8, '
     if parameters == CURRENT_BRIDGE_CONSTRUCTOR_PARAMETERS:
         return ""
     raise ValueError(f"unsupported Bridge constructor parameters: {parameters!r}")

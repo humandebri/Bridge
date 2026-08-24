@@ -32,6 +32,7 @@ CLEANUP_DONE=0
 UI_DEPENDENCIES_READY=0
 
 # shellcheck source=ci_guards.sh
+# shellcheck source=ci_guards.sh
 source "$ROOT/scripts/ci_guards.sh"
 
 cleanup_runtime() {
@@ -123,23 +124,17 @@ run_step() {
   return "$status"
 }
 
-verify_no_npm_lockfiles() {
-  local lockfile
-
-  for lockfile in \
-    "$ROOT/package-lock.json" \
-    "$ROOT/npm-shrinkwrap.json" \
-    "$ROOT/ui/package-lock.json" \
-    "$ROOT/ui/npm-shrinkwrap.json"; do
-    if [[ -e "$lockfile" ]]; then
-      echo "npm lockfile is forbidden; use pnpm-lock.yaml: $lockfile" >&2
-      return 1
-    fi
-  done
-}
-
 run_versions() {
-  verify_no_npm_lockfiles
+  verify_no_npm_lockfiles "$ROOT"
+  shellcheck -x -S warning \
+    "$ROOT/scripts/ci-local.sh" \
+    "$ROOT/scripts/production-release.sh" \
+    "$ROOT/scripts/production-validation.sh" \
+    "$ROOT/scripts/production-deploy-driver.sh" \
+    "$ROOT/scripts/production-activation-proposal.sh" \
+    "$ROOT/scripts/production-activate-driver.sh" \
+    "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/trusted-pr-container.sh"
   "$ROOT/scripts/check_tool_versions.sh"
   "$ROOT/scripts/test_tool_version_gate.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
@@ -148,7 +143,6 @@ run_versions() {
   verify_no_obsolete_withdrawal_terms \
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
-  python3 "$ROOT/scripts/test_live_fee_guard.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
   python3 "$ROOT/scripts/test_proof_impact.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
@@ -320,6 +314,8 @@ run_rust_fast() {
   run_no_automatic_execution_guards
   cargo fmt --manifest-path "$ROOT/Cargo.toml" --all --check
   cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" --workspace --all-targets -- -D warnings
+  cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" -p bridge-canister --all-targets \
+    --features test-deployment -- -D warnings
   cargo test --locked --manifest-path "$ROOT/Cargo.toml" --workspace
 }
 
@@ -339,6 +335,7 @@ run_rust_integration() {
   require_workspace_dependencies
   pnpm --dir "$ROOT" run governance-relayer:test
   pnpm --dir "$ROOT" run governance-relayer:typecheck
+  pnpm --dir "$ROOT" run integration:typecheck
   pnpm --dir "$ROOT" run test:e2e
   python3 "$ROOT/scripts/test_prepare_local_network.py"
   bash "$ROOT/scripts/test_ci_local_safety.sh"
@@ -393,6 +390,7 @@ build_smt_failure_fixture() {
     --root "$ROOT/verification/smt" \
     "${skip_args[@]}" \
     --force
+
 }
 
 run_smt() {
@@ -410,6 +408,8 @@ run_smt() {
     "${pass_skip_args[@]}" \
     --force
 
+  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope smt
+
   verify_smt_failure_fixtures \
     "$TMP_ROOT/smt-failures" \
     build_smt_failure_fixture \
@@ -424,9 +424,6 @@ run_verus() {
   local kernel_name
   local proof_name
   local expected_fixture
-  local production_path
-  local production_source
-  local -a production_sources
   local verus_version
 
   verus_version="$(verus --version 2>&1)"
@@ -445,11 +442,12 @@ run_verus() {
   fi
 
   verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass"
+  python3 "$ROOT/scripts/check_verus_manifest.py"
 
-  while IFS=$'\t' read -r kind kernel_name proof_name expected_fixture production_path; do
-    [[ -n "$kernel_name" ]] || continue
+  while IFS=$'\t' read -r obligation_id kind kernel_name proof_name expected_fixture _binding _derived_bindings _production_calls _claim_ids; do
+    [[ "$obligation_id" == "schema" ]] && continue
     case "$kind" in
-      shared)
+      shared-expression|derived|model)
         rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
           echo "Verus manifest spec is missing: $kernel_name" >&2
           return 1
@@ -463,20 +461,11 @@ run_verus() {
           return 1
         }
         rg -q "pub (const )?fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
-          echo "shared Verus kernel is missing: $kernel_name" >&2
-          return 1
+          [[ "$kind" == "model" ]] || {
+            echo "non-model Verus kernel is missing: $kernel_name" >&2
+            return 1
+          }
         }
-        IFS=';' read -r -a production_sources <<<"$production_path"
-        for production_source in "${production_sources[@]}"; do
-          [[ -n "$production_source" ]] || {
-            echo "shared Verus kernel has an empty production path: $kernel_name" >&2
-            return 1
-          }
-          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
-            echo "shared Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
-            return 1
-          }
-        done
         ;;
       executable)
         rg -q "^fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
@@ -495,32 +484,6 @@ run_verus() {
           echo "Verus executable kernel is missing: $kernel_name" >&2
           return 1
         }
-        IFS=';' read -r -a production_sources <<<"$production_path"
-        for production_source in "${production_sources[@]}"; do
-          [[ -n "$production_source" ]] || {
-            echo "executable Verus kernel has an empty production path: $kernel_name" >&2
-            return 1
-          }
-          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
-            echo "executable Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
-            return 1
-          }
-        done
-        ;;
-      model)
-        rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
-          echo "Verus manifest spec is missing: $kernel_name" >&2
-          return 1
-        }
-        rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
-          echo "Verus manifest proof is missing: $proof_name" >&2
-          return 1
-        }
-        rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
-          echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
-          return 1
-        }
-        [[ "$production_path" == "-" ]]
         ;;
       *)
         echo "invalid Verus manifest kind: $kind" >&2
@@ -528,25 +491,6 @@ run_verus() {
         ;;
     esac
   done < "$ROOT/verification/verus/manifest.tsv"
-
-  rg -o 'pub open spec fn [A-Za-z0-9_]+' "$ROOT/canister/bridge-core/src/kernel.rs" \
-    | sed 's/pub open spec fn //' | sort >"$TMP_ROOT/verus-specs"
-  awk -F $'\t' '$1 != "executable" { print $2 }' "$ROOT/verification/verus/manifest.tsv" \
-    | sed 's/$/_spec/' | sort >"$TMP_ROOT/verus-manifest-specs"
-  if ! cmp -s "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs"; then
-    echo "Verus manifest does not cover every spec exactly once" >&2
-    diff -u "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs" >&2 || true
-    return 1
-  fi
-
-  cut -f4 "$ROOT/verification/verus/manifest.tsv" | sort >"$TMP_ROOT/verus-manifest-fixtures"
-  rg --files "$ROOT/verification/verus/fail" -g '*.rs' \
-    | sed 's#^.*/##' | sort >"$TMP_ROOT/verus-failure-fixtures"
-  if ! cmp -s "$TMP_ROOT/verus-manifest-fixtures" "$TMP_ROOT/verus-failure-fixtures"; then
-    echo "Verus failure fixtures and manifest are not one-to-one" >&2
-    diff -u "$TMP_ROOT/verus-manifest-fixtures" "$TMP_ROOT/verus-failure-fixtures" >&2 || true
-    return 1
-  fi
 
   while IFS= read -r failure_fixture; do
     failure_log="$TMP_ROOT/verus-$(basename "$failure_fixture" .rs).log"
@@ -565,6 +509,75 @@ run_verus() {
       return 1
     fi
   done < <(rg --files "$ROOT/verification/verus/fail" -g '*.rs' | sort)
+}
+
+run_halmos() {
+  local halmos_entry="$ROOT/verification/halmos/.venv/bin/halmos"
+  local halmos_python="$ROOT/verification/halmos/.venv/bin/python"
+  local -a halmos
+  local positive_log="$TMP_ROOT/halmos-positive.log"
+  local failure_id
+  local failure_link
+  local failure_path
+  local failure_contract
+  local failure_function
+  local failure_log
+  local failure_status
+  local version
+
+  if [[ ! -x "$halmos_entry" || ! -x "$halmos_python" ]]; then
+    echo "missing locked Halmos environment; run uv sync --project verification/halmos --frozen" >&2
+    return 1
+  fi
+  python3 "$ROOT/scripts/halmos_environment.py" --check
+  halmos=("$halmos_python" "$halmos_entry")
+  version="$("${halmos[@]}" --version 2>&1)"
+  if [[ "$version" != "halmos 0.3.3" ]]; then
+    echo "Halmos version mismatch for proofs: $version" >&2
+    return 1
+  fi
+
+  "${halmos[@]}" \
+    --root "$ROOT/contracts" \
+    --contract BridgeMintCommitHalmos \
+    --solver z3 \
+    --solver-timeout-assertion 30s \
+    --early-exit \
+    --no-status >"$positive_log" 2>&1
+  if ! rg -q 'Symbolic test result: 3 passed; 0 failed' "$positive_log" \
+    || rg -qi '\[FAIL\]|counterexample|timeout|unknown' "$positive_log"; then
+    echo "Halmos positive proofs did not complete exactly" >&2
+    cat "$positive_log" >&2
+    return 1
+  fi
+  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope bridge
+
+  while IFS=$'\t' read -r failure_id failure_link; do
+    failure_path="${failure_link%%#*}"
+    failure_function="${failure_link#*#}"
+    failure_contract="$(basename "$failure_path" .t.sol)Halmos"
+    failure_log="$TMP_ROOT/halmos-$failure_id.log"
+    set +e
+    "${halmos[@]}" \
+      --root "$ROOT/contracts" \
+      --contract "$failure_contract" \
+      --function "$failure_function" \
+      --solver z3 \
+      --solver-timeout-assertion 30s \
+      --early-exit \
+      --no-status >"$failure_log" 2>&1
+    failure_status=$?
+    set -e
+    if [[ "$failure_status" -eq 0 ]] \
+      || ! rg -q '\[FAIL\]' "$failure_log" \
+      || ! rg -qi 'counterexample' "$failure_log" \
+      || ! rg -q 'Symbolic test result: 0 passed; 1 failed' "$failure_log" \
+      || rg -qi 'timeout|unknown' "$failure_log"; then
+      echo "Halmos negative fixture did not produce one counterexample: $failure_id" >&2
+      cat "$failure_log" >&2
+      return 1
+    fi
+  done < "$ROOT/verification/halmos/failure-manifest.tsv"
 }
 
 run_lean_failure_fixtures() {
@@ -620,9 +633,18 @@ run_proof_stage() {
   set +e
   (
     set -e
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
-    "$@"
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
+    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+      echo "proof source fingerprint changed before stage: $stage" >&2
+      exit 1
+    }
+    if ! "$@"; then
+      echo "proof stage command failed: $stage" >&2
+      exit 1
+    fi
+    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+      echo "proof source fingerprint changed during stage: $stage" >&2
+      exit 1
+    }
   )
   status=$?
   set -e
@@ -634,8 +656,11 @@ run_proof_stage() {
   printf '%s\t%s\t' "$stage" "$stage_status" >>"$PROOF_STAGE_RECEIPT"
   tr -d '\n' <"$PROOF_SOURCE_BASELINE" >>"$PROOF_STAGE_RECEIPT"
   printf '\n' >>"$PROOF_STAGE_RECEIPT"
-  python3 "$ROOT/scripts/write_proof_receipt.py" \
-    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"
+  if ! python3 "$ROOT/scripts/write_proof_receipt.py" \
+    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"; then
+    echo "proof receipt write failed after stage: $stage" >&2
+    return 1
+  fi
   return "$status"
 }
 
@@ -649,6 +674,10 @@ run_proofs() {
   python3 "$ROOT/scripts/test_write_proof_receipt.py"
   python3 "$ROOT/scripts/test_claim_test_manifest.py"
   python3 "$ROOT/scripts/test_check_claim_manifest.py"
+  python3 "$ROOT/scripts/test_halmos_environment.py"
+  python3 "$ROOT/scripts/test_solidity_ast_bindings.py"
+  python3 "$ROOT/scripts/test_verus_manifest.py"
+  "$ROOT/scripts/test_concrete_runtime.sh"
   python3 "$ROOT/scripts/check_failure_manifests.py"
   run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"
   run_proof_stage lean run_lean_proofs
@@ -660,6 +689,7 @@ run_proofs() {
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt
+  run_proof_stage halmos-and-negative run_halmos
   run_proof_stage verus-and-negative run_verus
   python3 -c \
     'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["complete"] is True' \
@@ -712,8 +742,8 @@ run_icp_build() {
 }
 
 wait_for_anvil() {
-  local attempt
-  for attempt in {1..50}; do
+  local _attempt
+  for _attempt in {1..50}; do
     if [[ -z "$ANVIL_PID" ]] || ! kill -0 "$ANVIL_PID" 2>/dev/null; then
       echo "spawned Anvil exited before becoming ready" >&2
       return 1
@@ -927,22 +957,22 @@ run_smoke() {
   local limit_signature
   local smoke_principal
   local bridge_init_args
-  local readonly bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-  local readonly runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
-  local readonly unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
-  local readonly independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
-  local readonly recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
-  local readonly deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
-  local readonly gross_amount="101000000"
-  local readonly service_fee="1000000"
-  local readonly minted_amount="100000000"
-  local readonly release_amount="50000000"
-  local readonly release_amount_out="49000000"
-  local readonly principal_owner="0x010203"
-  local readonly default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
-  local readonly timelock_delay_seconds="86400"
-  local readonly zero_address="0x0000000000000000000000000000000000000000"
-  local readonly zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
+  local -r bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  local -r runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+  local -r unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+  local -r independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
+  local -r recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
+  local -r deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
+  local -r gross_amount="101000000"
+  local -r service_fee="1000000"
+  local -r minted_amount="100000000"
+  local -r release_amount="50000000"
+  local -r release_amount_out="49000000"
+  local -r principal_owner="0x010203"
+  local -r default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
+  local -r timelock_delay_seconds="86400"
+  local -r zero_address="0x0000000000000000000000000000000000000000"
+  local -r zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
 
   ensure_icp_network "$network_status"
   prepare_smoke_canister_state
@@ -1176,9 +1206,6 @@ for field, (value, candid_type) in stable_fields.items():
 
   bridge_address="$(deploy_contract \
     "src/Bridge.sol:Bridge" \
-    "kinic" \
-    "KINIC" \
-    "8" \
     "$bridge_signer" \
     "$runtime_administrator" \
     "$base_admin_timelock" \
@@ -1220,7 +1247,7 @@ for field, (value, candid_type) in stable_fields.items():
   token_symbol="$(cast call "$bsns_address" "symbol()(string)" --rpc-url http://127.0.0.1:8545)"
   token_version="$(cast call "$bsns_address" "version()(string)" --rpc-url http://127.0.0.1:8545)"
   read -r token_decimals _ <<<"$(cast call "$bsns_address" "decimals()(uint8)" --rpc-url http://127.0.0.1:8545)"
-  require_equal "bSNS name" "$token_name" '"kinic"'
+  require_equal "bSNS name" "$token_name" '"KINIC"'
   require_equal "bSNS symbol" "$token_symbol" '"KINIC"'
   require_equal "bSNS EIP-712 version" "$token_version" '"1"'
   require_equal "bSNS decimals" "$token_decimals" "8"

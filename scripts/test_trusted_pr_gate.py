@@ -80,8 +80,8 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
-        self.assertIn("proofs) mode=\"all\"", workflow)
-        self.assertIn("*) mode=\"ci\"", workflow)
+        self.assertIn("if jq -e 'index(\"proofs\") != null'", workflow)
+        self.assertEqual(workflow.count("docker build --file"), 1)
         self.assertIn("actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn("actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn(
@@ -137,12 +137,12 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("dst=/workspace,readonly", wrapper)
         self.assertIn("dst=/workspace/scripts,readonly", wrapper)
         self.assertIn(
-            "src=$SOURCE_ROOT/scripts/plan007/generate-local-e2e.mjs,"
+            "src=$SCRATCH/candidate-scripts/plan007/generate-local-e2e.mjs,"
             "dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly",
             wrapper,
         )
         self.assertIn(
-            "src=$SOURCE_ROOT/scripts/plan007/test-generate-local-e2e.mjs,"
+            "src=$SCRATCH/candidate-scripts/plan007/test-generate-local-e2e.mjs,"
             "dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly",
             wrapper,
         )
@@ -217,12 +217,11 @@ class TrustedPrGateTests(unittest.TestCase):
         resolution = (ROOT / "scripts" / "source_resolution.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('[[ -e "$POLICY_ROOT/$candidate_script" ]] && continue', wrapper)
-        self.assertIn('cp -p "$SOURCE_ROOT/$candidate_script"', wrapper)
-        self.assertIn('chmod +x "$POLICY_ROOT/$candidate_script"', wrapper)
+        self.assertNotIn('cp -p "$SOURCE_ROOT/$candidate_script"', wrapper)
+        self.assertIn("bridge_materialize_regular_git_tree", wrapper)
         self.assertIn("BRIDGE_CANDIDATE_SCRIPTS=/scratch/candidate-scripts", wrapper)
         self.assertIn(
-            'src=$SOURCE_ROOT/scripts,dst=/scratch/candidate-scripts,readonly',
+            'src=$SCRATCH/candidate-scripts,dst=/scratch/candidate-scripts,readonly',
             wrapper,
         )
         self.assertLess(
@@ -236,6 +235,15 @@ class TrustedPrGateTests(unittest.TestCase):
                 "from source_resolution import",
                 (ROOT / "scripts" / check).read_text(encoding="utf-8"),
             )
+
+    def test_candidate_script_materialization_rejects_symlinks(self) -> None:
+        helper = (ROOT / "scripts" / "trusted-pr-mountpoints.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("git -C \"$root\" ls-tree -rz HEAD", helper)
+        self.assertIn('"$mode" == "100644" || "$mode" == "100755"', helper)
+        self.assertIn("git -C \"$root\" cat-file blob \"$object_id\"", helper)
+        self.assertNotIn('cp -p "$root/$path"', helper)
         staging_upgrade_test = (
             ROOT / "scripts" / "plan007" / "test_staging_canister_upgrade.py"
         ).read_text(encoding="utf-8")
@@ -382,9 +390,9 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn(
             "Verus executable obligation does not call production symbol", driver
         )
-        self.assertIn(
-            """awk -F $'\\t' '$1 != "executable" { print $2 }'""", driver
-        )
+        self.assertIn('python3 "$ROOT/scripts/check_verus_manifest.py"', driver)
+        self.assertIn("shared-expression|derived|model)", driver)
+        self.assertIn('[[ "$obligation_id" == "schema" ]] && continue', driver)
 
     def test_pr_controlled_gate_does_not_return(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(

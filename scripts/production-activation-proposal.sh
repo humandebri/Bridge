@@ -18,18 +18,8 @@ PROPOSER_PRINCIPAL="${7:?missing proposer principal}"
 command -v icp >/dev/null || { echo "icp is required" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
-# Reserve the checkpoint before proposal submission. If submission is interrupted,
-# the empty marker intentionally blocks an unsafe duplicate attempt.
-python3 - "$OUTPUT" <<'PY'
-import os,sys
-target=sys.argv[1]; parent=os.path.dirname(os.path.abspath(target)) or '.'
-if not os.path.isdir(parent): raise SystemExit('activation submission parent directory does not exist')
-fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-os.fsync(fd); os.close(fd)
-PY
-
 python3 - "$PHASE" "$BUNDLE" "$MANIFEST_SHA256" "$OUTPUT" "$IDENTITY" "$NEURON_SUBACCOUNT" "$PROPOSER_PRINCIPAL" <<'PY'
-import hashlib,json,os,re,subprocess,sys,time
+import hashlib,json,os,re,subprocess,sys,tempfile,time
 from pathlib import Path
 
 phase,bundle,manifest_hash,output,identity,subaccount,proposer=sys.argv[1:]
@@ -88,6 +78,17 @@ for function in functions:
 if len(matches)!=1: raise SystemExit('SNS function registry has no unique exact activation function')
 function_id=matches[0]
 
+# All reversible identity and registry checks are complete. Reserve the durable
+# checkpoint immediately before the irreversible proposal submission.
+parent=target.parent.resolve()
+if not parent.is_dir(): raise SystemExit('activation submission parent directory does not exist')
+reserve_fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+try: os.fsync(reserve_fd)
+finally: os.close(reserve_fd)
+parent_fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+try: os.fsync(parent_fd)
+finally: os.close(parent_fd)
+
 def blob_literal(raw): return 'blob "'+''.join(f'\\{byte:02x}' for byte in raw)+'"'
 title='Schedule KINIC Bridge activation' if phase=='schedule' else 'Execute KINIC Bridge activation'
 summary=('Schedule the reviewed 24-hour Timelock activation while all asset flows remain paused.'
@@ -117,8 +118,19 @@ evidence={
  'proposal_response_hex':stdout.encode().hex(),'proposal_response_sha256':hashlib.sha256(stdout.encode()).hexdigest(),
  'registry_command_argv':registry_command,'proposal_command_argv':[value if value!=argument else '<fixed-candid-payload>' for value in submit_command],
 }
-tmp=Path(str(target)+f'.tmp.{os.getpid()}')
-tmp.write_text(json.dumps(evidence,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
-os.replace(tmp,target)
+payload_bytes=(json.dumps(evidence,sort_keys=True,separators=(',',':'))+'\n').encode()
+tmp_fd,tmp_name=tempfile.mkstemp(prefix='.activation-evidence.',dir=parent)
+try:
+ view=memoryview(payload_bytes)
+ while view:
+  written=os.write(tmp_fd,view)
+  if written<=0: raise SystemExit('short write while saving activation evidence')
+  view=view[written:]
+ os.fsync(tmp_fd)
+finally: os.close(tmp_fd)
+os.replace(tmp_name,target)
+parent_fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+try: os.fsync(parent_fd)
+finally: os.close(parent_fd)
 print(f"proposal_submitted phase={phase} proposal_id={proposal_ids[0]} submission={target}")
 PY

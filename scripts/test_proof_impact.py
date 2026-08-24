@@ -229,12 +229,17 @@ class ProofImpactTests(unittest.TestCase):
             "scripts/check_tool_versions.sh",
             "scripts/plan007/evm-rpc-fault-injector",
             "verification/claims.tsv",
+            "verification/halmos/uv.lock",
             "verification/lean/BridgeSpec/Claims.lean",
             "verification/generated/protocol-vectors.json",
             "verification/verus/fail/notification_ingestion_allowed.rs",
             "contracts/foundry.toml",
+            ".node-version",
             "Cargo.lock",
+            "icp.yaml",
+            "lean-toolchain",
             "pnpm-lock.yaml",
+            "pnpm-workspace.yaml",
             "ui/vitest.config.ts",
             "ui/pnpm-lock.yaml",
             "ui/pnpm-workspace.yaml",
@@ -291,6 +296,9 @@ class ProofImpactTests(unittest.TestCase):
         }
         self.assertFalse(any(path.startswith("verification/output/") for path in inputs))
         self.assertFalse(any("/.lake/" in path for path in inputs))
+        self.assertFalse(any("/.venv/" in path for path in inputs))
+        self.assertFalse(any(path.startswith("verification/smt/out/") for path in inputs))
+        self.assertFalse(any(path.startswith("verification/smt/cache/") for path in inputs))
 
 
 if __name__ == "__main__":

@@ -10,7 +10,6 @@ from pathlib import Path
 
 FORBIDDEN_PATHS = frozenset(
     {
-        "scripts/build-v30-upgrade-fixture.sh",
         "scripts/plan007/capture-obsolete-pause-evidence.mjs",
         "deployments/sepolia-staging/obsolete-replacement-policy.json",
         "deployments/sepolia-staging/obsolete-pause-capture.template.json",

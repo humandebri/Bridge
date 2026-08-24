@@ -4,13 +4,32 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
+from functools import lru_cache
+from pathlib import Path
 from pathlib import PurePosixPath
 
 
 AREAS = ("rust", "contracts", "proofs", "ui", "real", "icp")
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@lru_cache(maxsize=1)
+def _proof_owned_paths() -> frozenset[str]:
+    manifest = ROOT / "verification" / "proof-impact.tsv"
+    owned: set[str] = set()
+    with manifest.open(encoding="utf-8", newline="") as source:
+        for row in csv.reader(source, delimiter="\t"):
+            if len(row) < 3 or row[0] != "area":
+                continue
+            for entry in row[2].split(";"):
+                path = entry.partition("#")[0].strip()
+                if path:
+                    owned.add(path)
+    return frozenset(owned)
 
 
 def _matches(path: str, prefixes: tuple[str, ...], exact: tuple[str, ...] = ()) -> bool:
@@ -56,6 +75,9 @@ def classify(paths: list[str]) -> dict[str, bool]:
             continue
 
         classified = False
+        if path in _proof_owned_paths():
+            result["proofs"] = True
+            classified = True
         if _matches(path, ("tools/",)):
             result["rust"] = True
             classified = True

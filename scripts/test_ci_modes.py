@@ -10,6 +10,7 @@ import unittest
 
 
 SOURCE = (Path(__file__).parent / "ci-local.sh").read_text(encoding="utf-8")
+GUARDS = (Path(__file__).parent / "ci_guards.sh").read_text(encoding="utf-8")
 
 
 def function_body(name: str) -> str:
@@ -53,6 +54,20 @@ class CiModeTests(unittest.TestCase):
         self.assertLess(real, smoke)
         self.assertTrue(body.rstrip().endswith("run_step smoke run_smoke_step"))
 
+    def test_smoke_bridge_deploy_uses_current_constructor_shape(self) -> None:
+        start = SOURCE.index('bridge_address="$(deploy_contract \\\n    "src/Bridge.sol:Bridge"')
+        terminator = '    "$service_fee")"'
+        end = SOURCE.index(terminator, start) + len(terminator)
+        deployment = SOURCE[start:end]
+        self.assertNotIn('"kinic"', deployment)
+        self.assertNotIn('"KINIC"', deployment)
+        self.assertEqual(
+            deployment.count('\n    '),
+            10,
+            "Bridge smoke deployment must pass the contract plus exactly nine constructor arguments",
+        )
+        self.assertIn('require_equal "bSNS name" "$token_name" \'"KINIC"\'', SOURCE)
+
     def test_legacy_aggregate_modes_remain_complete(self) -> None:
         self.assert_calls("run_rust", ["run_rust_fast", "run_rust_integration"])
         self.assert_calls("run_contracts", ["run_contracts_fast", "run_contracts_coverage"])
@@ -76,7 +91,7 @@ class CiModeTests(unittest.TestCase):
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
         body = function_body("run_proof_stage")
         before = body.index('proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"')
-        command = body.index('    "$@"')
+        command = body.index('    if ! "$@"; then')
         after = body.index(
             'proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"', before + 1
         )
@@ -283,8 +298,8 @@ class CiModeTests(unittest.TestCase):
 
     def test_versions_rejects_npm_lockfiles(self) -> None:
         body = function_body("run_versions")
-        self.assertLess(body.index("  verify_no_npm_lockfiles\n"), body.index("check_tool_versions.sh"))
-        guard = function_body("verify_no_npm_lockfiles")
+        self.assertLess(body.index('  verify_no_npm_lockfiles "$ROOT"\n'), body.index("check_tool_versions.sh"))
+        guard = GUARDS
         for relative_path in (
             "package-lock.json",
             "npm-shrinkwrap.json",
