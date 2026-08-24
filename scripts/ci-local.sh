@@ -529,7 +529,7 @@ run_halmos() {
     echo "missing locked Halmos environment; run uv sync --project verification/halmos --frozen" >&2
     return 1
   fi
-  python3 "$ROOT/scripts/halmos_environment.py" --check
+  python3 "$ROOT/scripts/halmos_environment.py" --check || return
   halmos=("$halmos_python" "$halmos_entry")
   version="$("${halmos[@]}" --version 2>&1)"
   if [[ "$version" != "halmos 0.3.3" ]]; then
@@ -550,7 +550,7 @@ run_halmos() {
     cat "$positive_log" >&2
     return 1
   fi
-  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope bridge
+  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope bridge || return
 
   while IFS=$'\t' read -r failure_id failure_link; do
     failure_path="${failure_link%%#*}"

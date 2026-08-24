@@ -103,6 +103,11 @@ class CiModeTests(unittest.TestCase):
         commands = [line.strip() for line in refinement.splitlines() if line.strip()]
         self.assertTrue(all(command.endswith("|| return") for command in commands[:-1]))
 
+    def test_halmos_prerequisite_checks_fail_closed(self) -> None:
+        body = function_body("run_halmos")
+        self.assertIn('halmos_environment.py" --check || return', body)
+        self.assertIn('check_solidity_ast_bindings.py" --scope bridge || return', body)
+
     def test_new_modes_are_exposed(self) -> None:
         for mode in (
             "rust-fast",
