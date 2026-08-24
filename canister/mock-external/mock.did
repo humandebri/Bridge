@@ -518,11 +518,15 @@ service : (InitArgs) -> {
   set_bridge_signer_for_canister : (principal, text) -> (Result_10);
   set_broadcast_inconsistent_after_accepts : (nat8) -> ();
   set_configured_chain_id : (nat64) -> ();
-  set_control_plane_addresses : (blob, blob, blob) -> (Result_10);
   set_deployment_postconditions : (blob, blob, blob, blob, blob, blob) -> (
       Result_10,
     );
   set_deployment_role_signers_for_canister : (principal, text) -> (Result_10);
+  set_deployment_role_signers_for_canister_at_generation : (
+      principal,
+      text,
+      nat32,
+    ) -> (Result_10);
   set_deposit_mints_paused : (bool) -> ();
   set_eth_balance : (nat) -> ();
   set_finalized_block : (nat64, blob) -> (Result_10);
@@ -532,6 +536,7 @@ service : (InitArgs) -> {
   set_ledger_fee_available : (bool) -> ();
   set_ledger_mode : (LedgerMode) -> ();
   set_max_service_fee : (nat) -> ();
+  set_minimum_service_fee : (nat) -> ();
   set_mint_authorization_epoch : (nat64) -> ();
   set_mint_log : (opt MintLogFixture) -> ();
   set_mint_window : (nat, nat, nat64, nat64, nat64) -> ();

@@ -19,7 +19,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.getByRole("button", { name: "Acknowledge and continue" }).click()
   await expect(page.getByRole("region", { name: "KINIC bridge" })).toBeVisible()
   await page.goto("/status")
-  await expect(page.getByText("Availability is fail-closed until fresh status checks succeed.")).toBeHidden()
+  await expect(page.getByText("Live availability is unknown until current status checks succeed.")).toBeHidden()
   await expect(page.getByText("To Base").locator("..")).toContainText("Available")
   await page.goto("/")
   await page.getByRole("button", { name: "Connect EVM wallet", exact: true }).click()
@@ -189,10 +189,11 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   expect([...new Set(bridgeUpdateObserver.attempts.map((call) => call.method))]).toEqual(["notify_withdrawal", "continue_withdrawal"])
   bridgeUpdateObserver.stop()
   await bridgeUpdateGate.stop()
-  await expect(page.getByText("The payout needs another explicit step from History.", { exact: true })).toBeVisible()
+  await expect(page.getByText("The withdrawal is recorded but needs reconciliation. Open History to review the available action.", { exact: true })).toBeVisible()
   expect((await controlState(request)).bsnsAllowance).toBe("0")
   await openHistory(page)
-  await page.getByLabel("Bridge activity").getByRole("button", { name: "Refresh", exact: true }).click()
+  await page.locator("header").filter({ has: page.getByRole("heading", { name: "Bridge history" }) })
+    .getByRole("button", { name: "Refresh", exact: true }).click()
   await expect(page.getByText("Recovery needed", { exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "Continue payout", exact: true })).toBeVisible()
   await page.getByRole("button", { name: /IC wallet connected as /i }).click()
@@ -205,7 +206,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await expect(page.getByRole("button", { name: /EVM wallet connected as 0xf39F/i })).toBeVisible()
   await expect(page.getByRole("button", { name: "Connect IC wallet", exact: true })).toBeVisible()
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    await page.getByRole("button", { name: "Refresh", exact: true }).click()
+    await page.locator("header").getByRole("button", { name: "Refresh", exact: true }).click()
     if (await page.getByText("Paid", { exact: true }).isVisible()) break
     const continuePayout = page.getByRole("button", { name: "Continue payout", exact: true })
     if (await continuePayout.isVisible()) {
@@ -245,7 +246,7 @@ test("claims an expired deposit refund from History", async ({ page, request }) 
   await expect(page.getByRole("dialog").getByRole("button", { name: "Disconnect Plug", exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Close confirmation" }).click()
   await openHistory(page)
-  await page.getByRole("button", { name: "Refresh", exact: true }).click()
+  await page.locator("header").getByRole("button", { name: "Refresh", exact: true }).click()
   const refundRow = page.locator("article").filter({ hasText: "Not submitted" }).filter({
     has: page.getByRole("button", { name: "Claim refund", exact: true }),
   }).first()
@@ -337,7 +338,7 @@ function observeIcUpdateMethods(page: Page): {
 async function holdIcUpdateMethod(page: Page, method: string): Promise<{ release: () => void; stop: () => Promise<void> }> {
   let release!: () => void
   const released = new Promise<void>((resolve) => { release = resolve })
-  const pattern = /\/api\/v[23]\/canister\/[^/]+\/call$/
+  const pattern = /\/api\/v[234]\/canister\/[^/]+\/call$/
   const handler = async (route: Route) => {
     if (decodeIcUpdateRequest(route.request())?.method === method) await released
     await route.continue()
@@ -348,7 +349,7 @@ async function holdIcUpdateMethod(page: Page, method: string): Promise<{ release
 
 function decodeIcUpdateRequest(request: Request): { method: string; requestId: string } | undefined {
   const pathname = new URL(request.url()).pathname
-  if (request.method() !== "POST" || !/^\/api\/v[23]\/canister\/[^/]+\/call$/.test(pathname)) return undefined
+  if (request.method() !== "POST" || !/^\/api\/v[234]\/canister\/[^/]+\/call$/.test(pathname)) return undefined
   const body = request.postDataBuffer()
   if (!body) return { method: "<missing-body>", requestId: "<unknown>" }
   try {

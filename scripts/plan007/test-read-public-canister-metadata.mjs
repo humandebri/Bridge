@@ -53,7 +53,7 @@ test("verifies the read-state certificate before classifying metadata", async ()
   }
   const createCertificate = async options => {
     assert.equal(options.agent, agent)
-    assert.equal(options.canisterId.toText(), "aaaaa-aa")
+    assert.equal(options.principal.canisterId.toText(), "aaaaa-aa")
     assert.equal(options.certificate, certificateBytes)
     assert.equal(options.rootKey, rootKey)
     return {

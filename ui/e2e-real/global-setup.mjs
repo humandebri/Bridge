@@ -1,7 +1,8 @@
 import { execFileSync, spawn } from "node:child_process"
 import { createServer } from "node:http"
 import { connect } from "node:net"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { gunzipSync } from "node:zlib"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -24,6 +25,7 @@ const controlPort = 43119
 const uiPort = 4174
 const ACTIVATION_DELAY_SECONDS = 5 * 60
 const ACTIVATION_TIME_ADVANCES = 3
+const CONTROL_PLANE_QUOTA_WINDOW_SECONDS = 60
 const stagingForgeEnv = { ...process.env, FOUNDRY_PROFILE: "staging" }
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 const testIdentity = Ed25519KeyIdentity.generate(new Uint8Array(32).fill(7))
@@ -71,6 +73,10 @@ async function setup() {
   await waitForOwnedRpc(anvil)
   const publicClient = createPublicClient({ transport: http(rpcUrl) })
 
+  // @dfinity/pic 0.23.0 keys its port file by the parent PID and does not
+  // remove an existing file. Long gates can reuse a PID, so remove only this
+  // process's stale rendezvous file before waiting for the new server port.
+  await rm(path.join(tmpdir(), `pocket_ic_${process.ppid}.port`), { force: true })
   const picServer = await PocketIcServer.start()
   resources.picServer = picServer
   const pic = await PocketIc.create(picServer.getUrl(), {
@@ -156,31 +162,50 @@ async function setup() {
   })
   const signerProbe = pic.createActor(mockIdl, bridgeId)
   signerProbe.setIdentity(testIdentity)
-  let signer = bytesHex(await signerProbe.derive_chain_key_address(bridgeId, "key_1", []))
-  let governanceOperator = bytesHex(await signerProbe.derive_chain_key_address(
-    bridgeId,
-    "key_1",
-    [new TextEncoder().encode("governance-operator")],
-  ))
-  let runtimeAdministrator = bytesHex(await signerProbe.derive_chain_key_address(
-    bridgeId,
-    "key_1",
-    [
-      new TextEncoder().encode("governance-operator"),
-      new TextEncoder().encode("KINIC-RUNTIME-ADMINISTRATOR-V1"),
-    ],
-  ))
-  let independentCanceller = bytesHex(await signerProbe.derive_chain_key_address(
-    bridgeId,
-    "key_1",
-    [
-      new TextEncoder().encode("governance-operator"),
-      new TextEncoder().encode("KINIC-INDEPENDENT-CANCELLER-V1"),
-    ],
-  ))
+  const deriveControlPlaneGeneration = async (generation) => {
+    const generationBytes = new Uint8Array(4)
+    new DataView(generationBytes.buffer).setUint32(0, generation)
+    const suffix = generation === 0
+      ? []
+      : [
+          new TextEncoder().encode("KINIC-CONTROL-PLANE-GENERATION-V1"),
+          generationBytes,
+        ]
+    return {
+      signer: bytesHex(await signerProbe.derive_chain_key_address(bridgeId, "key_1", suffix)),
+      governanceOperator: bytesHex(await signerProbe.derive_chain_key_address(
+        bridgeId,
+        "key_1",
+        [new TextEncoder().encode("governance-operator"), ...suffix],
+      )),
+      runtimeAdministrator: bytesHex(await signerProbe.derive_chain_key_address(
+        bridgeId,
+        "key_1",
+        [
+          new TextEncoder().encode("governance-operator"),
+          new TextEncoder().encode("KINIC-RUNTIME-ADMINISTRATOR-V1"),
+          ...suffix,
+        ],
+      )),
+      independentCanceller: bytesHex(await signerProbe.derive_chain_key_address(
+        bridgeId,
+        "key_1",
+        [
+          new TextEncoder().encode("governance-operator"),
+          new TextEncoder().encode("KINIC-INDEPENDENT-CANCELLER-V1"),
+          ...suffix,
+        ],
+      )),
+    }
+  }
+  const generationZero = await deriveControlPlaneGeneration(0)
+  const generationOne = await deriveControlPlaneGeneration(1)
+  const generationTwo = await deriveControlPlaneGeneration(2)
+  let { signer, governanceOperator, runtimeAdministrator, independentCanceller } = generationZero
   const configuredRoleSigners = await mock.actor.set_deployment_role_signers_for_canister(bridgeId, "key_1")
   if (!("Ok" in configuredRoleSigners)) throw new Error(`Failed to configure deployment role signers: ${configuredRoleSigners.Err}`)
   for (const [role, address] of [
+    ["bridge signer", signer],
     ["governance operator", governanceOperator],
     ["runtime administrator", runtimeAdministrator],
     ["independent canceller", independentCanceller],
@@ -191,13 +216,26 @@ async function setup() {
 
   const timelockAddress = deployTimelock(governanceOperator, independentCanceller)
   resources.timelockAddress = timelockAddress
-  const bridgeAddress = deployBridge(signer, runtimeAdministrator, timelockAddress)
+  const bridgeAddress = deployBridge(
+    signer,
+    governanceOperator,
+    runtimeAdministrator,
+    timelockAddress,
+    independentCanceller,
+  )
   const bsnsAddress = execFileSync("cast", ["call", bridgeAddress, "bsns()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   const deploymentBlock = await publicClient.getBlockNumber()
   const bridgeCode = await publicClient.getCode({ address: bridgeAddress })
   const timelockCode = await publicClient.getCode({ address: timelockAddress })
   const bsnsCode = await publicClient.getCode({ address: bsnsAddress })
   if (!bridgeCode || !timelockCode || !bsnsCode) throw new Error("Anvil contract deployment returned empty code")
+  const observedMinimumServiceFee = await publicClient.readContract({
+    address: bridgeAddress,
+    abi: bridgeAbi,
+    functionName: "MIN_SERVICE_FEE",
+  })
+  if (observedMinimumServiceFee !== 10_000n) throw new Error(`Bridge minimum service fee drifted: ${observedMinimumServiceFee}`)
+  await mock.actor.set_minimum_service_fee(observedMinimumServiceFee)
   await mock.actor.set_bridge_runtime_code(hexToBytes(bridgeCode))
   const operationalConfig = {
     governance_evm_fee: {
@@ -242,7 +280,7 @@ async function setup() {
       deposit_rate_limit_window_seconds: 60n,
       deposit_rate_limit_global: 30,
       deposit_rate_limit_per_principal: 3,
-      notification_rate_limit_window_seconds: 60n,
+      notification_rate_limit_window_seconds: BigInt(CONTROL_PLANE_QUOTA_WINDOW_SECONDS),
       notification_rate_limit_global: 60,
       notification_ingestion_rate_limit_global: 30,
       settlement_rate_limit_window_seconds: 600n,
@@ -405,6 +443,12 @@ async function setup() {
     const ledgerFee = 10_000n
     const ownerSequence = await bridge.actor.get_next_deposit_sequence(testOwner)
     const now = await pic.getTime()
+    const certifiedTimestamp = BigInt(Math.floor(now / 1_000))
+    const latestBeforeAdmission = await publicClient.getBlock({ blockTag: "latest" })
+    if (latestBeforeAdmission.timestamp < certifiedTimestamp) {
+      await rpc("evm_increaseTime", [Number(certifiedTimestamp - latestBeforeAdmission.timestamp)])
+      await rpc("evm_mine", [])
+    }
     const approval = await ledger.icrc2_approve({
       from_subaccount: [],
       spender: account(bridge.canisterId),
@@ -436,7 +480,7 @@ async function setup() {
       await delay(250)
     }
     const authorization = record?.mint_authorization[0]
-    if (!authorization?.signature.length) throw new Error("refund fixture did not reach a signed Mint Authorization")
+    if (!authorization?.signature.length) throw new Error(`refund fixture did not reach a signed Mint Authorization: ${json(record)}`)
     const latest = await publicClient.getBlock({ blockTag: "latest" })
     const advanceSeconds = authorization.deadline >= latest.timestamp
       ? authorization.deadline - latest.timestamp + 1n
@@ -454,17 +498,21 @@ async function setup() {
     }
   }
   await syncObservedHeads()
-  const relaySigned = async (artifact, expectedSuccess = true) => {
+  const expectedSignerForArtifact = (artifact) => {
+    const kind = Object.keys(artifact.kind)[0]
+    if (["PauseDepositMints", "PauseWithdrawals", "SetServiceFee"].includes(kind)) return runtimeAdministrator
+    if (kind === "CancelTimelock") return independentCanceller
+    return governanceOperator
+  }
+  const relaySigned = async (
+    artifact,
+    { expectedSigner = expectedSignerForArtifact(artifact), expectedReceiptStatus = "success" } = {},
+  ) => {
     const raw = bytesHex(artifact.raw_transaction)
     const expectedHash = keccak256(raw)
     if (expectedHash.toLowerCase() !== bytesHex(artifact.transaction_hash).toLowerCase()) throw new Error("Canister signed hash mismatch")
     const rawSigner = await recoverTransactionAddress({ serializedTransaction: raw })
     const kind = Object.keys(artifact.kind)[0]
-    const expectedSigner = ["PauseDepositMints", "PauseWithdrawals", "SetServiceFee"].includes(kind)
-      ? runtimeAdministrator
-      : kind === "CancelTimelock"
-        ? independentCanceller
-        : governanceOperator
     if (bytesHex(artifact.sender).toLowerCase() !== expectedSigner.toLowerCase()) {
       throw new Error(`Canister reported the wrong ${kind} sender ${bytesHex(artifact.sender)}`)
     }
@@ -485,66 +533,73 @@ async function setup() {
     const receipt = await rpc("eth_getTransactionReceipt", [expectedHash])
     if (!receipt) throw new Error(`Anvil did not mine relayed transaction ${expectedHash}`)
     const succeeded = receipt.status === "0x1"
+    const expectedSuccess = expectedReceiptStatus === "success"
+    if (!["success", "reverted"].includes(expectedReceiptStatus)) {
+      throw new Error(`Unsupported expected receipt status ${expectedReceiptStatus}`)
+    }
     if (succeeded !== expectedSuccess) {
       const trace = await rpc("debug_traceTransaction", [expectedHash, { tracer: "callTracer" }])
       throw new Error(`Anvil returned the wrong ${kind} receipt status for ${expectedHash}: ${json(trace)}`)
     }
   }
-  const confirmSigned = async (artifact, expectedSuccess = true) => {
-    await relaySigned(artifact, expectedSuccess)
+  const confirmRelayed = async (artifact) => {
     await syncObservedHeads()
     return bridge.actor.confirm_base_governance_transaction({
       operation_id: artifact.operation_id,
       transaction_hash: artifact.transaction_hash,
     })
   }
-  const rotateControlPlane = async () => {
-    const schedule = await bridge.actor.prepare_base_governance_action({ ScheduleControlPlaneRotation: null })
-    if (!("Ok" in schedule)) throw new Error(`Control-plane rotation schedule failed: ${json(schedule.Err)}`)
-    const scheduleConfirmed = await confirmSigned(schedule.Ok)
-    if (!("Ok" in scheduleConfirmed)) throw new Error(`Control-plane rotation schedule confirmation failed: ${json(scheduleConfirmed.Err)}`)
-    await pic.advanceCertifiedTime(60_001)
+  const confirmSigned = async (artifact, options = {}) => {
+    await relaySigned(artifact, options)
+    return confirmRelayed(artifact)
+  }
+  const advanceControlPlaneQuotaWindow = async () => {
+    await pic.advanceCertifiedTime(CONTROL_PLANE_QUOTA_WINDOW_SECONDS * 1_000 + 1)
+    await rpc("evm_increaseTime", [CONTROL_PLANE_QUOTA_WINDOW_SECONDS + 1])
+    await rpc("evm_mine", [])
+  }
+  const rotateControlPlane = async (generation, addresses) => {
+    const previousRoles = { signer, governanceOperator, runtimeAdministrator, independentCanceller }
+    const previousGovernanceOperator = previousRoles.governanceOperator
+    const scheduleSubmitted = await bridge.actor.prepare_base_governance_action({ ScheduleControlPlaneRotation: null })
+    if (!("Ok" in scheduleSubmitted)) throw new Error(`Control-plane generation ${generation} schedule failed: ${json(scheduleSubmitted.Err)}`)
+    const scheduleConfirmed = await confirmSigned(scheduleSubmitted.Ok, { expectedSigner: previousGovernanceOperator })
+    if (!("Ok" in scheduleConfirmed)) throw new Error(`Control-plane generation ${generation} schedule confirmation failed: ${json(scheduleConfirmed.Err)}`)
     await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
     await rpc("evm_mine", [])
-    const execute = await bridge.actor.prepare_base_governance_action({ ExecuteControlPlaneRotation: null })
-    if (!("Ok" in execute)) throw new Error(`Control-plane rotation execute failed: ${json(execute.Err)}`)
-    const rotated = execute.Ok.kind.ExecuteControlPlaneRotation
-    if (!rotated) throw new Error(`Control-plane rotation returned the wrong operation kind: ${json(execute.Ok.kind)}`)
-    await relaySigned(execute.Ok)
-    const nextSigner = bytesHex(rotated.bridge_signer)
-    const nextGovernanceOperator = bytesHex(rotated.governance_operator)
-    const nextRuntimeAdministrator = bytesHex(rotated.runtime_administrator)
-    const nextIndependentCanceller = bytesHex(rotated.independent_canceller)
-    const configuredAddresses = await mock.actor.set_control_plane_addresses(
-      rotated.governance_operator,
-      rotated.runtime_administrator,
-      rotated.independent_canceller,
-    )
-    if (!("Ok" in configuredAddresses)) throw new Error(`Failed to configure rotated control-plane addresses: ${configuredAddresses.Err}`)
-    const configuredSigner = await mock.actor.set_bridge_signer(rotated.bridge_signer)
-    if (!("Ok" in configuredSigner)) throw new Error(`Failed to configure rotated bridge signer: ${configuredSigner.Err}`)
-    const configuredDeployment = await mock.actor.set_deployment_postconditions(
-      hexToBytes(timelockAddress),
-      rotated.governance_operator,
-      hexToBytes(bsnsAddress),
-      hexToBytes(bridgeAddress),
-      hexToBytes(timelockCode),
-      hexToBytes(bsnsCode),
-    )
-    if (!("Ok" in configuredDeployment)) throw new Error(`Failed to configure rotated deployment postconditions: ${configuredDeployment.Err}`)
-    for (const address of [nextGovernanceOperator, nextRuntimeAdministrator, nextIndependentCanceller]) {
+    const executeSubmitted = await bridge.actor.prepare_base_governance_action({ ExecuteControlPlaneRotation: null })
+    if (!("Ok" in executeSubmitted)) throw new Error(`Control-plane generation ${generation} execute failed: ${json(executeSubmitted.Err)}`)
+    const rotated = executeSubmitted.Ok.kind.ExecuteControlPlaneRotation
+    if (!rotated) throw new Error(`Control-plane generation ${generation} returned the wrong operation kind: ${json(executeSubmitted.Ok.kind)}`)
+    const observedAddresses = {
+      signer: bytesHex(rotated.bridge_signer),
+      governanceOperator: bytesHex(rotated.governance_operator),
+      runtimeAdministrator: bytesHex(rotated.runtime_administrator),
+      independentCanceller: bytesHex(rotated.independent_canceller),
+    }
+    for (const role of Object.keys(addresses)) {
+      if (observedAddresses[role].toLowerCase() !== addresses[role].toLowerCase()) {
+        throw new Error(`Control-plane generation ${generation} ${role} did not match independent chain-key derivation`)
+      }
+    }
+    await relaySigned(executeSubmitted.Ok, { expectedSigner: previousGovernanceOperator })
+    const configuredGeneration = await mock.actor.set_deployment_role_signers_for_canister_at_generation(bridgeId, "key_1", generation)
+    if (!("Ok" in configuredGeneration)) throw new Error(`Failed to configure generation-${generation} role observations: ${configuredGeneration.Err}`)
+    const executeConfirmed = await confirmRelayed(executeSubmitted.Ok)
+    if (!("Ok" in executeConfirmed)) throw new Error(`Control-plane generation ${generation} execute confirmation failed: ${json(executeConfirmed.Err)}`)
+    ;({ signer, governanceOperator, runtimeAdministrator, independentCanceller } = addresses)
+    for (const address of [signer, governanceOperator, runtimeAdministrator, independentCanceller]) {
       await rpc("anvil_setBalance", [address, "0x8ac7230489e80000"])
     }
-    await syncObservedHeads()
-    const confirmed = await bridge.actor.confirm_base_governance_transaction({
-      operation_id: execute.Ok.operation_id,
-      transaction_hash: execute.Ok.transaction_hash,
-    })
-    if (!("Ok" in confirmed)) throw new Error(`Control-plane rotation execute confirmation failed: ${json(confirmed.Err)}`)
-    signer = nextSigner
-    governanceOperator = nextGovernanceOperator
-    runtimeAdministrator = nextRuntimeAdministrator
-    independentCanceller = nextIndependentCanceller
+    assertFrozenCanisterRoles(
+      bridgeAddress,
+      timelockAddress,
+      signer,
+      governanceOperator,
+      runtimeAdministrator,
+      independentCanceller,
+      previousRoles,
+    )
   }
   await syncObservedHeads()
   const sealedLifecycle = await bridge.actor.seal_operational_config(operationalConfig)
@@ -559,7 +614,10 @@ async function setup() {
   const earlyExecuteSubmitted = await bridge.actor.execute_activation()
   if (!("Ok" in earlyExecuteSubmitted)) throw new Error(`Canister early execute submission failed: ${json(earlyExecuteSubmitted.Err)}`)
   await mock.actor.set_receipt_mode({ Reverted: null })
-  const earlyExecuteConfirmed = await confirmSigned(earlyExecuteSubmitted.Ok, false)
+  const earlyExecuteConfirmed = await confirmSigned(earlyExecuteSubmitted.Ok, {
+    expectedSigner: governanceOperator,
+    expectedReceiptStatus: "reverted",
+  })
   if (!("Err" in earlyExecuteConfirmed) || !("TransactionReverted" in earlyExecuteConfirmed.Err)) {
     throw new Error(`Canister did not record the pre-delay execute revert: ${json(earlyExecuteConfirmed)}`)
   }
@@ -578,14 +636,15 @@ async function setup() {
   if (!("Ok" in localPause)) throw new Error(`Pause principal could not pause IC deposits: ${json(localPause.Err)}`)
   const pauseDepositSubmitted = await bridge.actor.prepare_base_governance_action({ PauseDepositMints: null })
   if (!("Ok" in pauseDepositSubmitted)) throw new Error(`Canister deposit pause failed: ${json(pauseDepositSubmitted.Err)}`)
-  const pauseDepositConfirmed = await confirmSigned(pauseDepositSubmitted.Ok)
+  const pauseDepositConfirmed = await confirmSigned(pauseDepositSubmitted.Ok, { expectedSigner: runtimeAdministrator })
   if (!("Ok" in pauseDepositConfirmed)) throw new Error(`Canister deposit pause confirmation failed: ${json(pauseDepositConfirmed.Err)}`)
   const pauseWithdrawalSubmitted = await bridge.actor.prepare_base_governance_action({ PauseWithdrawals: null })
   if (!("Ok" in pauseWithdrawalSubmitted)) throw new Error(`Canister withdrawal pause failed: ${json(pauseWithdrawalSubmitted.Err)}`)
-  const pauseWithdrawalConfirmed = await confirmSigned(pauseWithdrawalSubmitted.Ok)
+  const pauseWithdrawalConfirmed = await confirmSigned(pauseWithdrawalSubmitted.Ok, { expectedSigner: runtimeAdministrator })
   if (!("Ok" in pauseWithdrawalConfirmed)) throw new Error(`Canister withdrawal pause confirmation failed: ${json(pauseWithdrawalConfirmed.Err)}`)
 
-  await rotateControlPlane()
+  await advanceControlPlaneQuotaWindow()
+  await rotateControlPlane(1, generationOne)
   const secondScheduleSubmitted = await bridge.actor.schedule_activation()
   if (!("Ok" in secondScheduleSubmitted)) throw new Error(`Second activation schedule failed: ${json(secondScheduleSubmitted.Err)}`)
   if (secondScheduleSubmitted.Ok.operation_id === scheduleSubmitted.Ok.operation_id) throw new Error("Activation reused its governance operation ID")
@@ -593,7 +652,7 @@ async function setup() {
   if (!("Ok" in secondScheduleConfirmed)) throw new Error(`Second activation schedule confirmation failed: ${json(secondScheduleConfirmed.Err)}`)
   // The protected verification lane intentionally admits at most six calls per
   // notification window. Continue the long control-plane scenario in the next window.
-  await pic.advanceCertifiedTime(60_001)
+  await advanceControlPlaneQuotaWindow()
   await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const secondExecuteSubmitted = await bridge.actor.execute_activation()
@@ -601,20 +660,33 @@ async function setup() {
   const emergencyDuringExecute = await pauseActor.emergency_pause()
   if (!("Ok" in emergencyDuringExecute)) throw new Error(`Emergency pause failed: ${json(emergencyDuringExecute)}`)
   const secondExecuteConfirmed = await confirmSigned(secondExecuteSubmitted.Ok)
-  if (!("Ok" in secondExecuteConfirmed)) throw new Error(`Second activation execute confirmation failed: ${json(secondExecuteConfirmed.Err)}`)
+  if (!("Ok" in secondExecuteConfirmed)) {
+    const observedSnapshot = await publicClient.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "bridgeSnapshot" })
+    throw new Error(`Second activation execute confirmation failed: ${json(secondExecuteConfirmed.Err)} snapshot=${json(observedSnapshot)}`)
+  }
   const emergencyStatus = await bridge.actor.get_bridge_status()
   if (!emergencyStatus.deposits_paused) throw new Error("Submitted activation resumed IC deposits during an emergency")
 
   const emergencyDepositPauseSubmitted = await bridge.actor.prepare_next_emergency_base_action()
   if (!("Ok" in emergencyDepositPauseSubmitted)) throw new Error(`Emergency deposit pause failed: ${json(emergencyDepositPauseSubmitted.Err)}`)
-  const emergencyDepositPauseConfirmed = await confirmSigned(emergencyDepositPauseSubmitted.Ok)
+  const emergencyDepositPauseConfirmed = await confirmSigned(emergencyDepositPauseSubmitted.Ok, { expectedSigner: runtimeAdministrator })
   if (!("Ok" in emergencyDepositPauseConfirmed)) throw new Error(`Emergency deposit pause confirmation failed: ${json(emergencyDepositPauseConfirmed.Err)}`)
   const emergencyWithdrawalPauseSubmitted = await bridge.actor.prepare_next_emergency_base_action()
   if (!("Ok" in emergencyWithdrawalPauseSubmitted)) throw new Error(`Emergency withdrawal pause failed: ${json(emergencyWithdrawalPauseSubmitted.Err)}`)
-  const emergencyWithdrawalPauseConfirmed = await confirmSigned(emergencyWithdrawalPauseSubmitted.Ok)
+  const emergencyWithdrawalPauseConfirmed = await confirmSigned(emergencyWithdrawalPauseSubmitted.Ok, { expectedSigner: runtimeAdministrator })
   if (!("Ok" in emergencyWithdrawalPauseConfirmed)) throw new Error(`Emergency withdrawal pause confirmation failed: ${json(emergencyWithdrawalPauseConfirmed.Err)}`)
 
-  await rotateControlPlane()
+  await advanceControlPlaneQuotaWindow()
+  const cancellableScheduleSubmitted = await bridge.actor.schedule_activation()
+  if (!("Ok" in cancellableScheduleSubmitted)) throw new Error(`Cancellable activation schedule failed: ${json(cancellableScheduleSubmitted.Err)}`)
+  const cancellableScheduleConfirmed = await confirmSigned(cancellableScheduleSubmitted.Ok)
+  if (!("Ok" in cancellableScheduleConfirmed)) throw new Error(`Cancellable activation schedule confirmation failed: ${json(cancellableScheduleConfirmed.Err)}`)
+  const cancellationSubmitted = await bridge.actor.prepare_base_governance_action({ CancelPendingTimelock: null })
+  if (!("Ok" in cancellationSubmitted)) throw new Error(`Canister activation cancellation failed: ${json(cancellationSubmitted.Err)}`)
+  const cancellationConfirmed = await confirmSigned(cancellationSubmitted.Ok, { expectedSigner: independentCanceller })
+  if (!("Ok" in cancellationConfirmed)) throw new Error(`Canister activation cancellation confirmation failed: ${json(cancellationConfirmed.Err)}`)
+  await advanceControlPlaneQuotaWindow()
+  await rotateControlPlane(2, generationTwo)
   const recoveryScheduleSubmitted = await bridge.actor.schedule_activation()
   if (!("Ok" in recoveryScheduleSubmitted)) throw new Error(`Post-emergency activation schedule failed: ${json(recoveryScheduleSubmitted.Err)}`)
   const recoveryScheduleConfirmed = await confirmSigned(recoveryScheduleSubmitted.Ok)
@@ -822,7 +894,20 @@ async function setup() {
   await new Promise((resolve, reject) => control.once("error", reject).listen(controlPort, "127.0.0.1", resolve))
   resources.control = control
 
-  const vite = spawn("pnpm", ["exec", "vite", "--config", "vite.real.config.ts", "--host", "127.0.0.1", "--port", String(uiPort)], { cwd: uiRoot, stdio: "inherit" })
+  const viteEnvironment = {
+    ...process.env,
+    KINIC_POCKET_IC_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}`,
+  }
+  execFileSync("pnpm", ["exec", "vite", "build", "--config", "vite.real.config.ts"], {
+    cwd: uiRoot,
+    stdio: "inherit",
+    env: viteEnvironment,
+  })
+  const vite = spawn("pnpm", ["exec", "vite", "preview", "--config", "vite.real.config.ts", "--host", "127.0.0.1", "--port", String(uiPort)], {
+    cwd: uiRoot,
+    stdio: "inherit",
+    env: viteEnvironment,
+  })
   resources.vite = vite
   await waitForUrl(`http://127.0.0.1:${uiPort}`)
 
@@ -969,7 +1054,7 @@ function deployTimelock(governanceOperator, independentCanceller) {
   return match[1]
 }
 
-function deployBridge(signer, runtimeAdministrator, timelockAddress) {
+function deployBridge(signer, governanceOperator, runtimeAdministrator, timelockAddress, independentCanceller) {
   const timelockCodeHash = execFileSync(
     "cast", ["codehash", timelockAddress, "--rpc-url", rpcUrl], { encoding: "utf8" },
   ).trim()
@@ -981,7 +1066,52 @@ function deployBridge(signer, runtimeAdministrator, timelockAddress) {
   ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Bridge deployment:\n${output}`)
+  assertFrozenCanisterRoles(
+    match[1],
+    timelockAddress,
+    signer,
+    governanceOperator,
+    runtimeAdministrator,
+    independentCanceller,
+  )
   return match[1]
+}
+
+function assertFrozenCanisterRoles(
+  bridgeAddress,
+  timelockAddress,
+  expectedSigner,
+  governanceOperator,
+  runtimeAdministrator,
+  independentCanceller,
+  previousRoles = undefined,
+) {
+  const bridgeSigner = execFileSync("cast", ["call", bridgeAddress, "bridgeSigner()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  if (bridgeSigner.toLowerCase() !== expectedSigner.toLowerCase()) throw new Error("Bridge signer does not match the independently derived generation signer")
+  const runtime = execFileSync("cast", ["call", bridgeAddress, "runtimeAdministrator()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  if (bridgeSigner.toLowerCase() === previousRoles?.signer?.toLowerCase()) throw new Error("Bridge retained the previous generation signer")
+  if (runtime.toLowerCase() !== runtimeAdministrator.toLowerCase()) throw new Error("Bridge runtime administrator is not independently derived")
+  if (runtime.toLowerCase() === previousRoles?.runtimeAdministrator?.toLowerCase()) throw new Error("Bridge retained the previous runtime administrator")
+  const proposerRole = execFileSync("cast", ["call", timelockAddress, "PROPOSER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const executorRole = execFileSync("cast", ["call", timelockAddress, "EXECUTOR_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const cancellerRole = execFileSync("cast", ["call", timelockAddress, "CANCELLER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  for (const role of [proposerRole, executorRole]) {
+    const operatorHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, governanceOperator, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+    const deployerHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, deployer, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+    if (operatorHasRole !== "true" || deployerHasRole !== "false") throw new Error("Timelock operational role set is not canister-only")
+  }
+  const cancellerHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, independentCanceller, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const operatorCanCancel = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, governanceOperator, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const deployerCanCancel = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, deployer, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  if (cancellerHasRole !== "true" || operatorCanCancel !== "false" || deployerCanCancel !== "false") throw new Error("Timelock canceller role is not independently controlled")
+  if (previousRoles) {
+    for (const role of [proposerRole, executorRole]) {
+      const previousOperatorHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, previousRoles.governanceOperator, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+      if (previousOperatorHasRole !== "false") throw new Error("Timelock retained the previous governance operator")
+    }
+    const previousCancellerHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, previousRoles.independentCanceller, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+    if (previousCancellerHasRole !== "false") throw new Error("Timelock retained the previous independent canceller")
+  }
 }
 
 function sendAsTimelock(target, signature, ...args) {
@@ -1009,19 +1139,19 @@ export interface DeploymentProfile {
   bridgeAddress: \`0x\${string}\` | null; bsnsAddress: \`0x\${string}\` | null; timelockAddress: \`0x\${string}\` | null; expected_bridge_signer: \`0x\${string}\` | null; deploymentBlock: bigint | null;
   bridgeRuntimeHash: \`0x\${string}\` | null; bsnsRuntimeHash: \`0x\${string}\` | null;
 }
+export function canonicalRpcUrl(value: string): string {
+  return new URL(value).href
+}
 export const deploymentProfile: DeploymentProfile = ${serialize({
     environment: "local-real-e2e", label: "Local Anvil + PocketIC", testOnly: true,
     environmentMode: "short-delay-test-only", activationTimelockDelaySeconds: ACTIVATION_DELAY_SECONDS,
-    icHost: `http://127.0.0.1:${values.gatewayPort}`,
+    icHost: `http://127.0.0.1:${uiPort}`,
     baseRpcUrl: rpcUrl, chainId: 31337, bridgeCanisterId: values.bridgeId, deploymentInstanceId: values.deploymentInstanceId, minimumWithdrawalId: values.minimumWithdrawalId, ledgerCanisterId: values.ledgerId, indexCanisterId: values.indexId,
     evmRpcCanisterId: values.evmRpcCanisterId, rpcProviderUrlsSha256: values.rpcProviderUrlsSha256,
     icToken: { name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 }, baseToken: { symbol: "KINIC", decimals: 8 },
     bridgeAddress: values.bridgeAddress, bsnsAddress: values.bsnsAddress, timelockAddress: values.timelockAddress, expected_bridge_signer: values.expected_bridge_signer, deploymentBlock: values.deploymentBlock,
-    bridgeRuntimeHash: values.bridgeHash, bsnsRuntimeHash: values.bsnsHash,
+  bridgeRuntimeHash: values.bridgeHash, bsnsRuntimeHash: values.bsnsHash,
   })}
-export function canonicalRpcUrl(value: string): string {
-  return new URL(value).href
-}
 export function profileCompleteness(profile: DeploymentProfile): string[] {
   const blockers: string[] = []
   if (!profile.bridgeCanisterId || !profile.deploymentInstanceId || !profile.ledgerCanisterId || !profile.indexCanisterId || !profile.evmRpcCanisterId || !profile.rpcProviderUrlsSha256 || !profile.bridgeAddress || !profile.bsnsAddress || !profile.timelockAddress || !profile.expected_bridge_signer || profile.deploymentBlock === null || !profile.bridgeRuntimeHash || !profile.bsnsRuntimeHash) blockers.push("Deployment profile is incomplete")

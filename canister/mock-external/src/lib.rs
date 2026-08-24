@@ -211,6 +211,7 @@ struct StableMockState {
     eth_balance: u128,
     next_evm_nonce: u64,
     service_fee: u128,
+    minimum_service_fee: u128,
     max_service_fee: u128,
     per_deposit_limit: u128,
     mint_window_limit: u128,
@@ -269,6 +270,7 @@ thread_local! {
     static ETH_BALANCE: RefCell<u128> = const { RefCell::new(10_000_000_000_000_000_000) };
     static NEXT_EVM_NONCE: RefCell<u64> = const { RefCell::new(0) };
     static SERVICE_FEE: RefCell<u128> = const { RefCell::new(1) };
+    static MINIMUM_SERVICE_FEE: RefCell<u128> = const { RefCell::new(1) };
     static MAX_SERVICE_FEE: RefCell<u128> = const { RefCell::new(10) };
     static PER_DEPOSIT_LIMIT: RefCell<u128> = const { RefCell::new(1_000_000) };
     static MINT_WINDOW_LIMIT: RefCell<u128> = const { RefCell::new(10_000_000) };
@@ -430,6 +432,11 @@ fn set_service_fee(value: u128) {
 }
 
 #[ic_cdk::update]
+fn set_minimum_service_fee(value: u128) {
+    MINIMUM_SERVICE_FEE.with(|current| *current.borrow_mut() = value);
+}
+
+#[ic_cdk::update]
 fn set_max_service_fee(value: u128) {
     MAX_SERVICE_FEE.with(|current| *current.borrow_mut() = value);
 }
@@ -498,16 +505,42 @@ async fn set_deployment_role_signers_for_canister(
     canister_id: Principal,
     key_name: String,
 ) -> Result<(), String> {
-    let governance_path = vec![b"governance-operator".to_vec()];
+    set_deployment_role_signers_for_canister_at_generation(canister_id, key_name, 0).await
+}
+
+#[ic_cdk::update]
+async fn set_deployment_role_signers_for_canister_at_generation(
+    canister_id: Principal,
+    key_name: String,
+    generation: u32,
+) -> Result<(), String> {
+    let generation_suffix = if generation == 0 {
+        Vec::new()
+    } else {
+        vec![
+            b"KINIC-CONTROL-PLANE-GENERATION-V1".to_vec(),
+            generation.to_be_bytes().to_vec(),
+        ]
+    };
+    let mut mint_path = Vec::new();
+    mint_path.extend(generation_suffix.clone());
+    let mut governance_path = vec![b"governance-operator".to_vec()];
+    governance_path.extend(generation_suffix.clone());
     let mut runtime_administrator_path = governance_path.clone();
-    runtime_administrator_path.push(b"KINIC-RUNTIME-ADMINISTRATOR-V1".to_vec());
-    let mut independent_canceller_path = governance_path;
-    independent_canceller_path.push(b"KINIC-INDEPENDENT-CANCELLER-V1".to_vec());
+    runtime_administrator_path.splice(1..1, [b"KINIC-RUNTIME-ADMINISTRATOR-V1".to_vec()]);
+    let mut independent_canceller_path = governance_path.clone();
+    independent_canceller_path.splice(1..1, [b"KINIC-INDEPENDENT-CANCELLER-V1".to_vec()]);
+    let bridge_signer =
+        derive_address_for_canister(canister_id, key_name.clone(), mint_path).await?;
+    let governance_operator =
+        derive_address_for_canister(canister_id, key_name.clone(), governance_path).await?;
     let runtime_administrator =
         derive_address_for_canister(canister_id, key_name.clone(), runtime_administrator_path)
             .await?;
     let independent_canceller =
         derive_address_for_canister(canister_id, key_name, independent_canceller_path).await?;
+    BRIDGE_SIGNER.with(|current| *current.borrow_mut() = bridge_signer);
+    GOVERNANCE_OPERATOR.with(|current| *current.borrow_mut() = governance_operator);
     RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = runtime_administrator);
     INDEPENDENT_CANCELLER.with(|current| *current.borrow_mut() = independent_canceller);
     Ok(())
@@ -581,27 +614,6 @@ fn set_deployment_postconditions(
     BSNS_BRIDGE.with(|current| *current.borrow_mut() = bridge);
     TIMELOCK_RUNTIME_CODE.with(|current| *current.borrow_mut() = timelock_runtime_code);
     BSNS_RUNTIME_CODE.with(|current| *current.borrow_mut() = bsns_runtime_code);
-    Ok(())
-}
-
-#[ic_cdk::update]
-fn set_control_plane_addresses(
-    governance_operator: Vec<u8>,
-    runtime_administrator: Vec<u8>,
-    independent_canceller: Vec<u8>,
-) -> Result<(), String> {
-    let governance_operator: [u8; 20] = governance_operator
-        .try_into()
-        .map_err(|_| "governance operator must be 20 bytes".to_string())?;
-    let runtime_administrator: [u8; 20] = runtime_administrator
-        .try_into()
-        .map_err(|_| "runtime administrator must be 20 bytes".to_string())?;
-    let independent_canceller: [u8; 20] = independent_canceller
-        .try_into()
-        .map_err(|_| "independent canceller must be 20 bytes".to_string())?;
-    GOVERNANCE_OPERATOR.with(|current| *current.borrow_mut() = governance_operator);
-    RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = runtime_administrator);
-    INDEPENDENT_CANCELLER.with(|current| *current.borrow_mut() = independent_canceller);
     Ok(())
 }
 
@@ -704,6 +716,7 @@ fn pre_upgrade() {
         eth_balance: ETH_BALANCE.with(|v| *v.borrow()),
         next_evm_nonce: NEXT_EVM_NONCE.with(|v| *v.borrow()),
         service_fee: SERVICE_FEE.with(|v| *v.borrow()),
+        minimum_service_fee: MINIMUM_SERVICE_FEE.with(|v| *v.borrow()),
         max_service_fee: MAX_SERVICE_FEE.with(|v| *v.borrow()),
         per_deposit_limit: PER_DEPOSIT_LIMIT.with(|v| *v.borrow()),
         mint_window_limit: MINT_WINDOW_LIMIT.with(|v| *v.borrow()),
@@ -766,6 +779,7 @@ fn post_upgrade() {
     ETH_BALANCE.with(|v| *v.borrow_mut() = state.eth_balance);
     NEXT_EVM_NONCE.with(|v| *v.borrow_mut() = state.next_evm_nonce);
     SERVICE_FEE.with(|v| *v.borrow_mut() = state.service_fee);
+    MINIMUM_SERVICE_FEE.with(|v| *v.borrow_mut() = state.minimum_service_fee);
     MAX_SERVICE_FEE.with(|v| *v.borrow_mut() = state.max_service_fee);
     PER_DEPOSIT_LIMIT.with(|v| *v.borrow_mut() = state.per_deposit_limit);
     MINT_WINDOW_LIMIT.with(|v| *v.borrow_mut() = state.mint_window_limit);
@@ -1198,7 +1212,7 @@ fn multi_request(
     } else if request.contains("8abdf5aa") {
         word(SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains(&selector_hex("MIN_SERVICE_FEE()")) {
-        word(10_000)
+        word(MINIMUM_SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains("14d90e1b") {
         word(MAX_SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains("e71fb849") {

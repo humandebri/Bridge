@@ -18,7 +18,7 @@
   "base_chain_id": 84532,
   "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
   "governance_principal": "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae",
-  "source_module_sha256": "a33e5a5fa718830a8930ad04c912a19b6e8b2d2e9f8758d67e797fefcf8c994f",
+  "source_module_sha256": "61f7b019154aed70917db5a43ea2c5de80dc882d62476446ae89ae2e930c2199",
   "source_candid_sha256": "e074f6dd9be750ec7321adc81697ee2af33019ee264d61307c5bdd613eda3b28",
   "source_api": "get_public_config",
   "target_api": "get_runtime_binding"
