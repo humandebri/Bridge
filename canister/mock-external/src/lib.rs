@@ -211,6 +211,7 @@ struct StableMockState {
     eth_balance: u128,
     next_evm_nonce: u64,
     service_fee: u128,
+    minimum_service_fee: u128,
     max_service_fee: u128,
     per_deposit_limit: u128,
     mint_window_limit: u128,
@@ -269,6 +270,7 @@ thread_local! {
     static ETH_BALANCE: RefCell<u128> = const { RefCell::new(10_000_000_000_000_000_000) };
     static NEXT_EVM_NONCE: RefCell<u64> = const { RefCell::new(0) };
     static SERVICE_FEE: RefCell<u128> = const { RefCell::new(1) };
+    static MINIMUM_SERVICE_FEE: RefCell<u128> = const { RefCell::new(1) };
     static MAX_SERVICE_FEE: RefCell<u128> = const { RefCell::new(10) };
     static PER_DEPOSIT_LIMIT: RefCell<u128> = const { RefCell::new(1_000_000) };
     static MINT_WINDOW_LIMIT: RefCell<u128> = const { RefCell::new(10_000_000) };
@@ -427,6 +429,11 @@ fn set_next_evm_nonce(value: u64) {
 #[ic_cdk::update]
 fn set_service_fee(value: u128) {
     SERVICE_FEE.with(|current| *current.borrow_mut() = value);
+}
+
+#[ic_cdk::update]
+fn set_minimum_service_fee(value: u128) {
+    MINIMUM_SERVICE_FEE.with(|current| *current.borrow_mut() = value);
 }
 
 #[ic_cdk::update]
@@ -683,6 +690,7 @@ fn pre_upgrade() {
         eth_balance: ETH_BALANCE.with(|v| *v.borrow()),
         next_evm_nonce: NEXT_EVM_NONCE.with(|v| *v.borrow()),
         service_fee: SERVICE_FEE.with(|v| *v.borrow()),
+        minimum_service_fee: MINIMUM_SERVICE_FEE.with(|v| *v.borrow()),
         max_service_fee: MAX_SERVICE_FEE.with(|v| *v.borrow()),
         per_deposit_limit: PER_DEPOSIT_LIMIT.with(|v| *v.borrow()),
         mint_window_limit: MINT_WINDOW_LIMIT.with(|v| *v.borrow()),
@@ -745,6 +753,7 @@ fn post_upgrade() {
     ETH_BALANCE.with(|v| *v.borrow_mut() = state.eth_balance);
     NEXT_EVM_NONCE.with(|v| *v.borrow_mut() = state.next_evm_nonce);
     SERVICE_FEE.with(|v| *v.borrow_mut() = state.service_fee);
+    MINIMUM_SERVICE_FEE.with(|v| *v.borrow_mut() = state.minimum_service_fee);
     MAX_SERVICE_FEE.with(|v| *v.borrow_mut() = state.max_service_fee);
     PER_DEPOSIT_LIMIT.with(|v| *v.borrow_mut() = state.per_deposit_limit);
     MINT_WINDOW_LIMIT.with(|v| *v.borrow_mut() = state.mint_window_limit);
@@ -1177,7 +1186,7 @@ fn multi_request(
     } else if request.contains("8abdf5aa") {
         word(SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains(&selector_hex("MIN_SERVICE_FEE()")) {
-        word(1)
+        word(MINIMUM_SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains("14d90e1b") {
         word(MAX_SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains("e71fb849") {

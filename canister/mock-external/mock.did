@@ -531,6 +531,7 @@ service : (InitArgs) -> {
   set_ledger_fee_available : (bool) -> ();
   set_ledger_mode : (LedgerMode) -> ();
   set_max_service_fee : (nat) -> ();
+  set_minimum_service_fee : (nat) -> ();
   set_mint_authorization_epoch : (nat64) -> ();
   set_mint_log : (opt MintLogFixture) -> ();
   set_mint_window : (nat, nat, nat64, nat64, nat64) -> ();

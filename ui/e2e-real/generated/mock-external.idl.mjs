@@ -515,6 +515,7 @@ export const idlFactory = ({ IDL }) => {
     'set_ledger_fee_available' : IDL.Func([IDL.Bool], [], []),
     'set_ledger_mode' : IDL.Func([LedgerMode], [], []),
     'set_max_service_fee' : IDL.Func([IDL.Nat], [], []),
+    'set_minimum_service_fee' : IDL.Func([IDL.Nat], [], []),
     'set_mint_authorization_epoch' : IDL.Func([IDL.Nat64], [], []),
     'set_mint_log' : IDL.Func([IDL.Opt(MintLogFixture)], [], []),
     'set_mint_window' : IDL.Func(

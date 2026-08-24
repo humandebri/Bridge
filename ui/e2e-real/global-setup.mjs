@@ -142,6 +142,7 @@ async function setup() {
   })
   await mock.actor.set_configured_chain_id(31_337n)
   await mock.actor.set_service_fee(1_000_000n)
+  await mock.actor.set_minimum_service_fee(10_000n)
   await mock.actor.set_max_service_fee(100_000_000n)
   await mock.actor.set_per_deposit_limit(1_000_000_000_000n)
   await mock.actor.set_mint_window(0n, 10_000_000_000_000n, 0n, 3_600n, 1n)
