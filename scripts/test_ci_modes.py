@@ -63,8 +63,8 @@ class CiModeTests(unittest.TestCase):
         self.assertNotIn('"KINIC"', deployment)
         self.assertEqual(
             deployment.count('\n    '),
-            10,
-            "Bridge smoke deployment must pass the contract plus exactly nine constructor arguments",
+            11,
+            "Bridge smoke deployment must pass the contract plus exactly ten constructor arguments",
         )
         self.assertIn('require_equal "bSNS name" "$token_name" \'"KINIC"\'', SOURCE)
 
