@@ -163,6 +163,14 @@ async function setup() {
     "key_1",
     [new TextEncoder().encode("governance-operator")],
   ))
+  const runtimeAdministrator = bytesHex(await signerProbe.derive_chain_key_address(
+    bridgeId,
+    "key_1",
+    [
+      new TextEncoder().encode("governance-operator"),
+      new TextEncoder().encode("KINIC-RUNTIME-ADMINISTRATOR-V1"),
+    ],
+  ))
   const independentCanceller = bytesHex(await signerProbe.derive_chain_key_address(
     bridgeId,
     "key_1",
@@ -174,11 +182,21 @@ async function setup() {
   const configuredRoleSigners = await mock.actor.set_deployment_role_signers_for_canister(bridgeId, "key_1")
   if (!("Ok" in configuredRoleSigners)) throw new Error(`Failed to configure deployment role signers: ${configuredRoleSigners.Err}`)
   await rpc("anvil_setBalance", [governanceOperator, "0x8ac7230489e80000"])
+  await rpc("anvil_setBalance", [runtimeAdministrator, "0x8ac7230489e80000"])
+  await rpc("anvil_setBalance", [independentCanceller, "0x8ac7230489e80000"])
   if (BigInt(await rpc("eth_getBalance", [governanceOperator, "latest"])) === 0n) throw new Error("Failed to fund the PocketIC governance operator")
+  if (BigInt(await rpc("eth_getBalance", [runtimeAdministrator, "latest"])) === 0n) throw new Error("Failed to fund the PocketIC runtime administrator")
+  if (BigInt(await rpc("eth_getBalance", [independentCanceller, "latest"])) === 0n) throw new Error("Failed to fund the PocketIC independent canceller")
 
   const timelockAddress = deployTimelock(governanceOperator, independentCanceller)
   resources.timelockAddress = timelockAddress
-  const bridgeAddress = deployBridge(signer, governanceOperator, timelockAddress, independentCanceller)
+  const bridgeAddress = deployBridge(
+    signer,
+    governanceOperator,
+    runtimeAdministrator,
+    timelockAddress,
+    independentCanceller,
+  )
   const bsnsAddress = execFileSync("cast", ["call", bridgeAddress, "bsns()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   const deploymentBlock = await publicClient.getBlockNumber()
   const bridgeCode = await publicClient.getCode({ address: bridgeAddress })
@@ -286,6 +304,8 @@ async function setup() {
   const liveOperationalConfig = operationalConfigResult.Ok
   if (bytesHex(publicConfig.expected_bridge_signer).toLowerCase() !== signer.toLowerCase()) throw new Error("Bridge mint signer derivation drifted")
   if (bytesHex(liveOperationalConfig.governance_operator).toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge governance operator derivation drifted")
+  if (bytesHex(liveOperationalConfig.runtime_administrator).toLowerCase() !== runtimeAdministrator.toLowerCase()) throw new Error("Bridge runtime administrator derivation drifted")
+  if (bytesHex(liveOperationalConfig.independent_canceller).toLowerCase() !== independentCanceller.toLowerCase()) throw new Error("Bridge independent canceller derivation drifted")
   const deploymentPostconditions = await mock.actor.set_deployment_postconditions(
     hexToBytes(timelockAddress),
     hexToBytes(governanceOperator),
@@ -442,13 +462,13 @@ async function setup() {
     }
   }
   await syncObservedHeads()
-  const relaySigned = async (artifact) => {
+  const relaySigned = async (artifact, expectedSigner = governanceOperator) => {
     const raw = bytesHex(artifact.raw_transaction)
     const expectedHash = keccak256(raw)
     if (expectedHash.toLowerCase() !== bytesHex(artifact.transaction_hash).toLowerCase()) throw new Error("Canister signed hash mismatch")
     const rawSigner = await recoverTransactionAddress({ serializedTransaction: raw })
-    if (rawSigner.toLowerCase() !== governanceOperator.toLowerCase()) {
-      throw new Error(`Canister signature used non-Governance signer ${rawSigner}`)
+    if (rawSigner.toLowerCase() !== expectedSigner.toLowerCase()) {
+      throw new Error(`Canister signature used unexpected control-plane signer ${rawSigner}`)
     }
     try {
       const submittedHash = await rpc("eth_sendRawTransaction", [raw])
@@ -463,8 +483,8 @@ async function setup() {
     await rpc("anvil_mine", ["0x40"])
     if (!await rpc("eth_getTransactionReceipt", [expectedHash])) throw new Error(`Anvil did not mine relayed transaction ${expectedHash}`)
   }
-  const confirmSigned = async (artifact) => {
-    await relaySigned(artifact)
+  const confirmSigned = async (artifact, expectedSigner = governanceOperator) => {
+    await relaySigned(artifact, expectedSigner)
     await syncObservedHeads()
     return bridge.actor.confirm_base_governance_transaction({
       operation_id: artifact.operation_id,
@@ -503,11 +523,11 @@ async function setup() {
   if (!("Ok" in localPause)) throw new Error(`Pause principal could not pause IC deposits: ${json(localPause.Err)}`)
   const pauseDepositSubmitted = await bridge.actor.prepare_base_governance_action({ PauseDepositMints: null })
   if (!("Ok" in pauseDepositSubmitted)) throw new Error(`Canister deposit pause failed: ${json(pauseDepositSubmitted.Err)}`)
-  const pauseDepositConfirmed = await confirmSigned(pauseDepositSubmitted.Ok)
+  const pauseDepositConfirmed = await confirmSigned(pauseDepositSubmitted.Ok, runtimeAdministrator)
   if (!("Ok" in pauseDepositConfirmed)) throw new Error(`Canister deposit pause confirmation failed: ${json(pauseDepositConfirmed.Err)}`)
   const pauseWithdrawalSubmitted = await bridge.actor.prepare_base_governance_action({ PauseWithdrawals: null })
   if (!("Ok" in pauseWithdrawalSubmitted)) throw new Error(`Canister withdrawal pause failed: ${json(pauseWithdrawalSubmitted.Err)}`)
-  const pauseWithdrawalConfirmed = await confirmSigned(pauseWithdrawalSubmitted.Ok)
+  const pauseWithdrawalConfirmed = await confirmSigned(pauseWithdrawalSubmitted.Ok, runtimeAdministrator)
   if (!("Ok" in pauseWithdrawalConfirmed)) throw new Error(`Canister withdrawal pause confirmation failed: ${json(pauseWithdrawalConfirmed.Err)}`)
 
   const secondScheduleSubmitted = await bridge.actor.schedule_activation()
@@ -528,11 +548,11 @@ async function setup() {
 
   const emergencyDepositPauseSubmitted = await bridge.actor.prepare_next_emergency_base_action()
   if (!("Ok" in emergencyDepositPauseSubmitted)) throw new Error(`Emergency deposit pause failed: ${json(emergencyDepositPauseSubmitted.Err)}`)
-  const emergencyDepositPauseConfirmed = await confirmSigned(emergencyDepositPauseSubmitted.Ok)
+  const emergencyDepositPauseConfirmed = await confirmSigned(emergencyDepositPauseSubmitted.Ok, runtimeAdministrator)
   if (!("Ok" in emergencyDepositPauseConfirmed)) throw new Error(`Emergency deposit pause confirmation failed: ${json(emergencyDepositPauseConfirmed.Err)}`)
   const emergencyWithdrawalPauseSubmitted = await bridge.actor.prepare_next_emergency_base_action()
   if (!("Ok" in emergencyWithdrawalPauseSubmitted)) throw new Error(`Emergency withdrawal pause failed: ${json(emergencyWithdrawalPauseSubmitted.Err)}`)
-  const emergencyWithdrawalPauseConfirmed = await confirmSigned(emergencyWithdrawalPauseSubmitted.Ok)
+  const emergencyWithdrawalPauseConfirmed = await confirmSigned(emergencyWithdrawalPauseSubmitted.Ok, runtimeAdministrator)
   if (!("Ok" in emergencyWithdrawalPauseConfirmed)) throw new Error(`Emergency withdrawal pause confirmation failed: ${json(emergencyWithdrawalPauseConfirmed.Err)}`)
 
   const recoveryScheduleSubmitted = await bridge.actor.schedule_activation()
@@ -887,25 +907,37 @@ function deployTimelock(governanceOperator, independentCanceller) {
   return match[1]
 }
 
-function deployBridge(signer, governanceOperator, timelockAddress, independentCanceller) {
+function deployBridge(signer, governanceOperator, runtimeAdministrator, timelockAddress, independentCanceller) {
   const timelockCodeHash = execFileSync(
     "cast", ["codehash", timelockAddress, "--rpc-url", rpcUrl], { encoding: "utf8" },
   ).trim()
   const output = execFileSync("forge", [
     "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
     "--from", deployer, "--unlocked", "--broadcast", "src/Bridge.sol:Bridge", "--constructor-args",
-    signer, governanceOperator, timelockAddress, timelockCodeHash,
+    signer, runtimeAdministrator, timelockAddress, timelockCodeHash,
     "1000000000000", "10000000000000", "3600", "10000", "100000000", "1000000",
   ], { encoding: "utf8", env: stagingForgeEnv })
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Bridge deployment:\n${output}`)
-  assertFrozenCanisterRoles(match[1], timelockAddress, governanceOperator, independentCanceller)
+  assertFrozenCanisterRoles(
+    match[1],
+    timelockAddress,
+    governanceOperator,
+    runtimeAdministrator,
+    independentCanceller,
+  )
   return match[1]
 }
 
-function assertFrozenCanisterRoles(bridgeAddress, timelockAddress, governanceOperator, independentCanceller) {
+function assertFrozenCanisterRoles(
+  bridgeAddress,
+  timelockAddress,
+  governanceOperator,
+  runtimeAdministrator,
+  independentCanceller,
+) {
   const runtime = execFileSync("cast", ["call", bridgeAddress, "runtimeAdministrator()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-  if (runtime.toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge runtime administrator is not the canister governance operator")
+  if (runtime.toLowerCase() !== runtimeAdministrator.toLowerCase()) throw new Error("Bridge runtime administrator is not independently derived")
   const proposerRole = execFileSync("cast", ["call", timelockAddress, "PROPOSER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   const executorRole = execFileSync("cast", ["call", timelockAddress, "EXECUTOR_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
   const cancellerRole = execFileSync("cast", ["call", timelockAddress, "CANCELLER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
