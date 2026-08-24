@@ -585,6 +585,27 @@ fn set_deployment_postconditions(
 }
 
 #[ic_cdk::update]
+fn set_control_plane_addresses(
+    governance_operator: Vec<u8>,
+    runtime_administrator: Vec<u8>,
+    independent_canceller: Vec<u8>,
+) -> Result<(), String> {
+    let governance_operator: [u8; 20] = governance_operator
+        .try_into()
+        .map_err(|_| "governance operator must be 20 bytes".to_string())?;
+    let runtime_administrator: [u8; 20] = runtime_administrator
+        .try_into()
+        .map_err(|_| "runtime administrator must be 20 bytes".to_string())?;
+    let independent_canceller: [u8; 20] = independent_canceller
+        .try_into()
+        .map_err(|_| "independent canceller must be 20 bytes".to_string())?;
+    GOVERNANCE_OPERATOR.with(|current| *current.borrow_mut() = governance_operator);
+    RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = runtime_administrator);
+    INDEPENDENT_CANCELLER.with(|current| *current.borrow_mut() = independent_canceller);
+    Ok(())
+}
+
+#[ic_cdk::update]
 fn set_deposit_mints_paused(value: bool) {
     DEPOSIT_MINTS_PAUSED.with(|current| *current.borrow_mut() = value);
 }
@@ -1177,7 +1198,7 @@ fn multi_request(
     } else if request.contains("8abdf5aa") {
         word(SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains(&selector_hex("MIN_SERVICE_FEE()")) {
-        word(1)
+        word(10_000)
     } else if request.contains("14d90e1b") {
         word(MAX_SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains("e71fb849") {

@@ -485,6 +485,11 @@ export const idlFactory = ({ IDL }) => {
       ),
     'set_broadcast_inconsistent_after_accepts' : IDL.Func([IDL.Nat8], [], []),
     'set_configured_chain_id' : IDL.Func([IDL.Nat64], [], []),
+    'set_control_plane_addresses' : IDL.Func(
+        [IDL.Vec(IDL.Nat8), IDL.Vec(IDL.Nat8), IDL.Vec(IDL.Nat8)],
+        [Result_10],
+        [],
+      ),
     'set_deployment_postconditions' : IDL.Func(
         [
           IDL.Vec(IDL.Nat8),

@@ -18,6 +18,15 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({ 
   await page.getByRole("checkbox", { name: "Acknowledge unaudited bridge risk" }).check()
   await page.getByRole("button", { name: "Acknowledge and continue" }).click()
   await expect(page.getByRole("region", { name: "KINIC bridge" })).toBeVisible()
+  const runtimeValidation = await page.evaluate(async () => {
+    // @ts-expect-error Vite serves this source module only inside the real-E2E browser.
+    const { validateRuntime } = await import("/src/lib/runtime-validation.ts")
+    // @ts-expect-error The real-E2E global setup generates this Vite-only module.
+    const { deploymentProfile } = await import("/.e2e-runtime/profile.ts")
+    const validation = await validateRuntime(deploymentProfile)
+    return { ready: validation.ready, blockers: validation.blockers }
+  })
+  expect(runtimeValidation.ready, runtimeValidation.blockers.join("; ")).toBe(true)
   await page.goto("/status")
   await expect(page.getByText("Availability is fail-closed until fresh status checks succeed.")).toBeHidden()
   await expect(page.getByText("To Base").locator("..")).toContainText("Available")
