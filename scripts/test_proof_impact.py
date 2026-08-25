@@ -257,7 +257,7 @@ class ProofImpactTests(unittest.TestCase):
 
     def test_conservative_fingerprint_covers_consumers_drivers_and_configs(self) -> None:
         inputs = {
-            path.relative_to(ROOT).as_posix()
+            proof_fingerprint.logical_source_path(path, ROOT).as_posix()
             for path in check_proof_impact.fingerprint_inputs()
         }
         for relative in (
@@ -330,7 +330,7 @@ class ProofImpactTests(unittest.TestCase):
 
     def test_fingerprint_excludes_generated_receipts_and_build_state(self) -> None:
         inputs = {
-            path.relative_to(ROOT).as_posix()
+            proof_fingerprint.logical_source_path(path, ROOT).as_posix()
             for path in check_proof_impact.fingerprint_inputs()
         }
         self.assertFalse(any(path.startswith("verification/output/") for path in inputs))
