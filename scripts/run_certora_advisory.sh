@@ -86,10 +86,8 @@ for item in "${targets[@]}"; do
   finished="$(date +%s)"
   python3 "$ROOT/scripts/proof_fingerprint.py" --check "$baseline" >/dev/null
 
-  public_report=0
   if rg -q 'anonymousKey=' "$raw_log"; then
     echo "Certora emitted a public anonymous report URL" >&2
-    public_report=1
     job_status=1
   fi
   if rg -qi '(^|[^[:alpha:]])(TIMEOUT|UNKNOWN)([^[:alpha:]]|$)|sanity[^\n]*(fail|warning)|unresolved[^\n]*(assert|havoc)|optimizer steps missing' "$raw_log"; then
