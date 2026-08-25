@@ -189,7 +189,9 @@ def production_body_calls(
     body: str, symbol: str, *, kernel_internal: bool = False
 ) -> bool:
     qualified = re.compile(
-        rf"(?<![A-Za-z0-9_:])(?:crate|bridge_core)\s*::\s*{re.escape(symbol)}\s*\("
+        rf"(?<![A-Za-z0-9_:])(?:"
+        rf"crate\s*::\s*kernel|::\s*bridge_core\s*::\s*kernel"
+        rf")\s*::\s*{re.escape(symbol)}\s*\("
     )
     if qualified.search(body) is not None:
         return True
