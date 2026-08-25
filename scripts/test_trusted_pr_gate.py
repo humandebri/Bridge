@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 
+from trusted_proof_profiles import select_profile
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
@@ -80,8 +82,15 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
-        self.assertIn("proofs) mode=\"all\"", workflow)
-        self.assertIn("*) mode=\"ci\"", workflow)
+        profile = select_profile(ROOT).identifier
+        if profile == "current-main":
+            self.assertIn("proofs) mode=\"all\"", workflow)
+            self.assertIn("*) mode=\"ci\"", workflow)
+        elif profile == "security-hardening-v1":
+            self.assertIn("if jq -e 'index(\"proofs\") != null'", workflow)
+            self.assertIn('then mode="all"; else mode="ci"; fi', workflow)
+        else:  # pragma: no cover - profile selection itself is fail closed
+            self.fail(f"unsupported trusted profile: {profile}")
         self.assertEqual(workflow.count("docker build --file"), 1)
         self.assertIn("actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn("actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
