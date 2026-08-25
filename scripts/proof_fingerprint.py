@@ -46,6 +46,7 @@ FINGERPRINT_EXCLUDED_VERIFICATION_DIRS = (
     ("smt", "out"),
     ("smt", "cache"),
     ("halmos", ".venv"),
+    ("certora", ".venv"),
 )
 
 

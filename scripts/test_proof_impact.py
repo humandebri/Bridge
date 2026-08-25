@@ -207,6 +207,21 @@ class ProofImpactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid shape"):
                 proof_fingerprint.load_fingerprint(path)
 
+    def test_fingerprint_excludes_certora_virtual_environment(self) -> None:
+        verification = Path("/repo/verification")
+        self.assertTrue(
+            proof_fingerprint.excluded_verification_path(
+                verification / "certora/.venv/lib/python/site-packages/cache.pyc",
+                verification,
+            )
+        )
+        self.assertFalse(
+            proof_fingerprint.excluded_verification_path(
+                verification / "certora/specs/Bridge.spec",
+                verification,
+            )
+        )
+
     def test_receipt_rejects_forged_claims_and_summary(self) -> None:
         forged_claims = self.valid_receipt()
         forged_claims["claims"][0]["status"] = "forged"
