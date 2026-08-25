@@ -410,6 +410,13 @@ fn registered_proof()
         )
         self.assertTrue(
             production_call_is_canonical(
+                "{ match ::bridge_core::kernel::target(value) { _ => () } }",
+                "target",
+                canister,
+            )
+        )
+        self.assertTrue(
+            production_call_is_canonical(
                 "{ ::bridge_core::kernel::target(); }", "target", canister
             )
         )

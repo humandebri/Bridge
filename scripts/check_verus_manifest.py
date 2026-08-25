@@ -238,11 +238,13 @@ def production_call_is_canonical(
         return False
     symbol_pattern = re.compile(
         rf"(?<![A-Za-z0-9_])(?P<path>(?:::)?"
-        rf"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*{escaped})\b"
+        rf"(?:(?!(?:break|else|for|if|let|match|return|while)\b)"
+        rf"[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*{escaped})\b"
     )
     macro_pattern = re.compile(
         rf"(?<![A-Za-z0-9_])(?P<path>(?:::)?"
-        rf"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*{escaped}_body)\s*!\s*[({{\[]"
+        rf"(?:(?!(?:break|else|for|if|let|match|return|while)\b)"
+        rf"[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*{escaped}_body)\s*!\s*[({{\[]"
     )
     calls = _rust_call_paths(body, symbol_pattern)
     macros = {
