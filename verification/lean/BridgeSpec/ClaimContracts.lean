@@ -1,9 +1,8 @@
 import BridgeSpec.Protocol
 import BridgeSpec.ControlPlane
 import BridgeSpec.GlobalHistory
-import BridgeSpec.Liveness
 import BridgeSpec.Claims
-import BridgeSpec.Refinement
+import BridgeSpec.ModelRefinement
 import BridgeSpec.LedgerBlockProvenance
 
 namespace BridgeSpec.ClaimContracts
@@ -60,24 +59,17 @@ def confirmationCallerAuthorized
     (caller == confirmationRelayer || caller == governance || caller == pause)
 
 def GovernanceConfirmationAuthorization : Prop :=
-  ∀ caller initialConfirmationRelayer initialGovernance initialPause
-      currentConfirmationRelayer currentGovernance currentPause : Nat,
+  ∀ caller currentConfirmationRelayer currentGovernance currentPause : Nat,
     confirmationCallerAuthorized
-        caller initialConfirmationRelayer initialGovernance initialPause = true →
-      confirmationCallerAuthorized
-        caller currentConfirmationRelayer currentGovernance currentPause = true →
+        caller currentConfirmationRelayer currentGovernance currentPause = true ↔
       caller ≠ 0 ∧
         (caller = currentConfirmationRelayer ∨
           caller = currentGovernance ∨ caller = currentPause)
 
 theorem governance_confirmation_authorization_witness :
     GovernanceConfirmationAuthorization := by
-  intro caller _ _ _ currentConfirmationRelayer currentGovernance currentPause _ authorized
-  simp [confirmationCallerAuthorized] at authorized
-  rcases authorized with ⟨nonzero, (relayer | governance) | pause⟩
-  · exact ⟨nonzero, Or.inl relayer⟩
-  · exact ⟨nonzero, Or.inr (Or.inl governance)⟩
-  · exact ⟨nonzero, Or.inr (Or.inr pause)⟩
+  intro caller currentConfirmationRelayer currentGovernance currentPause
+  simp [confirmationCallerAuthorized, or_assoc]
 
 theorem governance_confirmation_authorization_claim :
     GovernanceConfirmationAuthorization :=
@@ -480,24 +472,6 @@ theorem epoch_invalidation_witness : EpochInvalidation :=
     retired_signer_rejects_even_future_epoch_authorizations,
     authorization_binding_witness⟩
 
-abbrev WithdrawalEventuallyPaid := Liveness.WithdrawalEventuallyPaid
-theorem withdrawal_eventually_paid_witness : WithdrawalEventuallyPaid :=
-  Liveness.committed_withdrawal_eventually_paid
-
-abbrev FundedDepositEventuallyMinted := Liveness.FundedDepositEventuallyMinted
-theorem funded_deposit_eventually_minted_witness : FundedDepositEventuallyMinted :=
-  Liveness.funded_deposit_eventually_minted
-
-abbrev ExpiredDepositEventuallyRefunded := Liveness.ExpiredDepositEventuallyRefunded
-theorem expired_deposit_eventually_refunded_witness : ExpiredDepositEventuallyRefunded :=
-  Liveness.expired_deposit_eventually_refunded
-
-abbrev FundedDepositEventuallyMintedOrRefunded :=
-  Liveness.FundedDepositEventuallyMintedOrRefunded
-theorem funded_deposit_eventually_minted_or_refunded_witness :
-    FundedDepositEventuallyMintedOrRefunded :=
-  Liveness.funded_deposit_eventually_minted_or_refunded
-
 def NonterminalDepositIndexConsistency : Prop :=
   ∀ phase : MintAuthorization.DepositPhase,
     MintAuthorization.nonterminalDepositIndexed phase = true ↔
@@ -506,9 +480,5 @@ def NonterminalDepositIndexConsistency : Prop :=
 theorem nonterminal_deposit_index_consistency_witness :
     NonterminalDepositIndexConsistency :=
   MintAuthorization.nonterminal_deposit_index_matches_nonterminal_phases
-
-abbrev FundingFailureEventuallyCancelled := Liveness.FundingFailureEventuallyCancelled
-theorem funding_failure_eventually_cancelled_witness : FundingFailureEventuallyCancelled :=
-  Liveness.funding_failure_eventually_cancelled
 
 end BridgeSpec.ClaimContracts

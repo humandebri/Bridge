@@ -1,4 +1,4 @@
-import BridgeSpec.Refinement
+import BridgeSpec.ModelRefinement
 
 namespace BridgeSpec.Vectors
 

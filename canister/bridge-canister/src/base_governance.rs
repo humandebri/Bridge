@@ -803,8 +803,12 @@ pub(crate) fn confirmation_caller_authorized(
     governance: Principal,
     pause: Principal,
 ) -> bool {
-    caller != Principal::anonymous()
-        && (caller == confirmation_relayer || caller == governance || caller == pause)
+    bridge_core::confirmation_caller_authorized(
+        caller != Principal::anonymous(),
+        caller == confirmation_relayer,
+        caller == governance,
+        caller == pause,
+    )
 }
 
 pub fn emergency_pause(caller: Principal) -> Result<EmergencyPauseReceipt, BaseGovernanceError> {

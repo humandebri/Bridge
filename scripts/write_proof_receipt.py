@@ -8,7 +8,13 @@ import sys
 from pathlib import Path
 
 from check_claim_manifest import CLAIM_REPORT_SCHEMA, REPORT, build_claim_report
-from check_proof_impact import RECEIPT_SCHEMA, REQUIRED_STAGES, source_fingerprint
+from check_proof_impact import (
+    RECEIPT_SCHEMA,
+    REQUIRED_STAGES,
+    release_summary_is_complete,
+    source_fingerprint,
+    summarize_claim_report,
+)
 from proof_fingerprint import load_fingerprint
 
 REQUIRED = REQUIRED_STAGES
@@ -16,7 +22,7 @@ REQUIRED = REQUIRED_STAGES
 
 def current_claim_evidence(
     baseline: dict[str, object],
-) -> tuple[list[dict[str, object]], dict[str, object]]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
     if not REPORT.is_file():
         raise ValueError("claim report is missing")
     try:
@@ -32,6 +38,7 @@ def current_claim_evidence(
     if fingerprint_after != baseline:
         raise ValueError("proof inputs changed while computing claim evidence")
     claims = report.get("claims")
+    conditional_liveness = report.get("conditional_liveness")
     if report.get("schema") != CLAIM_REPORT_SCHEMA:
         raise ValueError("claim report schema does not match the current generator")
     if report.get("source_fingerprint") != fingerprint_before:
@@ -42,7 +49,11 @@ def current_claim_evidence(
         raise ValueError("claim evidence must contain a non-empty claim list")
     if not all(isinstance(claim, dict) for claim in claims):
         raise ValueError("claim evidence contains a malformed claim")
-    return claims, baseline
+    if not isinstance(conditional_liveness, list) or not all(
+        isinstance(prop, dict) for prop in conditional_liveness
+    ):
+        raise ValueError("conditional liveness evidence is malformed")
+    return claims, conditional_liveness, baseline
 
 
 def main() -> int:
@@ -67,16 +78,19 @@ def main() -> int:
             stages[stage] = (status, stage_fingerprint)
     claim_error: str | None = None
     try:
-        claims, fingerprint = current_claim_evidence(baseline)
+        claims, conditional_liveness, fingerprint = current_claim_evidence(baseline)
     except ValueError as error:
         claims = []
+        conditional_liveness = []
         fingerprint = baseline
         claim_error = str(error)
+    claim_summary = summarize_claim_report(claims, conditional_liveness)
     complete = (
         claim_error is None
         and tuple(stages) == REQUIRED
         and all(status == "pass" for status, _ in stages.values())
         and bool(claims)
+        and release_summary_is_complete(claim_summary)
     )
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
     receipt_path.write_text(
@@ -95,15 +109,8 @@ def main() -> int:
                 ],
                 "source_fingerprint": fingerprint,
                 "claims": claims,
-                "claim_summary": {
-                    status: sum(claim.get("status") == status for claim in claims)
-                    for status in (
-                        "implementation-proved",
-                        "refinement-tested",
-                        "partial",
-                        "assumed",
-                    )
-                },
+                "conditional_liveness": conditional_liveness,
+                "claim_summary": claim_summary,
                 "complete": complete,
                 **({"claim_report_error": claim_error} if claim_error is not None else {}),
             },

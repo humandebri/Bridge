@@ -1,7 +1,8 @@
 use bridge_core::{
     administrator_authorized, audit_next, authorization_commit_allowed, checked_counter_transition,
-    checked_requirement, counter_delta, deposit_admission_decision, deposit_reservation_active,
-    deposit_transition, deposit_transition_decision, evidence_matches, expiry_refund_allowed,
+    checked_requirement, confirmation_caller_authorized, confirmation_roles_distinct,
+    counter_delta, deposit_admission_decision, deposit_reservation_active, deposit_transition,
+    deposit_transition_decision, evidence_matches, expiry_refund_allowed,
     fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
     lease_outcome_is_current, manual_claim_decision, mint_admission_total,
@@ -18,6 +19,37 @@ use bridge_core::{
 
 #[test]
 fn boolean_decisions_are_exhaustive() {
+    for non_anonymous in [false, true] {
+        for relayer in [false, true] {
+            for governance in [false, true] {
+                for pause in [false, true] {
+                    assert_eq!(
+                        confirmation_caller_authorized(non_anonymous, relayer, governance, pause,),
+                        non_anonymous && (relayer || governance || pause)
+                    );
+                }
+            }
+        }
+    }
+    for relayer_governance in [false, true] {
+        for relayer_pause in [false, true] {
+            for governance_pause in [false, true] {
+                for allow_staging in [false, true] {
+                    assert_eq!(
+                        confirmation_roles_distinct(
+                            relayer_governance,
+                            relayer_pause,
+                            governance_pause,
+                            allow_staging,
+                        ),
+                        !governance_pause
+                            && !relayer_pause
+                            && (allow_staging || !relayer_governance)
+                    );
+                }
+            }
+        }
+    }
     for old in [false, true] {
         for new in [false, true] {
             let expected = match (old, new) {

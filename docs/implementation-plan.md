@@ -210,7 +210,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 - Service Feeの上限制約、二重計上防止、成功前のfee確定禁止、未完了payoutがない場合のrecipient変更によるreserve保存、fee reserveを超える送金の禁止（ADR 0004）。
 - Deposit受付がcandidateを含むSettlement Reserveを満たし、candidateからreservedへの移行で必要資源量を減らさないこと（ADR 0005）。
 - stable settlement executorのleaseがrecordとlaneへ束縛され、generationが単調増加し、stale callback、同一recordの重複claim、scheduled/leased jobの手動迂回を拒否すること（ADR 0019、0023）。
-- release対象claimは`Claims.lean`、有限幅semanticsは`Implementation.lean`、implementation対応は`Refinement.lean`、統合traceは`Protocol.lean`へ分離し、claim台帳、vector section、production consumer、外部仮定をCIで完全一致させる。release driverは自己申告attestationを受理せず、不可逆操作直前にclean sourceからproof gateと二重artifact buildを再実行する。
+- release対象claimは`Claims.lean`、有限幅モデルは`FiniteWidthModel.lean`、model refinementは`ModelRefinement.lean`、統合traceは`Protocol.lean`へ分離し、claim台帳、vector section、production consumer、外部仮定をCIで完全一致させる。model refinementはproduction全体の証明とは呼ばず、生成vectorによるbounded conformanceとして扱う。release driverは自己申告attestationを受理せず、不可逆操作直前にclean sourceからproof gateと二重artifact buildを再実行する。
 - Reconciliation Hold から新規 transfer または補償状態へ直接遷移しないこと（ADR 0006）。
 
 証明範囲は資産の 1:1 裏付けと上記の性質に限定し、cross-chain governance を含めない（ADR 0002）。

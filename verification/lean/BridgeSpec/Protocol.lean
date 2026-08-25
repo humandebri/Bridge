@@ -1,10 +1,10 @@
-import BridgeSpec.Refinement
+import BridgeSpec.ModelRefinement
 import BridgeSpec.DepositAuthorization
 
 namespace BridgeSpec.Protocol
 
 open BridgeSpec
-open BridgeSpec.Implementation
+open BridgeSpec.FiniteWidthModel
 
 namespace Deposit
 

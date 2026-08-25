@@ -410,6 +410,18 @@ macro_rules! refund_request_identity_decision_body {
     };
 }
 
+macro_rules! confirmation_caller_authorized_body {
+    ($non_anonymous:expr, $relayer:expr, $governance:expr, $pause:expr) => {
+        $non_anonymous && ($relayer || $governance || $pause)
+    };
+}
+
+macro_rules! confirmation_roles_distinct_body {
+    ($relayer_governance:expr, $relayer_pause:expr, $governance_pause:expr, $allow_staging:expr) => {
+        !$governance_pause && !$relayer_pause && ($allow_staging || !$relayer_governance)
+    };
+}
+
 macro_rules! notification_admission_body {
     ($global_count:expr, $caller_count:expr, $global_limit:expr, $caller_limit:expr) => {
         $global_count < $global_limit && $caller_count < $caller_limit
@@ -1414,6 +1426,41 @@ verus! {
             authenticated,
             RefundRequestIdentityDecision::Allow,
             RefundRequestIdentityDecision::AnonymousCaller
+        )
+    }
+}
+
+verus! {
+    pub fn confirmation_caller_authorized(
+        non_anonymous: bool,
+        relayer: bool,
+        governance: bool,
+        pause: bool,
+    ) -> (result: bool)
+        ensures
+            result == (non_anonymous && (relayer || governance || pause)),
+    {
+        confirmation_caller_authorized_body!(non_anonymous, relayer, governance, pause)
+    }
+}
+
+verus! {
+    pub fn confirmation_roles_distinct(
+        relayer_is_governance: bool,
+        relayer_is_pause: bool,
+        governance_is_pause: bool,
+        allow_staging_relayer_governance: bool,
+    ) -> (result: bool)
+        ensures
+            result == (!governance_is_pause
+                && !relayer_is_pause
+                && (allow_staging_relayer_governance || !relayer_is_governance)),
+    {
+        confirmation_roles_distinct_body!(
+            relayer_is_governance,
+            relayer_is_pause,
+            governance_is_pause,
+            allow_staging_relayer_governance
         )
     }
 }

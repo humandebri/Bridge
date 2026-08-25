@@ -443,6 +443,35 @@ fn deposit_identity_decision_is_fail_closed(
     kernel::deposit_identity_decision(processed)
 }
 
+fn confirmation_caller_authorization_matches_current_roles(
+    non_anonymous: bool,
+    relayer: bool,
+    governance: bool,
+    pause: bool,
+) -> (result: bool)
+    ensures result <==> non_anonymous && (relayer || governance || pause),
+{
+    kernel::confirmation_caller_authorized(non_anonymous, relayer, governance, pause)
+}
+
+fn confirmation_role_separation_matches_deployment_policy(
+    relayer_is_governance: bool,
+    relayer_is_pause: bool,
+    governance_is_pause: bool,
+    allow_staging_relayer_governance: bool,
+) -> (result: bool)
+    ensures result <==> !governance_is_pause
+        && !relayer_is_pause
+        && (allow_staging_relayer_governance || !relayer_is_governance),
+{
+    kernel::confirmation_roles_distinct(
+        relayer_is_governance,
+        relayer_is_pause,
+        governance_is_pause,
+        allow_staging_relayer_governance,
+    )
+}
+
 fn reservation_decision_preserves_candidate_requirement(
     reserved: u128, candidate: u128,
 ) -> (result: Option<kernel::ReservationDecision>)

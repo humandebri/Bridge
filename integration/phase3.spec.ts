@@ -93,6 +93,19 @@ describe("Phase 3 PocketIC saga", () => {
     return { ledger, index, evm, bridge, init, runtimePrincipal, confirmationRelayerPrincipal };
   }
 
+  async function rejects_overlapping_confirmation_and_pause_roles_at_install() {
+    const overlappingPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(77));
+    await expect(setup(false, {
+      pause_principal: overlappingPrincipal,
+      confirmation_relayer_principal: overlappingPrincipal,
+    })).rejects.toThrow();
+  }
+
+  it(
+    "rejects overlapping confirmation and pause roles at install",
+    rejects_overlapping_confirmation_and_pause_roles_at_install,
+  );
+
   async function activateBridgeThroughGovernance(bridge: any, evm: any, governance: Principal) {
     bridge.actor.setPrincipal(governance);
     await (evm.actor as any).set_deposit_mints_paused(true);

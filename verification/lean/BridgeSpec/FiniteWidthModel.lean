@@ -1,14 +1,13 @@
 import BridgeSpec.Model
 import BridgeSpec.LedgerBlockProvenance
 
-namespace BridgeSpec.Implementation
+namespace BridgeSpec.FiniteWidthModel
 
 open BridgeSpec
 
 def maxU128 : Nat := 2 ^ 128 - 1
 def maxU64 : Nat := 2 ^ 64 - 1
 def maxU16 : Nat := 2 ^ 16 - 1
-def maxU8 : Nat := 2 ^ 8 - 1
 
 structure U128 where
   val : Nat
@@ -25,34 +24,8 @@ structure U16 where
   bounded : val ≤ maxU16
 deriving DecidableEq
 
-structure U8 where
-  val : Nat
-  bounded : val ≤ maxU8
-deriving DecidableEq
-
 def checkedAdd128 (left right : Nat) : Option Nat :=
   if left + right ≤ maxU128 then some (left + right) else none
-
-def checkedSub128 (left right : Nat) : Option Nat :=
-  if right ≤ left ∧ left ≤ maxU128 then some (left - right) else none
-
-def checkedMul128 (left right : Nat) : Option Nat :=
-  if left * right ≤ maxU128 then some (left * right) else none
-
-def checkedNext64 (current : Nat) : Option Nat :=
-  if current < maxU64 then some (current + 1) else none
-
-def checkedWindowId64 (now windowSize : Nat) : Option Nat :=
-  if windowSize = 0 then none
-  else
-    let windowId := now / windowSize
-    if windowId ≤ maxU64 then some windowId else none
-
-def checkedCounterDelta64 (current : Nat) (wasActive isActive : Bool) : Option Nat :=
-  if wasActive = isActive then
-    if current ≤ maxU64 then some current else none
-  else if isActive then checkedNext64 current
-  else if current ≤ maxU64 then checkedSub128 current 1 else none
 
 def commitImpl (amount serviceFee : U128) (destination : Account) : Option Withdrawal :=
   commit amount.val serviceFee.val destination
@@ -158,4 +131,4 @@ def withdrawalFinalityCheckpointImpl
 def ledgerBlockImpl (current : Option U128) (block : U128) : Option (Option Nat) :=
   ledgerBlockProvenance (current.map U128.val) block.val
 
-end BridgeSpec.Implementation
+end BridgeSpec.FiniteWidthModel

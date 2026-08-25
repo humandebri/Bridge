@@ -596,10 +596,12 @@ impl BridgeInitArgs {
         if self.governance_principal == Principal::anonymous()
             || self.pause_principal == Principal::anonymous()
             || self.confirmation_relayer_principal == Principal::anonymous()
-            || self.pause_principal == self.governance_principal
-            || (!cfg!(feature = "test-deployment")
-                && self.confirmation_relayer_principal == self.governance_principal)
-            || self.confirmation_relayer_principal == self.pause_principal
+            || !bridge_core::confirmation_roles_distinct(
+                self.confirmation_relayer_principal == self.governance_principal,
+                self.confirmation_relayer_principal == self.pause_principal,
+                self.governance_principal == self.pause_principal,
+                cfg!(feature = "test-deployment"),
+            )
             || self.fee_recipient.owner == Principal::anonymous()
             || self.fee_recipient.owner == self.pause_principal
             || self.fee_recipient.owner == self.governance_principal

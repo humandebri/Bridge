@@ -31,7 +31,8 @@ pub use external::{
 pub use kernel::{
     activation_base_preflight_matches, activation_postcondition_matches, administrator_authorized,
     audit_next, authorization_commit_allowed, canonical_probe_matches, checked_counter_transition,
-    checked_requirement, committed_quote_matches, counter_delta, deposit_admission_decision,
+    checked_requirement, committed_quote_matches, confirmation_caller_authorized,
+    confirmation_roles_distinct, counter_delta, deposit_admission_decision,
     deposit_charge_service_fee, deposit_identity_decision, deposit_ledger_block_transition,
     deposit_nonterminal_indexed, deposit_numeric_effects, deposit_refund_amount,
     deposit_releases_reservation, deposit_reservation_active, deposit_transition,
