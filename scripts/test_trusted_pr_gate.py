@@ -136,16 +136,21 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("--cap-drop ALL", wrapper)
         self.assertIn("dst=/workspace,readonly", wrapper)
         self.assertIn("dst=/workspace/scripts,readonly", wrapper)
-        self.assertIn(
-            "src=$SOURCE_ROOT/scripts/plan007/generate-local-e2e.mjs,"
-            "dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly",
-            wrapper,
+        materializes_candidate_scripts = "bridge_materialize_regular_git_tree" in wrapper
+        script_source = (
+            "$SCRATCH/candidate-scripts"
+            if materializes_candidate_scripts
+            else "$SOURCE_ROOT/scripts"
         )
-        self.assertIn(
-            "src=$SOURCE_ROOT/scripts/plan007/test-generate-local-e2e.mjs,"
-            "dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly",
-            wrapper,
-        )
+        for script in ("generate-local-e2e.mjs", "test-generate-local-e2e.mjs"):
+            self.assertIn(
+                f"src={script_source}/plan007/{script},"
+                f"dst=/workspace/scripts/plan007/{script},readonly",
+                wrapper,
+            )
+        if materializes_candidate_scripts:
+            self.assertIn("DEPENDENCY_ROOT", wrapper)
+            self.assertNotIn("src=$POLICY_ROOT/node_modules", wrapper)
         self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
@@ -217,14 +222,31 @@ class TrustedPrGateTests(unittest.TestCase):
         resolution = (ROOT / "scripts" / "source_resolution.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('[[ -e "$POLICY_ROOT/$candidate_script" ]] && continue', wrapper)
-        self.assertIn('cp -p "$SOURCE_ROOT/$candidate_script"', wrapper)
-        self.assertIn('chmod +x "$POLICY_ROOT/$candidate_script"', wrapper)
+        if "bridge_materialize_regular_git_tree" in wrapper:
+            helper = (ROOT / "scripts" / "trusted-pr-mountpoints.sh").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn('cp -p "$SOURCE_ROOT/$candidate_script"', wrapper)
+            self.assertIn(
+                'bridge_materialize_regular_git_tree "$SOURCE_ROOT" scripts', wrapper
+            )
+            self.assertIn('git -C "$root" ls-tree -rz HEAD', helper)
+            self.assertIn('"$mode" == "100644" || "$mode" == "100755"', helper)
+            self.assertIn('git -C "$root" cat-file blob "$object_id"', helper)
+            candidate_mount = (
+                'src=$SCRATCH/candidate-scripts,'
+                'dst=/scratch/candidate-scripts,readonly'
+            )
+        else:
+            self.assertIn('[[ -e "$POLICY_ROOT/$candidate_script" ]] && continue', wrapper)
+            self.assertIn('cp -p "$SOURCE_ROOT/$candidate_script"', wrapper)
+            self.assertIn('chmod +x "$POLICY_ROOT/$candidate_script"', wrapper)
+            candidate_mount = (
+                'src=$SOURCE_ROOT/scripts,'
+                'dst=/scratch/candidate-scripts,readonly'
+            )
         self.assertIn("BRIDGE_CANDIDATE_SCRIPTS=/scratch/candidate-scripts", wrapper)
-        self.assertIn(
-            'src=$SOURCE_ROOT/scripts,dst=/scratch/candidate-scripts,readonly',
-            wrapper,
-        )
+        self.assertIn("".join(candidate_mount), wrapper)
         self.assertLess(
             wrapper.index("dst=/workspace/scripts,readonly"),
             wrapper.index("dst=/scratch/candidate-scripts,readonly"),
