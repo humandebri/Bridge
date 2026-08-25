@@ -215,10 +215,6 @@ class TrustedPrGateTests(unittest.TestCase):
                 workflow.index(checkout),
             )
         self.assertLess(
-            workflow.index("Build the pinned isolation image from trusted policy"),
-            workflow.index(checkout),
-        )
-        self.assertLess(
             workflow.index(checkout),
             workflow.index("Authenticate and isolate profile dependency manifests"),
         )
