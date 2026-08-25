@@ -134,10 +134,13 @@ run_versions() {
     "$ROOT/scripts/production-activation-proposal.sh" \
     "$ROOT/scripts/production-activate-driver.sh" \
     "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/install-certora-solc.sh" \
     "$ROOT/scripts/trusted-pr-container.sh"
   "$ROOT/scripts/check_tool_versions.sh"
   "$ROOT/scripts/test_tool_version_gate.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
+  python3 "$ROOT/scripts/check_certora_manifest.py"
+  python3 "$ROOT/scripts/test_certora_manifest.py"
   python3 "$ROOT/scripts/check_no_obsolete_release_dependencies.py"
   python3 "$ROOT/scripts/test_no_obsolete_release_dependencies.py"
   verify_no_obsolete_withdrawal_terms \
