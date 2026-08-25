@@ -184,14 +184,14 @@ impl DepositRecord {
     }
 
     pub fn verify_retry(&self, payload_hash: [u8; 32]) -> Result<(), CoreError> {
-        if !crate::replay_matches(self.payload_hash == payload_hash) {
+        if !crate::kernel::replay_matches(self.payload_hash == payload_hash) {
             return Err(CoreError::PayloadConflict);
         }
         Ok(())
     }
 
     pub const fn reserves_mint_resources(&self) -> bool {
-        crate::deposit_reservation_active(self.state.code())
+        crate::kernel::deposit_reservation_active(self.state.code())
     }
 
     pub fn reserved_mint_amount(&self) -> Result<Amount, CoreError> {
@@ -220,7 +220,7 @@ impl DepositRecord {
             } => (2, *refund_ledger_block_index),
             _ => (0, 0),
         };
-        let expected_ledger_blocks = crate::deposit_ledger_block_transition(
+        let expected_ledger_blocks = crate::kernel::deposit_ledger_block_transition(
             current_ledger_blocks.0,
             current_ledger_blocks.1,
             ledger_event.0,
@@ -249,16 +249,17 @@ impl DepositRecord {
             transition_quote.map_or(0, |quote| quote.net_amount.get())
         };
         let reserved_amount = self.reserved_mint_amount()?.get();
-        let transition = crate::deposit_transition_decision(crate::DepositTransitionInput {
-            state: self.state.code(),
-            event: event.code(),
-            guard,
-            same_payload: self.is_idempotent(&event),
-            gross_amount: self.gross_amount.get(),
-            net_amount,
-            service_fee,
-            reserved_amount,
-        });
+        let transition =
+            crate::kernel::deposit_transition_decision(crate::DepositTransitionInput {
+                state: self.state.code(),
+                event: event.code(),
+                guard,
+                same_payload: self.is_idempotent(&event),
+                gross_amount: self.gross_amount.get(),
+                net_amount,
+                service_fee,
+                reserved_amount,
+            });
         let expected_effects = match transition {
             crate::DepositTransitionDecision::Idempotent => return Ok(ApplyResult::idempotent()),
             crate::DepositTransitionDecision::Reject => {
@@ -810,7 +811,7 @@ impl DepositRecord {
             && evidence.runtime_sha256 != [0; 32]
             && evidence.rpc_request_digest != [0; 32]
             && evidence.rpc_response_digest != [0; 32];
-        crate::expiry_refund_allowed(
+        crate::kernel::expiry_refund_allowed(
             binding_matches,
             evidence.deposit_processed,
             evidence.finalized_block_timestamp,

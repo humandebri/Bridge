@@ -292,7 +292,7 @@ async fn recover_one_funding_attempt() {
         crate::ledger::ReconciliationOutcome::Absent { .. } => {
             let now = ic_cdk::api::time();
             let dedup_expired = funding_dedup_expired(current.transfer.created_at_time_ns, now);
-            match bridge_core::funding_reconciliation_decision(
+            match ::bridge_core::kernel::funding_reconciliation_decision(
                 true,
                 *final_absence_scan,
                 dedup_expired,

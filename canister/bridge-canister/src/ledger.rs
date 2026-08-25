@@ -235,7 +235,7 @@ async fn reconcile_ledger(
 
         if ledger_tip.is_some_and(|exclusive_tip| {
             exclusive_tip == 0
-                || bridge_core::scan_complete(
+                || ::bridge_core::kernel::scan_complete(
                     next_block,
                     exclusive_tip - 1,
                     exclusive_tip - 1,

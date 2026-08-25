@@ -342,7 +342,10 @@ pub async fn notify_withdrawal(
                 finalized_checkpoint_block_number,
             ),
         };
-    if !bridge_core::withdrawal_id_is_admissible(&observed.id, &config.minimum_withdrawal_id) {
+    if !::bridge_core::kernel::withdrawal_id_is_admissible(
+        &observed.id,
+        &config.minimum_withdrawal_id,
+    ) {
         return Err(NotifyWithdrawalError::WithdrawalBeforeAdmissionBoundary {
             observed_withdrawal_id: observed.id.to_vec(),
             minimum_withdrawal_id: config.minimum_withdrawal_id,
@@ -737,7 +740,7 @@ pub(crate) fn runtime_attested(config: &BridgeInitArgs) -> Result<bool, DepositE
             .external_progress()
             .map(|progress| {
                 let observation = progress.finalized_observation;
-                bridge_core::runtime_attestation_matches(
+                ::bridge_core::kernel::runtime_attestation_matches(
                     observation.is_some(),
                     observation.is_some_and(|value| value.chain_id == config.base_chain_id),
                     observation.is_some_and(|value| value.runtime_sha256 == expected_runtime),
@@ -919,7 +922,7 @@ fn cached_deposit_preflight(
     user_max_service_fee: Amount,
 ) -> Result<(), bridge_core::CoreError> {
     let net_amount = snapshot.quote(gross_amount, user_max_service_fee)?;
-    let decision = bridge_core::deposit_admission_decision(
+    let decision = ::bridge_core::kernel::deposit_admission_decision(
         gross_amount.get(),
         snapshot.service_fee.get(),
         snapshot.max_service_fee.get(),
@@ -1276,7 +1279,7 @@ pub async fn request_deposit(
         bridge_core::LedgerCallOutcome::RetryableFailure { .. } => 4,
     };
     match (
-        bridge_core::funding_attempt_decision(outcome_kind),
+        ::bridge_core::kernel::funding_attempt_decision(outcome_kind),
         ledger_outcome,
     ) {
         (
@@ -1727,7 +1730,7 @@ async fn fresh_deposit_preflight(
         max_service_fee,
     )
     .map_err(preflight_error)?;
-    match bridge_core::deposit_identity_decision(observation.processed) {
+    match ::bridge_core::kernel::deposit_identity_decision(observation.processed) {
         bridge_core::DepositIdentityDecision::Allow => Ok(()),
         bridge_core::DepositIdentityDecision::Conflict => {
             Err(DepositError::DepositIdentityConflict)

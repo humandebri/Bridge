@@ -99,4 +99,3 @@ rule cancelConsumesNonce(env e) {
         assert authorizationState(authorizer, nonce);
     }
 }
-
