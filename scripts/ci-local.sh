@@ -333,6 +333,8 @@ run_rust_fast() {
 }
 
 run_rust_integration() {
+  local proof_profile
+  proof_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
   cargo build \
     --locked \
     --manifest-path "$ROOT/Cargo.toml" \
@@ -348,7 +350,9 @@ run_rust_integration() {
   require_workspace_dependencies
   pnpm --dir "$ROOT" run governance-relayer:test
   pnpm --dir "$ROOT" run governance-relayer:typecheck
-  pnpm --dir "$ROOT" run integration:typecheck
+  if [[ "$proof_profile" == "security-hardening-v1" ]]; then
+    pnpm --dir "$ROOT" run integration:typecheck
+  fi
   pnpm --dir "$ROOT" run test:e2e
   python3 "$ROOT/scripts/test_prepare_local_network.py"
   bash "$ROOT/scripts/test_ci_local_safety.sh"

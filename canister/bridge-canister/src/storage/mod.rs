@@ -1202,7 +1202,7 @@ impl V33DepositAdmissionControl {
             last_completed_governance_transaction: value
                 .last_completed_governance_transaction
                 .clone(),
-            pending_timelock_operation: value.pending_timelock_operation.clone(),
+            pending_timelock_operation: value.pending_timelock_operation,
             emergency_pause_deposit_required: value.emergency_pause_deposit_required,
             emergency_pause_withdrawal_required: value.emergency_pause_withdrawal_required,
             emergency_cancel_required: value.emergency_cancel_required,

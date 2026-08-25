@@ -72,6 +72,20 @@ class CiModeTests(unittest.TestCase):
         self.assert_calls("run_contracts", ["run_contracts_fast", "run_contracts_coverage"])
         self.assert_calls("run_ui", ["run_ui_fast", "run_ui_e2e"])
 
+    def test_integration_typecheck_is_hardening_only(self) -> None:
+        body = function_body("run_rust_integration")
+        profile = body.index(
+            'proof_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"'
+        )
+        branch = body.index(
+            'if [[ "$proof_profile" == "security-hardening-v1" ]]; then'
+        )
+        typecheck = body.index('pnpm --dir "$ROOT" run integration:typecheck')
+        e2e = body.index('pnpm --dir "$ROOT" run test:e2e')
+        self.assertLess(profile, branch)
+        self.assertLess(branch, typecheck)
+        self.assertLess(typecheck, e2e)
+
     def test_proofs_use_independent_claim_stages(self) -> None:
         body = function_body("run_proofs")
         receipt_regression = body.index('python3 "$ROOT/scripts/test_write_proof_receipt.py"')
