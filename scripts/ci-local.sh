@@ -147,6 +147,9 @@ run_versions() {
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
+  forge build --root "$ROOT/contracts" --ast
+  python3 "$ROOT/scripts/check_certora_manifest.py"
+  python3 "$ROOT/scripts/test_certora_manifest.py"
   python3 "$ROOT/scripts/test_proof_impact.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"

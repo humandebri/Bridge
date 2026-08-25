@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 import check_certora_manifest
+from check_solidity_ast_bindings import AstIndex
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,7 @@ class CertoraManifestTests(unittest.TestCase):
             shutil.copy2(source, target)
         openzeppelin = self.root / "contracts/lib/openzeppelin-contracts/contracts"
         openzeppelin.mkdir(parents=True)
+        self.ast_index = AstIndex(ROOT / "contracts/out", ROOT / "contracts", ROOT)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -59,9 +61,42 @@ class CertoraManifestTests(unittest.TestCase):
 
     def test_unknown_claim_is_rejected(self) -> None:
         path = self.root / "verification/certora/obligations.tsv"
-        path.write_text(path.read_text(encoding="utf-8") + "obligation\tbad\tadvisory\tverification/certora/specs/BSNS.spec#onlyBridgeChangesSupply\tcontracts/src/BSNS.sol#bridgeMint\truntime_toolchain\tnot_a_claim\n", encoding="utf-8")
+        path.write_text(path.read_text(encoding="utf-8") + "obligation\tbad\tadvisory\tverification/certora/specs/BSNS.spec#onlyBridgeChangesSupply\tcontracts/src/BSNS.sol#BSNS.bridgeMint(address,uint256)\truntime_toolchain\tnot_a_claim\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "unknown Certora claims"):
             check_certora_manifest.validate(self.root)
+
+    def test_noncanonical_source_symbol_is_rejected(self) -> None:
+        path = self.root / "verification/certora/obligations.tsv"
+        text = path.read_text(encoding="utf-8").replace(
+            "contracts/src/BSNS.sol#BSNS.bridgeMint(address,uint256)",
+            "contracts/src/BSNS.sol#bridgeMint",
+            1,
+        )
+        path.write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "canonical Solidity function link"):
+            check_certora_manifest.validate(self.root, self.ast_index)
+
+    def test_wrong_source_signature_is_rejected(self) -> None:
+        path = self.root / "verification/certora/obligations.tsv"
+        text = path.read_text(encoding="utf-8").replace(
+            "contracts/src/BSNS.sol#BSNS.bridgeMint(address,uint256)",
+            "contracts/src/BSNS.sol#BSNS.bridgeMint(address,uint128)",
+            1,
+        )
+        path.write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unresolved Solidity AST function link"):
+            check_certora_manifest.validate(self.root, self.ast_index)
+
+    def test_wrong_source_contract_is_rejected(self) -> None:
+        path = self.root / "verification/certora/obligations.tsv"
+        text = path.read_text(encoding="utf-8").replace(
+            "contracts/src/BSNS.sol#BSNS.bridgeMint(address,uint256)",
+            "contracts/src/BSNS.sol#Decoy.bridgeMint(address,uint256)",
+            1,
+        )
+        path.write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unresolved Solidity AST function link"):
+            check_certora_manifest.validate(self.root, self.ast_index)
 
     def test_unowned_rule_is_rejected(self) -> None:
         path = self.root / "verification/certora/specs/BSNS.spec"

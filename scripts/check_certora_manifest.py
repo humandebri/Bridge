@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from check_solidity_ast_bindings import AstIndex
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CERTORA = Path("verification/certora")
@@ -171,12 +173,16 @@ def validate_tool_pin(root: Path) -> None:
         raise ValueError("Certora uv.lock does not pin certora-cli 8.17.1")
 
 
-def validate(root: Path = ROOT) -> None:
+def validate(root: Path = ROOT, ast_index: AstIndex | None = None) -> None:
     validate_tool_pin(root)
     validate_configs(root)
     claims = claim_ids(root)
     assumptions = assumption_ids(root)
     obligations = parse_obligations(root)
+    if ast_index is None:
+        ast_index = AstIndex(
+            root / "contracts" / "out", root / "contracts", root
+        )
 
     declared: dict[str, Path] = {}
     for spec in sorted((root / CERTORA / "specs").glob("*.spec")):
@@ -191,14 +197,19 @@ def validate(root: Path = ROOT) -> None:
             if declared.get(rule) != path:
                 raise ValueError(f"Certora obligation references an undeclared rule: {link}")
             referenced.add(rule)
-        for link in obligation.sources:
-            parse_link(link, root, suffix=".sol")
         unknown_assumptions = set(obligation.assumptions) - assumptions
         unknown_claims = set(obligation.claims) - claims
         if unknown_assumptions:
             raise ValueError(f"unknown Certora assumptions: {sorted(unknown_assumptions)}")
         if unknown_claims:
             raise ValueError(f"unknown Certora claims: {sorted(unknown_claims)}")
+        for link in obligation.sources:
+            source_path, _ = parse_link(link, root, suffix=".sol")
+            records = ast_index.resolve(link)
+            if len(records) != 1 or records[0].source != source_path.resolve():
+                raise ValueError(
+                    f"Certora source ownership must resolve exactly once: {link}"
+                )
     unowned = set(declared) - referenced
     if unowned:
         raise ValueError(f"Certora rules missing obligation ownership: {sorted(unowned)}")
