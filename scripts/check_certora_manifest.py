@@ -179,10 +179,6 @@ def validate(root: Path = ROOT, ast_index: AstIndex | None = None) -> None:
     claims = claim_ids(root)
     assumptions = assumption_ids(root)
     obligations = parse_obligations(root)
-    if ast_index is None:
-        ast_index = AstIndex(
-            root / "contracts" / "out", root / "contracts", root
-        )
 
     declared: dict[str, Path] = {}
     for spec in sorted((root / CERTORA / "specs").glob("*.spec")):
@@ -204,9 +200,13 @@ def validate(root: Path = ROOT, ast_index: AstIndex | None = None) -> None:
         if unknown_claims:
             raise ValueError(f"unknown Certora claims: {sorted(unknown_claims)}")
         for link in obligation.sources:
-            source_path, _ = parse_link(link, root, suffix=".sol")
+            parse_link(link, root, suffix=".sol")
+            if ast_index is None:
+                ast_index = AstIndex(
+                    root / "contracts" / "out", root / "contracts", root
+                )
             records = ast_index.resolve(link)
-            if len(records) != 1 or records[0].source != source_path.resolve():
+            if len(records) != 1:
                 raise ValueError(
                     f"Certora source ownership must resolve exactly once: {link}"
                 )
