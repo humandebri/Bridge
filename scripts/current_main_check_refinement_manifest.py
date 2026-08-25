@@ -214,6 +214,16 @@ def run_json_command(
     return retry
 
 
+def parse_json_stdout(result: subprocess.CompletedProcess[str], label: str) -> dict[str, object]:
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{label} emitted non-JSON stdout") from error
+    if not isinstance(report, dict):
+        raise ValueError(f"{label} JSON stdout must be an object")
+    return report
+
+
 def validate_generated_selector_ownership(
     consumers: list[Consumer],
     root: Path = ROOT,
@@ -292,7 +302,7 @@ def execute_consumer(
             root,
             runner,
         )
-        report = json.loads(result.stdout)
+        report = parse_json_stdout(result, "Foundry refinement consumer")
         results = [
             (name, value)
             for suite in report.values()
@@ -314,21 +324,17 @@ def execute_consumer(
             raise ValueError(f"Vitest consumer is outside ui: {consumer.target}") from error
         result = run_json_command(
             [
-                "pnpm",
-                "--dir",
-                "ui",
-                "exec",
-                "vitest",
+                str(root / "ui" / "node_modules" / ".bin" / "vitest"),
                 "run",
                 test_path,
                 "-t",
                 consumer.selector,
                 "--reporter=json",
             ],
-            root,
+            root / "ui",
             runner,
         )
-        report = json.loads(result.stdout)
+        report = parse_json_stdout(result, "Vitest refinement consumer")
         matches = [
             assertion
             for test in report.get("testResults", [])
