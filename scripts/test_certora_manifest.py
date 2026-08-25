@@ -63,7 +63,7 @@ class CertoraManifestTests(unittest.TestCase):
         path = self.root / "verification/certora/obligations.tsv"
         path.write_text(path.read_text(encoding="utf-8") + "obligation\tbad\tadvisory\tverification/certora/specs/BSNS.spec#onlyBridgeChangesSupply\tcontracts/src/BSNS.sol#BSNS.bridgeMint(address,uint256)\truntime_toolchain\tnot_a_claim\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "unknown Certora claims"):
-            check_certora_manifest.validate(self.root)
+            check_certora_manifest.validate(self.root, self.ast_index)
 
     def test_noncanonical_source_symbol_is_rejected(self) -> None:
         path = self.root / "verification/certora/obligations.tsv"
@@ -102,7 +102,7 @@ class CertoraManifestTests(unittest.TestCase):
         path = self.root / "verification/certora/specs/BSNS.spec"
         path.write_text(path.read_text(encoding="utf-8") + "\nrule unownedRule() { assert true; }\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "missing obligation ownership"):
-            check_certora_manifest.validate(self.root)
+            check_certora_manifest.validate(self.root, self.ast_index)
 
     def test_runner_redacts_secrets_before_console_and_artifact_output(self) -> None:
         source = self.root / "raw-certora.log"
