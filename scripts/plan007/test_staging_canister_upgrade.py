@@ -7,11 +7,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from source_resolution import source_path
+from trusted_proof_profiles import select_profile
 
 ROOT = Path(__file__).resolve().parents[2]
+HARDENING_PROFILE = select_profile(ROOT).identifier == "security-hardening-v1"
 SCRIPT_FILES = ("scripts/plan007/staging-canister-upgrade.sh", "scripts/plan007/staging_canister_upgrade.py",
          "scripts/plan007/candid_values.py", "scripts/plan007/read-public-canister-metadata.mjs")
-POLICY = "deployments/sepolia-staging/same-schema-upgrade-policy.json"
+POLICY = (
+    "deployments/sepolia-staging/v33-to-v34-upgrade-policy.json"
+    if HARDENING_PROFILE
+    else "deployments/sepolia-staging/same-schema-upgrade-policy.json"
+)
 PROFILE = "deployments/sepolia-staging/frontend-profile.json"
 COUNTS = {"retained_audit_events": 15, "reconciliation_holds": 0, "retained_deposit_index_entries": 1,
           "pending_ledger_operations": 0, "withdrawals": 1, "deposits": 1,
@@ -29,7 +35,10 @@ class V33ToV35UpgradeTests(unittest.TestCase):
             shutil.copy2(source_path(relative) if relative in SCRIPT_FILES else ROOT / relative, target)
         self.did = self.repo / "canister/bridge-canister/bridge.did"; self.did.parent.mkdir(parents=True)
         self.did.write_text("service : { get_runtime_binding : () -> (); get_operational_config : () -> () }")
-        self.source_did = self.base / "source.did"; self.source_did.write_text("service : { get_public_config : () -> () }")
+        source_did = "service : { get_public_config : () -> ()"
+        if HARDENING_PROFILE:
+            source_did += "; legacy_marker : () -> ()"
+        self.source_did = self.base / "source.did"; self.source_did.write_text(source_did + " }")
         self.wasm = self.base / "candidate.wasm"; self.wasm.write_bytes(b"same schema candidate")
         self.source_module = "11" * 32; self.target_module = self.sha(self.wasm)
         policy_path = self.repo / POLICY; policy = json.loads(policy_path.read_text())
@@ -89,17 +98,18 @@ if a[:2]==["canister","status"]:
  print(json.dumps({"module_hash":module,"settings":{"controllers":["aaaaa-aa"]},"cycles":"1000000000000"})); raise SystemExit(0)
 if a[:2] != ["canister","call"]: raise SystemExit(2)
 method=a[3]; identity=a[a.index("--identity")+1]
-schema=35 if applied else 33
+schema=int(os.environ["MOCK_TARGET_SCHEMA"]) if applied else 33
 fields=f"""schema_version = {schema} : nat16; deployment_instance_id = blob "{esc(profile['deploymentInstanceId'][2:])}"; minimum_withdrawal_id = blob "{esc(profile['minimumWithdrawalId'][2:])}"; base_chain_id = 84532 : nat64; bridge_contract = blob "{esc(profile['bridgeAddress'][2:])}"; expected_bridge_runtime_sha256 = blob "{esc(profile['bridgeRuntimeHash'][2:])}"; timelock_contract = blob "{esc(profile['timelockAddress'][2:])}"; expected_bridge_signer = blob "{esc(profile['expected_bridge_signer'][2:])}"; ledger_canister_id = principal "{profile['ledgerCanisterId']}"; index_canister_id = principal "{profile['indexCanisterId']}"; evm_rpc_canister_id = principal "{profile['evmRpcCanisterId']}"; rpc_provider_urls_sha256 = blob "{esc(profile['rpcProviderUrlsSha256'][2:])}"; marker = 0 : nat8"""
 if method in ("get_public_config","get_runtime_binding"): candid=f'record {{ {fields}; governance_principal = principal "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"; cycles_floor = 1000 : nat }}'
 elif method=="get_operational_config": candid='variant { Err = variant { Unauthorized } }' if identity=="anonymous" else 'variant { Ok = record { governance_principal = principal "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"; cycles_floor = 1000 : nat } }'
+elif method=="initialize_public_config" and os.environ["MOCK_HARDENING_PROFILE"]=="1": state.joinpath("initialized").touch(); candid='variant { Ok }'
 elif method=="get_bridge_status":
  counts=json.loads(os.environ["MOCK_COUNTS"]); counts["deposits"] += int(os.environ.get("MOCK_DRIFT","0"))
  if applied: counts["deposits"] += int(os.environ.get("MOCK_POST_DRIFT","0"))
  candid='record { '+ '; '.join(f'{k} = {v} : '+('nat' if k=='reserved_deposit_mint_amount' else 'nat64') for k,v in counts.items()) +' }'
 elif method=="storage_integrity_check": candid='variant { Ok = "ok" }'
 elif method=="get_activation_status": candid='variant { Ok = record { pending_timelock_operation = null } }'
-elif method=="get_pending_base_governance_transaction": candid='variant { Ok = null }'
+elif method=="get_pending_base_governance_transaction": candid='variant { Ok = vec {} }' if applied and os.environ["MOCK_HARDENING_PROFILE"]=="1" else 'variant { Ok = null }'
 else: raise SystemExit(2)
 print(json.dumps({"response_candid":candid}))
 ''')
@@ -108,7 +118,9 @@ print(json.dumps({"response_candid":candid}))
         value = os.environ.copy(); value.update({"PATH": f"{self.bin}{os.pathsep}{value['PATH']}",
             "BRIDGE_STAGING_IDENTITY": "controller", "MOCK_STATE": str(self.state), "MOCK_DID": str(self.did),
             "MOCK_SOURCE_DID": str(self.source_did), "MOCK_PROFILE": str(self.repo / PROFILE),
-            "MOCK_SOURCE": self.source_module, "MOCK_TARGET": self.target_module, "MOCK_COUNTS": json.dumps(COUNTS)})
+            "MOCK_SOURCE": self.source_module, "MOCK_TARGET": self.target_module, "MOCK_COUNTS": json.dumps(COUNTS),
+            "MOCK_TARGET_SCHEMA": "34" if HARDENING_PROFILE else "35",
+            "MOCK_HARDENING_PROFILE": "1" if HARDENING_PROFILE else "0"})
         value.update(changes); return value
 
     def run_driver(self, execute: bool = False, **changes: str):
@@ -123,7 +135,11 @@ print(json.dumps({"response_candid":candid}))
         evidence = json.loads(self.preflight.read_text())
         self.assertEqual(evidence["result"], "preflight-passed")
         self.assertIn("expected_status_counts = opt record", evidence["upgrade_arguments"])
-        self.assertIn('migration_id = opt "bridge-staging-v33-to-v35"', evidence["upgrade_arguments"])
+        migration = "bridge-staging-v33-to-v34" if HARDENING_PROFILE else "bridge-staging-v33-to-v35"
+        self.assertIn(f'migration_id = opt "{migration}"', evidence["upgrade_arguments"])
+        if HARDENING_PROFILE:
+            self.assertIn("expected_timelock_minimum_delay_seconds = 300", evidence["upgrade_arguments"])
+            self.assertIn("expected_minimum_service_fee = 10000", evidence["upgrade_arguments"])
         self.assertIn('confirmation_relayer_principal = opt principal', evidence["upgrade_arguments"])
         self.assertIn("rpc_provider_update = null", evidence["upgrade_arguments"])
 
@@ -138,6 +154,8 @@ print(json.dumps({"response_candid":candid}))
         result = self.run_driver(execute=True); self.assertEqual(result.returncode, 0, result.stderr)
         install = json.loads((self.state / "install.json").read_text())
         self.assertEqual(install[install.index("--wasm") + 1], str(self.wasm))
+        if HARDENING_PROFILE:
+            self.assertTrue((self.state / "initialized").exists())
         self.assertEqual(json.loads(self.result.read_text())["result"], "upgraded")
 
     def test_state_drift_rejects_before_install(self) -> None:
