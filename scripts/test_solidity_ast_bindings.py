@@ -15,6 +15,9 @@ from check_solidity_ast_bindings import (
     require_call_argument_declarations,
     require_closed_call_set,
     require_evaluate_input_binding,
+    require_exact_state_writes,
+    require_exact_commit_statements,
+    require_no_modifiers,
     require_no_declaration_reassignment,
     validate_smt_call_graph,
 )
@@ -169,12 +172,17 @@ class SolidityAstBindingTests(unittest.TestCase):
 
     def records(self, kernel_declaration: int) -> FakeIndex:
         source = Path("/")
+        kernel_call = call("kernel", kernel_declaration)
+        kernel_call["src"] = "10:1:0"
+        assertion = call("assert", -3)
+        assertion["src"] = "20:1:0"
+        assertion["arguments"] = [kernel_call]
         pass_record = FunctionRecord(
             source,
             "Harness",
             "check()",
             1,
-            {"body": {"statements": [call("kernel", kernel_declaration), call("assert", 99)]}},
+            {"body": {"statements": [assertion]}},
         )
         production_record = FunctionRecord(
             source, "Policy", "kernel(uint256)", 2, {"body": {"statements": []}}
@@ -189,6 +197,14 @@ class SolidityAstBindingTests(unittest.TestCase):
     def test_accepts_direct_declaration_binding(self) -> None:
         validate_smt_call_graph(self.records(2), {"example": self.obligation()})
 
+    def test_accepts_direct_nested_assertion_with_real_source_order(self) -> None:
+        records = self.records(2)
+        pass_record = records.records["pass.sol#Harness.check()"][0]
+        assertion = pass_record.node["body"]["statements"][0]
+        assertion["src"] = "10:20:0"
+        assertion["arguments"][0]["src"] = "17:5:0"
+        validate_smt_call_graph(records, {"example": self.obligation()})
+
     def test_rejects_same_name_bound_to_another_declaration(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not call its production kernel"):
             validate_smt_call_graph(self.records(3), {"example": self.obligation()})
@@ -196,8 +212,93 @@ class SolidityAstBindingTests(unittest.TestCase):
     def test_rejects_pass_function_without_an_assertion(self) -> None:
         records = self.records(2)
         pass_record = records.records["pass.sol#Harness.check()"][0]
-        pass_record.node["body"] = {"statements": [call("kernel", 2)]}
+        kernel_call = call("kernel", 2)
+        kernel_call["src"] = "10:1:0"
+        pass_record.node["body"] = {"statements": [kernel_call]}
         with self.assertRaisesRegex(ValueError, "has no assertion"):
+            validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_rejects_assert_true_unrelated_to_production_call(self) -> None:
+        records = self.records(2)
+        pass_record = records.records["pass.sol#Harness.check()"][0]
+        kernel_call = call("kernel", 2)
+        kernel_call["src"] = "10:1:0"
+        assertion = call("assert", -3)
+        assertion["src"] = "20:1:0"
+        assertion["arguments"] = [{"nodeType": "Literal", "value": "true"}]
+        pass_record.node["body"] = {"statements": [kernel_call, assertion]}
+        with self.assertRaisesRegex(ValueError, "does not depend on production result"):
+            validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_rejects_assertion_before_production_call(self) -> None:
+        records = self.records(2)
+        pass_record = records.records["pass.sol#Harness.check()"][0]
+        kernel_call = call("kernel", 2)
+        kernel_call["src"] = "20:1:0"
+        assertion = call("assert", -3)
+        assertion["src"] = "10:1:0"
+        declaration = {
+            "nodeType": "VariableDeclarationStatement",
+            "declarations": [{"nodeType": "VariableDeclaration", "id": 7}],
+            "initialValue": kernel_call,
+        }
+        assertion["arguments"] = [
+            {"nodeType": "Identifier", "referencedDeclaration": 7}
+        ]
+        pass_record.node["body"] = {"statements": [assertion, declaration]}
+        with self.assertRaisesRegex(ValueError, "does not depend on production result"):
+            validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_rejects_control_dependent_assert_true(self) -> None:
+        records = self.records(2)
+        pass_record = records.records["pass.sol#Harness.check()"][0]
+        kernel_call = call("kernel", 2)
+        kernel_call["src"] = "10:1:0"
+        declaration = {
+            "nodeType": "VariableDeclarationStatement",
+            "declarations": [{"nodeType": "VariableDeclaration", "id": 7}],
+            "initialValue": kernel_call,
+        }
+        assertion = call("assert", -3)
+        assertion["src"] = "30:1:0"
+        assertion["arguments"] = [{"nodeType": "Literal", "value": "true"}]
+        branch = {
+            "nodeType": "IfStatement",
+            "condition": {"nodeType": "Identifier", "referencedDeclaration": 7},
+            "trueBody": {"statements": [assertion]},
+        }
+        pass_record.node["body"] = {"statements": [declaration, branch]}
+        with self.assertRaisesRegex(ValueError, "does not depend on production result"):
+            validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_rejects_reassigned_production_result(self) -> None:
+        records = self.records(2)
+        pass_record = records.records["pass.sol#Harness.check()"][0]
+        kernel_call = call("kernel", 2)
+        kernel_call["src"] = "10:1:0"
+        declaration = {
+            "nodeType": "VariableDeclarationStatement",
+            "declarations": [{"nodeType": "VariableDeclaration", "id": 7}],
+            "initialValue": kernel_call,
+        }
+        reassignment = {
+            "nodeType": "Assignment",
+            "operator": "=",
+            "leftHandSide": {
+                "nodeType": "Identifier",
+                "referencedDeclaration": 7,
+            },
+            "rightHandSide": {"nodeType": "Literal", "value": "true"},
+        }
+        assertion = call("assert", -3)
+        assertion["src"] = "20:1:0"
+        assertion["arguments"] = [
+            {"nodeType": "Identifier", "referencedDeclaration": 7}
+        ]
+        pass_record.node["body"] = {
+            "statements": [declaration, reassignment, assertion]
+        }
+        with self.assertRaisesRegex(ValueError, "production result is reassigned"):
             validate_smt_call_graph(records, {"example": self.obligation()})
 
     def test_rejects_registered_production_kernel_without_pass_coverage(self) -> None:
@@ -217,11 +318,201 @@ class SolidityAstBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not covered by a pass function"):
             validate_smt_call_graph(records, {"example": obligation})
 
+    def test_rejects_modifier_on_production_kernel(self) -> None:
+        records = self.records(2)
+        production = records.records["production.sol#Policy.kernel(uint256)"][0]
+        production.node["modifiers"] = [{"modifierName": {"name": "never"}}]
+        with self.assertRaisesRegex(ValueError, "must not use modifiers"):
+            validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_rejects_user_defined_or_member_assert(self) -> None:
+        for expression in (
+            {
+                "nodeType": "Identifier",
+                "name": "assert",
+                "referencedDeclaration": 99,
+            },
+            {
+                "nodeType": "MemberAccess",
+                "memberName": "assert",
+                "referencedDeclaration": 99,
+                "expression": {"nodeType": "Identifier", "name": "helper"},
+            },
+        ):
+            with self.subTest(expression=expression):
+                records = self.records(2)
+                assertion = records.records["pass.sol#Harness.check()"][0].node[
+                    "body"
+                ]["statements"][0]
+                assertion["expression"] = expression
+                with self.assertRaisesRegex(ValueError, "has no assertion"):
+                    validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_rejects_smt_pass_modifier(self) -> None:
+        records = self.records(2)
+        records.records["pass.sol#Harness.check()"][0].node["modifiers"] = [
+            {"modifierName": {"name": "vacuous"}}
+        ]
+        with self.assertRaisesRegex(ValueError, "must not use modifiers"):
+            validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_rejects_self_comparison_of_production_result(self) -> None:
+        records = self.records(2)
+        pass_record = records.records["pass.sol#Harness.check()"][0]
+        kernel_call = call("kernel", 2)
+        kernel_call["src"] = "10:1:0"
+        declaration = {
+            "nodeType": "VariableDeclarationStatement",
+            "declarations": [{"nodeType": "VariableDeclaration", "id": 7}],
+            "initialValue": kernel_call,
+        }
+        assertion = call("assert", -3)
+        assertion["src"] = "20:1:0"
+        assertion["arguments"] = [
+            {
+                "nodeType": "BinaryOperation",
+                "operator": "==",
+                "leftExpression": {
+                    "nodeType": "Identifier",
+                    "referencedDeclaration": 7,
+                },
+                "rightExpression": {
+                    "nodeType": "Identifier",
+                    "referencedDeclaration": 7,
+                },
+            }
+        ]
+        pass_record.node["body"] = {"statements": [declaration, assertion]}
+        with self.assertRaisesRegex(ValueError, "does not depend on production result"):
+            validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_accepts_distinct_arithmetic_expressions_using_production_result(self) -> None:
+        records = self.records(2)
+        pass_record = records.records["pass.sol#Harness.check()"][0]
+        kernel_call = call("kernel", 2)
+        kernel_call["src"] = "10:1:0"
+        declaration = {
+            "nodeType": "VariableDeclarationStatement",
+            "declarations": [{"nodeType": "VariableDeclaration", "id": 7}],
+            "initialValue": kernel_call,
+        }
+        assertion = call("assert", -3)
+        assertion["src"] = "20:1:0"
+        assertion["arguments"] = [
+            {
+                "nodeType": "BinaryOperation",
+                "operator": "==",
+                "leftExpression": {
+                    "nodeType": "BinaryOperation",
+                    "operator": "+",
+                    "leftExpression": {
+                        "nodeType": "Identifier",
+                        "referencedDeclaration": 7,
+                    },
+                    "rightExpression": {"nodeType": "Literal", "value": "1"},
+                },
+                "rightExpression": {
+                    "nodeType": "BinaryOperation",
+                    "operator": "+",
+                    "leftExpression": {
+                        "nodeType": "Identifier",
+                        "referencedDeclaration": 8,
+                    },
+                    "rightExpression": {"nodeType": "Literal", "value": "1"},
+                },
+            }
+        ]
+        pass_record.node["body"] = {"statements": [declaration, assertion]}
+        validate_smt_call_graph(records, {"example": self.obligation()})
+
+    def test_rejects_identical_type_conversions_of_production_result(self) -> None:
+        records = self.records(2)
+        pass_record = records.records["pass.sol#Harness.check()"][0]
+        kernel_call = call("kernel", 2)
+        kernel_call["src"] = "10:1:0"
+        declaration = {
+            "nodeType": "VariableDeclarationStatement",
+            "declarations": [{"nodeType": "VariableDeclaration", "id": 7}],
+            "initialValue": kernel_call,
+        }
+
+        def conversion() -> dict[str, object]:
+            return {
+                "nodeType": "FunctionCall",
+                "kind": "typeConversion",
+                "expression": {
+                    "nodeType": "ElementaryTypeNameExpression",
+                    "typeName": {"name": "uint256"},
+                },
+                "arguments": [
+                    {"nodeType": "Identifier", "referencedDeclaration": 7}
+                ],
+            }
+
+        assertion = call("assert", -3)
+        assertion["src"] = "20:1:0"
+        assertion["arguments"] = [
+            {
+                "nodeType": "BinaryOperation",
+                "operator": "==",
+                "leftExpression": conversion(),
+                "rightExpression": conversion(),
+            }
+        ]
+        pass_record.node["body"] = {"statements": [declaration, assertion]}
+        with self.assertRaisesRegex(ValueError, "does not depend on production result"):
+            validate_smt_call_graph(records, {"example": self.obligation()})
+
     def test_rejects_noncanonical_link_before_artifact_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             index = AstIndex(Path(directory), Path(directory))
             with self.assertRaisesRegex(ValueError, "invalid canonical Solidity function link"):
                 index.resolve("Bridge.sol#mintDepositWithAuthorization")
+
+    def test_rejects_modifier_on_trusted_function(self) -> None:
+        record = FunctionRecord(
+            Path("/Bridge.sol"),
+            "Bridge",
+            "commit()",
+            1,
+            {"modifiers": [{"nodeType": "ModifierInvocation"}]},
+        )
+        with self.assertRaisesRegex(ValueError, "must not use modifiers"):
+            require_no_modifiers(record)
+
+    def test_commit_statements_must_be_unconditional_and_ordered(self) -> None:
+        def assignment(left: int, right: int) -> dict[str, object]:
+            return {
+                "nodeType": "Assignment",
+                "operator": "=",
+                "leftHandSide": {"nodeType": "Identifier", "referencedDeclaration": left},
+                "rightHandSide": {"nodeType": "Identifier", "referencedDeclaration": right},
+            }
+
+        writes = tuple(
+            ("=", ("declaration", left), ("declaration", right))
+            for left, right in ((1, 11), (2, 12), (3, 13))
+        )
+        expressions = [
+            {"nodeType": "ExpressionStatement", "expression": assignment(left, right)}
+            for left, right in ((1, 11), (2, 12), (3, 13))
+        ]
+        expressions.extend(
+            (
+                {"nodeType": "ExpressionStatement", "expression": call("bridgeMint", 20)},
+                {"nodeType": "EmitStatement"},
+            )
+        )
+        require_exact_commit_statements({"statements": expressions}, writes)
+        conditional = {"nodeType": "IfStatement", "trueBody": expressions[0]}
+        with self.assertRaisesRegex(ValueError, "statement sequence differs"):
+            require_exact_commit_statements(
+                {"statements": [conditional, *expressions[1:]]}, writes
+            )
+        with self.assertRaisesRegex(ValueError, "write order differs"):
+            require_exact_commit_statements(
+                {"statements": [expressions[1], expressions[0], *expressions[2:]]}, writes
+            )
 
     def test_accepts_exact_commit_argument_declarations(self) -> None:
         call_node = {
@@ -358,6 +649,96 @@ class SolidityAstBindingTests(unittest.TestCase):
             ],
         }
         require_no_declaration_reassignment(node, {12, 13})
+
+    @staticmethod
+    def exact_commit_write() -> tuple[
+        dict[str, object], dict[str, int], Counter[tuple[object, ...]]
+    ]:
+        variables = {"_processedDeposits": 100}
+        authorization = {
+            "nodeType": "Identifier",
+            "name": "authorization",
+            "referencedDeclaration": 11,
+        }
+        effects = {
+            "nodeType": "Identifier",
+            "name": "effects",
+            "referencedDeclaration": 12,
+        }
+        left = {
+            "nodeType": "IndexAccess",
+            "baseExpression": {
+                "nodeType": "Identifier",
+                "name": "_processedDeposits",
+                "referencedDeclaration": 100,
+            },
+            "indexExpression": {
+                "nodeType": "MemberAccess",
+                "expression": authorization,
+                "memberName": "depositId",
+            },
+        }
+        right = {
+            "nodeType": "MemberAccess",
+            "expression": effects,
+            "memberName": "processedAfter",
+        }
+        node = {
+            "nodeType": "Assignment",
+            "operator": "=",
+            "leftHandSide": left,
+            "rightHandSide": right,
+        }
+        expected = Counter(
+            {
+                (
+                    "=",
+                    (
+                        "index",
+                        ("declaration", 100),
+                        ("member", ("declaration", 11), "depositId"),
+                    ),
+                    ("member", ("declaration", 12), "processedAfter"),
+                ): 1
+            }
+        )
+        return node, variables, expected
+
+    def test_accepts_exact_commit_state_write(self) -> None:
+        node, variables, expected = self.exact_commit_write()
+        require_exact_state_writes(node, variables, expected, "commit")
+
+    def test_rejects_commit_write_with_wrong_mapping_index(self) -> None:
+        node, variables, expected = self.exact_commit_write()
+        node["leftHandSide"]["indexExpression"]["memberName"] = "digest"
+        with self.assertRaisesRegex(ValueError, "state writes differ"):
+            require_exact_state_writes(node, variables, expected, "commit")
+
+    def test_rejects_commit_compound_assignment(self) -> None:
+        node, variables, expected = self.exact_commit_write()
+        node["operator"] = "+="
+        with self.assertRaisesRegex(ValueError, "state writes differ"):
+            require_exact_state_writes(node, variables, expected, "commit")
+
+    def test_rejects_commit_unary_increment(self) -> None:
+        node, variables, expected = self.exact_commit_write()
+        increment = {
+            "nodeType": "UnaryOperation",
+            "operator": "++",
+            "subExpression": node["leftHandSide"]["baseExpression"],
+        }
+        with self.assertRaisesRegex(ValueError, "state writes differ"):
+            require_exact_state_writes([node, increment], variables, expected, "commit")
+
+    def test_rejects_commit_delete(self) -> None:
+        node, variables, expected = self.exact_commit_write()
+        delete = {
+            "nodeType": "UnaryOperation",
+            "operator": "delete",
+            "subExpression": node["leftHandSide"],
+        }
+        with self.assertRaisesRegex(ValueError, "state writes differ"):
+            require_exact_state_writes([node, delete], variables, expected, "commit")
 
     def test_accepts_exact_evaluate_transition_input(self) -> None:
         call_node, variables = self.evaluate_input()

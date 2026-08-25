@@ -58,7 +58,7 @@ def excluded_verification_path(path: Path, verification: Path) -> bool:
 
 def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> tuple[Path, ...]:
     if manifest is None:
-        from check_proof_impact import load_manifest
+        from current_main_check_proof_impact import load_manifest
 
         manifest = load_manifest(repo_root)
     paths = {

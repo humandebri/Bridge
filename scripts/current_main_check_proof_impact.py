@@ -8,14 +8,14 @@ import json
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from proof_fingerprint import (
+from current_main_proof_fingerprint import (
     FINGERPRINT_CONFIG_FILES,
     FINGERPRINT_SOURCE_ROOTS,
     fingerprint_inputs,
     source_fingerprint,
     validate_fingerprint,
 )
-from claim_manifest import parse_claim_manifest
+from current_main_claim_manifest import parse_claim_manifest
 from source_resolution import source_path
 
 
@@ -29,10 +29,9 @@ REQUIRED_STAGES = (
     "claim-transaction-tests",
     "known-answer-consumers",
     "smt-and-negative",
-    "halmos-and-negative",
     "verus-and-negative",
 )
-RECEIPT_SCHEMA = 6
+RECEIPT_SCHEMA = 5
 
 
 @dataclass(frozen=True)
@@ -79,7 +78,7 @@ def _claim_production_sources(repo_root: Path) -> set[str]:
         (repo_root / "verification" / "claims.tsv").read_text(encoding="utf-8")
     )
     for row in manifest.rows:
-        for link in row[9].split(";"):
+        for link in row[7].split(";"):
             if link == "-" or link.count("#") != 1:
                 raise ValueError(f"invalid production source link: {link}")
             sources.add(link.split("#", 1)[0])
@@ -277,7 +276,7 @@ def check_receipt(receipt_path: Path, repo_root: Path = ROOT) -> None:
         raise ValueError("proof receipt source fingerprint is stale")
     if repo_root.resolve() != ROOT.resolve():
         raise ValueError("claim report regeneration requires the repository root")
-    from check_claim_manifest import CLAIM_REPORT_SCHEMA, build_claim_report
+    from current_main_check_claim_manifest import CLAIM_REPORT_SCHEMA, build_claim_report
 
     expected_report = build_claim_report()
     expected_claims = expected_report.get("claims")

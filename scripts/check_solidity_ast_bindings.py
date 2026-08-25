@@ -142,6 +142,185 @@ def function_calls(node: object) -> set[int]:
     return calls
 
 
+def direct_function_calls(node: object, declaration_ids: set[int]) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+    for item in walk(node):
+        if item.get("nodeType") != "FunctionCall":
+            continue
+        expression = item.get("expression")
+        if (
+            isinstance(expression, dict)
+            and expression.get("referencedDeclaration") in declaration_ids
+        ):
+            calls.append(item)
+    return calls
+
+
+def _contains_node(node: object, target: dict[str, object]) -> bool:
+    return any(item is target for item in walk(node))
+
+
+def _source_start(node: dict[str, object], context: str) -> int:
+    source = node.get("src")
+    if not isinstance(source, str):
+        raise ValueError(f"missing Solidity AST source range: {context}")
+    start = source.split(":", 1)[0]
+    if not start.isdigit():
+        raise ValueError(f"invalid Solidity AST source range: {context}/{source}")
+    return int(start)
+
+
+def _call_result_bindings(
+    body: object, call: dict[str, object]
+) -> tuple[set[int], set[int]]:
+    declarations: set[int] = set()
+    binding_assignments: set[int] = set()
+    for item in walk(body):
+        if (
+            item.get("nodeType") == "VariableDeclarationStatement"
+            and item.get("initialValue") is call
+        ):
+            declarations.update(
+                declaration["id"]
+                for declaration in item.get("declarations", [])
+                if isinstance(declaration, dict)
+                and isinstance(declaration.get("id"), int)
+            )
+        elif (
+            item.get("nodeType") == "Assignment"
+            and item.get("rightHandSide") is call
+        ):
+            declarations.update(referenced_declarations(item.get("leftHandSide")))
+            binding_assignments.add(id(item))
+    return declarations, binding_assignments
+
+
+def _require_call_result_not_reassigned(
+    body: object, declaration_ids: set[int], binding_assignments: set[int], context: str
+) -> None:
+    for item in walk(body):
+        if item.get("nodeType") == "Assignment":
+            target = item.get("leftHandSide")
+        elif item.get("nodeType") == "UnaryOperation" and item.get("operator") in {
+            "++",
+            "--",
+            "delete",
+        }:
+            target = item.get("subExpression")
+        else:
+            continue
+        if (
+            referenced_declarations(target) & declaration_ids
+            and id(item) not in binding_assignments
+        ):
+            raise ValueError(f"SMT production result is reassigned: {context}")
+
+
+def _assertion_depends_on_call(
+    body: object,
+    assertion: dict[str, object],
+    production_call: dict[str, object],
+    result_ids: set[int],
+) -> bool:
+    arguments = assertion.get("arguments")
+    if not isinstance(arguments, list) or len(arguments) != 1:
+        return False
+    condition = arguments[0]
+    if _is_trivially_true(condition):
+        return False
+    if _contains_node(arguments, production_call) or (
+        referenced_declarations(arguments) & result_ids
+    ):
+        return True
+    for item in walk(body):
+        if item.get("nodeType") != "IfStatement":
+            continue
+        if not (
+            _contains_node(item.get("trueBody"), assertion)
+            or _contains_node(item.get("falseBody"), assertion)
+        ):
+            continue
+        condition = item.get("condition")
+        if _contains_node(condition, production_call) or (
+            referenced_declarations(condition) & result_ids
+        ):
+            return True
+    return False
+
+
+def _is_trivially_true(node: object) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if node.get("nodeType") == "Literal" and node.get("value") == "true":
+        return True
+    if node.get("nodeType") != "BinaryOperation" or node.get("operator") not in {
+        "==",
+        "<=",
+        ">=",
+    }:
+        return False
+    return _expression_structure(node.get("leftExpression")) == _expression_structure(
+        node.get("rightExpression")
+    )
+
+
+def _expression_structure(node: object) -> object:
+    if isinstance(node, list):
+        return tuple(_expression_structure(item) for item in node)
+    if not isinstance(node, dict):
+        return node
+    return tuple(
+        (key, _expression_structure(value))
+        for key, value in sorted(node.items())
+        if key not in {"id", "src", "typeDescriptions"}
+    )
+
+
+def builtin_assertions(node: object) -> list[dict[str, object]]:
+    assertions: list[dict[str, object]] = []
+    for item in walk(node):
+        if item.get("nodeType") != "FunctionCall":
+            continue
+        expression = item.get("expression")
+        if (
+            isinstance(expression, dict)
+            and expression.get("nodeType") == "Identifier"
+            and expression.get("name") == "assert"
+            and isinstance(expression.get("referencedDeclaration"), int)
+            and expression["referencedDeclaration"] < 0
+        ):
+            assertions.append(item)
+    return assertions
+
+
+def require_smt_production_assertion_dependency(
+    body: object, production_call: dict[str, object], context: str
+) -> None:
+    result_ids, binding_assignments = _call_result_bindings(body, production_call)
+    _require_call_result_not_reassigned(body, result_ids, binding_assignments, context)
+    assertions = builtin_assertions(body)
+    call_start = _source_start(production_call, context)
+    if not any(
+        (
+            _contains_node(assertion, production_call)
+            or _source_start(assertion, context) > call_start
+        )
+        and _assertion_depends_on_call(body, assertion, production_call, result_ids)
+        for assertion in assertions
+    ):
+        raise ValueError(f"SMT assertion does not depend on production result: {context}")
+
+
+def require_no_modifiers(*records: FunctionRecord) -> None:
+    for record in records:
+        modifiers = record.node.get("modifiers")
+        if modifiers not in (None, []):
+            raise ValueError(
+                f"trusted Solidity function must not use modifiers: "
+                f"{record.contract}.{record.signature}"
+            )
+
+
 def call_name_count(node: object, name: str) -> int:
     count = 0
     for item in walk(node):
@@ -182,6 +361,8 @@ def validate_smt_call_graph(
         )
     for obligation in obligations.values():
         production_groups = [index.resolve(link) for link in obligation.production_links]
+        for group in production_groups:
+            require_no_modifiers(*group)
         production_ids = {
             record.declaration_id for group in production_groups for record in group
         }
@@ -191,14 +372,22 @@ def validate_smt_call_graph(
             if len(pass_records) != 1:
                 raise ValueError(f"ambiguous SMT pass function AST: {link}")
             pass_record = pass_records[0]
-            if call_name_count(pass_record.node.get("body"), "assert") == 0:
+            body = pass_record.node.get("body")
+            require_no_modifiers(pass_record)
+            if not builtin_assertions(body):
                 raise ValueError(f"SMT pass function has no assertion: {link}")
-            calls = function_calls(pass_record.node.get("body"))
+            calls = function_calls(body)
             linked = calls & production_ids
             if not linked:
                 raise ValueError(
                     f"SMT pass function does not call its production kernel: "
                     f"{obligation.obligation_id}/{link}"
+                )
+            for production_call in direct_function_calls(body, linked):
+                require_smt_production_assertion_dependency(
+                    body,
+                    production_call,
+                    f"{obligation.obligation_id}/{link}",
                 )
             covered.update(linked)
         for link, group in zip(obligation.production_links, production_groups, strict=True):
@@ -227,19 +416,6 @@ def _state_variables(record: FunctionRecord, index: AstIndex) -> dict[str, int]:
     return variables
 
 
-def _assignment_counts(node: object, variable_ids: dict[str, int]) -> dict[str, int]:
-    counts = {name: 0 for name in variable_ids}
-    for item in walk(node):
-        if item.get("nodeType") != "Assignment":
-            continue
-        left = item.get("leftHandSide")
-        declarations = referenced_declarations(left)
-        for name, declaration_id in variable_ids.items():
-            if declaration_id in declarations:
-                counts[name] += 1
-    return counts
-
-
 def expression_path(node: object) -> str:
     if not isinstance(node, dict):
         return "?"
@@ -250,18 +426,6 @@ def expression_path(node: object) -> str:
     if node.get("nodeType") == "IndexAccess":
         return f"{expression_path(node.get('baseExpression'))}[{expression_path(node.get('indexExpression'))}]"
     return str(node.get("nodeType", "?"))
-
-
-def assignment_values(node: object, variable_ids: dict[str, int]) -> dict[str, list[str]]:
-    values = {name: [] for name in variable_ids}
-    for item in walk(node):
-        if item.get("nodeType") != "Assignment":
-            continue
-        declarations = referenced_declarations(item.get("leftHandSide"))
-        for name, declaration_id in variable_ids.items():
-            if declaration_id in declarations:
-                values[name].append(expression_path(item.get("rightHandSide")))
-    return values
 
 
 def named_calls(node: object, name: str) -> list[dict[str, object]]:
@@ -601,6 +765,13 @@ def expression_declaration_binding(node: object) -> tuple[object, ...]:
         if isinstance(declaration, int) and declaration >= 0:
             return ("declaration", declaration)
         return ("magic", node.get("name"))
+    if node_type == "Literal":
+        return (
+            "literal",
+            node.get("kind"),
+            node.get("value"),
+            node.get("hexValue"),
+        )
     if node_type == "MemberAccess":
         return (
             "member",
@@ -612,6 +783,19 @@ def expression_declaration_binding(node: object) -> tuple[object, ...]:
             "index",
             expression_declaration_binding(node.get("baseExpression")),
             expression_declaration_binding(node.get("indexExpression")),
+        )
+    if node_type == "BinaryOperation":
+        return (
+            "binary",
+            node.get("operator"),
+            expression_declaration_binding(node.get("leftExpression")),
+            expression_declaration_binding(node.get("rightExpression")),
+        )
+    if node_type == "UnaryOperation":
+        return (
+            "unary",
+            node.get("operator"),
+            expression_declaration_binding(node.get("subExpression")),
         )
     if node_type == "FunctionCall" and node.get("kind") == "typeConversion":
         expression = node.get("expression")
@@ -625,6 +809,87 @@ def expression_declaration_binding(node: object) -> tuple[object, ...]:
         ):
             return ("address", expression_declaration_binding(arguments[0]))
     return ("unsupported", node_type)
+
+
+def state_write_bindings(
+    node: object, variable_ids: dict[str, int]
+) -> Counter[tuple[object, ...]]:
+    writes: Counter[tuple[object, ...]] = Counter()
+    tracked = set(variable_ids.values())
+    for item in walk(node):
+        if item.get("nodeType") == "Assignment":
+            left = item.get("leftHandSide")
+            if not (referenced_declarations(left) & tracked):
+                continue
+            writes[
+                (
+                    item.get("operator"),
+                    expression_declaration_binding(left),
+                    expression_declaration_binding(item.get("rightHandSide")),
+                )
+            ] += 1
+        elif item.get("nodeType") == "UnaryOperation" and item.get("operator") in {
+            "++",
+            "--",
+            "delete",
+        }:
+            target = item.get("subExpression")
+            if referenced_declarations(target) & tracked:
+                writes[
+                    (
+                        item.get("operator"),
+                        expression_declaration_binding(target),
+                        None,
+                    )
+                ] += 1
+    return writes
+
+
+def require_exact_state_writes(
+    node: object,
+    variable_ids: dict[str, int],
+    expected: Counter[tuple[object, ...]],
+    context: str,
+) -> None:
+    actual = state_write_bindings(node, variable_ids)
+    if actual != expected:
+        raise ValueError(
+            f"{context} state writes differ: "
+            f"actual={dict(actual)} expected={dict(expected)}"
+        )
+
+
+def require_exact_commit_statements(
+    body: object, expected_writes: tuple[tuple[object, ...], ...]
+) -> None:
+    statements = body.get("statements") if isinstance(body, dict) else None
+    if not isinstance(statements, list) or [
+        item.get("nodeType") if isinstance(item, dict) else None for item in statements
+    ] != [
+        "ExpressionStatement",
+        "ExpressionStatement",
+        "ExpressionStatement",
+        "ExpressionStatement",
+        "EmitStatement",
+    ]:
+        raise ValueError("Bridge Mint commit statement sequence differs")
+    actual_writes: list[tuple[object, ...]] = []
+    for statement in statements[:3]:
+        expression = statement.get("expression")
+        if not isinstance(expression, dict) or expression.get("nodeType") != "Assignment":
+            raise ValueError("Bridge Mint commit state write is not top-level")
+        actual_writes.append(
+            (
+                expression.get("operator"),
+                expression_declaration_binding(expression.get("leftHandSide")),
+                expression_declaration_binding(expression.get("rightHandSide")),
+            )
+        )
+    if tuple(actual_writes) != expected_writes:
+        raise ValueError("Bridge Mint commit state write order differs")
+    mint_expression = statements[3].get("expression")
+    if not isinstance(mint_expression, dict) or mint_expression.get("nodeType") != "FunctionCall":
+        raise ValueError("Bridge Mint token call is not top-level")
 
 
 def require_evaluate_input_binding(
@@ -766,6 +1031,8 @@ def validate_bridge_commit(index: AstIndex) -> None:
     commit = commit_records[0]
     digest = digest_records[0]
     reject = reject_records[0]
+    evaluate = evaluate_records[0]
+    require_no_modifiers(wrapper, commit, digest, reject, evaluate)
     variables = _state_variables(wrapper, index)
     wrapper_statements = wrapper.node.get("body", {}).get("statements", [])
     if [statement.get("nodeType") for statement in wrapper_statements] != [
@@ -864,25 +1131,38 @@ def validate_bridge_commit(index: AstIndex) -> None:
         name: variables[name]
         for name in ("_processedDeposits", "mintWindowStartedAt", "mintedInWindow")
     }
-    if any(_assignment_counts(wrapper.node.get("body"), selected).values()):
+    if state_write_bindings(wrapper.node.get("body"), selected):
         raise ValueError("Bridge Mint wrapper writes commit state outside the commit boundary")
-    commit_assignments = _assignment_counts(commit.node.get("body"), selected)
-    if commit_assignments != {name: 1 for name in selected}:
-        raise ValueError(f"Bridge Mint commit state assignments differ: {commit_assignments}")
-    expected_assignments = {
-        "_processedDeposits": ["effects.processedAfter"],
-        "mintWindowStartedAt": ["effects.windowStartedAtAfter"],
-        "mintedInWindow": ["effects.windowConsumedAfter"],
-    }
-    actual_assignments = assignment_values(commit.node.get("body"), selected)
-    if actual_assignments != expected_assignments:
-        raise ValueError(f"Bridge Mint commit assignment values differ: {actual_assignments}")
-    all_commit_assignments = _assignment_counts(commit.node.get("body"), variables)
-    if {name: count for name, count in all_commit_assignments.items() if count} \
-            != {name: 1 for name in selected}:
-        raise ValueError(f"Bridge Mint commit has unlisted state writes: {all_commit_assignments}")
-    require_no_declaration_reassignment(
-        commit.node.get("body"), set(variables.values()) - set(selected.values())
+    commit_parameters = commit.node.get("parameters", {}).get("parameters", [])
+    commit_authorization_id = named_declaration_id(commit_parameters, "authorization")
+    commit_effects_id = named_declaration_id(commit_parameters, "effects")
+    authorization_binding = ("declaration", commit_authorization_id)
+    effects_binding = ("declaration", commit_effects_id)
+    ordered_writes = (
+            (
+                "=",
+                (
+                    "index",
+                    ("declaration", variables["_processedDeposits"]),
+                    ("member", authorization_binding, "depositId"),
+                ),
+                ("member", effects_binding, "processedAfter"),
+            ),
+            (
+                "=",
+                ("declaration", variables["mintWindowStartedAt"]),
+                ("member", effects_binding, "windowStartedAtAfter"),
+            ),
+            (
+                "=",
+                ("declaration", variables["mintedInWindow"]),
+                ("member", effects_binding, "windowConsumedAfter"),
+            ),
+    )
+    expected_writes: Counter[tuple[object, ...]] = Counter(ordered_writes)
+    require_exact_commit_statements(commit.node.get("body"), ordered_writes)
+    require_exact_state_writes(
+        commit.node.get("body"), variables, expected_writes, "Bridge Mint commit"
     )
     require_closed_call_set(
         commit.node.get("body"),

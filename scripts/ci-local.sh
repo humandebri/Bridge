@@ -125,6 +125,8 @@ run_step() {
 }
 
 run_versions() {
+  local proof_profile
+  proof_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
   verify_no_npm_lockfiles "$ROOT"
   shellcheck -x -S warning \
     "$ROOT/scripts/ci-local.sh" \
@@ -144,7 +146,13 @@ run_versions() {
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
-  python3 "$ROOT/scripts/test_proof_impact.py"
+  if [[ "$proof_profile" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/test_proof_impact.py"
+  else
+    python3 "$ROOT/scripts/current_main_check_proof_impact.py"
+  fi
+  python3 "$ROOT/scripts/test_trusted_proof_profiles.py"
+  python3 "$ROOT/scripts/test_proof_fingerprint_candidate_scripts.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
   "$ROOT/scripts/test_ci_guards.sh"
@@ -398,6 +406,10 @@ run_smt() {
   local -a pass_skip_args=()
   local failure_fixture
 
+  if [[ "$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/smt_obligations.py" --check-sources
+  fi
+
   while IFS= read -r failure_fixture; do
     failure_fixtures+=("$failure_fixture")
     pass_skip_args+=(--skip "$(basename "$failure_fixture")")
@@ -408,7 +420,9 @@ run_smt() {
     "${pass_skip_args[@]}" \
     --force
 
-  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope smt
+  if [[ "$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope smt
+  fi
 
   verify_smt_failure_fixtures \
     "$TMP_ROOT/smt-failures" \
@@ -416,7 +430,162 @@ run_smt() {
     "${failure_fixtures[@]}"
 }
 
+run_verus_current() {
+  local failure_fixture
+  local failure_log
+  local failure_status
+  local kind
+  local kernel_name
+  local proof_name
+  local expected_fixture
+  local production_path
+  local production_source
+  local -a production_sources
+  local verus_version
+
+  verus_version="$(verus --version 2>&1)"
+  if ! output_has_matching_line "$verus_version" "$VERUS_VERSION_PATTERN"; then
+    echo "verus version mismatch for proofs" >&2
+    echo "$verus_version" >&2
+    return 1
+  fi
+
+  if rg -n '\b(assume|admit|external_body)\b' \
+    "$ROOT/canister/bridge-core/src/kernel.rs" \
+    "$ROOT/verification/verus/pass.rs" \
+    "$ROOT/verification/verus/fail"; then
+    echo "forbidden Verus proof escape found" >&2
+    return 1
+  fi
+
+  verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass"
+
+  while IFS=$'\t' read -r kind kernel_name proof_name expected_fixture production_path; do
+    [[ -n "$kernel_name" ]] || continue
+    case "$kind" in
+      shared)
+        rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus manifest spec is missing: $kernel_name" >&2
+          return 1
+        }
+        rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus manifest proof is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
+          return 1
+        }
+        rg -q "pub (const )?fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "shared Verus kernel is missing: $kernel_name" >&2
+          return 1
+        }
+        IFS=';' read -r -a production_sources <<<"$production_path"
+        for production_source in "${production_sources[@]}"; do
+          [[ -n "$production_source" ]] || {
+            echo "shared Verus kernel has an empty production path: $kernel_name" >&2
+            return 1
+          }
+          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
+            echo "shared Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
+            return 1
+          }
+        done
+        ;;
+      executable)
+        rg -q "^fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus executable obligation is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "kernel::${kernel_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus executable obligation does not call production symbol: $kernel_name" >&2
+          return 1
+        }
+        rg -q "kernel::${kernel_name}\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not call production symbol: $expected_fixture" >&2
+          return 1
+        }
+        rg -q "pub fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus executable kernel is missing: $kernel_name" >&2
+          return 1
+        }
+        IFS=';' read -r -a production_sources <<<"$production_path"
+        for production_source in "${production_sources[@]}"; do
+          [[ -n "$production_source" ]] || {
+            echo "executable Verus kernel has an empty production path: $kernel_name" >&2
+            return 1
+          }
+          rg -q "\b${kernel_name}\b" "$ROOT/$production_source" || {
+            echo "executable Verus kernel is not referenced by production path: $kernel_name -> $production_source" >&2
+            return 1
+          }
+        done
+        ;;
+      model)
+        rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus manifest spec is missing: $kernel_name" >&2
+          return 1
+        }
+        rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus manifest proof is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
+          return 1
+        }
+        [[ "$production_path" == "-" ]]
+        ;;
+      *)
+        echo "invalid Verus manifest kind: $kind" >&2
+        return 1
+        ;;
+    esac
+  done < "$ROOT/verification/verus/manifest.tsv"
+
+  rg -o 'pub open spec fn [A-Za-z0-9_]+' "$ROOT/canister/bridge-core/src/kernel.rs" \
+    | sed 's/pub open spec fn //' | sort >"$TMP_ROOT/verus-specs"
+  awk -F $'\t' '$1 != "executable" { print $2 }' "$ROOT/verification/verus/manifest.tsv" \
+    | sed 's/$/_spec/' | sort >"$TMP_ROOT/verus-manifest-specs"
+  if ! cmp -s "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs"; then
+    echo "Verus manifest does not cover every spec exactly once" >&2
+    diff -u "$TMP_ROOT/verus-specs" "$TMP_ROOT/verus-manifest-specs" >&2 || true
+    return 1
+  fi
+
+  cut -f4 "$ROOT/verification/verus/manifest.tsv" | sort >"$TMP_ROOT/verus-manifest-fixtures"
+  rg --files "$ROOT/verification/verus/fail" -g '*.rs' \
+    | sed 's#^.*/##' | sort >"$TMP_ROOT/verus-failure-fixtures"
+  if ! cmp -s "$TMP_ROOT/verus-manifest-fixtures" "$TMP_ROOT/verus-failure-fixtures"; then
+    echo "Verus failure fixtures and manifest are not one-to-one" >&2
+    diff -u "$TMP_ROOT/verus-manifest-fixtures" "$TMP_ROOT/verus-failure-fixtures" >&2 || true
+    return 1
+  fi
+
+  while IFS= read -r failure_fixture; do
+    failure_log="$TMP_ROOT/verus-$(basename "$failure_fixture" .rs).log"
+    set +e
+    verus --no-cheating "$failure_fixture" \
+      -o "$TMP_ROOT/verus-$(basename "$failure_fixture" .rs)" >"$failure_log" 2>&1
+    failure_status=$?
+    set -e
+    if [[ "$failure_status" -eq 0 ]]; then
+      echo "Verus accepted deliberate failing fixture: $failure_fixture" >&2
+      return 1
+    fi
+    if ! rg -qi "postcondition.*not satisfied|postcondition.*fail" "$failure_log"; then
+      echo "Verus fixture failed without expected postcondition violation: $failure_fixture" >&2
+      cat "$failure_log" >&2
+      return 1
+    fi
+  done < <(rg --files "$ROOT/verification/verus/fail" -g '*.rs' | sort)
+}
+
 run_verus() {
+  if [[ "$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)" == "current-main" ]]; then
+    run_verus_current
+    return
+  fi
   local failure_fixture
   local failure_log
   local failure_status
@@ -515,7 +684,13 @@ run_halmos() {
   local halmos_entry="$ROOT/verification/halmos/.venv/bin/halmos"
   local halmos_python="$ROOT/verification/halmos/.venv/bin/python"
   local -a halmos
-  local positive_log="$TMP_ROOT/halmos-positive.log"
+  local row_type
+  local obligation_id
+  local positive_link
+  local positive_path
+  local positive_contract
+  local positive_function
+  local positive_log
   local failure_id
   local failure_link
   local failure_path
@@ -524,6 +699,8 @@ run_halmos() {
   local failure_log
   local failure_status
   local version
+
+  python3 "$ROOT/scripts/halmos_obligations.py" --check-sources
 
   if [[ ! -x "$halmos_entry" || ! -x "$halmos_python" ]]; then
     echo "missing locked Halmos environment; run uv sync --project verification/halmos --frozen" >&2
@@ -537,19 +714,32 @@ run_halmos() {
     return 1
   fi
 
-  "${halmos[@]}" \
-    --root "$ROOT/contracts" \
-    --contract BridgeMintCommitHalmos \
-    --solver z3 \
-    --solver-timeout-assertion 30s \
-    --early-exit \
-    --no-status >"$positive_log" 2>&1
-  if ! rg -q 'Symbolic test result: 3 passed; 0 failed' "$positive_log" \
-    || rg -qi '\[FAIL\]|counterexample|timeout|unknown' "$positive_log"; then
-    echo "Halmos positive proofs did not complete exactly" >&2
-    cat "$positive_log" >&2
-    return 1
-  fi
+  while IFS=$'\t' read -r row_type obligation_id _strength positive_link \
+      _production_link _failure_ids _claim_ids; do
+    [[ "$row_type" == "schema" ]] && continue
+    positive_path="${positive_link%%#*}"
+    positive_function="${positive_link#*#}"
+    positive_contract="$(basename "$positive_path" .t.sol)"
+    positive_log="$TMP_ROOT/halmos-positive-$obligation_id.log"
+    if ! "${halmos[@]}" \
+      --root "$ROOT/contracts" \
+      --contract "$positive_contract" \
+      --function "$positive_function" \
+      --solver z3 \
+      --solver-timeout-assertion 30s \
+      --early-exit \
+      --no-status >"$positive_log" 2>&1; then
+      echo "Halmos positive obligation failed: $obligation_id" >&2
+      cat "$positive_log" >&2
+      return 1
+    fi
+    if ! rg -q 'Symbolic test result: 1 passed; 0 failed' "$positive_log" \
+      || rg -qi '\[FAIL\]|counterexample|timeout|unknown' "$positive_log"; then
+      echo "Halmos positive obligation did not complete exactly: $obligation_id" >&2
+      cat "$positive_log" >&2
+      return 1
+    fi
+  done < "$ROOT/verification/halmos/obligations.tsv"
   python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope bridge
 
   while IFS=$'\t' read -r failure_id failure_link; do
@@ -616,13 +806,13 @@ run_policy_vector_consumers() {
 }
 
 run_refinement_gate() {
-  python3 "$ROOT/scripts/test_transition_manifest.py" || return
-  python3 "$ROOT/scripts/check_transition_manifest.py" || return
+  python3 "$TRANSITION_MANIFEST_TEST" || return
+  python3 "$TRANSITION_MANIFEST_CHECK" || return
   python3 "$ROOT/scripts/test_reproducible_artifacts.py" || return
-  python3 "$ROOT/scripts/test_refinement_manifest.py" || return
-  python3 "$ROOT/scripts/generate_refinement_harness.py" --check || return
-  python3 "$ROOT/scripts/check_refinement_manifest.py" || return
-  python3 "$ROOT/scripts/check_proof_impact.py"
+  python3 "$REFINEMENT_MANIFEST_TEST" || return
+  python3 "$REFINEMENT_GENERATOR" --check || return
+  python3 "$REFINEMENT_MANIFEST_CHECK" || return
+  python3 "$PROOF_IMPACT_CHECK"
 }
 
 run_proof_stage() {
@@ -633,7 +823,7 @@ run_proof_stage() {
   set +e
   (
     set -e
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+    python3 "$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
       echo "proof source fingerprint changed before stage: $stage" >&2
       exit 1
     }
@@ -641,7 +831,7 @@ run_proof_stage() {
       echo "proof stage command failed: $stage" >&2
       exit 1
     fi
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+    python3 "$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
       echo "proof source fingerprint changed during stage: $stage" >&2
       exit 1
     }
@@ -656,7 +846,7 @@ run_proof_stage() {
   printf '%s\t%s\t' "$stage" "$stage_status" >>"$PROOF_STAGE_RECEIPT"
   tr -d '\n' <"$PROOF_SOURCE_BASELINE" >>"$PROOF_STAGE_RECEIPT"
   printf '\n' >>"$PROOF_STAGE_RECEIPT"
-  if ! python3 "$ROOT/scripts/write_proof_receipt.py" \
+  if ! python3 "$PROOF_RECEIPT_WRITER" \
     "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"; then
     echo "proof receipt write failed after stage: $stage" >&2
     return 1
@@ -665,36 +855,81 @@ run_proof_stage() {
 }
 
 run_proofs() {
+  PROOF_PROFILE="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
+  case "$PROOF_PROFILE" in
+    current-main)
+      CLAIM_CHECK="$ROOT/scripts/current_main_check_claim_manifest.py"
+      CLAIM_TEST_CHECK="$ROOT/scripts/current_main_check_claim_test_manifest.py"
+      CLAIM_TEST_TEST="$ROOT/scripts/current_main_test_claim_test_manifest.py"
+      CONCRETE_RUNTIME_TEST="$ROOT/scripts/current_main_test_concrete_runtime.sh"
+      FAILURE_MANIFEST_CHECK="$ROOT/scripts/current_main_check_failure_manifests.py"
+      PROOF_IMPACT_CHECK="$ROOT/scripts/current_main_check_proof_impact.py"
+      PROOF_FINGERPRINT="$ROOT/scripts/current_main_proof_fingerprint.py"
+      PROOF_RECEIPT_WRITER="$ROOT/scripts/current_main_write_proof_receipt.py"
+      REFINEMENT_GENERATOR="$ROOT/scripts/current_main_generate_refinement_harness.py"
+      REFINEMENT_MANIFEST_CHECK="$ROOT/scripts/current_main_check_refinement_manifest.py"
+      REFINEMENT_MANIFEST_TEST="$ROOT/scripts/current_main_test_refinement_manifest.py"
+      TRANSITION_MANIFEST_CHECK="$ROOT/scripts/current_main_check_transition_manifest.py"
+      TRANSITION_MANIFEST_TEST="$ROOT/scripts/current_main_test_transition_manifest.py"
+      ;;
+    security-hardening-v1)
+      CLAIM_CHECK="$ROOT/scripts/check_claim_manifest.py"
+      CLAIM_TEST_CHECK="$ROOT/scripts/check_claim_test_manifest.py"
+      CLAIM_TEST_TEST="$ROOT/scripts/test_claim_test_manifest.py"
+      CONCRETE_RUNTIME_TEST="$ROOT/scripts/test_concrete_runtime.sh"
+      FAILURE_MANIFEST_CHECK="$ROOT/scripts/check_failure_manifests.py"
+      PROOF_IMPACT_CHECK="$ROOT/scripts/check_proof_impact.py"
+      PROOF_FINGERPRINT="$ROOT/scripts/proof_fingerprint.py"
+      PROOF_RECEIPT_WRITER="$ROOT/scripts/write_proof_receipt.py"
+      REFINEMENT_GENERATOR="$ROOT/scripts/generate_refinement_harness.py"
+      REFINEMENT_MANIFEST_CHECK="$ROOT/scripts/check_refinement_manifest.py"
+      REFINEMENT_MANIFEST_TEST="$ROOT/scripts/test_refinement_manifest.py"
+      TRANSITION_MANIFEST_CHECK="$ROOT/scripts/check_transition_manifest.py"
+      TRANSITION_MANIFEST_TEST="$ROOT/scripts/test_transition_manifest.py"
+      ;;
+    *)
+      echo "unreachable trusted proof profile: $PROOF_PROFILE" >&2
+      return 1
+      ;;
+  esac
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
   PROOF_SOURCE_BASELINE="$TMP_ROOT/proof-source-fingerprint.json"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
-  python3 "$ROOT/scripts/proof_fingerprint.py" --write "$PROOF_SOURCE_BASELINE" >/dev/null
-  python3 "$ROOT/scripts/check_claim_manifest.py" >/dev/null
-  python3 "$ROOT/scripts/test_write_proof_receipt.py"
-  python3 "$ROOT/scripts/test_claim_test_manifest.py"
-  python3 "$ROOT/scripts/test_check_claim_manifest.py"
-  python3 "$ROOT/scripts/test_halmos_environment.py"
+  python3 "$PROOF_FINGERPRINT" --write "$PROOF_SOURCE_BASELINE" >/dev/null
+  python3 "$CLAIM_CHECK" >/dev/null
+  if [[ "$PROOF_PROFILE" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/test_write_proof_receipt.py"
+  fi
+  python3 "$CLAIM_TEST_TEST"
+  if [[ "$PROOF_PROFILE" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/test_check_claim_manifest.py"
+    python3 "$ROOT/scripts/test_halmos_environment.py"
+  fi
   python3 "$ROOT/scripts/test_solidity_ast_bindings.py"
   python3 "$ROOT/scripts/test_verus_manifest.py"
-  "$ROOT/scripts/test_concrete_runtime.sh"
-  python3 "$ROOT/scripts/check_failure_manifests.py"
-  run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"
+  python3 "$ROOT/scripts/test_check_failure_manifests.py"
+  python3 "$ROOT/scripts/test_trusted_proof_profiles.py"
+  bash "$CONCRETE_RUNTIME_TEST"
+  python3 "$FAILURE_MANIFEST_CHECK"
+  run_proof_stage claim-manifest python3 "$CLAIM_CHECK"
   run_proof_stage lean run_lean_proofs
   run_proof_stage lean-negative run_lean_failure_fixtures
   run_proof_stage policy-vector-consumers run_policy_vector_consumers
   run_proof_stage refinement-gate run_refinement_gate
   run_proof_stage claim-transaction-tests \
-    python3 "$ROOT/scripts/check_claim_test_manifest.py"
+    python3 "$CLAIM_TEST_CHECK"
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt
-  run_proof_stage halmos-and-negative run_halmos
+  if [[ "$PROOF_PROFILE" == "security-hardening-v1" ]]; then
+    run_proof_stage halmos-and-negative run_halmos
+  fi
   run_proof_stage verus-and-negative run_verus
   python3 -c \
     'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["complete"] is True' \
     "$PROOF_RECEIPT"
-  python3 "$ROOT/scripts/check_proof_impact.py" --receipt "$PROOF_RECEIPT"
+  python3 "$PROOF_IMPACT_CHECK" --receipt "$PROOF_RECEIPT"
   echo "proof_receipt=$PROOF_RECEIPT" >&2
 }
 
@@ -928,6 +1163,8 @@ restore_smoke_canister_state() {
 }
 
 run_smoke() {
+  local proof_profile
+  local -a bridge_fee_constructor_args
   local network_status="$TMP_ROOT/icp-network-status.json"
   local canister_status="$TMP_ROOT/canister-status.json"
   local bridge_status
@@ -965,6 +1202,12 @@ run_smoke() {
   local -r deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
   local -r gross_amount="101000000"
   local -r service_fee="1000000"
+  proof_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
+  if [[ "$proof_profile" == "security-hardening-v1" ]]; then
+    bridge_fee_constructor_args=("1" "100000000" "$service_fee")
+  else
+    bridge_fee_constructor_args=("100000000" "$service_fee")
+  fi
   local -r minted_amount="100000000"
   local -r release_amount="50000000"
   local -r release_amount_out="49000000"
@@ -1213,8 +1456,7 @@ for field, (value, candid_type) in stable_fields.items():
     "1000000000000" \
     "10000000000000" \
     "3600" \
-    "100000000" \
-    "$service_fee")"
+    "${bridge_fee_constructor_args[@]}")"
   for limit_caller in "$bridge_signer" "$runtime_administrator" "$unauthorized_wallet"; do
     for limit_signature in \
       "setMintLimits(uint256,uint256,uint64)" \

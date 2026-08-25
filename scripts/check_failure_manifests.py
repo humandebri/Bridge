@@ -50,11 +50,19 @@ def rows(path: Path, width: int) -> list[list[str]]:
     return parsed
 
 
+def relative_fixture_paths(directory: Path, suffix: str) -> list[str]:
+    return sorted(
+        path.relative_to(directory).as_posix()
+        for path in directory.rglob(f"*{suffix}")
+        if path.is_file()
+    )
+
+
 def main() -> int:
     smt_dir = ROOT / "verification" / "smt" / "fail"
     smt_rows = rows(ROOT / "verification" / "smt" / "failure-manifest.tsv", 2)
     smt_fixtures = [row[1] for row in smt_rows]
-    actual_smt = sorted(path.name for path in smt_dir.glob("*.sol"))
+    actual_smt = relative_fixture_paths(smt_dir, ".sol")
     if len(set(smt_fixtures)) != len(smt_fixtures) or sorted(smt_fixtures) != actual_smt:
         raise ValueError("SMT failure manifest does not exactly cover deliberate fixtures")
     smt_obligations = parse_smt_obligations(
@@ -119,7 +127,7 @@ def main() -> int:
         )
     )
     lean_rows = rows(ROOT / "verification" / "lean" / "deposit-failure-manifest.tsv", 3)
-    fixture_names = {path.name for path in lean_dir.glob("*.lean")}
+    fixture_names = set(relative_fixture_paths(lean_dir, ".lean"))
     manifest_names = {fixture for _, fixture, _ in lean_rows}
     required_names = set(REQUIRED_LEAN_FAILURE_SHA256)
     if fixture_names != required_names or manifest_names != required_names:

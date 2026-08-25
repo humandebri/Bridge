@@ -6,7 +6,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from check_transition_manifest import production_body_calls, strip_comments_and_strings
+from check_transition_manifest import strip_comments_and_strings
+from trusted_proof_profiles import require_profile
 from verus_manifest import VerusObligation, parse_verus_manifest
 
 
@@ -42,34 +43,40 @@ def verus_spec_body(source: str, name: str) -> str:
 
 def rust_body(cleaned: str, name: str) -> str:
     function_marker = re.compile(
-        rf"\b(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+{re.escape(name)}\s*\("
+        rf"\b(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+"
+        rf"{re.escape(name)}\b(?=\s*(?:<|\())"
     )
-    marker = function_marker.search(cleaned)
-    if marker is None:
-        raise ValueError(f"missing production call-site function: {name}")
-    next_function = re.compile(
-        r"\b(?:(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+"
-        r"\w+(?:<[^>{}]*>)?\s*\(|(?:pub\s+)?(?:struct|enum)\s+\w+)"
-    ).search(cleaned, marker.end())
-    limit = next_function.start() if next_function else len(cleaned)
+    matches = list(function_marker.finditer(cleaned))
+    if len(matches) != 1:
+        raise ValueError(
+            f"production call-site function must resolve exactly once: "
+            f"{name}/{len(matches)}"
+        )
+    marker = matches[0]
+    stack: list[str] = []
+    pairs = {")": "(", "]": "[", "}": "{", ">": "<"}
+    brace = None
+    for index in range(marker.end(), len(cleaned)):
+        character = cleaned[index]
+        if character in "([<":
+            stack.append(character)
+        elif character == "{" and stack:
+            stack.append(character)
+        elif character in pairs and stack and stack[-1] == pairs[character]:
+            stack.pop()
+        elif character == "{" and not stack:
+            brace = index
+            break
+    if brace is None:
+        raise ValueError(f"production call-site function has no body: {name}")
     depth = 0
-    start = None
-    candidates: list[tuple[int, int]] = []
-    for index in range(marker.end(), limit):
+    for index in range(brace, len(cleaned)):
         if cleaned[index] == "{":
-            if depth == 0:
-                start = index
             depth += 1
         elif cleaned[index] == "}":
-            if depth == 0:
-                break
             depth -= 1
             if depth == 0:
-                assert start is not None
-                candidates.append((start, index + 1))
-    if candidates:
-        start, end = candidates[-1]
-        return cleaned[start:end]
+                return cleaned[brace : index + 1]
     raise ValueError(f"unbalanced production call-site body: {name}")
 
 
@@ -113,9 +120,15 @@ def _definition_body(definition: str, name: str) -> str:
     return definition[start:end]
 
 
-def _ensures_contract(definition: str, body: str, name: str) -> str:
+def _proof_contract(definition: str, body: str, name: str) -> str:
     body_start = definition.rfind(body)
     contract = definition[:body_start]
+    if re.search(r"\bensures\b", contract) is None:
+        raise ValueError(f"Verus function has no ensures contract: {name}")
+    return contract
+
+
+def _ensures_contract(contract: str, name: str) -> str:
     marker = re.search(r"\bensures\b", contract)
     if marker is None:
         raise ValueError(f"Verus function has no ensures contract: {name}")
@@ -156,7 +169,8 @@ def validate_proof_binding(
         cleaned_pass, proof, proof_function=kind != "executable"
     )
     body = _definition_body(definition, proof)
-    ensures = _ensures_contract(definition, body, proof)
+    contract = _proof_contract(definition, body, proof)
+    ensures = _ensures_contract(contract, proof)
     if kind == "executable":
         result = re.search(r"->\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", definition)
         if result is None or re.search(rf"\b{re.escape(result.group(1))}\b", ensures) is None:
@@ -189,6 +203,99 @@ def production_call_site_path(path_text: str) -> Path:
     ):
         raise ValueError(f"production call-site is outside Rust production roots: {path_text}")
     return path
+
+
+def production_call_is_canonical(
+    body: str, kernel: str, path: Path, *, source_scope: str | None = None
+) -> bool:
+    escaped = re.escape(kernel)
+    resolved = path.resolve()
+    source_scope = body if source_scope is None else source_scope
+    alias_or_shadow = (
+        re.search(
+            rf"\buse\b[^;]*\b{escaped}\b(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*;",
+            source_scope,
+        )
+        or re.search(rf"\buse\b[^;]*\b{escaped}_body\b[^;]*;", source_scope)
+        or re.search(rf"\blet\s+(?:mut\s+)?{escaped}\b", body)
+        or re.search(rf"\b(?:fn|struct|enum|type|const|static)\s+{escaped}\b", body)
+        or re.search(rf"\blet\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^;]*\b{escaped}\b", body)
+        or re.search(rf"\bmacro_rules\s*!\s*{escaped}_body\b", body)
+    )
+    if alias_or_shadow:
+        return False
+    symbol_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_])(?P<path>(?:::)?"
+        rf"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*{escaped})\b"
+    )
+    macro_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_])(?P<path>(?:::)?"
+        rf"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*{escaped}_body)\s*!\s*[({{\[]"
+    )
+    calls = _rust_call_paths(body, symbol_pattern)
+    macros = {
+        re.sub(r"\s+", "", match.group("path"))
+        for match in macro_pattern.finditer(body)
+    }
+    if resolved == KERNEL.resolve():
+        return bool(calls or macros) and calls <= {f"self::{kernel}"} and macros <= {
+            f"{kernel}_body"
+        }
+    bridge_core_root = (ROOT / "canister" / "bridge-core" / "src").resolve()
+    bridge_canister_root = (ROOT / "canister" / "bridge-canister" / "src").resolve()
+    if bridge_core_root in resolved.parents:
+        expected = f"crate::kernel::{kernel}"
+    elif bridge_canister_root in resolved.parents:
+        expected = f"::bridge_core::kernel::{kernel}"
+    else:
+        return False
+    return bool(calls) and calls == {expected} and not macros
+
+
+def _skip_whitespace(source: str, offset: int) -> int:
+    while offset < len(source) and source[offset].isspace():
+        offset += 1
+    return offset
+
+
+def _turbofish_end(source: str, offset: int) -> int | None:
+    offset = _skip_whitespace(source, offset)
+    if not source.startswith("::", offset):
+        return offset
+    offset = _skip_whitespace(source, offset + 2)
+    if offset >= len(source) or source[offset] != "<":
+        return None
+    angle_depth = 0
+    delimiters: list[str] = []
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for index in range(offset, len(source)):
+        character = source[index]
+        if character in "([{":
+            delimiters.append(character)
+        elif character in pairs:
+            if not delimiters or delimiters.pop() != pairs[character]:
+                return None
+        elif not delimiters and character == "<":
+            angle_depth += 1
+        elif not delimiters and character == ">":
+            angle_depth -= 1
+            if angle_depth == 0:
+                return index + 1
+            if angle_depth < 0:
+                return None
+    return None
+
+
+def _rust_call_paths(source: str, pattern: re.Pattern[str]) -> set[str]:
+    calls: set[str] = set()
+    for match in pattern.finditer(source):
+        offset = _turbofish_end(source, match.end())
+        if offset is None:
+            continue
+        offset = _skip_whitespace(source, offset)
+        if offset < len(source) and source[offset] == "(":
+            calls.add(re.sub(r"\s+", "", match.group("path")))
+    return calls
 
 
 def _balanced(source: str, start: int, opening: str, closing: str) -> tuple[str, int]:
@@ -408,12 +515,15 @@ def validate_derived_dependencies(
 
 
 def main() -> int:
-    obligations = parse_verus_manifest(MANIFEST.read_text(encoding="utf-8"))
+    manifest = MANIFEST.read_bytes()
+    obligations = parse_verus_manifest(manifest.decode())
     validate_derived_dependencies(obligations)
     kernel_source = KERNEL.read_text(encoding="utf-8")
     cleaned_kernel = strip_comments_and_strings(kernel_source)
-    pass_source = PASS.read_text(encoding="utf-8")
+    pass_bytes = PASS.read_bytes()
+    pass_source = pass_bytes.decode()
     cleaned_pass = strip_comments_and_strings(pass_source)
+    require_profile("security-hardening-v1")
     cleaned_sources: dict[Path, str] = {KERNEL.resolve(): cleaned_kernel}
 
     for obligation in obligations.values():
@@ -450,20 +560,9 @@ def main() -> int:
                 )
             cleaned = cleaned_sources[path]
             body = rust_body(cleaned, function)
-            imported_kernel = re.escape(obligation.kernel)
-            imported = re.search(
-                rf"\buse\s+bridge_core\s*::\s*\{{[^}}]*\b{imported_kernel}\b[^}}]*\}}\s*;",
-                cleaned,
-                re.DOTALL,
-            ) is not None
-            unqualified = re.search(
-                rf"(?<![A-Za-z0-9_:]){re.escape(obligation.kernel)}\s*\(", body
-            ) is not None and re.search(
-                rf"\b(?:let|fn)\s+{re.escape(obligation.kernel)}\b", body
-            ) is None
-            if not production_body_calls(
-                body, obligation.kernel, kernel_internal=path == KERNEL.resolve()
-            ) and not (imported and unqualified):
+            if not production_call_is_canonical(
+                body, obligation.kernel, path, source_scope=cleaned
+            ):
                 raise ValueError(
                     f"production call-site does not call registered kernel: "
                     f"{call_site} -> {obligation.kernel}"
@@ -483,7 +582,11 @@ def main() -> int:
             f"missing={sorted(actual_specs - registered_specs)} "
             f"extra={sorted(registered_specs - actual_specs)}"
         )
-    actual_fixtures = {path.name for path in FAIL.glob("*.rs")}
+    actual_fixtures = {
+        path.relative_to(FAIL).as_posix()
+        for path in FAIL.rglob("*.rs")
+        if path.is_file()
+    }
     registered_fixtures = {obligation.fixture for obligation in obligations.values()}
     if registered_fixtures != actual_fixtures:
         raise ValueError(
