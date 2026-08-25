@@ -12,7 +12,7 @@ import { isDepositPhase } from "@/lib/settlement-phase"
 
 const CALL_TIMEOUT_MS = 120_000
 const OISY_SIGNER_URL = "https://oisy.com/sign"
-const BRIDGE_SERVICE = idlFactory({ IDL: LegacyIDL }) as IDL.ServiceClass
+const BRIDGE_SERVICE = idlFactory({ IDL: LegacyIDL })
 
 type BridgeWalletMethod = "request_deposit" | "request_deposit_refund"
 

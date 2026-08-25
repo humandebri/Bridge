@@ -4,8 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { idlFactory } from "@/generated/bridge.idl"
 import { decodeDepositReply, OisyAdapter, PlugAdapter, requestDepositRefundErrorMessage } from "./wallet"
 
-// didc's runtime JS intentionally has no static return type; the checked-in TS binding is the typed contract.
-// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const bridgeService: IDL.ServiceClass = idlFactory({ IDL })
 function resultType(method: "request_deposit") {
   const codec = (bridgeService._fields as Array<[string, IDL.FuncClass]>).find(([name]) => name === method)?.[1]
