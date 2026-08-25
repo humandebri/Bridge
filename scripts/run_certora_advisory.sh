@@ -9,6 +9,32 @@ CERTORA_PROJECT="$ROOT/verification/certora"
 OUTPUT_ROOT="$ROOT/verification/output/certora"
 export PATH="$ROOT/.tools/bin:$PATH"
 
+redact_certora_output() {
+  local source="$1"
+  local destination="$2"
+  CERTORA_REDACT_VALUE="${CERTORAKEY:-}" python3 - "$source" "$destination" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+source, destination = map(Path, sys.argv[1:])
+text = source.read_text(encoding="utf-8", errors="replace")
+secret = os.environ.get("CERTORA_REDACT_VALUE", "")
+if secret:
+    text = text.replace(secret, "[REDACTED_CERTORAKEY]")
+text = re.sub(r"([?&][A-Za-z0-9_.~-]+=)[^&\s]+", r"\1[REDACTED]", text)
+destination.write_text(text, encoding="utf-8")
+PY
+}
+
+if [[ "${1:-}" == "--test-redaction" ]]; then
+  [[ $# == 3 ]] || { echo "usage: $0 --test-redaction SOURCE DESTINATION" >&2; exit 2; }
+  redact_certora_output "$2" "$3"
+  cat "$3"
+  exit 0
+fi
+
 case "$MODE" in compile|cloud) ;; *) echo "usage: $0 {compile|cloud} {bridge|bsns|timelock|all}" >&2; exit 2 ;; esac
 case "$TARGET" in bridge|bsns|timelock|all) ;; *) echo "unknown Certora target: $TARGET" >&2; exit 2 ;; esac
 if [[ "$MODE" == cloud && -z "${CERTORAKEY:-}" ]]; then
@@ -46,6 +72,7 @@ for item in "${targets[@]}"; do
   log="$OUTPUT_ROOT/$item.log"
   summary="$OUTPUT_ROOT/$item-summary.json"
   raw_log="$(mktemp "${TMPDIR:-/tmp}/certora-$item.XXXXXX")"
+  chmod 600 "$raw_log"
   trap 'rm -f "${raw_log:-}"' EXIT
   python3 "$ROOT/scripts/proof_fingerprint.py" --write "$baseline" >/dev/null
   started="$(date +%s)"
@@ -53,8 +80,8 @@ for item in "${targets[@]}"; do
   args=("$config")
   if [[ "$MODE" == compile ]]; then args+=(--compilation_steps_only); fi
   set +e
-  (cd "$ROOT" && "${certora[@]}" "${args[@]}") 2>&1 | tee "$raw_log"
-  job_status=${PIPESTATUS[0]}
+  (cd "$ROOT" && "${certora[@]}" "${args[@]}") >"$raw_log" 2>&1
+  job_status=$?
   set -e
   finished="$(date +%s)"
   python3 "$ROOT/scripts/proof_fingerprint.py" --check "$baseline" >/dev/null
@@ -69,23 +96,9 @@ for item in "${targets[@]}"; do
     echo "Certora reported timeout, unknown, sanity, or assertion-resolution problems" >&2
     job_status=1
   fi
-  report_url="$(rg -o 'https://[^[:space:]]*certora[^[:space:]]*' "$raw_log" | tail -n 1 || true)"
-  if (( public_report != 0 )); then report_url=""; fi
-  CERTORA_REDACT_VALUE="${CERTORAKEY:-}" python3 - "$raw_log" "$log" <<'PY'
-import os
-import re
-import sys
-from pathlib import Path
-
-source, destination = map(Path, sys.argv[1:])
-text = source.read_text(encoding="utf-8", errors="replace")
-secret = os.environ.get("CERTORA_REDACT_VALUE", "")
-if secret:
-    text = text.replace(secret, "[REDACTED_CERTORAKEY]")
-text = re.sub(r"([?&]anonymousKey=)[^&\s]+", r"\1[REDACTED]", text)
-destination.write_text(text, encoding="utf-8")
-PY
-  python3 - "$summary" "$item" "$MODE" "$job_status" "$started" "$finished" "$baseline" "$cli_version" "$solc_version" "$report_url" "$git_commit" "$ROOT" "$config" <<'PY'
+  redact_certora_output "$raw_log" "$log"
+  cat "$log"
+  python3 - "$summary" "$item" "$MODE" "$job_status" "$started" "$finished" "$baseline" "$cli_version" "$solc_version" "$git_commit" "$ROOT" "$config" <<'PY'
 import json
 import re
 import sys
@@ -101,7 +114,6 @@ from pathlib import Path
     baseline,
     cli,
     solc,
-    report,
     commit,
     root,
     config_path,
@@ -129,7 +141,6 @@ Path(path).write_text(
             "prover_version": "release/15June2026",
             "solc": solc.strip(),
             "rule_results": {rule: result for rule in rules},
-            **({"private_report_url": report} if report else {}),
         },
         indent=2,
     ) + "\n",

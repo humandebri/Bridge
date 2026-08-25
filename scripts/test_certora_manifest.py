@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -66,6 +68,38 @@ class CertoraManifestTests(unittest.TestCase):
         path.write_text(path.read_text(encoding="utf-8") + "\nrule unownedRule() { assert true; }\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "missing obligation ownership"):
             check_certora_manifest.validate(self.root)
+
+    def test_runner_redacts_secrets_before_console_and_artifact_output(self) -> None:
+        source = self.root / "raw-certora.log"
+        destination = self.root / "sanitized-certora.log"
+        secret = "certora-secret-value"
+        source.write_text(
+            f"key={secret}\n"
+            "https://prover.certora.com/output/?anonymousKey=public-token&jobId=private-token\n",
+            encoding="utf-8",
+        )
+        environment = os.environ.copy()
+        environment["CERTORAKEY"] = secret
+        result = subprocess.run(
+            [
+                str(ROOT / "scripts/run_certora_advisory.sh"),
+                "--test-redaction",
+                str(source),
+                str(destination),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        persisted = destination.read_text(encoding="utf-8")
+        for output in (result.stdout, result.stderr, persisted):
+            self.assertNotIn(secret, output)
+            self.assertNotIn("public-token", output)
+            self.assertNotIn("private-token", output)
+        self.assertIn("[REDACTED_CERTORAKEY]", persisted)
+        self.assertIn("anonymousKey=[REDACTED]", persisted)
+        self.assertIn("jobId=[REDACTED]", persisted)
 
 
 if __name__ == "__main__":
