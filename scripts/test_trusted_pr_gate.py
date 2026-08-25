@@ -124,14 +124,85 @@ class TrustedPrGateTests(unittest.TestCase):
             "node trusted-policy/ui/scripts/download-ledger-artifacts.mjs",
             workflow,
         )
+        profile_isolation = "prepare_trusted_dependencies.py" in workflow
+        if profile_isolation:
+            self.assertIn("BRIDGE_TRUSTED_DEPENDENCY_ROOT", workflow)
+            self.assertIn(
+                'pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install '
+                "--frozen-lockfile --ignore-scripts",
+                workflow,
+            )
+            self.assertIn(
+                'pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" install '
+                "--frozen-lockfile --ignore-scripts",
+                workflow,
+            )
+            checkout = next(
+                name
+                for name in (
+                    "Check out exact untrusted head as read-only container input",
+                    "Check out exact untrusted head as authenticated data input",
+                )
+                if name in workflow
+            )
+            self.assertLess(
+                workflow.index(checkout),
+                workflow.index("Authenticate and isolate profile dependency manifests"),
+            )
+            self.assertLess(
+                workflow.index("Authenticate and isolate profile dependency manifests"),
+                workflow.index("Install authenticated workspace dependencies"),
+            )
+            artifact_prefetch = workflow.index(
+                "Prefetch verified real-E2E ledger artifacts"
+            )
+            if artifact_prefetch < workflow.index(checkout):
+                self.assertIn(
+                    "pnpm --dir trusted-policy/ui install "
+                    "--frozen-lockfile --ignore-scripts",
+                    workflow,
+                )
+            else:
+                self.assertLess(
+                    workflow.index(
+                        "Authenticate and isolate profile dependency manifests"
+                    ),
+                    artifact_prefetch,
+                )
+            self.assertLess(
+                workflow.index("Build the pinned isolation image from trusted policy"),
+                workflow.index("Run selected trusted check"),
+            )
+            self.assertIn("trusted-policy/scripts/trusted-pr-container.sh", workflow)
+        else:
+            self.assertIn(
+                "pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts",
+                workflow,
+            )
+            self.assertIn(
+                "pnpm --dir trusted-policy install --frozen-lockfile",
+                workflow,
+            )
+            checkout = "Check out exact untrusted head as read-only container input"
+            self.assertLess(
+                workflow.index("Prefetch verified real-E2E ledger artifacts"),
+                workflow.index(checkout),
+            )
+            self.assertLess(
+                workflow.index("Build the pinned isolation image from trusted policy"),
+                workflow.index(checkout),
+            )
+            self.assertIn(
+                "trusted-policy/scripts/trusted-pr-container.sh source trusted-policy",
+                workflow,
+            )
         for prefetch in (
             "Prefetch locked Rust dependencies from trusted policy",
             "Prefetch pinned ICP recipes from trusted policy",
-            "Prefetch verified real-E2E ledger artifacts",
         ):
             self.assertLess(
                 workflow.index(prefetch),
-                workflow.index("Check out exact untrusted head as read-only container input"),
+                workflow.index(checkout),
             )
         self.assertLess(
             workflow.index("Build the pinned isolation image from trusted policy"),
