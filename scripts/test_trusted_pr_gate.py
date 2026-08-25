@@ -112,6 +112,19 @@ class TrustedPrGateTests(unittest.TestCase):
             'pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" install --frozen-lockfile --ignore-scripts',
             workflow,
         )
+        self.assertIn(
+            'node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic/postinstall.mjs"',
+            workflow,
+        )
+        self.assertIn(
+            'node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"',
+            workflow,
+        )
+        self.assertIn(
+            "contains(fromJSON(needs.classify.outputs.matrix), 'rust') || "
+            "contains(fromJSON(needs.classify.outputs.matrix), 'real')",
+            workflow,
+        )
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
         self.assertIn("trusted-policy/scripts/trusted-pr-container.sh", workflow)
         self.assertIn(

@@ -173,9 +173,11 @@ jobs:
       - name: Prefetch verified real-E2E ledger artifacts
         if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
         run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
-      - name: Prefetch PocketIC runtime for real E2E
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
-        run: node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
+      - name: Prefetch PocketIC runtime for integration checks
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'rust') || contains(fromJSON(needs.classify.outputs.matrix), 'real')
+        run: |
+          node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic/postinstall.mjs"
+          node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
       - name: Build the pinned isolation image from trusted policy
         run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
       - name: Verify isolation mount boundaries
