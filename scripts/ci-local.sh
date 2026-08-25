@@ -148,6 +148,7 @@ run_versions() {
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
   if [[ "$proof_profile" == "security-hardening-v1" ]]; then
+    forge build --root "$ROOT/contracts" --ast
     python3 "$ROOT/scripts/check_certora_manifest.py"
     python3 "$ROOT/scripts/test_certora_manifest.py"
     python3 "$ROOT/scripts/test_proof_impact.py"
