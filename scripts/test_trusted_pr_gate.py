@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 
+from trusted_proof_profiles import select_profile
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
@@ -80,8 +82,16 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
-        self.assertIn("proofs) mode=\"all\"", workflow)
-        self.assertIn("*) mode=\"ci\"", workflow)
+        profile = select_profile(ROOT).identifier
+        if profile == "current-main":
+            self.assertIn("proofs) mode=\"all\"", workflow)
+            self.assertIn("*) mode=\"ci\"", workflow)
+        elif profile == "security-hardening-v1":
+            self.assertIn("if jq -e 'index(\"proofs\") != null'", workflow)
+            self.assertIn('then mode="all"; else mode="ci"; fi', workflow)
+        else:  # pragma: no cover - profile selection itself is fail closed
+            self.fail(f"unsupported trusted profile: {profile}")
+        self.assertEqual(workflow.count("docker build --file"), 1)
         self.assertIn("actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn("actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn(
@@ -98,7 +108,18 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("ICP_CLI_DISABLE_UPDATE: \"1\"", workflow)
         self.assertIn("ICP_TELEMETRY_DISABLED: \"1\"", workflow)
+        self.assertIn("prepare_trusted_dependencies.py", workflow)
+        self.assertIn("BRIDGE_TRUSTED_DEPENDENCY_ROOT", workflow)
+        self.assertIn(
+            'pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts',
+            workflow,
+        )
+        self.assertIn(
+            'pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" install --frozen-lockfile --ignore-scripts',
+            workflow,
+        )
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
+        self.assertIn("trusted-policy/scripts/trusted-pr-container.sh", workflow)
         self.assertIn(
             "node trusted-policy/ui/scripts/download-ledger-artifacts.mjs",
             workflow,
@@ -183,7 +204,19 @@ class TrustedPrGateTests(unittest.TestCase):
                 workflow.index(prefetch),
                 workflow.index(checkout),
             )
+        self.assertLess(
+            workflow.index("Build the pinned isolation image from trusted policy"),
+            workflow.index("Check out exact untrusted head as read-only container input"),
+        )
+        self.assertLess(
+            workflow.index("Check out exact untrusted head as read-only container input"),
+            workflow.index("Authenticate and isolate profile dependency manifests"),
+        )
         self.assertNotIn("pnpm --dir source/ui install", workflow)
+        self.assertLess(
+            workflow.index("Authenticate and isolate profile dependency manifests"),
+            workflow.index("Install authenticated workspace dependencies"),
+        )
 
     def test_each_check_uses_fresh_read_only_container_boundaries(self) -> None:
         wrapper = (ROOT / "scripts" / "trusted-pr-container.sh").read_text(encoding="utf-8")
@@ -194,23 +227,20 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("--cap-drop ALL", wrapper)
         self.assertIn("dst=/workspace,readonly", wrapper)
         self.assertIn("dst=/workspace/scripts,readonly", wrapper)
-        materializes_candidate_scripts = "bridge_materialize_regular_git_tree" in wrapper
-        script_source = (
-            "$SCRATCH/candidate-scripts"
-            if materializes_candidate_scripts
-            else "$SOURCE_ROOT/scripts"
+        self.assertIn(
+            "src=$SCRATCH/candidate-scripts/plan007/generate-local-e2e.mjs,"
+            "dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly",
+            wrapper,
         )
-        for script in ("generate-local-e2e.mjs", "test-generate-local-e2e.mjs"):
-            self.assertIn(
-                f"src={script_source}/plan007/{script},"
-                f"dst=/workspace/scripts/plan007/{script},readonly",
-                wrapper,
-            )
-        if materializes_candidate_scripts:
-            self.assertIn("DEPENDENCY_ROOT", wrapper)
-            self.assertNotIn("src=$POLICY_ROOT/node_modules", wrapper)
+        self.assertIn(
+            "src=$SCRATCH/candidate-scripts/plan007/test-generate-local-e2e.mjs,"
+            "dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly",
+            wrapper,
+        )
         self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
+        self.assertIn("DEPENDENCY_ROOT", wrapper)
+        self.assertNotIn("src=$POLICY_ROOT/node_modules", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.vite-temp", wrapper)
         self.assertIn("dst=/workspace/ui/.e2e-runtime", wrapper)
@@ -280,31 +310,13 @@ class TrustedPrGateTests(unittest.TestCase):
         resolution = (ROOT / "scripts" / "source_resolution.py").read_text(
             encoding="utf-8"
         )
-        if "bridge_materialize_regular_git_tree" in wrapper:
-            helper = (ROOT / "scripts" / "trusted-pr-mountpoints.sh").read_text(
-                encoding="utf-8"
-            )
-            self.assertNotIn('cp -p "$SOURCE_ROOT/$candidate_script"', wrapper)
-            self.assertIn(
-                'bridge_materialize_regular_git_tree "$SOURCE_ROOT" scripts', wrapper
-            )
-            self.assertIn('git -C "$root" ls-tree -rz HEAD', helper)
-            self.assertIn('"$mode" == "100644" || "$mode" == "100755"', helper)
-            self.assertIn('git -C "$root" cat-file blob "$object_id"', helper)
-            candidate_mount = (
-                'src=$SCRATCH/candidate-scripts,'
-                'dst=/scratch/candidate-scripts,readonly'
-            )
-        else:
-            self.assertIn('[[ -e "$POLICY_ROOT/$candidate_script" ]] && continue', wrapper)
-            self.assertIn('cp -p "$SOURCE_ROOT/$candidate_script"', wrapper)
-            self.assertIn('chmod +x "$POLICY_ROOT/$candidate_script"', wrapper)
-            candidate_mount = (
-                'src=$SOURCE_ROOT/scripts,'
-                'dst=/scratch/candidate-scripts,readonly'
-            )
+        self.assertNotIn('cp -p "$SOURCE_ROOT/$candidate_script"', wrapper)
+        self.assertIn("bridge_materialize_regular_git_tree", wrapper)
         self.assertIn("BRIDGE_CANDIDATE_SCRIPTS=/scratch/candidate-scripts", wrapper)
-        self.assertIn("".join(candidate_mount), wrapper)
+        self.assertIn(
+            'src=$SCRATCH/candidate-scripts,dst=/scratch/candidate-scripts,readonly',
+            wrapper,
+        )
         self.assertLess(
             wrapper.index("dst=/workspace/scripts,readonly"),
             wrapper.index("dst=/scratch/candidate-scripts,readonly"),
@@ -316,6 +328,15 @@ class TrustedPrGateTests(unittest.TestCase):
                 "from source_resolution import",
                 (ROOT / "scripts" / check).read_text(encoding="utf-8"),
             )
+
+    def test_candidate_script_materialization_rejects_symlinks(self) -> None:
+        helper = (ROOT / "scripts" / "trusted-pr-mountpoints.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("git -C \"$root\" ls-tree -rz HEAD", helper)
+        self.assertIn('"$mode" == "100644" || "$mode" == "100755"', helper)
+        self.assertIn("git -C \"$root\" cat-file blob \"$object_id\"", helper)
+        self.assertNotIn('cp -p "$root/$path"', helper)
         staging_upgrade_test = (
             ROOT / "scripts" / "plan007" / "test_staging_canister_upgrade.py"
         ).read_text(encoding="utf-8")
@@ -462,13 +483,9 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn(
             "Verus executable obligation does not call production symbol", driver
         )
-        legacy_manifest_check = """awk -F $'\\t' '$1 != "executable" { print $2 }'"""
-        if legacy_manifest_check in driver:
-            self.assertIn(legacy_manifest_check, driver)
-        else:
-            self.assertIn('python3 "$ROOT/scripts/check_verus_manifest.py"', driver)
-            self.assertIn("shared-expression|derived|model", driver)
-            self.assertIn('[[ "$obligation_id" == "schema" ]] && continue', driver)
+        self.assertIn('python3 "$ROOT/scripts/check_verus_manifest.py"', driver)
+        self.assertIn("shared-expression|derived|model)", driver)
+        self.assertIn('[[ "$obligation_id" == "schema" ]] && continue', driver)
 
     def test_pr_controlled_gate_does_not_return(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(

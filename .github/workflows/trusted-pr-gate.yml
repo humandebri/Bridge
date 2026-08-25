@@ -73,10 +73,6 @@ jobs:
   test:
     needs: classify
     if: needs.classify.outputs.any == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        area: ${{ fromJSON(needs.classify.outputs.matrix) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -103,9 +99,15 @@ jobs:
         uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.7.1
+      - name: Install uv 0.8.4
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'proofs')
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: 0.8.4
+          enable-cache: false
       - name: Restore cached proof toolchain
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: matrix.area == 'proofs'
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'proofs')
         with:
           path: |
             /home/runner/.elan
@@ -116,16 +118,19 @@ jobs:
           key: bridge-trusted-pr-proof-tools-${{ hashFiles('trusted-policy/lean-toolchain', 'trusted-policy/scripts/install-ci-tools.sh') }}
       - name: Install CI toolchain
         env:
-          AREA: ${{ matrix.area }}
+          AREAS: ${{ needs.classify.outputs.matrix }}
         run: |
-          case "$AREA" in
-            proofs) mode="all" ;;
-            *) mode="ci" ;;
-          esac
+          mode="ci"
+          while IFS= read -r area; do
+            case "$area" in
+              proofs) mode="all"; break ;;
+              *) mode="ci" ;;
+            esac
+          done < <(jq -r '.[]' <<< "$AREAS")
           trusted-policy/scripts/install-ci-tools.sh "$mode"
       - name: Save cached proof toolchain
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: matrix.area == 'proofs'
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'proofs')
         with:
           path: |
             /home/runner/.elan
@@ -146,15 +151,9 @@ jobs:
         run: pnpm --dir trusted-policy install --frozen-lockfile
       - name: Install trusted UI dependencies without lifecycle scripts
         run: pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts
-      - name: Install Chromium when required
-        if: matrix.area == 'ui' || matrix.area == 'real'
-        run: pnpm --dir trusted-policy/ui exec playwright install --with-deps chromium
       - name: Prefetch verified real-E2E ledger artifacts
-        if: matrix.area == 'real'
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
         run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
-      - name: Prefetch PocketIC runtime for real E2E
-        if: matrix.area == 'real'
-        run: node trusted-policy/ui/node_modules/@dfinity/pic/postinstall.mjs
       - name: Build the pinned isolation image from trusted policy
         run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
       - name: Check out exact untrusted head as read-only container input
@@ -166,32 +165,53 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      - name: Authenticate and isolate profile dependency manifests
+        run: |
+          dependency_root="$RUNNER_TEMP/bridge-trusted-dependencies"
+          profile="$(python3 trusted-policy/scripts/prepare_trusted_dependencies.py \
+            --source source --destination "$dependency_root")"
+          echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
+          echo "BRIDGE_TRUSTED_PROFILE=$profile" >> "$GITHUB_ENV"
+      - name: Install authenticated workspace dependencies without lifecycle scripts
+        run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts
+      - name: Install authenticated UI dependencies without lifecycle scripts
+        run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" install --frozen-lockfile --ignore-scripts
+      - name: Install Chromium when required
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'ui') || contains(fromJSON(needs.classify.outputs.matrix), 'real')
+        run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" exec playwright install --with-deps chromium
+      - name: Prefetch PocketIC runtime for real E2E
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
+        run: node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
+      - name: Verify isolation mount boundaries
+        run: trusted-policy/scripts/test_trusted_pr_container_mounts.sh kinic-bridge-trusted-pr:local
       - name: Run selected trusted check
         env:
-          AREA: ${{ matrix.area }}
+          AREAS: ${{ needs.classify.outputs.matrix }}
           BRIDGE_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run_check() {
-            trusted-policy/scripts/trusted-pr-container.sh source trusted-policy "$1"
+            trusted-policy/scripts/trusted-pr-container.sh source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"
           }
-          case "$AREA" in
-            rust)
-              run_check rust-fast
-              run_check rust-integration
-              ;;
-            contracts)
-              run_check contracts-fast
-              run_check contracts-coverage
-              ;;
-            proofs) run_check proofs ;;
-            ui)
-              run_check ui-fast
-              run_check ui-e2e
-              ;;
-            real) run_check real ;;
-            icp) run_check icp ;;
-            *) exit 2 ;;
-          esac
+          while IFS= read -r area; do
+            case "$area" in
+              rust)
+                run_check rust-fast
+                run_check rust-integration
+                ;;
+              contracts)
+                run_check contracts-fast
+                run_check contracts-coverage
+                ;;
+              proofs) run_check proofs ;;
+              ui)
+                run_check ui-fast
+                run_check ui-e2e
+                ;;
+              real) run_check real ;;
+              icp) run_check icp ;;
+              *) exit 2 ;;
+            esac
+          done < <(jq -r '.[]' <<< "$AREAS")
 
   trusted-pr-gate:
     if: always()

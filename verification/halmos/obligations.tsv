@@ -1,0 +1,4 @@
+schema	1	-	-	-	-	-
+obligation	mint_commit_state	supporting	contracts/test/halmos/BridgeMintCommitHalmos.t.sol#check_mint_commit_state	contracts/src/Bridge.sol#_commitAuthorizedMint	processed_update_omitted	deposit_admission;expiry_refund;exact_mint_finalization
+obligation	mint_commit_supply	supporting	contracts/test/halmos/BridgeMintCommitHalmos.t.sol#check_mint_commit_supply	contracts/src/Bridge.sol#_commitAuthorizedMint	supply_amount_mismatch	exact_mint_finalization;deposit_backing
+obligation	mint_commit_atomicity	supporting	contracts/test/halmos/BridgeMintCommitHalmos.t.sol#check_mint_commit_atomicity	contracts/src/Bridge.sol#_commitAuthorizedMint	rollback_omitted	expiry_refund;deposit_backing

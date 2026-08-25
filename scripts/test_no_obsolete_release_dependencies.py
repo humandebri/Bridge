@@ -24,7 +24,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
         temporary, root = self.root()
         self.addCleanup(temporary.cleanup)
         (root / "scripts/production-release.sh").write_text(
-            'scripts/build-v30-upgrade-fixture.sh\n', encoding="utf-8"
+            'scripts/plan007/capture-obsolete-pause-evidence.mjs\n', encoding="utf-8"
         )
         self.assertTrue(guard.violations(root))
 

@@ -22,7 +22,7 @@ class RefinementManifestTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def test_generator_supports_legacy_and_current_bridge_constructors(self) -> None:
+    def test_generator_rejects_legacy_and_accepts_only_current_bridge_constructor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.write_bridge_constructor(
@@ -33,14 +33,16 @@ class RefinementManifestTests(unittest.TestCase):
                 "uint256 initialPerDepositLimit, uint256 initialMintWindowLimit, "
                 "uint64 initialMintWindowDuration, uint256 maxServiceFee, uint256 initialServiceFee",
             )
-            self.assertEqual(generator.bridge_constructor_prefix(root), '"kinic", "KINIC", 8, ')
+            with self.assertRaisesRegex(ValueError, "unsupported Bridge constructor"):
+                generator.bridge_constructor_prefix(root)
 
             self.write_bridge_constructor(
                 root,
                 "address initialBridgeSigner, address initialRuntimeAdministrator, "
                 "address initialBaseAdminTimelock, bytes32 initialApprovedTimelockRuntimeCodeHash, "
                 "uint256 initialPerDepositLimit, uint256 initialMintWindowLimit, "
-                "uint64 initialMintWindowDuration, uint256 maxServiceFee, uint256 initialServiceFee",
+                "uint64 initialMintWindowDuration, uint256 minServiceFee, "
+                "uint256 maxServiceFee, uint256 initialServiceFee",
             )
             self.assertEqual(generator.bridge_constructor_prefix(root), "")
 
@@ -164,6 +166,22 @@ class RefinementManifestTests(unittest.TestCase):
         refinement.execute_consumer(consumer, Path("."), runner)
         self.assertEqual(calls, 2)
 
+    def test_vitest_consumer_uses_direct_binary_and_rejects_stdout_noise(self) -> None:
+        consumer = refinement.Consumer(
+            "example_cases", "example", "exampleImpl", "example_refinement", "vitest",
+            "ui/generated/example.test.ts", "protocol_example_cases_matches_production",
+        )
+        commands: list[object] = []
+
+        def runner(command: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess([], 0, "pnpm warning\n{}", "")
+
+        with self.assertRaisesRegex(ValueError, "non-JSON stdout"):
+            refinement.execute_consumer(consumer, Path("."), runner)
+        self.assertTrue(str(commands[0][0]).endswith("ui/node_modules/.bin/vitest"))
+        self.assertNotIn("pnpm", commands[0])
+
     def test_json_consumer_rejects_repeated_empty_success(self) -> None:
         consumer = refinement.Consumer(
             "example_cases", "example", "exampleImpl", "example_refinement", "vitest",
@@ -250,8 +268,8 @@ class RefinementManifestTests(unittest.TestCase):
             __import__("json").loads(refinement.VECTORS.read_text(encoding="utf-8")),
             refinement.MANIFEST.read_text(encoding="utf-8"),
             refinement.MODEL.read_text(encoding="utf-8"),
-            refinement.IMPLEMENTATION.read_text(encoding="utf-8"),
-            refinement.REFINEMENT.read_text(encoding="utf-8"),
+            refinement.FINITE_WIDTH_MODEL.read_text(encoding="utf-8"),
+            refinement.MODEL_REFINEMENT.read_text(encoding="utf-8"),
         )
         self.assertGreater(len(consumers), 0)
 

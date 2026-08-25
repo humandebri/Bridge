@@ -66,7 +66,7 @@ if PATH="$T/bin:$PATH" TRACE="$TRACE" MANAGE_NEURON_AT="$T/manage-neuron-at" "$R
   echo "activation proposal accepted an identity/principal mismatch" >&2
   exit 1
 fi
-[[ -e "$T/rejected.json" && ! -s "$T/rejected.json" ]]
+[[ ! -e "$T/rejected.json" ]]
 [[ "$(grep -c manage_neuron "$TRACE")" -eq 1 ]]
 
 echo "production activation proposal tests passed"

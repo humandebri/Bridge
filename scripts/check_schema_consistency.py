@@ -65,6 +65,11 @@ def main() -> None:
             1,
         ),
         (
+            "canister/bridge-canister/src/storage/mod.rs",
+            r"INSERT INTO bridge_metadata VALUES \(1, (\d+), \d+\);",
+            1,
+        ),
+        (
             "tools/bridge-profile/src/main.rs",
             r"CURRENT_STABLE_SCHEMA_VERSION: u16 = (\d+);",
             1,
@@ -102,6 +107,11 @@ def main() -> None:
             2,
         ),
         ("docs/implementation-plan.md", r"record wire v(\d+)", 1),
+        (
+            "canister/bridge-canister/src/storage/mod.rs",
+            r"INSERT INTO bridge_metadata VALUES \(1, \d+, (\d+)\);",
+            1,
+        ),
     )
     for path, pattern, expected_count in wire_checks:
         require_versions(path, pattern, wire_version, expected_count)

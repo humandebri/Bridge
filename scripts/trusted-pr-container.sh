@@ -5,6 +5,7 @@ set -euo pipefail
 SOURCE_ROOT="$(cd "${1:?missing candidate source}" && pwd)"
 POLICY_ROOT="$(cd "${2:?missing trusted policy}" && pwd)"
 MODE="${3:?missing CI mode}"
+DEPENDENCY_ROOT="$(cd "${4:?missing authenticated dependencies}" && pwd)"
 IMAGE="${BRIDGE_TRUSTED_PR_IMAGE:-kinic-bridge-trusted-pr:local}"
 
 case "$MODE" in
@@ -14,9 +15,9 @@ esac
 
 [[ -d "$SOURCE_ROOT/.git" && ! -L "$SOURCE_ROOT" ]] || { echo "candidate source must be a checkout" >&2; exit 1; }
 [[ -d "$POLICY_ROOT/scripts" && ! -L "$POLICY_ROOT/scripts" ]] || { echo "trusted policy is invalid" >&2; exit 1; }
-[[ -d "$POLICY_ROOT/node_modules" && ! -L "$POLICY_ROOT/node_modules" ]] \
+[[ -d "$DEPENDENCY_ROOT/node_modules" && ! -L "$DEPENDENCY_ROOT/node_modules" ]] \
   || { echo "trusted workspace dependencies are missing" >&2; exit 1; }
-[[ -d "$POLICY_ROOT/ui/node_modules" && ! -L "$POLICY_ROOT/ui/node_modules" ]] \
+[[ -d "$DEPENDENCY_ROOT/ui/node_modules" && ! -L "$DEPENDENCY_ROOT/ui/node_modules" ]] \
   || { echo "trusted UI dependencies are missing" >&2; exit 1; }
 [[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "${BRIDGE_EXPECTED_HEAD_SHA:?missing expected head SHA}" ]] \
   || { echo "candidate checkout SHA mismatch" >&2; exit 1; }
@@ -36,20 +37,14 @@ mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-ou
   "$SCRATCH/contracts-cache" "$SCRATCH/contracts-staging-out" "$SCRATCH/contracts-staging-cache" "$SCRATCH/ui-dist" \
   "$SCRATCH/ui-results" "$SCRATCH/ui-tsbuildinfo" "$SCRATCH/ui-vite-temp" "$SCRATCH/ui-vite" \
   "$SCRATCH/e2e-runtime" "$SCRATCH/proof-output" "$SCRATCH/lean-lake" "$SCRATCH/smt-out" "$SCRATCH/smt-cache" \
-  "$SCRATCH/icp-cache" "$SCRATCH/empty-tools" \
+  "$SCRATCH/icp-cache" "$SCRATCH/empty-tools" "$SCRATCH/candidate-scripts" \
   "$SCRATCH/home/.svm" "$SCRATCH/home/.elan/toolchains" \
   "$SCRATCH/home/.local/share/icp-cli/pkg" "$SCRATCH/home/.config"
 chmod -R 0777 "$SCRATCH"
 chmod 0555 "$SCRATCH/empty-tools"
 
 bridge_prepare_mountpoint "$SOURCE_ROOT" scripts
-while IFS= read -r candidate_script; do
-  [[ -f "$SOURCE_ROOT/$candidate_script" ]] || continue
-  [[ -e "$POLICY_ROOT/$candidate_script" ]] && continue
-  mkdir -p "$(dirname "$POLICY_ROOT/$candidate_script")"
-  cp -p "$SOURCE_ROOT/$candidate_script" "$POLICY_ROOT/$candidate_script"
-  chmod +x "$POLICY_ROOT/$candidate_script"
-done < <(git -C "$SOURCE_ROOT" ls-files scripts/)
+bridge_materialize_regular_git_tree "$SOURCE_ROOT" scripts "$SCRATCH/candidate-scripts"
 for path in node_modules ui/node_modules target contracts/out contracts/cache \
   contracts/out-staging contracts/cache-staging \
   ui/dist ui/test-results .tools; do
@@ -59,9 +54,9 @@ done
 WRITABLE_UI_MOUNTS=()
 case "$MODE" in
   proofs|ui-fast|ui-e2e|real)
-    bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .tmp
-    bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .vite-temp
-    bridge_prepare_mountpoint "$POLICY_ROOT/ui/node_modules" .vite
+    bridge_prepare_mountpoint "$DEPENDENCY_ROOT/ui/node_modules" .tmp
+    bridge_prepare_mountpoint "$DEPENDENCY_ROOT/ui/node_modules" .vite-temp
+    bridge_prepare_mountpoint "$DEPENDENCY_ROOT/ui/node_modules" .vite
     WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp")
     WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-vite-temp,dst=/workspace/ui/node_modules/.vite-temp")
     WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/ui-vite,dst=/workspace/ui/node_modules/.vite")
@@ -70,14 +65,14 @@ esac
 if [[ "$MODE" == "real" ]]; then
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" ui/.e2e-runtime
   WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$SCRATCH/e2e-runtime,dst=/workspace/ui/.e2e-runtime")
-  pic_pkg="$(find "$POLICY_ROOT/ui/node_modules/.pnpm" -maxdepth 4 -type d \
+  pic_pkg="$(find "$DEPENDENCY_ROOT/ui/node_modules/.pnpm" -maxdepth 4 -type d \
     -path '*/@dfinity+pic@*/node_modules/@dfinity/pic' 2>/dev/null | head -n 1)"
   if [[ -n "$pic_pkg" ]]; then
     pic_scratch="$SCRATCH/pic-package"
     mkdir -p "$pic_scratch"
     cp -a "$pic_pkg/." "$pic_scratch/"
     chmod 0755 "$pic_scratch/pocket-ic" 2>/dev/null || true
-    pic_rel="${pic_pkg#"$POLICY_ROOT/"}"
+    pic_rel="${pic_pkg#"$DEPENDENCY_ROOT/"}"
     WRITABLE_UI_MOUNTS+=(--mount "type=bind,src=$pic_scratch,dst=/workspace/$pic_rel")
   else
     echo "trusted real-E2E @dfinity/pic package is missing" >&2
@@ -91,11 +86,13 @@ if [[ "$MODE" == "proofs" ]]; then
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/lean/.lake
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/smt/out
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/smt/cache
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/halmos/.venv
   WRITABLE_BUILD_MOUNTS+=(
     --mount "type=bind,src=$SCRATCH/proof-output,dst=/workspace/verification/output"
     --mount "type=bind,src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake"
     --mount "type=bind,src=$SCRATCH/smt-out,dst=/workspace/verification/smt/out"
     --mount "type=bind,src=$SCRATCH/smt-cache,dst=/workspace/verification/smt/cache"
+    --mount "type=bind,src=$POLICY_ROOT/verification/halmos/.venv,dst=/workspace/verification/halmos/.venv,readonly"
   )
 fi
 if [[ "$MODE" == "icp" ]]; then
@@ -148,11 +145,11 @@ docker run --rm \
   --security-opt no-new-privileges \
   --mount "type=bind,src=$SOURCE_ROOT,dst=/workspace,readonly" \
   --mount "type=bind,src=$POLICY_ROOT/scripts,dst=/workspace/scripts,readonly" \
-  --mount "type=bind,src=$SOURCE_ROOT/scripts/plan007/generate-local-e2e.mjs,dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly" \
-  --mount "type=bind,src=$SOURCE_ROOT/scripts/plan007/test-generate-local-e2e.mjs,dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly" \
-  --mount "type=bind,src=$SOURCE_ROOT/scripts,dst=/scratch/candidate-scripts,readonly" \
-  --mount "type=bind,src=$POLICY_ROOT/node_modules,dst=/workspace/node_modules,readonly" \
-  --mount "type=bind,src=$POLICY_ROOT/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
+  --mount "type=bind,src=$SCRATCH/candidate-scripts/plan007/generate-local-e2e.mjs,dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly" \
+  --mount "type=bind,src=$SCRATCH/candidate-scripts/plan007/test-generate-local-e2e.mjs,dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly" \
+  --mount "type=bind,src=$SCRATCH/candidate-scripts,dst=/scratch/candidate-scripts,readonly" \
+  --mount "type=bind,src=$DEPENDENCY_ROOT/node_modules,dst=/workspace/node_modules,readonly" \
+  --mount "type=bind,src=$DEPENDENCY_ROOT/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
   "${WRITABLE_UI_MOUNTS[@]}" \
   --mount "type=bind,src=$SCRATCH/target,dst=/workspace/target" \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \

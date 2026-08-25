@@ -9,6 +9,10 @@ import sys
 import tempfile
 
 import ci_changed_areas
+from trusted_proof_profiles import select_profile
+
+
+TRUSTED_PROOF_PROFILE = select_profile().identifier
 
 
 class ChangedAreaTests(unittest.TestCase):
@@ -49,11 +53,24 @@ class ChangedAreaTests(unittest.TestCase):
             "ui/src/lib/deposit-history.ts",
             "ui/src/lib/withdrawal-notification.ts",
             "ui/src/lib/withdrawal-submit.ts",
-            "ui/src/lib/runtime-validation.ts",
             "ui/src/lib/future-settlement-module.ts",
         ):
             with self.subTest(path=path):
-                self.assert_areas([path], "ui", "real")
+                expected = (
+                    ("ui", "real", "proofs")
+                    if path == "ui/src/lib/withdrawal-submit.ts"
+                    and TRUSTED_PROOF_PROFILE == "security-hardening-v1"
+                    else ("ui", "real")
+                )
+                self.assert_areas([path], *expected)
+
+    def test_proof_owned_runtime_validation_runs_proofs_and_real(self) -> None:
+        self.assert_areas(
+            ["ui/src/lib/runtime-validation.ts"],
+            "proofs",
+            "ui",
+            "real",
+        )
 
     def test_proof_change_runs_proofs_only(self) -> None:
         self.assert_areas(["verification/lean/Bridge.lean"], "proofs")
@@ -72,8 +89,13 @@ class ChangedAreaTests(unittest.TestCase):
     def test_submodule_change_runs_every_area(self) -> None:
         self.assert_areas([".gitmodules"], *ci_changed_areas.AREAS)
 
-    def test_bridge_profile_tool_runs_rust(self) -> None:
-        self.assert_areas(["tools/bridge-profile/src/main.rs"], "rust")
+    def test_bridge_profile_tool_runs_rust_and_owned_proofs(self) -> None:
+        self.assert_areas(["tools/bridge-profile/src/main.rs"], "rust", "proofs")
+
+    def test_every_proof_owned_source_enables_proofs(self) -> None:
+        for path in ci_changed_areas._proof_owned_paths():
+            with self.subTest(path=path):
+                self.assertTrue(ci_changed_areas.classify([path])["proofs"])
 
     def test_deployment_profiles_and_icp_mappings_run_every_area(self) -> None:
         self.assert_areas(

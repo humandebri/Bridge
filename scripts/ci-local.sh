@@ -32,6 +32,7 @@ CLEANUP_DONE=0
 UI_DEPENDENCIES_READY=0
 
 # shellcheck source=ci_guards.sh
+# shellcheck source=ci_guards.sh
 source "$ROOT/scripts/ci_guards.sh"
 
 cleanup_runtime() {
@@ -123,23 +124,20 @@ run_step() {
   return "$status"
 }
 
-verify_no_npm_lockfiles() {
-  local lockfile
-
-  for lockfile in \
-    "$ROOT/package-lock.json" \
-    "$ROOT/npm-shrinkwrap.json" \
-    "$ROOT/ui/package-lock.json" \
-    "$ROOT/ui/npm-shrinkwrap.json"; do
-    if [[ -e "$lockfile" ]]; then
-      echo "npm lockfile is forbidden; use pnpm-lock.yaml: $lockfile" >&2
-      return 1
-    fi
-  done
-}
-
 run_versions() {
-  verify_no_npm_lockfiles
+  local proof_profile
+  proof_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
+  verify_no_npm_lockfiles "$ROOT"
+  shellcheck -x -S warning \
+    "$ROOT/scripts/ci-local.sh" \
+    "$ROOT/scripts/production-release.sh" \
+    "$ROOT/scripts/production-validation.sh" \
+    "$ROOT/scripts/production-deploy-driver.sh" \
+    "$ROOT/scripts/production-activation-proposal.sh" \
+    "$ROOT/scripts/production-activate-driver.sh" \
+    "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/install-certora-solc.sh" \
+    "$ROOT/scripts/trusted-pr-container.sh"
   "$ROOT/scripts/check_tool_versions.sh"
   "$ROOT/scripts/test_tool_version_gate.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
@@ -148,9 +146,18 @@ run_versions() {
   verify_no_obsolete_withdrawal_terms \
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
-  python3 "$ROOT/scripts/test_live_fee_guard.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
-  python3 "$ROOT/scripts/test_proof_impact.py"
+  if [[ "$proof_profile" == "security-hardening-v1" ]]; then
+    forge build --root "$ROOT/contracts" --ast
+    python3 "$ROOT/scripts/check_certora_manifest.py"
+    python3 "$ROOT/scripts/test_certora_manifest.py"
+    python3 "$ROOT/scripts/test_proof_impact.py"
+  else
+    python3 "$ROOT/scripts/current_main_check_proof_impact.py"
+  fi
+  python3 "$ROOT/scripts/test_trusted_proof_profiles.py"
+  python3 "$ROOT/scripts/test_trusted_dependency_profiles.py"
+  python3 "$ROOT/scripts/test_proof_fingerprint_candidate_scripts.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
   "$ROOT/scripts/test_ci_guards.sh"
@@ -320,6 +327,8 @@ run_rust_fast() {
   run_no_automatic_execution_guards
   cargo fmt --manifest-path "$ROOT/Cargo.toml" --all --check
   cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" --workspace --all-targets -- -D warnings
+  cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" -p bridge-canister --all-targets \
+    --features test-deployment -- -D warnings
   cargo test --locked --manifest-path "$ROOT/Cargo.toml" --workspace
 }
 
@@ -339,6 +348,7 @@ run_rust_integration() {
   require_workspace_dependencies
   pnpm --dir "$ROOT" run governance-relayer:test
   pnpm --dir "$ROOT" run governance-relayer:typecheck
+  pnpm --dir "$ROOT" run integration:typecheck
   pnpm --dir "$ROOT" run test:e2e
   python3 "$ROOT/scripts/test_prepare_local_network.py"
   bash "$ROOT/scripts/test_ci_local_safety.sh"
@@ -393,12 +403,17 @@ build_smt_failure_fixture() {
     --root "$ROOT/verification/smt" \
     "${skip_args[@]}" \
     --force
+
 }
 
 run_smt() {
   local -a failure_fixtures=()
   local -a pass_skip_args=()
   local failure_fixture
+
+  if [[ "$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/smt_obligations.py" --check-sources
+  fi
 
   while IFS= read -r failure_fixture; do
     failure_fixtures+=("$failure_fixture")
@@ -410,13 +425,17 @@ run_smt() {
     "${pass_skip_args[@]}" \
     --force
 
+  if [[ "$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope smt
+  fi
+
   verify_smt_failure_fixtures \
     "$TMP_ROOT/smt-failures" \
     build_smt_failure_fixture \
     "${failure_fixtures[@]}"
 }
 
-run_verus() {
+run_verus_current() {
   local failure_fixture
   local failure_log
   local failure_status
@@ -567,6 +586,195 @@ run_verus() {
   done < <(rg --files "$ROOT/verification/verus/fail" -g '*.rs' | sort)
 }
 
+run_verus() {
+  if [[ "$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)" == "current-main" ]]; then
+    run_verus_current
+    return
+  fi
+  local failure_fixture
+  local failure_log
+  local failure_status
+  local kind
+  local kernel_name
+  local proof_name
+  local expected_fixture
+  local verus_version
+
+  verus_version="$(verus --version 2>&1)"
+  if ! output_has_matching_line "$verus_version" "$VERUS_VERSION_PATTERN"; then
+    echo "verus version mismatch for proofs" >&2
+    echo "$verus_version" >&2
+    return 1
+  fi
+
+  if rg -n '\b(assume|admit|external_body)\b' \
+    "$ROOT/canister/bridge-core/src/kernel.rs" \
+    "$ROOT/verification/verus/pass.rs" \
+    "$ROOT/verification/verus/fail"; then
+    echo "forbidden Verus proof escape found" >&2
+    return 1
+  fi
+
+  verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass"
+  python3 "$ROOT/scripts/check_verus_manifest.py"
+
+  while IFS=$'\t' read -r obligation_id kind kernel_name proof_name expected_fixture _binding _derived_bindings _production_calls _claim_ids; do
+    [[ "$obligation_id" == "schema" ]] && continue
+    case "$kind" in
+      shared-expression|derived|model)
+        rg -q "pub open spec fn ${kernel_name}_spec\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus manifest spec is missing: $kernel_name" >&2
+          return 1
+        }
+        rg -q "proof fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus manifest proof is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "${kernel_name}_spec\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
+          return 1
+        }
+        rg -q "pub (const )?fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          [[ "$kind" == "model" ]] || {
+            echo "non-model Verus kernel is missing: $kernel_name" >&2
+            return 1
+          }
+        }
+        ;;
+      executable)
+        rg -q "^fn ${proof_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus executable obligation is missing: $proof_name" >&2
+          return 1
+        }
+        rg -q "kernel::${kernel_name}\b" "$ROOT/verification/verus/pass.rs" || {
+          echo "Verus executable obligation does not call production symbol: $kernel_name" >&2
+          return 1
+        }
+        rg -q "kernel::${kernel_name}\b" "$ROOT/verification/verus/fail/$expected_fixture" || {
+          echo "Verus failure fixture does not call production symbol: $expected_fixture" >&2
+          return 1
+        }
+        rg -q "pub fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+          echo "Verus executable kernel is missing: $kernel_name" >&2
+          return 1
+        }
+        ;;
+      *)
+        echo "invalid Verus manifest kind: $kind" >&2
+        return 1
+        ;;
+    esac
+  done < "$ROOT/verification/verus/manifest.tsv"
+
+  while IFS= read -r failure_fixture; do
+    failure_log="$TMP_ROOT/verus-$(basename "$failure_fixture" .rs).log"
+    set +e
+    verus --no-cheating "$failure_fixture" \
+      -o "$TMP_ROOT/verus-$(basename "$failure_fixture" .rs)" >"$failure_log" 2>&1
+    failure_status=$?
+    set -e
+    if [[ "$failure_status" -eq 0 ]]; then
+      echo "Verus accepted deliberate failing fixture: $failure_fixture" >&2
+      return 1
+    fi
+    if ! rg -qi "postcondition.*not satisfied|postcondition.*fail" "$failure_log"; then
+      echo "Verus fixture failed without expected postcondition violation: $failure_fixture" >&2
+      cat "$failure_log" >&2
+      return 1
+    fi
+  done < <(rg --files "$ROOT/verification/verus/fail" -g '*.rs' | sort)
+}
+
+run_halmos() {
+  local halmos_entry="$ROOT/verification/halmos/.venv/bin/halmos"
+  local halmos_python="$ROOT/verification/halmos/.venv/bin/python"
+  local -a halmos
+  local row_type
+  local obligation_id
+  local positive_link
+  local positive_path
+  local positive_contract
+  local positive_function
+  local positive_log
+  local failure_id
+  local failure_link
+  local failure_path
+  local failure_contract
+  local failure_function
+  local failure_log
+  local failure_status
+  local version
+
+  python3 "$ROOT/scripts/halmos_obligations.py" --check-sources
+
+  if [[ ! -x "$halmos_entry" || ! -x "$halmos_python" ]]; then
+    echo "missing locked Halmos environment; run uv sync --project verification/halmos --frozen" >&2
+    return 1
+  fi
+  python3 "$ROOT/scripts/halmos_environment.py" --check || return
+  halmos=("$halmos_python" "$halmos_entry")
+  version="$("${halmos[@]}" --version 2>&1)"
+  if [[ "$version" != "halmos 0.3.3" ]]; then
+    echo "Halmos version mismatch for proofs: $version" >&2
+    return 1
+  fi
+
+  while IFS=$'\t' read -r row_type obligation_id _strength positive_link \
+      _production_link _failure_ids _claim_ids; do
+    [[ "$row_type" == "schema" ]] && continue
+    positive_path="${positive_link%%#*}"
+    positive_function="${positive_link#*#}"
+    positive_contract="$(basename "$positive_path" .t.sol)"
+    positive_log="$TMP_ROOT/halmos-positive-$obligation_id.log"
+    if ! "${halmos[@]}" \
+      --root "$ROOT/contracts" \
+      --contract "$positive_contract" \
+      --function "$positive_function" \
+      --solver z3 \
+      --solver-timeout-assertion 30s \
+      --early-exit \
+      --no-status >"$positive_log" 2>&1; then
+      echo "Halmos positive obligation failed: $obligation_id" >&2
+      cat "$positive_log" >&2
+      return 1
+    fi
+    if ! rg -q 'Symbolic test result: 1 passed; 0 failed' "$positive_log" \
+      || rg -qi '\[FAIL\]|counterexample|timeout|unknown' "$positive_log"; then
+      echo "Halmos positive obligation did not complete exactly: $obligation_id" >&2
+      cat "$positive_log" >&2
+      return 1
+    fi
+  done < "$ROOT/verification/halmos/obligations.tsv"
+  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope bridge || return
+
+  while IFS=$'\t' read -r failure_id failure_link; do
+    failure_path="${failure_link%%#*}"
+    failure_function="${failure_link#*#}"
+    failure_contract="$(basename "$failure_path" .t.sol)Halmos"
+    failure_log="$TMP_ROOT/halmos-$failure_id.log"
+    set +e
+    "${halmos[@]}" \
+      --root "$ROOT/contracts" \
+      --contract "$failure_contract" \
+      --function "$failure_function" \
+      --solver z3 \
+      --solver-timeout-assertion 30s \
+      --early-exit \
+      --no-status >"$failure_log" 2>&1
+    failure_status=$?
+    set -e
+    if [[ "$failure_status" -eq 0 ]] \
+      || ! rg -q '\[FAIL\]' "$failure_log" \
+      || ! rg -qi 'counterexample' "$failure_log" \
+      || ! rg -q 'Symbolic test result: 0 passed; 1 failed' "$failure_log" \
+      || rg -qi 'timeout|unknown' "$failure_log"; then
+      echo "Halmos negative fixture did not produce one counterexample: $failure_id" >&2
+      cat "$failure_log" >&2
+      return 1
+    fi
+  done < "$ROOT/verification/halmos/failure-manifest.tsv"
+}
+
 run_lean_failure_fixtures() {
   local failure_fixture
   local failure_log
@@ -603,13 +811,13 @@ run_policy_vector_consumers() {
 }
 
 run_refinement_gate() {
-  python3 "$ROOT/scripts/test_transition_manifest.py" || return
-  python3 "$ROOT/scripts/check_transition_manifest.py" || return
+  python3 "$TRANSITION_MANIFEST_TEST" || return
+  python3 "$TRANSITION_MANIFEST_CHECK" || return
   python3 "$ROOT/scripts/test_reproducible_artifacts.py" || return
-  python3 "$ROOT/scripts/test_refinement_manifest.py" || return
-  python3 "$ROOT/scripts/generate_refinement_harness.py" --check || return
-  python3 "$ROOT/scripts/check_refinement_manifest.py" || return
-  python3 "$ROOT/scripts/check_proof_impact.py"
+  python3 "$REFINEMENT_MANIFEST_TEST" || return
+  python3 "$REFINEMENT_GENERATOR" --check || return
+  python3 "$REFINEMENT_MANIFEST_CHECK" || return
+  python3 "$PROOF_IMPACT_CHECK"
 }
 
 run_proof_stage() {
@@ -620,9 +828,18 @@ run_proof_stage() {
   set +e
   (
     set -e
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
-    "$@"
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null
+    python3 "$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+      echo "proof source fingerprint changed before stage: $stage" >&2
+      exit 1
+    }
+    if ! "$@"; then
+      echo "proof stage command failed: $stage" >&2
+      exit 1
+    fi
+    python3 "$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+      echo "proof source fingerprint changed during stage: $stage" >&2
+      exit 1
+    }
   )
   status=$?
   set -e
@@ -634,37 +851,90 @@ run_proof_stage() {
   printf '%s\t%s\t' "$stage" "$stage_status" >>"$PROOF_STAGE_RECEIPT"
   tr -d '\n' <"$PROOF_SOURCE_BASELINE" >>"$PROOF_STAGE_RECEIPT"
   printf '\n' >>"$PROOF_STAGE_RECEIPT"
-  python3 "$ROOT/scripts/write_proof_receipt.py" \
-    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"
+  if ! python3 "$PROOF_RECEIPT_WRITER" \
+    "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"; then
+    echo "proof receipt write failed after stage: $stage" >&2
+    return 1
+  fi
   return "$status"
 }
 
 run_proofs() {
+  PROOF_PROFILE="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
+  case "$PROOF_PROFILE" in
+    current-main)
+      CLAIM_CHECK="$ROOT/scripts/current_main_check_claim_manifest.py"
+      CLAIM_TEST_CHECK="$ROOT/scripts/current_main_check_claim_test_manifest.py"
+      CLAIM_TEST_TEST="$ROOT/scripts/current_main_test_claim_test_manifest.py"
+      CONCRETE_RUNTIME_TEST="$ROOT/scripts/current_main_test_concrete_runtime.sh"
+      FAILURE_MANIFEST_CHECK="$ROOT/scripts/current_main_check_failure_manifests.py"
+      PROOF_IMPACT_CHECK="$ROOT/scripts/current_main_check_proof_impact.py"
+      PROOF_FINGERPRINT="$ROOT/scripts/current_main_proof_fingerprint.py"
+      PROOF_RECEIPT_WRITER="$ROOT/scripts/current_main_write_proof_receipt.py"
+      REFINEMENT_GENERATOR="$ROOT/scripts/current_main_generate_refinement_harness.py"
+      REFINEMENT_MANIFEST_CHECK="$ROOT/scripts/current_main_check_refinement_manifest.py"
+      REFINEMENT_MANIFEST_TEST="$ROOT/scripts/current_main_test_refinement_manifest.py"
+      TRANSITION_MANIFEST_CHECK="$ROOT/scripts/current_main_check_transition_manifest.py"
+      TRANSITION_MANIFEST_TEST="$ROOT/scripts/current_main_test_transition_manifest.py"
+      ;;
+    security-hardening-v1)
+      CLAIM_CHECK="$ROOT/scripts/check_claim_manifest.py"
+      CLAIM_TEST_CHECK="$ROOT/scripts/check_claim_test_manifest.py"
+      CLAIM_TEST_TEST="$ROOT/scripts/test_claim_test_manifest.py"
+      CONCRETE_RUNTIME_TEST="$ROOT/scripts/test_concrete_runtime.sh"
+      FAILURE_MANIFEST_CHECK="$ROOT/scripts/check_failure_manifests.py"
+      PROOF_IMPACT_CHECK="$ROOT/scripts/check_proof_impact.py"
+      PROOF_FINGERPRINT="$ROOT/scripts/proof_fingerprint.py"
+      PROOF_RECEIPT_WRITER="$ROOT/scripts/write_proof_receipt.py"
+      REFINEMENT_GENERATOR="$ROOT/scripts/generate_refinement_harness.py"
+      REFINEMENT_MANIFEST_CHECK="$ROOT/scripts/check_refinement_manifest.py"
+      REFINEMENT_MANIFEST_TEST="$ROOT/scripts/test_refinement_manifest.py"
+      TRANSITION_MANIFEST_CHECK="$ROOT/scripts/check_transition_manifest.py"
+      TRANSITION_MANIFEST_TEST="$ROOT/scripts/test_transition_manifest.py"
+      ;;
+    *)
+      echo "unreachable trusted proof profile: $PROOF_PROFILE" >&2
+      return 1
+      ;;
+  esac
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
   PROOF_SOURCE_BASELINE="$TMP_ROOT/proof-source-fingerprint.json"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
-  python3 "$ROOT/scripts/proof_fingerprint.py" --write "$PROOF_SOURCE_BASELINE" >/dev/null
-  python3 "$ROOT/scripts/check_claim_manifest.py" >/dev/null
-  python3 "$ROOT/scripts/test_write_proof_receipt.py"
-  python3 "$ROOT/scripts/test_claim_test_manifest.py"
-  python3 "$ROOT/scripts/test_check_claim_manifest.py"
-  python3 "$ROOT/scripts/check_failure_manifests.py"
-  run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"
+  python3 "$PROOF_FINGERPRINT" --write "$PROOF_SOURCE_BASELINE" >/dev/null
+  python3 "$CLAIM_CHECK" >/dev/null
+  if [[ "$PROOF_PROFILE" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/test_write_proof_receipt.py"
+  fi
+  python3 "$CLAIM_TEST_TEST"
+  if [[ "$PROOF_PROFILE" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/test_check_claim_manifest.py"
+    python3 "$ROOT/scripts/test_halmos_environment.py"
+  fi
+  python3 "$ROOT/scripts/test_solidity_ast_bindings.py"
+  python3 "$ROOT/scripts/test_verus_manifest.py"
+  python3 "$ROOT/scripts/test_check_failure_manifests.py"
+  python3 "$ROOT/scripts/test_trusted_proof_profiles.py"
+  bash "$CONCRETE_RUNTIME_TEST"
+  python3 "$FAILURE_MANIFEST_CHECK"
+  run_proof_stage claim-manifest python3 "$CLAIM_CHECK"
   run_proof_stage lean run_lean_proofs
   run_proof_stage lean-negative run_lean_failure_fixtures
   run_proof_stage policy-vector-consumers run_policy_vector_consumers
   run_proof_stage refinement-gate run_refinement_gate
   run_proof_stage claim-transaction-tests \
-    python3 "$ROOT/scripts/check_claim_test_manifest.py"
+    python3 "$CLAIM_TEST_CHECK"
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt
+  if [[ "$PROOF_PROFILE" == "security-hardening-v1" ]]; then
+    run_proof_stage halmos-and-negative run_halmos
+  fi
   run_proof_stage verus-and-negative run_verus
   python3 -c \
     'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["complete"] is True' \
     "$PROOF_RECEIPT"
-  python3 "$ROOT/scripts/check_proof_impact.py" --receipt "$PROOF_RECEIPT"
+  python3 "$PROOF_IMPACT_CHECK" --receipt "$PROOF_RECEIPT"
   echo "proof_receipt=$PROOF_RECEIPT" >&2
 }
 
@@ -712,8 +982,8 @@ run_icp_build() {
 }
 
 wait_for_anvil() {
-  local attempt
-  for attempt in {1..50}; do
+  local _attempt
+  for _attempt in {1..50}; do
     if [[ -z "$ANVIL_PID" ]] || ! kill -0 "$ANVIL_PID" 2>/dev/null; then
       echo "spawned Anvil exited before becoming ready" >&2
       return 1
@@ -898,6 +1168,8 @@ restore_smoke_canister_state() {
 }
 
 run_smoke() {
+  local proof_profile
+  local -a bridge_fee_constructor_args
   local network_status="$TMP_ROOT/icp-network-status.json"
   local canister_status="$TMP_ROOT/canister-status.json"
   local bridge_status
@@ -921,28 +1193,37 @@ run_smoke() {
   local executor_role
   local default_admin_role
   local unpause_deposit_data
+  local rotate_signer_data
   local management_salt
   local current_service_fee
   local limit_caller
   local limit_signature
   local smoke_principal
   local bridge_init_args
-  local readonly bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-  local readonly runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
-  local readonly unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
-  local readonly independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
-  local readonly recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
-  local readonly deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
-  local readonly gross_amount="101000000"
-  local readonly service_fee="1000000"
-  local readonly minted_amount="100000000"
-  local readonly release_amount="50000000"
-  local readonly release_amount_out="49000000"
-  local readonly principal_owner="0x010203"
-  local readonly default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
-  local readonly timelock_delay_seconds="86400"
-  local readonly zero_address="0x0000000000000000000000000000000000000000"
-  local readonly zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
+  local bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  local -r rotated_bridge_signer="0x976EA74026E726554dB657fA54763abd0C3a0aa9"
+  local -r second_rotated_bridge_signer="0x14dC79964da2C08b23698B3D3cc7Ca32193d9955"
+  local -r runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+  local -r unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+  local -r independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
+  local -r recipient="0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
+  local -r deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
+  local -r gross_amount="101000000"
+  local -r service_fee="1000000"
+  proof_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
+  if [[ "$proof_profile" == "security-hardening-v1" ]]; then
+    bridge_fee_constructor_args=("1" "100000000" "$service_fee")
+  else
+    bridge_fee_constructor_args=("100000000" "$service_fee")
+  fi
+  local -r minted_amount="100000000"
+  local -r release_amount="50000000"
+  local -r release_amount_out="49000000"
+  local -r principal_owner="0x010203"
+  local -r default_subaccount="0x0000000000000000000000000000000000000000000000000000000000000000"
+  local -r timelock_delay_seconds="86400"
+  local -r zero_address="0x0000000000000000000000000000000000000000"
+  local -r zero_bytes32="0x0000000000000000000000000000000000000000000000000000000000000000"
 
   ensure_icp_network "$network_status"
   prepare_smoke_canister_state
@@ -956,6 +1237,10 @@ run_smoke() {
     bridge_contract = blob \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\";
     expected_bridge_runtime_sha256 = blob \"\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\";
     timelock_contract = blob \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\";
+    expected_timelock_minimum_delay_seconds = 86_400 : nat64;
+    expected_bsns_runtime_sha256 = blob \"\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\";
+    expected_bsns_decimals = 8 : nat8;
+    expected_minimum_service_fee = 10_000 : nat;
     deployment_instance_id = blob \"\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\";
     minimum_withdrawal_id = blob \"\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\01\";
     ecdsa_key_name = \"dfx_test_key\";
@@ -1110,7 +1395,7 @@ for field, (value, candid_type) in stable_fields.items():
     "src/BridgeTimelockController.sol:BridgeTimelockController" \
     "$timelock_delay_seconds" \
     "[$runtime_administrator]" \
-    "[$runtime_administrator]" \
+    "[$independent_canceller]" \
     "[$runtime_administrator]")"
   read -r timelock_delay _ <<<"$(
     cast call "$base_admin_timelock" "getMinDelay()(uint256)" --rpc-url http://127.0.0.1:8545
@@ -1134,15 +1419,15 @@ for field, (value, candid_type) in stable_fields.items():
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Governance Operator canceller role" \
+    "Governance Operator has no canceller role" \
     "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
-    "true"
+    "false"
   require_equal \
-    "legacy independent wallet has no canceller role" \
+    "independent canceller role" \
     "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$independent_canceller" \
       --rpc-url http://127.0.0.1:8545)" \
-    "false"
+    "true"
   require_equal \
     "independent canceller has no proposer role" \
     "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$independent_canceller" \
@@ -1176,9 +1461,6 @@ for field, (value, candid_type) in stable_fields.items():
 
   bridge_address="$(deploy_contract \
     "src/Bridge.sol:Bridge" \
-    "kinic" \
-    "KINIC" \
-    "8" \
     "$bridge_signer" \
     "$runtime_administrator" \
     "$base_admin_timelock" \
@@ -1186,8 +1468,7 @@ for field, (value, candid_type) in stable_fields.items():
     "1000000000000" \
     "10000000000000" \
     "3600" \
-    "100000000" \
-    "$service_fee")"
+    "${bridge_fee_constructor_args[@]}")"
   for limit_caller in "$bridge_signer" "$runtime_administrator" "$unauthorized_wallet"; do
     for limit_signature in \
       "setMintLimits(uint256,uint256,uint64)" \
@@ -1220,7 +1501,7 @@ for field, (value, candid_type) in stable_fields.items():
   token_symbol="$(cast call "$bsns_address" "symbol()(string)" --rpc-url http://127.0.0.1:8545)"
   token_version="$(cast call "$bsns_address" "version()(string)" --rpc-url http://127.0.0.1:8545)"
   read -r token_decimals _ <<<"$(cast call "$bsns_address" "decimals()(uint8)" --rpc-url http://127.0.0.1:8545)"
-  require_equal "bSNS name" "$token_name" '"kinic"'
+  require_equal "bSNS name" "$token_name" '"KINIC"'
   require_equal "bSNS symbol" "$token_symbol" '"KINIC"'
   require_equal "bSNS EIP-712 version" "$token_version" '"1"'
   require_equal "bSNS decimals" "$token_decimals" "8"
@@ -1237,6 +1518,9 @@ for field, (value, candid_type) in stable_fields.items():
   # waiting 24 hours. The same run separately verifies that the real admin wallet needs Timelock.
   cast rpc anvil_impersonateAccount "$base_admin_timelock" --rpc-url http://127.0.0.1:8545 >/dev/null
   cast rpc anvil_setBalance "$base_admin_timelock" 0x56BC75E2D63100000 --rpc-url http://127.0.0.1:8545 >/dev/null
+  cast send "$bridge_address" "rotateBridgeSigner(address)" "$rotated_bridge_signer" \
+    --rpc-url http://127.0.0.1:8545 --from "$base_admin_timelock" --unlocked >/dev/null
+  bridge_signer="$rotated_bridge_signer"
   cast send "$bridge_address" "unpauseDepositMints()" \
     --rpc-url http://127.0.0.1:8545 --from "$base_admin_timelock" --unlocked >/dev/null
   cast send "$bridge_address" "unpauseWithdrawals()" \
@@ -1248,7 +1532,7 @@ for field, (value, candid_type) in stable_fields.items():
     cast call "$bridge_address" "mintAuthorizationEpoch()(uint256)" \
       --rpc-url http://127.0.0.1:8545
   )"
-  deadline="$(( $(cast block latest --rpc-url http://127.0.0.1:8545 --field timestamp) + 7200 ))"
+  deadline="$(( $(cast block latest --rpc-url http://127.0.0.1:8545 --field timestamp) + 600 ))"
   typed_data="$(
     jq -cn \
       --arg deposit_id "$deposit_id" \
@@ -1408,13 +1692,14 @@ for field, (value, candid_type) in stable_fields.items():
     return 1
   fi
   unpause_deposit_data="$(cast calldata "unpauseDepositMints()")"
+  rotate_signer_data="$(cast calldata "rotateBridgeSigner(address)" "$second_rotated_bridge_signer")"
   management_salt="0x0000000000000000000000000000000000000000000000000000000000000001"
   cast send \
     "$base_admin_timelock" \
-    "schedule(address,uint256,bytes,bytes32,bytes32,uint256)" \
-    "$bridge_address" \
-    0 \
-    "$unpause_deposit_data" \
+    "scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)" \
+    "[$bridge_address,$bridge_address]" \
+    "[0,0]" \
+    "[$rotate_signer_data,$unpause_deposit_data]" \
     "$zero_bytes32" \
     "$management_salt" \
     "$timelock_delay_seconds" \
@@ -1423,10 +1708,10 @@ for field, (value, candid_type) in stable_fields.items():
     --unlocked >/dev/null
   if cast send \
     "$base_admin_timelock" \
-    "execute(address,uint256,bytes,bytes32,bytes32)" \
-    "$bridge_address" \
-    0 \
-    "$unpause_deposit_data" \
+    "executeBatch(address[],uint256[],bytes[],bytes32,bytes32)" \
+    "[$bridge_address,$bridge_address]" \
+    "[0,0]" \
+    "[$rotate_signer_data,$unpause_deposit_data]" \
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
@@ -1439,10 +1724,10 @@ for field, (value, candid_type) in stable_fields.items():
   cast rpc evm_mine --rpc-url http://127.0.0.1:8545 >/dev/null
   cast send \
     "$base_admin_timelock" \
-    "execute(address,uint256,bytes,bytes32,bytes32)" \
-    "$bridge_address" \
-    0 \
-    "$unpause_deposit_data" \
+    "executeBatch(address[],uint256[],bytes[],bytes32,bytes32)" \
+    "[$bridge_address,$bridge_address]" \
+    "[0,0]" \
+    "[$rotate_signer_data,$unpause_deposit_data]" \
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \

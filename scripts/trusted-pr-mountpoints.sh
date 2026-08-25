@@ -55,6 +55,42 @@ bridge_prepare_candidate_mountpoint() {
   bridge_prepare_mountpoint "$root" "$relative"
 }
 
+# Materialize an untrusted Git subtree without consulting checkout paths. This
+# rejects symlinks and special modes before any candidate-controlled pathname is
+# used as a host-side copy or bind-mount source.
+bridge_materialize_regular_git_tree() {
+  local root="${1:?missing candidate root}"
+  local subtree="${2:?missing candidate subtree}"
+  local destination="${3:?missing materialization destination}"
+  local record metadata path mode object_type object_id output parent
+
+  [[ -d "$destination" && ! -L "$destination" ]] \
+    || { echo "materialization destination must be a real directory: $destination" >&2; return 1; }
+  case "$subtree" in
+    /*|.|..|*/.|*/..|*//*|"")
+      echo "invalid Git subtree: $subtree" >&2
+      return 1
+      ;;
+  esac
+
+  while IFS= read -r -d '' record; do
+    metadata="${record%%$'\t'*}"
+    path="${record#*$'\t'}"
+    [[ "$path" == "$subtree/"* && "$path" != *$'\n'* && "$path" != *$'\r'* ]] \
+      || { echo "unsafe candidate path in Git index" >&2; return 1; }
+    read -r mode object_type object_id _ <<<"$metadata"
+    [[ "$object_type" == "blob" && ( "$mode" == "100644" || "$mode" == "100755" ) ]] \
+      || { echo "candidate scripts must be regular Git blobs: $path ($mode $object_type)" >&2; return 1; }
+    output="$destination/${path#"$subtree/"}"
+    parent="$(dirname "$output")"
+    mkdir -p -- "$parent"
+    [[ ! -L "$parent" && ! -e "$output" ]] \
+      || { echo "unsafe materialization target: $output" >&2; return 1; }
+    git -C "$root" cat-file blob "$object_id" >"$output"
+    chmod "${mode#100}" "$output"
+  done < <(git -C "$root" ls-tree -rz HEAD -- "$subtree/")
+}
+
 bridge_cleanup_mountpoints() {
   local index path status=0
 

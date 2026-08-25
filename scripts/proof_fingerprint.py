@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from source_resolution import logical_source_path, source_path, source_root
+
 
 ROOT = Path(__file__).resolve().parents[1]
 FINGERPRINT_SOURCE_ROOTS = (
@@ -19,11 +21,15 @@ FINGERPRINT_SOURCE_ROOTS = (
     ("verification", frozenset({".json", ".lean", ".rs", ".sol", ".toml", ".tsv"})),
 )
 FINGERPRINT_CONFIG_FILES = (
+    ".node-version",
     ".gitmodules",
     "Cargo.lock",
     "Cargo.toml",
+    "icp.yaml",
+    "lean-toolchain",
     "package.json",
     "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
     "rust-toolchain.toml",
     "ui/package.json",
     "ui/pnpm-lock.yaml",
@@ -34,6 +40,21 @@ FINGERPRINT_CONFIG_FILES = (
     "ui/vite.config.ts",
     "ui/vitest.config.ts",
 )
+FINGERPRINT_EXCLUDED_VERIFICATION_DIRS = (
+    ("output",),
+    ("lean", ".lake"),
+    ("smt", "out"),
+    ("smt", "cache"),
+    ("halmos", ".venv"),
+    ("certora", ".venv"),
+)
+
+
+def excluded_verification_path(path: Path, verification: Path) -> bool:
+    return any(
+        verification.joinpath(*parts) in path.parents
+        for parts in FINGERPRINT_EXCLUDED_VERIFICATION_DIRS
+    )
 
 
 def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> tuple[Path, ...]:
@@ -41,30 +62,30 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
         from check_proof_impact import load_manifest
 
         manifest = load_manifest(repo_root)
-    paths = {repo_root / source for area in manifest.areas for source in area.sources}
+    paths = {
+        source_path(source, repo_root)
+        for area in manifest.areas
+        for source in area.sources
+    }
     verification = repo_root / "verification"
     paths.update(
         path
         for path in verification.rglob("*")
         if path.is_file()
-        and verification / "output" not in path.parents
-        and ".lake" not in path.parts
+        and not excluded_verification_path(path, verification)
     )
     for relative_root, suffixes in FINGERPRINT_SOURCE_ROOTS:
-        source_root = repo_root / relative_root
-        if not source_root.is_dir():
+        resolved_root = source_root(relative_root, repo_root)
+        if not resolved_root.is_dir():
             raise ValueError(f"missing proof fingerprint root: {relative_root}")
         paths.update(
             path
-            for path in source_root.rglob("*")
+            for path in resolved_root.rglob("*")
             if path.is_file()
             and path.suffix in suffixes
             and not (
                 relative_root == "verification"
-                and (
-                    "output" in path.relative_to(source_root).parts
-                    or any(part.startswith(".") for part in path.relative_to(source_root).parts)
-                )
+                and excluded_verification_path(path, resolved_root)
             )
         )
     patches = repo_root / "ui" / "patches"
@@ -75,16 +96,25 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
     if missing:
         raise ValueError(
             "missing proof fingerprint inputs: "
-            + ", ".join(path.relative_to(repo_root).as_posix() for path in sorted(missing))
+            + ", ".join(
+                logical_source_path(path, repo_root).as_posix()
+                for path in sorted(missing)
+            )
         )
-    return tuple(sorted(paths))
+    logical_inputs: dict[str, Path] = {}
+    for path in paths:
+        logical = logical_source_path(path, repo_root).as_posix()
+        previous = logical_inputs.setdefault(logical, path)
+        if previous != path:
+            raise ValueError(f"duplicate logical proof fingerprint input: {logical}")
+    return tuple(logical_inputs[logical] for logical in sorted(logical_inputs))
 
 
 def source_fingerprint(repo_root: Path = ROOT, manifest: Any | None = None) -> dict[str, object]:
     digest = hashlib.sha256()
     inputs = fingerprint_inputs(repo_root, manifest)
     for path in inputs:
-        relative = path.relative_to(repo_root).as_posix().encode()
+        relative = logical_source_path(path, repo_root).as_posix().encode()
         content = path.read_bytes()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)

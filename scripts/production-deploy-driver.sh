@@ -76,14 +76,16 @@ PY
   tx="$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["transactionHash"])' <<<"$json")"
   checkpoint "${args_key}_submitted" "$expected" "$nonce" "$tx"
   receipt="$(cast receipt "$tx" --rpc-url "$BASE_RPC_URL" --json)" || { echo "track $tx; do not redeploy" >&2; exit 1; }
-  python3 - "$tx" "$expected" "$receipt" <<'PY'
+  if ! python3 - "$tx" "$expected" "$receipt" <<'PY'
 import json,re,sys
 tx,address,raw=sys.argv[1:];r=json.loads(raw);n=lambda v:int(str(v),16) if str(v).startswith('0x') else int(v)
 if not re.fullmatch(r'0x[0-9a-fA-F]{64}',tx) or n(r.get('status',0))!=1: raise SystemExit('deployment reverted')
 if r.get('contractAddress','').lower()!=address.lower(): raise SystemExit('receipt CREATE address mismatch')
 if not re.fullmatch(r'0x[0-9a-fA-F]{64}',str(r.get('blockHash',''))): raise SystemExit('receipt block hash is invalid')
 PY
-  [[ $? -eq 0 ]] || return 1
+  then
+    return 1
+  fi
   printf '%s\t%s\t%s\n' "$tx" "$(python3 -c 'import json,sys;v=json.loads(sys.stdin.read())["blockNumber"];print(int(v,16) if str(v).startswith("0x") else int(v))' <<<"$receipt")" "$(python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["blockHash"].lower())' <<<"$receipt")"
 }
 

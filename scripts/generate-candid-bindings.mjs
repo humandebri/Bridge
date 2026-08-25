@@ -40,6 +40,9 @@ function bind(did, target) {
   const result = spawnSync("didc", ["bind", resolve(root, did), "-t", target], { encoding: "utf8" })
   if (result.status !== 0) throw new Error(result.stderr || `didc ${target} binding failed for ${did}`)
   return result.stdout
+    .replaceAll("@dfinity/agent", "@icp-sdk/core/agent")
+    .replaceAll("@dfinity/candid", "@icp-sdk/core/candid")
+    .replaceAll("@dfinity/principal", "@icp-sdk/core/principal")
 }
 
 async function emit(path, contents) {
@@ -79,7 +82,16 @@ for (const definition of interfaces) {
   const runtime = bind(definition.did, "js")
   for (const path of definition.types) await emit(path, `${header}${types}`)
   for (const [path, isTypeScript] of definition.runtimes) {
-    await emit(path, `${header}${isTypeScript ? "// @ts-nocheck\n" : ""}${runtime}`)
+    const contents = isTypeScript
+      ? runtime.replaceAll(
+          "({ IDL }) =>",
+          '({ IDL }: Parameters<import("@icp-sdk/core/candid").IDL.InterfaceFactory>[0]) =>',
+        ).replace(
+          '({ IDL }: Parameters<import("@icp-sdk/core/candid").IDL.InterfaceFactory>[0]) => { return []; }',
+          '(_idl: Parameters<import("@icp-sdk/core/candid").IDL.InterfaceFactory>[0]) => { return []; }',
+        )
+      : runtime
+    await emit(path, `${header}${contents}`)
   }
   process.stdout.write(`${check ? "checked" : "generated"} ${definition.name} Candid bindings\n`)
 }

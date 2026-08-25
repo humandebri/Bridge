@@ -8,7 +8,6 @@ import difflib
 import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -96,29 +95,26 @@ def update() -> None:
 
 
 def check() -> None:
-    with tempfile.TemporaryDirectory(prefix="bridge-abi-") as directory:
-        temporary = Path(directory)
-        for name, identifier in TARGETS.items():
-            concrete = run_abi(identifier)
-            interface = run_abi(INTERFACES[name])
-            check_interface_subset(name, concrete, interface)
-            expected = SNAPSHOTS / f"{name}.json"
-            actual = encoded(canonical_abi(concrete))
-            if not expected.exists():
-                sys.stderr.write(f"missing ABI snapshot: {expected}\n")
-                raise SystemExit(1)
-            current = expected.read_text(encoding="utf-8")
-            if current != actual:
-                diff = difflib.unified_diff(
-                    current.splitlines(),
-                    actual.splitlines(),
-                    fromfile=str(expected),
-                    tofile=f"generated:{expected.name}",
-                    lineterm="",
-                )
-                sys.stderr.write("\n".join(diff) + "\n")
-                raise SystemExit(1)
-            (temporary / f"{name}.json").write_text(actual, encoding="utf-8")
+    for name, identifier in TARGETS.items():
+        concrete = run_abi(identifier)
+        interface = run_abi(INTERFACES[name])
+        check_interface_subset(name, concrete, interface)
+        expected = SNAPSHOTS / f"{name}.json"
+        actual = encoded(canonical_abi(concrete))
+        if not expected.exists():
+            sys.stderr.write(f"missing ABI snapshot: {expected}\n")
+            raise SystemExit(1)
+        current = expected.read_text(encoding="utf-8")
+        if current != actual:
+            diff = difflib.unified_diff(
+                current.splitlines(),
+                actual.splitlines(),
+                fromfile=str(expected),
+                tofile=f"generated:{expected.name}",
+                lineterm="",
+            )
+            sys.stderr.write("\n".join(diff) + "\n")
+            raise SystemExit(1)
 
 
 def main() -> int:

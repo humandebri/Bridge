@@ -140,7 +140,7 @@ verify_lean_no_proof_escape() {
     echo "no Lean proof source supplied" >&2
     return 1
   fi
-  if rg -n '\b(sorry|admit)\b' "$@" --glob '*.lean'; then
+  if rg -n '\b(sorry|admit)\b|^\s*(axiom|constant)\b' "$@" --glob '*.lean'; then
     echo "forbidden Lean proof escape found" >&2
     return 1
   fi

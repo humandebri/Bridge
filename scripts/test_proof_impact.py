@@ -67,16 +67,17 @@ class ProofImpactTests(unittest.TestCase):
         self.assertEqual(impact["stages"], [])
 
     def valid_receipt(self) -> dict[str, object]:
-        claims = build_claim_report()["claims"]
+        report = build_claim_report()
+        claims = report["claims"]
+        conditional_liveness = report["conditional_liveness"]
         current = {
             "algorithm": "sha256",
             "digest": "c" * 64,
             "input_count": 1,
         }
-        summary = {
-            status: sum(claim.get("status") == status for claim in claims)
-            for status in ("implementation-proved", "refinement-tested", "partial", "assumed")
-        }
+        summary = check_proof_impact.summarize_claim_report(
+            claims, conditional_liveness
+        )
         return {
             "schema": check_proof_impact.RECEIPT_SCHEMA,
             "required_stages": list(check_proof_impact.REQUIRED_STAGES),
@@ -91,6 +92,7 @@ class ProofImpactTests(unittest.TestCase):
             "source_fingerprint": current,
             "claim_report_schema": CLAIM_REPORT_SCHEMA,
             "claims": claims,
+            "conditional_liveness": conditional_liveness,
             "claim_summary": summary,
             "complete": True,
         }
@@ -135,7 +137,7 @@ class ProofImpactTests(unittest.TestCase):
             self.check_receipt(forged)
 
     def test_receipt_rejects_wrong_schema_and_untyped_stages(self) -> None:
-        for schema in (4, 3.0, True):
+        for schema in (6, 4, 3.0, True):
             with self.subTest(schema=schema):
                 wrong_schema = self.valid_receipt()
                 wrong_schema["schema"] = schema
@@ -205,20 +207,57 @@ class ProofImpactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid shape"):
                 proof_fingerprint.load_fingerprint(path)
 
+    def test_fingerprint_excludes_certora_virtual_environment(self) -> None:
+        verification = Path("/repo/verification")
+        self.assertTrue(
+            proof_fingerprint.excluded_verification_path(
+                verification / "certora/.venv/lib/python/site-packages/cache.pyc",
+                verification,
+            )
+        )
+        self.assertFalse(
+            proof_fingerprint.excluded_verification_path(
+                verification / "certora/specs/Bridge.spec",
+                verification,
+            )
+        )
+
     def test_receipt_rejects_forged_claims_and_summary(self) -> None:
         forged_claims = self.valid_receipt()
         forged_claims["claims"][0]["status"] = "forged"
-        with self.assertRaisesRegex(ValueError, "claims do not match"):
+        with self.assertRaisesRegex(ValueError, "summary does not match"):
             self.check_receipt(forged_claims)
 
         forged_summary = self.valid_receipt()
-        forged_summary["claim_summary"]["partial"] += 1
+        forged_summary["claim_summary"]["release-ready"] += 1
         with self.assertRaisesRegex(ValueError, "summary does not match"):
             self.check_receipt(forged_summary)
 
+    def test_receipt_rejects_policy_complete_claim_count_and_strength_drift(self) -> None:
+        mutations = {
+            "missing release-ready": lambda receipt: receipt["claims"][0].__setitem__(
+                "status", "release-blocked"
+            ),
+            "model support": lambda receipt: receipt["claims"][0].__setitem__(
+                "status", "model-support"
+            ),
+            "strength drift": lambda receipt: receipt["claims"][0].__setitem__(
+                "evidence_strength", "abstract-proved"
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                receipt = self.valid_receipt()
+                mutate(receipt)
+                receipt["claim_summary"] = check_proof_impact.summarize_claim_report(
+                    receipt["claims"], receipt["conditional_liveness"]
+                )
+                with self.assertRaisesRegex(ValueError, "completion flag"):
+                    self.check_receipt(receipt)
+
     def test_conservative_fingerprint_covers_consumers_drivers_and_configs(self) -> None:
         inputs = {
-            path.relative_to(ROOT).as_posix()
+            proof_fingerprint.logical_source_path(path, ROOT).as_posix()
             for path in check_proof_impact.fingerprint_inputs()
         }
         for relative in (
@@ -229,12 +268,17 @@ class ProofImpactTests(unittest.TestCase):
             "scripts/check_tool_versions.sh",
             "scripts/plan007/evm-rpc-fault-injector",
             "verification/claims.tsv",
+            "verification/halmos/uv.lock",
             "verification/lean/BridgeSpec/Claims.lean",
             "verification/generated/protocol-vectors.json",
             "verification/verus/fail/notification_ingestion_allowed.rs",
             "contracts/foundry.toml",
+            ".node-version",
             "Cargo.lock",
+            "icp.yaml",
+            "lean-toolchain",
             "pnpm-lock.yaml",
+            "pnpm-workspace.yaml",
             "ui/vitest.config.ts",
             "ui/pnpm-lock.yaml",
             "ui/pnpm-workspace.yaml",
@@ -286,11 +330,14 @@ class ProofImpactTests(unittest.TestCase):
 
     def test_fingerprint_excludes_generated_receipts_and_build_state(self) -> None:
         inputs = {
-            path.relative_to(ROOT).as_posix()
+            proof_fingerprint.logical_source_path(path, ROOT).as_posix()
             for path in check_proof_impact.fingerprint_inputs()
         }
         self.assertFalse(any(path.startswith("verification/output/") for path in inputs))
         self.assertFalse(any("/.lake/" in path for path in inputs))
+        self.assertFalse(any("/.venv/" in path for path in inputs))
+        self.assertFalse(any(path.startswith("verification/smt/out/") for path in inputs))
+        self.assertFalse(any(path.startswith("verification/smt/cache/") for path in inputs))
 
 
 if __name__ == "__main__":

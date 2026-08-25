@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=production-validation.sh
+# shellcheck source=production-validation.sh
 source "$ROOT/scripts/production-validation.sh"
 MODE="${1:-}"
 shift || true
@@ -175,7 +176,8 @@ export BRIDGE_CANISTER_INIT_FILE="$RELEASE_INPUTS/canister-init.json"
 export BRIDGE_CONSTRUCTOR_ARGS_FILE="$RELEASE_INPUTS/contract-constructor-args.json"
 export BRIDGE_UI_RUNTIME_PROFILE_FILE="$RELEASE_INPUTS/ui-runtime-profile.json"
 export BRIDGE_RELEASE_INPUTS_MANIFEST="$RELEASE_INPUTS/release-inputs-manifest.json"
-export BRIDGE_RELEASE_BUNDLE="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$BUNDLE")"
+BRIDGE_RELEASE_BUNDLE="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$BUNDLE")"
+export BRIDGE_RELEASE_BUNDLE
 export BRIDGE_SOURCE_ROOT="$SOURCE_ROOT"
 
 GATE_OUTPUT=""
@@ -186,7 +188,6 @@ if [[ "$MODE" == "deploy" ]]; then
     echo "offline Gate A validation did not return an authorizing success result" >&2
     exit 1
   }
-  STRUCTURAL_MANIFEST_SHA256="${BASH_REMATCH[1]}"
   GATE_OUTPUT="$STRUCTURAL_GATE_OUTPUT"
 else
   [[ "$ACTIVATION_PHASE" == schedule || "$ACTIVATION_PHASE" == execute ]] || {
