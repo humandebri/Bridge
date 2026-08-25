@@ -127,22 +127,19 @@ class TrustedPrGateTests(unittest.TestCase):
         for prefetch in (
             "Prefetch locked Rust dependencies from trusted policy",
             "Prefetch pinned ICP recipes from trusted policy",
+            "Prefetch verified real-E2E ledger artifacts",
         ):
             self.assertLess(
                 workflow.index(prefetch),
-                workflow.index("Check out exact untrusted head as authenticated data input"),
+                workflow.index("Check out exact untrusted head as read-only container input"),
             )
         self.assertLess(
-            workflow.index("Authenticate and isolate profile dependency manifests"),
-            workflow.index("Prefetch verified real-E2E ledger artifacts"),
-        )
-        self.assertLess(
-            workflow.index("Prefetch verified real-E2E ledger artifacts"),
-            workflow.index("Run selected trusted check"),
-        )
-        self.assertLess(
             workflow.index("Build the pinned isolation image from trusted policy"),
-            workflow.index("Run selected trusted check"),
+            workflow.index("Check out exact untrusted head as read-only container input"),
+        )
+        self.assertLess(
+            workflow.index("Check out exact untrusted head as read-only container input"),
+            workflow.index("Authenticate and isolate profile dependency manifests"),
         )
         self.assertNotIn("pnpm --dir source/ui install", workflow)
         self.assertLess(

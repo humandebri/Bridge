@@ -147,7 +147,16 @@ jobs:
           ICP_CLI_DISABLE_UPDATE: "1"
           ICP_TELEMETRY_DISABLED: "1"
         run: icp project show --project-root-override . >/dev/null
-      - name: Check out exact untrusted head as authenticated data input
+      - name: Install trusted workspace dependencies
+        run: pnpm --dir trusted-policy install --frozen-lockfile
+      - name: Install trusted UI dependencies without lifecycle scripts
+        run: pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts
+      - name: Prefetch verified real-E2E ledger artifacts
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
+        run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
+      - name: Build the pinned isolation image from trusted policy
+        run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
+      - name: Check out exact untrusted head as read-only container input
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -170,14 +179,9 @@ jobs:
       - name: Install Chromium when required
         if: contains(fromJSON(needs.classify.outputs.matrix), 'ui') || contains(fromJSON(needs.classify.outputs.matrix), 'real')
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" exec playwright install --with-deps chromium
-      - name: Prefetch verified real-E2E ledger artifacts
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
-        run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
       - name: Prefetch PocketIC runtime for real E2E
         if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
         run: node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
-      - name: Build the pinned isolation image from trusted policy
-        run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
       - name: Verify isolation mount boundaries
         run: trusted-policy/scripts/test_trusted_pr_container_mounts.sh kinic-bridge-trusted-pr:local
       - name: Run selected trusted check
@@ -186,8 +190,7 @@ jobs:
           BRIDGE_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run_check() {
-            trusted-policy/scripts/trusted-pr-container.sh \
-              source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"
+            trusted-policy/scripts/trusted-pr-container.sh source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"
           }
           while IFS= read -r area; do
             case "$area" in
