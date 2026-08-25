@@ -270,7 +270,7 @@ thread_local! {
     static ETH_BALANCE: RefCell<u128> = const { RefCell::new(10_000_000_000_000_000_000) };
     static NEXT_EVM_NONCE: RefCell<u64> = const { RefCell::new(0) };
     static SERVICE_FEE: RefCell<u128> = const { RefCell::new(1) };
-    static MINIMUM_SERVICE_FEE: RefCell<u128> = const { RefCell::new(1) };
+    static MINIMUM_SERVICE_FEE: RefCell<u128> = const { RefCell::new(10_000) };
     static MAX_SERVICE_FEE: RefCell<u128> = const { RefCell::new(10) };
     static PER_DEPOSIT_LIMIT: RefCell<u128> = const { RefCell::new(1_000_000) };
     static MINT_WINDOW_LIMIT: RefCell<u128> = const { RefCell::new(10_000_000) };
