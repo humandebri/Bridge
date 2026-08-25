@@ -125,6 +125,7 @@ run_step() {
 }
 
 run_versions() {
+  python3 "$ROOT/scripts/trusted_proof_profiles.py" --print >/dev/null
   verify_no_npm_lockfiles "$ROOT"
   shellcheck -x -S warning \
     "$ROOT/scripts/ci-local.sh" \
@@ -139,8 +140,6 @@ run_versions() {
   "$ROOT/scripts/check_tool_versions.sh"
   "$ROOT/scripts/test_tool_version_gate.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
-  python3 "$ROOT/scripts/check_certora_manifest.py"
-  python3 "$ROOT/scripts/test_certora_manifest.py"
   python3 "$ROOT/scripts/check_no_obsolete_release_dependencies.py"
   python3 "$ROOT/scripts/test_no_obsolete_release_dependencies.py"
   verify_no_obsolete_withdrawal_terms \
@@ -151,6 +150,9 @@ run_versions() {
   python3 "$ROOT/scripts/check_certora_manifest.py"
   python3 "$ROOT/scripts/test_certora_manifest.py"
   python3 "$ROOT/scripts/test_proof_impact.py"
+  python3 "$ROOT/scripts/test_trusted_proof_profiles.py"
+  python3 "$ROOT/scripts/test_trusted_dependency_profiles.py"
+  python3 "$ROOT/scripts/test_proof_fingerprint_candidate_scripts.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
   "$ROOT/scripts/test_ci_guards.sh"
@@ -404,6 +406,8 @@ run_smt() {
   local -a pass_skip_args=()
   local failure_fixture
 
+  python3 "$ROOT/scripts/smt_obligations.py" --check-sources
+
   while IFS= read -r failure_fixture; do
     failure_fixtures+=("$failure_fixture")
     pass_skip_args+=(--skip "$(basename "$failure_fixture")")
@@ -521,7 +525,13 @@ run_halmos() {
   local halmos_entry="$ROOT/verification/halmos/.venv/bin/halmos"
   local halmos_python="$ROOT/verification/halmos/.venv/bin/python"
   local -a halmos
-  local positive_log="$TMP_ROOT/halmos-positive.log"
+  local row_type
+  local obligation_id
+  local positive_link
+  local positive_path
+  local positive_contract
+  local positive_function
+  local positive_log
   local failure_id
   local failure_link
   local failure_path
@@ -530,6 +540,8 @@ run_halmos() {
   local failure_log
   local failure_status
   local version
+
+  python3 "$ROOT/scripts/halmos_obligations.py" --check-sources
 
   if [[ ! -x "$halmos_entry" || ! -x "$halmos_python" ]]; then
     echo "missing locked Halmos environment; run uv sync --project verification/halmos --frozen" >&2
@@ -543,19 +555,32 @@ run_halmos() {
     return 1
   fi
 
-  "${halmos[@]}" \
-    --root "$ROOT/contracts" \
-    --contract BridgeMintCommitHalmos \
-    --solver z3 \
-    --solver-timeout-assertion 30s \
-    --early-exit \
-    --no-status >"$positive_log" 2>&1
-  if ! rg -q 'Symbolic test result: 3 passed; 0 failed' "$positive_log" \
-    || rg -qi '\[FAIL\]|counterexample|timeout|unknown' "$positive_log"; then
-    echo "Halmos positive proofs did not complete exactly" >&2
-    cat "$positive_log" >&2
-    return 1
-  fi
+  while IFS=$'\t' read -r row_type obligation_id _strength positive_link \
+      _production_link _failure_ids _claim_ids; do
+    [[ "$row_type" == "schema" ]] && continue
+    positive_path="${positive_link%%#*}"
+    positive_function="${positive_link#*#}"
+    positive_contract="$(basename "$positive_path" .t.sol)"
+    positive_log="$TMP_ROOT/halmos-positive-$obligation_id.log"
+    if ! "${halmos[@]}" \
+      --root "$ROOT/contracts" \
+      --contract "$positive_contract" \
+      --function "$positive_function" \
+      --solver z3 \
+      --solver-timeout-assertion 30s \
+      --early-exit \
+      --no-status >"$positive_log" 2>&1; then
+      echo "Halmos positive obligation failed: $obligation_id" >&2
+      cat "$positive_log" >&2
+      return 1
+    fi
+    if ! rg -q 'Symbolic test result: 1 passed; 0 failed' "$positive_log" \
+      || rg -qi '\[FAIL\]|counterexample|timeout|unknown' "$positive_log"; then
+      echo "Halmos positive obligation did not complete exactly: $obligation_id" >&2
+      cat "$positive_log" >&2
+      return 1
+    fi
+  done < "$ROOT/verification/halmos/obligations.tsv"
   python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope bridge || return
 
   while IFS=$'\t' read -r failure_id failure_link; do
@@ -622,13 +647,13 @@ run_policy_vector_consumers() {
 }
 
 run_refinement_gate() {
-  python3 "$ROOT/scripts/test_transition_manifest.py" || return
-  python3 "$ROOT/scripts/check_transition_manifest.py" || return
+  python3 "$TRANSITION_MANIFEST_TEST" || return
+  python3 "$TRANSITION_MANIFEST_CHECK" || return
   python3 "$ROOT/scripts/test_reproducible_artifacts.py" || return
-  python3 "$ROOT/scripts/test_refinement_manifest.py" || return
-  python3 "$ROOT/scripts/generate_refinement_harness.py" --check || return
-  python3 "$ROOT/scripts/check_refinement_manifest.py" || return
-  python3 "$ROOT/scripts/check_proof_impact.py"
+  python3 "$REFINEMENT_MANIFEST_TEST" || return
+  python3 "$REFINEMENT_GENERATOR" --check || return
+  python3 "$REFINEMENT_MANIFEST_CHECK" || return
+  python3 "$PROOF_IMPACT_CHECK"
 }
 
 run_proof_stage() {
@@ -639,7 +664,7 @@ run_proof_stage() {
   set +e
   (
     set -e
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+    python3 "$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
       echo "proof source fingerprint changed before stage: $stage" >&2
       exit 1
     }
@@ -647,7 +672,7 @@ run_proof_stage() {
       echo "proof stage command failed: $stage" >&2
       exit 1
     fi
-    python3 "$ROOT/scripts/proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
+    python3 "$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
       echo "proof source fingerprint changed during stage: $stage" >&2
       exit 1
     }
@@ -662,7 +687,7 @@ run_proof_stage() {
   printf '%s\t%s\t' "$stage" "$stage_status" >>"$PROOF_STAGE_RECEIPT"
   tr -d '\n' <"$PROOF_SOURCE_BASELINE" >>"$PROOF_STAGE_RECEIPT"
   printf '\n' >>"$PROOF_STAGE_RECEIPT"
-  if ! python3 "$ROOT/scripts/write_proof_receipt.py" \
+  if ! python3 "$PROOF_RECEIPT_WRITER" \
     "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"; then
     echo "proof receipt write failed after stage: $stage" >&2
     return 1
@@ -671,27 +696,43 @@ run_proof_stage() {
 }
 
 run_proofs() {
+  python3 "$ROOT/scripts/trusted_proof_profiles.py" --print >/dev/null
+  CLAIM_CHECK="$ROOT/scripts/check_claim_manifest.py"
+  CLAIM_TEST_CHECK="$ROOT/scripts/check_claim_test_manifest.py"
+  CLAIM_TEST_TEST="$ROOT/scripts/test_claim_test_manifest.py"
+  CONCRETE_RUNTIME_TEST="$ROOT/scripts/test_concrete_runtime.sh"
+  FAILURE_MANIFEST_CHECK="$ROOT/scripts/check_failure_manifests.py"
+  PROOF_IMPACT_CHECK="$ROOT/scripts/check_proof_impact.py"
+  PROOF_FINGERPRINT="$ROOT/scripts/proof_fingerprint.py"
+  PROOF_RECEIPT_WRITER="$ROOT/scripts/write_proof_receipt.py"
+  REFINEMENT_GENERATOR="$ROOT/scripts/generate_refinement_harness.py"
+  REFINEMENT_MANIFEST_CHECK="$ROOT/scripts/check_refinement_manifest.py"
+  REFINEMENT_MANIFEST_TEST="$ROOT/scripts/test_refinement_manifest.py"
+  TRANSITION_MANIFEST_CHECK="$ROOT/scripts/check_transition_manifest.py"
+  TRANSITION_MANIFEST_TEST="$ROOT/scripts/test_transition_manifest.py"
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
   PROOF_SOURCE_BASELINE="$TMP_ROOT/proof-source-fingerprint.json"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
-  python3 "$ROOT/scripts/proof_fingerprint.py" --write "$PROOF_SOURCE_BASELINE" >/dev/null
-  python3 "$ROOT/scripts/check_claim_manifest.py" >/dev/null
+  python3 "$PROOF_FINGERPRINT" --write "$PROOF_SOURCE_BASELINE" >/dev/null
+  python3 "$CLAIM_CHECK" >/dev/null
   python3 "$ROOT/scripts/test_write_proof_receipt.py"
-  python3 "$ROOT/scripts/test_claim_test_manifest.py"
+  python3 "$CLAIM_TEST_TEST"
   python3 "$ROOT/scripts/test_check_claim_manifest.py"
   python3 "$ROOT/scripts/test_halmos_environment.py"
   python3 "$ROOT/scripts/test_solidity_ast_bindings.py"
   python3 "$ROOT/scripts/test_verus_manifest.py"
-  "$ROOT/scripts/test_concrete_runtime.sh"
-  python3 "$ROOT/scripts/check_failure_manifests.py"
-  run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"
+  python3 "$ROOT/scripts/test_check_failure_manifests.py"
+  python3 "$ROOT/scripts/test_trusted_proof_profiles.py"
+  bash "$CONCRETE_RUNTIME_TEST"
+  python3 "$FAILURE_MANIFEST_CHECK"
+  run_proof_stage claim-manifest python3 "$CLAIM_CHECK"
   run_proof_stage lean run_lean_proofs
   run_proof_stage lean-negative run_lean_failure_fixtures
   run_proof_stage policy-vector-consumers run_policy_vector_consumers
   run_proof_stage refinement-gate run_refinement_gate
   run_proof_stage claim-transaction-tests \
-    python3 "$ROOT/scripts/check_claim_test_manifest.py"
+    python3 "$CLAIM_TEST_CHECK"
   run_proof_stage known-answer-consumers \
     python3 "$ROOT/scripts/check_known_answer_manifest.py"
   run_proof_stage smt-and-negative run_smt
@@ -700,7 +741,7 @@ run_proofs() {
   python3 -c \
     'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["complete"] is True' \
     "$PROOF_RECEIPT"
-  python3 "$ROOT/scripts/check_proof_impact.py" --receipt "$PROOF_RECEIPT"
+  python3 "$PROOF_IMPACT_CHECK" --receipt "$PROOF_RECEIPT"
   echo "proof_receipt=$PROOF_RECEIPT" >&2
 }
 
@@ -934,6 +975,7 @@ restore_smoke_canister_state() {
 }
 
 run_smoke() {
+  local -a bridge_fee_constructor_args
   local network_status="$TMP_ROOT/icp-network-status.json"
   local canister_status="$TMP_ROOT/canister-status.json"
   local bridge_status
@@ -974,6 +1016,7 @@ run_smoke() {
   local -r deposit_id="0x0000000000000000000000000000000000000000000000000000000000000001"
   local -r gross_amount="101000000"
   local -r service_fee="1000000"
+  bridge_fee_constructor_args=("1" "100000000" "$service_fee")
   local -r minted_amount="100000000"
   local -r release_amount="50000000"
   local -r release_amount_out="49000000"
@@ -1226,9 +1269,7 @@ for field, (value, candid_type) in stable_fields.items():
     "1000000000000" \
     "10000000000000" \
     "3600" \
-    "10000" \
-    "100000000" \
-    "$service_fee")"
+    "${bridge_fee_constructor_args[@]}")"
   for limit_caller in "$bridge_signer" "$runtime_administrator" "$unauthorized_wallet"; do
     for limit_signature in \
       "setMintLimits(uint256,uint256,uint64)" \

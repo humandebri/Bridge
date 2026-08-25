@@ -6,7 +6,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from check_transition_manifest import production_body_calls, strip_comments_and_strings
+from check_transition_manifest import strip_comments_and_strings
+from rust_canonical_calls import (
+    balanced as _balanced,
+    production_call_is_canonical,
+    rust_body,
+    rust_function_parameter_names,
+    split_top_level as _split_top_level,
+)
+from trusted_proof_profiles import require_profile
 from verus_manifest import VerusObligation, parse_verus_manifest
 
 
@@ -38,39 +46,6 @@ def verus_spec_body(source: str, name: str) -> str:
             if depth == 0:
                 return cleaned[brace : index + 1]
     raise ValueError(f"unbalanced Verus spec body: {name}")
-
-
-def rust_body(cleaned: str, name: str) -> str:
-    function_marker = re.compile(
-        rf"\b(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+{re.escape(name)}\s*\("
-    )
-    marker = function_marker.search(cleaned)
-    if marker is None:
-        raise ValueError(f"missing production call-site function: {name}")
-    next_function = re.compile(
-        r"\b(?:(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+"
-        r"\w+(?:<[^>{}]*>)?\s*\(|(?:pub\s+)?(?:struct|enum)\s+\w+)"
-    ).search(cleaned, marker.end())
-    limit = next_function.start() if next_function else len(cleaned)
-    depth = 0
-    start = None
-    candidates: list[tuple[int, int]] = []
-    for index in range(marker.end(), limit):
-        if cleaned[index] == "{":
-            if depth == 0:
-                start = index
-            depth += 1
-        elif cleaned[index] == "}":
-            if depth == 0:
-                break
-            depth -= 1
-            if depth == 0:
-                assert start is not None
-                candidates.append((start, index + 1))
-    if candidates:
-        start, end = candidates[-1]
-        return cleaned[start:end]
-    raise ValueError(f"unbalanced production call-site body: {name}")
 
 
 def verus_function_definition(
@@ -113,9 +88,15 @@ def _definition_body(definition: str, name: str) -> str:
     return definition[start:end]
 
 
-def _ensures_contract(definition: str, body: str, name: str) -> str:
+def _proof_contract(definition: str, body: str, name: str) -> str:
     body_start = definition.rfind(body)
     contract = definition[:body_start]
+    if re.search(r"\bensures\b", contract) is None:
+        raise ValueError(f"Verus function has no ensures contract: {name}")
+    return contract
+
+
+def _ensures_contract(contract: str, name: str) -> str:
     marker = re.search(r"\bensures\b", contract)
     if marker is None:
         raise ValueError(f"Verus function has no ensures contract: {name}")
@@ -156,7 +137,8 @@ def validate_proof_binding(
         cleaned_pass, proof, proof_function=kind != "executable"
     )
     body = _definition_body(definition, proof)
-    ensures = _ensures_contract(definition, body, proof)
+    contract = _proof_contract(definition, body, proof)
+    ensures = _ensures_contract(contract, proof)
     if kind == "executable":
         result = re.search(r"->\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", definition)
         if result is None or re.search(rf"\b{re.escape(result.group(1))}\b", ensures) is None:
@@ -189,42 +171,6 @@ def production_call_site_path(path_text: str) -> Path:
     ):
         raise ValueError(f"production call-site is outside Rust production roots: {path_text}")
     return path
-
-
-def _balanced(source: str, start: int, opening: str, closing: str) -> tuple[str, int]:
-    if start >= len(source) or source[start] != opening:
-        raise ValueError(f"expected {opening} at offset {start}")
-    depth = 0
-    for index in range(start, len(source)):
-        if source[index] == opening:
-            depth += 1
-        elif source[index] == closing:
-            depth -= 1
-            if depth == 0:
-                return source[start + 1 : index], index + 1
-    raise ValueError(f"unbalanced {opening}{closing} expression")
-
-
-def _split_top_level(source: str) -> tuple[str, ...]:
-    items: list[str] = []
-    start = 0
-    stack: list[str] = []
-    pairs = {")": "(", "]": "[", "}": "{"}
-    for index, char in enumerate(source):
-        if char in "([{":
-            stack.append(char)
-        elif char in pairs:
-            if not stack or stack.pop() != pairs[char]:
-                raise ValueError("unbalanced shared-expression argument")
-        elif char == "," and not stack:
-            items.append(source[start:index].strip())
-            start = index + 1
-    if stack:
-        raise ValueError("unbalanced shared-expression argument")
-    final = source[start:].strip()
-    if final:
-        items.append(final)
-    return tuple(items)
 
 
 def _macro_invocations(body: str, macro: str) -> tuple[tuple[str, ...], ...]:
@@ -408,12 +354,15 @@ def validate_derived_dependencies(
 
 
 def main() -> int:
-    obligations = parse_verus_manifest(MANIFEST.read_text(encoding="utf-8"))
+    manifest = MANIFEST.read_bytes()
+    obligations = parse_verus_manifest(manifest.decode())
     validate_derived_dependencies(obligations)
     kernel_source = KERNEL.read_text(encoding="utf-8")
     cleaned_kernel = strip_comments_and_strings(kernel_source)
-    pass_source = PASS.read_text(encoding="utf-8")
+    pass_bytes = PASS.read_bytes()
+    pass_source = pass_bytes.decode()
     cleaned_pass = strip_comments_and_strings(pass_source)
+    require_profile("security-hardening-v1")
     cleaned_sources: dict[Path, str] = {KERNEL.resolve(): cleaned_kernel}
 
     for obligation in obligations.values():
@@ -450,20 +399,13 @@ def main() -> int:
                 )
             cleaned = cleaned_sources[path]
             body = rust_body(cleaned, function)
-            imported_kernel = re.escape(obligation.kernel)
-            imported = re.search(
-                rf"\buse\s+bridge_core\s*::\s*\{{[^}}]*\b{imported_kernel}\b[^}}]*\}}\s*;",
-                cleaned,
-                re.DOTALL,
-            ) is not None
-            unqualified = re.search(
-                rf"(?<![A-Za-z0-9_:]){re.escape(obligation.kernel)}\s*\(", body
-            ) is not None and re.search(
-                rf"\b(?:let|fn)\s+{re.escape(obligation.kernel)}\b", body
-            ) is None
-            if not production_body_calls(
-                body, obligation.kernel, kernel_internal=path == KERNEL.resolve()
-            ) and not (imported and unqualified):
+            if not production_call_is_canonical(
+                body,
+                obligation.kernel,
+                path,
+                source_scope=cleaned,
+                parameter_names=rust_function_parameter_names(cleaned, function),
+            ):
                 raise ValueError(
                     f"production call-site does not call registered kernel: "
                     f"{call_site} -> {obligation.kernel}"
@@ -483,7 +425,11 @@ def main() -> int:
             f"missing={sorted(actual_specs - registered_specs)} "
             f"extra={sorted(registered_specs - actual_specs)}"
         )
-    actual_fixtures = {path.name for path in FAIL.glob("*.rs")}
+    actual_fixtures = {
+        path.relative_to(FAIL).as_posix()
+        for path in FAIL.rglob("*.rs")
+        if path.is_file()
+    }
     registered_fixtures = {obligation.fixture for obligation in obligations.values()}
     if registered_fixtures != actual_fixtures:
         raise ValueError(

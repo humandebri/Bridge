@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for the claim-manifest Solidity refinement gate."""
 
+import hashlib
 import unittest
 import subprocess
 import tempfile
@@ -16,7 +17,7 @@ from claim_manifest import (
     parse_claim_manifest,
     parse_conditional_liveness_manifest,
 )
-from halmos_obligations import parse_halmos_obligations
+from halmos_obligations import parse_halmos_obligations, validate_trusted_halmos_sources
 from verus_manifest import parse_verus_manifest
 from check_claim_manifest import (
     abstract_evidence_status,
@@ -32,7 +33,11 @@ from check_claim_manifest import (
     uncovered_verus_obligations,
     validate_lean_axiom_output,
 )
-from smt_obligations import parse_smt_obligations
+from smt_obligations import parse_smt_obligations, validate_trusted_smt_sources
+from trusted_proof_profiles import select_profile
+
+
+TRUSTED_PROOF_PROFILE = select_profile().identifier
 
 
 class ClaimContractTests(unittest.TestCase):
@@ -336,6 +341,19 @@ class SmtObligationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate SMT claim IDs"):
             parse_smt_obligations(self.manifest().replace("\tclaim\n", "\tclaim;claim\n"))
 
+    def test_trusted_source_digests_reject_harness_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relative = "verification/smt/pass/Harness.sol"
+            harness = root / relative
+            harness.parent.mkdir(parents=True)
+            harness.write_text("assert(state);\n", encoding="utf-8")
+            expected = {relative: hashlib.sha256(harness.read_bytes()).hexdigest()}
+            validate_trusted_smt_sources(root, expected)
+            harness.write_text("assert(true);\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "source digest differs"):
+                validate_trusted_smt_sources(root, expected)
+
 
 class SmtClaimCoverageTests(unittest.TestCase):
     def test_accepts_exact_bidirectional_coverage(self) -> None:
@@ -530,6 +548,10 @@ class VerusImplementationCoverageTests(unittest.TestCase):
             {"derived_proof"},
         )
 
+    @unittest.skipUnless(
+        TRUSTED_PROOF_PROFILE == "security-hardening-v1",
+        "requires the security-hardening-v1 claim schema",
+    )
     def test_current_mixed_strength_claims_are_not_implementation_covered(self) -> None:
         root = Path(__file__).resolve().parents[1]
         claims = parse_claim_manifest(
@@ -608,6 +630,19 @@ class HalmosObligationTests(unittest.TestCase):
             parse_halmos_obligations(
                 self.manifest().replace("\tclaim\n", "\tclaim;claim\n")
             )
+
+    def test_trusted_source_digests_reject_harness_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relative = "contracts/test/halmos/Harness.t.sol"
+            harness = root / relative
+            harness.parent.mkdir(parents=True)
+            harness.write_text("assert(state);\n", encoding="utf-8")
+            expected = {relative: hashlib.sha256(harness.read_bytes()).hexdigest()}
+            validate_trusted_halmos_sources(root, expected)
+            harness.write_text("assert(true);\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "source digest differs"):
+                validate_trusted_halmos_sources(root, expected)
 
 
 if __name__ == "__main__":

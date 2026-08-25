@@ -120,7 +120,13 @@ jobs:
         env:
           AREAS: ${{ needs.classify.outputs.matrix }}
         run: |
-          if jq -e 'index("proofs") != null' <<< "$AREAS" >/dev/null; then mode="all"; else mode="ci"; fi
+          mode="ci"
+          while IFS= read -r area; do
+            case "$area" in
+              proofs) mode="all"; break ;;
+              *) mode="ci" ;;
+            esac
+          done < <(jq -r '.[]' <<< "$AREAS")
           trusted-policy/scripts/install-ci-tools.sh "$mode"
       - name: Save cached proof toolchain
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -141,24 +147,7 @@ jobs:
           ICP_CLI_DISABLE_UPDATE: "1"
           ICP_TELEMETRY_DISABLED: "1"
         run: icp project show --project-root-override . >/dev/null
-      - name: Install trusted workspace dependencies
-        run: pnpm --dir trusted-policy install --frozen-lockfile
-      - name: Install trusted UI dependencies without lifecycle scripts
-        run: pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts
-      - name: Install Chromium when required
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'ui') || contains(fromJSON(needs.classify.outputs.matrix), 'real')
-        run: pnpm --dir trusted-policy/ui exec playwright install --with-deps chromium
-      - name: Prefetch verified real-E2E ledger artifacts
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
-        run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
-      - name: Prefetch PocketIC runtime for real E2E
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
-        run: node trusted-policy/ui/node_modules/@dfinity/pic/postinstall.mjs
-      - name: Build the pinned isolation image from trusted policy
-        run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
-      - name: Verify isolation mount boundaries
-        run: trusted-policy/scripts/test_trusted_pr_container_mounts.sh kinic-bridge-trusted-pr:local
-      - name: Check out exact untrusted head as read-only container input
+      - name: Check out exact untrusted head as authenticated data input
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -167,13 +156,38 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      - name: Authenticate and isolate profile dependency manifests
+        run: |
+          dependency_root="$RUNNER_TEMP/bridge-trusted-dependencies"
+          profile="$(python3 trusted-policy/scripts/prepare_trusted_dependencies.py \
+            --source source --destination "$dependency_root")"
+          echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
+          echo "BRIDGE_TRUSTED_PROFILE=$profile" >> "$GITHUB_ENV"
+      - name: Install authenticated workspace dependencies without lifecycle scripts
+        run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts
+      - name: Install authenticated UI dependencies without lifecycle scripts
+        run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" install --frozen-lockfile --ignore-scripts
+      - name: Install Chromium when required
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'ui') || contains(fromJSON(needs.classify.outputs.matrix), 'real')
+        run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" exec playwright install --with-deps chromium
+      - name: Prefetch verified real-E2E ledger artifacts
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
+        run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
+      - name: Prefetch PocketIC runtime for real E2E
+        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
+        run: node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
+      - name: Build the pinned isolation image from trusted policy
+        run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
+      - name: Verify isolation mount boundaries
+        run: trusted-policy/scripts/test_trusted_pr_container_mounts.sh kinic-bridge-trusted-pr:local
       - name: Run selected trusted check
         env:
           AREAS: ${{ needs.classify.outputs.matrix }}
           BRIDGE_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run_check() {
-            trusted-policy/scripts/trusted-pr-container.sh source trusted-policy "$1"
+            trusted-policy/scripts/trusted-pr-container.sh \
+              source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"
           }
           while IFS= read -r area; do
             case "$area" in

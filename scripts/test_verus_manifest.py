@@ -5,8 +5,11 @@ import unittest
 
 from check_transition_manifest import production_body_calls, strip_comments_and_strings
 from check_verus_manifest import (
+    ROOT,
+    production_call_is_canonical,
     production_call_site_path,
     rust_body,
+    rust_function_parameter_names,
     validate_derived_dependencies,
     validate_proof_binding,
     validate_shared_expression,
@@ -32,6 +35,10 @@ class VerusManifestParserTests(unittest.TestCase):
         )["derived"]
         self.assertEqual(obligation.binding, ("base_kernel",))
         self.assertFalse(obligation.production_bound)
+
+
+class TrustedContractPolicyTests(unittest.TestCase):
+    manifest = staticmethod(VerusManifestParserTests.manifest)
 
     def test_model_cannot_claim_a_production_call_site(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot bind production"):
@@ -263,6 +270,16 @@ fn other() { crate::kernel(); }
         body = rust_body(source, "caller")
         self.assertFalse(production_body_calls(body, "kernel"))
 
+    def test_rejects_ambiguous_same_name_call_site_functions(self) -> None:
+        source = strip_comments_and_strings(
+            """
+mod decoy { fn caller() { crate::kernel::target(); } }
+mod production { fn caller<T: Into<Vec<u8>>>() { crate::fake::target(); } }
+"""
+        )
+        with self.assertRaisesRegex(ValueError, "resolve exactly once"):
+            rust_body(source, "caller")
+
     def test_spec_extraction_does_not_include_the_next_spec(self) -> None:
         source = """
 pub open spec fn first(value: bool) -> bool { value }
@@ -374,6 +391,120 @@ fn registered_proof()
     def test_rejects_call_site_outside_rust_production_roots(self) -> None:
         with self.assertRaisesRegex(ValueError, "outside Rust production roots"):
             production_call_site_path("scripts/test_verus_manifest.py")
+
+    def test_requires_canonical_production_call_qualification(self) -> None:
+        core = ROOT / "canister/bridge-core/src/deposit.rs"
+        canister = ROOT / "canister/bridge-canister/src/api.rs"
+        kernel = ROOT / "canister/bridge-core/src/kernel.rs"
+        self.assertTrue(
+            production_call_is_canonical(
+                "{ crate::kernel::target(); }", "target", core
+            )
+        )
+        self.assertTrue(
+            production_call_is_canonical(
+                "{ let result = crate::kernel::target(value); result }",
+                "target",
+                core,
+            )
+        )
+        self.assertTrue(
+            production_call_is_canonical(
+                "{ match ::bridge_core::kernel::target(value) { _ => () } }",
+                "target",
+                canister,
+            )
+        )
+        self.assertTrue(
+            production_call_is_canonical(
+                "{ ::bridge_core::kernel::target(); }", "target", canister
+            )
+        )
+        self.assertTrue(
+            production_call_is_canonical("{ self::target(); }", "target", kernel)
+        )
+        self.assertTrue(
+            production_call_is_canonical("{ target_body!(); }", "target", kernel)
+        )
+        for shadowed in (
+            "{ use crate::kernel::target; target(); }",
+            "{ use crate::kernel::target as alias; alias(); }",
+            "{ use crate::fake::target; target(); }",
+            "{ let target = fake; target(); }",
+            "{ target(); }",  # A parameter named target is equally unqualified.
+            "{ fake::target(); }",
+        ):
+            with self.subTest(shadowed=shadowed):
+                self.assertFalse(
+                    production_call_is_canonical(shadowed, "target", core)
+                )
+
+    def test_rejects_canonical_decoy_with_alias_or_shadow(self) -> None:
+        core = ROOT / "canister/bridge-core/src/deposit.rs"
+        kernel = ROOT / "canister/bridge-core/src/kernel.rs"
+        for body, path in (
+            (
+                "{ crate::kernel::target(); use crate::fake::target as alias; alias(); }",
+                core,
+            ),
+            ("{ crate::kernel::target(); let target = fake; target(); }", core),
+            (
+                "{ let alias = crate::kernel::target; crate::kernel::target(); alias(); }",
+                core,
+            ),
+            (
+                "{ let alias: fn(u64) = crate::kernel::target; crate::kernel::target(1); }",
+                core,
+            ),
+            (
+                "{ self::target(); macro_rules! target_body { () => { false } } target_body!(); }",
+                kernel,
+            ),
+            (
+                "{ self::target(); use crate::fake::target_body; target_body!(); }",
+                kernel,
+            ),
+            ("{ crate::kernel::target(); crate::fake::target(); }", core),
+            ("{ crate::kernel::target(); k::target(); }", core),
+            ("{ crate::kernel::target(); crate::fake::target::<u64>(); }", core),
+            (
+                "{ crate::kernel::target(); crate::fake::target::<Vec<u8>>(); }",
+                core,
+            ),
+            ("{ self::target(); fake::target_body!(); }", kernel),
+            ("{ self::target(); fake::target_body! {}; }", kernel),
+            ("{ self::target(); fake::target_body! []; }", kernel),
+        ):
+            with self.subTest(body=body):
+                self.assertFalse(production_call_is_canonical(body, "target", path))
+
+    def test_rejects_module_scope_alias_decoy(self) -> None:
+        core = ROOT / "canister/bridge-core/src/deposit.rs"
+        body = "{ crate::kernel::target(); alias(); }"
+        for source_scope in (
+            "use crate::fake::target as alias;\n" + body,
+            "use crate::fake::target_body as alias_body;\n" + body,
+        ):
+            with self.subTest(source_scope=source_scope):
+                self.assertFalse(
+                    production_call_is_canonical(
+                        body, "target", core, source_scope=source_scope
+                    )
+                )
+
+    def test_rejects_parameter_shadowing_even_with_a_canonical_decoy(self) -> None:
+        core = ROOT / "canister/bridge-core/src/deposit.rs"
+        source = "fn caller(target: fn()) { crate::kernel::target(); target(); }"
+        body = rust_body(source, "caller")
+        self.assertFalse(
+            production_call_is_canonical(
+                body,
+                "target",
+                core,
+                source_scope=source,
+                parameter_names=rust_function_parameter_names(source, "caller"),
+            )
+        )
 
 
 if __name__ == "__main__":
