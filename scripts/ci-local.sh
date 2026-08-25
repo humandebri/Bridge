@@ -155,6 +155,7 @@ run_versions() {
     python3 "$ROOT/scripts/current_main_check_proof_impact.py"
   fi
   python3 "$ROOT/scripts/test_trusted_proof_profiles.py"
+  python3 "$ROOT/scripts/test_trusted_dependency_profiles.py"
   python3 "$ROOT/scripts/test_proof_fingerprint_candidate_scripts.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
