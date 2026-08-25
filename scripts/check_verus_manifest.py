@@ -206,11 +206,23 @@ def production_call_site_path(path_text: str) -> Path:
 
 
 def production_call_is_canonical(
-    body: str, kernel: str, path: Path, *, source_scope: str | None = None
+    body: str,
+    kernel: str,
+    path: Path,
+    *,
+    source_scope: str | None = None,
+    parameter_names: frozenset[str] = frozenset(),
 ) -> bool:
     escaped = re.escape(kernel)
     resolved = path.resolve()
     source_scope = body if source_scope is None else source_scope
+    function_item_alias = re.search(
+        rf"\blet\s+(?:mut\s+)?[A-Za-z_][A-Za-z0-9_]*"
+        rf"(?:\s*:\s*[^=;]+)?\s*=\s*(?:::)?"
+        rf"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*{escaped}"
+        rf"(?:\s*::\s*<[^;]+>)?\s*;",
+        body,
+    )
     alias_or_shadow = (
         re.search(
             rf"\buse\b[^;]*\b{escaped}\b(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*;",
@@ -219,10 +231,10 @@ def production_call_is_canonical(
         or re.search(rf"\buse\b[^;]*\b{escaped}_body\b[^;]*;", source_scope)
         or re.search(rf"\blet\s+(?:mut\s+)?{escaped}\b", body)
         or re.search(rf"\b(?:fn|struct|enum|type|const|static)\s+{escaped}\b", body)
-        or re.search(rf"\blet\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^;]*\b{escaped}\b", body)
+        or function_item_alias
         or re.search(rf"\bmacro_rules\s*!\s*{escaped}_body\b", body)
     )
-    if alias_or_shadow:
+    if alias_or_shadow or kernel in parameter_names:
         return False
     symbol_pattern = re.compile(
         rf"(?<![A-Za-z0-9_])(?P<path>(?:::)?"
@@ -310,6 +322,43 @@ def _balanced(source: str, start: int, opening: str, closing: str) -> tuple[str,
             if depth == 0:
                 return source[start + 1 : index], index + 1
     raise ValueError(f"unbalanced {opening}{closing} expression")
+
+
+def rust_function_parameter_names(cleaned: str, name: str) -> frozenset[str]:
+    marker = re.compile(
+        rf"\b(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+"
+        rf"{re.escape(name)}\b(?=\s*(?:<|\())"
+    )
+    matches = list(marker.finditer(cleaned))
+    if len(matches) != 1:
+        raise ValueError(
+            f"production call-site function must resolve exactly once: "
+            f"{name}/{len(matches)}"
+        )
+    angle_depth = 0
+    parameter_start = None
+    for index in range(matches[0].end(), len(cleaned)):
+        character = cleaned[index]
+        if character == "<":
+            angle_depth += 1
+        elif character == ">" and angle_depth:
+            angle_depth -= 1
+        elif character == "(" and angle_depth == 0:
+            parameter_start = index
+            break
+    if parameter_start is None:
+        raise ValueError(f"production call-site function has no parameters: {name}")
+    parameters, _ = _balanced(cleaned, parameter_start, "(", ")")
+    names: set[str] = set()
+    for parameter in _split_top_level(parameters):
+        match = re.match(
+            r"\s*(?:(?:&\s*(?:'[_A-Za-z][_A-Za-z0-9]*\s*)?)?mut\s+|ref\s+)?"
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*:",
+            parameter,
+        )
+        if match is not None:
+            names.add(match.group(1))
+    return frozenset(names)
 
 
 def _split_top_level(source: str) -> tuple[str, ...]:
@@ -561,7 +610,11 @@ def main() -> int:
             cleaned = cleaned_sources[path]
             body = rust_body(cleaned, function)
             if not production_call_is_canonical(
-                body, obligation.kernel, path, source_scope=cleaned
+                body,
+                obligation.kernel,
+                path,
+                source_scope=cleaned,
+                parameter_names=rust_function_parameter_names(cleaned, function),
             ):
                 raise ValueError(
                     f"production call-site does not call registered kernel: "

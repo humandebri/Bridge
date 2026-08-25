@@ -130,6 +130,8 @@ class TrustedProofProfileTests(unittest.TestCase):
                 "verification/smt/out/A.json",
                 "verification/smt/cache/A.json",
                 "verification/halmos/.venv/stamp.json",
+                "verification/certora/.venv/stamp.json",
+                "verification/.DS_Store",
             ):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +145,7 @@ class TrustedProofProfileTests(unittest.TestCase):
     def test_rejects_hidden_verification_source_and_nested_halmos_harness(self) -> None:
         for relative in (
             "verification/smt/.decoy.sol",
+            "verification/certora/.decoy.spec",
             "contracts/test/halmos/nested/Decoy.sol",
         ):
             with self.subTest(path=relative), tempfile.TemporaryDirectory() as directory:

@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 VECTORS = ROOT / "verification" / "generated" / "protocol-vectors.json"
 MANIFEST = ROOT / "verification" / "refinement-manifest.tsv"
 MODEL = ROOT / "verification" / "lean" / "BridgeSpec" / "Model.lean"
-IMPLEMENTATION = ROOT / "verification" / "lean" / "BridgeSpec" / "Implementation.lean"
-REFINEMENT = ROOT / "verification" / "lean" / "BridgeSpec" / "Refinement.lean"
+FINITE_WIDTH_MODEL = ROOT / "verification" / "lean" / "BridgeSpec" / "FiniteWidthModel.lean"
+MODEL_REFINEMENT = ROOT / "verification" / "lean" / "BridgeSpec" / "ModelRefinement.lean"
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 NON_GENERATED_TESTS = (
     "canister/bridge-core/tests/protocol_vectors.rs",
@@ -214,6 +214,16 @@ def run_json_command(
     return retry
 
 
+def parse_json_stdout(result: subprocess.CompletedProcess[str], label: str) -> dict[str, object]:
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{label} emitted non-JSON stdout") from error
+    if not isinstance(report, dict):
+        raise ValueError(f"{label} JSON stdout must be an object")
+    return report
+
+
 def validate_generated_selector_ownership(
     consumers: list[Consumer],
     root: Path = ROOT,
@@ -292,7 +302,7 @@ def execute_consumer(
             root,
             runner,
         )
-        report = json.loads(result.stdout)
+        report = parse_json_stdout(result, "Foundry refinement consumer")
         results = [
             (name, value)
             for suite in report.values()
@@ -314,21 +324,17 @@ def execute_consumer(
             raise ValueError(f"Vitest consumer is outside ui: {consumer.target}") from error
         result = run_json_command(
             [
-                "pnpm",
-                "--dir",
-                "ui",
-                "exec",
-                "vitest",
+                str(root / "ui" / "node_modules" / ".bin" / "vitest"),
                 "run",
                 test_path,
                 "-t",
                 consumer.selector,
                 "--reporter=json",
             ],
-            root,
+            root / "ui",
             runner,
         )
-        report = json.loads(result.stdout)
+        report = parse_json_stdout(result, "Vitest refinement consumer")
         matches = [
             assertion
             for test in report.get("testResults", [])
@@ -356,8 +362,8 @@ def main() -> int:
         json.loads(VECTORS.read_text(encoding="utf-8")),
         MANIFEST.read_text(encoding="utf-8"),
         MODEL.read_text(encoding="utf-8"),
-        IMPLEMENTATION.read_text(encoding="utf-8"),
-        REFINEMENT.read_text(encoding="utf-8"),
+        FINITE_WIDTH_MODEL.read_text(encoding="utf-8"),
+        MODEL_REFINEMENT.read_text(encoding="utf-8"),
     )
     validate_generated_selector_ownership(consumers)
     for consumer in consumers:

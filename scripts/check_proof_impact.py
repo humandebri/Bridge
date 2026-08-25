@@ -15,7 +15,12 @@ from proof_fingerprint import (
     source_fingerprint,
     validate_fingerprint,
 )
-from claim_manifest import parse_claim_manifest
+from claim_manifest import (
+    REQUIRED_CLAIM_IDS,
+    REQUIRED_CONDITIONAL_LIVENESS_IDS,
+    REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS,
+    parse_claim_manifest,
+)
 from source_resolution import source_path
 
 
@@ -32,7 +37,44 @@ REQUIRED_STAGES = (
     "halmos-and-negative",
     "verus-and-negative",
 )
-RECEIPT_SCHEMA = 6
+RECEIPT_SCHEMA = 7
+EXPECTED_CLAIM_SUMMARY = {
+    "total": len(REQUIRED_CLAIM_IDS),
+    "release-ready": len(REQUIRED_CLAIM_IDS),
+    "release-blocked": 0,
+    "model-support": 0,
+    "conditional-liveness": len(REQUIRED_CONDITIONAL_LIVENESS_IDS),
+    "implementation-proved": len(REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS),
+    "production-linked": len(REQUIRED_CLAIM_IDS)
+    - len(REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS),
+    "abstract-proved": 0,
+}
+
+
+def summarize_claim_report(
+    claims: list[dict[str, object]],
+    conditional_liveness: list[dict[str, object]],
+) -> dict[str, int]:
+    return {
+        "total": len(claims),
+        "release-ready": sum(claim.get("status") == "release-ready" for claim in claims),
+        "release-blocked": sum(claim.get("status") == "release-blocked" for claim in claims),
+        "model-support": sum(claim.get("status") == "model-support" for claim in claims),
+        "conditional-liveness": len(conditional_liveness),
+        "implementation-proved": sum(
+            claim.get("evidence_strength") == "implementation-proved" for claim in claims
+        ),
+        "production-linked": sum(
+            claim.get("evidence_strength") == "production-linked" for claim in claims
+        ),
+        "abstract-proved": sum(
+            claim.get("evidence_strength") == "abstract-proved" for claim in claims
+        ),
+    }
+
+
+def release_summary_is_complete(summary: object) -> bool:
+    return summary == EXPECTED_CLAIM_SUMMARY
 
 
 @dataclass(frozen=True)
@@ -261,10 +303,21 @@ def validate_receipt_contents(receipt: object) -> None:
     claims = receipt.get("claims")
     if not isinstance(claims, list) or not claims:
         raise ValueError("proof receipt claims must be a non-empty list")
+    conditional_liveness = receipt.get("conditional_liveness")
+    if not isinstance(conditional_liveness, list):
+        raise ValueError("proof receipt conditional liveness must be a list")
+    if not all(isinstance(claim, dict) for claim in claims) or not all(
+        isinstance(prop, dict) for prop in conditional_liveness
+    ):
+        raise ValueError("proof receipt evidence records are malformed")
+    expected_summary = summarize_claim_report(claims, conditional_liveness)
+    if receipt.get("claim_summary") != expected_summary:
+        raise ValueError("proof receipt claim summary does not match its contents")
     derived_complete = (
         stage_ids == list(REQUIRED_STAGES)
         and all(stage["status"] == "pass" for stage in stages)
         and bool(claims)
+        and release_summary_is_complete(expected_summary)
     )
     if receipt.get("complete") is not derived_complete or not derived_complete:
         raise ValueError("proof receipt completion flag does not match its contents")
@@ -281,23 +334,22 @@ def check_receipt(receipt_path: Path, repo_root: Path = ROOT) -> None:
 
     expected_report = build_claim_report()
     expected_claims = expected_report.get("claims")
-    summary_statuses = (
-        "implementation-proved",
-        "refinement-tested",
-        "partial",
-        "assumed",
+    expected_conditional_liveness = expected_report.get("conditional_liveness")
+    if not isinstance(expected_claims, list) or not isinstance(
+        expected_conditional_liveness, list
+    ):
+        raise ValueError("deterministic claim report is malformed")
+    expected_summary = summarize_claim_report(
+        expected_claims, expected_conditional_liveness
     )
-    expected_summary = {
-        status: sum(
-            isinstance(claim, dict) and claim.get("status") == status
-            for claim in expected_claims
-        )
-        for status in summary_statuses
-    }
     if receipt.get("claim_report_schema") != CLAIM_REPORT_SCHEMA:
         raise ValueError("proof receipt claim report schema is stale")
     if receipt.get("claims") != expected_claims:
         raise ValueError("proof receipt claims do not match deterministic claim evidence")
+    if receipt.get("conditional_liveness") != expected_conditional_liveness:
+        raise ValueError(
+            "proof receipt conditional liveness does not match deterministic claim evidence"
+        )
     if receipt.get("claim_summary") != expected_summary:
         raise ValueError("proof receipt claim summary does not match deterministic claim evidence")
     if "claim_report_error" in receipt:

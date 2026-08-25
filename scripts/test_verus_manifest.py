@@ -9,6 +9,7 @@ from check_verus_manifest import (
     production_call_is_canonical,
     production_call_site_path,
     rust_body,
+    rust_function_parameter_names,
     validate_derived_dependencies,
     validate_proof_binding,
     validate_shared_expression,
@@ -402,6 +403,13 @@ fn registered_proof()
         )
         self.assertTrue(
             production_call_is_canonical(
+                "{ let result = crate::kernel::target(value); result }",
+                "target",
+                core,
+            )
+        )
+        self.assertTrue(
+            production_call_is_canonical(
                 "{ ::bridge_core::kernel::target(); }", "target", canister
             )
         )
@@ -433,6 +441,14 @@ fn registered_proof()
                 core,
             ),
             ("{ crate::kernel::target(); let target = fake; target(); }", core),
+            (
+                "{ let alias = crate::kernel::target; crate::kernel::target(); alias(); }",
+                core,
+            ),
+            (
+                "{ let alias: fn(u64) = crate::kernel::target; crate::kernel::target(1); }",
+                core,
+            ),
             (
                 "{ self::target(); macro_rules! target_body { () => { false } } target_body!(); }",
                 kernel,
@@ -468,6 +484,20 @@ fn registered_proof()
                         body, "target", core, source_scope=source_scope
                     )
                 )
+
+    def test_rejects_parameter_shadowing_even_with_a_canonical_decoy(self) -> None:
+        core = ROOT / "canister/bridge-core/src/deposit.rs"
+        source = "fn caller(target: fn()) { crate::kernel::target(); target(); }"
+        body = rust_body(source, "caller")
+        self.assertFalse(
+            production_call_is_canonical(
+                body,
+                "target",
+                core,
+                source_scope=source,
+                parameter_names=rust_function_parameter_names(source, "caller"),
+            )
+        )
 
 
 if __name__ == "__main__":

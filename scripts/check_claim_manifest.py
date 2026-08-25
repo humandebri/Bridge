@@ -11,9 +11,13 @@ import tempfile
 from pathlib import Path
 
 from claim_manifest import (
+    REQUIRED_CLAIM_POLICY,
     REQUIRED_CLAIM_IDS,
     ClaimManifest,
+    ConditionalLivenessProperty,
+    conditional_liveness_check_source,
     lean_contract_check_source,
+    parse_conditional_liveness_manifest,
     parse_claim_manifest,
 )
 from halmos_obligations import parse_halmos_obligations
@@ -24,13 +28,14 @@ from verus_manifest import parse_verus_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
+CONDITIONAL_LIVENESS = ROOT / "verification" / "conditional-liveness.tsv"
 REPORT = Path(
     os.environ.get(
         "BRIDGE_CLAIM_REPORT",
         str(ROOT / "verification" / "output" / "claim-report.json"),
     )
 )
-CLAIM_REPORT_SCHEMA = 6
+CLAIM_REPORT_SCHEMA = 7
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REQUIRED_SCALAR_CALLS = (
     "deadlineAccepts(",
@@ -51,6 +56,18 @@ def items(value: str) -> list[str]:
 
 def abstract_evidence_status(value: str) -> str:
     return "proved" if items(value) else "not-applicable"
+
+
+EVIDENCE_STRENGTH = {
+    "unlinked": 0,
+    "abstract-proved": 1,
+    "production-linked": 2,
+    "implementation-proved": 3,
+}
+
+
+def required_strength_met(actual: str, required: str) -> bool:
+    return EVIDENCE_STRENGTH[actual] >= EVIDENCE_STRENGTH[required]
 
 
 def checked_link(value: str) -> tuple[Path, str]:
@@ -210,11 +227,6 @@ def require_exact_implementation_basis(
             for registration in verus_rows[proof]
         )
     }
-    required.update(
-        f"halmos:{obligation_id}"
-        for obligation_id in halmos_ids
-        if halmos_obligations[obligation_id].claim_complete
-    )
     actual = set(basis)
     if actual != required:
         raise ValueError(
@@ -299,19 +311,32 @@ def check_solidity_wrapper_refinement() -> None:
         raise ValueError(f"Bridge mint commit does not apply one exact transition: {missing}")
 
 
-def check_lean_claim_contracts(manifest_text: str) -> None:
-    manifest = parse_claim_manifest(manifest_text)
-    require_mandatory_claim_catalog(manifest)
-    source = lean_contract_check_source(manifest)
+def validate_lean_axiom_output(output: str, expected: int, label: str) -> None:
+    printed = re.findall(r"depends on axioms: \[([^\]]*)\]", output)
+    no_axioms = output.count("does not depend on any axioms")
+    if len(printed) + no_axioms != expected:
+        raise ValueError(f"Lean did not report an axiom dependency set for every {label}")
+    for dependencies in printed:
+        actual = {name.strip() for name in dependencies.split(",") if name.strip()}
+        forbidden = actual - ALLOWED_LEAN_AXIOMS
+        if forbidden:
+            raise ValueError(
+                f"Lean {label} depends on project-local axioms: {sorted(forbidden)}"
+            )
+
+
+def run_lean_evidence_check(
+    source: str, build_target: str, expected: int, label: str
+) -> None:
     build = subprocess.run(
-        ["lake", "build", "BridgeSpec.ClaimContracts"],
+        ["lake", "build", build_target],
         cwd=ROOT / "verification" / "lean",
         capture_output=True,
         text=True,
         check=False,
     )
     if build.returncode != 0:
-        raise ValueError(f"Lean claim contract build failed:\n{build.stdout}{build.stderr}")
+        raise ValueError(f"Lean {label} build failed:\n{build.stdout}{build.stderr}")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lean", encoding="utf-8") as check:
         check.write(source)
         check.flush()
@@ -323,19 +348,31 @@ def check_lean_claim_contracts(manifest_text: str) -> None:
             check=False,
         )
     if result.returncode != 0:
-        raise ValueError(f"Lean claim contract check failed:\n{result.stdout}{result.stderr}")
-    printed = re.findall(r"depends on axioms: \[([^\]]*)\]", result.stdout)
-    no_axioms = result.stdout.count("does not depend on any axioms")
+        raise ValueError(f"Lean {label} check failed:\n{result.stdout}{result.stderr}")
+    validate_lean_axiom_output(result.stdout, expected, label)
+
+
+def check_lean_claim_contracts(manifest_text: str) -> None:
+    manifest = parse_claim_manifest(manifest_text)
+    require_mandatory_claim_catalog(manifest)
     proved = sum(registration.is_proved for registration in manifest.contracts.values())
-    if len(printed) + no_axioms != proved:
-        raise ValueError("Lean did not report an axiom dependency set for every claim witness")
-    for dependencies in printed:
-        actual = {name.strip() for name in dependencies.split(",") if name.strip()}
-        forbidden = actual - ALLOWED_LEAN_AXIOMS
-        if forbidden:
-            raise ValueError(
-                f"Lean claim witness depends on project-local axioms: {sorted(forbidden)}"
-            )
+    run_lean_evidence_check(
+        lean_contract_check_source(manifest),
+        "BridgeSpec.ClaimContracts",
+        proved,
+        "claim witness",
+    )
+
+
+def check_conditional_liveness_theorems(
+    properties: dict[str, ConditionalLivenessProperty],
+) -> None:
+    run_lean_evidence_check(
+        conditional_liveness_check_source(properties),
+        "BridgeSpec.Liveness",
+        len(properties),
+        "conditional liveness theorem",
+    )
 
 
 def require_mandatory_claim_catalog(manifest: ClaimManifest) -> None:
@@ -346,12 +383,32 @@ def require_mandatory_claim_catalog(manifest: ClaimManifest) -> None:
             f"missing={sorted(REQUIRED_CLAIM_IDS - actual)} "
             f"extra={sorted(actual - REQUIRED_CLAIM_IDS)}"
         )
+    mismatches = {
+        claim_id: {
+            "expected": REQUIRED_CLAIM_POLICY[claim_id],
+            "actual": (
+                manifest.contracts[claim_id].assurance_target,
+                manifest.contracts[claim_id].required_strength,
+            ),
+        }
+        for claim_id in REQUIRED_CLAIM_IDS
+        if (
+            manifest.contracts[claim_id].assurance_target,
+            manifest.contracts[claim_id].required_strength,
+        )
+        != REQUIRED_CLAIM_POLICY[claim_id]
+    }
+    if mismatches:
+        raise ValueError(f"mandatory claim policy differs: {mismatches}")
 
 
 def build_claim_report() -> dict[str, object]:
     check_solidity_wrapper_refinement()
     manifest_text = MANIFEST.read_text(encoding="utf-8")
     manifest = parse_claim_manifest(manifest_text)
+    conditional_liveness = parse_conditional_liveness_manifest(
+        CONDITIONAL_LIVENESS.read_text(encoding="utf-8")
+    )
     require_mandatory_claim_catalog(manifest)
     smt_obligations_by_id = parse_smt_obligations(
         (ROOT / "verification" / "smt" / "obligations.tsv").read_text(encoding="utf-8")
@@ -410,6 +467,7 @@ def build_claim_report() -> dict[str, object]:
                 f"{sorted(unknown_claims)}"
             )
     check_lean_claim_contracts(manifest_text)
+    check_conditional_liveness_theorems(conditional_liveness)
     lean_source = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted((ROOT / "verification" / "lean" / "BridgeSpec").glob("*.lean"))
@@ -453,6 +511,15 @@ def build_claim_report() -> dict[str, object]:
     actual_assumption_dependencies = {
         assumption: set() for assumption in assumption_dependencies
     }
+    for property in conditional_liveness.values():
+        unknown_assumptions = set(property.assumption_ids) - assumptions
+        if unknown_assumptions:
+            raise ValueError(
+                f"unknown conditional liveness assumption for {property.property_id}: "
+                f"{sorted(unknown_assumptions)}"
+            )
+        for assumption in property.assumption_ids:
+            actual_assumption_dependencies[assumption].add(property.property_id)
     vector_sections = {
         line.split("\t", 1)[0]
         for line in (ROOT / "verification" / "refinement-manifest.tsv")
@@ -487,7 +554,7 @@ def build_claim_report() -> dict[str, object]:
         assumption_ids,
         vectors,
     ) in rows:
-        if kind not in {"protocol", "mint", "liveness"} or not IDENTIFIER.fullmatch(claim_id):
+        if kind not in {"protocol", "mint"} or not IDENTIFIER.fullmatch(claim_id):
             raise ValueError(f"invalid typed claim: {kind}/{claim_id}")
         theorem_names = (
             items(abstract_theorems)
@@ -588,10 +655,46 @@ def build_claim_report() -> dict[str, object]:
             if vectors != "-"
             else "not-applicable"
         )
-        kernel_strength = (
+        formal_strength = (
             "implementation-proved"
             if required_basis and not uncovered_verus
-            else "refinement-tested"
+            else "abstract-proved"
+        )
+        registration = manifest.contracts[claim_id]
+        implementation_strength = (
+            "unlinked"
+            if not registration.is_proved
+            else formal_strength
+            if formal_strength == "implementation-proved"
+            else "production-linked"
+            if production and tests
+            else "abstract-proved"
+        )
+        typed_basis = [
+            {"kind": "production-symbol", "id": link}
+            for link in items(production_links)
+        ]
+        typed_basis.extend(
+            {"kind": "transaction-test", "id": link}
+            for link in items(transaction_tests)
+        )
+        typed_basis.extend(
+            {"kind": "formal-verus", "id": value.removeprefix("verus:")}
+            for value in basis
+            if value.startswith("verus:")
+        )
+        typed_basis.extend(
+            {"kind": "bounded-conformance", "id": vectors}
+            for _ in [0]
+            if vectors != "-"
+        )
+        typed_basis.extend(
+            {"kind": "supporting-smt", "id": obligation_id}
+            for obligation_id in claim_smt_ids
+        )
+        typed_basis.extend(
+            {"kind": "supporting-halmos", "id": obligation_id}
+            for obligation_id in claim_halmos_ids
         )
         evidence = {
             "proof": (
@@ -599,8 +702,8 @@ def build_claim_report() -> dict[str, object]:
             ),
             "implementation": (
                 "implementation-proved"
-                if kernel_strength == "implementation-proved"
-                else "unproved"
+                if implementation_strength == "implementation-proved"
+                else implementation_strength
             ),
             "tests": "tested" if tests else "unproved",
             "assumptions": (
@@ -628,6 +731,7 @@ def build_claim_report() -> dict[str, object]:
                 for obligation_id in claim_halmos_ids
             ],
             "implementation_basis": basis,
+            "typed_implementation_basis": typed_basis,
             "adapter": "transaction-tested" if tests else "missing",
             "vector_consumer": vector_consumer,
             "external": "assumed" if items(assumption_ids) else "not-applicable",
@@ -640,36 +744,46 @@ def build_claim_report() -> dict[str, object]:
                 "uncovered_verus:" + ",".join(sorted(uncovered_verus))
             )
         if not basis:
-            reasons.append("missing_implementation_basis")
+            reasons.append("implementation_proof_gap:missing_formal_basis")
         if unreferenced_kernels:
             reasons.append(
                 "production_kernel_not_linked:" + ",".join(sorted(unreferenced_kernels))
             )
         if items(assumption_ids):
             reasons.append("external_assumptions:" + ",".join(items(assumption_ids)))
-        status = "partial" if reasons else kernel_strength
+        release_gaps: list[str] = []
+        if not registration.is_proved:
+            release_gaps.append("missing_claim_contract")
+        if not production:
+            release_gaps.append("missing_production_symbols")
+        if not tests:
+            release_gaps.append("missing_transaction_tests")
+        if unreferenced_kernels:
+            release_gaps.append("production_kernel_not_linked")
+        if not required_strength_met(
+            implementation_strength, registration.required_strength
+        ):
+            release_gaps.append(
+                f"required_strength:{registration.required_strength}"
+            )
+        status = (
+            "model-support"
+            if registration.assurance_target == "model-support"
+            else "release-blocked" if release_gaps else "release-ready"
+        )
         results.append(
             {
                 "id": claim_id,
                 "kind": kind,
                 "status": status,
+                "assurance_target": registration.assurance_target,
+                "required_strength": registration.required_strength,
+                "evidence_strength": implementation_strength,
                 "evidence": evidence,
                 "unproved_reasons": reasons,
+                "release_blockers": release_gaps,
             }
         )
-
-    internal_gaps = {
-        result["id"]: [
-            reason
-            for reason in result["unproved_reasons"]
-            if reason == "missing_claim_contract"
-            or reason.startswith("production_kernel_not_linked:")
-        ]
-        for result in results
-    }
-    internal_gaps = {claim: reasons for claim, reasons in internal_gaps.items() if reasons}
-    if internal_gaps:
-        raise ValueError(f"internal claim evidence gaps: {internal_gaps}")
 
     missing_verus = set(verus_rows) - used_verus
     if missing_verus:
@@ -711,6 +825,16 @@ def build_claim_report() -> dict[str, object]:
         "schema": CLAIM_REPORT_SCHEMA,
         "source_fingerprint": source_fingerprint(),
         "claims": results,
+        "conditional_liveness": [
+            {
+                "id": property.property_id,
+                "status": "conditional-liveness",
+                "theorem": property.theorem,
+                "assumptions": list(property.assumption_ids),
+                "implementation": "unproved",
+            }
+            for property in conditional_liveness.values()
+        ],
     }
 
 
@@ -724,6 +848,13 @@ def main() -> int:
     write_claim_report(report)
     results = report["claims"]
     assert isinstance(results, list)
+    ready = {claim["id"] for claim in results if claim["status"] == "release-ready"}
+    if ready != REQUIRED_CLAIM_IDS:
+        raise ValueError(
+            "release safety catalog is not fully ready: "
+            f"missing={sorted(REQUIRED_CLAIM_IDS - ready)} "
+            f"extra={sorted(ready - REQUIRED_CLAIM_IDS)}"
+        )
     print(f"unified claim manifest passed ({len(results)} claims)")
     return 0
 

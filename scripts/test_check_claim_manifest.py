@@ -8,7 +8,15 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from claim_manifest import lean_contract_check_source, parse_claim_manifest
+from claim_manifest import (
+    REQUIRED_CLAIM_POLICY,
+    REQUIRED_CONDITIONAL_LIVENESS_POLICY,
+    REQUIRED_CONDITIONAL_LIVENESS_IDS,
+    conditional_liveness_check_source,
+    lean_contract_check_source,
+    parse_claim_manifest,
+    parse_conditional_liveness_manifest,
+)
 from halmos_obligations import parse_halmos_obligations, validate_trusted_halmos_sources
 from verus_manifest import parse_verus_manifest
 from check_claim_manifest import (
@@ -19,9 +27,11 @@ from check_claim_manifest import (
     require_exact_implementation_basis,
     require_exact_smt_claim_coverage,
     require_unique_smt_obligations,
+    required_strength_met,
     solidity_function_body,
     strip_solidity_comments_and_strings,
     uncovered_verus_obligations,
+    validate_lean_axiom_output,
 )
 from smt_obligations import parse_smt_obligations, validate_trusted_smt_sources
 from trusted_proof_profiles import select_profile
@@ -33,8 +43,8 @@ TRUSTED_PROOF_PROFILE = select_profile().identifier
 class ClaimContractTests(unittest.TestCase):
     def manifest(self, contract: str, witness: str) -> str:
         return (
-            "schema\t5\t-\t-\t-\n"
-            f"contract\tclaim_id\thistory-safety\t{contract}\t{witness}\n"
+            "schema\t6\t-\t-\t-\t-\t-\n"
+            f"contract\tclaim_id\thistory-safety\trelease-safety\tproduction-linked\t{contract}\t{witness}\n"
             "protocol\tclaim_id\tclaim_theorem\t-\ttrace_theorem\t-\t-\t-\t-\t"
             "source.rs#kernel\ttest.rs#case\tassumption\t-\n"
         )
@@ -55,6 +65,10 @@ class ClaimContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be paired"):
             parse_claim_manifest(self.manifest("BridgeSpec.Contract", "-"))
 
+    def test_release_safety_requires_a_contract_and_witness(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires a Lean contract"):
+            parse_claim_manifest(self.manifest("-", "-"))
+
     def test_every_claim_requires_one_contract_registration(self) -> None:
         document = self.manifest("BridgeSpec.Contract", "BridgeSpec.witness")
         document = document.replace("contract\tclaim_id", "contract\tother_claim")
@@ -65,12 +79,130 @@ class ClaimContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "vacuous Lean claim contract"):
             parse_claim_manifest(self.manifest("True", "True.intro"))
 
+    def test_rejects_legacy_claim_schema(self) -> None:
+        legacy = self.manifest("BridgeSpec.Contract", "BridgeSpec.witness").replace(
+            "schema\t6\t-\t-\t-\t-\t-", "schema\t5\t-\t-\t-"
+        )
+        with self.assertRaisesRegex(ValueError, "schema 6"):
+            parse_claim_manifest(legacy)
+
+    def test_rejects_invalid_assurance_target_and_strength(self) -> None:
+        current = self.manifest("BridgeSpec.Contract", "BridgeSpec.witness")
+        with self.assertRaisesRegex(ValueError, "assurance target"):
+            parse_claim_manifest(current.replace("release-safety", "release-claim"))
+        with self.assertRaisesRegex(ValueError, "required strength"):
+            parse_claim_manifest(current.replace("production-linked", "tested"))
+
+    def test_liveness_cannot_reenter_the_release_claim_catalog(self) -> None:
+        current = self.manifest("BridgeSpec.Contract", "BridgeSpec.witness")
+        with self.assertRaisesRegex(ValueError, "proof class"):
+            parse_claim_manifest(current.replace("history-safety", "liveness"))
+
+    def test_conditional_liveness_catalog_is_exact(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        document = (root / "verification" / "conditional-liveness.tsv").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(
+            set(parse_conditional_liveness_manifest(document)),
+            REQUIRED_CONDITIONAL_LIVENESS_IDS,
+        )
+        rows = document.splitlines()
+        with self.assertRaisesRegex(ValueError, "catalog differs"):
+            parse_conditional_liveness_manifest("\n".join(rows[:-1]) + "\n")
+
+    def test_conditional_liveness_policy_rejects_theorem_and_assumption_drift(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        document = (root / "verification" / "conditional-liveness.tsv").read_text(
+            encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ValueError, "theorem differs"):
+            parse_conditional_liveness_manifest(
+                document.replace(
+                    "BridgeSpec.Liveness.committed_withdrawal_eventually_paid",
+                    "Other.committed_withdrawal_eventually_paid",
+                    1,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "assumptions differ"):
+            parse_conditional_liveness_manifest(
+                document.replace("eventual_keeper_action;", "", 1)
+            )
+
+    def test_conditional_liveness_source_checks_exact_type_and_axioms(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        properties = parse_conditional_liveness_manifest(
+            (root / "verification" / "conditional-liveness.tsv").read_text(
+                encoding="utf-8"
+            )
+        )
+        source = conditional_liveness_check_source(properties)
+        theorem, proposition, _ = REQUIRED_CONDITIONAL_LIVENESS_POLICY[
+            "withdrawal_eventually_paid"
+        ]
+        self.assertIn(f"example : {proposition} := by", source)
+        self.assertIn(f"exact {theorem}", source)
+        self.assertIn(f"#print axioms {theorem}", source)
+
+    def test_conditional_liveness_rejects_project_local_axioms(self) -> None:
+        with self.assertRaisesRegex(ValueError, "project-local axioms"):
+            validate_lean_axiom_output(
+                "declaration uses 'sorry'\ndepends on axioms: [BridgeSpec.localAxiom]\n",
+                1,
+                "conditional liveness theorem",
+            )
+
     def test_release_policy_rejects_missing_mandatory_claims(self) -> None:
         manifest = parse_claim_manifest(
             self.manifest("BridgeSpec.Contract", "BridgeSpec.witness")
         )
         with self.assertRaisesRegex(ValueError, "mandatory claim catalog differs"):
             require_mandatory_claim_catalog(manifest)
+
+    def test_release_policy_rejects_target_and_strength_downgrades(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        document = (root / "verification" / "claims.tsv").read_text(encoding="utf-8")
+        target_downgrade = document.replace("release-safety", "model-support", 1)
+        with self.assertRaisesRegex(ValueError, "mandatory claim policy differs"):
+            require_mandatory_claim_catalog(parse_claim_manifest(target_downgrade))
+
+        implementation_claim = next(
+            claim_id
+            for claim_id, (_, strength) in REQUIRED_CLAIM_POLICY.items()
+            if strength == "implementation-proved"
+        )
+        strength_downgrade = document.replace(
+            f"contract\t{implementation_claim}\thistory-safety\trelease-safety\timplementation-proved",
+            f"contract\t{implementation_claim}\thistory-safety\trelease-safety\tproduction-linked",
+            1,
+        )
+        with self.assertRaisesRegex(ValueError, "mandatory claim policy differs"):
+            require_mandatory_claim_catalog(parse_claim_manifest(strength_downgrade))
+
+    def test_release_policy_rejects_strength_exchange_between_claims(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        document = (root / "verification" / "claims.tsv").read_text(encoding="utf-8")
+        implementation_claim = next(
+            claim_id
+            for claim_id, (_, strength) in REQUIRED_CLAIM_POLICY.items()
+            if strength == "implementation-proved"
+        )
+        linked_claim = next(
+            claim_id
+            for claim_id, (_, strength) in REQUIRED_CLAIM_POLICY.items()
+            if strength == "production-linked"
+        )
+        exchanged = document.replace(
+            f"contract\t{implementation_claim}\thistory-safety\trelease-safety\timplementation-proved",
+            f"contract\t{implementation_claim}\thistory-safety\trelease-safety\tSWAP",
+            1,
+        ).replace(
+            f"contract\t{linked_claim}\thistory-safety\trelease-safety\tproduction-linked",
+            f"contract\t{linked_claim}\thistory-safety\trelease-safety\timplementation-proved",
+            1,
+        ).replace("\tSWAP\t", "\tproduction-linked\t", 1)
+        with self.assertRaisesRegex(ValueError, "mandatory claim policy differs"):
+            require_mandatory_claim_catalog(parse_claim_manifest(exchanged))
 
     def test_cross_claim_witness_does_not_typecheck(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -329,19 +461,23 @@ class ImplementationBasisTests(unittest.TestCase):
                 {},
             )
 
-    def test_includes_future_claim_complete_halmos_evidence(self) -> None:
-        required = require_exact_implementation_basis(
-            "claim",
-            ["halmos:complete"],
-            [],
-            ["complete", "supporting"],
-            {},
-            {
-                "complete": SimpleNamespace(claim_complete=True),
-                "supporting": SimpleNamespace(claim_complete=False),
-            },
-        )
-        self.assertEqual(required, {"halmos:complete"})
+    def test_halmos_supporting_evidence_cannot_be_implementation_basis(self) -> None:
+        with self.assertRaisesRegex(ValueError, "implementation basis differs"):
+            require_exact_implementation_basis(
+                "claim",
+                ["halmos:complete"],
+                [],
+                ["complete", "supporting"],
+                {},
+                {
+                    "complete": SimpleNamespace(claim_complete=True),
+                    "supporting": SimpleNamespace(claim_complete=False),
+                },
+            )
+
+    def test_required_strength_order_fails_closed(self) -> None:
+        self.assertTrue(required_strength_met("implementation-proved", "production-linked"))
+        self.assertFalse(required_strength_met("production-linked", "implementation-proved"))
 
 
 class VerusImplementationCoverageTests(unittest.TestCase):

@@ -20,7 +20,9 @@ VERIFICATION_EXCLUDED_DIRECTORIES = (
     ("smt", "out"),
     ("smt", "cache"),
     ("halmos", ".venv"),
+    ("certora", ".venv"),
 )
+EXCLUDED_FILENAMES = frozenset({".DS_Store"})
 SOURCE_GLOBS = (
     "contracts/test/halmos/**/*.sol",
 )
@@ -75,6 +77,7 @@ def discover_sources(root: Path) -> set[str]:
         path.relative_to(root).as_posix()
         for path in verification.rglob("*")
         if path.is_file()
+        and path.name not in EXCLUDED_FILENAMES
         and not any(
             verification.joinpath(*parts) in path.parents
             for parts in VERIFICATION_EXCLUDED_DIRECTORIES

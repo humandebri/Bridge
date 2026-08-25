@@ -136,6 +136,7 @@ run_versions() {
     "$ROOT/scripts/production-activation-proposal.sh" \
     "$ROOT/scripts/production-activate-driver.sh" \
     "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/install-certora-solc.sh" \
     "$ROOT/scripts/trusted-pr-container.sh"
   "$ROOT/scripts/check_tool_versions.sh"
   "$ROOT/scripts/test_tool_version_gate.sh"
@@ -147,6 +148,8 @@ run_versions() {
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
   if [[ "$proof_profile" == "security-hardening-v1" ]]; then
+    python3 "$ROOT/scripts/check_certora_manifest.py"
+    python3 "$ROOT/scripts/test_certora_manifest.py"
     python3 "$ROOT/scripts/test_proof_impact.py"
   else
     python3 "$ROOT/scripts/current_main_check_proof_impact.py"
@@ -706,7 +709,7 @@ run_halmos() {
     echo "missing locked Halmos environment; run uv sync --project verification/halmos --frozen" >&2
     return 1
   fi
-  python3 "$ROOT/scripts/halmos_environment.py" --check
+  python3 "$ROOT/scripts/halmos_environment.py" --check || return
   halmos=("$halmos_python" "$halmos_entry")
   version="$("${halmos[@]}" --version 2>&1)"
   if [[ "$version" != "halmos 0.3.3" ]]; then
@@ -740,7 +743,7 @@ run_halmos() {
       return 1
     fi
   done < "$ROOT/verification/halmos/obligations.tsv"
-  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope bridge
+  python3 "$ROOT/scripts/check_solidity_ast_bindings.py" --scope bridge || return
 
   while IFS=$'\t' read -r failure_id failure_link; do
     failure_path="${failure_link%%#*}"
@@ -1188,13 +1191,16 @@ run_smoke() {
   local executor_role
   local default_admin_role
   local unpause_deposit_data
+  local rotate_signer_data
   local management_salt
   local current_service_fee
   local limit_caller
   local limit_signature
   local smoke_principal
   local bridge_init_args
-  local -r bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  local bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  local -r rotated_bridge_signer="0x976EA74026E726554dB657fA54763abd0C3a0aa9"
+  local -r second_rotated_bridge_signer="0x14dC79964da2C08b23698B3D3cc7Ca32193d9955"
   local -r runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
   local -r unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
   local -r independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
@@ -1229,6 +1235,10 @@ run_smoke() {
     bridge_contract = blob \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\";
     expected_bridge_runtime_sha256 = blob \"\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\\04\";
     timelock_contract = blob \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\";
+    expected_timelock_minimum_delay_seconds = 86_400 : nat64;
+    expected_bsns_runtime_sha256 = blob \"\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\\05\";
+    expected_bsns_decimals = 8 : nat8;
+    expected_minimum_service_fee = 10_000 : nat;
     deployment_instance_id = blob \"\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\\03\";
     minimum_withdrawal_id = blob \"\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\00\\01\";
     ecdsa_key_name = \"dfx_test_key\";
@@ -1383,7 +1393,7 @@ for field, (value, candid_type) in stable_fields.items():
     "src/BridgeTimelockController.sol:BridgeTimelockController" \
     "$timelock_delay_seconds" \
     "[$runtime_administrator]" \
-    "[$runtime_administrator]" \
+    "[$independent_canceller]" \
     "[$runtime_administrator]")"
   read -r timelock_delay _ <<<"$(
     cast call "$base_admin_timelock" "getMinDelay()(uint256)" --rpc-url http://127.0.0.1:8545
@@ -1407,15 +1417,15 @@ for field, (value, candid_type) in stable_fields.items():
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
-    "Governance Operator canceller role" \
+    "Governance Operator has no canceller role" \
     "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$runtime_administrator" \
       --rpc-url http://127.0.0.1:8545)" \
-    "true"
+    "false"
   require_equal \
-    "legacy independent wallet has no canceller role" \
+    "independent canceller role" \
     "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$independent_canceller" \
       --rpc-url http://127.0.0.1:8545)" \
-    "false"
+    "true"
   require_equal \
     "independent canceller has no proposer role" \
     "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$independent_canceller" \
@@ -1506,6 +1516,9 @@ for field, (value, candid_type) in stable_fields.items():
   # waiting 24 hours. The same run separately verifies that the real admin wallet needs Timelock.
   cast rpc anvil_impersonateAccount "$base_admin_timelock" --rpc-url http://127.0.0.1:8545 >/dev/null
   cast rpc anvil_setBalance "$base_admin_timelock" 0x56BC75E2D63100000 --rpc-url http://127.0.0.1:8545 >/dev/null
+  cast send "$bridge_address" "rotateBridgeSigner(address)" "$rotated_bridge_signer" \
+    --rpc-url http://127.0.0.1:8545 --from "$base_admin_timelock" --unlocked >/dev/null
+  bridge_signer="$rotated_bridge_signer"
   cast send "$bridge_address" "unpauseDepositMints()" \
     --rpc-url http://127.0.0.1:8545 --from "$base_admin_timelock" --unlocked >/dev/null
   cast send "$bridge_address" "unpauseWithdrawals()" \
@@ -1517,7 +1530,7 @@ for field, (value, candid_type) in stable_fields.items():
     cast call "$bridge_address" "mintAuthorizationEpoch()(uint256)" \
       --rpc-url http://127.0.0.1:8545
   )"
-  deadline="$(( $(cast block latest --rpc-url http://127.0.0.1:8545 --field timestamp) + 7200 ))"
+  deadline="$(( $(cast block latest --rpc-url http://127.0.0.1:8545 --field timestamp) + 600 ))"
   typed_data="$(
     jq -cn \
       --arg deposit_id "$deposit_id" \
@@ -1677,13 +1690,14 @@ for field, (value, candid_type) in stable_fields.items():
     return 1
   fi
   unpause_deposit_data="$(cast calldata "unpauseDepositMints()")"
+  rotate_signer_data="$(cast calldata "rotateBridgeSigner(address)" "$second_rotated_bridge_signer")"
   management_salt="0x0000000000000000000000000000000000000000000000000000000000000001"
   cast send \
     "$base_admin_timelock" \
-    "schedule(address,uint256,bytes,bytes32,bytes32,uint256)" \
-    "$bridge_address" \
-    0 \
-    "$unpause_deposit_data" \
+    "scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)" \
+    "[$bridge_address,$bridge_address]" \
+    "[0,0]" \
+    "[$rotate_signer_data,$unpause_deposit_data]" \
     "$zero_bytes32" \
     "$management_salt" \
     "$timelock_delay_seconds" \
@@ -1692,10 +1706,10 @@ for field, (value, candid_type) in stable_fields.items():
     --unlocked >/dev/null
   if cast send \
     "$base_admin_timelock" \
-    "execute(address,uint256,bytes,bytes32,bytes32)" \
-    "$bridge_address" \
-    0 \
-    "$unpause_deposit_data" \
+    "executeBatch(address[],uint256[],bytes[],bytes32,bytes32)" \
+    "[$bridge_address,$bridge_address]" \
+    "[0,0]" \
+    "[$rotate_signer_data,$unpause_deposit_data]" \
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
@@ -1708,10 +1722,10 @@ for field, (value, candid_type) in stable_fields.items():
   cast rpc evm_mine --rpc-url http://127.0.0.1:8545 >/dev/null
   cast send \
     "$base_admin_timelock" \
-    "execute(address,uint256,bytes,bytes32,bytes32)" \
-    "$bridge_address" \
-    0 \
-    "$unpause_deposit_data" \
+    "executeBatch(address[],uint256[],bytes[],bytes32,bytes32)" \
+    "[$bridge_address,$bridge_address]" \
+    "[0,0]" \
+    "[$rotate_signer_data,$unpause_deposit_data]" \
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \

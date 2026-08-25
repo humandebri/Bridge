@@ -83,6 +83,22 @@ class CiModeTests(unittest.TestCase):
         self.assertIn('python3 "$ROOT/scripts/test_check_claim_manifest.py"', body)
         self.assertIn("run_proof_stage claim-transaction-tests", body)
 
+    def test_certora_preflight_is_hardening_only(self) -> None:
+        body = function_body("run_versions")
+        profile_branch = body.index(
+            'if [[ "$proof_profile" == "security-hardening-v1" ]]; then'
+        )
+        certora_manifest = body.index(
+            'python3 "$ROOT/scripts/check_certora_manifest.py"'
+        )
+        certora_tests = body.index('python3 "$ROOT/scripts/test_certora_manifest.py"')
+        current_main = body.index(
+            'python3 "$ROOT/scripts/current_main_check_proof_impact.py"'
+        )
+        self.assertLess(profile_branch, certora_manifest)
+        self.assertLess(certora_manifest, certora_tests)
+        self.assertLess(certora_tests, current_main)
+
     def test_shared_verus_kernels_may_be_const_or_non_const(self) -> None:
         body = function_body("run_verus")
         self.assertIn('pub (const )?fn ${kernel_name}\\b', body)
@@ -125,6 +141,11 @@ class CiModeTests(unittest.TestCase):
         refinement = function_body("run_refinement_gate")
         commands = [line.strip() for line in refinement.splitlines() if line.strip()]
         self.assertTrue(all(command.endswith("|| return") for command in commands[:-1]))
+
+    def test_halmos_prerequisite_checks_fail_closed(self) -> None:
+        body = function_body("run_halmos")
+        self.assertIn('halmos_environment.py" --check || return', body)
+        self.assertIn('check_solidity_ast_bindings.py" --scope bridge || return', body)
 
     def test_new_modes_are_exposed(self) -> None:
         for mode in (

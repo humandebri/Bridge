@@ -123,6 +123,7 @@ def main() -> int:
             "DepositAuthorization.lean",
             "ClaimContracts.lean",
             "LedgerBlockProvenance.lean",
+            "Liveness.lean",
             "Protocol.lean",
         )
     )

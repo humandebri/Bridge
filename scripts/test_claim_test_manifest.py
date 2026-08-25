@@ -15,8 +15,9 @@ class ClaimTestManifestTests(unittest.TestCase):
     @staticmethod
     def claims(row: str) -> str:
         return (
-            "schema\t5\t-\t-\t-\n"
-            "contract\tclaim\timplementation-only\t-\t-\n"
+            "schema\t6\t-\t-\t-\t-\t-\n"
+            "contract\tclaim\timplementation-only\trelease-safety\tproduction-linked\t"
+            "BridgeSpec.TestContract\tBridgeSpec.test_witness\n"
             + row
         )
 
