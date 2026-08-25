@@ -67,7 +67,8 @@ class CandidateScriptFingerprintTests(unittest.TestCase):
                     areas=(SimpleNamespace(sources=("scripts/policy.sh",)),)
                 )
 
-                workspace = fingerprint.source_fingerprint(root, manifest)
+                with patch.object(source_resolution, "CANDIDATE_SCRIPTS", None):
+                    workspace = fingerprint.source_fingerprint(root, manifest)
 
                 with patch.object(
                     source_resolution, "CANDIDATE_SCRIPTS", str(candidate_scripts)
