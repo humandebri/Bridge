@@ -216,10 +216,10 @@ class TrustedPrGateTests(unittest.TestCase):
             )
         self.assertLess(
             workflow.index("Build the pinned isolation image from trusted policy"),
-            workflow.index("Check out exact untrusted head as read-only container input"),
+            workflow.index(checkout),
         )
         self.assertLess(
-            workflow.index("Check out exact untrusted head as read-only container input"),
+            workflow.index(checkout),
             workflow.index("Authenticate and isolate profile dependency manifests"),
         )
         self.assertNotIn("pnpm --dir source/ui install", workflow)
